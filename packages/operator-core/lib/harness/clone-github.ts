@@ -39,6 +39,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { createTextCollector } from '../child-output.js';
 
 // Lazy: this server module is pulled into the operator-vite SPA bundle, where
 // node:util is browser-stubbed (promisify === undefined). Calling promisify at
@@ -295,8 +296,17 @@ export function runGitClone(
       return;
     }
 
-    let stderr = '';
     let settled = false;
+    const stderr = createTextCollector(child.stderr, {
+      maxChars: 64 * 1024,
+      onDecodedText: (chunk) => {
+        if (!onProgress) return;
+        for (const seg of chunk.split(/[\r\n]+/)) {
+          const p = parseGitProgressLine(seg);
+          if (p) onProgress(p);
+        }
+      },
+    });
     const finish = (o: GitCloneOutcome) => {
       if (settled) return;
       settled = true;
@@ -312,24 +322,12 @@ export function runGitClone(
     }, timeoutMs);
     timer.unref?.();
 
-    child.stderr?.on('data', (buf: Buffer) => {
-      const chunk = buf.toString();
-      stderr += chunk;
-      // git progress is unbounded \r-rewrites; keep only the tail (the fatal
-      // error line is last) so classification still works without OOM.
-      if (stderr.length > 64 * 1024) stderr = stderr.slice(-64 * 1024);
-      if (!onProgress) return;
-      for (const seg of chunk.split(/[\r\n]+/)) {
-        const p = parseGitProgressLine(seg);
-        if (p) onProgress(p);
-      }
-    });
     child.on('error', (e: NodeJS.ErrnoException) => {
       finish({ ok: false, message: e.message || 'git spawn failed', gitMissing: e.code === 'ENOENT' });
     });
     child.on('close', (code) => {
       if (code === 0) finish({ ok: true, message: '' });
-      else finish({ ok: false, message: stderr.trim() || `git clone exited with code ${code}` });
+      else finish({ ok: false, message: stderr.text().trim() || `git clone exited with code ${code}` });
     });
   });
 }

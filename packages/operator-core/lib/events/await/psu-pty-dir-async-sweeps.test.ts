@@ -149,6 +149,35 @@ describe('psu-pty directory sweeps never touch the directory synchronously (WI-1
     expect(syncCallsUnder(dir)).toEqual([]);
   });
 
+  it('bounds concurrent per-host checks while preserving every live result', async () => {
+    const owners = Array.from({ length: 24 }, (_, i) => `su-bulk-${i}`);
+    for (const ownerId of owners) {
+      const sock = join(dir, `${ownerId}.sock`);
+      writeFileSync(sock, '');
+      writeFileSync(
+        join(dir, `${ownerId}.json`),
+        JSON.stringify({ ownerId, sock, pid: process.pid, startedAt: NOW, advSessionId: null }),
+      );
+    }
+
+    let activeChecks = 0;
+    let maxActiveChecks = 0;
+    const hosts = await listLiveHostsAsync(dir, {
+      verifyIdentity: async () => {
+        activeChecks += 1;
+        maxActiveChecks = Math.max(maxActiveChecks, activeChecks);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        activeChecks -= 1;
+        return true;
+      },
+    });
+
+    expect(hosts.filter((host) => owners.includes(host.ownerId))).toHaveLength(owners.length);
+    expect(maxActiveChecks).toBeGreaterThan(1);
+    expect(maxActiveChecks).toBeLessThanOrEqual(8);
+    expect(syncCallsUnder(dir)).toEqual([]);
+  });
+
   it('pruneDeadDiscoveryFilesAsync (the janitor)', async () => {
     expect(await pruneDeadDiscoveryFilesAsync(dir, { verifyIdentity })).toBe(2); // su-dead + su-corrupt
     expect(syncCallsUnder(dir)).toEqual([]);
@@ -173,5 +202,61 @@ describe('psu-pty directory sweeps never touch the directory synchronously (WI-1
   it('carry-drill-drop watchdog: orphan candidate listing (runs every 60s)', async () => {
     expect(await listOrphanCandidateOwners(dir, NOW, 60 * 60_000)).toEqual(['su-live']);
     expect(syncCallsUnder(dir)).toEqual([]);
+  });
+});
+
+describe('the janitor never reaps a host-code adoption handoff (WI-6554700010008431)', () => {
+  // A handoff is `<key>.handoff.json`: it ends in `.json`, carries no pid/sock, and lives
+  // in the discovery directory for ~1s between a predecessor writing it and the re-exec'd
+  // launcher consuming it. Sweeping it as a "dead host" made the successor cold-boot
+  // without its carry.
+  let hdir: string;
+  beforeEach(() => {
+    hdir = mkdtempSync(join(tmpdir(), 'psu-pty-handoff-sweep-'));
+  });
+  afterEach(() => {
+    rmSync(hdir, { recursive: true, force: true });
+  });
+
+  const handoffRecord = (ownerId: string) =>
+    JSON.stringify({ ownerId, fromPid: 2 ** 22 + 7, parentPid: process.pid, createdAt: new Date().toISOString(), mode: 'carry-respawn', args: ['--x'] });
+
+  it('leaves a parseable handoff AND a half-written one, while still pruning a dead discovery record', async () => {
+    writeFileSync(join(hdir, 'su-adopting.handoff.json'), handoffRecord('su-adopting'));
+    writeFileSync(join(hdir, 'su-midwrite.handoff.json'), '{"ownerId":"su-midwr'); // partial write
+    // Control: a real dead discovery record IS still reaped, so the sweep is not a no-op.
+    writeFileSync(
+      join(hdir, 'su-dead.json'),
+      JSON.stringify({ ownerId: 'su-dead', pid: 2 ** 22 + 9, sock: join(hdir, 'su-dead.sock'), startedAt: NOW }),
+    );
+    expect(await pruneDeadDiscoveryFilesAsync(hdir, { verifyIdentity: () => false })).toBe(1);
+    expect(existsSync(join(hdir, 'su-dead.json'))).toBe(false);
+    expect(existsSync(join(hdir, 'su-adopting.handoff.json'))).toBe(true);
+    expect(existsSync(join(hdir, 'su-midwrite.handoff.json'))).toBe(true);
+  });
+
+  it('leaves any other parseable non-discovery JSON alone (shape rail, not just the name rail)', async () => {
+    writeFileSync(join(hdir, 'su-future.sidecar.json'), JSON.stringify({ ownerId: 'su-future', note: 'not a host' }));
+    expect(await pruneDeadDiscoveryFilesAsync(hdir, { verifyIdentity: () => false })).toBe(0);
+    expect(existsSync(join(hdir, 'su-future.sidecar.json'))).toBe(true);
+  });
+
+  it('never lists a handoff as a host', async () => {
+    writeFileSync(join(hdir, 'su-adopting.handoff.json'), handoffRecord('su-adopting'));
+    expect(await listLiveHostsAsync(hdir, { verifyIdentity: () => true })).toEqual([]);
+  });
+
+  it('the predicate agrees with the host writer suffix (lockstep pin against psu-pty-host.mjs)', () => {
+    const hostSrc = readFileSync(
+      new URL('../../../../../apps/operator/scripts/psu-pty-host.mjs', import.meta.url),
+      'utf8',
+    );
+    const m = hostSrc.match(/export const HOST_HANDOFF_FILE_SUFFIX = '([^']+)';/);
+    expect(m?.[1]).toBe(discovery.HOST_HANDOFF_FILE_SUFFIX);
+    // handoffPathFor must build its name FROM the constant, or the constant pins nothing.
+    expect(hostSrc).toMatch(/\$\{sanitizeKey\(ownerId\)\}\$\{HOST_HANDOFF_FILE_SUFFIX\}/);
+    expect(discovery.isDiscoveryRecordFileName('su-a.json')).toBe(true);
+    expect(discovery.isDiscoveryRecordFileName(`su-a${discovery.HOST_HANDOFF_FILE_SUFFIX}`)).toBe(false);
+    expect(discovery.isDiscoveryRecordFileName('su-a.events.jsonl')).toBe(false);
   });
 });

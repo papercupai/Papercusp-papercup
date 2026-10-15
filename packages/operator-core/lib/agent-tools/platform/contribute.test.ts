@@ -27,11 +27,14 @@ vi.mock('../../pot/contribute-upstream', () => ({ contributeUpstream: vi.fn() })
 vi.mock('../../pot/enable-platform-mode', () => ({ PLATFORM_SELF_POT_SLUG: 'papercusp-platform' }));
 
 import { resolveAgentIdentity } from '../coordination/identity';
+import type { AgentIdentity } from '../coordination/identity';
 import { contributeUpstream } from '../../pot/contribute-upstream';
 import { recordFlagAudit } from '../../flag-audit';
 const ident = vi.mocked(resolveAgentIdentity);
 const contribM = vi.mocked(contributeUpstream);
 const auditM = vi.mocked(recordFlagAudit);
+/** Partial identity — the handler reads only `source`. A checked assertion, not `as never`. */
+const identity = (source: AgentIdentity['source']) => ({ source }) as AgentIdentity;
 const tool = (await import('./contribute')).default;
 
 type Out = { content: { text: string }[] };
@@ -44,12 +47,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   ident.mockReturnValue({ source: 'operator' } as never);
   contribM.mockResolvedValue({ ok: true, prepared: true, needs: ['fork_remote'] } as never);
-  auditM.mockResolvedValue(undefined as never);
+  auditM.mockResolvedValue(undefined);
 });
 
 describe('platform:contribute guards + delegation', () => {
   it('refuses a bee (fleet-spawn) — root-only — with no outward action', async () => {
-    ident.mockReturnValue({ source: 'fleet-spawn' } as never);
+    ident.mockReturnValue(identity('fleet-spawn'));
     const b = body(await call({ kind: 'knowledge-pack' }));
     expect(b).toMatchObject({ ok: false, error: 'platform_contribute_root_only' });
     expect(contribM).not.toHaveBeenCalled();
@@ -67,6 +70,23 @@ describe('platform:contribute guards + delegation', () => {
     expect(contribM.mock.calls[0]![0]).toMatchObject({
       kind: 'pr', confirm: true, featureBranch: 'fix/x', prTitle: 'Fix x',
     });
+  });
+
+  it('passes a report through the same contribution core and retains queued status', async () => {
+    const report = { text: 'Export crashes', reportContext: { appVersion: '0.0.1' } };
+    contribM.mockResolvedValue({ ok: true, kind: 'report', queued: true } as never);
+    const result = body(await call({ kind: 'report', confirm: true, report }));
+    expect(result).toMatchObject({ queued: true });
+    expect(result).not.toHaveProperty('sent');
+    expect(contribM.mock.calls[0]![0]).toMatchObject({ kind: 'report', confirm: true, workspaceId: 'ws-1', report });
+    expect(auditM).not.toHaveBeenCalled();
+  });
+
+  it('keeps reports root-only too, without invoking the contribution core', async () => {
+    ident.mockReturnValue(identity('fleet-spawn'));
+    expect(body(await call({ kind: 'report', confirm: true, report: { text: 'Export crashes' } })))
+      .toMatchObject({ error: 'platform_contribute_root_only' });
+    expect(contribM).not.toHaveBeenCalled();
   });
 });
 

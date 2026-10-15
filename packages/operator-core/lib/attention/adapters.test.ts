@@ -828,6 +828,68 @@ describe('P-005 — the folded owner-gate channels (owner-inbox-single-pane-2026
     expect(unknown.body).toContain('LIVENESS UNKNOWN');
   });
 
+  it('blocked-session: a suppressed_ask stays a Decision with its default + deadline even when the asker is gone (WI-10005039)', () => {
+    for (const livenessState of ['ended', null] as const) {
+      const card = blockedSessionToAttention({
+        sessionId: 'sess-sup',
+        client: 'claude',
+        refId: 'sup-1',
+        gateKind: 'suppressed_ask',
+        question: 'Ship the migration now, or hold for the owner window?',
+        waitingHours: 3,
+        actionability: livenessState === 'ended' ? 'non-actionable' : 'unknown',
+        livenessState,
+        decideBy: '2026-10-09T12:00:00.000Z',
+        defaultIfUnanswered: 'ship it at the deadline',
+      });
+      expect(card.tier).toBe('decision');
+      expect(card.needsHuman).toBe(true);
+      expect(card.body).toContain('Default if unanswered: ship it at the deadline');
+      expect(card.body).toContain('decide by 2026-10-09T12:00:00.000Z');
+      // The declaring agent dying is the DESIGN of this kind — it must not read as stranded work.
+      expect(card.status).toBe('blocked (claude)');
+      expect(card.body).not.toContain('STRANDED');
+      expect(card.body).not.toContain('LIVENESS UNKNOWN');
+    }
+  });
+
+  it('blocked-session: a suppressed_ask renders a non-string default as JSON and says so when none was declared', () => {
+    const base = {
+      sessionId: 's',
+      client: 'claude',
+      refId: 'r',
+      gateKind: 'suppressed_ask' as const,
+      question: 'q?',
+      actionability: 'actionable' as const,
+      livenessState: 'live' as const,
+    };
+    expect(blockedSessionToAttention({ ...base, defaultIfUnanswered: { choice: 'deny' } }).body).toContain(
+      'Default if unanswered: {"choice":"deny"}',
+    );
+    const none = blockedSessionToAttention({ ...base, decideBy: null, defaultIfUnanswered: null });
+    expect(none.body).toContain('No default declared');
+    expect(none.body).not.toContain('undefined');
+    expect(none.body).not.toContain('decide by');
+  });
+
+  it('CONTROL: a plain ask with an ended asker is still a stranded Alert with no default line', () => {
+    // Pins the other side: if the suppressed branch ever leaked onto plain asks, the suppressed
+    // assertions above would pass for the wrong reason (everything becoming a Decision).
+    const plain = blockedSessionToAttention({
+      sessionId: 'sess-plain',
+      client: 'claude',
+      refId: 'plain-1',
+      gateKind: 'ask',
+      question: 'an old question',
+      actionability: 'non-actionable',
+      livenessState: 'ended',
+    });
+    expect(plain.tier).toBe('alert');
+    expect(plain.status).toBe('stranded (claude)');
+    expect(plain.body).toContain('STRANDED');
+    expect(plain.body).not.toContain('Default if unanswered');
+  });
+
   it('all four: id is kind-prefixed, ref.kind matches, needsHuman === (tier === decision), category set', () => {
     const items: AttentionItem[] = [
       workItemNeedsHumanToAttention({ workItemId: 'WI-1', itemKind: 'chunk', title: 't' }),

@@ -437,11 +437,11 @@ const DEFAULT_MAX_BYTES_PER_FILE = 32 * 1024 * 1024;
  * cold-loop-respawned session whose `adv_sessions.session_id` was never
  * re-anchored to its live successor transcript — filed separately.)
  */
-export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<IngestResult> {
+export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { sql?: Sql; workspaceId?: string } = {}): Promise<IngestResult> {
   const maxFiles = opts.maxFilesPerTick ?? DEFAULT_MAX_FILES;
   const capBytes = opts.maxBytesPerFile ?? DEFAULT_MAX_BYTES_PER_FILE;
-  const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
+  const sql = scope.sql ?? getOrgPg().sql;
+  const ws = scope.workspaceId ?? activeWorkspaceId();
   if (opts.historical && (opts.adapters?.length !== 1 || opts.includeIsolationRoots === true ||
     !Number.isSafeInteger(opts.historical.backupSnapshotId) || opts.historical.backupSnapshotId <= 0 ||
     !/^[a-f0-9]{64}$/.test(opts.historical.sourceSha256) || !/^[a-f0-9]{32}$/.test(opts.historical.legacyFingerprint))) {
@@ -708,6 +708,16 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
             await tx`DELETE FROM harness_shared.agent_usage_samples WHERE workspace_id = ${ws}
               AND source = 'interactive' AND session_id = ${sessionId} AND usage_event_key IS NULL`;
           }
+          const [sessionRole] = await tx<Array<{ role: string }>>`
+            SELECT COALESCE(
+              (SELECT role FROM harness_shared.adv_sessions
+                WHERE workspace_id = ${ws} AND id = ${adapter.advSessionId ?? null}::bigint),
+              (SELECT role FROM harness_shared.adv_sessions
+                WHERE workspace_id = ${ws} AND session_id = ${sessionId}
+                ORDER BY id DESC LIMIT 1),
+              'interactive'
+            ) AS role
+          `;
           const deltas: TranscriptDelta[] = [];
           // Keep custom adapters compatible, but label their coarser grain explicitly.
           const observations: TranscriptUsageEvent[] = events ?? [...perModel].map(([model, usage]) => ({
@@ -806,7 +816,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}): Promise<
                 ${price.costUsd}, ${stored.model}, ${price.costSource},
                 (SELECT harness_shared.harness_slug_for_usage_attribution(
                    ${ws}, ${adapter.ownerId ?? null}, ${sessionId}, ${adapter.advSessionId ?? null})),
-                ${sessionId}, ${'interactive'}, ${sessionId},
+                ${sessionId}, ${sessionRole.role}, ${sessionId},
                 (SELECT harness_shared.goal_id_for_usage_session(
                    ${ws}, ${sessionId}, ${adapter.advSessionId ?? null})),
                 ${stored.cache_creation_5m_tokens},

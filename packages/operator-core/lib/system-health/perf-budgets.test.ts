@@ -4,13 +4,15 @@
  * on a 128-core box), the definitive-wedge crits, the warn tiers, and the fail-safes
  * (stale never reds; null/wrong-schema → unknown).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   evaluateRealBackendAdmission,
   evaluateMemoryPressure,
   evaluatePerfSignals,
   worstOwnedInotifyHolder,
   type PerfSignalsV1,
+  type PerfConditionContext,
+  perfBudgetConditionKey,
 } from './perf-budgets';
 
 const NOW = Date.parse('2026-06-19T16:35:00Z');
@@ -30,6 +32,99 @@ const sig = (
     ...over,
   },
   ...top,
+});
+
+describe('condition rail at the original perf evaluator', () => {
+  const capture = (over: Partial<PerfSignalsV1['signals']> = {}, top: Partial<PerfSignalsV1> = {}) => sig({
+    eventLoopLag: { lag_p95_ms: 5, window_mature: true },
+    psi: { cpu: { some: { avg60: 0 } }, memory: { some: { avg60: 0 }, full: { avg60: 0 } } },
+    inotify: { totalWatches: 100, limits: { maxUserWatches: 1_000_000 } }, ...over,
+  }, { capturedAt: new Date(NOW).toISOString(), ...top });
+  function fixture() {
+    const open = new Map<string, number>();
+    const broadcast = vi.fn(async (event: { conditionKey?: string; oneShot?: boolean }) => {
+      expect(event.oneShot).toBe(true); if (!open.has(event.conditionKey!)) open.set(event.conditionKey!, NOW); return true;
+    });
+    const resolve = vi.fn(async (event: { conditionKey: string }) => open.delete(event.conditionKey));
+    const context: PerfConditionContext = { workspaceId: 'fixture', hostId: 'host', rail: { broadcast, resolve },
+      readOpenConditions: async () => [...open].map(([conditionKey, openedAtMs]) => ({ conditionKey, openedAtMs })) };
+    const key = (kind: 'operator' | 'ambient') => perfBudgetConditionKey(kind, 'fixture', 'host');
+    return { open, broadcast, resolve, context, key };
+  }
+  const breach = () => capture({ operator_3070_reachable: false,
+    psi: { cpu: { some: { avg60: 99 } }, memory: { full: { avg60: 0 } } } });
+
+  it('opens independent episodes, resolves measured recovery and rearms after recovery', async () => {
+    const f = fixture();
+    expect((await evaluatePerfSignals(breach(), NOW, undefined, false, f.context)).degraded).toBe(true);
+    expect([...f.open.keys()]).toEqual([f.key('operator'), f.key('ambient')]);
+    await evaluatePerfSignals(breach(), NOW, undefined, false, f.context);
+    expect(f.open.size).toBe(2);
+    await evaluatePerfSignals(capture(), NOW, undefined, false, f.context);
+    expect(f.open.size).toBe(0); expect(f.resolve).toHaveBeenCalledTimes(2);
+    await evaluatePerfSignals(breach(), NOW, undefined, false, f.context); expect(f.open.size).toBe(2);
+  });
+
+  it.each(['missing', 'schema', 'stale', 'future', 'clock', 'partial', 'immature', 'deploy', 'old', 'foreign', 'read-failed'])(
+    'preserves episodes on %s evidence across a fresh evaluator context', async mode => {
+      const f = fixture(); await evaluatePerfSignals(breach(), NOW, undefined, false, f.context);
+      let sample: PerfSignalsV1 | null = capture(), context = { ...f.context }, now = NOW;
+      if (mode === 'missing') sample = null;
+      if (mode === 'schema') sample = capture({}, { schemaVersion: 'invalid' });
+      if (mode === 'stale') sample = capture({}, { capturedAt: new Date(NOW - 3_600_000).toISOString() });
+      if (mode === 'future') sample = capture({}, { capturedAt: new Date(NOW + 1).toISOString() });
+      if (mode === 'clock') now = Number.NaN;
+      if (mode === 'partial') sample = sig({}, { capturedAt: new Date(NOW).toISOString() });
+      if (mode === 'immature') sample = capture({ eventLoopLag: { lag_p95_ms: 0, window_mature: false }, psi: null });
+      if (mode === 'deploy') sample = capture({ operator_3070_reachable: false, psi: null });
+      if (mode === 'old') sample = capture({}, { capturedAt: new Date(NOW - 1).toISOString() });
+      if (mode === 'foreign') context.workspaceId = 'other';
+      if (mode === 'read-failed') context.readOpenConditions = async () => { throw new Error('unreadable'); };
+      await evaluatePerfSignals(sample, now, undefined, mode === 'deploy', context);
+      expect(f.open.size).toBe(2); expect(f.resolve).not.toHaveBeenCalled();
+    });
+
+  it('recovers independent known classes while the other class remains unmeasured', async () => {
+    const f = fixture(); await evaluatePerfSignals(breach(), NOW, undefined, false, f.context);
+    await evaluatePerfSignals(capture({ psi: null }), NOW, undefined, false, f.context);
+    expect([...f.open.keys()]).toEqual([f.key('ambient')]);
+    await evaluatePerfSignals(capture({ eventLoopLag: null }), NOW, undefined, false, f.context);
+    expect(f.open.size).toBe(0);
+  });
+
+  it('awaits delivery and retains the verdict and other episode after a rail failure', async () => {
+    const f = fixture(); let release!: () => void, settled = false;
+    f.context.rail!.broadcast = async event => {
+      if (event.conditionKey === f.key('operator')) {
+        await new Promise<void>(resolve => { release = resolve; }); throw new Error('refused');
+      }
+      return f.broadcast(event);
+    };
+    const pending = evaluatePerfSignals(breach(), NOW, undefined, false, f.context).then(v => { settled = true; return v; });
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    expect(settled).toBe(false); release(); expect((await pending).status).toBe('crit');
+    expect([...f.open.keys()]).toEqual([f.key('ambient')]);
+  });
+
+  it('retains failed resolutions and rejects invalid measurements and episode clocks', async () => {
+    const f = fixture(); await evaluatePerfSignals(breach(), NOW, undefined, false, f.context);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await evaluatePerfSignals(capture(), NOW, undefined, false, { ...f.context,
+        rail: { resolve: async () => { throw new Error('unavailable'); } } });
+      expect(f.open.size).toBe(2); expect(warning).toHaveBeenCalledTimes(2);
+    } finally { warning.mockRestore(); }
+    await evaluatePerfSignals(capture({ eventLoopLag: { lag_p95_ms: Number.NaN },
+      psi: { cpu: { some: { avg60: Number.NaN } }, memory: { full: { avg60: Number.NaN } } } }),
+      NOW, undefined, false, f.context);
+    expect(f.open.size).toBe(2);
+    await evaluatePerfSignals(capture(), NOW, undefined, false, { ...f.context,
+      readOpenConditions: async () => [...f.open.keys()].map(conditionKey => ({ conditionKey, openedAtMs: Number.NaN })) });
+    expect(f.resolve).not.toHaveBeenCalled();
+    const invalid = fixture(); await evaluatePerfSignals(capture({ eventLoopLag: { lag_p95_ms: Number.POSITIVE_INFINITY },
+      psi: { cpu: { some: { avg60: 101 } } } }), NOW, undefined, false, invalid.context);
+    expect(invalid.open.size).toBe(0);
+  });
 });
 
 describe('critAttribution — WI-38449 / D-007 F3: which crits may hold a deploy', () => {

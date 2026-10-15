@@ -1,7 +1,7 @@
 [Unit]
 Description=Kopia snapshot of all registered sources
 After=network-online.target
-RequiresMountsFor=/mnt/backup
+RequiresMountsFor=/mnt/cold-a/Backup/db-dumps
 
 [Service]
 Type=oneshot
@@ -27,15 +27,14 @@ MemoryAccounting=yes
 MemoryHigh=8G
 MemoryMax=12G
 MemorySwapMax=0
-TimeoutStopSec=30s
-# WI-2146225: snapshot-all.sh resolves this to build REQUIRED_SOURCES, so the
-# sweep covers the dump directory even before that directory has ever been
-# snapshotted (discovery alone can never reach it — see the comment there).
-# A systemd user unit inherits no interactive shell environment, so without this
-# line the sweep would fall back to the ABANDONED /mnt/data path and force-cover
-# the very directory nothing writes any more — the WI-2145397 failure exactly.
-# ⚠ KEEP IN SYNC with papercusp-db-backup.service and kopia-healthcheck.service.
-Environment=PAPERCUSP_HOST_PG_DUMP_DIR=/mnt/backup/db-dumps
+# Same budget as kopia-home-snapshot.service (WI-6554700010011924): up to 3 sudo
+# calls bounded at KOPIA_SUDO_SIGNAL_TIMEOUT_SEC (45 s) + the 15 s flush grace.
+TimeoutStopSec=180s
+# snapshot-all.sh resolves this to build REQUIRED_SOURCES, so the dump directory
+# stays first in the sweep even before its first snapshot. A systemd user unit
+# inherits no interactive-shell environment; keep this explicit with the same
+# cold-a target as the producer and healthcheck.
+Environment=PAPERCUSP_HOST_PG_DUMP_DIR=/mnt/cold-a/Backup/db-dumps
 ExecStart=%h/.config/kopia/kopia-backup-guard.sh --mode scheduled --label hot -- %h/.config/kopia/snapshot-all.sh
 # If oomd kills the user-owned guard while root Kopia survives sudo, validate
 # and kill only the exact PID this invocation recorded.

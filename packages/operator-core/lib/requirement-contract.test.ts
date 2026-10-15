@@ -61,6 +61,25 @@ describe('unified requirement contract', () => {
     expect(requirementSections(legacy).intent).toBeNull();
   });
 
+  it('does not promote the readback bar=model echo on a legacy criterion into BAR-contract metadata', () => {
+    const legacy = {
+      key: 'old',
+      title: 'Existing requirement',
+      model: 'Existing promise',
+      bar: 'Existing promise',
+      method: 'Existing check',
+      driftMarkers: 'Failure',
+    };
+
+    expect(normalizeAcceptanceBarCriterion(legacy)).toEqual({
+      key: 'old',
+      title: 'Existing requirement',
+      model: 'Existing promise',
+      method: 'Existing check',
+      driftMarkers: 'Failure',
+    });
+  });
+
   it('patches a verification method without changing the promise, but treats weaker proof as an amendment', () => {
     const canonical = normalizeAcceptanceBarCriterion(requirement);
     const stored = { rubricId: 'export', kind: 'acceptance', status: 'active',

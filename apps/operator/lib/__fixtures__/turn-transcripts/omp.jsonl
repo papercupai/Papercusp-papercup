@@ -1,0 +1,9 @@
+{"type":"message","id":"5d714364","timestamp":"2026-10-06T09:33:29.886Z","message":{"role":"user"}}
+{"type":"message","id":"8802265b","timestamp":"2026-10-06T09:33:35.053Z","message":{"role":"assistant","stopReason":"toolUse"}}
+{"type":"custom","id":"8ce1fdd8","timestamp":"2026-10-06T09:33:35.059Z"}
+{"type":"message","id":"04d4707e","timestamp":"2026-10-06T09:33:35.072Z","message":{"role":"toolResult"}}
+{"type":"message","id":"a66ec9b2","timestamp":"2026-10-06T09:33:39.123Z","message":{"role":"assistant","stopReason":"toolUse"}}
+{"type":"custom","id":"72357870","timestamp":"2026-10-06T09:33:39.124Z"}
+{"type":"message","id":"d66fbaa1","timestamp":"2026-10-06T09:33:39.638Z","message":{"role":"toolResult"}}
+{"type":"message","id":"af7dd701","timestamp":"2026-10-06T09:33:41.676Z","message":{"role":"assistant","stopReason":"stop"}}
+{"type":"custom","id":"966d3bb2","timestamp":"2026-10-06T09:33:48.948Z"}

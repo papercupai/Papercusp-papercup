@@ -7,13 +7,21 @@
  * authorities. This record makes the logical attempt, retry policy, current
  * physical runner, blockers, and evidence machine-readable across processes.
  */
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { Sql } from 'postgres';
+import { promisify } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { boundedOrgTxn } from '../pg-bounded-txn';
 import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
+import {
+  dependencyGenerationInfraCode,
+  GREEN_CHECKPOINT_RESULT_MARKER,
+  isFixtureLogLine,
+  ORCHESTRATOR_STDOUT_TAG,
+} from './checkpoint-log-tags';
 import {
   frozenRepairHeadAwaitsVerification,
   parseFrozenCandidateRepairQueue,
@@ -50,7 +58,7 @@ export function checkpointPidIdentity(pid: number): string | null {
  * degrades to the old lease-only behaviour instead of handing one candidate to two runners.
  */
 export type RunnerLiveness = 'live' | 'dead' | 'unknown';
-export type RunnerLivenessProber = (runner: QualificationPhysicalRunner) => RunnerLiveness;
+export type RunnerLivenessProber = (runner: QualificationPhysicalRunner) => RunnerLiveness | Promise<RunnerLiveness>;
 
 /**
  * How long an attempt with NO physical runner may sit untouched before it is treated as abandoned.
@@ -66,11 +74,30 @@ export const QUALIFICATION_PROGRESS_STALE_MS = 3 * 60_000;
 /** An admitted scheduler fire may be probed before systemd has created its named scope. */
 export const QUALIFICATION_LAUNCH_GRACE_MS = 60_000;
 
+/**
+ * WI-6554700010009616: how long a LIVE runner may sit in `finalizing` before the lost-run sweep
+ * calls it a post-verdict hang. Every post-verdict step is bounded (30-60s each, WI-6554700010009547),
+ * so 20m is far past any legitimate tail. The heartbeat cannot catch this case: its interval keeps
+ * firing through an awaited hang (run b874ad21 sat ~2h with a fresh heartbeat).
+ */
+export const QUALIFICATION_POST_VERDICT_HANG_MS = 20 * 60_000;
+
+/** True when a live runner has been parked past its final verdict longer than the bound above. */
+export function isPostVerdictHang(
+  runner: Pick<QualificationPhysicalRunner, 'phase' | 'phaseEnteredAtMs'> | null | undefined,
+  liveness: RunnerLiveness,
+  nowMs: number,
+  boundMs = QUALIFICATION_POST_VERDICT_HANG_MS,
+): boolean {
+  return !!runner && runner.phase === 'finalizing' && liveness === 'live' &&
+    typeof runner.phaseEnteredAtMs === 'number' && nowMs - runner.phaseEnteredAtMs > boundMs;
+}
+
 function launchReservationInGrace(runner: QualificationPhysicalRunner | null | undefined, nowMs: number): boolean {
   return !!runner && runner.phase === 'launching' && nowMs - runner.reservedAtMs < QUALIFICATION_LAUNCH_GRACE_MS;
 }
 
-const systemdRunnerLiveness: RunnerLivenessProber = (runner) => {
+const systemdRunnerLiveness: RunnerLivenessProber = async (runner) => {
   if (runner.pid != null) {
     try {
       process.kill(runner.pid, 0);
@@ -92,14 +119,11 @@ const systemdRunnerLiveness: RunnerLivenessProber = (runner) => {
     return null;
   };
   try {
-    return (
-      read(
-        execFileSync('systemctl', ['--user', 'is-active', unit], {
-          encoding: 'utf8',
-          timeout: 5_000,
-        }),
-      ) ?? 'unknown'
-    );
+    const { stdout } = await promisify(execFile)('systemctl', ['--user', 'is-active', unit], {
+      encoding: 'utf8',
+      timeout: 5_000,
+    });
+    return read(stdout) ?? 'unknown';
   } catch (error) {
     // A non-active unit makes `is-active` exit non-zero WITH the state on stdout, so the throw is
     // the normal path for a dead unit, not an error.
@@ -127,10 +151,13 @@ function unboundReservationOutlivedCeiling(runner: QualificationPhysicalRunner, 
   return nowMs - lastSign > QUALIFICATION_OWNER_ABANDONED_MS;
 }
 
-export function probeRunnerLiveness(runner: QualificationPhysicalRunner | null | undefined, nowMs = Date.now()): RunnerLiveness {
+export async function probeRunnerLiveness(
+  runner: QualificationPhysicalRunner | null | undefined,
+  nowMs = Date.now(),
+): Promise<RunnerLiveness> {
   if (!runner) return 'unknown';
   if (unboundReservationOutlivedCeiling(runner, nowMs)) return 'dead';
-  const observed = runnerLivenessProber(runner);
+  const observed = await runnerLivenessProber(runner);
   // A scope name is reserved in the DB before systemd-run creates it. Its temporary absence
   // cannot authorize a second physical run during that launch interval.
   return observed === 'dead' && launchReservationInGrace(runner, nowMs) ? 'unknown' : observed;
@@ -197,7 +224,12 @@ export interface QualificationPhysicalRunner {
   pid?: number | null;
   pidIdentity?: string | null;
   heartbeatAtMs?: number;
-  phase?: 'launching' | 'materializing' | 'suite' | 'isolating' | 'delivering';
+  /** `finalizing` (WI-6554700010009616): the tick is past its final verdict and no further suite can
+   * start, so only bounded post-verdict steps remain. A runner parked here is a post-verdict hang. */
+  phase?: 'launching' | 'materializing' | 'suite' | 'isolating' | 'delivering' | 'finalizing';
+  /** When `phase` last changed. The heartbeat keeps advancing through an awaited hang, so only
+   * this clock can say how long the runner has been parked in one phase. */
+  phaseEnteredAtMs?: number;
 }
 
 export interface QualificationPhysicalRun extends QualificationPhysicalRunner {
@@ -301,6 +333,14 @@ export interface BeginQualificationInput {
   evidenceRefs?: readonly string[];
   /** What the caller proved about the INCUMBENT attempt's runner. Default 'unknown' = old behaviour. */
   incumbentLiveness?: RunnerLiveness;
+  /**
+   * WI-10007408: what the caller measured about the fixer an `awaiting-fixer` frozen queue
+   * names, keyed by the EXACT spawn id it probed. Successor reconciliation is pure and cannot
+   * probe, and the probe necessarily runs before the locked row is read, so the spawn id is the
+   * binding: a verdict about a superseded fixer can never vouch for whichever fixer the locked
+   * row names now. Absent / 'unknown' / mismatched = old fail-closed behaviour.
+   */
+  assignedFixerLiveness?: { spawnId: string; liveness: RunnerLiveness } | null;
   nowMs?: number;
   /**
    * Same-row proof that an unowned `repair-in-progress` wait now has an exact,
@@ -335,18 +375,62 @@ export interface CancelQualificationInput {
 
 export type QualificationTransition =
   | { status: 'updated' | 'idempotent'; transaction: CheckpointQualificationTransaction }
-  | { status: 'conflict' | 'terminal'; transaction: CheckpointQualificationTransaction };
+  | { status: 'conflict' | 'terminal'; transaction: CheckpointQualificationTransaction; refusalReason?: string };
+
+/**
+ * A scheduled fire may safely retarget only a runner placeholder that never attached a CLI.
+ * The gate-fire reference is just the pre-spawn reservation; `checkpoint-run:<id>` is the
+ * evidence that a process actually attached. The same-row queue check lives in
+ * beginStoredQualification, and this physical check keeps an attached runner pinned.
+ */
+function isUnstartedDeadRepairRunner(
+  current: CheckpointQualificationTransaction | null,
+  incumbentLiveness: RunnerLiveness | undefined,
+  nowMs: number,
+): boolean {
+  const runner = current?.currentPhysicalRunner;
+  return Boolean(
+    current &&
+    current.phase === 'running' &&
+    current.outcome.kind === 'pending' &&
+    current.pendingRepairHead &&
+    runner &&
+    runner.phase === 'launching' &&
+    runner.pid == null &&
+    runner.pidIdentity == null &&
+    !(runner.evidenceRefs ?? []).some((ref) => ref.startsWith('checkpoint-run:')) &&
+    incumbentLiveness === 'dead' &&
+    !launchReservationInGrace(runner, nowMs) &&
+    (!current.runId || storedRunIdIsFromEndedRunner(current) || storedRunIdOrphanedAtUnattachedRunner(current))
+  );
+}
 
 /**
  * EI-21643577467008123 — this waiting reason is emitted only after the durable
  * waiter failed to start. It therefore has no owner that can ever advance it and
  * must not retain the singleton transaction against a later retry/successor.
- * Every other pre-suite wait remains exclusive until its real owner advances it.
+ *
+ * WI-10005450 — a scheduled fire can also leave a `running` logical attempt with only an
+ * unattached launch placeholder after the prior CLI vanished. When the same locked repair queue
+ * proves a new untested head and liveness says the placeholder is dead, resume that exact attempt
+ * at the new head instead of letting every tick reserve the old candidate and conflict at CLI
+ * activation. Unknown/live runners remain exclusive.
  */
+function isUnstartedAncestryRefusal(current: CheckpointQualificationTransaction | null): boolean {
+  return Boolean(current && current.phase === 'waiting' &&
+    current.outcome.kind === 'pre-suite-no-verdict' &&
+    ['required-ancestor-missing', 'required-ancestor-unverifiable'].includes(current.outcome.reason) &&
+    current.currentPhysicalRunner === null &&
+    !(current.consumedPhysicalRuns ?? []).some(run => run.outcome.kind !== 'pre-suite-no-verdict'));
+}
+
 function isRetryableUnownedWait(
   current: CheckpointQualificationTransaction | null,
   resumeUnownedRepairVerification = false,
+  incumbentLiveness?: RunnerLiveness,
+  nowMs = Date.now(),
 ): boolean {
+  if (resumeUnownedRepairVerification && isUnstartedDeadRepairRunner(current, incumbentLiveness, nowMs)) return true;
   if (
     !current ||
     current.phase !== 'waiting' ||
@@ -355,7 +439,8 @@ function isRetryableUnownedWait(
   )
     return false;
   if (current.outcome.reason === 'wait-for-eligibility-unavailable') return true;
-  return resumeUnownedRepairVerification && current.outcome.reason === 'repair-in-progress';
+  return resumeUnownedRepairVerification &&
+    (current.outcome.reason === 'repair-in-progress' || isUnstartedAncestryRefusal(current));
 }
 
 /**
@@ -761,6 +846,13 @@ export function qualificationIntentMatches(
   input: Pick<BeginQualificationInput, 'requiredAncestorSha' | 'declaredPaths'>,
 ): boolean {
   if (isTerminalQualificationOutcome(current.outcome)) return false;
+  return qualificationRequestPolicyMatches(current, input);
+}
+
+function qualificationRequestPolicyMatches(
+  current: CheckpointQualificationTransaction,
+  input: Pick<BeginQualificationInput, 'requiredAncestorSha' | 'declaredPaths'>,
+): boolean {
   return (
     current.requiredAncestorSha === (input.requiredAncestorSha?.trim() || null) &&
     sameStrings(current.candidatePolicy.declaredPaths, input.declaredPaths ?? [])
@@ -907,10 +999,21 @@ export function beginQualificationTransaction(
   input: BeginQualificationInput,
 ): QualificationTransition {
   const nowMs = input.nowMs ?? Date.now();
-  const retryableUnownedWait = isRetryableUnownedWait(current, input.resumeUnownedRepairVerification === true);
+  const retryableUnownedWait = isRetryableUnownedWait(
+    current,
+    input.resumeUnownedRepairVerification === true,
+    input.incumbentLiveness,
+    nowMs,
+  );
   const abandoned = isAbandonedQualification(current, input.incumbentLiveness, nowMs);
   if (current?.attemptId === input.attemptId) {
     if (retryableUnownedWait) {
+      const reclaimingDeadRepairRunner = isUnstartedDeadRepairRunner(
+        current,
+        input.incumbentLiveness,
+        nowMs,
+      );
+      const runnerVanished: QualificationOutcome = { kind: 'pre-suite-no-verdict', reason: 'runner-vanished' };
       return {
         status: 'updated',
         transaction: {
@@ -924,12 +1027,17 @@ export function beginQualificationTransaction(
           candidate: input.candidate?.trim() || current.candidate,
           repairHead: input.repairHead?.trim() || current.repairHead,
           pendingRepairHead: null,
-          runId: input.runId?.trim() || current.runId,
+          runId: reclaimingDeadRepairRunner ? null : input.runId?.trim() || current.runId,
+          lastProgressAtMs: nowMs,
           phase: 'ready',
           phaseEnteredAtMs: nowMs,
           phaseDurationsMs: completedPhaseDurations(current, 'ready', nowMs),
           outcome: { kind: 'pending' },
           blockers: [],
+          currentPhysicalRunner: reclaimingDeadRepairRunner ? null : current.currentPhysicalRunner,
+          consumedPhysicalRuns: reclaimingDeadRepairRunner
+            ? consumedRunner(current, runnerVanished, nowMs)
+            : current.consumedPhysicalRuns,
           eligibilitySnapshot: input.resumeUnownedRepairVerification === true ? null : current.eligibilitySnapshot,
           evidenceRefs: uniqueStrings([...current.evidenceRefs, ...(input.evidenceRefs ?? [])]),
         },
@@ -1112,18 +1220,27 @@ export function reserveQualificationRunner(
     nowMs?: number;
   },
 ): QualificationTransition {
-  if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
+  if (current.attemptId !== input.attemptId) {
+    return { status: 'conflict', transaction: current, refusalReason: 'attempt-id-mismatch' };
+  }
   if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
   const nowMs = input.nowMs ?? Date.now();
   const incumbent = current.currentPhysicalRunner;
   if (incumbent?.id === input.runnerId) {
-    if (
-      (current.candidate && input.candidate && current.candidate !== input.candidate.trim()) ||
-      (current.repairHead && input.repairHead && current.repairHead !== input.repairHead.trim()) ||
-      (current.runId && input.runId && current.runId !== input.runId.trim() &&
-        !storedRunIdIsFromEndedRunner(current) && !storedRunIdOrphanedAtUnattachedRunner(current)) ||
-      (incumbent.pidIdentity && input.pidIdentity && incumbent.pidIdentity !== input.pidIdentity)
-    ) return { status: 'conflict', transaction: current };
+    // Preserve the exact failed invariant. Matching physical ids do not imply that the
+    // candidate, logical run or process identity also matches (P-033).
+    const refusalReason =
+      current.candidate && input.candidate && current.candidate !== input.candidate.trim()
+        ? 'candidate-mismatch'
+        : current.repairHead && input.repairHead && current.repairHead !== input.repairHead.trim()
+          ? 'repair-head-mismatch'
+          : current.runId && input.runId && current.runId !== input.runId.trim() &&
+            !storedRunIdIsFromEndedRunner(current) && !storedRunIdOrphanedAtUnattachedRunner(current)
+            ? 'run-id-mismatch'
+            : incumbent.pidIdentity && input.pidIdentity && incumbent.pidIdentity !== input.pidIdentity
+              ? 'pid-identity-mismatch'
+              : null;
+    if (refusalReason) return { status: 'conflict', transaction: current, refusalReason };
     if (input.started !== true && input.pid == null && !input.unit) {
       return { status: 'idempotent', transaction: current };
     }
@@ -1155,7 +1272,7 @@ export function reserveQualificationRunner(
   }
   // A lease timeout alone cannot prove death. Unknown or live ownership keeps single flight.
   if (incumbent && (input.incumbentLiveness !== 'dead' || launchReservationInGrace(incumbent, nowMs))) {
-    return { status: 'conflict', transaction: current };
+    return { status: 'conflict', transaction: current, refusalReason: 'runner-held' };
   }
   const evidenceRefs = uniqueStrings(input.evidenceRefs ?? []);
   // Keep the two displacement causes distinct in the history: a lease that ran out is a runner that
@@ -1233,7 +1350,12 @@ export function recordQualificationRunnerProgress(
       ...current,
       updatedAtMs: nowMs,
       lastProgressAtMs: nowMs,
-      currentPhysicalRunner: { ...runner, heartbeatAtMs: nowMs, phase: input.phase },
+      currentPhysicalRunner: {
+        ...runner,
+        heartbeatAtMs: nowMs,
+        phase: input.phase,
+        phaseEnteredAtMs: runner.phase === input.phase ? runner.phaseEnteredAtMs ?? nowMs : nowMs,
+      },
     },
   };
 }
@@ -1382,6 +1504,86 @@ export function recoverQualificationScheduledTerminal(
   };
 }
 
+export interface HistoricalPreSuiteRecoveryInput {
+  attemptId: string;
+  runId: string;
+  candidate: string;
+  /** Hash of the COMPLETE archived producer log, never a tail or a summary. */
+  logSha256: string;
+  logPath: string;
+  log: string;
+  nowMs?: number;
+}
+
+function historicalRecoveryAttemptId(input: HistoricalPreSuiteRecoveryInput): string {
+  return createHash('sha256').update(JSON.stringify([
+    'historical-pre-suite-recovery-v1', input.attemptId, input.runId, input.candidate, input.logSha256,
+  ])).digest('hex').slice(0, 24);
+}
+
+/**
+ * Recover a historically misclassified dependency preflight by starting a DISTINCT attempt.
+ * Terminal verdicts remain immutable. Positive producer evidence must prove that this exact
+ * run failed before the checkpoint lock; a missing suite line alone proves nothing.
+ */
+export function recoverQualificationHistoricalPreSuiteError(
+  current: CheckpointQualificationTransaction,
+  input: HistoricalPreSuiteRecoveryInput,
+): QualificationTransition {
+  const conflict = (refusalReason: string): QualificationTransition => ({
+    status: 'conflict', transaction: current, refusalReason,
+  });
+  if (!input.attemptId || !input.runId || !input.candidate || !input.logPath.trim() ||
+      !/^[a-f0-9]{64}$/.test(input.logSha256)) return conflict('archive-input-invalid');
+  if (createHash('sha256').update(input.log).digest('hex') !== input.logSha256) return conflict('archive-hash-mismatch');
+  const lines = input.log.split(/\r?\n/).filter(line => !isFixtureLogLine(line));
+  const markerLines = lines.filter(line => line.trimStart().startsWith(GREEN_CHECKPOINT_RESULT_MARKER));
+  if (markerLines.length !== 1) return conflict('archive-result-count');
+  let result: Record<string, unknown>;
+  try {
+    result = JSON.parse(markerLines[0].trimStart().slice(GREEN_CHECKPOINT_RESULT_MARKER.length).trim());
+  } catch { return conflict('archive-result-json'); }
+  if (!result || result.runId !== input.runId || result.candidate !== input.candidate ||
+      result.reason !== 'error' || result.green !== null || result.advanced !== false ||
+      result.crashed !== true || result.recorded !== true) return conflict('archive-result-mismatch');
+  // Fixture lines are already filtered out above, so this matches the PRODUCTION tag — derived from
+  // its one definition (WI-37605 guard), never re-typed, so it cannot drift from the emitter.
+  const prelock = lines.findIndex(line => line.startsWith(`${ORCHESTRATOR_STDOUT_TAG} FAILED before checkpoint lock:`));
+  const marker = lines.indexOf(markerLines[0]);
+  if (prelock < 0 || prelock >= marker ||
+      !lines[prelock].includes('dependency-generation.sh') ||
+      !dependencyGenerationInfraCode(null, lines.slice(prelock, marker).join('\n'))) return conflict('archive-prelock-unproven');
+  if (lines.some(line => /checkpointing candidate|full suite output|TEST_FILE_RESULT|phase[=:]suite|suite (?:started|round)|running (?:affected|full) (?:test|suite)/i.test(line))) {
+    return conflict('archive-suite-evidence');
+  }
+  const attemptId = historicalRecoveryAttemptId(input);
+  const proofRef = `historical-pre-suite-recovery:${input.attemptId}:${input.runId}:${input.logSha256}`;
+  if (current.attemptId === attemptId && current.previousAttemptId === input.attemptId &&
+      current.evidenceRefs.includes(proofRef)) {
+    return { status: 'idempotent', transaction: current };
+  }
+  if (current.attemptId !== input.attemptId) return conflict('predecessor-attempt-mismatch');
+  if (current.runId !== input.runId) return conflict('predecessor-run-mismatch');
+  if (current.candidate !== input.candidate) return conflict('predecessor-candidate-mismatch');
+  if (current.phase !== 'terminal' ||
+      current.outcome.kind !== 'code-inconclusive' || current.outcome.reason !== 'error' ||
+      current.currentPhysicalRunner !== null || current.pendingRepairHead) return conflict('predecessor-not-recoverable');
+  if ((current.consumedPhysicalRuns ?? []).some(run =>
+    run.phase === 'suite' || run.phase === 'isolating' || run.phase === 'delivering' || run.phase === 'finalizing' ||
+    (run.outcome.kind !== 'pre-suite-no-verdict' &&
+      !(run.id === input.runId && run.candidate === input.candidate &&
+        run.outcome.kind === 'code-inconclusive' && run.outcome.reason === 'error')))) return conflict('consumed-run-not-pre-suite');
+  return beginQualificationTransaction(current, {
+    attemptId,
+    requiredAncestorSha: current.requiredAncestorSha,
+    declaredPaths: current.candidatePolicy.declaredPaths,
+    candidate: current.candidate,
+    repairHead: current.repairHead,
+    evidenceRefs: [...current.evidenceRefs, proofRef, `archived-log:${input.logPath}`, `log-sha256:${input.logSha256}`],
+    nowMs: input.nowMs,
+  });
+}
+
 /**
  * WI-10002454 (b): name the measurements behind a `settleQualificationTransaction` conflict —
  * each identity the producer carried that disagrees with the stored transaction, as
@@ -1459,6 +1661,8 @@ export type RepairQueueReconciliation = {
     | 'queue-not-safe-unstarted'
     | 'matching-untested-repair-head'
     | 'promoted-awaiting-staging-bridge'
+    | 'awaiting-unassigned-fixer'
+    | 'awaiting-dead-fixer'
     | 'exact-safe-unstarted'
     | 'cas-miss';
   predecessorAttemptId: string;
@@ -1589,6 +1793,67 @@ export function assessTerminalRepairQueueReconciliation(
       ...base,
     };
   }
+  // WI-10007398: an `awaiting-fixer` queue that NO fixer owns can only leave that phase through
+  // the gate run's own `decideFrozenCandidateRepairQueue` -> `dispatch-fixer` branch (or an
+  // agent admission). The run that measured the red moves the queue to awaiting-fixer and exits;
+  // dispatch is left to the NEXT scheduled run. Blocking that successor here therefore closed the
+  // only automatic path: measured 2026-10-07 16:00Z -> 2026-10-08 04:23Z, every hourly tick on
+  // papercusp refused `skipped-qualification-conflict` at stage begin (queue-not-safe-unstarted)
+  // with attempts=0 and fixerSpawnId=null, so the fixer the queue was waiting on was never
+  // launched. Third instance of the class after EI-24610407938327281 (ready-to-promote) and
+  // WI-10000288 (ready-to-verify).
+  // Preserving is a HANDOFF (the queue is retained and re-stamped to the successor), never a
+  // retire, so the red signature survives. It stays deliberately narrow: provenance must name
+  // the terminal attempt or its immediate predecessor, unless a legacy/null-origin row is pinned
+  // to its exact repairHead. No fixer may be assigned (a live fixer advances the queue itself by
+  // admission, and a dead one needs liveness this pure check does not have), and no unexpired
+  // dispatch reservation may be held (a launch is in flight). An
+  // expired reservation is abandoned: `decideFrozenCandidateRepairQueue` already treats it as
+  // dispatchable, so refusing on it here would recreate the same deadlock one field over.
+  // Fail closed without a clock: an unmeasurable expiry counts as a live reservation.
+  const reservationLive =
+    queue.dispatchReservation != null &&
+    !(typeof successor.nowMs === 'number' && queue.dispatchReservation.expiresAtMs <= successor.nowMs);
+  if (
+    (originMatchesTerminal || originMatchesImmediatePredecessor || unknownOriginPinnedToRepairHead) &&
+    queue.phase === 'awaiting-fixer' &&
+    queue.fixerSpawnId === null &&
+    !reservationLive
+  ) {
+    return {
+      status: 'preserved',
+      reason: 'awaiting-unassigned-fixer',
+      candidate: queue.candidate,
+      ...base,
+    };
+  }
+  // WI-10007408: the same deadlock with a fixer ASSIGNED but dead. Only the gate run's own
+  // `decideFrozenCandidateRepairQueue` -> `recover-dead-fixer` branch clears a dead fixer from
+  // an awaiting-fixer row, and that run needs a successor qualification to start, so blocking
+  // here again closes the only automatic exit. Observed 2026-10-08: papercusp fixer
+  // durable-spawn:...:1791455553983 reached spawned_agents status 'done' at 10:43Z with no
+  // admission, and the queue stayed awaiting-fixer naming it. Fourth instance of the class.
+  // Narrow on purpose: the caller's probe must name THIS row's fixerSpawnId and must have
+  // CONFIRMED it gone ('dead' = releaseFixerSpawnAlive === false, the exact predicate the
+  // recovery branch acts on). Live and unknown liveness stay blocked: a live fixer advances the
+  // queue itself by admission, and an unmeasurable one must not be raced.
+  const assignedFixerProvablyDead =
+    queue.fixerSpawnId !== null &&
+    successor.assignedFixerLiveness?.spawnId === queue.fixerSpawnId &&
+    successor.assignedFixerLiveness.liveness === 'dead';
+  if (
+    (originMatchesTerminal || originMatchesImmediatePredecessor) &&
+    queue.phase === 'awaiting-fixer' &&
+    assignedFixerProvablyDead &&
+    !reservationLive
+  ) {
+    return {
+      status: 'preserved',
+      reason: 'awaiting-dead-fixer',
+      candidate: queue.candidate,
+      ...base,
+    };
+  }
   if (
     queue.phase !== 'ready-to-test' ||
     queue.repairHead !== queue.candidate ||
@@ -1629,14 +1894,26 @@ type StoredQualificationMutationOptions = {
   successorInput?: BeginQualificationInput | ((context: StoredQualificationRowContext) => BeginQualificationInput);
   /** A terminal pipeline result committed with the exact qualification transition. */
   terminalEvent?: { status: string; detail: Record<string, unknown> };
+  /** Preserve the predecessor snapshot atomically with an evidence-backed successor. */
+  historicalRecovery?: HistoricalPreSuiteRecoveryInput;
 };
+
+// Qualification writes must ride through short PostgreSQL restart windows while
+// retaining one hard acquisition ceiling. Keep pool-pressure deadline retries
+// disabled here so the 15 safe setup retries share this 135s cap.
+const QUALIFICATION_STORE_TXN_OPTIONS = {
+  acquireTimeoutMs: 135_000,
+  acquireRetries: 0,
+  connectionSetupRetries: 15,
+  connectionSetupBackoffMs: 1_000,
+} as const;
 
 async function mutateStoredQualification(
   target: GateVerdictTarget,
   change: (
     current: CheckpointQualificationTransaction | null,
     context: StoredQualificationRowContext,
-  ) => StoredQualificationMutation,
+  ) => StoredQualificationMutation | Promise<StoredQualificationMutation>,
   options: StoredQualificationMutationOptions = {},
 ): Promise<StoredQualificationMutation> {
   try {
@@ -1658,17 +1935,38 @@ async function mutateStoredQualification(
       const rowContext: StoredQualificationRowContext = { rawRepairQueue: metadata.repair_queue ?? null };
       const queueHead = frozenRepairQueueVerificationTarget(rowContext.rawRepairQueue);
       if (current?.pendingRepairHead && queueHead && current.pendingRepairHead !== queueHead) {
-        return { status: 'conflict' as const, transaction: current };
+        return { status: 'conflict' as const, transaction: current,
+          refusalReason: 'pending-head-queue-mismatch' };
       }
-      const transition = change(current, rowContext);
+      // Keep async probes under this row lock. Moving the probe outside the mutation would let
+      // it describe one runner while the following decision acts on a replacement.
+      const transition = await change(current, rowContext);
       if (transition.status !== 'updated') return transition;
       const persistTerminalEvent = async (): Promise<void> => {
+        if (options.historicalRecovery && current && transition.transaction.previousAttemptId === current.attemptId) {
+          await appendPipelineEvent({
+            workspaceId: target.workspaceId,
+            installSlug: target.installSlug,
+            kind: 'green_checkpoint',
+            status: 'qualification-recovered-pre-suite',
+            detail: {
+              attemptId: transition.transaction.attemptId,
+              predecessor: current,
+              logPath: options.historicalRecovery.logPath,
+              logSha256: options.historicalRecovery.logSha256,
+            },
+          }, tx as unknown as Sql, { required: true });
+        }
         if (!options.terminalEvent || !isTerminalQualificationOutcome(transition.transaction.outcome)) return;
+        // WI-10007497: stamp the logical attempt this event settles. The event commits in the same
+        // row write as the transition, so the transaction's own id is the authoritative one; without
+        // it, attempt-to-verdict latency (and joins from skipped-joined-attempt rows) is unmeasurable.
         await appendPipelineEvent({
           workspaceId: target.workspaceId,
           installSlug: target.installSlug,
           kind: 'green_checkpoint',
-          ...options.terminalEvent,
+          status: options.terminalEvent.status,
+          detail: { ...options.terminalEvent.detail, attemptId: transition.transaction.attemptId },
         }, tx as unknown as Sql, { required: true });
       };
       const successorInput =
@@ -1690,6 +1988,7 @@ async function mutateStoredQualification(
           status: 'conflict' as const,
           transaction: predecessor!,
           repairQueueReconciliation: reconciliation,
+          ...(options.historicalRecovery ? { refusalReason: 'repair-queue-reconciliation' } : {}),
         };
       }
       if (reconciliation?.status === 'retired') {
@@ -1723,6 +2022,7 @@ async function mutateStoredQualification(
               status: 'blocked',
               reason: 'cas-miss',
             },
+            ...(options.historicalRecovery ? { refusalReason: 'repair-queue-cas-miss' } : {}),
           };
         }
         await persistTerminalEvent();
@@ -1762,6 +2062,7 @@ async function mutateStoredQualification(
               status: 'blocked',
               reason: 'cas-miss',
             },
+            ...(options.historicalRecovery ? { refusalReason: 'repair-queue-cas-miss' } : {}),
           };
         }
         await persistTerminalEvent();
@@ -1781,7 +2082,7 @@ async function mutateStoredQualification(
            AND target_role = 'system:green-checkpoint'`;
       await persistTerminalEvent();
       return reconciliation ? { ...transition, repairQueueReconciliation: reconciliation } : transition;
-    });
+    }, QUALIFICATION_STORE_TXN_OPTIONS);
   } catch (error) {
     return { status: 'unreadable', error: error instanceof Error ? error.message : String(error) };
   }
@@ -1797,19 +2098,33 @@ export function beginStoredQualification(
     // Probe INSIDE the mutation so the liveness verdict is taken against the same `current` the
     // transition decides on. Probing outside would race: the incumbent can die, or a fresh runner
     // can take the lease, between the read and the write.
-    (current, context) => {
+    async (current, context) => {
       const queue = parseFrozenCandidateRepairQueue(context.rawRepairQueue);
-      const resumableRepairHead =
+      const incumbentLiveness =
+        input.incumbentLiveness ?? await probeRunnerLiveness(current?.currentPhysicalRunner);
+      const queueOwnsUntestedRepairHead = Boolean(
         current &&
-        current.phase === 'waiting' &&
-        current.outcome.kind === 'pre-suite-no-verdict' &&
-        current.outcome.reason === 'repair-in-progress' &&
-        current.currentPhysicalRunner === null &&
         queue?.phase === 'ready-to-verify' &&
         queue.qualificationAttemptId === current.attemptId &&
         queue.fixerSpawnId === null &&
         queue.dispatchReservation == null &&
         frozenRepairHeadAwaitsVerification(queue)
+      );
+      const resumableRepairHead =
+        current && queue && queueOwnsUntestedRepairHead && (
+          (current.phase === 'waiting' &&
+            current.outcome.kind === 'pre-suite-no-verdict' &&
+            (current.outcome.reason === 'repair-in-progress' ||
+              // A rejected ancestry request never launched a suite. Correct its
+              // pin only to the untested head owned by this same locked queue,
+              // retaining its attempt and declared-path policy.
+              (isUnstartedAncestryRefusal(current) &&
+                input.requiredAncestorSha === queue.repairHead &&
+                sameStrings(current.candidatePolicy.declaredPaths, input.declaredPaths ?? []))) &&
+            current.currentPhysicalRunner === null) ||
+          (current.pendingRepairHead === queue.repairHead &&
+            isUnstartedDeadRepairRunner(current, incumbentLiveness, input.nowMs ?? Date.now()))
+        )
           ? queue.repairHead
           : null;
       return beginQualificationTransaction(current, {
@@ -1822,7 +2137,8 @@ export function beginStoredQualification(
           ? current!.attemptId
           : resolveQualificationAttemptId(input, context.rawRepairQueue),
         candidate: resumableRepairHead ?? input.candidate,
-        incumbentLiveness: input.incumbentLiveness ?? probeRunnerLiveness(current?.currentPhysicalRunner),
+        repairHead: resumableRepairHead ?? input.repairHead,
+        incumbentLiveness,
         resumeUnownedRepairVerification: resumableRepairHead !== null,
       });
     },
@@ -1860,18 +2176,81 @@ export function waitStoredQualification(
   );
 }
 
+/**
+ * WI-10005957 — retarget an attempt that a PRE-SUITE no-verdict pinned to a sha nobody judged.
+ *
+ * A scheduled run that tears before its candidate is resolved (dependency prewarm, torn source)
+ * still settles with the integration TIP it read, so the stored attempt adopts that tip. The
+ * frozen repair queue keeps owning the attempt, and every later scheduled CLI resumes the queue's
+ * never-judged repairHead (`scheduledAttemptPrewarmTarget`). Activation then compares the stored
+ * tip with the head and refuses `conflict` on every fire — a wedge that nothing else clears,
+ * because `beginStoredQualification` only retargets a `repair-in-progress` waiter or a pending
+ * repair head.
+ *
+ * The same locked row is the authority: when its queue owns this attempt, its head awaits
+ * verification, the attaching CLI asks for exactly that head on its OWN unstarted placeholder,
+ * and no physical run under the attempt ever reached a suite, the queue's head is the only
+ * candidate the attempt can judge. Anything else is returned unchanged and keeps failing closed.
+ */
+export function retargetPreSuiteAttemptToOwningRepairHead(
+  current: CheckpointQualificationTransaction,
+  input: Pick<Parameters<typeof reserveQualificationRunner>[1], 'attemptId' | 'runnerId' | 'candidate' | 'started'>,
+  rawRepairQueue: unknown,
+): CheckpointQualificationTransaction {
+  return assessPreSuiteRepairRetarget(current, input, rawRepairQueue).transaction;
+}
+
+/** Preserve the failed locked-row guard so an attach refusal remains diagnosable later. */
+function assessPreSuiteRepairRetarget(
+  current: CheckpointQualificationTransaction,
+  input: Pick<Parameters<typeof reserveQualificationRunner>[1], 'attemptId' | 'runnerId' | 'candidate' | 'started'>,
+  rawRepairQueue: unknown,
+): { transaction: CheckpointQualificationTransaction; refusalReason?: string } {
+  const unchanged = { transaction: current };
+  const refused = (refusalReason: string) => ({ transaction: current, refusalReason });
+  const requested = input.candidate?.trim();
+  if (!requested || input.started !== true) return unchanged;
+  if (current.attemptId !== input.attemptId || current.outcome.kind !== 'pending') return unchanged;
+  if (!current.candidate || current.candidate === requested) return unchanged;
+  const runner = current.currentPhysicalRunner;
+  if (!runner || runner.id !== input.runnerId) return unchanged;
+  if (runner.phase !== 'launching' || runner.pid != null) return refused('runner-already-attached');
+  const everJudged = (current.consumedPhysicalRuns ?? []).some((run) => run.outcome.kind !== 'pre-suite-no-verdict');
+  if (everJudged) return refused('attempt-already-judged');
+  const queue = parseFrozenCandidateRepairQueue(rawRepairQueue);
+  if (!queue) return refused('queue-missing-or-unreadable');
+  if (queue.phase !== 'ready-to-verify') return refused('queue-not-ready-to-verify');
+  if (queue.qualificationAttemptId !== current.attemptId) return refused('queue-attempt-mismatch');
+  if (queue.fixerSpawnId !== null) return refused('queue-fixer-active');
+  if (queue.dispatchReservation != null) return refused('queue-dispatch-reserved');
+  if (queue.repairHead !== requested) return refused('queue-head-mismatch');
+  if (!frozenRepairHeadAwaitsVerification(queue)) return refused('queue-head-already-judged');
+  return {
+    transaction: {
+      ...current,
+      candidate: requested,
+      repairHead: requested,
+      currentPhysicalRunner: { ...runner, candidate: requested },
+      evidenceRefs: uniqueStrings([...current.evidenceRefs, `candidate:${requested}`, `retargeted-from:${current.candidate}`]),
+    },
+  };
+}
+
 export function reserveStoredQualificationRunner(
   target: GateVerdictTarget,
   input: Parameters<typeof reserveQualificationRunner>[1],
 ): Promise<StoredQualificationMutation> {
-  return mutateStoredQualification(target, (current) =>
-    current
-      ? reserveQualificationRunner(current, {
-          ...input,
-          incumbentLiveness: input.incumbentLiveness ?? probeRunnerLiveness(current.currentPhysicalRunner),
-        })
-      : { status: 'unreadable', error: 'missing attempt' },
-  );
+  return mutateStoredQualification(target, async (current, context) => {
+    if (!current) return { status: 'unreadable', error: 'missing attempt' };
+    const retarget = assessPreSuiteRepairRetarget(current, input, context.rawRepairQueue);
+    const transition = reserveQualificationRunner(retarget.transaction, {
+      ...input,
+      incumbentLiveness: input.incumbentLiveness ?? await probeRunnerLiveness(current.currentPhysicalRunner),
+    });
+    return transition.status === 'conflict' && transition.refusalReason === 'candidate-mismatch' && retarget.refusalReason
+      ? { ...transition, refusalReason: `candidate-mismatch:pre-suite-retarget-${retarget.refusalReason}` }
+      : transition;
+  });
 }
 
 export function recordStoredQualificationRunnerProgress(
@@ -1954,6 +2333,46 @@ export function recordStoredQualificationScheduledTerminalRecovery(
   );
 }
 
+/** Read the archive ourselves; validate and install its successor under the existing row lock. */
+export function recoverStoredQualificationHistoricalPreSuiteError(
+  target: GateVerdictTarget,
+  input: Omit<HistoricalPreSuiteRecoveryInput, 'log'>,
+  request?: Pick<BeginQualificationInput, 'requiredAncestorSha' | 'declaredPaths'>,
+): Promise<StoredQualificationMutation> {
+  let proof: HistoricalPreSuiteRecoveryInput;
+  try {
+    proof = { ...input, log: readFileSync(input.logPath, 'utf8') };
+  } catch (error) {
+    return Promise.resolve({ status: 'unreadable', error: error instanceof Error ? error.message : String(error) });
+  }
+  let successorInput: BeginQualificationInput;
+  return mutateStoredQualification(target, (current) => {
+    if (!current) return { status: 'unreadable', error: 'missing attempt' };
+    // Validate the archive and exact predecessor before attributing a request-policy
+    // conflict. A newer attempt may have different policy; that must not suggest
+    // changing the caller's original guard to recover an unrelated terminal.
+    // This transition is pure: every policy/store guard still precedes any write.
+    const transition = recoverQualificationHistoricalPreSuiteError(current, proof);
+    if (transition.status !== 'updated' && transition.status !== 'idempotent') return transition;
+    if (request && !qualificationRequestPolicyMatches(current, request)) {
+      return { status: 'conflict', transaction: current,
+        refusalReason: current.requiredAncestorSha !== (request.requiredAncestorSha?.trim() || null)
+          ? 'request-ancestor-mismatch' : 'request-paths-mismatch' };
+    }
+    if (transition.status === 'updated') {
+      successorInput = {
+        attemptId: transition.transaction.attemptId,
+        requiredAncestorSha: transition.transaction.requiredAncestorSha,
+        declaredPaths: transition.transaction.candidatePolicy.declaredPaths,
+        candidate: transition.transaction.candidate,
+        repairHead: transition.transaction.repairHead,
+        nowMs: transition.transaction.updatedAtMs,
+      };
+    }
+    return transition;
+  }, { successorInput: () => successorInput, historicalRecovery: proof });
+}
+
 /**
  * Stop and settle a runner while the qualification row is held FOR UPDATE. The exact
  * attempt/unit predicates are repeated on the UPDATE as a row-level CAS, and the repair
@@ -2012,7 +2431,7 @@ export async function cancelStoredQualification(
          RETURNING metadata`;
       if (updatedRows.length === 0) return { status: 'conflict' as const, transaction: current };
       return transition;
-    });
+    }, QUALIFICATION_STORE_TXN_OPTIONS);
   } catch (error) {
     return { status: 'unreadable', error: error instanceof Error ? error.message : String(error) };
   }

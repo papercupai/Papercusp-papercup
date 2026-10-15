@@ -14,6 +14,7 @@ import {
   shellSyntaxDetector,
   conflictMarkersDetector,
   DEFAULT_CONTENT_DETECTORS,
+  rootRedirectArtifactDetector,
 } from './registry';
 
 describe('mdxDetector', () => {
@@ -120,8 +121,27 @@ describe('conflictMarkersDetector', () => {
   });
 });
 
+describe('rootRedirectArtifactDetector', () => {
+  const artifact = 'VERDICT: WORKING (cpu is being consumed)';
+
+  it('matches only extensionless superproject-root names with a colon and whitespace', () => {
+    expect(rootRedirectArtifactDetector.matches(artifact)).toBe(true);
+    expect(rootRedirectArtifactDetector.matches('CPU: report.md')).toBe(false);
+    expect(rootRedirectArtifactDetector.matches('logs/VERDICT: WORKING (cpu is being consumed)')).toBe(false);
+    expect(rootRedirectArtifactDetector.matches('VERDICT: WORKING.txt')).toBe(false);
+    expect(rootRedirectArtifactDetector.matches('VERDICT-WORKING')).toBe(false);
+    expect(rootRedirectArtifactDetector.repoScope).toBe('superproject-only');
+  });
+
+  it('explains how to dispose of a likely redirected-output artifact', () => {
+    expect(rootRedirectArtifactDetector.detect(artifact, '1.02067')).toMatch(
+      /root-level shell output artifact.*delete accidental output/i,
+    );
+  });
+});
+
 describe('DEFAULT_CONTENT_DETECTORS', () => {
-  it('ships all twelve seeded detectors, keyed for the guard + escalation', () => {
+  it('ships all fourteen seeded detectors, keyed for the guard + escalation', () => {
     expect(DEFAULT_CONTENT_DETECTORS.map((d) => d.key)).toEqual([
       // EI-21230011589307899: ordered FIRST. Every other detector here guards a
       // BUILD, where a miss is repaired by the next commit; this one guards git
@@ -142,6 +162,9 @@ describe('DEFAULT_CONTENT_DETECTORS', () => {
       // message must be recorded first. It also catches the SILENT form, where
       // the file parses and ts-parse is structurally blind.
       'sql-comment-backtick',
+      // Empty source modules are parseable, so quarantine a zero-byte executable
+      // TS file before git-sync can publish an accidental truncate/write state.
+      'empty-ts-source',
       // EI-5240: the bundler's own transform verdict must run before the
       // TypeScript-only check, which can accept source that esbuild rejects.
       'esbuild-transform',
@@ -162,6 +185,7 @@ describe('DEFAULT_CONTENT_DETECTORS', () => {
       // committed) and scoped to test/spec files, so it never overlaps the
       // detectors above on ordinary source.
       'focused-test',
+      'root-redirect-artifact',
     ]);
   });
 });

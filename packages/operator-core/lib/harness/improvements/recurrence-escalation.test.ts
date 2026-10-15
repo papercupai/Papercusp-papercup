@@ -6,10 +6,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   CANDIDATE_DRAFT_MAX_CHARS,
+  INSTANCE_EVIDENCE_MARKER,
+  INSTANCE_EVIDENCE_MAX_PROPOSALS,
   RECURRENCE_ESCALATION_THRESHOLD,
   RECURRING_SIGNATURE_SCAN_CAP,
   RECURRING_MEMBER_HYDRATION_CAP,
+  planInstanceEvidenceProposals,
   planRecurrenceEscalation,
+  renderSeverityProposalComment,
   runRecurrenceEscalation,
   selectRecurringSignatures,
   type EscalationDeps,
@@ -150,6 +154,7 @@ describe('runRecurrenceEscalation — glue', () => {
     applyTriage: vi.fn(async (input) => ({ ok: true, id: input.id })),
     capture: vi.fn(async () => ({ ok: true as const, created: true, possibleDuplicates: [] })),
     stageCandidate: vi.fn(async () => ({ staged: true as const, id: 'cand-1' })),
+    readInstanceEvidence: vi.fn<EscalationDeps['readInstanceEvidence']>(async () => []),
     ...over,
   });
 
@@ -229,7 +234,7 @@ describe('runRecurrenceEscalation — glue', () => {
       }),
       stageCandidate: vi.fn(async (input) => {
         stagedInputs.push(input);
-        return { staged: true, id: 'cand-1' };
+        return { staged: true as const, id: 'cand-1' };
       }),
     });
     const res = await runRecurrenceEscalation({}, deps);
@@ -245,7 +250,7 @@ describe('runRecurrenceEscalation — glue', () => {
       title: 'cross scope pain everywhere always',
       recurrenceCount: 3,
     });
-    expect([...stagedInputs[0]!.sourceItemIds].sort()).toEqual(['x1', 'x2', 'x3']);
+    expect([...(stagedInputs[0]!.sourceItemIds ?? [])].sort()).toEqual(['x1', 'x2', 'x3']);
     expect(stagedInputs[0]!.scopes.sort()).toEqual(['harness:papercup', 'harness:sheets', 'operator']);
     expect(stagedInputs[0]!.signature).toBeTruthy();
   });
@@ -372,5 +377,109 @@ describe('selectRecurringSignatures — actionable-first slicing (EI-21889809467
     expect(slate).toHaveLength(RECURRING_SIGNATURE_SCAN_CAP);
     // the two actionable ones lead, the remainder of the cap is exhausted ones
     expect(slate.slice(0, 2).every((s) => s.count === 4)).toBe(true);
+  });
+});
+
+describe('instance-evidence severity proposals (EI-23768242440859949)', () => {
+  const row = (id: string, rows: number, reporters: number, severity: 'minor' | 'nit' = 'minor') => ({
+    id,
+    harness: 'papercusp',
+    severity,
+    rows,
+    reporters,
+    firstAt: '2026-09-28T00:00:00.000Z',
+    lastAt: '2026-10-01T00:00:00.000Z',
+  });
+
+  it('ranks by distinct reporters first (one chatty reporter cannot outrank corroboration), then rows, then id', () => {
+    const out = planInstanceEvidenceProposals([row('noisy', 90, 2), row('b', 4, 3), row('a', 4, 3), row('c', 6, 3)]);
+    expect(out.map((p) => p.id)).toEqual(['c', 'a', 'b', 'noisy']);
+  });
+
+  it('re-applies the gate itself — a slate row below ≥3 rows or ≥2 reporters is never proposed', () => {
+    const out = planInstanceEvidenceProposals([row('few-rows', 2, 2), row('one-reporter', 50, 1), row('ok', 3, 2)]);
+    expect(out.map((p) => p.id)).toEqual(['ok']);
+  });
+
+  it('caps the slate and never emits a proposal that mutates severity', () => {
+    const slate = Array.from({ length: 40 }, (_, i) => row(`i${String(i).padStart(2, '0')}`, 5, 3));
+    const out = planInstanceEvidenceProposals(slate);
+    expect(out).toHaveLength(INSTANCE_EVIDENCE_MAX_PROPOSALS);
+    expect(out.every((p) => p.kind === 'propose-severity' && p.to === 'major')).toBe(true);
+    expect(planInstanceEvidenceProposals(slate, { maxProposals: 0 })).toEqual([]);
+  });
+
+  it('de-duplicates a repeated id and carries the evidence window on each proposal', () => {
+    const out = planInstanceEvidenceProposals([row('x', 5, 3), row('x', 5, 3)], { windowDays: 3 });
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ id: 'x', from: 'minor', rows: 5, reporters: 3, windowDays: 3 });
+  });
+
+  it('the comment starts with the marker the reader keys idempotence on, and says NOT applied', () => {
+    const [p] = planInstanceEvidenceProposals([row('x', 5, 3, 'nit')]);
+    const body = renderSeverityProposalComment(p!);
+    expect(body.startsWith(INSTANCE_EVIDENCE_MARKER)).toBe(true);
+    expect(body).toContain('nit→major');
+    expect(body).toContain('NOT applied');
+    expect(body).toContain('5 reports from 3 distinct reporters');
+  });
+
+  // The runner only tests the post for truthiness; this is the one stand-in for a landed ThreadPostRow.
+  const POSTED = { id: 'post-1' } as unknown as Awaited<ReturnType<EscalationDeps['commentIssue']>>;
+
+  const run = async (over: Partial<EscalationDeps>) => {
+    const deps: EscalationDeps = {
+      readItems: vi.fn(async () => []),
+      scanCorpus: vi.fn(async () => []),
+      updateIssue: vi.fn(async () => null),
+      commentIssue: vi.fn(async () => POSTED),
+      applyTriage: vi.fn(async (input) => ({ ok: true, id: input.id })),
+      capture: vi.fn(async () => ({ ok: true as const, created: true, possibleDuplicates: [] })),
+      stageCandidate: vi.fn(async () => ({ staged: true as const, id: 'cand-1' })),
+      readInstanceEvidence: vi.fn(async () => []),
+      ...over,
+    };
+    return { deps, result: await runRecurrenceEscalation({}, deps) };
+  };
+
+  it('posts ONE marker comment per proposal and NEVER calls updateIssue', async () => {
+    const { deps, result } = await run({ readInstanceEvidence: vi.fn(async () => [row('a', 5, 3), row('b', 4, 2)]) });
+    expect(result.severityProposed).toBe(2);
+    expect(deps.updateIssue).not.toHaveBeenCalled();
+    const calls = vi.mocked(deps.commentIssue).mock.calls;
+    expect(calls.map((c) => c[0])).toEqual(['a', 'b']);
+    expect(calls.every((c) => c[1].startsWith(INSTANCE_EVIDENCE_MARKER) && c[2] === 'recurrence-escalation')).toBe(true);
+  });
+
+  it('asks the reader for the marker it excludes on, so a landed proposal never re-posts', async () => {
+    const readInstanceEvidence = vi.fn<EscalationDeps['readInstanceEvidence']>(async () => []);
+    await run({ readInstanceEvidence });
+    expect(readInstanceEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({ proposedMarker: INSTANCE_EVIDENCE_MARKER, minRows: 3, minReporters: 2, windowDays: 7 }),
+    );
+  });
+
+  it('a throwing reader never aborts the pass; a throwing comment skips only that item; a null comment is not counted', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const failingRead = await run({
+      readInstanceEvidence: vi.fn(async () => {
+        throw new Error('pg blip');
+      }),
+    });
+    expect(failingRead.result.severityProposed).toBe(0);
+    const commentIssue = vi
+      .fn<EscalationDeps['commentIssue']>()
+      .mockRejectedValueOnce(new Error('thread write failed'))
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(POSTED);
+    const mixed = await run({
+      commentIssue,
+      readInstanceEvidence: vi.fn(async () => [row('a', 9, 4), row('b', 8, 4), row('c', 7, 4)]),
+    });
+    expect(commentIssue).toHaveBeenCalledTimes(3);
+    expect(mixed.result.severityProposed).toBe(1);
+    // both failures are surfaced (read failure + the one throwing comment), not swallowed silently
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
   });
 });

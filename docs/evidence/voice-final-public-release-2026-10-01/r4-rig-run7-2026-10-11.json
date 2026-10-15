@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Voice R-4 lifecycle and D-006 round trips, immutable isolated Tauri rig run 20261011T070738Z-90892",
+  "framework": "operational",
+  "exitCode": 0,
+  "startedAt": "2026-10-11T07:07:41.007Z",
+  "finishedAt": "2026-10-11T07:22:32.167Z",
+  "summary": "Immutable isolated Tauri rig: 11/11 synthetic voice tests passed. Prepare, boot and assertion phases passed. Covers stop, mute, off, navigation, denial, STT retry, synthesis outage and spoken round trips. No typecheck was executed in this run.",
+  "repository": "papercusp",
+  "sourceCommit": "dcadea9a23bf9813fbe0f17657bce452e730cf92",
+  "sourceDirty": false,
+  "testCounts": {
+    "playwright": {
+      "tests": 11,
+      "passed": 11,
+      "failed": 0
+    }
+  },
+  "plan": "voice-final-public-release-2026-10-01",
+  "specId": "AUTO-BAR-R-4-P-004",
+  "workItemId": "WI-10004760",
+  "evidencePlane": "live",
+  "testLayer": "integration",
+  "disclosures": [
+    "Self-audio: not exercised. The fake microphone has no acoustic path from the speaker, so a synthetic run cannot produce echo; the capture-overlap guard is unit-tested. Live evidence comes only from guided-session step A4 (D-005).",
+    "Hosted credential, tenant and spend isolation: not exercised by the desktop rig. Covered by R-7 and the hosted-portal leg, whose spoken round trip moved to the guided session (D-009).",
+    "Shared SPA advanced after freeze; maintained spa_require_built_gate separately passed against canonical voice-mode.ts at boot. Frozen server identity is sourceCommit; no lint result is claimed."
+  ],
+  "command": [
+    "bash",
+    ".papercusp/scratch/d006-rig-assert.sh"
+  ],
+  "sourceFiles": [
+    {
+      "path": "apps/operator/app/_components/voice/voice-mode.ts",
+      "sha256": "2b6340fbe5e9ea65c9c29a3fa48f5ee0f45d9290054f203bf66a44cf3d41da29"
+    },
+    {
+      "path": "apps/operator/e2e/voice-synthetic-roundtrip.spec.ts",
+      "sha256": "d537d61a792b28af4571e8fa7fe209fa9e82a63cd1235077402ce31885e0a6ad"
+    }
+  ],
+  "logs": [
+    {
+      "path": ".papercusp/scratch/r4-rig-run7-2026-10-11.log",
+      "sha256": "44528ca0b1717ea02a6d832e327b9ba5fcdb961d8a77253dfcad36ef2d3c0724"
+    }
+  ],
+  "assertions": [
+    {
+      "id": "harness-prepare",
+      "passed": true,
+      "evidence": "passed at 2026-10-11T07:16:22.890Z"
+    },
+    {
+      "id": "harness-boot",
+      "passed": true,
+      "evidence": "passed at 2026-10-11T07:18:51.930Z"
+    },
+    {
+      "id": "harness-assert",
+      "passed": true,
+      "evidence": "passed at 2026-10-11T07:22:29.684Z"
+    },
+    {
+      "id": "playwright-1",
+      "passed": true,
+      "evidence": "SYNTHETIC voice round trips (D-006) \u203a push-to-talk: fake-mic speech is transcribed by the real PTT path (12.2s)"
+    },
+    {
+      "id": "playwright-2",
+      "passed": true,
+      "evidence": "SYNTHETIC voice round trips (D-006) \u203a reply playback (kokoro): speak() plays audio that transcribes back to the reply (9.4s)"
+    },
+    {
+      "id": "playwright-3",
+      "passed": true,
+      "evidence": "SYNTHETIC voice round trips (D-006) \u203a reply playback (elevenlabs): speak() plays audio that transcribes back to the reply (9.1s)"
+    },
+    {
+      "id": "playwright-4",
+      "passed": true,
+      "evidence": "SYNTHETIC voice round trips (D-006) \u203a stop: cancelling mid-reply ends playback and stays stopped (5.1s)"
+    },
+    {
+      "id": "playwright-5",
+      "passed": true,
+      "evidence": "SYNTHETIC voice round trips (D-006) \u203a denial: a blocked microphone names the permission problem (3.8s)"
+    },
+    {
+      "id": "playwright-6",
+      "passed": true,
+      "evidence": "SYNTHETIC voice round trips (D-006) \u203a retry: an STT failure says so, and the next hold transcribes (15.1s)"
+    },
+    {
+      "id": "playwright-7",
+      "passed": true,
+      "evidence": "SYNTHETIC voice round trips (D-006) \u203a brain: a spoken question is posted, answered by the agent, and the answer is spoken (12.1s)"
+    },
+    {
+      "id": "playwright-8",
+      "passed": true,
+      "evidence": "SYNTHETIC voice lifecycle (R-4) \u203a mute: muting mid-reply stops it, a muted reply stays silent, unmuting speaks again (9.8s)"
+    },
+    {
+      "id": "playwright-9",
+      "passed": true,
+      "evidence": "SYNTHETIC voice lifecycle (R-4) \u203a off: turning voice off releases the microphone and stops a reply mid-playback (4.4s)"
+    },
+    {
+      "id": "playwright-10",
+      "passed": true,
+      "evidence": "SYNTHETIC voice lifecycle (R-4) \u203a navigate: moving between screens keeps one microphone, and off still releases it (6.5s)"
+    },
+    {
+      "id": "playwright-11",
+      "passed": true,
+      "evidence": "SYNTHETIC voice lifecycle (R-4) \u203a tts outage: a failed synthesis says so on the same engine, and the next reply plays (3.4s)"
+    }
+  ]
+}

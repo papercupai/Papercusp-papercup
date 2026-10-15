@@ -4,11 +4,14 @@
  *
  * Exercises `executeSpawnChild` with the REAL PG deps from
  * `buildDefaultSpawnChildDeps` — seed-plan write (`withPlanLock` →
- * `harness_shared.harness_plans`), VAL upsert (`harness_plan_assertions`), and
- * plan start (`op_status='started'`) — asserting the brief's green bar:
+ * `harness_shared.harness_plans`) and plan start (`op_status='started'`) —
+ * asserting the brief's green bar:
  *
  *   • child schema exists,
- *   • child seed plan started,
+ *   • child seed plan started, carrying plain Acceptance sub-bullets and no
+ *     inline VAL-* block (retired: verification-system-improvements-2026-10-10
+ *     P-003 — no harness_plan_assertions table is provisioned here, so a
+ *     regression that re-adds the write fails loudly),
  *   • child features carry the seed slug,
  *   • the DISPATCHER would pick them up (the started-plan eligibility gate),
  *   • a re-run is idempotent (D-004 retry).
@@ -31,7 +34,8 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../../test/_work-items-schema';
 import type postgres from 'postgres';
-import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { applyMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { findValBlocks } from '../plans/val-retirement';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 const reg = vi.hoisted(() => ({ registered: new Set<string>() }));
@@ -108,18 +112,15 @@ const HARNESS_PLANS_DDL = `
     -- the INSERT fails "column <name> does not exist". The structured plan columns are
     -- read by every withPlanLock write and are nullable for this seed-plan fixture.
     template text, template_data jsonb, input_schema jsonb, promote_policy jsonb,
+    -- withPlanLock's read/insert also names these (908 output_schema, the
+    -- acceptance-bar contract slug, and forced_past). This fixture fell one migration
+    -- behind once already and 42703'd the seed-plan write ("column output_schema does
+    -- not exist"); keep it in step with with-plan-lock.ts's SELECT + INSERT lists.
+    output_schema jsonb, acceptance_bar_rubric_slug text, forced_past jsonb,
+    acceptance_bar_epoch integer, acceptance_bar_cohort text,
+    acceptance_bar_seeded_at timestamptz, acceptance_bar_seeded_by text,
     created_at timestamptz DEFAULT now() NOT NULL, updated_at timestamptz DEFAULT now() NOT NULL,
     PRIMARY KEY (workspace_id, harness_slug, plan_slug))`;
-
-/** harness_plan_assertions — mirrors archive/087 + 088 (requires_test). */
-const ASSERTIONS_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.harness_plan_assertions (
-    workspace_id text NOT NULL, harness_slug text NOT NULL, val_id text NOT NULL,
-    plan_slug text NOT NULL, item_id text NOT NULL,
-    verify_text text NOT NULL, evidence_text text NOT NULL DEFAULT '',
-    status text NOT NULL DEFAULT 'todo', requires_test boolean NOT NULL DEFAULT true,
-    created_at timestamptz DEFAULT now() NOT NULL, updated_at timestamptz DEFAULT now() NOT NULL,
-    PRIMARY KEY (workspace_id, harness_slug, val_id))`;
 
 /** harness_features_consolidated — the columns the import lands + the
  *  dispatcher eligibility read needs (status/metadata/item_kind/origin/…). */
@@ -134,11 +135,10 @@ async function fakeImport(childSlug: string, payload: ImportPayload) {
     await h.sql`
       INSERT INTO harness_shared.harness_features_consolidated
         (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
-         metadata, claims, source_plan_slug, source_plan_item_ids, origin)
+         metadata, source_plan_slug, source_plan_item_ids, origin)
       VALUES
         (${WS}, ${childSlug}, ${f.id}, ${f.title}, ${f.summary ?? null}, 'todo', 'feature',
          ${JSON.stringify(f.metadata)}::text::jsonb,
-         ${f.claims && f.claims.length > 0 ? JSON.stringify(f.claims) : null},
          ${f.source_plan_slug}, ${f.source_plan_item_ids ?? null}, 'local')
       ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
         title = EXCLUDED.title, summary = EXCLUDED.summary
@@ -213,14 +213,42 @@ beforeAll(async () => {
   db = await createFreshPgDb('spawn-child');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_PLANS_DDL);
-  await db.sql.unsafe(ASSERTIONS_DDL);
   await db.sql.unsafe(HFC_DDL);
+  // The seed-plan write reads harness_shared.plan_audits (activation-audit
+  // preservation). Apply the REAL migrations through the self-auditing helper,
+  // so a later structural migration on that table fails this fixture loudly
+  // instead of 42P01/42703-ing the seed write into a warning (EI-25654810864485091).
+  await applyMigrationsForTest(db.sql, ['832-plan-audits.sql', '938-plan-activation-audits.sql'], {
+    label: 'spawn-child.integration plan_audits',
+    runtimeTables: ['harness_shared.plan_audits'],
+  });
   // The seed-plan step resolves the child's workspace from harness_shared.projects
   // (resolvePlanScope, WI-148). The scaffold dep registers the child here; create
   // the table (slug + workspace_id; parent_slug for the P-004 completion test).
   await db.sql.unsafe(`
     CREATE TABLE IF NOT EXISTS harness_shared.projects (
       slug text PRIMARY KEY, workspace_id text, parent_slug text)`);
+  // The seed frontmatter carries `template: child-seed` (D-038), so a brand-new seed
+  // write takes withPlanLock's EI-14579 resurrection check, which reads
+  // plan_revisions for prior history. Without the table that read 42P01s the seed
+  // write into a warning. Shape mirrors 000-baseline + 1107 (content_snapshot_hash).
+  await db.sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.plan_revisions (
+      id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      plan_slug text NOT NULL,
+      seq integer NOT NULL,
+      content_hash text NOT NULL,
+      content_snapshot text NOT NULL,
+      content_snapshot_hash text,
+      rationale text,
+      author_kind text,
+      author_id text,
+      session_id text,
+      session_kind text,
+      created_at bigint,
+      UNIQUE (workspace_id, harness_slug, plan_slug, seq))`);
   // resolvePlanScope's registry FALLBACK (EI-1511: projects is the org-blueprint
   // projection, sparse by design) now reads the AUTHORITATIVE slug→workspace
   // registry — the harness_registry operator-state row (workspace_id, payload
@@ -259,9 +287,10 @@ describe('executeSpawnChild against real PG (scratch workspace)', () => {
       scaffold: 'created',
       seed_plan: 'created',
       feature_ids: ['F-SCRATCH-CHILD-SEED-001', 'F-SCRATCH-CHILD-SEED-002'],
-      assertions_written: 3,
       started: true,
     });
+    // The retired VAL step left no field behind on the result.
+    expect(r).not.toHaveProperty('assertions_written');
 
     // 1. Child schema exists.
     const schemas = await db.sql<{ schema_name: string }[]>`
@@ -280,6 +309,14 @@ describe('executeSpawnChild against real PG (scratch workspace)', () => {
     expect(plans).toHaveLength(1);
     expect(plans[0]).toMatchObject({ plan_slug: SEED, status: 'active', op_status: 'started', version: 1 });
     expect(plans[0].content).toContain('- **P-001** `todo` Feature one');
+    // Acceptance rides as plain sub-bullets in the persisted body (P-003) …
+    expect(plans[0].content).toMatch(/^ {2}- \*\*Acceptance:\*\* one verifies$/m);
+    expect(plans[0].content.match(/^ {2}- \*\*Acceptance:\*\* /gm)).toHaveLength(3);
+    // … and the persisted body carries no inline VAL-* block. Positive control:
+    // the same detector finds one in a body that does carry it, so the empty
+    // result above is a real absence, not a broken instrument.
+    expect(findValBlocks(plans[0].content)).toEqual([]);
+    expect(findValBlocks('- **P-001** `todo` x\n  - **[VAL-x-001]**\n    - **Verify:** y')).toHaveLength(1);
 
     // 3. Child features carry the seed slug (column + the dispatcher's metadata key).
     const feats = await db.sql<
@@ -295,18 +332,8 @@ describe('executeSpawnChild against real PG (scratch workspace)', () => {
       expect(f.source_plan_slug).toBe(SEED);
       expect(f.meta_plan).toBe(SEED);
     }
-    expect(JSON.parse(feats[0].claims!)).toEqual([`VAL-${SEED}-001`]);
-    expect(JSON.parse(feats[1].claims!)).toEqual([`VAL-${SEED}-002`, `VAL-${SEED}-003`]);
-
-    // 4. The VAL assertions landed in the child scope, test-gated by default.
-    const vals = await db.sql<{ val_id: string; item_id: string; requires_test: boolean }[]>`
-      SELECT val_id, item_id, requires_test
-        FROM harness_shared.harness_plan_assertions
-       WHERE workspace_id = ${WS} AND harness_slug = ${CHILD_SLUG} AND plan_slug = ${SEED}
-       ORDER BY val_id
-    `;
-    expect(vals).toHaveLength(3);
-    expect(vals[0]).toMatchObject({ val_id: `VAL-${SEED}-001`, item_id: 'P-001', requires_test: true });
+    // 4. No feature carries VAL-* claims: there are no VAL ids to name (P-003).
+    for (const f of feats) expect(f.claims).toBeNull();
 
     // 5. THE DISPATCHER WOULD PICK THEM UP: the started seed plan makes the
     //    features pass readFrontierFeatures' plan gate.

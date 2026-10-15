@@ -18,8 +18,10 @@
  *
  * BOUNDED BY CONSTRUCTION: skips under host load, skips while a green-checkpoint
  * suite runs (never fight the gate), refuses radii wider than
- * maxWorkspaces=3 / maxPaths=80 / maxCommits=40, and every "could not measure"
- * resolves to holding the cursor — never to a false green. It is an OBSERVER: no
+ * maxWorkspaces=10 / maxPaths=80 / maxCommits=40 / maxTaskCommands=32 / maxGuards=26,
+ * and the affected runner uses `--related` to narrow test files only when the selector
+ * has positive evidence. Every "could not measure" resolves to holding the cursor —
+ * never to a false green. It is an OBSERVER: no
  * auto-revert, no gate firing, no agent spawn (spend: 'none').
  *
  * The desktop-shell precedent for the self-gate: the affected/typecheck runner
@@ -58,5 +60,6 @@ registerSystemAction(
     });
     await runSyncBatchDeltaCheck(deps);
   },
-  { routineTimeoutMs: SYNC_BATCH_DELTA_ROUTINE_TIMEOUT_MS },
+  // WI-10005745: spawns node scripts/affected-tests.mjs and test runs from the integration tree.
+  { routineTimeoutMs: SYNC_BATCH_DELTA_ROUTINE_TIMEOUT_MS, executesIntegrationTreeCode: true },
 );

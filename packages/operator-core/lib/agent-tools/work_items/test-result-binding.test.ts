@@ -13,7 +13,7 @@ import type { CompletionVerificationEvidence } from '../../coord-lifecycle/recor
 import {
   MAX_TEST_BINDING_LOOKBACK_MS,
   TEST_BINDING_WINDOW_SLACK_MS,
-  testResultContradictedByRun,
+  testResultContradictedByRun as evaluateTestResultContradictedByRun,
   type TestingRunInvocation,
   type TestRunLedgerRow,
   type TestResultBindingProbe,
@@ -32,6 +32,7 @@ function run(overrides: Partial<TestingRunInvocation> = {}): TestingRunInvocatio
   return {
     invokedAt: new Date(NOW.getTime() - 60_000),
     durationMs: 5_000,
+    workItemId: 'WI-1',
     files: ['a.test.ts', 'b.test.ts'],
     ...overrides,
   };
@@ -60,6 +61,13 @@ function probe(opts: {
     },
     now: () => NOW,
   };
+}
+
+function testResultContradictedByRun(
+  evidence: CompletionVerificationEvidence | null | undefined,
+  bindingProbe: TestResultBindingProbe,
+) {
+  return evaluateTestResultContradictedByRun(evidence, 'WI-1', bindingProbe);
 }
 
 describe('testResultContradictedByRun — the finding', () => {
@@ -239,5 +247,43 @@ describe('testResultContradictedByRun — silence is the default, and each cause
       }),
     );
     expect(to?.getTime()).toBe(invocation.invokedAt.getTime() + TEST_BINDING_WINDOW_SLACK_MS);
+  });
+});
+
+describe('work item attribution', () => {
+  it('does not use a failing run without an explicit work-item id', async () => {
+    let queriedLedger = false;
+    const found = await evaluateTestResultContradictedByRun(
+      CLAIMS_PASSED,
+      'WI-1',
+      probe({
+        latest: run({ workItemId: null }),
+        rows: [row({ status: 'fail' })],
+        onWindow: () => {
+          queriedLedger = true;
+        },
+      }),
+    );
+
+    expect(found).toBeUndefined();
+    expect(queriedLedger).toBe(false);
+  });
+
+  it('does not use a failing run attributed to another work-item', async () => {
+    let queriedLedger = false;
+    const found = await evaluateTestResultContradictedByRun(
+      CLAIMS_PASSED,
+      'WI-1',
+      probe({
+        latest: run({ workItemId: 'WI-other' }),
+        rows: [row({ status: 'fail' })],
+        onWindow: () => {
+          queriedLedger = true;
+        },
+      }),
+    );
+
+    expect(found).toBeUndefined();
+    expect(queriedLedger).toBe(false);
   });
 });

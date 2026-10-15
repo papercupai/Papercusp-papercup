@@ -24,10 +24,10 @@
  * asserted at the wiring site, not by actually running it (same rationale as
  * verify-tauri-headless-spa-isolation.test.ts / tty-title-target.test.ts).
  */
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 
@@ -128,20 +128,20 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
       expect(helper).toBeTruthy();
       expect(envLine).toBeTruthy();
       const probe = join(work, 'probe.cjs');
-      writeFileSync(probe, `console.log(JSON.stringify({id:process.env.PAPERCUSP_WORKSPACE_ID,legacy:process.env.PAPERCUSP_WORKSPACE,root:process.env.PAPERCUSP_WORKSPACES_ROOT,codexHomes:process.env.PAPERCUSP_SU_CODEX_HOMES_DIR,ghConfig:process.env.GH_CONFIG_DIR}));`);
+      writeFileSync(probe, `console.log(JSON.stringify({id:process.env.PAPERCUSP_WORKSPACE_ID,legacy:process.env.PAPERCUSP_WORKSPACE,root:process.env.PAPERCUSP_WORKSPACES_ROOT,codexHomes:process.env.PAPERCUSP_SU_CODEX_HOMES_DIR,ghConfig:process.env.GH_CONFIG_DIR,operatorBase:process.env.PAPERCUSP_OPERATOR_BASE,operatorUrl:process.env.PAPERCUSP_OPERATOR_URL}));`);
       const script = [
         'set -eu', helper,
         'WORK="$1"; ISOLATED_WORKSPACE=verify-tauri-isolated-test; ISOLATED_HOME="$WORK/home"; ISOLATED_CODEX_HOMES_DIR="$WORK/su-codex-homes"; ISOLATED_GH_CONFIG_DIR="$WORK/gh-config"',
-        'ISOLATED_ADMIN_URL=test-admin; ISOLATED_APP_URL=test-app; ISOLATED_PG_PORT=1234',
+        'ISOLATED_ADMIN_URL=test-admin; ISOLATED_APP_URL=test-app; ISOLATED_PG_PORT=1234; DEV_PORT=33799',
         'ISOLATED_WEBVIEW_DATA="$WORK/data"; ISOLATED_WEBVIEW_CACHE="$WORK/cache"; ISOLATED_WEBVIEW_CONFIG="$WORK/config"',
         'prepare_isolated_workspace', envLine,
         'eval "$ISOLATED_ENV_LINE node \\"$WORK/probe.cjs\\""',
       ].join('\n');
       const result = spawnSync('bash', ['-c', script, 'probe', work], {
-        encoding: 'utf8', env: { ...process.env, PAPERCUSP_WORKSPACE_ID: 'live-owner', PAPERCUSP_WORKSPACE: 'live-owner', PAPERCUSP_WORKSPACES_ROOT: '/do-not-touch-live-registry' },
+        encoding: 'utf8', env: { ...process.env, PAPERCUSP_WORKSPACE_ID: 'live-owner', PAPERCUSP_WORKSPACE: 'live-owner', PAPERCUSP_WORKSPACES_ROOT: '/do-not-touch-live-registry', PAPERCUSP_OPERATOR_BASE: 'http://127.0.0.1:3070', PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070' },
       });
       expect(result.status, result.stderr).toBe(0);
-      expect(JSON.parse(result.stdout)).toEqual({ id: 'verify-tauri-isolated-test', legacy: 'verify-tauri-isolated-test', root: join(work, 'workspaces'), codexHomes: join(work, 'su-codex-homes'), ghConfig: join(work, 'gh-config') });
+      expect(JSON.parse(result.stdout)).toEqual({ id: 'verify-tauri-isolated-test', legacy: 'verify-tauri-isolated-test', root: join(work, 'workspaces'), codexHomes: join(work, 'su-codex-homes'), ghConfig: join(work, 'gh-config'), operatorBase: 'http://127.0.0.1:33799', operatorUrl: 'http://127.0.0.1:33799' });
       const registry = JSON.parse(readFileSync(join(work, 'workspaces/registry.json'), 'utf8'));
       expect(registry.current).toBe('verify-tauri-isolated-test');
       expect(registry.workspaces.map((row: { id: string }) => row.id)).toEqual(['verify-tauri-isolated-test']);
@@ -153,6 +153,8 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
   it('verifies the running sidecar identity and exports it in both assertion and boot-only handoffs', () => {
     expect(src).toContain('grep -Fxq "PAPERCUSP_WORKSPACE_ID=$ISOLATED_WORKSPACE" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('grep -Fxq "PAPERCUSP_WORKSPACES_ROOT=$ISOLATED_WORKSPACES_ROOT" <<<"$SIDECAR_ENVIRON"');
+    expect(src).toContain('grep -Fxq "PAPERCUSP_OPERATOR_BASE=http://127.0.0.1:$DEV_PORT" <<<"$SIDECAR_ENVIRON"');
+    expect(src).toContain('grep -Fxq "PAPERCUSP_OPERATOR_URL=http://127.0.0.1:$DEV_PORT" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('grep -Fxq "PAPERCUSP_SU_CODEX_HOMES_DIR=$ISOLATED_CODEX_HOMES_DIR" <<<"$SIDECAR_ENVIRON"');
     expect(src).toContain('export PAPERCUSP_WORKSPACE_ID="$ISOLATED_WORKSPACE"');
     expect(src).toContain('export PAPERCUSP_WORKSPACES_ROOT="$ISOLATED_WORKSPACES_ROOT"');
@@ -160,6 +162,30 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     expect(src).toContain("printf 'export PAPERCUSP_WORKSPACE_ID=%q\\n'");
     expect(src).toContain("printf 'export PAPERCUSP_WORKSPACES_ROOT=%q\\n'");
     expect(src).toContain("printf 'export PAPERCUSP_SU_CODEX_HOMES_DIR=%q\\n'");
+  });
+
+  it('repins the actual launch command after a port retry, overriding the initial isolated env line', () => {
+    const work = mkdtempSync(join(tmpdir(), 'verifier-api-retry-'));
+    try {
+      const writer = src.match(/cat > "\$WORK\/launch.sh" <<LAUNCH\n[\s\S]*?\nLAUNCH\n/)?.[0];
+      expect(writer).toBeTruthy();
+      const bin = join(work, 'bin'); mkdirSync(bin);
+      const npm = join(bin, 'npm');
+      const probe = join(work, 'probe.cjs');
+      writeFileSync(probe, "console.log(JSON.stringify({base:process.env.PAPERCUSP_OPERATOR_BASE,url:process.env.PAPERCUSP_OPERATOR_URL,port:process.env.OPERATOR_DEV_PORT}));");
+      writeFileSync(npm, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(probe)}\n`);
+      chmodSync(npm, 0o700);
+      const script = [
+        'set -e', 'WORK="$1"; DESKTOP_DIR="$WORK"; DEV_PORT=33801; PTY_PORT=33805; DISPLAY_NUM=91',
+        `ISOLATED_ENV_LINE='PAPERCUSP_OPERATOR_BASE="http://127.0.0.1:33800" PAPERCUSP_OPERATOR_URL="http://127.0.0.1:33800"'`,
+        'TAURI_CONFIG="{}"; LAUNCH_PREFIX=()', writer, 'bash "$WORK/launch.sh"',
+      ].join('\n');
+      const result = spawnSync('bash', ['-c', script, 'test', work], {
+        encoding: 'utf8', env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ base: 'http://127.0.0.1:33801', url: 'http://127.0.0.1:33801', port: '33801' });
+    } finally { rmSync(work, { recursive: true, force: true }); }
   });
 
   it.each([200, 400])('retains bounded response evidence and browser identity in the real health probe (%i)', async (status) => {
@@ -225,8 +251,54 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
       /if \[ "\$ISOLATED_DB" = "1" \]; then[\s\S]*?EI-10387 isolation VERIFIED[\s\S]*?\nfi/,
     )?.[0];
     expect(isolationGuard).toBeTruthy();
-    expect(isolationGuard).toContain('pgrep -f "$OPERATOR_HOST_PROCESS_RE"');
+    expect(isolationGuard).toContain('find_pid_by_env "$OPERATOR_HOST_PROCESS_RE"');
     expect(isolationGuard).toContain('OPERATOR_DEV_PORT=$DEV_PORT');
+  });
+
+  it('uses the shared matcher for sidecar and bridge PID selection', () => {
+    expect(src).toContain(
+      'SIDECAR_PID="$(find_pid_by_env "$OPERATOR_HOST_PROCESS_RE" "OPERATOR_DEV_PORT=$DEV_PORT" || true)"',
+    );
+    expect(src).toMatch(/BRIDGE_PID="\$\(find_pid_by_env "debug\/papercusp-desktop"/);
+    expect(src).toContain('"DISPLAY=:$DISPLAY_NUM"');
+    expect(src).toContain('"OPERATOR_DEV_PORT=$DEV_PORT"');
+    expect(src).toContain('"PAPERCUSP_SID=$TAURI_OWNER_SID"');
+    expect(src).toContain('"PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE"');
+  });
+
+  it('does not write matching PIDs to a pipe after the first reader exits', async () => {
+    const helper = src.match(/find_pid_by_env\(\) \{\n[\s\S]*?\n\}\n/)?.[0];
+    expect(helper).toBeTruthy();
+    const marker = `verifier-pid-selector-${process.pid}-${Date.now()}`;
+    const env = { ...process.env, VERIFY_TAURI_PID_SELECTOR: marker };
+    const first = spawn('sleep', ['30'], { env, stdio: 'ignore' });
+    const second = spawn('sleep', ['30'], { env, stdio: 'ignore' });
+    const waitForSpawn = (child: ReturnType<typeof spawn>) => new Promise<void>((resolveSpawn, rejectSpawn) => {
+      child.once('spawn', () => resolveSpawn());
+      child.once('error', rejectSpawn);
+    });
+    try {
+      await Promise.all([waitForSpawn(first), waitForSpawn(second)]);
+      const script = [
+        'set -uo pipefail',
+        "trap '' PIPE",
+        helper!,
+        'pgrep() { printf "%s\\n" "$FAKE_PID_1" "$FAKE_PID_2"; }',
+        'selected="$(find_pid_by_env ignored "VERIFY_TAURI_PID_SELECTOR=$MATCH_VALUE")"',
+        'status=$?',
+        'printf "selected=%s\\nstatus=%s\\n" "$selected" "$status"',
+      ].join('\n');
+      const result = spawnSync('bash', ['-c', script], {
+        encoding: 'utf8',
+        env: { ...process.env, FAKE_PID_1: String(first.pid), FAKE_PID_2: String(second.pid), MATCH_VALUE: marker },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toBe('');
+      expect(result.stdout).toBe(`selected=${first.pid}\nstatus=0\n`);
+    } finally {
+      if (first.exitCode === null) first.kill('SIGTERM');
+      if (second.exitCode === null) second.kill('SIGTERM');
+    }
   });
 
   it('removes the throwaway datadir at teardown (never leaks a migrated cluster into $TMPDIR)', () => {

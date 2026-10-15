@@ -31,9 +31,17 @@ import { orchestrationSourceArgsSchema } from './public-contract';
 
 /** Unwrap `.refine()` / `.strict()` wrappers to reach the underlying object shape. */
 function objectShape(schema: unknown): Record<string, ZodTypeAny> {
-  let cur = schema as { shape?: unknown; _def?: { schema?: unknown; innerType?: unknown } };
+  let cur = schema as {
+    shape?: unknown;
+    _def?: { schema?: unknown; innerType?: unknown; options?: unknown };
+  };
   for (let hop = 0; hop < 10 && cur != null; hop += 1) {
     if (cur.shape && typeof cur.shape === 'object') return cur.shape as Record<string, ZodTypeAny>;
+    const options = cur._def?.options;
+    if (Array.isArray(options) && options.length > 0) {
+      cur = options[0] as typeof cur;
+      continue;
+    }
     const next = cur._def?.schema ?? cur._def?.innerType;
     if (next == null) break;
     cur = next as typeof cur;
@@ -56,6 +64,11 @@ const LEGACY_FIELD_DISPOSITION: Record<string, Record<string, Disposition>> = {
     description: { kind: 'fronted', unifiedPath: 'script.description' },
     dryRun: { kind: 'fronted', unifiedPath: 'dryRun' },
     timeoutSec: { kind: 'fronted', unifiedPath: 'timeoutSec' },
+    kernel: {
+      kind: 'legacy-door-only',
+      why:
+        'Managed JavaScript kernel open/run/status/close operations are not part of the unified orchestration contract; callers use code:run directly for this process-local surface.',
+    },
   },
   'recipes:run': {
     id: { kind: 'fronted', unifiedPath: 'recipe.id' },

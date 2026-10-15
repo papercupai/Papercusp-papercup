@@ -20,7 +20,7 @@ import {
   type CoverageSnapshot,
   type SurfaceReading,
 } from './coverage-gate';
-import { TOTAL_COVERAGE_FLOOR, surfaceKey } from './embed-coverage';
+import { TOTAL_COVERAGE_FLOOR, surfaceKey, coverageTargets } from './embed-coverage';
 import { TARGETS } from './embed-backfill';
 import { SEARCH_SOURCES } from '../agent-tools/search/sources';
 
@@ -92,7 +92,7 @@ describe('SEARCH_SOURCE_SURFACES exhaustiveness', () => {
   // Structural rather than data-driven on purpose, so it does not depend on
   // what happens to have been sampled recently.
   it('references only surfaces the embed-backfill actually produces', () => {
-    const real = new Set(TARGETS.map((t) => surfaceKey(t)));
+    const real = new Set(coverageTargets().map((t) => surfaceKey(t)));
     const bogus = Object.entries(SEARCH_SOURCE_SURFACES).flatMap(([source, surfaces]) =>
       surfaces.filter((s) => !real.has(s)).map((s) => `${source} → ${s}`),
     );

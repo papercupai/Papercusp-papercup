@@ -36,6 +36,7 @@
 import { z } from 'zod';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { resolveSiblingTreeRoot } from '../../release/sibling-tree-root';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { COORD_ROLES } from '../coordination/roles';
@@ -284,10 +285,22 @@ export default defineTool({
     // 5. On-disk residue: the app tree, its git checkpoint worktree, the launch-context file.
     if (args.removeFiles ?? true) {
       const root = papercuspRoot();
+      const appTree = join(root, 'apps', slug);
+      // The checkpoint worktree has two possible homes: the legacy nested
+      // <root>/apps/<slug>-checkpoint, and (WI-6554700010009501) the location
+      // hive-release-env now derives, outside any enclosing git work tree. Remove both;
+      // the Set collapses them when <root> is not itself inside a work tree.
+      const derivedCheckpointTree = await resolveSiblingTreeRoot({
+        integrationRoot: appTree,
+        name: `${slug}-checkpoint`,
+      });
       const targets = [
-        join(root, 'apps', slug),
-        join(root, 'apps', `${slug}-checkpoint`),
-        join(root, 'launch-context', `fleet-${slug}-launch-context.md`),
+        ...new Set([
+          appTree,
+          join(root, 'apps', `${slug}-checkpoint`),
+          derivedCheckpointTree,
+          join(root, 'launch-context', `fleet-${slug}-launch-context.md`),
+        ]),
       ];
       const removed: string[] = [];
       for (const t of targets) {

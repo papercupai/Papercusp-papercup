@@ -1,11 +1,13 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { existsSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { SELF_IDENTIFYING_SECRET_PATTERN } from './sensitive-text';
 import { createTextCollector } from './child-output';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildIsolatedScopeArgv,
   buildTaskScopeArgv,
@@ -18,6 +20,7 @@ import {
   TASK_DEADLINE_EPOCH_MS_ENV,
   taskDeadlineEnv,
   userManagerBusReachable,
+  probeTransientScopeSupport,
 } from './systemd-scope';
 import {
   isDirectSystemdScopeEnvRunnerInvocation,
@@ -62,6 +65,55 @@ describe('userManagerBusReachable — can `systemd-run --user` reach a user mana
   });
 });
 
+describe('harmless bounded scope preflight (EI-25807722383059921)', () => {
+  it('probes under the supplied env and reports a disconnected transport before any workload is selected', async () => {
+    const child = Object.assign(new EventEmitter(), { stderr: new PassThrough(), kill: vi.fn() });
+    const spawnFn = vi.fn(() => child) as unknown as typeof spawn;
+    const env = { DBUS_SESSION_BUS_ADDRESS: 'unix:path=/disconnected/bus' };
+    const pending = probeTransientScopeSupport({ spawnFn, env, platform: 'linux', systemdRunPath: '/usr/bin/systemd-run' });
+    expect(spawnFn).toHaveBeenCalledWith('/usr/bin/systemd-run', expect.arrayContaining([
+      '--scope', '--property=RuntimeMaxSec=5', '--property=TimeoutStopSec=1', '--', '/usr/bin/true',
+    ]), { env, stdio: ['ignore', 'ignore', 'pipe'] });
+    child.stderr.write('Failed to start transient scope unit: Transport endpoint is not connected');
+    child.emit('exit', 1);
+    await expect(pending).resolves.toEqual({ ok: false,
+      reason: 'systemd-run probe exited 1: Failed to start transient scope unit: Transport endpoint is not connected' });
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it('kills only the owned probe on its deadline and never waits indefinitely', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = Object.assign(new EventEmitter(), { stderr: new PassThrough(), kill: vi.fn() });
+      const pending = probeTransientScopeSupport({ spawnFn: (() => child) as unknown as typeof spawn,
+        platform: 'linux', timeoutMs: 100 });
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(pending).resolves.toEqual({ ok: false, reason: 'systemd-run probe timed out' });
+      expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGKILL');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('reports a missing launcher without claiming successful confinement', async () => {
+    const child = Object.assign(new EventEmitter(), { stderr: new PassThrough(), kill: vi.fn() });
+    const pending = probeTransientScopeSupport({ spawnFn: (() => child) as unknown as typeof spawn, platform: 'linux' });
+    child.emit('error', new Error('spawn ENOENT'));
+    await expect(pending).resolves.toEqual({ ok: false, reason: 'systemd-run unavailable: spawn ENOENT' });
+  });
+
+  it('accepts a successful scope and cancels its deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = Object.assign(new EventEmitter(), { stderr: new PassThrough(), kill: vi.fn() });
+      const pending = probeTransientScopeSupport({ spawnFn: (() => child) as unknown as typeof spawn,
+        platform: 'linux', timeoutMs: 100 });
+      child.emit('exit', 0);
+      await expect(pending).resolves.toEqual({ ok: true });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(child.kill).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+});
+
 describe('systemd scope environment runner entrypoint', () => {
   it('executes only the copied runner basename, never an importing host bundle', () => {
     expect(isDirectSystemdScopeEnvRunnerInvocation('/tmp/dist-host/systemd-scope-env-runner.mjs')).toBe(true);
@@ -84,9 +136,9 @@ describe('transient service payload escaping', () => {
   });
 
   it.skipIf(!userManagerBusReachable())(
-    'preserves Bash $VAR and $$ through systemd-run and the credential env runner',
+    'preserves Bash $VAR, command substitution, and $$ through systemd-run and the credential env runner',
     async () => {
-      const command = 'printf "value=<%s> pid=<%s>\\n" "$PC_WI10004318_VALUE" "$$"';
+      const command = 'printf "value=<%s> substitution=<%s> pid=<%s>\\n" "$PC_WI10004318_VALUE" "$(printf command-substitution)" "$$"';
       const built = buildTaskServiceArgvWithTransport(['/bin/bash', '-o', 'pipefail', '-c', command], {
         unit: `pc-wi10004318-env-handoff-${process.pid}-${Date.now()}.service`,
         slice: 'papercusp-bash-job.slice',
@@ -110,7 +162,7 @@ describe('transient service payload escaping', () => {
         const [code, signal] = (await once(child, 'close')) as [number | null, NodeJS.Signals | null];
 
         expect({ code, signal, stderr }).toEqual({ code: 0, signal: null, stderr: '' });
-        expect(stdout).toMatch(/^value=<expanded> pid=<\d+>\n$/);
+        expect(stdout).toMatch(/^value=<expanded> substitution=<command-substitution> pid=<\d+>\n$/);
       } finally {
         built.transport?.release();
       }
@@ -127,6 +179,76 @@ describe('transient service payload escaping', () => {
 
     expect(argv.at(-1)).toBe(command);
   });
+
+  it('uses an inherited stdio fd only when the scope caller opts in', () => {
+    const legacy = buildTaskScopeArgvWithTransport(['/bin/false'], {
+      unit: 'papercusp-env-fd-legacy.scope',
+      slice: 'papercusp-bash-job.slice',
+      env: { PRIVATE_VALUE: 'kept-out-of-argv' },
+    });
+    const inherited = buildTaskScopeArgvWithTransport(['/bin/false'], {
+      unit: 'papercusp-env-fd-inherited.scope',
+      slice: 'papercusp-bash-job.slice',
+      env: { PRIVATE_VALUE: 'kept-out-of-argv' },
+      environmentFdIndex: 4,
+    });
+    try {
+      const legacyRunner = legacy.argv.indexOf(SYSTEMD_ENV_RUNNER_PATH);
+      const inheritedRunner = inherited.argv.indexOf(SYSTEMD_ENV_RUNNER_PATH);
+      expect(legacy.argv[legacyRunner + 2]).toMatch(new RegExp('^/proc/' + process.pid + '/fd/\\d+$'));
+      expect(inherited.argv[inheritedRunner + 1]).toBe('--env-fd-path');
+      expect(inherited.argv[inheritedRunner + 2]).toBe('/proc/self/fd/4');
+      expect(inherited.inheritFd).toEqual({ index: 4, fd: inherited.transport!.fd });
+      expect(inherited.argv).not.toContain('PRIVATE_VALUE=kept-out-of-argv');
+      expect(legacy.inheritFd).toBeUndefined();
+    } finally {
+      legacy.transport?.release();
+      inherited.transport?.release();
+    }
+  });
+
+  it.skipIf(!userManagerBusReachable())(
+    'keeps a scope environment available after its short-lived caller exits',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'systemd-scope-short-caller-'));
+      const resultPath = join(dir, 'result.json');
+      const moduleUrl = new URL('./systemd-scope.ts', import.meta.url).href;
+      const secret = 'caller-exits-before-scope-reads-this';
+      const payloadScript = [
+        "const { readdirSync, readlinkSync, writeFileSync } = require('node:fs');",
+        'const parent = "/proc/" + process.ppid + "/fd";',
+        'const fds = readdirSync(parent);',
+        'const leaked = fds.some((fd) => { try { return /papercusp-env-.*\\(deleted\\)/.test(readlinkSync(parent + "/" + fd)); } catch { return false; } });',
+        'writeFileSync(process.env.PC_TEST_RESULT, JSON.stringify({ value: process.env.PC_TEST_SECRET, leaked }));',
+      ].join('');
+      const helper = [
+        'const { buildTaskScopeArgvWithTransport } = await import(' + JSON.stringify(moduleUrl) + ');',
+        "const { spawn } = await import('node:child_process');",
+        'const built = buildTaskScopeArgvWithTransport([' + JSON.stringify(process.execPath) + ', "-e", ' + JSON.stringify(payloadScript) + '], {',
+        'unit: ' + JSON.stringify('pc-short-caller-' + process.pid + '-' + Date.now() + '.scope') + ', slice: "papercusp-bash-job.slice",',
+        'env: { PC_TEST_SECRET: ' + JSON.stringify(secret) + ', PC_TEST_RESULT: ' + JSON.stringify(resultPath) + ' }, environmentFdIndex: 3 });',
+        "const child = spawn(built.argv[0], built.argv.slice(1), { env: process.env, stdio: ['ignore', 'ignore', 'ignore', built.inheritFd.fd], detached: true });",
+        'built.transport.release(); child.unref(); process.exit(0);',
+      ].join('');
+      const caller = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', helper], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stderr = '';
+      caller.stderr?.setEncoding('utf8').on('data', (chunk: string) => {
+        stderr += chunk;
+      });
+      const [code, signal] = (await once(caller, 'close')) as [number | null, NodeJS.Signals | null];
+      expect({ code, signal, stderr }).toEqual({ code: 0, signal: null, stderr: '' });
+
+      const deadline = Date.now() + 10_000;
+      while (!existsSync(resultPath) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(existsSync(resultPath)).toBe(true);
+      expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toEqual({ value: secret, leaked: false });
+    },
+    20_000,
+  );
 
   it('retains failed task units for the ledger writer while preserving collection by default', () => {
     const retained = buildTaskServiceArgv(['/bin/false'], {

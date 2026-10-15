@@ -1,21 +1,21 @@
 /**
- * plans:promote — promote a plan into a harness as features (+ their
- * inline VAL-* assertions).
+ * plans:promote — promote a plan into a harness as features.
  *
  * agent-coordination-architecture-v2 §11, as amended by
  * plans-central-harness-ux-2026-05-26 (D-004/D-005): plans replaced
  * SPEC.md as the authoritative scope/acceptance document, so promote no
- * longer writes SPEC.md — it extracts inline VAL-* assertions from the
- * plan items and stores them as `feature.claims` + `harness_plan_assertions`.
+ * longer writes SPEC.md. Inline VAL-* assertions are retired
+ * (verification-system-improvements-2026-10-10 P-003): acceptance lives in
+ * the plan's requirement contract (spec clauses + bound evidence), and an
+ * apply over a plan that still carries VAL blocks is refused by
+ * `evaluatePromotionAssertionGate` with the `val-block-retired` repair.
  *
- *   - **Preview** (default, `apply: false`): parses the plan, lists the
- *     VAL-* assertions that would be extracted for the named `from_items`,
- *     and returns the per-feature summary for the caller to inspect —
+ *   - **Preview** (default, `apply: false`): parses the plan, reports the
+ *     retirement gate's verdict for the named `from_items`, and returns the per-feature summary for the caller to inspect —
  *     useful for dry-runs / agent-driven proposal review.
  *   - **Apply** (`apply: true`): `POST`s the features to
  *     `/features/import` so the server allocates F-AUTO-* ids (carrying
- *     `claims` + source-plan provenance), upserts the extracted VAL-*
- *     assertions into `harness_plan_assertions`, and — unless
+ *     source-plan provenance), and — unless
  *     `mark_items: false` — marks each plan item listed in `from_items`
  *     as `done` via `withPlanLock` + `flipStatusInBody`. It then writes a
  *     `## Promoted` block + `## Now` status line back into the plan and
@@ -59,8 +59,11 @@ import { FanoutCapError, type ResolveFanoutCtx } from '@papercusp/fanout-resolve
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
 import { planRevisionCapture, type PlanRevisionCtx } from '../../plans/revisions';
-import { extractAssertions, type PlanAssertion } from '../../plans/val-assertions';
 import { evaluatePromotionAssertionGate } from '../../plans/promotion-assertion-gate';
+import {
+  valRetirementRefusal,
+  type ValRetirementRefusalCode,
+} from '../../plans/val-retirement';
 import { matchRoutingGateHint } from '../../../routing-gate-hints';
 import { loopbackFetch, readJsonBody } from '../../../loopback-fetch';
 import { resolveProject } from '../../../harness-core';
@@ -564,6 +567,7 @@ async function backfillPromotedFromConsolidated(opts: {
   if (writeResult.kind === 'busy') {
     return fail('plan_locked', `plan ${slug} is locked by another writer — retry the backfill`);
   }
+  if (writeResult.kind === 'refused') return fail(writeResult.value.code, writeResult.value.message);
   if (!wrote) {
     return {
       content: [
@@ -606,78 +610,11 @@ async function backfillPromotedFromConsolidated(opts: {
   };
 }
 
-/**
- * Persist a plan's inline VAL-* assertions into harness_plan_assertions.
- *
- * P-003 (D-002/D-005). This is a separate, INJECTABLE unit rather than an inline
- * block for one reason: promote's fail-closed path has to be testable. `sql` is a
- * parameter instead of a `getOrgPg()` call made inside, so a unit test can drive a
- * failing store directly — the same testability `spawn-child` already gets from
- * `SpawnChildDeps.writeAssertions`, and whose absence here is why promote's refusal
- * was otherwise only reachable through a live PG.
- *
- * It NEVER throws, and it NEVER decides policy: it reports per-assertion outcomes
- * and the CALLER owns the refusal. That split is deliberate. The defect this
- * replaced was a persistence step that silently downgraded its own failure to a
- * warning — precisely what a helper allowed to own policy is free to do again.
- */
-export async function persistPlanAssertions(opts: {
-  sql: ReturnType<typeof getOrgPg>['sql'];
-  workspaceId: string;
-  harnessSlug: string;
-  planSlug: string;
-  assertions: readonly PlanAssertion[];
-}): Promise<{ written: number; errors: string[] }> {
-  const { sql, workspaceId, harnessSlug, planSlug, assertions } = opts;
-  let written = 0;
-  const errors: string[] = [];
-  const seen = new Set<string>();
-  for (const a of assertions) {
-    // A VAL id is the upsert KEY (workspace_id, harness_slug, val_id), so two
-    // assertions in one promote sharing an id do NOT produce two rows — the
-    // second silently overwrites the first. The feature still carries VAL-x as
-    // a claim, but the row behind it now describes a DIFFERENT claim. That is
-    // worse than a missing row, because every reader resolves it successfully
-    // and gets the wrong assertion. Refuse rather than write.
-    //
-    // P-002 enforces VAL-id uniqueness upstream at extraction; this is the
-    // persistence-layer backstop for when that is bypassed or regresses.
-    if (seen.has(a.valId)) {
-      errors.push(
-        `${a.valId}: duplicate VAL id within this plan — a second assertion reuses it, which would ` +
-          `overwrite the first row rather than add one`,
-      );
-      continue;
-    }
-    seen.add(a.valId);
-    try {
-      await sql`
-        INSERT INTO harness_shared.harness_plan_assertions
-          (workspace_id, harness_slug, val_id, plan_slug, item_id, verify_text, evidence_text, status, requires_test)
-        VALUES
-          (${workspaceId}, ${harnessSlug}, ${a.valId}, ${planSlug}, ${a.itemId},
-           ${a.verifyText}, ${a.evidenceText}, ${a.status}, ${a.requiresTest})
-        ON CONFLICT (workspace_id, harness_slug, val_id) DO UPDATE SET
-          plan_slug     = EXCLUDED.plan_slug,
-          item_id       = EXCLUDED.item_id,
-          verify_text   = EXCLUDED.verify_text,
-          evidence_text = EXCLUDED.evidence_text,
-          requires_test = EXCLUDED.requires_test,
-          updated_at    = now()
-      `;
-      written++;
-    } catch (e) {
-      errors.push(`${a.valId}: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-  return { written, errors };
-}
-
 export default defineTool({
   name: 'plans:promote',
   profile: 'engineer',
   description:
-    "Promote a `plans:*` plan into a harness. Preview computes the per-feature covers mapping and lists assertions that would be extracted. Apply POSTs features to /features/import (server allocates F-AUTO-*), stores inline VAL-* assertions to harness_plan_assertions, and marks its from_items done. A wave declaring `spawn_child` is routed into a NEWLY-SPAWNED child harness instead (scaffold → auto-synthesized seed plan → import → start; preview reports the would-be child). Emits `plan_event` kind=promoted.",
+    "Promote a `plans:*` plan into a harness. Preview computes the per-feature covers mapping and reports whether retired inline VAL-* blocks would refuse the apply. Apply POSTs features to /features/import (server allocates F-AUTO-*) and marks its from_items done; acceptance lives in the plan's requirement contract, not VAL-* blocks. A wave declaring `spawn_child` is routed into a NEWLY-SPAWNED child harness instead (scaffold → auto-synthesized seed plan → import → start; preview reports the would-be child). Emits `plan_event` kind=promoted.",
   guidance: {
     when: 'A plan is ready to enter the harness — you and the human have settled the feature list and acceptance criteria.',
     notWhen:
@@ -715,7 +652,7 @@ export default defineTool({
       .boolean()
       .optional()
       .default(false)
-      .describe('When true, import features + store VAL-* assertions + mark plan items done. When false (default), preview-only.'),
+      .describe('When true, import features + mark plan items done. When false (default), preview-only.'),
     mark_items: z
       .boolean()
       .optional()
@@ -1014,20 +951,19 @@ export default defineTool({
       };
     }
 
-    // P-002 — fail-closed gate on inline VAL-* assertions.
+    // VAL-* retirement gate (verification-system-improvements-2026-10-10 P-003,
+    // D-008). Inline VAL blocks are no longer stored anywhere, so a block left
+    // under a promoted item would be silently dropped; refuse it with the typed
+    // retirement code instead.
     //
-    // Evaluated HERE, beside the other fail-fast validation, and deliberately
-    // NOT next to the assertion extraction further down: the apply path spawns
-    // child harnesses, seed plans and feature imports well BEFORE it reaches
-    // that extraction, so a refusal placed there would fire after real writes
-    // had already landed.
+    // Evaluated HERE, beside the other fail-fast validation: the apply path
+    // spawns child harnesses, seed plans and feature imports well before the end
+    // of this handler, so a refusal placed later would fire after real writes.
     //
-    // Scoped to PARENT-bound items — the same set whose assertions promotion
-    // actually stores. A spawned child's features carry assertions synthesized
-    // into the child SEED plan instead (D-002), so requiring parent-plan VALs
-    // for them would be a false refusal.
+    // Scoped to EVERY promoted item, parent- and child-bound alike: nothing
+    // stores a VAL block on either path any more.
     const gateItemIds = new Set<string>();
-    for (const f of parentFeatures) {
+    for (const f of promoteFeatures) {
       for (const id of f.from_items ?? []) gateItemIds.add(id);
     }
     const assertionGate = evaluatePromotionAssertionGate({
@@ -1044,16 +980,13 @@ export default defineTool({
             type: 'text' as const,
             text: JSON.stringify({
               ok: false,
-              error: 'plan_assertions_fail_closed',
+              error: 'val-block-retired' satisfies ValRetirementRefusalCode,
               detail:
-                `promote refused: ${assertionGate.violations.length} validation-assertion ` +
-                `violation(s) on plan ${args.slug}. A malformed VAL block is silently ` +
-                `dropped from feature.claims, so promoting it would record the item as ` +
-                `having nothing to prove. Fix the blocks below (or run with apply:false ` +
-                `to review), then re-promote.`,
+                `promote refused: ${assertionGate.violations.length} inline VAL-* block(s) on ` +
+                `plan ${args.slug}. ${valRetirementRefusal('val-block-retired').repair}`,
               lane: assertionGate.lane,
               violations: assertionGate.violations,
-              items_missing_assertions: assertionGate.itemsMissingAssertions,
+              items_with_val_blocks: assertionGate.itemsWithAssertions,
             }),
           },
         ],
@@ -1067,10 +1000,6 @@ export default defineTool({
       for (const f of promoteFeatures) {
         for (const id of f.from_items ?? []) previewItemIds.add(id);
       }
-      const previewAssertions = previewItemIds.size > 0
-        ? extractAssertions(planFile.parsed.raw, previewItemIds)
-        : [];
-
       // P-003: report what a spawn_child apply WOULD create — child slug, seed
       // plan slug, feature count — with zero side effects (reads only).
       const spawnChildrenPreview = await Promise.all(
@@ -1099,11 +1028,10 @@ export default defineTool({
         after: {
           harness_slug: harnessSlug ?? null,
           feature_count: promoteFeatures.length,
-          assertion_count: previewAssertions.length,
           ...(spawnChildrenPreview.length > 0 && { spawn_children: spawnChildrenPreview.length }),
           mode: 'preview',
         },
-        detail: `previewed promote to ${previewTarget}: ${promoteFeatures.length} feature(s), ${previewAssertions.length} assertion(s)${spawnChildrenPreview.length > 0 ? `, ${spawnChildrenPreview.length} spawned child(ren)` : ''}`,
+        detail: `previewed promote to ${previewTarget}: ${promoteFeatures.length} feature(s)${spawnChildrenPreview.length > 0 ? `, ${spawnChildrenPreview.length} spawned child(ren)` : ''}`,
       });
 
       // Destructive preview: report what a destructive apply WOULD deprecate
@@ -1138,8 +1066,6 @@ export default defineTool({
               plan_title: planTitle,
               preview: {
                 feature_count: promoteFeatures.length,
-                assertion_count: previewAssertions.length,
-                assertions: previewAssertions.map((a) => ({ val_id: a.valId, item_id: a.itemId, verify: a.verifyText })),
                 // P-002: what the fail-closed gate would do on apply. `violations`
                 // non-empty means an apply:true promote REFUSES. Surfaced in the
                 // preview so the fix happens before the write, not after a refusal.
@@ -1157,7 +1083,7 @@ export default defineTool({
               },
               apply_hint: {
                 ...(harnessSlug && { features_import_endpoint: `/api/harness/${harnessSlug}/features/import` }),
-                note: 'Re-call with apply=true to import features + store assertions + mark plan items.',
+                note: 'Re-call with apply=true to import features + mark plan items.',
               },
               ...(destructivePreview && { destructive: destructivePreview }),
             }),
@@ -1201,25 +1127,15 @@ export default defineTool({
       }
     }
 
-    // Extract inline VAL-* assertions before building the import payload so
-    // claims can be included in the SQLite INSERT (the import endpoint only
-    // sets claims on INSERT, not UPDATE, so they must arrive with the row).
-    // Scoped to the PARENT-bound features: a spawned child's features carry
-    // claims synthesized from the wave's acceptance into the child SEED plan
-    // (D-002) — the parent plan's VAL store doesn't track them.
+    // Plan items bound to PARENT features (a spawned child's features belong to
+    // its own seed plan). Inline VAL-* assertions are retired
+    // (verification-system-improvements-2026-10-10 P-003): acceptance lives in
+    // the plan's requirement contract, and evaluatePromotionAssertionGate above
+    // refuses an apply that still carries VAL blocks, so nothing is extracted or
+    // stored as feature claims here.
     const allItemIds = new Set<string>();
     for (const f of parentFeatures) {
       for (const id of f.from_items ?? []) allItemIds.add(id);
-    }
-    // assertions keyed by item_id for O(1) lookup during payload construction.
-    const assertionsByItem = new Map<string, string[]>();
-    const allAssertions = allItemIds.size > 0
-      ? extractAssertions(planFile.parsed.raw, allItemIds)
-      : [];
-    for (const a of allAssertions) {
-      const arr = assertionsByItem.get(a.itemId) ?? [];
-      arr.push(a.valId);
-      assertionsByItem.set(a.itemId, arr);
     }
     const phaseByItemId = new Map(
       planFile.parsed.items.map((item) => [item.id, item.phase ?? null]),
@@ -1227,7 +1143,6 @@ export default defineTool({
 
     // POST features to /features/import. Server allocates F-AUTO-* ids.
     // metadata.source_plan + metadata.covers carry provenance forward.
-    // claims is populated from extracted VAL-* assertions for this feature's items.
     const importPayload = parentFeatures.map((f, idx) => {
       const metadata: Record<string, unknown> = {
         source_plan: args.slug,
@@ -1249,15 +1164,11 @@ export default defineTool({
       // P-043: stamp generative provenance on resolver-produced children (the
       // completion-time replay-dedup key + audit trail).
       if (f.generated) metadata.generated_by = { plan: args.slug, wave: f.wave ?? waveId ?? null };
-      const featureClaims = (f.from_items ?? []).flatMap(
-        (id) => assertionsByItem.get(id) ?? [],
-      );
       const out: {
         title: string;
         summary?: string;
         metadata: Record<string, unknown>;
         id?: string;
-        claims?: string[];
         source_plan_slug: string;
         source_plan_item_ids: string[];
         wave?: string;
@@ -1274,7 +1185,6 @@ export default defineTool({
             phaseRequiresTwoMachineRig(phaseByItemId.get(itemId)),
           ),
         }),
-        ...(featureClaims.length > 0 && { claims: featureClaims }),
         ...((f.wave ?? waveId) && { wave: f.wave ?? waveId }),
         ...(f.blocked_by && f.blocked_by.length > 0 && { blocked_by: f.blocked_by }),
         ...(f.order != null && { order: f.order }),
@@ -1285,61 +1195,6 @@ export default defineTool({
       }
       return out;
     });
-    // P-003 (llm-agent-evaluation-measurement-integrity-2026-08-25, D-002/D-005):
-    // persist assertion rows BEFORE the feature import, and FAIL CLOSED if they
-    // cannot be persisted.
-    //
-    // Features and assertions live in two DIFFERENT datastores — features in the
-    // target harness DB (written by /features/import below), assertion rows in
-    // operator PG — so no single transaction spans both and ORDERING is the only
-    // integrity boundary available. Importing first (the previous behaviour, whose
-    // assertion write was explicitly best-effort) made the failure mode DANGLING
-    // CLAIMS: a feature durably carrying VAL-* ids with no assertion row, written
-    // silently, because a swallowed PG error still left the import committed. Every
-    // reader of harness_plan_assertions then under-reports with nothing failing
-    // loudly — /assertion/:valId resolves nothing, harness-test-gate cannot approve
-    // a required test, and plans:get planItemTests / testing.ts coverage joins miss
-    // the row entirely.
-    //
-    // Persisting first inverts that into ORPHAN ASSERTION ROWS when a later step
-    // fails: benign, idempotent (the upsert is ON CONFLICT DO UPDATE), invisible to
-    // every reader above because no feature references them, and self-healing on the
-    // next promote of the same plan.
-    let assertionsWritten = 0;
-    let assertionErrors: string[] = [];
-    if (allAssertions.length > 0 && harnessSlug) {
-      try {
-        const { sql } = getOrgPg();
-        const stored = await persistPlanAssertions({
-          sql,
-          workspaceId: ctx.workspaceId ?? '',
-          harnessSlug,
-          planSlug: args.slug,
-          assertions: allAssertions,
-        });
-        assertionsWritten = stored.written;
-        assertionErrors = stored.errors;
-      } catch (e) {
-        // getOrgPg() itself failed — there is no store to write to at all, so every
-        // assertion is unpersisted. Surfaced as an error (not a warning) so the
-        // refusal below fires: this is the case where EVERY claim would dangle.
-        assertionErrors = [e instanceof Error ? e.message : String(e)];
-        ctx.log?.(`[plans:promote] assertion PG store unavailable: ${assertionErrors[0]}`);
-      }
-    }
-    // Refuse BEFORE any feature is imported. Nothing has been written to the target
-    // harness yet, so this leaves no partial promotion to reconcile — the caller can
-    // re-run the identical promote once PG is reachable and the upsert re-converges.
-    if (assertionErrors.length > 0) {
-      return fail(
-        'assertion_store_failed',
-        `${assertionErrors.length} of ${allAssertions.length} inline VAL-* assertion(s) could not be persisted to ` +
-          `harness_shared.harness_plan_assertions, so features carrying them as claims were NOT imported ` +
-          `(refusing rather than promoting claim ids with no assertion row). Re-run this promote once the ` +
-          `store is reachable; the upsert is idempotent. Errors: ${assertionErrors.join('; ')}`,
-      );
-    }
-
     // A pure spawn_child promote has no parent-bound features — skip the
     // target-harness import entirely (harnessSlug may legitimately be unset).
     const importRes =
@@ -1507,7 +1362,7 @@ export default defineTool({
       'plans:promote → write ## Promoted block + Now status + activate',
       planScope,
     );
-    await withPlanLock<null>(
+    const finalWrite = await withPlanLock<null>(
       ctx as never,
       {
         slug: args.slug,
@@ -1531,6 +1386,9 @@ export default defineTool({
         return { newBody: bumpUpdatedDate(newBody), value: null };
       },
     );
+
+    if (finalWrite.kind === 'busy') return fail('plan_locked', `plan ${args.slug} is locked by another writer`);
+    if (finalWrite.kind === 'refused') return fail(finalWrite.value.code, finalWrite.value.message);
 
     const spawnSummary = spawnedChildren.map((c) => ({
       child_slug: c.child_slug,
@@ -1574,14 +1432,12 @@ export default defineTool({
               features_updated: importRes.updated,
               marked_items: markedItems,
               skipped_items: skippedItems,
-              assertions_written: assertionsWritten,
               ...(spawnedChildren.length > 0 && {
                 spawned_children: spawnedChildren,
                 ...((spawnedChildren.some((c) => c.warnings.length > 0) || spawnEdgeWarnings.length > 0) && {
                   warnings: [...spawnEdgeWarnings, ...spawnedChildren.flatMap((c) => c.warnings)],
                 }),
               }),
-              ...(assertionErrors.length > 0 && { assertion_errors: assertionErrors }),
               ...(importRes.provenanceFailed != null && importRes.provenanceFailed > 0 && {
                 provenance_failed: importRes.provenanceFailed,
                 provenance_errors: importRes.provenanceErrors ?? [],

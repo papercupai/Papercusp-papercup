@@ -120,6 +120,31 @@ describe('projectPlanOperationalBrief', () => {
     expect(renderOperationalBrief(brief)).toContain('last verified: unknown (no plan audit is recorded for this plan)');
   });
 
+  it('uses lifecycle rubric state and marks an omitted meta-mode audit as unmeasured', () => {
+    const brief = projectPlanOperationalBrief(
+      planResult({
+        latestAudit: undefined,
+        acceptanceRubric: undefined,
+        lifecycle: { acceptance: { rubricActive: true, rubricRef: 'acceptance-plan-meta-fixture' } },
+      }),
+      { itemsComplete: true, acceptanceIncluded: true, auditIncluded: false },
+    );
+
+    expect(brief.facts.acceptance).toMatchObject({
+      status: 'known',
+      value: {
+        source: 'acceptanceRubric',
+        satisfied: null,
+        summary: 'active acceptance rubric acceptance-plan-meta-fixture is attached; criteria details were not included in this read',
+      },
+      source: 'plans:get.lifecycle.acceptance',
+    });
+    expect(brief.lastVerified.status).toBe('unknown');
+    expect(renderOperationalBrief(brief)).toContain(
+      'last verified: unknown (plan audit was not included in this read; re-read with mode:"sections" and includeEnrichments:true)',
+    );
+  });
+
   it('refuses to report plan-wide blockers from a narrowed items selection', () => {
     const brief = projectPlanOperationalBrief(planResult(), { itemsComplete: false });
     expect(brief.blockers.status).toBe('unknown');

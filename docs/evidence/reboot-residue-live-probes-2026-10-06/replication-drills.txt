@@ -1,0 +1,16 @@
+# Output of replication-drills.sh (same directory), exit 0. Redacted by the script itself ($HOME, user and host names).
+# Rubric acceptance-reboot-residue-service-repairs-2026-10-03, criteria R-001..R-003 replication; vetting conv-muwk6715.
+# run_at=2026-10-06T11:00:42Z kernel=7.0.0-34-generic
+R-001.1a-mistyped-route	real: /api/agenticmail/health=200	mutant: /api/agenticmail/healthz=401	DISCRIMINATES
+R-001.1b-unused-port	real: port 3150=200	mutant: free port 38675=000	DISCRIMINATES
+R-001.2-entry-path	real: entry present	mutant: entry missing copy_sha=463c33c053eb	DISCRIMINATES
+R-001.3-inactive-unit	real: agenticmail.service=active	mutant: code-server.service=inactive	DISCRIMINATES
+R-002.1-digest	real: digest match	mutant: 1MiB copy digest mismatch copy_sha=14927848767e	DISCRIMINATES
+R-002.2-read-as-<user>	real: real blob readable=yes	mutant: chmod-000 copy readable=no	DISCRIMINATES
+R-002.2-read-as-ollama	real: real blob readable=yes	mutant: chmod-000 copy readable=no	DISCRIMINATES
+R-003.1-package	real: virtualbox-7.2=ii	mutant: virtualbox-7.2-mutant=absent	DISCRIMINATES
+R-003.2-vermagic	real: vermagic=7.0.0-34-generic	mutant: vs 7.0.0-34-generic-mutant: mismatch	DISCRIMINATES
+R-003.3-lsmod	real: vboxdrv listed	mutant: vboxdrv-mutant absent	DISCRIMINATES
+R-003.4-hook-postinst.d	real: cmp exit 0	mutant: cmp exit 1 copy_sha=7f3ae6ac54f6	DISCRIMINATES
+R-003.4-hook-header_postinst.d	real: cmp exit 0	mutant: cmp exit 1 copy_sha=7f3ae6ac54f6	DISCRIMINATES
+# rows_not_discriminating=0

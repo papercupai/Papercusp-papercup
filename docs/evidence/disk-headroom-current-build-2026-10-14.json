@@ -1,0 +1,230 @@
+{
+  "schemaVersion": 1,
+  "plan": "disk-headroom-standing-reclaim-2026-10-12",
+  "ownerSession": "su-6c29fd94-ae38-453e-86e6-e81f44a698c5",
+  "evidencePlane": "current-build",
+  "pathDisplay": "Machine-local home paths are shown as $HOME; receipt IDs retain the exact observed paths in workspace evidence.",
+  "census": {
+    "observedAt": "2026-10-14T05:03:59.109Z",
+    "devices": [
+      {
+        "device": "/",
+        "sampledAt": "2026-10-13T23:05:52.842Z",
+        "baselineAt": "2026-10-12T23:16:41.813Z",
+        "complete": true,
+        "stale": false,
+        "coverageGap": false,
+        "consumersTotal": 481,
+        "returned": 481,
+        "truncatedByLimit": false,
+        "smallestReturnedBytes": 1074450432,
+        "attributedBytes": 1916153262080,
+        "unattributedBytes": 0,
+        "growthKnown": 449,
+        "largeConsumers": 93,
+        "top": [
+          {
+            "consumer": "/",
+            "kind": "dir",
+            "depth": 0,
+            "bytes": 1916153262080,
+            "baselineBytes": 1863274721280,
+            "growth24hBytes": 52878540800
+          },
+          {
+            "consumer": "/home",
+            "kind": "dir",
+            "depth": 1,
+            "bytes": 1491888721920,
+            "baselineBytes": 1459369537536,
+            "growth24hBytes": 32519184384
+          },
+          {
+            "consumer": "$HOME",
+            "kind": "dir",
+            "depth": 2,
+            "bytes": 1490674044928,
+            "baselineBytes": 1458154860544,
+            "growth24hBytes": 32519184384
+          }
+        ]
+      },
+      {
+        "device": "/mnt/data",
+        "sampledAt": "2026-10-13T23:23:29.209Z",
+        "baselineAt": "2026-10-12T21:05:23.312Z",
+        "complete": true,
+        "stale": false,
+        "coverageGap": false,
+        "consumersTotal": 921,
+        "returned": 500,
+        "truncatedByLimit": true,
+        "smallestReturnedBytes": 3677515776,
+        "attributedBytes": 7899289014272,
+        "unattributedBytes": 573687808,
+        "growthKnown": 447,
+        "largeConsumers": 224,
+        "top": [
+          {
+            "consumer": "/mnt/data",
+            "kind": "dir",
+            "depth": 0,
+            "bytes": 7899289014272,
+            "baselineBytes": 7412429451264,
+            "growth24hBytes": 486859563008
+          },
+          {
+            "consumer": "/mnt/data/Backup",
+            "kind": "dir",
+            "depth": 1,
+            "bytes": 2703914999808,
+            "baselineBytes": 2677234429952,
+            "growth24hBytes": 26680569856
+          },
+          {
+            "consumer": "/mnt/data/Backup/kopia-repo",
+            "kind": "dir",
+            "depth": 2,
+            "bytes": 2676369068032,
+            "baselineBytes": 2649688502272,
+            "growth24hBytes": 26680565760
+          }
+        ]
+      }
+    ],
+    "otherDevices": [
+      {
+        "device": "/dev/shm",
+        "missing": true
+      }
+    ],
+    "receiptId": "8a819648-c17d-4f3f-a03f-329ca3df26d6",
+    "receiptHref": "/settings/storage?reclaim=8a819648-c17d-4f3f-a03f-329ca3df26d6"
+  },
+  "censusScope": "Both required devices / and /mnt/data. /dev/shm is outside this plan and reports missing. Byte-ordered / returns all481consumers; data returns500of921 with smallest3,677,515,776B, below10GiB, so all census-listed >10GiB consumers are in returned window. This read does not independently prove no physical consumer was missed by the walk.",
+  "censusRerun": {
+    "tool": "storage:census",
+    "operator": "http://127.0.0.1:3170",
+    "args": {
+      "orderBy": "bytes",
+      "limit": 500
+    }
+  },
+  "tests": {
+    "commit": "cf23e89123",
+    "files": [
+      "packages/operator-core/lib/storage/usage.test.ts",
+      "packages/operator-core/lib/storage/disk-census-walk-usage.test.ts",
+      "packages/operator-core/lib/storage/disk-consumer-census.test.ts",
+      "packages/operator-core/lib/storage/disk-census-own-files.test.ts",
+      "packages/operator-core/lib/storage/disk-consumer-census.integration.test.ts",
+      "packages/operator-core/lib/storage/disk-reclaim.test.ts",
+      "packages/operator-core/lib/storage/disk-reclaim.integration.test.ts",
+      "packages/operator-core/lib/storage/disk-space-alarm.test.ts",
+      "packages/operator-core/lib/storage/storage-growth-alarm.test.ts"
+    ],
+    "passed": 196,
+    "skipped": 0,
+    "testRunIds": [
+      21232279,
+      21232280,
+      21232281,
+      21232282,
+      21232283,
+      21232284,
+      21232285,
+      21232298,
+      21232299
+    ],
+    "execution": "canonical lint:as-committed with private runtime and PG",
+    "log": "/tmp/disk-proof-current-clean-v2-tests.log",
+    "cleanup": {
+      "runtimeRemoved": true,
+      "pgDataRemoved": true
+    }
+  },
+  "testRefresh": {
+    "commit": "c8e6f9805c07c59b1f012f54b36700749444e8d7",
+    "runGroup": "disk-final-two-clean-20261014t0533",
+    "files": [
+      "packages/operator-core/lib/storage/disk-consumer-census.test.ts",
+      "packages/operator-core/lib/storage/prune.test.ts"
+    ],
+    "testRunIds": [21232494, 21232493],
+    "passed": 32,
+    "skipped": 0,
+    "bindings": { "census": 43461, "prune": 43488 },
+    "log": "/tmp/disk-final-two-clean.log",
+    "cleanup": { "runtimeRemoved": true, "pgDataRemoved": true }
+  },
+  "certification": {
+    "census": {
+      "scorecard": "EI-25933686563658547",
+      "verdict": "pass",
+      "gradingAudit": "passed",
+      "auditScorecard": "EI-25934127633257145",
+      "auditedAt": "2026-10-14T06:11:51.550Z"
+    },
+    "alarm": {
+      "scorecard": "EI-25931066884779080",
+      "verdict": "pass",
+      "gradingAudit": "passed",
+      "auditScorecard": "EI-25932447510198757",
+      "auditedAt": "2026-10-14T05:45:23.540Z",
+      "workItem": "WI-6554700010008938",
+      "completionAuthorityAtLastRead": "proposed",
+      "settlementPending": "Evidence artifact must have committed Git content identity. A done lifecycle alone does not settle completion."
+    }
+  },
+  "scopedMutations": {
+    "census": { "baseline": 21232326, "copyBaseline": 21232331, "mutant": 21232334, "binding": 43382 },
+    "reclaim": { "baseline": 21232338, "copyBaseline": 21232340, "mutant": 21232343, "binding": 43410 },
+    "alarm": { "baseline": 21232385, "copyBaseline": 21232390, "mutant": 21232393, "binding": 43412 },
+    "outcome": "Each scoped baseline and copy-baseline passed; each exact targeted mutant failed. These durable scoped rows supersede the unbindable historical reclaim probe below."
+  },
+  "alarm": {
+    "notificationId": 24429,
+    "createdAt": "2026-10-14T01:13:14.447091Z",
+    "deviceTrigger": "/mnt/data",
+    "namedDevices": [
+      "/",
+      "/mnt/data"
+    ],
+    "receiptId": "32cb3e95-3dec-4939-9454-b0cec320eb6d",
+    "desktopAttempted": true,
+    "desktopSucceeded": true,
+    "desktopError": null,
+    "mobileSucceeded": false,
+    "sourceRead": "/tmp/disk-p006-live-alarm.json",
+    "receiptRerun": {
+      "tool": "storage:census",
+      "args": {
+        "receiptId": "32cb3e95-3dec-4939-9454-b0cec320eb6d"
+      }
+    }
+  },
+  "reclaimMutation": {
+    "invocation": "4554a327-3b7f-4521-8448-d1bf7f08b7c6",
+    "baseline": {
+      "id": 21232206,
+      "status": "pass"
+    },
+    "copyBaseline": {
+      "id": 21232209,
+      "status": "pass"
+    },
+    "mutant": {
+      "id": 21232216,
+      "status": "fail"
+    },
+    "bindableHere": false,
+    "reason": "Probe omitted reporter workspace override and isolated runtime stamped its private workspace. Actual assertion proof is preserved; new scoped proof required.",
+    "treeUnchanged": true
+  },
+  "pending": {
+    "scheduledReclaim": "Next actual receipt after04:34:32startup remains unverified; background workflows are withheld on migration1498, ownedWI6554700010011854.",
+    "p002": "Actual owner policy answer pending; no PostgreSQL deletion authorized.",
+    "soak72hStarted": false,
+    "shipped": false
+  }
+}

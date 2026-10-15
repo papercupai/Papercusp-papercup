@@ -1,0 +1,17 @@
+# Committed test sidecar isolation runbook
+URL: /internal/docs/agent-insights/committed-test-sidecar-isolation-runbook
+
+Diagnose committed-source CommonJS refusal and inherited sidecar routing in test workers using maintained loader and hermetic setup controls.
+
+When a focused spec-evidence lifetime test reports environment currentness as unknown, inspect the earlier process error before changing the receipt assertions. EI-25876242898686066 measured two separate causes in that path.
+
+1. For `COMMITTED_SOURCE refused` on a clean TypeScript sidecar, inspect the entrypoint's nearest package declaration. Without `type: module`, tsx transforms TypeScript on the CommonJS path before the committed-source guard compares its raw bytes. `apps/operator/bin/package.json` declares ESM for the existing dev entrypoints. The guard remains strict. The canonical loader tests distinguish ESM execution and committed substitution of a dirty dependency from refusal of the same clean format without the declaration.
+2. If the next failure is a sidecar startup timeout, inspect the exact routing override used by the Git seam. `sync-exec-replay` uses `PAPERCUSP_GIT_PIPELINE_SPAWN_SIDECAR`; the committed blob reader uses `PAPERCUSP_PLAN_AUDIT_SPAWN_SIDECAR`. An explicit per-site opt-in can enable the route in an unmarked test worker even after the global `PAPERCUSP_SPAWNER_SIDECAR` controls are removed.
+3. Use the shared hermetic setup to remove inherited `PAPERCUSP_*_SPAWN_SIDECAR` overrides at worker startup. This covers new sites without a second list. Tests exercising routing deliberately set their own controls after setup. The setup regression tests inherited pipeline, plan-audit, pot-Git and future-site overrides, plus unrelated variables that must survive.
+4. Run the project's test router against the setup suite and the unchanged original receipt cases. Keep warning checks and measurement/currentness guards enabled. Filtered skips are unexecuted cases, so scope the verification claim to the named cases.
+
+The measured recovery passed the three focused loader controls, all 37 hermetic setup tests, and both original isolated integration/e2e lifetime certification cases. Those runs verify local source; the latter filtered out 197 unrelated cases. A local pass does not establish a full-suite verdict or deployment.
+
+Use `npm run test:file -- libs/test-config/src/setup-hermetic-env.test.ts` for the shared guard. The original receipt reproduction is `npm run test:file -- packages/operator-core/lib/agent-tools/plans/spec-evidence-store.test.ts -- -t 'certifies the original lifetime with the reporter hashes'`. The loader guard lives at `packages/operator-core/lib/__tests__/committed-source-loader.test.ts`. Record test provenance and source captures with the work item.
+
+This runbook extends the existing loader and test setup surfaces; it adds no production routing switch or alternative evidence reader.

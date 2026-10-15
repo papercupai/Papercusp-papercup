@@ -8,7 +8,7 @@ import { dreamCapabilityRun, dreamCallTotals, newDreamCapabilityRun } from './dr
 import type { DreamRun } from './dream-run-store';
 import { buildCapabilitySamplingSnapshot, sampleCapabilityCombination } from './capability-sampler';
 import { freezeDreamEvaluationProtocol, dreamComparisonInputHash } from './dream-evaluation';
-import { dreamRunOutcome } from './dream-config';
+import { DEFAULT_DREAM_PASS_CONFIG, DEFAULT_DREAM_REVIEW_CONFIG, dreamRunOutcome } from './dream-config';
 import { scopeDreamProblems } from './capability-pass';
 import { capabilityHash } from './capability-contracts';
 
@@ -141,10 +141,11 @@ function harness() {
     }),
     review: vi.fn(async (options, deps) => {
       await deps!.rerank('query', f.review.priorMatches, { timeoutMs: options.config?.timeoutMs ?? 180_000 });
+      const reviewerModel = options.config?.model ?? 'reviewer';
       const values = await Promise.allSettled(
         (['control-a', 'control-b'] as const).map((p) =>
           options.callForPhase!(p)({
-            model: 'reviewer',
+            model: reviewerModel,
             messages: [{ role: 'user', content: p }],
             signal: options.signal,
           }),
@@ -153,7 +154,7 @@ function harness() {
       const failed = values.find((v) => v.status === 'rejected');
       if (failed?.status === 'rejected') throw failed.reason;
       const last = await options.callForPhase!('review')({
-        model: 'reviewer',
+        model: reviewerModel,
         messages: [{ role: 'user', content: 'review' }],
         signal: options.signal,
       });
@@ -161,7 +162,7 @@ function harness() {
       return {
         ...f.review,
         usage: {
-          model: 'reviewer',
+          model: reviewerModel,
           costUsd: usage.reduce((n, u) => n + u.costUsd, 0),
           inputTokens: usage.reduce((n, u) => n + u.inputTokens, 0),
           outputTokens: usage.reduce((n, u) => n + u.outputTokens, 0),
@@ -212,10 +213,54 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     expect(await runDreamCycle(h.input, h.d)).toMatchObject({ reason: 'review-unavailable', attempts: 1, costUsd: 0 });
     expect(h.runs.size).toBe(1);
   });
-  it('refuses same-model provenance before starting a paid call', async () => {
-    const h = harness(); h.input.review = { model: 'dreamer' };
-    await expect(runDreamCycle(h.input, h.d)).rejects.toThrow('different model');
+  it('uses the observed packet verifier at production readiness before any paid generation', async () => {
+    const h = await harness();
+    h.d.verifyPacket = vi.fn(async () => ({ fresh: false, reason: 'Compiler graph differs from current cited source' }));
+    expect(await runDreamCycle(h.input, h.d)).toMatchObject({ reason: 'review-unavailable', attempts: 1, costUsd: 0 });
+    expect(h.d.verifyPacket).toHaveBeenCalled();
     expect(h.llm).not.toHaveBeenCalled();
+    const run = [...h.runs.values()][0]!;
+    expect(run.review).toMatchObject({ ready: false, reason: 'source-unavailable',
+      note: 'Compiler graph differs from current cited source' });
+  });
+  it('marks an unpriced-model admission refusal as generation skipped', async () => {
+    const h = harness();
+    h.input.pass = { model: 'unpriced-provider' };
+    h.d.estimateCall = estimateDreamCall;
+
+    await runDreamCycle(h.input, h.d);
+
+    const run = h.row(dreamRunId(h.input.cycleId, 0));
+    expect(run.status).toBe('error');
+    expect(run.error).toContain('Dream cannot admit an unpriced model');
+    expect(run.outcome).toMatchObject({ generationSkipped: true });
+    expect(dreamCapabilityRun(run)!.calls.some((call) => call.phase === 'generation')).toBe(false);
+    expect(h.llm).not.toHaveBeenCalled();
+  });
+  it('runs the uniform-model defaults with separately governed review evidence', async () => {
+    const h = harness();
+    h.input.pass = DEFAULT_DREAM_PASS_CONFIG;
+    h.input.review = DEFAULT_DREAM_REVIEW_CONFIG;
+    expect(h.input.pass.model).toBe(h.input.review.model);
+    h.d.estimateCall = estimateDreamCall;
+
+    await runDreamCycle(h.input, h.d);
+
+    const run = h.row('cycle-1:dream:1');
+    const provenance = dreamCapabilityRun(run)!;
+    expect(run.status).toBe('accepted');
+    expect(provenance).toMatchObject({
+      dreamerModel: DEFAULT_DREAM_PASS_CONFIG.model,
+      reviewerModel: DEFAULT_DREAM_REVIEW_CONFIG.model,
+    });
+    expect(provenance.dreamPromptVersion).not.toBe(provenance.reviewPromptVersion);
+    const reviewedPhases = provenance.calls.filter((call) =>
+      ['generation', 'control-a', 'control-b', 'review'].includes(call.phase),
+    );
+    expect(reviewedPhases).toHaveLength(4);
+    expect(reviewedPhases.every((call) => call.model === DEFAULT_DREAM_PASS_CONFIG.model)).toBe(true);
+    expect(h.llm).toHaveBeenCalledTimes(4);
+    expect(h.d.sink).toHaveBeenCalledTimes(1);
   });
   it('rechecks dependencies after readiness rather than treating preflight as proposal approval', async () => {
     const h = harness();
@@ -343,6 +388,28 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
     expect(h.llm).toHaveBeenCalled();
   });
 
+  it('NATIVE-GRAPH-COMPARISON: refuses a missing measured treatment before generation and records the assigned treatment', async () => {
+    const h = harness(), original = await pilot(h);
+    const common = { manifestRevision: f.manifest.revision,
+      scope: { workspaceId: h.input.workspaceId, potSlug: h.input.potSlug },
+      problemContext: { mode: 'open-exploration' as const, evidence: [], note: 'Frozen unit comparison.' } };
+    const comparison = { ...common, inputHash: dreamComparisonInputHash({ ...common, sourceSnapshot: original.protocol.sourceSnapshot }),
+      graphAblation: { treatments: ['graph', 'control'] as ['graph', 'control'], populationIds: f.packets.map(p => p.unit.id),
+        samplerHash: capabilityHash(JSON.stringify(h.input.sampler ?? {})), attemptsPerTreatment: 2, usdPerTreatment: 2,
+        outcomeAssessment: 'blinded-independent-executed-benefit' as const } };
+    h.input.pilot = { ...freezeDreamEvaluationProtocol({ ...original.protocol, comparison }),
+      arm: 'structured-pair', matchedPairIndex: 0, graphTreatment: 'control' };
+    await runDreamCycle(h.input, h.d);
+    expect(h.llm).not.toHaveBeenCalled();
+    expect(h.d.sample).not.toHaveBeenCalled();
+    const saved = h.row('cycle-1:dream:1');
+    expect(saved.status).toBe('error');
+    expect(saved.error).toContain('no measured graph treatment');
+    expect(dreamCapabilityRun(saved)?.evaluation).toMatchObject({
+      protocolPin: h.input.pilot.pin, inputHash: comparison.inputHash, graphTreatment: 'control', matchedPairIndex: 0,
+    });
+  });
+
   it('rechecks the actual source snapshot before generation, preserving a rejected run', async () => {
     const h = harness();
     const valid = await pilot(h);
@@ -453,6 +520,26 @@ describe('Dream capability cycle governance — AUTO-REQ-M-002-P-005', () => {
       estimateDreamCall({ model: 'claude-haiku-4-5', messages: [{ role: 'user', content: 'source' }] }),
     ).toBeGreaterThan(0);
     expect(() => estimateDreamCall({ model: 'unpriced-provider', messages: [] })).toThrow('unpriced');
+  });
+
+  it.each([DEFAULT_DREAM_PASS_CONFIG.model, 'gpt-6-astra:xhigh', 'gpt-5.4:medium'])(
+    'admits a priced tiered model %s using the actual request estimate', (model) => {
+      const estimate = estimateDreamCall({
+        model, messages: [{ role: 'user', content: 'A bounded Dream source packet' }], maxTokens: 1024,
+      });
+      expect(Number.isFinite(estimate)).toBe(true);
+      expect(estimate).toBeGreaterThan(0);
+    },
+  );
+
+  it('reserves the long-context tier and reasoning output for a large Dream request', () => {
+    const estimate = estimateDreamCall({
+      model: DEFAULT_DREAM_PASS_CONFIG.model,
+      system: 'x'.repeat(272_001), messages: [], maxTokens: 1024, thinkingBudgetTokens: 2048,
+    });
+    // The maintained Sol rate above 272k input is $4/M input and $15/M output.
+    // This lower bound excludes envelope bytes; ordinary-tier admission is unsafe.
+    expect(estimate).toBeGreaterThanOrEqual((272_001 * 4 + 3072 * 15) / 1_000_000);
   });
 
   it('refused admission reads no source and sends no model call', async () => {

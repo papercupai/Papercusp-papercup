@@ -51,7 +51,7 @@ afterAll(async () => {
 async function record(disposition: 'plan-needed' | 'existing-plans-sufficient') {
   const args = ideatePassRecordArgs.parse({ ideasFiled: 0, goalReview: {
     goalId: GOAL, disposition, rationale: 'Fixture review of checkout recovery.', evidenceRefs: [`goal:${GOAL}`],
-    ...(disposition === 'plan-needed' ? { uncoveredOutcome: 'Recover failed checkout' } : {}),
+    ...(disposition === 'plan-needed' ? { uncoveredOutcome: 'Recover failed checkout' } : { coverage: [] }),
   } });
   const result = await recordTool.handler(args, {
     isSuperuser: true, uiClientId: OWNER, workspaceId: WS, harnessSlug: 'papercusp',
@@ -64,7 +64,9 @@ async function record(disposition: 'plan-needed' | 'existing-plans-sufficient') 
 async function readAgenda() {
   return readAgentObligationAgenda({ workspaceId: WS, ownerId: OWNER,
     // Only unrelated sources are stubbed. Goal mode, portfolio, review and ownership use production reads.
-    deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [],
+    deps: { planSlugs: async () => [], ownerDirectives: async () => [], waitingOn: async () => [], 
+      fleetStaffing: async () => [],
+      strandedGoalWork: async (_ws: string, goalId: string) => ({ goalId, thresholdMs: 0, total: 0, refusedCount: 0, sample: [], truncatedByLimit: false }),
       ownerReport: async () => null,
       goalLaunch: async () => ({ goalId: GOAL, settings: null, goalBrief: null, effective: {},
         ceilings: { maxAgents: null, maxPerFleet: null }, headcount: { total: 0, fleet: null },

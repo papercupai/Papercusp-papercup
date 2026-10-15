@@ -57,6 +57,22 @@ export function reconcileLearningSingletonsExitCode(execute: boolean, missingCou
 }
 
 /**
+ * EI-25457697211948138: refuse a WRITE run whose target database was not named.
+ * Without DATABASE_URL, getOrgPg() falls back to discovery, which on a dev box can resolve
+ * to the desktop's embedded PG instead of the operator database — measured 2026-10-09:
+ * `--execute` reported MATERIALIZED while the operator DB (:5432) stayed untouched.
+ * Dry runs still proceed (they print the resolved target). Returns the refusal text, or null.
+ */
+export function seedExecuteTargetRefusal(execute: boolean, databaseUrl: string | undefined): string | null {
+  if (!execute || (databaseUrl ?? '').trim() !== '') return null;
+  return (
+    '--execute needs an explicit DATABASE_URL: without it getOrgPg() falls back to discovery, ' +
+    "which can resolve to the desktop's embedded PG rather than the operator database. " +
+    'Re-run with DATABASE_URL=<operator database url>.'
+  );
+}
+
+/**
  * All 13 migrated workspace-singleton loops (D-018/D-024). A loop is only acted on once its
  * blueprint actually declares `singleton: true`. The 10 FRONTIER learning loops are dark-by-design
  * (armed at the P-001 gate); the 3 ALWAYS-ON loops (change-ledger/scout/iq-battery) declare
@@ -88,6 +104,10 @@ export const LEARNING_SINGLETONS: LearningSingleton[] = [
   // EI-10047: memory recall canary (always-on, flag-gated). Like memory-precision, no
   // legacy bespoke routine ever existed — the retire-legacy pass is a clean no-op.
   { blueprintId: 'memory-live-recall-canary', legacyRoutine: 'memory-live-recall-canary' },
+  // scout-su-ideate-pipeline-gaps-2026-10-08 P-007 (D-005): the hourly su-ideate pass
+  // scheduler (always-on; budgeted launch door). No legacy bespoke routine ever existed,
+  // so the retire-legacy pass is a clean no-op; this loop is born as a @singleton row.
+  { blueprintId: 'su-ideate', legacyRoutine: 'su-ideate-schedule' },
 ];
 
 export interface LegacyRowState {
@@ -439,7 +459,20 @@ async function main(): Promise<void> {
 
   const workspaceId =
     process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE ?? activeWorkspaceId();
+  const refusal = seedExecuteTargetRefusal(execute, process.env.DATABASE_URL);
+  if (refusal) {
+    console.error(`[seed-learning-singletons] REFUSED: ${refusal}`);
+    process.exitCode = 2;
+    return;
+  }
   const { sql } = getOrgPg();
+  // EI-25457697211948138: name the database every run actually reads/writes.
+  const [target] = await sql<{ db: string; port: number | null }[]>`
+    SELECT current_database() AS db, inet_server_port() AS port`;
+  console.log(
+    `[seed-learning-singletons] target db=${target?.db ?? '?'} port=${target?.port ?? 'socket'} ` +
+      `(DATABASE_URL ${process.env.DATABASE_URL ? 'set' : 'unset — discovered'})`,
+  );
 
   // --reconcile (EI-10625): diff DECLARED singletons against the routine rows that exist,
   // and heal the gap. This is the mode that must eventually run on boot — a loop added to

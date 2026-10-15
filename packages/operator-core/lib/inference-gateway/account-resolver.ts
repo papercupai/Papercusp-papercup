@@ -30,6 +30,7 @@ import {
 export interface ResolvedAccount {
   accountId: string;
   credentialRef: string;
+  anthropicWorkspaceId?: string;
   /** How it was resolved (for /healthz + logs). `pool` = one entry of a multi-account pool;
    *  `default-account` = the account the owner marked default in Settings → Deploy accounts;
    *  `sole-pool-account` = the single registered account; `env` = the PAPERCUSP_ACCOUNT_ID pin;
@@ -161,7 +162,7 @@ export async function resolveBoundAccount(ws?: string): Promise<ResolvedAccount>
   const wanted = process.env.PAPERCUSP_ACCOUNT_ID?.trim();
   if (wanted) {
     const acct = accounts.find((a) => a.id === wanted);
-    if (acct) return { accountId: acct.id, credentialRef: acct.credentialRef, egress: acct.egress, egressPool: acct.egressPool, source: 'env' };
+    if (acct) return { accountId: acct.id, credentialRef: acct.credentialRef, anthropicWorkspaceId: acct.anthropicWorkspaceId, egress: acct.egress, egressPool: acct.egressPool, source: 'env' };
     throw new Error(`inference-gateway: PAPERCUSP_ACCOUNT_ID='${wanted}' not in the account pool`);
   }
   // The owner's default outranks the sole-pool shortcut: with one account they agree, but an
@@ -175,12 +176,13 @@ export async function resolveBoundAccount(ws?: string): Promise<ResolvedAccount>
       credentialRef: preferred.credentialRef,
       egress: preferred.egress,
       egressPool: preferred.egressPool,
+      anthropicWorkspaceId: preferred.anthropicWorkspaceId,
       source: 'default-account',
     };
   }
   if (accounts.length === 1) {
     const a = accounts[0];
-    return { accountId: a.id, credentialRef: a.credentialRef, egress: a.egress, egressPool: a.egressPool, source: 'sole-pool-account' };
+    return { accountId: a.id, credentialRef: a.credentialRef, anthropicWorkspaceId: a.anthropicWorkspaceId, egress: a.egress, egressPool: a.egressPool, source: 'sole-pool-account' };
   }
   // No env pin, no usable default, and 0 or >1 pool accounts → the box's own login. (>1 with no
   // pin is ambiguous; the local login is the safe, explicit choice rather than guessing which
@@ -204,6 +206,7 @@ export async function resolveAccountPool(ws?: string, provider: AccountProvider 
     credentialRef: a.credentialRef,
     egress: a.egress,
     egressPool: a.egressPool,
+    ...(a.anthropicWorkspaceId ? { anthropicWorkspaceId: a.anthropicWorkspaceId } : {}),
     ...(a.meteredPolicy ? { meteredPolicy: a.meteredPolicy } : {}),
     source: 'pool' as const,
   }));

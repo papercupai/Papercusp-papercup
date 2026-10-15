@@ -7,10 +7,12 @@
  * its own acceptance rather than loosening that suite's shape assertions — which are load-bearing
  * for the packs they cover.
  *
- * The most important test here is `cannot send mail`. The pack's no-auto-send property is a
- * consequence of the OAuth scopes it requests, not of the plan text asking nicely, and a future
- * edit that adds `gmail.send` to make some flow "work end to end" would silently convert every
- * draft path into a send path. That edit must fail a test, loudly, with a reason.
+ * The pack must never send mail. The scopes are NOT what guarantees that: Google's
+ * `gmail.compose` scope itself permits sending drafts and messages. The enforced guard is the
+ * host's: `mail:reply { planRunId }` refuses `mode:"send"` from a triggered run while the
+ * owner-authority flag papercusp-gmail-auto-send is OFF (capability-verbs/mail-run-reply.test.ts).
+ * The tests here keep the pack itself from asking for more: no wider send scope in the manifest,
+ * and no plan text that names a send verb or send mode.
  */
 import { describe, expect, it } from 'vitest';
 import { resolve, dirname } from 'node:path';
@@ -76,7 +78,8 @@ describe('fundraise-pipeline trigger pack', () => {
       expect(scope).not.toContain('gmail.send');
       expect(scope).not.toContain('mail.google.com');
     }
-    // compose is what makes drafting possible, and is the boundary we intend to sit at.
+    // compose is what makes drafting possible. It also permits sending, which is why the
+    // host-side run-send gate, not this scope list, is the actual no-send guarantee.
     expect(declared).toContain('https://www.googleapis.com/auth/gmail.compose');
   });
 
@@ -94,7 +97,18 @@ describe('fundraise-pipeline trigger pack', () => {
       const path = resolve(PACK_DIR, file);
       expect(existsSync(path), `${file} is declared by the manifest and must exist`).toBe(true);
       const body = readFileSync(path, 'utf8');
-      expect(body).not.toMatch(/gmail:send|gmail:send-message|sendMessage\(/);
+      expect(body).not.toMatch(/gmail:send|gmail:send-message|sendMessage\(|mail:send/);
+      // `mode:"send"` may appear only as the explicit prohibition "never `mode:"send"`".
+      const sendModes = body.match(/[^\n]{0,24}mode:\s*["']send["']/g) ?? [];
+      for (const mention of sendModes) expect(mention, file).toMatch(/never\s*`?$|never\s*`?mode/i);
+    }
+  });
+
+  it('every outbound step names a provider-neutral mail verb, not the retired gmail:create-draft', () => {
+    for (const file of ['plan-classify-reply.md', 'plan-follow-up.md', 'plan-post-meeting.md', 'plan-first-touch.md']) {
+      const body = readFileSync(resolve(PACK_DIR, file), 'utf8');
+      expect(body, file).not.toContain('gmail:create-draft');
+      expect(body, file).toMatch(/mail:reply|mail:draft/);
     }
   });
 

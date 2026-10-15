@@ -23,7 +23,7 @@ vi.mock('../scheduler/fleet-scope-admission', () => ({
   diagnoseFleetScopeFeatureFamilyExclusions: mocks.diagnoseFleetScopeFeatureFamilyExclusions,
 }));
 
-import { readClaimSpecLaneHealth, readFleetLaneHealth, readFleetLaneHealthDiagnosed } from './lane-health';
+import { interpretFleetClaimability, readClaimSpecLaneHealth, readFleetLaneHealth, readFleetLaneHealthDiagnosed } from './lane-health';
 
 const planFilter: FilterNode = { field: 'plan', op: '=', value: 'p' };
 
@@ -305,5 +305,36 @@ describe('lane-health read failures keep their cause (EI-24700545763161721)', ()
 
     await expect(readClaimSpecLaneHealth(args)).resolves.toBeNull();
     await expect(readClaimSpecLaneHealth({ ...args, throwOnError: true })).rejects.toThrow(timeout);
+  });
+});
+
+describe('interpretFleetClaimability — remainder held or parked (WI-6554700010010002)', () => {
+  // The observed shape: an id allowlist whose rows are 16 done + 1 wip held by a peer. The
+  // claimable-state breakdown reads matchedByFilter 0, which for a non-plan scope used to be
+  // interpreted as `spec-empty` (the spec itself is wrong). It is not empty: its rows are with
+  // their holders.
+  const zeroIdLane = {
+    claimable: 0,
+    matchedByFilter: 0,
+    excluded: {},
+    fleetPaused: false,
+    planScoped: false,
+  };
+
+  it('reports a non-plan zero as drained, not spec-empty, when the remainder is held or parked', () => {
+    expect(interpretFleetClaimability(zeroIdLane).state).toBe('spec-empty');
+    const interpretation = interpretFleetClaimability({ ...zeroIdLane, remainderUnclaimable: true });
+    expect(interpretation.state).toBe('drained');
+    expect(interpretation.exactness.status).toBe('exact');
+    expect(interpretation.exactness.reason).toMatch(/held by an agent, or parked/);
+    // Its reason is distinct from a confirmed drain, which says the lane is complete.
+    expect(interpretation.exactness.reason).not.toMatch(/lane is complete/);
+  });
+
+  it('keeps a pause and a confirmed drain ahead of the held-or-parked remainder', () => {
+    expect(interpretFleetClaimability({ ...zeroIdLane, fleetPaused: true, remainderUnclaimable: true }).state).toBe('paused');
+    expect(
+      interpretFleetClaimability({ ...zeroIdLane, drainConfirmed: true, remainderUnclaimable: true }).exactness.reason,
+    ).toMatch(/lane is complete/);
   });
 });

@@ -1,23 +1,51 @@
 /** Exact work-item/spec-revision coverage and immutable evidence bindings (P-005). */
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { readFile, realpath, stat } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { mkdir, open, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { hostname } from 'node:os';
+import fastGlob from 'fast-glob';
+import type { Sql } from 'postgres';
 import { z } from 'zod';
+import ts from 'typescript';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { withWorkspace } from '@papercusp/db-org';
+import {
+  parseTestRunExecutionDetails,
+  passedCaseTitlesIncomplete,
+  stableRecordedRuntimeEnvironment,
+} from '@papercusp/test-config/execution-details';
+import { CALIBRATION_LEGS } from '@papercusp/test-config/mutation-descriptor';
+import { listRuntimeVintage } from '../../runtime-vintage';
+import { measureRuntimeEnvironment } from '../../remote-runtime-identity';
+import { defaultEvidenceRoot } from '@papercusp/verification-harness';
 import { pgTimestampToIso } from '../../pg-timestamp';
+import { areAcceptanceLineageRelated, resolvePlanImplementerIdentities } from '../../acceptance-author-identity';
 import { planItemRef } from '../../issue-blocks-merge';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE, resolveSpecScopeSlug } from './adhoc-spec-scope';
 import type { SpecClauseSql } from './spec-clauses-store';
+import { declaredConfigurationFingerprint, parseProductionConfiguration } from './declared-configuration';
 import { resolvePlanScope } from './source';
+import { measurePackagedArtifactEnvironment } from './packaged-artifact-evidence';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
+import {
+  createCommittedTreeDiagnostics,
+  defaultBlobBatchReader,
+  fingerprintRepoFileSetAtCommit,
+  listCommittedGlobMatches,
+  repoFileSetFingerprint,
+  REPO_FILE_SET_READ_LIMITS,
+  REPO_FIXTURE_READ_LIMITS,
+  resolveMeasurementCommit,
+  type CommittedTreeDeps,
+  type CommittedTreeDiagnostics,
+  type RepoFileSetReadLimits,
+} from './committed-tree-reader';
 import {
   MEASUREMENT_PIN_DETAILS_KEY,
   buildMeasurementPin,
   diffMeasuredFiles,
-  gitBlobId,
   readMeasurementPin,
   type GitRunner,
   type MeasuredRepoFile,
@@ -37,8 +65,66 @@ export const SPEC_EVIDENCE_KINDS = [
   'check',
   'manual',
   'operational',
+  // verification-system-improvements-2026-10-10 P-008 (D-005): a non-implementer's
+  // re-observation of an implementer binding. Always cites that binding
+  // (verifiesBindingId) and must match its source + environment fingerprints.
+  'independent-verification',
 ] as const;
 export type SpecEvidenceKind = (typeof SPEC_EVIDENCE_KINDS)[number];
+
+// The case-title matching rule lives in the shared {file, testName} resolver
+// (test-rubric-unification-2026-10-12 P-002) so rubric tests checks and spec
+// evidence bindings cannot drift apart. Re-exported for existing importers.
+import {
+  hasSameCaseTitleIdentity,
+  hasMatchingDeclaredCaseTitle,
+  resolveTestCaseFilter,
+  type RecordedTestCase,
+} from '../../testing-case-filter';
+export { hasSameCaseTitleIdentity, hasMatchingDeclaredCaseTitle };
+
+/**
+ * The per-case ledger rows (test_case_runs, migration 1478) of one test run, or null when
+ * none are recorded — a run before 1478, or a reporter that never saw the module. Runs
+ * inside the binding transaction, so the table's presence is probed with to_regclass
+ * rather than by catching 42P01 (a caught error would still abort the transaction).
+ */
+async function readRecordedTestCases(
+  tx: Sql,
+  testRunId: number,
+): Promise<{ file: string; cases: RecordedTestCase[] } | null> {
+  const present = (await tx`SELECT to_regclass('harness_shared.test_case_runs') IS NOT NULL AS present`) as Array<{
+    present: boolean;
+  }>;
+  if (!present[0]?.present) return null;
+  const rows = (await tx`
+    SELECT c.case_key, c.occurrence, c.status, c.duration_ms, r.file_path
+      FROM harness_shared.test_case_runs c
+      JOIN harness_shared.test_runs r ON r.id = c.test_run_id
+     WHERE c.test_run_id = ${testRunId}
+     ORDER BY c.case_index`) as Array<{
+    case_key: string;
+    occurrence: number;
+    status: RecordedTestCase['status'];
+    duration_ms: number | null;
+    file_path: string | null;
+  }>;
+  if (rows.length === 0) return null;
+  return {
+    file: rows[0]!.file_path ?? `test-run ${testRunId}`,
+    cases: rows.map((r) => ({
+      caseKey: r.case_key,
+      occurrence: r.occurrence,
+      status: r.status,
+      durationMs: r.duration_ms,
+    })),
+  };
+}
+
+const MAX_REPO_MEASUREMENT_SOURCE_GLOBS = 16;
+const MAX_REPO_MEASUREMENT_GLOB_MATCHES = 128;
+const MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES = 4096;
+const MAX_REPO_MEASUREMENT_GLOB_DEPTH = 16;
 
 const evidenceFingerprintSchema = z.string().trim().min(1).max(256);
 const repoMeasurementPathSchema = z
@@ -54,10 +140,24 @@ const repoMeasurementPathSchema = z
       !value.split('/').some((part) => part === '' || part === '.' || part === '..'),
     'measurement paths must be normalized repo-relative POSIX file paths',
   );
+const repoMeasurementGlobSchema = repoMeasurementPathSchema
+  .refine((value) => !value.startsWith('!'), 'measurement globs must be positive patterns');
+const runtimeUnitsSchema = z.array(z.string().trim().min(1).max(120)).min(1).max(32)
+  .refine(units => new Set(units).size === units.length, 'runtime units must be unique');
+
+/**
+ * The current evidence-measurement schema version. A binding that omits `schemaVersion` is
+ * stored at this version (P-005 of plan-verification-friction-reduction-2026-10-11); any
+ * other explicit value is refused, so an unsupported version still fails loudly.
+ */
+export const EVIDENCE_MEASUREMENT_SCHEMA_VERSION = 1 as const;
+const measurementSchemaVersionSchema = z
+  .literal(EVIDENCE_MEASUREMENT_SCHEMA_VERSION)
+  .default(EVIDENCE_MEASUREMENT_SCHEMA_VERSION);
 
 export const repoFilesEvidenceMeasurementSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: measurementSchemaVersionSchema,
     kind: z.literal('repo-files'),
     /**
      * Optional workspace-registry slug for a source/test checkout other than the
@@ -67,9 +167,60 @@ export const repoFilesEvidenceMeasurementSchema = z
      */
     rootHarnessSlug: z.string().trim().min(1).max(120).optional(),
     sourcePaths: z.array(repoMeasurementPathSchema).min(1).max(32),
+    sourceGlobs: z.array(repoMeasurementGlobSchema).min(1).max(MAX_REPO_MEASUREMENT_SOURCE_GLOBS)
+      .refine((patterns) => new Set(patterns).size === patterns.length, 'measurement globs must be unique').optional(),
     testPaths: z.array(repoMeasurementPathSchema).min(1).max(32).optional(),
+    /** Files a fixture was calibrated against; tracked independently from the test and product source. */
+    fixturePaths: z.array(repoMeasurementPathSchema).min(1).max(32).optional(),
+    /** Bounded calibration corpus; membership and bytes participate in the fixture digest. */
+    fixtureGlobs: z.array(repoMeasurementGlobSchema).min(1).max(MAX_REPO_MEASUREMENT_SOURCE_GLOBS)
+      .refine((patterns) => new Set(patterns).size === patterns.length, 'measurement globs must be unique').optional(),
+    /** Optional registered harness root for fixturePaths when calibration sources live elsewhere. */
+    fixtureRootHarnessSlug: z.string().trim().min(1).max(120).optional(),
+    /** Local runtime units observed around execution; evidence reads independently remeasure them. */
+    runtimeUnits: runtimeUnitsSchema.optional(),
+    /** Final package environment, independently rehashed from a measured operational receipt. */
+    artifactReceiptPath: repoMeasurementPathSchema.optional(),
+    /** Completed isolated tests certify retained source/lifecycle artifacts, not a live deployment. */
+    completedRuntime: z.discriminatedUnion('kind', [z.object({
+      kind: z.literal('verification-harness'),
+      verifierRunId: z.string().regex(/^\d{8}T\d{6}Z-\d+(?:\.\d+)?$/),
+      journeyHarness: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(120),
+      journeyRunId: z.string().regex(/^\d{8}T\d{6}Z-\d+(?:\.\d+)?$/),
+      /** Static model-facing metadata may differ; the full raw file still participates in currentness. */
+      guidanceOnlySourcePaths: z.array(repoMeasurementPathSchema).min(1).max(8)
+        .refine(paths => new Set(paths).size === paths.length, 'guidance paths must be unique').optional(),
+    }).strict(), z.object({ kind: z.literal('llm-in-process') }).strict(), z.object({
+      kind: z.literal('isolated-integration'),
+      runIds: z.array(z.string().regex(/^\d{8}T\d{6}Z-\d+(?:\.\d+)?$/)).min(1).max(32)
+        .refine(ids => new Set(ids).size === ids.length, 'integration run ids must be unique'),
+    }).strict()]).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((measurement, ctx) => {
+    if (measurement.artifactReceiptPath && (!measurement.artifactReceiptPath.startsWith('docs/evidence/') ||
+      !measurement.sourcePaths.includes(measurement.artifactReceiptPath) ||
+      measurement.runtimeUnits || measurement.completedRuntime)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['artifactReceiptPath'],
+        message: 'artifact receipt must be an explicit docs/evidence source path and cannot also select a process runtime' });
+    }
+    if (measurement.completedRuntime && !measurement.runtimeUnits) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['completedRuntime'],
+        message: 'completedRuntime requires original execution runtimeUnits' });
+    }
+    if (measurement.completedRuntime?.kind === 'verification-harness'
+      && measurement.completedRuntime.guidanceOnlySourcePaths?.some(path => !measurement.sourcePaths.includes(path))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['completedRuntime', 'guidanceOnlySourcePaths'],
+        message: 'guidance classification requires an explicit measured source path' });
+    }
+    if (measurement.fixtureRootHarnessSlug && !hasRepoFixturePaths(measurement)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['fixtureRootHarnessSlug'],
+        message: 'fixtureRootHarnessSlug requires fixturePaths or fixtureGlobs',
+      });
+    }
+  });
 
 export type RepoFilesEvidenceMeasurement = z.infer<typeof repoFilesEvidenceMeasurementSchema>;
 
@@ -100,13 +251,15 @@ const ledgerMeasurementIdSchema = z
  */
 export const workItemsEvidenceMeasurementSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: measurementSchemaVersionSchema,
     kind: z.literal('work-items'),
     /**
      * The census population. Bounded like `sourcePaths`: a measurement basis has to stay cheap
      * enough to recompute on every evidence read.
      */
     workItemIds: z.array(ledgerMeasurementIdSchema).min(1).max(64),
+    /** Optional local runtime units; live/deployed evidence remeasures them independently of ledger state. */
+    runtimeUnits: runtimeUnitsSchema.optional(),
   })
   .strict();
 
@@ -123,9 +276,10 @@ export type EvidenceMeasurement = z.infer<typeof evidenceMeasurementSchema>;
 export interface MeasuredRepoEvidenceFingerprints {
   sourceFingerprint: string;
   testFingerprint: string | null;
+  fixtureFingerprint?: string | null;
+  environmentFingerprint?: string | null;
 }
 
-const MAX_REPO_MEASUREMENT_BYTES = 8 * 1024 * 1024;
 
 function containedBy(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
@@ -135,6 +289,7 @@ function containedBy(root: string, candidate: string): boolean {
 async function fingerprintRepoFileSet(
   repoRoot: string,
   declaredPaths: readonly string[],
+  limits: Readonly<RepoFileSetReadLimits> = REPO_FILE_SET_READ_LIMITS,
 ): Promise<{ fingerprint: string; files: Array<{ path: string; sha256: string; gitBlob: string }> }> {
   const root = await realpath(repoRoot);
   const paths = [...new Set(declaredPaths)].sort();
@@ -149,18 +304,91 @@ async function fingerprintRepoFileSet(
     const info = await stat(canonical);
     if (!info.isFile()) throw new Error(`repo_measurement_not_file:${path}`);
     totalBytes += info.size;
-    if (totalBytes > MAX_REPO_MEASUREMENT_BYTES) {
-      throw new Error(`repo_measurement_too_large:${totalBytes}>${MAX_REPO_MEASUREMENT_BYTES}`);
+    if (info.size > limits.maxFileBytes || totalBytes > limits.maxTotalBytes) {
+      throw new Error(`repo_measurement_too_large:${info.size > limits.maxFileBytes ? info.size : totalBytes}>${info.size > limits.maxFileBytes ? limits.maxFileBytes : limits.maxTotalBytes}`);
     }
-    const content = await readFile(canonical);
-    const sha256 = createHash('sha256').update(content).digest('hex');
+    // Reuse the artifact measurer's streaming/stat fence, retaining the exact digest
+    // formulas. A fixture corpus may exceed a batch, while resident payload stays 64KiB.
+    const file = await open(canonical, 'r');
+    let sha256: string;
+    let gitBlob: string;
+    try {
+      const before = await file.stat({ bigint: true });
+      if (!before.isFile() || before.size !== BigInt(info.size)) throw new Error(`repo_measurement_changed_during_read:${path}`);
+      const hash = createHash('sha256');
+      const blobHash = createHash('sha1').update(`blob ${info.size}\0`);
+      let readBytes = 0;
+      for await (const chunk of file.createReadStream({ autoClose: false, highWaterMark: 64 * 1024 })) {
+        readBytes += chunk.length;
+        if (readBytes > info.size) throw new Error(`repo_measurement_changed_during_read:${path}`);
+        hash.update(chunk);
+        blobHash.update(chunk);
+      }
+      const after = await file.stat({ bigint: true });
+      const current = await stat(canonical, { bigint: true });
+      const pin = (value: typeof before) => [value.dev, value.ino, value.size, value.mtimeNs, value.ctimeNs].join(':');
+      if (readBytes !== info.size || pin(before) !== pin(after) || pin(after) !== pin(current) || await realpath(candidate) !== canonical) {
+        throw new Error(`repo_measurement_changed_during_read:${path}`);
+      }
+      sha256 = hash.digest('hex');
+      gitBlob = blobHash.digest('hex');
+    } finally { await file.close(); }
     // The digest input stays exactly `{ path, sha256 }` so every existing fingerprint is
     // byte-identical; the git blob id rides alongside for the P-018 commit pin only.
     entries.push({ path, sha256 });
-    files.push({ path, sha256, gitBlob: gitBlobId(content) });
+    files.push({ path, sha256, gitBlob });
   }
-  const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
-  return { fingerprint: `sha256-file-set-v1:${digest}`, files };
+  // One formula for the working-tree and the committed measurement (D-001), so a binding
+  // reads current at commit M exactly when its stored fingerprint equals the bytes at M.
+  return { fingerprint: repoFileSetFingerprint(entries), files };
+}
+
+async function expandRepoMeasurementGlobsAtRoot(root: string, globs: readonly string[], maxMatches = MAX_REPO_MEASUREMENT_GLOB_MATCHES): Promise<string[]> {
+  if (globs.length === 0) return [];
+  const matches = new Set<string>();
+  const stream = fastGlob.stream([...globs], {
+    cwd: root,
+    absolute: false,
+    dot: true,
+    onlyFiles: true,
+    followSymbolicLinks: false,
+    unique: true,
+    deep: MAX_REPO_MEASUREMENT_GLOB_DEPTH,
+  });
+  for await (const matched of stream as AsyncIterable<string>) {
+    const path = matched.split(sep).join('/');
+    matches.add(path);
+    if (matches.size > maxMatches) {
+      throw new Error(`repo_measurement_too_many_glob_files:${matches.size}>${maxMatches}`);
+    }
+  }
+  return [...matches].sort();
+}
+
+function hasRepoFixturePaths(recipe: RepoFilesEvidenceMeasurement): boolean {
+  return Boolean(recipe.fixturePaths || recipe.fixtureGlobs);
+}
+
+async function expandedRepoFixturePathsAtRoot(root: string, recipe: RepoFilesEvidenceMeasurement): Promise<string[]> {
+  const matches = await expandRepoMeasurementGlobsAtRoot(root, recipe.fixtureGlobs ?? [], MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES);
+  return [...new Set([...(recipe.fixturePaths ?? []), ...matches])].sort();
+}
+
+async function expandedRepoSourcePathsAtRoot(
+  root: string,
+  parsed: RepoFilesEvidenceMeasurement,
+): Promise<string[]> {
+  const globPaths = await expandRepoMeasurementGlobsAtRoot(root, parsed.sourceGlobs ?? []);
+  return [...new Set([...parsed.sourcePaths, ...globPaths])].sort();
+}
+
+/** Resolve the bounded source file set recorded by a repo-files measurement. */
+export async function expandRepoFilesEvidenceSourcePathsAtRoot(
+  repoRoot: string,
+  measurement: RepoFilesEvidenceMeasurement,
+): Promise<string[]> {
+  const parsed = repoFilesEvidenceMeasurementSchema.parse(measurement);
+  return expandedRepoSourcePathsAtRoot(await realpath(repoRoot), parsed);
 }
 
 /** The fingerprint tuple plus the per-file hashes it was computed from (P-018). */
@@ -225,7 +453,7 @@ async function readMutationProbeLocks(resolved: ReadonlyMap<string, ProbePath>):
   await ensureBootstrap();
   const probes: ProbePath[] = [];
   for (const [coordinationDomain, paths] of groups) {
-    const queue = await readQueue(getTxPool(), { coordinationDomain, paths: [...paths] });
+    const queue = await readQueue(getTxPool(), { coordinationDomain, paths: [...paths], includeWaiting: false });
     for (const lock of queue.active_locks) {
       if (String(lock.intent ?? '').trim().toLowerCase() === 'mutation probe') {
         probes.push({ domain: coordinationDomain, repoPath: lock.path });
@@ -287,17 +515,34 @@ async function readMutationProbeSnapshot(
 /** Pre-read snapshots, one per measurement root, over the union of its bindings' paths. */
 async function readRepoFilesProbeSnapshots(
   recipes: ReadonlyArray<EvidenceMeasurement | null>,
-  rootFor: (recipe: RepoFilesEvidenceMeasurement) => Promise<string>,
+  rootFor: (recipe: RepoFilesEvidenceMeasurement, dimension?: 'source' | 'fixture') => Promise<string>,
 ): Promise<Map<string, MutationProbeSnapshot>> {
   const unions = new Map<string, Set<string>>();
   await Promise.all(
     recipes.map(async (recipe) => {
       if (!recipe || recipe.kind === 'work-items') return;
-      const root = await rootFor(recipe).catch(() => null);
-      if (!root) return;
-      const union = unions.get(root) ?? new Set<string>();
-      for (const path of repoFilesMeasuredPaths(recipe)) union.add(path);
-      unions.set(root, union);
+      const primaryRoot = await rootFor(recipe, 'source').catch(() => null);
+      if (!primaryRoot) return;
+      const fixtureRoot = hasRepoFixturePaths(recipe)
+        ? await rootFor(recipe, 'fixture').catch(() => null)
+        : primaryRoot;
+      const fixturePaths = fixtureRoot ? await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe).catch(() => null) : [];
+      if (!fixturePaths) return;
+      const primaryPaths = await repoFilesPrimaryPathsAtRoot(primaryRoot, recipe).catch(() => null);
+      if (!primaryPaths) return;
+      const groups: Array<[string, string[]]> = [[
+        primaryRoot,
+        [...primaryPaths, ...(fixtureRoot === primaryRoot ? fixturePaths : [])],
+      ]];
+      if (fixtureRoot && fixtureRoot !== primaryRoot && hasRepoFixturePaths(recipe)) {
+        groups.push([fixtureRoot, fixturePaths]);
+      }
+      for (const [root, paths] of groups) {
+        if (paths.length === 0) continue;
+        const union = unions.get(root) ?? new Set<string>();
+        for (const path of paths) union.add(path);
+        unions.set(root, union);
+      }
     }),
   );
   const snapshots = new Map<string, MutationProbeSnapshot>();
@@ -312,35 +557,172 @@ async function readRepoFilesProbeSnapshots(
 export async function measureRepoFilesEvidenceDetailedAtRoot(
   repoRoot: string,
   measurement: RepoFilesEvidenceMeasurement,
+  options: { fixtureRoot?: string; fixtureRootHarnessSlug?: string } = {},
 ): Promise<DetailedRepoEvidenceMeasurement> {
   const parsed = repoFilesEvidenceMeasurementSchema.parse(measurement);
   const root = await realpath(repoRoot);
-  const measuredPaths = repoFilesMeasuredPaths(parsed);
+  const fixtureRoot = await realpath(options.fixtureRoot ?? root);
+  const fixtureRootHarnessSlug = options.fixtureRootHarnessSlug ?? parsed.fixtureRootHarnessSlug;
+  if (parsed.fixtureRootHarnessSlug && !options.fixtureRoot) {
+    throw new Error(`repo_measurement_fixture_root_required:${parsed.fixtureRootHarnessSlug}`);
+  }
+  if (fixtureRoot !== root && !fixtureRootHarnessSlug) {
+    throw new Error('repo_measurement_fixture_root_identity_required');
+  }
+  const sourcePaths = await expandedRepoSourcePathsAtRoot(root, parsed);
+  const fixturePaths = await expandedRepoFixturePathsAtRoot(fixtureRoot, parsed);
+  const measuredPaths = [
+    ...sourcePaths,
+    ...(parsed.testPaths ?? []),
+    ...(fixtureRoot === root ? fixturePaths : []),
+  ];
   await refuseMutationProbePaths(root, measuredPaths);
-  const detailed = await fingerprintRepoFilesMeasurement(root, parsed);
+  if (fixtureRoot !== root && hasRepoFixturePaths(parsed)) {
+    await refuseMutationProbePaths(fixtureRoot, fixturePaths);
+  }
+  const detailed = await fingerprintRepoFilesMeasurement(
+    root,
+    parsed,
+    sourcePaths,
+    fixtureRoot,
+    fixtureRootHarnessSlug,
+    fixturePaths,
+  );
   await refuseMutationProbePaths(root, measuredPaths);
+  if (fixtureRoot !== root && hasRepoFixturePaths(parsed)) {
+    await refuseMutationProbePaths(fixtureRoot, fixturePaths);
+  }
   return detailed;
 }
 
-function repoFilesMeasuredPaths(parsed: RepoFilesEvidenceMeasurement): string[] {
-  return [...parsed.sourcePaths, ...(parsed.testPaths ?? [])];
+/**
+ * Measure a repo-files recipe from the bytes COMMITTED at `commit` (D-001): the commit-side
+ * twin of measureRepoFilesEvidenceDetailedAtRoot, with the same digest, the same glob bounds
+ * and the same per-file `{ path, sha256, gitBlob }`. It needs no mutation-probe fence: a
+ * probe's mutant is an uncommitted working-tree edit, so it is in no commit's objects.
+ */
+export async function measureRepoFilesEvidenceDetailedAtCommit(
+  repoRoot: string,
+  measurement: RepoFilesEvidenceMeasurement,
+  commit: string,
+  options: {
+    repoPrefix?: string | null;
+    deps?: CommittedTreeDeps;
+    fixtureRoot?: string;
+    fixtureCommit?: string | null;
+    fixtureRootHarnessSlug?: string;
+  } = {},
+): Promise<DetailedRepoEvidenceMeasurement> {
+  const parsed = repoFilesEvidenceMeasurementSchema.parse(measurement);
+  const root = await realpath(repoRoot);
+  const deps = options.deps ?? {};
+  // `commit` belongs to the repository at `repoPrefix` ('' / null = the root repository).
+  // An as-committed run inside a submodule records the SUBMODULE's commit, so its files are
+  // read in that repository while the digest keeps root-relative paths, exactly as stored.
+  const prefix = options.repoPrefix || null;
+  const repoDir = prefix ? join(root, prefix) : root;
+  const fixtureRoot = await realpath(options.fixtureRoot ?? root);
+  const fixtureRootHarnessSlug = options.fixtureRootHarnessSlug ?? parsed.fixtureRootHarnessSlug;
+  if (parsed.fixtureRootHarnessSlug && !options.fixtureRoot) {
+    throw new Error(`repo_measurement_fixture_root_required:${parsed.fixtureRootHarnessSlug}`);
+  }
+  if (fixtureRoot !== root && !fixtureRootHarnessSlug) {
+    throw new Error('repo_measurement_fixture_root_identity_required');
+  }
+  const fixtureCommit = options.fixtureCommit === undefined
+    ? (fixtureRoot === root ? commit : null)
+    : options.fixtureCommit;
+  const inRepo = (path: string) => {
+    if (!prefix) return path;
+    if (!path.startsWith(`${prefix}/`)) throw new Error(`repo_measurement_outside_run_repository:${path}`);
+    return path.slice(prefix.length + 1);
+  };
+  const fromRepo = (path: string) => (prefix ? `${prefix}/${path}` : path);
+  const fileSetAt = async (baseRoot: string, paths: readonly string[], atCommit: string, prefixPaths = false, limits = REPO_FILE_SET_READ_LIMITS) => {
+    const measured = await fingerprintRepoFileSetAtCommit(
+      prefixPaths ? repoDir : baseRoot,
+      atCommit,
+      prefixPaths ? paths.map(inRepo) : paths,
+      deps,
+      limits,
+    );
+    const files = measured.files.map((file) => ({ ...file, path: prefixPaths ? fromRepo(file.path) : file.path }));
+    return { fingerprint: repoFileSetFingerprint(files), files };
+  };
+  const globPaths = (
+    await listCommittedGlobMatches(
+      repoDir,
+      commit,
+      (parsed.sourceGlobs ?? []).map(inRepo),
+      { maxMatches: MAX_REPO_MEASUREMENT_GLOB_MATCHES, maxDepth: MAX_REPO_MEASUREMENT_GLOB_DEPTH },
+      deps,
+    )
+  ).map(fromRepo);
+  const sourcePaths = [...new Set([...parsed.sourcePaths, ...globPaths])].sort();
+  const fixtureGlobPaths = fixtureCommit
+    ? (await listCommittedGlobMatches(
+        fixtureRoot === root ? repoDir : fixtureRoot,
+        fixtureCommit,
+        (parsed.fixtureGlobs ?? []).map((path) => fixtureRoot === root ? inRepo(path) : path),
+        { maxMatches: MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES, maxDepth: MAX_REPO_MEASUREMENT_GLOB_DEPTH },
+        deps,
+      )).map((path) => fixtureRoot === root ? fromRepo(path) : path)
+    : await expandRepoMeasurementGlobsAtRoot(fixtureRoot, parsed.fixtureGlobs ?? [], MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES);
+  const fixturePaths = [...new Set([...(parsed.fixturePaths ?? []), ...fixtureGlobPaths])].sort();
+  const fixtureIsWorkingTree = Boolean(fixturePaths.length && !fixtureCommit);
+  if (fixtureIsWorkingTree) await refuseMutationProbePaths(fixtureRoot, fixturePaths);
+  const [source, test, fixture] = await Promise.all([
+    fileSetAt(root, sourcePaths, commit, true),
+    parsed.testPaths ? fileSetAt(root, parsed.testPaths, commit, true) : Promise.resolve(null),
+    hasRepoFixturePaths(parsed)
+      ? fixtureCommit
+        ? fileSetAt(fixtureRoot, fixturePaths, fixtureCommit, fixtureRoot === root, REPO_FIXTURE_READ_LIMITS)
+        : fingerprintRepoFileSet(fixtureRoot, fixturePaths, REPO_FIXTURE_READ_LIMITS)
+      : Promise.resolve(null),
+  ]);
+  if (fixtureIsWorkingTree) await refuseMutationProbePaths(fixtureRoot, fixturePaths);
+  const fixtureIdentity = fixtureRootHarnessSlug ? { rootHarnessSlug: fixtureRootHarnessSlug } : {};
+  return {
+    sourceFingerprint: source.fingerprint,
+    testFingerprint: test?.fingerprint ?? null,
+    ...(fixture ? { fixtureFingerprint: fixture.fingerprint } : {}),
+    files: [
+      ...source.files.map((file) => ({ ...file, dimension: 'source' as const })),
+      ...(test?.files ?? []).map((file) => ({ ...file, dimension: 'test' as const })),
+      ...(fixture?.files ?? []).map((file) => ({ ...file, ...fixtureIdentity, dimension: 'fixture' as const })),
+    ],
+  };
+}
+
+async function repoFilesPrimaryPathsAtRoot(root: string, parsed: RepoFilesEvidenceMeasurement): Promise<string[]> {
+  return [...(await expandedRepoSourcePathsAtRoot(root, parsed)), ...(parsed.testPaths ?? [])];
 }
 
 /** The UNFENCED read. Callers own the mutation-probe fence on both sides of it. */
 async function fingerprintRepoFilesMeasurement(
   root: string,
   parsed: RepoFilesEvidenceMeasurement,
+  expandedSourcePaths?: readonly string[],
+  fixtureRoot: string = root,
+  fixtureRootHarnessSlug?: string,
+  expandedFixturePaths?: readonly string[],
 ): Promise<DetailedRepoEvidenceMeasurement> {
-  const [source, test] = await Promise.all([
-    fingerprintRepoFileSet(root, parsed.sourcePaths),
+  const sourcePaths = expandedSourcePaths ?? (await expandedRepoSourcePathsAtRoot(root, parsed));
+  const fixturePaths = expandedFixturePaths ?? (await expandedRepoFixturePathsAtRoot(fixtureRoot, parsed));
+  const [source, test, fixture] = await Promise.all([
+    fingerprintRepoFileSet(root, sourcePaths),
     parsed.testPaths ? fingerprintRepoFileSet(root, parsed.testPaths) : Promise.resolve(null),
+    hasRepoFixturePaths(parsed) ? fingerprintRepoFileSet(fixtureRoot, fixturePaths, REPO_FIXTURE_READ_LIMITS) : Promise.resolve(null),
   ]);
+  const fixtureIdentity = fixtureRootHarnessSlug ? { rootHarnessSlug: fixtureRootHarnessSlug } : {};
   return {
     sourceFingerprint: source.fingerprint,
     testFingerprint: test?.fingerprint ?? null,
+    ...(fixture ? { fixtureFingerprint: fixture.fingerprint } : {}),
     files: [
       ...source.files.map((file) => ({ ...file, dimension: 'source' as const })),
       ...(test?.files ?? []).map((file) => ({ ...file, dimension: 'test' as const })),
+      ...(fixture?.files ?? []).map((file) => ({ ...file, ...fixtureIdentity, dimension: 'fixture' as const })),
     ],
   };
 }
@@ -349,9 +731,19 @@ async function fingerprintRepoFilesMeasurement(
 export async function measureRepoFilesEvidenceAtRoot(
   repoRoot: string,
   measurement: RepoFilesEvidenceMeasurement,
+  options: { fixtureRoot?: string; fixtureRootHarnessSlug?: string } = {},
 ): Promise<MeasuredRepoEvidenceFingerprints> {
-  const { sourceFingerprint, testFingerprint } = await measureRepoFilesEvidenceDetailedAtRoot(repoRoot, measurement);
-  return { sourceFingerprint, testFingerprint };
+  const detailed = await measureRepoFilesEvidenceDetailedAtRoot(repoRoot, measurement, options);
+  const { sourceFingerprint, testFingerprint, fixtureFingerprint } = detailed;
+  return {
+    sourceFingerprint,
+    testFingerprint,
+    ...(fixtureFingerprint !== undefined ? { fixtureFingerprint } : {}),
+    ...(measurement.artifactReceiptPath ? { environmentFingerprint: await measurePackagedArtifactEnvironment(
+      repoRoot, measurement.artifactReceiptPath,
+      detailed.files.find(file => file.path === measurement.artifactReceiptPath && file.dimension === 'source')!.sha256,
+      { verifyExpectations: true }) } : {}),
+  };
 }
 
 /**
@@ -363,20 +755,85 @@ export async function measureRepoFilesEvidenceAtRoot(
 export async function measureAndPinRepoFilesEvidenceAtRoot(
   repoRoot: string,
   measurement: RepoFilesEvidenceMeasurement,
-  options: { git?: GitRunner } = {},
+  options: { git?: GitRunner; fixtureRoot?: string; fixtureRootHarnessSlug?: string } = {},
 ): Promise<MeasuredRepoEvidenceFingerprints & { pin: MeasurementPin }> {
-  const detailed = await measureRepoFilesEvidenceDetailedAtRoot(repoRoot, measurement);
-  const pin = await buildMeasurementPin(await realpath(repoRoot), detailed.files, options);
-  return { sourceFingerprint: detailed.sourceFingerprint, testFingerprint: detailed.testFingerprint, pin };
+  const root = await realpath(repoRoot);
+  const fixtureRoot = await realpath(options.fixtureRoot ?? root);
+  const fixtureRootHarnessSlug = options.fixtureRootHarnessSlug ?? measurement.fixtureRootHarnessSlug;
+  const detailed = await measureRepoFilesEvidenceDetailedAtRoot(root, measurement, {
+    fixtureRoot,
+    ...(fixtureRootHarnessSlug ? { fixtureRootHarnessSlug } : {}),
+  });
+  const pin = await buildMeasurementPin(root, detailed.files, {
+    ...(options.git ? { git: options.git } : {}),
+    ...(fixtureRootHarnessSlug ? { roots: { [fixtureRootHarnessSlug]: fixtureRoot } } : {}),
+  });
+  await retainCompletedRuntimeArtifacts(measurement);
+  return {
+    sourceFingerprint: detailed.sourceFingerprint,
+    testFingerprint: detailed.testFingerprint,
+    ...(detailed.fixtureFingerprint !== undefined ? { fixtureFingerprint: detailed.fixtureFingerprint } : {}),
+    ...(measurement.artifactReceiptPath ? { environmentFingerprint: await measurePackagedArtifactEnvironment(
+      root, measurement.artifactReceiptPath,
+      detailed.files.find(file => file.path === measurement.artifactReceiptPath && file.dimension === 'source')!.sha256,
+      { verifyExpectations: true }) } : {}),
+    pin,
+  };
 }
 
-async function resolveMeasurementRoot(
+/**
+ * Measure and pin a repo-files recipe from the bytes committed at the commit an
+ * as-committed test run executed (D-001 (b)): the bind stores what actually ran, so the
+ * shared checkout moving past that commit neither refuses the bind nor leaks into its
+ * fingerprint. The pin's per-file sha256 (what names moved paths later) comes from that
+ * commit; its head/clean fields still describe the checkout's HEAD at bind time.
+ */
+export async function measureAndPinRepoFilesEvidenceAtCommitForScope(
   workspaceId: string,
   harnessSlug: string,
-  measurement?: Pick<RepoFilesEvidenceMeasurement, 'rootHarnessSlug'>,
+  measurement: RepoFilesEvidenceMeasurement,
+  at: { commitSha: string; repoPrefix: string | null },
+  options: { git?: GitRunner } = {},
+): Promise<MeasuredRepoEvidenceFingerprints & { pin: MeasurementPin }> {
+  const root = await realpath(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement));
+  const fixtureRootHarnessSlug = measurement.fixtureRootHarnessSlug;
+  const fixtureRoot = hasRepoFixturePaths(measurement)
+    ? await realpath(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement, 'fixture'))
+    : root;
+  const fixtureCommit = fixtureRoot === root ? at.commitSha : await resolveMeasurementCommit(fixtureRoot);
+  const detailed = await measureRepoFilesEvidenceDetailedAtCommit(root, measurement, at.commitSha, {
+    repoPrefix: at.repoPrefix,
+    ...(hasRepoFixturePaths(measurement) ? { fixtureRoot, fixtureCommit, fixtureRootHarnessSlug } : {}),
+    ...(options.git ? { deps: { git: options.git } } : {}),
+  });
+  const pin = await buildMeasurementPin(root, detailed.files, {
+    ...(options.git ? { git: options.git } : {}),
+    ...(hasRepoFixturePaths(measurement) && fixtureRootHarnessSlug ? { roots: { [fixtureRootHarnessSlug]: fixtureRoot } } : {}),
+  });
+  await retainCompletedRuntimeArtifacts(measurement);
+  return {
+    sourceFingerprint: detailed.sourceFingerprint,
+    testFingerprint: detailed.testFingerprint,
+    ...(detailed.fixtureFingerprint !== undefined ? { fixtureFingerprint: detailed.fixtureFingerprint } : {}),
+    ...(measurement.artifactReceiptPath ? { environmentFingerprint: await measurePackagedArtifactEnvironment(
+      root, measurement.artifactReceiptPath,
+      detailed.files.find(file => file.path === measurement.artifactReceiptPath && file.dimension === 'source')!.sha256,
+      { verifyExpectations: true }) } : {}),
+    pin,
+  };
+}
+
+export async function resolveMeasurementRoot(
+  workspaceId: string,
+  harnessSlug: string,
+  measurement?: Pick<RepoFilesEvidenceMeasurement, 'rootHarnessSlug' | 'fixtureRootHarnessSlug'>,
+  dimension: 'source' | 'fixture' = 'source',
 ): Promise<string> {
   const registry = await loadHarnessRegistry(workspaceId);
-  const rootHarnessSlug = measurement?.rootHarnessSlug ?? harnessSlug;
+  const primaryRootHarnessSlug = measurement?.rootHarnessSlug ?? harnessSlug;
+  const rootHarnessSlug = dimension === 'fixture'
+    ? measurement?.fixtureRootHarnessSlug ?? primaryRootHarnessSlug
+    : primaryRootHarnessSlug;
   const root = resolveHarnessContentPath(registry, rootHarnessSlug);
   if (!root) throw new Error(`repo_measurement_harness_root_unavailable:${rootHarnessSlug}`);
   return root;
@@ -388,7 +845,52 @@ export async function measureRepoFilesEvidence(
   harnessSlug: string,
   measurement: RepoFilesEvidenceMeasurement,
 ): Promise<MeasuredRepoEvidenceFingerprints> {
-  return measureRepoFilesEvidenceAtRoot(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement), measurement);
+  const root = await resolveMeasurementRoot(workspaceId, harnessSlug, measurement);
+  const fixtureRoot = hasRepoFixturePaths(measurement)
+    ? await resolveMeasurementRoot(workspaceId, harnessSlug, measurement, 'fixture')
+    : root;
+  const fixtureRootHarnessSlug = measurement.fixtureRootHarnessSlug;
+  return measureRepoFilesEvidenceAtRoot(root, measurement, {
+    ...(hasRepoFixturePaths(measurement) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
+  });
+}
+
+/**
+ * Observe a live repo-files recipe's named runtimes NOW, exactly as the read path re-measures
+ * them, so a manual live probe stores the runtime it was observed against instead of NULL
+ * (WI-6554700010008521). A completedRuntime recipe belongs to a test run's execution witness,
+ * and bindSpecEvidence replaces any testRunId binding's input with that witness, so neither
+ * is restamped from the binding-time runtime here.
+ */
+async function liveRuntimeEnvironment(
+  workspaceId: string,
+  measurement: RepoFilesEvidenceMeasurement,
+): Promise<{ environmentFingerprint?: string | null }> {
+  if (!measurement.runtimeUnits || measurement.completedRuntime) return {};
+  return {
+    environmentFingerprint: await measureRuntimeEnvironment(
+      await listRuntimeVintage(workspaceId), measurement.runtimeUnits),
+  };
+}
+
+/** Resolve both registered roots when fixture calibration lives outside the tested checkout. */
+export async function measureAndPinRepoFilesEvidence(
+  workspaceId: string,
+  harnessSlug: string,
+  measurement: RepoFilesEvidenceMeasurement,
+  options: { git?: GitRunner } = {},
+): Promise<MeasuredRepoEvidenceFingerprints & { pin: MeasurementPin }> {
+  const root = await resolveMeasurementRoot(workspaceId, harnessSlug, measurement);
+  const fixtureRoot = hasRepoFixturePaths(measurement)
+    ? await resolveMeasurementRoot(workspaceId, harnessSlug, measurement, 'fixture')
+    : root;
+  const fixtureRootHarnessSlug = measurement.fixtureRootHarnessSlug ?? measurement.rootHarnessSlug ?? harnessSlug;
+  const measured = await measureAndPinRepoFilesEvidenceAtRoot(root, measurement, {
+    ...options,
+    ...(hasRepoFixturePaths(measurement) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
+  });
+  // Spread last: like the read path, named runtimes take precedence over an artifact receipt.
+  return { ...measured, ...(await liveRuntimeEnvironment(workspaceId, measurement)) };
 }
 
 /**
@@ -406,6 +908,7 @@ export async function measureWorkItemsEvidenceForScope(
   workspaceId: string,
   harnessSlug: string,
   measurement: WorkItemsEvidenceMeasurement,
+  runtimeRows?: Awaited<ReturnType<typeof listRuntimeVintage>>,
 ): Promise<MeasuredRepoEvidenceFingerprints> {
   const parsed = workItemsEvidenceMeasurementSchema.parse(measurement);
   const ids = [...new Set(parsed.workItemIds)].sort();
@@ -420,7 +923,14 @@ export async function measureWorkItemsEvidenceForScope(
   const statusById = new Map(rows.map((row) => [row.feature_id, row.status]));
   const entries = ids.map((id) => ({ id, status: statusById.get(id) ?? null }));
   const digest = createHash('sha256').update(JSON.stringify(entries)).digest('hex');
-  return { sourceFingerprint: `sha256-work-item-set-v1:${digest}`, testFingerprint: null };
+  const environmentFingerprint = parsed.runtimeUnits
+    ? await measureRuntimeEnvironment(runtimeRows ?? await listRuntimeVintage(workspaceId), parsed.runtimeUnits)
+    : undefined;
+  return {
+    sourceFingerprint: `sha256-work-item-set-v1:${digest}`,
+    testFingerprint: null,
+    ...(parsed.runtimeUnits ? { environmentFingerprint } : {}),
+  };
 }
 
 /** Dispatch a measurement recipe to its basis. Both bases are server-measured, never caller-attested. */
@@ -446,7 +956,128 @@ export async function measureAndPinEvidenceForScope(
   if (measurement.kind === 'work-items') {
     return { ...(await measureWorkItemsEvidenceForScope(workspaceId, harnessSlug, measurement)), pin: null };
   }
-  return measureAndPinRepoFilesEvidenceAtRoot(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement), measurement);
+  return measureAndPinRepoFilesEvidence(workspaceId, harnessSlug, measurement);
+}
+
+const MAX_OPERATIONAL_ARTIFACT_BYTES = 8 * 1024 * 1024;
+
+type OperationalEvidenceDisclosureRow = {
+  id?: number;
+  evidenceKind: SpecEvidenceKind;
+  evidenceRef: string;
+  details: Record<string, unknown>;
+  currentness: { overall: string };
+  serverMeasurement?: { status: string };
+};
+
+/**
+ * Read explicit coverage disclosures from a current, server-measured operational
+ * evidence artifact. Opaque/manual bindings and caller-attested fingerprints are
+ * deliberately excluded: only a file included in the repo-files measurement and
+ * measured current by listSpecEvidence can contribute artifact disclosures.
+ */
+export async function readCurrentOperationalArtifactDisclosures(
+  workspaceId: string,
+  harnessSlug: string,
+  rows: readonly OperationalEvidenceDisclosureRow[],
+): Promise<Map<number, string[]>> {
+  const candidates = rows.flatMap((row) => {
+    if (
+      row.id === undefined ||
+      !Number.isSafeInteger(row.id) ||
+      row.evidenceKind !== 'operational' ||
+      row.currentness.overall !== 'current' ||
+      row.serverMeasurement?.status !== 'measured'
+    ) return [];
+    const measurement = evidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
+    return measurement.success &&
+      measurement.data.kind === 'repo-files' &&
+      measurement.data.sourcePaths.includes(row.evidenceRef)
+      ? [{ row, measurement: measurement.data }]
+      : [];
+  });
+  if (candidates.length === 0) return new Map();
+
+  const roots = new Map<string, Promise<string>>();
+  const byReference = new Map<string, Promise<string[]>>();
+  const readOne = (
+    evidenceRef: string,
+    measurement: RepoFilesEvidenceMeasurement,
+  ): Promise<string[]> => {
+    const rootKey = measurement.rootHarnessSlug ?? harnessSlug;
+    const key = JSON.stringify([rootKey, evidenceRef]);
+    const existing = byReference.get(key);
+    if (existing) return existing;
+    const task = (async () => {
+      let root: string;
+      try {
+        let rootPromise = roots.get(rootKey);
+        if (!rootPromise) {
+          rootPromise = realpath(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement));
+          roots.set(rootKey, rootPromise);
+        }
+        root = await rootPromise;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message.split('\n')[0] : String(error);
+        return [`The measured operational evidence repository could not be resolved for disclosure verification: ${reason.slice(0, 180)}`];
+      }
+      const pathParts = evidenceRef.split('/');
+      if (
+        isAbsolute(evidenceRef) ||
+        evidenceRef.includes('\\') ||
+        pathParts.some((part) => part === '' || part === '.' || part === '..')
+      ) return ['The current operational evidence artifact path is unsafe, so its disclosure fields could not be verified.'];
+      const candidate = resolve(root, evidenceRef);
+      if (!containedBy(root, candidate)) {
+        return ['The current operational evidence artifact resolves outside its repository root, so its disclosure fields could not be verified.'];
+      }
+      try {
+        const canonical = await realpath(candidate);
+        if (!containedBy(root, canonical)) {
+          return ['The current operational evidence artifact follows a path outside its repository root, so its disclosure fields could not be verified.'];
+        }
+        const info = await stat(canonical);
+        if (!info.isFile() || info.size > MAX_OPERATIONAL_ARTIFACT_BYTES) {
+          return ['The current operational evidence artifact is not a bounded regular file, so its disclosure fields could not be verified.'];
+        }
+        const parsed: unknown = JSON.parse(await readFile(canonical, 'utf8'));
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return ['The current operational evidence artifact is not a JSON object, so its disclosure fields could not be verified.'];
+        }
+        const artifact = parsed as Record<string, unknown>;
+        if (artifact.kind !== 'operational-test-evidence') return [];
+        const gaps: string[] = [];
+        for (const field of ['disclosures', 'couldNotDetermine'] as const) {
+          const value = artifact[field];
+          if (Array.isArray(value)) {
+            for (const entry of value) {
+              const detail = typeof entry === 'string'
+                ? entry.trim()
+                : JSON.stringify(entry);
+              gaps.push(detail
+                ? `Artifact ${field}: ${detail}`
+                : `Artifact ${field} contains an entry whose disclosure could not be read.`);
+            }
+          } else if (value !== undefined && value !== null) {
+            gaps.push(`Artifact ${field} is malformed, so its disclosure could not be verified.`);
+          }
+        }
+        return gaps;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message.split('\\n')[0] : String(error);
+        return [`The current operational evidence artifact could not be read for disclosure fields: ${reason.slice(0, 180)}`];
+      }
+    })();
+    byReference.set(key, task);
+    return task;
+  };
+
+  const output = new Map<number, string[]>();
+  await Promise.all(candidates.map(async ({ row, measurement }) => {
+    const gaps = await readOne(row.evidenceRef, measurement);
+    if (gaps.length > 0) output.set(row.id!, gaps);
+  }));
+  return output;
 }
 
 function measurementFromDetails(details: Record<string, unknown>): EvidenceMeasurement | null {
@@ -506,10 +1137,28 @@ export interface BindSpecEvidenceInput extends EvidenceFingerprints {
   evidenceRef: string;
   coverageEvidenceRef?: number | null;
   testRunId?: number | null;
+  /**
+   * P-008: the implementer binding an `independent-verification` row re-observed.
+   * Required for that kind, refused for every other kind.
+   */
+  verifiesBindingId?: number | null;
   details?: Record<string, unknown>;
   observedAt?: string;
   actorId: string;
 }
+
+/**
+ * P-008 (D-005) bind-time refusals at plans:bind-spec-evidence. Named on its own so the
+ * verification-system map can register exactly these contract refusals
+ * (CONTRACT_GATE_CODE_TYPES) without the result union's non-refusal statuses. The
+ * union below uses Extract<> over this alias, so a member renamed in one place and
+ * not the other fails the typecheck.
+ */
+export type IndependentVerificationRefusalStatus =
+  | 'verified_binding_required'
+  | 'verified_binding_not_allowed'
+  | 'verified_binding_not_found'
+  | 'independent_fingerprint_mismatch';
 
 export type BindSpecEvidenceResult =
   | {
@@ -524,9 +1173,38 @@ export type BindSpecEvidenceResult =
       bindingFingerprint: string;
     }
   | { status: 'work_item_not_found'; workItemId: string }
-  | { status: 'spec_not_found'; specId?: string; sourceValId?: string }
+  | { status: 'spec_not_found'; specId?: string; sourceValId?: string; message?: string }
   | { status: 'spec_revision_not_found'; specId: string; specRevision: number }
   | { status: 'coverage_evidence_not_found'; coverageEvidenceRef: number }
+  // P-008 (D-005): independent-verification refusals.
+  | { status: Extract<IndependentVerificationRefusalStatus, 'verified_binding_required' | 'verified_binding_not_allowed'>; message: string }
+  | { status: Extract<IndependentVerificationRefusalStatus, 'verified_binding_not_found'>; verifiesBindingId: number; message: string }
+  | {
+      status: Extract<IndependentVerificationRefusalStatus, 'independent_fingerprint_mismatch'>;
+      verifiesBindingId: number;
+      mismatched: Array<'source' | 'environment'>;
+      /** The cited binding's test run, when its proof is a recorded execution (EI-25847620673275477). */
+      citedTestRunId?: number;
+      message: string;
+    }
+  | {
+      status: 'test_cases_not_in_run';
+      testRunId: number;
+      declaredCaseCount: number;
+      passedCaseTitleCount: number;
+      /** Which record judged the declared cases: the per-case ledger, or the run's capped title list. */
+      source?: 'case-ledger' | 'passed-case-titles';
+      /** Declared titles that matched no executed recorded case (case-ledger source only). */
+      unmatchedTestCases?: string[];
+      message: string;
+    }
+  | {
+      status: 'test_run_measurement_recipe_changed' | 'test_run_measurement_recipe_unverified';
+      testRunId: number;
+      previousSpecRevision: number;
+      specRevision: number;
+      message: string;
+    }
   // The test-run lookup is tenant-scoped, so a row that EXISTS but carries a
   // different (or NULL) harness_slug is indistinguishable from a fabricated id
   // — both surface as a bare `test_run_not_found`, which reads as "you invented
@@ -580,6 +1258,8 @@ interface CanonicalBinding {
   environmentFingerprint: string | null;
   coverageEvidenceRef: number | null;
   testRunId: number | null;
+  /** P-008: present ONLY for independent-verification rows, so legacy fingerprints are unchanged. */
+  verifiesBindingId?: number;
   details: Record<string, unknown>;
 }
 
@@ -602,6 +1282,16 @@ interface SpecIdentityRow {
 
 interface SpecRevisionRow {
   content_hash: string;
+}
+
+interface PriorTestRunBindingRow {
+  spec_revision: number;
+  source_fingerprint: string;
+  test_fingerprint: string | null;
+  fixture_fingerprint: string | null;
+  rubric_fingerprint: string | null;
+  environment_fingerprint: string | null;
+  details: Record<string, unknown>;
 }
 
 /** Resolve the selector and append one idempotent exact evidence binding. */
@@ -637,6 +1327,13 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         status: 'spec_not_found',
         ...(input.specId ? { specId: input.specId } : {}),
         ...(input.sourceValId ? { sourceValId: input.sourceValId } : {}),
+        ...(!input.planSlug?.trim()
+          ? {
+              message:
+                `spec_not_found in ${planSlug} (no slug supplied; defaulted to the ad-hoc scope). ` +
+                'For a clause on a named plan, pass slug to plans:bind-spec-evidence.',
+            }
+          : {}),
       };
     }
 
@@ -664,9 +1361,35 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         return { status: 'coverage_evidence_not_found', coverageEvidenceRef: input.coverageEvidenceRef };
       }
     }
+    // EI-25847620673275477: an independent-verification row re-observes the SAME proof the
+    // implementer bound. When that proof is a recorded test execution, its environment
+    // fingerprint was derived from THAT run's receipts, so a re-observation that omits the
+    // run could never match it (independent_fingerprint_mismatch [environment]). Adopt the
+    // cited binding's run when the caller names none; its plane and run identity are copied
+    // onto the row below so the read side certifies the same execution.
+    let citedProof: { test_run_id: string | number | null; details: Record<string, unknown> | null } | undefined;
+    if (input.evidenceKind === 'independent-verification' && input.verifiesBindingId != null) {
+      [citedProof] = await tx<{ test_run_id: string | number | null; details: Record<string, unknown> | null }[]>`
+        SELECT test_run_id, details
+          FROM harness_shared.spec_evidence_bindings
+         WHERE id = ${input.verifiesBindingId}
+           AND workspace_id = ${scope.workspaceId}
+           AND harness_slug = ${scope.harnessSlug}
+           AND plan_slug = ${planSlug}
+           AND spec_id = ${identity.spec_id}
+           AND retracted_at IS NULL
+           AND evidence_kind <> 'independent-verification'`;
+      if (citedProof?.test_run_id != null && input.testRunId == null) {
+        input = { ...input, testRunId: Number(citedProof.test_run_id) };
+      }
+    }
+    const citedTestRunId = citedProof?.test_run_id != null ? Number(citedProof.test_run_id) : null;
+    let executionRuntimeFingerprint: string | null = null;
+    const runtimeRecipe = measurementFromDetails(input.details ?? {});
+    const runtimeUnits = runtimeRecipe?.runtimeUnits;
     if (input.testRunId != null) {
-      const rows = await tx<{ id: number }[]>`
-        SELECT id FROM harness_shared.test_runs
+      const rows = await tx<{ id: number; status: string | null; execution_details?: unknown }[]>`
+        SELECT id, status, execution_details FROM harness_shared.test_runs
          WHERE id = ${input.testRunId}
            AND workspace_id = ${scope.workspaceId}
            AND harness_slug = ${scope.harnessSlug}`;
@@ -696,14 +1419,123 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
           },
         };
       }
+      const parsedRunExecution = parseTestRunExecutionDetails(rows[0].execution_details);
+      const passedCaseTitles = parsedRunExecution?.passedCaseTitles;
+      const rawAdequacy = input.details?.adequacy;
+      const rawTestCases =
+        rawAdequacy !== null && typeof rawAdequacy === 'object' && !Array.isArray(rawAdequacy)
+          ? (rawAdequacy as Record<string, unknown>).testCases
+          : undefined;
+      const declaredTestCases = Array.isArray(rawTestCases)
+        ? rawTestCases
+            .filter((title): title is string => typeof title === 'string' && title.trim().length > 0)
+            .map((title) => title.trim())
+        : [];
+      // P-002 / R-2: when the per-case ledger (migration 1478) recorded this run's cases,
+      // EVERY declared case must resolve to an executed recorded case through the shared
+      // resolver. The capped passedCaseTitles list below could only check "at least one
+      // matched" and skipped the check entirely when the list was incomplete.
+      let judgedByCaseLedger = false;
+      if (input.evidenceKind === 'test' && declaredTestCases.length > 0) {
+        const recordedCases = await readRecordedTestCases(tx, input.testRunId);
+        if (recordedCases !== null) {
+          judgedByCaseLedger = true;
+          const unmatched = declaredTestCases.filter(
+            (testName) => !resolveTestCaseFilter({ file: recordedCases.file, testName }, recordedCases.cases).ok,
+          );
+          if (unmatched.length > 0) {
+            return {
+              status: 'test_cases_not_in_run',
+              testRunId: input.testRunId,
+              declaredCaseCount: declaredTestCases.length,
+              passedCaseTitleCount: recordedCases.cases.filter((c) => c.status === 'pass').length,
+              source: 'case-ledger',
+              unmatchedTestCases: unmatched,
+              message:
+                unmatched.length + ' of ' + declaredTestCases.length +
+                ' declared details.adequacy.testCases entries matched no executed case among the ' +
+                recordedCases.cases.length + ' recorded cases of test-run ' + input.testRunId + ' (' +
+                unmatched.map((t) => JSON.stringify(t)).join(', ') + '). A declared case that matches ' +
+                'nothing is refused rather than counted; correct the label (full describe/it path, or a ' +
+                "suffix at a ' > ' boundary) or bind a run that executed it.",
+            };
+          }
+        }
+      }
+      if (
+        !judgedByCaseLedger &&
+        input.evidenceKind === 'test' &&
+        declaredTestCases.length > 0 &&
+        rows[0].status === 'pass' &&
+        parsedRunExecution !== undefined &&
+        parsedRunExecution.testLayer !== 'llm' &&
+        parsedRunExecution.collectionFailed === false &&
+        parsedRunExecution.failed === 0 &&
+        parsedRunExecution.skipped === 0 &&
+        parsedRunExecution.passed > 0 &&
+        passedCaseTitles !== undefined &&
+        passedCaseTitles.length === parsedRunExecution.passed &&
+        !passedCaseTitlesIncomplete(parsedRunExecution) &&
+        !declaredTestCases.some((title) => hasMatchingDeclaredCaseTitle(title, passedCaseTitles))
+      ) {
+        return {
+          status: 'test_cases_not_in_run',
+          testRunId: input.testRunId,
+          declaredCaseCount: declaredTestCases.length,
+          passedCaseTitleCount: passedCaseTitles.length,
+          source: 'passed-case-titles',
+          message:
+            'none of the ' + declaredTestCases.length +
+            ' declared details.adequacy.testCases entries matched any of the ' +
+            passedCaseTitles.length + ' recorded passedCaseTitles in test-run ' + input.testRunId +
+            '. Bind a run that executed at least one claimed case or correct the case labels; ' +
+            "titles match exactly or by bare-case suffix after ' > '.",
+        };
+      }
+      if (runtimeUnits) {
+        const execution = parsedRunExecution;
+        const witness = stableRecordedRuntimeEnvironment(
+          execution?.runtimeEnvironmentBefore, execution?.runtimeEnvironmentAfter);
+        if (witness && JSON.stringify([...witness.units].sort()) === JSON.stringify([...runtimeUnits].sort())) {
+          executionRuntimeFingerprint = witness.fingerprint;
+        }
+        if ((execution?.testLayer === 'integration' || execution?.testLayer === 'e2e') && execution.isolatedRuntimeReceipts
+          && JSON.stringify(runtimeUnits.slice().sort()) === JSON.stringify(execution.isolatedRuntimeReceipts
+            .map(receipt => `isolated-integration:${receipt.runId}`).sort())) {
+          executionRuntimeFingerprint = isolatedIntegrationFingerprint(execution.isolatedRuntimeReceipts);
+        }
+      }
     }
 
     const evidenceRef = input.evidenceRef.trim();
-    const sourceFingerprint = input.sourceFingerprint.trim();
-    const testFingerprint = nullableTrimmed(input.testFingerprint);
-    const fixtureFingerprint = nullableTrimmed(input.fixtureFingerprint);
-    const rubricFingerprint = nullableTrimmed(input.rubricFingerprint);
-    const environmentFingerprint = nullableTrimmed(input.environmentFingerprint);
+    let sourceFingerprint = input.sourceFingerprint.trim();
+    let testFingerprint = nullableTrimmed(input.testFingerprint);
+    let fixtureFingerprint = nullableTrimmed(input.fixtureFingerprint);
+    let rubricFingerprint = nullableTrimmed(input.rubricFingerprint);
+    // Test runs must retain their execution-time witness. A manual live probe has
+    // no test run; keep the server-measured runtime of that observation instead.
+    let environmentFingerprint = runtimeUnits && input.testRunId != null
+      ? executionRuntimeFingerprint : nullableTrimmed(input.environmentFingerprint);
+    const priorTestRunBinding = input.testRunId == null
+      ? undefined
+      : (
+          await tx<PriorTestRunBindingRow[]>`
+        SELECT spec_revision, source_fingerprint, test_fingerprint, fixture_fingerprint,
+               rubric_fingerprint, environment_fingerprint, details
+          FROM harness_shared.spec_evidence_bindings
+         WHERE workspace_id = ${scope.workspaceId}
+           AND harness_slug = ${scope.harnessSlug}
+           AND work_item_id = ${input.workItemId}
+           AND plan_slug = ${planSlug}
+           AND spec_id = ${identity.spec_id}
+           AND evidence_kind = ${input.evidenceKind}
+           AND evidence_ref = ${evidenceRef}
+           AND coverage_evidence_ref IS NOT DISTINCT FROM ${input.coverageEvidenceRef ?? null}
+           AND test_run_id = ${input.testRunId}
+           AND retracted_at IS NULL
+         ORDER BY created_at ASC, id ASC
+         LIMIT 1`
+        )[0];
     // A replay that omits details is a partial update of an existing logical
     // binding, not a request to replace executable proof metadata with `{}`.
     // Explicit details (including `{}`) remain authoritative and retain the
@@ -735,7 +1567,127 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
           )[0]?.details
         : undefined;
 
+    let details = (input.details ?? priorDetails ?? priorTestRunBinding?.details ?? {}) as Record<string, unknown>;
+    if (priorTestRunBinding) {
+      const previousMeasurement = measurementFromDetails(priorTestRunBinding.details);
+      const currentMeasurement = measurementFromDetails(details);
+      if (previousMeasurement || currentMeasurement) {
+        if (!previousMeasurement || !currentMeasurement) {
+          return {
+            status: 'test_run_measurement_recipe_unverified',
+            testRunId: input.testRunId!,
+            previousSpecRevision: Number(priorTestRunBinding.spec_revision),
+            specRevision,
+            message:
+              `Cannot safely rebind test-run ${input.testRunId} at spec revision ${specRevision}: ` +
+              `the earliest live binding at revision ${priorTestRunBinding.spec_revision} has no matching ` +
+              'verifiable currentMeasurement recipe. Re-run the test or use its original recipe.',
+          };
+        }
+        const previousRecipe = JSON.stringify(canonicalJson(previousMeasurement));
+        const currentRecipe = JSON.stringify(canonicalJson(currentMeasurement));
+        if (previousRecipe !== currentRecipe) {
+          return {
+            status: 'test_run_measurement_recipe_changed',
+            testRunId: input.testRunId!,
+            previousSpecRevision: Number(priorTestRunBinding.spec_revision),
+            specRevision,
+            message:
+              `Cannot safely rebind test-run ${input.testRunId} at spec revision ${specRevision}: ` +
+              `the measurement recipe differs from its earliest live binding at revision ` +
+              `${priorTestRunBinding.spec_revision}. Re-run the test with the new recipe.`,
+          };
+        }
+
+        // The same recorded execution must keep the state measured for that execution.
+        // Re-measuring at bind time would let a later spec revision reset the source pin
+        // and turn old, source-stale test evidence into source-current evidence.
+        sourceFingerprint = priorTestRunBinding.source_fingerprint;
+        testFingerprint = priorTestRunBinding.test_fingerprint;
+        fixtureFingerprint = priorTestRunBinding.fixture_fingerprint;
+        rubricFingerprint = priorTestRunBinding.rubric_fingerprint;
+        environmentFingerprint = priorTestRunBinding.environment_fingerprint;
+        details = { ...details, currentMeasurement: previousMeasurement };
+        const previousPin = readMeasurementPin(priorTestRunBinding.details);
+        if (previousPin) details[MEASUREMENT_PIN_DETAILS_KEY] = previousPin;
+        else delete details[MEASUREMENT_PIN_DETAILS_KEY];
+      }
+    }
+
+    // EI-25847620673275477: a re-observation of the cited run carries that run's plane and
+    // identity, which completed-runtime certification requires to read environment=current.
+    if (citedTestRunId != null && input.testRunId === citedTestRunId) {
+      const cited = citedProof?.details ?? {};
+      if (details.evidencePlane === undefined && cited.evidencePlane !== undefined) {
+        details = { ...details, evidencePlane: cited.evidencePlane };
+      }
+      if (details.testRun === undefined && cited.testRun !== undefined) {
+        details = { ...details, testRun: cited.testRun };
+      }
+    }
+
+    // P-008 (D-005): an independent-verification row is a non-implementer re-observing the
+    // SAME thing the implementer bound. It must cite a live, non-independent binding on the
+    // same clause, and both fingerprints must match that row exactly — a re-observation of a
+    // different source tree or a different environment verifies nothing about the cited proof.
+    const verifiesBindingId = input.verifiesBindingId ?? null;
+    if (input.evidenceKind === 'independent-verification' && verifiesBindingId == null) {
+      return {
+        status: 'verified_binding_required',
+        message: "evidenceKind 'independent-verification' requires verifiesBindingId: the implementer binding it re-observed.",
+      };
+    }
+    if (input.evidenceKind !== 'independent-verification' && verifiesBindingId != null) {
+      return {
+        status: 'verified_binding_not_allowed',
+        message: "verifiesBindingId is only valid with evidenceKind 'independent-verification'.",
+      };
+    }
+    if (verifiesBindingId != null) {
+      const cited = (
+        await tx<{ source_fingerprint: string; environment_fingerprint: string | null }[]>`
+          SELECT source_fingerprint, environment_fingerprint
+            FROM harness_shared.spec_evidence_bindings
+           WHERE id = ${verifiesBindingId}
+             AND workspace_id = ${scope.workspaceId}
+             AND harness_slug = ${scope.harnessSlug}
+             AND plan_slug = ${planSlug}
+             AND spec_id = ${identity.spec_id}
+             AND retracted_at IS NULL
+             AND evidence_kind <> 'independent-verification'`
+      )[0];
+      if (!cited) {
+        return {
+          status: 'verified_binding_not_found',
+          verifiesBindingId,
+          message:
+            `verifiesBindingId ${verifiesBindingId} is not a live, non-independent binding on clause ` +
+            `${identity.spec_id} of ${planSlug}. Cite the implementer binding you re-observed.`,
+        };
+      }
+      const mismatched: Array<'source' | 'environment'> = [];
+      if (cited.source_fingerprint !== sourceFingerprint) mismatched.push('source');
+      if ((cited.environment_fingerprint ?? null) !== (environmentFingerprint ?? null)) mismatched.push('environment');
+      if (mismatched.length > 0) {
+        return {
+          status: 'independent_fingerprint_mismatch',
+          verifiesBindingId,
+          mismatched,
+          message:
+            `independent-verification refused: ${mismatched.join(' and ')} fingerprint differs from cited binding ` +
+            `${verifiesBindingId}. Re-observe the same source and environment the implementer bound, or re-bind ` +
+            'the implementer proof first.' +
+            (mismatched.includes('environment') && citedTestRunId != null && input.testRunId !== citedTestRunId
+              ? ` The cited binding is backed by test-run ${citedTestRunId}; omit testRunId (it is adopted) or ` +
+                `pass ${citedTestRunId}, so the environment is derived from that same execution.`
+              : ''),
+          ...(citedTestRunId != null ? { citedTestRunId } : {}),
+        };
+      }
+    }
+
     const canonical: CanonicalBinding = {
+      ...(verifiesBindingId != null ? { verifiesBindingId } : {}),
       workspaceId: scope.workspaceId,
       harnessSlug: scope.harnessSlug,
       workItemId: input.workItemId,
@@ -752,7 +1704,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       environmentFingerprint,
       coverageEvidenceRef: input.coverageEvidenceRef ?? null,
       testRunId: input.testRunId ?? null,
-      details: (canonicalJson(input.details ?? priorDetails ?? {}) ?? {}) as Record<string, unknown>,
+      details: (canonicalJson(details) ?? {}) as Record<string, unknown>,
     };
     const bindingFingerprint = specEvidenceBindingFingerprint(canonical);
 
@@ -772,7 +1724,8 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         spec_revision, spec_fingerprint, evidence_kind, evidence_ref,
         source_fingerprint, test_fingerprint, fixture_fingerprint,
         rubric_fingerprint, environment_fingerprint, coverage_evidence_ref,
-        test_run_id, details, observed_at, binding_fingerprint, created_by
+        test_run_id, details, observed_at, binding_fingerprint, created_by,
+        verifies_binding_id
       ) VALUES (
         ${scope.workspaceId}, ${scope.harnessSlug}, ${input.workItemId}, ${planSlug},
         ${identity.spec_id}, ${specRevision}, ${revision.content_hash}, ${input.evidenceKind},
@@ -780,7 +1733,8 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
         ${canonical.fixtureFingerprint}, ${canonical.rubricFingerprint},
         ${canonical.environmentFingerprint}, ${canonical.coverageEvidenceRef},
         ${canonical.testRunId}, ${JSON.stringify(canonical.details)}::text::jsonb,
-        ${observedAt}, ${bindingFingerprint}, ${input.actorId}
+        ${observedAt}, ${bindingFingerprint}, ${input.actorId},
+        ${verifiesBindingId}
       ) ON CONFLICT (
         workspace_id, harness_slug, work_item_id,
         plan_slug, spec_id, spec_revision, binding_fingerprint
@@ -882,15 +1836,110 @@ export type EvidenceCurrentnessProvenance =
   | 'partially-server-measured'
   | 'attested-current'
   | 'replayed-snapshot'
+  | 'historical-snapshot'
   | 'not-supplied';
 
 type OpaqueFingerprintDimension = 'fixture' | 'rubric' | 'environment';
 
 /** Trust metadata for the current-fingerprint tuple used by the classifier. */
 interface CurrentnessClassificationOptions {
-  provenance?: 'server-measured' | 'partially-server-measured' | 'replayed-snapshot';
+  provenance?: 'server-measured' | 'partially-server-measured' | 'replayed-snapshot' | 'historical-snapshot';
   /** Applicable non-repository dimensions supplied by the caller beside server measurements. */
   attestedDimensions?: OpaqueFingerprintDimension[];
+  /** Internal independent certification only; never admitted through current-input schemas. */
+  sourceEquivalence?: StaticGuidanceSourceEquivalence;
+  /**
+   * P-011: the bar this evidence proves declares `verification.productionConfiguration`.
+   * `declaredFingerprint` is that declaration's fingerprint; `unresolved` means the bar's
+   * declaration could not be read, which is never treated as "declares nothing".
+   */
+  declaredConfiguration?: { declaredFingerprint: string } | { unresolved: string };
+}
+
+/** The bind-time stamp `plans:bind-spec-evidence` writes on a configuration-checked binding. */
+function declaredConfigurationStampOf(
+  details: Record<string, unknown> | undefined,
+): { declaredFingerprint: string; fingerprint: string } | null {
+  const stamp = details?.declaredConfiguration;
+  if (!stamp || typeof stamp !== 'object' || Array.isArray(stamp)) return null;
+  const { required, declaredFingerprint, fingerprint } = stamp as Record<string, unknown>;
+  if (required !== true || typeof declaredFingerprint !== 'string' || typeof fingerprint !== 'string') return null;
+  return { declaredFingerprint, fingerprint };
+}
+
+/**
+ * SPEC-P-011-NULL-FINGERPRINT: evidence without a declared-configuration fingerprint never
+ * counts as current for a bar that declares a production configuration. Only a binding the
+ * bind door checked and stamped, under the declaration the bar still makes, is current.
+ */
+function declaredConfigurationState(
+  row: CurrentnessRow,
+  declared: NonNullable<CurrentnessClassificationOptions['declaredConfiguration']>,
+): FingerprintState {
+  if ('unresolved' in declared) return 'unknown';
+  const stamp = declaredConfigurationStampOf(row.details);
+  if (!stamp || stamp.fingerprint !== stamp.declaredFingerprint) return 'unknown';
+  return stamp.declaredFingerprint === declared.declaredFingerprint ? 'current' : 'stale';
+}
+
+type DeclaredConfigurationResolution = NonNullable<CurrentnessClassificationOptions['declaredConfiguration']>;
+
+function declaredConfigurationPinKey(row: {
+  source_rubric_slug?: string | null;
+  source_rubric_revision?: number | null;
+  source_bar_key?: string | null;
+}): string | null {
+  if (!row.source_rubric_slug || row.source_rubric_revision == null || !row.source_bar_key) return null;
+  return `${row.source_rubric_slug}@${Number(row.source_rubric_revision)}:${row.source_bar_key}`;
+}
+
+/** Test seam: replace the pinned-rubric read the P-011 currentness check performs. */
+export const declaredConfigurationReadSeam: {
+  loadRubricCriteria?: (rubricSlug: string, revision: number) => Promise<
+    Array<{ key: string; barKey?: string; productionConfiguration?: unknown }> | null
+  >;
+} = {};
+
+/**
+ * P-011: which pinned BARs declare a production configuration. One rubric read per distinct
+ * (rubric, revision); a BAR whose rubric is gone declares nothing, while a read that throws
+ * is `unresolved` so its evidence cannot read as current on an unknown declaration.
+ */
+export async function resolveDeclaredConfigurations(
+  rows: ReadonlyArray<{ source_rubric_slug?: string | null; source_rubric_revision?: number | null; source_bar_key?: string | null }>,
+): Promise<Map<string, DeclaredConfigurationResolution>> {
+  const out = new Map<string, DeclaredConfigurationResolution>();
+  const rubricReads = new Map<string, Promise<Array<{ key: string; barKey?: string; productionConfiguration?: unknown }> | null>>();
+  const loadCriteria =
+    declaredConfigurationReadSeam.loadRubricCriteria ??
+    (async (slug: string, revision: number) => {
+      const { getRubric } = await import('../../rubrics');
+      return (await getRubric(slug, revision))?.criteria ?? null;
+    });
+  for (const row of rows) {
+    const key = declaredConfigurationPinKey(row);
+    if (!key || out.has(key)) continue;
+    const rubricKey = `${row.source_rubric_slug}@${Number(row.source_rubric_revision)}`;
+    if (!rubricReads.has(rubricKey)) {
+      rubricReads.set(rubricKey, loadCriteria(row.source_rubric_slug!, Number(row.source_rubric_revision)));
+    }
+    try {
+      const criteria = await rubricReads.get(rubricKey)!;
+      const criterion = criteria?.find((c) => (c.barKey?.trim() || c.key) === row.source_bar_key);
+      const declared = parseProductionConfiguration(criterion?.productionConfiguration);
+      if (declared) out.set(key, { declaredFingerprint: declaredConfigurationFingerprint(declared) });
+    } catch (error: unknown) {
+      out.set(key, { unresolved: (error instanceof Error ? error.message : String(error)).slice(0, 160) });
+    }
+  }
+  return out;
+}
+
+interface StaticGuidanceSourceEquivalence {
+  kind: 'static-agent-tool-guidance';
+  paths: string[];
+  storedFingerprint: string;
+  measuredFingerprint: string;
 }
 
 /**
@@ -905,6 +1954,8 @@ export interface ProvisionalScorecardProof {
 }
 
 export interface EvidenceCurrentness {
+  /** Raw fingerprints differ only at the listed independently certified inert metadata spans. */
+  sourceEquivalence?: StaticGuidanceSourceEquivalence;
   overall: Exclude<FingerprintState, 'not-applicable'>;
   dimensions: {
     spec: Exclude<FingerprintState, 'unknown' | 'not-applicable'>;
@@ -915,6 +1966,8 @@ export interface EvidenceCurrentness {
     environment: FingerprintState;
     coverageEvidence: FingerprintState;
     testRun: FingerprintState;
+    /** P-011: present only when the bar declares a production configuration. */
+    configuration?: FingerprintState;
   };
   staleReasons: string[];
   unknownReasons: string[];
@@ -949,6 +2002,9 @@ interface CurrentnessRow {
   coverage_evidence_present: boolean;
   test_run_id: number | null;
   test_run_present: boolean;
+  test_run_worktree_dirty?: boolean | null;
+  evidence_kind?: SpecEvidenceKind;
+  details?: Record<string, unknown>;
 }
 
 function compareFingerprint(stored: string | null, current: string | null | undefined): FingerprintState {
@@ -963,23 +2019,77 @@ export function classifySpecEvidenceCurrentness(
   current?: EvidenceCurrentInput,
   options: CurrentnessClassificationOptions = {},
 ): EvidenceCurrentness {
+  const adequacy = row.details?.adequacy;
+  const fixtureCalibrationAttested =
+    adequacy !== null && typeof adequacy === 'object' && !Array.isArray(adequacy) &&
+    (adequacy as Record<string, unknown>).fixtureCalibrated === true;
+  const fixtureExpected = row.evidence_kind === 'fixture' || fixtureCalibrationAttested;
+  const evidencePlane = row.details?.evidencePlane ?? row.details?.evidence_plane ?? row.details?.plane;
+  const ledgerMeasurement = workItemsEvidenceMeasurementSchema.safeParse(row.details?.currentMeasurement);
+  // A live ledger-state observation measures dispositions, not a serving process.
+  // Only a valid ledger-only recipe can omit runtime identity; runtime-dependent
+  // work-item measurements and every repository-backed live proof still require it.
+  const ledgerOnly = ledgerMeasurement.success && ledgerMeasurement.data.runtimeUnits === undefined;
+  const liveEnvironmentRequired =
+    typeof evidencePlane === 'string' && ['live', 'deployed'].includes(evidencePlane.trim().toLowerCase()) &&
+    !ledgerOnly;
+  const environmentFingerprintMissing = liveEnvironmentRequired && row.environment_fingerprint === null;
   const dimensions: EvidenceCurrentness['dimensions'] = {
     spec: row.spec_is_current ? 'current' : 'stale',
     source: compareFingerprint(row.source_fingerprint, current?.sourceFingerprint) as 'current' | 'stale' | 'unknown',
     test: compareFingerprint(row.test_fingerprint, current?.testFingerprint),
-    fixture: compareFingerprint(row.fixture_fingerprint, current?.fixtureFingerprint),
+    fixture:
+      fixtureExpected && row.fixture_fingerprint === null
+        ? 'unknown'
+        : compareFingerprint(row.fixture_fingerprint, current?.fixtureFingerprint),
     rubric: compareFingerprint(row.rubric_fingerprint, current?.rubricFingerprint),
-    environment: compareFingerprint(row.environment_fingerprint, current?.environmentFingerprint),
+    // A live/deployed proof depends on the runtime it exercised. Missing that identity
+    // is unknown, not proof that the environment dimension does not apply.
+    environment: environmentFingerprintMissing
+      ? 'unknown'
+      : compareFingerprint(row.environment_fingerprint, current?.environmentFingerprint),
     coverageEvidence:
       row.coverage_evidence_ref === null ? 'not-applicable' : row.coverage_evidence_present ? 'current' : 'stale',
-    testRun: row.test_run_id === null ? 'not-applicable' : row.test_run_present ? 'current' : 'stale',
+    // A durable testRunId proves that a ledger row exists; it does not prove that a
+    // run against a dirty shared worktree executed the committed files now being
+    // fingerprinted. The file-set measurement covers only declared paths, so a
+    // dirty run remains unknown even when those declared hashes happen to match.
+    testRun:
+      row.test_run_id === null
+        ? 'not-applicable'
+        : !row.test_run_present
+          ? 'stale'
+          : row.test_run_worktree_dirty === false
+            ? 'current'
+            : 'unknown',
+    // Additive only: a bar that declares nothing classifies exactly as before P-011.
+    ...(options.declaredConfiguration
+      ? { configuration: declaredConfigurationState(row, options.declaredConfiguration) }
+      : {}),
   };
+  const sourceEquivalence = options.provenance === 'server-measured' && options.sourceEquivalence
+    && options.sourceEquivalence.storedFingerprint === row.source_fingerprint
+    && options.sourceEquivalence.measuredFingerprint === current?.sourceFingerprint
+    && options.sourceEquivalence.paths.length > 0 ? options.sourceEquivalence : undefined;
+  if (sourceEquivalence && dimensions.source === 'stale') dimensions.source = 'current';
   const staleReasons = Object.entries(dimensions)
     .filter(([, state]) => state === 'stale')
     .map(([dimension]) => `${dimension}-stale`);
   const unknownReasons = Object.entries(dimensions)
     .filter(([, state]) => state === 'unknown')
-    .map(([dimension]) => `${dimension}-current-fingerprint-not-supplied`);
+    .map(([dimension]) =>
+      dimension === 'testRun'
+        ? row.test_run_worktree_dirty === true
+          ? 'test-run-worktree-not-clean'
+          : 'test-run-worktree-cleanliness-unproven'
+        : dimension === 'environment' && environmentFingerprintMissing
+          ? 'environment-evidence-fingerprint-not-recorded'
+          : dimension === 'configuration'
+            ? options.declaredConfiguration && 'unresolved' in options.declaredConfiguration
+              ? `declared-configuration-unresolved:${options.declaredConfiguration.unresolved}`
+              : 'declared-configuration-fingerprint-not-recorded'
+            : `${dimension}-current-fingerprint-not-supplied`,
+    );
   const attestedDimensions = [...new Set(options.attestedDimensions ?? [])].sort();
   const provenance: EvidenceCurrentnessProvenance =
     current === undefined
@@ -987,12 +2097,11 @@ export function classifySpecEvidenceCurrentness(
       : options.provenance === 'server-measured' && attestedDimensions.length > 0
         ? 'partially-server-measured'
         : options.provenance ?? 'attested-current';
-  // A replayed snapshot is NOT an independent measurement: on the replay path the
-  // server skips measuring entirely and the whole `current` tuple arrives from the
-  // caller, so labelling it 'server-measured' would launder a caller assertion into
-  // server proof. Guard it exactly like an attested tuple — the caller can still
-  // reproduce a historical grade, but cannot mint a fresh-freshness verdict from
-  // fingerprints it authored itself.
+  // The public replay path is NOT an independent measurement: the whole `current`
+  // tuple arrives from the caller, so `replayed-snapshot` stays unknown when it matches.
+  // The internal grading-audit path uses `historical-snapshot` only with auditAsOf to
+  // reconstruct the verdict at card creation; its distinct provenance is not a live
+  // freshness attestation or a ship-gate result.
   const attestedCurrentGuard =
     (provenance === 'attested-current' ||
       provenance === 'partially-server-measured' ||
@@ -1014,10 +2123,53 @@ export function classifySpecEvidenceCurrentness(
     unknownReasons: guardedUnknownReasons,
     comparisonSupplied: current != null,
     provenance,
+    ...(sourceEquivalence ? { sourceEquivalence } : {}),
   };
 }
 
+/**
+ * Split a failed mutation-probe run's ledger tail into its non-empty lines (WI-10006745). The
+ * ledger reporter writes one `<case full name>: <message>` line per failed case; the adequacy
+ * evaluator matches a declared test case against those line prefixes. Prefer structured failed
+ * identities (EI-25248905256718690): large DOM diagnostics can erase all names from that tail.
+ * Old valid rows retain their legacy path; malformed execution proof never falls back to text.
+ */
+export function mutationFailureLines(tail: string, executionDetails?: unknown): string[] {
+  if (executionDetails != null) {
+    const execution = parseTestRunExecutionDetails(executionDetails);
+    if (!execution) return [];
+    if (execution.failedCaseTitles !== undefined) {
+      return execution.failedCaseTitles.map(title => `${title}: (recorded failed assertion)`);
+    }
+  }
+  return tail
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+    .slice(0, 64);
+}
+
+/**
+ * The mutant run's recorded failed-case titles, for EXACT-membership case matching (WI-10006753).
+ * `mutationFailureLines` re-renders these as `<title>: …` lines, and prefix matching over those
+ * lines lets a declared `suite > a` claim a recorded failed `suite > a: b`; the adequacy
+ * evaluator prefers this list when present. `undefined` = no structured titles (legacy row or no
+ * execution details) → the evaluator falls back to line-prefix matching. Malformed execution proof
+ * yields `[]` (measures nothing), mirroring `mutationFailureLines`' refusal to fall back to text.
+ */
+export function mutationFailedCaseTitles(executionDetails?: unknown): string[] | undefined {
+  if (executionDetails == null) return undefined;
+  const execution = parseTestRunExecutionDetails(executionDetails);
+  if (!execution) return [];
+  return execution.failedCaseTitles === undefined ? undefined : [...execution.failedCaseTitles];
+}
+
 interface EvidenceRow extends CurrentnessRow {
+  verifies_binding_id?: number | string | null;
+  /** P-011: the BAR pin of the bound clause revision, when it was projected from a rubric. */
+  source_rubric_slug?: string | null;
+  source_rubric_revision?: number | null;
+  source_bar_key?: string | null;
   id: number;
   work_item_id: string;
   plan_slug: string;
@@ -1044,8 +2196,39 @@ interface EvidenceRow extends CurrentnessRow {
   test_run_file_path: string | null;
   test_run_commit_sha: string | null;
   test_run_worktree_dirty: boolean | null;
+  test_run_status?: string | null;
+  test_run_framework?: string | null;
+  test_run_source?: string | null;
+  test_run_execution_details?: unknown;
+  test_run_started_at?: Date | string | null;
+  test_run_finished_at?: Date | string | null;
+  /** Ledger output tail of a FAILED mutation-probe run bound as mutation evidence; else NULL. */
+  mutation_failure_tail: string | null;
+  /** Same source/status fence as the tail; optional for legacy mock/read envelopes. */
+  mutation_execution_details?: unknown;
+  mutation_baseline_id?: number | string | null;
+  mutation_baseline_status?: string | null;
+  mutation_baseline_execution_details?: unknown;
   provisionalProofBase?: boolean;
   provisionalScorecard?: ProvisionalScorecardProof;
+}
+
+/** The verified recording adapter's layer, never an inferred historical runtime layer. */
+export function canonicalOperationalAdapterLayer(run: {
+  framework?: string | null; source?: string | null; filePath?: string | null;
+  runGroupId?: string | null; commitSha?: string | null; worktreeDirty?: boolean | null;
+}): 'operational' | undefined {
+  if (run.framework !== 'operational' || run.source !== 'local' ||
+    run.worktreeDirty !== false || !run.commitSha) return undefined;
+  // executeOperationalRun owns this receipt namespace and executes the callback;
+  // this classifies the recording adapter, not a Vitest or e2e runtime layer.
+  const native = /^operational-native:[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(run.runGroupId ?? '') &&
+    /^[a-f0-9]{40}$/.test(run.commitSha) &&
+    repoMeasurementPathSchema.safeParse(run.filePath).success;
+  const archived =
+    /^docs\/evidence\/[^\n]+\.json$/.test(run.filePath ?? '') &&
+    /^operational(?:-recovery:\d+)?:[a-f0-9]{40}$/.test(run.runGroupId ?? '');
+  return native || archived ? 'operational' : undefined;
 }
 
 function scorecardIssueIdFromEvidenceRef(evidenceRef: string): string | null {
@@ -1063,8 +2246,24 @@ function parseProvisionalScorecardProof(issueId: string, value: unknown): Provis
   return { issueId, stampedAt: raw.stampedAt, violatableKeys };
 }
 
+export interface ListSpecEvidenceDiagnostics {
+  phaseMs: Record<string, number>;
+  committedTree?: CommittedTreeDiagnostics;
+  bindings: {
+    selectedRows: number;
+    rowsWithRecipe: number;
+    measured: number;
+    unavailable: number;
+    skipped: number;
+    totalMeasurementMs: number;
+    maxMeasurementMs: number;
+  };
+}
+
 export interface ListSpecEvidenceOptions {
   harnessSlug?: string;
+  /** Pin historical audit reads to the workspace recorded on the graded card. */
+  workspaceId?: string;
   /**
    * The plan namespaces to read evidence from — an ARRAY, not a single slug, since P-013.
    *
@@ -1087,15 +2286,18 @@ export interface ListSpecEvidenceOptions {
   sourceValIds?: string[];
   evidenceKinds?: SpecEvidenceKind[];
   evidenceRefs?: string[];
-  current?: EvidenceCurrentInput[];
+  /** Restrict a replay to exact immutable binding rows; [] selects no rows. */
+  bindingIds?: number[];
+  /** Boolean aliases carry no testimony and use the same server measurement as omission. */
+  current?: EvidenceCurrentInput[] | boolean;
   /** Pin reads to one immutable clause revision instead of the live revision pointer. */
   specRevision?: number;
   /** Optional content hash paired with specRevision for an exact immutable pin. */
   specFingerprint?: string;
   /** Replay the supplied current tuple as a prior server measurement; never re-read live files. */
   replaySnapshot?: boolean;
-  /** Provenance for a replayed current tuple. */
-  currentProvenance?: 'server-measured' | 'partially-server-measured' | 'replayed-snapshot';
+  /** Provenance for a replayed current tuple; historical-snapshot is internal and requires auditAsOf. */
+  currentProvenance?: 'server-measured' | 'partially-server-measured' | 'replayed-snapshot' | 'historical-snapshot';
   currentness?: Array<'current' | 'stale' | 'unknown'>;
   /**
    * Include bindings that were deliberately WITHDRAWN (migration 1174, decision D-011).
@@ -1114,7 +2316,14 @@ export interface ListSpecEvidenceOptions {
    * why — never from an evaluator, a gate, or anything that counts evidence.
    */
   includeRetracted?: boolean;
+  /**
+   * Historical audit cutoff. When set with includeRetracted:true, return only
+   * bindings that existed and had not yet been withdrawn at this instant.
+   */
+  auditAsOf?: Date;
   limit?: number;
+  /** Optional internal timing sink for the plans:get-spec-evidence slow-read diagnosis. */
+  diagnostics?: ListSpecEvidenceDiagnostics;
 }
 
 export interface WorkItemSpecRevisionEdge {
@@ -1291,7 +2500,9 @@ export async function listWorkItemSpecRevisionEdges(options: {
   planSlug?: string;
   workItemId: string;
 }): Promise<WorkItemSpecRevisionEdge[]> {
-  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  const scope = await resolvePlanScope({
+    harnessSlug: options.harnessSlug,
+  });
   const planSlug = options.planSlug;
   const rows = await withWorkspace(
     scope.workspaceId,
@@ -1405,9 +2616,34 @@ export interface SupersedeSpecEvidenceOptions {
 }
 
 /**
- * P-019 (review-system-rework-reduction-2026-09-23): withdraw, in ONE statement, every other
- * live row of the same evidence kind at one clause revision, stamped as superseded by the
- * named binding (D-011: stamped, never deleted, still returned by includeRetracted reads).
+ * Why a same-kind live sibling survived a supersession. Each names a claim the sibling makes
+ * that the superseding row does not, so withdrawing it would have destroyed proof nothing
+ * replaced (EI-25220306060165214, EI-24400631485940769).
+ */
+export type SupersessionKeepReason =
+  | 'different-subject'
+  | 'different-target'
+  | 'different-causal-pairs'
+  | 'superseding-binding-not-live';
+
+export interface SupersessionKeptRow {
+  id: number;
+  work_item_id: string;
+  evidence_ref: string;
+  subject: string;
+  keep_reason: SupersessionKeepReason;
+}
+
+export interface SupersessionResult {
+  retracted: RetractedBindingRow[];
+  /** Same-kind live siblings left standing, each with the claim that protected it. */
+  kept: SupersessionKeptRow[];
+}
+
+/**
+ * P-019 (review-system-rework-reduction-2026-09-23): withdraw the live rows at one clause
+ * revision that the named binding REPLACES, stamped as superseded by it (D-011: stamped, never
+ * deleted, still returned by includeRetracted reads).
  *
  * The adequacy evaluator grades every live row at a revision, so one old weak, stale or
  * failing row fails a criterion beside newer sufficient proof — measured on R-11, where a
@@ -1415,47 +2651,529 @@ export interface SupersedeSpecEvidenceOptions {
  * hand. Scoped to the same evidence KIND on purpose: a fresh test row must never withdraw the
  * clause's mutation proof, which is a different obligation. Runs AFTER the superseding bind
  * commits, so a failure here leaves the old rows live and never loses proof.
+ *
+ * Scoped to the same proof SUBJECT as well. A clause's proof often spans several test files
+ * (a unit and an integration layer) or several causal pairs (one per seam). Keyed only on
+ * kind, one fresh run retracted every sibling file's current proof: EI-24400631485940769 wiped
+ * ~15 current rows from five unrelated seams, EI-25220306060165214 a different layer's still-
+ * current unit proof. A sibling is withdrawn only when it proves the same subject — the test
+ * run's file (the same `test_runs.file_path` the evaluator reads as testRunProvenance), else
+ * `details.testRun.filePath`, else the evidence ref — AND claims nothing the superseding row
+ * does not: an `adequacy.targeted` that differs under the clause's accepted-target policy,
+ * or `adequacy.causalPairIds` outside the
+ * superseding row's set, is a different proof. Survivors are returned in `kept` with that
+ * reason, so a caller who meant to clear them retracts those ids explicitly.
  */
-export async function supersedeSpecEvidenceAtRevision(options: SupersedeSpecEvidenceOptions) {
+export async function supersedeSpecEvidenceAtRevision(
+  options: SupersedeSpecEvidenceOptions,
+): Promise<SupersessionResult> {
   const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
   const actorId = options.actorId.trim();
   const reason = `superseded by binding ${options.supersedingBindingId} (plans:bind-spec-evidence supersedeAtRevision)`;
   const keep = [...new Set([options.supersedingBindingId, ...options.keepBindingIds])];
-  return withWorkspace(scope.workspaceId, async (tx) =>
-    tx<RetractedBindingRow[]>`
+  return withWorkspace(scope.workspaceId, async (tx) => {
+    const siblings = await tx<
+      Array<Omit<SupersessionKeptRow, 'keep_reason'> & { keep_reason: SupersessionKeepReason | null }>
+    >`
+      WITH target_policy AS (
+        SELECT CASE WHEN jsonb_typeof(r.falsifier->'requiredScenarios') = 'array'
+                    THEN jsonb_array_length(r.falsifier->'requiredScenarios') = 0
+                    ELSE true END AS accepts_self_target
+          FROM harness_shared.plan_spec_clause_revisions r
+         WHERE r.workspace_id = ${scope.workspaceId}
+           AND r.harness_slug = ${scope.harnessSlug}
+           AND r.plan_slug = ${options.planSlug}
+           AND r.spec_id = ${options.specId}
+           AND r.revision = ${options.specRevision}
+      ), clause_rows AS (
+        SELECT b.id, b.work_item_id, b.evidence_ref,
+               COALESCE(NULLIF(tr.file_path, ''), NULLIF(b.details->'testRun'->>'filePath', ''), b.evidence_ref)
+                 AS subject,
+               CASE WHEN jsonb_typeof(b.details->'adequacy'->'targeted') = 'string' THEN
+                      CASE WHEN (SELECT accepts_self_target FROM target_policy)
+                                 AND b.details->'adequacy'->>'targeted'
+                                     IN (${options.specId}, ${options.specId.toLowerCase()})
+                           THEN ${options.specId}
+                           ELSE b.details->'adequacy'->>'targeted' END
+                    END AS targeted,
+               CASE WHEN jsonb_typeof(b.details->'adequacy'->'causalPairIds') = 'array'
+                    THEN b.details->'adequacy'->'causalPairIds' ELSE '[]'::jsonb END AS causal_pair_ids
+          FROM harness_shared.spec_evidence_bindings b
+          LEFT JOIN harness_shared.test_runs tr ON tr.id = b.test_run_id
+         WHERE b.workspace_id = ${scope.workspaceId}
+           AND b.harness_slug = ${scope.harnessSlug}
+           AND b.plan_slug = ${options.planSlug}
+           AND b.spec_id = ${options.specId}
+           AND b.spec_revision = ${options.specRevision}
+           AND b.evidence_kind = ${options.evidenceKind}
+           AND b.retracted_at IS NULL
+      ),
+      superseding AS (SELECT * FROM clause_rows WHERE id = ${options.supersedingBindingId})
+      SELECT c.id, c.work_item_id, c.evidence_ref, c.subject,
+             CASE WHEN s.id IS NULL THEN 'superseding-binding-not-live'
+                  WHEN c.subject IS DISTINCT FROM s.subject THEN 'different-subject'
+                  WHEN c.targeted IS NOT NULL AND c.targeted IS DISTINCT FROM s.targeted THEN 'different-target'
+                  WHEN NOT (c.causal_pair_ids <@ s.causal_pair_ids) THEN 'different-causal-pairs'
+             END AS keep_reason
+        FROM clause_rows c
+        LEFT JOIN superseding s ON true
+       WHERE NOT (c.id = ANY(${keep}::bigint[]))
+       ORDER BY c.id`;
+    const retractIds = siblings.filter((row) => row.keep_reason === null).map((row) => Number(row.id));
+    const kept = siblings
+      .filter((row): row is SupersessionKeptRow => row.keep_reason !== null)
+      .map((row) => ({ ...row, id: Number(row.id) }));
+    if (retractIds.length === 0) return { retracted: [], kept };
+    const retracted = await tx<RetractedBindingRow[]>`
       UPDATE harness_shared.spec_evidence_bindings
          SET retracted_at = now(), retracted_by = ${actorId}, retraction_reason = ${reason}
        WHERE workspace_id = ${scope.workspaceId}
          AND harness_slug = ${scope.harnessSlug}
-         AND plan_slug = ${options.planSlug}
-         AND spec_id = ${options.specId}
-         AND spec_revision = ${options.specRevision}
-         AND evidence_kind = ${options.evidenceKind}
+         AND id = ANY(${retractIds}::bigint[])
          AND retracted_at IS NULL
-         AND NOT (id = ANY(${keep}::bigint[]))
       RETURNING id, work_item_id, plan_slug, spec_id, spec_revision,
-                evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason`,
-  );
+                evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason`;
+    return { retracted, kept };
+  });
+}
+
+/**
+ * Strip only inert description/guidance properties of a direct imported defineTool.
+ * Everything outside those spans remains byte-identical. Dynamic metadata, root
+ * spreads, duplicate properties and parse errors fail closed. This classifies a
+ * completed native journey; it never changes the measured raw source fingerprint.
+ */
+export function agentToolRuntimeSourceWithoutStaticGuidance(source: string): string | null {
+  const file = ts.createSourceFile('tool.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  if ((file as ts.SourceFile & { parseDiagnostics: readonly unknown[] }).parseDiagnostics.length) return null;
+  const importsDefineTool = file.statements.some(statement => ts.isImportDeclaration(statement)
+    && ts.isStringLiteral(statement.moduleSpecifier) && statement.moduleSpecifier.text === '@papercusp/agent-mcp'
+    && statement.importClause?.namedBindings && ts.isNamedImports(statement.importClause.namedBindings)
+    && statement.importClause.namedBindings.elements.some(element => element.name.text === 'defineTool'
+      && (!element.propertyName || element.propertyName.text === 'defineTool')));
+  const exports = file.statements.filter(ts.isExportAssignment);
+  if (!importsDefineTool || exports.length !== 1 || exports[0].isExportEquals) return null;
+  const expression = exports[0].expression;
+  if (!ts.isCallExpression(expression) || !ts.isIdentifier(expression.expression)
+    || expression.expression.text !== 'defineTool' || expression.arguments.length !== 1
+    || !ts.isObjectLiteralExpression(expression.arguments[0])) return null;
+  const object = expression.arguments[0];
+  const key = (node: ts.PropertyName | undefined): string | null => node
+    && (ts.isIdentifier(node) || ts.isStringLiteral(node)) ? node.text : null;
+  const keys = object.properties.map(property => ts.isSpreadAssignment(property) ? null : key(property.name));
+  if (keys.includes(null) || new Set(keys).size !== keys.length) return null;
+  const staticString = (node: ts.Expression): boolean => ts.isStringLiteral(node)
+    || ts.isNoSubstitutionTemplateLiteral(node)
+    || ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken
+      && staticString(node.left) && staticString(node.right);
+  const staticValue = (node: ts.Expression): boolean => staticString(node)
+    || ts.isArrayLiteralExpression(node) && node.elements.every(element => staticString(element));
+  const metadata = object.properties.filter(property => !ts.isSpreadAssignment(property)
+    && ['description', 'guidance'].includes(key(property.name) ?? ''));
+  if (metadata.length !== 2) return null;
+  for (const property of metadata) {
+    if (!ts.isPropertyAssignment(property)) return null;
+    if (key(property.name) === 'description') {
+      if (!staticString(property.initializer)) return null;
+    } else {
+      if (!ts.isObjectLiteralExpression(property.initializer)) return null;
+      const guidanceKeys = property.initializer.properties.map(entry => ts.isSpreadAssignment(entry) ? null : key(entry.name));
+      if (new Set(guidanceKeys).size !== guidanceKeys.length
+        || !property.initializer.properties.every(entry => ts.isPropertyAssignment(entry)
+          && ['when', 'notWhen', 'chaining', 'returns', 'seeAlso'].includes(key(entry.name) ?? '')
+          && staticValue(entry.initializer))) return null;
+    }
+  }
+  let stripped = source;
+  for (const property of [...metadata].sort((a, b) => b.pos - a.pos)) {
+    const end = source[property.end] === ',' ? property.end + 1 : property.end;
+    stripped = stripped.slice(0, property.getFullStart()) + stripped.slice(end);
+  }
+  return stripped;
+}
+
+async function onlyStaticToolGuidanceChanged(root: string, original: MeasuredRepoFile, current: MeasuredRepoFile): Promise<boolean> {
+  if (!original.gitBlob || !current.gitBlob) return false;
+  const blobs = await defaultBlobBatchReader(root, [original.gitBlob, current.gitBlob]);
+  const before = blobs.get(original.gitBlob), after = blobs.get(current.gitBlob);
+  if (!before || !after || createHash('sha256').update(before).digest('hex') !== original.sha256
+    || createHash('sha256').update(after).digest('hex') !== current.sha256) return false;
+  const beforeRuntime = agentToolRuntimeSourceWithoutStaticGuidance(before.toString('utf8'));
+  return beforeRuntime !== null && beforeRuntime === agentToolRuntimeSourceWithoutStaticGuidance(after.toString('utf8'));
+}
+
+/** Bounded original receipts outlive the disposable runtime and run-count pruning. */
+function completedRuntimeArtifactRefs(selector: NonNullable<RepoFilesEvidenceMeasurement['completedRuntime']>) {
+  if (selector.kind === 'isolated-integration') return selector.runIds.flatMap(runId => [
+    ['isolated-integration', runId, 'result.json'],
+    ['isolated-integration', runId, 'phases/prepare/source.json'],
+    ['isolated-integration', runId, 'phases/execute/lifecycle.json'],
+  ] as const);
+  return selector.kind === 'verification-harness' ? [
+    ['verify-tauri-headless', selector.verifierRunId, 'result.json'],
+    ['verify-tauri-headless', selector.verifierRunId, 'phases/prepare/verifier-source-receipt.json'],
+    [selector.journeyHarness, selector.journeyRunId, 'result.json'],
+    ...(selector.journeyHarness === 'operator-e2e-isolated' ? [] : [
+      [selector.journeyHarness, selector.journeyRunId, 'phases/native/manifest.json'] as const,
+    ]),
+  ] as const : [];
+}
+
+async function readCompletedRuntimeArtifact(harness: string, runId: string, file: string) {
+  // EI-25420516419064831: reuse the maintained driver's existing root contract;
+  // measurement selectors still cannot supply an arbitrary filesystem path.
+  const roots = [defaultEvidenceRoot(harness)];
+  if (harness === 'operator-e2e-isolated') roots.push(
+    process.env.OPERATOR_E2E_HARNESS_EVIDENCE_ROOT?.trim() || '/tmp/pcv/operator-e2e-isolated');
+  for (const root of [...new Set(roots)]) {
+    let base: string, path: string;
+    try {
+      base = await realpath(root);
+      try { path = await realpath(join(base, runId, file)); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        path = await realpath(join(base, 'retained', runId, file));
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      continue;
+    }
+    if (relative(base, path).startsWith('..') || isAbsolute(relative(base, path))) throw new Error('artifact outside harness');
+    const info = await stat(path);
+    if (!info.isFile() || info.size > 16 * 1024 * 1024) throw new Error('invalid harness artifact');
+    const bytes = await readFile(path);
+    if (bytes.length > 16 * 1024 * 1024) throw new Error('invalid harness artifact');
+    return { base, bytes, data: JSON.parse(bytes.toString('utf8')) };
+  }
+  throw new Error('completed runtime artifact missing');
+}
+
+/** Extend existing proof pinning; retain receipt bytes, rather than whole multi-GB verifier runs. */
+async function retainCompletedRuntimeArtifacts(recipe: RepoFilesEvidenceMeasurement) {
+  if (!recipe.completedRuntime) return;
+  await Promise.all(completedRuntimeArtifactRefs(recipe.completedRuntime).map(async ([harness, runId, file]) => {
+    const { base, bytes } = await readCompletedRuntimeArtifact(harness, runId, file);
+    const destination = join(base, 'retained', runId, file);
+    await mkdir(dirname(destination), { recursive: true });
+    const parent = await realpath(dirname(destination));
+    if (relative(base, parent).startsWith('..') || isAbsolute(relative(base, parent))) throw new Error('artifact outside harness');
+    try { await writeFile(destination, bytes, { flag: 'wx' }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const existingPath = await realpath(destination);
+      if (relative(base, existingPath).startsWith('..') || isAbsolute(relative(base, existingPath))) throw new Error('artifact outside harness');
+      const existing = await readFile(destination);
+      if (!existing.equals(bytes)) throw new Error('retained harness artifact changed');
+    }
+  }));
+}
+
+/**
+ * Rows whose recorded test execution completed-runtime certification may re-verify: the
+ * implementer's own `test` row, and an `independent-verification` row re-observing that
+ * same run (EI-25847620673275477). bindSpecEvidence admits the latter only with source and
+ * environment fingerprints equal to the cited row's, carrying its run, plane and identity.
+ */
+function certifiesCompletedTestRow(kind: string): boolean {
+  return kind === 'test' || kind === 'independent-verification';
+}
+
+/**
+ * A disposed verifier cannot be re-probed through /proc. Certify its completed
+ * execution from the retained harness lifecycle and independently rehashed source
+ * instead. This opt-in applies only to clean native/LLM test receipts on the live
+ * test plane; it never certifies a serving/deployed production process.
+ */
+export async function measureCompletedTestRuntime(
+  row: EvidenceRow,
+  recipe: RepoFilesEvidenceMeasurement,
+  currentFiles: readonly MeasuredRepoFile[],
+  scope: { workspaceId: string; harnessSlug: string },
+  root: string,
+  options: { onStaticGuidanceEquivalence?: (value: StaticGuidanceSourceEquivalence) => void } = {},
+): Promise<string | null> {
+  const selector = recipe.completedRuntime;
+  if (selector?.kind === 'isolated-integration') return measureCompletedIntegrationRuntime(row, recipe, currentFiles, scope, root);
+  const execution = parseTestRunExecutionDetails(row.test_run_execution_details);
+  const witness = stableRecordedRuntimeEnvironment(
+    execution?.runtimeEnvironmentBefore, execution?.runtimeEnvironmentAfter);
+  // Guarded fromTestRun adoption changes ledger attribution, not the original
+  // captured receipt. The scoped join proves adoption; foreign, CI/admin and
+  // still-unscoped rows cannot certify an originally NULL-harness LLM witness.
+  const executionHarnessMatches = execution?.harnessSlug === scope.harnessSlug
+    || (selector?.kind === 'llm-in-process' && execution?.harnessSlug === null
+      && row.test_run_present
+      && (row.test_run_source === 'local' || row.test_run_source === 'mutation-probe'));
+  if (!selector || !recipe.runtimeUnits || !certifiesCompletedTestRow(row.evidence_kind)
+    || row.details.evidencePlane !== 'live' || row.test_run_status !== 'pass'
+    || !(selector.kind === 'llm-in-process' ? row.test_run_framework === 'llm-test'
+      : selector.kind === 'verification-harness' ? ['vitest', 'playwright'].includes(row.test_run_framework ?? '')
+      : row.test_run_framework === 'vitest')
+    || row.test_run_worktree_dirty !== false
+    || !execution || execution.testLayer !== (selector.kind === 'llm-in-process' ? 'llm' : 'e2e')
+    || execution.worktreeDirty
+    || execution.collectionFailed || execution.failed !== 0 || execution.skipped !== 0 || execution.passed < 1
+    || execution.workspaceId !== scope.workspaceId || !executionHarnessMatches
+    || !execution.commitSha || !/^[a-f0-9]{40,64}$/.test(execution.commitSha)
+    || execution.commitSha !== row.test_run_commit_sha || !witness
+    || JSON.stringify([...witness.units].sort()) !== JSON.stringify([...recipe.runtimeUnits].sort())
+    || !recipe.testPaths?.includes(execution.filePath)
+    || recipe.rootHarnessSlug || recipe.fixtureRootHarnessSlug) return null;
+  const instant = (value: unknown): number =>
+    value instanceof Date || typeof value === 'string' ? new Date(value).getTime() : NaN;
+  const before = instant(execution.runtimeEnvironmentBefore!.observedAt);
+  const after = instant(execution.runtimeEnvironmentAfter!.observedAt);
+  const start = instant(row.test_run_started_at);
+  const end = instant(row.test_run_finished_at);
+  if (![before, after, start, end].every(Number.isFinite)
+    || before > start || start > end || end > after) return null;
+  if (selector.kind === 'llm-in-process') {
+    try {
+      // The original recorder measured these kernel pins while the process was
+      // live. Reproduce THAT witness, then independently compare today's files
+      // with the executed Git objects. This proves completed source execution,
+      // without claiming that its PID or a serving deployment is still alive.
+      const rows = await listRuntimeVintage(scope.workspaceId);
+      const pins: Array<[string, string, string, string, number, string]> = [];
+      for (const unit of [...recipe.runtimeUnits].sort()) {
+        const matches = rows.filter(runtime => runtime.unit === unit && runtime.host === hostname());
+        if (matches.length !== 1) return null;
+        const runtime = matches[0];
+        const kernel = runtime.extra.kernelProcessIdentity;
+        const built = instant(runtime.buildTime), reported = instant(runtime.reportedAt);
+        if (!Number.isSafeInteger(runtime.pid) || runtime.pid! <= 0
+          || unit !== `llm-test-in-process-${runtime.pid}` || runtime.workspaceId !== scope.workspaceId
+          || runtime.treeSha !== execution.commitSha || runtime.bundleVersion !== null
+          || typeof kernel !== 'string' || !kernel
+          || !Number.isFinite(built) || !Number.isFinite(reported)
+          || built > reported || reported > before) return null;
+        pins.push([unit, runtime.host, runtime.treeSha, new Date(built).toISOString(), runtime.pid!, kernel]);
+      }
+      // Same normalized pin contract written by measureRuntimeVintageEnvironment.
+      if (createHash('sha256').update(JSON.stringify(pins)).digest('hex') !== witness.fingerprint) return null;
+      const recorded = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, execution.commitSha);
+      const original = new Map(recorded.files.map(file => [`${file.dimension}:${file.path}`, file.sha256]));
+      if (currentFiles.length === 0 || currentFiles.length !== recorded.files.length
+        || currentFiles.some(file => original.get(`${file.dimension}:${file.path}`) !== file.sha256)) return null;
+      return witness.fingerprint;
+    } catch { return null; }
+  }
+  try {
+    const operatorE2e = selector.journeyHarness === 'operator-e2e-isolated';
+    const [verifier, receipt, journey, manifest] = await Promise.all(
+      completedRuntimeArtifactRefs(selector).map(async ([harness, runId, file]) =>
+        (await readCompletedRuntimeArtifact(harness, runId, file)).data));
+    const completed = (result: any, harness: string, runId: string) => result?.schemaVersion === 1
+      && result.harness === harness && result.runId === runId && result.verdict === 'pass'
+      && !result.reuseFromRunId && Array.isArray(result.phases) && result.phases.length > 0
+      && result.phases.every((phase: any) => phase.status === 'passed');
+    if (!completed(verifier, 'verify-tauri-headless', selector.verifierRunId)
+      || !completed(journey, selector.journeyHarness, selector.journeyRunId)
+      || receipt?.schemaVersion !== 'verifier-source-v1' || receipt.sourceCommit !== execution.commitSha
+      || !Array.isArray(receipt.files) || !Array.isArray(receipt.testedInputs)
+      || !receipt.testedInputs.some((file: any) => file.path === execution.filePath)
+      || (!operatorE2e && (manifest?.result !== 'pass' || !Array.isArray(manifest.sourceFingerprints)
+        || manifest.sourceFingerprints.length === 0))) return null;
+    const phase = (name: string) => {
+      const matches = verifier.phases.filter((entry: any) => entry.phase === name);
+      return matches.length === 1 ? matches[0] : null;
+    };
+    const prepare = phase('prepare'), boot = phase('boot'), assertions = phase('assert');
+    // Reporter intervals derive from measured duration and can round before
+    // the harness writes its completion receipt. The original paired runtime
+    // observations bracket the actual test lifetime; use those exact bounds
+    // for the journey, while preserving the reporter interval checks above.
+    const journeyStart = instant(journey.startedAt), journeyEnd = instant(journey.endedAt);
+    if (!prepare || !boot || !assertions
+      || !(instant(prepare.endedAt) <= instant(boot.startedAt)
+        && instant(boot.endedAt) <= before && instant(assertions.startedAt) <= before
+        && instant(assertions.endedAt) >= after)) return null;
+    if (operatorE2e) {
+      // This driver wraps preparation, boot, assertions and teardown. Its
+      // interval encloses the verifier, while the original paired observations
+      // bracket the test inside that verifier's assertion phase.
+      const phases = (name: string) => journey.phases.filter((entry: any) => entry.phase === name);
+      const preflight = phases('preflight'), suite = phases('isolated-suite');
+      if (preflight.length !== 1 || suite.length !== 1
+        || !(journeyStart <= instant(preflight[0].startedAt)
+          && instant(preflight[0].startedAt) <= instant(preflight[0].endedAt)
+          && instant(preflight[0].endedAt) <= instant(suite[0].startedAt)
+          && instant(suite[0].startedAt) <= instant(verifier.startedAt)
+          && instant(verifier.startedAt) <= instant(prepare.startedAt)
+          && instant(assertions.endedAt) <= instant(verifier.endedAt)
+          && instant(verifier.endedAt) <= instant(suite[0].endedAt)
+          && instant(suite[0].endedAt) <= journeyEnd)) return null;
+    } else if (!(before <= journeyStart && journeyStart <= journeyEnd && journeyEnd <= after)) return null;
+    // A retained JSON receipt alone is not code identity. Read the immutable Git
+    // objects too, then compare each current source/test/fixture byte measurement.
+    const recorded = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, execution.commitSha);
+    const recordedFiles = new Map(recorded.files.map(file => [`${file.dimension}:${file.path}`, file]));
+    const receiptFiles = new Map(receipt.files.map((file: any) => [file.path, file.sha256]));
+    const journeyFiles = new Map((operatorE2e ? receipt.testedInputs : manifest.sourceFingerprints)
+      .map((file: any) => [file.path, file.sha256]));
+    const guidanceChanged: string[] = [];
+    if (currentFiles.length === 0 || currentFiles.length !== recorded.files.length) return null;
+    for (const file of currentFiles) {
+      const original = recordedFiles.get(`${file.dimension}:${file.path}`);
+      if (!original || receiptFiles.get(file.path) !== original.sha256
+        || ((operatorE2e || file.dimension === 'source' && !file.path.startsWith('scripts/'))
+          && journeyFiles.get(file.path) !== original.sha256)) return null;
+      if (file.sha256 !== original.sha256 && !(file.dimension === 'source'
+        && selector.guidanceOnlySourcePaths?.includes(file.path)
+        && await onlyStaticToolGuidanceChanged(root, original, file))) return null;
+      if (file.sha256 !== original.sha256) guidanceChanged.push(file.path);
+    }
+    if (guidanceChanged.length && recorded.sourceFingerprint === row.source_fingerprint) {
+      options.onStaticGuidanceEquivalence?.({ kind: 'static-agent-tool-guidance', paths: guidanceChanged.sort(),
+        storedFingerprint: recorded.sourceFingerprint,
+        measuredFingerprint: repoFileSetFingerprint(currentFiles.filter(file => file.dimension === 'source')) });
+    }
+    return witness.fingerprint;
+  } catch { return null; }
+}
+
+function isolatedIntegrationFingerprint(receipts: NonNullable<ReturnType<typeof parseTestRunExecutionDetails>>['isolatedRuntimeReceipts']): string {
+  return createHash('sha256').update(JSON.stringify([...receipts!].sort((a, b) => a.runId.localeCompare(b.runId)))).digest('hex');
+}
+
+/** Certify the original mid-test lifetime, never the current serving host or retrofitted stdout. */
+async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: RepoFilesEvidenceMeasurement,
+  currentFiles: readonly MeasuredRepoFile[], scope: { workspaceId: string; harnessSlug: string }, root: string): Promise<string | null> {
+  const execution = parseTestRunExecutionDetails(row.test_run_execution_details);
+  const selector = recipe.completedRuntime;
+  // The scoped ledger lookup proves any adoption into this harness. Preserve
+  // the original NULL in the hashed receipt, and never adopt CI/admin evidence.
+  const isolatedHarnessMatches = execution?.harnessSlug === scope.harnessSlug
+    || (execution?.harnessSlug === null && row.test_run_present
+      && (row.test_run_source === 'local' || row.test_run_source === 'mutation-probe'));
+  if (selector?.kind !== 'isolated-integration' || !execution?.isolatedRuntimeReceipts || !recipe.runtimeUnits
+    || !row.test_run_present
+    || !certifiesCompletedTestRow(row.evidence_kind) || row.details.evidencePlane !== 'live' || row.test_run_status !== 'pass'
+    || row.test_run_framework !== 'vitest' || (execution.testLayer !== 'integration' && execution.testLayer !== 'e2e')
+    || row.test_run_worktree_dirty !== false || execution.worktreeDirty || execution.collectionFailed
+    || execution.failed !== 0 || execution.passed !== selector.runIds.length
+    || execution.workspaceId !== scope.workspaceId || !isolatedHarnessMatches
+    || !execution.commitSha || !/^[a-f0-9]{40,64}$/.test(execution.commitSha)
+    || execution.commitSha !== row.test_run_commit_sha || !recipe.testPaths?.includes(execution.filePath)
+    || recipe.rootHarnessSlug || recipe.fixtureRootHarnessSlug
+    || JSON.stringify([...selector.runIds].sort()) !== JSON.stringify(execution.isolatedRuntimeReceipts.map(r => r.runId).sort())
+    || JSON.stringify([...recipe.runtimeUnits].sort()) !== JSON.stringify(selector.runIds.map(id => `isolated-integration:${id}`).sort())) return null;
+  const at = (value: any) => new Date(value).getTime();
+  const start = at(row.test_run_started_at), end = at(row.test_run_finished_at);
+  if (![start, end].every(Number.isFinite) || start > end) return null;
+  try {
+    if (execution.skipped !== 0) {
+      // A focused Vitest run records excluded cases as skips. Certify only
+      // when the case ledger proves every skip was outside the actual filter;
+      // a selected skip or missing case ledger remains unverified.
+      if (!execution.testNamePattern || !row.test_run_id) return null;
+      const pattern = new RegExp(execution.testNamePattern);
+      const recordedCases = await withWorkspace(scope.workspaceId,
+        tx => readRecordedTestCases(tx, row.test_run_id!));
+      if (!recordedCases || recordedCases.cases.length !== execution.passed + execution.skipped
+        || recordedCases.cases.filter(c => c.status === 'pass').length !== execution.passed
+        || recordedCases.cases.filter(c => c.status === 'skip').length !== execution.skipped
+        || recordedCases.cases.some(c => pattern.test(c.caseKey.replaceAll(' > ', ' ')) !== (c.status === 'pass')))
+        return null;
+    }
+    const recorded = await measureRepoFilesEvidenceDetailedAtCommit(root, recipe, execution.commitSha);
+    const originals = new Map(recorded.files.map(file => [`${file.dimension}:${file.path}`, file]));
+    if (!currentFiles.length || currentFiles.length !== recorded.files.length
+      || currentFiles.some(file => originals.get(`${file.dimension}:${file.path}`)?.sha256 !== file.sha256)) return null;
+    for (const original of execution.isolatedRuntimeReceipts) {
+      const artifacts = await Promise.all(['result.json', 'phases/prepare/source.json', 'phases/execute/lifecycle.json']
+        .map(file => readCompletedRuntimeArtifact('isolated-integration', original.runId, file)));
+      const expected = [original.resultSha256, original.sourceSha256, original.lifecycleSha256];
+      if (artifacts.some((artifact, i) => createHash('sha256').update(artifact.bytes).digest('hex') !== expected[i])) return null;
+      const [result, source, life] = artifacts.map(a => a.data);
+      const phases = result?.phases;
+      if (result?.schemaVersion !== 1 || result.harness !== 'isolated-integration' || result.runId !== original.runId
+        || result.verdict !== 'pass' || result.reuseFromRunId || result.preflight?.status === 'failed'
+        || !Array.isArray(phases) || phases.length !== 3
+        || JSON.stringify(phases.map((p: any) => p.phase)) !== JSON.stringify(['prepare', 'execute', 'teardown'])
+        || phases.some((p: any) => p.status !== 'passed' || p.reusedFromRunId)
+        || source?.schemaVersion !== 1 || source.runId !== original.runId || source.sourceCommit !== execution.commitSha
+        || typeof source.repoRoot !== 'string' || !isAbsolute(source.repoRoot)
+        || source.filePath !== execution.filePath || source.runGroupId !== execution.runGroupId
+        || source.workspaceId !== execution.workspaceId || source.harnessSlug !== execution.harnessSlug
+        || !Array.isArray(source.files) || new Set(source.files.map((f: any) => f.path)).size !== source.files.length
+        || recorded.files.some(file => !source.files.some((f: any) => f.path === file.path && f.sha256 === file.sha256 && f.gitSha256 === file.sha256))
+        || life?.schemaVersion !== 1 || life.runId !== original.runId || life.host !== hostname()
+        || life.cwd !== source.repoRoot || !/^test-runtime-/.test(life.workspace)
+        || typeof life.runtimeRoot !== 'string' || !basename(life.runtimeRoot).startsWith('papercusp-test-runtime-')
+        || typeof life.dataDir !== 'string' || !basename(life.dataDir).startsWith('papercusp-test-pg-')
+        || !Number.isInteger(life.pgPort) || life.pgPort <= 0 || life.pgPort === 5432
+        || !Array.isArray(life.argv) || !life.argv.length
+        || [life.observer, life.supervisor, life.worker, life.database].some(pin => !Number.isSafeInteger(pin?.pid) || pin.pid <= 0
+          || !/^linux:[^:]+:\d+$/.test(pin.identity) || !Number.isSafeInteger(pin.parentPid))
+        || life.supervisor.parentPid !== life.observer.pid || life.worker.parentPid !== life.supervisor.pid
+        || life.database.parentPid !== life.supervisor.pid
+        || !life.ended || life.ended.childPid !== life.worker.pid || life.ended.signal
+        || !Number.isInteger(life.ended.exitCode) || !life.ended.runtimeRemoved || !life.ended.pgDataRemoved) return null;
+      // The reporter derives its start by subtracting rounded duration from a
+      // later completion observation. Harness preparation may already have
+      // started on its own clock. Validate that receipt's full internal order,
+      // then bind the actual runtime execution and completion to the parent
+      // interval; an old execution still cannot be admitted by a new test.
+      const times = [at(result.startedAt), ...phases.flatMap((p: any) => [at(p.startedAt), at(p.endedAt)]), at(result.endedAt)];
+      if (times.some((time, i) => !Number.isFinite(time) || (i > 0 && time < times[i - 1]))
+        || at(phases[1].startedAt) < start || at(result.endedAt) > end
+        || !(at(phases[1].startedAt) <= at(life.observedAt) && at(life.observedAt) < at(life.ended.observedAt)
+          && at(life.ended.observedAt) <= at(phases[1].endedAt))) return null;
+    }
+    return isolatedIntegrationFingerprint(execution.isolatedRuntimeReceipts);
+  } catch { return null; }
 }
 
 export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
+  const diagnostics = options.diagnostics;
+  const committedTree = diagnostics
+    ? (diagnostics.committedTree ??= createCommittedTreeDiagnostics())
+    : undefined;
+  const totalStartedAt = diagnostics ? Date.now() : 0;
+  const recordPhase = (name: string, startedAt: number) => {
+    if (diagnostics) diagnostics.phaseMs[name] = Math.max(0, Date.now() - startedAt);
+  };
+  const recordMaxPhase = (name: string, startedAt: number) => {
+    if (!diagnostics) return;
+    diagnostics.phaseMs[name] = Math.max(
+      diagnostics.phaseMs[name] ?? 0,
+      Math.max(0, Date.now() - startedAt),
+    );
+  };
+  if (options.auditAsOf && options.includeRetracted !== true) {
+    throw new Error('auditAsOf requires includeRetracted:true');
+  }
   // No namespace selected can never match a row, so say so without a round-trip. Kept
   // explicit rather than leaning on `= ANY('{}')`: a reader must not have to know that
   // Postgres happens to return nothing, and the alternative reading — an empty filter
   // meaning "every plan" — is the exact silent-widening this whole plan exists to remove.
-  if (options.planSlugs.length === 0) return [];
-  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  if (options.planSlugs.length === 0) {
+    recordPhase('total', totalStartedAt);
+    return [];
+  }
+  const scopeStartedAt = diagnostics ? Date.now() : 0;
+  const scope = await resolvePlanScope({
+    harnessSlug: options.harnessSlug,
+    workspaceId: options.workspaceId,
+  });
+  recordPhase('resolvePlanScope', scopeStartedAt);
   const planSlugs = options.planSlugs;
   const workItemIds = options.workItemIds ?? [];
   const specIds = options.specIds ?? [];
   const sourceValIds = options.sourceValIds ?? [];
   const evidenceKinds = options.evidenceKinds ?? [];
   const evidenceRefs = options.evidenceRefs ?? [];
+  const bindingIds = options.bindingIds;
   const limit = options.limit ?? 200;
   const includeRetracted = options.includeRetracted === true;
+  const auditAsOf = options.auditAsOf ?? null;
+  if (options.currentProvenance === 'historical-snapshot' && !auditAsOf) {
+    throw new Error('historical-snapshot currentness requires an auditAsOf timestamp');
+  }
   const specRevision = options.specRevision;
   const specFingerprint = options.specFingerprint;
-  const replayCurrent = options.current ?? [];
+  const replayCurrent = Array.isArray(options.current) ? options.current : [];
   // Completion gates can span several clauses, while each scorecard rerun recipe pins one.
   // For a multi-clause replay, current[] already carries the exact tuple per evidence row;
   // preserve those tuples instead of applying one scalar fingerprint to every clause.
@@ -1477,6 +3195,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
         return [JSON.stringify(pin), pin] as const;
       })).values()]
     : [];
+  const workspaceReadStartedAt = diagnostics ? Date.now() : 0;
   const rows = await withWorkspace(
     scope.workspaceId,
     async (tx) => {
@@ -1513,18 +3232,50 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       const specIsCurrent = options.replaySnapshot
         ? replaySnapshotMatch
         : tx`(b.spec_revision = c.current_revision AND b.spec_fingerprint = r.content_hash)`;
+      const bindingIdFilter = bindingIds === undefined
+        ? tx`TRUE`
+        : tx`b.id = ANY(${bindingIds}::bigint[])`;
+      const bindingRowsStartedAt = diagnostics ? Date.now() : 0;
       const rows = await tx<EvidenceRow[]>`
     SELECT b.id, b.work_item_id, b.plan_slug, b.spec_id, c.source_val_id,
            b.spec_revision, c.current_revision, b.spec_fingerprint,
            b.evidence_kind, b.evidence_ref, b.source_fingerprint,
            b.test_fingerprint, b.fixture_fingerprint, b.rubric_fingerprint,
-           b.environment_fingerprint, b.coverage_evidence_ref, b.test_run_id,
+           b.environment_fingerprint, b.coverage_evidence_ref, b.test_run_id, b.verifies_binding_id,
            b.details, b.observed_at, b.binding_fingerprint, b.created_by, b.created_at,
            b.retracted_at, b.retracted_by, b.retraction_reason,
            tr.file_path AS test_run_file_path,
            tr.commit_sha AS test_run_commit_sha,
            tr.worktree_dirty AS test_run_worktree_dirty,
+           tr.status AS test_run_status,
+           tr.framework AS test_run_framework,
+           tr.source AS test_run_source,
+           tr.execution_details AS test_run_execution_details,
+           tr.started_at AS test_run_started_at,
+           tr.finished_at AS test_run_finished_at,
+           mutation_baseline.id AS mutation_baseline_id,
+           mutation_baseline.status AS mutation_baseline_status,
+           mutation_baseline.execution_details AS mutation_baseline_execution_details,
+           -- WI-10006745: unconditional, so no adequacy reader (the ship-gate snapshot included)
+           -- can forget to ask for it. Bounded by the ledger's own 4000-char tail.
+           CASE
+             WHEN b.evidence_kind IN ('mutation', 'counterexample')
+               AND tr.source = 'mutation-probe'
+               AND tr.status = 'fail'
+               AND tr.execution_details->>'mutationPhase' = 'mutant'
+             THEN tr.output_tail
+             ELSE NULL
+           END AS mutation_failure_tail,
+           CASE
+             WHEN b.evidence_kind IN ('mutation', 'counterexample')
+               AND tr.source = 'mutation-probe'
+               AND tr.status = 'fail'
+               AND tr.execution_details->>'mutationPhase' = 'mutant'
+             THEN tr.execution_details
+             ELSE NULL
+           END AS mutation_execution_details,
            ${specIsCurrent} AS spec_is_current,
+           r.source_rubric_slug, r.source_rubric_revision, r.source_bar_key,
            (b.coverage_evidence_ref IS NOT NULL AND EXISTS (
               SELECT 1 FROM harness_shared.coverage_evidence ce
               JOIN harness_shared.testing_surfaces s ON s.id = ce.surface_ref
@@ -1540,6 +3291,25 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       LEFT JOIN harness_shared.test_runs tr
         ON tr.id = b.test_run_id
        AND tr.workspace_id = b.workspace_id AND tr.harness_slug = b.harness_slug
+      LEFT JOIN LATERAL (
+        SELECT baseline.id, baseline.status, baseline.execution_details
+          FROM harness_shared.test_runs baseline
+         WHERE b.evidence_kind IN ('mutation', 'counterexample')
+           AND tr.source = 'mutation-probe'
+           AND tr.execution_details->'mutation'->>'leg' = 'mutant'
+           AND baseline.workspace_id = tr.workspace_id
+           AND baseline.harness_slug = tr.harness_slug
+           AND baseline.file_path = tr.file_path
+           AND baseline.source = 'mutation-probe'
+           AND baseline.status = 'pass'
+           AND baseline.execution_details->'mutation'->>'leg' = ANY(${[...CALIBRATION_LEGS]}::text[])
+           AND baseline.execution_details->'mutation'->>'probeInvocationId'
+               = tr.execution_details->'mutation'->>'probeInvocationId'
+           AND baseline.execution_details->'mutation'->>'subjectBeforeSha256'
+               = tr.execution_details->'mutation'->>'subjectBeforeSha256'
+         ORDER BY baseline.id DESC
+         LIMIT 1
+      ) mutation_baseline ON TRUE
       JOIN harness_shared.plan_spec_clauses c
         ON c.workspace_id = b.workspace_id AND c.harness_slug = b.harness_slug
        AND c.plan_slug = b.plan_slug AND c.spec_id = b.spec_id
@@ -1556,9 +3326,18 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
        AND (${sourceValIds.length} = 0 OR c.source_val_id = ANY(${sourceValIds}::text[]))
        AND (${evidenceKinds.length} = 0 OR b.evidence_kind = ANY(${evidenceKinds}::text[]))
        AND (${evidenceRefs.length} = 0 OR b.evidence_ref = ANY(${evidenceRefs}::text[]))
+       AND ${bindingIdFilter}
        AND (${includeRetracted}::boolean IS TRUE OR b.retracted_at IS NULL)
+       AND (
+         ${auditAsOf}::timestamptz IS NULL
+         OR (
+           b.created_at <= ${auditAsOf}::timestamptz
+           AND (b.retracted_at IS NULL OR b.retracted_at > ${auditAsOf}::timestamptz)
+         )
+       )
      ORDER BY b.observed_at DESC, b.id DESC
       LIMIT ${limit}`;
+      recordPhase('bindingRowsQuery', bindingRowsStartedAt);
       const scorecardIds = [
         ...new Set(
           rows
@@ -1566,8 +3345,12 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             .filter((issueId): issueId is string => issueId !== null),
         ),
       ];
-      if (scorecardIds.length === 0) return rows;
+      if (scorecardIds.length === 0) {
+        if (diagnostics) diagnostics.phaseMs.scorecardProofQuery = 0;
+        return rows;
+      }
 
+      const scorecardProofStartedAt = diagnostics ? Date.now() : 0;
       const scorecards = await tx<{ feature_id: string; provisional: unknown }[]>`
         SELECT feature_id, payload -> 'observation' -> 'provisional' AS provisional
           FROM harness_shared.work_items
@@ -1575,6 +3358,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
            AND harness_slug = ${scope.harnessSlug}
            AND feature_id = ANY(${scorecardIds}::text[])
            AND payload -> 'observation' -> 'provisional' IS NOT NULL`;
+      recordPhase('scorecardProofQuery', scorecardProofStartedAt);
       const provisionalById = new Map<string, ProvisionalScorecardProof>();
       for (const scorecard of scorecards) {
         const proof = parseProvisionalScorecardProof(scorecard.feature_id, scorecard.provisional);
@@ -1589,26 +3373,107 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       });
     },
   );
+  recordPhase('workspaceRead', workspaceReadStartedAt);
 
-  const currentByKey = new Map((options.current ?? []).map((c) => [evidenceCurrentInputKey(c), c]));
+  const currentByKey = new Map(replayCurrent.map((c) => [evidenceCurrentInputKey(c), c]));
   // The server-measured replay opt-out is explained at its use in the loop below.
+  const recipeBuildStartedAt = diagnostics ? Date.now() : 0;
   const recipes = rows.map((row) =>
-    options.replaySnapshot && options.currentProvenance === 'server-measured'
+    options.auditAsOf || (options.replaySnapshot && options.currentProvenance === 'server-measured')
       ? null
       : measurementFromDetails(row.details),
   );
+  recordPhase('recipeBuild', recipeBuildStartedAt);
+  if (diagnostics) {
+    diagnostics.bindings.selectedRows = rows.length;
+    diagnostics.bindings.rowsWithRecipe = recipes.filter((recipe) => recipe !== null).length;
+  }
   const measurementRoots = new Map<string, Promise<string>>();
-  const measurementRootFor = (recipe: RepoFilesEvidenceMeasurement): Promise<string> => {
-    const rootHarnessSlug = recipe.rootHarnessSlug ?? scope.harnessSlug;
-    const root =
-      measurementRoots.get(rootHarnessSlug) ??
-      resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug, recipe).then((path) => realpath(path));
+  const measurementRootFor = (
+    recipe: RepoFilesEvidenceMeasurement,
+    dimension: 'source' | 'fixture' = 'source',
+  ): Promise<string> => {
+    const primaryRootHarnessSlug = recipe.rootHarnessSlug ?? scope.harnessSlug;
+    const rootHarnessSlug = dimension === 'fixture'
+      ? recipe.fixtureRootHarnessSlug ?? primaryRootHarnessSlug
+      : primaryRootHarnessSlug;
+    const existing = measurementRoots.get(rootHarnessSlug);
+    if (existing) return existing;
+    const root = (async () => {
+      const registryLookupStartedAt = diagnostics ? Date.now() : 0;
+      const path = await resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug, recipe, dimension);
+      recordMaxPhase('measurementRootRegistryLookupMaxMs', registryLookupStartedAt);
+      const realpathStartedAt = diagnostics ? Date.now() : 0;
+      const resolved = await realpath(path);
+      recordMaxPhase('measurementRootRealpathMaxMs', realpathStartedAt);
+      return resolved;
+    })();
     measurementRoots.set(rootHarnessSlug, root);
     return root;
   };
-  const probeSnapshots = await readRepoFilesProbeSnapshots(recipes, measurementRootFor);
+  // D-001: ONE measurement commit M per measurement root per evaluation — the root's HEAD,
+  // resolved once and shared by every binding measured there. A repo-files binding is
+  // measured from git objects at M, so an uncommitted peer edit to a closure file never
+  // stales it, while a committed change still does. A root that is not a git top level
+  // resolves null and keeps the working-tree measurement and its mutation-probe fence.
+  const measurementCommits = new Map<string, Promise<string | null>>();
+  const measurementCommitFor = (root: string): Promise<string | null> => {
+    const existing = measurementCommits.get(root);
+    if (existing) return existing;
+    const commitStartedAt = diagnostics ? Date.now() : 0;
+    const commit = resolveMeasurementCommit(root).then((value) => {
+      recordMaxPhase('measurementCommitResolutionMaxMs', commitStartedAt);
+      return value;
+    });
+    measurementCommits.set(root, commit);
+    return commit;
+  };
+  const rootAndCommitStartedAt = diagnostics ? Date.now() : 0;
+  const workingTreeRecipes = await Promise.all(
+    recipes.map(async (recipe) => {
+      if (!recipe || recipe.kind === 'work-items') return recipe;
+      const root = await measurementRootFor(recipe, 'source').catch(() => null);
+      if (!root) return recipe;
+      const sourceCommit = await measurementCommitFor(root);
+      const fixtureRoot = hasRepoFixturePaths(recipe)
+        ? await measurementRootFor(recipe, 'fixture').catch(() => null)
+        : root;
+      const fixtureCommit = hasRepoFixturePaths(recipe) && fixtureRoot
+        ? fixtureRoot === root ? sourceCommit : await measurementCommitFor(fixtureRoot)
+        : null;
+      const sourceNeedsWorkingTree = !sourceCommit;
+      const fixtureNeedsWorkingTree = Boolean(hasRepoFixturePaths(recipe) && !fixtureCommit);
+      if (!sourceNeedsWorkingTree && !fixtureNeedsWorkingTree) return null;
+      return {
+        ...recipe,
+        ...(sourceNeedsWorkingTree ? {} : { sourcePaths: [], sourceGlobs: undefined, testPaths: undefined }),
+        ...(fixtureNeedsWorkingTree ? {} : { fixturePaths: undefined, fixtureGlobs: undefined, fixtureRootHarnessSlug: undefined }),
+      };
+    }),
+  );
+  recordPhase('resolveMeasurementRootsAndCommits', rootAndCommitStartedAt);
+  const probeSnapshotsStartedAt = diagnostics ? Date.now() : 0;
+  const probeSnapshots = await readRepoFilesProbeSnapshots(workingTreeRecipes, measurementRootFor);
+  recordPhase('preReadProbeSnapshots', probeSnapshotsStartedAt);
+  let runtimeRows: ReturnType<typeof listRuntimeVintage> | undefined;
+  // One control-plane read per remote runtime per evaluation (WI-6554700010011907).
+  const remoteRuntimeIdentities = new Map<string, Promise<string | null>>();
+  const bindingMeasurementStatus = (status: 'measured' | 'unavailable' | 'skipped', startedAt: number) => {
+    if (!diagnostics) return;
+    const elapsedMs = Math.max(0, Date.now() - startedAt);
+    diagnostics.bindings[status] += 1;
+    diagnostics.bindings.totalMeasurementMs += elapsedMs;
+    diagnostics.bindings.maxMeasurementMs = Math.max(diagnostics.bindings.maxMeasurementMs, elapsedMs);
+  };
+  const serverMeasurementsStartedAt = diagnostics ? Date.now() : 0;
+  // Bindings often repeat the same recipe at different clauses or work items. Share
+  // only the immutable file measurement within this evaluation, before any process
+  // starts; binding-specific runtime and adequacy checks still run below. A rejected
+  // measurement remains rejected for every identical binding, never a cached pass.
+  const committedMeasurements = new Map<string, Promise<DetailedRepoEvidenceMeasurement>>();
   const serverMeasurements = await Promise.all(
     rows.map(async (row, index) => {
+      const bindingStartedAt = diagnostics ? Date.now() : 0;
       // A REPLAY RE-MEASURES UNLESS THE CALLER HANDS US SERVER-MEASURED PROOF.
       // `currentProvenance:'server-measured'` is a caller saying "this pinned tuple is
       // already server-measured; replay it as-is, do not read the live repository" —
@@ -1634,32 +3499,146 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       // behaviour for a FRESHNESS criterion: a card must stop replaying 'pass' once the
       // code it was bound against moves.
       const recipe = recipes[index];
-      if (!recipe) return null;
+      if (!recipe) {
+        bindingMeasurementStatus('skipped', bindingStartedAt);
+        return null;
+      }
       try {
         let measured: MeasuredRepoEvidenceFingerprints;
         let files: MeasuredRepoFile[] | null = null;
+        let measuredAtCommit: string | null = null;
+        let sourceEquivalence: StaticGuidanceSourceEquivalence | undefined;
         if (recipe.kind === 'work-items') {
           // Ledger state has no checkout to resolve: the digest is recomputed from the rows.
-          measured = await measureWorkItemsEvidenceForScope(scope.workspaceId, scope.harnessSlug, recipe);
+          measured = await measureWorkItemsEvidenceForScope(
+            scope.workspaceId,
+            scope.harnessSlug,
+            recipe,
+            recipe.runtimeUnits ? await (runtimeRows ??= listRuntimeVintage(scope.workspaceId)) : undefined,
+          );
         } else {
-          const measurementRoot = await measurementRootFor(recipe);
+          const measurementRoot = await measurementRootFor(recipe, 'source');
+          const fixtureRoot = hasRepoFixturePaths(recipe)
+            ? await measurementRootFor(recipe, 'fixture')
+            : measurementRoot;
+          const fixtureRootHarnessSlug = recipe.fixtureRootHarnessSlug;
+          measuredAtCommit = await measurementCommitFor(measurementRoot);
+          const fixtureCommit = fixtureRoot === measurementRoot
+            ? measuredAtCommit
+            : hasRepoFixturePaths(recipe)
+              ? await measurementCommitFor(fixtureRoot)
+              : null;
           // Same single read as before; the per-file hashes it now also returns are what
           // name the moved paths below at zero extra IO. Under a batch probe snapshot the
           // pre-read fence is decided locally; its post-read half runs after this loop.
           const snapshot = probeSnapshots.get(measurementRoot);
-          const refusal = snapshot
-            ? mutationProbeRefusal(snapshot.resolved, snapshot.probes, repoFilesMeasuredPaths(recipe))
-            : null;
-          if (refusal) throw new Error(refusal);
-          const detailed = snapshot
-            ? await fingerprintRepoFilesMeasurement(measurementRoot, recipe)
-            : await measureRepoFilesEvidenceDetailedAtRoot(measurementRoot, recipe);
-          measured = { sourceFingerprint: detailed.sourceFingerprint, testFingerprint: detailed.testFingerprint };
+          const fixtureSnapshot = fixtureRoot === measurementRoot ? snapshot : probeSnapshots.get(fixtureRoot);
+          let detailed: DetailedRepoEvidenceMeasurement;
+          if (measuredAtCommit) {
+            // A fixture outside a committed repository still needs its own
+            // working-tree read and mutation-probe fences for each binding.
+            const measurementKey = !hasRepoFixturePaths(recipe) || fixtureCommit
+              ? JSON.stringify([
+                  measurementRoot, measuredAtCommit, recipe, fixtureRoot, fixtureCommit, fixtureRootHarnessSlug ?? null,
+                ])
+              : null;
+            let measurement = measurementKey ? committedMeasurements.get(measurementKey) : undefined;
+            if (!measurement) {
+              measurement = measureRepoFilesEvidenceDetailedAtCommit(measurementRoot, recipe, measuredAtCommit, {
+                ...(committedTree ? { deps: { diagnostics: committedTree } } : {}),
+                ...(hasRepoFixturePaths(recipe) ? { fixtureRoot, fixtureCommit, fixtureRootHarnessSlug } : {}),
+              });
+              if (measurementKey) committedMeasurements.set(measurementKey, measurement);
+            }
+            detailed = await measurement;
+          } else if (snapshot && (fixtureRoot === measurementRoot || !hasRepoFixturePaths(recipe) || fixtureSnapshot)) {
+            const sourcePaths = await expandedRepoSourcePathsAtRoot(measurementRoot, recipe);
+            const fixturePaths = await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe);
+            const measuredPaths = [
+              ...sourcePaths,
+              ...(recipe.testPaths ?? []),
+              ...(fixtureRoot === measurementRoot ? fixturePaths : []),
+            ];
+            const refusal = mutationProbeRefusal(snapshot.resolved, snapshot.probes, measuredPaths);
+            if (refusal) throw new Error(refusal);
+            if (fixtureRoot !== measurementRoot && hasRepoFixturePaths(recipe) && fixtureSnapshot) {
+              const fixtureRefusal = mutationProbeRefusal(fixtureSnapshot.resolved, fixtureSnapshot.probes, fixturePaths);
+              if (fixtureRefusal) throw new Error(fixtureRefusal);
+            }
+            if (fixtureRoot !== measurementRoot && hasRepoFixturePaths(recipe)) {
+              const primaryRecipe = { ...recipe, fixturePaths: undefined, fixtureGlobs: undefined, fixtureRootHarnessSlug: undefined };
+              const primary = await fingerprintRepoFilesMeasurement(
+                measurementRoot,
+                primaryRecipe,
+                sourcePaths,
+                measurementRoot,
+              );
+              let fixtureFingerprint: string;
+              let fixtureFiles: Array<{ path: string; sha256: string; gitBlob: string }>;
+              if (fixtureCommit) {
+                const committedFixturePaths = [...new Set([
+                  ...(recipe.fixturePaths ?? []),
+                  ...await listCommittedGlobMatches(fixtureRoot, fixtureCommit, recipe.fixtureGlobs ?? [],
+                    { maxMatches: MAX_REPO_MEASUREMENT_FIXTURE_GLOB_MATCHES, maxDepth: MAX_REPO_MEASUREMENT_GLOB_DEPTH }),
+                ])].sort();
+                const fixture = await fingerprintRepoFileSetAtCommit(fixtureRoot, fixtureCommit, committedFixturePaths,
+                  committedTree ? { diagnostics: committedTree } : {}, REPO_FIXTURE_READ_LIMITS);
+                fixtureFingerprint = fixture.fingerprint;
+                fixtureFiles = fixture.files;
+              } else {
+                const fixture = await fingerprintRepoFileSet(fixtureRoot, fixturePaths, REPO_FIXTURE_READ_LIMITS);
+                fixtureFingerprint = fixture.fingerprint;
+                fixtureFiles = fixture.files;
+              }
+              detailed = {
+                sourceFingerprint: primary.sourceFingerprint,
+                testFingerprint: primary.testFingerprint,
+                fixtureFingerprint,
+                files: [
+                  ...primary.files,
+                  ...fixtureFiles.map((file) => ({
+                    ...file,
+                    ...(recipe.fixtureRootHarnessSlug ? { rootHarnessSlug: recipe.fixtureRootHarnessSlug } : {}),
+                    dimension: 'fixture' as const,
+                  })),
+                ],
+              };
+            } else {
+              detailed = await fingerprintRepoFilesMeasurement(
+                measurementRoot,
+                recipe,
+                sourcePaths,
+                fixtureRoot,
+                hasRepoFixturePaths(recipe) ? fixtureRootHarnessSlug : undefined,
+              );
+            }
+          } else {
+            detailed = await measureRepoFilesEvidenceDetailedAtRoot(measurementRoot, recipe, {
+              ...(hasRepoFixturePaths(recipe) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
+            });
+          }
+          measured = {
+            sourceFingerprint: detailed.sourceFingerprint,
+            testFingerprint: detailed.testFingerprint,
+            ...(detailed.fixtureFingerprint !== undefined ? { fixtureFingerprint: detailed.fixtureFingerprint } : {}),
+            ...(recipe.artifactReceiptPath ? { environmentFingerprint: await measurePackagedArtifactEnvironment(
+              measurementRoot, recipe.artifactReceiptPath,
+              detailed.files.find(file => file.path === recipe.artifactReceiptPath && file.dimension === 'source')!.sha256) } : {}),
+            ...(recipe.runtimeUnits ? { environmentFingerprint: recipe.completedRuntime
+              ? await measureCompletedTestRuntime(row, recipe, detailed.files, scope, measurementRoot,
+                { onStaticGuidanceEquivalence: value => { sourceEquivalence = value; } })
+              : await measureRuntimeEnvironment(
+                await (runtimeRows ??= listRuntimeVintage(scope.workspaceId)), recipe.runtimeUnits,
+                { memo: remoteRuntimeIdentities }) } : {}),
+          };
           files = detailed.files;
         }
+        bindingMeasurementStatus('measured', bindingStartedAt);
         return {
           status: 'measured' as const,
           files,
+          measuredAtCommit,
+          sourceEquivalence,
           current: {
             planSlug: row.plan_slug,
             specId: row.spec_id,
@@ -1671,6 +3650,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           } satisfies EvidenceCurrentInput,
         };
       } catch (error: unknown) {
+        bindingMeasurementStatus('unavailable', bindingStartedAt);
         return {
           status: 'unavailable' as const,
           reason: (error instanceof Error ? error.message : String(error)).slice(0, 240),
@@ -1678,9 +3658,11 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       }
     }),
   );
+  recordPhase('serverMeasurements', serverMeasurementsStartedAt);
   // Post-read half of the batch fence: a probe that locked a binding's paths while the
   // batch was reading fails that binding, exactly as its own post-read fence would. An
   // unreadable queue falls back to that per-binding fence.
+  const postReadProbeStartedAt = diagnostics ? Date.now() : 0;
   for (const [root, before] of probeSnapshots) {
     const after = await readMutationProbeSnapshot(root, [], before.resolved);
     if (after && after.probes.length === 0) continue;
@@ -1688,8 +3670,19 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       rows.map(async (_row, index) => {
         const recipe = recipes[index];
         if (!recipe || recipe.kind === 'work-items' || serverMeasurements[index]?.status !== 'measured') return;
-        if ((await measurementRootFor(recipe)) !== root) return;
-        const paths = repoFilesMeasuredPaths(recipe);
+        const sourceRoot = await measurementRootFor(recipe, 'source');
+        const fixtureRoot = hasRepoFixturePaths(recipe)
+          ? await measurementRootFor(recipe, 'fixture')
+          : sourceRoot;
+        let paths: string[];
+        if (sourceRoot === root) {
+          paths = await repoFilesPrimaryPathsAtRoot(root, recipe);
+          if (fixtureRoot === root) paths.push(...await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe));
+        } else if (fixtureRoot === root && hasRepoFixturePaths(recipe)) {
+          paths = await expandedRepoFixturePathsAtRoot(fixtureRoot, recipe);
+        } else {
+          return;
+        }
         try {
           if (!after) await refuseMutationProbePaths(root, paths);
           const refusal = after ? mutationProbeRefusal(after.resolved, after.probes, paths) : null;
@@ -1703,8 +3696,15 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       }),
     );
   }
+  recordPhase('postReadProbeFence', postReadProbeStartedAt);
+  const declaredConfigurations = await resolveDeclaredConfigurations(rows);
+  const classificationStartedAt = diagnostics ? Date.now() : 0;
   const classified = rows.map((row, index) => {
     const measured = serverMeasurements[index];
+    const parsedTestRunExecution = row.test_run_id === null
+      ? undefined
+      : parseTestRunExecutionDetails(row.test_run_execution_details);
+    const baselineExecution = parseTestRunExecutionDetails(row.mutation_baseline_execution_details);
     const scopedCurrentKey = evidenceCurrentInputKey({
       planSlug: row.plan_slug,
       specId: row.spec_id,
@@ -1721,13 +3721,19 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
     const attestedDimensions: OpaqueFingerprintDimension[] =
       measured?.status === 'measured'
         ? [
-            ...(row.fixture_fingerprint !== null && callerCurrent?.fixtureFingerprint != null
+            // Repo-files measurements include fixturePaths. Do not downgrade a
+            // server-measured fixture fingerprint to caller-attested merely because
+            // the rerun recipe also carries its original current tuple (EI-248065476).
+            ...(row.fixture_fingerprint !== null &&
+            callerCurrent?.fixtureFingerprint != null &&
+            measured.current.fixtureFingerprint == null
               ? (['fixture'] as const)
               : []),
             ...(row.rubric_fingerprint !== null && callerCurrent?.rubricFingerprint != null
               ? (['rubric'] as const)
               : []),
             ...(row.environment_fingerprint !== null && callerCurrent?.environmentFingerprint != null
+              && measured.current.environmentFingerprint == null
               ? (['environment'] as const)
               : []),
           ]
@@ -1740,20 +3746,26 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       options.replaySnapshot && options.currentProvenance
         ? { provenance: options.currentProvenance }
         : {};
+    const declaredConfiguration = declaredConfigurations.get(declaredConfigurationPinKey(row) ?? '');
     const currentness = classifySpecEvidenceCurrentness(
       row,
       current,
-      measured?.status === 'measured'
-        ? { provenance: 'server-measured', attestedDimensions }
-        : replayProvenance,
+      {
+        ...(measured?.status === 'measured'
+          ? { provenance: 'server-measured' as const, attestedDimensions, sourceEquivalence: measured.sourceEquivalence }
+          : replayProvenance),
+        ...(declaredConfiguration ? { declaredConfiguration } : {}),
+      },
     );
     if (measured?.status === 'unavailable' && currentness.overall === 'unknown') {
       currentness.unknownReasons = [...currentness.unknownReasons, `server-measurement-unavailable:${measured.reason}`];
     }
-    // P-018: a source/test-stale verdict now names WHICH measured files moved. Only for a
+    // P-018: a repository-file-stale verdict now names WHICH measured files moved. Only for a
     // row that is stale on those dimensions — a current row has nothing to name, and a
     // row that predates the pin reports `pinned:false` rather than an empty (false) list.
-    const fileStale = currentness.staleReasons.some((reason) => reason === 'source-stale' || reason === 'test-stale');
+    const fileStale = currentness.staleReasons.some(
+      (reason) => reason === 'source-stale' || reason === 'test-stale' || reason === 'fixture-stale',
+    );
     const movement =
       fileStale && measured?.status === 'measured' && measured.files
         ? diffMeasuredFiles(readMeasurementPin(row.details), measured.files)
@@ -1778,12 +3790,74 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       },
       coverageEvidenceRef: row.coverage_evidence_ref === null ? null : Number(row.coverage_evidence_ref),
       testRunId: row.test_run_id === null ? null : Number(row.test_run_id),
+      // This relation is stored separately from binder-authored details.
+      ...(row.verifies_binding_id == null ? {} : { verifiesBindingId: Number(row.verifies_binding_id) }),
+      ...(row.test_run_id === null
+        ? {}
+        : {
+            testRunExecution: parsedTestRunExecution
+              ? {
+                  status: typeof row.test_run_status === 'string' ? row.test_run_status : null,
+                  passed: parsedTestRunExecution.passed,
+                  failed: parsedTestRunExecution.failed,
+                  skipped: parsedTestRunExecution.skipped,
+                  collectionFailed: parsedTestRunExecution.collectionFailed,
+                  filePath: parsedTestRunExecution.filePath,
+                  ...(parsedTestRunExecution.scenarioId !== undefined
+                    ? { scenarioId: parsedTestRunExecution.scenarioId }
+                    : {}),
+                  ...(parsedTestRunExecution.passedCaseTitles !== undefined
+                    ? { passedCaseTitles: [...parsedTestRunExecution.passedCaseTitles] }
+                    : {}),
+                  ...(passedCaseTitlesIncomplete(parsedTestRunExecution)
+                    ? { passedCaseTitlesIncomplete: true }
+                    : {}),
+                  ...(parsedTestRunExecution.testLayer !== undefined || canonicalOperationalAdapterLayer({
+                    framework: row.test_run_framework, source: row.test_run_source,
+                    filePath: row.test_run_file_path, runGroupId: parsedTestRunExecution.runGroupId,
+                    commitSha: row.test_run_commit_sha, worktreeDirty: row.test_run_worktree_dirty,
+                  }) !== undefined
+                    ? { testLayer: parsedTestRunExecution.testLayer ?? 'operational' }
+                    : {}),
+                }
+              : null,
+          }),
       testRunProvenance: row.test_run_id === null || row.test_run_file_path == null
         ? null
         : {
             filePath: row.test_run_file_path,
+            framework: row.test_run_framework ?? null,
+            source: row.test_run_source ?? null,
+            mutationPhase: parsedTestRunExecution?.mutationPhase ?? null,
+            ...(parsedTestRunExecution?.mutation ? {
+              mutation: parsedTestRunExecution.mutation,
+              mutationBaseline: row.mutation_baseline_id != null && baselineExecution?.mutation
+                ? {
+                    testRunId: Number(row.mutation_baseline_id),
+                    status: row.mutation_baseline_status ?? null,
+                    mutation: baselineExecution.mutation,
+                    passed: baselineExecution.passed,
+                    failed: baselineExecution.failed,
+                    skipped: baselineExecution.skipped,
+                    collectionFailed: baselineExecution.collectionFailed,
+                    ...(baselineExecution.passedCaseTitles !== undefined
+                      ? { passedCaseTitles: [...baselineExecution.passedCaseTitles] }
+                      : {}),
+                    ...(passedCaseTitlesIncomplete(baselineExecution)
+                      ? { passedCaseTitlesIncomplete: true }
+                      : {}),
+                  }
+                : null,
+            } : {}),
             commitSha: row.test_run_commit_sha,
             worktreeDirty: row.test_run_worktree_dirty,
+            ...(row.mutation_failure_tail || row.mutation_execution_details != null
+              ? { mutationFailureLines: mutationFailureLines(row.mutation_failure_tail ?? '', row.mutation_execution_details) }
+              : {}),
+            ...(() => {
+              const titles = mutationFailedCaseTitles(row.mutation_execution_details);
+              return titles === undefined ? {} : { mutationFailedCaseTitles: titles };
+            })(),
           },
       details: row.provisionalProofBase
         ? {
@@ -1810,8 +3884,13 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                     measuredDimensions: [
                       'source',
                       ...(measured.current.testFingerprint === null ? [] : ['test']),
+                      ...(measured.current.fixtureFingerprint == null ? [] : ['fixture']),
+                      ...(measured.current.environmentFingerprint == null ? [] : ['environment']),
                     ],
                     ...(attestedDimensions.length > 0 ? { attestedDimensions } : {}),
+                    // D-001: the commit whose objects were measured; absent for a
+                    // working-tree (non-git root) or ledger measurement.
+                    ...(measured.measuredAtCommit ? { measuredAtCommit: measured.measuredAtCommit } : {}),
                     current: measured.current,
                     ...(movement
                       ? movement.pinned
@@ -1825,6 +3904,54 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       currentness,
     };
   });
+  recordPhase('classification', classificationStartedAt);
+  // An ordinary audit-as-of read reconstructs what was bound at a historical instant
+  // and is downgraded to unknown freshness. Only the internal historical grading replay
+  // opts out so the auditor can reproduce the card's emission-time verdict from its
+  // saved tuple; the provenance remains historical-snapshot, never live freshness.
+  const auditOnly = options.auditAsOf && options.currentProvenance !== 'historical-snapshot'
+    ? classified.map((row) => ({
+        ...row,
+        currentness: {
+          ...row.currentness,
+          overall: 'unknown' as const,
+          provenance: 'replayed-snapshot' as const,
+          staleReasons: [],
+          unknownReasons: [...new Set([...row.currentness.unknownReasons, 'historical-audit-only'])],
+        },
+      }))
+    : classified;
   const allowed = options.currentness ? new Set(options.currentness) : null;
-  return allowed ? classified.filter((row) => allowed.has(row.currentness.overall)) : classified;
+  const result = allowed ? auditOnly.filter((row) => allowed.has(row.currentness.overall)) : auditOnly;
+  // Certify once at the common read seam. Both work-item acceptance and the BAR
+  // ship snapshot consume these rows directly, without the evaluator tool.
+  const absence = new Map<number, number[]>();
+  if (result.some(row => row.evidenceKind === 'independent-verification')) {
+    const { resolveFixtureAbsenceVerifications } = await import('./spec-test-adequacy');
+    const implementers = new Map<string, Promise<string[]>>();
+    const relations = new Map<string, Promise<boolean>>();
+    const certified = await resolveFixtureAbsenceVerifications(result, async (reviewer, citedAuthor, planSlug) => {
+      let authors = implementers.get(planSlug);
+      if (!authors) {
+        authors = resolvePlanImplementerIdentities(planSlug, { workspaceId: scope.workspaceId });
+        implementers.set(planSlug, authors);
+      }
+      for (const author of new Set([...(await authors), citedAuthor])) {
+        if (author === reviewer) return false;
+        const key = `${author}\u0000${reviewer}`;
+        let relation = relations.get(key);
+        if (!relation) {
+          relation = areAcceptanceLineageRelated(author, reviewer, { workspaceId: scope.workspaceId });
+          relations.set(key, relation);
+        }
+        if (await relation) return false;
+      }
+      return true;
+    });
+    for (const [id, verifierIds] of certified) absence.set(id, verifierIds);
+  }
+  recordPhase('total', totalStartedAt);
+  return result.map(row => ({ ...row,
+    ...(absence.has(row.id) ? { fixtureAbsenceVerification: { verifierBindingIds: absence.get(row.id)! } } : {}),
+  }));
 }

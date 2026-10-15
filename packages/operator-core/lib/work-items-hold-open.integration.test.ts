@@ -107,6 +107,22 @@ describe('agent-operability P-003 — one dead-owner sweep', () => {
     expect(await holdOf('WI-DEAD-2')).toEqual({ by: null, claimHold: null });
   });
 
+  it('WI-10005173: the dead-owner sweep NEVER lifts a hold on a PEER-WRITTEN (origin=remote) row', async () => {
+    await seedHeld('WI-PEER-DEAD', 'su-dead-peer', 8 * 60, { origin: 'remote' });
+    await seedHeld('WI-LOCAL-DEAD', 'su-dead-peer', 8 * 60);
+    expect(await originOf('WI-PEER-DEAD')).toBe('remote');
+    await sql`
+      INSERT INTO harness_shared.routines
+        (id, workspace_id, name, active, reschedule_interval_sec, target_owner_id, updated_at)
+      VALUES ('loop-peer', ${WS}, 'loop-peer', true, 60, 'su-dead-peer', now() - interval '3 hours')`;
+
+    const result = await sweepDeadOwnerControlState(sql, { ownerGraceMs: 1, holdOpenGraceMs: 1 });
+
+    expect(result).toEqual({ owners: ['su-dead-peer'], loopsTerminated: 1, holdsLifted: 1 });
+    expect(await holdOf('WI-PEER-DEAD')).toEqual({ by: 'su-dead-peer', claimHold: 'true' });
+    expect(await holdOf('WI-LOCAL-DEAD')).toEqual({ by: null, claimHold: null });
+  });
+
   it('WI-6774: NEVER lifts a POLICY-TIER hold via dead-owner liveness sweep, even for a fully dead owner', async () => {
     // The exact incident this closes: a policy-tier fence on a live-money item, holder's loop
     // long dead — must survive the sweep. Only the audited, ownerOverride-gated
@@ -135,7 +151,7 @@ async function seedHeld(
   featureId: string,
   holder: string,
   heldAgoMin: number,
-  opts: { status?: string; itemKind?: string; heldAtRaw?: string | null; reason?: string } = {},
+  opts: { status?: string; itemKind?: string; heldAtRaw?: string | null; reason?: string; origin?: 'local' | 'remote' } = {},
 ): Promise<void> {
   const heldAt =
     opts.heldAtRaw !== undefined
@@ -153,6 +169,15 @@ async function seedHeld(
     VALUES
       (${WS}, ${H}, ${featureId}, ${opts.itemKind ?? 'task'}, ${featureId}, ${opts.status ?? 'open'},
        ${sql.json(payload)}, ${Date.now()}, ${Date.now()})`;
+  if (opts.origin) {
+    await sql`UPDATE harness_shared.work_items SET origin = ${opts.origin} WHERE feature_id = ${featureId}`;
+  }
+}
+
+async function originOf(featureId: string): Promise<string | null> {
+  const [row] = await sql<{ origin: string | null }[]>`
+    SELECT origin FROM harness_shared.work_items WHERE feature_id = ${featureId}`;
+  return row?.origin ?? null;
 }
 
 /** The hold as it stands in the DB right now (null ⇒ no hold). */
@@ -188,6 +213,23 @@ describe('WI-4531 — a hold-open must not outlive its holder', () => {
     // claim_next/scheduler self-select reads _claimHold. Clearing one and leaving the other
     // would fix half the bug.
     expect(await holdOf('WI-4445')).toEqual({ by: null, claimHold: null });
+  });
+
+  it('WI-10005173: NEVER lifts a hold on a PEER-WRITTEN (origin=remote) row — this node cannot judge a peer agent', async () => {
+    // Measured 2026-10-03: the Mac VM lifted a LIVE tower agent's lease on a replicated
+    // row exactly HOLD_OPEN_GRACE_MS after it was stamped, because the tower agent is never
+    // in the VM's coord_presence, then federated the revocation back to the tower.
+    await seedHeld('WI-PEER-HELD', 'su-peer-agent', 8 * 60, { origin: 'remote' });
+    // Control: the identical lease on a locally-written row IS lifted, so the guard below
+    // is not passing vacuously (holder absent here, past grace).
+    await seedHeld('WI-LOCAL-HELD', 'su-peer-agent', 8 * 60);
+    expect(await originOf('WI-PEER-HELD')).toBe('remote');
+
+    const { expired } = await reclaimStaleHoldOpens(sql);
+
+    expect(expired.map((e) => e.feature_id)).toEqual(['WI-LOCAL-HELD']);
+    expect(await holdOf('WI-PEER-HELD')).toEqual({ by: 'su-peer-agent', claimHold: 'true' });
+    expect(await holdOf('WI-LOCAL-HELD')).toEqual({ by: null, claimHold: null });
   });
 
   it('WI-6774: NEVER lifts a POLICY-TIER hold via the liveness reaper, even for a fully dead holder', async () => {
@@ -310,6 +352,15 @@ describe('WI-4531 — isHoldOpenExpired (the inline chokepoint test)', () => {
   // setWorkItemState calls this on the refusal path so a dead holder's hold never blocks a
   // terminal transition even when the 60s sweep is wedged or has not ticked yet.
   const old = () => new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
+
+  it('WI-10005916: is FALSE for a PEER-WRITTEN (origin=remote) row — this node cannot judge a peer holder', async () => {
+    // A peer agent is never in this node's presence, so without the origin rule it reads dead.
+    expect(await isHoldOpenExpired(sql, 'su-ghost', old(), { origin: 'remote' })).toBe(false);
+    // Control: the same invisible holder at the same age on a LOCAL row IS expired, so the
+    // origin rule (not the fixture) is what keeps the remote hold enforced.
+    expect(await isHoldOpenExpired(sql, 'su-ghost', old(), { origin: 'local' })).toBe(true);
+    expect(await isHoldOpenExpired(sql, 'su-ghost', old(), { origin: null })).toBe(true);
+  });
 
   it('is TRUE for a holder with no liveness signal at all, past grace', async () => {
     expect(await isHoldOpenExpired(sql, 'su-ghost', old())).toBe(true);

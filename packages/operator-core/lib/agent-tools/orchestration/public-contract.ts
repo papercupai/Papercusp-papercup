@@ -69,31 +69,52 @@ export const orchestrationCapturePolicySchema = z
   })
   .strict();
 
+const orchestrationSourceFields = {
+  script: orchestrationScriptSourceSchema.optional(),
+  recipe: orchestrationRecipeSelectorSchema.optional(),
+  /** Status inspection for an already-admitted durable run. */
+  durableRun: durableOrchestrationRunSchema.optional(),
+  /** Cancel or signal an already-admitted durable run. */
+  durableControl: durableOrchestrationControlSchema.optional(),
+  bindings: orchestrationBindingsSchema.optional(),
+  capture: orchestrationCapturePolicySchema.optional(),
+  /** Existing canonical work item this run belongs to. It is linked only; no item is created. */
+  workItemId: z.string().min(1).max(120).optional(),
+  /** Compatibility preview carried through code:run / recipes:run. */
+  dryRun: z.boolean().optional(),
+  /** Exact revision + binding pin returned by orchestrate:inspect. Optional
+   * for existing foreground callers and required for durable execution. */
+  inspectionPin: z.object({
+    sourceSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    bindingsSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    recipeRevision: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  }).strict().optional(),
+};
+
+const durableExecutionPolicySchema = z.object({
+  mode: z.enum(['server', 'auto', 'client']).optional(),
+  lifecycle: z.enum(['foreground', 'background']).optional(),
+  durability: z.literal('durable'),
+}).strict();
+
+/**
+ * Keep the conditional timeout ceiling in JSON-Schema-visible branches. A
+ * superRefine-only ceiling rejects a foreground request at dispatch while tools/list
+ * still advertises the durable 3,600-second maximum to every caller.
+ */
 export const orchestrationSourceArgsSchema = z
-  .object({
-    script: orchestrationScriptSourceSchema.optional(),
-    recipe: orchestrationRecipeSelectorSchema.optional(),
-    /** Status inspection for an already-admitted durable run. */
-    durableRun: durableOrchestrationRunSchema.optional(),
-    /** Cancel or signal an already-admitted durable run. */
-    durableControl: durableOrchestrationControlSchema.optional(),
-    bindings: orchestrationBindingsSchema.optional(),
-    execution: orchestrationExecutionPolicySchema.optional(),
-    capture: orchestrationCapturePolicySchema.optional(),
-    timeoutSec: z.number().int().min(1).max(3_600).optional(),
-    /** Existing canonical work item this run belongs to. It is linked only; no item is created. */
-    workItemId: z.string().min(1).max(120).optional(),
-    /** Compatibility preview carried through code:run / recipes:run. */
-    dryRun: z.boolean().optional(),
-    /** Exact revision + binding pin returned by orchestrate:inspect. Optional
-     * for existing foreground callers and required for durable execution. */
-    inspectionPin: z.object({
-      sourceSha256: z.string().regex(/^[0-9a-f]{64}$/),
-      bindingsSha256: z.string().regex(/^[0-9a-f]{64}$/),
-      recipeRevision: z.string().regex(/^[0-9a-f]{64}$/).optional(),
-    }).strict().optional(),
-  })
-  .strict()
+  .union([
+    z.object({
+      ...orchestrationSourceFields,
+      execution: orchestrationExecutionPolicySchema.optional(),
+      timeoutSec: z.number().int().min(1).max(FOREGROUND_TIMEOUT_CEILING_MS / 1000).optional(),
+    }).strict(),
+    z.object({
+      ...orchestrationSourceFields,
+      execution: durableExecutionPolicySchema,
+      timeoutSec: z.number().int().min(1).max(3_600).optional(),
+    }).strict(),
+  ])
   .superRefine((args, ctx) => {
     if (
       args.timeoutSec !== undefined &&

@@ -103,4 +103,12 @@ describe('socialAdminFacts', () => {
     const facts = socialAdminFacts('linkedin', {}, NOW);
     expect(facts!.writeVerbs).toEqual(row.write.verbs);
   });
+
+  it('shows generic provider sync freshness and retained loss evidence (P-032)', () => {
+    const lossRisk = { kind: 'retention-window-exceeded' as const, oldestReachableAt: '2026-08-20T00:00:00Z', detail: 'Older events are no longer reachable' };
+    const facts = socialAdminFacts('reddit', { provider: 'opaque:v2:position',
+      providerSync: { lastSyncedAt: '2026-08-23T11:00:00Z', lossRisk } }, NOW);
+    expect(facts!.cursor).toMatchObject({ state: 'synced', at: '2026-08-23T11:00:00Z', ageMs: 3_600_000, lossRisk });
+    expect(socialAdminFacts('reddit', { provider: 'any-new-cursor-shape' }, NOW)!.cursor.state).toBe('position-only');
+  });
 });

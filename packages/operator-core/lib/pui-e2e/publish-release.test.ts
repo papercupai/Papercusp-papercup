@@ -34,18 +34,19 @@ function sha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
-function candidate() {
+function candidate(target = 'linux-x86_64', sourceSha = 'a'.repeat(40)) {
+  const platform = target === 'macos-aarch64' ? 'macOS arm64'
+    : target === 'macos-x86_64' ? 'macOS x86_64' : 'Linux x86_64';
   const root = mkdtempSync(join(tmpdir(), 'pui-publish-test-'));
   roots.push(root);
-  const unitName = 'pui-0.1.0-linux-x86_64';
+  const unitName = `pui-0.1.0-${target}`;
   const unit = join(root, unitName);
   mkdirSync(unit);
-  const sourceSha = 'a'.repeat(40);
   writeFileSync(join(unit, 'PROVENANCE.json'), JSON.stringify({
     schemaVersion: 1,
     name: 'pui',
     version: '0.1.0',
-    target: 'linux-x86_64',
+    target,
     source: { commit: sourceSha },
   }));
   writeFileSync(join(unit, 'README.md'), 'fixture\n');
@@ -57,9 +58,10 @@ function candidate() {
   writeFileSync(acceptance, JSON.stringify({
     schemaVersion: 1,
     ok: true,
-    candidate: { archiveSha256: digest, sourceSha, advertise: [{ platform: 'Linux x86_64', backend: 'Claude' }] },
+    candidate: { archiveSha256: digest, sourceSha, advertise: [{ platform, backend: 'Claude' }] },
     refusals: [],
     runner: {
+      platform,
       stockMachines: [{ image: 'ubuntu:24.04', status: 0 }, { image: 'debian:stable-slim', status: 0 }],
       cloudDeviceStart: { ok: true, status: 200 },
       legs: [{ engine: 'scripted', status: 0 }, { engine: 'claude', status: 0 }],
@@ -71,9 +73,15 @@ function candidate() {
   return { root, archive, acceptance, hostEnv, digest };
 }
 
-function run(files: ReturnType<typeof candidate>) {
+function run(files: ReturnType<typeof candidate>, previous?: unknown) {
   const work = join(files.root, 'work');
-  const result = spawnSync('bash', [PUBLISH, '--archive', files.archive, '--work', work], {
+  const args = [PUBLISH, '--archive', files.archive, '--work', work];
+  if (previous) {
+    const previousPath = join(files.root, 'previous.json');
+    writeFileSync(previousPath, JSON.stringify(previous));
+    args.push('--previous', previousPath);
+  }
+  const result = spawnSync('bash', args, {
     cwd: REPO_ROOT,
     encoding: 'utf8',
     env: hermeticEnv({ DRY_RUN: '1', PUI_RELEASE_HOST_ENV: files.hostEnv }),
@@ -87,16 +95,24 @@ function publication(files: ReturnType<typeof candidate>, options: {
   headFailure?: boolean;
   corruptPublicArchive?: boolean;
   existingArchive?: 'identical-without-metadata' | 'different';
+  legacyArchive?: ReturnType<typeof candidate>;
+  previousManifest?: unknown;
+  previousReadFailure?: boolean;
 } = {}) {
   const bin = join(files.root, 'bin');
   mkdirSync(bin);
   const state = join(files.root, 'objects.json');
   const events = join(files.root, 'events.jsonl');
-  const archiveKey = 'unguessable-prefix/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz';
-  writeFileSync(state, JSON.stringify(options.existingArchive ? {
+  const archiveKey = `unguessable-prefix/pui/0.1.0/${files.digest}/pui-0.1.0-linux-x86_64.tar.gz`;
+  const legacyArchiveKey = 'unguessable-prefix/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz';
+  writeFileSync(state, JSON.stringify({ ...(options.existingArchive ? {
     [archiveKey]: { body: (options.existingArchive === 'different'
       ? Buffer.from('previous release') : readFileSync(files.archive)).toString('base64') },
-  } : {}));
+  } : {}), ...(options.legacyArchive ? {
+    [legacyArchiveKey]: { body: readFileSync(options.legacyArchive.archive).toString('base64') },
+  } : {}), ...(options.previousManifest ? {
+    'unguessable-prefix/pui/latest.json': { body: Buffer.from(JSON.stringify(options.previousManifest)).toString('base64') },
+  } : {}) }));
   writeFileSync(events, '');
   const adapter = `#!${process.execPath}
 const fs = require('node:fs');
@@ -126,7 +142,12 @@ if (path.basename(process.argv[1]) === 'curl') {
 } else if (args.includes('get-object')) {
   const key = arg('--key');
   log('authenticated-get', key);
-  if (!store[key]) process.exit(1);
+  if (process.env.MOCK_PREVIOUS_FAILURE === '1' && key.endsWith('/latest.json')) {
+    console.error('An error occurred (AccessDenied) when calling GetObject'); process.exit(1);
+  }
+  if (!store[key]) {
+    console.error('An error occurred (NoSuchKey) when calling GetObject'); process.exit(1);
+  }
   fs.writeFileSync(args.at(-1), Buffer.from(store[key].body, 'base64'));
 } else if (args.includes('cp')) {
   const index = args.indexOf('cp');
@@ -150,9 +171,11 @@ if (path.basename(process.argv[1]) === 'curl') {
       PUI_PORTAL_LINKS_ENV: portalEnv, PUI_SKIP_PORTAL_CONFIG: '0',
       MOCK_STORE: state, MOCK_EVENTS: events,
       MOCK_HEAD_FAILURE: options.headFailure ? '1' : '0',
+      MOCK_PREVIOUS_FAILURE: options.previousReadFailure ? '1' : '0',
       MOCK_CORRUPT: options.corruptPublicArchive ? '1' : '0' }),
   });
-  return { result, portalEnv, work, archiveKey,
+  return { result, portalEnv, work, archiveKey, legacyArchiveKey,
+    objects: JSON.parse(readFileSync(state, 'utf8')) as Record<string, { body: string; sha?: string }>,
     events: readFileSync(events, 'utf8').trim().split('\n').filter(Boolean)
       .map((line) => JSON.parse(line) as { op: string; key: string }) };
 }
@@ -171,10 +194,128 @@ describe('PUI public release publisher', () => {
       sourceSha: 'a'.repeat(40),
       archiveSha256: files.digest,
     });
-    expect(latest.archiveUrl).toBe('https://pub.example.test/unguessable-prefix/pui/0.1.0/pui-0.1.0-linux-x86_64.tar.gz');
+    expect(latest.archiveUrl).toBe(`https://pub.example.test/unguessable-prefix/pui/0.1.0/${files.digest}/pui-0.1.0-linux-x86_64.tar.gz`);
     const page = readFileSync(join(work, 'index.html'), 'utf8');
     expect(page).toContain(latest.archiveUrl);
     expect(page).toContain(`${files.digest}</code>`);
+    expect(page).toContain('<h2>Linux</h2>');
+    expect(page).toContain('<h2>macOS</h2>');
+    expect(page).toContain('<h2>Windows</h2>');
+    expect(page).toContain('open its Linux terminal');
+    expect(page).toContain('macOS Apple Silicon download is awaiting release verification');
+    expect(page).not.toContain('href="https://pub.example.test/unguessable-prefix/pui/0.1.0/pui-0.1.0-macos');
+    expect(page).toContain('Launch PSU, select your cloud desktop');
+    expect(page).toContain('Where should psu run?');
+    expect(page).toContain('Papercusp cloud — sign in to use a hosted workspace');
+    expect(page).toContain('Local — this computer');
+    expect(page).toContain('href="../index.html#download-gui"');
+    expect(page).toContain('PSU and PUI are already included in Desktop Server.');
+    expect(page).toContain('Windows uses the same download as Linux, through WSL2.');
+    expect(page).toContain('There is no separate Windows executable.');
+    expect(page).not.toMatch(/(?:psu|pui) --connect/);
+    expect(latest.artifacts['linux-x86_64'].archiveSha256).toBe(files.digest);
+  });
+
+  it('keeps previously published macOS downloads when publishing Linux', () => {
+    const mac = run(candidate('macos-aarch64'));
+    expect(mac.result.status, mac.result.stderr).toBe(0);
+    const previous = JSON.parse(readFileSync(join(mac.work, 'latest.json'), 'utf8'));
+    const published = publication(candidate(), { previousManifest: previous });
+    expect(published.result.status, published.result.stderr).toBe(0);
+    const latest = JSON.parse(readFileSync(join(published.work, 'latest.json'), 'utf8'));
+    expect(Object.keys(latest.artifacts).sort()).toEqual(['linux-x86_64', 'macos-aarch64']);
+    const page = readFileSync(join(published.work, 'index.html'), 'utf8');
+    expect(page).toContain(previous.archiveUrl);
+    expect(page).toContain(latest.archiveUrl);
+    expect(latest.sumsUrl).not.toBe(previous.sumsUrl);
+  });
+
+  it('publishes a new generation at the same version without replacing the legacy archive', () => {
+    const old = candidate('linux-x86_64', 'b'.repeat(40));
+    const preview = run(old);
+    expect(preview.result.status, preview.result.stderr).toBe(0);
+    const previous = JSON.parse(readFileSync(join(preview.work, 'latest.json'), 'utf8'));
+    // The already-published r14 layout had no generation segment.
+    for (const key of ['archiveUrl', 'acceptanceUrl', 'sumsUrl']) {
+      previous[key] = previous[key].replace(`/${old.digest}/`, '/');
+    }
+    delete previous.artifacts;
+    const files = candidate();
+    expect(files.digest).not.toBe(old.digest);
+    const published = publication(files, { legacyArchive: old, previousManifest: previous });
+    expect(published.result.status, published.result.stderr).toBe(0);
+    const latest = JSON.parse(readFileSync(join(published.work, 'latest.json'), 'utf8'));
+    expect(latest.version).toBe(previous.version);
+    expect(latest.archiveUrl).not.toBe(previous.archiveUrl);
+    expect(latest.archiveUrl).toContain(`/0.1.0/${files.digest}/`);
+    expect(published.objects[published.legacyArchiveKey].body).toBe(readFileSync(old.archive).toString('base64'));
+    expect(published.objects[published.archiveKey].body).toBe(readFileSync(files.archive).toString('base64'));
+    expect(published.events).toContainEqual({ op: 'public-get', key: published.archiveKey });
+    expect(published.events.some(({ op, key }) => op === 'put' && key === published.legacyArchiveKey)).toBe(false);
+  });
+
+  it('migrates a legacy single-target manifest without losing its download', () => {
+    const linux = run(candidate());
+    const previous = JSON.parse(readFileSync(join(linux.work, 'latest.json'), 'utf8'));
+    delete previous.artifacts;
+    for (const key of ['archiveUrl', 'acceptanceUrl', 'sumsUrl']) {
+      previous[key] = previous[key].replace(`/${previous.archiveSha256}/`, '/');
+    }
+    previous.sumsUrl = 'https://pub.example.test/unguessable-prefix/pui/0.1.0/SHA256SUMS';
+    const mac = run(candidate('macos-x86_64'), previous);
+    expect(mac.result.status, mac.result.stderr).toBe(0);
+    const latest = JSON.parse(readFileSync(join(mac.work, 'latest.json'), 'utf8'));
+    expect(latest.artifacts['linux-x86_64']).toEqual(previous);
+    expect(latest.artifacts['macos-x86_64'].sumsUrl).toContain('macos-x86_64.tar.gz.sha256');
+  });
+
+  it('refuses a retained generation URL whose directory names another archive digest', () => {
+    const prior = run(candidate('macos-aarch64'));
+    const previous = JSON.parse(readFileSync(join(prior.work, 'latest.json'), 'utf8'));
+    delete previous.artifacts;
+    for (const key of ['archiveUrl', 'acceptanceUrl', 'sumsUrl']) {
+      previous[key] = previous[key].replace(`/${previous.archiveSha256}/`, `/${'f'.repeat(64)}/`);
+    }
+    const published = publication(candidate(), { previousManifest: previous });
+    expect(published.result.status).not.toBe(0);
+    expect(published.result.stderr).toContain('previous platform release URL does not match');
+    expect(published.events.some(({ op }) => op === 'put')).toBe(false);
+    expect(existsSync(published.portalEnv)).toBe(false);
+  });
+
+  it('refuses to erase platform entries when the prior manifest cannot be read', () => {
+    const published = publication(candidate(), { previousReadFailure: true });
+    expect(published.result.status).not.toBe(0);
+    expect(published.result.stderr).toContain('refusing to erase them');
+    expect(published.events.some((row) => row.op === 'put')).toBe(false);
+  });
+
+  it('refuses a previous manifest pointing at another host before uploading', () => {
+    const prior = run(candidate('macos-aarch64'));
+    const manifest = JSON.parse(readFileSync(join(prior.work, 'latest.json'), 'utf8'));
+    manifest.artifacts['macos-aarch64'].archiveUrl = 'https://wrong.example.test/download';
+    const published = publication(candidate(), { previousManifest: manifest });
+    expect(published.result.status).not.toBe(0);
+    expect(published.result.stderr).toContain('previous platform release URL');
+    expect(published.events.some((row) => row.op === 'put')).toBe(false);
+  });
+
+  it('requires acceptance on the matching macOS host, even if all engine legs are green', () => {
+    const files = candidate('macos-aarch64');
+    const report = JSON.parse(readFileSync(files.acceptance, 'utf8'));
+    report.runner.platform = 'Linux x86_64';
+    writeFileSync(files.acceptance, JSON.stringify(report));
+    const { result } = run(files);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('matching macOS host');
+  });
+
+  it('refuses a report advertising a different platform from its archive', () => {
+    const files = candidate('macos-x86_64');
+    const report = JSON.parse(readFileSync(files.acceptance, 'utf8'));
+    report.candidate.advertise[0].platform = 'Linux x86_64';
+    writeFileSync(files.acceptance, JSON.stringify(report));
+    expect(run(files).result.stderr).toContain('platform/backend scope is absent or invalid');
   });
 
   it('refuses a green-looking report bound to different archive bytes', () => {
@@ -237,7 +378,7 @@ describe('PUI public release publisher', () => {
     expect(published.result.status, published.result.stderr).toBe(0);
     const { events } = published;
     const firstAdvertise = events.findIndex((row) => row.op === 'put' && row.key.endsWith('/latest.json'));
-    for (const filename of ['pui-0.1.0-linux-x86_64.tar.gz', 'pui-0.1.0-linux-x86_64.tar.gz.acceptance.json', 'SHA256SUMS']) {
+    for (const filename of ['pui-0.1.0-linux-x86_64.tar.gz', 'pui-0.1.0-linux-x86_64.tar.gz.acceptance.json', 'pui-0.1.0-linux-x86_64.tar.gz.sha256']) {
       const verified = events.findIndex((row) => row.op === 'public-get' && row.key.endsWith(`/${filename}`));
       expect(verified).toBeGreaterThan(-1);
       expect(verified).toBeLessThan(firstAdvertise);

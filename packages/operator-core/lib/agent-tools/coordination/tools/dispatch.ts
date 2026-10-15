@@ -26,6 +26,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { resolveEffectiveStatusForItems, type PlanItem } from '@papercusp/plan-parser';
 import { COORD_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
@@ -35,9 +36,13 @@ import { renderHydratedRefs } from '../ref-hydrate';
 import { hydrateRefs, makePlanItemResolver } from '../ref-hydrate-resolve';
 import { DEFAULT_INBOX_BODY_CAP } from './inbox-content-bounds';
 import {
+  adopterGoneDiagnosis,
   assignActionableWorkItems,
+  classifyRequiredWakeFailure,
+  resolveStableAgentTarget,
   type ActionableWorkItemAssignment,
   type RequiredWakeFailure,
+  type StableAgentTargetState,
 } from '../actionable-work-item-dispatch';
 import { resolveAgentIdentity } from '../identity';
 import {
@@ -45,6 +50,7 @@ import {
   type PilotParticipantDispatchReceipt,
   type PersistPilotParticipantDispatchInput,
 } from '../../../pilot-participant-receipts';
+import { asRecord, completedResultPayload } from '../../abort-completion-payload';
 
 export interface DispatchArgs {
   to: string;
@@ -122,6 +128,9 @@ export interface DispatchResult {
   queued?: number;
   /** False until a later checkpoint/activity observation proves the target took a turn. */
   pickupConfirmed?: boolean;
+  /** P-006 / D-005: passed through from coord:send — the key the pump fires if the queued wake
+   *  was NOT picked up within `windowSec`. Await it instead of trusting `queued`. */
+  pickup?: Array<{ target: string; event: string; windowSec: number }>;
   /** EI-5957: >0 when the wake STAGED (target in MANUAL wake-mode — the hive
    *  pause/edit gate) instead of delivering. The lane is assigned durably but the
    *  directed note was queued for owner review, NOT delivered — see `warning`. */
@@ -206,6 +215,8 @@ function findPresenceRow(
   };
 }
 
+const CANONICAL_OWNER_ID_RE = /^su-[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+
 /**
  * PURE composition over an injected `call` (run SEQUENTIALLY so the sub-reads never
  * contend on the caller's single ctx connection). Order: presence (pre-state) →
@@ -218,6 +229,158 @@ export interface ComposeDispatchDeps {
   hydrateRefs?: typeof hydrateRefs;
   /** Injectable lower-level stable-agent assignment seam. */
   assignWorkItems?: typeof assignActionableWorkItems;
+  /** Invocation-scoped observer; omitted by pure composition callers. */
+  runPhase?: <T>(phase: DispatchPhaseName, operation: () => Promise<T>) => Promise<T>;
+  /**
+   * Stable-name resolver consulted ONLY after the required wake already failed for a
+   * non-canonical `to` (WI-6554700010010992). Omitted by pure composition callers, which
+   * then keep the raw target_absent/target_dead classification.
+   */
+  resolveStableTarget?: (targetAgent: string) => Promise<StableAgentTargetState>;
+}
+
+export type DispatchPhaseName =
+  | 'target_resolution'
+  | 'assignment_preflight'
+  | 'assignment'
+  | 'hydration'
+  | 'required_delivery'
+  | 'finalization'
+  | 'admission_recovery';
+
+export type DispatchTraceStatus = 'running' | 'completed' | 'failed' | 'aborted';
+export type DispatchPhaseStatus = 'running' | 'completed' | 'failed' | 'aborted';
+
+interface DispatchPhaseRecord {
+  phase: DispatchPhaseName;
+  status: DispatchPhaseStatus;
+  elapsedMs: number;
+}
+
+export interface DispatchPhaseInstrumentation {
+  run<T>(phase: DispatchPhaseName, operation: () => Promise<T>): Promise<T>;
+  finish(status?: Exclude<DispatchTraceStatus, 'running'>): void;
+}
+
+const MAX_DISPATCH_TRACE_PHASES = 8;
+const MAX_DISPATCH_TRACE_ELAPSED_MS = 3_600_000;
+const COORD_SEND_TIMING_FIELDS = ['prePersistMs', 'persistMs', 'postPersistMs'] as const;
+
+function boundedDispatchElapsedMs(startedAt: number): number {
+  return Math.min(MAX_DISPATCH_TRACE_ELAPSED_MS, Math.max(0, Math.round(performance.now() - startedAt)));
+}
+
+function readCoordSendPhaseTimings(value: unknown): Record<string, number | null> | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const envelope = value as {
+    results?: Array<{ phaseTimingsMs?: unknown }>;
+    phaseTimingsMs?: unknown;
+  };
+  const candidate = envelope.results?.[0]?.phaseTimingsMs ?? envelope.phaseTimingsMs;
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return undefined;
+
+  const source = candidate as Record<string, unknown>;
+  const timings: Record<string, number | null> = {};
+  for (const field of COORD_SEND_TIMING_FIELDS) {
+    const value = source[field];
+    if (value === null) timings[field] = null;
+    else if (typeof value === 'number' && Number.isFinite(value)) {
+      timings[field] = Math.min(MAX_DISPATCH_TRACE_ELAPSED_MS, Math.max(0, Math.round(value)));
+    }
+  }
+  return Object.keys(timings).length > 0 ? timings : undefined;
+}
+
+/**
+ * Cumulative, bounded metadata for one coord:dispatch invocation. `ctx.metadata`
+ * is last-write-wins, so each update carries the full small phase list. The abort
+ * listener records an in-flight phase before the outer tool deadline settles;
+ * no recipient, note, work-item id, or thrown error text is copied into telemetry.
+ */
+export function createDispatchPhaseInstrumentation(
+  metadata?: (value: Record<string, unknown>) => void,
+  signal?: AbortSignal,
+): DispatchPhaseInstrumentation {
+  const startedAt = performance.now();
+  const phases: DispatchPhaseRecord[] = [];
+  let activePhase: { record: DispatchPhaseRecord; startedAt: number } | null = null;
+  let status: DispatchTraceStatus = 'running';
+  let abortObserved = false;
+  let coordSendPhaseTimingsMs: Record<string, number | null> | undefined;
+
+  const emit = () => {
+    const trace = {
+      schemaVersion: 'coord-dispatch-phase-v1',
+      status: signal?.aborted || abortObserved ? 'aborted' : status,
+      elapsedMs: boundedDispatchElapsedMs(startedAt),
+      ...(activePhase ? { currentPhase: activePhase.record.phase } : {}),
+      phases: phases.map((phase) => ({ ...phase })),
+      ...(coordSendPhaseTimingsMs ? { coordSendPhaseTimingsMs: { ...coordSendPhaseTimingsMs } } : {}),
+    };
+    try {
+      metadata?.({ coordDispatch: trace });
+    } catch {
+      // Instrumentation is diagnostic: a sink failure must not change dispatch.
+    }
+  };
+
+  const onAbort = () => {
+    abortObserved = true;
+    status = 'aborted';
+    if (activePhase) {
+      activePhase.record.status = 'aborted';
+      activePhase.record.elapsedMs = boundedDispatchElapsedMs(activePhase.startedAt);
+    }
+    emit();
+  };
+
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener('abort', onAbort, { once: true });
+
+  const run = async <T>(phase: DispatchPhaseName, operation: () => Promise<T>): Promise<T> => {
+    const record: DispatchPhaseRecord = { phase, status: 'running', elapsedMs: 0 };
+    if (phases.length === MAX_DISPATCH_TRACE_PHASES) phases.shift();
+    phases.push(record);
+    const active = { record, startedAt: performance.now() };
+    activePhase = active;
+    emit();
+
+    try {
+      const value = await operation();
+      record.elapsedMs = boundedDispatchElapsedMs(active.startedAt);
+      if (record.status !== 'aborted') {
+        record.status = signal?.aborted || abortObserved ? 'aborted' : 'completed';
+      }
+      if (phase === 'required_delivery') {
+        coordSendPhaseTimingsMs = readCoordSendPhaseTimings(value) ?? coordSendPhaseTimingsMs;
+      }
+      if (activePhase === active) activePhase = null;
+      emit();
+      return value;
+    } catch (error) {
+      record.elapsedMs = boundedDispatchElapsedMs(active.startedAt);
+      record.status = signal?.aborted || abortObserved ? 'aborted' : 'failed';
+      if (record.status === 'aborted') {
+        abortObserved = true;
+        status = 'aborted';
+      }
+      if (activePhase === active) activePhase = null;
+      emit();
+      throw error;
+    } finally {
+      if (activePhase === active) activePhase = null;
+    }
+  };
+
+  return {
+    run,
+    finish(resultStatus = 'completed') {
+      activePhase = null;
+      status = signal?.aborted || abortObserved ? 'aborted' : resultStatus;
+      signal?.removeEventListener('abort', onAbort);
+      emit();
+    },
+  };
 }
 
 export async function composeDispatch(
@@ -227,22 +390,29 @@ export async function composeDispatch(
   caller?: string,
 ): Promise<DispatchResult> {
   const hydrate = deps.hydrateRefs ?? hydrateRefs;
+  const runPhase = <T>(phase: DispatchPhaseName, operation: () => Promise<T>) =>
+    deps.runPhase ? deps.runPhase(phase, operation) : operation();
   // 1. Pre-state: the target's wakeability (P-001). Best-effort — a presence read
   //    hiccup degrades sessionState/wakeable to null but never blocks the dispatch.
   let sessionState: string | null = null;
   let wakeable: boolean | null = null;
-  let presenceOwnerId: string | null = null;
+  const exactOwnerId = CANONICAL_OWNER_ID_RE.test(args.to);
+  let presenceOwnerId: string | null = exactOwnerId ? args.to : null;
   try {
-    // Targeted `owner` lookup: the default roster now omits `ended` rows, but a
-    // dispatch target may well be dead — pass `owner` so an `ended`/parked target is
-    // still resolved (for the wakeable/recipient_dead pre-state) instead of missed.
-    const snapshot = await call('coord:presence', { scope: 'workspace', owner: args.to });
-    const row = findPresenceRow(snapshot, args.to);
-    if (row) {
-      sessionState = row.sessionState;
-      wakeable = row.wakeable;
-      presenceOwnerId = row.ownerId || null;
-    }
+    await runPhase('target_resolution', async () => {
+      if (exactOwnerId) return;
+      // Resolve handles and add liveness hints when the input is ambiguous. A
+      // canonical owner id is already sufficient for assignment and coord:send;
+      // skip this optional read there so a slow roster lookup cannot consume the
+      // dispatch deadline before its required delivery leg runs.
+      const snapshot = await call('coord:presence', { scope: 'workspace', owner: args.to });
+      const row = findPresenceRow(snapshot, args.to);
+      if (row) {
+        sessionState = row.sessionState;
+        wakeable = row.wakeable;
+        presenceOwnerId = row.ownerId || null;
+      }
+    });
   } catch {
     /* degrade: sessionState/wakeable stay null */
   }
@@ -254,18 +424,21 @@ export async function composeDispatch(
   //       BEFORE coord:send's required wake; blocked descendants are neither
   //       claimed nor included in the wake payload/body.
   let workItems: ActionableWorkItemAssignment | null = null;
-  if (args.workItemIds && args.workItemIds.length > 0) {
+  const requestedWorkItemIds = args.workItemIds;
+  if (requestedWorkItemIds && requestedWorkItemIds.length > 0) {
     const assign = deps.assignWorkItems ?? assignActionableWorkItems;
     const targetAgent = presenceOwnerId || args.to;
     try {
-      workItems = await assign({
-        workItemIds: args.workItemIds,
-        targetAgent,
-        ...(caller ? { actor: caller } : {}),
-        ...(args.harness ? { harness: args.harness } : {}),
-      });
+      workItems = await runPhase('assignment', () =>
+        assign({
+          workItemIds: requestedWorkItemIds,
+          targetAgent,
+          ...(caller ? { actor: caller } : {}),
+          ...(args.harness ? { harness: args.harness } : {}),
+        }),
+      );
     } catch (error) {
-      const requested = [...new Set(args.workItemIds)];
+      const requested = [...new Set(requestedWorkItemIds)];
       workItems = {
         ok: false,
         targetAgent,
@@ -298,10 +471,10 @@ export async function composeDispatch(
   let itemsToAssign = args.items;
   if (args.planSlug && args.items && args.items.length > 0) {
     try {
-      const statusEnv = (await call('plan_items:status', {
+      const statusEnv = (await runPhase('assignment_preflight', () => call('plan_items:status', {
         plan: args.planSlug,
         ...(args.harness ? { harness: args.harness } : {}),
-      })) as
+      }))) as
         | {
             items?: Array<{
               itemId: string;
@@ -372,12 +545,12 @@ export async function composeDispatch(
   let assigned: DispatchAssigned | null = null;
   if (args.planSlug && itemsToAssign && itemsToAssign.length > 0) {
     try {
-      const env = (await call('plan_items:assign', {
+      const env = (await runPhase('assignment', () => call('plan_items:assign', {
         plan: args.planSlug,
         itemIds: itemsToAssign,
         assignee: args.to,
         ...(args.harness ? { harness: args.harness } : {}),
-      })) as
+      }))) as
         | {
             ok?: boolean;
             results?: unknown[];
@@ -443,9 +616,9 @@ export async function composeDispatch(
         slug: args.planSlug as string,
         item,
       }));
-      const hydrated = await hydrate(refs, {
+      const hydrated = await runPhase('hydration', () => hydrate(refs, {
         resolvers: { 'plan-item': makePlanItemResolver(args.harness) },
-      });
+      }));
       itemsHydrated = hydrated.filter((h) => h.ok).length;
       const block = renderHydratedRefs(hydrated);
       if (block) {
@@ -499,7 +672,7 @@ export async function composeDispatch(
   //    This is the critical leg: it persists the inbox row (durable) AND fires the
   //    target's own coord:inbox-wake key, returning the authoritative queued-delivery
   //    signal (queued / recipient_absent / recipient_dead). It does not confirm a turn.
-  const sendEnv = (await call('coord:send', {
+  const sendEnv = (await runPhase('required_delivery', () => call('coord:send', {
     to: [args.to],
     summary: args.note,
     // The structured-body gate refuses a plain string, and expects:'action' below makes a
@@ -523,7 +696,7 @@ export async function composeDispatch(
     // asking it to confirm receipt; pickup must be verified separately) and never
     // 'none' (a dispatch nobody is obliged to act on is not a dispatch).
     expects: 'action',
-  })) as { results?: Array<Record<string, unknown>> } | undefined;
+  }))) as { results?: Array<Record<string, unknown>> } | undefined;
 
   const r0 = (sendEnv?.results?.[0] ?? {}) as {
     ok?: boolean;
@@ -536,6 +709,7 @@ export async function composeDispatch(
       recipient_absent?: boolean;
       recipient_dead?: string[];
       note?: string;
+      pickup?: Array<{ target: string; event: string; windowSec: number }>;
     };
     error?: string;
   };
@@ -572,6 +746,7 @@ export async function composeDispatch(
     woken,
     queued,
     pickupConfirmed: false,
+    ...(Array.isArray(wake.pickup) && wake.pickup.length > 0 ? { pickup: wake.pickup } : {}),
     ...(itemsHydrated > 0 ? { itemsHydrated } : {}),
     ...(staged > 0 ? { staged } : {}),
     ...(wake.recipient_absent ? { recipient_absent: true } : {}),
@@ -623,6 +798,23 @@ export async function composeDispatch(
       code: 'target_absent',
       message: `coord:send could not deliver the required dispatch to ${resolvedTo}: ${r0.error ?? 'unknown delivery failure'}`,
     };
+  }
+  // WI-6554700010010992: a stable NAME whose every adopter has ended is resolved by
+  // coord:send to one dead session id, so the chain above names that id. Ask the
+  // stable-target resolver once, only on this already-failed path and only for a
+  // non-canonical input. When it confirms the name outlived its adopters, report the
+  // NAME and its plan_items:adopt_name repair (the shared classifier's own branch).
+  if (failure && (failure.code === 'target_absent' || failure.code === 'target_dead') && !exactOwnerId) {
+    let stable: StableAgentTargetState | null = null;
+    try {
+      stable = (await deps.resolveStableTarget?.(args.to)) ?? null;
+    } catch {
+      /* degrade: keep the raw classification */
+    }
+    const reclassified = stable
+      ? classifyRequiredWakeFailure({ target: stable, wake: { queued, woken, staged, timedOutTargets: [] }, queuePreserved })
+      : null;
+    if (reclassified?.code === 'target_adopter_gone') failure = reclassified;
   }
   if (failure) {
     result.ok = false;
@@ -681,8 +873,200 @@ export async function composeDispatch(
       'verify a fresh work-item checkpoint or activity timestamp before treating the assigned lane as active.';
     result.warning = result.warning ? `${result.warning} ${pickupWarning}` : pickupWarning;
   }
+  if (failure?.code === 'target_adopter_gone') {
+    // The generic dead/absent warnings above name one session; the repair is the name's.
+    result.warning = `coord:dispatch reached no live adopter: ${failure.message}.`;
+  }
 
   return result;
+}
+
+/** Run the normal dispatch composition with an invocation-scoped phase trace. */
+export async function runInstrumentedDispatch(
+  args: DispatchArgs,
+  call: InnerCall,
+  deps: ComposeDispatchDeps,
+  caller: string | undefined,
+  scope: { workspaceId: string | null; harnessSlug: string | null },
+  trace: DispatchPhaseInstrumentation,
+): Promise<DispatchResult> {
+  const resolveStableTarget =
+    deps.resolveStableTarget ??
+    ((targetAgent: string) =>
+      resolveStableAgentTarget({
+        targetAgent,
+        ...(scope.workspaceId ? { workspaceId: scope.workspaceId } : {}),
+        ...(scope.harnessSlug ? { harness: scope.harnessSlug } : {}),
+      }));
+  try {
+    const result = await composeDispatch(args, call, { ...deps, resolveStableTarget, runPhase: trace.run }, caller);
+    const finalized = await trace.run('finalization', () => finalizePilotDispatchReceipt(args, result, scope));
+    trace.finish('completed');
+    return finalized;
+  } catch (error) {
+    trace.finish('failed');
+    throw error;
+  }
+}
+
+/**
+ * Resolve a late coord:dispatch completion only from effects the returned dispatch
+ * summary proves. Assignment counts alone are not receipts: plan-item rows must
+ * carry their canonical assignment, work-item ids must come from successful atomic
+ * claims, and a message id must identify a persisted inbox row.
+ */
+export function coordDispatchAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  if (context.toolName !== 'coord:dispatch' || !context.callId.trim()) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'coord:dispatch receipt is missing its dispatch attempt identity',
+      failures: ['missing-attempt-identity'],
+    };
+  }
+
+  const payload = completedResultPayload(result);
+  if (!payload) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'coord:dispatch result did not contain a structured completion summary',
+      failures: ['missing-dispatch-result'],
+    };
+  }
+
+  const effects: string[] = [];
+  const unresolved: string[] = [];
+  const delivered = payload.delivered;
+  if (typeof delivered === 'string' && delivered.trim()) {
+    effects.push(`message:${delivered.trim()}`);
+  } else if (delivered !== null) {
+    unresolved.push('unresolved-message-outcome');
+  }
+
+  let noExecutableWorkItems = false;
+  const rawAssigned = payload.assigned;
+  if (rawAssigned === undefined) {
+    unresolved.push('missing-plan-assignment-outcome');
+  } else if (rawAssigned !== null) {
+    const summary = asRecord(rawAssigned);
+    const planSlug = typeof summary?.planSlug === 'string' ? summary.planSlug.trim() : '';
+    const items = Array.isArray(summary?.items) && summary.items.every((item) => typeof item === 'string' && item.trim())
+      ? summary.items as string[]
+      : null;
+    const rows = Array.isArray(summary?.results) ? summary.results : null;
+    if (
+      !summary || !planSlug || !items || items.length === 0 || !rows ||
+      summary.requested !== items.length || rows.length !== items.length
+    ) {
+      unresolved.push('unresolved-plan-assignment-outcomes');
+    } else {
+      const remaining = new Map<string, number>();
+      for (const item of items) remaining.set(item, (remaining.get(item) ?? 0) + 1);
+      let provenAssigned = 0;
+      let knownRefused = 0;
+      for (const value of rows) {
+        const row = asRecord(value);
+        const item = typeof row?.item === 'string' ? row.item : '';
+        const available = remaining.get(item) ?? 0;
+        if (!row || row.plan !== planSlug || available < 1) {
+          unresolved.push('unresolved-plan-assignment-outcomes');
+          continue;
+        }
+        remaining.set(item, available - 1);
+        if (row.ok === true) {
+          const assignment = asRecord(row.assignment);
+          const expectedAssignee = asRecord(_args)?.to;
+          if (
+            assignment?.planSlug === planSlug && assignment.itemId === item &&
+            typeof expectedAssignee === 'string' && assignment.assigneeName === expectedAssignee
+          ) {
+            effects.push(`plan-item:${planSlug}#${item}`);
+            provenAssigned += 1;
+          } else {
+            unresolved.push('unresolved-plan-assignment-outcomes');
+          }
+        } else if (row.ok === false && typeof row.refused === 'string' && row.refused.trim()) {
+          knownRefused += 1;
+        } else {
+          // A thrown/errored assignment can race its durable upsert.
+          unresolved.push('unresolved-plan-assignment-outcomes');
+        }
+      }
+      if (
+        [...remaining.values()].some((count) => count !== 0) ||
+        summary.assigned !== provenAssigned || summary.failed !== knownRefused ||
+        summary.partial !== (provenAssigned > 0 && knownRefused > 0)
+      ) unresolved.push('unresolved-plan-assignment-outcomes');
+    }
+  }
+
+  let workItemsPresent = false;
+  const rawWorkItems = payload.workItems;
+  if (rawWorkItems === undefined) {
+    unresolved.push('missing-work-item-assignment-outcome');
+  } else if (rawWorkItems !== null) {
+    workItemsPresent = true;
+    const workItems = asRecord(rawWorkItems);
+    const readIds = (value: unknown): string[] | null =>
+      Array.isArray(value) && value.every((id) => typeof id === 'string' && id.trim()) ? value as string[] : null;
+    const requested = readIds(workItems?.requested);
+    const assigned = readIds(workItems?.assigned);
+    const retained = readIds(workItems?.retained);
+    const execution = readIds(workItems?.executionWorkItemIds);
+    const failed = Array.isArray(workItems?.failed) ? workItems.failed : null;
+    const unique = (ids: string[]) => new Set(ids).size === ids.length;
+    const requestedSet = new Set(requested ?? []);
+    const assignedSet = new Set(assigned ?? []);
+    const retainedSet = new Set(retained ?? []);
+    const expectedExecution = (requested ?? []).filter((id) => assignedSet.has(id) || retainedSet.has(id));
+    if (
+      !workItems || !requested || !assigned || !retained || !execution || !failed ||
+      !unique(requested) || !unique(assigned) || !unique(retained) || !unique(execution) ||
+      assigned.some((id) => !requestedSet.has(id)) || retained.some((id) => !requestedSet.has(id)) ||
+      retained.some((id) => assignedSet.has(id)) ||
+      execution.length !== expectedExecution.length || execution.some((id, index) => id !== expectedExecution[index])
+    ) {
+      unresolved.push('unresolved-work-item-assignment-outcomes');
+    } else {
+      for (const id of assigned) effects.push(`work-item:${id}`);
+      for (const value of failed) {
+        const row = asRecord(value);
+        if (!row || typeof row.workItemId !== 'string' || !requestedSet.has(row.workItemId)) {
+          unresolved.push('unresolved-work-item-assignment-outcomes');
+        } else if (row.code !== 'claim_refused') {
+          // claim_failed may have raced a committed claim; refusal is the only
+          // failure outcome that proves the atomic assignment did not land.
+          unresolved.push('unresolved-work-item-assignment-outcomes');
+        }
+      }
+      noExecutableWorkItems = execution.length === 0 && assigned.length === 0 && retained.length === 0;
+    }
+  }
+
+  const effectRef = effects.length > 0
+    ? `coord-dispatch:${context.callId}:${[...new Set(effects)].join(',')}`
+    : undefined;
+  const failures = [...new Set(unresolved)];
+  if (failures.length > 0) {
+    return {
+      status: 'recovery-incomplete',
+      reason: `coord:dispatch has ${effects.length} proven effect(s), but its completed summary leaves an outcome ambiguous`,
+      failures,
+      ...(effectRef ? { effectRef } : {}),
+    };
+  }
+  if (effectRef) return { status: 'recorded', effectRef };
+  if (workItemsPresent && noExecutableWorkItems && delivered === null && rawAssigned === null) {
+    return { status: 'not-recorded', reason: 'coord:dispatch found no executable work-items and performed no delivery' };
+  }
+  return {
+    status: 'recovery-incomplete',
+    reason: 'coord:dispatch completion did not prove a delivered message or durable assignment',
+    failures: ['no-proven-dispatch-effect'],
+  };
 }
 
 export default defineTool({
@@ -699,6 +1083,7 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
+  abortCompletionReceipt: coordDispatchAbortCompletionReceipt,
   // Composite marker (tool-call-batching-wrappers P-010): the primitives this bundles.
   replaces: ['coord:presence', 'plan_items:assign', 'work_items:claim', 'coord:send', 'events:emit'],
   args: z
@@ -768,25 +1153,58 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const dispatchArgs = args as DispatchArgs;
+    const ctxTrace = ctx as unknown as {
+      metadata?: (value: Record<string, unknown>) => void;
+      signal?: AbortSignal;
+    };
+    const trace = createDispatchPhaseInstrumentation(ctxTrace.metadata, ctxTrace.signal);
     if (dispatchArgs.resumeAdmission) {
       const identity = resolveAgentIdentity(ctx);
       const { requestAdmissionRecovery, AdmissionRecoveryRefused } = await import('../../../work-item-admission-recovery');
       const { bindAdmissionAuthority, AdmissionAuthorityRefused } = await import('../../../work-item-admission-authority');
-      const { resolveStableAgentTarget } = await import('../actionable-work-item-dispatch');
       try {
         if (!identity.workspaceId) throw new AdmissionRecoveryRefused('recovery requires a concrete caller workspace');
-        const target = await resolveStableAgentTarget({
-          targetAgent: dispatchArgs.to, workspaceId: identity.workspaceId, harness: dispatchArgs.harness,
-        });
-        const result = await requestAdmissionRecovery({
-          workspaceId: identity.workspaceId, harnessSlug: dispatchArgs.harness!,
-          workItemId: dispatchArgs.workItemIds![0]!, caller: identity.ownerId, target: target.ownerId,
+        // A canonical owner ID is already exact. requestAdmissionRecovery performs
+        // fresh presence, workspace, and work-item authorization checks for it;
+        // resolve only stable handles here so this path does not read the roster twice.
+        const resolution = await trace.run('target_resolution', async () =>
+          CANONICAL_OWNER_ID_RE.test(dispatchArgs.to)
+            ? null
+            : resolveStableAgentTarget({
+                targetAgent: dispatchArgs.to,
+                workspaceId: identity.workspaceId!,
+                harness: dispatchArgs.harness,
+              }),
+        );
+        // WI-6554700010010992: a stable name whose every adopter has ended resolves to
+        // one dead session id. Registering recovery for that id strands the item, so
+        // name the NAME and its adopt_name repair instead of passing the dead id on.
+        const adopters = resolution && resolution.present === false ? (resolution.adoptedBy ?? []) : [];
+        if (adopters.length > 0) {
+          trace.finish('completed');
+          return { content: [{ type: 'text' as const, text: JSON.stringify({
+            ok: false, error: 'target_adopter_gone', target: dispatchArgs.to, adoptedBy: adopters,
+            reason: adopterGoneDiagnosis(dispatchArgs.to, adopters),
+            workItemId: dispatchArgs.workItemIds![0], responsibleActor: identity.ownerId,
+            nextAction: `Launch an agent that runs plan_items:adopt_name { name: "${dispatchArgs.to}" }, then retry this same item with resumeAdmission:true.`,
+            pickupConfirmed: false,
+          }) }] };
+        }
+        const targetOwnerId = resolution ? resolution.ownerId : dispatchArgs.to;
+        const result = await trace.run('admission_recovery', () => requestAdmissionRecovery({
+          workspaceId: identity.workspaceId!, harnessSlug: dispatchArgs.harness!,
+          workItemId: dispatchArgs.workItemIds![0]!, caller: identity.ownerId, target: targetOwnerId,
           authority: bindAdmissionAuthority(ctx),
           note: dispatchArgs.note, ...(dispatchArgs.body !== undefined ? { body: dispatchArgs.body } : {}),
-        });
+        }));
+        trace.finish('completed');
         return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
       } catch (error) {
-        if (!(error instanceof AdmissionRecoveryRefused) && !(error instanceof AdmissionAuthorityRefused)) throw error;
+        if (!(error instanceof AdmissionRecoveryRefused) && !(error instanceof AdmissionAuthorityRefused)) {
+          trace.finish('failed');
+          throw error;
+        }
+        trace.finish('completed');
         return { content: [{ type: 'text' as const, text: JSON.stringify({
           ok: false, error: 'admission_recovery_refused', reason: error.message,
           workItemId: dispatchArgs.workItemIds![0], responsibleActor: identity.ownerId,
@@ -796,11 +1214,17 @@ export default defineTool({
       }
     }
     const identity = resolveAgentIdentity(ctx);
-    const result = await composeDispatch(dispatchArgs, inProcessCall(ctx), {}, identity.ownerId);
-    const finalized = await finalizePilotDispatchReceipt(dispatchArgs, result, {
-      workspaceId: identity.workspaceId,
-      harnessSlug: dispatchArgs.harness ?? ((ctx as unknown as { harnessSlug?: string }).harnessSlug ?? null),
-    });
+    const finalized = await runInstrumentedDispatch(
+      dispatchArgs,
+      inProcessCall(ctx),
+      {},
+      identity.ownerId,
+      {
+        workspaceId: identity.workspaceId,
+        harnessSlug: dispatchArgs.harness ?? ((ctx as unknown as { harnessSlug?: string }).harnessSlug ?? null),
+      },
+      trace,
+    );
     return { content: [{ type: 'text' as const, text: JSON.stringify(finalized) }] };
   },
 });

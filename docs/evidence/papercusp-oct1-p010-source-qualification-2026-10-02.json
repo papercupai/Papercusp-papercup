@@ -1,0 +1,1558 @@
+{
+  "schemaVersion": "papercusp-source-qualification-evidence-v1",
+  "workItem": "EI-24827847586322829",
+  "savedAt": "2026-10-02T02:12:35.692136+00:00",
+  "sourceFingerprints": {
+    "libs/test-config/src/vitest-config.ts": "84c7ecfce5aff9077fc36f70efa7687e57ad040591d40ffdebd485a1b0d4afc3",
+    "libs/test-config/src/executed-source-map-reporter.ts": "6efa567db72d511b0164811e83f139619be647ef667e835a063ed63a66b2e855",
+    "libs/test-config/src/executed-source-map-reporter.test.ts": "83a39e63e08e1ec6fdb3a131ec529efcf37712e988d3e9fe7f74e793f00004a6",
+    "libs/test-config/src/executed-source-fingerprints.test.ts": "02a124f2cf5aaa1ddee787874f11997059628f9f4f6a65a66da66b5c6a141b41"
+  },
+  "finalRegression": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/test-config PC_EXECUTED_SOURCE_MAP_OUT=/tmp/su-7db4f-source-qualification-meta-fixed-out.json PC_EXECUTED_SOURCE_MAP_NO_PERSIST=1 npm run test:file -- libs/test-config/src/executed-source-map-reporter.test.ts libs/test-config/src/executed-source-fingerprints.test.ts",
+    "exitCode": 0,
+    "passed": 37,
+    "skipped": 0,
+    "testRuns": [
+      20462746,
+      20462747
+    ],
+    "routerHead": "abf0415fe9",
+    "namedDirtyPaths": 2,
+    "provenance": "stamped",
+    "typecheck": {
+      "command": "npm run --workspace @papercusp/test-config typecheck",
+      "exitCode": 0
+    },
+    "reporterOut": {
+      "workspaceName": "@papercusp/test-config",
+      "recordedSha": "abf0415fe92e92487fe5a3af1d6d22ea0fca3525",
+      "worktreeDirty": true,
+      "skipped": 0,
+      "rows": [
+        {
+          "workspaceName": "@papercusp/test-config",
+          "testFile": "libs/test-config/src/executed-source-map-reporter.test.ts",
+          "executedModules": [
+            "libs/generic/module-singleton/src/index.ts",
+            "libs/test-config/src/admin-test-runs-reporter.ts",
+            "libs/test-config/src/console-noise-filter.ts",
+            "libs/test-config/src/executed-inputs-capture-setup.ts",
+            "libs/test-config/src/executed-inputs-capture.ts",
+            "libs/test-config/src/executed-source-map-reporter.test.ts",
+            "libs/test-config/src/executed-source-map-reporter.ts",
+            "libs/test-config/src/execution-details.ts",
+            "libs/test-config/src/handle-leak-delta.ts",
+            "libs/test-config/src/hermetic-tmpdir.ts",
+            "libs/test-config/src/lane-split.ts",
+            "libs/test-config/src/setup-fail-on-console.ts",
+            "libs/test-config/src/setup-handle-leak-detector.ts",
+            "libs/test-config/src/setup-hermetic-env.ts",
+            "libs/test-config/src/setup-no-real-pg.ts",
+            "libs/test-config/src/setup-testing-library-timeout.ts",
+            "libs/test-config/src/silenced-console-census.ts",
+            "libs/test-config/src/test-pass-reuse-skip.ts",
+            "libs/test-config/src/timer-leak-ledger.ts",
+            "libs/test-config/src/tmpdir-guard.ts",
+            "libs/test-config/src/vitest-config.ts",
+            "libs/test-config/src/worker-setup-files.ts"
+          ],
+          "inputsCaptured": true,
+          "readPaths": [
+            "~/papercupai-workspace/papercusp/libs/test-config/src/__snapshots__/executed-source-map-reporter.test.ts.snap",
+            "~/papercupai-workspace/papercusp/libs/test-config/src/executed-source-fingerprints.test.ts",
+            "~/papercupai-workspace/papercusp/libs/test-config/src/executed-source-map-reporter.test.ts",
+            "~/papercupai-workspace/papercusp/libs/test-config/src/executed-source-map-reporter.ts",
+            "~/papercupai-workspace/papercusp/libs/test-config/src/lane-split.ts",
+            "~/papercupai-workspace/papercusp/libs/test-config/src/test-pass-reuse-skip.ts",
+            "~/papercupai-workspace/papercusp/libs/test-config/src/tmpdir-guard.ts",
+            "~/papercupai-workspace/papercusp/libs/test-config/src/vitest-config.ts",
+            "~/papercupai-workspace/papercusp/libs/test-config/src/worker-setup-files.ts",
+            "~/papercupai-workspace/papercusp/libs/test-config/vitest.config.ts"
+          ],
+          "opaqueReasons": [],
+          "sourceEvidence": {
+            "schemaVersion": "vite-collected-source-evidence-v1",
+            "scope": "repository-worker-vite-original-sources",
+            "status": "stable",
+            "sources": [
+              {
+                "path": "libs/generic/module-singleton/src/index.ts",
+                "sha256": "4f472845d83ba2a9a894b6a8f5c35e24ccb66182a483ac7b79e34577544322b0",
+                "currentSha256": "4f472845d83ba2a9a894b6a8f5c35e24ccb66182a483ac7b79e34577544322b0"
+              },
+              {
+                "path": "libs/test-config/src/admin-test-runs-reporter.ts",
+                "sha256": "840a6e02476d044d3d5de01c87f365c41e056bd8c8ab4373186a7529ed22dc25",
+                "currentSha256": "840a6e02476d044d3d5de01c87f365c41e056bd8c8ab4373186a7529ed22dc25"
+              },
+              {
+                "path": "libs/test-config/src/console-noise-filter.ts",
+                "sha256": "3d6a101a6935f02a9189a98b6e4124f5f791c82e0daaefcc6c6b724a5673d888",
+                "currentSha256": "3d6a101a6935f02a9189a98b6e4124f5f791c82e0daaefcc6c6b724a5673d888"
+              },
+              {
+                "path": "libs/test-config/src/executed-inputs-capture-setup.ts",
+                "sha256": "77e4f40201cc5aef9e6e5692b3be12d3975acf19de3fea65ea350cb5213d4d90",
+                "currentSha256": "77e4f40201cc5aef9e6e5692b3be12d3975acf19de3fea65ea350cb5213d4d90"
+              },
+              {
+                "path": "libs/test-config/src/executed-inputs-capture.ts",
+                "sha256": "4de69dece605e06cebf602a259ae8aaab9ea7d603767b4c3bc35da32074498ba",
+                "currentSha256": "4de69dece605e06cebf602a259ae8aaab9ea7d603767b4c3bc35da32074498ba"
+              },
+              {
+                "path": "libs/test-config/src/executed-source-map-reporter.test.ts",
+                "sha256": "83a39e63e08e1ec6fdb3a131ec529efcf37712e988d3e9fe7f74e793f00004a6",
+                "currentSha256": "83a39e63e08e1ec6fdb3a131ec529efcf37712e988d3e9fe7f74e793f00004a6"
+              },
+              {
+                "path": "libs/test-config/src/executed-source-map-reporter.ts",
+                "sha256": "6efa567db72d511b0164811e83f139619be647ef667e835a063ed63a66b2e855",
+                "currentSha256": "6efa567db72d511b0164811e83f139619be647ef667e835a063ed63a66b2e855"
+              },
+              {
+                "path": "libs/test-config/src/execution-details.ts",
+                "sha256": "30cedefe4055d0661b37773fa0403a44c26b458dc91c5f5636668bcff40900c3",
+                "currentSha256": "30cedefe4055d0661b37773fa0403a44c26b458dc91c5f5636668bcff40900c3"
+              },
+              {
+                "path": "libs/test-config/src/handle-leak-delta.ts",
+                "sha256": "b39b39d4f30ea67994a797204132a38a0d32b110a893da1aa671b38dcd46869c",
+                "currentSha256": "b39b39d4f30ea67994a797204132a38a0d32b110a893da1aa671b38dcd46869c"
+              },
+              {
+                "path": "libs/test-config/src/hermetic-tmpdir.ts",
+                "sha256": "280f8cc67e306e4fc6239fee8715972e26070eb33e10feb6e9db18166744fcd7",
+                "currentSha256": "280f8cc67e306e4fc6239fee8715972e26070eb33e10feb6e9db18166744fcd7"
+              },
+              {
+                "path": "libs/test-config/src/lane-split.ts",
+                "sha256": "85dd2a8e3cb89fd728b7cdd99976343736a53b44182452e7d6b8241eb6aef2fa",
+                "currentSha256": "85dd2a8e3cb89fd728b7cdd99976343736a53b44182452e7d6b8241eb6aef2fa"
+              },
+              {
+                "path": "libs/test-config/src/setup-fail-on-console.ts",
+                "sha256": "f740bb992a61c9d75a37f3791161d36a6b3220615e91c6e2ab4ad4bca56540bb",
+                "currentSha256": "f740bb992a61c9d75a37f3791161d36a6b3220615e91c6e2ab4ad4bca56540bb"
+              },
+              {
+                "path": "libs/test-config/src/setup-handle-leak-detector.ts",
+                "sha256": "56b9f669f67d9d12e9a8e8b80f197c9203a516845a33127a17705300f365c3d8",
+                "currentSha256": "56b9f669f67d9d12e9a8e8b80f197c9203a516845a33127a17705300f365c3d8"
+              },
+              {
+                "path": "libs/test-config/src/setup-hermetic-env.ts",
+                "sha256": "011a078ba207fea2288e3f01444367493c08fe876e36bceec9c7ef09a6f0ffe4",
+                "currentSha256": "011a078ba207fea2288e3f01444367493c08fe876e36bceec9c7ef09a6f0ffe4"
+              },
+              {
+                "path": "libs/test-config/src/setup-no-real-pg.ts",
+                "sha256": "2f2147c36d0d0132d66aaf1d2eee66ec76fab04d85828117416c9b4d9f262906",
+                "currentSha256": "2f2147c36d0d0132d66aaf1d2eee66ec76fab04d85828117416c9b4d9f262906"
+              },
+              {
+                "path": "libs/test-config/src/setup-testing-library-timeout.ts",
+                "sha256": "424be5f6c7d32b05373f95d2f1418fa8a6faf0ce2cd786a304472654a0e30274",
+                "currentSha256": "424be5f6c7d32b05373f95d2f1418fa8a6faf0ce2cd786a304472654a0e30274"
+              },
+              {
+                "path": "libs/test-config/src/silenced-console-census.ts",
+                "sha256": "8d8899162d3969f1206d02164b8cc2a7c1ece81858729d27b730989099512a0e",
+                "currentSha256": "8d8899162d3969f1206d02164b8cc2a7c1ece81858729d27b730989099512a0e"
+              },
+              {
+                "path": "libs/test-config/src/test-pass-reuse-skip.ts",
+                "sha256": "e58c5c0f6f1b4a3bfa4ba430ece8292a59229fe449657540eb65bf20508907f9",
+                "currentSha256": "e58c5c0f6f1b4a3bfa4ba430ece8292a59229fe449657540eb65bf20508907f9"
+              },
+              {
+                "path": "libs/test-config/src/timer-leak-ledger.ts",
+                "sha256": "e032992f18c1d6bf75071546030db33e3d998ebde81d0fc26865ffc5636d2e6f",
+                "currentSha256": "e032992f18c1d6bf75071546030db33e3d998ebde81d0fc26865ffc5636d2e6f"
+              },
+              {
+                "path": "libs/test-config/src/tmpdir-guard.ts",
+                "sha256": "e3accf02a398ce8dd269ca2fe6b032504fc2149487cad620b32239e2cb779680",
+                "currentSha256": "e3accf02a398ce8dd269ca2fe6b032504fc2149487cad620b32239e2cb779680"
+              },
+              {
+                "path": "libs/test-config/src/vitest-config.ts",
+                "sha256": "84c7ecfce5aff9077fc36f70efa7687e57ad040591d40ffdebd485a1b0d4afc3",
+                "currentSha256": "84c7ecfce5aff9077fc36f70efa7687e57ad040591d40ffdebd485a1b0d4afc3"
+              },
+              {
+                "path": "libs/test-config/src/worker-setup-files.ts",
+                "sha256": "a23ed576b35dcafaff7c6fcfaa98bf2714211ad426382f75eee4f3640b75953c",
+                "currentSha256": "a23ed576b35dcafaff7c6fcfaa98bf2714211ad426382f75eee4f3640b75953c"
+              }
+            ],
+            "reasons": []
+          }
+        },
+        {
+          "workspaceName": "@papercusp/test-config",
+          "testFile": "libs/test-config/src/executed-source-fingerprints.test.ts",
+          "executedModules": [
+            "libs/generic/module-singleton/src/index.ts",
+            "libs/test-config/src/admin-test-runs-reporter.ts",
+            "libs/test-config/src/console-noise-filter.ts",
+            "libs/test-config/src/executed-inputs-capture-setup.ts",
+            "libs/test-config/src/executed-inputs-capture.ts",
+            "libs/test-config/src/executed-source-fingerprints.test.ts",
+            "libs/test-config/src/executed-source-map-reporter.ts",
+            "libs/test-config/src/execution-details.ts",
+            "libs/test-config/src/handle-leak-delta.ts",
+            "libs/test-config/src/hermetic-tmpdir.ts",
+            "libs/test-config/src/lane-split.ts",
+            "libs/test-config/src/setup-fail-on-console.ts",
+            "libs/test-config/src/setup-handle-leak-detector.ts",
+            "libs/test-config/src/setup-hermetic-env.ts",
+            "libs/test-config/src/setup-no-real-pg.ts",
+            "libs/test-config/src/setup-testing-library-timeout.ts",
+            "libs/test-config/src/silenced-console-census.ts",
+            "libs/test-config/src/test-pass-reuse-skip.ts",
+            "libs/test-config/src/timer-leak-ledger.ts",
+            "libs/test-config/src/tmpdir-guard.ts",
+            "libs/test-config/src/vitest-config.ts",
+            "libs/test-config/src/worker-setup-files.ts"
+          ],
+          "inputsCaptured": true,
+          "readPaths": [
+            "~/papercupai-workspace/papercusp/libs/test-config/src/__snapshots__/executed-source-fingerprints.test.ts.snap",
+            "~/papercupai-workspace/papercusp/libs/test-config/src/lane-split.ts",
+            "~/papercupai-workspace/papercusp/libs/test-config/src/test-pass-reuse-skip.ts",
+            "~/papercupai-workspace/papercusp/libs/test-config/src/tmpdir-guard.ts",
+            "~/papercupai-workspace/papercusp/libs/test-config/src/vitest-config.ts",
+            "~/papercupai-workspace/papercusp/libs/test-config/src/worker-setup-files.ts",
+            "~/papercupai-workspace/papercusp/libs/test-config/vitest.config.ts"
+          ],
+          "opaqueReasons": [
+            "child-process"
+          ],
+          "sourceEvidence": {
+            "schemaVersion": "vite-collected-source-evidence-v1",
+            "scope": "repository-worker-vite-original-sources",
+            "status": "stable",
+            "sources": [
+              {
+                "path": "libs/generic/module-singleton/src/index.ts",
+                "sha256": "4f472845d83ba2a9a894b6a8f5c35e24ccb66182a483ac7b79e34577544322b0",
+                "currentSha256": "4f472845d83ba2a9a894b6a8f5c35e24ccb66182a483ac7b79e34577544322b0"
+              },
+              {
+                "path": "libs/test-config/src/admin-test-runs-reporter.ts",
+                "sha256": "840a6e02476d044d3d5de01c87f365c41e056bd8c8ab4373186a7529ed22dc25",
+                "currentSha256": "840a6e02476d044d3d5de01c87f365c41e056bd8c8ab4373186a7529ed22dc25"
+              },
+              {
+                "path": "libs/test-config/src/console-noise-filter.ts",
+                "sha256": "3d6a101a6935f02a9189a98b6e4124f5f791c82e0daaefcc6c6b724a5673d888",
+                "currentSha256": "3d6a101a6935f02a9189a98b6e4124f5f791c82e0daaefcc6c6b724a5673d888"
+              },
+              {
+                "path": "libs/test-config/src/executed-inputs-capture-setup.ts",
+                "sha256": "77e4f40201cc5aef9e6e5692b3be12d3975acf19de3fea65ea350cb5213d4d90",
+                "currentSha256": "77e4f40201cc5aef9e6e5692b3be12d3975acf19de3fea65ea350cb5213d4d90"
+              },
+              {
+                "path": "libs/test-config/src/executed-inputs-capture.ts",
+                "sha256": "4de69dece605e06cebf602a259ae8aaab9ea7d603767b4c3bc35da32074498ba",
+                "currentSha256": "4de69dece605e06cebf602a259ae8aaab9ea7d603767b4c3bc35da32074498ba"
+              },
+              {
+                "path": "libs/test-config/src/executed-source-fingerprints.test.ts",
+                "sha256": "02a124f2cf5aaa1ddee787874f11997059628f9f4f6a65a66da66b5c6a141b41",
+                "currentSha256": "02a124f2cf5aaa1ddee787874f11997059628f9f4f6a65a66da66b5c6a141b41"
+              },
+              {
+                "path": "libs/test-config/src/executed-source-map-reporter.ts",
+                "sha256": "6efa567db72d511b0164811e83f139619be647ef667e835a063ed63a66b2e855",
+                "currentSha256": "6efa567db72d511b0164811e83f139619be647ef667e835a063ed63a66b2e855"
+              },
+              {
+                "path": "libs/test-config/src/execution-details.ts",
+                "sha256": "30cedefe4055d0661b37773fa0403a44c26b458dc91c5f5636668bcff40900c3",
+                "currentSha256": "30cedefe4055d0661b37773fa0403a44c26b458dc91c5f5636668bcff40900c3"
+              },
+              {
+                "path": "libs/test-config/src/handle-leak-delta.ts",
+                "sha256": "b39b39d4f30ea67994a797204132a38a0d32b110a893da1aa671b38dcd46869c",
+                "currentSha256": "b39b39d4f30ea67994a797204132a38a0d32b110a893da1aa671b38dcd46869c"
+              },
+              {
+                "path": "libs/test-config/src/hermetic-tmpdir.ts",
+                "sha256": "280f8cc67e306e4fc6239fee8715972e26070eb33e10feb6e9db18166744fcd7",
+                "currentSha256": "280f8cc67e306e4fc6239fee8715972e26070eb33e10feb6e9db18166744fcd7"
+              },
+              {
+                "path": "libs/test-config/src/lane-split.ts",
+                "sha256": "85dd2a8e3cb89fd728b7cdd99976343736a53b44182452e7d6b8241eb6aef2fa",
+                "currentSha256": "85dd2a8e3cb89fd728b7cdd99976343736a53b44182452e7d6b8241eb6aef2fa"
+              },
+              {
+                "path": "libs/test-config/src/setup-fail-on-console.ts",
+                "sha256": "f740bb992a61c9d75a37f3791161d36a6b3220615e91c6e2ab4ad4bca56540bb",
+                "currentSha256": "f740bb992a61c9d75a37f3791161d36a6b3220615e91c6e2ab4ad4bca56540bb"
+              },
+              {
+                "path": "libs/test-config/src/setup-handle-leak-detector.ts",
+                "sha256": "56b9f669f67d9d12e9a8e8b80f197c9203a516845a33127a17705300f365c3d8",
+                "currentSha256": "56b9f669f67d9d12e9a8e8b80f197c9203a516845a33127a17705300f365c3d8"
+              },
+              {
+                "path": "libs/test-config/src/setup-hermetic-env.ts",
+                "sha256": "011a078ba207fea2288e3f01444367493c08fe876e36bceec9c7ef09a6f0ffe4",
+                "currentSha256": "011a078ba207fea2288e3f01444367493c08fe876e36bceec9c7ef09a6f0ffe4"
+              },
+              {
+                "path": "libs/test-config/src/setup-no-real-pg.ts",
+                "sha256": "2f2147c36d0d0132d66aaf1d2eee66ec76fab04d85828117416c9b4d9f262906",
+                "currentSha256": "2f2147c36d0d0132d66aaf1d2eee66ec76fab04d85828117416c9b4d9f262906"
+              },
+              {
+                "path": "libs/test-config/src/setup-testing-library-timeout.ts",
+                "sha256": "424be5f6c7d32b05373f95d2f1418fa8a6faf0ce2cd786a304472654a0e30274",
+                "currentSha256": "424be5f6c7d32b05373f95d2f1418fa8a6faf0ce2cd786a304472654a0e30274"
+              },
+              {
+                "path": "libs/test-config/src/silenced-console-census.ts",
+                "sha256": "8d8899162d3969f1206d02164b8cc2a7c1ece81858729d27b730989099512a0e",
+                "currentSha256": "8d8899162d3969f1206d02164b8cc2a7c1ece81858729d27b730989099512a0e"
+              },
+              {
+                "path": "libs/test-config/src/test-pass-reuse-skip.ts",
+                "sha256": "e58c5c0f6f1b4a3bfa4ba430ece8292a59229fe449657540eb65bf20508907f9",
+                "currentSha256": "e58c5c0f6f1b4a3bfa4ba430ece8292a59229fe449657540eb65bf20508907f9"
+              },
+              {
+                "path": "libs/test-config/src/timer-leak-ledger.ts",
+                "sha256": "e032992f18c1d6bf75071546030db33e3d998ebde81d0fc26865ffc5636d2e6f",
+                "currentSha256": "e032992f18c1d6bf75071546030db33e3d998ebde81d0fc26865ffc5636d2e6f"
+              },
+              {
+                "path": "libs/test-config/src/tmpdir-guard.ts",
+                "sha256": "e3accf02a398ce8dd269ca2fe6b032504fc2149487cad620b32239e2cb779680",
+                "currentSha256": "e3accf02a398ce8dd269ca2fe6b032504fc2149487cad620b32239e2cb779680"
+              },
+              {
+                "path": "libs/test-config/src/vitest-config.ts",
+                "sha256": "84c7ecfce5aff9077fc36f70efa7687e57ad040591d40ffdebd485a1b0d4afc3",
+                "currentSha256": "84c7ecfce5aff9077fc36f70efa7687e57ad040591d40ffdebd485a1b0d4afc3"
+              },
+              {
+                "path": "libs/test-config/src/worker-setup-files.ts",
+                "sha256": "a23ed576b35dcafaff7c6fcfaa98bf2714211ad426382f75eee4f3640b75953c",
+                "currentSha256": "a23ed576b35dcafaff7c6fcfaa98bf2714211ad426382f75eee4f3640b75953c"
+              }
+            ],
+            "reasons": []
+          }
+        }
+      ]
+    }
+  },
+  "preflightBeforeMetadataExtension": {
+    "testRun": 20462670,
+    "passed": 4,
+    "skipped": 0,
+    "progress": {
+      "expectedReads": 32,
+      "completedReads": 32,
+      "completedArms": 8
+    },
+    "incomplete": false,
+    "mode": "private-PG",
+    "sourceEvidence": [
+      {
+        "testFile": "packages/operator-core/lib/plan-item-coverage.performance.integration.test.ts",
+        "sourceEvidence": {
+          "schemaVersion": "vite-collected-source-evidence-v1",
+          "scope": "repository-worker-vite-original-sources",
+          "status": "unknown",
+          "reasons": [
+            "module-source-unresolved:libs/generic/structured-concurrency/src/ports.ts",
+            "module-source-unresolved:libs/testing-shell/src/llm/deps.ts"
+          ]
+        },
+        "capturedSourceCount": 1097
+      }
+    ]
+  },
+  "metadataRegressionFailure": {
+    "log": "/tmp/su-7db4f-source-qualification-meta.log",
+    "cause": "Vite transform metadata writer updates EnvironmentModuleNode.info.meta; node.meta holds resolver metadata. Reader corrected to info.meta; real Vite erasure fixture now passes."
+  },
+  "logFingerprints": {
+    "/tmp/su-7db4f-source-qualification-meta-fixed.log": "c3d8b9213df964ce053528bd579e431f7e6506d315db75e58f5a4f9aaf05a493",
+    "/tmp/su-7db4f-source-qualification-meta-fixed-types.log": "e9296e0b5f210d8ac8b12c783d300d2a7a746098c4a8bf7ddcf657b3fcb2fa94",
+    "/tmp/su-7db4f-source-qualification-meta.log": "4f3c903e01a3e0bdacf774aef1a8ed402fa78d9cbf9bf33ac95b38fad72ba21c",
+    "/tmp/su-7db4f-p010-source-preflight-private.log": "fc8b86623f34bddf010961714fdf1149f82e14ea918260247d2815dbfd7566a5"
+  },
+  "limitations": [
+    "Local dirty-tree verification, not final shipment.",
+    "Source diagnostics only cover repository worker Vite originals; runner/native dependencies and runtime reads are separate.",
+    "No large matrix rerun or acceptance binding. R25 remains byte-exact and router provenance UNKNOWN.",
+    "Database reuse still requires clean checkout and existing input/opaque rules.",
+    "Corrected bounded private-PG benchmark preflight qualifies 1085 of 1085 reported repository worker Vite originals with no source gaps; live statistical replacement remains prospective."
+  ],
+  "correctedBenchmarkPreflight": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/su-7db4f-p010-source-preflight-meta-fixed-out.json PC_EXECUTED_SOURCE_MAP_NO_PERSIST=1 PAPERCUSP_P010_REPORT=/tmp/su-7db4f-p010-source-preflight-meta-fixed-report.json npm run test:file -- packages/operator-core/lib/plan-item-coverage.performance.integration.test.ts",
+    "exitCode": 0,
+    "passed": 4,
+    "skipped": 0,
+    "testRuns": [
+      20462870
+    ],
+    "mode": "private-PG",
+    "progress": {
+      "expectedReads": 32,
+      "completedReads": 32,
+      "completedArms": 8
+    },
+    "incomplete": false,
+    "routerHead": "459e42e6c46749445a0b3c64a431a6d4d87413c1",
+    "routerProvenance": "stamped",
+    "reportedModules": 1085,
+    "capturedOriginalSources": 1085,
+    "status": "stable",
+    "reasons": [],
+    "erasedModuleReceipts": [
+      {
+        "path": "libs/generic/structured-concurrency/src/ports.ts",
+        "sha256": "35829617d9b8733197cf6de6debae09140adad7aba71aa82aa132f437d65d23b",
+        "basis": "vite-pre-transform",
+        "currentSha256": "35829617d9b8733197cf6de6debae09140adad7aba71aa82aa132f437d65d23b"
+      },
+      {
+        "path": "libs/testing-shell/src/llm/deps.ts",
+        "sha256": "6f5d123d3a9a7bd68567738b4bfef285b30804cfc90e1d5b68d34ab6e24870d9",
+        "basis": "vite-pre-transform",
+        "currentSha256": "6f5d123d3a9a7bd68567738b4bfef285b30804cfc90e1d5b68d34ab6e24870d9"
+      }
+    ],
+    "sourceReceipt": {
+      "path": "docs/evidence/papercusp-oct1-p010-source-preflight-meta-fixed-2026-10-02.json",
+      "sha256": "3e3d9e47b5d2e43ed867940e017def68d35da859ce8ecaddd6048eb2ff3f2301",
+      "originalSha256": "78ad35902299acf88d12cc0b3a671321266a4a7fdd11195134a5419b0894c858",
+      "serialization": "Persisted OUT JSON after home-path shortening, plus a final LF. Captured sourceEvidence remains exact; the full JSON differs from the retained raw OUT in diagnostic paths. Raw OUT digest is retained under temporaryEvidenceSha256.",
+      "qualification": "Expanding the persisted file's shortened home paths exactly reproduces originalSha256. The repaired receipt identifies current persisted bytes only; it does not upgrade historical run provenance or source currentness."
+    },
+    "temporaryEvidenceSha256": {
+      "/tmp/su-7db4f-p010-source-preflight-meta-fixed-out.json": "eb6eeeed78b6766db9514bc96df74a96babc75c4e2a04330d10bea538c5a1bd5",
+      "/tmp/su-7db4f-p010-source-preflight-meta-fixed-report.json": "e58ae00eb284a6c1fd4f4e56d3096bd517f63d79cdb9bd031e2f76b94fe0535e",
+      "/tmp/su-7db4f-p010-source-preflight-meta-fixed.log": "3a6a1756593068f0fbee514d78c2a43df404637f5165734bf392c7598c00ef56"
+    },
+    "benchmark": {
+      "schemaVersion": 2,
+      "workItem": "WI-10004889",
+      "startedAt": "2026-10-02T02:10:28.483Z",
+      "endedAt": "2026-10-02T02:10:28.655Z",
+      "mode": "private-PG",
+      "host": "buildhost",
+      "plan": "p010-benchmark",
+      "identity": {
+        "database": "plic_perf_f6854f648d",
+        "postgres": "PostgreSQL 18.4 (Debian 18.4-1.pgdg12+1) on x86_64-pc-linux-gnu, compiled by gcc (Debian 12.2.0-14+deb12u1) 12.2.0, 64-bit",
+        "snapshot": "302472:302472:",
+        "transaction_time": "2026-10-02T02:10:28.505Z"
+      },
+      "fingerprints": {
+        "plan-item-coverage.ts": "187eddb1921a695535eb366d09bf7f1da3116fa1e8964bb4c3207c908203bb93",
+        "fleet/assignments.ts": "c605f51c02da5a86dd6d4269762f27c3fccce4df658ccd617989e7e1a38c83b9"
+      },
+      "fingerprintsAfter": {
+        "plan-item-coverage.ts": "187eddb1921a695535eb366d09bf7f1da3116fa1e8964bb4c3207c908203bb93",
+        "fleet/assignments.ts": "c605f51c02da5a86dd6d4269762f27c3fccce4df658ccd617989e7e1a38c83b9"
+      },
+      "diagnostics": [],
+      "incomplete": false,
+      "progress": {
+        "expectedReads": 32,
+        "completedReads": 32,
+        "completedArms": 8
+      },
+      "sourceSha": "459e42e6c46749445a0b3c64a431a6d4d87413c1",
+      "testFingerprint": "6da00fb4cde349f0397ef9c66ffe99ad7cd127d7fc21531cc7e17f9db143fd6a",
+      "confidenceMethod": {
+        "metric": "per-window p95 reader wallMs, candidate minus control",
+        "method": "percentile bootstrap of the mean paired difference",
+        "confidence": 0.95,
+        "seed": 268454025,
+        "resamples": 10000,
+        "minimumCompletePairs": 10
+      },
+      "control": "full production coverage then exact plan selection",
+      "candidate": "production planSlug restriction",
+      "profiles": {
+        "concurrency": [
+          1,
+          8
+        ],
+        "windows": 2,
+        "requestsPerSideWindow": 4,
+        "cache": "no coverage result cache; PostgreSQL cache uncontrolled and shared",
+        "connection": "one read-only repeatable-read connection on both sides",
+        "inputs": "JS clock pinned to transaction time; initial measured liveness replayed for both arms"
+      },
+      "populationHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+      "samples": [
+        {
+          "concurrency": 1,
+          "window": 0,
+          "arm": "control",
+          "batch": [
+            {
+              "index": 0,
+              "ok": true,
+              "wallMs": 4.228076999999757,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 1.184255000000121,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.9590790000002016,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 1,
+          "window": 0,
+          "arm": "control",
+          "batch": [
+            {
+              "index": 1,
+              "ok": true,
+              "wallMs": 7.188367999999173,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 4.374417999999423,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.6069800000004761,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 1,
+          "window": 0,
+          "arm": "control",
+          "batch": [
+            {
+              "index": 2,
+              "ok": true,
+              "wallMs": 7.597305999999662,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 4.157499999997526,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.862883999998303,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 1,
+          "window": 0,
+          "arm": "control",
+          "batch": [
+            {
+              "index": 3,
+              "ok": true,
+              "wallMs": 3.972062000000733,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 1.6335220000000845,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.4059020000022429,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 1,
+          "window": 0,
+          "arm": "candidate",
+          "batch": [
+            {
+              "index": 0,
+              "ok": true,
+              "wallMs": 3.1715079999994487,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 1.208160999998654,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 0.7660980000000563,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 1,
+          "window": 0,
+          "arm": "candidate",
+          "batch": [
+            {
+              "index": 1,
+              "ok": true,
+              "wallMs": 4.592630000002828,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 2.6647909999992407,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.2181099999979779,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 1,
+          "window": 0,
+          "arm": "candidate",
+          "batch": [
+            {
+              "index": 2,
+              "ok": true,
+              "wallMs": 2.861891000000469,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 1.429838000000018,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 0.7347970000009809,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 1,
+          "window": 0,
+          "arm": "candidate",
+          "batch": [
+            {
+              "index": 3,
+              "ok": true,
+              "wallMs": 3.4512480000012147,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 2.065565000000788,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 0.7986200000013923,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 1,
+          "window": 1,
+          "arm": "candidate",
+          "batch": [
+            {
+              "index": 0,
+              "ok": true,
+              "wallMs": 1.6895499999991443,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 0.5368449999987206,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 0.5812609999993583,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 1,
+          "window": 1,
+          "arm": "candidate",
+          "batch": [
+            {
+              "index": 1,
+              "ok": true,
+              "wallMs": 1.4802060000001802,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 0.5662630000006175,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 0.47206999999980326,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 1,
+          "window": 1,
+          "arm": "candidate",
+          "batch": [
+            {
+              "index": 2,
+              "ok": true,
+              "wallMs": 1.1228759999976319,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 0.3536420000018552,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 0.3968559999993886,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 1,
+          "window": 1,
+          "arm": "candidate",
+          "batch": [
+            {
+              "index": 3,
+              "ok": true,
+              "wallMs": 1.1708789999975124,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 0.36823999999978696,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 0.4147499999999127,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 1,
+          "window": 1,
+          "arm": "control",
+          "batch": [
+            {
+              "index": 0,
+              "ok": true,
+              "wallMs": 4.447950999998284,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 1.3201169999992999,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 2.0300459999998566,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 1,
+          "window": 1,
+          "arm": "control",
+          "batch": [
+            {
+              "index": 1,
+              "ok": true,
+              "wallMs": 3.32781999999861,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 0.45859500000005937,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.7960950000015146,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 1,
+          "window": 1,
+          "arm": "control",
+          "batch": [
+            {
+              "index": 2,
+              "ok": true,
+              "wallMs": 3.738602000001265,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 1.110821999998734,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.7282439999980852,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 1,
+          "window": 1,
+          "arm": "control",
+          "batch": [
+            {
+              "index": 3,
+              "ok": true,
+              "wallMs": 2.932237000000896,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 0.480717000002187,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.457181000001583,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 8,
+          "window": 0,
+          "arm": "control",
+          "batch": [
+            {
+              "index": 0,
+              "ok": true,
+              "wallMs": 4.383665999997902,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            },
+            {
+              "index": 1,
+              "ok": true,
+              "wallMs": 7.059589000000415,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            },
+            {
+              "index": 2,
+              "ok": true,
+              "wallMs": 7.178307999998651,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            },
+            {
+              "index": 3,
+              "ok": true,
+              "wallMs": 8.269201999999495,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 1.098508999999467,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.096745999999257,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.0959640000000945,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.0954630000014731,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.5149530000016966,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            },
+            {
+              "wallMs": 3.7244949999985693,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            },
+            {
+              "wallMs": 3.7268800000019837,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            },
+            {
+              "wallMs": 5.8375210000012885,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 8,
+          "window": 0,
+          "arm": "candidate",
+          "batch": [
+            {
+              "index": 0,
+              "ok": true,
+              "wallMs": 2.7199780000009923,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            },
+            {
+              "index": 1,
+              "ok": true,
+              "wallMs": 2.607450000003155,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            },
+            {
+              "index": 2,
+              "ok": true,
+              "wallMs": 2.6792179999974906,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            },
+            {
+              "index": 3,
+              "ok": true,
+              "wallMs": 3.004155999999057,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 1.0310989999998128,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.0294860000030894,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.0295760000008158,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.0297559999999066,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 0.775777000002563,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            },
+            {
+              "wallMs": 0.7750459999988379,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            },
+            {
+              "wallMs": 0.7744140000031621,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            },
+            {
+              "wallMs": 1.550320999998803,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 8,
+          "window": 1,
+          "arm": "candidate",
+          "batch": [
+            {
+              "index": 0,
+              "ok": true,
+              "wallMs": 1.8195699999996577,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            },
+            {
+              "index": 1,
+              "ok": true,
+              "wallMs": 2.293574000002991,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            },
+            {
+              "index": 2,
+              "ok": true,
+              "wallMs": 2.3822760000002745,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            },
+            {
+              "index": 3,
+              "ok": true,
+              "wallMs": 2.6699900000021444,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 8,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 0.5238399999980174,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 0.819921999998769,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 0.8180979999997362,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.1022369999991497,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "9960e5ee4435b5ecdd84eea7fba0f8add1e720556405fbe0d4d4fbbaad79de4a",
+              "kind": "other"
+            },
+            {
+              "wallMs": 0.5670539999991888,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            },
+            {
+              "wallMs": 0.8661110000030021,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            },
+            {
+              "wallMs": 0.8666010000015376,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            },
+            {
+              "wallMs": 1.1081379999995988,
+              "rows": 8,
+              "ok": true,
+              "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+              "kind": "stamp"
+            }
+          ]
+        },
+        {
+          "concurrency": 8,
+          "window": 1,
+          "arm": "control",
+          "batch": [
+            {
+              "index": 0,
+              "ok": true,
+              "wallMs": 3.4649940000017523,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            },
+            {
+              "index": 1,
+              "ok": true,
+              "wallMs": 5.059850999998162,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            },
+            {
+              "index": 2,
+              "ok": true,
+              "wallMs": 7.936530999999377,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            },
+            {
+              "index": 3,
+              "ok": true,
+              "wallMs": 8.126255999999557,
+              "resultHash": "0527f0e79ab2e649b3c4abf70eea31873246c38d1aae89a71b9958b5a348ff99",
+              "totalCoverageRefs": 128,
+              "selectedRefs": 8
+            }
+          ],
+          "phases": [
+            {
+              "wallMs": 0.7209609999990789,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 0.7196479999984149,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 0.7201989999994112,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 0.7200689999990573,
+              "rows": 0,
+              "ok": true,
+              "sqlHash": "107f89a906f7972b3bde2fb2f1289bf12c40161575cfbb443d76a924bdc8a268",
+              "kind": "other"
+            },
+            {
+              "wallMs": 1.5388590000002296,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            },
+            {
+              "wallMs": 3.3298540000032517,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            },
+            {
+              "wallMs": 5.3609919999980775,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            },
+            {
+              "wallMs": 5.366562999999587,
+              "rows": 128,
+              "ok": true,
+              "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+              "kind": "stamp"
+            }
+          ]
+        }
+      ],
+      "explain": {
+        "control": {
+          "sqlHash": "2dcc4cdec66598dbb88f1575322ce10c82d3b72486fa30a39777f7cee2511fb7",
+          "plan": [
+            {
+              "Plan": {
+                "Node Type": "Sort",
+                "Parallel Aware": false,
+                "Async Capable": false,
+                "Startup Cost": 12.42,
+                "Total Cost": 12.52,
+                "Plan Rows": 39,
+                "Plan Width": 200,
+                "Actual Startup Time": 0.32,
+                "Actual Total Time": 0.327,
+                "Actual Rows": 128,
+                "Actual Loops": 1,
+                "Disabled": false,
+                "Sort Key": [
+                  "(((payload -> 'plan_item'::text) ->> 'plan_slug'::text))",
+                  "(((payload -> 'plan_item'::text) ->> 'item_id'::text))"
+                ],
+                "Sort Method": "quicksort",
+                "Sort Space Used": 34,
+                "Sort Space Type": "Memory",
+                "Shared Hit Blocks": 5,
+                "Shared Read Blocks": 0,
+                "Shared Dirtied Blocks": 0,
+                "Shared Written Blocks": 0,
+                "Local Hit Blocks": 0,
+                "Local Read Blocks": 0,
+                "Local Dirtied Blocks": 0,
+                "Local Written Blocks": 0,
+                "Temp Read Blocks": 0,
+                "Temp Written Blocks": 0,
+                "Plans": [
+                  {
+                    "Node Type": "Seq Scan",
+                    "Parent Relationship": "Outer",
+                    "Parallel Aware": false,
+                    "Async Capable": false,
+                    "Relation Name": "work_items",
+                    "Alias": "work_items",
+                    "Startup Cost": 0,
+                    "Total Cost": 11.39,
+                    "Plan Rows": 39,
+                    "Plan Width": 200,
+                    "Actual Startup Time": 0.014,
+                    "Actual Total Time": 0.119,
+                    "Actual Rows": 128,
+                    "Actual Loops": 1,
+                    "Disabled": false,
+                    "Filter": "(((payload -> 'plan_item'::text) IS NOT NULL) AND (((payload -> 'plan_item'::text) ->> 'plan_slug'::text) IS NOT NULL) AND (((payload -> 'plan_item'::text) ->> 'item_id'::text) IS NOT NULL))",
+                    "Rows Removed by Filter": 0,
+                    "Shared Hit Blocks": 5,
+                    "Shared Read Blocks": 0,
+                    "Shared Dirtied Blocks": 0,
+                    "Shared Written Blocks": 0,
+                    "Local Hit Blocks": 0,
+                    "Local Read Blocks": 0,
+                    "Local Dirtied Blocks": 0,
+                    "Local Written Blocks": 0,
+                    "Temp Read Blocks": 0,
+                    "Temp Written Blocks": 0
+                  }
+                ]
+              },
+              "Planning": {
+                "Shared Hit Blocks": 0,
+                "Shared Read Blocks": 0,
+                "Shared Dirtied Blocks": 0,
+                "Shared Written Blocks": 0,
+                "Local Hit Blocks": 0,
+                "Local Read Blocks": 0,
+                "Local Dirtied Blocks": 0,
+                "Local Written Blocks": 0,
+                "Temp Read Blocks": 0,
+                "Temp Written Blocks": 0
+              },
+              "Planning Time": 0.08,
+              "Triggers": [],
+              "Execution Time": 0.345
+            }
+          ]
+        },
+        "candidate": {
+          "sqlHash": "339f9500721215866fb289da2b400f7a20b89a399bea766a9223ef0ba340c968",
+          "plan": [
+            {
+              "Plan": {
+                "Node Type": "Index Scan",
+                "Parallel Aware": false,
+                "Async Capable": false,
+                "Scan Direction": "Forward",
+                "Index Name": "work_items_plan_item_stamp_idx",
+                "Relation Name": "work_items",
+                "Alias": "work_items",
+                "Startup Cost": 0.14,
+                "Total Cost": 8.17,
+                "Plan Rows": 1,
+                "Plan Width": 200,
+                "Actual Startup Time": 0.017,
+                "Actual Total Time": 0.025,
+                "Actual Rows": 8,
+                "Actual Loops": 1,
+                "Disabled": false,
+                "Index Cond": "((((payload -> 'plan_item'::text) ->> 'plan_slug'::text) IS NOT NULL) AND (((payload -> 'plan_item'::text) ->> 'plan_slug'::text) = 'p010-benchmark'::text) AND (((payload -> 'plan_item'::text) ->> 'item_id'::text) IS NOT NULL))",
+                "Rows Removed by Index Recheck": 0,
+                "Index Searches": 1,
+                "Shared Hit Blocks": 2,
+                "Shared Read Blocks": 0,
+                "Shared Dirtied Blocks": 0,
+                "Shared Written Blocks": 0,
+                "Local Hit Blocks": 0,
+                "Local Read Blocks": 0,
+                "Local Dirtied Blocks": 0,
+                "Local Written Blocks": 0,
+                "Temp Read Blocks": 0,
+                "Temp Written Blocks": 0
+              },
+              "Planning": {
+                "Shared Hit Blocks": 0,
+                "Shared Read Blocks": 0,
+                "Shared Dirtied Blocks": 0,
+                "Shared Written Blocks": 0,
+                "Local Hit Blocks": 0,
+                "Local Read Blocks": 0,
+                "Local Dirtied Blocks": 0,
+                "Local Written Blocks": 0,
+                "Temp Read Blocks": 0,
+                "Temp Written Blocks": 0
+              },
+              "Planning Time": 0.085,
+              "Triggers": [],
+              "Execution Time": 0.039
+            }
+          ]
+        }
+      },
+      "comparisons": [
+        {
+          "concurrency": 1,
+          "differences": [
+            -3.0046759999968344,
+            -2.7584009999991395
+          ],
+          "interval": null
+        },
+        {
+          "concurrency": 8,
+          "differences": [
+            -5.265046000000439,
+            -5.456265999997413
+          ],
+          "interval": null
+        }
+      ],
+      "limitations": [
+        "SQL wall includes queue/transfer/decoding; not database CPU or isolated JSON extraction.",
+        "Shared PostgreSQL cache is not a cold-cache benchmark.",
+        "This is the production reader on frozen data, not HTTP end-to-end timing.",
+        "Replay fixes exogenous liveness inputs; matrix timings exclude repeated oracle IO.",
+        "Serving source containment is checked at both endpoints; this does not freeze the HTTP runtime."
+      ]
+    },
+    "limitations": [
+      "Qualifies only the repository worker Vite originals reported for this prospective run.",
+      "External dependencies, config bundle inputs, runtime inputs and the HTTP/background runtime are outside this receipt.",
+      "The previous graph reported 1099 modules; this fresh graph reports 1085 and is checked against its own exact population.",
+      "This private-PG preflight is not the live statistical matrix, HTTP macro timing, or shipment acceptance.",
+      "R25 remains byte-exact with UNKNOWN router provenance; no retrospective repair or acceptance binding."
+    ]
+  }
+}

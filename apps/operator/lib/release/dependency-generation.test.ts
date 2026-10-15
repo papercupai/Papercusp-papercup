@@ -1,16 +1,24 @@
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync as nativeSpawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  readlinkSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -32,6 +40,45 @@ const SCRIPT =
 
 const roots: string[] = [];
 
+// A synchronous child blocks Vitest's worker and its case-timeout callback.
+// Emit directly to the worker's stderr before entering that child so the file
+// watchdog can identify the exact case/phase even when the child never returns.
+function spawnSync(
+  command: string,
+  args: readonly string[],
+  options: SpawnSyncOptionsWithStringEncoding = { encoding: 'utf8' },
+) {
+  const started = Date.now();
+  const subject = {
+    test: expect.getState().currentTestName,
+    command,
+    args: args.map((arg) => arg.slice(0, 240)),
+  };
+  const emit = (phase: string, fields: Record<string, unknown>) => {
+    const line = `DEPENDENCY_GENERATION_SHELL_${phase} ${JSON.stringify(fields)}\n`;
+    // The router buffers stderr until finalization. A task-level kill can end
+    // the router too, so an explicitly requested diagnostic file must be
+    // written synchronously before the child starts, outside that buffer.
+    const traceFile = process.env.DEPENDENCY_GENERATION_SHELL_TRACE_FILE;
+    if (traceFile) appendFileSync(traceFile, line);
+    writeSync(2, line);
+  };
+  emit('START', subject);
+  const result = nativeSpawnSync(command, args, {
+    ...options,
+    timeout: options.timeout ?? NATIVE_SHELL_TIMEOUT_MS,
+    killSignal: options.killSignal ?? 'SIGKILL',
+  });
+  emit('END', {
+    ...subject,
+    durationMs: Date.now() - started,
+    status: result.status,
+    signal: result.signal,
+    error: result.error?.message,
+  });
+  return result;
+}
+
 interface ShellResult {
   status: number | null;
   stdout: string;
@@ -42,7 +89,7 @@ type TelemetryRecord = Record<string, string>;
 
 function telemetryRecords(
   stderr: string,
-  kind: 'PHASE' | 'SUMMARY',
+  kind: 'PHASE' | 'SUMMARY' | 'INCREMENTAL',
 ): TelemetryRecord[] {
   const prefix = `[dependency-generation] ${kind} `;
   return stderr
@@ -92,6 +139,9 @@ function makeIntegration(): string {
     { recursive: true },
   );
   writeFileSync(join(root, 'node_modules/pkg/index.js'), 'root-v1\n');
+  // A real install: the publish-time lock-vs-tree audit (WI-6554700010008514) requires
+  // every locked package to carry package.json at its locked version (PKG below locks 1.0.0).
+  writeFileSync(join(root, 'node_modules/pkg/package.json'), '{"name":"pkg","version":"1.0.0"}\n');
   writeFileSync(
     join(root, 'package-lock.json'),
     '{"name":"fixture","lockfileVersion":3,"packages":{}}\n',
@@ -191,10 +241,11 @@ function ensureRef(
   ref: string,
   env: NodeJS.ProcessEnv = {},
   generationRoot?: string,
+  extraArgs: string[] = [],
 ): ShellResult {
   const args = [SCRIPT, '--integration', integration];
   if (generationRoot) args.push('--generation-root', generationRoot);
-  args.push('--ensure-ref', ref);
+  args.push('--ensure-ref', ref, ...extraArgs);
   const result = spawnSync(
     'bash',
     args,
@@ -336,6 +387,115 @@ function commitAllFixture(integration: string, message: string): string {
   }).trim();
 }
 
+describe('dependency source checkout boundaries', () => {
+  it('bounds a blocked synchronous child and preserves its diagnostic phase outside router buffers', () => {
+    const integration = makeIntegration();
+    const trace = join(dirname(integration), 'shell-trace.log');
+    const previous = process.env.DEPENDENCY_GENERATION_SHELL_TRACE_FILE;
+    process.env.DEPENDENCY_GENERATION_SHELL_TRACE_FILE = trace;
+    try {
+      const result = spawnSync(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+        encoding: 'utf8', timeout: 100,
+      });
+      expect(result.error).toMatchObject({ code: 'ETIMEDOUT' });
+      expect(result.signal).toBe('SIGKILL');
+      const records = readFileSync(trace, 'utf8').trim().split('\n');
+      expect(records).toHaveLength(2);
+      expect(records[0]).toContain('DEPENDENCY_GENERATION_SHELL_START');
+      expect(records[0]).toContain('bounds a blocked synchronous child');
+      expect(records[1]).toContain('DEPENDENCY_GENERATION_SHELL_END');
+      expect(records[1]).toContain('ETIMEDOUT');
+    } finally {
+      if (previous === undefined) delete process.env.DEPENDENCY_GENERATION_SHELL_TRACE_FILE;
+      else process.env.DEPENDENCY_GENERATION_SHELL_TRACE_FILE = previous;
+    }
+  });
+
+  it('preserves the termination signal selected by a bounded-child caller', () => {
+    const result = spawnSync(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      encoding: 'utf8', timeout: 100, killSignal: 'SIGTERM',
+    });
+    expect(result.error).toMatchObject({ code: 'ETIMEDOUT' });
+    expect(result.signal).toBe('SIGTERM');
+  });
+
+  it('excludes generated Next standalone outputs from full and selected captures', () => {
+    const integration = makeIntegration();
+    const sourceCommit = commitFixture(integration, 'seed source inputs');
+    const generated = join(integration, 'apps/web/.next/standalone');
+    for (const rel of ['node_modules/copied', 'apps/web/node_modules/copied']) {
+      mkdirSync(join(generated, rel), { recursive: true });
+      writeFileSync(join(generated, rel, 'index.js'), 'generated-v1\n');
+    }
+    writeFileSync(join(generated, 'package-lock.json'), '{"name":"generated","lockfileVersion":3,"packages":{}}\n');
+    writeFileSync(join(generated, 'apps/web/package.json'), '{"name":"generated-web"}\n');
+    const walk = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_input_manifest "$INTEGRATION"',
+      'printf "LIVE_INPUT="; dependency_generation_input_fingerprint "$INTEGRATION"',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+      'DEPENDENCY_GENERATION_SCOPE_MODE=selected',
+      'DEPENDENCY_GENERATION_WORKSPACE_DIRS=(packages/a apps/web/.next/standalone/apps/web)',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+    ].join('\n')], { encoding: 'utf8', env: { ...process.env, SCRIPT, INTEGRATION: integration } });
+    expect(walk.status, walk.stderr).toBe(0);
+    expect(walk.stdout).not.toContain('.next');
+    expect(walk.stdout.match(/packages\/a\/node_modules/g)).toHaveLength(2);
+    const exact = fingerprintRef(integration, sourceCommit);
+    expect(exact.status, exact.stderr).toBe(0);
+    expect(walk.stdout).toContain(`LIVE_INPUT=${publishedInputFingerprint(exact.stdout)}`);
+    const result = publish(integration, {
+      NEXT_OUTPUT: join(generated, 'node_modules/copied/index.js'),
+      DEPENDENCY_GENERATION_AFTER_COPY_HOOK: 'printf "generated-v2\\n" > "$NEXT_OUTPUT"',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(join(publishedPath(result.stdout), 'tree/apps/web/.next'))).toBe(false);
+    expect(readFileSync(join(generated, 'node_modules/copied/index.js'), 'utf8')).toBe('generated-v2\n');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('excludes unrelated nested checkouts while retaining tracked submodule inputs and trees', () => {
+    const integration = makeIntegration();
+    commitFixture(integration, 'seed source repository');
+    const vendor = join(integration, 'libs/vendor');
+    mkdirSync(join(vendor, 'node_modules/vendor'), { recursive: true });
+    writeFileSync(join(vendor, 'node_modules/vendor/index.js'), 'vendor\n');
+    writeFileSync(join(vendor, 'package-lock.json'), '{"name":"vendor","lockfileVersion":3,"packages":{}}\n');
+    const vendorCommit = commitAllFixture(vendor, 'seed submodule inputs');
+    writeFileSync(join(integration, '.gitmodules'), '[submodule "vendor"]\n\tpath = libs/vendor\n\turl = ./vendor\n');
+    execFileSync('git', ['update-index', '--add', '--cacheinfo', `160000,${vendorCommit},libs/vendor`], { cwd: integration });
+    const sourceCommit = commitAllFixture(integration, 'record submodule');
+
+    const foreign = join(integration, 'apps/unrelated-checkpoint');
+    mkdirSync(join(foreign, 'node_modules/foreign'), { recursive: true });
+    writeFileSync(join(foreign, 'node_modules/foreign/index.js'), 'unrelated\n');
+    writeFileSync(join(foreign, 'package-lock.json'), '{"name":"foreign","lockfileVersion":3,"packages":{}}\n');
+    commitAllFixture(foreign, 'separate checkout');
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_input_manifest "$INTEGRATION"',
+      'printf "LIVE_INPUT="; dependency_generation_input_fingerprint "$INTEGRATION"',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+      'DEPENDENCY_GENERATION_SCOPE_MODE=selected',
+      'DEPENDENCY_GENERATION_WORKSPACE_DIRS=(libs/vendor apps/unrelated-checkpoint)',
+      'dependency_generation_enumerate_node_modules "$INTEGRATION"',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: { ...process.env, SCRIPT, INTEGRATION: integration },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('libs/vendor/package-lock.json');
+    expect(result.stdout).toContain('packages/a/node_modules');
+    expect(result.stdout.match(/libs\/vendor\/node_modules/g)).toHaveLength(2);
+    expect(result.stdout).not.toContain('unrelated-checkpoint');
+    const exact = fingerprintRef(integration, sourceCommit);
+    expect(exact.status, exact.stderr).toBe(0);
+    expect(result.stdout).toContain(`LIVE_INPUT=${publishedInputFingerprint(exact.stdout)}`);
+    expect(readFileSync(join(foreign, 'node_modules/foreign/index.js'), 'utf8')).toBe('unrelated\n');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+});
+
 describe('WI-10002299: patch-package patches are dependency inputs', () => {
   // The root package.json postinstall runs `patch-package`, so a patches/*.patch
   // change alters the produced node_modules closure exactly as a lockfile change
@@ -379,6 +539,79 @@ describe('WI-10002299: patch-package patches are dependency inputs', () => {
 });
 
 describe('immutable dependency generation', () => {
+  it.each(['1', '2'])('rejects a nested dependency-root alias before publication (walk jobs %s)', (jobs) => {
+    const integration = makeIntegration();
+    // The alias can be dangling: following it is neither necessary nor safe.
+    symlinkSync('/absent/other-checkout/node_modules', join(integration, 'node_modules/node_modules'));
+    const result = publish(integration, { DEPENDENCY_GENERATION_WALK_JOBS: jobs });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('nested dependency-root symlink');
+    expect(result.stdout).not.toMatch(/identity=v1-/);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('refuses a legacy cached generation with a nested root alias even when its publication token matches', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    const generation = publishedPath(first.stdout);
+    const dependencyRoot = join(generation, 'tree/packages/a/node_modules');
+    chmodSync(dependencyRoot, 0o755);
+    symlinkSync(join(integration, 'node_modules'), join(dependencyRoot, 'node_modules'));
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'marker="$GENERATION/.papercusp-dependency-generation"',
+      'chmod u+w "$marker"',
+      'body="$(sed "/^publication_token=/d" "$marker")"',
+      'printf "%s\\n" "$body" > "$marker"',
+      'token="$(dependency_generation_publication_token "$GENERATION" 3)"',
+      'printf "publication_token=%s\\n" "$token" >> "$marker"',
+      'dependency_generation_publication_is_valid "$GENERATION"',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: { ...process.env, SCRIPT, GENERATION: generation },
+    });
+    expect(result.status, result.stderr).not.toBe(0);
+    expect(readFileSync(join(generation, '.papercusp-dependency-generation'), 'utf8'))
+      .toMatch(/publication_token=v3:[0-9a-f]{64}/);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('excludes smoke repository churn from live trees and committed dependency inputs', () => {
+    const integration = makeIntegration();
+    const baselineRef = commitAllFixture(integration, 'product dependencies');
+    const baseline = publish(integration);
+    expect(baseline.status, baseline.stderr).toBe(0);
+    const smoke = join(integration, '.papercusp-smoke-snapshots/hive-fromrepo-smoke.fixture');
+    mkdirSync(join(smoke, 'node_modules/temporary'), { recursive: true });
+    writeFileSync(join(smoke, 'node_modules/temporary/index.js'), 'ephemeral\n');
+    writeFileSync(join(smoke, 'package-lock.json'), '{"name":"temporary"}\n');
+    const smokeRef = commitAllFixture(integration, 'temporary smoke repository');
+
+    const inputBefore = fingerprintRef(integration, baselineRef);
+    const inputWithSmoke = fingerprintRef(integration, smokeRef);
+    expect(inputBefore.status, inputBefore.stderr).toBe(0);
+    expect(inputWithSmoke.status, inputWithSmoke.stderr).toBe(0);
+    expect(publishedInputFingerprint(inputWithSmoke.stdout)).toBe(
+      publishedInputFingerprint(inputBefore.stdout),
+    );
+    const withSmoke = publish(integration);
+    expect(withSmoke.status, withSmoke.stderr).toBe(0);
+    expect(publishedIdentity(withSmoke.stdout)).toBe(publishedIdentity(baseline.stdout));
+    expect(existsSync(join(publishedPath(withSmoke.stdout), 'tree/.papercusp-smoke-snapshots'))).toBe(false);
+
+    rmSync(smoke, { recursive: true });
+    const removed = publish(integration);
+    expect(removed.status, removed.stderr).toBe(0);
+    expect(publishedIdentity(removed.stdout)).toBe(publishedIdentity(baseline.stdout));
+    // A real product install still changes the generation and is copied.
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'changed product dependency\n');
+    const changed = publish(integration);
+    expect(changed.status, changed.stderr).toBe(0);
+    expect(publishedIdentity(changed.stdout)).not.toBe(publishedIdentity(baseline.stdout));
+    expect(readFileSync(join(publishedPath(changed.stdout), 'tree/node_modules/pkg/index.js'), 'utf8'))
+      .toBe('changed product dependency\n');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('WI-322485: parses the whole long-running script before executing it', () => {
     const source = readFileSync(SCRIPT, 'utf8');
     const guardOpen = source.indexOf(
@@ -546,6 +779,7 @@ describe('immutable dependency generation', () => {
       ).toEqual([
         'source-manifest-before',
         'cache-validation',
+        'lock-tree-audit',
         'source-manifest-after-cache',
       ]);
 
@@ -694,17 +928,105 @@ describe('immutable dependency generation', () => {
     expect(existsSync(validationTrace)).toBe(false);
   });
 
-  it('P-003: validates an ordinary cache hit from the v2 publication token without a generation walk', () => {
+  it('WI-10005569: a publication token survives a reboot that renumbers the block device (st_dev)', () => {
     const integration = makeIntegration();
     const first = publish(integration);
     expect(first.status, first.stderr).toBe(0);
-    expect(publishedToken(first.stdout)).toMatch(/^v2:[0-9a-f]{64}$/);
+    const generation = publishedPath(first.stdout);
+    // A `stat` shim that reports a different st_dev (%d) for every path, as a
+    // reboot renumbering /dev/nvme1n1 from 259:0 to 259:3 does.
+    const shimDir = join(integration, 'stat-shim');
+    mkdirSync(shimDir, { recursive: true });
+    const realStat = execFileSync('bash', ['-c', 'command -v stat'], {
+      encoding: 'utf8',
+    }).trim();
+    writeFileSync(
+      join(shimDir, 'stat'),
+      [
+        '#!/usr/bin/env bash',
+        `out="$(${realStat} "$@")" || exit $?`,
+        'if [ "$1" = -c ] && [[ "$2" == %d* ]]; then',
+        `  printf '%s\\n' "$out" | awk -F: 'BEGIN{OFS=":"}{$1=$1+3; print}'`,
+        'else',
+        `  printf '%s\\n' "$out"`,
+        'fi',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const run = (body: string, shim: boolean) =>
+      spawnSync('bash', ['-c', `set -uo pipefail\nsource "$SCRIPT"\n${body}`], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          SCRIPT,
+          GENERATION: generation,
+          PATH: shim ? `${shimDir}:${process.env.PATH}` : process.env.PATH,
+        },
+      });
+    // Control: the shim really changes the device, so the legacy schema-2
+    // token (which binds st_dev) moves under it. Without this the assertion
+    // below could pass vacuously.
+    const legacy = 'dependency_generation_publication_token "$GENERATION" 2';
+    const legacyBefore = run(legacy, false);
+    const legacyAfter = run(legacy, true);
+    expect(legacyBefore.status, legacyBefore.stderr).toBe(0);
+    expect(legacyAfter.stdout.trim()).toMatch(/^v2:[0-9a-f]{64}$/);
+    expect(legacyAfter.stdout.trim()).not.toBe(legacyBefore.stdout.trim());
+
+    const valid = run(
+      'dependency_generation_publication_is_valid "$GENERATION" && echo VALID',
+      true,
+    );
+    expect(valid.stdout, valid.stderr).toContain('VALID');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('WI-10005617: the selector token of a legacy schema-2 marker is its own v2 token, not a v3 recompute', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    const generation = publishedPath(first.stdout);
+    // Rewrite the marker IN PLACE (same inode) as a legacy schema-2
+    // publication, the shape every generation published before WI-10005569
+    // still carries on disk.
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        [
+          'set -euo pipefail',
+          'source "$SCRIPT"',
+          'M="$GENERATION/.papercusp-dependency-generation"',
+          'chmod u+w "$M"',
+          `body="$(sed '/^publication_token=/d; s/^publication_schema=.*/publication_schema=2/' "$M")"`,
+          `printf '%s\\n' "$body" > "$M"`,
+          'tok="$(dependency_generation_publication_token "$GENERATION" 2)"',
+          `printf 'publication_token=%s\\n' "$tok" >> "$M"`,
+          'echo "RECORDED=$tok"',
+          'echo "SELECTOR=$(dependency_generation_selector_token "$GENERATION")"',
+          'dependency_generation_publication_is_valid "$GENERATION" && echo VALID',
+        ].join('\n'),
+      ],
+      { encoding: 'utf8', env: { ...process.env, SCRIPT, GENERATION: generation } },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    const recorded = /RECORDED=(\S+)/.exec(result.stdout)?.[1];
+    const selector = /SELECTOR=(\S+)/.exec(result.stdout)?.[1];
+    expect(recorded).toMatch(/^v2:[0-9a-f]{64}$/);
+    expect(selector).toBe(recorded);
+    expect(result.stdout).toContain('VALID');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('P-003: validates an ordinary cache hit from the v3 publication token without a generation walk', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    expect(publishedToken(first.stdout)).toMatch(/^v3:[0-9a-f]{64}$/);
     const generation = publishedPath(first.stdout);
     const marker = readFileSync(
       join(generation, '.papercusp-dependency-generation'),
       'utf8',
     );
-    expect(marker).toContain('publication_schema=2\n');
+    expect(marker).toContain('publication_schema=3\n');
     expect(marker).toContain(`publication_token=${publishedToken(first.stdout)}\n`);
     const validationTrace = join(integration, 'hot-validation.trace');
 
@@ -754,7 +1076,7 @@ describe('immutable dependency generation', () => {
       trees_copied: '3',
       trees_removed: '0',
     });
-    expect(publishedToken(repaired.stdout)).toMatch(/^v2:[0-9a-f]{64}$/);
+    expect(publishedToken(repaired.stdout)).toMatch(/^v3:[0-9a-f]{64}$/);
     expect(publishedToken(repaired.stdout)).not.toBe(`v2:${'0'.repeat(64)}`);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
@@ -790,7 +1112,7 @@ describe('immutable dependency generation', () => {
         ({ phase }) => phase === 'cache-validation',
       ),
     ).toMatchObject({ outcome: 'legacy-deep-hit' });
-    expect(publishedToken(legacyHit.stdout)).not.toMatch(/^v2:/);
+    expect(publishedToken(legacyHit.stdout)).not.toMatch(/^v[23]:/);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('WI-41491: invalidates the selector when dependency inputs change and rewarms the new key', () => {
@@ -804,12 +1126,19 @@ describe('immutable dependency generation', () => {
 
     writeFileSync(
       join(integration, 'package-lock.json'),
-      '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/new":{}}}\n',
+      '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/new":{"version":"1.0.0"}}}\n',
     );
     const miss = selectPrewarmed(generationRoot, integration);
     expect(miss.status).toBe(74);
     expect(miss.stderr).toContain('no prewarmed dependency generation');
+    // WI-10005159: the miss names the store it searched, so a wrong-store miss explains itself.
+    expect(miss.stderr).toContain(`(generation_root=${generationRoot})`);
 
+    mkdirSync(join(integration, 'node_modules/new'), { recursive: true });
+    writeFileSync(
+      join(integration, 'node_modules/new/package.json'),
+      '{"name":"new","version":"1.0.0"}\n',
+    );
     const rewarmed = publish(integration);
     expect(rewarmed.status, rewarmed.stderr).toBe(0);
     const selected = selectPrewarmed(generationRoot, integration);
@@ -839,6 +1168,98 @@ describe('immutable dependency generation', () => {
     expect(publishedToken(second.stdout)).toBe(publishedToken(first.stdout));
   });
 
+  describe('WI-6554700010008481: --ensure-ref --retain-as ref pins', () => {
+    const LABEL = 'checkpoint-candidate';
+    const refPins = (generationRoot: string): string[] => {
+      const pins = join(generationRoot, '.pins');
+      if (!existsSync(pins)) return [];
+      return readdirSync(pins).filter((entry) => entry.startsWith('ref-') && !entry.includes('.tmp.'));
+    };
+    const readPin = (path: string): Record<string, string> =>
+      Object.fromEntries(
+        readFileSync(path, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]),
+      );
+
+    it('pins the ensured identity once per integration and label, and refreshes it on a selector hit', () => {
+      const integration = makeIntegration();
+      const generationRoot = join(integration, '.papercusp/dependency-generations');
+      const candidate = commitFixture(integration, 'candidate');
+
+      const first = ensureRef(integration, candidate, {}, undefined, ['--retain-as', LABEL]);
+      expect(first.status, first.stderr).toBe(0);
+      const pins = refPins(generationRoot);
+      expect(pins).toHaveLength(1);
+      const pin = readPin(join(generationRoot, '.pins', pins[0]));
+      expect(pin).toMatchObject({
+        kind: 'ref',
+        label: LABEL,
+        identity: publishedIdentity(first.stdout),
+        ref: candidate,
+      });
+      expect(Number(pin.expires)).toBeGreaterThan(Number(pin.updated));
+
+      const second = ensureRef(integration, candidate, {}, undefined, ['--retain-as', LABEL]);
+      expect(second.status, second.stderr).toBe(0);
+      expect(refPins(generationRoot)).toEqual(pins);
+      expect(second.stderr).toContain(
+        `retained ${publishedIdentity(second.stdout)} as ref pin '${LABEL}' for ${candidate}`,
+      );
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    it('keeps a ref-pinned generation through recency retention until the pin expires', () => {
+      const integration = makeIntegration();
+      const generationRoot = join(integration, '.papercusp/dependency-generations');
+      const candidate = commitFixture(integration, 'candidate');
+      const ensured = ensureRef(integration, candidate, {}, undefined, ['--retain-as', LABEL]);
+      expect(ensured.status, ensured.stderr).toBe(0);
+      const pinned = join(generationRoot, publishedIdentity(ensured.stdout));
+      expect(existsSync(pinned)).toBe(true);
+
+      const newer: string[] = [];
+      for (let i = 0; i < 3; i += 1) {
+        writeFileSync(join(integration, 'node_modules/pkg/index.js'), `root-v${i}\n`);
+        const result = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+        expect(result.status, result.stderr).toBe(0);
+        newer.push(join(generationRoot, publishedIdentity(result.stdout)));
+      }
+      // Control: recency retention ran and kept only the newest unpinned publish.
+      expect(existsSync(newer[0])).toBe(false);
+      expect(existsSync(newer[1])).toBe(false);
+      expect(existsSync(newer[2])).toBe(true);
+      // The ensured generation is older than all three and survives only by its pin.
+      expect(existsSync(pinned)).toBe(true);
+
+      const [pinName] = refPins(generationRoot);
+      const pinPath = join(generationRoot, '.pins', pinName);
+      writeFileSync(pinPath, readFileSync(pinPath, 'utf8').replace(/^expires=\d+$/m, 'expires=1'));
+      writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'root-after-expiry\n');
+      const afterExpiry = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+      expect(afterExpiry.status, afterExpiry.stderr).toBe(0);
+      expect(afterExpiry.stderr).toContain(`removing expired or stale ref pin ${pinName}`);
+      expect(existsSync(pinPath)).toBe(false);
+      expect(existsSync(pinned)).toBe(false);
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    it('refuses --retain-as without --ensure-ref or with a malformed label', () => {
+      const integration = makeIntegration();
+      const candidate = commitFixture(integration, 'candidate');
+      const orphan = spawnSync('bash', [SCRIPT, '--integration', integration, '--retain-as', LABEL], {
+        encoding: 'utf8',
+        env: process.env,
+      });
+      expect(orphan.status).toBe(2);
+      expect(String(orphan.stderr)).toContain('--retain-as requires --ensure-ref');
+
+      const malformed = ensureRef(integration, candidate, {}, undefined, ['--retain-as', 'Bad Label']);
+      expect(malformed.status).toBe(2);
+      expect(malformed.stderr).toContain('--retain-as label must match');
+      expect(refPins(join(integration, '.papercusp/dependency-generations'))).toEqual([]);
+    });
+  });
+
   it('WI-10003403: direct --ensure-ref honors the environment generation root unless a CLI root is explicit', () => {
     const integration = makeIntegration();
     const candidate = commitFixture(integration, 'candidate');
@@ -854,6 +1275,189 @@ describe('immutable dependency generation', () => {
     const explicit = ensureRef(integration, candidate, env, explicitRoot);
     expect(explicit.status, explicit.stderr).toBe(0);
     expect(publishedPath(explicit.stdout).startsWith(`${explicitRoot}/`)).toBe(true);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('WI-10005159: an env-less caller follows the generation root a configured run recorded for the integration root', () => {
+    const integration = makeIntegration();
+    const candidate = commitFixture(integration, 'candidate');
+    const configuredRoot = join(dirname(integration), 'recorded-generations');
+    const record = join(integration, '.papercusp/dependency-generation-root');
+
+    const configured = ensureRef(integration, candidate, {
+      PAPERCUSP_DEPENDENCY_GENERATION_ROOT: configuredRoot,
+    });
+    expect(configured.status, configured.stderr).toBe(0);
+    expect(readFileSync(record, 'utf8')).toBe(`${configuredRoot}\n`);
+
+    // bg-host's env is absent from a manual systemd-run unit, install:safe and an
+    // agent shell; an empty value is unset to bash `:-`.
+    const envLess = ensureRef(integration, candidate, { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '' });
+    expect(envLess.status, envLess.stderr).toBe(0);
+    expect(publishedPath(envLess.stdout).startsWith(`${configuredRoot}/`)).toBe(true);
+    expect(publishedIdentity(envLess.stdout)).toBe(publishedIdentity(configured.stdout));
+    expect(existsSync(join(integration, '.papercusp/dependency-generations'))).toBe(false);
+
+    const explicitRoot = join(dirname(integration), 'explicit-generations');
+    const explicit = ensureRef(integration, candidate, { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '' }, explicitRoot);
+    expect(explicit.status, explicit.stderr).toBe(0);
+    expect(publishedPath(explicit.stdout).startsWith(`${explicitRoot}/`)).toBe(true);
+    // An explicit root is a one-off; it never rewrites the record.
+    expect(readFileSync(record, 'utf8')).toBe(`${configuredRoot}\n`);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('WI-10006081: once the root moves, retention sweeps the legacy tree-local store except live pins', () => {
+    const integration = makeIntegration();
+    const legacyRoot = join(integration, '.papercusp/dependency-generations');
+    const envLess = { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '' };
+
+    // Two generations published before any root was configured land in the
+    // tree-local store; a direct sibling checkout still runs on the second one.
+    const stale = publish(integration, envLess);
+    expect(stale.status, stale.stderr).toBe(0);
+    const stalePath = publishedPath(stale.stdout);
+    expect(stalePath.startsWith(`${legacyRoot}/`)).toBe(true);
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'root-v2\n');
+    const pinned = publish(integration, envLess);
+    expect(pinned.status, pinned.stderr).toBe(0);
+    const pinnedIdentity = publishedIdentity(pinned.stdout);
+    const pinnedPath = publishedPath(pinned.stdout);
+    const checkout = join(dirname(integration), 'checkpoint');
+    mkdirSync(join(checkout, 'node_modules'), { recursive: true });
+    const marker = join(checkout, 'node_modules/.papercusp-dependency-generation');
+    writeFileSync(marker, `identity=${pinnedIdentity}\nsource=${pinnedIdentity.slice(3)}\n`);
+
+    // A one-off explicit root with no env and no record is NOT a move: the
+    // tree-local store is still the real one and must be left alone.
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'root-v3\n');
+    const oneOff = publish(integration, envLess, join(dirname(integration), 'one-off'));
+    expect(oneOff.status, oneOff.stderr).toBe(0);
+    expect(oneOff.stderr).not.toContain('sweeping legacy tree-local generation store');
+    expect(existsSync(stalePath)).toBe(true);
+
+    // The configured run moves the root: the unpinned legacy generation goes,
+    // the pinned one stays.
+    const configuredRoot = join(dirname(integration), 'configured-generations');
+    const moved = publish(integration, { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: configuredRoot });
+    expect(moved.status, moved.stderr).toBe(0);
+    expect(publishedPath(moved.stdout).startsWith(`${configuredRoot}/`)).toBe(true);
+    expect(moved.stderr).toContain('sweeping legacy tree-local generation store');
+    expect(existsSync(stalePath)).toBe(false);
+    expect(existsSync(pinnedPath)).toBe(true);
+
+    // Once the checkout moves off it, an env-less caller following the record
+    // reclaims the last legacy generation too.
+    rmSync(marker);
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'root-v4\n');
+    const followed = publish(integration, envLess);
+    expect(followed.status, followed.stderr).toBe(0);
+    expect(publishedPath(followed.stdout).startsWith(`${configuredRoot}/`)).toBe(true);
+    expect(existsSync(pinnedPath)).toBe(false);
+    expect(readdirSync(legacyRoot).filter((entry) => entry.startsWith('v1-'))).toEqual([]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it.each([
+    ['independent copy', false],
+    ['internal symlink', false],
+    ['internal hardlink', false],
+    ['fresh pin', true],
+    ['foreign pin', true],
+    ['live lease', true],
+    ['hardlink', true],
+    ['generation symlink', true],
+    ['newline symlink', true],
+    ['external symlink', true],
+    ['unreadable inventory', true],
+  ] as const)(
+    'EI-25299577060523251: legacy sweep handles an old same-filesystem %s safely',
+    (protection, retained) => {
+      const integration = makeIntegration();
+      const legacyRoot = join(integration, '.papercusp/dependency-generations');
+      const first = publish(integration, { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '' }, legacyRoot);
+      expect(first.status, first.stderr).toBe(0);
+      const identity = publishedIdentity(first.stdout);
+      const generation = publishedPath(first.stdout);
+      const checkout = join(dirname(integration), 'old-checkpoint');
+      mkdirSync(join(checkout, 'node_modules/pkg'), { recursive: true });
+      const independentFile = join(checkout, 'node_modules/pkg/index.js');
+      writeFileSync(independentFile, 'independent checkout\n');
+      const marker = join(checkout, 'node_modules/.papercusp-dependency-generation');
+      writeFileSync(marker, `identity=${identity}\nsource=${identity.slice(3)}\n`);
+      const retentionEnv: NodeJS.ProcessEnv = {};
+      expect(statSync(checkout).dev).toBe(statSync(legacyRoot).dev);
+      const aged = new Date(Date.now() - 4 * 86_400_000);
+      if (protection !== 'fresh pin') utimesSync(marker, aged, aged);
+      if (protection === 'foreign pin') {
+        mkdirSync(join(legacyRoot, '.pins'), { recursive: true });
+        writeFileSync(join(legacyRoot, '.pins/foreign'),
+          `host=another-host\nidentity=${identity}\ncheckout=${checkout}\n`);
+      } else if (protection === 'live lease') {
+        mkdirSync(join(legacyRoot, '.leases'), { recursive: true });
+        writeFileSync(join(legacyRoot, '.leases/live'),
+          `host=${execFileSync('hostname', { encoding: 'utf8' }).trim()}\n` +
+          `pid=${process.pid}\nidentity=${identity}\n`);
+      } else if (protection === 'hardlink') {
+        linkSync(join(generation, 'tree/node_modules/pkg/index.js'), join(checkout, 'shared.js'));
+      } else if (protection === 'internal hardlink') {
+        linkSync(join(generation, 'tree/node_modules/pkg/index.js'), join(generation, 'internal-alias.js'));
+      } else if (protection === 'generation symlink') {
+        symlinkSync(join(generation, 'tree/node_modules/pkg'), join(checkout, 'linked-package'));
+      } else if (protection === 'newline symlink') {
+        symlinkSync(join(generation, 'tree/node_modules/pkg'), join(checkout, 'linked\npackage'));
+      } else if (protection === 'external symlink') {
+        symlinkSync(integration, join(checkout, 'other-checkout'));
+      } else if (protection === 'internal symlink') {
+        symlinkSync('node_modules/pkg', join(checkout, 'linked-package'));
+        symlinkSync('missing-internal-package', join(checkout, 'broken-internal-link'));
+      } else if (protection === 'unreadable inventory') {
+        const shimBin = join(dirname(integration), 'shim-bin');
+        mkdirSync(shimBin);
+        const realFind = execFileSync('sh', ['-c', 'command -v find'], { encoding: 'utf8' }).trim();
+        writeFileSync(join(shimBin, 'find'),
+          '#!/bin/bash\n[ "$1" != "$RETENTION_TEST_UNREADABLE_GENERATION" ] || exit 1\n' +
+          `exec ${JSON.stringify(realFind)} "$@"\n`);
+        chmodSync(join(shimBin, 'find'), 0o755);
+        retentionEnv.PATH = `${shimBin}:${process.env.PATH}`;
+        retentionEnv.RETENTION_TEST_UNREADABLE_GENERATION = generation;
+      }
+      // Migrate using the real publisher/retention path, then follow its record
+      // without the service's env. A sibling import must not resurrect the old
+      // independent pin. Its own files remain readable after the store is pruned.
+      const configuredRoot = join(dirname(integration), 'persistent-generations');
+      const moved = publish(integration, { ...retentionEnv, PAPERCUSP_DEPENDENCY_GENERATION_ROOT: configuredRoot });
+      expect(moved.status, moved.stderr).toBe(0);
+      expect(existsSync(generation)).toBe(retained);
+      const followed = spawnSync('bash', [SCRIPT, '--integration', integration, '--prune-only'], {
+        encoding: 'utf8', env: { ...process.env, ...retentionEnv, PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '' },
+      });
+      expect(followed.status, followed.stderr).toBe(0);
+      expect(existsSync(generation)).toBe(retained);
+      expect(readFileSync(independentFile, 'utf8')).toBe('independent checkout\n');
+      if (protection === 'live lease') expect(existsSync(join(legacyRoot, '.leases/live'))).toBe(true);
+      if (protection === 'foreign pin') expect(existsSync(join(legacyRoot, '.pins/foreign'))).toBe(true);
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+
+  it('EI-25299577060523251: ordinary retention keeps an old same-filesystem checkout pin', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(dirname(integration), 'persistent-generations');
+    const env = { PAPERCUSP_DEPENDENCY_GENERATION_ROOT: generationRoot, DEPENDENCY_GENERATION_RETAIN_COUNT: '1' };
+    const first = publish(integration, env);
+    expect(first.status, first.stderr).toBe(0);
+    const identity = publishedIdentity(first.stdout);
+    const generation = publishedPath(first.stdout);
+    const checkout = join(dirname(integration), 'old-checkpoint');
+    mkdirSync(join(checkout, 'node_modules'), { recursive: true });
+    const marker = join(checkout, 'node_modules/.papercusp-dependency-generation');
+    writeFileSync(marker, `identity=${identity}\nsource=${identity.slice(3)}\n`);
+    const aged = new Date(Date.now() - 4 * 86_400_000);
+    utimesSync(marker, aged, aged);
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'new persistent generation\n');
+    const next = publish(integration, env);
+    expect(next.status, next.stderr).toBe(0);
+    expect(publishedIdentity(next.stdout)).not.toBe(identity);
+    expect(existsSync(generation)).toBe(true);
+    expect(existsSync(publishedPath(next.stdout))).toBe(true);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('P-004: exposes the cheap immutable candidate/input key without reading mutable live lockfiles', () => {
@@ -1023,6 +1627,125 @@ describe('immutable dependency generation', () => {
       line.split(' ').slice(1).map((kv) => kv.split('=') as [string, string]),
     ) as Record<'schema' | 'ref' | 'input' | 'live' | 'verdict' | 'links', string>;
   };
+
+  it('WI-10004151: reuses an equivalent prewarmed ancestor after live dependencies move on', () => {
+    const integration = makeIntegration();
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    commitFixture(integration, 'installed baseline');
+    const baseline = publish(integration);
+    expect(baseline.status, baseline.stderr).toBe(0);
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const selector = join(generationRoot, '.inputs', publishedInputFingerprint(baseline.stdout));
+    const selectorBytes = readFileSync(selector);
+    const candidateLock = JSON.parse(lockWith(PKG));
+    candidateLock.packages[''].dependencies = { pkg: '1.0.0' };
+    writeFileSync(join(integration, 'package-lock.json'), `${JSON.stringify(candidateLock)}\n`);
+    const candidate = commitFixture(integration, 'declaration-only lock change');
+    const input = publishedInputFingerprint(fingerprintRef(integration, candidate).stdout);
+    writeFileSync(join(integration, 'package-lock.json'), lockWith({
+      'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '2.0.0' },
+    }));
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'live-v2\n');
+    // Same live tree and candidate: only the validated donor changes.
+    rmSync(selector);
+    expect(predictionOf(predictRef(integration, candidate).stdout).verdict).toBe('refused');
+    writeFileSync(selector, selectorBytes);
+    const prediction = predictRef(integration, candidate);
+    expect(prediction.status, prediction.stderr).toBe(0);
+    expect(predictionOf(prediction.stdout).verdict).toBe('buildable');
+    expect(existsSync(join(generationRoot, '.inputs', input))).toBe(false);
+    const built = ensureRef(integration, candidate);
+    expect(built.status, built.stderr).toBe(0);
+    expect(publishedInputFingerprint(built.stdout)).toBe(input);
+    expect(publishedIdentity(built.stdout)).toBe(publishedIdentity(baseline.stdout));
+    expect(readFileSync(join(publishedPath(built.stdout), 'tree/node_modules/pkg/index.js'), 'utf8')).toBe('root-v1\n');
+    expect(readFileSync(join(integration, 'node_modules/pkg/index.js'), 'utf8')).toBe('live-v2\n');
+    expect(readdirSync(exactScratch(integration))).toEqual([]);
+    const leaseRoot = join(generationRoot, '.leases');
+    expect(existsSync(leaseRoot) ? readdirSync(leaseRoot) : []).toEqual([]);
+    expect(predictionOf(predictRef(integration, candidate).stdout).verdict).toBe('prewarmed');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('WI-10004151: leases a cached donor while copying and removes only its extra workspace link', () => {
+    const integration = makeIntegration();
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      lockWith({
+        ...PKG,
+        'node_modules/@papercusp/extra': { resolved: 'packages/b', link: true },
+      }),
+    );
+    mkdirSync(join(integration, 'node_modules/@papercusp'), { recursive: true });
+    symlinkSync('../../packages/b', join(integration, 'node_modules/@papercusp/extra'));
+    commitFixture(integration, 'installed baseline with workspace link');
+    const baseline = publish(integration);
+    expect(baseline.status, baseline.stderr).toBe(0);
+    const donor = publishedPath(baseline.stdout);
+    const donorIdentity = publishedIdentity(baseline.stdout);
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    const candidate = commitFixture(integration, 'remove workspace link');
+    const input = publishedInputFingerprint(fingerprintRef(integration, candidate).stdout);
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      lockWith({ 'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '2.0.0' } }),
+    );
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'live-v2\n');
+    const prediction = predictRef(integration, candidate);
+    expect(prediction.status, prediction.stderr).toBe(0);
+    expect(predictionOf(prediction.stdout)).toMatchObject({ verdict: 'buildable', links: '1' });
+
+    const shim = join(dirname(integration), 'donor-copy-bin');
+    mkdirSync(shim);
+    writeFileSync(join(shim, 'cp'), `#!/bin/bash
+if [ "$1" = '-al' ]; then
+  lease_found=''
+  for lease in "$TEST_DONOR_LEASE_ROOT"/*; do
+    if [ -f "$lease" ] && grep -q -F "identity=$TEST_DONOR_ID" "$lease"; then
+      lease_found=1
+    fi
+  done
+  [ -n "$lease_found" ] || { echo 'cached donor copied without a retention lease' >&2; exit 99; }
+fi
+exec /bin/cp "$@"
+`, { mode: 0o755 });
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const built = ensureRef(integration, candidate, {
+      PATH: `${shim}:${process.env.PATH}`,
+      TEST_DONOR_LEASE_ROOT: join(generationRoot, '.leases'),
+      TEST_DONOR_ID: donorIdentity,
+    });
+    expect(built.status, built.stderr).toBe(0);
+    expect(publishedInputFingerprint(built.stdout)).toBe(input);
+    expect(publishedIdentity(built.stdout)).not.toBe(donorIdentity);
+    expect(readFileSync(join(publishedPath(built.stdout), 'tree/node_modules/pkg/index.js'), 'utf8')).toBe('root-v1\n');
+    expect(existsSync(join(publishedPath(built.stdout), 'tree/node_modules/@papercusp/extra'))).toBe(false);
+    expect(readlinkSync(join(donor, 'tree/node_modules/@papercusp/extra'))).toBe('../../packages/b');
+    expect(readFileSync(join(integration, 'node_modules/pkg/index.js'), 'utf8')).toBe('live-v2\n');
+    expect(statSync(join(donor, 'tree/node_modules/pkg/index.js')).mode & 0o222).toBe(0);
+    const leaseRoot = join(generationRoot, '.leases');
+    expect(existsSync(leaseRoot) ? readdirSync(leaseRoot) : []).toEqual([]);
+    expect(readdirSync(exactScratch(integration))).toEqual([]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('WI-10004151: an incompatible prewarmed ancestor cannot satisfy a new installed version', () => {
+    const integration = makeIntegration();
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    commitFixture(integration, 'installed baseline');
+    expect(publish(integration).status).toBe(0);
+    writeFileSync(join(integration, 'package-lock.json'), lockWith({
+      'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '2.0.0' },
+    }));
+    const candidate = commitFixture(integration, 'requires a new package version');
+    const input = publishedInputFingerprint(fingerprintRef(integration, candidate).stdout);
+    writeFileSync(join(integration, 'package-lock.json'), lockWith({
+      'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '3.0.0' },
+    }));
+    const result = ensureRef(integration, candidate);
+    expect(result.status).toBe(74);
+    expect(result.stderr).toContain('not install-equivalent');
+    expect(existsSync(join(integration, '.papercusp/dependency-generations/.inputs', input))).toBe(false);
+    expect(readdirSync(exactScratch(integration))).toEqual([]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('WI-10004151: --predict-ref names live-match, buildable, then prewarmed, agreeing with --ensure-ref', () => {
     const integration = makeIntegration();
@@ -1277,7 +2000,7 @@ describe('immutable dependency generation', () => {
       identity,
     );
     expect(selected.status, selected.stderr).toBe(0);
-  });
+  }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('fully revalidates a changed incumbent and reuses a valid concurrent winner', () => {
     const integration = makeIntegration();
@@ -1340,6 +2063,96 @@ describe('immutable dependency generation', () => {
       'invalid dependency-generation identity',
     );
   });
+
+  // WI-6554700010008514: v1-7c590a4e was published from a root missing
+  // node_modules/sharp/node_modules/semver and indexed under input 8f48c4a6, so every gate
+  // run sharing that key failed `npm ls`. The publish now audits the copied trees against
+  // the lockfiles they were copied under and refuses (infra rc75) instead of publishing.
+  it('WI-6554700010008514: refuses (rc75) a source whose trees do not realise its lockfile, and publishes nothing', () => {
+    const integration = makeIntegration();
+    // The fixture installs pkg@1.0.0; this lock claims 2.0.0 plus a never-installed package.
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      `${JSON.stringify({
+        name: 'fixture',
+        lockfileVersion: 3,
+        packages: {
+          '': { name: 'fixture' },
+          'node_modules/pkg': { version: '2.0.0' },
+          'node_modules/never-installed': { version: '1.0.0' },
+          'node_modules/optional-absent': { version: '1.0.0', optional: true },
+        },
+      })}\n`,
+    );
+
+    const result = publish(integration);
+
+    expect(result.status).toBe(75);
+    expect(result.stderr).toContain(
+      'LOCK_TREE_DEFECT\tversion-mismatch\tnode_modules/pkg\tlocked 2.0.0 installed 1.0.0',
+    );
+    expect(result.stderr).toContain('LOCK_TREE_DEFECT\tmissing\tnode_modules/never-installed\tlocked 1.0.0');
+    // npm skips optional packages that do not fit the platform: absence is not a defect.
+    expect(result.stderr).not.toContain('optional-absent');
+    expect(result.stderr).toContain('refusing to publish');
+    expect(lastSummary(result)).toMatchObject({ result: 'lock-tree-incomplete' });
+    expect(result.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it.each([
+    ['missing', 'node_modules/never-installed', '1.0.0'],
+    ['version-mismatch', 'node_modules/pkg', '2.0.0'],
+  ])('WI-6554700010008526: refuses a cache-hit selector for a %s locked dependency', (defect, path, version) => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const marker = join(publishedPath(first.stdout), '.papercusp-dependency-generation');
+    const originalMarker = readFileSync(marker, 'utf8');
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      `${JSON.stringify({
+        name: 'fixture',
+        lockfileVersion: 3,
+        packages: { [path]: { version } },
+      })}\n`,
+    );
+
+    const result = publish(integration);
+
+    expect(result.status, result.stderr).toBe(75);
+    expect(result.stderr).toContain('outcome=hot-hit');
+    expect(result.stderr).toContain(`LOCK_TREE_DEFECT\t${defect}\t${path}`);
+    expect(lastSummary(result)).toMatchObject({ result: 'lock-tree-incomplete' });
+    expect(result.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+    expect(selectPrewarmed(generationRoot, integration).status).toBe(74);
+    expect(readFileSync(marker, 'utf8')).toBe(originalMarker);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('WI-6554700010008526: binds a new matching lockfile to the cached tree after auditing it', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/pkg":{"version":"1.0.0"}}}\n',
+    );
+
+    const result = publish(integration);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('reused=true');
+    expect(publishedIdentity(result.stdout)).toBe(publishedIdentity(first.stdout));
+    expect(telemetryRecords(result.stderr, 'PHASE')).toContainEqual(
+      expect.objectContaining({ phase: 'lock-tree-audit', outcome: 'ok' }),
+    );
+    const selected = selectPrewarmed(
+      join(integration, '.papercusp/dependency-generations'),
+      integration,
+    );
+    expect(selected.status, selected.stderr).toBe(0);
+    expect(publishedIdentity(selected.stdout)).toBe(publishedIdentity(first.stdout));
+  }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('refuses a torn source with rc75 and publishes no partial generation', () => {
     const integration = makeIntegration();
@@ -1477,6 +2290,38 @@ describe('immutable dependency generation', () => {
     ).toBe(false);
   });
 
+  it.each(['0', '1'])('ignores nested model-cache creation and removal but refuses dependency rewrites (portable=%s)', (portable) => {
+    const integration = makeIntegration();
+    const packageDir = join(integration, 'node_modules/@huggingface/transformers');
+    const dependency = join(packageDir, 'index.js');
+    const cache = join(packageDir, '.cache');
+    mkdirSync(packageDir, { recursive: true });
+    writeFileSync(dependency, 'dependency-v1\n');
+    const env = { DEPENDENCY_GENERATION_FORCE_PORTABLE_STAT: portable, DG_MODEL_PACKAGE: packageDir };
+    const first = publish(integration, {
+      ...env,
+      DEPENDENCY_GENERATION_AFTER_COPY_HOOK:
+        'mkdir -p "$DG_MODEL_PACKAGE/.cache/model/onnx"; printf "downloaded-model\\n" > "$DG_MODEL_PACKAGE/.cache/model/onnx/model.onnx_data"',
+    });
+    expect(first.status, first.stderr).toBe(0);
+    expect(existsSync(join(publishedPath(first.stdout), 'tree/node_modules/@huggingface/transformers/.cache'))).toBe(false);
+
+    // Removing the pruned child changes its package directory's size/mtime.
+    rmSync(cache, { recursive: true, force: true });
+    const second = publish(integration, env);
+    expect(second.status, second.stderr).toBe(0);
+    expect(second.stdout).toContain('reused=true');
+    expect(publishedPath(second.stdout)).toBe(publishedPath(first.stdout));
+
+    writeFileSync(dependency, 'dependency-v2\n');
+    const torn = publish(integration, {
+      ...env,
+      DEPENDENCY_GENERATION_AFTER_COPY_HOOK: 'printf "dependency-v3\\n" > "$DG_MODEL_PACKAGE/index.js"',
+    });
+    expect(torn.status, torn.stderr).toBe(75);
+    expect(torn.stderr).toContain('refusing a torn snapshot');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('ignores crash-left deployment swap siblings in both input and dependency manifests (WI-2144371)', () => {
     const integration = makeIntegration();
     const first = publish(integration);
@@ -1507,6 +2352,77 @@ describe('immutable dependency generation', () => {
     );
     expect(afterDebris.stderr).not.toContain('node_modules.deploy-tmp.1592326');
     expect(afterDebris.stderr).not.toContain('node_modules.deploy-old.1592326');
+  });
+
+  it('keeps emitted desktop dependency copies out of full source generations and input keys (WI-10006855)', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    for (const output of ['sidecar', 'env-sidecars', 'resources']) {
+      const dir = join(integration, 'papercusp-desktop/src-tauri', output);
+      mkdirSync(join(dir, 'node_modules/copied'), { recursive: true });
+      writeFileSync(join(dir, 'node_modules/copied/index.js'), 'emitted copy, no source lock binding\n');
+      writeFileSync(join(dir, 'package-lock.json'), '{"lockfileVersion":3,"packages":{}}\n');
+    }
+    const afterOutput = publish(integration);
+    expect(afterOutput.status, afterOutput.stderr).toBe(0);
+    expect(publishedIdentity(afterOutput.stdout)).toBe(publishedIdentity(first.stdout));
+    expect(afterOutput.stdout).toContain('reused=true');
+    expect(existsSync(join(publishedPath(afterOutput.stdout), 'tree/papercusp-desktop/src-tauri'))).toBe(false);
+    for (const source of ['papercusp-desktop', 'packages/sidecar']) {
+      const dir = join(integration, source);
+      mkdirSync(join(dir, 'node_modules/source-package'), { recursive: true });
+      writeFileSync(join(dir, 'node_modules/source-package/index.js'), 'source dependency\n');
+    }
+    const afterSource = publish(integration);
+    expect(afterSource.status, afterSource.stderr).toBe(0);
+    expect(publishedIdentity(afterSource.stdout)).not.toBe(publishedIdentity(first.stdout));
+    expect(existsSync(join(publishedPath(afterSource.stdout), 'tree/papercusp-desktop/node_modules/source-package'))).toBe(true);
+    expect(existsSync(join(publishedPath(afterSource.stdout), 'tree/packages/sidecar/node_modules/source-package'))).toBe(true);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('ignores whole-directory swap siblings (<dir>.tmp.<pid> / <dir>.old.<pid>) in both manifests (WI-10005953)', () => {
+    // build-desktop-sidecar.sh stages the sidecar as `sidecar.tmp.$$` and swaps the
+    // previous one to `sidecar.old.$$`. Each sibling carries its own node_modules and
+    // package-lock.json; counting them tore gate run 132bbb67's generation (exit 75).
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+
+    const sidecarTmp = join(integration, 'packages/a/sidecar.tmp.2054494');
+    const sidecarOld = join(integration, 'packages/a/sidecar.old.2054494');
+    for (const dir of [sidecarTmp, sidecarOld]) {
+      mkdirSync(join(dir, 'node_modules/staged-package'), { recursive: true });
+      writeFileSync(join(dir, 'node_modules/staged-package/index.js'), 'staged\n');
+      writeFileSync(
+        join(dir, 'package-lock.json'),
+        '{"name":"sidecar-staging","lockfileVersion":3,"packages":{}}\n',
+      );
+    }
+
+    const afterSwap = publish(integration);
+    expect(afterSwap.status, afterSwap.stderr).toBe(0);
+    expect(afterSwap.stdout).toContain('reused=true');
+    expect(publishedIdentity(afterSwap.stdout)).toBe(
+      publishedIdentity(first.stdout),
+    );
+    expect(afterSwap.stderr).not.toContain('sidecar.tmp.2054494');
+    expect(afterSwap.stderr).not.toContain('sidecar.old.2054494');
+
+    // Calibration: the same tree under a non-scratch name IS a dependency input,
+    // so the assertions above cannot pass because the walk ignores packages/a.
+    mkdirSync(join(integration, 'packages/a/sidecar/node_modules/staged-package'), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(integration, 'packages/a/sidecar/node_modules/staged-package/index.js'),
+      'staged\n',
+    );
+    const afterReal = publish(integration);
+    expect(afterReal.status, afterReal.stderr).toBe(0);
+    expect(publishedIdentity(afterReal.stdout)).not.toBe(
+      publishedIdentity(first.stdout),
+    );
   });
 
   it('reclaims a same-host dead writer before publishing', () => {
@@ -1666,6 +2582,46 @@ describe('immutable dependency generation', () => {
     expect(readFileSync(join(copied, 'pkg/index.js'), 'utf8')).toBe('root-v1\n');
   });
 
+  it('falls back to an independent copy when the hardlink opt-in cannot hardlink (WI-10004928)', () => {
+    // The admission pre-check always opts in to hardlinks. A failing `cp -al`
+    // (EXDEV, EMLINK, …) must degrade to a correct independent copy, never fail
+    // the materialization.
+    const integration = makeIntegration();
+    const result = publish(integration);
+    expect(result.status, result.stderr).toBe(0);
+    const source = join(publishedPath(result.stdout), 'tree/node_modules');
+    const dest = join(integration, 'materialized-fallback');
+    const shim = join(integration, 'cp-shim');
+    const realCp = execFileSync('bash', ['-c', 'command -v cp'], { encoding: 'utf8' }).trim();
+    const wrapper = [
+      'set -euo pipefail',
+      'mkdir -p "$SHIM"',
+      // Refuse only the hardlink form. Every other cp call passes through.
+      `printf '%s\\n' '#!/usr/bin/env bash' 'for a in "$@"; do [ "$a" = -al ] && exit 1; done' 'exec "$REAL_CP" "$@"' > "$SHIM/cp"`,
+      'chmod +x "$SHIM/cp"',
+      'export PATH="$SHIM:$PATH"',
+      'source "$SCRIPT"',
+      'dependency_generation_materialize_tree "$SOURCE" "$DEST"',
+      'printf "mode=%s\\n" "$DEPENDENCY_GENERATION_MATERIALIZE_MODE"',
+    ].join('\n');
+    const fallback = spawnSync('bash', ['-c', wrapper], {
+      env: {
+        ...process.env,
+        SCRIPT,
+        SOURCE: source,
+        DEST: dest,
+        SHIM: shim,
+        REAL_CP: realCp,
+        DEPENDENCY_GENERATION_ALLOW_HARDLINK: '1',
+      },
+      encoding: 'utf8',
+    });
+    expect(fallback.status, String(fallback.stderr ?? '')).toBe(0);
+    expect(fallback.stdout).toContain('mode=copy');
+    expect(statSync(join(dest, 'pkg/index.js')).ino).not.toBe(statSync(join(source, 'pkg/index.js')).ino);
+    expect(readFileSync(join(dest, 'pkg/index.js'), 'utf8')).toBe('root-v1\n');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('does not mutate immutable generation modes during repeated hardlink cleanup', () => {
     const integration = makeIntegration();
     const published = publish(integration);
@@ -1735,6 +2691,33 @@ describe('immutable dependency generation', () => {
     });
     expect(reused.status, reused.stderr).toBe(0);
     expect(existsSync(orphan)).toBe(false);
+    expect(reused.stderr).toContain(`deleted prune quarantine ${orphan}`);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('reports a failed quarantine deletion even when a later deletion succeeds', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const failed = join(generationRoot, '.prune-a-refused');
+    const removed = join(generationRoot, '.prune-z-removable');
+    mkdirSync(failed, { recursive: true });
+    mkdirSync(removed, { recursive: true });
+    writeFileSync(join(failed, 'payload'), 'preserved after refused unlink\n');
+    const result = spawnSync('bash', ['-c', [
+      'set -uo pipefail',
+      'source "$SCRIPT"',
+      'rm() { if [ "${@: -1}" = "$FAILED" ]; then return 23; fi; command rm "$@"; }',
+      'dependency_generation_main --integration "$INTEGRATION" --generation-root "$DG_ROOT" --prune-only --no-recorded-store-cascade',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: { ...process.env, SCRIPT, INTEGRATION: integration, DG_ROOT: generationRoot, FAILED: failed },
+    });
+    expect(result.status, result.stderr).toBe(23);
+    expect(readFileSync(join(failed, 'payload'), 'utf8')).toBe('preserved after refused unlink\n');
+    expect(existsSync(removed)).toBe(false);
+    expect(result.stderr).toContain(`failed prune quarantine deletion ${failed} (rc=23)`);
+    expect(result.stderr).toContain(`deleted prune quarantine ${removed}`);
+    expect(result.stderr).not.toContain(`deleted prune quarantine ${failed}`);
+    expect(existsSync(join(generationRoot, '.publish-lock'))).toBe(false);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('removes input selectors before pruning the generation they reference (WI-2144343)', () => {
@@ -1754,6 +2737,9 @@ describe('immutable dependency generation', () => {
       join(integration, 'package-lock.json'),
       '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/new-input":{}}}\n',
     );
+    // The new lock entry is installed, as a real install would leave it (lock-tree audit).
+    mkdirSync(join(integration, 'node_modules/new-input'), { recursive: true });
+    writeFileSync(join(integration, 'node_modules/new-input/package.json'), '{"name":"new-input"}\n');
     writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'new-generation\n');
     const second = publish(integration, {
       DEPENDENCY_GENERATION_RETAIN_COUNT: '1',
@@ -1950,6 +2936,71 @@ describe('immutable dependency generation', () => {
         ),
       ),
     ).toBe(false);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('keeps a live cross-filesystem sibling pin but prunes one whose checkout was offloaded and went stale (WI-10003695)', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    // The host service can set PAPERCUSP_DEPENDENCY_GENERATION_ROOT globally. Pin this
+    // fixture's store to the integration tree so its device and pin assertions stay isolated.
+    const first = publish(
+      integration,
+      { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' },
+      generationRoot,
+    );
+    expect(first.status, first.stderr).toBe(0);
+    const firstIdentity = publishedIdentity(first.stdout);
+    const firstPath = publishedPath(first.stdout);
+    const pinsFor = (identity: string) =>
+      existsSync(join(generationRoot, '.pins'))
+        ? readdirSync(join(generationRoot, '.pins')).filter((entry) =>
+            readFileSync(join(generationRoot, '.pins', entry), 'utf8').includes(`identity=${identity}\n`),
+          )
+        : [];
+
+    // The root-offload convention: the checkout lives on another filesystem and
+    // its old path, a direct sibling of the integration root, is a symlink to it.
+    // WI-10005970: choose a parent on a filesystem OTHER than the store's. A hardcoded
+    // /dev/shm failed this case's precondition whenever tmpdir-guard relocated TMPDIR (and so
+    // the integration root and its store) onto /dev/shm itself.
+    const storeDev = statSync(generationRoot).dev;
+    const offloadBase =
+      ['/dev/shm', '/var/tmp', '/tmp'].find((base) => {
+        try {
+          return statSync(base).dev !== storeDev;
+        } catch {
+          return false;
+        }
+      }) ?? '/dev/shm';
+    const offloadParent = mkdtempSync(join(offloadBase, 'dependency-generation-offload-'));
+    roots.push(offloadParent);
+    const offloaded = join(offloadParent, 'relcut');
+    mkdirSync(join(offloaded, 'node_modules'), { recursive: true });
+    const marker = join(offloaded, 'node_modules/.papercusp-dependency-generation');
+    writeFileSync(marker, `identity=${firstIdentity}\nsource=${firstIdentity.slice(3)}\n`);
+    symlinkSync(offloaded, `${integration}-relcut`);
+    expect(
+      statSync(offloaded).dev,
+      'fixture precondition: the offloaded checkout must be on a different filesystem than the store',
+    ).not.toBe(statSync(generationRoot).dev);
+
+    // A freshly materialized cross-filesystem checkout is live: it stays pinned.
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'cross-fs-live\n');
+    const live = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+    expect(live.status, live.stderr).toBe(0);
+    expect(existsSync(firstPath)).toBe(true);
+    expect(pinsFor(firstIdentity)).toHaveLength(1);
+
+    // Four days without a re-materialization: retired. The pin goes, the sibling
+    // scan does not re-write it, and retention prunes the generation.
+    const fourDaysAgo = new Date(Date.now() - 4 * 86_400_000);
+    utimesSync(marker, fourDaysAgo, fourDaysAgo);
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'cross-fs-retired\n');
+    const retired = publish(integration, { DEPENDENCY_GENERATION_RETAIN_COUNT: '1' });
+    expect(retired.status, retired.stderr).toBe(0);
+    expect(retired.stderr).toContain('removing retired cross-filesystem checkout pin');
+    expect(pinsFor(firstIdentity)).toHaveLength(0);
+    expect(existsSync(firstPath)).toBe(false);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('protects a live exact-identity selector lease and reclaims it after the reader is gone', () => {
@@ -2283,6 +3334,7 @@ describe('dependency-generation publish-lock waiter', () => {
     const result = spawnSync('bash', ['-c', wrapper], {
       encoding: 'utf8',
       timeout: timeoutMs,
+      killSignal: 'SIGTERM',
       env: { ...process.env, SCRIPT, ROOT: root, SCENARIO: scenario, ...env },
     });
     return {
@@ -2476,6 +3528,68 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
     );
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it.each(['advancing', 'idle'] as const)('uses copy writes, not static text or holder polling, for an %s joined build', (activity) => {
+    const root = mkdtempSync(join(tmpdir(), 'papercusp-inflight-copy-wait-'));
+    roots.push(root);
+    const wrapper = [
+      'set -uo pipefail',
+      'source "$SCRIPT"',
+      'lock="$ROOT/.inflight-$ID"; mkdir "$lock"',
+      'printf "host=%s\\npid=%s\\nstarted=0\\n" "$(dependency_generation_host)" "$$" > "$lock/writer"',
+      'printf "0 copying dependency tree: node_modules\\n" > "$lock/progress"',
+      'echo 0 > "$ROOT/tick"',
+      // Only the clock and kernel counter seam are controlled. The production
+      // waiter must outlive its stall budget on writes and reject a flat counter.
+      'date() { cat "$ROOT/tick"; }',
+      'dependency_generation_inflight_is_abandoned() { return 1; }',
+      'dependency_generation_subtree_io() { [ "$2" = cp-written ] || return 1; if [ "$ACTIVITY" = advancing ]; then echo $((100 + $(cat "$ROOT/tick") * 1024)); else echo 100; fi; }',
+      'sleep() { local tick; tick=$(( $(cat "$ROOT/tick") + 1 )); echo "$tick" > "$ROOT/tick"; if [ "$ACTIVITY" = advancing ] && [ "$tick" -ge 6 ]; then rm -rf -- "$lock"; fi; }',
+      'rc=0; dependency_generation_wait_inflight "$ROOT" "$ID" || rc=$?',
+      'printf "RC=%s TICK=%s\\n" "$rc" "$(cat "$ROOT/tick")"',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8', timeout: NATIVE_SHELL_TIMEOUT_MS,
+      env: { ...process.env, SCRIPT, ROOT: root, ID: `v1-${'b'.repeat(64)}`, ACTIVITY: activity,
+        DEPENDENCY_GENERATION_COPY_PROGRESS_SEC: '1', DEPENDENCY_GENERATION_INFLIGHT_STALL_SEC: '2' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    if (activity === 'advancing') {
+      expect(result.stdout).toContain('RC=79 TICK=6');
+      expect(result.stderr).toContain('copy writes advanced');
+      expect(result.stderr).not.toContain('FATAL');
+    } else {
+      expect(result.stdout).toContain('RC=73 TICK=2');
+      expect(result.stderr).not.toContain('copy writes advanced');
+    }
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('measures an actual copy child while excluding holder reads and shell writes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'papercusp-inflight-copy-io-'));
+    roots.push(root);
+    const wrapper = [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'printf holder-polling > "$ROOT/noise"; cat "$ROOT/noise" >/dev/null',
+      'printf "IDLE=%s\\n" "$(dependency_generation_subtree_io $$ cp-written)"',
+      'mkfifo "$ROOT/fifo"',
+      'cp "$ROOT/fifo" "$ROOT/sink" & copier=$!',
+      'trap \'kill "$copier" 2>/dev/null || true\' EXIT',
+      'exec 9> "$ROOT/fifo"',
+      'printf "%1048576s" "" >&9',
+      'while [ "$(stat -c %s "$ROOT/sink" 2>/dev/null || echo 0)" -lt 1048576 ]; do kill -0 "$copier"; sleep 0.05; done',
+      'printf "ACTIVE=%s\\n" "$(dependency_generation_subtree_io $$ cp-written)"',
+      'exec 9>&-; wait "$copier"; trap - EXIT',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8', timeout: NATIVE_SHELL_TIMEOUT_MS,
+      env: { ...process.env, SCRIPT, ROOT: root },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/^IDLE=\s*$/m);
+    const written = Number(/^ACTIVE=(\d+)$/m.exec(result.stdout)?.[1]);
+    expect(written).toBeGreaterThanOrEqual(1_048_576);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   function copyScenario(shimBody: string): ShellResult {
     const root = mkdtempSync(join(tmpdir(), 'papercusp-copy-progress-'));
     roots.push(root);
@@ -2515,4 +3629,1238 @@ describe('WI-10004094: one build per dependency identity, with visible copy prog
     expect(result.stdout, result.stderr).toContain('RC=0');
     expect(result.stderr).not.toContain('copy progress');
   }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('reports checksum reads while an independent resume verifies retained bytes without writing', () => {
+    const root = mkdtempSync(join(tmpdir(), 'papercusp-checksum-progress-'));
+    roots.push(root);
+    writeFileSync(join(root, 'payload'), 'x'.repeat(1_048_576));
+    const wrapper = [
+      'set -uo pipefail',
+      'source "$SCRIPT"',
+      // The worker reads using a shell builtin so the kernel counters belong
+      // to the actual monitored PID, just as rsync sender checksum reads do.
+      'rsync() { local chunk; for i in 1 2 3; do IFS= read -r -N 1048576 chunk < "$ROOT/payload"; sleep 1.2; done; }',
+      'rc=0; dependency_generation_copy_with_progress "$ROOT/src" "$ROOT/dest" --rsync-checksum || rc=$?',
+      'printf "RC=%s\\n" "$rc"',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], {
+      encoding: 'utf8', timeout: NATIVE_SHELL_TIMEOUT_MS,
+      env: { ...process.env, SCRIPT, ROOT: root, DEPENDENCY_GENERATION_COPY_PROGRESS_SEC: '1' },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('RC=0');
+    expect(result.stderr).toMatch(/checksum read progress: .* read=[1-9]\d*MiB/);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it.each(['writes', 'checksum-reads', 'stalled', 'unmeasured'] as const)
+    ('uses measured copy inactivity rather than elapsed time: %s', activity => {
+      const root = mkdtempSync(join(tmpdir(), 'dependency-copy-stall-')); roots.push(root);
+      const wrapper = [
+        'set -uo pipefail; source "$SCRIPT"',
+        'echo 0 > "$ROOT/tick"',
+        'date() { cat "$ROOT/tick"; }',
+        'cp() { echo "$BASHPID" > "$ROOT/child"; while [ ! -f "$ROOT/done" ]; do command sleep 0.01; done; }',
+        'rsync() { cp; }',
+        'dependency_generation_subtree_io() { local tick; tick=$(cat "$ROOT/tick"); if { [ "$ACTIVITY" = writes ] && [ "$2" = copy-written ]; } || { [ "$ACTIVITY" = checksum-reads ] && [ "$2" = copy-read ]; }; then echo $((tick * 1048576)); elif [ "$ACTIVITY" != unmeasured ]; then echo 0; fi; }',
+        'sleep() { local tick; tick=$(( $(cat "$ROOT/tick") + 1 )); echo "$tick" > "$ROOT/tick"; if [ "$tick" -ge 6 ]; then touch "$ROOT/done"; fi; command sleep 0.03; }',
+        'rc=0; dependency_generation_copy_with_progress "$ROOT/src" "$ROOT/dest" --rsync-checksum || rc=$?',
+        'printf "RC=%s TICK=%s\\n" "$rc" "$(cat "$ROOT/tick")"',
+        'child=$(cat "$ROOT/child"); if kill -0 "$child" 2>/dev/null; then echo CHILD_ALIVE; kill -KILL "$child"; fi',
+      ].join('\n');
+      const result = spawnSync('bash', ['-c', wrapper], { encoding: 'utf8', timeout: NATIVE_SHELL_TIMEOUT_MS,
+        env: { ...process.env, SCRIPT, ROOT: root, ACTIVITY: activity,
+          DEPENDENCY_GENERATION_COPY_PROGRESS_SEC: '1', DEPENDENCY_GENERATION_INFLIGHT_STALL_SEC: '2' } });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).not.toContain('CHILD_ALIVE');
+      if (activity === 'writes' || activity === 'checksum-reads') {
+        expect(result.stdout).toMatch(/RC=0 TICK=[6-9]/);
+        expect(result.stderr).not.toContain('COPY_STALLED');
+      } else {
+        expect(result.stdout).toContain('RC=73 TICK=2');
+        expect(result.stderr).toMatch(/COPY_STALLED idle=2s budget=2s .*path=/);
+      }
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('cancels and reaps only its copy subtree while preserving the caller EXIT trap', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dependency-copy-cancel-')); roots.push(root);
+    const wrapper = [
+      'set -uo pipefail; source "$SCRIPT"',
+      'trap \'echo CALLER_EXIT\' EXIT',
+      'cp() { echo "$BASHPID" > "$ROOT/child"; ps -o ppid= -p "$BASHPID" > "$ROOT/supervisor"; command sleep 60 & nested=$!; echo "$nested" > "$ROOT/nested"; wait "$nested"; }',
+      'dependency_generation_copy_with_progress "$ROOT/src" "$ROOT/dest" & runner=$!',
+      'while [ ! -f "$ROOT/nested" ]; do sleep 0.01; done',
+      // Bash backgrounds a subshell-bodied function through an extra wrapper.
+      // Signal the observed copy supervisor, rather than bypassing its trap.
+      'kill -TERM "$(tr -d \' \' < "$ROOT/supervisor")"; rc=0; wait "$runner" || rc=$?; echo RC=$rc',
+      // A descendant killed before its parent can briefly remain as a zombie;
+      // neither a running copy nor a live nested worker may survive the return.
+      'for file in child nested; do pid=$(cat "$ROOT/$file"); if [ -r "/proc/$pid/stat" ]; then state=$(awk \'{print $3}\' "/proc/$pid/stat"); [ "$state" = Z ] || { echo SURVIVING_WORKER; kill -KILL "$pid"; }; fi; done',
+    ].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], { encoding: 'utf8', timeout: NATIVE_SHELL_TIMEOUT_MS,
+      env: { ...process.env, SCRIPT, ROOT: root } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('RC=143');
+    expect(result.stdout).toContain('CALLER_EXIT');
+    expect(result.stdout).not.toContain('SURVIVING_WORKER');
+    expect(result.stderr).toContain('COPY_CANCELLED signal=TERM');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+});
+
+describe('WI-10004825: scratch trees stranded by dead runs are reaped', () => {
+  const parents: string[] = [];
+  afterEach(() => {
+    for (const p of parents.splice(0)) rmSync(p, { recursive: true, force: true });
+  });
+
+  function deadPid(): number {
+    const child = spawnSync('bash', ['-c', 'echo $$'], { encoding: 'utf8' });
+    const pid = Number(child.stdout.trim());
+    expect(Number.isInteger(pid) && pid > 0).toBe(true);
+    expect(existsSync(`/proc/${pid}`)).toBe(false);
+    return pid;
+  }
+
+  function scratch(path: string, ageSec: number): void {
+    mkdirSync(join(path, 'pkg'), { recursive: true });
+    writeFileSync(join(path, 'pkg/index.js'), 'partial\n');
+    const t = Date.now() / 1000 - ageSec;
+    utimesSync(path, t, t);
+  }
+
+  it('removes only siblings whose pid is gone and whose mtime is past the grace window', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'dependency-generation-reap-'));
+    parents.push(parent);
+    const dest = join(parent, 'node_modules');
+    mkdirSync(dest);
+    const dead = deadPid();
+    const live = process.pid;
+    const nestedDead = `${dest}.deploy-tmp.${dead}.generation-tmp.${dead}`;
+    const oldDead = `${dest}.deploy-old.${dead}`;
+    const genDead = `${dest}.generation-tmp.${dead}`;
+    const liveOwned = `${dest}.deploy-tmp.${live}`;
+    const recentDead = `${dest}.generation-old.${dead}`;
+    scratch(nestedDead, 7200);
+    scratch(oldDead, 7200);
+    scratch(genDead, 7200);
+    // A read-only directory inside a frozen generation copy must not block removal.
+    chmodSync(join(genDead, 'pkg'), 0o555);
+    scratch(liveOwned, 7200);
+    scratch(recentDead, 5);
+
+    const result = spawnSync(
+      'bash',
+      ['-c', 'set -euo pipefail; source "$SCRIPT"; dependency_generation_reap_dead_siblings "$DEST"; echo RC=$?'],
+      {
+        env: { ...process.env, SCRIPT, DEST: dest, DEPENDENCY_GENERATION_REAP_GRACE_SEC: '600' },
+        encoding: 'utf8',
+      },
+    );
+    expect(result.stdout, result.stderr).toContain('RC=0');
+    expect(existsSync(nestedDead)).toBe(false);
+    expect(existsSync(oldDead)).toBe(false);
+    expect(existsSync(genDead)).toBe(false);
+    expect(existsSync(liveOwned)).toBe(true);
+    expect(existsSync(recentDead)).toBe(true);
+    expect(existsSync(dest)).toBe(true);
+    expect(result.stderr).toContain(`reaping orphaned scratch tree from dead pid ${dead}`);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('is a no-op when no sibling exists', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'dependency-generation-reap-'));
+    parents.push(parent);
+    const dest = join(parent, 'node_modules');
+    const result = spawnSync(
+      'bash',
+      ['-c', 'set -euo pipefail; source "$SCRIPT"; dependency_generation_reap_dead_siblings "$DEST"; echo RC=$?'],
+      { env: { ...process.env, SCRIPT, DEST: dest }, encoding: 'utf8' },
+    );
+    expect(result.stdout, result.stderr).toContain('RC=0');
+    expect(readdirSync(parent)).toEqual([]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+});
+
+// WI-10004849: physical dependency copies are serialized host-wide and refuse to
+// start without disk headroom. Exits: 76 = lock timeout, 77 = headroom.
+describe('WI-10004849: dependency copy lock + headroom preflight', () => {
+  function copyFixture(): { root: string; generation: string; source: string } {
+    const root = mkdtempSync(join(tmpdir(), 'dependency-generation-headroom-'));
+    roots.push(root);
+    const generation = join(root, 'generation');
+    const source = join(generation, 'tree/node_modules');
+    mkdirSync(join(source, 'pkg'), { recursive: true });
+    writeFileSync(join(source, 'pkg/index.js'), 'v1\n');
+    return { root, generation, source };
+  }
+
+  function runShell(body: string, env: NodeJS.ProcessEnv): ShellResult {
+    const wrapper = ['set -euo pipefail', 'source "$SCRIPT"', body].join('\n');
+    const result = spawnSync('bash', ['-c', wrapper], {
+      env: { ...process.env, SCRIPT, ...env },
+      encoding: 'utf8',
+    });
+    return {
+      status: result.status,
+      stdout: String(result.stdout ?? ''),
+      stderr: String(result.stderr ?? ''),
+    };
+  }
+
+  const fs = (avail: number) => ({
+    DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(avail),
+    DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: '100000',
+    DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '2',
+    DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '1000',
+  });
+
+  it('headroom_required is need + reserve + margin', () => {
+    const result = runShell('dependency_generation_headroom_required 5000 2000 1000', {});
+    expect(result.stdout.trim(), result.stderr).toBe('8000');
+  });
+
+  it('refuses with exit 77 when the recorded size does not fit, and copies nothing', () => {
+    const { root, generation, source } = copyFixture();
+    writeFileSync(join(generation, '.tree-bytes'), 'node_modules\t5000\n');
+    const dest = join(root, 'out/node_modules');
+    // required = 5000 + 2% of 100000 + 1000 = 8000
+    const refused = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+      ...fs(7999),
+      SOURCE: source,
+      DEST: dest,
+    });
+    expect(refused.status, refused.stderr).toBe(77);
+    expect(refused.stderr).toContain('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=5000');
+    expect(refused.stderr).toContain('required=8000 size=recorded');
+    expect(existsSync(dest)).toBe(false);
+
+    const allowed = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+      ...fs(8000),
+      SOURCE: source,
+      DEST: dest,
+    });
+    expect(allowed.status, allowed.stderr).toBe(0);
+    expect(readFileSync(join(dest, 'pkg/index.js'), 'utf8')).toBe('v1\n');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('an unknown size still enforces reserve + margin', () => {
+    const { root, source } = copyFixture();
+    const refused = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+      ...fs(2999),
+      SOURCE: source,
+      DEST: join(root, 'out/node_modules'),
+    });
+    expect(refused.status, refused.stderr).toBe(77);
+    expect(refused.stderr).toContain('need=0');
+    expect(refused.stderr).toContain('size=unknown');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  describe('WI-10005931: the percentage reserve protects only the integration-root filesystem', () => {
+    // reserve = 50% of 100000 = 50000 on the protected fs; capped to 3000 elsewhere.
+    const scoped = (avail: number, sameFs: '0' | '1') => ({
+      ...fs(avail),
+      DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '50',
+      DEPENDENCY_GENERATION_HEADROOM_OTHER_FS_RESERVE_CAP_BYTES: '3000',
+      DEPENDENCY_GENERATION_HEADROOM_SAME_FS: sameFs,
+    });
+
+    it('caps the reserve off the protected filesystem and keeps the margin', () => {
+      const { root, generation, source } = copyFixture();
+      writeFileSync(join(generation, '.tree-bytes'), 'node_modules\t5000\n');
+      const dest = join(root, 'out/node_modules');
+      // other fs: required = 5000 + min(50000, 3000) + 1000 = 9000
+      const refused = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+        ...scoped(8999, '0'),
+        SOURCE: source,
+        DEST: dest,
+      });
+      expect(refused.status, refused.stderr).toBe(77);
+      expect(refused.stderr).toContain('reserve=3000 reserve_scope=other-fs');
+      expect(refused.stderr).toContain('required=9000');
+      expect(existsSync(dest)).toBe(false);
+
+      const allowed = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+        ...scoped(9000, '0'),
+        SOURCE: source,
+        DEST: dest,
+      });
+      expect(allowed.status, allowed.stderr).toBe(0);
+      expect(readFileSync(join(dest, 'pkg/index.js'), 'utf8')).toBe('v1\n');
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    it('keeps the full percentage reserve on the protected filesystem', () => {
+      const { root, generation, source } = copyFixture();
+      writeFileSync(join(generation, '.tree-bytes'), 'node_modules\t5000\n');
+      // protected fs: required = 5000 + 50000 + 1000 = 56000
+      const refused = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+        ...scoped(9000, '1'),
+        SOURCE: source,
+        DEST: join(root, 'out/node_modules'),
+      });
+      expect(refused.status, refused.stderr).toBe(77);
+      expect(refused.stderr).toContain('reserve=50000 reserve_scope=protected-fs');
+      expect(refused.stderr).toContain('required=56000');
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    it('admits the incident copy (9.1 GB needed, 165.7 GB free on an 8 TB data disk) only off the protected fs', () => {
+      // Measured on papercusp-public-site run 05385367 (2026-10-03 08:50Z):
+      // need=9138462720 avail=165755830272 reserve=159988524482 (2% of total).
+      const incident = (sameFs: '0' | '1') => ({
+        DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '165755830272',
+        DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: '7999426224100',
+        DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '2',
+        DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '10737418240',
+        // The 20 GiB other-fs cap is deliberately left at its default.
+        DEPENDENCY_GENERATION_HEADROOM_OTHER_FS_RESERVE_CAP_BYTES: '',
+        DEPENDENCY_GENERATION_HEADROOM_SAME_FS: sameFs,
+      });
+      const { root, generation, source } = copyFixture();
+      writeFileSync(join(generation, '.tree-bytes'), 'node_modules\t9138462720\n');
+      const check = 'rc=0; dependency_generation_check_headroom "$SOURCE" "$DEST" || rc=$?; echo "RC=$rc"';
+      const dest = join(root, 'out/node_modules');
+      mkdirSync(join(root, 'out'), { recursive: true });
+      const dataDisk = runShell(check, { ...incident('0'), SOURCE: source, DEST: dest });
+      expect(dataDisk.stdout, dataDisk.stderr).toContain('RC=0');
+      const protectedFs = runShell(check, { ...incident('1'), SOURCE: source, DEST: dest });
+      expect(protectedFs.stdout, protectedFs.stderr).toContain('RC=77');
+      expect(protectedFs.stderr).toContain('reserve=159988524482 reserve_scope=protected-fs');
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    it('compares real devices, and treats an unknown protected path as protected', () => {
+      const { root } = copyFixture();
+      const probe = (protectedPath: string, dir: string) =>
+        runShell(
+          'rc=0; dependency_generation_on_reserve_fs "$DIR" || rc=$?; echo "RC=$rc"',
+          { DEPENDENCY_GENERATION_RESERVE_FS_PATH: protectedPath, DIR: dir },
+        ).stdout.trim();
+      expect(probe(root, join(root, 'generation'))).toBe('RC=0');
+      // procfs is always a distinct device from a tmpdir.
+      expect(probe(root, '/proc')).toBe('RC=1');
+      expect(probe('', '/proc')).toBe('RC=0');
+      expect(probe(join(root, 'does-not-exist'), '/proc')).toBe('RC=0');
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    it('a sourced caller starts unscoped, and main records the integration root', () => {
+      const { root } = copyFixture();
+      const result = runShell(
+        [
+          'echo "BEFORE=[$DEPENDENCY_GENERATION_RESERVE_FS_PATH]"',
+          'rc=0; dependency_generation_main --integration "$ROOT" --generation-root "$ROOT/no-store" --prune-only || rc=$?',
+          'echo "RC=$rc AFTER=[$DEPENDENCY_GENERATION_RESERVE_FS_PATH]"',
+        ].join('\n'),
+        { ROOT: root, DEPENDENCY_GENERATION_RESERVE_FS_PATH: '' },
+      );
+      const real = realpathSync(root);
+      expect(result.stdout, result.stderr).toContain('BEFORE=[]');
+      expect(result.stdout, result.stderr).toContain(`RC=0 AFTER=[${real}]`);
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    // WI-10006767: setup-release-checkout sources this script and calls
+    // dependency_generation_ensure directly, so main never ran and the reserve
+    // stayed fail-closed (160 GB on the 8 TB data disk) for every build.
+    it('record_reserve_fs records the physical root once and stays empty for an unresolvable one', () => {
+      const { root } = copyFixture();
+      mkdirSync(join(root, 'real'));
+      symlinkSync(join(root, 'real'), join(root, 'link'));
+      const result = runShell(
+        [
+          'dependency_generation_record_reserve_fs "$ROOT/link"',
+          'echo "FIRST=[$DEPENDENCY_GENERATION_RESERVE_FS_PATH]"',
+          'dependency_generation_record_reserve_fs /proc',
+          'echo "KEPT=[$DEPENDENCY_GENERATION_RESERVE_FS_PATH]"',
+          'DEPENDENCY_GENERATION_RESERVE_FS_PATH=""',
+          'dependency_generation_record_reserve_fs "$ROOT/missing"',
+          'echo "MISSING=[$DEPENDENCY_GENERATION_RESERVE_FS_PATH]"',
+        ].join('\n'),
+        { ROOT: root, DEPENDENCY_GENERATION_RESERVE_FS_PATH: '' },
+      );
+      const real = realpathSync(join(root, 'real'));
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain(`FIRST=[${real}]`);
+      expect(result.stdout).toContain(`KEPT=[${real}]`);
+      expect(result.stdout).toContain('MISSING=[]');
+    }, NATIVE_SHELL_TIMEOUT_MS);
+
+    it('a sourced dependency_generation_ensure records the integration root (WI-10006767)', () => {
+      const integration = makeIntegration();
+      const result = runShell(
+        [
+          'echo "BEFORE=[$DEPENDENCY_GENERATION_RESERVE_FS_PATH]"',
+          'dependency_generation_configure_workspace_dirs "$ROOT"',
+          'dependency_generation_ensure "$ROOT" "$ROOT/.papercusp/dependency-generations"',
+          'echo "AFTER=[$DEPENDENCY_GENERATION_RESERVE_FS_PATH]"',
+        ].join('\n'),
+        { ROOT: integration, DEPENDENCY_GENERATION_RESERVE_FS_PATH: '' },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('BEFORE=[]');
+      expect(result.stdout).toContain(`AFTER=[${realpathSync(integration)}]`);
+    }, NATIVE_SHELL_TIMEOUT_MS);
+  });
+
+  it('materialize_tree propagates the typed headroom exit instead of a generic mv error', () => {
+    const { root, source } = copyFixture();
+    const dest = join(root, 'checkout/node_modules');
+    const result = runShell(
+      'rc=0; dependency_generation_materialize_tree "$SOURCE" "$DEST" || rc=$?; echo "RC=$rc"',
+      { ...fs(10), SOURCE: source, DEST: dest },
+    );
+    expect(result.stdout, result.stderr).toContain('RC=77');
+    expect(existsSync(dest)).toBe(false);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('times out with exit 76 while another process holds the host copy lock', async () => {
+    const { root, source } = copyFixture();
+    const lock = join(root, 'copy.lock');
+    writeFileSync(`${lock}.holder`, 'pid=4242 op=copy fixture since=0\n');
+    // Detached: the lock is held by the open file description, which `sleep`
+    // inherits from flock, so release needs the whole process group killed.
+    const holder = spawn('flock', [lock, 'sleep', '30'], { stdio: 'ignore', detached: true });
+    const exited = new Promise((r) => holder.once('exit', r));
+    try {
+      // Wait until the holder actually owns the lock.
+      for (let i = 0; i < 100; i++) {
+        const probe = spawnSync('flock', ['-n', lock, 'true']);
+        if (probe.status !== 0) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const result = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+        SOURCE: source,
+        DEST: join(root, 'out/node_modules'),
+        DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+        DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '1',
+      });
+      expect(result.status, result.stderr).toBe(76);
+      expect(result.stderr).toContain('DEPENDENCY_GENERATION_LOCK_TIMEOUT');
+      expect(result.stderr).toContain('holder=pid=4242');
+      expect(existsSync(join(root, 'out/node_modules'))).toBe(false);
+    } finally {
+      try {
+        process.kill(-(holder.pid as number), 'SIGKILL');
+      } catch {
+        holder.kill('SIGKILL');
+      }
+    }
+    // Once released, the same copy succeeds and records itself as the holder.
+    await exited;
+    for (let i = 0; i < 100; i++) {
+      if (spawnSync('flock', ['-n', lock, 'true']).status === 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const after = runShell('dependency_generation_copy_independent "$SOURCE" "$DEST"', {
+      SOURCE: source,
+      DEST: join(root, 'out/node_modules'),
+      DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+      DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '1',
+    });
+    expect(after.status, after.stderr).toBe(0);
+    expect(readFileSync(`${lock}.holder`, 'utf8')).toMatch(/^pid=\d+ op=copy /);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  // WI-10004928 part 6: the timeout is a STALL budget. A waiter behind a holder
+  // whose process subtree keeps doing I/O keeps waiting past it; a silent live
+  // holder still times out, and nothing waits past the hard cap.
+  async function holdLock(lock: string, workFile: string, script: string) {
+    const holder = spawn(
+      'flock',
+      [lock, 'bash', '-c', `printf 'pid=%s op=fixture since=0\\n' "$$" > "$LOCK.holder"; ${script}`],
+      { stdio: 'ignore', detached: true, env: { ...process.env, LOCK: lock, WORK: workFile } },
+    );
+    const exited = new Promise((r) => holder.once('exit', r));
+    for (let i = 0; i < 100; i++) {
+      if (spawnSync('flock', ['-n', lock, 'true']).status !== 0 && existsSync(`${lock}.holder`)) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    const kill = () => {
+      try {
+        process.kill(-(holder.pid as number), 'SIGKILL');
+      } catch {
+        holder.kill('SIGKILL');
+      }
+    };
+    return { exited, kill };
+  }
+
+  const waitEnv = (lock: string, extra: Record<string, string>) => ({
+    DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+    DEPENDENCY_GENERATION_COPY_LOCK_SAMPLE_SEC: '0',
+    ...extra,
+  });
+
+  it('acquires a lock released while the progress sample becomes unmeasurable', async () => {
+    const { root } = copyFixture();
+    const lock = join(root, 'released-during-sample.lock');
+    const release = join(root, 'release-holder');
+    const held = await holdLock(
+      lock,
+      release,
+      'while [ ! -e "$WORK" ]; do sleep 0.02; done',
+    );
+    try {
+      // The first sample starts the stall clock. The second explicitly releases
+      // the holder and waits for the real lock to become free before returning
+      // no measurement, as /proc does when the sampled holder has exited.
+      const result = runShell(
+        [
+          'dependency_generation_subtree_io() {',
+          '  if [ ! -e "$FIRST_SAMPLE" ]; then',
+          '    touch "$FIRST_SAMPLE"',
+          '    sleep 1.1',
+          "    printf '0\\n'",
+          '  else',
+          '    touch "$WORK"',
+          '    while ! flock -n "$DEPENDENCY_GENERATION_COPY_LOCK_FILE" true; do sleep 0.02; done',
+          '  fi',
+          '}',
+          'dependency_generation_acquire_copy_lock waiter && echo ACQUIRED',
+        ].join('\n'),
+        waitEnv(lock, {
+          WORK: release,
+          FIRST_SAMPLE: join(root, 'first-sample'),
+          DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '1',
+        }),
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('ACQUIRED');
+      expect(result.stderr).not.toContain('DEPENDENCY_GENERATION_LOCK_TIMEOUT');
+    } finally {
+      held.kill();
+    }
+    await held.exited;
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('keeps waiting past the stall budget while the holder is making progress', async () => {
+    const { root } = copyFixture();
+    const lock = join(root, 'progress.lock');
+    const held = await holdLock(
+      lock,
+      join(root, 'work'),
+      'for i in $(seq 1 60); do printf "%04096d" 0 >> "$WORK"; sleep 0.1; done',
+    );
+    try {
+      const started = Date.now();
+      // A 2s budget, not 1s: one sample of a busy host's process table can take
+      // most of a second, and progress needs two samples to be seen at all.
+      const result = runShell(
+        'dependency_generation_acquire_copy_lock waiter && echo ACQUIRED',
+        waitEnv(lock, { DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '2' }),
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('ACQUIRED');
+      expect(result.stderr).not.toContain('DEPENDENCY_GENERATION_LOCK_TIMEOUT');
+      // The holder ran ~6s, well past the 2s stall budget.
+      expect(Date.now() - started).toBeGreaterThan(4000);
+    } finally {
+      held.kill();
+    }
+    await held.exited;
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('times out reason=stalled behind a live holder that does no I/O', async () => {
+    const { root } = copyFixture();
+    const lock = join(root, 'stalled.lock');
+    const held = await holdLock(lock, join(root, 'work'), 'sleep 30');
+    try {
+      const result = runShell(
+        'dependency_generation_acquire_copy_lock waiter',
+        waitEnv(lock, { DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '1' }),
+      );
+      expect(result.status, result.stderr).toBe(76);
+      expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_LOCK_TIMEOUT .*reason=stalled/);
+    } finally {
+      held.kill();
+    }
+    await held.exited;
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('never waits past the hard cap, even behind a progressing holder', async () => {
+    const { root } = copyFixture();
+    const lock = join(root, 'cap.lock');
+    const held = await holdLock(
+      lock,
+      join(root, 'work'),
+      'for i in $(seq 1 300); do printf "%04096d" 0 >> "$WORK"; sleep 0.1; done',
+    );
+    try {
+      const result = runShell(
+        'dependency_generation_acquire_copy_lock waiter',
+        waitEnv(lock, {
+          DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '1',
+          DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC: '2',
+        }),
+      );
+      expect(result.status, result.stderr).toBe(76);
+      expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_LOCK_TIMEOUT .*reason=cap/);
+    } finally {
+      held.kill();
+    }
+    await held.exited;
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('the lock is re-entrant within one process', () => {
+    const { root } = copyFixture();
+    const result = runShell(
+      [
+        'dependency_generation_acquire_copy_lock outer',
+        'dependency_generation_acquire_copy_lock inner',
+        'dependency_generation_release_copy_lock',
+        'echo "DEPTH=$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH"',
+        'dependency_generation_release_copy_lock',
+        'echo "DEPTH=$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH"',
+        'flock -n "$DEPENDENCY_GENERATION_COPY_LOCK_FILE" true && echo FREE',
+      ].join('\n'),
+      { DEPENDENCY_GENERATION_COPY_LOCK_FILE: join(root, 'reentrant.lock') },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('DEPTH=1\nDEPTH=0\nFREE\n');
+  });
+
+  it('a published generation records every tree size in .tree-bytes', () => {
+    const integration = makeIntegration();
+    const result = publish(integration);
+    expect(result.status, result.stderr).toBe(0);
+    const generation = publishedPath(result.stdout);
+    const lines = readFileSync(join(generation, '.tree-bytes'), 'utf8').trim().split('\n');
+    const rels = lines.map((line) => line.split('\t')[0]).sort();
+    expect(rels).toEqual(
+      ['node_modules', 'packages/a/node_modules', 'packages/b/node_modules'].sort(),
+    );
+    for (const line of lines) expect(line).toMatch(/^[^\t]+\t[1-9]\d*$/);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('a publish refused for headroom exits 77 and publishes nothing', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(dirname(integration), 'generations');
+    const result = publish(integration, fs(10), generationRoot);
+    expect(result.status, result.stderr).toBe(77);
+    expect(result.stderr).toContain('DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+});
+
+// P-012 (WI-10004927): a changed tree is rebuilt from the predecessor's copy plus
+// the paths whose live source record changed, instead of one full copy.
+describe('P-012: incremental copy of a changed dependency tree', () => {
+  const incrementalEnv = (racyWindowSec: string): NodeJS.ProcessEnv => ({
+    DEPENDENCY_GENERATION_WALK_JOBS: '1',
+    DEPENDENCY_GENERATION_RACY_WINDOW_SEC: racyWindowSec,
+    // The fixture filesystem may lack reflink. Plain copy seeding runs the same
+    // delta and verification logic everywhere.
+    DEPENDENCY_GENERATION_INCREMENTAL_SEED_REFLINK: 'auto',
+  });
+  const npmEpoch = new Date('1985-10-26T08:15:00Z');
+
+  // Everything a consumer of the tree can observe, with write bits ignored
+  // because a published generation freezes its files read-only.
+  function treeContents(root: string): Record<string, string> {
+    const out: Record<string, string> = {};
+    const walk = (rel: string): void => {
+      for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
+        const child = rel ? `${rel}/${entry.name}` : entry.name;
+        const path = join(root, child);
+        if (entry.isSymbolicLink()) {
+          out[child] = `link:${readlinkSync(path)}`;
+        } else if (entry.isDirectory()) {
+          out[child] = `dir:${(statSync(path).mode & 0o777).toString(8)}`;
+          walk(child);
+        } else {
+          const stat = statSync(path);
+          out[child] =
+            `file:${(stat.mode & 0o555).toString(8)}:${stat.mtimeMs}:` +
+            readFileSync(path, 'utf8');
+        }
+      }
+    };
+    walk('');
+    return out;
+  }
+
+  function sourceRecords(generation: string, rel: string) {
+    const recordsDir = join(generation, '.source-records');
+    const indexPath = join(recordsDir, 'index');
+    const lines = readFileSync(indexPath, 'utf8').trim().split('\n');
+    const row = lines.findIndex((line) => line.startsWith(`${rel}\t`));
+    expect(row, `no stored records for ${rel}`).toBeGreaterThanOrEqual(0);
+    const key = lines[row].split('\t')[2];
+    const gz = join(recordsDir, `${key}.gz`);
+    return { indexPath, lines, row, key, gz };
+  }
+
+  it(
+    'copies only changed paths and catches a same-size, same-mtime rewrite by ctime',
+    () => {
+      const integration = makeIntegration();
+      const pkg = join(integration, 'node_modules/pkg');
+      for (let i = 0; i < 20; i += 1) {
+        writeFileSync(join(pkg, `f${i}.js`), `v1-${i}\n`);
+        utimesSync(join(pkg, `f${i}.js`), npmEpoch, npmEpoch);
+      }
+      symlinkSync('index.js', join(pkg, 'link.js'));
+      mkdirSync(join(integration, 'node_modules/gone'));
+      writeFileSync(join(integration, 'node_modules/gone/index.js'), 'gone\n');
+
+      const first = publish(integration, incrementalEnv('0'));
+      expect(first.status, first.stderr).toBe(0);
+      const firstPath = publishedPath(first.stdout);
+      expect(
+        readFileSync(join(firstPath, '.source-records/index'), 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => line.split('\t')[0])
+          .sort(),
+      ).toEqual(['node_modules', 'packages/a/node_modules', 'packages/b/node_modules']);
+
+      // npm rewrites a package file with the same size and its fixed tarball
+      // mtime. Only the inode and ctime can show that the bytes changed.
+      writeFileSync(join(pkg, 'f0.js'), 'v2-0\n');
+      utimesSync(join(pkg, 'f0.js'), npmEpoch, npmEpoch);
+      writeFileSync(join(pkg, 'new.js'), 'new\n');
+      rmSync(join(integration, 'node_modules/gone'), { recursive: true });
+
+      const second = publish(integration, incrementalEnv('0'));
+      expect(second.status, second.stderr).toBe(0);
+      expect(lastSummary(second)).toMatchObject({
+        result: 'published',
+        trees_reused: '2',
+        trees_copied: '1',
+        trees_incremental: '1',
+      });
+      expect(telemetryRecords(second.stderr, 'INCREMENTAL')).toEqual([
+        {
+          schema: '1',
+          tree: 'node_modules',
+          // 20 pkg/f*.js siblings + pkg/index.js + pkg/package.json (the locked
+          // manifest makeIntegration installs so the lock-vs-tree audit passes).
+          kept: '22',
+          copied: '2',
+          removed: '3',
+          copied_bytes: String('v2-0\n'.length + 'new\n'.length),
+          // f0.js matched its record except for ctime and inode, so its bytes were
+          // compared with the predecessor's copy, found different, and copied.
+          verified: '0',
+        },
+      ]);
+      const secondPath = publishedPath(second.stdout);
+      expect(treeContents(join(secondPath, 'tree/node_modules'))).toEqual(
+        treeContents(join(integration, 'node_modules')),
+      );
+      expect(
+        readFileSync(join(secondPath, 'tree/node_modules/pkg/f0.js'), 'utf8'),
+      ).toBe('v2-0\n');
+      // Reused files are independent copies, never shared inodes.
+      expect(statSync(join(secondPath, 'tree/node_modules/pkg/f1.js')).ino).not.toBe(
+        statSync(join(firstPath, 'tree/node_modules/pkg/f1.js')).ino,
+      );
+      // Reused trees carry their records forward; the rebuilt tree stores new ones.
+      expect(
+        readFileSync(join(secondPath, '.source-records/index'), 'utf8')
+          .trim()
+          .split('\n'),
+      ).toHaveLength(3);
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+
+  it(
+    'never trusts a record captured within the racy window: it compares the bytes',
+    () => {
+      const integration = makeIntegration();
+      writeFileSync(join(integration, 'node_modules/pkg/stable.js'), 'stable\n');
+      writeFileSync(join(integration, 'node_modules/pkg/racy.js'), 'racy-1\n');
+      const first = publish(integration, incrementalEnv('3600'));
+      expect(first.status, first.stderr).toBe(0);
+
+      // The predecessor's copy of racy.js holds other bytes of the same size, mode
+      // and nanosecond mtime, so the generation still validates and its live
+      // record still matches exactly. Only a byte comparison can tell.
+      const seeded = join(publishedPath(first.stdout), 'tree/node_modules/pkg/racy.js');
+      const timeRef = join(dirname(integration), 'racy-time-ref');
+      writeFileSync(timeRef, '');
+      execFileSync('touch', ['-r', seeded, timeRef]);
+      const frozenMode = statSync(seeded).mode & 0o7777;
+      chmodSync(seeded, 0o644);
+      writeFileSync(seeded, 'racy-X\n');
+      chmodSync(seeded, frozenMode);
+      execFileSync('touch', ['-r', timeRef, seeded]);
+
+      writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'root-v2\n');
+      const second = publish(integration, incrementalEnv('3600'));
+      expect(second.status, second.stderr).toBe(0);
+      // Inside the window no record is trusted. stable.js and pkg/package.json are
+      // kept because their bytes equal the predecessor's copy; racy.js is copied
+      // because they differ.
+      expect(telemetryRecords(second.stderr, 'INCREMENTAL')).toMatchObject([
+        { tree: 'node_modules', kept: '2', copied: '2', verified: '2' },
+      ]);
+      const secondTree = join(publishedPath(second.stdout), 'tree/node_modules');
+      expect(treeContents(secondTree)).toEqual(treeContents(join(integration, 'node_modules')));
+      expect(readFileSync(join(secondTree, 'pkg/racy.js'), 'utf8')).toBe('racy-1\n');
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+
+  it(
+    'creates a missing nested destination parent before incremental headroom measurement',
+    () => {
+      const integration = makeIntegration();
+      const nestedPkg = join(
+        integration,
+        'tools/perf-test/wdio/node_modules/pkg',
+      );
+      mkdirSync(nestedPkg, { recursive: true });
+      writeFileSync(join(nestedPkg, 'index.js'), 'v1\n');
+      const env = {
+        ...incrementalEnv('0'),
+        DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '0',
+        DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: '0',
+      };
+
+      const first = publish(integration, env);
+      expect(first.status, first.stderr).toBe(0);
+
+      writeFileSync(join(nestedPkg, 'index.js'), 'v2\n');
+      const second = publish(integration, env);
+      expect(second.status, second.stderr).toBe(0);
+      expect(second.stderr).not.toContain(
+        'DEPENDENCY_GENERATION_HEADROOM_UNMEASURED',
+      );
+      expect(lastSummary(second)).toMatchObject({
+        result: 'published',
+        trees_incremental: '1',
+      });
+      expect(
+        readFileSync(
+          join(
+            publishedPath(second.stdout),
+            'tree/tools/perf-test/wdio/node_modules/pkg/index.js',
+          ),
+          'utf8',
+        ),
+      ).toBe('v2\n');
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+
+  it(
+    'reuses files whose only change is ctime from a hard-linked sibling checkout',
+    () => {
+      const integration = makeIntegration();
+      const pkg = join(integration, 'node_modules/pkg');
+      for (let i = 0; i < 10; i += 1) {
+        writeFileSync(join(pkg, `f${i}.js`), `v1-${i}\n`);
+        utimesSync(join(pkg, `f${i}.js`), npmEpoch, npmEpoch);
+      }
+      const first = publish(integration, incrementalEnv('0'));
+      expect(first.status, first.stderr).toBe(0);
+
+      // A staging refresh hard-links every source file into a sibling checkout and
+      // later removes the old links. Every ctime moves; no byte changes.
+      const sibling = join(dirname(integration), 'staging-links');
+      mkdirSync(sibling);
+      const files = readdirSync(pkg).filter((name) => statSync(join(pkg, name)).isFile());
+      for (const name of files) linkSync(join(pkg, name), join(sibling, name));
+      rmSync(sibling, { recursive: true });
+      // One real change, so the tree is rebuilt at all.
+      writeFileSync(join(pkg, 'f9.js'), 'v2-9-longer\n');
+
+      const second = publish(integration, incrementalEnv('0'));
+      expect(second.status, second.stderr).toBe(0);
+      const [record] = telemetryRecords(second.stderr, 'INCREMENTAL');
+      // Before D-018 every churned file failed the exact match and was copied.
+      expect(record).toMatchObject({
+        tree: 'node_modules',
+        kept: String(files.length - 1),
+        copied: '1',
+        verified: String(files.length - 1),
+        copied_bytes: String('v2-9-longer\n'.length),
+      });
+      expect(
+        treeContents(join(publishedPath(second.stdout), 'tree/node_modules')),
+      ).toEqual(treeContents(join(integration, 'node_modules')));
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+
+  it(
+    'falls back to a full copy when the incremental result does not reproduce the live tree',
+    () => {
+      const integration = makeIntegration();
+      const first = publish(integration, incrementalEnv('0'));
+      expect(first.status, first.stderr).toBe(0);
+      const firstPath = publishedPath(first.stdout);
+
+      // Forge a stored record for a directory the predecessor never copied, so
+      // the delta wrongly keeps it. Only the verification step can notice.
+      mkdirSync(join(integration, 'node_modules/pkg/sub'));
+      const forged = execFileSync(
+        'find',
+        [
+          '.',
+          '-mindepth',
+          '1',
+          '-path',
+          './pkg/sub',
+          '-printf',
+          '%P\\t%y\\t%m\\t%U\\t%G\\t%s\\t%T@\\t%i\\t%C@\\t%l\\n',
+        ],
+        { cwd: join(integration, 'node_modules'), encoding: 'utf8' },
+        // Keep the trailing tab: the empty link-target field is the 10th field.
+      ).replace(/\n$/, '');
+      expect(forged.startsWith('pkg/sub\td\t')).toBe(true);
+      const { indexPath, lines, row, key, gz } = sourceRecords(firstPath, 'node_modules');
+      const records = gunzipSync(readFileSync(gz)).toString('utf8').split('\n').filter(Boolean);
+      chmodSync(gz, 0o644);
+      writeFileSync(gz, gzipSync(Buffer.from(`${[...records, forged].sort().join('\n')}\n`)));
+      // Move the capture time past the forged ctime so the record is trusted.
+      const futureNs = String(BigInt(Date.now() + 60_000) * 1_000_000n);
+      lines[row] = [
+        'node_modules',
+        futureNs,
+        key,
+        createHash('sha256').update(readFileSync(gz)).digest('hex'),
+      ].join('\t');
+      writeFileSync(indexPath, `${lines.join('\n')}\n`);
+
+      const second = publish(integration, incrementalEnv('0'));
+      expect(second.status, second.stderr).toBe(0);
+      expect(second.stderr).toContain(
+        'incremental copy of node_modules did not reproduce the live tree',
+      );
+      expect(lastSummary(second)).toMatchObject({
+        trees_copied: '1',
+        trees_incremental: '0',
+      });
+      expect(
+        treeContents(join(publishedPath(second.stdout), 'tree/node_modules')),
+      ).toEqual(treeContents(join(integration, 'node_modules')));
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+
+  it(
+    'ignores stored records whose digest no longer matches',
+    () => {
+      const integration = makeIntegration();
+      const first = publish(integration, incrementalEnv('0'));
+      expect(first.status, first.stderr).toBe(0);
+      const { gz } = sourceRecords(publishedPath(first.stdout), 'node_modules');
+      chmodSync(gz, 0o644);
+      writeFileSync(gz, Buffer.concat([readFileSync(gz), Buffer.from('tampered')]));
+
+      writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'root-v2\n');
+      const second = publish(integration, incrementalEnv('0'));
+      expect(second.status, second.stderr).toBe(0);
+      expect(telemetryRecords(second.stderr, 'INCREMENTAL')).toEqual([]);
+      expect(lastSummary(second)).toMatchObject({
+        trees_copied: '1',
+        trees_incremental: '0',
+      });
+      expect(
+        readFileSync(
+          join(publishedPath(second.stdout), 'tree/node_modules/pkg/index.js'),
+          'utf8',
+        ),
+      ).toBe('root-v2\n');
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+
+  // D-019: every repository's gate shares one generation root, and a full-scope
+  // build has the same closure fingerprint everywhere. Live, papercusp's 07:09Z
+  // build picked a newer 7-tree generation from ANOTHER repository and reused
+  // 0 of 95 trees while its own previous generation sat unused.
+  it(
+    'prefers its own layout over a newer generation from another repository in a shared root',
+    () => {
+      const sharedRoot = mkdtempSync(join(tmpdir(), 'dependency-generation-shared-'));
+      roots.push(sharedRoot);
+      const env = { ...incrementalEnv('0'), DEPENDENCY_GENERATION_RETAIN_COUNT: '10' };
+
+      const own = makeIntegration();
+      const first = publish(own, env, sharedRoot);
+      expect(first.status, first.stderr).toBe(0);
+      const ownIdentity = publishedPath(first.stdout).split('/').pop();
+
+      // Another repository: only the root tree path is shared, with other bytes.
+      const foreign = makeIntegration();
+      rmSync(join(foreign, 'packages'), { recursive: true });
+      mkdirSync(join(foreign, 'apps/other/node_modules/x'), { recursive: true });
+      writeFileSync(join(foreign, 'apps/other/node_modules/x/index.js'), 'x-v1\n');
+      writeFileSync(join(foreign, 'node_modules/pkg/index.js'), 'foreign-root\n');
+      const foreignBuild = publish(foreign, env, sharedRoot);
+      expect(foreignBuild.status, foreignBuild.stderr).toBe(0);
+      const foreignIdentity = publishedPath(foreignBuild.stdout).split('/').pop();
+      expect(foreignIdentity).not.toBe(ownIdentity);
+
+      writeFileSync(join(own, 'packages/a/node_modules/local/index.js'), 'local-v2\n');
+      const second = publish(own, env, sharedRoot);
+      expect(second.status, second.stderr).toBe(0);
+      expect(lastSummary(second)).toMatchObject({
+        result: 'published',
+        predecessor: ownIdentity,
+        trees_reused: '2',
+        trees_copied: '1',
+      });
+      expect(second.stderr).toContain(
+        `selected reusable immutable predecessor ${ownIdentity} (identical_trees=2 shared_trees=3)`,
+      );
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
+});
+
+// WI-10007424 (green-main-cycle-time P-003): the gate's up-front disk preflight
+// asks the script itself, so a run refuses BEFORE setup with the same typed exit
+// 77 the copy path uses, instead of passing the alarm's smaller floor and then
+// dying mid-materialization (WI-10005705: avail 43.7G, required 51.0G).
+describe('WI-10007424: --check-headroom is the copy path\'s own reserve, measured up front', () => {
+  const GIB = 1024 ** 3;
+  const runCheck = (integration: string, env: Record<string, string>, extra: string[] = []) =>
+    spawnSync('bash', [SCRIPT, '--integration', integration, '--check-headroom', ...extra], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        DEPENDENCY_GENERATION_RESERVE_FS_PATH: '',
+        DEPENDENCY_GENERATION_HEADROOM_SAME_FS: '1',
+        DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: String(1900 * GIB),
+        // dependency-copy-isolation.setup-vitest.ts zeroes both for ordinary fixtures;
+        // this suite measures the production reserve, so restore its defaults.
+        DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '2',
+        DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: String(10 * GIB),
+        ...env,
+      },
+      timeout: NATIVE_SHELL_TIMEOUT_MS,
+    });
+  const freshIntegration = () => {
+    const parent = mkdtempSync(join(tmpdir(), 'dependency-generation-headroom-'));
+    roots.push(parent);
+    const integration = join(parent, 'integration');
+    mkdirSync(integration);
+    return integration;
+  };
+  const statProbe = (parent: string) => {
+    const bin = join(parent, 'fake-bin');
+    const capture = join(parent, 'stat-paths');
+    mkdirSync(bin);
+    const fakeStat = join(bin, 'stat');
+    writeFileSync(fakeStat, [
+      '#!/usr/bin/env bash',
+      'printf \'%s\\n\' "$4" >> "$STAT_CAPTURE"',
+      'case "$3" in',
+      '  \'%b %S\') printf \'8000 1073741824\\n\' ;;',
+      '  \'%a %S\') printf \'60 1073741824\\n\' ;;',
+      '  *) exit 2 ;;',
+      'esac',
+    ].join('\n'));
+    chmodSync(fakeStat, 0o755);
+    return { capture, env: { PATH: `${bin}:${process.env.PATH ?? ''}`, STAT_CAPTURE: capture } };
+  };
+
+  it('measures the configured generation store through its existing ancestor without creating or recording it', () => {
+    const integration = freshIntegration();
+    const parent = dirname(integration);
+    const generationParent = join(parent, 'generation-store');
+    mkdirSync(generationParent);
+    const generationRoot = join(generationParent, 'new-generations');
+    const probe = statProbe(parent);
+    const result = runCheck(integration, {
+      ...probe.env,
+      PAPERCUSP_DEPENDENCY_GENERATION_ROOT: generationRoot,
+      DEPENDENCY_GENERATION_HEADROOM_SAME_FS: '0',
+      DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '',
+      DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: '',
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain(
+      `reserve=21474836480 reserve_scope=other-fs margin=10737418240 required=32212254720 size=unknown path=${generationRoot}/.dependency-generation-headroom-check`,
+    );
+    expect(readFileSync(probe.capture, 'utf8').trim().split('\n')).toEqual([
+      generationParent,
+      generationParent,
+    ]);
+    expect(existsSync(generationRoot)).toBe(false);
+    expect(existsSync(join(integration, '.papercusp/dependency-generation-root'))).toBe(false);
+    expect(readdirSync(integration)).toEqual([]);
+  });
+
+  it('follows a recorded generation store when the gate process has no environment override', () => {
+    const integration = freshIntegration();
+    const parent = dirname(integration);
+    const generationRoot = join(parent, 'recorded-generations');
+    mkdirSync(generationRoot);
+    const record = join(integration, '.papercusp/dependency-generation-root');
+    mkdirSync(dirname(record), { recursive: true });
+    writeFileSync(record, `${generationRoot}\n`);
+    const probe = statProbe(parent);
+    const result = runCheck(integration, {
+      ...probe.env,
+      PAPERCUSP_DEPENDENCY_GENERATION_ROOT: '',
+      DEPENDENCY_GENERATION_HEADROOM_SAME_FS: '0',
+      DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: '',
+      DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: '',
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain(`path=${generationRoot}/.dependency-generation-headroom-check`);
+    expect(readFileSync(probe.capture, 'utf8').trim().split('\n')).toEqual([
+      generationRoot,
+      generationRoot,
+    ]);
+    expect(readFileSync(record, 'utf8')).toBe(`${generationRoot}\n`);
+    expect(readdirSync(generationRoot)).toEqual([]);
+  });
+
+  it('refuses with exit 77 in the band the gate alarm used to admit (above 2%, below 2% + margin)', () => {
+    const integration = freshIntegration();
+    // 45 GiB free on a 1900 GiB root: above the alarm's 38 GiB floor, below 38 + 10 GiB.
+    const result = runCheck(integration, {
+      DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(45 * GIB),
+    });
+    expect(result.status).toBe(77);
+    expect(result.stderr).toMatch(
+      /DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT need=0 avail=\d+ reserve=\d+ reserve_scope=protected-fs margin=10737418240 required=\d+ size=unknown/,
+    );
+    // A pure measurement: nothing is created beside the integration root.
+    expect(readdirSync(integration)).toEqual([]);
+  });
+
+  it('admits with exit 0 and reports the same numbers when free space covers reserve + margin', () => {
+    const integration = freshIntegration();
+    const result = runCheck(integration, {
+      DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(60 * GIB),
+    });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_HEADROOM_OK need=0 avail=\d+ .*required=\d+/);
+    expect(readdirSync(integration)).toEqual([]);
+  });
+
+  it('never reaps: a dead copy sibling survives a refusing check', () => {
+    const integration = freshIntegration();
+    const sibling = join(integration, '.dependency-generation-headroom-check.deploy-tmp.99999999');
+    mkdirSync(sibling);
+    const result = runCheck(integration, {
+      DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(1 * GIB),
+    });
+    expect(result.status).toBe(77);
+    expect(existsSync(sibling)).toBe(true);
+  });
+
+  it('cannot be combined with another mode', () => {
+    const integration = freshIntegration();
+    const result = runCheck(integration, {}, ['--prune-only']);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('--check-headroom cannot be combined');
+  });
+});
+
+// green-main-cycle-time P-022: the same up-front preflight also answers the host
+// dependency-copy lock, so a run that can only fail on it refuses BEFORE setup. A
+// busy lock behind a HEALTHY copy is reported and never refused: the copy path waits
+// behind it on a stall budget and then proceeds, so a refusal would lose a round
+// that the wait would have won.
+describe('P-022: --check-headroom probes the host dependency-copy lock before setup', () => {
+  const GIB = 1024 ** 3;
+  const holders: Array<ReturnType<typeof spawn>> = [];
+  afterEach(() => {
+    for (const holder of holders.splice(0)) holder.kill('SIGKILL');
+  });
+  const fresh = () => {
+    const parent = mkdtempSync(join(tmpdir(), 'dependency-generation-lock-probe-'));
+    roots.push(parent);
+    const integration = join(parent, 'integration');
+    mkdirSync(integration);
+    return { integration, lock: join(parent, 'copy.lock') };
+  };
+  const runCheck = (integration: string, lock: string, env: Record<string, string> = {}) =>
+    spawnSync('bash', [SCRIPT, '--integration', integration, '--check-headroom'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        DEPENDENCY_GENERATION_RESERVE_FS_PATH: '',
+        DEPENDENCY_GENERATION_HEADROOM_SAME_FS: '1',
+        DEPENDENCY_GENERATION_HEADROOM_TOTAL_BYTES: String(1900 * GIB),
+        DEPENDENCY_GENERATION_HEADROOM_RESERVE_PCT: '2',
+        DEPENDENCY_GENERATION_HEADROOM_MARGIN_BYTES: String(10 * GIB),
+        DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(60 * GIB),
+        DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock,
+        ...env,
+      },
+      timeout: NATIVE_SHELL_TIMEOUT_MS,
+    });
+  /** Holds the copy lock exactly the way the copy path does (flock on an append fd). */
+  const holdLock = async (lock: string) => {
+    const child = spawn('bash', ['-c', 'exec 9>>"$1"; flock 9; echo locked; exec sleep 120', 'hold', lock], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    holders.push(child);
+    await new Promise<void>((resolveLocked, reject) => {
+      child.stdout!.on('data', (chunk) => {
+        if (String(chunk).includes('locked')) resolveLocked();
+      });
+      child.once('exit', (code) => reject(new Error(`lock holder exited early (${code})`)));
+    });
+  };
+  const writeHolder = (lock: string, pid: number, heldSec: number) => {
+    const since = Math.floor(Date.now() / 1000) - heldSec;
+    writeFileSync(`${lock}.holder`, `pid=${pid} op=copy packages/a since=${since}\n`);
+  };
+  const deadPid = () => {
+    for (let pid = 4_194_000; pid > 1_000; pid -= 7) if (!existsSync(`/proc/${pid}`)) return pid;
+    throw new Error('no free pid found');
+  };
+
+  it('reports a free lock, keeps the headroom verdict, and never creates the lock file', () => {
+    const { integration, lock } = fresh();
+    const absent = runCheck(integration, lock);
+    expect(absent.status, absent.stderr).toBe(0);
+    expect(absent.stderr).toContain('DEPENDENCY_GENERATION_COPY_LOCK state=free');
+    expect(absent.stderr).toMatch(/DEPENDENCY_GENERATION_HEADROOM_OK /);
+    expect(existsSync(lock)).toBe(false);
+
+    writeFileSync(lock, '');
+    const existing = runCheck(integration, lock, {
+      DEPENDENCY_GENERATION_HEADROOM_AVAIL_BYTES: String(45 * GIB),
+    });
+    // A free lock never masks the headroom refusal.
+    expect(existing.status).toBe(77);
+    expect(existing.stderr).toContain('DEPENDENCY_GENERATION_COPY_LOCK state=free');
+    expect(existsSync(`${lock}.holder`)).toBe(false);
+  });
+
+  it('a lock busy behind a live holder younger than the cap is reported, never refused', async () => {
+    const { integration, lock } = fresh();
+    await holdLock(lock);
+    writeHolder(lock, process.pid, 30);
+    const before = readFileSync(`${lock}.holder`, 'utf8');
+    const result = runCheck(integration, lock);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_COPY_LOCK state=busy held=\d+s max=5400s holder=pid=/);
+    expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_HEADROOM_OK /);
+    // The probe never rewrites the holder record.
+    expect(readFileSync(`${lock}.holder`, 'utf8')).toBe(before);
+  });
+
+  it('a live holder past the copy-lock cap is wedged: exit 76 before any headroom measurement', async () => {
+    const { integration, lock } = fresh();
+    await holdLock(lock);
+    writeHolder(lock, process.pid, 6_000);
+    const result = runCheck(integration, lock);
+    expect(result.status, result.stderr).toBe(76);
+    expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_LOCK_BUSY state=wedged held=\d+s max=5400s/);
+    expect(result.stderr).not.toContain('DEPENDENCY_GENERATION_HEADROOM_');
+
+    // The cap is the waiter's own DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC.
+    writeHolder(lock, process.pid, 120);
+    const tuned = runCheck(integration, lock, { DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC: '60' });
+    expect(tuned.status, tuned.stderr).toBe(76);
+    expect(tuned.stderr).toMatch(/state=wedged held=\d+s max=60s/);
+  });
+
+  it('a stale holder record (its pid is gone) is busy with unknown age, never wedged', async () => {
+    const { integration, lock } = fresh();
+    await holdLock(lock);
+    // Release never clears the record, so an old record names a former holder.
+    writeHolder(lock, deadPid(), 100_000);
+    const result = runCheck(integration, lock);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('DEPENDENCY_GENERATION_COPY_LOCK state=busy held=unknown');
+  });
 });

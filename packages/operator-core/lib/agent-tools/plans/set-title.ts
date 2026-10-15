@@ -110,6 +110,7 @@ export default defineTool({
       },
     );
 
+    if (result.kind === 'refused') return text({ ...result.value }, true);
     if (result.kind === 'busy') {
       return text(
         {

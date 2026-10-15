@@ -27,7 +27,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import postgres from 'postgres';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../test/_work-items-schema';
 import { randomBytes } from 'node:crypto';
-import { getTestPg } from '@papercusp/test-config/pg';
+import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
+import { applyMigrationForTest } from '../../test/_pg-helpers';
+import { fileURLToPath } from 'node:url';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { PLAN_ITEM_KIND, planItemRef } from '../issue-blocks-merge';
 
@@ -82,6 +84,7 @@ beforeAll(async () => {
   const admin = postgres(adminUri, { max: 1, onnotice: () => {} });
   try {
     await admin.unsafe(`CREATE DATABASE "${dbName}"`);
+    await markManagedTestDatabase(admin, dbName);
   } finally {
     await admin.end({ timeout: 5 });
   }
@@ -114,12 +117,17 @@ beforeAll(async () => {
   // is proven against actual SQL, not a mock of it (the goal-provenance-stamp
   // integration test exists because the unit-mocked halves had "never been
   // proven to compose" — same lesson here).
-  await rootSql.unsafe(`
-    CREATE TABLE harness_shared.agent_modes (
-      workspace_id text NOT NULL, owner_id text NOT NULL,
-      axis_key text NOT NULL, mode text NOT NULL, subject text,
-      updated_at timestamptz DEFAULT now(), set_by text
-    )`);
+  // The provenance resolver reads the canonical election/lease plane. Reuse
+  // its actual migrations instead of a pre-election imitation of agent_modes.
+  for (const migration of [
+    '500-agent-modes.sql',
+    '767-agent-modes-subject.sql',
+    '1032-agent-mode-goal-holder-election.sql',
+  ]) {
+    await applyMigrationForTest(rootSql, fileURLToPath(new URL(
+      `../../../../libs/papercusp/libs/db/sql/${migration}`, import.meta.url,
+    )));
+  }
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.session_briefs (
       owner_id text PRIMARY KEY, workspace_id text NOT NULL, goal_id text,
@@ -562,6 +570,32 @@ describe('stampPromotedWorkItemProvenance + promotion wiring (P-003 / D-005 obli
       source_plan_slug: 'the-plan',
       source_plan_item_ids: ['P-007'],
     });
+  });
+
+  it('a superseded GOAL holder cannot stamp goal or plan provenance', async () => {
+    await givenRunsGoal('promoter-1', 'goal-elected');
+    await givenRunsGoal('successor', 'goal-elected');
+    await rootSql`UPDATE harness_shared.agent_modes
+                    SET goal_lease_epoch = CASE WHEN owner_id = 'successor' THEN 2 ELSE 1 END`;
+    await insertItem('WI-superseded');
+    expect(await stampPromotedWorkItemProvenance(args('WI-superseded'))).toBeNull();
+    expect(await readItem('WI-superseded')).toEqual({
+      goal_id: null, source_plan_slug: null, source_plan_item_ids: null,
+    });
+  });
+
+  it('an unreadable holder schema leaves provenance unchanged rather than assuming authority', async () => {
+    await givenRunsGoal('promoter-1', 'goal-unreadable');
+    await insertItem('WI-unreadable');
+    await rootSql`ALTER TABLE harness_shared.agent_modes RENAME COLUMN goal_lease_epoch TO hidden_epoch`;
+    try {
+      expect(await stampPromotedWorkItemProvenance(args('WI-unreadable'))).toBeNull();
+      expect(await readItem('WI-unreadable')).toEqual({
+        goal_id: null, source_plan_slug: null, source_plan_item_ids: null,
+      });
+    } finally {
+      await rootSql`ALTER TABLE harness_shared.agent_modes RENAME COLUMN hidden_epoch TO goal_lease_epoch`;
+    }
   });
 
   it('first attribution wins; item ids accumulate without duplicates', async () => {

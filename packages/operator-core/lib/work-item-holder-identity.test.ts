@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { operationCallerId, verifiedSpawnSessionAlias } from './agent-tools/coordination/identity';
 import {
   canonicalizeAssigneeOwnerId,
   holderIsCaller,
@@ -115,6 +116,27 @@ describe('canonicalizeAssigneeOwnerId (WRITE half)', () => {
 });
 
 describe('resolveHolderOwnerId / holderIsCaller (READ half)', () => {
+  it('recognises a signed judge session holding its bare coordination identity', async () => {
+    const ctx = { principal: { slug: 'system:judge', authMethod: 'spawn-url', trust: 'trusted' }, uiClientId: ME };
+    const caller = operationCallerId(ctx.principal.slug, ME);
+    const verifiedCallerAlias = verifiedSpawnSessionAlias(ctx, caller);
+    await expect(holderIsCaller(ME, caller, { verifiedCallerAlias })).resolves.toBe(true);
+    await expect(holderIsCaller(OTHER, caller, { verifiedCallerAlias })).resolves.toBe(false);
+    await expect(holderIsCaller('su-851c1a7a', caller, { verifiedCallerAlias, lookup: registry([ME]) })).resolves.toBe(true);
+    await expect(holderIsCaller('su-851c1', caller, { verifiedCallerAlias, lookup: registry([ME, PEER_SAME_5]) })).resolves.toBe(false);
+  });
+
+  it.each([
+    { slug: 'system:judge', authMethod: 'bearer', trust: 'trusted' },
+    { slug: 'system:judge', authMethod: 'spawn-url', trust: 'untrusted' },
+    { slug: 'app:judge', authMethod: 'spawn-url', trust: 'trusted' },
+  ])('does not grant a caller-chosen client alias under %j', async (principal) => {
+    const caller = operationCallerId(principal.slug, ME);
+    const verifiedCallerAlias = verifiedSpawnSessionAlias({ principal, uiClientId: ME }, caller);
+    expect(verifiedCallerAlias).toBeNull();
+    await expect(holderIsCaller(ME, caller, { verifiedCallerAlias })).resolves.toBe(false);
+  });
+
   it('recognises the holder behind a legacy short-form taken_by (the refused-close incident)', async () => {
     const lookup = registry([ME, OTHER]);
     await expect(resolveHolderOwnerId('su-851c1a7a', { lookup })).resolves.toBe(ME);

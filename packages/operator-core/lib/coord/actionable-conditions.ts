@@ -39,8 +39,12 @@ export interface ActionableCondition {
    *
    * 'suffix'  = the text after the prefix IS the harness slug.
    * 'ambient' = the key carries no harness; the caller must supply one.
+   * 'leading-segment' = the text after the prefix is `<harness>:<detail>`, and the
+   *   harness is the segment before the FIRST ':' — for families whose key must also
+   *   name a sub-subject that may itself contain ':' (a failing leg such as `lint:tsc`).
+   *   'suffix' cannot serve them: it refuses any suffix containing ':' by design.
    */
-  harnessFrom: 'suffix' | 'ambient';
+  harnessFrom: 'suffix' | 'ambient' | 'leading-segment';
   severity: 'critical' | 'major' | 'minor' | 'nit';
 }
 
@@ -58,11 +62,33 @@ export const GITHUB_BRIDGE_AGENT_ACTIONABLE_CONDITION_PREFIX = 'github-bridge-ag
 export const FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX = 'frozen-repair-convergence:';
 
 /**
+ * Stable condition namespace for ONE failing leg of a frozen repair queue
+ * (green-main-cycle-time-2026-10-08 P-013, D-028/D-029). Keys are
+ * `frozen-repair-leg:<pipeline>:<failing entry>`, emitted only by
+ * release/frozen-repair-leg-routing.ts, which imports this constant so the emitted
+ * prefix and its opt-in entry cannot drift apart. The entry may contain ':' (`lint:tsc`),
+ * which is why the entry below uses `harnessFrom: 'leading-segment'`.
+ */
+export const FROZEN_REPAIR_LEG_CONDITION_PREFIX = 'frozen-repair-leg:';
+
+/**
+ * Stable condition namespace for a collapsed fail-open rate
+ * (degradation-signals-on-condition-rail-2026-10-11 P-003, BAR R-2). Keys are
+ * `degraded:<mechanism>[:<scope>]:<reason>`, emitted only by the generic degradation
+ * watchdog (system-health/degradation-watchdog.ts), which imports this constant so the
+ * emitted prefix and its opt-in entry cannot drift apart.
+ */
+export const DEGRADATION_CONDITION_PREFIX = 'degraded:';
+
+/**
  * The opt-in catalog. See {@link ActionableCondition.harnessFrom} for why the
  * harness derivation is explicit per-entry rather than parsed.
  */
 export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   { prefix: 'green-stall:', harnessFrom: 'suffix', severity: 'critical' },
+  // P-008: reuse the lost-run sweep's existing keys and measured recovery.
+  { prefix: 'green-checkpoint-lost-run:', harnessFrom: 'suffix', severity: 'critical' },
+  { prefix: 'green-checkpoint-run-progress:', harnessFrom: 'suffix', severity: 'major' },
   // P-005 (gate-ownership-followup-2026-08-08). A gate that FIRES hourly and reds
   // every time is not a stall — `green-stall:` above cannot see it (its legs are
   // fire-staleness and a 12h no-green backstop), so until this entry existed a plain
@@ -83,6 +109,13 @@ export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   // tick the hold holds; suffix is `pipelineName(integrationRoot)`, the same slug the other
   // gate entries use. Critical: it is the last path off a frozen `main`.
   { prefix: FROZEN_REPAIR_CONVERGENCE_CONDITION_PREFIX, harnessFrom: 'suffix', severity: 'critical' },
+  // green-main-cycle-time-2026-10-08 P-013 (D-028/D-029): ONE claimable item per failing
+  // leg of the frozen queue, so the repair is not a single gate owner's serial labour —
+  // any agent may claim a leg, fix it and admit the fix (admission needs no gate
+  // ownership). Durable: opened when a leg enters the queue's failing set, resolved when
+  // it leaves, never per-tick. Major, not critical: the convergence and red-streak items
+  // above already carry the stop-the-line severity for the queue as a whole.
+  { prefix: FROZEN_REPAIR_LEG_CONDITION_PREFIX, harnessFrom: 'leading-segment', severity: 'major' },
   { prefix: 'main-behind-staging:', harnessFrom: 'suffix', severity: 'major' },
   { prefix: 'release-trigger-freeze:', harnessFrom: 'suffix', severity: 'major' },
   { prefix: 'release-trigger-fire-stale:', harnessFrom: 'suffix', severity: 'major' },
@@ -93,6 +126,14 @@ export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   // owner-gated bridge alarm so the same condition gets one ownable item and
   // does not page a human for a fix an agent can apply.
   { prefix: GITHUB_BRIDGE_AGENT_ACTIONABLE_CONDITION_PREFIX, harnessFrom: 'suffix', severity: 'major' },
+  // degradation-signals-on-condition-rail-2026-10-11 P-003 (R-2). A registered mechanism
+  // whose trailing fail-open window collapsed — e.g. gate pass reuse falling to 0 of ~7,689
+  // eligible tasks (run 762a13a6) with nothing alarmed. Durable by construction: the
+  // watchdog only opens after a minimum eligible count and resolves with hysteresis, so it
+  // cannot flap per tick. 'ambient' because the key carries a mechanism, never a harness.
+  { prefix: DEGRADATION_CONDITION_PREFIX, harnessFrom: 'ambient', severity: 'major' },
+  // Existing attention alarms now have per-caller keys and measured recovery (P-007).
+  { prefix: 'alarm:', harnessFrom: 'ambient', severity: 'major' },
 ];
 
 /** The bare prefixes — derived, so the catalog stays the single source of truth. */

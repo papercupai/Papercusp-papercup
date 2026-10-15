@@ -22,6 +22,8 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../test/_org-test-db';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { IDEA_ORIGIN_PAYLOAD_KEY } from './ideation-origin';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
@@ -71,6 +73,52 @@ describe('scout routed-ledger ORIGIN dimension (real PG, migration 470)', () => 
     const rows = await db.adminSql<{ origin: string }[]>`
       SELECT origin FROM harness_shared.scout_routed_ideas WHERE idea_id = 'EI-su-1'`;
     expect(rows[0]?.origin).toBe('su-ideate');
+  });
+
+  it.each(['open', ...ANY_FAMILY_TERMINAL_STATES])(
+    'backfills origin only on a nonterminal artifact (state %s)',
+    async (status) => {
+      const workspace = 'ws-origin-backfill-' + status;
+      const id = 'EI-origin-backfill-' + status;
+      await db.adminSql`INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind, payload)
+        VALUES (${workspace}, ${HARNESS}, ${id}, ${'origin replay ' + status}, ${status}, 'change',
+          ${JSON.stringify({ retained: 'exact payload' })}::jsonb)`;
+      const [before] = await db.adminSql`SELECT payload FROM harness_shared.work_items
+        WHERE workspace_id = ${workspace} AND feature_id = ${id}`;
+      const input = {
+        origin: 'dream' as const, ideaId: 'dream:' + id, lens: 'dream' as const, rail: 'improvement' as const,
+        routedRef: 'wi:' + id, harnessSlug: HARNESS, workspaceId: workspace, preserveExisting: true,
+      };
+      await Promise.all([recordRoutedIdea(input), recordRoutedIdea(input)]);
+      await recordRoutedIdea(input);
+      const [after] = await db.adminSql`SELECT payload FROM harness_shared.work_items
+        WHERE workspace_id = ${workspace} AND feature_id = ${id}`;
+      expect(after!.payload).toEqual(status === 'open'
+        ? { ...before!.payload, [IDEA_ORIGIN_PAYLOAD_KEY]: 'dream' }
+        : before!.payload);
+      const ledger = await readRoutedIdeas({ workspaceId: workspace, origin: 'dream' });
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0]!.routedRef).toBe('wi:' + id);
+    },
+  );
+
+  it('keeps an existing unrelated origin on a nonterminal routed artifact', async () => {
+    const workspace = 'ws-origin-backfill-existing';
+    const id = 'EI-origin-backfill-existing';
+    await db.adminSql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, title, status, item_kind, payload)
+      VALUES (${workspace}, ${HARNESS}, ${id}, 'existing origin replay', 'open', 'change',
+        ${JSON.stringify({ retained: 'exact payload', [IDEA_ORIGIN_PAYLOAD_KEY]: 'su-ideate' })}::jsonb)`;
+    const [before] = await db.adminSql`SELECT payload FROM harness_shared.work_items
+      WHERE workspace_id = ${workspace} AND feature_id = ${id}`;
+    await recordRoutedIdea({
+      origin: 'dream', ideaId: 'dream:' + id, lens: 'dream', rail: 'improvement', routedRef: 'wi:' + id,
+      harnessSlug: HARNESS, workspaceId: workspace, preserveExisting: true,
+    });
+    const [after] = await db.adminSql`SELECT payload FROM harness_shared.work_items
+      WHERE workspace_id = ${workspace} AND feature_id = ${id}`;
+    expect(after!.payload).toEqual(before!.payload);
   });
 
   it('readRoutedIdeas() DEFAULTS to scout-origin — EXCLUDES su-ideate by ORIGIN (D-009 lens isolation)', async () => {

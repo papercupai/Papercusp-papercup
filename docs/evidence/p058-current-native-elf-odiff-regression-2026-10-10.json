@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P-058 current-source complete ELF inventory and odiff prune regression",
+  "command": [
+    "env",
+    "TMPDIR=/mnt/backup/portable-server-p058/odiff-current-regression-20261010/tmp",
+    "$HOME/.local/node25/bin/node",
+    "--test",
+    "--test-global-setup=papercusp-desktop/test/monorepo-host-preflight.mjs",
+    "papercusp-desktop/test/build-desktop-sidecar-dependency-closure.test.js",
+    "papercusp-desktop/test/verify-sidecar-bundle-spa-layout.test.js",
+    "papercusp-desktop/test/server-container.test.js",
+    "papercusp-desktop/test/server-native-builder.test.js",
+    "papercusp-desktop/test/sidecar-stage-resume.test.js"
+  ],
+  "cwd": ".",
+  "startedAt": "2026-10-10T07:03:58.870771+00:00",
+  "finishedAt": "2026-10-10T07:04:24.197212+00:00",
+  "exitCode": 0,
+  "summary": "189 canonical Node tests passed with zero failures, cancellations or skips. The maintained global preflight ran. Source/test/global-preflight bytes stayed unchanged. This is current-source regression proof, separate from installed, signed, published or final paired release acceptance.",
+  "assertions": [
+    {
+      "id": "current-canonical-suite-189",
+      "passed": true,
+      "evidence": "Actual maintained Node runner summary: tests=189, pass=189, fail=0, cancelled=0, skipped=0, todo=0."
+    },
+    {
+      "id": "current-source-binding-stable",
+      "passed": true,
+      "evidence": "Every recorded input source, test and global-preflight SHA matched after the run."
+    },
+    {
+      "id": "whole-payload-target-elf-controls",
+      "passed": true,
+      "evidence": "Real Linux linkage branch uses the maintained OCI inventory helper. ARM64 and AMD64 controls admit target headers and reject foreign extensionless odiff/arbitrary deep paths, non-executable ELFs, malformed class/endian/truncated headers and escaping links. Contained link positive control passes."
+    },
+    {
+      "id": "real-importer-and-pixelmatch",
+      "passed": true,
+      "evidence": "The real installed lost-pixel comparator eagerly imports the byte-identical pruned odiff JS wrapper, then compares black versus white PNGs via pixelmatch and writes the difference. execFile is a throwing negative control; no native odiff dispatch occurs."
+    },
+    {
+      "id": "copier-preserves-requester-identity",
+      "passed": true,
+      "evidence": "Top-level odiff 2.6.1 and nested odiff 2.5.0 retain package identity and JS while their unused bin, platform-* and _export payloads are removed. Source donors remain intact. Existing nested posthog/rusha and required/optional dependency controls pass. A different-package prune is refused."
+    },
+    {
+      "id": "helper-binding-and-existing-native-guards",
+      "passed": true,
+      "evidence": "Receipt independently binds verifier, manifest writer and ELF inventory helper. Stage identity also binds the helper and rejects changed helper bytes on resume. Existing target loader, addon library/runpath, factory, allocator and stage-resume controls pass."
+    }
+  ],
+  "workItemId": "EI-25526231122479676",
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "evidencePlane": "current-source-regression",
+  "candidateAccepted": false,
+  "rawLogFile": "/mnt/backup/portable-server-p058/odiff-current-regression-20261010/regression.log",
+  "rawLogSha256": "7fc6fb7c1f72ab9e1f33fd339352fb13d84b852e3d5f2cae6eb32a59e71aa8c9",
+  "sourceHashes": {
+    "papercusp-desktop/bin/build-desktop-sidecar.sh": "b24e899300a22b5b06a43896da5c141fd006793c5f0711f2e31fdff0f40b2e83",
+    "papercusp-desktop/bin/verify-sidecar-bundle.sh": "78efda72efe92e24199d9049038691d3dc764a250d39fe25b369ef48178de2fa",
+    "papercusp-desktop/bin/lib/server-container.mjs": "a0a1b6617d74673f738f4ebfc5125201514298c37377a7db3a21ecae553d90b1",
+    "papercusp-desktop/bin/lib/sidecar-stage-state.js": "75a2e3a56a50944fdfbaf6b76cabffb6b407922ceb58260f6f4c7dc86a6de39a"
+  },
+  "testHashes": {
+    "papercusp-desktop/test/build-desktop-sidecar-dependency-closure.test.js": "fd07c593c2950661bdc6d4b84fdcceecb5e7c148d744a3048563e668d6dde17b",
+    "papercusp-desktop/test/verify-sidecar-bundle-spa-layout.test.js": "e184378f81158192b4c3d68d95c43c9e7c5106cc8d737bf104ad0a64a2e5b47c",
+    "papercusp-desktop/test/server-container.test.js": "b798979fb35b56b33776313c2ce870fcaca9239801117a97bad26b45e717368e",
+    "papercusp-desktop/test/server-native-builder.test.js": "855df00a3fac236d25fcae6875e1a9f18237b0c07407cf1489f6cd5d9052238b",
+    "papercusp-desktop/test/sidecar-stage-resume.test.js": "655db14059c1d8d783798fa33a3c14b4f2bd639133bdc27d89cb6547834aea45",
+    "papercusp-desktop/test/monorepo-host-preflight.mjs": "fbc35e5679ed948f9844780498405b52772d848931620e3f7a59b7d703e40f0f"
+  },
+  "sourceHashesStable": true,
+  "previousEvidence": {
+    "path": "docs/evidence/p058-native-elf-inventory-and-odiff-prune-2026-10-09.json",
+    "sha256": "dde7d6ba51e35fa5778a3c7f728317ff304ab9a330e34cd03104e7a74aa9c322",
+    "scope": "Historical 125-pass source regression; current edition reruns changed source bytes."
+  }
+}

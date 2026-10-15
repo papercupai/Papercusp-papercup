@@ -66,4 +66,11 @@ describe('accounts.pool — read model', () => {
     await resolveNamedQueryV2('accounts.pool', { workspace: 'ws-other' });
     expect(accountStatus).toHaveBeenCalledWith('ws-other');
   });
+
+  it('preserves numeric balance, unit, timestamp, and wallet identity through the existing query', async () => {
+    const creditRows = [{ ...rows[1], creditWalletId: 'wallet', rate: { ...rows[1].rate,
+      creditBalance: { amount: 0, unit: 'credits', source: 'codex', observedAt: 1234 } } }];
+    accountStatus.mockResolvedValue(creditRows);
+    expect(await resolveNamedQueryV2('accounts.pool', {})).toEqual(creditRows);
+  });
 });

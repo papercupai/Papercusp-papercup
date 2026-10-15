@@ -188,7 +188,7 @@ export interface TopicGossipHandle<Frame> {
   leaveTopic(topic: Buffer): Promise<void>;
   /** Send a frame to every currently-paired channel of ONE topic (best-effort).
    *  Pairing guarantees only peers that joined that topic receive it. */
-  broadcast(topicHex: string, frame: Frame): void;
+  broadcast(topicHex: string, frame: Frame): boolean;
   /** Leave every topic + detach the connection handler + stop re-flush. Idempotent. */
   close(): Promise<void>;
   /** Hex of every joined topic (diagnostics). */
@@ -483,7 +483,7 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
           }
           sendOurs();
         },
-        onclose: () => {
+        onclose: (isRemote: boolean) => {
           if (message) st.channels.delete(message);
           // Lost the topic's last peer → re-arm the FAST refresh window so
           // rediscovery/reconnection is snappy again.
@@ -533,7 +533,9 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
                       `(${st.consecutiveFlapCloses} consecutive channels closed after <${minUsefulChannelMs}ms; ` +
                       `this one lasted ${aliveMs}ms) — fast-discovery window decayed to ` +
                       `${st.fastWindowGrantedMs}ms` +
-                      `${st.fastWindowGrantedMs === 0 ? ' (slow keepalive only)' : ''} (EI-18808621019872598).`,
+                      `${st.fastWindowGrantedMs === 0 ? ' (slow keepalive only)' : ''}; ` +
+                      `closeSource=${isRemote ? 'remote-or-stream' : 'local-channel-close'} ` +
+                      `(Protomux isRemote=${isRemote}) (EI-18808621019872598).`,
                   );
                 }
               }
@@ -884,7 +886,7 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
       }
     },
 
-    broadcast(topicHex: string, frame: Frame): void {
+    broadcast(topicHex: string, frame: Frame): boolean {
       const st = topics.get(topicHex);
       // WI-953 layer-4 diagnosability: broadcast() is fire-and-forget over
       // WHATEVER channels happen to be open at this exact instant (no queue,
@@ -923,11 +925,15 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
           );
         }
       }
-      if (!st) return;
+      if (!st) return false;
+      let sentAtLeastOnce = false;
+      let sendFailed = false;
       for (const m of st.channels) {
         try {
           m.send(frame);
+          sentAtLeastOnce = true;
         } catch (e) {
+          sendFailed = true;
           // WI-953 layer-4b diagnosability: this catch previously swallowed
           // the error with ZERO signal — a channel counted as "open" in
           // st.channels (added on `onopen`, removed on `onclose`) can still
@@ -946,6 +952,7 @@ export function createTopicGossip<Frame>(opts: CreateTopicGossipOpts<Frame>): To
           }
         }
       }
+      return sentAtLeastOnce && !sendFailed;
     },
 
     async close() {

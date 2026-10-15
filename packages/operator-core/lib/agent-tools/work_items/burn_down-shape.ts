@@ -132,6 +132,7 @@ function projectRow(value: unknown, titleCap: number): JsonObject | null {
     ...(typeof row.assigneeLive === 'boolean' ? { assigneeLive: row.assigneeLive } : {}),
     takenAt: stringOrNull(row.takenAt),
     lastProgressAt: stringOrNull(row.lastProgressAt),
+    ...(object(row.workEvidence) ? { workEvidence: object(row.workEvidence)! } : {}),
     updatedAt: requiredString(row.updatedAt),
     severity: stringOrNull(row.severity),
     priority: numberOrNull(row.priority),

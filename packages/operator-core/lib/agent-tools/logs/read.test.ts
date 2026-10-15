@@ -17,6 +17,7 @@ vi.mock('../../journal-read', async (importOriginal) => ({
 }));
 
 import logsReadTool from './read';
+import { JOURNAL_READ_MAX_LIMIT } from '../../journal-read';
 
 const CLEAN = {
   entries: [],
@@ -77,6 +78,30 @@ describe('logs:read — payload-tier shapers are WIRED (EI-20203342112661815)', 
   });
 });
 
+describe('logs:read — nested result fields are published to callers', () => {
+  it('declares the backend, collapsed-row timestamps, and shaper markers in the result schema', () => {
+    const result = (logsReadTool as unknown as {
+      result: { toJSONSchema: () => { properties?: Record<string, unknown>; required?: string[] } };
+    }).result.toJSONSchema();
+
+    expect(result.properties?.backend).toMatchObject({
+      type: 'string',
+      enum: ['systemd', 'macos-unified', 'none'],
+    });
+    expect(result.required ?? []).not.toContain('backend');
+    expect(result.properties?.entries).toMatchObject({
+      type: 'array',
+      items: {
+        properties: {
+          lastTs: { type: 'string' },
+          clipped: { const: true },
+          _truncated: { const: true },
+        },
+      },
+    });
+  });
+});
+
 describe('logs:read — dispatch transaction boundary', () => {
   it('does not retain an ambient workspace transaction during journalctl host I/O', () => {
     expect((logsReadTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
@@ -84,6 +109,19 @@ describe('logs:read — dispatch transaction boundary', () => {
 });
 
 describe('logs:read — unit resolution', () => {
+  it('documents the real service prefix and journal scope semantics', () => {
+    const argsSchema = (logsReadTool as unknown as {
+      args: { toJSONSchema: () => { properties?: Record<string, { description?: string }> } };
+    }).args.toJSONSchema();
+    const unitDescription = argsSchema.properties?.unit?.description ?? '';
+    const scopeDescription = argsSchema.properties?.scope?.description ?? '';
+
+    expect(unitDescription).toContain("'papercup-bg-host' → 'papercup-bg-host.service'");
+    expect(unitDescription).not.toContain('papercusp-bg-host');
+    expect(scopeDescription).toContain('no unit-name prefix filter');
+    expect(scopeDescription).not.toContain('papercusp-* units');
+  });
+
   it('suffixes a bare unit name with .service', async () => {
     await call({ unit: 'papercup-bg-host' });
     expect(readJournalMock.mock.calls[0][0].units).toEqual(['papercup-bg-host.service']);
@@ -168,6 +206,13 @@ describe('logs:read — journal/file boundary', () => {
 });
 
 describe('logs:read — arguments reach journalctl unchanged', () => {
+  it('publishes the same maximum row count enforced by the argument schema', () => {
+    const shape = (logsReadTool as unknown as {
+      args: { shape: { limit: { description?: string } } };
+    }).args.shape;
+    expect(shape.limit.description).toContain(`up to ${JOURNAL_READ_MAX_LIMIT}`);
+  });
+
   it('forwards grep, level, window, limit and scope verbatim', async () => {
     await call({
       unit: 'papercup-bg-host',

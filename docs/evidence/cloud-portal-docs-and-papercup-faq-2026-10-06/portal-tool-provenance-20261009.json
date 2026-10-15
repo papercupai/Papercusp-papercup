@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "workItem": "EI-25479754662359812",
+  "planItem": "P-006",
+  "status": "local-proxy-regression-passed",
+  "rootCause": "Portal projectPapercupFrame reconstructs provenance with engine, model and accountRoute only, dropping the validated toolContext emitted by operator:converse.",
+  "distinguishingTest": {
+    "procedure": "Send validated provenance through projectPapercupFrame and the real createPortalPapercupChat sendTurn stream in the maintained Portal test suite. Change only the provenance projection, then repeat the suite.",
+    "hypothesis": "The Portal projection drops the field.",
+    "alternativeHypothesis": "The upstream protocol decoder drops the field before projection.",
+    "predictions": {
+      "hypothesis": "Adding the decoded frame.toolContext to the projection makes the tests pass without changing the decoder.",
+      "alternativeHypothesis": "The tests remain red after changing only the projection because frame.toolContext is absent."
+    },
+    "before": { "passed": 21, "failed": 4, "skipped": 0, "exitCode": 1 },
+    "after": { "passed": 25, "failed": 0, "skipped": 0, "exitCode": 0 },
+    "logs": ["/tmp/su73-portal-provenance-red-0552.log", "/tmp/su73-portal-provenance-green-0553.log"]
+  },
+  "recurrenceGuard": {
+    "suite": "portal/tests/papercup-chat-proxy.test.ts",
+    "covers": ["granted and unavailable authorization", "normalized tool names and prompt hash", "raw principal and workspace fields removed", "invalid authorization refused", "tool inputs and result bodies remain private", "stream forwarding and persistence for plain and tagged answers"]
+  },
+  "sources": [
+    { "harness": "portal", "path": "apps/host/src/papercup-chat.ts", "sha256": "f3f33ca3c57dcca279ab936b05d7cee11035bfd6456459d10decf431438f51bd" },
+    { "harness": "portal", "path": "tests/papercup-chat-proxy.test.ts", "sha256": "f82af448ace297fa498efd3f086ef6468d7eeb841954c5504b6f5b9cd8e260c4" },
+    { "harness": "portal", "path": "vitest.config.ts", "sha256": "42268ec1aef45e13a9c4ebed01b6c55ecb2a284b3fe637d6b0e1b2d17f9588e9" }
+  ],
+  "retainedCandidate": {
+    "buildId": "xCOEzbwT1fd0lWLAzRvmO",
+    "sourceRootDigest": "45f67485ccb82bbd3262e533b0094f591c122a37253eff6024fc9402f00804f0",
+    "serverChunk": "160.js",
+    "serverChunkSha256": "92800b28a5b3604b29a78c1507da403ba93476ab316eeb289d1fbb808698e2fe",
+    "observation": "The actual retained candidate's compiled provenance projection also reconstructs engine, model and accountRoute without toolContext. The candidate was read and preserved; it was not rebuilt or changed."
+  },
+  "corrections": [
+    "The initial filing incorrectly called missing browser tool-result summaries a defect. They are intentionally suppressed, as already recorded in thread-post:1164437. The fix preserves this privacy boundary.",
+    "The actual Portal test's assertPublicDocsResults already checks names, call IDs and statuses without requiring result bodies. No relaxation or rewrite of that guard is needed."
+  ],
+  "limits": [
+    "No new model call, Portal rebuild, runtime launch, deploy or live gate operation.",
+    "The retained 0547 real FAQ run retrieved and cited the FAQ but failed the provenance guard; history assertions did not run.",
+    "The 0547 source capture reports a changed imported adv-sessions.ts, with config/main-process load provenance unknown; this is not clean acceptance evidence.",
+    "The older no-retrieval FAQ failure's cause remains unproven.",
+    "Full plan acceptance, real novice observations, independent certification and exact shipment remain open."
+  ]
+}

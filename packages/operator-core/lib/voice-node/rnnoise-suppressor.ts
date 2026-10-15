@@ -1,3 +1,6 @@
+/// <reference path="./rnnoise-wasm.d.ts" />
+// The reference makes the module shim visible to EVERY program that reaches this file, not only
+// operator-core's own (whose include glob happens to pick up the .d.ts). WI-10006237.
 /**
  * RNNoise spectral noise suppression — the `noiseSuppressionEngine: 'rnnoise'`
  * binding of @papercusp/audio-dsp's NoiseSuppressor seam (P-010 / D-013).

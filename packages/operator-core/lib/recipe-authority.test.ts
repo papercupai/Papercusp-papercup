@@ -4,6 +4,7 @@ import {
   deriveRecipeAuthority,
   findVolatileCoordinationOwnerId,
   findVolatileRunArtifactLiteral,
+  findVolatileSessionIdLiteral,
   findVolatileTaskIdLiteral,
   recipeRevision,
   recipeAuthorityMatches,
@@ -209,6 +210,31 @@ describe('recipe recommendation authority (P-008)', () => {
     });
   });
 
+  it('fails closed when a coordination owner id is inside a URI-encoded condition key', async () => {
+    const encodedConditionKeyScript = `
+      const key = 'alarm:codex-rollout-provider:%5B%22papercusp-workspace%22%2C%2240336%22%2C%22su-e5f812b6-2f01-4cb8-8d23-3299e65fc494%22%5D';
+      return await tools.coord.conditions({ include_resolved: false });
+    `;
+
+    expect(findVolatileCoordinationOwnerId(encodedConditionKeyScript)).toBe(
+      'su-e5f812b6-2f01-4cb8-8d23-3299e65fc494',
+    );
+    await expect(deriveRecipeAuthority(encodedConditionKeyScript)).resolves.toMatchObject({
+      unresolved: true,
+      unresolvedCause: {
+        kind: 'volatile-coordination-owner-id',
+        ownerId: 'su-e5f812b6-2f01-4cb8-8d23-3299e65fc494',
+      },
+    });
+
+    const verdict = await validateRecipeAuthorityProof({
+      script: encodedConditionKeyScript,
+      updatedAt: '2026-10-14T00:00:00.000Z',
+    });
+    expect(verdict).toMatchObject({ ok: false, error: 'authority_unresolved' });
+    expect((verdict as { reason: string }).reason).toContain('concrete agent owner id');
+  });
+
   // EI-20480226881133232 — the recurrence guard. The real `distill-exact-active-checkpoint-log`
   // recipe froze ONE gate run's /tmp log into a `const`, then reported that dead run's terminal
   // red as the LIVE gate's verdict (11 runs, misclassifying an in-flight candidate). The literal
@@ -315,6 +341,40 @@ describe('recipe recommendation authority (P-008)', () => {
     expect(findVolatileTaskIdLiteral(`const word = 'abcdefghijklmnopqrs';`)).toBeNull();
     expect(findVolatileTaskIdLiteral(`const digits = '0123456789012345678';`)).toBeNull();
     expect(findVolatileTaskIdLiteral('const id = `${currentTaskId}`;')).toBeNull();
+  });
+
+  it('fails closed for a hardcoded native session UUID in a session id slot', async () => {
+    const sessionId = '01a046b1-3b6c-7013-baeb-b1e0a260b785';
+    const script = `const sessionId = '${sessionId}';
+      return await tools.activity.toolLog({ session_id: sessionId });`;
+
+    expect(findVolatileSessionIdLiteral(script)).toBe(sessionId);
+    expect(findVolatileSessionIdLiteral("return await tools.activity.toolLog({ session_id: 'claude:ca072a58-85aa-47ae-9b99-1c91675822cf' });"))
+      .toBe('claude:ca072a58-85aa-47ae-9b99-1c91675822cf');
+    await expect(deriveRecipeAuthority(script)).resolves.toMatchObject({
+      unresolved: true,
+      unresolvedCause: { kind: 'volatile-session-id-literal', sessionId },
+    });
+    await expect(buildRecipeAuthorityRecommendation({
+      script,
+      updatedAt: '2026-09-08T00:00:00.000Z',
+      context: { harness: 'papercusp' },
+    })).resolves.toBeNull();
+
+    const verdict = await validateRecipeAuthorityProof({ script, updatedAt: '2026-09-08T00:00:00.000Z' });
+    expect(verdict).toMatchObject({ ok: false, error: 'authority_unresolved' });
+    expect((verdict as { reason: string }).reason).toContain('native session id');
+  });
+
+  it('keeps runtime or binding supplied session ids reusable and ignores unrelated UUIDs', async () => {
+    const sessionId = '01a046b1-3b6c-7013-baeb-b1e0a260b785';
+    const runtimeScript = `const sessionId = inputs.sessionId;
+      return await tools.activity.toolLog({ session_id: sessionId });`;
+    expect(findVolatileSessionIdLiteral(runtimeScript)).toBeNull();
+    await expect(deriveRecipeAuthority(runtimeScript)).resolves.toMatchObject({ unresolved: false });
+
+    expect(findVolatileSessionIdLiteral(`const planId = '${sessionId}';`)).toBeNull();
+    expect(findVolatileSessionIdLiteral(`const id = '${sessionId}';`)).toBeNull();
   });
 
   it('fails closed for a pinned capability:bash scratch log without rejecting runtime-derived paths', async () => {

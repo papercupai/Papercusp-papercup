@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-058 original ARM ESM debug pipe-buffer failure",
+  "framework": "operational",
+  "cwd": ".",
+  "parentWorkItemId": "WI-10007352",
+  "workItemId": "EI-25629008665505233",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "evidencePlane": "original-owned-arm-diagnostic",
+  "candidateAccepted": false,
+  "command": [
+    "node",
+    "--input-type=module"
+  ],
+  "commandEvidence": "Native call at 2026-10-10T21:16:19.268Z constructed a frozen command from the saved paused-profile artifact and exact one-time transforms; command hash is bound below. No execution was replayed.",
+  "diagnosticCommandSha256": "1818613b86b34f699545d83254bf133d20c0f229849ee5b30db5345bb32c383a",
+  "producerTaskId": "0mv2wasfx145z4jp1l6",
+  "startedAt": "2026-10-10T21:17:27.164Z",
+  "finishedAt": "2026-10-10T21:18:33.100Z",
+  "exitCode": 1,
+  "summary": "The original ARM diagnostic failed: verbose child stderr exceeded the unchanged 1 MiB captured pipe, yielding ENOBUFS after 22189 ms and SIGTERM. Profiler.stop then found a closed CDP transport; no profile was produced. This failure is distinct from the original 60000 ms ETIMEDOUT and is preserved as FAIL.",
+  "diagnostic": {
+    "executable": "/opt/papercusp/sidecar/bin/node",
+    "cwd": "/opt/papercusp/sidecar",
+    "elapsedMs": 22189,
+    "pid": 37,
+    "status": null,
+    "signal": "SIGTERM",
+    "errorCode": "ENOBUFS",
+    "allocatorCap": "2",
+    "home": "/tmp/papercusp-boot-imports-UcOetb",
+    "receiptObserved": false
+  },
+  "canonicalChildDeadlineMs": 60000,
+  "canonicalPipeMaxBufferBytes": 1048576,
+  "childStderrBytes": 1057743,
+  "capture": {
+    "status": "failed",
+    "error": "CDP transport closed while waiting for Profiler.stop"
+  },
+  "boot": {
+    "exitCode": 1,
+    "markerObserved": false
+  },
+  "inputsStable": true,
+  "bindings": {
+    "sourceCommit": "dd07170622dbe1000a0e97a38c940af1a9da7403",
+    "serveSha256": "2cbbcca8d8da25a7bf972da3fa21e88a1f61cbfc17c842aa05615e63c3487365",
+    "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+    "platform": "linux/arm64",
+    "canonicalBootFunctionSha256": "ffbd2d83808dd2129e6e8f8bcf770e4f1bd9799717a7d634d047a09b611fa3d9",
+    "instrumentedBootFunctionSha256": "9cefbe7da64dc60603652938a4c81d1f33afb0a6c4741102f65446f1204ad3c1"
+  },
+  "privateResultRoot": "/mnt/backup/portable-server-p058/arm-boot-deadline-20261010-source-dd071706/profile4-loader-hpeF7A",
+  "rawFiles": [
+    {
+      "name": "guest-result.json",
+      "sha256": "60f8e1e7b6271d9cec90e54f39d2edf5c278b62028544c7ecd67239497c73674",
+      "bytes": 16475
+    },
+    {
+      "name": "result.json",
+      "sha256": "49bddca8310a963a84c81244de697e58b9c92161d3e2daaa4a036761da800148",
+      "bytes": 18438
+    },
+    {
+      "name": "capture.json",
+      "sha256": "704302d5ad42f80d562b1607de1195198b5f827eeff587b45774c993e054a09b",
+      "bytes": 402
+    },
+    {
+      "name": "boot-probe.sh",
+      "sha256": "e5b30aa3faa3db66201dbf03ea0db940836b3303e488ad6ce297018051b0062d",
+      "bytes": 2630
+    },
+    {
+      "name": "child-stderr.log",
+      "sha256": "403923810fc0f2985f0a23db8148375a4a7c13629aa0b76fa3247f1dfc22ead6",
+      "bytes": 1057743
+    },
+    {
+      "name": "child-stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "name": "engine-phases.jsonl",
+      "sha256": "993c5f24c020bf71a27124abd9b664058b1930073fd13c8653abba3ef0932c9f",
+      "bytes": 431
+    },
+    {
+      "name": "guest-phases.jsonl",
+      "sha256": "44bd9ef1e38a38c87edef4ef69e700e9d96227d357732e149464ebea28b1ea8d",
+      "bytes": 375
+    },
+    {
+      "name": ".native-producer-owner-onINYE/ownership.json",
+      "sha256": "859129dfcc411f308f7db98a031213a0964eafd0750c22e159f9e0e42869eea1",
+      "bytes": 751
+    }
+  ],
+  "cleanup": {
+    "containerId": "6761189da88fac08bb4e61d0f957f4c5289a96a8dbf170a384ac2aa7561325bf",
+    "imageId": "sha256:355aadb45aa0a5ea21214a9bae11ee5c272c9a5fbad339e2c1fd962b5e40c921",
+    "removed": true,
+    "cleanupPending": false,
+    "ownershipSha256": "859129dfcc411f308f7db98a031213a0964eafd0750c22e159f9e0e42869eea1"
+  },
+  "assertions": [
+    {
+      "id": "diagnostic-boot-and-profile-complete",
+      "passed": false,
+      "evidence": "Boot did not emit its receipt and Profiler.stop transport closed."
+    }
+  ],
+  "limitations": [
+    "No CPU profile was produced.",
+    "This identifies the debug observer buffer defect only; the original ARM timeout and Docker latency causes remain unresolved."
+  ]
+}

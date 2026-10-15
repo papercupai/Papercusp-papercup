@@ -33,6 +33,7 @@ describe('PUI release psu wrapper', () => {
         "try { count = Number(readFileSync(log + '.count', 'utf8')); } catch {}",
         'appendFileSync(log, JSON.stringify({',
         '  reexec: process.env.PAPERCUSP_PSU_REEXEC,',
+        '  reexecCount: process.env.PAPERCUSP_PSU_REEXEC_COUNT,',
         '  advertiser: process.env.PAPERCUSP_PSU_REEXEC_PPID,',
         '  ppid: process.ppid,',
         '  sidecar: process.env.PAPERCUSP_SIDECAR_BIN,',
@@ -46,13 +47,14 @@ describe('PUI release psu wrapper', () => {
 
       const result = spawnSync(wrapper, ['--agent=claude', '--kickoff=once', '--resume=session'], {
         encoding: 'utf8',
-        env: { ...process.env, PSU_TEST_RUN_LOG: log },
+        env: { ...process.env, PSU_TEST_RUN_LOG: log, PAPERCUSP_PSU_REEXEC_COUNT: '99' },
       });
       expect(result.error).toBeUndefined();
       expect(result.status).toBe(0);
       const runs = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
       expect(runs).toHaveLength(2);
       expect(runs[0].reexec).toBe(String(PSU_REEXEC_EXIT_CODE));
+      expect(runs.map((run) => run.reexecCount)).toEqual(['0', '1']);
       expect(runs.every((run) => String(run.ppid) === run.advertiser)).toBe(true);
       expect(runs.every((run) => run.sidecar === nodeDir)).toBe(true);
       expect(runs[0].args).toEqual(['--agent=claude', '--kickoff=once', '--resume=session']);

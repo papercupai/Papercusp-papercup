@@ -67,6 +67,15 @@ describe('owner-directive capture provenance (migrations 1187 + 1198)', () => {
     );
   }
 
+  it('a retry with the same sourceTurnRef returns the committed directive id', async () => {
+    const sourceTurnRef = 'turn-committed-response-lost-1';
+    const committed = await captureViaHook(sourceTurnRef);
+    const retry = await captureViaHook(sourceTurnRef);
+
+    expect(retry.id).toBe(committed.id);
+    expect(retry.sourceTurnRef).toBe(sourceTurnRef);
+  });
+
   it('D-001: a hook capture lands OPEN — there is no pending triage step', async () => {
     const hooked = await captureViaHook('turn-open-1');
     expect(ownerDirectiveState(hooked)).toBe('open');

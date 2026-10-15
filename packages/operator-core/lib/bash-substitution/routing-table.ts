@@ -216,6 +216,10 @@ export function routingCell(text: string): string {
  * census floor — so its verdict became `unaudited` while its `deny` tier stood
  * untouched.
  *
+ * An `equivalent` pair that sets `routingWithheld` is also left out: its call is
+ * proven against the source tree but not yet served by the deployed operator, so a
+ * row would teach every agent a call the running tool rejects (see the field).
+ *
  * `tier` is deliberately absent. It is promotion state (observe → advise → deny)
  * earned by P-020's observation window and lives only in the database. The table
  * states what the right tool IS — stable guidance; how hard the gate currently
@@ -224,7 +228,7 @@ export function routingCell(text: string): string {
  */
 export function renderRoutingBlock(pairs: SubstitutionPair[]): string {
   const rows = pairs
-    .filter((p) => p.expectedVerdict === 'equivalent' || p.policyTier != null)
+    .filter((p) => (p.expectedVerdict === 'equivalent' && p.routingWithheld === undefined) || p.policyTier != null)
     .map(
       (p) =>
         `| ${routingCell(p.routing.want)} | ${routingCell(p.routing.use)} | ${routingCell(

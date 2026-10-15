@@ -13,11 +13,16 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import type { RunLiveness } from './bulk-run-store';
+import { observeFallback } from '../degradation/fallback-observations';
+vi.mock('../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
 import {
   decideWatchdogVerdict,
   diffCounters,
+  resolverKeepsRunAlive,
   runBulkRunWatchdog,
   strandReasonText,
+  WATCHDOG_RESOLVER_MAX_SILENCE_MS,
+  WATCHDOG_STALE_AFTER_MS,
   type BulkRunCounters,
   type WatchdogRunFacts,
 } from './bulk-run-watchdog';
@@ -191,5 +196,137 @@ describe('runBulkRunWatchdog', () => {
     expect(result.examined).toBe(2);
     expect(result.stranded).toEqual(['good']);
     expect(result.errors).toEqual([{ runId: 'bad', error: 'deadlock' }]);
+  });
+
+  it('records one tick for empty, healthy, healed, raced and failed sweeps', async () => {
+    const observe = vi.fn();
+    await runBulkRunWatchdog(deps([], { observe }));
+    await runBulkRunWatchdog(deps([facts({ liveness: { state: 'live', ageMs: 1, measuredFrom: 'heartbeat' } })], { observe }));
+    await runBulkRunWatchdog(deps([facts()], { observe }));
+    await runBulkRunWatchdog(deps([facts()], { observe, strandRun: vi.fn(async () => ({ marked: 0 })) }));
+    await runBulkRunWatchdog(deps([facts({ liveness: { state: 'not-executing', phase: 'complete' },
+      stored: { ...ZERO, failed: 1 } })], { observe }));
+    await runBulkRunWatchdog(deps([facts()], { observe, strandRun: vi.fn(async () => { throw new Error('write failed'); }) }));
+    await expect(runBulkRunWatchdog(deps([], { observe,
+      listRuns: vi.fn(async () => { throw new Error('read failed'); }) }))).rejects.toThrow('read failed');
+    expect(observe.mock.calls.map(([row]) => row)).toEqual([
+      { eligible: 1, applied: 1, reason: 'healthy', scope: 'sweep' },
+      { eligible: 1, applied: 1, reason: 'healthy', scope: 'sweep' },
+      { eligible: 1, applied: 0, reason: 'heal-strand', scope: 'sweep' },
+      { eligible: 1, applied: 1, reason: 'healthy', scope: 'sweep' },
+      { eligible: 1, applied: 0, reason: 'heal-counters', scope: 'sweep' },
+      { eligible: 1, applied: 0, reason: 'effect-failed', scope: 'sweep' },
+      { eligible: 1, applied: 0, reason: 'census-failed', scope: 'sweep' },
+    ]);
+    vi.mocked(observeFallback).mockClear();
+    await runBulkRunWatchdog(deps([]));
+    expect(observeFallback).toHaveBeenCalledExactlyOnceWith('bulk-run-watchdog',
+      { eligible: 1, applied: 1, reason: 'healthy', scope: 'sweep' });
+  });
+});
+
+/**
+ * WI-10004887 — the heartbeat is one witness, not the only one. Both measured
+ * false strands on 2026-10-01 had a resolver making tool calls every few
+ * seconds through the strand: bulk-8df81e9e (classifying 200 items with non-run
+ * tools, 12:49–12:55Z, failed 10s before its first report) and bulk-948a3af3
+ * (polling coord:inbox every ~45s for a peer's reply, failed at 13:53:28Z).
+ */
+describe('resolver activity as evidence of life (WI-10004887)', () => {
+  const NOW = Date.parse('2026-10-01T12:55:34Z');
+  const busy = { ownerId: 'su-4d659446', lastActivityMs: NOW - 20_000 };
+
+  it('pins its thresholds to the store constants', async () => {
+    const storeConsts = await vi.importActual<typeof import('./bulk-run-store')>('./bulk-run-store');
+    expect(WATCHDOG_STALE_AFTER_MS).toBe(storeConsts.RUN_HEARTBEAT_STALE_MS);
+    expect(WATCHDOG_RESOLVER_MAX_SILENCE_MS).toBe(storeConsts.RESOLVER_ACTIVITY_MAX_SILENCE_MS);
+  });
+
+  it('defers a heartbeat-stale run whose resolver is still calling tools (the bulk-8df81e9e shape)', () => {
+    const v = decideWatchdogVerdict(
+      facts({ liveness: { state: 'stale', ageMs: 494_000, measuredFrom: 'heartbeat' }, undecided: 200, resolver: busy }),
+      NOW,
+    );
+    expect(v.strand).toBeNull();
+    expect(v.deferred).toEqual({
+      reason: 'resolver-active',
+      ownerId: 'su-4d659446',
+      activityAgeMs: 20_000,
+      heartbeatAgeMs: 494_000,
+    });
+  });
+
+  it('still strands when the resolver has been quiet as long as the heartbeat threshold', () => {
+    const v = decideWatchdogVerdict(
+      facts({ resolver: { ownerId: 'su-x', lastActivityMs: NOW - WATCHDOG_STALE_AFTER_MS - 1 } }),
+      NOW,
+    );
+    expect(v.deferred).toBeNull();
+    expect(v.strand?.reason).toBe('stale-executing');
+  });
+
+  it('still strands a resolver that never acted at all (the walled-launch shape)', () => {
+    const v = decideWatchdogVerdict(
+      facts({
+        liveness: { state: 'stale', ageMs: 540_000, measuredFrom: 'start' },
+        resolver: { ownerId: 'su-f5350064', lastActivityMs: null },
+      }),
+      NOW,
+    );
+    expect(v.strand?.measuredFrom).toBe('start');
+    expect(v.deferred).toBeNull();
+  });
+
+  it('stops rescuing once the run itself has been silent past the ceiling, however busy the resolver', () => {
+    const v = decideWatchdogVerdict(
+      facts({
+        liveness: { state: 'stale', ageMs: WATCHDOG_RESOLVER_MAX_SILENCE_MS + 1, measuredFrom: 'heartbeat' },
+        resolver: busy,
+      }),
+      NOW,
+    );
+    expect(v.deferred).toBeNull();
+    expect(v.strand).not.toBeNull();
+  });
+
+  it('never lets resolver evidence touch a run that is live or not executing', () => {
+    expect(
+      decideWatchdogVerdict(facts({ liveness: { state: 'live', ageMs: 1_000, measuredFrom: 'heartbeat' }, resolver: busy }), NOW),
+    ).toMatchObject({ strand: null, deferred: null });
+    expect(
+      decideWatchdogVerdict(facts({ liveness: { state: 'not-executing', phase: 'review' }, resolver: busy }), NOW),
+    ).toMatchObject({ strand: null, deferred: null });
+  });
+
+  it('resolverKeepsRunAlive treats a future activity stamp (clock skew) as just now', () => {
+    expect(
+      resolverKeepsRunAlive({
+        liveness: { state: 'stale', ageMs: 400_000, measuredFrom: 'heartbeat' },
+        resolver: { ownerId: 'su-y', lastActivityMs: NOW + 5_000 },
+        nowMs: NOW,
+      }),
+    ).toEqual({ ownerId: 'su-y', activityAgeMs: 0, heartbeatAgeMs: 400_000 });
+  });
+
+  it('the sweep reports a deferral, never calls strandRun for it, and still reconciles drift', async () => {
+    const strandRun = vi.fn(async () => ({ marked: 3 }));
+    const reconcileCounters = vi.fn(async () => {});
+    const note = vi.fn();
+    const result = await runBulkRunWatchdog({
+      listRuns: async () => [
+        facts({ runId: 'busy', resolver: busy, stored: { ...ZERO, failed: 1 } }),
+        facts({ runId: 'dead', resolver: { ownerId: 'su-gone', lastActivityMs: null } }),
+      ],
+      strandRun,
+      reconcileCounters,
+      note,
+      nowMs: () => NOW,
+    });
+    expect(result.deferred).toEqual(['busy']);
+    expect(result.stranded).toEqual(['dead']);
+    expect(strandRun).toHaveBeenCalledTimes(1);
+    expect(strandRun).toHaveBeenCalledWith(expect.objectContaining({ runId: 'dead' }));
+    expect(result.countersReconciled).toEqual(['busy', 'dead']);
+    expect(note).toHaveBeenCalledWith(expect.stringMatching(/^deferred busy: no run heartbeat for 900s, but resolver su-4d659446 was active 20s ago$/));
   });
 });

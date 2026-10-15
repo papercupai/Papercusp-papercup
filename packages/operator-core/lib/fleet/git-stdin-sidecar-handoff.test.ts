@@ -224,6 +224,19 @@ describe('WI-6404 — cat-file --batch through the sidecar fd handoff', () => {
     }
   });
 
+  it('preserves typed process failure metadata through the fd handoff', async () => {
+    const { runGitStdinViaSpawnerSidecar } = await import('./git-via-sidecar');
+    const error = { code: 'ETIMEDOUT', signal: 'SIGTERM', killed: true };
+    rpcOverride = async () => ({ code: -1, stdout: '', stderr: 'sidecar deadline', stdoutBytes: 0, error });
+    try {
+      expect(await runGitStdinViaSpawnerSidecar(
+        ['cat-file', '--batch'], repo, unicodeOid + '\n', 60_000, process.env,
+      )).toEqual({ code: -1, stdout: Buffer.alloc(0), stderr: 'sidecar deadline', error });
+    } finally {
+      rpcOverride = null;
+    }
+  });
+
   it('falls back to the LOCAL spawn — with the same bytes — when the sidecar fails', async () => {
     const { defaultRunGitStdin, runGitStdinLocal } = await import('../sync/pot-git/storage');
     const args = ['cat-file', '--batch', '--buffer'];

@@ -31,6 +31,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 // The SHARED emitter for the failing-file declaration contract. Imported rather than
 // hand-typed on purpose: `scripts/lib/test-runner-classes.mjs` classifies this task as
 // attributable only because this import exists, and importing the formatter means the
@@ -70,6 +71,21 @@ const defsDir = path.resolve(operatorRoot, '../../packages/operator-core/lib/com
 const defFiles = fs
   .readdirSync(defsDir)
   .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts') && f !== 'index.ts');
+
+// Preparation uses the SAME input discovery as the check. These are check inputs,
+// not executed test files, and no drift verdict is produced on this route.
+if (process.argv.includes('--print-selection')) {
+  const repositoryRoot = path.resolve(operatorRoot, '../..');
+  const inputs = [fileURLToPath(import.meta.url), path.join(operatorRoot, SYNC_SCRIPT_REL),
+    ...defFiles.map(file => path.join(defsDir, file))].map(file => ({
+      path: path.relative(repositoryRoot, file).split(path.sep).join('/'),
+      sha256: createHash('sha256').update(fs.readFileSync(file)).digest('hex'),
+    })).sort((a, b) => a.path.localeCompare(b.path));
+  console.log(`COMMAND_CHECK_SELECTION=${JSON.stringify({ schemaVersion: 1,
+    kind: 'command-check-inputs', check: 'el-tools-drift', files: [], inputs,
+    executed: false, runtimeClosure: 'unmeasured', operationalAcceptance: false })}`);
+  process.exit(0);
+}
 
 const defs = [];
 for (const file of defFiles) {

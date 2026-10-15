@@ -9,7 +9,7 @@ const evidenceDir = join(acceptance.evidenceDir, "workspace-session");
 /**
  * P-031 real-host profile. Reuses private auth, exact origin, SOCKS and serial
  * execution; keeps receipts separate from P-029's final evidence.
- * Supply PAPERCUSP_HOSTED_ACCEPTANCE_STORAGE_STATE plus HOST_ID, WORKSPACE_ID,
+ * Supply PAPERCUSP_HOSTED_ACCEPTANCE_STORAGE_STATE plus HOST_ID, WORKSPACE_ID, ORGANIZATION_ID,
  * WORKSPACE_ROOT and DESKTOP_SESSION_ID under the same environment prefix.
  * The existing host must be enrolled and advertise its websocket connector.
  *

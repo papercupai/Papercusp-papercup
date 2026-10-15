@@ -1,0 +1,17 @@
+{
+  "decision": "keep",
+  "reasons": [
+    "Codebase-Memory does not replace: correct 1/5 < installed 2/5; recall 0.20 < 0.50; warmMedianMs 3.31x installed",
+    "candidate does not upgrade: correct 1/5 < installed 2/5; recall 0.43 < 0.50; coldIndexMs 2.71x installed; indexBytes 1.41x installed"
+  ],
+  "residue": [],
+  "sourceParity": {
+    "same": true,
+    "fingerprints": {
+      "baseline-lsp-rg": "08104b5503ccf9a3b0cf486a81bbc06fc94329f5",
+      "gitnexus-installed": "08104b5503ccf9a3b0cf486a81bbc06fc94329f5",
+      "gitnexus-candidate": "08104b5503ccf9a3b0cf486a81bbc06fc94329f5",
+      "codebase-memory": "08104b5503ccf9a3b0cf486a81bbc06fc94329f5"
+    }
+  }
+}

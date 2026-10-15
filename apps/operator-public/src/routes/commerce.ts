@@ -14,6 +14,7 @@
  */
 
 import { Hono } from 'hono';
+import { verifySellerReceiptAuthority, type SellerReceiptAuthority } from '@papercusp/operator-core/lib/p2p/metered-invocation';
 import type { Env } from '../env.ts';
 import { ingestWebhook } from '@papercusp/operator-core/lib/cupboard/webhook-inbox';
 import type { PaymentProviderAdapter } from '@papercusp/operator-core/lib/cupboard/webhook-inbox';
@@ -152,6 +153,7 @@ interface PublishOfferRequest {
   pricingModel: PricingModel;
   price: Money;
   perUse?: PerUseOfferTerms;
+  receiptAuthority?: SellerReceiptAuthority;
   active?: boolean;
 }
 
@@ -192,6 +194,7 @@ function parsePublishOfferRequest(
       ...(body.perUse !== undefined
         ? { perUse: body.perUse as PerUseOfferTerms }
         : {}),
+      ...(body.receiptAuthority !== undefined ? { receiptAuthority: body.receiptAuthority as SellerReceiptAuthority } : {}),
       ...(body.active !== undefined ? { active: body.active } : {}),
     },
   };
@@ -361,6 +364,11 @@ export function commerceRoute(
       return c.json({ error: "invalid_request", detail: parsed.detail }, 400);
     }
     const request = parsed.value;
+    if (request.receiptAuthority !== undefined && (request.pricingModel !== 'per-use' || !request.receiptAuthority ||
+        !verifySellerReceiptAuthority({ seller: actingUserId, offerId: request.offerId,
+          productId: request.productId, skuRef: request.skuRef }, request.receiptAuthority))) {
+      return c.json({ error: 'invalid_seller_authority', detail: 'the publisher must prove possession of the exact offer receipt key' }, 422);
+    }
     const events = await loadLedgerEvents(c.env.DB);
     const state = reduceLedger(events);
     const existingProduct = state.products.get(request.productId);
@@ -401,6 +409,7 @@ export function commerceRoute(
       pricingModel: request.pricingModel,
       price: request.price,
       ...(request.perUse !== undefined ? { perUse: request.perUse } : {}),
+      ...(request.receiptAuthority ? { receiptAuthority: request.receiptAuthority } : {}),
       active: request.active !== false,
     };
     const candidate: LedgerEvent[] = [
@@ -418,7 +427,13 @@ export function commerceRoute(
         source: { provider: "operator", providerEventId: null },
         payload: offerPayload,
       },
-    ];
+    ].map((event) => {
+      // An event id derives from the content, while the reducer digests its
+      // timestamp too. An exact retry must retain the original signed fact's
+      // time. Every other field still reaches duplicate-conflict validation.
+      const prior = events.find((stored) => stored.ledgerEventId === event.ledgerEventId);
+      return { ...event, occurredAtMs: prior?.occurredAtMs ?? event.occurredAtMs } as LedgerEvent;
+    });
     const candidateIds = new Set(candidate.map((event) => event.ledgerEventId));
     const projected = reduceLedger([...events, ...candidate]);
     const rejection = projected.rejected.find((row) =>
@@ -749,7 +764,9 @@ export function commerceRoute(
       throw err;
     }
 
-    const buyer = c.req.query('buyer');
+    // A turn host discovers its payer from this authenticated self read. An
+    // explicit organization still goes through the same membership check.
+    const buyer = c.req.query('buyer') ?? actingUserId;
     if (!buyer) return c.json({ error: 'buyer_required' }, 400);
 
     // Same rule as checkout, same single copy of it: you may read yourself, or

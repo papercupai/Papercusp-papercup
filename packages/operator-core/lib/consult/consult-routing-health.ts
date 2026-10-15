@@ -38,9 +38,11 @@
  * its census limit or a consult's 24-record log cap, so a count is a floor.
  */
 import type { Sql } from 'postgres';
+import type { ExpertiseRoutingReceipt, ExpertiseRoutingStage } from './relevance-router';
 import { HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
 import { DISPATCH_RECORDS_MAX } from './consult-dispatch';
 import { reviewConsultKind } from './consult-expiry-core';
+import { CONSULT_RECONCILIATION_DISPOSITIONS, type ConsultReconciliationDisposition } from './consult-verbs-core';
 import {
   ACCEPTANCE_GRADING_POLICY,
   CONSULT_DEFAULT_POLICY,
@@ -50,6 +52,80 @@ import {
 
 /** Consults scanned per read. Independent of any caller limit (a census, not a page). */
 export const ROUTING_HEALTH_CONSULT_LIMIT = 5000;
+
+export interface ExpertiseExecutionHealth {
+  cohort: 'routing-execution-start';
+  status: 'measured' | 'measured-empty' | 'unavailable';
+  unavailableReason: string | null;
+  rowsScanned: number;
+  invalidReceipts: number;
+  truncatedByLimit: boolean;
+  groups: Array<{
+    caller: string; policy: string; buildSha: string | null; calls: number;
+    outcomes: Record<ExpertiseRoutingReceipt['outcome'], number>;
+    latencyMs: { observed: number; p50: number | null; p95: number | null };
+    stages: Partial<Record<ExpertiseRoutingStage, { observed: number; threw: number; p50: number | null; p95: number | null }>>;
+  }>;
+}
+
+/** Nearest-rank percentiles over observed durations only; empty is unknown. */
+function executionLatency(values: number[]) {
+  const sorted = values.filter(v => Number.isFinite(v) && v >= 0).sort((a, b) => a - b);
+  const percentile = (p: number) => sorted.length ? sorted[Math.ceil(sorted.length * p) - 1] : null;
+  return { observed: sorted.length, p50: percentile(0.5), p95: percentile(0.95) };
+}
+
+/** Routing executions are a third cohort, never a request or launch denominator. */
+export function expertiseExecutionHealthFromRows(rows: Array<{ metadata_json: unknown }>, truncatedByLimit = false): ExpertiseExecutionHealth {
+  const groups = new Map<string, ExpertiseExecutionHealth['groups'][number] & {
+    durations: number[]; stageDurations: Partial<Record<ExpertiseRoutingStage, number[]>>;
+  }>();
+  let invalidReceipts = 0;
+  for (const row of rows) {
+    const value = jsonObject(row.metadata_json);
+    if (value.schemaVersion !== 1 || typeof value.caller !== 'string' || typeof value.policy !== 'string' ||
+        !['returned', 'degraded', 'threw'].includes(String(value.outcome))) { invalidReceipts++; continue; }
+    const receipt = value as unknown as ExpertiseRoutingReceipt;
+    const buildSha = typeof receipt.buildSha === 'string' ? receipt.buildSha : null;
+    const key = JSON.stringify([receipt.caller, receipt.policy, buildSha]);
+    let group = groups.get(key);
+    if (!group) {
+      group = { caller: receipt.caller, policy: receipt.policy, buildSha, calls: 0,
+        outcomes: { returned: 0, degraded: 0, threw: 0 }, latencyMs: executionLatency([]), stages: {}, durations: [], stageDurations: {} };
+      groups.set(key, group);
+    }
+    group.calls++; group.outcomes[receipt.outcome]++;
+    if (typeof receipt.durationMs === 'number') group.durations.push(receipt.durationMs);
+    for (const stage of ['disclosure', 'embedding', 'transcripts', 'verification', 'authorship', 'liveness', 'ranking', 'evidence'] as const) {
+      const reading = receipt.stages?.[stage];
+      if (!reading || !Number.isFinite(reading.durationMs) || reading.durationMs < 0) continue;
+      const values = group.stageDurations[stage] ??= [];
+      values.push(reading.durationMs);
+      const prior = group.stages[stage];
+      group.stages[stage] = { ...executionLatency(values), threw: (prior?.threw ?? 0) + (reading.outcome === 'threw' ? 1 : 0) };
+    }
+  }
+  return {
+    cohort: 'routing-execution-start', status: rows.length ? 'measured' : 'measured-empty', unavailableReason: null,
+    rowsScanned: rows.length, invalidReceipts, truncatedByLimit,
+    groups: [...groups.values()].map(({ durations, stageDurations: _stageDurations, ...group }) => ({ ...group, latencyMs: executionLatency(durations) }))
+      .sort((a, b) => a.caller.localeCompare(b.caller) || a.policy.localeCompare(b.policy) || (a.buildSha ?? '').localeCompare(b.buildSha ?? '')),
+  };
+}
+
+/** Read the existing route ledger, including thrown routes with no consult row. */
+export async function readExpertiseExecutionHealth(sql: Sql, workspaceId: string, sinceIso: string, untilIso: string): Promise<ExpertiseExecutionHealth> {
+  try {
+    const rows = await sql<{ metadata_json: unknown }[]>`
+      SELECT metadata_json FROM harness_shared.route_invocations
+       WHERE workspace_id = ${workspaceId} AND method = 'INTERNAL' AND path = 'internal:expertise-routing'
+         AND invoked_at >= ${sinceIso}::timestamptz AND invoked_at < ${untilIso}::timestamptz
+       ORDER BY invoked_at DESC, id DESC LIMIT ${ROUTING_HEALTH_CONSULT_LIMIT + 1}`;
+    return expertiseExecutionHealthFromRows(rows.slice(0, ROUTING_HEALTH_CONSULT_LIMIT), rows.length > ROUTING_HEALTH_CONSULT_LIMIT);
+  } catch {
+    return { ...expertiseExecutionHealthFromRows([]), status: 'unavailable', unavailableReason: 'routing-invocation-ledger-unavailable' };
+  }
+}
 /** Longest window a caller may ask for. */
 export const ROUTING_HEALTH_MAX_WINDOW_MS = 14 * 24 * 3_600_000;
 /** How long before the window a consult may have been opened and still launch
@@ -59,6 +135,13 @@ const CONSULT_OPEN_MARGIN = '2 days';
 /** One consult_state row, as the reader selects it. */
 export interface RoutingHealthConsultRow {
   conversation_id: string;
+  requester_id?: string | null;
+  created_at?: string | Date | null;
+  expires_at?: string | Date | null;
+  outcome?: unknown;
+  /** Typed responder posts, measured independently of bounded cascade history. */
+  has_feedback?: boolean;
+  has_decline?: boolean;
   routing: unknown;
   state: string;
   latency_contract: string | null;
@@ -99,6 +182,95 @@ export interface RoutingHealth {
   policies: PolicyRoutingHealth[];
   totals: Omit<PolicyRoutingHealth, 'policy'>;
   bounded: RoutingHealthBounds;
+  requestCohort: {
+    window: { since: string; until: string; cohort: 'request-time' };
+    policies: Array<RequestDeliveryHealth & { policy: string }>;
+    totals: RequestDeliveryHealth;
+  };
+}
+
+/** Intent partitions requests; outcomes partition requested dispatch only. */
+export interface RequestDeliveryHealth {
+  requests: number;
+  dispatchRequested: number;
+  retrievalOnly: number;
+  legacyIntentUnknown: number;
+  /** `unlaunchable` (consult-backed-parking P-003, R-2): experts were selected
+   * but no answering session launched for any of them. Distinct from
+   * `unavailable`, which is the measured no_qualified_responder absence. */
+  outcomes: { received: number; declined: number; pending: number; unavailable: number; unlaunchable: number; failed: number; unmeasured: number };
+  followThrough: {
+    applicable: number; notApplicable: number; applicabilityUnknown: number;
+    recorded: Record<ConsultReconciliationDisposition, number>;
+    unknown: number; invalid: number;
+    recordedWithFeedback: number; recordedWithoutFeedback: number;
+  };
+}
+
+function emptyRequestCounts(): RequestDeliveryHealth {
+  return {
+    requests: 0, dispatchRequested: 0, retrievalOnly: 0, legacyIntentUnknown: 0,
+    outcomes: { received: 0, declined: 0, pending: 0, unavailable: 0, unlaunchable: 0, failed: 0, unmeasured: 0 },
+    followThrough: {
+      applicable: 0, notApplicable: 0, applicabilityUnknown: 0,
+      recorded: { confirmed: 0, rescoped: 0, reversed: 0, moot: 0 },
+      unknown: 0, invalid: 0, recordedWithFeedback: 0, recordedWithoutFeedback: 0,
+    },
+  };
+}
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  const parsed = typeof value === 'string' ? safeParse(value) : value;
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+}
+
+function requestOutcome(row: RoutingHealthConsultRow, nowMs: number): keyof RequestDeliveryHealth['outcomes'] {
+  const outcome = jsonObject(row.outcome);
+  const answer = outcome.source === 'archive' ? jsonObject(outcome.answer).answer : outcome.answer;
+  // A typed receipt outranks expiry, decline and recovered launch failures.
+  if (row.has_feedback === true || (typeof answer === 'string' && answer.trim())) return 'received';
+  if (row.has_decline === true || row.state === 'closed_cant_help' || row.state === 'declined') return 'declined';
+  const request = jsonObject(jsonObject(row.routing).request);
+  // The recoverable acceptance phase is pending work before any launch. A
+  // legacy routing label or an already recorded result does not prove that.
+  if (row.state === 'routing' && request.version === 1 && request.result == null) return 'pending';
+  const walks = parseWalks(row.dispatch_attempts);
+  const expiresMs = toMs(row.expires_at);
+  const open = ['awaiting_responder', 'active', 'budget_exhausted'].includes(row.state);
+  if (open && Number.isFinite(expiresMs) && nowMs < expiresMs) return 'pending';
+  if (row.state === 'no_launchable_responder') return 'unlaunchable';
+  if (row.state === 'no_qualified_responder') return 'unavailable';
+  const attempts = walks.flatMap((walk) => walk.attempts);
+  if (attempts.length > 0 && attempts.every((attempt) =>
+    attempt.outcome === 'skipped' && attempt.reason === 'account-walled')) return 'unavailable';
+  if (walks.some((walk) => walk.answerFailure != null) ||
+      attempts.some((attempt) => attempt.outcome === 'failed') ||
+      (walks.some((walk) => walk.dispatched) &&
+        (row.state === 'expired' || (Number.isFinite(expiresMs) && nowMs >= expiresMs)))) return 'failed';
+  // Missing recorder/expiry evidence is not proof of a delivery failure.
+  return 'unmeasured';
+}
+
+function recordFollowThrough(row: RoutingHealthConsultRow, counts: RequestDeliveryHealth, nowMs: number) {
+  const follow = counts.followThrough;
+  if (row.latency_contract === 'hard-blocked') { follow.notApplicable += 1; return; }
+  if (row.latency_contract !== 'proceed') { follow.applicabilityUnknown += 1; return; }
+  follow.applicable += 1;
+  const raw = jsonObject(row.outcome).reconciliation;
+  if (raw == null) { follow.unknown += 1; return; }
+  const reconciliation = jsonObject(raw);
+  const disposition = reconciliation.disposition as ConsultReconciliationDisposition;
+  const atMs = toMs(reconciliation.at);
+  if (!row.requester_id || reconciliation.by !== row.requester_id ||
+      !CONSULT_RECONCILIATION_DISPOSITIONS.includes(disposition) ||
+      typeof reconciliation.note !== 'string' || !reconciliation.note.trim() ||
+      !Number.isFinite(atMs) || atMs > nowMs) {
+    follow.invalid += 1;
+    return;
+  }
+  follow.recorded[disposition] += 1;
+  if (requestOutcome(row, nowMs) === 'received') follow.recordedWithFeedback += 1;
+  else follow.recordedWithoutFeedback += 1;
 }
 
 /** The selection policy a consult ran under. Null `routing.policy` is the default. */
@@ -230,8 +402,12 @@ export function routingHealthFromRows(
   const { sinceMs, untilMs, nowMs } = opts;
   const inWindow = (ms: number) => ms >= sinceMs && ms < untilMs;
   const byPolicy = new Map<string, Omit<PolicyRoutingHealth, 'policy'>>();
+  const requestPolicies = new Map<string, RequestDeliveryHealth>();
   // Every known policy is reported, so a zero is a measured zero, not an omission.
-  for (const key of Object.keys(SELECTION_POLICIES)) byPolicy.set(key, emptyCounts());
+  for (const key of Object.keys(SELECTION_POLICIES)) {
+    byPolicy.set(key, emptyCounts());
+    requestPolicies.set(key, emptyRequestCounts());
+  }
   let dispatchLogCapped = 0;
 
   for (const row of rows) {
@@ -240,6 +416,19 @@ export function routingHealthFromRows(
     if (!c) {
       c = emptyCounts();
       byPolicy.set(policy, c);
+    }
+    if (inWindow(toMs(row.created_at))) {
+      const requests = requestPolicies.get(policy) ?? emptyRequestCounts();
+      requestPolicies.set(policy, requests);
+      requests.requests += 1;
+      recordFollowThrough(row, requests, nowMs);
+      const intent = jsonObject(row.routing).deliveryIntent;
+      if (intent === 'retrieval-only') requests.retrievalOnly += 1;
+      else if (intent !== 'dispatch') requests.legacyIntentUnknown += 1;
+      else {
+        requests.dispatchRequested += 1;
+        requests.outcomes[requestOutcome(row, nowMs)] += 1;
+      }
     }
     const records = parseWalks(row.dispatch_attempts);
     c.consults += 1;
@@ -318,6 +507,21 @@ export function routingHealthFromRows(
     .map(([policy, counts]) => ({ policy, ...counts }))
     .sort((a, b) => a.policy.localeCompare(b.policy));
   const totals = emptyCounts();
+  const requestTotals = emptyRequestCounts();
+  for (const counts of requestPolicies.values()) {
+    for (const key of ['requests', 'dispatchRequested', 'retrievalOnly', 'legacyIntentUnknown'] as const) {
+      requestTotals[key] += counts[key];
+    }
+    for (const key of Object.keys(counts.outcomes) as Array<keyof RequestDeliveryHealth['outcomes']>) {
+      requestTotals.outcomes[key] += counts.outcomes[key];
+    }
+    for (const key of ['applicable', 'notApplicable', 'applicabilityUnknown', 'unknown', 'invalid', 'recordedWithFeedback', 'recordedWithoutFeedback'] as const) {
+      requestTotals.followThrough[key] += counts.followThrough[key];
+    }
+    for (const disposition of CONSULT_RECONCILIATION_DISPOSITIONS) {
+      requestTotals.followThrough.recorded[disposition] += counts.followThrough.recorded[disposition];
+    }
+  }
   for (const p of policies) {
     for (const key of [
       'consults',
@@ -346,6 +550,11 @@ export function routingHealthFromRows(
       consultLimit: opts.consultLimit ?? ROUTING_HEALTH_CONSULT_LIMIT,
       dispatchLogCapped,
     },
+    requestCohort: {
+      window: { since: new Date(sinceMs).toISOString(), until: new Date(untilMs).toISOString(), cohort: 'request-time' },
+      policies: [...requestPolicies.entries()].map(([policy, counts]) => ({ policy, ...counts })).sort((a, b) => a.policy.localeCompare(b.policy)),
+      totals: requestTotals,
+    },
   };
 }
 
@@ -361,15 +570,27 @@ export async function readRoutingHealthRows(
   sinceIso: string,
   untilIso: string,
   limit = ROUTING_HEALTH_CONSULT_LIMIT,
+  asOfIso = new Date().toISOString(),
 ): Promise<{ rows: RoutingHealthConsultRow[]; truncated: boolean }> {
+  // Keep precise snapshot strings as text on the wire: an inferred timestamp
+  // parameter is serialized through JS Date by postgres.js and loses micros.
   const rows = await sql<RoutingHealthConsultRow[]>`
-    SELECT conversation_id, routing, state, latency_contract, closed_at, cascade_digest, dispatch_attempts
-      FROM harness_shared.consult_state
-     WHERE workspace_id = ${workspaceId}
-       AND created_at < ${untilIso}::timestamptz
-       AND created_at >= ${sinceIso}::timestamptz - ${CONSULT_OPEN_MARGIN}::interval
-       AND (closed_at IS NULL OR closed_at >= ${sinceIso}::timestamptz)
-     ORDER BY created_at DESC
+    SELECT cs.conversation_id, cs.requester_id, cs.created_at, cs.expires_at, cs.outcome, cs.routing, cs.state,
+           cs.latency_contract, cs.closed_at, cs.cascade_digest, cs.dispatch_attempts,
+           EXISTS (SELECT 1 FROM harness_shared.consult_post_meta pm
+                    WHERE pm.workspace_id = cs.workspace_id AND pm.conversation_id = cs.conversation_id
+                      AND pm.author_id <> cs.requester_id AND pm.kind IN ('answer', 'new_fact')
+                      AND pm.created_at <= ${asOfIso}::text::timestamptz) AS has_feedback,
+           EXISTS (SELECT 1 FROM harness_shared.consult_post_meta pm
+                    WHERE pm.workspace_id = cs.workspace_id AND pm.conversation_id = cs.conversation_id
+                      AND pm.author_id <> cs.requester_id AND pm.kind = 'decline'
+                      AND pm.created_at <= ${asOfIso}::text::timestamptz) AS has_decline
+      FROM harness_shared.consult_state cs
+     WHERE cs.workspace_id = ${workspaceId}
+       AND cs.created_at < ${untilIso}::timestamptz
+       AND cs.created_at >= ${sinceIso}::timestamptz - ${CONSULT_OPEN_MARGIN}::interval
+       AND (cs.closed_at IS NULL OR cs.closed_at >= ${sinceIso}::timestamptz OR cs.created_at >= ${sinceIso}::timestamptz)
+     ORDER BY cs.created_at DESC
      LIMIT ${limit + 1}
   `;
   const truncated = rows.length > limit;

@@ -24,6 +24,8 @@ export interface ResolvedBackendLaunch {
   bin: string;
   /** Whether the OPERATOR's PATH resolved it (informational — the spawned PATH differs). */
   onPath: boolean;
+  /** The bin came from the per-launch override env (backendBinOverrideEnvKey), not discovery. */
+  override: boolean;
   /** Shebang interpreter as written (`bun`, `/usr/bin/python3`), or null. */
   interpreter: string | null;
   /** Absolute path to the interpreter, or null when there is none / it is unresolvable. */
@@ -85,6 +87,13 @@ export function resolveSpawnPathDirs(
 
 /** Env key carrying the resolved dirs to every spawner (server-side and Tauri). */
 export const SPAWN_PATH_DIRS_ENV: string;
+
+/**
+ * The env key that pins one launch's backend binary (`PAPERCUSP_BACKEND_BIN_CODEX`).
+ * While set, resolveBackendLaunch skips discovery and returns null unless the value
+ * is an absolute path to an executable file (fail closed, never a host fallback).
+ */
+export function backendBinOverrideEnvKey(agent: string): string;
 
 /** The two PATH layers a spawned window is GUARANTEED, split by precedence. */
 export function spawnPathLayers(env?: Record<string, string | undefined>): {

@@ -1,0 +1,141 @@
+{
+  "schemaVersion": "p011-cache-heap-selection-qualification-v1",
+  "measuredAt": "2026-10-05T16:10:00Z",
+  "ownerId": "su-7db4feb8-04cb-46ce-80c2-844aa23006d2",
+  "nativeSession": "01a10cc0-9639-7510-baf7-d862b18e0831",
+  "workItem": "WI-10004890",
+  "plan": {
+    "slug": "papercusp-log-performance-remediation-2026-09-23",
+    "version": 101,
+    "contentHash": "8ac15bb31f55ef20df51464ae9e326c286a472ecf19b066df98df26ff02b5807",
+    "item": "P-011",
+    "spec": "PERF-OCT1-P011-MEMORY@2",
+    "decision": "D-021"
+  },
+  "scope": {
+    "plane": "canonical-suite-and-isolated-node-inspector",
+    "newOperatorResourceCohort": false,
+    "retainedCacheOwnerAcceptance": false,
+    "nativePhysicalOwnership": "unmeasured",
+    "productionSavings": "unmeasured",
+    "fullExecutedSourceGraph": "unknown",
+    "fullP011Acceptance": false,
+    "shipmentVerified": false
+  },
+  "reuse": "Extended existing readPinnedHeapObjectIds and reused readPinnedState's operatorCache cache.l1.map path and SHA-256 key selection. No new cache, registry, diagnostic service, or graph algorithm.",
+  "selection": {
+    "input": "1–32 exact key SHA-256 digests and the operatorCache owner",
+    "scan": {
+      "maxScanned": 8192,
+      "maxKeyCodeUnits": 16384
+    },
+    "beforeSnapshot": "Identity metadata and WeakRefs to map, entry and value; raw row/value objects are not retained by selection.",
+    "afterSnapshot": "Membership and identity checked against the same map/entry/value, including a final fence after asynchronous CDP ID reads.",
+    "output": "Digest plus distinct entry/value snapshot IDs, explicit gaps, scan coverage and shared-ID overlap warning.",
+    "privacy": "Raw cache keys, arguments, row contents and remote handles do not leave the target in the report.",
+    "missing": "Only a complete digestible scan can call an unmatched digest missing. Incomplete/undigestible scans preserve unobserved statuses and refuse capture."
+  },
+  "source": [
+    {
+      "path": "scripts/cdp-inspector.mjs",
+      "bytes": 60831,
+      "sha256": "465318098afcd445483150edc4fc5d0b40ed458ce96d4e0a7573f0293f1b7a19"
+    },
+    {
+      "path": "scripts/cdp-inspector.d.mts",
+      "bytes": 15572,
+      "sha256": "ce8474d8ef8f0bea74931db36ec63d3ed16392bcbaa71e665f18e19119911222",
+      "generator": "npm run gen:declarations -- --files=scripts/cdp-inspector.mjs"
+    },
+    {
+      "path": "packages/operator-core/lib/cdp-inspector.test.ts",
+      "bytes": 72201,
+      "sha256": "dfa5defa3c4b943689782868c2c777bc5e9ac61927a072870099bada3837b8e3"
+    }
+  ],
+  "tests": [
+    {
+      "testRunId": 20703973,
+      "result": "PASS",
+      "passed": 63,
+      "filteredSkipped": 0,
+      "exitCode": 0,
+      "sourceScope": "Complete inspector suite before one test-only response-union narrowing; runtime reader and declaration bytes match final source.",
+      "testSourceSha256": "16676289cc946791144c244eeb8d3df01735d9cf0e7225fe5e5a26141962c575",
+      "log": {
+        "path": ".papercusp/logs/cohort-bcb169e00141e1a8ae1c566c19ad4d5d25726a1cb5360b2e07abc23dbbd19710.log",
+        "bytes": 4572,
+        "sha256": "bcb169e00141e1a8ae1c566c19ad4d5d25726a1cb5360b2e07abc23dbbd19710"
+      },
+      "routerProvenance": "unknown; HEAD moved while named test was running"
+    },
+    {
+      "testRunId": 20703974,
+      "result": "PASS",
+      "passed": 24,
+      "filteredSkipped": 39,
+      "exitCode": 0,
+      "sourceScope": "Every new cache-selection guard on final named test bytes; existing 39 tests were filtered, not re-executed.",
+      "testSourceSha256": "dfa5defa3c4b943689782868c2c777bc5e9ac61927a072870099bada3837b8e3",
+      "log": {
+        "path": ".papercusp/logs/cohort-d5665a2f579b77858ea1b4b333422fc3368df7ace107a2acabd22a006e4eac94.log",
+        "bytes": 16904,
+        "sha256": "d5665a2f579b77858ea1b4b333422fc3368df7ace107a2acabd22a006e4eac94"
+      },
+      "routerProvenance": "stamped for named test file only"
+    }
+  ],
+  "guardCoverage": [
+    "Exact entry and payload IDs with no raw keys/content/handles in report",
+    "Metadata-only weak selection during snapshot callback",
+    "Eviction, map replacement, entry replacement and payload replacement",
+    "Membership race after a CDP ID await",
+    "Accessor and proxy safety at cache path, entry and value",
+    "Scan cap and undigestible-key absence stays unobserved",
+    "Shared payload IDs preserved across distinct entries",
+    "Snapshot and ID failure handle release",
+    "Input bounds, UUID-independent cache selection and PID mismatch",
+    "Zero/invalid/unsafe numeric heap IDs",
+    "Real isolated Node inspector: each returned ID re-resolves to the exact existing map entry/value; child reaped"
+  ],
+  "types": {
+    "initial": {
+      "exitCode": 1,
+      "changedTestError": "TS2339 on fake CDP response union; fixed with an in-operator narrowing",
+      "scriptsDeclarationErrors": 0,
+      "scriptsDeclarationChecked": 1,
+      "log": {
+        "path": ".papercusp/logs/cohort-59970ff78ae17b497304f4a0a8890883b0517b0ee2d7437f5a1fae7e90ef3a4d.log",
+        "bytes": 3140,
+        "sha256": "59970ff78ae17b497304f4a0a8890883b0517b0ee2d7437f5a1fae7e90ef3a4d"
+      }
+    },
+    "final": {
+      "exitCode": 0,
+      "namedTestChecked": 1,
+      "namedTestErrors": 0,
+      "route": "npm run lint:tsc -- --files=packages/operator-core/lib/cdp-inspector.test.ts --all-errors",
+      "log": {
+        "path": ".papercusp/logs/cohort-3337db773148d8049e1d7502705a2ce38e61ed186df87294fa1f1d6b8dafc495.log",
+        "bytes": 1024,
+        "sha256": "3337db773148d8049e1d7502705a2ce38e61ed186df87294fa1f1d6b8dafc495"
+      }
+    },
+    "limits": "Focused scripts declaration and actual changed test-file coverage; no global project clean claim."
+  },
+  "savedR3Preserved": {
+    "qualificationPath": "docs/evidence/papercusp-oct5-p011-request-retainers-r3-qualification-2026-10-05.json",
+    "qualificationSha256": "c535b17b01dee28b564808a4e4bedb483bca10d35cb7cacd8059ed5d552d1dcf",
+    "rawSha256": "0b67e72bf878b0c6174192692c8cfbc036aeca76ff0a902342d0a243d1baeff7",
+    "oracleSha256": "e60ad4a097b115a7aa2bf15c5a7bac270d15e9d2490bceaf9ed4f120127e8fdf",
+    "status": "Historical raw/qualification/oracle receipts unchanged. New inspector bytes supersede the old named-source fence; no retrospective freshness claim."
+  },
+  "next": "Extend the maintained inbox comparison's exact raw-key selection and independent raw-graph oracle to use cacheEntries entry/value IDs, deduplicate shared payload IDs, and preserve gap statuses. Freeze source/test/runtime identities before one necessary paired resource/retainer measurement; no replay merely for recovery.",
+  "acceptanceLimits": [
+    "Controlled Node identity tests prepare cache-owner measurement; they are not a serving-operator resource comparison.",
+    "Selected cache IDs are not allocation stacks or exclusive physical/native ownership.",
+    "All collected query targets in R3 remain gaps; they were not pinned to force a positive result.",
+    "Full P011@2/D021 eight-source dispositions, P010, R8/R9, authenticated native owner affirmation, independent acceptance and shipment remain open.",
+    "LIVE_GATE_OPS remains stopped after predecessor observed a peer hold; no new gate reads or intervention this turn."
+  ]
+}

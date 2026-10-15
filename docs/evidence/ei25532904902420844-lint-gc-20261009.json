@@ -1,0 +1,63 @@
+{
+  "workItem": "EI-25532904902420844",
+  "parent": "WI-10007751",
+  "observedAt": "2026-10-09T20:17:00Z",
+  "plane": "canonical staging current source; live background build not yet verified",
+  "reused": [
+    "scripts/lint-as-committed.mjs sweepStaleWorkRoots expiry/artifact/cap policy",
+    "native-bg-task-ledger.ts openWriterPidsMany fail-closed fd/cwd census",
+    "existing hourly fleetLogsGc DBOS workflow",
+    "operator-app-root.ts source and bundle path resolver"
+  ],
+  "sourceSha256": {
+    "scripts/lint-as-committed.mjs": "40add737b5bd71345fd40b6bc58ee15dfd9f47ce0dc84b941455f5b0bce2f606",
+    "packages/operator-core/lib/fleet-logs-gc.ts": "d4f30092bf5741475639088aacc3f40de5ca20966929cc839d7cc0b4b8d5da04",
+    "packages/operator-core/lib/fleet-logs-gc.test.ts": "09623b1bf4a17612ee931e382c4517f193f104093e43ca1142f96735d6daab5d",
+    "packages/operator-core/lib/dbos/periodic-workflows.ts": "904171c3dd8da9d50920e911563070386ea723082018875a444af011576aa993"
+  },
+  "verification": [
+    {
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/fleet-logs-gc.test.ts",
+      "startedAt": "2026-10-09T20:13:29.472Z",
+      "result": "exit 0; 44 passed, zero skips; stamped working-tree provenance",
+      "invocation": "c9adeaac32c2444c9e9e2604be5b9f27"
+    },
+    {
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/lint-as-committed.test.ts -t 'extracted-tree lifecycle'",
+      "startedAt": "2026-10-09T20:14:39.872Z",
+      "result": "exit 0; 9 selected lifecycle tests passed, 92 other cases intentionally not run",
+      "invocation": "10b634b8ca8442148d18cb823a51c1f8"
+    },
+    {
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run lint:tsc -- --files=packages/operator-core/lib/fleet-logs-gc.ts,packages/operator-core/lib/fleet-logs-gc.test.ts,packages/operator-core/lib/dbos/periodic-workflows.ts",
+      "result": "exit 0; selected files and direct importer clean",
+      "stamp": "2026-10-09T20:12:45.000Z"
+    },
+    {
+      "command": "PC_ISOLATED_RUNTIME_PROOF=1 PAPERCUSP_TEST_RUN_HARNESS=papercusp node scripts/with-test-pg.mjs --isolated-runtime -- npm run test:file -- packages/operator-core/lib/fleet-logs-gc.test.ts",
+      "result": "exit 0; cleanup complete, runtimeRemoved=true and pgDataRemoved=true",
+      "privatePg": "/dev/shm/pcv/papercusp-test-pg-CWtLme",
+      "privatePort": 45393,
+      "counts": "not reconstructed from truncated middle output; separate exact 44-test run above is the count evidence"
+    },
+    {
+      "result": "normal uid1000 census incomplete; same maintained scanner under uid0 complete with no holders",
+      "scope": "failClosed descendants/cwd scan of /tmp/papercusp-lint-as-committed-scan-proof"
+    },
+    {
+      "result": "actual default background adapter from uid1000 returned scanComplete=true, one keep-expired wouldRemove, preserved=true",
+      "scope": "read-only owned fixture /tmp/wi10007751-lint-default-Chbyfo; fixture removed by its own teardown"
+    }
+  ],
+  "recurrenceGuards": [
+    "expiry without another lint invocation",
+    "dependent artifacts and young roots preserved",
+    "genuinely open descendant fd preserved",
+    "incomplete or throwing census defers all removals, including dead owners",
+    "custody marker change defers removal",
+    "dry-run preserves source",
+    "existing hourly workflow retains the GC invocation"
+  ],
+  "supersededEvidence": "First combined run is not final proof: six new cases used the wrong fixture marker path, and the fixture was corrected during that run. Final fleet suite and focused lifecycle reruns above are stable.",
+  "shipment": "No main, deploy or current LIVE_GATE_OPS claim. Parent disk/global-producer/old-WAL qualification remains open."
+}

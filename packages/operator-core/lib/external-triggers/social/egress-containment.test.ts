@@ -17,8 +17,8 @@
  * shape for the wave-B gate. So a module's platforms come from the markers the
  * code itself carries — `readonly platformId` on a read adapter, `platform:` /
  * `readonly platform` on a write adapter — and a shared module inherits the
- * platforms of the modules that IMPORT it. `facebook-common.ts` is therefore
- * facebook's because two facebook adapters import it, not because of its name.
+ * platforms of the modules that IMPORT it. `instagram-common.ts` is therefore
+ * Instagram's because its adapters import it, not because of its name.
  *
  * IT MUST NOT PASS VACUOUSLY. A guard whose job is to notice an absence reports
  * a fully-compliant tree and a broken scanner identically. So it asserts a
@@ -56,7 +56,7 @@ const MARKERS = [
   /\bplatform:\s*'([a-z0-9-]+)'/g,
 ];
 
-/** Local sibling imports, e.g. `from './facebook-common'`. */
+/** Local sibling imports, e.g. `from './instagram-common'`. */
 const LOCAL_IMPORT = /from\s+'\.\/([a-zA-Z0-9._-]+)'/g;
 
 /** Every `scheme://host` literal left after comments are removed. */
@@ -176,19 +176,17 @@ describe('the scan is measuring something', () => {
   });
 
   it('attributes the shared modules through imports rather than filenames', () => {
-    // These three carry the only API-origin constants in the tree and declare no
+    // These shared modules carry API-origin constants and declare no
     // platform marker of their own. If import propagation broke, they would go
     // unattributed and the gate would report that rather than silently pass.
     const platformsOf = (file: string) =>
       [...(MODULES.find((m) => m.file === file)?.platforms ?? [])].sort();
-    expect(platformsOf('facebook-common.ts')).toEqual(['facebook-pages']);
     expect(platformsOf('instagram-common.ts')).toEqual(['instagram']);
     expect(platformsOf('threads-common.ts')).toEqual(['threads']);
   });
 
   it('is looking at the origin constants it exists to police', () => {
     const hostsIn = (file: string) => hostLiterals(MODULES.find((m) => m.file === file)?.code ?? '');
-    expect(hostsIn('facebook-common.ts')).toContain('graph.facebook.com');
     expect(hostsIn('instagram-common.ts')).toContain('graph.facebook.com');
     expect(hostsIn('threads-common.ts')).toContain('graph.threads.net');
   });

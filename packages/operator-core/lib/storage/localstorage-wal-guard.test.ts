@@ -1,4 +1,8 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true),
+  broadcastSevereEventResolved: vi.fn(async () => true) }));
+vi.mock('../agent-tools/coordination/tools/conditions', () => ({ readConditionEnvelopes: async () => [],
+  computeConditionStates: () => [] }));
 import { mkdtempSync, rmSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +12,7 @@ import {
   discoverWalCandidates,
   checkpointOne,
   runWalCheckpointSweep,
+  runWalCheckpointGuard,
   DEFAULT_WAL_CHECKPOINT_THRESHOLD_BYTES,
   type WalCandidate,
 } from './localstorage-wal-guard';
@@ -166,6 +171,69 @@ describe('runWalCheckpointSweep (end-to-end, real fs + sqlite)', () => {
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
 
+  it('reports and alerts on an unreclaimed WAL without disturbing a live reader', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'wal-guard-retained-'));
+    const dbPath = join(dir, 'busy.localstorage');
+    const writer = new DatabaseSync(dbPath);
+    writer.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE t (v TEXT);');
+    const insert = writer.prepare('INSERT INTO t (v) VALUES (?)');
+    for (let i = 0; i < 16; i++) insert.run('x'.repeat(4096));
+    const reader = new DatabaseSync(dbPath);
+    reader.exec('BEGIN;');
+    reader.prepare('SELECT count(*) FROM t').get();
+    try {
+      for (let i = 0; i < 128; i++) insert.run('y'.repeat(4096));
+      const before = statSync(`${dbPath}-wal`).size;
+      expect(before).toBeGreaterThan(MB);
+      const result = runWalCheckpointSweep({ roots: [dir], thresholdBytes: MB });
+      expect(result.checkpointed).toBe(1);
+      expect(result.bytesReclaimed).toBe(0);
+      expect(result.retained).toEqual([{ dbPath, walBytes: before, busy: true }]);
+      const notify = vi.fn(async (_input: { title: string; body: string }) => {});
+      const reported = await runWalCheckpointGuard({ roots: [dir], thresholdBytes: MB }, {
+        notify, recentlyEscalated: async () => false,
+      });
+      expect(reported.escalated).toBe(true);
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Desktop localStorage WAL not reclaimed',
+        body: expect.stringContaining(`${dbPath}-wal`),
+      }));
+      expect(notify.mock.calls[0]?.[0].body).toContain('SQLite reported busy');
+      const suppressed = await runWalCheckpointGuard({ roots: [dir], thresholdBytes: MB }, {
+        notify, recentlyEscalated: async () => true,
+      });
+      expect(suppressed.escalated).toBe(false);
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(reader.prepare('SELECT count(*) AS n FROM t').get()?.n).toBe(16);
+      expect(writer.prepare('SELECT count(*) AS n FROM t').get()?.n).toBe(144);
+    } finally {
+      reader.exec('COMMIT;');
+      reader.close();
+      writer.close();
+    }
+  });
+
+  it('does not alert after a successful checkpoint or an empty sweep', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'wal-guard-no-alert-'));
+    const dbPath = join(dir, 'healthy.localstorage');
+    const writer = new DatabaseSync(dbPath);
+    writer.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE t (v TEXT);');
+    writer.prepare('INSERT INTO t (v) VALUES (?)').run('healthy');
+    const notify = vi.fn(async (_input: { title: string; body: string }) => {});
+    try {
+      const result = await runWalCheckpointGuard({ roots: [dir], thresholdBytes: 1 }, {
+        notify, recentlyEscalated: async () => false,
+      });
+      expect(result.bytesReclaimed).toBeGreaterThan(0);
+      expect(result.retained).toEqual([]);
+      expect(result.escalated).toBe(false);
+      expect(notify).not.toHaveBeenCalled();
+      const empty = await runWalCheckpointGuard({ roots: [] }, { notify });
+      expect(empty.escalated).toBe(false);
+      expect(notify).not.toHaveBeenCalled();
+    } finally { writer.close(); }
+  });
+
   it('checkpoints only the over-threshold db and reports bytes reclaimed', () => {
     dir = mkdtempSync(join(tmpdir(), 'wal-guard-sweep-'));
 
@@ -212,6 +280,6 @@ describe('runWalCheckpointSweep (end-to-end, real fs + sqlite)', () => {
 
   it('a missing root sweeps to an empty, error-free result', () => {
     const result = runWalCheckpointSweep({ roots: ['/nope/' + Date.now()] });
-    expect(result).toEqual({ checked: 0, overThreshold: 0, checkpointed: 0, bytesReclaimed: 0, errors: [] });
+    expect(result).toEqual({ checked: 0, overThreshold: 0, checkpointed: 0, bytesReclaimed: 0, retained: [], errors: [] });
   });
 });

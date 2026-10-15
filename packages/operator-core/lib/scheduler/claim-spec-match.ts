@@ -8,6 +8,7 @@
  * issue-family fallback one shared decision instead of four approximations.
  */
 import type { WorkItem } from '../work-items';
+import { itemClassOfPayload, type ItemClass } from '../scout/ideation-origin';
 import type { ClaimSpec, FilterLeaf, FilterNode } from './claim-spec';
 
 export interface ClaimSpecSubject {
@@ -29,6 +30,11 @@ export interface ClaimSpecSubject {
    * HUMAN gate: a design draft or an owner is required before implementation.
    */
   triageGate: string | null;
+  /**
+   * P-005 (R-10/R-11): 'ideation' for a Scout/su-ideate idea, else 'work' — never null. Mirrors
+   * FIELD_MAP.item_class; see scout/ideation-origin.ts for the single definition.
+   */
+  itemClass: ItemClass;
   age: number | null;
   riskTier: string | null;
   redundancy: number | null;
@@ -162,6 +168,7 @@ export function claimSpecSubjectFromWorkItem(item: WorkItem, topicTags: string[]
     // EI-16052: mirrors FIELD_MAP.triage_gate — see triageGateOfPayload for why the null
     // semantics have to match the SQL leg exactly.
     triageGate: triageGateOfPayload(payload),
+    itemClass: itemClassOfPayload(payload),
     age: Number.isFinite(createdMs) ? createdMs : null,
     riskTier: typeof payload.risk_tier === 'string' ? payload.risk_tier : null,
     // WI-38326: `COALESCE(redundancy, 1)`. The default is the whole fix for this field, not a
@@ -224,6 +231,7 @@ function valueFor(subject: ClaimSpecSubject, field: FilterLeaf['field']): string
     case 'plan_item': return subject.planItem;
     case 'fleet': return subject.fleet;
     case 'triage_gate': return subject.triageGate;
+    case 'item_class': return subject.itemClass;
     case 'age': return subject.age;
     case 'risk_tier': return subject.riskTier;
     case 'redundancy': return subject.redundancy;
@@ -273,6 +281,66 @@ function wordBoundaryRegex(literal: string): RegExp {
   return new RegExp(`(?<![A-Za-z0-9])${escapeRegexLiteral(literal)}(?![A-Za-z0-9])`, 'i');
 }
 
+// A census evaluates the same filter leaves for thousands of rows. Keep the
+// compiled expression with its leaf, without retaining retired specs globally.
+// Check the operator and literal because callers may edit a leaf in place.
+const textPredicates = new WeakMap<FilterLeaf, { op: 'word' | 'glob'; literal: string; regex: RegExp }>();
+
+function textPredicateRegex(leaf: FilterLeaf, op: 'word' | 'glob'): RegExp {
+  const literal = String(leaf.value);
+  const cached = textPredicates.get(leaf);
+  if (cached?.op === op && cached.literal === literal) return cached.regex;
+  const regex = op === 'word' ? wordBoundaryRegex(literal) : globRegex(literal);
+  textPredicates.set(leaf, { op, literal, regex });
+  return regex;
+}
+
+type WordAlternative = { field: FilterLeaf['field']; regex: RegExp } | { node: FilterNode };
+const wordAlternatives = new WeakMap<FilterNode[], {
+  shape: Array<{ node: FilterNode; field?: FilterLeaf['field']; op?: FilterLeaf['op']; literal?: string }>;
+  alternatives: WordAlternative[];
+}>();
+
+/** Like the SQL compiler, scan a field once for direct whole-word alternatives.
+ * Keep this cache with the filter tree and invalidate edited leaves/arrays; a
+ * nested boolean expression remains its own scope and is evaluated normally. */
+function groupedWordAlternatives(nodes: FilterNode[]): WordAlternative[] {
+  const cached = wordAlternatives.get(nodes);
+  if (cached && cached.shape.length === nodes.length && cached.shape.every((saved, index) => {
+    const node = nodes[index]!;
+    return saved.node === node && ('field' in node
+      ? saved.field === node.field && saved.op === node.op && saved.literal === String(node.value)
+      : saved.field === undefined);
+  })) return cached.alternatives;
+
+  const groups = new Map<FilterLeaf['field'], FilterLeaf[]>();
+  for (const node of nodes) {
+    if (!('field' in node) || node.op !== 'word') continue;
+    const group = groups.get(node.field) ?? [];
+    group.push(node);
+    groups.set(node.field, group);
+  }
+  const emitted = new Set<FilterLeaf['field']>();
+  const alternatives: WordAlternative[] = [];
+  for (const node of nodes) {
+    const group = 'field' in node && node.op === 'word' ? groups.get(node.field) : undefined;
+    if (!group || group.length < 2 || !('field' in node)) {
+      alternatives.push({ node });
+    } else if (!emitted.has(node.field)) {
+      emitted.add(node.field);
+      const literals = [...new Set(group.map(leaf => escapeRegexLiteral(String(leaf.value))))];
+      alternatives.push({ field: node.field,
+        regex: new RegExp(`(?<![A-Za-z0-9])(?:${literals.join('|')})(?![A-Za-z0-9])`, 'i') });
+    }
+  }
+  wordAlternatives.set(nodes, {
+    shape: nodes.map(node => 'field' in node
+      ? { node, field: node.field, op: node.op, literal: String(node.value) } : { node }),
+    alternatives,
+  });
+  return alternatives;
+}
+
 function compareScalar(actual: string | number | null, leaf: FilterLeaf): boolean {
   if (actual == null) {
     // A NULL/absent field has NO value, so it matches no positive predicate (`=`, `glob`,
@@ -288,8 +356,8 @@ function compareScalar(actual: string | number | null, leaf: FilterLeaf): boolea
   }
   const values = Array.isArray(leaf.value) ? leaf.value : [leaf.value];
   if (leaf.op === 'in') return values.some((v) => String(actual) === String(v));
-  if (leaf.op === 'glob') return globRegex(String(leaf.value)).test(String(actual));
-  if (leaf.op === 'word') return wordBoundaryRegex(String(leaf.value)).test(String(actual));
+  if (leaf.op === 'glob') return textPredicateRegex(leaf, 'glob').test(String(actual));
+  if (leaf.op === 'word') return textPredicateRegex(leaf, 'word').test(String(actual));
   if (leaf.op === 'contains') return String(actual).toLowerCase().includes(String(leaf.value).toLowerCase());
 
   if (typeof actual === 'number') {
@@ -323,8 +391,8 @@ function matchLeaf(subject: ClaimSpecSubject, leaf: FilterLeaf): boolean {
   if (Array.isArray(actual)) {
     const wanted = (Array.isArray(leaf.value) ? leaf.value : [leaf.value]).map(String);
     if (leaf.op === 'in') return actual.some((v) => wanted.includes(v));
-    if (leaf.op === 'glob') return actual.some((v) => globRegex(String(leaf.value)).test(v));
-    if (leaf.op === 'word') return actual.some((v) => wordBoundaryRegex(String(leaf.value)).test(v));
+    if (leaf.op === 'glob') return actual.some((v) => textPredicateRegex(leaf, 'glob').test(v));
+    if (leaf.op === 'word') return actual.some((v) => textPredicateRegex(leaf, 'word').test(v));
     if (leaf.op === '!=') return !actual.includes(String(leaf.value));
     // SQL compiler treats array '=' and 'contains' as membership.
     return actual.includes(String(leaf.value));
@@ -367,7 +435,13 @@ export function matchesClaimSpecFilter(subject: ClaimSpecSubject, filter: Filter
   if (!filter) return true;
   if ('field' in filter) return matchLeaf(subject, filter);
   if ('all' in filter) return filter.all.every((node) => matchesClaimSpecFilter(subject, node));
-  if ('any' in filter) return filter.any.some((node) => matchesClaimSpecFilter(subject, node));
+  if ('any' in filter) return groupedWordAlternatives(filter.any).some(alternative => {
+    if ('node' in alternative) return matchesClaimSpecFilter(subject, alternative.node);
+    const actual = valueFor(subject, alternative.field);
+    return Array.isArray(actual)
+      ? actual.some(value => alternative.regex.test(value))
+      : actual != null && alternative.regex.test(String(actual));
+  });
   return !matchesClaimSpecFilter(subject, filter.not);
 }
 

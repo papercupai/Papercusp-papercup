@@ -9,7 +9,7 @@ import {
   INTENT_STALE_SEC,
   INTENT_DIVERGENCE_SEC,
   mergeTier1,
-  stripTurnPartLastAt,
+  stripDerivationInputs,
   TURN_PART_FRESHNESS_WINDOW_SEC,
   type PresenceTier1Joins,
 } from './presence-tier1';
@@ -129,8 +129,8 @@ describe('deriveLastActive (P-011: transcript-freshness leg)', () => {
   });
 });
 
-describe('stripTurnPartLastAt (P-011)', () => {
-  it('drops ONLY the derivation-input timestamp, preserving every join field', () => {
+describe('stripDerivationInputs (P-011 turnPartLastAt, P-010 heldWorkIntent)', () => {
+  it('drops ONLY the derivation inputs, preserving every join field', () => {
     const join: PresenceTier1Joins = {
       claimedItems: ['P-001'],
       model: 'opus',
@@ -139,14 +139,16 @@ describe('stripTurnPartLastAt (P-011)', () => {
       awaitingNote: null,
       wakeMode: 'auto',
       turnPartLastAt: iso(NOW - 1000),
+      heldWorkIntent: { workItemId: 'WI-1', title: 'Fix the thing' },
     };
-    const rest = stripTurnPartLastAt(join);
+    const rest = stripDerivationInputs(join);
     expect(rest).not.toHaveProperty('turnPartLastAt');
+    expect(rest).not.toHaveProperty('heldWorkIntent');
     expect(rest).toMatchObject({ claimedItems: ['P-001'], model: 'opus', wakeMode: 'auto' });
   });
 
   it('an absent join yields an empty spreadable object, not a throw', () => {
-    expect(stripTurnPartLastAt(undefined)).toEqual({});
+    expect(stripDerivationInputs(undefined)).toEqual({});
   });
 });
 

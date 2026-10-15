@@ -10,13 +10,16 @@ vi.mock('../operator-state-pg', () => ({
   writeOperatorState: vi.fn(async (_table: string, next: unknown) => {
     pgState.payload = next;
   }),
+  updateOperatorState: vi.fn(async (_table: string, fallback: unknown, mutate: (current: unknown) => unknown) => {
+    pgState.payload = mutate(pgState.payload ?? fallback); return pgState.payload;
+  }),
 }));
 // Arming a real timer in a unit test would leak into the suite.
 vi.mock('@papercusp/scheduled-registry', () => ({ managedSetInterval: vi.fn() }));
 
 import { SUPERUSER_FALLBACK_CLIENT_ID } from '../agent-tools/coordination/identity';
 import { directedImplementerConfinement } from './session-confinement';
-import { checkSessionConfinement, hasSessionConfinementResolver } from './session-confinement-port';
+import { checkSessionConfinement, hasSessionConfinementResolver, sessionAllowsAmbientContext } from './session-confinement-port';
 import {
   __markSessionConfinementsPrimedForTest,
   __setSessionConfinementCacheForTest,
@@ -24,6 +27,7 @@ import {
   refreshSessionConfinements,
   releaseSessionConfinement,
   sessionConfinementFor,
+  readSessionConfinement,
   type StoredSessionConfinement,
 } from './session-confinement-store';
 
@@ -56,6 +60,122 @@ describe('session-confinement store — installation', () => {
     // unconfined, with nothing thrown and nothing logged. So "did anything install it"
     // is itself an invariant worth a test.
     expect(hasSessionConfinementResolver()).toBe(true);
+  });
+});
+
+describe('exact native launch ceilings', () => {
+  it('accepts the same ceiling after JSONB reorders object keys but still refuses policy changes', async () => {
+    const confinement = { denyTools: [], denyOutside: ['work_items:get'],
+      denyWorkItemsOutside: { id: 'F-own', harness: 'bench', checkout: '/private/assignment' },
+      denyAmbientContext: true as const, reason: 'assignment', imposedBy: 'host' };
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement })).toMatchObject({ ok: true });
+    // JSONB preserves values and array order, but not object insertion order.
+    // The mock normally returns the original object, masking this round trip.
+    const reordered = { imposedBy: 'host', reason: 'assignment', denyAmbientContext: true as const,
+      denyWorkItemsOutside: { checkout: '/private/assignment', harness: 'bench', id: 'F-own' },
+      denyOutside: ['work_items:get'], denyTools: [] };
+    expect(JSON.stringify(reordered)).not.toBe(JSON.stringify(confinement));
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement: reordered }) } };
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement })).toMatchObject({ ok: true });
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER,
+      confinement: { ...confinement, denyOutside: ['work_items:get', 'work_items:complete'] } }))
+      .rejects.toThrow(/cannot be replaced/);
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER,
+      confinement: { ...confinement, denyWorkItemsOutside: { ...confinement.denyWorkItemsOutside, id: 'F-other' } } }))
+      .rejects.toThrow(/cannot be replaced/);
+    expect(await readSessionConfinement(IMPLEMENTER_OWNER)).toEqual(confinement);
+  });
+  it('snapshots nominated product reads, refuses broad replacement, and fails closed on corrupt stored selectors', async () => {
+    const reads = { harness: 'papercusp', docsHarness: 'engineering', docsSlugs: ['agent-insights/product-guide'], testFiles: ['lib/probe.test.ts'] };
+    const confinement = { denyTools: [], denyOutside: ['docs:get', 'testing:runs'], denyProductReadsOutside: reads,
+      reason: 'blind product reads', imposedBy: 'host' };
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement })).toMatchObject({ ok: true });
+    reads.docsSlugs.push('other-guide');
+    reads.testFiles.push('lib/other.test.ts');
+    expect((await readSessionConfinement(IMPLEMENTER_OWNER))?.denyProductReadsOutside).toEqual({
+      harness: 'papercusp', docsHarness: 'engineering', docsSlugs: ['agent-insights/product-guide'], testFiles: ['lib/probe.test.ts'],
+    });
+    expect(await checkSessionConfinement({ toolName: 'docs:get', args: { harness: 'engineering', slugs: ['other-guide'] },
+      ctx: { isSuperuser: true, workspaceId: 'papercusp-workspace', uiClientId: IMPLEMENTER_OWNER } as UnifiedToolContext,
+    })).toMatchObject({ decision: 'deny' });
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement })).rejects.toThrow(/cannot be replaced/);
+    const malformed = { ...confinement, denyProductReadsOutside: { ...reads, testFiles: ['../outside.test.ts'] } };
+    expect(await declareSessionConfinement({ ownerId: 'su-other', confinement: malformed })).toMatchObject({ ok: false });
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement: malformed }) } };
+    await expect(readSessionConfinement(IMPLEMENTER_OWNER)).rejects.toThrow(/malformed/);
+    expect(await declareSessionConfinement({ ownerId: 'su-other', confinement: {
+      ...confinement, denyProductReadsOutside: { ...reads, docsSlugs: null } as never,
+    } })).toMatchObject({ ok: false });
+  });
+
+  it('snapshots the exact assignment, refuses retargeting, and rejects malformed stored scope', async () => {
+    const boundary = { id: 'F-own', harness: 'bench', checkout: '/private/assignment' };
+    const confined = { denyTools: [], denyOutside: ['work_items:get'], denyWorkItemsOutside: boundary, reason: 'assignment', imposedBy: 'host' };
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement: confined })).toMatchObject({ ok: true });
+    boundary.id = 'F-other';
+    expect((await readSessionConfinement(IMPLEMENTER_OWNER))?.denyWorkItemsOutside).toEqual({ id: 'F-own', harness: 'bench', checkout: '/private/assignment' });
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement: confined })).rejects.toThrow(/cannot be replaced/);
+    const malformed = { ...confined, denyWorkItemsOutside: { id: 'F-own', harness: '../other', checkout: '/private/assignment' } };
+    expect(await declareSessionConfinement({ ownerId: 'su-other', confinement: malformed })).toMatchObject({ ok: false });
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement: malformed }) } };
+    await expect(readSessionConfinement(IMPLEMENTER_OWNER)).rejects.toThrow(/malformed/);
+  });
+  it('persists frozen context policy, keeps it after expiry, and refuses to remove it', async () => {
+    const frozen = { denyTools: [], denyOutside: ['coord:whoami'], denyAmbientContext: true as const,
+      reason: 'frozen benchmark', imposedBy: 'host' };
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private', confinement: frozen })).toMatchObject({ ok: true });
+    expect(await sessionAllowsAmbientContext({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private' })).toBe(false);
+    const payload = pgState.payload as { sessions: Record<string, StoredSessionConfinement> };
+    payload.sessions[IMPLEMENTER_OWNER] = { ...payload.sessions[IMPLEMENTER_OWNER], expiresAt: new Date(0).toISOString() };
+    expect(await sessionAllowsAmbientContext({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private' })).toBe(false);
+    const { denyAmbientContext: _denied, ...widened } = frozen;
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private', confinement: widened })).rejects.toThrow(/cannot be replaced/);
+  });
+  it('fails closed on a malformed stored ambient policy and refuses invalid writes', async () => {
+    const malformed = { denyTools: [], denyOutside: ['coord:whoami'], denyAmbientContext: false,
+      reason: 'frozen benchmark', imposedBy: 'host' };
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement: malformed as never }) } };
+    await expect(readSessionConfinement(IMPLEMENTER_OWNER, 'private')).rejects.toThrow(/malformed/);
+    expect(await sessionAllowsAmbientContext({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private' })).toBe(false);
+    expect(await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, workspaceId: 'private', confinement: malformed as never })).toMatchObject({ ok: false });
+  });
+  const confinement = { denyTools: [], denyOutside: ['coord:whoami', 'work_items:get'],
+    reason: 'metered native gateway', imposedBy: 'benchmark-host' };
+  it.each(['double-encoded JSONB', 'invalid population'])('rejects %s as unreadable authority', async kind => {
+    pgState.payload = kind === 'double-encoded JSONB' ? JSON.stringify({ sessions: {} }) : { sessions: [] };
+    await expect(readSessionConfinement(IMPLEMENTER_OWNER, 'bench-private')).rejects.toThrow(/population is malformed/);
+  });
+  it('reads a declaration written by another host even with an empty warm cache', async () => {
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement }) } };
+    expect(await readSessionConfinement(IMPLEMENTER_OWNER, 'bench-private')).toEqual(confinement);
+    expect(await checkSessionConfinement({ toolName: 'capability:bash', ctx: {
+      isSuperuser: true, workspaceId: 'bench-private', uiClientId: IMPLEMENTER_OWNER,
+    } as UnifiedToolContext })).toMatchObject({ decision: 'deny' });
+  });
+  it('fails closed after expiry and retains the strict row across refresh/pruning', async () => {
+    pgState.payload = { sessions: { [IMPLEMENTER_OWNER]: stored({ confinement, expiresAt: 'invalid' }) } };
+    await refreshSessionConfinements();
+    expect(sessionConfinementFor(IMPLEMENTER_OWNER)?.denyOutside).toEqual([]);
+    await declareSessionConfinement({ ownerId: 'su-another', confinement: CONFINEMENT });
+    expect((pgState.payload as { sessions: Record<string, unknown> }).sessions[IMPLEMENTER_OWNER]).toBeDefined();
+    expect((await readSessionConfinement(IMPLEMENTER_OWNER))?.denyOutside).toEqual([]);
+  });
+  it('snapshots the declaration and refuses a wider replacement', async () => {
+    const ceiling = ['coord:whoami'];
+    await declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement: { ...confinement, denyOutside: ceiling } });
+    ceiling.push('capability:bash');
+    expect((await readSessionConfinement(IMPLEMENTER_OWNER))?.denyOutside).toEqual(['coord:whoami']);
+    await expect(declareSessionConfinement({ ownerId: IMPLEMENTER_OWNER, confinement }))
+      .rejects.toThrow(/cannot be replaced/);
+  });
+  it('denies an authoritative store failure instead of using an unconfined cache miss', async () => {
+    const pg = await import('../operator-state-pg');
+    vi.mocked(pg.readOperatorState).mockRejectedValueOnce(new Error('store down'));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(await checkSessionConfinement({ toolName: 'capability:bash', ctx: {
+      isSuperuser: true, workspaceId: 'bench-private', uiClientId: IMPLEMENTER_OWNER,
+    } as UnifiedToolContext })).toMatchObject({ decision: 'deny' });
+    log.mockRestore();
   });
 });
 

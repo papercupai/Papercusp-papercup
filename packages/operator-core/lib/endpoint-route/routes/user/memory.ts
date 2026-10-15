@@ -338,12 +338,13 @@ const del = defineTool({
   auth: 'loopback',
   async handler(req) {
     const user = await getSessionUserOrDefault(req.headers);
-    const backend = getMemoryBackend();
-    const avail = await backend.available();
-    if (!avail.ok) return Response.json({ error: avail.reason }, { status: 503 });
     const url = new URL(req.url);
     const id = url.searchParams.get('id');
     const all = url.searchParams.get('all');
+    if (!id && all !== '1') return Response.json({ error: 'id_or_all_required' }, { status: 400 });
+    const backend = getMemoryBackend();
+    const avail = await backend.available();
+    if (!avail.ok) return Response.json({ error: avail.reason }, { status: 503 });
     if (all === '1') {
       const mine = await backend.list({ scope: user.id });
       let n = 0;

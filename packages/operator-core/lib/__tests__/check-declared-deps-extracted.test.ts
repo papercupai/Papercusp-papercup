@@ -32,6 +32,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
@@ -39,6 +40,7 @@ import { RUNTIME_CONTENT_PROBES, declaredVersionRange, findIncompleteWorkspacePa
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — same, for the post-install verification wired into install:safe.
 import { normalizeNpmArgs, packageLocalRepairTargets, parseCliArgs, removePackageLocalRepairLockEntries, repoLockName, runCommandUnderInstallMutex, verifyDepsExtracted } from '../../../../scripts/npm-install-safe.mjs';
+import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 
 type RuntimeProbeFailure = { specifier: string; detail: string };
 
@@ -141,6 +143,22 @@ describe('check-declared-deps-extracted detector (EI-18666853411437489)', () => 
     });
     mkdirSync(join(root, 'apps', 'not-a-workspace'), { recursive: true });
     expect(resolveWorkspaceDirs(root)).toEqual(['apps/operator', 'apps/operator-vite']);
+  });
+
+  it('does not diagnose or repair dependencies of a negatively excluded workspace', async () => {
+    const root = fixture({
+      workspaces: ['apps/*', '!apps/*-checkpoint'],
+      packages: {
+        'apps/operator': { dependencies: { present: '^1' } },
+        'apps/drill-checkpoint': { dependencies: { 'excluded-missing': '^1' } },
+      },
+      extracted: { '': ['present'] },
+    });
+    expect(resolveWorkspaceDirs(root)).toEqual(['apps/operator']);
+    expect(findUnextractedDeps({ repoRoot: root })).toEqual([]);
+    const runNpm = vi.fn(() => 1);
+    expect(await verifyDepsExtracted({ repoRoot: root, probeSpecifiers: [], runNpm })).toBe(0);
+    expect(runNpm).not.toHaveBeenCalled();
   });
 });
 
@@ -262,6 +280,46 @@ describe('bundle-safe CLI entry detection', () => {
 });
 
 describe('package-local version guard catches readable stale dev tools (EI-20863794002653922)', () => {
+  it.each([
+    ['4.1.8', {}, '4.1.8'],
+    ['$vitest', { vitest: '4.1.8' }, '4.1.8'],
+    [{ '.': '$vitest' }, { vitest: '4.1.8' }, '4.1.8'],
+  ])('checks an installed dev tool against the root override %j', (override, hostDeps, effective) => {
+    const root = fixture({
+      packages: { 'libs/downloader': { devDependencies: { vitest: '^4.1.9' } } },
+      extracted: { 'libs/downloader': ['vitest'] },
+    });
+    writeFileSync(join(root, 'package.json'), JSON.stringify({
+      workspaces: ['libs/downloader'], devDependencies: hostDeps,
+      overrides: { vitest: override },
+    }));
+    const installedPath = join(root, 'libs/downloader/node_modules/vitest/package.json');
+    writeFileSync(installedPath, JSON.stringify({ name: 'vitest', version: '4.1.10' }));
+    expect(findInvalidWorkspacePackageVersions({ repoRoot: root })).toEqual([
+      { package: 'vitest', workspace: 'libs/downloader', declared: effective, installed: '4.1.10' },
+    ]);
+    writeFileSync(installedPath, JSON.stringify({ name: 'vitest', version: '4.1.8' }));
+    expect(findInvalidWorkspacePackageVersions({ repoRoot: root })).toEqual([]);
+  });
+
+  it('honors a direct root override for hoisted runtime dependencies without leaking child rules', () => {
+    const root = fixture({
+      packages: { 'libs/image': { dependencies: { sharp: '^0.34.0', undici: '^6.0.0' } } },
+      extracted: { '': ['sharp', 'undici'] },
+    });
+    writeFileSync(join(root, 'package.json'), JSON.stringify({
+      workspaces: ['libs/image'],
+      overrides: { sharp: '^0.35.0', other: { undici: '^7.0.0' } },
+    }));
+    writeFileSync(join(root, 'node_modules/sharp/package.json'), JSON.stringify({ version: '0.35.0' }));
+    writeFileSync(join(root, 'node_modules/undici/package.json'), JSON.stringify({ version: '6.28.1' }));
+    expect(findUnsatisfiedDeclaredDepRanges({ repoRoot: root })).toEqual([]);
+    writeFileSync(join(root, 'node_modules/sharp/package.json'), JSON.stringify({ version: '0.34.5' }));
+    expect(findUnsatisfiedDeclaredDepRanges({ repoRoot: root })).toEqual([
+      { dep: 'sharp', workspace: 'libs/image', declared: '^0.35.0', installed: '0.34.5' },
+    ]);
+  });
+
   it('FLAGS Vitest 3 retained under an SSE declaration that now requires Vitest 4', () => {
     const root = fixture({
       packages: {
@@ -537,6 +595,132 @@ describe('runtime-content probes catch partial packages that directory checks ca
 });
 
 describe('install:safe post-install verification (the half the mutex cannot cover)', () => {
+  it('retains a local executable that becomes healthy during asynchronous runtime verification', async () => {
+    const root = fixture({ packages: { 'libs/tooling': {} }, extracted: { 'libs/tooling': ['tool'] } });
+    const nm = join(root, 'libs/tooling/node_modules');
+    writeFileSync(join(nm, 'tool/package.json'), JSON.stringify({ name: 'tool', version: '1.0.0' }));
+    mkdirSync(join(nm, '.bin'));
+    symlinkSync('../tool/cli.js', join(nm, '.bin/tool'));
+    const repair = vi.fn(() => 0);
+    const status = await verifyDepsExtracted({ repoRoot: root, probeSpecifiers: ['hono'], runNpm: repair, deps: {
+      sleep: async () => {},
+      probeRuntimeImport: () => {
+        writeFileSync(join(nm, 'tool/cli.js'), 'settled');
+        return { ok: true };
+      },
+    } });
+    expect(status).toBe(0);
+    expect(repair).not.toHaveBeenCalled();
+    expect(readFileSync(join(nm, '.bin/tool'), 'utf8')).toBe('settled');
+  });
+
+  it('refuses an external .bin directory before changing its dangling link', async () => {
+    silenceConsole();
+    const root = fixture({ packages: { 'libs/tooling': {} }, extracted: {} });
+    const external = fixture({ packages: {}, extracted: {} });
+    const bin = join(external, 'bins');
+    mkdirSync(bin);
+    symlinkSync('../missing/cli.js', join(bin, 'tool'));
+    const nm = join(root, 'libs/tooling/node_modules');
+    mkdirSync(nm, { recursive: true });
+    symlinkSync(bin, join(nm, '.bin'));
+    const repair = vi.fn(() => 0);
+    await expect(verifyDepsExtracted({ repoRoot: root, probeSpecifiers: [], runNpm: repair, deps: { sleep: async () => {} } }))
+      .rejects.toThrow(/executable-link repair outside repo root/);
+    expect(() => symlinkSync('../missing/cli.js', join(bin, 'tool'))).toThrow();
+    expect(repair).not.toHaveBeenCalled();
+  });
+
+  it('refuses a scoped package whose physical parent is outside the repo before any unlink or removal', async () => {
+    silenceConsole();
+    const root = fixture({ packages: { 'libs/tooling': {} }, extracted: {} });
+    const external = fixture({ packages: {}, extracted: { '': ['tool'] } });
+    writeFileSync(join(external, 'node_modules/tool/package.json'), JSON.stringify({ name: 'tool', version: '1.0.0' }));
+    const nm = join(root, 'libs/tooling/node_modules');
+    mkdirSync(join(nm, '.bin'), { recursive: true });
+    symlinkSync(join(external, 'node_modules'), join(nm, '@scope'));
+    symlinkSync('../@scope/tool/cli.js', join(nm, '.bin/tool'));
+    const repair = vi.fn(() => 0);
+    await expect(verifyDepsExtracted({ repoRoot: root, probeSpecifiers: [], runNpm: repair, deps: { sleep: async () => {} } }))
+      .rejects.toThrow(/executable-package repair outside repo root/);
+    expect(existsSync(join(external, 'node_modules/tool/package.json'))).toBe(true);
+    expect(() => symlinkSync('../@scope/tool/cli.js', join(nm, '.bin/tool'))).toThrow();
+    expect(repair).not.toHaveBeenCalled();
+  });
+
+  it('repairs an orphan workspace bin that a real offline hoisted npm install leaves untouched', async () => {
+    silenceConsole();
+    const root = fixture({ packages: { 'libs/tooling': {} }, extracted: {} });
+    const vendor = join(root, 'vendor/tool');
+    mkdirSync(vendor, { recursive: true });
+    writeFileSync(join(vendor, 'package.json'), JSON.stringify({ name: 'fixture-tool', version: '1.0.0', bin: { 'fixture-tool': 'cli.js' } }));
+    writeFileSync(join(vendor, 'cli.js'), '#!/usr/bin/env node\nprocess.exit(0)\n');
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'fixture-root', private: true, workspaces: ['libs/tooling'], dependencies: { 'fixture-tool': 'file:vendor/tool' } }));
+    writeFileSync(join(root, 'libs/tooling/package.json'), JSON.stringify({ name: 'tooling', version: '1.0.0', devDependencies: { 'fixture-tool': 'file:../../vendor/tool' } }));
+    const install = () => execFileSync('npm', ['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: root, stdio: 'pipe', timeout: 30_000 });
+    install();
+    const bin = join(root, 'libs/tooling/node_modules/.bin');
+    mkdirSync(bin, { recursive: true });
+    const orphan = join(bin, 'fixture-tool');
+    symlinkSync('../fixture-tool/cli.js', orphan);
+    install();
+    expect(readFileSync(join(root, 'node_modules/fixture-tool/cli.js'), 'utf8')).toContain('process.exit(0)');
+    expect(() => readFileSync(orphan)).toThrow();
+    // A plain reify left the orphan behind; the wrapper's post-install check
+    // must detect it, perform one repair and retain the usable hoisted binary.
+    let repairs = 0;
+    const status = await verifyDepsExtracted({ repoRoot: root, probeSpecifiers: [], runNpm: () => { repairs++; install(); return 0; }, deps: { sleep: async () => {} } });
+    expect(status).toBe(0);
+    expect(repairs).toBe(1);
+    expect(() => symlinkSync('../fixture-tool/cli.js', orphan)).not.toThrow();
+    expect(existsSync(join(root, 'node_modules/.bin/fixture-tool'))).toBe(true);
+  }, 45_000);
+
+  it('removes the damaged local package before repairing its missing executable content', async () => {
+    silenceConsole();
+    const root = fixture({ packages: { 'libs/tooling': {} }, extracted: { 'libs/tooling': ['tool'] } });
+    const nm = join(root, 'libs/tooling/node_modules');
+    writeFileSync(join(nm, 'tool/package.json'), JSON.stringify({ name: 'tool', version: '1.0.0', bin: { tool: 'cli.js' } }));
+    mkdirSync(join(nm, '.bin'));
+    symlinkSync('../tool/cli.js', join(nm, '.bin/tool'));
+    let repairs = 0;
+    const status = await verifyDepsExtracted({ repoRoot: root, probeSpecifiers: [], runNpm: () => {
+      repairs++;
+      expect(existsSync(join(nm, 'tool'))).toBe(false);
+      mkdirSync(join(nm, 'tool'));
+      writeFileSync(join(nm, 'tool/package.json'), JSON.stringify({ name: 'tool', version: '1.0.0' }));
+      writeFileSync(join(nm, 'tool/cli.js'), 'ok');
+      symlinkSync('../tool/cli.js', join(nm, '.bin/tool'));
+      return 0;
+    }, deps: { sleep: async () => {} } });
+    expect(status).toBe(0);
+    expect(repairs).toBe(1);
+    expect(existsSync(join(nm, '.bin/tool'))).toBe(true);
+  });
+
+  it('refuses success when a repair recreates the dangling link', async () => {
+    silenceConsole();
+    const root = fixture({ packages: { 'libs/tooling': {} }, extracted: {} });
+    const bin = join(root, 'libs/tooling/node_modules/.bin');
+    mkdirSync(bin, { recursive: true });
+    symlinkSync('../tool/cli.js', join(bin, 'tool'));
+    let repairs = 0;
+    const status = await verifyDepsExtracted({ repoRoot: root, probeSpecifiers: [], runNpm: () => { repairs++; symlinkSync('../tool/cli.js', join(bin, 'tool')); return 0; }, deps: { sleep: async () => {} } });
+    expect(status).toBe(1);
+    expect(repairs).toBe(1);
+  });
+
+  it('keeps broken bins in unselected workspaces out of a workspace-scoped repair', async () => {
+    const root = fixture({ packages: { 'libs/tooling': {}, 'libs/other': {} }, extracted: {} });
+    const bin = join(root, 'libs/other/node_modules/.bin');
+    mkdirSync(bin, { recursive: true });
+    symlinkSync('../tool/cli.js', join(bin, 'tool'));
+    const calls: string[][] = [];
+    const status = await verifyDepsExtracted({ repoRoot: root, npmArgs: ['install', '--workspace=libs/tooling'], probeSpecifiers: [], runNpm: (args: string[]) => { calls.push(args); return 0; }, deps: { sleep: async () => {} } });
+    expect(status).toBe(0);
+    expect(calls).toEqual([]);
+  });
+
   it('refuses every pre-repair target outside the repo or workspace node_modules boundary', () => {
     expect(
       packageLocalRepairTargets({
@@ -839,6 +1023,80 @@ describe('install:safe post-install verification (the half the mutex cannot cove
     );
   });
 
+  it('repairs an orphaned dangling workspace link without npm recreating its old target', async () => {
+    silenceConsole();
+    const root = fixture({
+      packages: { 'apps/operator': {}, 'libs/maintained/widget': {} },
+      extracted: {},
+    });
+    writeFileSync(join(root, 'package.json'), JSON.stringify({
+      name: 'dangling-workspace-fixture', private: true,
+      workspaces: ['apps/operator', 'libs/maintained/widget'],
+    }));
+    writeFileSync(join(root, 'apps/operator/package.json'), JSON.stringify({
+      name: '@fixture/operator', version: '1.0.0',
+      dependencies: { '@fixture/widget': 'file:../../libs/maintained/widget' },
+    }));
+    writeFileSync(join(root, 'libs/maintained/widget/package.json'), JSON.stringify({
+      name: '@fixture/widget', version: '1.0.0',
+    }));
+    const install = () => execFileSync('npm', [
+      'install', '--legacy-peer-deps', '--ignore-scripts', '--no-audit', '--no-fund', '--offline',
+    ], { cwd: root, timeout: 30_000, env: {
+      ...process.env, PAPERCUSP_INSTALL_SAFE_ACTIVE: '1',
+      npm_config_prefix: undefined, NPM_CONFIG_PREFIX: undefined,
+      npm_config_package_lock_only: undefined, NPM_CONFIG_PACKAGE_LOCK_ONLY: undefined,
+    } });
+    install();
+    const staleKey = 'apps/operator/node_modules/@fixture/widget';
+    const target = join(root, staleKey);
+    const lockPath = join(root, 'package-lock.json');
+    const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+    lock.packages[staleKey] = { resolved: 'libs/obsolete/widget', link: true };
+    lock.packages['libs/obsolete/widget'] = {};
+    writeFileSync(lockPath, JSON.stringify(lock));
+    const hiddenLockPath = join(root, 'node_modules/.package-lock.json');
+    const hiddenLock = JSON.parse(readFileSync(hiddenLockPath, 'utf8'));
+    hiddenLock.packages[staleKey] = lock.packages[staleKey];
+    hiddenLock.packages['libs/obsolete/widget'] = {};
+    writeFileSync(hiddenLockPath, JSON.stringify(hiddenLock));
+    mkdirSync(join(root, 'apps/operator/node_modules/@fixture'), { recursive: true });
+    symlinkSync('../../../../libs/obsolete/widget', target);
+    expect(findIncompleteWorkspacePackages({ repoRoot: root })).toEqual([
+      { package: '@fixture/widget', workspace: 'apps/operator' },
+    ]);
+    let repairs = 0;
+    const status = await verifyDepsExtracted({
+      repoRoot: root, probeSpecifiers: [], deps: { sleep: async () => {} },
+      runNpm: () => { repairs++; install(); return 0; },
+    });
+    expect(repairs).toBe(1);
+    expect(status).toBe(0);
+    expect(findIncompleteWorkspacePackages({ repoRoot: root })).toEqual([]);
+    const repaired = JSON.parse(readFileSync(lockPath, 'utf8'));
+    expect(repaired.packages[staleKey]).toBeUndefined();
+    expect(repaired.packages['node_modules/@fixture/widget']).toEqual({
+      resolved: 'libs/maintained/widget', link: true,
+    });
+  }, 60_000);
+
+  it.each([
+    { name: 'healthy link', dangling: false, lockedTarget: 'libs/maintained/widget' },
+    { name: 'changed lock target', dangling: true, lockedTarget: 'libs/maintained/widget' },
+  ])('preserves a $name while cleaning a detector finding', ({ dangling, lockedTarget }) => {
+    const root = fixture({ packages: { 'apps/operator': {}, 'libs/maintained/widget': {} }, extracted: {} });
+    const key = 'apps/operator/node_modules/@fixture/widget';
+    mkdirSync(join(root, 'apps/operator/node_modules/@fixture'), { recursive: true });
+    symlinkSync(`../../../../libs/${dangling ? 'obsolete' : 'maintained'}/widget`, join(root, key));
+    const lockPath = join(root, 'package-lock.json');
+    const original = JSON.stringify({ lockfileVersion: 3, packages: { [key]: { resolved: lockedTarget, link: true } } });
+    writeFileSync(lockPath, original);
+    expect(removePackageLocalRepairLockEntries({
+      repoRoot: root, findings: [{ workspace: 'apps/operator', package: '@fixture/widget' }],
+    })).toEqual([]);
+    expect(readFileSync(lockPath, 'utf8')).toBe(original);
+  });
+
   it('fails immediately when the bounded repair exits nonzero, even if later spot probes could pass', async () => {
     silenceConsole();
     const root = fixture({
@@ -932,7 +1190,7 @@ describe('install:safe managed-repo targeting (EI-20412068513394843)', () => {
       args: ['bin/bundle-host.sh', 'entry.ts'],
       options: { cwd: root },
     });
-    expect(calls[0].options.env.PAPERCUSP_INSTALL_MUTEX_HELD).toBe('1');
+    expect(calls[0].options.env.PAPERCUSP_INSTALL_MUTEX_HELD?.split(',')).toContain(repoLockName(root));
   });
 
   it('routes guarded-reader diagnostics to stderr so stdout stays JSON-safe', async () => {
@@ -950,6 +1208,55 @@ describe('install:safe managed-repo targeting (EI-20412068513394843)', () => {
 
     expect(stdout).not.toHaveBeenCalled();
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining('NPM_INSTALL_SAFE guarding reader: node -e'));
+  });
+
+  it.each(['scoped', 'legacy'])('waits for another repo writer with an inherited %s reader marker', async (marker) => {
+    silenceConsole();
+    const first = fixture({ packages: {}, extracted: {} });
+    const second = fixture({ packages: {}, extracted: {} });
+    let inherited: NodeJS.ProcessEnv = {};
+    await runCommandUnderInstallMutex({
+      repoRoot: first,
+      commandArgs: ['first-reader'],
+      env: {},
+      runCommand: (_command: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
+        inherited = options.env;
+        return { status: 0 };
+      },
+    });
+    if (marker === 'legacy') inherited = { ...inherited, PAPERCUSP_INSTALL_MUTEX_HELD: '1' };
+
+    let releaseWriter = () => {};
+    let writerEntered = () => {};
+    const writerReady = new Promise<void>((resolve) => { writerEntered = resolve; });
+    const writer = withFsMutex(repoLockName(second), async () => {
+      writerEntered();
+      await new Promise<void>((resolve) => { releaseWriter = resolve; });
+    }, { retryMs: 5 });
+    await writerReady;
+    let readerRan = false;
+    const reader = runCommandUnderInstallMutex({
+      repoRoot: second,
+      commandArgs: ['second-reader'],
+      env: inherited,
+      runCommand: (_command: string, _args: string[], options: { env: NodeJS.ProcessEnv }) => {
+        readerRan = true;
+        const names = options.env.PAPERCUSP_INSTALL_MUTEX_HELD?.split(',');
+        expect(names).toContain(repoLockName(second));
+        if (marker === 'scoped') expect(names).toContain(repoLockName(first));
+        else expect(names).not.toContain('1');
+        return { status: 0 };
+      },
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(readerRan).toBe(false);
+    } finally {
+      releaseWriter();
+      await writer;
+      await expect(reader).resolves.toBe(0);
+    }
+    expect(readerRan).toBe(true);
   });
 
   it('keys the mutex by the selected root realpath, including symlink aliases', () => {

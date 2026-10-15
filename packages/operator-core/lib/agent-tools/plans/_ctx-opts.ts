@@ -79,8 +79,14 @@ export function resolveEffectiveHarnessSlug(ctx: unknown): string {
 }
 
 export async function ctxToPlanSourceOpts(ctx: unknown): Promise<CtxHarnessOpts> {
-  const c = ctx as { harnessSlug?: string };
+  const c = ctx as { harnessSlug?: string; workspaceId?: string };
   const raw = c.harnessSlug?.trim();
+  const workspaceId = c.workspaceId?.trim();
+  // Preserve the admitted tool context's concrete workspace. Dropping it
+  // makes home-harness writes fall back to the dogfood literal even while
+  // the browser's workspace-wide list reads the selected private workspace.
+  // An unbound superuser wildcard remains an unbound scope.
+  const workspace = workspaceId && workspaceId !== '*' ? { workspaceId } : {};
   // '*' is the SU-mode wildcard set by http-projection.ts when an admin
   // request arrives with `?superuser=1` and no `?harness=`. Treat it
   // exactly like an empty ctx (no harness in scope) so /adv/plans —
@@ -92,7 +98,7 @@ export async function ctxToPlanSourceOpts(ctx: unknown): Promise<CtxHarnessOpts>
   // so this site auto-follows the home cutover (papercup→papercusp merge).
   const home = operatorHomeHarnessSlug();
   if (!raw || raw === '*' || raw === home) {
-    return { harnessSlug: home };
+    return { harnessSlug: home, ...workspace };
   }
-  return { harnessSlug: raw };
+  return { harnessSlug: raw, ...workspace };
 }

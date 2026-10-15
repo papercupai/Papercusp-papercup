@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "plane": "isolated-current-build-operator-api",
+  "incomplete": true,
+  "phase": "parent-report-decoding",
+  "error": "SyntaxError: Unterminated string in JSON at position 174054 (line 1 column 174055)",
+  "samples": [],
+  "windows": [],
+  "evidence": {
+    "nativeHandle": 98925,
+    "nativeExitCode": 1,
+    "logPath": "/tmp/su-7db4f-memory-cohort-r5.log",
+    "testPath": "packages/operator-core/lib/service-memory-attribution.integration.test.ts",
+    "startedAt": "2026-10-01T19:48:09.573Z",
+    "finishedAt": "2026-10-01T19:50:23.548Z",
+    "head": "f27961b45b",
+    "worktreeDirty": true
+  },
+  "limitations": [
+    "The complete subprocess result and runner.error were not persisted before JSON.parse failed.",
+    "No complete matched-memory artifact can be reconstructed from this failure record.",
+    "Growing stdout reports under spawnSync maxBuffer=4MiB are the suspected failure mechanism; the historic overflow was not directly measured."
+  ]
+}

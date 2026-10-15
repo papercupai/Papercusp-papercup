@@ -1,0 +1,270 @@
+{
+  "assembledAt": "2026-10-15T15:28:55.139093+00:00",
+  "bank": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z",
+  "buildSha": "d35f632f",
+  "d248": {
+    "artifactDigestScope": "new Server package and signature freshly hashed; unchanged artifact digests copied from held parent with current sizes checked",
+    "command": {
+      "rewrite": [
+        "python3",
+        "-I",
+        "papercusp-desktop/bin/split-server-seed-deb.py",
+        "rewrite-control",
+        "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/linux-server-production/final-artifacts/deb/Papercusp Server_0.0.26_amd64.deb",
+        "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/linux-server-production/final-artifacts/deb/papercusp-server-seed_0.0.26_all.deb",
+        "/mnt/bench/work/su-940e-d248-control-13f304c6-20261015T1505Z/Papercusp Server_0.0.26_amd64.deb"
+      ],
+      "verify": [
+        "python3",
+        "-I",
+        "papercusp-desktop/bin/split-server-seed-deb.py",
+        "verify-control",
+        "/mnt/bench/work/su-940e-d248-control-13f304c6-20261015T1505Z/Papercusp Server_0.0.26_amd64.deb",
+        "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/linux-server-production/final-artifacts/deb/papercusp-server-seed_0.0.26_all.deb"
+      ]
+    },
+    "compiledIdentity": {
+      "buildSha": "d35f632f",
+      "desktopSource": "d35f632f0757c86bc2651b6dfa073777e96c06fe",
+      "superprojectSha": "cd652930ccafc7fa1e1727bfbe05ee6ba5acc820"
+    },
+    "controlDelta": {
+      "dataMember": "data.tar.xz",
+      "dataMemberByteEqual": true,
+      "dataMemberSha256": "18493451d98fcdf5502076166675913837dc79ba6374bc65857f9f04c1d12c7b",
+      "newRecommends": "papercusp-server-seed",
+      "oldRecommends": "papercusp-server-seed (= 0.0.26)",
+      "onlyChangedControlEntry": "control",
+      "unchangedControlEntries": [
+        "md5sums",
+        "postinst",
+        "postrm",
+        "prerm"
+      ]
+    },
+    "guard": {
+      "command": "node --test test/split-server-seed-deb.test.js test/offline-installer-journey.test.js",
+      "cwd": "papercusp-desktop",
+      "exitCode": 0,
+      "failed": 0,
+      "negativeVersionedRecommendationControl": "passed",
+      "passed": 48
+    },
+    "packagerSource": {
+      "desktopCommit": "13f304c6d96d0fb4e2c1a690f72fb97ffafe4e11",
+      "files": [
+        {
+          "path": "papercusp-desktop/bin/split-server-seed-deb.py",
+          "sha256": "6a7f1ef317e7e57d2caf0af5fda958668a042c7b42cdb5ed49d9c42169cfc4a5"
+        },
+        {
+          "path": "papercusp-desktop/test/split-server-seed-deb.test.js",
+          "sha256": "0c2507c0bfff09fd1d3ed5f73300564fdfe4ecde7a14dfbf17be3acd5451daa5"
+        },
+        {
+          "path": "papercusp-desktop/test/offline-installer-journey.test.js",
+          "sha256": "2b0b4245dc6ab4274a61604d2bfe414651bef58be1bb8bb0e3c4827fbb1ae3e4"
+        }
+      ]
+    },
+    "parentHeldManifest": {
+      "path": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/candidate-manifest.json",
+      "reason": "versioned seed recommendation violates D-236",
+      "sha256": "67d159888ca189eff1d3db7dde36cff42240a59b4d108327d5f6a06ef8c5ae8c",
+      "status": "HOLD"
+    },
+    "qualification": "pending independent rehash, signature, profile and P-521 acceptance",
+    "signatureVerification": {
+      "algo": "ED",
+      "keyId": "449908a7d47d3a5d",
+      "valid": true,
+      "verifier": "papercusp-desktop/bin/verify-tauri-signature.mjs"
+    }
+  },
+  "decision": "p2p-public-release-endgame-2026-09-01#D-248",
+  "desktopSource": "d35f632f0757c86bc2651b6dfa073777e96c06fe",
+  "legs": {
+    "linux-gui": {
+      "artifacts": [
+        {
+          "bytes": 47097052,
+          "path": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/linux-gui-production/final-artifacts/deb/Papercusp GUI_0.0.26_amd64.deb",
+          "sha256": "94a95bf58765b4a5b626b288de0a76d894e78197b4dc42d7115788f6c9bb071e"
+        },
+        {
+          "bytes": 396,
+          "path": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/linux-gui-production/final-artifacts/deb/Papercusp GUI_0.0.26_amd64.deb.sig",
+          "sha256": "874ce817a9ade0bc951c04613e51201d0041212879962d42f9c601c2e4573899"
+        }
+      ],
+      "completion": "D234_LINUX_GUI_COMPLETE sha=cd652930ccafc7fa1e1727bfbe05ee6ba5acc820 build_sha=d35f632f",
+      "signatures": [
+        {
+          "artifact": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/linux-gui-production/final-artifacts/deb/Papercusp GUI_0.0.26_amd64.deb",
+          "signature": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/linux-gui-production/final-artifacts/deb/Papercusp GUI_0.0.26_amd64.deb.sig",
+          "verdict": {
+            "algo": "ED",
+            "keyId": "449908a7d47d3a5d",
+            "valid": true
+          }
+        }
+      ]
+    },
+    "linux-server": {
+      "artifacts": [
+        {
+          "bytes": 3212482000,
+          "path": "/mnt/bench/work/su-940e-d248-control-13f304c6-20261015T1505Z/Papercusp Server_0.0.26_amd64.deb",
+          "sha256": "967e068fc78aa340cb3379bec709ce4d6d85a3bef3b4100a0f10ecf98871dfd0"
+        },
+        {
+          "bytes": 424,
+          "path": "/mnt/bench/work/su-940e-d248-control-13f304c6-20261015T1505Z/Papercusp Server_0.0.26_amd64.deb.sig",
+          "sha256": "733c7513e3ef8e13b1654a78bc706938de5f175dfd943336709ac83293c307cb"
+        },
+        {
+          "bytes": 8786765072,
+          "path": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/linux-server-production/final-artifacts/deb/papercusp-server-seed_0.0.26_all.deb",
+          "sha256": "10287baa6434b4fc721eff0b6bfcb7ca855ddf0645cc0203b7dce382af02068f"
+        },
+        {
+          "bytes": 396,
+          "path": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/linux-server-production/final-artifacts/deb/papercusp-server-seed_0.0.26_all.deb.sig",
+          "sha256": "b3d833154b8c58625e035de44ab908d2303c9830a748036734eea11e3eddb7f0"
+        }
+      ],
+      "completion": "D234_LINUX_SERVER_COMPLETE sha=cd652930ccafc7fa1e1727bfbe05ee6ba5acc820 build_sha=d35f632f",
+      "signatures": [
+        {
+          "artifact": "/mnt/bench/work/su-940e-d248-control-13f304c6-20261015T1505Z/Papercusp Server_0.0.26_amd64.deb",
+          "signature": "/mnt/bench/work/su-940e-d248-control-13f304c6-20261015T1505Z/Papercusp Server_0.0.26_amd64.deb.sig",
+          "verdict": {
+            "algo": "ED",
+            "keyId": "449908a7d47d3a5d",
+            "valid": true
+          }
+        },
+        {
+          "artifact": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/linux-server-production/final-artifacts/deb/papercusp-server-seed_0.0.26_all.deb",
+          "signature": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/linux-server-production/final-artifacts/deb/papercusp-server-seed_0.0.26_all.deb.sig",
+          "verdict": {
+            "algo": "ED",
+            "keyId": "449908a7d47d3a5d",
+            "valid": true
+          }
+        }
+      ]
+    },
+    "mac-intel": {
+      "artifacts": [
+        {
+          "bytes": 63374709,
+          "path": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/dmg/Papercusp GUI_0.0.26_x64.dmg",
+          "sha256": "ca73485c119ff127aa48014610c35eff2e649e07f1fbc7981e5e236b2eba49e0"
+        },
+        {
+          "bytes": 420,
+          "path": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/dmg/Papercusp GUI_0.0.26_x64.dmg.sig",
+          "sha256": "0da2e799e469cd56b548fc2dae2abcefc97767221a9669f63d4a2efaf005943e"
+        },
+        {
+          "bytes": 11043893596,
+          "path": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/dmg/Papercusp Server_0.0.26_x64.dmg",
+          "sha256": "97e10a8bcb251af739393165b5f6ecf68703855181c83124ce73d0a051acc8e4"
+        },
+        {
+          "bytes": 424,
+          "path": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/dmg/Papercusp Server_0.0.26_x64.dmg.sig",
+          "sha256": "cadece5437fadf86c9c76132c258b1d90916a3cc2848bfd4d2df2096f75ec5d0"
+        },
+        {
+          "bytes": 62208759,
+          "path": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/macos/Papercusp GUI.app.tar.gz",
+          "sha256": "d741c73f2a26fdeef99fb58f83aa4084bd0dbbe8ab66add43f3dfdfe3f262797"
+        },
+        {
+          "bytes": 412,
+          "path": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/macos/Papercusp GUI.app.tar.gz.sig",
+          "sha256": "9a433e0e1b578f4d17cc364f0b010b3e42ea3f3aa1a71d4dab7175d443756039"
+        },
+        {
+          "bytes": 11012096747,
+          "path": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/macos/Papercusp Server.app.tar.gz",
+          "sha256": "f238022ba248f0ca46e9f7978cfedbee39af4ebd4555747f85483c56176e04a4"
+        },
+        {
+          "bytes": 416,
+          "path": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/macos/Papercusp Server.app.tar.gz.sig",
+          "sha256": "116d5c9902c89714be9af40f9bacca34b92f6321222615a5e6e37aeef038eecf"
+        }
+      ],
+      "completion": "D234_MAC_INTEL_COMPLETE sha=cd652930ccafc7fa1e1727bfbe05ee6ba5acc820 build_sha=d35f632f native=2191c9b608edcb6b2aa1f95563a88e23ee876bbc66c8cd80fc2941eabd59f61d",
+      "signatures": [
+        {
+          "artifact": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/macos/Papercusp Server.app.tar.gz",
+          "signature": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/macos/Papercusp Server.app.tar.gz.sig",
+          "verdict": {
+            "algo": "ED",
+            "keyId": "449908a7d47d3a5d",
+            "valid": true
+          }
+        },
+        {
+          "artifact": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/macos/Papercusp GUI.app.tar.gz",
+          "signature": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/macos/Papercusp GUI.app.tar.gz.sig",
+          "verdict": {
+            "algo": "ED",
+            "keyId": "449908a7d47d3a5d",
+            "valid": true
+          }
+        },
+        {
+          "artifact": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/dmg/Papercusp GUI_0.0.26_x64.dmg",
+          "signature": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/dmg/Papercusp GUI_0.0.26_x64.dmg.sig",
+          "verdict": {
+            "algo": "ED",
+            "keyId": "449908a7d47d3a5d",
+            "valid": true
+          }
+        },
+        {
+          "artifact": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/dmg/Papercusp Server_0.0.26_x64.dmg",
+          "signature": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/mac-intel-production/bundle/dmg/Papercusp Server_0.0.26_x64.dmg.sig",
+          "verdict": {
+            "algo": "ED",
+            "keyId": "449908a7d47d3a5d",
+            "valid": true
+          }
+        }
+      ]
+    }
+  },
+  "schema": "d248-control-successor-manifest-v1",
+  "seed": {
+    "corestoreGraftedFrom": null,
+    "cutAtEpoch": 1,
+    "cutDbTargets": [
+      "env@localhost:5432"
+    ],
+    "epochKeysSha256": "640fcaa2e99d37c7166c0fe7fc8800967c3b2f3de5b138fa7552052675751678",
+    "linuxSeedPackage": {
+      "bytes": 8786765072,
+      "decision": "p2p-public-release-endgame-2026-09-01#D-236",
+      "name": "papercusp-server-seed_0.0.26_all.deb",
+      "sha256": "10287baa6434b4fc721eff0b6bfcb7ca855ddf0645cc0203b7dce382af02068f"
+    },
+    "manifestSha256": "4ef651de82f9896c1699386ad9e7f6416590309d9123007613a562ca98af3dd9",
+    "potId": "papercusp",
+    "sourceEpochReceipt": {
+      "bytes": 1926,
+      "path": "/mnt/bench/work/su-940e-d246-cd652930-20261015T0955Z/seed-source-epoch-acceptance-d246.json",
+      "sha256": "5572934b698f49c80b936a6619f6ace3bbb0a573abad7e2e9eba3bc85f2a1f7e"
+    }
+  },
+  "superprojectSha": "cd652930ccafc7fa1e1727bfbe05ee6ba5acc820",
+  "validation": {
+    "artifactPopulation": "7 payloads + 7 signatures",
+    "scope": "Exact source and build identity, seed source/epoch evidence, artifact hashes and updater signatures. Package contents and P-521 runtime acceptance are separate."
+  },
+  "workItem": "WI-6554700010012560"
+}

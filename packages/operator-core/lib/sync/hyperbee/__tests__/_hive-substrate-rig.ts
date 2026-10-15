@@ -24,8 +24,8 @@ import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { unsafeFederatedPotScope } from '../../../federated-pot-scope';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
+import { moduleRepoRoot } from '../../../module-repo-root';
 import type postgres from 'postgres';
 import createTestnet from 'hyperdht/testnet.js';
 import Hyperswarm from 'hyperswarm';
@@ -41,9 +41,7 @@ import { buildHiveSettingsProjection } from '../projections/hive-settings';
 import { createFreshPgDb, type FreshPgDb } from '../../../../test/_pg-helpers';
 import { drainCleanupsBounded } from './_cleanup-bounded';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-// .../packages/operator-core/lib/sync/hyperbee/__tests__ → repo root is seven up.
-const REPO_ROOT = resolve(__dirname, '../../../../../..');
+const REPO_ROOT = moduleRepoRoot(import.meta.url);
 const SQL_DIR = resolve(REPO_ROOT, 'libs/papercusp/libs/db/sql');
 
 // ── Shared identity / swarm constants. The Hive's home slug IS the projection
@@ -380,6 +378,7 @@ export interface SwarmTimingOverride {
   refreshMs?: number;
   fastWindowMs?: number;
   slowRefreshMs?: number;
+  stalledMaxRefreshMs?: number;
 }
 
 export interface HivePeer {
@@ -412,8 +411,10 @@ async function bootHivePeer(opts: {
     swarmBinding: BINDING,
     swarmOverride: rawSwarm,
     verifyBindingOverride: async (_pk, _login, userId) => opts.verify(userId),
-    applyOverride: (op) => {
-      apply ??= buildHivePeerApply(opts.pg, handle!.ownLog.keyHex);
+    // ctx, not `handle`: a merge pass can run before bootHarnessSubstrate returns
+    // (a rejoining peer already holds admitted logs) — WI-6554700010008561.
+    applyOverride: (op, ctx) => {
+      apply ??= buildHivePeerApply(opts.pg, ctx.ownLogKeyHex);
       return apply(op);
     },
     mergePollMs: 0,
@@ -424,6 +425,7 @@ async function bootHivePeer(opts: {
     swarmRefreshMs: opts.swarmTiming?.refreshMs,
     swarmFastWindowMs: opts.swarmTiming?.fastWindowMs,
     swarmSlowRefreshMs: opts.swarmTiming?.slowRefreshMs,
+    swarmStalledMaxRefreshMs: opts.swarmTiming?.stalledMaxRefreshMs,
   });
   cleanups.push(async () => {
     await handle?.close();

@@ -247,6 +247,11 @@ there and redo it.
   sequences multiple subsystems: `plans:new` + `plans:add-item`, then `plans:start`
   (promotes items into work-items). Don't over-apply — a single work-item, a one-shot
   fix, or pure investigation needs no plan.
+- **Shape, then specify; lead approval with the walkthrough.** For an owner-originated
+  plan, write `## Product shaping` (audience, problem, outcome, non-goals, source turns,
+  scenarios) BEFORE requirements, and requirements before tasks. Ask the owner to
+  approve with the `ownerWalkthrough` from `plans:audit { slug, phase:'shaping' }`
+  first — plain-language scenarios, assumptions, open choices — not the requirement list.
 - **Audit the complete source conversation before activating a draft plan.** Before
   `draft → ready` / `active` or `plans:start`, use `sessions:search` / `sessions:read`
   to re-read the full plan-related conversation — never rely on memory or a summary.
@@ -332,7 +337,12 @@ there and redo it.
   **Scope this exclusivity to `LIVE_GATE_OPS` only.** `LIVE_GATE_OPS` means work coupled to the
   current verdict or its live control plane: firing/re-running a checkpoint, deploy/force actions,
   current-red triage, repair-queue mutation, or monitoring the current run. FIRST call
-  `state:read { cell: 'gate.greenCheckpoint.ownership' }`. **Held by a live agent ⇒ you are DONE
+  `state:read { cell: 'gate.greenCheckpoint.ownership' }`.
+  Compare `gate.ownership.takenBy` with your own verified owner identity.
+  **Held by YOU ⇒ continue `LIVE_GATE_OPS`** on the existing owning work-item: diagnose a stopped
+  or stalled runner and drive the gate to a verified verdict. Never stand down merely because your own claim is held-live.
+  If several native continuations share that identity, verify the elected execution continuation;
+  it continues the lane and the others hand off to it. **Held by ANOTHER live agent ⇒ you are DONE
   with `LIVE_GATE_OPS`, not with every gate-related task:** send useful live-gate evidence once
   (`coord:send`), then STOP THAT LANE — do not claim the live gate item, arm a fallback monitor,
   or read gate status again this session.
@@ -433,6 +443,27 @@ there and redo it.
 
 ## Anti-babysitting rule — monitoring is not work by default
 
+**Publish finished owner-facing prose.** When you finish an audit, review, analysis,
+postmortem, status digest or proposal for the human owner, save the complete Markdown
+through `reports:publish` before your final reply. Preserve Mermaid fences and keep
+the default `visibility:'owner'` unless a broader audience was requested. Complete
+delivery in this order: (1) `reports:publish`; (2) `reports:get { id: report_id }` using
+the returned id; (3) verify that readback contains the complete Markdown and intended
+visibility; (4) provide a descriptive Markdown link to the report page in the GUI.
+The returned `path` is a valid same-origin route; use it directly as the Markdown
+target in Papercusp/Tauri (the Reports reader selects a report with
+`/reports?sel=<report_id>`). Verify that the link opens the intended report. Use an
+absolute HTTP(S) URL only when a verified owner-facing GUI origin is available;
+never guess or ask the owner for an origin
+solely to format the link. Never give a bare report id as the actionable link. Keep
+`report_id` in the durable evidence record. Claim
+saved or delivered only after the readback succeeds. Pass the complete Markdown as
+`body_md`. Use a stable `request_key` for retries of the same edition; keep the
+request key and content unchanged across retries. Changed content needs a new key.
+A correction uses `supersedes`; a separate dated edition
+starts its own lineage. Short answers and progress updates need no report. In-flight
+handoffs still go to `work_items:checkpoint`, and standing facts to shared memory.
+
 AUTO authorizes execution; it does not create a monitoring mission. **Fixing is work;
 watching someone else fix is not.**
 
@@ -485,6 +516,7 @@ row is non-compliance. New platform surfaces add a ROW here, not a new section.
 | "bring this repo under management" | A FORK — ask which: `pot:create_from_repo` (GitHub URL → full pot; dedupes to a join offer if one exists) vs `harness:generate-from-repo` (existing local repo → coding harness; detects and runs the test command once; `dryRun` previews). |
 | "design this screen / component" | `design-phase.search_registry` FIRST (pick from existing registry components instead of inventing) → spec → `design-phase.validate_spec` / `design-phase.lint_spec`. |
 | repeated multi-step tool orchestration | `recipes:search` before composing by hand — `code:run` auto-captures recipes; search surfaces them. |
+| "measure X again / track this number / grade this metric" (any repeatable measurement) | A repeatable measurement belongs in a rubric check recorded to the results ledger, never in a hand rating: bind a `check` (tests / probe / sql / registered instrument) to the criterion, grade with `scorecards:emit { fromLedger:true }`, and re-measure on a cadence with `plans:set-schedule { action:{ system:'rubric-rescore' } }` + `watch:create` on `rubric:criterion-regressed:<rubricRef>`. Doc: `agent-insights/repeat-measurements-are-rubric-checks`. |
 | "create/build an app" (any form) | `templates:list` → `templates:get-guide` → `templates:new-app` — the templates mandate above is this row's full rule (3 app-scope roots, presented AS Papercusp templates with the one-line gloss + the always-offered "No template — I'll specify the framework myself" opt-out; ask when the shape is ambiguous). |
 
 ## Default posture (AUTO mode OFF) — plan, then confirm before you execute
@@ -1078,7 +1110,7 @@ A **multi-agent coding platform**, run locally (Tauri desktop + embedded PG + a 
 
 ## Scope: which harness a tool acts on
 
-Most state lives under a harness, so harness-scoped tools (`docs:*`, `plans:*`, `features:*`, `issues:*`) need to know **which** — and the `harness` arg is **per-call, not a session property**. Important exception: `harness:get` and `harness:status` take their own `slug`/`slugs` arguments; do **not** add a top-level `harness` field to those calls:
+Most state lives under a harness, so harness-scoped tools (`docs:*`, `plans:*`, `features:*`, `issues:*`) need to know **which** — and the `harness` arg is **per-call, not a session property**. Important exception: `harness:get` takes its own `slug` and `harness:status` takes `slug`/`slugs`; do **not** add a top-level `harness` field to those calls. Both accept an optional `workspace` argument for unscoped superuser calls that need a workspace transaction; omit it from workspace-scoped sessions:
 1. **Session scoped to a harness** (`ctx.harnessSlug` set) — pass nothing.
 2. **Operator scope (the usual su case)** — **name the harness on the call**: `harness: '<slug>'` for a managed harness. For Papercusp's engineering docs via `docs:*`, use `harness: 'engineering'` from a workspace-scoped session; `harness: 'all'` is reserved for a truly unscoped (`--all-workspaces`) session because the scoped transport rejects that cross-workspace sentinel. For `plans:*`, use a concrete in-scope harness or `harness: 'all'` only from an unscoped session. Without it you get `harness_required` — which never means "this session can't," only "you haven't said which yet." **You are never blocked.**
 
@@ -1117,15 +1149,11 @@ Plugins are per-workspace, namespaced `<plugin>.<verb>` (repomix, fetch-plus, gi
 
 Multiple su shells, paperclip, and the harness fleet share **one checkout**. Beyond the base spine's enforced locks + git-sync-owns-commit rules, the **Papercusp-specific** operational facts:
 
-**The workspace map** *(authoritative paths/branches)*:
-- ✅ `/home/dev/papercupai-workspace/papercup` — the canonical shared tree (branch `staging`). ALL repo work happens here (superproject + submodules, edited in place); git-sync sweeps it to `origin/staging` on a schedule.
-- 🚫 `/home/dev/papercupai-workspace/papercup-release` — the live operator's deploy artifact, pinned to green `main`. NEVER edit it (every deploy resets + cleans it). If the live host lacks your fix, it isn't deployed yet — work in the canonical tree and let the pipeline carry it.
-- 🚫 `/home/dev/papercupai-workspace/papercup-checkpoint` — the green-checkpoint's isolated test tree. Never edit / leave debris (reset+cleaned each run; debris poisons the green gate).
-- 🚫 other sibling `papercup-*` dirs — preserved special-purpose worktrees on their own branches.
+**Workspace roots** come from the generated workspace map earlier in the base prompt. Use those resolved paths for the canonical, release, and checkpoint trees; do not duplicate absolute roots in this per-pot override.
 
-Stay on `staging`; never `git worktree` or branch-switch. `main` is automation-only (green-checkpoint fast-forwards it from green staging; a pre-push hook blocks manual pushes). Self-check before editing: `pwd` under `…/papercup` and `git branch --show-current` prints `staging`.
+Stay on the registered `staging` tree; never `git worktree` or branch-switch. `main` is automation-only (green-checkpoint fast-forwards it from green staging; a pre-push hook blocks manual pushes). Self-check before editing: `git rev-parse --show-toplevel` matches the canonical root in the generated workspace map, and `git branch --show-current` prints `staging`.
 
-**The two-port model — `:3070` auto-serves green `main`; `:3170` is where your edits run.** `:3070` (`papercup-dev-api`) runs the **release checkout** pinned to green `main` — restarting it does NOT pick up your `staging` edits. To test a server-side edit live: **`dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }`**, then probe **`:3170`**. **Never** shell out to a raw `systemctl --user restart papercup-staging-api.service` — on this heavily-parallel fleet that was firing every ~5-6min for hours with zero coordination (WI-4221): every agent's own "test my edit" restart was a real outage AND the trigger that made EI-9748 (headless children reaped by the service's cgroup on every restart) fire constantly. The tool drains concurrent `:3170` users first, and — for `target: 'staging'` specifically — **coalesces**: a restart requested within ~2min of a peer's real restart is skipped (reported `coalesced: true`) instead of firing a redundant one, so probe directly if you get that back. The Hono host has NO file-watch (only `:3055` Vite hot-reloads). Promotion to `:3070` is automatic (hourly green-checkpoint FF → ≤15-min scripted deploy with auto-rollback); a manual `npx tsx apps/operator/lib/release/deploy-cli.ts --execute` deploys immediately (needs `PAPERCUSP_ALLOW_DEV_RESTART=1` for the restart step). Watch the pipeline at `/admin/git`. **Probe where your write actually lands** — `:3070` serves green main, not your staging edit.
+**The two-port model — `:3070` auto-serves green `main`; `:3170` is where your edits run.** `:3070` (`papercusp-dev-api`) runs the **release checkout** pinned to green `main` — restarting it does NOT pick up your `staging` edits. To test a server-side edit live: **`dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }`**, then probe **`:3170`**. **Never** shell out to a raw `systemctl --user restart papercusp-staging-api.service` — on this heavily-parallel fleet that was firing every ~5-6min for hours with zero coordination (WI-4221): every agent's own "test my edit" restart was a real outage AND the trigger that made EI-9748 (headless children reaped by the service's cgroup on every restart) fire constantly. The tool drains concurrent `:3170` users first, and — for `target: 'staging'` specifically — **coalesces**: a restart requested within ~2min of a peer's real restart is skipped (reported `coalesced: true`) instead of firing a redundant one, so probe directly if you get that back. The Hono host has NO file-watch (only `:3055` Vite hot-reloads). Promotion to `:3070` is automatic (hourly green-checkpoint FF → ≤15-min scripted deploy with auto-rollback); a manual `npx tsx apps/operator/lib/release/deploy-cli.ts --execute` deploys immediately (needs `PAPERCUSP_ALLOW_DEV_RESTART=1` for the restart step). Watch the pipeline at `/admin/git`. **Probe where your write actually lands** — `:3070` serves green main, not your staging edit.
 
 **Named resource locks — coordinate destructive shared actions.** `locks:*` has registered **resource** locks (`locks:list` shows the set): acquire `shared` before relying on one, `exclusive` + drain before restarting/migrating it. The blessed paths for the server/DB resources are **`dev:restart`** and **`db:migrate`** (drain protocol included; dry-run default; a real restart also requires `authorize:true` plus an audited `reason`). To pause git-sync for a tree, take its SCOPED lock — `locks:acquire_resource { resource: 'git-sync:<slug>', mode: 'exclusive', ttl_sec: 1200 }` (holds ONLY that tree's sync; auto-resumes on TTL; audited). **NEVER `UPDATE harness_shared.routines SET active=false WHERE name='git-sync'`** — that one statement freezes the WHOLE fleet's sync (no TTL, no auto-resume, no audit).
 
@@ -1143,7 +1171,7 @@ The behavioral dual of the multi-account note. The **ONLY** legitimate reason yo
 
 ## Optimize tool flows for MODEL turns — use parallel calls or one `code:run`
 
-Count MODEL inference turns, not raw tool/RPC calls. One assistant response can emit several independent calls together; those calls are one inference turn and do not re-read context once per RPC. Emit independent one-off calls together. Use one `code:run` (or a saved recipe) for a mechanical loop / branch / filter / retry, or when only a summary of bulky intermediate results should enter context; it turns a sequential model→tool→model flow into one inference turn. Keep a turn boundary only where YOU must read a result and exercise judgment before choosing the next action — mere data dependency is scriptable. Judge batching by avoided MODEL turns and intermediate bytes, not N calls: a small same-turn fan-out is already efficient; two sequential per-item turns that could be a mechanical loop are not. Batch work you hold THIS turn instead of stashing it. Flow: write the script and `code:run` it directly; a wrong tool/arg name returns typed signatures inline. For `effect:'write'`, preview with `dryRun:true`, inspect `plannedMutations`, then run. Return conservatively because only the script's final value re-enters context. **Reuse before authoring:** scan `coord:orient`'s ranked recipes or `recipes:search`, run a close match with `recipes:run`, and give new scripts a clear title + description. (The shared `CODE_RUN_NUDGE` every harness agent also carries.)
+Count MODEL inference turns, not raw tool/RPC calls. One assistant response can emit several independent calls together; those calls are one inference turn and do not re-read context once per RPC. Emit independent one-off calls together. Use one `code:run` (or a saved recipe) for a mechanical loop / branch / filter / retry, or when only a summary of bulky intermediate results should enter context; it turns a sequential model→tool→model flow into one inference turn. Keep a turn boundary only where YOU must read a result and exercise judgment before choosing the next action — mere data dependency is scriptable. Judge batching by avoided MODEL turns and intermediate bytes, not N calls: a small same-turn fan-out is already efficient; two sequential per-item turns that could be a mechanical loop are not. Batch work you hold THIS turn instead of stashing it. Flow: write the script and `code:run` it directly; a wrong tool/arg name returns typed signatures inline. `effect: 'write'` labels effect metadata for tools called inside the script; it is not an argument to `code:run`. `code:run` accepts `{ script, title?, description?, dryRun?, timeoutSec? }`. Example: `code:run { script: '<JavaScript body>', dryRun: true }` previews nested writes in `plannedMutations`; inspect the preview, then rerun with the same script and without `dryRun` to commit. Return conservatively because only the script's final value re-enters context. **Reuse before authoring:** scan `coord:orient`'s ranked recipes or `recipes:search`, run a close match with `recipes:run`, and give new scripts a clear title + description. (The shared `CODE_RUN_NUDGE` every harness agent also carries.)
 
 ## Looping — recur via the ENGINE loop, not Claude /loop
 

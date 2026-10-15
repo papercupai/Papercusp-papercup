@@ -21,10 +21,16 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { COORD_ROLES } from '../coordination/roles';
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
-import { updateWorkItem, mergeWorkItemPayload, explainIssueClaimFloors, linkWorkItem, unlinkWorkItem } from '../../work-items';
+import { updateWorkItem, getWorkItem, activeExternalBlockers, mergeWorkItemPayload, explainIssueClaimFloors, linkWorkItem, unlinkWorkItem } from '../../work-items';
+import { hasStrictOwnerAction } from '../../harness/improvements/agent-review-policy';
+import { hasActiveStrictHumanAsk } from '../../hold-registry';
 import { runBulk, bulkContent } from '../_bulk';
+import { refuseExternalOwnedPatch } from '../../work-admission/admit';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { rejectBodySummaryConflict, resolveBodyAlias } from './_body-alias';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
+import { askReporterQuestion } from '../../harness/improvements/reporter-status';
+import { frozenTestsRegistrationSchema, registerFrozenTests } from './frozen-tests-gate';
 
 /**
  * EI-18707466248332421: the family-AGNOSTIC subset of this tool's fields — the ones that are
@@ -57,6 +63,9 @@ const PAYLOAD_FLAG_KEYS = {
  * ships. A prefix cannot drift the way a hand-maintained list does.
  */
 const PAYLOAD_MERGE_RESERVED_KEYS: ReadonlySet<string> = new Set([
+  'reporterRelease',
+  'reporterAnswer',
+  'reporterQuestion',
   'plan_item',
   'needs_2_machine_rig',
   'needsOwnerAction',
@@ -195,6 +204,7 @@ function hasColumnEdit(it: {
 }
 
 const FIELDS = {
+  frozenTests: frozenTestsRegistrationSchema.optional().describe('Opted-in frozenTests: pilot only. Register an independently authored manual test-only evidence binding plus red calibration; use alone. Re-freeze requires a named Decision and expectedRevision.'),
   title: hardText(LIMITS.SHORT_TITLE).optional(),
   body: hardText(8000).optional(),
   // WI-4492: `summary` is an ACCEPTED ALIAS for `body` — the SAME column. work_items:get
@@ -207,6 +217,7 @@ const FIELDS = {
     .enum(['bug', 'change'])
     .optional()
     .describe('correct a mislabeled work-item kind — bug = broken (auto-implement-eligible), change = desired improvement (human-gated)'),
+  reporterQuestion: z.string().min(1).max(4000).optional().describe('Ask the end-user reporter one follow-up question. Only the current fixer may ask; actor/id/time are server-stamped, text is redacted, and retry is idempotent. Use alone, without other edits. The reporter replies from their install.'),
   // EI-10943 (same trap as improvements:capture): a provenance LABEL must never bounce
   // the whole update on length. Soft-capped — truncated handler-side by `clampText`,
   // never rejected. (Handler-side, not a zod .transform(): a transform crashes
@@ -390,6 +401,8 @@ export default defineTool({
           // ok:true. Wire it exactly like the sibling needsTwoMachineRig flag.
           needsHuman: it.needsHuman !== undefined ? it.needsHuman : args.needsHuman,
           payload: it.payload ?? args.payload,
+          frozenTests: it.frozenTests ?? args.frozenTests,
+          reporterQuestion: it.reporterQuestion ?? args.reporterQuestion,
           harness: it.harness ?? args.harness,
         }))
       : [
@@ -408,6 +421,8 @@ export default defineTool({
             needsTwoMachineRig: args.needsTwoMachineRig,
             needsHuman: args.needsHuman, // WI-5689
             payload: args.payload, // WI-41509
+            frozenTests: args.frozenTests,
+            reporterQuestion: args.reporterQuestion,
             harness: args.harness,
           },
         ];
@@ -431,6 +446,62 @@ export default defineTool({
               `the dedicated args instead: plan_item, needsTwoMachineRig, needsHuman. Keys prefixed ` +
               `"_" are system-written bookkeeping and are never caller-writable.`,
           };
+        }
+        if (it.reporterQuestion !== undefined) {
+          const otherEdits = Object.entries(it).some(([key, value]) => !['id', 'harness', 'reporterQuestion'].includes(key) && value !== undefined);
+          if (otherEdits) return { ok: false as const, id: it.id, error: 'reporterQuestion-must-be-used-without-other-edits' };
+          return askReporterQuestion({ id: it.id, harness: it.harness, actor: ident.ownerId, text: it.reporterQuestion });
+        }
+        if (it.frozenTests !== undefined) {
+          if (Object.entries(it).some(([key, value]) => !['id','harness','frozenTests'].includes(key) && value !== undefined)) {
+            return { ok: false as const, id: it.id, error: 'frozenTests-must-be-used-without-other-edits' };
+          }
+          const item = await getWorkItem(it.id, it.harness);
+          const stamp = (item?.payload as { plan_item?: { plan_slug?: string } } | null)?.plan_item;
+          const planSlug = item?.sourcePlanSlug ?? stamp?.plan_slug;
+          if (!item || !planSlug || !item.harness) return { ok: false as const, id: it.id, error: 'frozen_tests_linked_item_required' };
+          return registerFrozenTests({ item, actorId: ident.ownerId, registration: it.frozenTests,
+            scope: { workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(), harnessSlug: item.harness, planSlug } });
+        }
+        // A compatibility flag is not its own owner-action evidence. Check the
+        // current typed condition before ANY field edit, including mixed/bulk
+        // requests; otherwise an unsupported flag can strand executable work.
+        // Ignore both the old flag and caller-supplied payload when establishing
+        // authority. Product decisions retain their agent-review route.
+        let expectedOwnerConditions: unknown;
+        if (it.needsHuman === true) {
+          const current = await getWorkItem(it.id, it.harness);
+          const payload = current?.payload;
+          expectedOwnerConditions = payload && typeof payload === 'object' && !Array.isArray(payload)
+            ? (payload as Record<string, unknown>).externalBlockers
+            : undefined;
+          const supported = activeExternalBlockers(current?.payload).some((blocker) =>
+            hasStrictOwnerAction({ externalBlockers: [blocker] }) &&
+            Boolean(blocker.summary.trim() && blocker.nextVerb?.trim()) &&
+            (blocker.kind !== 'human' || hasActiveStrictHumanAsk({ externalBlockers: [blocker] })),
+          );
+          if (!supported) {
+            return {
+              ok: false as const,
+              id: it.id,
+              error:
+                'needsHuman:true requires a current typed credential, physical-device, or external-service-action ' +
+                'condition. Record its evidence and next action with work_items:set_blocker first; human asks also ' +
+                'require defaultIfUnanswered. Existing flags, technical dependencies and product decisions do not ' +
+                'establish this admission gate. No fields were written.',
+            };
+          }
+        }
+        // P-020 / D-004: an admitted item's title and description are owned by its source.
+        // Refuse before any write so the edit is never half-applied.
+        const sourceOwned = [it.title !== undefined ? 'title' : null, it.body !== undefined ? 'body' : null].filter(
+          (f): f is string => f !== null,
+        );
+        if (sourceOwned.length > 0) {
+          const workspaceId =
+            (ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : ctx.principal?.workspaceId) ?? activeWorkspaceId();
+          const owned = await refuseExternalOwnedPatch(workspaceId, it.id, sourceOwned);
+          if (owned) return { ok: false as const, id: it.id, error: `${owned.code}: ${owned.message}` };
         }
         const res = await updateWorkItem(
           it.id,
@@ -474,7 +545,16 @@ export default defineTool({
             const merged = await mergeWorkItemPayload(it.id, payloadFlagPatch({ needsHuman: it.needsHuman }), {
               harness: it.harness,
               unset: payloadFlagUnset({ needsHuman: it.needsHuman }),
+              ...(it.needsHuman === true ? { expectedExternalBlockers: expectedOwnerConditions, requireNonTerminal: true } : {}),
             });
+            if (!merged && it.needsHuman === true) {
+              return {
+                ok: false as const,
+                id: it.id,
+                error: 'owner-condition-changed: the typed condition changed or the item closed before the flag write. ' +
+                  'The owner-action flag was not applied; earlier field or payload edits may have applied. Re-read before retrying.',
+              };
+            }
             if (merged) item = merged;
           }
           // EI-20189734665644353: an existing item needs a member-writable plan stamp before
@@ -619,7 +699,16 @@ export default defineTool({
               ...((clearingStamp || flagUnset.length > 0)
                 ? { unset: [...flagUnset, ...(clearingStamp ? ['plan_item'] : [])] }
                 : {}),
+              ...(it.needsHuman === true ? { expectedExternalBlockers: expectedOwnerConditions, requireNonTerminal: true } : {}),
             });
+            if (!merged && it.needsHuman === true) {
+              return {
+                ok: false as const,
+                id: it.id,
+                error: 'owner-condition-changed: the typed condition changed or the item closed before the flag write. ' +
+                  'No admission flags or plan stamp were applied. Re-read before retrying.',
+              };
+            }
             if (merged) {
               if (clearingStamp) await unlinkPlanItemCoverage(it.id, outgoing, planHarness);
               else await linkPlanItemCoverage(

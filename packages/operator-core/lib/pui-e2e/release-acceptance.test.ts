@@ -1,17 +1,286 @@
-import { describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { describe, expect, it, vi } from 'vitest';
+import { parseCLI, resolveConfig } from 'vitest/node';
+import { ADMIN_TEST_RUNS_REPORTER_PATH } from '@papercusp/test-config/vitest-config';
+import { execFileSync, spawn } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import type { SuSessionEvent } from '@papercusp/chat-protocol';
 import * as path from 'node:path';
-import { checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, parseAcceptanceLines, parseHarnessLine, type Candidate, type EvidenceRow } from './release-acceptance';
+import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeApprovalFollowupDecline, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, suToolApproval, type Candidate, type EvidenceRow } from './release-acceptance';
 import {
   CLOUD_DEVICE_START_ATTEMPTS, cloudDeviceStartBlocksLegs, cloudDeviceStartTransient, DOCKER_START_PROBE_TIMEOUT_MS,
-  legsBlocked, measureCloudDeviceStart, measureRunnerTree, probeDockerCreateStart, remeasureCloudDeviceStart, remeasureStockMachines,
-  runCloudDeviceStartSmoke, runnerTreeRefusals, runReleaseAcceptance, runStockMachineSmoke, stockMachineRefusal, stockMachinesBlockLegs,
+  legsBlocked, measureCloudDeviceStart, measureRunnerTree, prepareOperatorRuntimePackages, probeDockerCreateStart, probeRoutedCodexModel, remeasureCloudDeviceStart, remeasureStockMachines,
+  RELEASE_ACCEPTANCE_REPORTER_ARGS, runCloudDeviceStartSmoke, runnerTreeRefusals, runReleaseAcceptance, runStockMachineSmoke, stockMachineRefusal, stockMachinesBlockLegs,
   sweepOrphanedProbeContainers, type CloudDeviceStartResult,
 } from './release-acceptance-run';
+
+describe('native SU prerequisite approvals', () => {
+  it.each([
+    'Write(xd://mcp_papercusp-su_work_items_get)',
+    'Write(xd://mcp__papercusp_su_work_items_get)',
+    'Write(xd://mcp__papercusp_su__work_items_get)',
+  ])('answers the mounted MCP call once without allowing later native writes: %s', (title) => {
+    expect(suToolApproval(title)).toEqual({ tool: 'papercusp-su · work items get', remember: false });
+  });
+
+  it('keeps the existing direct MCP per-tool approval', () => {
+    expect(suToolApproval('papercusp-su · work items get (MCP)'))
+      .toEqual({ tool: 'papercusp-su · work items get', remember: true });
+  });
+
+  it.each([
+    'Write(/tmp/requested-note.txt)',
+    'Bash(printf note > /tmp/requested-note.txt)',
+    'Write(xd://mcp__other_server__work_items_get)',
+    'Write(/tmp/xd://mcp__papercusp_su__work_items_get)',
+    'Write(xd://mcp__papercusp_su__work_items_get/another-path)',
+  ])('leaves native effects and unrelated devices for their explicit card: %s', (title) => {
+    expect(suToolApproval(title)).toBeUndefined();
+  });
+});
+
+describe('native approval terminal wait', () => {
+  const event = (value: Record<string, unknown>) => value as unknown as SuSessionEvent;
+  const reply = event({ type: 'transcript', phase: 'completed', role: 'assistant',
+    channel: 'text', turnId: 'requested-turn', sequence: 10 });
+  const idle = event({ type: 'lifecycle', state: 'waiting-for-owner', sequence: 11 });
+
+  it('fails promptly when the requested turn replies and settles without a card', () => {
+    expect(nativeApprovalTurnSettled([reply, idle], 'requested-turn', false)).toBe(true);
+  });
+  it('keeps waiting for a pending card, including a prerequisite MCP approval', () => {
+    expect(nativeApprovalTurnSettled([reply, idle], 'requested-turn', true)).toBe(false);
+  });
+  it('does not mistake an earlier turn, reasoning completion, or initial idle for a refusal', () => {
+    expect(nativeApprovalTurnSettled([reply, idle], 'next-turn', false)).toBe(false);
+    expect(nativeApprovalTurnSettled([event({ ...reply, channel: 'reasoning' }), idle], 'requested-turn', false)).toBe(false);
+    expect(nativeApprovalTurnSettled([idle, event({ ...reply, sequence: 12 })], 'requested-turn', false)).toBe(false);
+  });
+  it.each(['failed', 'ended'])('stops a %s native session without a card', (state) => {
+    expect(nativeApprovalTurnSettled([event({ type: 'lifecycle', state, sequence: 12 })], 'requested-turn', false)).toBe(true);
+  });
+
+  it('does not complete at the post-effect verification card, but completes after its denial and final reply', () => {
+    const effect = event({ type: 'tool', phase: 'completed', sequence: 30, turnId: 'requested-turn', isError: false });
+    const cardIdle = event({ type: 'lifecycle', state: 'waiting-for-owner', sequence: 34 });
+    // The native trace parked at seq 34 with a second card open. It had
+    // already emitted assistant text, so lifecycle alone is not sufficient.
+    expect(nativeApprovalTurnSettled([reply, effect, cardIdle], 'requested-turn', true)).toBe(false);
+    expect(nativeApprovalTurnSettled([reply, effect, cardIdle,
+      event({ ...reply, sequence: 37 }), event({ ...idle, sequence: 38 }),
+    ], 'requested-turn', false)).toBe(true);
+  });
+});
+
+describe('native approval follow-up scope', () => {
+  const input = { turnId: 'requested-turn', afterSequence: 30, notePath: '/owned/note.txt' };
+  const followup = {
+    type: 'card', phase: 'opened', sequence: 33, turnId: input.turnId,
+    card: {
+      correlationId: 'verification', prompt: 'Read /owned/note.txt', allowDecline: true,
+      approval: { title: 'Bash(cat /owned/note.txt)', question: 'Do you want to run this command?', body: ['cat /owned/note.txt'] },
+      presentation: { kind: 'radio', options: [
+        { id: 'yes', label: 'Yes' }, { id: 'always', label: "Yes, and don't ask again" },
+        { id: 'no', label: 'No, and tell Codex what to do instead' },
+      ] },
+    },
+  };
+  const decline = (value: unknown) => nativeApprovalFollowupDecline(value as SuSessionEvent, input);
+
+  it('only selects the one-request denial, never Yes or remembered permission', () => {
+    expect(decline(followup)).toEqual({ key: '3', question: 'Do you want to run this command?',
+      label: 'No, and tell Codex what to do instead' });
+  });
+  it.each([
+    { ...followup, turnId: 'other-turn' },
+    { ...followup, sequence: 30 },
+    { ...followup, phase: 'closed' },
+    { ...followup, card: { ...followup.card, allowDecline: false } },
+    { ...followup, card: { ...followup.card, approval: undefined } },
+    { ...followup, card: { ...followup.card, presentation: { kind: 'text' } } },
+    { ...followup, card: { ...followup.card, prompt: '/other/note.txt',
+      approval: { ...followup.card.approval, body: ['/other/note.txt'] } } },
+    { ...followup, card: { ...followup.card, prompt: '/owned/note.txt.backup',
+      approval: { ...followup.card.approval, body: ['/owned/note.txt.backup'] } } },
+    { ...followup, card: { ...followup.card, prompt: '/other/owned/note.txt',
+      approval: { ...followup.card.approval, body: ['/other/owned/note.txt'] } } },
+    { ...followup, card: { ...followup.card, approval: { ...followup.card.approval,
+      title: 'papercusp-su · work items get (MCP)' } } },
+    { ...followup, card: { ...followup.card, presentation: { kind: 'radio',
+      options: followup.card.presentation.options.slice(0, 2) } } },
+  ])('leaves unrelated or unsupported card %# unanswered', (value) => {
+    expect(decline(value)).toBeUndefined();
+  });
+});
+
+describe('installed acceptance canonical test ledger', () => {
+  it('retains the ledger reporter when Vitest replaces configured reporters with CLI options', async () => {
+    const resolveReporters = async (args: string[]) => {
+      const { options } = parseCLI(['vitest', 'run', ...args]);
+      const { vitestConfig } = await resolveConfig(
+        { ...options, root: REPO_ROOT, config: false },
+        { test: { reporters: ['default', ADMIN_TEST_RUNS_REPORTER_PATH] } },
+      );
+      return vitestConfig.reporters.map((entry) => Array.isArray(entry) ? entry[0] : entry);
+    };
+    // Positive control: exercise Vitest's actual CLI/config merge, which loses
+    // the configured recorder when the CLI supplies only the release reporter.
+    const legacy = RELEASE_ACCEPTANCE_REPORTER_ARGS.filter(arg => !arg.includes(ADMIN_TEST_RUNS_REPORTER_PATH));
+    expect(await resolveReporters(legacy)).not.toContain(ADMIN_TEST_RUNS_REPORTER_PATH);
+    const reporters = await resolveReporters(RELEASE_ACCEPTANCE_REPORTER_ARGS);
+    expect(reporters).toContain(ADMIN_TEST_RUNS_REPORTER_PATH);
+    expect(reporters).toContain(path.join(REPO_ROOT, 'packages/operator-core/lib/pui-e2e/release-acceptance-reporter.ts'));
+  });
+});
+
+describe('cold operator runtime package admission', () => {
+  it('builds the missing CommonJS export from pinned workspace source and refuses a broken source build', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-runtime-package-'));
+    const packageRoot = path.join(root, 'libs/generic/sse');
+    try {
+      mkdirSync(packageRoot, { recursive: true });
+      for (const file of ['package.json', 'tsconfig.json', 'src']) {
+        cpSync(path.join(REPO_ROOT, 'libs/generic/sse', file), path.join(packageRoot, file), { recursive: true });
+      }
+      symlinkSync(path.join(REPO_ROOT, 'node_modules'), path.join(packageRoot, 'node_modules'), 'dir');
+      const requireFromPackage = createRequire(path.join(packageRoot, 'package.json'));
+      // The observed failure: the source tree and toolchain exist, but the
+      // CommonJS package export does not exist until the maintained build runs.
+      expect(() => requireFromPackage('@papercusp/sse')).toThrow(/Cannot find module/);
+      prepareOperatorRuntimePackages(root);
+      const loaded = requireFromPackage('@papercusp/sse') as Record<string, unknown>;
+      expect(loaded.sseResponse).toBeTypeOf('function');
+      expect(loaded.getChannel).toBeTypeOf('function');
+      writeFileSync(path.join(packageRoot, 'src/index.ts'), 'this is invalid TypeScript (');
+      expect(() => prepareOperatorRuntimePackages(root)).toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
+});
+
+describe('native interruption response budget admission', () => {
+  it('admits a numeric stream that fits one response and rejects the observed 10,000-line refusal trigger before inference', () => {
+    const prompt = nativeInterruptRequest('ordinary-list');
+    const count = Number(prompt.match(/1 through (\d+)/)?.[1]);
+    const expectedReply = Array.from({ length: count }, (_, index) => `${index + 1}\n`).join('');
+    expect(count).toBeGreaterThanOrEqual(100);
+    expect(Buffer.byteLength(expectedReply, 'utf8')).toBeLessThanOrEqual(4096);
+    // A real Claude turn interpreted "write the numbers" as a file task and
+    // waited on a Write approval. The probe must request inline text only.
+    expect(prompt).toContain('Reply directly in this chat');
+    expect(prompt).toContain('Do not create or edit files, run commands, or use any tools');
+    expect(prompt).not.toMatch(/write the numbers/i);
+    expect(() => nativeInterruptRequest('ordinary-list', 10000)).toThrow(/reply budget/);
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])('rejects invalid line count %s before creating an inference request', (count) => {
+    expect(() => nativeInterruptRequest('ordinary-list', count)).toThrow(/numeric lines/);
+  });
+});
+
+describe('native approval tool contract', () => {
+  it.each(['claude', 'codex'])('does not require unavailable framework tools from the bare %s client', (backend) => {
+    const prompt = nativeApprovalRequest({ backend, workItem: 'EI-123', ownerId: 'su-owned',
+      notePath: '/owned/note.txt', noteText: 'exact note' });
+    expect(prompt).not.toContain('work_items:get');
+    expect(prompt).not.toContain('EI-123');
+    expect(prompt).toContain("'/owned/note.txt'");
+    expect(prompt).toContain("'exact note' followed by a newline");
+    expect(prompt).toContain('Create it using Bash');
+  });
+
+  it('retains actual task-owner verification for the framework OMP client', () => {
+    const prompt = nativeApprovalRequest({ backend: 'omp', workItem: 'EI-123', ownerId: 'su-owned',
+      notePath: '/owned/note.txt', noteText: 'exact note' });
+    expect(prompt).toContain('Task EI-123 is assigned to your session su-owned');
+    expect(prompt).toContain('verify it with work_items:get');
+  });
+});
+
+describe('installed PUI store admission', () => {
+  it('rejects a missing, absent, or different store and accepts the installed release through its current symlink', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-store-admission-'));
+    try {
+      const release = path.join(root, 'releases', 'candidate');
+      mkdirSync(path.join(release, 'bin'), { recursive: true });
+      const binary = path.join(release, 'bin', 'pui');
+      writeFileSync(binary, 'installed candidate');
+      writeFileSync(path.join(root, 'other-pui'), 'another candidate');
+      expect(() => assertInstalledPuiStore(binary, undefined)).toThrow(/PUI_RELEASE_STORE/);
+      expect(() => assertInstalledPuiStore(binary, root)).toThrow(/no installed/);
+      symlinkSync(release, path.join(root, 'current'));
+      expect(() => assertInstalledPuiStore(path.join(root, 'other-pui'), root)).toThrow(/does not match/);
+      expect(() => assertInstalledPuiStore(binary, root)).not.toThrow();
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('release acceptance checkout helper snapshot', () => {
+  it('keeps the admitted helper stable when the shared source changes during checkout', async () => {
+    const wrapper = readFileSync(path.join(REPO_ROOT, 'apps/tui/scripts/release-acceptance.sh'), 'utf8');
+    const invocation = wrapper.match(/node "\$ROOT\/scripts\/npm-install-safe\.mjs"[\s\S]*?(?=\nlanded=)/)?.[0];
+    expect(invocation).toBeDefined();
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-helper-snapshot-'));
+    const helper = path.join(root, 'apps/operator/bin/release/setup-release-checkout.sh');
+    const snapshot = path.join(root, 'apps/operator/scripts/systemd/papercusp-script-snapshot.sh');
+    const installSafe = path.join(root, 'scripts/npm-install-safe.mjs');
+    const started = path.join(root, 'started');
+    const resume = path.join(root, 'resume');
+    const admittedArgs = path.join(root, 'admitted-args');
+    const checkouts = path.join(root, 'acceptance-cache');
+    mkdirSync(path.dirname(helper), { recursive: true });
+    mkdirSync(path.dirname(snapshot), { recursive: true });
+    mkdirSync(path.dirname(installSafe), { recursive: true });
+    writeFileSync(snapshot, readFileSync(path.join(REPO_ROOT, 'apps/operator/scripts/systemd/papercusp-script-snapshot.sh')));
+    // Check the actual shell call enters the maintained reader boundary before
+    // executing the snapshotted helper. Its lock arbitration has its own suite.
+    writeFileSync(installSafe, `import { spawnSync } from 'node:child_process';
+const args = process.argv.slice(2);
+if (args[0] !== '--repo-root' || args[1] !== process.env.ROOT || args[2] !== '--exec-under-lock' || args[3] !== '--' || args[4] !== 'bash') process.exit(42);
+const result = spawnSync(args[4], args.slice(5), { stdio: 'inherit', env: { ...process.env, PUI_SNAPSHOT_INSTALL_READER: '1' } });
+process.exit(result.status ?? 1);
+`);
+    // Put the completion beyond Bash's read-ahead buffer. The wait lets the
+    // test replace the original only after the admitted program has started.
+    writeFileSync(helper, `[ "$PUI_SNAPSHOT_INSTALL_READER" = 1 ] || exit 43\nprintf '%s\\n' "$@" > "$PUI_SNAPSHOT_ARGS"\nprintf '%s' "$0" > "$PUI_SNAPSHOT_STARTED"\nwhile [ ! -f "$PUI_SNAPSHOT_RESUME" ]; do sleep 0.01; done\n`
+      + '# padding beyond lazy shell read buffer\n'.repeat(2048)
+      + 'printf "CHECKOUT_HELPER_COMPLETED\\n"\n');
+    const child = spawn('bash', ['-c', `fail() { exit 2; }\n${invocation}`], {
+      env: { ...process.env, ROOT: root, checkouts, checkout: path.join(checkouts, 'slot-1'), sha: 'a'.repeat(40),
+        PUI_SNAPSHOT_STARTED: started, PUI_SNAPSHOT_RESUME: resume,
+        PUI_SNAPSHOT_ARGS: admittedArgs },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout.on('data', chunk => { output += String(chunk); });
+    child.stderr.on('data', chunk => { output += String(chunk); });
+    const exit = new Promise<number | null>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', resolve);
+    });
+    try {
+      await vi.waitFor(() => expect(existsSync(started), `snapshot child exit=${child.exitCode} signal=${child.signalCode}\n${output}`).toBe(true), { timeout: 5_000, interval: 10 });
+      expect(readFileSync(started, 'utf8')).not.toBe(helper);
+      const args = readFileSync(admittedArgs, 'utf8').trim().split('\n');
+      expect(args[args.indexOf('--node-modules-copy') + 1]).toBe('copy');
+      expect(args[args.indexOf('--node-modules-generation') + 1]).toBe('required');
+      expect(args[args.indexOf('--dependency-generation-root') + 1]).toBe(path.join(checkouts, 'dependency-generations'));
+      writeFileSync(helper, 'this is an invalid concurrent edit (\n');
+      writeFileSync(resume, 'continue');
+      expect(await exit).toBe(0);
+      expect(output).toContain('CHECKOUT_HELPER_COMPLETED');
+    } finally {
+      child.kill();
+      writeFileSync(resume, 'continue');
+      await exit;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('Docker create/start release preflight', () => {
   it('passes on the first bounded offline stock-container launch that succeeds', () => {
@@ -63,6 +332,7 @@ describe('Docker create/start release preflight', () => {
     const calls: string[][] = [];
     const listed = [
       'pui-release-preflight-111-1790766510125-1',
+      'pui-release-preflight-111-1790766510125-smoke-0',
       'pui-release-preflight-222-1790766530190-2',
       `pui-release-preflight-${process.pid}-1790766550268-3`,
       'other-pui-release-preflight-333-1-1',
@@ -72,9 +342,9 @@ describe('Docker create/start release preflight', () => {
       calls.push(args);
       return args[0] === 'ps' ? { status: 0, stdout: `${listed}\n` } : { status: 0 };
     }, (pid) => pid === 222);
-    expect(removed).toEqual(['pui-release-preflight-111-1790766510125-1']);
+    expect(removed).toEqual(['pui-release-preflight-111-1790766510125-1', 'pui-release-preflight-111-1790766510125-smoke-0']);
     expect(calls[0]).toEqual(expect.arrayContaining(['ps', '--all', '--filter', 'name=pui-release-preflight-']));
-    expect(calls[1]).toEqual(['rm', '--force', 'pui-release-preflight-111-1790766510125-1']);
+    expect(calls[1]).toEqual(['rm', '--force', ...removed]);
     expect(calls).toHaveLength(2);
   });
 
@@ -123,6 +393,58 @@ describe('Docker create/start release preflight', () => {
       && output.includes('preflight timed out'))).toBe(true);
   });
 
+  it.each([null, 143, 0])('keeps a timed-out Docker smoke inconclusive even with status %s', (status) => {
+    const calls: Array<{ args: string[]; timeout: number }> = [];
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-stock-timeout-'));
+    try {
+      const machines = runStockMachineSmoke(root, ['ubuntu:24.04'], () => null, (args, timeout) => {
+        calls.push({ args, timeout });
+        return args[0] === 'run'
+          ? { status, stdout: 'partial smoke output', stderr: 'Docker interrupted', error: { message: 'spawnSync docker ETIMEDOUT' } }
+          : { status: 0 };
+      });
+      expect(machines[0]).toMatchObject({ status, unmeasured: true });
+      expect(machines[0].output).toContain('partial smoke output\nDocker interrupted\nspawnSync docker ETIMEDOUT');
+      expect(stockMachinesBlockLegs(machines)).toBe(false);
+      expect(stockMachineRefusal(machines[0])).toContain('was not measured');
+      const name = calls[0].args[calls[0].args.indexOf('--name') + 1];
+      expect(name).toMatch(/^pui-release-preflight-\d+-\d+-smoke-0$/);
+      expect(calls[0].timeout).toBe(300_000);
+      expect(calls[1]).toEqual({ args: ['rm', '--force', name], timeout: DOCKER_START_PROBE_TIMEOUT_MS });
+      const passed = [{ image: 'ubuntu:24.04', status: 0, output: 'ok' }];
+      const remeasure = vi.fn(() => passed);
+      expect(remeasureStockMachines(machines, remeasure)).toBe(passed);
+      expect(remeasure).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([0, 1])('preserves completed smoke status %s and only blocks on actual failure', (status) => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-stock-completed-'));
+    try {
+      const run = vi.fn(() => ({ status, stdout: 'finished' }));
+      const machines = runStockMachineSmoke(root, ['ubuntu:24.04'], () => null, run);
+      expect(machines[0].unmeasured).toBeUndefined();
+      expect(stockMachinesBlockLegs(machines)).toBe(status !== 0);
+      expect(run).toHaveBeenCalledOnce();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a Docker invocation without a terminal status unmeasured', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-stock-interrupted-'));
+    try {
+      const machines = runStockMachineSmoke(root, ['ubuntu:24.04'], () => null, () => ({ status: null }));
+      expect(machines[0]).toMatchObject({ status: null, unmeasured: true });
+      expect(stockMachinesBlockLegs(machines)).toBe(false);
+      expect(stockMachineRefusal(machines[0])).toContain('was not measured');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // WI-10004247 run 7: a Docker stall on the host (WI-10003403) refused the
   // preflight, and every PTY leg was skipped as if the binary had failed.
   it('lets the legs run past an unmeasured smoke but not past a failed one', () => {
@@ -146,7 +468,7 @@ describe('Docker create/start release preflight', () => {
 
   it('refuses an unmeasured smoke as unmeasured, a failed one as failed, a passed one not at all', () => {
     expect(stockMachineRefusal({ image: 'debian:stable-slim', unmeasured: true, status: null, output: 'stalled' }))
-      .toBe('stock-machine smoke on debian:stable-slim was not measured: the host could not start a container '
+      .toBe('stock-machine smoke on debian:stable-slim was not measured: the host could not complete the smoke '
         + 'before or after the legs: stalled');
     expect(stockMachineRefusal({ image: 'debian:stable-slim', status: 2, output: 'boom' }))
       .toBe('stock-machine smoke on debian:stable-slim failed (status 2): boom');
@@ -360,6 +682,71 @@ describe('release acceptance evidence parsing', () => {
 });
 
 describe('release acceptance account preflight', () => {
+  it('requires completed inference and attributes the auto route without pinning an account', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      'data: {"type":"response.output_text.delta","delta":"OK"}\n\n'
+      + 'data: {"type":"response.completed"}\n\n',
+      { headers: { 'content-type': 'text/event-stream', 'x-papercusp-routed-account': 'codex-account' } },
+    ));
+    await expect(probeRoutedCodexModel('catalog-model', 'probe-owner', fetchImpl))
+      .resolves.toMatchObject({ model: 'catalog-model', verdict: 'completed', terminal: 'response.completed', account: 'codex-account' });
+    const init = fetchImpl.mock.calls[0][1]!;
+    const headers = new Headers(init.headers);
+    expect(headers.get('x-papercusp-owner')).toBe('probe-owner');
+    expect(headers.has('x-papercusp-account')).toBe(false);
+    expect(JSON.parse(String(init.body))).toMatchObject({ model: 'catalog-model', stream: true, store: false });
+  });
+
+  it('does not count an opened or incomplete stream as completed inference', async () => {
+    for (const body of ['data: {"type":"response.created"}\n\n', 'data: {"type":"response.incomplete"}\n\n']) {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(body));
+      await expect(probeRoutedCodexModel('catalog-model', 'probe-owner', fetchImpl))
+        .resolves.toMatchObject({ verdict: 'unmeasured' });
+    }
+  });
+
+  it.each([400, 401, 429, 503])('distinguishes model refusal from an inconclusive HTTP %s', async (status) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      JSON.stringify({ detail: "The 'old-model' model is not supported when using Codex with a ChatGPT account." }), { status },
+    ));
+    await expect(probeRoutedCodexModel('old-model', 'probe-owner', fetchImpl))
+      .resolves.toMatchObject({ status, verdict: status === 400 ? 'refused' : 'unmeasured' });
+  });
+
+  it('stops a refused model before the archive and expensive suites are opened', async () => {
+    const work = mkdtempSync(path.join(tmpdir(), 'pui-model-preflight-'));
+    const catalog = path.join(work, 'accounts.json');
+    writeFileSync(catalog, '{"accounts":[{"id":"codex-account","provider":"codex"}]}');
+    const request = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      '{"detail":"unsupported model"}', { status: 400 },
+    ));
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    vi.stubEnv('PAPERCUSP_SID', 'probe-owner');
+    try {
+      await expect(runReleaseAcceptance({ archive: path.join(work, 'missing.tar.gz'), advertise: [],
+        real: [{ backend: 'codex', model: 'old-model', env: {
+          PUI_REAL_ACCOUNT: 'auto', PUI_NATIVE_ACCOUNT_CATALOG: catalog,
+        } }] })).rejects.toThrow('Native Codex model preflight refused old-model');
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(info).toHaveBeenCalledWith('PUI_ROUTED_CODEX_MODEL_PREFLIGHT', expect.stringContaining('"verdict":"refused"'));
+    } finally {
+      request.mockRestore(); info.mockRestore(); vi.unstubAllEnvs(); rmSync(work, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses historical baseline capture before opening a current candidate or running suites', async () => {
+    const options = { archive: '/missing-pui-current-candidate.tar.gz', advertise: [] };
+    vi.stubEnv('PUI_CAPTURE_BASELINE', '1');
+    try {
+      await expect(runReleaseAcceptance(options)).rejects.toThrow(/pre-fix counterexample.*installed release acceptance/);
+      vi.stubEnv('PUI_CAPTURE_BASELINE', '');
+      await expect(runReleaseAcceptance({ ...options, real: [{ backend: 'codex', env: { PUI_CAPTURE_BASELINE: '1' } }] }))
+        .rejects.toThrow(/pre-fix counterexample.*installed release acceptance/);
+      // Positive control: an ordinary release reaches archive admission.
+      await expect(runReleaseAcceptance(options)).rejects.toThrow(/ENOENT/);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it('refuses a missing or invalid routed catalog before opening the archive or running suites', async () => {
     const work = mkdtempSync(path.join(tmpdir(), 'pui-acceptance-preflight-'));
     const archive = path.join(work, 'missing.tar.gz');

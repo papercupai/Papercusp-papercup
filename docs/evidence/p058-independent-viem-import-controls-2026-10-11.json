@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "P058 independent viem import controls and rejected direct ARM full graph",
+  "command": [
+    "node",
+    "--input-type=module"
+  ],
+  "commandProvenance": {
+    "independentX64TaskId": "0mv320uuq1allrirg24",
+    "independentArmTaskId": "0mv3260if1nrod4k1mv",
+    "directFullGraphTaskId": "0mv32beab1y1s7zddwg",
+    "note": "Exact inline commands are retained by the durable task and native transcript. Direct graph uses frozen canonical helper body plus parent-only spawn output retention."
+  },
+  "cwd": ".",
+  "startedAt": "2026-10-10T23:57:40.336Z",
+  "finishedAt": "2026-10-11T00:07:02.219Z",
+  "timestampProvenance": "startedAt is the first command request deadline minus its200000ms budget; finishedAt is the full-graph transient runner's JOB END. Neither is asserted as exact child import start/end.",
+  "exitCode": 1,
+  "summary": "Independent x64 and emulated ARM library probes passed. Direct ARM full graph failed after36963ms when incomplete native package closure fell back to the host repository's node-pty package; no whole-graph acceptance or original timeout cause is established.",
+  "workItemId": "EI-25500068013952985",
+  "relatedWorkItemIds": [
+    "EI-25608208328004035",
+    "EI-25639520292031822"
+  ],
+  "parentWorkItemId": "WI-10007352",
+  "planSlug": "portable-papercusp-container-and-native-2026-10-06",
+  "candidateAccepted": false,
+  "evidencePlane": "independent-direct-process-diagnosis",
+  "inputBinding": {
+    "overlayInventorySha256": "978c0594cdaf5ae326406e2d562d3ab2e71befe0d10f9c70635fb50d3a10054c",
+    "selectedFilesVerified": 13595,
+    "nodeVersion": "24.18.1",
+    "uid": 1000,
+    "armRootfsArchiveSha256": "277f892ed0254a7ef058586fb9186ebdaadae408860ec8f7f5a0ffc8c401baf4",
+    "armNodeSha256": "a990a8ae388fc285ddbce280e63fca48cfd7695f632b66aec6ed581566eace99",
+    "x64NodeSha256": "31e214a604403cf3afddd264e7b367fe559980459453bd9738a3977260a564db"
+  },
+  "measurements": [
+    {
+      "runtime": "x64",
+      "probe": "baseline",
+      "parentElapsedMs": 106.067492,
+      "importMs": 0.022353,
+      "status": 0
+    },
+    {
+      "runtime": "x64",
+      "probe": "chains",
+      "parentElapsedMs": 695.454169,
+      "importMs": 602.25539,
+      "status": 0
+    },
+    {
+      "runtime": "x64",
+      "probe": "viem-and-accounts",
+      "parentElapsedMs": 407.243455,
+      "importMs": 302.561823,
+      "status": 0
+    },
+    {
+      "runtime": "direct-binfmt-arm64",
+      "probe": "baseline",
+      "parentElapsedMs": 3700.938961,
+      "importMs": 0.671709,
+      "status": 0
+    },
+    {
+      "runtime": "direct-binfmt-arm64",
+      "probe": "chains",
+      "parentElapsedMs": 9144.283699,
+      "importMs": 7470.783284,
+      "status": 0
+    },
+    {
+      "runtime": "direct-binfmt-arm64",
+      "probe": "viem-and-accounts",
+      "parentElapsedMs": 7157.198289,
+      "importMs": 5318.493347,
+      "status": 0
+    }
+  ],
+  "measurementSemantics": "importMs is child performance.now elapsed around the import statements; parentElapsedMs includes child startup and teardown. Each probe uses a fresh process. These costs are not additive proof for the shared whole import graph.",
+  "fullGraph": {
+    "originalHelperSha256": "ffbd2d83808dd2129e6e8f8bcf770e4f1bd9799717a7d634d047a09b611fa3d9",
+    "observerScriptSha256": "af607aa03c4fea7d5e4ee5fd2d28babb6114a6c3a48c62120f11c8360a068bd1",
+    "serveSha256": "2cbbcca8d8da25a7bf972da3fa21e88a1f61cbfc17c842aa05615e63c3487365",
+    "canonicalTimeoutMs": 60000,
+    "elapsedMs": 36963,
+    "status": 1,
+    "signal": null,
+    "error": null,
+    "markerObserved": false,
+    "resultSha256": "ec4df785b4e70470869d535847a3131f3007a8467a49fad845da54e3e192c81c",
+    "stdoutSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stderrSha256": "d31fd7946cadf0ef4e609a69d23ab840b9b4fcfbd054a3446c1137f6bbec1695",
+    "stderrBytes": 2769,
+    "failure": "Host repository @lydell/node-pty cannot resolve @lydell/node-pty-linux-arm64.",
+    "ownedFollowUp": "EI-25639520292031822"
+  },
+  "rawEvidence": {
+    "x64": ".papercusp/scratch/bash-a0a24470-837.log",
+    "arm": ".papercusp/scratch/bash-3a9145cf-d60.log",
+    "fullGraph": ".papercusp/scratch/bash-02bc210a-57a.log",
+    "fullGraphFilesRoot": ".papercusp/scratch/p058-direct-arm-runtime-20261011"
+  },
+  "assertions": [
+    {
+      "id": "fresh-process-library-controls",
+      "passed": true,
+      "evidence": "Six baseline/import probes returned status0 with nullable-safe results and no spawn error."
+    },
+    {
+      "id": "direct-full-graph",
+      "passed": false,
+      "evidence": "Child exited1 after36963ms, markerfalse; missing target-native package through host fallback."
+    },
+    {
+      "id": "original-child-deadline",
+      "passed": true,
+      "evidence": "Observer receipt records canonicalTimeoutMs60000 and original --verify-boot-imports argv."
+    },
+    {
+      "id": "full-graph-failure-retained",
+      "passed": true,
+      "evidence": "Exact result, empty stdout and2769-byte stderr read back with hashes."
+    },
+    {
+      "id": "follow-up-owned",
+      "passed": true,
+      "evidence": "Create receipt for EI-25639520292031822 confirms assignee su-0d2affd0-2198-4734-b54f-186234343375."
+    }
+  ],
+  "limitations": [
+    "Direct UID1000/binfmt execution differs from isolated container UID1001 and from physical ARM hardware.",
+    "Full direct tree linked only the JS overlay and omitted original target-native base dependencies; it cannot qualify the original container graph.",
+    "No Docker request ran; populated checkpoint preflight stopped Docker diagnosis.",
+    "Original ARM60s startup cause remains unresolved; viem imports are a measured candidate cost.",
+    "No installed-native, signing/publication, transfer or final shipment acceptance."
+  ]
+}

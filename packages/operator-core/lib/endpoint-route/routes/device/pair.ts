@@ -19,9 +19,23 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { DEVICE_AUTH, devicePrincipal, isLoopbackHost } from './_shared';
 import { signDeviceToken } from '../../../device-jwt';
 import { getMobileVoicePort } from '../../../device-voice-ws';
-import { advertisedBaseUrls, lanAddress } from '../../../device-base-urls';
+import { advertisedBaseUrls, hostedDeviceRelayBaseUrl, lanAddress } from '../../../device-base-urls';
 import { mintPairToken, consumePairToken, newDeviceId } from '../../../device-pair-store';
 import { readRegistry, workspaceById } from '../../../workspace-registry';
+import {
+  canonicalNoisePublicKey,
+  loadOrCreateHostedMachineNoiseKeyPair,
+  noisePublicKeyBase64,
+} from '../../../workspace-host/hosted-machine-noise-key';
+
+/**
+ * The machine's static Noise public key, advertised only on a hosted machine (reached through
+ * the portal relay). A phone that sees it seals every device-http content frame (D-013 #6).
+ */
+async function machineNoiseKeyFor(relayUrl: string | null): Promise<string | null> {
+  if (!relayUrl) return null;
+  return noisePublicKeyBase64((await loadOrCreateHostedMachineNoiseKeyPair()).publicKey);
+}
 import {
   insertDevice,
   listAllDevices,
@@ -74,17 +88,20 @@ const mintPairTokenRoute = defineTool({
     const desktopHost = publicUrl
       ? publicUrl.replace(/^https?:\/\//, '').replace(/\/$/, '')
       : (process.env.MOBILE_DESKTOP_HOST ?? (lan ? `${lan}:${port}` : reqHost));
-    const serverUrl = publicUrl
-      ? publicUrl.replace(/\/$/, '')
-      : `http://${desktopHost}`;
+    // A hosted machine is reached only through the portal relay (D-013 #3, D-017).
+    const relayUrl = hostedDeviceRelayBaseUrl(workspaceId);
+    const serverUrl = relayUrl
+      ?? (publicUrl ? publicUrl.replace(/\/$/, '') : `http://${desktopHost}`);
 
     const { pairToken, expiresAt } = await mintPairToken({
       workspaceId,
       desktopHost,
       userEmail: sessionUserEmail,
     });
+    const noiseKey = await machineNoiseKeyFor(relayUrl);
     return Response.json({
-      qrPayload: { server: serverUrl, pairToken, workspaceId },
+      // Shape unchanged except `noiseKey`, present only on a hosted machine (D-013 #3, #6).
+      qrPayload: { server: serverUrl, pairToken, workspaceId, ...(noiseKey ? { noiseKey } : {}) },
       expiresAt,
     });
   },
@@ -147,11 +164,27 @@ const pairRoute = defineTool({
   path: '/device/pair',
   auth: 'public',
   cors: true,
-  input: z.object({ pairToken: z.string().min(1) }),
+  input: z.object({
+    pairToken: z.string().min(1),
+    /** The phone's static Noise public key; required when the machine advertised `noiseKey`. */
+    noisePublicKey: z.string().max(64).optional(),
+  }),
   async handler(_req, ctx) {
+    // Validate the key BEFORE consuming the one-time token, so a malformed key does not burn it.
+    const supplied = ctx.input.noisePublicKey;
+    const noisePublicKey = supplied === undefined ? null : canonicalNoisePublicKey(supplied);
+    if (supplied !== undefined && !noisePublicKey) {
+      return Response.json({ error: 'invalid_noise_public_key' }, { status: 400 });
+    }
     const pending = await consumePairToken(ctx.input.pairToken);
     if (!pending) {
       return Response.json({ error: 'invalid_or_expired_token' }, { status: 401 });
+    }
+    const machineNoiseKey = await machineNoiseKeyFor(hostedDeviceRelayBaseUrl(pending.workspaceId));
+    // A hosted machine only speaks sealed content to phones, so a pair without a phone key
+    // would produce a device that can never talk to it (the relay refuses plaintext).
+    if (machineNoiseKey && !noisePublicKey) {
+      return Response.json({ error: 'noise_public_key_required' }, { status: 400 });
     }
     const deviceId = newDeviceId();
     const deviceToken = signDeviceToken({
@@ -164,6 +197,7 @@ const pairRoute = defineTool({
       deviceId,
       userEmail: pending.userEmail ?? 'unknown@local',
       workspaceId: pending.workspaceId,
+      noisePublicKey: machineNoiseKey ? noisePublicKey : null,
     });
     const defguardEnrollmentUrl =
       process.env.DEFGUARD_ENROLLMENT_URL ?? 'https://mesh.papercuspai.com/enroll';
@@ -176,7 +210,8 @@ const pairRoute = defineTool({
       // Additive (on-desktop-direct-lan-voice-2026-07-14 P-005): every route
       // to this desktop, preference order mesh → lan → tunnel. Old clients
       // keep reading `desktopHost`; new clients probe this list (P-006).
-      baseUrls: advertisedBaseUrls({ port: portOf(pending.desktopHost) }),
+      baseUrls: advertisedBaseUrls({ port: portOf(pending.desktopHost), workspaceId: pending.workspaceId }),
+      ...(machineNoiseKey ? { noiseKey: machineNoiseKey } : {}),
     });
   },
 });
@@ -265,7 +300,7 @@ const runtimeConfigRoute = defineTool({
       // Additive (P-005): the fresh multi-path advertise list — a paired
       // phone re-reads this on app start / network change and re-probes
       // mesh → lan → tunnel (P-006).
-      baseUrls: advertisedBaseUrls(),
+      baseUrls: advertisedBaseUrls({ workspaceId: principal.workspaceId }),
     });
   },
 });

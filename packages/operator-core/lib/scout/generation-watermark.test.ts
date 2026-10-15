@@ -10,6 +10,7 @@ import {
   BG_HOST_RESTART_WATERMARK,
   BG_HOST_UNIT,
   KNOWN_WATERMARK_REFS,
+  assessHostStaleness,
   compareGenerationFreshness,
   parseSystemdTimestamp,
   resolveStagingHeadAsOf,
@@ -50,8 +51,21 @@ describe('parseSystemdTimestamp', () => {
   });
 });
 
+describe('assessHostStaleness — classify only measured generation comparisons', () => {
+  it('returns unknown when either comparison input is unavailable', () => {
+    expect(assessHostStaleness('abc1234', null)).toBeNull();
+    expect(assessHostStaleness(null, 'abc1234')).toBeNull();
+    expect(assessHostStaleness('  ', 'abc1234')).toBeNull();
+  });
+
+  it('returns fresh or stale only when both SHAs resolve', () => {
+    expect(assessHostStaleness('abc1234', 'ABC1234abcdef')).toBe(false);
+    expect(assessHostStaleness('abc1234', 'def5678')).toBe(true);
+  });
+});
+
 describe('readRunningGeneration — the stampable generation identity (EI-12147, reworked WI-5397)', () => {
-  it('returns every leg string-or-null (deployedSha/hostStartedAt/bootHeadSha/scoutCodeHash) plus a boolean staleHost, never throwing', async () => {
+  it('returns string-or-null identity legs and a boolean-or-null staleHost, never throwing', async () => {
     const { readRunningGeneration } = await import('./generation-watermark');
     const gen = await readRunningGeneration();
     expect(gen.deployedSha === null || typeof gen.deployedSha === 'string').toBe(true);
@@ -59,14 +73,14 @@ describe('readRunningGeneration — the stampable generation identity (EI-12147,
     expect(gen.hostStartedAt === null || !Number.isNaN(Date.parse(gen.hostStartedAt!))).toBe(true);
     expect(gen.bootHeadSha === null || typeof gen.bootHeadSha === 'string').toBe(true);
     expect(gen.scoutCodeHash === null || typeof gen.scoutCodeHash === 'string').toBe(true);
-    expect(typeof gen.staleHost).toBe('boolean');
+    expect(gen.staleHost === null || typeof gen.staleHost === 'boolean').toBe(true);
   });
 
-  it('staleHost fails toward "not proven fresh" — unresolved bootHeadSha or deployedSha ⇒ true, never a false all-clear', async () => {
+  it('reports unknown when either SHA is unresolved instead of claiming the host is stale', async () => {
     const { readRunningGeneration } = await import('./generation-watermark');
     const gen = await readRunningGeneration();
     if (gen.bootHeadSha === null || gen.deployedSha === null) {
-      expect(gen.staleHost).toBe(true);
+      expect(gen.staleHost).toBeNull();
     }
   });
 });

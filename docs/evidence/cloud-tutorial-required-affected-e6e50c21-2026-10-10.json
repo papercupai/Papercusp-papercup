@@ -1,0 +1,1162 @@
+{
+  "schemaVersion": 1,
+  "kind": "terminal-affected-observation-census",
+  "workItemId": "WI-10005128",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "taskId": "0mv225ayn1quyphfym7",
+  "ref": "e6e50c21f60369bd961e8270f63914a80961e6d1",
+  "terminalAt": "2026-10-10T08:42:17.487Z",
+  "exitCode": 78,
+  "verdict": "refused: admission-starved; no full test verdict",
+  "terminalMarker": "AFFECTED_TESTS_RESULT status=refused reason=admission-starved tasks=121 failed=0 quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=23 completedTasks=98 observedNonzeroExits=13 observedAdmissionErrors=1 ⚠ TALLY-UNDERCOUNT: 13 task(s) were OBSERVED exiting nonzero but failed=0 — this run died between observing an exit and counting it, so the tally fields above UNDERSTATE the damage. NOT a clean run. Do not read failed=0 as \"nothing failed\"; `tasks=` is the PLANNED count, not the number that ran. testsExecuted=74026 testsSkipped=586 coverageUnreadableTasks=35",
+  "archive": {
+    "path": "/dev/shm/tutorial-required-affected-e6e50c21-20261010T0714.log.inner-0",
+    "originalPath": "$HOME/.papercusp/logs/papercusp-affected-tests/3329382-28a4f5c2.log",
+    "sha256": "4d118622d0209a5f6efc21586a732fcc995a1ea7dbc40886866f4e226ef8555f",
+    "bytes": 5284387
+  },
+  "sourceCustody": {
+    "head": "e6e50c21f60369bd961e8270f63914a80961e6d1",
+    "wholeCloneClean": true,
+    "drift": [],
+    "receipt": ".papercusp/scratch/bash-96dba5bf-530.log"
+  },
+  "census": {
+    "completeOutputBlocks": 99,
+    "unclosedBlock": null,
+    "observedNonzeroBlocks": 13,
+    "coverage": "partial: settled blocks only; unstarted/uncaptured tasks cannot establish a complete failed-file population",
+    "failures": [
+      {
+        "task": "@papercusp/operator-core :: test:integration",
+        "label": "initial",
+        "exit": "1",
+        "signal": "none",
+        "beginLine": 229,
+        "endLine": 286,
+        "entries": [],
+        "unattributed": [
+          {
+            "task": "@papercusp/operator-core :: test:integration",
+            "reason": "no-file-rows"
+          }
+        ],
+        "transformCulprits": [],
+        "storageGuardObserved": true,
+        "failureReason": "test substrate storage precondition refusal"
+      },
+      {
+        "task": "@papercusp/operator-core :: lint:dependency-integrity",
+        "label": "initial",
+        "exit": "1",
+        "signal": "none",
+        "beginLine": 485,
+        "endLine": 507,
+        "entries": [],
+        "unattributed": [
+          {
+            "task": "@papercusp/operator-core :: lint:dependency-integrity",
+            "reason": "no-file-rows"
+          }
+        ],
+        "transformCulprits": [],
+        "storageGuardObserved": false
+      },
+      {
+        "task": "@papercusp/web :: lint:no-hand-rolled-cli-entry",
+        "label": "initial",
+        "exit": "1",
+        "signal": "none",
+        "beginLine": 534,
+        "endLine": 559,
+        "entries": [],
+        "unattributed": [
+          {
+            "task": "@papercusp/web :: lint:no-hand-rolled-cli-entry",
+            "reason": "no-file-rows"
+          }
+        ],
+        "transformCulprits": [],
+        "storageGuardObserved": false
+      },
+      {
+        "task": "@papercusp/web :: test",
+        "label": "initial",
+        "exit": "1",
+        "signal": "none",
+        "beginLine": 1061,
+        "endLine": 7530,
+        "entries": [
+          {
+            "workspace": "@papercusp/web",
+            "file": "app/_lints/design-primitives.test.ts"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "lib/release/record-release-cli.test.ts"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "app/_lints/contrast.test.ts"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "app/_lints/css-tokens.test.ts"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "lib/release/setup-release-checkout-workspace-builds.test.ts"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "lib/no-hand-rolled-module-pin-guard.test.ts"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "app/admin/admission/AdmissionRunsClient.test.tsx"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "scripts/__tests__/staging-isolated-bundle.test.ts"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "app/_components/vditor-cdn.test.ts"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "lib/verify-tauri-headless-assertion-mode-freshness.test.ts"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "app/harness/HarnessSettingsPanel.test.tsx"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "app/_components/porcupine-cdn.test.ts"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "lib/psu-pty-host-isolated-root-gate.test.ts"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "app/settings/voice/page.test.tsx"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "lib/verify-tauri-headless-display-reservation.test.ts"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "lib/no-hand-rolled-cli-entry-guard.test.ts"
+          },
+          {
+            "workspace": "@papercusp/web",
+            "file": "app/_components/GlobalSearchDialog.component.test.tsx"
+          }
+        ],
+        "unattributed": [],
+        "transformCulprits": [],
+        "storageGuardObserved": false
+      },
+      {
+        "task": "@papercusp/web :: test",
+        "label": "initial",
+        "exit": "1",
+        "signal": "none",
+        "beginLine": 7533,
+        "endLine": 7534,
+        "entries": [],
+        "unattributed": [
+          {
+            "task": "@papercusp/web :: test",
+            "reason": "no-captured-output"
+          }
+        ],
+        "transformCulprits": [],
+        "storageGuardObserved": false
+      },
+      {
+        "task": "@papercusp/operator-core :: test:lane-stateful",
+        "label": "initial",
+        "exit": "1",
+        "signal": "none",
+        "beginLine": 7917,
+        "endLine": 29921,
+        "entries": [
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/loop/checkpoint.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/tools/find.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/__tests__/test-pass-reuse.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/guard-string-literal-blindness.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/events/await/wake-executor-resume-exit.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/resource-governor/enforcement-lint.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/desktop-install/su-render-baseline.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/tracked-files-helper.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/result-door-encoding-contract.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/plans/certify-spec-clauses.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/scorecards/emit.evaluator-round-trip.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/dev/__tests__/dev.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/turn-provenance/envelope-grammar-cross-language.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/endpoint-route/__tests__/agent-chats-loop-lane.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/events/await/wake-executor-matrix.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/blueprint/compile-packages.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/__tests__/check-lint-guard-reachability.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/claude-seed-wire-budget.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/child-output-guard.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/sidecar-transformers-model-source.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/endpoint-route/__tests__/desktop.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/sync-resolver/no-heavy-io-on-read-path.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/endpoint-route/__tests__/agent-config-strict.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/sidecar-workspace-host-entrypoints.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/__tests__/main-thread-sync-spawn.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/__tests__/harness-test-ingestion.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/__tests__/committed-source-loader.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/sync-resolver/learning-frontier-read.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/sidecar-source-root-coherence.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/trimmed-contract.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/bundle-host-fallback.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/generated-declarations.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/endpoint-route/routes/discovery/discover-join-flow.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/templates-mirror-sync-cli.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/native-session-id-roundtrip.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/events/await/wake-resume-isolation.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/bootstrap-su-bearer-non-transit.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/declaration-export-parity.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/locks/__tests__/queue.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/guidance-output-schema-live-guard.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/full-replacement-mock-guard.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/coordination/tools/inbox-respawn-line.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/resource-governor/state-snapshot.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/supervision/unit-reconciler-failed-unit-census.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/sidecar-createrequire-bundling.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/tool-schema-byte-budget.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/gateway/gateway.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/__tests__/check-guidance-returns-schema.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/embedded-pg-declarations.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "test/reporters/admin-test-runs-reporter-playwright.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/plans/new-parse-admission.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/coordination/tools/read.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/sessions/search-self-zero-hit.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/llm-testing/__tests__/su-compact-catalog.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/endpoint-route/routes/agent-mcp/operator-voice-proxy.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/acceptance-runtime-vetting-findings.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/dream/dream-study-driver.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/endpoint-route/__tests__/launch-pui.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/plans/get-spec-evidence.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/__tests__/check-deps-wiring-parity-real-tree.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/config/tiers-set.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/design-to-code-coverage-seam.acceptance.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/rubric-scorecard-caller-workspace.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/typescript-toolchain-contract.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/capability-envelope/policy-load-graph.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/sync-resolver/pr-reviewer-settings-query.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/capability/managed-capability-api.e2e.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/sync-resolver/beacon-consent-query.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/endpoint-route/__tests__/launch-su.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/no-unhosted-remote-core-guard.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/autonomy/tripwire_revert.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/fleet/assignments-default-args-parity.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/fleet/assignments-fleet-scope.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/endpoint-route/__tests__/plan-cleanup-deterministic.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/endpoint-route/routes/agent-chats/messages-item-harness-scoping.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/sync/hyperbee/__tests__/boot-all.test.ts"
+          }
+        ],
+        "unattributed": [],
+        "transformCulprits": [],
+        "storageGuardObserved": false
+      },
+      {
+        "task": "@papercusp/operator-core :: test:pty-host-event-classification",
+        "label": "initial",
+        "exit": "1",
+        "signal": "none",
+        "beginLine": 30075,
+        "endLine": 30136,
+        "entries": [
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/scout/pty-host-health-lane.test.ts"
+          }
+        ],
+        "unattributed": [],
+        "transformCulprits": [],
+        "storageGuardObserved": false
+      },
+      {
+        "task": "@papercusp/operator-core :: test:lane-pure",
+        "label": "initial",
+        "exit": "1",
+        "signal": "none",
+        "beginLine": 30431,
+        "endLine": 44026,
+        "entries": [
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/scheduler/claim-door-census.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/sync-resolver/sync-read-audit.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/doc-claims/judge-scaffold-version-consumers.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/consult/consult-evidence-span.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/work-selection-census.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/personal-vault/archive-import.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/vitest-config-enrollment-guard.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/llm-testing/__tests__/runner-aggregate.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/sync-resolver/work-items-ui-projection.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/search/chunks/derived-registrations.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/search/session-turns-text-immutable.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/__tests__/check-mock-cast-escape.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/release/frozen-lineage-never-reads-tip.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/check-assert-integrity.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/sync-interest-single-contract.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/harness/gitmodules-invariants.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/doc-claims/goal-contract-rubric-coverage.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/release/frozen-repair-coverage-mutation.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/__tests__/check-generic-independence.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/search/embedding-space-parity.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/no-raw-harness-sentinel-guard.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/pool-idle-timeout-declared.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/managed-capability-disposition-contract.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/scout/pty-host-health-lane.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/scheduler/blocking-floor-single-source.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/goal-launch-resolver-coverage.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/sync-resolver/fanout-bound-audit.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/work-nature/work-predicate-lint.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/external-triggers/google-real-pg-cleanup-budget.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/__tests__/tool-guidance-budget.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/__tests__/tool-data-shape-ratchet.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/capability/foreground-transport-cap.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/__tests__/borrowable-export-index.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/physical-rename.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/endpoint-route/__tests__/webview-fetch-auth.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/search/search-surface-conformance.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/scout/cycle-failure-modes.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/release/sync-batch-delta-check.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/events/await/warm-inject-carry-seam.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/code-intelligence/acceptance-corpus.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/design-compare/ci-wiring.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/sidecar-dep-generation-skip.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/cupboard/template-bundle-integrity.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/search/ordered-vector-query-guard.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/plans/spec-test-adequacy-dragging.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/doc-claims/rubric-version-derivation.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/issues-engineer-filter-parity.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/e2e-egress-fixture-guard.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/perf-anti-patterns.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/agent-tools/orchestration/legacy-shape-parity.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/__tests__/not-checked-non-gating-mirror.test.ts"
+          },
+          {
+            "workspace": "@papercusp/operator-core",
+            "file": "lib/__tests__/tools-md-sync.test.ts"
+          }
+        ],
+        "unattributed": [],
+        "transformCulprits": [],
+        "storageGuardObserved": false
+      },
+      {
+        "task": "@papercusp/web :: test:integration",
+        "label": "initial",
+        "exit": "1",
+        "signal": "none",
+        "beginLine": 44051,
+        "endLine": 44108,
+        "entries": [],
+        "unattributed": [
+          {
+            "task": "@papercusp/web :: test:integration",
+            "reason": "no-file-rows"
+          }
+        ],
+        "transformCulprits": [],
+        "storageGuardObserved": true,
+        "failureReason": "test substrate storage precondition refusal"
+      },
+      {
+        "task": "@papercusp/template-kit :: test",
+        "label": "initial",
+        "exit": "1",
+        "signal": "none",
+        "beginLine": 44203,
+        "endLine": 44277,
+        "entries": [
+          {
+            "workspace": "@papercusp/template-kit",
+            "file": "src/templates-dir.test.ts"
+          }
+        ],
+        "unattributed": [],
+        "transformCulprits": [],
+        "storageGuardObserved": false
+      },
+      {
+        "task": "@papercusp/db-org :: test:integration",
+        "label": "initial",
+        "exit": "1",
+        "signal": "none",
+        "beginLine": 44797,
+        "endLine": 46632,
+        "entries": [
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/atomic-checkout.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/attention-bulk-item-reversal-window-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/backfill-work-item-deps.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/budget-enforcement.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/cache-l2.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/completion-authority-content-identity-floor-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/connection-concurrency.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/connection-phase1.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/consult-conversation-lifecycle-backfill.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/consult-threads-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/coord-escalation-reopen-compensation-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/coord-event-log-delete-sync-invalidate-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/coord-links-blocks-notify.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/coord-plane-restamp.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/coord-presence-state-only-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/cross-harness-legacy-needs-human-residue.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/customer-organization-boundary-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/customer-workspace-directory-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/data-source-record-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/documents-rename-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/drop-vault-transitional-normalizers-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/emit-change-notify-guc.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/engineer-issues-view-dml.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/event-await-standing-exact-key-index-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/external-trigger-binding-detach-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/external-trigger-core-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/fleet-membership-append-only.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/gcal-provider-cutover-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/gmail-provider-cutover-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/goal-pots.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/google-calendar-poll-routine-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/google-gmail-poll-routine-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/harness-features-admission-view-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/harness-schema.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/hosted-customer-rls-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/hosted-governance-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/hosted-identity-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/hosted-provider-delegation-metadata-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/hosted-role-concurrency.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/hosted-session-webhook-receipts-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/hosted-workspace-lifecycle-policy-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/hosted-workspace-reverse-connectors-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/idle-in-tx-timeout.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/legacy-human-park-retirement.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/legacy-human-park-status-repair.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/legacy-human-parks-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/legacy-shim-workspace.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/legacy-shim.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/memory-canonical-promote-scope.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/memory-canonical-temporal-lite-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/normalize-workspace-id-naming.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/owned-trigger-source-uniqueness-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/owner-loop-role-uniqueness-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/pending-events.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/personal-vault-account-provenance-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/personal-vault-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/pi-session-ttl-tool-allowlist-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/plan-revisions-content-snapshot-hash-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/prose-embedding-profile-identity-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/resource-governor-admission-ledger-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/resource-governor-work-item-receipt-retirement.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/routines-runtime.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/sync-trigger-coverage.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/tenant-context.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/tool-invocations-spawn-tree-filter-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/two-tenant-attack-harness.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/vault-mail-partition-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/work-item-dependency-resync-contention.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/work-item-deps.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/work-items-admission-flags-generated-columns.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/work-items-cdc-capture.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/work-items-epoch-ms-timestamp-guard-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/work-items-see-also-gin-retirement-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/work-items-unify.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/worked-by-history.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/workos-hosted-service-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/workos-sealed-session-vault-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/workspace-context.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/workspace-host-tenant-rls-migration.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/db-org",
+            "file": "src/write-skew.integration.test.ts"
+          }
+        ],
+        "unattributed": [],
+        "transformCulprits": [],
+        "storageGuardObserved": true,
+        "failureReason": "test substrate storage precondition refusal"
+      },
+      {
+        "task": "@papercusp/test-config :: test:integration",
+        "label": "initial",
+        "exit": "1",
+        "signal": "none",
+        "beginLine": 47033,
+        "endLine": 47361,
+        "entries": [
+          {
+            "workspace": "@papercusp/test-config",
+            "file": "src/pg-container.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/test-config",
+            "file": "src/pg-migrate.integration.test.ts"
+          },
+          {
+            "workspace": "@papercusp/test-config",
+            "file": "src/executed-source-map-writer.integration.test.ts"
+          }
+        ],
+        "unattributed": [],
+        "transformCulprits": [],
+        "storageGuardObserved": true,
+        "failureReason": "test substrate storage precondition refusal"
+      },
+      {
+        "task": "@papercusp/tooldef :: test",
+        "label": "initial",
+        "exit": "1",
+        "signal": "none",
+        "beginLine": 47511,
+        "endLine": 47786,
+        "entries": [
+          {
+            "workspace": "@papercusp/tooldef",
+            "file": "src/serialize-result.test.ts"
+          },
+          {
+            "workspace": "@papercusp/tooldef",
+            "file": "src/define-tool-transport-cap-exempt.test.ts"
+          },
+          {
+            "workspace": "@papercusp/tooldef",
+            "file": "src/code-orchestration/stranded-writes.test.ts"
+          }
+        ],
+        "unattributed": [],
+        "transformCulprits": [],
+        "storageGuardObserved": false
+      }
+    ]
+  },
+  "limitations": [
+    "No aggregate PASS. The source writer reports refused with unfinished tasks.",
+    "FAIL paths from storage preconditions are casualties of failed substrate readiness, not proven independent code regressions.",
+    "No task rerun; no LIVE_GATE operation; earlier settled repair proofs are unchanged."
+  ]
+}

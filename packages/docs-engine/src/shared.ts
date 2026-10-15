@@ -37,6 +37,16 @@ export function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+const MARKDOWN_ESCAPABLE_PUNCTUATION = new Set(Array.from("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"));
+
+/** Match heading text as it appears before or after Markdown backslash escaping. */
+function escapeRenderedHeadingText(text: string): string {
+  return Array.from(text, (char) => {
+    const optionalMarkdownEscape = MARKDOWN_ESCAPABLE_PUNCTUATION.has(char) ? String.raw`(?:\\)?` : '';
+    return `${optionalMarkdownEscape}${escapeRegex(char)}`;
+  }).join('');
+}
+
 /**
  * Normalize an authored heading, a rendered anchor, or a caller-supplied
  * heading ref into the common Starlight / doc-sections anchor vocabulary.
@@ -146,7 +156,7 @@ export function sliceByHeading(md: string, headingRef: string, toc: TocEntry[]):
   const text = reactToText(target.title);
   if (!text) return null;
 
-  const headerRe = new RegExp(`^#{${target.depth}}\\s+${escapeRegex(text)}\\s*$`, 'm');
+  const headerRe = new RegExp(`^#{${target.depth}}\\s+${escapeRenderedHeadingText(text)}\\s*$`, 'm');
   const startMatch = md.match(headerRe);
   if (!startMatch || startMatch.index === undefined) return null;
 

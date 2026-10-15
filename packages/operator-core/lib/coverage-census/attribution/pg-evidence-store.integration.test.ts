@@ -114,6 +114,23 @@ afterEach(() => {
 });
 
 describe('http-route traffic', () => {
+  it('publishes coverage invalidation on the same injected database as its evidence', async () => {
+    const ref = await seedSurface('http-route', 'GET /api/private-notification');
+    const notifications: unknown[] = [];
+    const listener = await db.adminSql.listen('sync_invalidate', payload => notifications.push(JSON.parse(payload)));
+    try {
+      setAmbientTestContext({ file: 'private-notification.test.ts', case: 'keeps the evidence venue' });
+      recordHttpTraffic({ method: 'GET', path: '/api/private-notification', status: 'ok', httpStatus: 200 });
+      await flushTrafficEvidence();
+
+      expect(await evidenceFor(ref)).toHaveLength(1);
+      expect(attributionStatus().lastError).toBeNull();
+      await expect.poll(() => notifications).toEqual([{ name: 'testing.coverage' }]);
+    } finally {
+      await listener.unlisten();
+    }
+  });
+
   it('writes one evidence row joined to the census surface', async () => {
     const ref = await seedSurface('http-route', ROUTE_ID);
     setAmbientTestContext({ file: 'packages/operator-core/lib/a.test.ts', case: 'serves a widget' });

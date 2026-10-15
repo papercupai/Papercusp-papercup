@@ -30,6 +30,7 @@
  */
 import { test, expect, assertMounted, type Page, type Route } from './_egress';
 import { stubSyncQueries, type SyncQueryStub } from './_sync-stub';
+import type { WorkItemPresentation } from '@papercusp/operator-core/lib/work-item-presentation-contract';
 
 const baseURL =
   process.env.OPERATOR_E2E_BASE_URL ??
@@ -63,6 +64,9 @@ const WORK_ITEMS = [
     origin: null,
     auditVerdict: null,
     verifiedAuthorGithubUserId: null,
+    presentation: {
+      stage: 'candidate', reason: 'awaiting-qualifying-acceptance', evidenceRefs: [], completionRef: null,
+    } satisfies WorkItemPresentation,
   },
   {
     id: 'WI-2',
@@ -83,6 +87,15 @@ const WORK_ITEMS = [
     origin: null,
     auditVerdict: null,
     verifiedAuthorGithubUserId: null,
+    presentation: {
+      stage: 'accepted-active', reason: 'accepted-work-reserved', evidenceRefs: [], completionRef: null,
+      workEvidence: {
+        reservation: { owner: 'bob', claimedAt: '2026-07-06T00:00:00.000Z' },
+        recentItemWork: { status: 'unknown', at: null, windowMs: 600000, writer: 'work_items.last_progress_at' },
+        waiting: { status: 'registered', refs: ['work-item:done:WI-dependency'] },
+        nativeAttestation: { status: 'unknown', reason: 'No owner-bound native observation' },
+      },
+    } satisfies WorkItemPresentation,
   },
 ];
 
@@ -303,6 +316,29 @@ test.describe('/adv work-item Detail pane + chat launch', () => {
     sync.assertServed('workItems.byHarness');
   });
 
+  test('queue and detail distinguish candidates, reservations, registered waits and unknown work attestation', async ({ page }) => {
+    await page.setViewportSize({ width: 1920, height: 1200 });
+    const sync = await stubApis(page, []);
+    const mounted = await dockMounts(page, 'WI-1');
+    assertMounted(mounted, SKIP_MSG);
+    await sync.waitForServed(['workItems.byHarness']);
+    const detail = page.locator('.pc-adv-detail').first();
+    const grid = page.locator('.pc-advpanel').first();
+    await expect(detail.getByText('Reproduction or review candidates', { exact: true })).toBeVisible();
+    await expect(detail.getByText('Work evidence unknown', { exact: true })).toBeVisible();
+    const reservedRow = grid.getByRole('row').filter({ hasText: 'Second stubbed item' });
+    await expect(reservedRow).toBeVisible();
+    await expect(reservedRow).toContainText('Reserved accepted work');
+    await expect(reservedRow).toContainText('Work attestation unknown');
+    await reservedRow.click();
+    await expect(detail.locator('.pc-adv-detail__id')).toHaveText('WI-2');
+    await expect(detail.getByText('Reserved accepted work', { exact: true })).toBeVisible();
+    await expect(detail.getByText('Reserved · Item updates unknown · Registered item wait · Work attestation unknown', { exact: true })).toBeVisible();
+    await expect(detail.getByText('Active accepted work', { exact: true })).toHaveCount(0);
+    sync.assertServed('workItems.byHarness');
+    sync.assertServed('workItems.detail');
+  });
+
   test('clicking a grid row drives the Detail pane selection', async ({ page }) => {
     const created: CreatedChat[] = [];
     const sync = await stubApis(page, created);
@@ -315,10 +351,11 @@ test.describe('/adv work-item Detail pane + chat launch', () => {
     // pick-an-item empty state until a row is clicked.
     const detail = page.locator('.pc-adv-detail').first();
     const grid = page.locator('.pc-advpanel').first();
-    await expect(grid.getByText('Second stubbed item')).toBeVisible({ timeout: 20_000 });
+    const secondRow = grid.getByRole('row').filter({ hasText: 'Second stubbed item' });
+    await expect(secondRow).toBeVisible({ timeout: 20_000 });
 
     // Row click sets ?sel via nuqs → the Detail pane follows to that item.
-    await grid.getByText('Second stubbed item').click();
+    await secondRow.click();
     await expect(detail.locator('.pc-adv-detail__title')).toHaveText('Second stubbed item', {
       timeout: 15_000,
     });

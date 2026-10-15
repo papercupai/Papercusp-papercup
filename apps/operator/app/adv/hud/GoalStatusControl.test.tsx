@@ -83,6 +83,9 @@ describe('GoalStatusControl — no optimistic status (P-016)', () => {
     fireEvent.click(screen.getByTestId('goal-pause-resume'));
 
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
+    // The failure sentence takes the same past participle as the success one —
+    // never "Could not paused this goal" (WI-10008179).
+    expect(toast.error).toHaveBeenCalledWith('Goal not paused', expect.anything());
     // Nothing was moved locally, so there is nothing to roll back — and the
     // button still offers the move that did not happen. (`waitFor` because the
     // in-flight "…" is cleared in a `finally` that runs after the toast.)

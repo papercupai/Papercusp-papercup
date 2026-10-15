@@ -14,11 +14,112 @@ vi.mock('../work-items', () => ({ getWorkItem }));
 vi.mock('./operation-admission', () => ({ readAcceptedBlueprintDirectWorkItem }));
 vi.mock('../agent-identities/source', () => ({ getIdentitySource }));
 vi.mock('../workspace-als', () => ({ runWithWorkspace: (_workspace: string, run: () => unknown) => run() }));
+// getOrgPg is stubbed above, so the real pot lookup reads a stub, is reported as
+// unmeasured (console.warn, by design since WI-10004845), and vitest-fail-on-console
+// fails the case (WI-10005470). Pot resolution is not this file's subject.
+vi.mock('../pot-membership', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../pot-membership')>()),
+  workItemStorageSlug: async (slug: string) => slug,
+}));
 
-import { describeOperationReceiptReadFault, matchOperationWorkerClaim, readActiveOperationModelPolicy, resolveAcceptedOperationWorkerBinding, selectAcceptedOperationWorkerModel } from './operation-worker-binding';
+import { assertExternalRuntimeProducerOutcome, assertVerifiedExternalRuntimeCompletion, verifyExternalRuntimeCompletionAttempt, describeOperationReceiptReadFault, matchOperationWorkerClaim, readActiveOperationModelPolicy, resolveAcceptedOperationWorkerBinding, selectAcceptedOperationWorkerModel, type ExternalRuntimeProducerBinding, type ExternalRuntimeStoredOutcome } from './operation-worker-binding';
 
 const HASH = 'a'.repeat(64);
 const REVISION = 'b'.repeat(64);
+describe('external voice producer retained outcome validation (D037)', () => {
+  const binding: ExternalRuntimeProducerBinding = {
+    kind: 'external-runtime-producer', workspaceId: 'ws-a', harnessSlug: 'phone',
+    storageHarnessSlug: 'phone-home',
+    workItemId: 'WI-voice', executionOwnerId: 'voice-executor', ownerId: 'customer-a',
+    callKey: 'inbound:room-a', callId: 'call-a', runId: 'run-a', jobId: 'job-a',
+    configurationSha256: HASH, registeredAt: '2026-10-07T13:00:00Z',
+  };
+  function fixture() {
+    const stored: ExternalRuntimeStoredOutcome = {
+      binding: { ...binding }, endReason: 'completed', endedAt: '2026-10-07T13:01:00Z',
+      transcriptSegmentCount: 2, transcriptSha256: REVISION,
+      retainedSegmentCount: 2, retainedSha256: REVISION, contentDeleted: false,
+    };
+    return { workspaceId: 'ws-a', by: 'voice-executor', stored,
+      item: { id: 'WI-voice', harness: 'phone-home', assignee: 'voice-executor',
+        payload: { externalRuntimeProducer: { ...binding } } } };
+  }
+  it('accepts a retained completed call without claiming source files or a CLI receipt', () => {
+    expect(assertExternalRuntimeProducerOutcome(fixture())).toEqual(binding);
+  });
+  it.each(['ownerId', 'callKey', 'callId', 'runId', 'jobId', 'configurationSha256', 'workItemId', 'harnessSlug', 'storageHarnessSlug', 'workspaceId', 'executionOwnerId'] as const)(
+    'refuses a foreign or rebound %s', (key) => {
+      const input = fixture();
+      input.stored.binding[key] = key === 'configurationSha256' ? 'c'.repeat(64) : 'foreign';
+      expect(() => assertExternalRuntimeProducerOutcome(input)).toThrow(/binding|registration/);
+    });
+  it('refuses a changed current claim even when the registration is unchanged', () => {
+    const input = fixture();
+    input.item.assignee = 'replacement-worker';
+    expect(() => assertExternalRuntimeProducerOutcome(input)).toThrow('current holder changed');
+  });
+  it.each(['worker-lost', 'failed', 'cancelled'] as const)('never promotes %s partial content to success', (reason) => {
+    const input = fixture();
+    input.stored.endReason = reason;
+    expect(() => assertExternalRuntimeProducerOutcome(input)).toThrow('no verified complete');
+  });
+  it.each(['retainedSegmentCount', 'retainedSha256', 'endedAt', 'contentDeleted'] as const)(
+    'refuses absent or contradictory retained evidence: %s', (key) => {
+      const input = fixture();
+      if (key === 'retainedSegmentCount') input.stored[key] = 1;
+      if (key === 'retainedSha256') input.stored[key] = HASH;
+      if (key === 'endedAt') input.stored[key] = null;
+      if (key === 'contentDeleted') input.stored[key] = true;
+      expect(() => assertExternalRuntimeProducerOutcome(input)).toThrow('no verified complete');
+    });
+  it('refuses an end predating the admitted runtime', () => {
+    const input = fixture();
+    input.stored.endedAt = '2026-10-07T12:59:00Z';
+    expect(() => assertExternalRuntimeProducerOutcome(input)).toThrow('no verified complete');
+  });
+  function attemptFixture() {
+    const input = fixture();
+    const updatedTs = Date.parse('2026-10-07T13:00:30Z');
+    return { ...input, item: { ...input.item, state: 'open', updatedAt: new Date(updatedTs).toISOString() },
+      attempt: { binding: { ...binding }, updatedTs,
+        readStoredOutcome: vi.fn(async () => input.stored) } };
+  }
+  it('reads the trusted host and freezes the independently verified receipt', async () => {
+    const input = attemptFixture();
+    const receipt = await verifyExternalRuntimeCompletionAttempt(input);
+    expect(() => assertVerifiedExternalRuntimeCompletion(receipt)).not.toThrow();
+    expect(() => assertVerifiedExternalRuntimeCompletion({ ...receipt })).toThrow('not minted');
+    expect(input.attempt.readStoredOutcome).toHaveBeenCalledOnce();
+    input.attempt.binding.runId = 'mutated';
+    input.stored.binding.runId = 'also-mutated';
+    expect(receipt.binding.runId).toBe('run-a');
+    expect(Object.isFrozen(receipt)).toBe(true);
+    expect(Object.isFrozen(receipt.binding)).toBe(true);
+  });
+  it('refuses host registration changes during asynchronous verification', async () => {
+    const input = attemptFixture();
+    input.attempt.readStoredOutcome.mockImplementation(async () => {
+      input.stored.binding.jobId = 'replacement-job';
+      return input.stored;
+    });
+    await expect(verifyExternalRuntimeCompletionAttempt(input)).rejects.toThrow('trusted host registration');
+  });
+  it.each(['epoch', 'terminal', 'cancelled', 'reopened'] as const)(
+    'refuses %s attempts before asking the host to verify', async (condition) => {
+      const input = attemptFixture();
+      if (condition === 'epoch') input.attempt.updatedTs++;
+      if (condition === 'terminal') input.item.state = 'done';
+      if (condition === 'cancelled') Object.assign(input.item.payload, { blueprintCancellation: {} });
+      if (condition === 'reopened') Object.assign(input.item.payload, { reopenHistory: [] });
+      await expect(verifyExternalRuntimeCompletionAttempt(input)).rejects.toThrow(/stale|cancelled|reopened/);
+      expect(input.attempt.readStoredOutcome).not.toHaveBeenCalled();
+    });
+  it('propagates an unavailable host rather than treating missing evidence as success', async () => {
+    const input = attemptFixture();
+    input.attempt.readStoredOutcome.mockRejectedValue(new Error('host unavailable'));
+    await expect(verifyExternalRuntimeCompletionAttempt(input)).rejects.toThrow('host unavailable');
+  });
+});
 const args = {
   sql: {} as never,
   workspaceId: 'ws-a',
@@ -63,6 +164,24 @@ describe('accepted blueprint operation worker binding', () => {
       requiredTools: ['coord:orient', 'work_items:get'],
     });
     expect(getIdentitySource).toHaveBeenCalledWith('blueprint-operation-worker', { repoDir: '/repo/harness-a' });
+  });
+
+  it('can ignore an accepted operation that belongs to a different requested role', async () => {
+    await expect(resolveAcceptedOperationWorkerBinding({
+      ...args,
+      sql: undefined,
+      role: 'independent-auditor',
+      roleMismatch: 'ignore',
+    })).resolves.toBeNull();
+    expect(readAcceptedBlueprintDirectWorkItem).toHaveBeenCalledWith(sqlMock, 'ws-a', item);
+    expect(getIdentitySource).not.toHaveBeenCalled();
+  });
+
+  it('keeps role mismatches strict unless the caller explicitly ignores them', async () => {
+    await expect(resolveAcceptedOperationWorkerBinding({
+      ...args,
+      role: 'independent-auditor',
+    })).rejects.toThrow('accepted blueprint operation does not authorize this worker role');
   });
 
   it('matches only the exact pinned item for an active worker', () => {

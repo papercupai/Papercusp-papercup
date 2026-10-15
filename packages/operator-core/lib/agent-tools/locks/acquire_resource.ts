@@ -23,6 +23,7 @@ import { ensureResourceDomainKindsFresh } from './resource-domain-kinds';
 import {
   findCrossDomainResourceConflicts,
   CROSS_DOMAIN_CONFLICT_HINT,
+  parseHostGlobalResourceExclusionError,
 } from './cross-domain-conflict';
 import { broadcastResourceDrainStart } from './resource-broadcast';
 import { hardText, LIMITS } from '../limits';
@@ -43,6 +44,29 @@ function holderJson(h: ResourceHolder) {
 const json = (payload: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
 });
+
+/** Map the database's final host-global fence race to the same refusal shape
+ * as the pre-read above. The exception is a safety refusal, not a handler
+ * failure, and its DETAIL carries the exact conflicting holder snapshot. */
+function hostGlobalExclusionRefusal(error: unknown, resource: string, targetDomain: string) {
+  const conflict = parseHostGlobalResourceExclusionError(error, { resource, targetDomain });
+  if (!conflict) return null;
+  return json({
+    ok: false,
+    reason: 'held_in_other_domain',
+    holders: [
+      {
+        resource: conflict.resource,
+        coordination_domain: conflict.coordination_domain,
+        owner: conflict.owner,
+        owner_label: null,
+        mode: conflict.mode,
+        status: conflict.status,
+      },
+    ],
+    hint: CROSS_DOMAIN_CONFLICT_HINT,
+  });
+}
 
 /** EI-218338: interactive named-resource acquires fail fast on same-workspace
  * contention, but must not leak the raw PG handler error. There is no holder
@@ -226,6 +250,8 @@ export default defineTool({
         );
       } catch (error) {
         if (isWorkspaceContended(error)) return workspaceContended(error);
+        const refusal = hostGlobalExclusionRefusal(error, args.resource, coordinationDomain);
+        if (refusal) return refusal;
         throw error;
       }
       if (!r.ok) return json({ ok: false, reason: r.reason, holders: r.holders.map(holderJson) });
@@ -280,6 +306,8 @@ export default defineTool({
       );
     } catch (error) {
       if (isWorkspaceContended(error)) return workspaceContended(error);
+      const refusal = hostGlobalExclusionRefusal(error, args.resource, coordinationDomain);
+      if (refusal) return refusal;
       throw error;
     }
 

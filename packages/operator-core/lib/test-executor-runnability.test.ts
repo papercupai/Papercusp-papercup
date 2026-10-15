@@ -115,6 +115,10 @@ describe('test executor runnability', () => {
       runnable: true,
       executor: 'playwright',
     });
+    await expect(audit('apps/operator/e2e/ongoing-work-native-collection.spec.mts')).resolves.toMatchObject({
+      runnable: true,
+      executor: 'playwright',
+    });
     await expect(
       audit('tools/perf-test/wdio/specs/smoke.spec.ts'),
     ).resolves.toMatchObject({ runnable: true, executor: 'webdriverio' });
@@ -197,6 +201,10 @@ describe('test executor runnability', () => {
       }),
     );
     await expect(explicitAudit('apps/operator/e2e/chat.spec.ts')).resolves.toMatchObject({
+      runnable: false,
+      reason: expect.stringContaining('Playwright'),
+    });
+    await expect(explicitAudit('apps/operator/e2e/ongoing-work-native-collection.spec.mts')).resolves.toMatchObject({
       runnable: false,
       reason: expect.stringContaining('Playwright'),
     });

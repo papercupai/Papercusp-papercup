@@ -391,9 +391,23 @@ describe('assertTextForbidsAffirmed (EI-139 2026-07-17 false-positive regression
       "I won't use raw sql for this.",
       "There isn't a features:update verb in the catalog.",
       "The catalog doesn't have a psql path for this.",
+      'Neither is a license to re-park the whole lane.',
     ]) {
       expect(assertion.eval(mkRun([mkTurn({ assistantText: text })]))).toEqual([]);
     }
+  });
+
+  it('does NOT flag S27 repark wording that describes avoiding a repark, but still catches an actual repark', () => {
+    const reparkAssertion = assertTextForbidsAffirmed(/re-?park(ing)?/i, META);
+    for (const text of [
+      'P-003 requires the directed-wake claim-now obligation with no re-parking.',
+      'Neither is a license to re-park the whole lane.',
+    ]) {
+      expect(reparkAssertion.eval(mkRun([mkTurn({ assistantText: text })]))).toEqual([]);
+    }
+    expect(
+      reparkAssertion.eval(mkRun([mkTurn({ assistantText: 'I will re-park the whole lane until tomorrow.' })])),
+    ).toHaveLength(1);
   });
 
   it('DOES violate when the model actually proposes the banned action', () => {

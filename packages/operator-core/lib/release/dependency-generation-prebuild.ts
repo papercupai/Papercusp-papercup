@@ -24,6 +24,8 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { createTextCollector } from '../child-output';
 import { emitAwaitedEvent } from '../events/await/engine';
 import { createNotifyBus } from '../pg-notify-bus';
+import { CHECKPOINT_QUALIFICATION_METADATA_KEY } from './checkpoint-qualification-transaction';
+import { resolveDependencyGenerationRoot } from './dependency-generation-root';
 
 export const DEPENDENCY_PREBUILD_NOTIFY_CHANNEL = 'papercusp_dependency_prebuild_changed';
 export const DEPENDENCY_PREBUILD_EVENT_PREFIX = 'dependency-generation:prebuild';
@@ -104,8 +106,32 @@ export interface DependencyPrebuildReadyState extends DependencyPrebuildBase {
   identity: string;
   token: string;
   reused: boolean;
+  /**
+   * The generation store the publisher actually wrote `identity` into, resolved
+   * exactly as dependency-generation.sh resolves it. The identity is only
+   * meaningful INSIDE this root: when PAPERCUSP_DEPENDENCY_GENERATION_ROOT moves
+   * (WI-10004797), a consumer whose env points at a different store must treat
+   * the marker as a miss, never hand setup an identity that store lacks
+   * (that surfaced as exit 74 "disappeared before it could be leased").
+   * Absent on states written before this field existed.
+   */
+  generationRoot?: string;
   telemetry?: DependencyPrebuildTelemetry;
 }
+
+/**
+ * Where dependency-generation.sh records the env-named store for an integration
+ * root, so env-less callers (a manual `systemd-run --unit` gate run, install:safe,
+ * an agent's hand prewarm) resolve the same store as bg-host (WI-10005159).
+ */
+// Keep these pure path helpers in a dependency-free leaf so worker entries can
+// use them without importing this producer's database/event orchestration graph.
+export {
+  dependencyGenerationRootRecord,
+  readRecordedDependencyGenerationRoot,
+  resolveDependencyGenerationRoot,
+  resolveDependencyGenerationRetentionRoots,
+} from './dependency-generation-root';
 
 export interface DependencyPrebuildFailedState extends DependencyPrebuildBase {
   status: 'failed';
@@ -305,6 +331,11 @@ export function parseDependencyPrebuildState(value: unknown): DependencyPrebuild
     const identity = typeof raw.identity === 'string' ? raw.identity : '';
     const token = typeof raw.token === 'string' ? raw.token : '';
     if (!GENERATION_ID_RE.test(identity) || !token) return null;
+    // Optional for back-compat with pre-WI-10004797 states; a present but
+    // malformed root is malformed state (absence), never "unknown root".
+    const hasGenerationRoot = raw.generationRoot !== undefined && raw.generationRoot !== null;
+    const generationRoot = hasGenerationRoot ? absolutePath(raw.generationRoot) : null;
+    if (hasGenerationRoot && generationRoot === null) return null;
     return {
       ...base,
       status: 'ready',
@@ -312,6 +343,7 @@ export function parseDependencyPrebuildState(value: unknown): DependencyPrebuild
       identity,
       token,
       reused: raw.reused === true,
+      ...(generationRoot ? { generationRoot } : {}),
       ...(telemetry ? { telemetry } : {}),
     };
   }
@@ -560,7 +592,9 @@ export async function settleDependencyPrebuildState(
 export async function emitDependencyPrebuildTerminal(
   target: DependencyPrebuildTarget,
   state: DependencyPrebuildReadyState | DependencyPrebuildFailedState,
+  deps: { emit?: typeof emitAwaitedEvent; sql?: Sql } = {},
 ): Promise<void> {
+  const emit = deps.emit ?? emitAwaitedEvent;
   const payload = {
     workspaceId: target.workspaceId,
     installSlug: target.installSlug,
@@ -573,22 +607,42 @@ export async function emitDependencyPrebuildTerminal(
     state.status === 'ready'
       ? `dependency generation ${state.identity} ready for ${state.candidate.slice(0, 12)}`
       : `dependency generation prebuild failed for ${state.candidate.slice(0, 12)}: ${state.error.slice(0, 240)}`;
-  await Promise.all([
-    emitAwaitedEvent({
+  const effects: Promise<unknown>[] = [
+    emit({
       key: `${DEPENDENCY_PREBUILD_EVENT_PREFIX}:${state.status}`,
       workspaceId: target.workspaceId,
       summary,
       payload,
       source: 'git-sync:dependency-prebuild',
     }),
-    emitAwaitedEvent({
+    emit({
       key: `${DEPENDENCY_PREBUILD_EVENT_PREFIX}:${state.status}:${state.candidate}:${state.inputFingerprint}`,
       workspaceId: target.workspaceId,
       summary,
       payload,
       source: 'git-sync:dependency-prebuild',
     }),
-  ]).then(() => undefined);
+  ];
+  if (state.status === 'ready') {
+    // Reuse the existing routine, not another readiness poll. A late publication for an old
+    // candidate must not wake a successor, and a live runner or an intentional pause stays put.
+    // Scheduling and notification delivery are independent consequences of persisted READY.
+    // Start both before awaiting either so a failed event cannot strand the matching attempt.
+    effects.push((deps.sql ?? getOrgPg().sql).unsafe(
+      `UPDATE harness_shared.routines
+          SET next_fire_at = now() + interval '1 minute', updated_at = now()
+        WHERE install_slug = $1 AND workspace_id = $2
+          AND target_role = 'system:green-checkpoint' AND active = true
+          AND metadata->'pause' IS NULL
+          AND metadata->'${CHECKPOINT_QUALIFICATION_METADATA_KEY}'->>'phase' IN ('waiting', 'ready')
+          AND COALESCE(jsonb_typeof(metadata->'${CHECKPOINT_QUALIFICATION_METADATA_KEY}'->'currentPhysicalRunner'), 'null') = 'null'
+          AND (metadata->'${CHECKPOINT_QUALIFICATION_METADATA_KEY}'->>'candidate' = $3
+            OR metadata->'repair_queue'->>'repairHead' = $3)
+          AND (next_fire_at IS NULL OR next_fire_at > now() + interval '1 minute')`,
+      [target.installSlug, target.workspaceId, state.candidate],
+    ));
+  }
+  await Promise.all(effects).then(() => undefined);
 }
 
 function terminateProcessGroup(pid: number, signal: NodeJS.Signals): void {
@@ -942,6 +996,9 @@ export async function runDependencyGenerationPrebuild(
       completedAtMs,
       updatedAtMs: completedAtMs,
       ...parsed,
+      // The publisher child inherits this process's env, so this is the store
+      // it wrote into (WI-10004797).
+      generationRoot: resolveDependencyGenerationRoot(request.integrationRoot),
       ...(telemetry ? { telemetry } : {}),
     };
     if (await settleState(target, ready)) await emitTerminal(target, ready);

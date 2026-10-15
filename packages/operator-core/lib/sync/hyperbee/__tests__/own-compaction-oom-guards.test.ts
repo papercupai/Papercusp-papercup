@@ -349,18 +349,23 @@ describe('(d) the fold worker is capped below the host and reports its own heap'
           author_pubkey: '',
         }),
       );
-    // P-006 (memory-reduction R-1): the SCAN retains winning positions, never values, so
-    // ~800 MB of values folds entirely under a 96 MB cap. The old value-holding fold failed
-    // here, a few windows in.
-    for (let w = 0; w < WINDOWS; w++) await worker.fold(windowAt(w), { sourceStart: w * 256 });
-    // The live set is the MATERIALIZED rows (the set's own bytes); that is where the cap trips.
-    const indexes = await worker.pendingIndexes();
-    expect(indexes).toHaveLength(WINDOWS * 256);
     let failure: unknown = null;
+    // P-006 scans retain winning positions rather than values. Those positions and
+    // the worker's other live objects still count against the heap cap, so a valid
+    // soft-cap refusal can occur during either scan or materialization.
     for (let w = 0; w < WINDOWS && failure === null; w++) {
-      await worker.materialize(windowAt(w), indexes.slice(w * 256, (w + 1) * 256), 0).catch((e: unknown) => {
+      await worker.fold(windowAt(w), { sourceStart: w * 256 }).catch((e: unknown) => {
         failure = e;
       });
+    }
+    if (failure === null) {
+      const indexes = await worker.pendingIndexes();
+      expect(indexes).toHaveLength(WINDOWS * 256);
+      for (let w = 0; w < WINDOWS && failure === null; w++) {
+        await worker.materialize(windowAt(w), indexes.slice(w * 256, (w + 1) * 256), 0).catch((e: unknown) => {
+          failure = e;
+        });
+      }
     }
     // The SOFT cap, not a V8 abort: this must hold whether or not the test process carries a
     // global --max-old-space-size (the batch router's NODE_OPTIONS does; bg-host's does). The

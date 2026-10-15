@@ -15,7 +15,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { srtBinOnPath } from '@papercusp/orchestrator';
 import {
@@ -36,12 +36,14 @@ const ROOT = `/var/tmp/wi608-exec-sandbox-it-${process.pid}`;
 const WORK = join(ROOT, 'work');
 const FAKE_HOME = join(ROOT, 'home');
 
-function run(cmd: string[], cwd: string, opts: BuildSandboxOpts) {
+function run(cmd: string[], cwd: string, opts: BuildSandboxOpts, hostLock?: string) {
   const decision = buildCapabilitySandboxCommand({ cmd, cwd }, opts);
   // Mirror the real handler (bash-jobs.spawnShell): cwd is set via the spawn
   // OPTIONS, not just bwrap's `--chdir`. srt confines fs but does not chdir, so
   // it relies on the spawn cwd exactly like the operator does.
-  const r = spawnSync(decision.binary, decision.argv, { encoding: 'utf8', timeout: 20_000, cwd });
+  const r = hostLock
+    ? spawnSync('flock', ['-x', hostLock, decision.binary, ...decision.argv], { encoding: 'utf8', timeout: 20_000, cwd })
+    : spawnSync(decision.binary, decision.argv, { encoding: 'utf8', timeout: 20_000, cwd });
   return { decision, r, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }
 
@@ -55,6 +57,32 @@ d('exec-sandbox — REAL bwrap exec (host is bwrap-capable)', () => {
     // .aws / .gnupg / .config/gcloud / .papercusp intentionally ABSENT → must be skipped.
   });
   afterAll(() => rmSync(ROOT, { recursive: true, force: true }));
+
+  it('prepares fresh shared scheduler metadata and observes the host flock without reopening network or credentials', () => {
+    const runtime = join(ROOT, 'runtime');
+    const slots = join(runtime, 'pc-heavy-slots');
+    expect(existsSync(slots)).toBe(false);
+    const previous = process.env.PC_HEAVY_DIR;
+    process.env.PC_HEAVY_DIR = slots;
+    try {
+      const { r, out, decision } = run(['/bin/sh', '-c',
+        `echo 123 > ${slots}/preemptible.test.pid && echo METADATA_WRITABLE; ` +
+        `if flock -n ${slots}/shared.lock true; then echo WRONG_PRIVATE_LOCK; else echo HOST_LOCK_HELD; fi; ` +
+        `cat ${FAKE_HOME}/.ssh/id_rsa 2>/dev/null; true`], WORK, {
+        enabled: true, required: true, srtBin: null, homeDir: FAKE_HOME, denyAllEgress: true,
+      }, join(slots, 'shared.lock'));
+      expect(r.status, out).toBe(0);
+      expect(out).toContain('METADATA_WRITABLE');
+      expect(out).toContain('HOST_LOCK_HELD');
+      expect(out).not.toContain('WRONG_PRIVATE_LOCK');
+      expect(readFileSync(join(slots, 'preemptible.test.pid'), 'utf8')).toBe('123\n');
+      expect(out).not.toContain('TOP_SECRET_PRIVATE_KEY');
+      expect(decision.argv).toContain('--unshare-net');
+    } finally {
+      if (previous === undefined) delete process.env.PC_HEAVY_DIR;
+      else process.env.PC_HEAVY_DIR = previous;
+    }
+  });
 
   it('runs the command, cwd is writable, /tmp ephemeral, masks existing creds, SKIPS missing ones (no fail-close)', () => {
     const script = [

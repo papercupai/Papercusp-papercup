@@ -6,6 +6,8 @@ import {
   advSessionIdFromCodexHome,
   codexSessionIdForFile,
   codexSessionRoots,
+  closedCodexTurnPopulation,
+  closedCodexSessionPopulation,
   defaultAdapters,
   parseCodexChunk,
   parseOmpChunk,
@@ -14,6 +16,103 @@ import {
 } from './ingest-adapters';
 
 const codexLine = (o: unknown) => JSON.stringify(o) + '\n';
+
+describe('closed Codex session accounting population', () => {
+  const header = codexLine({ type: 'session_meta', payload: { id: 'native-1' } });
+  const context = (id: string) => codexLine({ type: 'turn_context', payload: { turn_id: id, model: 'gpt-6' } });
+  const usage = (n: number, changed: Record<string, unknown> = {}) => codexLine({ type: 'event_msg', payload: {
+    type: 'token_count', info: { total_token_usage: { input_tokens: n, output_tokens: 10 },
+      last_token_usage: { input_tokens: 100, output_tokens: 10, cached_input_tokens: 20, cache_write_input_tokens: 5, ...changed } },
+  } });
+  const close = (id: string) => codexLine({ type: 'event_msg', payload: { type: 'task_complete', turn_id: id } });
+  const first = header + context('turn-1') + usage(100) + usage(100) + close('turn-1');
+  const read = (transcript: string) => closedCodexSessionPopulation({ transcript,
+    file: '/host/sessions/rollout-native-1.jsonl', fileGeneration: 0, nativeSessionId: 'native-1' });
+
+  it('covers every closed turn and request with the canonical deduplication and cache breakdown', () => {
+    const transcript = first + context('turn-2') + usage(200) + close('turn-2');
+    const result = read(transcript);
+    expect(result).toMatchObject({ ok: true, nativeTurnIds: ['turn-1', 'turn-2'], closedByteOffset: Buffer.byteLength(transcript) });
+    if (!result.ok) throw new Error(result.detail);
+    expect(result.events).toHaveLength(2);
+    expect(result.usageEventKeys).toHaveLength(2);
+    expect(result.events.map(event => event.turnId)).toEqual(['turn-1', 'turn-2']);
+    expect(result.events[0].usage).toMatchObject({ inputTokens: 75, cacheReadTokens: 20, cacheCreationTokens: 5, outputTokens: 10 });
+    const turn = closedCodexTurnPopulation({ transcript,
+      file: '/host/sessions/rollout-native-1.jsonl', fileGeneration: 0, nativeSessionId: 'native-1', nativeTurnId: 'turn-1' });
+    expect(turn.ok).toBe(true);
+    if (turn.ok) expect(result.events[0].usageEventKey).toBe(turn.usageEventKeys[0]);
+  });
+
+  it.each([
+    ['open later turn', first + context('turn-2') + usage(200)],
+    ['missing earlier closure', header + context('turn-1') + usage(100) + context('turn-2') + usage(200) + close('turn-2')],
+    ['usage outside a turn', header + usage(100)],
+    ['usage after closure', first + usage(200)],
+    ['wrong closure', header + context('turn-1') + usage(100) + close('wrong-turn')],
+    ['reopened turn', first + context('turn-1') + usage(200) + close('turn-1')],
+    ['unreported cache write', header + context('turn-1') + usage(100, { cache_write_input_tokens: undefined }) + close('turn-1')],
+    ['unreported cache read', header + context('turn-1') + usage(100, { cached_input_tokens: undefined }) + close('turn-1')],
+    ['impossible cache subsets', header + context('turn-1') + usage(100, { cached_input_tokens: 99 }) + close('turn-1')],
+    ['invalid token count', header + context('turn-1') + usage(100, { output_tokens: -1 }) + close('turn-1')],
+    ['conflicting duplicate', header + context('turn-1') + usage(100) + usage(100, { output_tokens: 20 }) + close('turn-1')],
+    ['cross-turn duplicate identity', first + context('turn-2') + usage(100) + close('turn-2')],
+    ['partial source', first.trimEnd()],
+  ])('keeps %s incomplete rather than emitting a complete cost population', (_name, transcript) => {
+    expect(read(transcript)).toMatchObject({ ok: false });
+  });
+});
+
+describe('closed Codex monetary population', () => {
+  const header = codexLine({ type: 'session_meta', payload: { id: 'native-1' } });
+  const context = (id = 'turn-1') => codexLine({ type: 'turn_context', payload: { turn_id: id, model: 'gpt-6' } });
+  const usage = (n = 100) => codexLine({ type: 'event_msg', payload: { type: 'token_count', info: {
+    total_token_usage: { input_tokens: n, output_tokens: 10 },
+    last_token_usage: { input_tokens: 100, output_tokens: 10, cached_input_tokens: 0, cache_write_input_tokens: 0 },
+  } } });
+  const close = (id = 'turn-1') => codexLine({ type: 'event_msg', payload: { type: 'task_complete', turn_id: id } });
+  const read = (transcript: string, fileGeneration = 0) => closedCodexTurnPopulation({ transcript,
+    file: '/host/sessions/rollout-native-1.jsonl', fileGeneration, nativeSessionId: 'native-1', nativeTurnId: 'turn-1' });
+
+  it('derives the full distinct population independently of ingested rows and excludes later turns', () => {
+    const prefix = header + context() + usage() + usage() + usage(200) + close();
+    const result = read(prefix + context('turn-2') + usage(300) + close('turn-2'));
+    expect(result).toMatchObject({ ok: true, closedByteOffset: Buffer.byteLength(prefix) });
+    if (!result.ok) throw new Error(result.detail);
+    expect(result.usageEventKeys).toHaveLength(2);
+    expect(new Set(result.usageEventKeys).size).toBe(2);
+    expect(read(prefix, 1)).not.toEqual(read(prefix));
+  });
+
+  it.each([
+    ['partial tail', header + context() + usage() + close().trimEnd()],
+    ['missing prefix', context() + usage() + close()],
+    ['different session', header.replace('native-1', 'foreign') + context() + usage() + close()],
+    ['unreadable record', header + context() + '{bad-json}\n' + usage() + close()],
+    ['missing turn context', header + usage() + close()],
+    ['uncorrelated close', header + context() + usage() + close('other')],
+    ['empty turn', header + context() + close()],
+    ['premature switch', header + context() + usage() + context('other') + close()],
+    ['reopened turn', header + context() + usage() + close() + context() + usage(200)],
+    ['usage after closure', header + context() + usage() + close() + usage(200)],
+    ['duplicate closure', header + context() + usage() + close() + close()],
+    ['duplicate header', header + header + context() + usage() + close()],
+    ['missing model', header + context().replace(',"model":"gpt-6"', '') + usage() + close()],
+    ['no cumulative identity', header + context() + codexLine({ type: 'event_msg', payload: { type: 'token_count',
+      info: { last_token_usage: { input_tokens: 100, output_tokens: 10 } } } }) + close()],
+    ['fractional identity', header + context() + usage(0.1) + close()],
+  ])('refuses %s rather than inventing complete billing evidence', (_label, transcript) => {
+    expect(read(transcript)).toMatchObject({ ok: false });
+  });
+
+  it('counts interrupted native turns with reported usage and ignores rate-limit-only notifications', () => {
+    const rateLimit = codexLine({ type: 'event_msg', payload: { type: 'token_count', info: null } });
+    expect(read(header + context() + rateLimit + usage() + close().replace('task_complete', 'turn_completed')))
+      .toMatchObject({ ok: true, usageEventKeys: [expect.stringMatching(/^[a-f0-9]{64}$/)] });
+    expect(read(header + context() + rateLimit + close())).toMatchObject({ ok: false });
+    expect(read(header + context() + usage() + close(), -1)).toMatchObject({ ok: false });
+  });
+});
 
 describe('parseCodexChunk (P-015)', () => {
   const turnCtx = codexLine({
@@ -103,6 +202,53 @@ describe('parseCodexChunk (P-015)', () => {
     expect(parsed.perModel.get(UNKNOWN_CODEX_MODEL)?.turns).toBe(1);
     expect(parsed.parserState).toMatchObject({ predecessorSessionId: 'parent-session', contextGeneration: 1 });
     expect(parsed.parserState?.model).toBeUndefined();
+  });
+
+  it('recovers managed-carry lineage from the native Codex user-message content shape', () => {
+    const predecessor = '01a0d5cb-6245-7692-a1a5-215c88d10295';
+    const header = codexLine({ type: 'session_meta', payload: { id: 'successor-session' } });
+    const carryMessage = codexLine({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: 'carried context\n⟦codex-carry-lineage predecessor:' + predecessor + '⟧\nrecovery details',
+        }],
+      },
+    });
+    const first = parseCodexChunk(header + turnCtx + carryMessage);
+    expect(first.parserState?.predecessorSessionId).toBe(predecessor);
+
+    const resumed = parseCodexChunk(tokenCount(1000, 600, 40), JSON.parse(JSON.stringify(first.parserState)));
+    expect(resumed.events?.[0]).toMatchObject({
+      requestOrdinal: 1,
+      contextGeneration: 0,
+      predecessorSessionId: predecessor,
+    });
+  });
+
+  it('keeps native fork metadata authoritative when it conflicts with a carry marker', () => {
+    const nativePredecessor = 'native-parent-session';
+    const markerPredecessor = '01a0d5cb-6245-7692-a1a5-215c88d10295';
+    const carryMessage = codexLine({
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: '⟦codex-carry-lineage predecessor:' + markerPredecessor + '⟧',
+        }],
+      },
+    });
+    const parsed = parseCodexChunk(
+      codexLine({ type: 'session_meta', payload: { forked_from_id: nativePredecessor } }) +
+      carryMessage + tokenCount(1000, 600, 40),
+    );
+    expect(parsed.parserState?.predecessorSessionId).toBe(nativePredecessor);
+    expect(parsed.events?.[0].predecessorSessionId).toBe(nativePredecessor);
   });
 
   it('counts startup requests across serialized chunks without counting duplicate/reset notifications', () => {

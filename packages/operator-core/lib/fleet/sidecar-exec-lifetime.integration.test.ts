@@ -125,21 +125,62 @@ it.runIf(process.platform === 'linux')(
     const killServer = () => {
       if (!killed) { killed = true; process.kill(snapshot.pid, 'SIGKILL'); }
     };
-    const run = runCommandViaSpawnerSidecar(process.execPath, ['-e', script], {
-      timeoutMs: 5000, signal: new AbortController().signal,
-      onProgress: phase === 'after-mutation' ? killServer : undefined,
-    });
-    if (phase === 'before-admission') {
-      await vi.waitFor(async () => expect(await readFile(barrier, 'utf8')).toBe('waiting'), { timeout: 5000 });
-      killServer();
+    // This deliberate server death emits correlated transport diagnostics. Assert
+    // the entire chain so unrelated warnings still fail this real IPC fixture.
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const run = runCommandViaSpawnerSidecar(process.execPath, ['-e', script], {
+        timeoutMs: 5000, signal: new AbortController().signal,
+        onProgress: phase === 'after-mutation' ? killServer : undefined,
+      });
+      if (phase === 'before-admission') {
+        await vi.waitFor(async () => expect(await readFile(barrier, 'utf8')).toBe('waiting'), { timeout: 5000 });
+        killServer();
+      }
+      const result = await run;
+      expect(killed).toBe(true);
+      expect(result.stderr).toContain('not replayed');
+      expect(isSidecarInfrastructureFault(result)).toBe(false);
+      expect(observeSidecarExit(snapshot)).toBe('exited');
+      if (phase === 'after-mutation') expect(await readFile(marker, 'utf8')).toBe('one\n');
+      else await expect(readFile(marker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+
+      const execution = warning.mock.calls[1]?.[1] as {
+        clientConnectionId: string; serverGeneration: string; connectionId: string; requestId: number;
+      };
+      expect(execution).toMatchObject({
+        clientConnectionId: expect.any(String), serverGeneration: expect.any(String),
+        connectionId: expect.any(String), requestId: expect.any(Number),
+      });
+      expect(execution.requestId).toBeGreaterThan(0);
+      expect(warning.mock.calls).toEqual([
+        ['[spawner-ipc-client-fault]', {
+          event: 'peer-eof', clientConnectionId: execution.clientConnectionId,
+          serverGeneration: execution.serverGeneration, serverConnectionId: execution.connectionId,
+          requestId: null, method: null, relatedRequestId: null, errorCode: null, errorName: 'Error',
+          activeRequests: [{
+            requestId: execution.requestId, method: 'process:exec',
+            callerLabel: 'git-via-sidecar.runCommandViaSpawnerSidecar',
+          }],
+        }],
+        ['[spawner-process-exec-fault]', {
+          event: 'transport-error', clientConnectionId: execution.clientConnectionId,
+          serverGeneration: execution.serverGeneration, connectionId: execution.connectionId,
+          requestId: execution.requestId, method: 'process:exec', errorCode: null, errorName: 'Error',
+          childPid: phase === 'after-mutation' ? expect.any(Number) : null,
+          elapsedMs: expect.any(Number),
+          childTimeoutMs: 5000, childIdleTimeoutMs: null, rpcTimeoutMs: 40000,
+        }],
+        ['[spawner-ipc-client-fault]', {
+          event: 'socket-error', clientConnectionId: expect.any(String),
+          serverGeneration: null, serverConnectionId: null, requestId: null, method: null,
+          relatedRequestId: null, errorCode: 'ECONNREFUSED', errorName: 'Error', activeRequests: [],
+        }],
+      ]);
+      expect(warning.mock.calls[2]?.[1].clientConnectionId).not.toBe(execution.clientConnectionId);
+    } finally {
+      warning.mockRestore();
     }
-    const result = await run;
-    expect(killed).toBe(true);
-    expect(result.stderr).toContain('not replayed');
-    expect(isSidecarInfrastructureFault(result)).toBe(false);
-    expect(observeSidecarExit(snapshot)).toBe('exited');
-    if (phase === 'after-mutation') expect(await readFile(marker, 'utf8')).toBe('one\n');
-    else await expect(readFile(marker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   }, 60_000,
 );
 }

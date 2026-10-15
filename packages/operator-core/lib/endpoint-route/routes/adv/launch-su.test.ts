@@ -161,11 +161,12 @@ function headedInteractiveScript(): string {
  * The psu command inside the headed wrapper, decoded back to what the rcfile
  * evals so it can be compared token-for-token with the headless form.
  */
-function headedPsuCommand(): string {
-  const script = headedInteractiveScript();
-  const m = /^\(eval (.+?)\); __papercusp_greeting_rc=/s.exec(script);
-  if (!m) throw new Error(`headed rcfile script does not eval psu: ${script}`);
-  return decodeShellWord(m[1]!);
+function headedPsuCommand(script = headedInteractiveScript()): string {
+  // The eval is either the greeting itself or a command inside the bounded
+  // stderr-capture group. Decode its shell word, never the outer escaped text.
+  const commands = [...script.matchAll(/(?:^|; )\(eval ('(?:[^']|'\\'')*')\)(?=;| 2>&4 3>&- 4>&-)/gs)];
+  if (commands.length !== 1) throw new Error(`headed rcfile script does not eval exactly one psu command: ${script}`);
+  return decodeShellWord(commands[0]![1]!);
 }
 /** `--owner-id=su-<uuid>` is freshly minted per launch, so normalise it to diff two argvs. */
 const normaliseOwner = (s: string): string => s.replace(/--owner-id=su-[0-9a-f-]+/i, '--owner-id=<pinned>');
@@ -331,6 +332,26 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
     expect(headless.match(/--headless/g)).toHaveLength(1);
   });
 
+  // WI-10004787: launched_by is the ONLY way a server-side launcher (the
+  // goal-drain-fleet watchdog) can hand bootstrap-su the owner whose goal the new
+  // session inherits. Dropping it again strands every relaunched drain worker
+  // with goal_id NULL on all of its tool calls.
+  it('forwards launched_by as exactly one --launched-by token, and omits it when unset', async () => {
+    await launch({ headless: true, launched_by: 'su-holder-1' });
+    const withLauncher = headlessOneliner();
+    expect(withLauncher.match(/--launched-by=su-holder-1/g)).toHaveLength(1);
+    vi.clearAllMocks();
+    await launch({ headless: true });
+    expect(headlessOneliner()).not.toContain('--launched-by');
+  });
+
+  it.each([['su holder; rm -rf /'], [42]])('rejects a launched_by that is not an owner id (%j)', async (bad) => {
+    const { status, json } = await launch({ headless: true, launched_by: bad });
+    expect(status).toBe(400);
+    expect(String(json.error)).toContain('launched_by');
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
   it('a headless spawn FAILURE is reported as an error — never a silent headed fallback', async () => {
     spawnHeadlessMock.mockResolvedValueOnce({
       status: 'error',
@@ -367,12 +388,14 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
     //     the psu command itself is still EVAL'd inside that rcfile rather than
     //     exec'd, so Ctrl+C cannot kill the terminal-holding shell with it.
     expect(cmd).toMatch(/^exec bash --noprofile --rcfile /);
-    expect(script).toMatch(/^\(eval '/);
+    expect(script).toMatch(/^\(exec 3> >\(umask 077; tail -c 16384 >> '/);
+    expect(headedPsuCommand()).toContain('psu');
 
     // (2) the separators are `;`, never `&&` — with `&&` a non-zero psu exit
     //     short-circuits past the banner AND the trailing shell, which is
     //     precisely the failure case the window is being held open FOR.
-    expect(script).toContain("'); __papercusp_greeting_rc=$?;");
+    expect(script).toContain('__papercusp_boot_rc=$?;');
+    expect(script).toContain('(exit "$__papercusp_boot_rc")); __papercusp_greeting_rc=$?;');
     expect(script).not.toMatch(/&&\s*exec/);
 
     // (3) a trailing interactive login shell is what actually holds it open.
@@ -389,6 +412,14 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
     expect(cmd).toMatch(/^exec /);
     expect(cmd).not.toContain('__papercusp_greeting_rc');
     expect(cmd).not.toContain('SHELL:-/bin/bash');
+  });
+
+  it('refuses a missing, malformed, or ambiguous headed eval command', async () => {
+    await launch({ headless: false });
+    const script = headedInteractiveScript();
+    expect(() => headedPsuCommand(script.replace('(eval ', '(exec '))).toThrow('exactly one psu command');
+    expect(() => headedPsuCommand("(eval 'unterminated); __papercusp_greeting_rc=$?;")).toThrow('exactly one psu command');
+    expect(() => headedPsuCommand(script + "; (eval 'second command');")).toThrow('exactly one psu command');
   });
 
   it('carries the fleet flag into a headless launch (the GUI fleet-launch row’s case)', async () => {

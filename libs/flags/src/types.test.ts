@@ -61,6 +61,8 @@ describe('flag registry invariants', () => {
     // tunnel) — the signup route's zero-users bootstrap path covers fresh
     // installs, so default-OFF costs nothing.
     expect(FLAG_DEFAULTS[FLAGS.OPEN_SIGNUP]).toBe(false);
+    expect(FLAG_DEFAULTS[FLAGS.TUTORIAL_VOICE_ISSUANCE]).toBe(false);
+    expect(DARK_FLAGS.get(FLAGS.TUTORIAL_VOICE_ISSUANCE)?.case).toBe('owner-authority');
   });
 
   it('endpoint authorization tiers stay ON by default', () => {

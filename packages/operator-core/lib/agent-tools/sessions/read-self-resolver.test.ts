@@ -86,7 +86,8 @@ vi.mock('../search/filters', () => ({
 // it. Keep that separate write-side operation out of this read-path fixture;
 // the sessions:read → resolveSearchFilters → resolveSelfSession chain remains
 // real, and the indexed rows below are the read surface under test.
-vi.mock('../../search/session-ingest', () => ({
+vi.mock('../../search/session-ingest', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../search/session-ingest')>()),
   ingestFileNow: vi.fn(async () => ({ inserted: 0 })),
 }));
 
@@ -221,7 +222,7 @@ describe("sessions:read session:'self' resolver integration (EI-2159293118197497
         emit: vi.fn(),
         workspaceId: 'default',
         runId: 'read-self-resolver-test',
-        role: 'operator',
+        role: 'judge',
         gateBypass: { role: true, capability: true, quota: true },
         transport: 'mcp',
         requestedFormat: 'json',
@@ -267,5 +268,47 @@ describe("sessions:read session:'self' resolver integration (EI-2159293118197497
     ]);
 
     expect(tx.mock.calls.some(([strings]) => String(strings).includes('owner = ANY'))).toBe(true);
+  });
+
+  it('judge rejects arbitrary session and turn-reference selectors before reading', async () => {
+    for (const args of [
+      { session: 'claude:unrelated-session' },
+      { ref: 'session_turn:claude:unrelated-session:4' },
+    ]) {
+      const tx = makeTx();
+      const dispatched = await dispatchProjectedTool(
+        projected,
+        'sessions:read',
+        args,
+        {
+          log: vi.fn(),
+          signal: new AbortController().signal,
+          progress: vi.fn(),
+          emit: vi.fn(),
+          workspaceId: 'default',
+          runId: 'read-judge-scope-test',
+          role: 'judge',
+          gateBypass: { role: true, capability: true, quota: true },
+          transport: 'mcp',
+          requestedFormat: 'json',
+          requestedStructured: true,
+          tx,
+        },
+        {},
+      );
+
+      // Dispatch success means the handler ran; an argument-scope refusal is
+      // returned as a tool error result rather than a dispatch-level failure.
+      expect(dispatched.ok).toBe(true);
+      expect(dispatched.result?.isError).toBe(true);
+      const refusalText = dispatched.result?.content.find((item) => item.type === 'text');
+      expect(refusalText?.type).toBe('text');
+      if (refusalText?.type !== 'text') continue;
+      expect(JSON.parse(refusalText.text)).toMatchObject({
+        ok: false,
+        error: 'judge_session_scope_only',
+      });
+      expect(tx).not.toHaveBeenCalled();
+    }
   });
 });

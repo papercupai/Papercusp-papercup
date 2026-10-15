@@ -723,7 +723,7 @@ export const GATE_CANDIDATE_FAILURES_CELL: CellSpec = {
       },
       unmeasured: {
         meaning:
-          'The candidate is frozen but its failing-file set could not be read (test_runs unreachable, or the refs did not resolve).',
+          'The candidate is frozen but its failing-file set could not be read (test_runs unreachable, or the refs did not resolve) — OR a non-test leg was last measured red at an OLDER repairHead and the cycle never admitted it, so nothing is known about that leg at the current head (WI-10005727: before this, that shape read `none-failing`).',
         safeAction:
           'Read `unavailable` for the reason. Do NOT substitute a raw test_runs query — that population mixes the full suite (commit_sha=NULL) and dirty-tree runs, which is the original defect. Retry, or state the answer is unknown.',
       },
@@ -1032,7 +1032,7 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
       'held-live': {
         meaning: "Held, and the presence oracle positively says the holder's session is alive.",
         safeAction:
-          'Do not take over or duplicate `LIVE_GATE_OPS` — current-verdict reruns, deploy actions, current-red triage, repair-queue mutation, or monitoring. Coordinate with the holder (`coord:send`) if that live lane needs to move. This ownership does not reserve independently registered `GATE_SYSTEM_DEV`; continue cache, instrumentation, selection, retention, alerting, test, doc, or refactor work under its own work-item/plan lane and file locks.',
+          'Compare `gate.ownership.takenBy` with your verified owner identity. If they match, you are the existing gate holder: continue `LIVE_GATE_OPS` on the owning work-item, diagnose stopped or stalled runners, and drive the gate to a verified verdict. Do not stand down because your own claim is held-live. If several native continuations share that identity, verify the elected execution continuation; it continues and the others hand off to it. If a different live owner holds it: Do not take over or duplicate `LIVE_GATE_OPS` — current-verdict reruns, deploy actions, current-red triage, repair-queue mutation, or monitoring. Coordinate with the holder (`coord:send`) if that live lane needs to move. This ownership does not reserve independently registered `GATE_SYSTEM_DEV`; continue cache, instrumentation, selection, retention, alerting, test, doc, or refactor work under its own work-item/plan lane and file locks.',
       },
       'held-stalled': {
         meaning:
@@ -1078,9 +1078,8 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
   nullable: true,
   unknownHoist: VERDICT_HOIST,
 
-  /** Axis 3. GLOBAL: the gate's incident is one condition for the whole workspace —
-   *  every caller asking "who owns this red" gets the same answer, unlike cell 2's
-   *  per-path containment question. */
+  /** Axis 3. GLOBAL within the caller's harness: dev:gate_ownership resolves the
+   *  concrete harness from the dispatch context, independently of a file path. */
   callerRelativity: { kind: 'global' },
 
   provenance: {
@@ -1093,7 +1092,9 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
 
   resolver: 'readGateOwnership() @ packages/operator-core/lib/coord/gate-ownership.ts',
 
-  visibility: OPERATOR_PIPELINE_VISIBILITY,
+  // Unlike the operator-home pipeline lenses, this resolver reads the caller's
+  // own harness. Target-pot fixers must be able to check their gate's owner.
+  visibility: { kind: 'workspace' },
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'dev:gate_ownership', path: 'gate.ownership.claimState' },
   shape:
@@ -1902,6 +1903,82 @@ export const GOVERNOR_RECOVERY_CELL: CellSpec = {
   shape: '{ state, completed, total, progress, nextProbeAtMs, evidenceRef, confidence }',
 };
 
+export const LSP_ADMISSION_CELL: CellSpec = {
+  cell: 'lsp.admission',
+  registeredOn: '2026-10-03',
+  owner: 'lsp-fleet-scale-all-languages-2026-08-21',
+  headline: 'admission',
+  nullable: true,
+  unknownHoist: 'unknown',
+  callerRelativity: { kind: 'global' },
+  provenance: {
+    obtainedBy: 'daemon-owned LspAdmissionController.snapshot() over the existing Unix-socket RPC transport',
+    liveExercised: true,
+    evidence: 'code-intelligence/lsp-admission.test.ts exercises the real controller under pressure; state/lsp-admission.test.ts reads its actual snapshot and rejects unavailable/stale readback.',
+  },
+  resolver: 'lsp:admission_snapshot → readLspDaemonAdmission → LspAdmissionController.snapshot()',
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
+  assessment: {
+    path: 'assessment',
+    codes: {
+      idle: { meaning: 'The daemon measured no active or waiting queries.', safeAction: 'Submit work through the daemon; the next request measures its own lane.' },
+      active: { meaning: 'Queries are running with no observed pressure waiters.', safeAction: 'Use the class windows and actual in-flight counts when assessing execution.' },
+      pressure: { meaning: 'Queries wait for class-specific service capacity.', safeAction: 'Inspect class queue age, caller deadlines and feedback; allow unrelated classes to proceed.' },
+      'settlement-failed': { meaning: 'At least one durable receipt failed to settle.', safeAction: 'Inspect the named failed receipts and restore durable settlement before asserting the queue drained.' },
+      unknown: { meaning: 'Daemon queue state could not be measured.', safeAction: 'Inspect the explicit daemon read failure; do not treat it as an empty queue.' },
+    },
+    evidence: ['measurement'],
+  },
+  changeSignal: { kind: 'poll', tool: 'lsp:admission_snapshot', path: 'admission' },
+  shape: '{ queued, inFlight, classes[{ classKey, queued, pendingPersistence, oldestWaitMs, desiredWindow, effectiveWindow, health, feedback }], settlementFailures, measured, sampledAtMs, generation }',
+};
+
+/** Reuse the daemon lens; readiness is not inferred from an empty queue or process health. */
+export const LSP_WARM_SERVERS_CELL: CellSpec = {
+  ...LSP_ADMISSION_CELL,
+  cell: 'lsp.warmServers',
+  registeredOn: '2026-10-05',
+  headline: 'runtime',
+  unknownHoist: 'runtimeUnknown',
+  provenance: {
+    obtainedBy: 'daemon health RPC → lspHealth() → lspClientInventory(), including the owning PID and measurement timestamp',
+    liveExercised: true,
+    evidence: 'lsp-admission.pinned.integration.test.ts measures the real daemon health inventory at nine replay boundaries with migrated PG; state/lsp-admission.test.ts rejects stale/failed readback independently of the queue.',
+  },
+  resolver: 'lsp:admission_snapshot → readLspDaemonHealth → lspClientInventory()',
+  assessment: {
+    path: 'runtimeAssessment',
+    codes: {
+      healthy: { meaning: 'The measured server processes are healthy; this does not certify any query intent.', safeAction: 'Read lsp.readiness before interpreting absence or completeness.' },
+      degraded: { meaning: 'At least one server process is degraded.', safeAction: 'Inspect its task identity and proof ledger.' },
+      unhealthy: { meaning: 'At least one server process is unhealthy.', safeAction: 'Inspect its actual failure before relying on answers.' },
+      unknown: { meaning: 'No enabled warm population could be established.', safeAction: 'Inspect runtimeUnknown and the enabled flag; do not infer zero servers.' },
+    },
+    evidence: ['runtimeMeasurement'],
+  },
+  changeSignal: { kind: 'poll', tool: 'lsp:admission_snapshot', path: 'runtime' },
+  shape: '{ enabled, overall, pid, node, entry, sampledAtMs, servers[{ language, rootPath, taskId, pid, health, certifiedReadiness, unprovenReadiness, pendingProgress, progressGeneration }] }',
+};
+
+export const LSP_READINESS_CELL: CellSpec = {
+  ...LSP_WARM_SERVERS_CELL,
+  cell: 'lsp.readiness',
+  headline: 'readiness',
+  assessment: {
+    path: 'readinessAssessment',
+    codes: {
+      reported: { meaning: 'The daemon reported its exact per-intent proof sets; missing intents are not certified.', safeAction: 'Use only the listed certified intents when interpreting absence.' },
+      unproven: { meaning: 'At least one measured intent is unproven or its server is still indexing.', safeAction: 'Retain honest degraded answers and inspect the per-intent evidence.' },
+      unknown: { meaning: 'An enabled server readiness population could not be established.', safeAction: 'Inspect runtimeUnknown; do not promote missing readiness into a proof.' },
+    },
+    evidence: ['runtimeMeasurement'],
+    measuredBy: { readiness: 'runtimeMeasurement' },
+  },
+  changeSignal: { kind: 'poll', tool: 'lsp:admission_snapshot', path: 'readiness' },
+  shape: '[{ language, rootPath, taskId, certified, unproven, quiescent, pendingProgress, progressGeneration }]; process health never promotes an intent proof',
+};
+
 /* ═══════════════════════════════════════════════════════════════════════════════
  * goal-mode-drift-guards-2026-08-31 P-002 — IS THE STEWARD PLACING ANYTHING?
  *
@@ -2359,9 +2436,9 @@ export const GATE_CONVERGENCE_CELL: CellSpec = {
       },
       'no-attempts': {
         meaning:
-          'A cycle is open but NO fixer has ever run on it (attempts 0), so nothing has been measured to converge. The reds beside this describe the last tick that actually ran, not the current candidate.',
+          'No automated fixer has been dispatched (attempts 0), and the stored rounds do not establish a trend yet. Manual repair rounds that do establish a trend are reported as converging or not-converging even when automated attempts remain zero.',
         safeAction:
-          'Read this as a DISPATCH problem, not a code problem — do not go hunting for the commit that broke it. Check freezeDisposition.reason for what withheld dispatch (a provider wall, a reservation held by another checkpoint). Do NOT fire release:checkpoint-run: it cuts a fresh candidate at tip and restarts the treadmill.',
+          'Read this as a DISPATCH problem only while no trend is knowable — do not go hunting for the commit that broke it. Check freezeDisposition.reason for what withheld dispatch (a provider wall, a reservation held by another checkpoint). Do NOT fire release:checkpoint-run: it cuts a fresh candidate at tip and restarts the treadmill.',
       },
       'not-yet-knowable': {
         meaning:
@@ -2800,6 +2877,83 @@ export const OWNER_DIRECTIVE_STATUS_CELL: CellSpec = {
     '{ kind: unclaimed|claimed|done|declined, claimedBy?, holders[], activeWorkItemIds[], workedButUndispositioned }',
 };
 
+/**
+ * `verification.health` — verification-system-improvements-2026-10-10 P-002. "Is the
+ * verification system being used, and where is it failing?" in one read: contract coverage
+ * by cohort, evidence-bound clause share, uncovered active plans (lane 2's triage measure,
+ * D-018), the awaiting-acceptance age histogram, forced ships and VAL-* block usage.
+ * Whole-workspace by construction (the resolver ignores the session harness), so every
+ * reader in the workspace sees the same value.
+ *
+ * ⚠ THE VALUE IS THE WHOLE `health` MEASUREMENT, NOT THE BREACH COUNT (EI-25692848225486055,
+ * plan D-049). The plan's live bars probe this cell per metric —
+ * `state:read { cell:'verification.health' }` at `$.value.triageGaps` (R-4),
+ * `$.value.staleAcceptanceUndispositioned` (R-5), `$.value.unreachablePlans` (R-12),
+ * `$.value.staleAcceptanceScopeExcluded` (R-13) — and R-2 requires the read to return every
+ * metric. A read value is `changeSignal.path` (cell-read.ts), so when that path was
+ * `health.breaches` the value was a bare integer and every per-metric probe resolved
+ * ABSENT while the resolver had the readings. The breach count stays reachable at
+ * `value.breaches`, and stays the MATERIAL change via `materiality` below.
+ * verification-health-cell-probes.test.ts runs the declared probe paths against a real
+ * read, so a narrowing of this path reds there.
+ */
+export const VERIFICATION_HEALTH_CELL: CellSpec = {
+  cell: 'verification.health',
+  registeredOn: '2026-10-11',
+  owner: 'verification-system-improvements-2026-10-10',
+  headline: 'health',
+
+  assessment: {
+    path: 'assessments.verificationHealth',
+    codes: {
+      healthy: {
+        meaning: 'Every thresholded reading (triageGaps, staleAcceptanceUndispositioned, valBlockPlans) was measured and is at or under its threshold.',
+        safeAction: 'Nothing is breached. Read the coverage and evidence-share metrics for trend, not for action.',
+      },
+      breached: {
+        meaning: 'At least one thresholded reading is above its threshold; health.breachCodes names which.',
+        safeAction: 'Work the named code: triageGaps → triage the uncovered active plans; staleAcceptanceUndispositioned → disposition the stale awaiting-acceptance plans; valBlockPlans → migrate the remaining [VAL- blocks.',
+      },
+      unmeasured: {
+        meaning: 'Nothing breached, but at least one thresholded reading is null (its measure threw or examined zero plans, D-019), so no verdict exists for it.',
+        safeAction: 'Read health.measurementErrors and health.unmeasuredCodes; fix the measurement before trusting a 0 anywhere else.',
+      },
+    },
+    evidence: ['health.breachCodes', 'health.unmeasuredCodes', 'health.measurementErrors'],
+  },
+
+  nullable: false,
+  whyTotal:
+    'runVerificationHealth() returns a report or throws: its own plan query is total (no default stands in for a failed read), and a lane-2 measure that throws nulls only its own readings and is named in measurementErrors. breaches is always an integer count of measured readings over threshold.',
+
+  callerRelativity: { kind: 'global' },
+
+  provenance: {
+    obtainedBy:
+      'runVerificationHealth(tx, { workspaceId }, VERIFICATION_HEALTH_MEASURES) — VERIFICATION_HEALTH_PLANS_QUERY over harness_plans + plan_spec_clauses/revisions + spec_evidence_bindings, plus lane 2 measureContractTriage (plan_contract_triage) and measureStaleAcceptance — aggregated by the pure buildVerificationHealth()',
+    liveExercised: true,
+    evidence:
+      'Ran the resolver path against the operator DB (:5432, workspace papercusp-workspace) at 2026-10-11T05:51:06Z (.papercusp/scratch/verif/health-live-probe.mts, WI-6554700010008354): activePlans 15 (post-epoch 1/1, legacy-backfilled 1/1, none 13/1 with contract), activeClauses 3884, evidence-bound 2676 (share 0.689), triageGaps 1 over 15 considered, awaitingAcceptance 141 (116 older than 28 days), staleAcceptanceUndispositioned 0 over 1551 considered, forcedShips 9, valBlockPlans 0 → breaches 1 [triageGaps], assessment breached. A first run against a discovered embedded PG (:24680) returned measurementErrors for the missing plan_contract_triage table and assessment unmeasured — the D-019 null path, observed live.',
+  },
+
+  resolver: 'runVerificationHealth() @ packages/operator-core/lib/verification-health.ts — via plans:verification-health (agent-tools/plans/verification-health.ts)',
+
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
+  changeSignal: { kind: 'poll', tool: 'plans:verification-health', path: 'health' },
+  /**
+   * The whole measurement moves on every read (measuredAt-adjacent counts, coverage
+   * ratios, the age histogram). The MATERIAL change is whether the number of breached
+   * thresholds moved — that is what a subscriber has to act on.
+   */
+  materiality: {
+    path: 'health.breaches',
+    why: 'the breach count is the actionable quantity: each breach names a threshold to work (health.breachCodes). Coverage shares, plan counts and the acceptance age histogram drift as plans are created and age without any threshold changing state, so waking a subscriber for them is noise.',
+  },
+  shape:
+    '{ health: { coverageByCohort, activePlans, activePlansWithContract, activeClauses, activeClausesEvidenceBound, evidenceBoundShare, uncoveredActivePlans, uncoveredActivePlansRaw, closureReasonMissing, triageGaps, activePlansConsidered, unreachablePlans, awaitingAcceptancePlans, awaitingAcceptanceAgeDays, staleAcceptanceSurfaced, staleAcceptanceNeverSurfaced, staleAcceptanceUndispositioned, acceptancePlansConsidered, staleAcceptanceScopeExcluded, measurementErrors, forcedShips, valBlockPlans, breaches, breachCodes, unmeasuredCodes }, assessments: { verificationHealth }, thresholds, scope, measuredAt }',
+};
+
 export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,
@@ -2824,10 +2978,14 @@ export const BUILTIN_CELLS: CellSpec[] = [
   GOVERNOR_QUEUE_CELL,
   GOVERNOR_RESOURCES_CELL,
   GOVERNOR_RECOVERY_CELL,
+  LSP_ADMISSION_CELL,
+  LSP_WARM_SERVERS_CELL,
+  LSP_READINESS_CELL,
   CAPACITY_VERDICT_CELL,
   ROLE_LAUNCH_CELL,
   WORK_SCOPE_CELL,
   OWNER_DIRECTIVE_STATUS_CELL,
+  VERIFICATION_HEALTH_CELL,
 ];
 
 /** Register every built-in cell. Idempotent — safe to call from more than one entry

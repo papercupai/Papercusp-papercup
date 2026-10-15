@@ -20,7 +20,7 @@
  *     assertable; the render itself is covered by su-persona-render tests and the
  *     R-4 real-backend e2e.
  *   - `getIdentitySource` / `resolveProjectDir` — identity files on disk.
- *   - `findLiveHost` — no live PTY host in CI; the nudge must report not-queued.
+ *   - `findLiveHostAsync` — controlled PTY discovery; absent hosts report not-queued.
  *   - the peripheral control-anchor READ legs (modes, loop, fleet membership,
  *     goal authority, self-wake) and the Orders SSE push — each is its own
  *     module with its own tests; they contribute no rows this path writes.
@@ -73,6 +73,10 @@ const h = vi.hoisted(() => {
     /** Runs inside rebuildSuLaunchArtifact — i.e. between the launch-record read and the CAS. */
     duringRebuild: null as null | (() => Promise<void>),
     goalAuthorityFailure: null as null | Error,
+    tagFailure: null as null | Error,
+    liveHost: null as null | { ownerId: string; pid: number; sock: string },
+    hostLookups: [] as string[],
+    injected: [] as Array<{ sock: string; msg: unknown }>,
   };
 });
 
@@ -96,9 +100,26 @@ vi.mock('./agent-identities/source', () => ({
 vi.mock('./spawn-config', () => ({ resolveProjectDir: vi.fn(async () => null) }));
 
 vi.mock('./events/await/psu-pty-discovery', () => ({
-  findLiveHost: vi.fn(() => null),
-  injectIntoHost: vi.fn(async () => false),
+  findLiveHostAsync: vi.fn(async (ownerId: string) => {
+    h.hostLookups.push(ownerId);
+    return h.liveHost;
+  }),
+  injectIntoHost: vi.fn(async (sock: string, msg: unknown) => {
+    h.injected.push({ sock, msg });
+    return false;
+  }),
 }));
+
+vi.mock('./turn-provenance/turn-provenance', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./turn-provenance/turn-provenance')>();
+  return {
+    ...actual,
+    tagTurnForInjection: vi.fn(async (args: Parameters<typeof actual.tagTurnForInjection>[0]) => {
+      if (h.tagFailure) throw h.tagFailure;
+      return actual.tagTurnForInjection(args);
+    }),
+  };
+});
 
 vi.mock('./su-persona-render', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./su-persona-render')>();
@@ -141,6 +162,7 @@ vi.mock('./agent-orders-notify', async (importOriginal) => ({
 
 import { restoreRawJsonbSerializer } from '@papercusp/db-org';
 import { mutateIdentityStack as mutateCurrentIdentityStack } from './identity-management';
+import { buildControlAnchorState, refreshControlAnchorAfterMutation } from './agent-tools/coordination/control-anchor';
 
 // Reuse the standard copy-out probe without mutating the shared identity writer.
 const mutateIdentityStack: typeof mutateCurrentIdentityStack = process.env.PAPERCUSP_MUTATION_PROBE_SOURCE
@@ -209,6 +231,8 @@ beforeAll(async () => {
   `);
   await applyMigrationForTest(db.sql, resolve(SQL_DIR, '1149-session-identity-activation-spans.sql'));
   await applyMigrationForTest(db.sql, resolve(SQL_DIR, '1177-identity-usage-carry-correlation.sql'));
+  // The activation recorder stamps specification_layer_refs (WI-10004494 gap 3).
+  await applyMigrationForTest(db.sql, resolve(SQL_DIR, '1295-activation-event-specification-layer-refs.sql'));
   await applyPlanItemClaimMigrations(db.sql);
 }, 120_000);
 
@@ -217,6 +241,10 @@ afterAll(async () => db?.cleanup(), 300_000);
 beforeEach(() => {
   h.duringRebuild = null;
   h.goalAuthorityFailure = null;
+  h.tagFailure = null;
+  h.liveHost = null;
+  h.hostLookups = [];
+  h.injected = [];
 });
 
 /** Seed one live session running `stack`, with that revision already APPLIED. */
@@ -294,6 +322,76 @@ const mutate = (owner: string, action: 'switch' | 'rollback', identityId?: strin
   });
 
 describe('mutateIdentityStack against real Postgres (R-4 integration layer)', () => {
+  async function superseded(owner: string, ended: boolean, stack: readonly string[]) {
+    const old = await seedSession(owner, ENGINEER);
+    const original = await launchSpec(owner);
+    const id = nextSessionId++;
+    const successor = { ...original, ...artifactFor(stack) };
+    await db.sql`
+      INSERT INTO harness_shared.adv_sessions (id, workspace_id, mode, coord_owner_id, session_id, launch_spec, started_at, ended_at)
+      VALUES (${id}, ${WS}, 'console', ${owner}, ${`native-${owner}-successor`},
+              ${JSON.stringify(successor)}::text::jsonb, now() - interval '1 hour', ${ended ? new Date() : null})`;
+    await db.sql`UPDATE harness_shared.adv_sessions SET started_at = now() + interval '1 hour' WHERE id = ${old.id}`;
+    return { oldId: old.id, id, original, successor };
+  }
+
+  it.each([false, true])('mutates the current registration after predecessor activity (successor ended=%s)', async (ended) => {
+    const owner = `su-identity-registration-${ended}`;
+    const seeded = await superseded(owner, ended, WRITER);
+    await mutate(owner, 'switch', 'other-domain');
+    const rows = await db.sql<Array<{ id: number; launch_spec: typeof seeded.original }>>`
+      SELECT id, launch_spec FROM harness_shared.adv_sessions WHERE coord_owner_id = ${owner} ORDER BY id`;
+    expect(rows[0].launch_spec).toEqual(seeded.original);
+    expect(rows[1].launch_spec.stack).toEqual(['domain:other-domain']);
+    expect(rows[1].launch_spec.identityHistory?.[0]?.stack).toEqual(WRITER);
+    const events = await db.sql<Array<{ adv_session_id: number; native_session_id: string }>>`
+      SELECT adv_session_id, native_session_id FROM harness_shared.session_identity_activation_events
+      WHERE owner_id = ${owner}`;
+    expect(events).toHaveLength(1);
+    expect(Number(events[0].adv_session_id)).toBe(seeded.id);
+    expect(events[0].native_session_id).toBe(`native-${owner}-successor`);
+  });
+
+  it.each([false, true])('builds control from the current registration stack (successor ended=%s)', async (ended) => {
+    const owner = `su-control-stack-registration-${ended}`;
+    await superseded(owner, ended, WRITER);
+    const state = await buildControlAnchorState(owner, WS, { sql: db.sql });
+    expect(state.stack).toEqual(WRITER);
+  });
+
+  it.each([false, true])('carries a control activation receipt only on the current registration (successor ended=%s)', async (ended) => {
+    const owner = `su-control-receipt-registration-${ended}`;
+    const seeded = await superseded(owner, ended, ENGINEER);
+    const anchor = await refreshControlAnchorAfterMutation({ ownerId: owner, workspaceId: WS,
+      actorId: owner, origin: 'agent', source: 'mode:set', sql: db.sql });
+    expect(anchor?.state.activation?.status).toBe('desired');
+    const rows = await db.sql<Array<{ id: number; launch_spec: typeof seeded.original }>>`
+      SELECT id, launch_spec FROM harness_shared.adv_sessions WHERE coord_owner_id = ${owner} ORDER BY id`;
+    expect(rows[0].launch_spec).toEqual(seeded.original);
+    expect(rows[1].launch_spec.identityHistory?.[0]).toMatchObject(anchor!.state.activation!.desired);
+    const events = await db.sql<Array<{ adv_session_id: number }>>`
+      SELECT adv_session_id FROM harness_shared.session_identity_activation_events WHERE owner_id = ${owner}`;
+    expect(events).toHaveLength(1);
+    expect(Number(events[0].adv_session_id)).toBe(seeded.id);
+  });
+
+  it('does not inject raw identity text when turn-provenance tagging throws', async () => {
+    const owner = 'su-identity-nudge-tag-error';
+    await seedSession(owner, ENGINEER);
+    h.liveHost = { ownerId: owner, pid: 7, sock: '/run/test-identity-nudge.sock' };
+    h.tagFailure = new Error('synthetic tagger failure');
+
+    const result = await mutate(owner, 'switch', 'writer');
+
+    expect(result.ok).toBe(true);
+    expect(result.nudge).toMatchObject({
+      queued: false,
+      reason: expect.stringContaining('turn-provenance tagging failed'),
+    });
+    expect(h.hostLookups).toEqual([owner]);
+    expect(h.injected).toEqual([]);
+  });
+
   it('clears a named root on explicit switch and restores its exact pin on rollback', async () => {
     const owner = 'su-p006-named-selection';
     const selectedIdentity = { ref: 'composition:review-suite', sourceRevision: 'a'.repeat(64) };
@@ -327,6 +425,7 @@ describe('mutateIdentityStack against real Postgres (R-4 integration layer)', ()
     // No live host in this process: the nudge must SAY it was not delivered.
     expect(result.nudge.queued).toBe(false);
     expect(result.nudge.reason).toMatch(/not currently reachable/);
+    expect(h.hostLookups).toEqual([owner]);
 
     const spec = await launchSpec(owner);
     expect(spec.stack).toEqual(WRITER);

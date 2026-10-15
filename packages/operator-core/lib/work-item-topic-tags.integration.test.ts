@@ -31,11 +31,31 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({
+  sql: undefined as unknown as postgres.Sql,
+  /** ids the own-node heal recognises as authored by THIS node (WI-10006515). */
+  ownNodeIds: new Set<string>(),
+  healCalls: [] as Array<{ workspaceId: string; id: string }>,
+}));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
+// The plain-table fixture has no work_items base or author keys, so the real identity check
+// cannot run here. This stand-in keeps its contract: flip origin to 'local' only for an
+// own-node row (simulated by `ownNodeIds`) and answer whether it healed. The SQL identity
+// predicate itself is covered by work-items-claim-issue-scope-reread.integration.test.ts.
+vi.mock('./work-items-admission', () => ({
+  selfHealOwnNodeOriginIfStranded: async (workspaceId: string, id: string) => {
+    h.healCalls.push({ workspaceId, id });
+    if (!h.ownNodeIds.has(id)) return false;
+    const rows = await h.sql`
+      UPDATE harness_shared.engineer_issues SET origin = 'local'
+       WHERE workspace_id = ${workspaceId} AND issue_id = ${id} AND origin = 'remote'
+      RETURNING issue_id`;
+    return rows.length > 0;
+  },
+}));
 
 const { nextTagSet, syncTopicTagToClaimTags } = await import('./work-item-topic-tags');
 
@@ -71,6 +91,8 @@ beforeAll(async () => {
 }, 60_000);
 
 beforeEach(async () => {
+  h.ownNodeIds.clear();
+  h.healCalls.length = 0;
   await db.sql`DELETE FROM harness_shared.harness_features_consolidated`;
   await db.sql`DELETE FROM harness_shared.engineer_issues`;
 });
@@ -231,6 +253,41 @@ describe('issue-family: the `payload.tags` the JS evaluator reads (EI-1865413808
       await seedIssue('EI-LOCAL', null, WS, 'local');
       expect(await outcomeOf({ id: 'EI-LOCAL', family: 'issue', workspaceId: WS, topic: 'p2p-excluded' })).toBe('applied');
       expect(await issuePayload('EI-LOCAL')).toEqual({ tags: ['p2p-excluded'] });
+    });
+  });
+
+  describe('WI-10006515 — an OWN-NODE row stranded at origin=remote is healed, not refused', () => {
+    it('heals an own-node remote row and applies the tag (pre-fix: remote-origin, tag never mirrored)', async () => {
+      await seedIssue('EI-OWN', null, WS, 'remote');
+      h.ownNodeIds.add('EI-OWN');
+
+      expect(await syncTopicTagToClaimTags({ id: 'EI-OWN', family: 'issue', workspaceId: WS, topic: 'p2p-excluded' })).toEqual({
+        outcome: 'applied',
+        mirrored: true,
+        changed: true,
+      });
+      expect(await issuePayload('EI-OWN')).toEqual({ tags: ['p2p-excluded'] });
+      expect(h.healCalls).toEqual([{ workspaceId: WS, id: 'EI-OWN' }]);
+    });
+
+    it('heals an own-node remote row on UNTAG too', async () => {
+      await seedIssue('EI-OWN-2', { tags: ['p2p-excluded'] }, WS, 'remote');
+      h.ownNodeIds.add('EI-OWN-2');
+      expect(await outcomeOf({ id: 'EI-OWN-2', family: 'issue', workspaceId: WS, topic: 'p2p-excluded', remove: true })).toBe('applied');
+      expect(await issuePayload('EI-OWN-2')).toEqual({ tags: [] });
+    });
+
+    it('a TRUE peer row is still refused: the heal is consulted, declines, and nothing is written', async () => {
+      await seedIssue('EI-PEER', null, WS, 'remote');
+      expect(await outcomeOf({ id: 'EI-PEER', family: 'issue', workspaceId: WS, topic: 'p2p-excluded' })).toBe('remote-origin');
+      expect(await issuePayload('EI-PEER')).toBeNull();
+      expect(h.healCalls).toEqual([{ workspaceId: WS, id: 'EI-PEER' }]);
+    });
+
+    it('a LOCAL row never consults the heal (the exceptional path only)', async () => {
+      await seedIssue('EI-LOCAL-2', null, WS, 'local');
+      expect(await outcomeOf({ id: 'EI-LOCAL-2', family: 'issue', workspaceId: WS, topic: 'p2p-excluded' })).toBe('applied');
+      expect(h.healCalls).toEqual([]);
     });
   });
 });

@@ -252,14 +252,16 @@ describe('makeScoutCycleAction', () => {
       fakeBuilder({ idleRatio: 1 }, calls),
       undefined,
       undefined,
+      // ELEVATED curbs the fan-out; DEEP skips paid generation entirely
+      // (WI-10007380 / P-003, covered in run.test.ts).
       async () => ({
         source: 'p005-queue-health',
-        level: 'deep',
-        pending: 41,
+        level: 'elevated',
+        pending: 21,
         latencySampleSize: 0,
         p95Ms: null,
         maxIdeators: 1,
-        reasons: ['deep queue'],
+        reasons: ['elevated queue'],
       }),
     );
     await handler({ ...ctx, payloadTemplate: { budget: { maxIdeators: 6 } } });

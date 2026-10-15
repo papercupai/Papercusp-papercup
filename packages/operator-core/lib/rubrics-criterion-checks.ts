@@ -33,6 +33,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import type { ChildProcess } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -46,8 +47,16 @@ import {
   type TestFilesCoreResult,
 } from './agent-tools/testing/run';
 import { findHarnessTestRunIds } from './testing-run-store';
+import { getOrgPg } from '@papercusp/db-org';
+import { loadTestCaseResults } from './agent-tools/testing/runs';
+import {
+  resolveTestCaseFilter,
+  sameTestFile,
+  type RecordedTestCase,
+  type TestCaseFilterRefusalCode,
+} from './testing-case-filter';
 import { selectUnambiguousEvidenceRoot } from './evidence-root-selection';
-import type { RubricCriterionCheck } from './agent-tools/plans/rubric-template';
+import { rubricCriterionCheckSchema, type RubricCriterionCheck } from './agent-tools/plans/rubric-template';
 import type { ActivationAuditMapping, EffectiveItemAudit, PlanItemStatus } from './plan-audits';
 import {
   describeUnrealized,
@@ -59,15 +68,26 @@ import type {
   ScorecardCheckRun,
   ScorecardCoverageCheckRun,
   ScorecardProbeCheckRun,
+  ScorecardSingleProbeCheckRun,
   ScorecardRequirementsCheckRun,
 } from './harness/improvements/observation-types';
 import { managedSpawn } from './task-manager/managed-spawn';
-import { continuityProbeSchema, runContinuityProbeBatch, type ContinuityProbe } from './continuity-probes';
+import { CONTINUITY_PROBE_MAX_PER_WAKE, SQL_PROBE_TOOL, continuityProbeSchema, runContinuityProbeBatch, type ContinuityProbe } from './continuity-probes';
+import { RUBRIC_PROBE_MAX_PER_EMIT } from './agent-tools/limits';
 
 /** The minimal criterion shape this module reads — key + the optional check. */
 export interface CheckedCriterion {
   key: string;
   check?: RubricCriterionCheck;
+}
+
+/** Pin every ALL child before rubric hashing/persistence. Legacy single probes keep their existing writer contract. */
+export function normalizeCriterionProbeChecks<T extends CheckedCriterion>(criteria: readonly T[]): T[] {
+  return criteria.map(c => {
+    if (c.check?.kind !== 'probe' || c.check.all === undefined) return c;
+    rubricCriterionCheckSchema.parse(c.check);
+    return { ...c, check: { kind: 'probe' as const, all: c.check.all.map(probe => continuityProbeSchema.parse(probe)) } };
+  });
 }
 
 export interface CriterionCheckPathFailure {
@@ -249,7 +269,39 @@ export function validateCriterionCheckPaths(
   const normalizedByKey: Record<string, string[]> = {};
   const normalizedCargoByKey: Record<string, NormalizedCargoCheckPaths> = {};
   let checked = 0;
+  const probeCount = criteria.reduce((n, c) => n + (c.check?.kind === 'probe' ? (c.check.all?.length ?? 1) : 0), 0);
+  if (probeCount > RUBRIC_PROBE_MAX_PER_EMIT) {
+    scopeFailures.push({ criterionKey: '(probe batch)', path: 'all', reason: `${probeCount} probes exceed the execution cap of ${RUBRIC_PROBE_MAX_PER_EMIT}` });
+  }
   for (const c of criteria) {
+    if (c.check?.kind === 'probe') {
+      const shape = rubricCriterionCheckSchema.safeParse(c.check);
+      if (!shape.success) {
+        scopeFailures.push({ criterionKey: c.key, path: 'probe', reason: shape.error.message });
+        continue;
+      }
+      for (const [index, probe] of (c.check.all ?? [c.check.probe]).entries()) {
+        const parsed = continuityProbeSchema.safeParse(probe);
+        if (!parsed.success) {
+          scopeFailures.push({ criterionKey: c.key, path: `probe[${index}]`, reason: parsed.error.message });
+          continue;
+        }
+        // An SQL probe dispatches through SQL_PROBE_TOOL, so the grader must be
+        // able to re-run THAT tool exactly as it must for a direct tool probe.
+        const toolName = parsed.data.kind === 'tool' ? parsed.data.tool : parsed.data.kind === 'sql' ? SQL_PROBE_TOOL : null;
+        if (toolName) {
+          const target = listAllProjectedTools().find(tool => tool.expose?.mcp?.name === toolName);
+          if (target?.agentRoles && !target.agentRoles.includes('judge')) {
+            scopeFailures.push({
+              criterionKey: c.key,
+              path: `probe[${index}]`,
+              reason: `tool '${toolName}' excludes the independent judge role — a rubric probe must be re-runnable by its grader. Choose a judge-readable tool or extend the read-only target's role allowlist before authoring this check`,
+            });
+          }
+        }
+      }
+      continue;
+    }
     if (c.check?.kind === 'coverage') {
       // A scope naming BOTH an explicit file list and planTouched is contradictory:
       // planTouched RESOLVES to a file list at grading time, so the two would silently
@@ -284,7 +336,7 @@ export function validateCriterionCheckPaths(
         failures.push({
           criterionKey: c.key,
           path: resolution.path,
-          reason: `ambiguous workspace-relative path — exists in multiple workspaces (${resolution.matches.join(', ')}); use the repo-root-relative form`,
+          reason: resolution.reason ?? `ambiguous workspace-relative path — exists in multiple workspaces (${resolution.matches.join(', ')}); use the repo-root-relative form`,
           checkKind: 'cargo',
         });
         continue;
@@ -342,7 +394,7 @@ export function validateCriterionCheckPaths(
       failures.push({
         criterionKey: c.key,
         path: resolution.path,
-        reason: `ambiguous workspace-relative path — exists in multiple workspaces (${resolution.matches.join(', ')}); use the repo-root-relative form`,
+        reason: resolution.reason ?? `ambiguous workspace-relative path — exists in multiple workspaces (${resolution.matches.join(', ')}); use the repo-root-relative form`,
       });
       continue;
     }
@@ -499,7 +551,7 @@ export function assertCriterionCheckPathsResolve(
   }
   if (v.scopeFailures.length > 0) {
     parts.push(
-      `structured coverage-check scopes must be self-consistent:\n` +
+        `structured coverage scopes and probe checks must be executable:\n` +
         v.scopeFailures.map((f) => `  • criterion '${f.criterionKey}': ${f.reason}`).join('\n'),
     );
   }
@@ -567,6 +619,18 @@ export type CriterionCheckRefusal =
       rating: string;
       detail: string;
       run: CriterionCheckRun;
+    }
+  | {
+      /** A tests check's testName filter did not resolve to executed recorded cases
+       *  (zero match, no recorded cases, all skipped, or malformed) — refused, never a pass. */
+      ok: false;
+      error: 'check_test_case_unresolved';
+      criterionKey: string;
+      code: TestCaseFilterRefusalCode;
+      file: string;
+      testName: string;
+      recordedSample: string[];
+      detail: string;
     };
 
 export type CriterionCoverageRefusal =
@@ -652,11 +716,59 @@ export async function runCriterionCheckFiles(opts: Parameters<CriterionCheckRunn
   };
 }
 
+/**
+ * Injectable per-case read seam for tests checks that carry a testName (tests stub this;
+ * production reads the ledger). Answers the recorded cases of `file` within the run's own
+ * test_runs rows, or null when none are recorded — unknown, which the resolver refuses.
+ */
+export type CriterionCaseLoader = (args: {
+  testRunIds: readonly number[];
+  file: string;
+}) => Promise<RecordedTestCase[] | null>;
+
+/** Production {@link CriterionCaseLoader}: test_runs rows of this run → test_case_runs. */
+export async function loadCriterionCheckCases(args: {
+  testRunIds: readonly number[];
+  file: string;
+}): Promise<RecordedTestCase[] | null> {
+  if (args.testRunIds.length === 0) return null;
+  const { sql } = getOrgPg();
+  // Match file identity with the shared rule rather than SQL equality: a criterion admitted
+  // from the superproject can store an absolute path, while the ledger records a repo- or
+  // workspace-relative one. The candidate rows are already this run's own rows.
+  const rows = (await sql`
+    SELECT id::text AS id, file_path
+      FROM harness_shared.test_runs
+     WHERE id = ANY(${args.testRunIds.map(String)}::bigint[])`) as unknown as Array<{
+    id: string;
+    file_path: string | null;
+  }>;
+  const ids = rows
+    .filter((r) => typeof r.file_path === 'string' && sameTestFile(args.file, r.file_path))
+    .map((r) => Number(r.id));
+  if (ids.length === 0) return null;
+  const { byRun, notMigrated } = await loadTestCaseResults(sql, ids);
+  if (notMigrated) return null;
+  const cases = ids.flatMap((id) => byRun.get(id) ?? []);
+  return cases.length > 0 ? cases : null;
+}
+
 /** Injectable direct-dispatch seam for rubric ContinuityProbe checks. */
 export type CriterionProbeDispatcher = (
   name: string,
   args: Record<string, unknown>,
 ) => Promise<unknown>;
+
+/**
+ * Per-probe budget for GRADING-time criterion probes. Grading is deliberate and
+ * fail-closed, so the budget is sized to the slowest probe-able read's measured
+ * tail rather than to the wake path's 2.5s critical-path budget. Measured over
+ * 24h of tool_invocations (2026-10-01): dev:pipeline_position p95 28s / p99 58s,
+ * state:read p99 22s. The 2.5s wake budget sat below dev:pipeline_position's
+ * p50, so most emits on such a criterion were refused unjudgeable
+ * (EI-24809550207915153). Still a small fraction of SCORECARD_TEST_CHECK_TIMEOUT_MS.
+ */
+export const CRITERION_PROBE_TIMEOUT_MS = 60_000;
 
 /**
  * GRADING-time evaluation for kind:'probe' checks. Rubrics deliberately keep
@@ -675,29 +787,39 @@ export async function evaluateCriterionProbeChecks(input: {
   ratings: Record<string, { rating: string } | undefined>;
   dispatchTool?: CriterionProbeDispatcher;
   nowIso?: () => string;
+  /** Per-probe dispatch budget; defaults to CRITERION_PROBE_TIMEOUT_MS. */
+  probeTimeoutMs?: number;
 }): Promise<CriterionCheckEvaluation> {
-  const planned: Array<{ key: string; probe: ContinuityProbe }> = [];
+  const planned: Array<{ key: string; childIndex: number; grouped: boolean; probe: ContinuityProbe }> = [];
   for (const c of input.criteria) {
     if (c.check?.kind !== 'probe' || input.ratings[c.key] === undefined) continue;
-    const parsed = continuityProbeSchema.safeParse(c.check.probe);
-    if (!parsed.success) {
-      const detail = parsed.error.issues
-        .slice(0, 4)
-        .map((issue) => `${issue.path.join('.') || '(probe)'}: ${issue.message}`)
-        .join('; ');
-      return {
-        ok: false,
-        error: 'probe_invalid',
-        criterionKey: c.key,
-        detail:
-          `criterion '${c.key}' carries a probe that is not executable against the current ` +
-          `read-only platform contract${detail ? ` (${detail})` : ''}. Fix the probe binding or ` +
-          'remove the check to leave the criterion fuzzy.',
-      };
+    const shape = rubricCriterionCheckSchema.safeParse(c.check);
+    if (!shape.success) return { ok: false, error: 'probe_invalid', criterionKey: c.key, detail: shape.error.message };
+    for (const [childIndex, probe] of (c.check.all ?? [c.check.probe]).entries()) {
+      const parsed = continuityProbeSchema.safeParse(probe);
+      if (!parsed.success) {
+        const detail = parsed.error.issues
+          .slice(0, 4)
+          .map((issue) => `${issue.path.join('.') || '(probe)'}: ${issue.message}`)
+          .join('; ');
+        return {
+          ok: false,
+          error: 'probe_invalid',
+          criterionKey: c.key,
+          detail:
+            `criterion '${c.key}' carries a probe that is not executable against the current ` +
+            `read-only platform contract${detail ? ` (${detail})` : ''}. Fix the probe binding or ` +
+            'remove the check to leave the criterion fuzzy.',
+        };
+      }
+      planned.push({ key: c.key, childIndex, grouped: c.check.all !== undefined, probe: parsed.data });
     }
-    planned.push({ key: c.key, probe: parsed.data });
   }
   if (planned.length === 0) return { ok: true, checkRuns: {} };
+  if (planned.length > RUBRIC_PROBE_MAX_PER_EMIT) return {
+    ok: false, error: 'probe_invalid', criterionKey: planned[0]!.key,
+    detail: `${planned.length} declared probes exceed execution cap ${RUBRIC_PROBE_MAX_PER_EMIT}; no probe was dispatched`,
+  };
   if (!input.dispatchTool) {
     return {
       ok: false,
@@ -714,12 +836,23 @@ export async function evaluateCriterionProbeChecks(input: {
     source: { kind: 'work-item' as const, id: `scorecard-probe:${item.key}` },
     checkIndex,
     check: {
-      id: item.key,
-      claim: `scorecard criterion '${item.key}' probe`,
+      id: `${item.key}:${item.childIndex}`,
+      claim: `scorecard criterion '${item.key}' probe ${item.childIndex}`,
       probe: item.probe,
     },
   }));
-  const batch = await runContinuityProbeBatch(sources, { dispatchTool: input.dispatchTool });
+  // The shared batch runner executes at most CONTINUITY_PROBE_MAX_PER_WAKE probes per call and
+  // truncates the rest, so a rubric's larger probe set runs in chunks of that size. Each source
+  // keeps its global checkIndex, which the runner copies onto its result.
+  const batch: { results: Awaited<ReturnType<typeof runContinuityProbeBatch>>['results']; truncated: number } = { results: [], truncated: 0 };
+  for (let start = 0; start < sources.length; start += CONTINUITY_PROBE_MAX_PER_WAKE) {
+    const chunk = await runContinuityProbeBatch(sources.slice(start, start + CONTINUITY_PROBE_MAX_PER_WAKE), {
+      dispatchTool: input.dispatchTool,
+      timeoutMs: input.probeTimeoutMs ?? CRITERION_PROBE_TIMEOUT_MS,
+    });
+    batch.results.push(...chunk.results);
+    batch.truncated += chunk.truncated;
+  }
   if (batch.truncated > 0 || batch.results.length !== planned.length) {
     return {
       ok: false,
@@ -735,6 +868,7 @@ export async function evaluateCriterionProbeChecks(input: {
   }
 
   const checkRuns: Record<string, CriterionCheckRun> = {};
+  const records = new Map<string, ScorecardSingleProbeCheckRun[]>();
   for (const [index, item] of planned.entries()) {
     const result = batch.results.find((candidate) => candidate.checkIndex === index);
     if (!result || !result.executed || (result.status !== 'fresh' && result.status !== 'stale')) {
@@ -749,7 +883,7 @@ export async function evaluateCriterionProbeChecks(input: {
           'Probe checks fail closed: repair the live typed probe/dispatcher and re-emit.',
       };
     }
-    const record: ProbeCheckRun = {
+    const record: ScorecardSingleProbeCheckRun = {
       kind: 'probe',
       probe: item.probe,
       verdict: result.status === 'fresh' ? 'pass' : 'fail',
@@ -758,21 +892,30 @@ export async function evaluateCriterionProbeChecks(input: {
       ...(result.observed !== undefined ? { observed: result.observed as string | number | boolean | null } : {}),
       measuredAt: nowIso(),
     };
-    const rating = input.ratings[item.key]?.rating ?? '';
+    records.set(item.key, [...(records.get(item.key) ?? []), record]);
+  }
+  for (const [key, children] of records) {
+    const grouped = planned.find(item => item.key === key)!.grouped;
+    const pass = children.every(child => child.verdict === 'pass');
+    const record: ProbeCheckRun = grouped ? {
+      kind: 'probe', all: children, verdict: pass ? 'pass' : 'fail', status: pass ? 'fresh' : 'stale',
+      executed: true, measuredAt: nowIso(),
+    } : children[0]!;
+    const rating = input.ratings[key]?.rating ?? '';
     if (record.verdict === 'fail' && ratingClaimsPass(rating)) {
       return {
         ok: false,
         error: 'probe_contradicted',
-        criterionKey: item.key,
+        criterionKey: key,
         rating,
         run: record,
         detail:
-          `criterion '${item.key}' is rated '${rating}' but its platform probe predicate was ` +
+          `criterion '${key}' is rated '${rating}' but at least one platform probe predicate was ` +
           'stale (the observed value did not match the declared expectation). A live probe outranks ' +
           'grader prose — fix the signal or rate the criterion honestly.',
       };
     }
-    checkRuns[item.key] = record;
+    checkRuns[key] = record;
   }
   return { ok: true, checkRuns };
 }
@@ -1330,6 +1473,8 @@ export async function evaluateCriterionTestChecks(input: {
   /** Total run budget across ALL checks (ms); each run gets what remains. */
   timeoutMs?: number;
   runner?: CriterionCheckRunner;
+  /** Per-case read for checks that carry a testName (defaults to the ledger read). */
+  caseLoader?: CriterionCaseLoader;
   /** Exact request-bound run group supplied by a composing durable scorecard emit. */
   runId?: string;
   nowIso?: () => string;
@@ -1356,7 +1501,7 @@ export async function evaluateCriterionTestChecks(input: {
   // Path resolution is per-criterion and must keep its own refusal (D-006), so a stale
   // path still names the criterion that carries it. Doing all of it up front also means
   // a rubric with one bad path costs zero test runs instead of failing partway through.
-  const planned: { key: string; files: string[] }[] = [];
+  const planned: { key: string; files: string[]; testName?: string }[] = [];
   for (const c of input.criteria) {
     if (c.check?.kind !== 'tests') continue;
     if (input.ratings[c.key] === undefined) continue;
@@ -1376,7 +1521,11 @@ export async function evaluateCriterionTestChecks(input: {
           `Fix the rubric's check (rubrics:propose) or restore the file(s), then re-emit.`,
       };
     }
-    planned.push({ key: c.key, files: validation.normalizedByKey[c.key] ?? [...c.check.files] });
+    planned.push({
+      key: c.key,
+      files: validation.normalizedByKey[c.key] ?? [...c.check.files],
+      ...(c.check.testName !== undefined ? { testName: c.check.testName } : {}),
+    });
   }
   if (planned.length === 0) return { ok: true, checkRuns };
 
@@ -1451,7 +1600,7 @@ export async function evaluateCriterionTestChecks(input: {
   const countsFor = (file: string): ReportedTestFileCounts | undefined =>
     byFile[file] ?? byIdentity.get(reportedTestFileIdentity(file, reportRoot));
 
-  for (const { key, files } of planned) {
+  for (const { key, files, testName } of planned) {
     // A file the report never mentions is UNJUDGED, not passed. Without this the batch's
     // green aggregate would vouch for a file that silently failed to run at all.
     const missing = files.filter((f) => countsFor(f) === undefined);
@@ -1492,8 +1641,51 @@ export async function evaluateCriterionTestChecks(input: {
           `required test configuration or bind the criterion to a non-skipping authority test, then re-emit.`,
       };
     }
-    const passed = files.reduce((n, f) => n + (countsFor(f)?.passed ?? 0), 0);
-    const failed = files.reduce((n, f) => n + (countsFor(f)?.failed ?? 0), 0);
+    // A testName filter narrows the judgment to the matching recorded cases (P-002 / R-2).
+    // The whole-file counts above still had to be judged, but they no longer decide the
+    // verdict: a filter that matches zero recorded cases is refused, never a pass.
+    let caseJudgment: { passed: number; failed: number; matched: number; failures: string[] } | null = null;
+    if (testName !== undefined) {
+      const file = files[0]!;
+      let cases: RecordedTestCase[] | null;
+      try {
+        cases = await (input.caseLoader ?? loadCriterionCheckCases)({ testRunIds: run.testRunIds ?? [], file });
+      } catch (error) {
+        return {
+          ok: false,
+          error: 'check_run_failed',
+          criterionKey: key,
+          detail:
+            `criterion '${key}' filters ${file} by testName ${JSON.stringify(testName)}, but its recorded ` +
+            `cases could not be read (${error instanceof Error ? error.message : String(error)}). An unread ` +
+            `case filter is unjudged, not a pass.`,
+        };
+      }
+      const resolution = resolveTestCaseFilter({ file, testName }, cases);
+      if (!resolution.ok) {
+        return {
+          ok: false,
+          error: 'check_test_case_unresolved',
+          criterionKey: key,
+          code: resolution.code,
+          file: resolution.file,
+          testName: resolution.testName,
+          recordedSample: resolution.recordedSample,
+          detail: `criterion '${key}': ${resolution.message}`,
+        };
+      }
+      caseJudgment = {
+        passed: resolution.passed,
+        failed: resolution.failed,
+        matched: resolution.matched.length,
+        failures: resolution.matched
+          .filter((c) => c.status === 'fail')
+          .slice(0, 10)
+          .map((c) => `${file}: ${c.caseKey}`),
+      };
+    }
+    const passed = caseJudgment?.passed ?? files.reduce((n, f) => n + (countsFor(f)?.passed ?? 0), 0);
+    const failed = caseJudgment?.failed ?? files.reduce((n, f) => n + (countsFor(f)?.failed ?? 0), 0);
     const fileIdentities = new Set(files.map((f) => reportedTestFileIdentity(f, reportRoot)));
     const record: CriterionCheckRun = {
       kind: 'tests',
@@ -1504,7 +1696,9 @@ export async function evaluateCriterionTestChecks(input: {
       runId: run.runId ?? null,
       ...(run.testRunIds !== undefined ? { testRunIds: [...run.testRunIds] } : {}),
       measuredAt: nowIso(),
-      ...(failed > 0 && Array.isArray(run.failures)
+      ...(caseJudgment !== null ? { testName, matchedCases: caseJudgment.matched } : {}),
+      ...(caseJudgment !== null && caseJudgment.failures.length > 0 ? { failures: caseJudgment.failures } : {}),
+      ...(caseJudgment === null && failed > 0 && Array.isArray(run.failures)
         ? {
             failures: run.failures
               .filter((f) => {

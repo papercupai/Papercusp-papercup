@@ -1,0 +1,235 @@
+{
+  "armId": "gitnexus-candidate",
+  "version": "1.6.12",
+  "unavailable": null,
+  "treeFingerprint": "08104b5503ccf9a3b0cf486a81bbc06fc94329f5",
+  "coldIndex": {
+    "wallMs": 1179740,
+    "peakRssKb": 9684572,
+    "ok": true,
+    "loadAvg1": 239.5,
+    "error": null
+  },
+  "indexBytes": 4063071918,
+  "cases": [
+    {
+      "caseId": "selective-scheduler-edge",
+      "intent": "callees",
+      "coldQueryMs": 6521,
+      "warmQueryMs": 5529,
+      "warmSamplesMs": [
+        5529,
+        5228,
+        5677
+      ],
+      "responseBytes": 56079,
+      "estTokens": 14020,
+      "correct": true,
+      "recall": 1,
+      "grade": {
+        "correct": true,
+        "missing": [],
+        "extra": [],
+        "reason": "all 1 expected site(s) present"
+      },
+      "returnedSites": [
+        "packages/operator-core/lib/long-lived-admin-pool.ts:145",
+        "packages/operator-core/lib/scheduler/claim-spec-match.ts:374",
+        "packages/operator-core/lib/scheduler/claim-spec-store.ts:502",
+        "packages/operator-core/lib/scheduler/claim-spec-store.ts:892",
+        "packages/operator-core/lib/scheduler/claim-spec-store.ts:914",
+        "packages/operator-core/lib/scheduler/claim-spec-store.ts:535",
+        "packages/operator-core/lib/scheduler/claim-spec-store.ts:189",
+        "packages/operator-core/lib/scheduler/claim-spec-store.ts:835",
+        "packages/operator-core/lib/scheduler/fleet-idle-drain.ts:98",
+        "packages/operator-core/lib/scheduler/get-next.ts:2779",
+        "packages/operator-core/lib/scheduler/plan-item-lane-guard.ts:470"
+      ],
+      "error": "gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current."
+    },
+    {
+      "caseId": "selective-fingerprint-chain",
+      "intent": "callees",
+      "coldQueryMs": 8260,
+      "warmQueryMs": 6690,
+      "warmSamplesMs": [
+        6690,
+        6320,
+        6845
+      ],
+      "responseBytes": 370181,
+      "estTokens": 92546,
+      "correct": false,
+      "recall": 0.5,
+      "grade": {
+        "correct": false,
+        "missing": [
+          "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:74"
+        ],
+        "extra": [],
+        "reason": "missing packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:74"
+      },
+      "returnedSites": [
+        "packages/operator-core/lib/agent-tools/plans/source.ts:488",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:580",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:470",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:98",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:131",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:653",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:110",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:648",
+        "packages/operator-core/lib/datatype-registry-store.ts:309",
+        "packages/operator-core/lib/datatype-registry-store.ts:309",
+        "packages/operator-core/lib/datatype-registry-store.ts:309",
+        "packages/operator-core/lib/datatype-registry-store.ts:309",
+        "packages/operator-core/lib/goals/package-property-datatypes.test.ts:66",
+        "packages/operator-core/lib/goals/package-property-datatypes.test.ts:66",
+        "packages/operator-core/lib/goals/package-property-datatypes.test.ts:66",
+        "packages/operator-core/lib/goals/package-property-datatypes.test.ts:66",
+        "packages/operator-core/lib/goals/package-property-datatypes.test.ts:84",
+        "packages/operator-core/lib/goals/package-property-datatypes.test.ts:84",
+        "packages/operator-core/lib/goals/package-property-datatypes.test.ts:84",
+        "packages/operator-core/lib/goals/package-property-datatypes.test.ts:84",
+        "packages/operator-core/lib/harness-insights/github-facts.test.ts:134",
+        "packages/operator-core/lib/harness-insights/github-facts.test.ts:134",
+        "packages/operator-core/lib/harness-insights/github-facts.test.ts:134",
+        "packages/operator-core/lib/harness-insights/github-facts.test.ts:134",
+        "packages/operator-core/lib/harness/fork-gc.test.ts:25"
+      ],
+      "error": "gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current."
+    },
+    {
+      "caseId": "selective-external-consumer",
+      "intent": "callers",
+      "coldQueryMs": 3750,
+      "warmQueryMs": 3910,
+      "warmSamplesMs": [
+        3923,
+        3795,
+        3910
+      ],
+      "responseBytes": 49448,
+      "estTokens": 12362,
+      "correct": false,
+      "recall": 0.6666666666666666,
+      "grade": {
+        "correct": false,
+        "missing": [
+          "packages/operator-core/lib/design-compare/acceptance.ts:120"
+        ],
+        "extra": [],
+        "reason": "missing packages/operator-core/lib/design-compare/acceptance.ts:120"
+      },
+      "returnedSites": [
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:902",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts:123",
+        "packages/operator-core/lib/agent-tools/testing/evidence.ts:182",
+        "packages/operator-core/lib/agent-tools/testing/evidence.ts:77",
+        "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.test.ts:?"
+      ],
+      "error": "gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. gitnexus callers returned 5 edge(s): 4 resolved call site(s) and 1 FILE-level edge(s) carrying no line. The file rows are listed last, with kind:\"file\". Do not count them as callers — the same file can appear both as a resolved site and as a file edge, so counting rows overstates the real total."
+    },
+    {
+      "caseId": "selective-route-boundary",
+      "intent": "text-search",
+      "coldQueryMs": 0,
+      "warmQueryMs": 0,
+      "warmSamplesMs": [
+        0,
+        0,
+        0
+      ],
+      "responseBytes": 0,
+      "estTokens": 0,
+      "correct": false,
+      "recall": 0,
+      "grade": {
+        "correct": false,
+        "missing": [
+          "packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts:48"
+        ],
+        "extra": [],
+        "reason": "missing packages/operator-core/lib/endpoint-route/routes/cupboard-publish-blueprint.ts:48"
+      },
+      "returnedSites": [],
+      "error": "declined: gitnexus facade does not route intent 'text-search'"
+    },
+    {
+      "caseId": "selective-exact-index-symbol",
+      "intent": "symbol-search",
+      "coldQueryMs": 1091,
+      "warmQueryMs": 996,
+      "warmSamplesMs": [
+        996,
+        987,
+        1055
+      ],
+      "responseBytes": 0,
+      "estTokens": 0,
+      "correct": false,
+      "recall": 0,
+      "grade": {
+        "correct": false,
+        "missing": [
+          "packages/operator-core/lib/work-items.ts:7991"
+        ],
+        "extra": [],
+        "reason": "missing packages/operator-core/lib/work-items.ts:7991"
+      },
+      "returnedSites": [],
+      "error": "gitnexus dispatch threw: gitnexus context exit 1: GitNexus Context (1.6.12)"
+    }
+  ],
+  "fixtures": [
+    {
+      "name": "edit",
+      "pass": true,
+      "detail": "all 1 expected site(s) present [engine note: gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current.]",
+      "refreshCost": {
+        "wallMs": 519020.85018899996,
+        "peakRssKb": 10765636,
+        "ok": true,
+        "error": null,
+        "loadAvg1": 104.92
+      },
+      "recoveryCost": null,
+      "faultSurfaced": null
+    },
+    {
+      "name": "delete",
+      "pass": true,
+      "detail": "no site from the deleted file is returned [engine note: gitnexus list_repos health probe threw: bench gitnexus CLI dispatch does not support tool 'list_repos'. Index health is UNMEASURED; do not treat graph results as current. gitnexus callers returned 5 edge(s): 4 resolved call site(s) and 1 FILE-level edge(s) carrying no line. The file rows are listed last, with kind:\"file\". Do not count them as callers — the same file can appear both as a resolved site and as a file edge, so counting rows overstates the real total.]",
+      "refreshCost": {
+        "wallMs": 720873.4518430001,
+        "peakRssKb": 10183204,
+        "ok": true,
+        "error": null,
+        "loadAvg1": 100.5
+      },
+      "recoveryCost": null,
+      "faultSurfaced": null
+    },
+    {
+      "name": "refresh-failure",
+      "pass": true,
+      "detail": "fault SILENT; correct cold=1 while-broken=1 after-restore=1; recovery refresh ok=true",
+      "refreshCost": {
+        "wallMs": 3701.9511679999996,
+        "peakRssKb": 206340,
+        "ok": true,
+        "error": null,
+        "loadAvg1": 96.26
+      },
+      "recoveryCost": {
+        "wallMs": 4146.504479000112,
+        "peakRssKb": 196500,
+        "ok": true,
+        "error": null,
+        "loadAvg1": 99.14
+      },
+      "faultSurfaced": false
+    }
+  ],
+  "error": null,
+  "measuredAt": "2026-10-01T21:05:36.226Z"
+}

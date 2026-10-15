@@ -1,0 +1,56 @@
+
+const result = await tools.work_items.get({ id: "WI-10005443", harness: "papercusp", resume: true });
+const item = result && Array.isArray(result.results) ? result.results.find((row) => row.id === "WI-10005443") : null;
+const nextText = item && item.resume && item.resume.nextAction ? item.resume.nextAction.text : "";
+const startMatch = nextText.match(/@(\d+)/);
+if (!startMatch) return { ok: false, reason: "No explicit @epoch start watermark in the live WI nextAction", nextAction: nextText };
+const sinceEpoch = Number(startMatch[1]);
+const untilEpoch = Math.floor(Date.now() / 1000);
+if (!Number.isSafeInteger(sinceEpoch) || untilEpoch <= sinceEpoch) return { ok: false, reason: "Invalid or non-advancing UTC window", sinceEpoch, untilEpoch };
+const tags = ["spawner-socket-error", "spawner-socket-peer-eof", "spawner-ipc-client-fault", "spawner-process-exec-fault", "spawner-process-drain"];
+const pattern = "\\[(?:" + tags.join("|") + ")\\]";
+const scan = await tools.logs.read({
+  unit: "papercusp-bg-host.service",
+  since: "@" + sinceEpoch,
+  until: "@" + untilEpoch,
+  grep: pattern,
+  limit: 1000,
+  scope: "user"
+});
+const entries = Array.isArray(scan?.entries) ? scan?.entries : [];
+const tagCounts = Object.fromEntries(tags.map((tag) => [tag, entries.filter((entry) => String(entry.message || "").includes("[" + tag + "]")).length]));
+const parsePayload = (message) => {
+  const brace = String(message || "").indexOf("{");
+  if (brace < 0) return null;
+  try { return JSON.parse(String(message).slice(brace)); } catch { return null; }
+};
+const peerRows = entries.filter((entry) => String(entry.message || "").includes("[spawner-socket-peer-eof]"));
+const processExecPeerEofs = peerRows.flatMap((entry) => {
+  const payload = parsePayload(entry.message);
+  const active = Array.isArray(payload && payload.activeRequests) ? payload.activeRequests : [];
+  const requests = active.filter((request) => request && request.method === "process:exec");
+  if (!requests.length) return [];
+  return [{
+    ts: entry.ts,
+    unit: entry.unit,
+    serverGeneration: payload.serverGeneration || null,
+    connectionId: payload.connectionId || null,
+    clientConnectionId: payload.clientConnectionId || payload.clientId || null,
+    activeProcessExecRequestIds: requests.map((request) => request.requestId || null)
+  }];
+});
+return {
+  ok: true,
+  window: { since: "@" + sinceEpoch, until: "@" + untilEpoch },
+  matched: scan?.matched ?? null,
+  collapsed: scan?.collapsed ?? null,
+  returned: entries.length,
+  truncated: scan?.truncated ?? null,
+  journalAvailable: scan?.journalAvailable ?? null,
+  journalError: scan?.journalError ?? null,
+  units: scan?.units ?? null,
+  tagCounts,
+  peerEofRows: peerRows.length,
+  processExecPeerEofs
+};
+

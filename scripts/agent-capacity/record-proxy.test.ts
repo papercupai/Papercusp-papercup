@@ -103,6 +103,7 @@ describe('record proxy', () => {
       stream: true,
       messages: 3,
       tools: 1,
+      inputToolOutputs: { count: 0, omitted: 0, items: [] },
     });
     expect(ex.chunks.map(decodeChunk).map((b) => b.toString('utf8')).join('')).toBe(SSE.join(''));
     expect(ex.resBytes).toBe(Buffer.byteLength(SSE.join('')));
@@ -163,5 +164,47 @@ describe('chunk encoding', () => {
     const fp = fingerprintRequest(Buffer.from('not json'));
     expect(fp.model).toBeNull();
     expect(fp.bytes).toBe(8);
+  });
+
+  it('records bounded, redacted tool-output metadata for OpenAI and Anthropic requests', () => {
+    const privateText = 'private tool output must not be recorded';
+    const openAiBody = {
+      model: 'gpt-5-codex',
+      input: [
+        { type: 'custom_tool_call', call_id: 'model-call', input: privateText },
+        { type: 'custom_tool_call_output', call_id: 'codex-call-7', output: privateText },
+        { type: 'function_call_output', call_id: 'function-call-8', output: { result: privateText } },
+      ],
+    };
+    const openAiFingerprint = fingerprintRequest(Buffer.from(JSON.stringify(openAiBody)));
+    expect(openAiFingerprint.inputToolOutputs).toEqual({
+      count: 2,
+      omitted: 0,
+      items: [
+        { type: 'custom_tool_call_output', callId: 'codex-call-7', outputBytes: Buffer.byteLength(privateText) },
+        { type: 'function_call_output', callId: 'function-call-8', outputBytes: Buffer.byteLength(JSON.stringify({ result: privateText })) },
+      ],
+    });
+    expect(JSON.stringify(openAiFingerprint)).not.toContain(privateText);
+
+    const anthropicContent = [{ type: 'text', text: privateText }];
+    const anthropicFingerprint = fingerprintRequest(Buffer.from(JSON.stringify({
+      messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-use-9', content: anthropicContent }] }],
+    })));
+    expect(anthropicFingerprint.inputToolOutputs).toEqual({
+      count: 1,
+      omitted: 0,
+      items: [{ type: 'tool_result', callId: 'tool-use-9', outputBytes: Buffer.byteLength(JSON.stringify(anthropicContent)) }],
+    });
+    expect(JSON.stringify(anthropicFingerprint)).not.toContain(privateText);
+  });
+
+  it('caps tool-output metadata while retaining the total count', () => {
+    const body = {
+      input: Array.from({ length: 66 }, (_, i) => ({ type: 'function_call_output', call_id: `call-${i}`, output: 'x' })),
+    };
+    const fp = fingerprintRequest(Buffer.from(JSON.stringify(body)));
+    expect(fp.inputToolOutputs).toMatchObject({ count: 66, omitted: 2 });
+    expect(fp.inputToolOutputs?.items).toHaveLength(64);
   });
 });

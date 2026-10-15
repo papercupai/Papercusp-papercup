@@ -135,6 +135,26 @@ export function applySecretAllowances(
  * 'result27=key14', the same fragment under a new temp-var index), and exactly ONE is new.
  * The generic-api-key entry names it and where it comes from.
  *
+ * RE-MEASURED 2026-10-06 for the 0.0.21-p318r62b bundle, the first one scanned on AWS
+ * (WI-10006421): the AMI scan's bundled census was 34 (2 gcp-api-key + 31 generic-api-key in
+ * serve.mjs + 1 generic-api-key in the vendored Monaco editor), and gitleaks 8.30.1 run
+ * directly over that release root's serve.mjs and Monaco file reproduced 31 + 1 to the unit.
+ * Every one of the 32 matches was read with its surrounding text. serve.mjs: the 20 tokenizer
+ * vocabulary matches and the PostHog / invite-token pair are unchanged; one minified fragment
+ * left ('EMPTY_SET3=new') and two arrived ('result30=key16', 'SESSION_PORT_TOKEN_ESTIMATOR'),
+ * both named in the entry below. The Monaco match is a new entry of its own.
+ *
+ * RE-MEASURED 2026-10-08 for 0.0.21-p012r69 (WI-10007452): the complete AWS census is
+ * 167 bundled findings, reproduced with gitleaks 8.30.1 on the exact baked release root:
+ * 33 in serve.mjs, 35 in spawner-sidecar.mjs, 96 in the doc-vector seed manifest, and the
+ * unchanged three SPA findings. The hash-verified p318r62b bundle reproduces its earlier
+ * 31 server findings. The multiset difference is five arrivals and three departures:
+ * one tokenizer match disappears; the two comparator matches are minifier renumberings;
+ * the other arrivals are an iterator assignment, an AWS SDK schema variable assignment,
+ * and the Monaco glyph-cache expression. None contains a credential value. The sidecar
+ * contains the same dependency code and public constants; all manifest matches are the
+ * pageSha field (rows[][3]) defined by search/doc-vector-seed.ts, not an API credential.
+ *
  * ⛔ SHRINK-ONLY IN SPIRIT: adding an entry means a new unexplained secret appeared in content
  * we ship. That is a finding to investigate first and justify second, never a line to append
  * to make a red gate green.
@@ -156,20 +176,27 @@ export const WORKSPACE_HOST_SECRET_ALLOWANCES: readonly ImageScanSecretAllowance
   {
     rule: 'generic-api-key',
     filePattern: '*/serve.mjs',
-    maxFindings: 30,
+    maxFindings: 33,
     reason:
       'The bundled server is a single ~57MB minified file, and gitleaks\' generic-api-key rule is ' +
-      'entropy-based, so it matches high-entropy NON-secret text. All 30 were read individually: ' +
-      '20 are base64-encoded tokenizer vocabulary (decoding the matches gives ordinary words in ' +
+      'entropy-based, so it matches high-entropy NON-secret text. All 33 were read individually: ' +
+      '19 are base64-encoded tokenizer vocabulary (decoding the matches gives ordinary words in ' +
       'several languages — " Canaveral", " subreddit", " richten", " gerçekle", Arabic script, ' +
-      '"UITextFiel"); 8 are minified JS source fragments (matches begin "e4.sortKey===v", ' +
-      '"EMPTY_SET3=new", "consumed=await", "this.signature", "parent=keyOfRow", "result27=key14", ' +
-      'and — the only finding r19 genuinely added — "verdictFns=await", which is the minified form ' +
-      'of `const verdictFns = await import(...)` at packages/operator-core/lib/harness/routines/' +
-      'release-actions.ts:1026. gitleaks flags it because the ADJACENT minified token ends ' +
-      '"...signWithDeviceKey,", so the rule\'s `key`-keyword proximity check captures the next ' +
-      'assignment; the captured text is an identifier and the `await` operator, carrying no value ' +
-      'at all, let alone a credential); 1 is POSTHOG_PUBLIC_DEFAULTS.projectKey ' +
+      '"UITextFiel"); 12 are minified JS source fragments or version labels (including two ' +
+      'comparator assignments, an additional iterator assignment, the EC2 SDK schema variable ' +
+      'following DescribeVpcBlockPublicAccessExclusionsRequest, and the Monaco glyph-cache ' +
+      'expression; none is a credential value). Earlier matches include ' +
+      '"consumed=await", "this.signature", "parent=keyOfRow", "result27=key14", "verdictFns=await" — ' +
+      'the minified form of `const verdictFns = await import(...)` in packages/operator-core/lib/' +
+      'harness/routines/release-actions.ts; gitleaks flags it because the ADJACENT minified token ' +
+      'ends "...signWithDeviceKey,", so the rule\'s `key`-keyword proximity check captures the next ' +
+      'assignment, an identifier and the `await` operator with no value at all — and, added by the ' +
+      '0.0.21 bundle, "result30=key16", which is `case"key":result30=key16;break` inside a minified ' +
+      'key/value iterator, and "SESSION_PORT_TOKEN_ESTIMATOR", which is the declaration of the ' +
+      'constant `SESSION_PORT_TOKEN_ESTIMATOR = \'utf8-byte-upper-bound-v1\'` from packages/' +
+      'operator-core/lib/session-port/types.ts, a version label for a token-count estimator. The ' +
+      '0.0.21 bundle no longer produces the earlier "EMPTY_SET3=new" match); 1 is ' +
+      'POSTHOG_PUBLIC_DEFAULTS.projectKey ' +
       'from posthog-public-defaults.ts, a PostHog write-only ingestion key designed to ship in ' +
       'clients; and 1 is CANONICAL_INVITE_SECRET from harness/canonical-hive-invite.ts, which that ' +
       'file documents as a DISCOVERY TOKEN deliberately committed under dogfood-silent-canonical-' +
@@ -177,5 +204,45 @@ export const WORKSPACE_HOST_SECRET_ALLOWANCES: readonly ImageScanSecretAllowance
       'gated by GitHub repo permissions and the owner-signed admission allowlist, and the hive ' +
       'PRIVATE key is explicitly kept out of that file. maxFindings pins the count so a genuinely ' +
       'new secret landing in serve.mjs still denies rather than hiding among these.',
+  },
+  {
+    rule: 'generic-api-key',
+    filePattern: '*/spa/monaco/vs/editor-*.js',
+    maxFindings: 1,
+    reason:
+      'Upstream monaco-editor code, vendored unmodified: the file is byte-for-byte the published ' +
+      'package\'s node_modules/monaco-editor/min/vs/editor-<hash>.js. The match is minified glyph-' +
+      'cache source, `this._glyphMap=new l.NKeyMap,this._glyphInOrderSet=new Set`; the `Key` inside ' +
+      'the class name NKeyMap trips the rule\'s keyword proximity check, which then captures the next ' +
+      'assignment. The captured text is two identifiers and `new`, with no value of any kind. The ' +
+      'filename hash changes when Monaco is upgraded, so the pattern keeps the directory and prefix.',
+  },
+  {
+    rule: 'generic-api-key',
+    filePattern: '*/spawner-sidecar.mjs',
+    maxFindings: 35,
+    reason:
+      'The maintained spawner sidecar bundles the same dependencies and public configuration as ' +
+      'the server. Pinned gitleaks 8.30.1 reproduces all 35 matches in the exact p012r69 artifact: ' +
+      '20 tokenizer vocabulary strings, 13 JavaScript expressions or estimator version labels, ' +
+      'and the same documented public PostHog ingestion and canonical discovery constants. The ' +
+      'expressions include comparator and iterator assignments, the EC2 SDK schema variable, ' +
+      'the Monaco glyph-cache expression, and a condition-key field reference in the sidecar. The ' +
+      'matched assignments have no credential value. Only this exact filename and rule are ' +
+      'justified; an additional finding still overflows this measured population.',
+  },
+  {
+    rule: 'generic-api-key',
+    filePattern: '*/doc-vector-seed/manifest.json',
+    maxFindings: 96,
+    reason:
+      'Every one of the 96 exact p012r69 manifest matches equals a lowercase SHA-256 page digest ' +
+      'at rows[][3]. DocVectorSeedRowKey in packages/operator-core/lib/search/doc-vector-seed.ts ' +
+      'defines that position as pageSha; the seed writer obtains it from the page_sha column ' +
+      'of the shipped documentation corpus. These are public content identities used to match ' +
+      'a documentation page to its seeded vector, with no credential or authorization role. ' +
+      'The scanner reproduction checked each captured value against the manifest tuple, ' +
+      'rather than excusing arbitrary hexadecimal strings or the whole seed directory. The ' +
+      'exact path, rule and measured count remain bounded; any surplus finding still denies.',
   },
 ]);

@@ -175,3 +175,21 @@ defineSignal({
     'apps/operator/bin/hono-host.ts',
   ],
 });
+
+defineSignal({
+  id: 'degradation-watchdog',
+  description:
+    'Collapsed fail-open rates: the degradation watchdog sweeps every registered mechanism\'s trailing ' +
+    'fallback_observations window and broadcasts degraded:<mechanism>[:<scope>]:<reason> when the applied ' +
+    'rate collapses, resolving it on recovery (degradation-signals-on-condition-rail-2026-10-11 P-003, R-8).',
+  source: 'packages/operator-core/lib/system-health/degradation-watchdog.ts (runDegradationSweepOnce)',
+  // R-8: the actor is the actionable-condition bridge, by its consumer id. Inlined rather than
+  // imported (condition-bridge.ts pulls the whole work-item layer into this leaf registry);
+  // degradation-watchdog.test.ts pins it equal to CONDITION_BRIDGE_ACTOR so it cannot drift.
+  actingConsumer: 'system:condition-bridge',
+  consumerRefs: [
+    'packages/operator-core/lib/coord/condition-bridge.ts#reconcileConditions',
+    'packages/operator-core/lib/system-health/condition-staleness-alarm.ts#startConditionStalenessAlarm',
+    'packages/operator-core/lib/coord/actionable-conditions.ts#DEGRADATION_CONDITION_PREFIX',
+  ],
+});

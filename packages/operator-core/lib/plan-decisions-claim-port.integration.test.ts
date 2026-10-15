@@ -46,7 +46,7 @@ async function write(slug: string, content: string): Promise<void> {
     { slug, intent: 'affected authority integration fixture', harnessSlug: HARNESS, workspaceId, ttlSec: 30 },
     async () => ({ newBody: content, value: { ok: true } }),
   );
-  if (result.kind !== 'applied') throw new Error(`plan fixture write was busy: ${JSON.stringify(result.busy)}`);
+  if (result.kind !== 'applied') throw new Error(`plan fixture write failed: ${JSON.stringify(result)}`);
 }
 
 beforeAll(async () => {

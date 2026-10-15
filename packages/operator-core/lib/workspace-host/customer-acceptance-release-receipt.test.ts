@@ -33,12 +33,25 @@ const RUNTIME_RELEASE = {
   schemaVersion: '1',
 };
 
-function releaseLedger() {
+/**
+ * The REAL publisher's receipt shape (WI-10004946): the bundle digest is named on the upload
+ * receipt (publish.multipart.complete), while publish.finalize names only the manifest
+ * finalization. An earlier fixture put `provider:bundle` on publish.finalize, which no real
+ * release ever carries — so the test passed while every live acceptance was refused.
+ */
+const REAL_PUBLICATION = [
+  receipt('publish.multipart.complete', 'committed', [`provider:bundle:${BUNDLE}`], 2),
+  receipt('publish.finalize', 'committed', [`provider:finalization:${'e'.repeat(64)}`], 3),
+];
+/** builtReceipts (2) + REAL_PUBLICATION (2) + root bootstrap + fixed-agent initialization. */
+const PREREQUISITE_CURSOR = 6;
+
+function releaseLedger(publication = REAL_PUBLICATION) {
   const values = [
     ...builtReceipts(),
-    receipt('publish.finalize', 'committed', [`provider:bundle:${BUNDLE}`], 2),
-    receipt('workspace.root-bootstrap', 'committed', ['initialize-operation:init-1'], 3),
-    receipt('workspace.fixed-agent-initialization', 'committed', ['initialize-operation:init-1'], 4),
+    ...publication,
+    receipt('workspace.root-bootstrap', 'committed', ['initialize-operation:init-1'], 4),
+    receipt('workspace.fixed-agent-initialization', 'committed', ['initialize-operation:init-1'], 5),
   ].map((entry) => ({ ...entry, recordedAt: PREREQUISITE_TIME }));
   return memoryReleaseLedger(labelJournal(values));
 }
@@ -148,13 +161,13 @@ describe('desktop-session.customer-acceptance', () => {
     await expect(record(stopped, fakeSql({ host: activeHostRow({ observed_state: 'absent' }) }))).rejects.toMatchObject({
       reason: 'host-not-running',
     } satisfies Partial<WorkspaceHostCustomerAcceptanceError>);
-    expect(stopped.journal.cursor).toBe(5);
+    expect(stopped.journal.cursor).toBe(PREREQUISITE_CURSOR);
 
     const noAudit = releaseLedger();
     await expect(record(noAudit, fakeSql({ audit: null }))).rejects.toMatchObject({
       reason: 'takeover-not-found',
     } satisfies Partial<WorkspaceHostCustomerAcceptanceError>);
-    expect(noAudit.journal.cursor).toBe(5);
+    expect(noAudit.journal.cursor).toBe(PREREQUISITE_CURSOR);
   });
 
   it('rejects a takeover event that predates the committed initialization receipts', async () => {
@@ -162,7 +175,17 @@ describe('desktop-session.customer-acceptance', () => {
     const audit = takeoverAudit({ ts: Date.parse('2026-09-02T00:30:00.000Z') });
 
     await expect(record(ledger, fakeSql({ audit }))).rejects.toMatchObject({ reason: 'takeover-predates-release' });
-    expect(ledger.journal.cursor).toBe(5);
+    expect(ledger.journal.cursor).toBe(PREREQUISITE_CURSOR);
+  });
+
+  it('refuses when publication finalized but no committed publish receipt names the bundle', async () => {
+    const ledger = releaseLedger([
+      receipt('publish.multipart.complete', 'intent', [`provider:bundle:${BUNDLE}`], 2),
+      receipt('publish.finalize', 'committed', [`provider:finalization:${'e'.repeat(64)}`], 3),
+    ]);
+
+    await expect(record(ledger)).rejects.toMatchObject({ reason: 'release-prerequisite-missing' });
+    expect(ledger.journal.cursor).toBe(PREREQUISITE_CURSOR);
   });
 
   it('refuses a release whose host runtime does not match its published bundle', async () => {
@@ -180,7 +203,7 @@ describe('desktop-session.customer-acceptance', () => {
         readHostRuntimeRelease: async () => ({ ...RUNTIME_RELEASE, bundleSha256: 'd'.repeat(64) }),
       }),
     ).rejects.toMatchObject({ reason: 'bundle-mismatch' } satisfies Partial<WorkspaceHostReleaseBindingError>);
-    expect(ledger.journal.cursor).toBe(5);
+    expect(ledger.journal.cursor).toBe(PREREQUISITE_CURSOR);
   });
 
   it('does not append a duplicate receipt when the same takeover is reconciled again', async () => {

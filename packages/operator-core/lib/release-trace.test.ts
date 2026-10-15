@@ -1528,6 +1528,49 @@ describe('buildReleaseTrace', () => {
     expect(out.nextVerb).toBeNull();
   });
 
+  it.each(['verdict', 'inconclusive', 'unknown-vintage'])(
+    'does not attribute an old manual 137 to a newer scheduled same-SHA %s', (kind) => {
+      const checkpointRun = {
+        active: false, terminalMarker: false,
+        terminalEvidence: {
+          source: 'systemd-exec-stop-post' as const, candidate: sha,
+          serviceResult: 'exit-code', exitCode: 'exited', exitStatus: '137', abnormal: true,
+          observedAtMs: kind === 'unknown-vintage' ? null : 100,
+        },
+        candidate: null, startedAtMs: null, elapsedSec: null, asOfAgeMs: 0,
+      };
+      const newer = kind === 'inconclusive' ? {
+        status: 'infra-inconclusive', candidate: sha, detail: 'new scheduled attempt', observedAtMs: 200,
+      } : null;
+      const out = buildReleaseTrace(input({
+        position: position({
+          gate: { ...position().gate, checkpointRunInFlight: checkpointRun,
+            verdictObservedAtMs: newer ? null : 200, inconclusive: newer },
+        }),
+        gate: { ...input().gate, checkpointRunInFlight: checkpointRun, inconclusive: newer },
+      }));
+      expect(out.gate.consumedAuthority).toBeNull();
+      expect(out.constraints.some((c) => c.code === 'checkpoint-run-inconclusive')).toBe(false);
+      expect(out.constraints.some((c) => c.code === 'checkpoint-authority-consumed')).toBe(false);
+    },
+  );
+
+  it('preserves an authentic manual terminal newer than the scheduled verdict', () => {
+    const checkpointRun = {
+      active: false, terminalMarker: false,
+      terminalEvidence: {
+        source: 'systemd-exec-stop-post' as const, candidate: sha,
+        serviceResult: 'exit-code', exitCode: 'exited', exitStatus: '137', abnormal: true, observedAtMs: 300,
+      },
+      candidate: null, startedAtMs: null, elapsedSec: null, asOfAgeMs: 0,
+    };
+    const out = buildReleaseTrace(input({
+      position: position({ gate: { ...position().gate, checkpointRunInFlight: checkpointRun, verdictObservedAtMs: 200 } }),
+      gate: { ...input().gate, checkpointRunInFlight: checkpointRun },
+    }));
+    expect(out.gate.consumedAuthority?.candidate).toBe(sha);
+  });
+
   it('EI-21103060581352507: refuses to await a candidate whose checkpoint was cancelled and has no producer', () => {
     const cancelledRun = {
       active: false,

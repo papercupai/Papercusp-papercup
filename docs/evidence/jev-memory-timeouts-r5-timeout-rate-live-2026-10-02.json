@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "jev-memory-timeouts-to-zero-2026-10-01 R-5 live measurement: memory-injection timeouts below 1% over at least 1,000 new-build calls, each residue attributed",
+  "framework": "operational",
+  "planSlug": "jev-memory-timeouts-to-zero-2026-10-01",
+  "specId": "AUTO-BAR-R-5-P-008",
+  "workItemId": "EI-24748208098755918",
+  "command": [
+    "sudo", "-n", "-u", "postgres", "psql", "-d", "papercusp", "-At", "-c",
+    "SELECT count(*) AS total, count(*) FILTER (WHERE outcome <> 'answered') AS not_answered, count(*) FILTER (WHERE outcome <> 'answered' AND inconclusive_reason = 'timeout') AS timeouts, round(100.0 * count(*) FILTER (WHERE outcome <> 'answered') / nullif(count(*),0), 2) AS pct, max(created_at), now() FROM harness_shared.decision_model_calls WHERE workspace_id='papercusp-workspace' AND consumer='memory-injection' AND surface IS NOT NULL AND created_at >= '2026-10-02T04:13:10Z'"
+  ],
+  "residueCommand": [
+    "sudo", "-n", "-u", "postgres", "psql", "-d", "papercusp", "-At", "-c",
+    "SELECT created_at, surface, inconclusive_reason, loop_utilization, latency_ms, transport_latency_ms FROM harness_shared.decision_model_calls WHERE workspace_id='papercusp-workspace' AND consumer='memory-injection' AND surface IS NOT NULL AND created_at >= '2026-10-02T04:13:10Z' AND outcome <> 'answered' ORDER BY created_at"
+  ],
+  "population": "harness_shared.decision_model_calls rows for workspace papercusp-workspace, consumer memory-injection, surface IS NOT NULL (written only by builds carrying this plan's P-007 and P-008 changes: :3170 staging and bg-host), created at or after 2026-10-02T04:13:10Z. The embed-sidecar outage 04:29:54Z-04:53Z produced zero calls.",
+  "exitCode": 0,
+  "startedAt": "2026-10-02T06:01:17.000Z",
+  "finishedAt": "2026-10-02T06:01:18.000Z",
+  "window": { "from": "2026-10-02T04:13:10Z", "to": "2026-10-02T06:01:16.536Z" },
+  "result": { "total": 1147, "notAnswered": 6, "timeouts": 6, "otherInconclusive": 0, "pct": 0.52 },
+  "residue": [
+    { "at": "2026-10-02T04:19:01.873Z", "surface": "turn-start", "loopUtilization": 1.0, "latencyMs": 776, "cause": "calling thread saturated (ELU 1.0)" },
+    { "at": "2026-10-02T05:44:01.637Z", "surface": "mid-turn", "loopUtilization": 1.0, "latencyMs": 825, "cause": "calling thread saturated (ELU 1.0); 60 s after the bg-host restart at 05:43:01Z and 17 s after the :3170 restart at 05:43:44Z" },
+    { "at": "2026-10-02T05:44:45.576Z", "surface": "mid-turn", "loopUtilization": 0.989, "latencyMs": 890, "cause": "calling thread saturated (ELU 0.99) in the post-restart window" },
+    { "at": "2026-10-02T05:45:00.837Z", "surface": "mid-turn", "loopUtilization": 0.999, "latencyMs": 803, "cause": "calling thread saturated (ELU 1.0) in the post-restart window" },
+    { "at": "2026-10-02T05:47:25.335Z", "surface": "mid-turn", "loopUtilization": 0.838, "latencyMs": 802, "cause": "calling thread busy (ELU 0.84) in the post-restart window; box load average 109-131 on 128 cores" },
+    { "at": "2026-10-02T05:53:00.048Z", "surface": "mid-turn", "loopUtilization": 0.999, "latencyMs": 803, "cause": "calling thread saturated (ELU 1.0)" }
+  ],
+  "knownGap": "Worker-transport timeouts do not record worker-side timing (transport_latency_ms is NULL on every residue), so the split between a slow Jev answer and a starved worker is not measured. Follow-up WI-10005319.",
+  "comparison": "The old :3070 build f52b2457ba (no P-007/P-008) was ~25-27% not answered over the same window.",
+  "summary": "6 of 1,147 new-build memory-injection calls not answered (0.52%, below the 1% target over more than 1,000 calls); all 6 are timeouts and each carries its calling-thread event-loop utilization (0.84-1.0) as the named cause.",
+  "assertions": [
+    { "id": "at-least-1000-calls", "passed": true, "evidence": "total = 1147 >= 1000" },
+    { "id": "not-answered-below-1pct", "passed": true, "evidence": "6 of 1147 not answered = 0.52% < 1%" },
+    { "id": "every-residue-attributed", "passed": true, "evidence": "6 of 6 not-answered rows are timeouts carrying calling-thread loop_utilization 0.84-1.0 (see residue[])" }
+  ]
+}

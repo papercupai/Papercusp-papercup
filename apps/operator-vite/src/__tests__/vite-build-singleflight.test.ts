@@ -17,14 +17,25 @@
 // config does) and VITE_BUILD_OUT_ROOT (dist/ lives in a tmp tree, never the
 // app's live bundle).
 import { afterEach, describe, expect, it } from 'vitest';
-import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const SCRIPT = resolve(__dirname, '../../bin/vite-build-singleflight');
 
-let tmp: string;
+let tmp = '';
 const children: ChildProcess[] = [];
 
 function launch(env: Record<string, string>): ChildProcess {
@@ -65,15 +76,29 @@ function collect(child: ChildProcess): { stdout: () => string; stderr: () => str
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// WI-10008303: how long a spawned build may take to reach its command. Startup
+// latency is not what these tests measure, and under a loaded gate run a spawned
+// bash + preflight lost more than the old fixed 5 s. Bounded by a deadline, not
+// an attempt count, so a slow poll loop cannot shrink the budget.
+const START_DEADLINE_MS = 30_000;
+// The holder's safety valve: it exits 9 on its own after HOLD_SECS so a leaked
+// holder cannot run forever. It must outlast the start deadline plus a waiter's
+// own startup, or a slow waiter finds the lock already free and races.
+const HOLD_SECS = 90;
+// Timeout for cases that start multiple build processes and verify the default lock.
+const DEFAULT_LOCK_TEST_TIMEOUT_MS = 120_000;
+
 async function waitForFile(path: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt++) {
+  const deadline = Date.now() + START_DEADLINE_MS;
+  while (Date.now() < deadline) {
     if (existsSync(path)) return;
     await sleep(50);
   }
-  throw new Error(`Build did not reach its command: ${path}`);
+  if (existsSync(path)) return;
+  throw new Error(`Build did not reach its command within ${START_DEADLINE_MS}ms: ${path}`);
 }
 
-const holdBuild = 'touch "$TEST_STARTED"; for i in $(seq 1 200); do [ ! -e "$TEST_RELEASE" ] || exit 0; sleep 0.05; done; exit 9';
+const holdBuild = `touch "$TEST_STARTED"; end=$(( $(date +%s) + ${HOLD_SECS} )); while [ "$(date +%s)" -lt "$end" ]; do [ ! -e "$TEST_RELEASE" ] || exit 0; sleep 0.05; done; exit 9`;
 
 /** Seed a previous, WORKING bundle in dist/ — the thing a red build must not eat. */
 function seedWorkingBundle(): void {
@@ -103,7 +128,10 @@ afterEach(() => {
       /* already gone */
     }
   }
-  rmSync(tmp, { recursive: true, force: true });
+  if (tmp) {
+    rmSync(tmp, { recursive: true, force: true });
+    tmp = '';
+  }
 });
 
 describe('vite-build-singleflight — build serialization (EI-9836)', () => {
@@ -127,7 +155,7 @@ describe('vite-build-singleflight — build serialization (EI-9836)', () => {
       writeFileSync(release, 'release');
       await first.exited;
     }
-  }, 15_000);
+  }, DEFAULT_LOCK_TEST_TIMEOUT_MS);
 
   it('serializes symlink aliases of the same output root with the default lock', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
@@ -154,49 +182,152 @@ describe('vite-build-singleflight — build serialization (EI-9836)', () => {
       writeFileSync(release, 'release');
       await first.exited;
     }
-  }, 15_000);
+  }, DEFAULT_LOCK_TEST_TIMEOUT_MS);
+
+  // WI-10008303: the budgets above only hold together if they are ordered. A
+  // holder that self-releases before a slow waiter starts lets the waiter race,
+  // and a start deadline past the test timeout reports as a bare timeout.
+  it('keeps its own start and hold budgets ordered', () => {
+    expect(START_DEADLINE_MS).toBeLessThan(HOLD_SECS * 1000);
+    expect(HOLD_SECS * 1000).toBeLessThan(DEFAULT_LOCK_TEST_TIMEOUT_MS);
+  });
+
+  // WI-6554700010009957: the disk preflight runs in front of EVERY build. The host
+  // lists hundreds of mounts (285 measured), and one subprocess per mount cost ~1.6 s
+  // of each trivial build under gate load, which timed out the 10 s cases in this
+  // file. Count the external commands the reservation-key scan runs when `df -a`
+  // reports 2,000 extra mounts: the count must not grow with the mount table, and a
+  // legacy (mount-name) key must still be found.
+  it('the disk preflight runs no subprocess per host mount', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const lib = resolve(__dirname, '../../../../papercusp-desktop/bin/lib/disk-preflight.sh');
+    const shims = join(tmp, 'shims');
+    const target = join(tmp, 'target');
+    const resRoot = join(tmp, 'disk-reservations');
+    const counter = join(tmp, 'exec-count');
+    const legacyKey = target.replace(/[^A-Za-z0-9]/g, '_');
+    mkdirSync(shims);
+    mkdirSync(target);
+    // A legacy key directory, so the mount-table scan really runs.
+    mkdirSync(join(resRoot, legacyKey), { recursive: true });
+    const realPath = process.env.PATH ?? '/usr/bin:/bin';
+    for (const tool of ['tr', 'sed', 'awk', 'cut', 'stat', 'basename', 'dirname', 'cat']) {
+      writeFileSync(
+        join(shims, tool),
+        ['#!/bin/sh', `echo ${tool} >> "$EXEC_COUNT"`, `PATH="$REAL_PATH" exec ${tool} "$@"`, ''].join('\n'),
+        { mode: 0o755 },
+      );
+    }
+    writeFileSync(
+      join(shims, 'df'),
+      [
+        '#!/bin/sh',
+        'echo df >> "$EXEC_COUNT"',
+        'PATH="$REAL_PATH" df "$@"',
+        'case " $* " in *" -a "*)',
+        '  i=0',
+        '  while [ "$i" -lt 2000 ]; do echo "fakefs 1 1 1 1% /fake/mnt/$i"; i=$((i + 1)); done',
+        '  echo "fakefs 1 1 1 1% $TARGET" ;;',
+        'esac',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+
+    const res = spawnSync('bash', ['-c', 'source "$LIB" && papercusp_reservation_keys "$TARGET"'], {
+      env: {
+        ...process.env,
+        PATH: `${shims}:${realPath}`,
+        REAL_PATH: realPath,
+        EXEC_COUNT: counter,
+        LIB: lib,
+        TARGET: target,
+        PAPERCUSP_DISK_RESERVATION_DIR: resRoot,
+      },
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+
+    expect(res.status).toBe(0);
+    const keys = res.stdout.trim().split('\n');
+    expect(keys[0]).toMatch(/^dev-\d+$/);
+    expect(keys).toContain(legacyKey);
+    // One subprocess per mount would be more than 2,000 here; the scan needs a handful.
+    const execs = readFileSync(counter, 'utf8').trim().split('\n');
+    expect(execs.length).toBeLessThan(50);
+  }, 75_000);
+
+  it('derives the default lock key without starting Node', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const io = collect(launch({
+      VITE_BUILD_LOCK: '', TMPDIR: tmp, VITE_BUILD_OUT_ROOT: join(tmp, 'out'),
+      // No node on PATH: a key derivation that still needs Node fails here.
+      PATH: '/usr/bin:/bin',
+      VITE_BUILD_CMD: 'echo keyed',
+    }));
+    expect(await io.exited).toBe(0);
+    expect(io.stdout()).toContain('keyed');
+    const locks = readdirSync(tmp).filter((n) => n.startsWith('papercup-operator-vite-build-') && n.endsWith('.lock'));
+    expect(locks).toHaveLength(1);
+    expect(locks[0]).toMatch(/^papercup-operator-vite-build-[0-9a-f]{64}\.lock$/);
+  }, DEFAULT_LOCK_TEST_TIMEOUT_MS);
 
   it('a second one-shot build WAITS for the first, then runs — never races or refuses', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
-    const first = launch({ VITE_BUILD_CMD: 'sleep 1.5 && echo first-done' });
+    const started = join(tmp, 'first-started');
+    const release = join(tmp, 'first-release');
+    const first = launch({ TEST_STARTED: started, TEST_RELEASE: release, VITE_BUILD_CMD: holdBuild });
     const firstRes = collect(first);
-    await sleep(200); // let it acquire the lock
+    let secondRes: ReturnType<typeof collect> | undefined;
+    try {
+      await waitForFile(started);
+      const second = launch({ VITE_BUILD_CMD: 'echo second-done' });
+      secondRes = collect(second);
 
-    const second = launch({ VITE_BUILD_CMD: 'echo second-done' });
-    const secondRes = collect(second);
-
-    // The second invocation must not have exited (refused) immediately —
-    // it should still be blocked waiting on the first's lock.
-    await sleep(200);
-    expect(second.exitCode).toBeNull();
+      // The second invocation must remain pending while the known-ready holder owns the lock.
+      await sleep(200);
+      expect(second.exitCode).toBeNull();
+    } finally {
+      writeFileSync(release, 'release');
+    }
 
     expect(await firstRes.exited).toBe(0);
-    expect(firstRes.stdout()).toContain('first-done');
-
-    expect(await secondRes.exited).toBe(0);
-    expect(secondRes.stdout()).toContain('second-done');
-  }, 15_000);
+    expect(secondRes).toBeDefined();
+    expect(await secondRes!.exited).toBe(0);
+    expect(secondRes!.stdout()).toContain('second-done');
+  }, DEFAULT_LOCK_TEST_TIMEOUT_MS);
 
   it('captures a requested snapshot before releasing the lock to the next build', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const started = join(tmp, 'first-started');
+    const release = join(tmp, 'first-release');
     const first = launch({
       VITE_BUILD_SNAPSHOT_DIR: join(tmp, 'snapshot'),
+      TEST_STARTED: started,
+      TEST_RELEASE: release,
       VITE_BUILD_CMD:
-        'mkdir -p "$PAPERCUSP_VITE_OUT_DIR"; echo FIRST > "$PAPERCUSP_VITE_OUT_DIR/index.html"; sleep 1; exit 0',
+        'mkdir -p "$PAPERCUSP_VITE_OUT_DIR"; echo FIRST > "$PAPERCUSP_VITE_OUT_DIR/index.html"; ' +
+        'touch "$TEST_STARTED"; while [ ! -e "$TEST_RELEASE" ]; do sleep 0.05; done; exit 0',
     });
     const firstRes = collect(first);
-    await sleep(200); // let the first build acquire the lock
-
-    const second = launch({
-      VITE_BUILD_CMD: 'mkdir -p "$PAPERCUSP_VITE_OUT_DIR"; echo SECOND > "$PAPERCUSP_VITE_OUT_DIR/index.html"; exit 0',
-    });
-    const secondRes = collect(second);
+    let secondRes: ReturnType<typeof collect> | undefined;
+    try {
+      await waitForFile(started);
+      const second = launch({
+        VITE_BUILD_CMD: 'mkdir -p "$PAPERCUSP_VITE_OUT_DIR"; echo SECOND > "$PAPERCUSP_VITE_OUT_DIR/index.html"; exit 0',
+      });
+      secondRes = collect(second);
+      await sleep(200); // Give the second process time to queue before releasing the holder.
+    } finally {
+      writeFileSync(release, 'release');
+    }
 
     expect(await firstRes.exited).toBe(0);
-    expect(await secondRes.exited).toBe(0);
+    expect(secondRes).toBeDefined();
+    expect(await secondRes!.exited).toBe(0);
     expect(readFileSync(join(tmp, 'snapshot', 'index.html'), 'utf8').trim()).toBe('FIRST');
     expect(distIndex()).toBe('SECOND');
-  }, 15_000);
+  }, DEFAULT_LOCK_TEST_TIMEOUT_MS);
 
   it('a fresh lock is acquired uncontested and the command exit status propagates', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
@@ -230,21 +361,59 @@ describe('vite-build-singleflight — build serialization (EI-9836)', () => {
 
   it('a waiter that TIMES OUT reports the holder pid and does not hang', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
-    const holder = launch({ VITE_BUILD_CMD: 'sleep 30' });
+    const started = join(tmp, 'started');
+    const release = join(tmp, 'release');
+    const holder = launch({ TEST_STARTED: started, TEST_RELEASE: release, VITE_BUILD_CMD: holdBuild });
     const holderRes = collect(holder);
-    await sleep(200); // let it acquire the lock
+    try {
+      await waitForFile(started);
+      const waiter = launch({ VITE_BUILD_CMD: 'echo unreachable', VITE_BUILD_WAIT_SECS: '1' });
+      const { stderr, exited } = collect(waiter);
+      expect(await exited).toBe(1);
+      expect(stderr()).toContain('TIMED OUT');
+      expect(stderr()).toContain('EI-9836');
 
-    const waiter = launch({ VITE_BUILD_CMD: 'echo unreachable', VITE_BUILD_WAIT_SECS: '1' });
-    const { stderr, exited } = collect(waiter);
-    expect(await exited).toBe(1);
-    expect(stderr()).toContain('TIMED OUT');
-    expect(stderr()).toContain('EI-9836');
+      // The holder is untouched by the waiter's timeout — still running.
+      expect(holder.exitCode).toBeNull();
+    } finally {
+      writeFileSync(release, 'release');
+    }
+    expect(await holderRes.exited).toBe(0);
+  }, DEFAULT_LOCK_TEST_TIMEOUT_MS);
 
-    // The holder is untouched by the waiter's timeout — still running.
-    expect(holder.exitCode).toBeNull();
-    process.kill(holder.pid!, 'SIGKILL');
-    await holderRes.exited;
-  }, 15_000);
+  // EI-24961470606265468: an unattended build sets ONE knob for every lock wait in
+  // its chain. Here it alone sets the wait (1s), and an explicit
+  // VITE_BUILD_WAIT_SECS still beats a large umbrella value.
+  it('the unattended lock-wait knob sets the wait, and the specific knob still wins', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const started = join(tmp, 'started');
+    const release = join(tmp, 'release');
+    const holderRes = collect(launch({
+      TEST_STARTED: started, TEST_RELEASE: release, VITE_BUILD_CMD: holdBuild,
+    }));
+    try {
+      // Do not race the waiter against holder startup. Once this marker exists,
+      // the holder has acquired the build lock and entered its command.
+      await waitForFile(started);
+
+      const umbrellaOnly = collect(launch({
+        VITE_BUILD_CMD: 'echo unreachable', VITE_BUILD_WAIT_SECS: '',
+        PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: '1',
+      }));
+      expect(await umbrellaOnly.exited).toBe(1);
+      expect(umbrellaOnly.stderr()).toContain('TIMED OUT after 1s');
+
+      const specificWins = collect(launch({
+        VITE_BUILD_CMD: 'echo unreachable', VITE_BUILD_WAIT_SECS: '1',
+        PAPERCUSP_UNATTENDED_LOCK_WAIT_SEC: '600',
+      }));
+      expect(await specificWins.exited).toBe(1);
+      expect(specificWins.stderr()).toContain('TIMED OUT after 1s');
+    } finally {
+      writeFileSync(release, 'release');
+    }
+    expect(await holderRes.exited).toBe(0);
+  }, DEFAULT_LOCK_TEST_TIMEOUT_MS);
 });
 
 describe('vite-build-singleflight — Node heap contract (EI-22614955223428270)', () => {
@@ -495,4 +664,72 @@ describe('vite-build-singleflight — a red build must not destroy the bundle (E
     expect(io.stderr()).toContain('PAPERCUSP_RETAIN_DIST_CHUNKS=0');
     expect(io.stderr()).toContain('Importing a module script failed');
   }, 10_000);
+});
+
+// WI-10006797: the bundle carries its own source-read time, dated AFTER the
+// singleflight lock wait. scripts/lib/spa-require-built.sh compares it with
+// source mtimes; the caller's earlier stamp made every edit made while the build
+// was queued (38 min, measured 2026-10-06) look unbuilt.
+describe('vite-build-singleflight — source-read stamp (WI-10006797)', () => {
+  const stampPath = () => join(tmp, 'dist', '.vite-build-source-read-at');
+  const mtime = (p: string) => statSync(p).mtimeMs;
+  const marksLeft = () => readdirSync(tmp).filter((n) => n.startsWith('.vite-build-source-read.'));
+
+  it('dates the stamp to when the build began reading source — after its lock wait, not when it queued', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const started = join(tmp, 'first-started');
+    const release = join(tmp, 'first-release');
+    const cmdAt = join(tmp, 'second-cmd-at');
+    const first = collect(launch({ TEST_STARTED: started, TEST_RELEASE: release, VITE_BUILD_CMD: holdBuild }));
+    await waitForFile(started);
+    const second = collect(launch({ TEST_CMD_AT: cmdAt, VITE_BUILD_CMD: `touch "$TEST_CMD_AT"; ${fakeVite(0)}` }));
+    await sleep(1500);
+    const releasedAt = Date.now();
+    writeFileSync(release, '');
+    expect(await first.exited).toBe(0);
+    expect(await second.exited).toBe(0);
+    expect(distIndex()).toBe('NEW-BUNDLE');
+    const stamp = mtime(stampPath());
+    // Kernel timestamps are coarse (a few ms) and can trail Date.now() slightly.
+    expect(stamp).toBeGreaterThanOrEqual(releasedAt - 100);
+    expect(stamp).toBeLessThanOrEqual(mtime(cmdAt));
+    expect(marksLeft()).toEqual([]);
+  }, 20_000);
+
+  it('a retain-regime build stamps dist/ in place', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    seedWorkingBundle();
+    const io = collect(
+      launch({
+        PAPERCUSP_RETAIN_DIST_CHUNKS: '1',
+        VITE_BUILD_CMD: 'echo NEW-IN-PLACE > "$VITE_BUILD_OUT_ROOT/dist/index.html"; exit 0',
+      }),
+    );
+    expect(await io.exited).toBe(0);
+    expect(distIndex()).toBe('NEW-IN-PLACE');
+    expect(existsSync(stampPath())).toBe(true);
+    expect(mtime(stampPath())).toBeLessThanOrEqual(mtime(join(tmp, 'dist', 'index.html')));
+    expect(marksLeft()).toEqual([]);
+  }, 10_000);
+
+  it('a failed build or a build that produced no bundle leaves the previous stamp exactly as it was', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    seedWorkingBundle();
+    const oldSec = Math.floor(Date.now() / 1000) - 3600;
+    writeFileSync(stampPath(), '');
+    utimesSync(stampPath(), oldSec, oldSec);
+    utimesSync(join(tmp, 'dist', 'index.html'), oldSec, oldSec);
+    const cases: Record<string, string>[] = [
+      { VITE_BUILD_CMD: fakeVite(1) }, // staged, fails after writing a bundle
+      { VITE_BUILD_CMD: 'true' }, // staged, exits 0 with no bundle
+      { PAPERCUSP_RETAIN_DIST_CHUNKS: '1', VITE_BUILD_CMD: 'exit 3' }, // in place, fails
+      { PAPERCUSP_RETAIN_DIST_CHUNKS: '1', VITE_BUILD_CMD: 'true' }, // in place, no bundle
+    ];
+    for (const env of cases) {
+      await collect(launch(env)).exited;
+      expect(Math.round(mtime(stampPath()))).toBe(oldSec * 1000);
+    }
+    expect(distIndex()).toBe('OLD-WORKING-BUNDLE');
+    expect(marksLeft()).toEqual([]);
+  }, 30_000);
 });

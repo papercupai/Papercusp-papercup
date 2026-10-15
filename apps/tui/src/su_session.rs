@@ -464,6 +464,23 @@ pub struct SuSessionDescriptor {
     pub role: String,
     #[serde(default)]
     pub model: Option<String>,
+    /// D-026: the approvals mode the engine runs in now (`ask`, `auto-edit`
+    /// or `read-only`). An engine without a switchable mode omits it.
+    #[serde(default)]
+    pub approvals: Option<String>,
+    /// D-029/D-031: what the engine measured about context and cost. Absent
+    /// until the first measurement, and on an older operator.
+    #[serde(default)]
+    pub usage: Option<SuSessionUsage>,
+    /// D-031: the agent's latest todo/plan list (each update replaces it).
+    /// Absent for an engine without a plan tool or before its first update.
+    #[serde(default)]
+    pub plan: Option<Vec<SuPlanItem>>,
+    /// WI-10006652: the models the ENGINE reports it can switch to (Claude's
+    /// SDK catalog, Codex `model/list`). Empty until the engine has answered;
+    /// /model then falls back to the server's tier menu.
+    #[serde(default)]
+    pub models: Vec<SuSessionModelOption>,
     #[serde(default)]
     pub account_route: Option<String>,
     pub carry: String,
@@ -471,6 +488,75 @@ pub struct SuSessionDescriptor {
     pub modes: Vec<String>,
     pub capabilities: SuSessionCapabilities,
     pub backend_extension: SuSessionBackendExtension,
+}
+
+/// D-029/D-031: engine-measured usage. Every field is optional; a field the
+/// engine did not report stays `None` and is never guessed.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuSessionUsage {
+    #[serde(default)]
+    pub context_tokens: Option<u64>,
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
+    /// Running session cost in USD (Claude, OMP). Codex reports none.
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+}
+
+// The descriptor derives `Eq`. JSON cannot carry NaN, so `cost_usd` is always a
+// real number here and equality is total in practice.
+impl Eq for SuSessionUsage {}
+
+impl SuSessionUsage {
+    /// Percent of the context window still free, when both sides were measured.
+    pub fn context_left_percent(&self) -> Option<u8> {
+        let window = self.context_window.filter(|w| *w > 0)?;
+        let used = self.context_tokens?;
+        let left = window.saturating_sub(used) as f64 * 100.0 / window as f64;
+        Some(left.round().clamp(0.0, 100.0) as u8)
+    }
+}
+
+/// One model an engine reports it can run (WI-10006652). `id` is what an
+/// owner turn's `model` spec names (`id[:effort]`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuSessionModelOption {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The canonical model an alias `id` resolves to (`sonnet` → `claude-sonnet-5`).
+    #[serde(default)]
+    pub resolved_model: Option<String>,
+    #[serde(default)]
+    pub efforts: Vec<String>,
+    #[serde(default)]
+    pub default_effort: Option<String>,
+    #[serde(default)]
+    pub is_default: bool,
+}
+
+/// One row of the agent's todo/plan list. `status` stays a string so a status
+/// a newer operator adds cannot fail the whole descriptor decode.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SuPlanItem {
+    pub text: String,
+    pub status: String,
+}
+
+impl SuPlanItem {
+    pub fn is_completed(&self) -> bool {
+        self.status == "completed"
+    }
+    pub fn is_in_progress(&self) -> bool {
+        self.status == "in_progress"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -940,7 +1026,30 @@ pub enum SuSessionEvent {
         #[serde(default)]
         details: Option<Value>,
     },
+    /// An event type this PUI predates (a newer operator added it). Only its
+    /// envelope is kept, so sequence tracking stays contiguous and the stream
+    /// keeps flowing; the body is ignored. Never deserialized directly:
+    /// [`decode_su_session_event`] builds it for a `type` not in
+    /// [`SU_SESSION_EVENT_TYPES`] (plan pui-chat-first-ux D-031).
+    #[serde(skip)]
+    Unrecognized {
+        envelope: SuSessionEventEnvelope,
+        kind: String,
+    },
 }
+
+/// The `type` tags this PUI can decode; any other tag is
+/// [`SuSessionEvent::Unrecognized`]. Keep in step with the variants above.
+pub const SU_SESSION_EVENT_TYPES: &[&str] = &[
+    "session",
+    "lifecycle",
+    "command_result",
+    "transcript",
+    "tool",
+    "card",
+    "backend",
+    "error",
+];
 
 impl SuSessionEvent {
     pub fn envelope(&self) -> &SuSessionEventEnvelope {
@@ -952,7 +1061,8 @@ impl SuSessionEvent {
             | Self::Tool { envelope, .. }
             | Self::Card { envelope, .. }
             | Self::Backend { envelope, .. }
-            | Self::Error { envelope, .. } => envelope,
+            | Self::Error { envelope, .. }
+            | Self::Unrecognized { envelope, .. } => envelope,
         }
     }
 }
@@ -964,8 +1074,25 @@ pub fn decode_su_session_event(frame: &SseFrame) -> Result<SuSessionEvent> {
     if frame.event != "session_event" && frame.event != "message" {
         bail!("unsupported SU-session SSE event `{}`", frame.event);
     }
-    let event: SuSessionEvent =
+    let value: Value =
         serde_json::from_str(&frame.data).with_context(|| "decode SU-session SSE payload")?;
+    let kind = value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    // D-031: a closed enum used to turn any new event type into a decode
+    // error, which ended the stream and failed the pending turn. An unknown
+    // type now keeps its envelope (schema/protocol are still checked below)
+    // and is skipped by the consumers.
+    let event = if SU_SESSION_EVENT_TYPES.contains(&kind.as_str()) {
+        serde_json::from_value::<SuSessionEvent>(value)
+            .with_context(|| "decode SU-session SSE payload")?
+    } else {
+        let envelope: SuSessionEventEnvelope = serde_json::from_value(value)
+            .with_context(|| format!("decode SU-session `{kind}` event envelope"))?;
+        SuSessionEvent::Unrecognized { envelope, kind }
+    };
     let envelope = event.envelope();
     if envelope.schema != SU_SESSION_SCHEMA {
         return Err(anyhow!(
@@ -1135,6 +1262,88 @@ mod tests {
         frame.data = frame.data.replace(SU_SESSION_SCHEMA, "other/v9");
         let error = decode_su_session_event(&frame).unwrap_err().to_string();
         assert!(error.contains("unsupported SU-session schema"));
+    }
+
+    /// pui-chat-first-ux D-031: an event type this PUI predates no longer ends
+    /// the stream. It keeps its envelope (so the sequence stays contiguous)
+    /// and the schema/protocol checks still apply to it.
+    #[test]
+    fn decodes_an_unknown_event_type_as_unrecognized_with_its_envelope() {
+        let frame = envelope("usage", json!({ "sequence": 9, "contextTokens": 12 }));
+        let event = decode_su_session_event(&frame).expect("unknown type is not fatal");
+        assert!(
+            matches!(&event, SuSessionEvent::Unrecognized { kind, .. } if kind == "usage"),
+            "{event:?}"
+        );
+        assert_eq!(event.envelope().sequence, 9);
+
+        let mut drifted = envelope("usage", json!({}));
+        drifted.data = drifted.data.replace(SU_SESSION_SCHEMA, "other/v9");
+        let error = decode_su_session_event(&drifted).unwrap_err().to_string();
+        assert!(error.contains("unsupported SU-session schema"), "{error}");
+
+        // A known type with a broken body is still an error, not skipped.
+        let broken = envelope("lifecycle", json!({ "state": 42 }));
+        assert!(decode_su_session_event(&broken).is_err());
+    }
+
+    #[test]
+    fn every_known_event_type_is_in_the_decoder_list() {
+        for kind in SU_SESSION_EVENT_TYPES {
+            let frame = envelope(kind, json!({}));
+            if let Ok(event) = decode_su_session_event(&frame) {
+                assert!(
+                    !matches!(event, SuSessionEvent::Unrecognized { .. }),
+                    "`{kind}` must decode as its own variant"
+                );
+            }
+        }
+    }
+
+    /// pui-chat-first-ux P-029 / D-031: usage and plan ride the descriptor.
+    #[test]
+    fn descriptor_carries_usage_and_plan_and_tolerates_their_absence() {
+        let mut value = json!({
+            "identity": {
+                "agentChatId":"chat-1", "advSessionId":7, "backend":"claude",
+                "nativeSessionId":"n-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"
+            },
+            "lifecycle":"waiting-for-owner", "runtimeGeneration":1, "role":"su",
+            "carry":"warm",
+            "capabilities": {"commands": {}, "features": {}},
+            "backendExtension": {"backend":"claude"}
+        });
+        let bare: SuSessionDescriptor = serde_json::from_value(value.clone()).expect("older operator");
+        assert_eq!(bare.usage, None);
+        assert_eq!(bare.plan, None);
+
+        value["usage"] = json!({ "contextTokens": 150000, "contextWindow": 200000, "costUsd": 0.5 });
+        value["plan"] = json!([
+            { "text": "Read", "status": "completed" },
+            { "text": "Fix", "status": "in_progress" },
+            { "text": "Later", "status": "blocked" }
+        ]);
+        let full: SuSessionDescriptor = serde_json::from_value(value).expect("usage + plan");
+        let usage = full.usage.expect("usage");
+        assert_eq!(usage.context_left_percent(), Some(25));
+        assert_eq!(usage.cost_usd, Some(0.5));
+        let plan = full.plan.expect("plan");
+        assert_eq!(plan.len(), 3, "an unknown status does not fail the descriptor");
+        assert!(plan[0].is_completed() && plan[1].is_in_progress());
+    }
+
+    #[test]
+    fn context_left_needs_both_measurements() {
+        let usage = |tokens, window| SuSessionUsage {
+            context_tokens: tokens,
+            context_window: window,
+            ..SuSessionUsage::default()
+        };
+        assert_eq!(usage(Some(10), None).context_left_percent(), None);
+        assert_eq!(usage(None, Some(100)).context_left_percent(), None);
+        assert_eq!(usage(Some(10), Some(0)).context_left_percent(), None);
+        assert_eq!(usage(Some(250), Some(200)).context_left_percent(), Some(0));
+        assert_eq!(usage(Some(0), Some(200)).context_left_percent(), Some(100));
     }
 
     #[test]

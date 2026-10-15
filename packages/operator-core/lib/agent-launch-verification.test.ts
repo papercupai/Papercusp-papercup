@@ -320,6 +320,59 @@ describe('fresh-launch worker attestation — productive capacity is four distin
     ...over,
   });
 
+  type EvidenceOverride = Partial<Parameters<typeof deriveFreshLaunchWorkerAttestation>[0]>;
+  const contracts: Array<{
+    scenario: string; repaired: EvidenceOverride; contaminated: EvidenceOverride;
+    expected: Record<string, unknown>;
+  }> = [
+    { scenario: 'claimed', repaired: {}, contaminated: { claimedWorkItemId: null, schedulerDisposition: null },
+      expected: { ready: true, stages: { disposition: { status: 'satisfied', kind: 'claimed', workItemId: 'WI-42407' } } } },
+    { scenario: 'healthy-no-claim',
+      repaired: { claimedWorkItemId: null, schedulerDisposition: { kind: 'no-claim', reason: 'fleet_lane_drained' } },
+      contaminated: { claimedWorkItemId: null, schedulerDisposition: null },
+      expected: { ready: true, stages: { disposition: { status: 'satisfied', kind: 'no-claim', reason: 'fleet_lane_drained' } } } },
+    { scenario: 'missing-custody', repaired: { claimedWorkItemId: null, schedulerDisposition: null }, contaminated: {},
+      expected: { ready: false, stages: { disposition: { status: 'missing', kind: 'missing' } } } },
+    { scenario: 'presence-only', repaired: { successfulCalls: 0 }, contaminated: {},
+      expected: { ready: false, stages: { agentCall: { status: 'missing' } } } },
+    { scenario: 'real-agent-call', repaired: {}, contaminated: { successfulCalls: 0 },
+      expected: { ready: true, stages: { agentCall: { status: 'satisfied' } } } },
+    { scenario: 'scheduler-not-called', repaired: { schedulerCalls: 0, successfulSchedulerCalls: 0 }, contaminated: {},
+      expected: { ready: false, stages: { schedulerPull: { status: 'missing' } } } },
+    { scenario: 'scheduler-refused', repaired: { successfulSchedulerCalls: 0 }, contaminated: {},
+      expected: { ready: false, stages: { schedulerPull: { status: 'failed' } } } },
+    { scenario: 'durable-wake', repaired: {}, contaminated: { wakeSource: 'owner' },
+      expected: { ready: true, stages: { durableWake: { status: 'satisfied' } } } },
+    { scenario: 'missing-wake', repaired: { wakeSource: 'owner' }, contaminated: {},
+      expected: { ready: false, stages: { durableWake: { status: 'missing' } } } },
+  ];
+  for (const contract of contracts) {
+    it.each(['repaired', 'outer control'])(`worker evidence causal contract: ${contract.scenario}: %s`, mode => {
+      // A wrong probe adapter removes real custody or fabricates a missing
+      // call/pull/wake. The actual public classifier must produce a result that
+      // fails the same literal oracle used for the correctly sourced evidence.
+      const input = mode === 'outer control' ? contract.contaminated : contract.repaired;
+      const result = deriveFreshLaunchWorkerAttestation(evidence(input));
+      const assertContract = () => expect(result).toMatchObject(contract.expected);
+      if (mode === 'outer control') expect(assertContract).toThrow();
+      else assertContract();
+    });
+  }
+
+  for (const scenario of ['slow-signalling', 'observed-silence']) {
+    it.each(['repaired', 'outer control'])(`launch clock causal contract: ${scenario}: %s`, async mode => {
+      const silent = scenario === 'observed-silence';
+      const observedSilent = mode === 'outer control' ? !silent : silent;
+      const result = await verifyFreshLaunchStarted(ARGS, {
+        ...FAST,
+        probe: fixedProbe([session({ msSinceLastSignal: observedSilent ? 60_000 : 0 })]),
+      });
+      const assertContract = () => expect(result.agentStarted).toBe(silent ? false : null);
+      if (mode === 'outer control') expect(assertContract).toThrow();
+      else assertContract();
+    });
+  }
+
   it('is ready when a real call, durable wake, scheduler pull, and canonical claim all exist', () => {
     const attestation = deriveFreshLaunchWorkerAttestation(evidence());
     expect(attestation.ready).toBe(true);
@@ -344,6 +397,19 @@ describe('fresh-launch worker attestation — productive capacity is four distin
       kind: 'no-claim',
       reason: 'fleet_lane_drained',
     });
+  });
+
+  it('keeps missing custody unready when the call, scheduler, and wake all succeed', () => {
+    const attestation = deriveFreshLaunchWorkerAttestation(evidence({
+      schedulerDisposition: null,
+      claimedWorkItemId: null,
+    }));
+    expect(attestation.stages.agentCall.status).toBe('satisfied');
+    expect(attestation.stages.schedulerPull.status).toBe('satisfied');
+    expect(attestation.stages.durableWake.status).toBe('satisfied');
+    expect(attestation.stages.disposition).toEqual({ status: 'missing', kind: 'missing' });
+    expect(attestation.ready).toBe(false);
+    expect(attestation.failures.map((failure) => failure.code)).toEqual(['disposition-missing']);
   });
 
   it('reports a tool-dark boot without letting presence or configuration substitute for work', () => {

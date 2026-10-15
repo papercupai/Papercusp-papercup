@@ -106,6 +106,39 @@ test('gateway:owner_report resolves agent:self to the caller owner id', async ()
   assert.equal(report.stageTelemetry.ownerId, 'su-test');
 });
 
+test('gateway:owner_report forwards owner and time/limit filters to durable request outcomes', async () => {
+  let requestedUrl = '';
+  server = http.createServer((req, res) => {
+    requestedUrl = req.url ?? '';
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ requestOutcomes: { total: 1, rows: [{ outcomeClass: 'upstream-429' }] } }));
+  });
+  await new Promise<void>((r) => server!.listen(0, '127.0.0.1', () => r()));
+  process.env.PAPERCUSP_GATEWAY_PORT = String((server!.address() as { port: number }).port);
+
+  const args = gatewayOwnerReportTool.args.parse({
+    agent: 'owner / one',
+    from: Date.parse('2026-10-13T09:00:00.000Z'),
+    to: Date.parse('2026-10-13T12:00:00.000Z'),
+    limit: 17,
+  });
+  const report = body(await gatewayOwnerReportTool.handler(args, {} as never));
+  const requested = new URL(requestedUrl, 'http://gateway');
+
+  assert.equal(requested.pathname, '/admin/owner-report');
+  assert.equal(requested.searchParams.get('owner'), 'owner / one');
+  assert.equal(requested.searchParams.get('from'), String(Date.parse('2026-10-13T09:00:00.000Z')));
+  assert.equal(requested.searchParams.get('to'), String(Date.parse('2026-10-13T12:00:00.000Z')));
+  assert.equal(requested.searchParams.get('limit'), '17');
+  assert.equal(report.requestOutcomes.total, 1);
+});
+
+test('gateway:owner_report requires an agent for filters and rejects an empty time window', () => {
+  assert.equal(gatewayOwnerReportTool.args.safeParse({ from: 10 }).success, false);
+  assert.equal(gatewayOwnerReportTool.args.safeParse({ agent: 'owner-a', from: 20, to: 20 }).success, false);
+  assert.equal(gatewayOwnerReportTool.args.safeParse({ agent: 'owner-a', from: 10, to: 20, limit: 1_000 }).success, true);
+});
+
 test('gateway:owner_report refuses agent:self without an attributable caller', async () => {
   const report = body(await gatewayOwnerReportTool.handler(
     { agent: 'self' } as never,

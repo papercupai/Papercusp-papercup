@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "kind": "completed-mounted-guide-browser-verification",
+  "planSlug": "cloud-app-live-tutorial-2026-10-01",
+  "workItemId": "WI-10007744",
+  "testRunId": 20963669,
+  "runGroup": "tutorial-mounted-guide-d88481ce-405947bc-20261009T2315",
+  "testFile": "e2e/portal-product-tutorial.spec.ts",
+  "result": { "passed": 41, "failed": 0, "skipped": 0, "retries": 0, "exitCode": 0 },
+  "attribution": { "harness": "papercusp", "workspace": "papercusp-workspace", "source": "local", "worktreeDirty": false },
+  "portalRoot": "/dev/shm/pcv/papercusp-lint-as-committed-d88481ce05-bNxRsV",
+  "portalCommit": "d88481ce05a95aa1497730862c3dcd2d16693715",
+  "operatorRoot": "/dev/shm/pcv/papercusp-lint-as-committed-405947bc4c-edpqzo",
+  "operatorCommit": "405947bc4cfff1ed3b721daa4af027d64d71e970",
+  "log": "/dev/shm/tutorial-mounted-guide-d88481ce-405947bc-20261009T2315.log",
+  "logSha256": "a03bedf36b60a9d03b88c6cabedac033d085a874020ae7747305e82dc08d42dc",
+  "ledgerRead": "/dev/shm/tutorial-mounted-guide-ledger-20963669.json",
+  "sourceCustody": {
+    "cleanBeforeAndAfter": true,
+    "currentWorkingAndHeadBytesMatchRetained": true,
+    "operatorImports": "Resolved retained operator packages; maintained esbuild-onLoad observer verifies consumed operator bytes after each case.",
+    "portalPaths": [
+      "e2e/portal-product-tutorial.spec.ts", "e2e/guide-write-observer.ts", "e2e/guide-destination-observer.ts",
+      "packages/ui/src/shell.tsx", "packages/ui/src/auth.tsx", "packages/ui/src/shell-model.ts",
+      "packages/ui/src/agents-popover.tsx", "packages/ui/src/process-popover.tsx", "packages/ui/src/voice-settings.tsx", "playwright.config.ts"
+    ],
+    "operatorPaths": [
+      "packages/operator-core/lib/onboarding/product-tutorial-lesson.ts",
+      "packages/operator-ui/src/browser-telemetry.tsx",
+      "packages/operator-ui/src/onboarding/product-tutorial.tsx"
+    ]
+  },
+  "exercised": [
+    "Delayed and explained destinations, unresolved destination refusal, and old-document versus same-document write cancellation",
+    "Actual Agents, Processes and voice popover Help/resume controls",
+    "Invalid tenant, user, curriculum-version and lesson fixtures refused before writes; valid fixture persists scoped versioned progress",
+    "Guide-first actual PortalEntry with null and assigned workspace; completed-account bypass",
+    "Independent complete curriculum review, reload persistence, and no fabricated domain completion",
+    "Every catalogue lesson and permitted target; pause acknowledgement and no domain writes",
+    "Small viewport, enlarged text, keyboard, contextual Help, denied progress recovery and workspace-required explanations",
+    "Explicit current-lesson AI question and opt-in spoken-question control lifecycle"
+  ],
+  "limitations": [
+    "Mounted browser fixture acceptance, not the hosted production artifact or a real signup/provider session.",
+    "Spoken-question control test mocks media/provider behavior; it does not establish human-heard audio or the full protected voice lifecycle.",
+    "This suite does not replace required unit/integration falsifiers, billing acceptance, full native/novice review, or affected-suite acceptance."
+  ],
+  "launchRecovery": {
+    "firstTask": "0mv1ky694qqblo2anoz",
+    "firstTaskOutcome": "Durable terminal exit 1 before browser startup: transient capability:bash had neither shared ledger environment variable.",
+    "successfulLaunch": "Native Codex shell inherited HARNESS_ADMIN_DATABASE_URL, passed it explicitly as PAPERCUSP_TEST_RUNS_DB_URL, and ran the canonical pc-heavy wrapper. Native handle drained to exit 0."
+  },
+  "shipment": "open"
+}

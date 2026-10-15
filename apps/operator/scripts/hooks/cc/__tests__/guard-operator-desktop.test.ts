@@ -17,11 +17,15 @@
  * The fail-open contract is the important half: a guard that blocks on its
  * own resolver error is worse than the bug it prevents.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
+
+// Every case spawns the real hook synchronously, and run() lets its lookups
+// take up to 20s under load; the 5s default would cut a slow but correct case.
+vi.setConfig({ testTimeout: 60_000 });
 
 // Overridable so a tier-2 mutation probe can point this suite at a mutated
 // COPY outside the tree (scripts/mutation-probe.sh --file … PROBE_HOOK={}),
@@ -152,6 +156,10 @@ function run(
     env: {
       ...process.env,
       ...(shim ? { PATH: `${shimDir}:${process.env.PATH ?? ""}` } : {}),
+      // The hook's 2s lookup budget fails OPEN on timeout, so under full gate
+      // load a slow shim reads as an ALLOW (2336ms case, WI-10006055). These
+      // cases assert the guard's logic, not its latency: give lookups room.
+      PAPERCUSP_GUARD_LOOKUP_TIMEOUT_MS: "20000",
       ...(opts.env ?? {}),
     },
   });

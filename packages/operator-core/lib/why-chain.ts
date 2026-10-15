@@ -16,8 +16,8 @@
  * mutates any of the systems it reads.
  */
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from './git-pipeline-stats';
-import { isCommitOnlyMember } from './git-pipeline-position';
-import { accountStatus, type AccountStatusRow } from './deployment/account-pool-store';
+import { isCommitOnlyMember } from './harness/git-sync/decide-git-sync-push';
+import type { AccountStatusRow } from './deployment/account-pool-store';
 import { runtimeDiagnostic, type RuntimeDiagnostic } from './runtime-diagnostic';
 import { computeDiagnosticVintage, type DiagnosticVintage } from './diagnostic-vintage';
 import { getBuildInfo } from './build-info';
@@ -873,7 +873,9 @@ export async function computeWhyChain(deps: WhyChainDeps = {}): Promise<WhyChain
   const loadSnapshot =
     deps.loadSnapshot ??
     (() => gitPipelineSnapshot(deps.harnessSlug, { useSpawnerSidecar: deps.useSpawnerSidecar ?? false }));
-  const loadAccounts = deps.loadAccounts ?? ((ws?: string) => accountStatus(ws));
+  // Gate-only callers and injected readers do not need provider/account wiring.
+  const loadAccounts = deps.loadAccounts ?? (async (ws?: string) =>
+    (await import('./deployment/account-pool-store')).accountStatus(ws));
   const loadAdmission = deps.loadAdmission ?? loadAdmissionDefault;
 
   const [rawSnap, accounts, admission, broadProxyFiles] = await Promise.all([

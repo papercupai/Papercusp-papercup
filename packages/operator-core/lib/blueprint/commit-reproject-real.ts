@@ -23,6 +23,7 @@ import {
   type CommitReprojectDeps,
   type CommitReprojectResult,
 } from './commit-reproject';
+import { recordProducerObservation, withProducerLifecycleWrite } from '../experiment/producer-lifecycle-store';
 
 const execFileP = promisify(execFileCb);
 
@@ -104,8 +105,23 @@ export async function acceptProposalViaCommit(sql: Sql, input: AcceptViaCommitIn
   );
   if (!res.ok) return { ...res, proposalMarked: false };
   const now = input.now ?? Date.now();
-  const updated = await sql`
-    UPDATE harness_shared.gym_proposals SET status = 'accepted', decided_at = ${now}
-     WHERE id = ${input.proposalId} AND status = 'pending'`;
-  return { ...res, proposalMarked: (updated.count ?? 0) > 0 };
+  const proposalMarked = await withProducerLifecycleWrite(sql, async (tx) => {
+    const updated = await tx`
+      UPDATE harness_shared.gym_proposals SET status = 'accepted', decided_at = ${now}
+       WHERE workspace_id = ${input.workspaceId} AND id = ${input.proposalId} AND status = 'pending'`;
+    const marked = (updated.count ?? 0) > 0;
+    const accepted = marked || (await tx`
+      SELECT 1 FROM harness_shared.gym_proposals
+       WHERE workspace_id = ${input.workspaceId} AND id = ${input.proposalId} AND status = 'accepted'`).length > 0;
+    if (accepted) {
+      // This commit/reproject route bypasses gym/control-plane.ts. Keep its native
+      // acceptance in the same source-linked receipt seam; the partial snapshot
+      // remains non-promoting because it has no common authority/spend contract.
+      await recordProducerObservation(tx, {
+        producer: 'gym', workspaceId: input.workspaceId, sourceId: input.proposalId,
+      });
+    }
+    return marked;
+  });
+  return { ...res, proposalMarked };
 }

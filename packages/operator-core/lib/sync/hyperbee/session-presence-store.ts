@@ -7,10 +7,10 @@
  * own sessions through the same table the roster merges). Never rides the
  * peer-log (plan D-002 — beats must not be immortalized).
  *
- * FULL-SET REPLACE semantics: one frame carries a device's WHOLE current
- * session set, so applying it upserts every entry and deletes the device's
- * rows NOT in the set — self-healing against missed frames, no per-session
- * tombstones needed. A stale frame (frameTs older than a device row's
+ * POT-SCOPED FULL-SET REPLACE semantics: one frame carries a device's current
+ * session set for this pot, so applying it upserts every entry and deletes the
+ * device's rows in this pot NOT in the set — self-healing against missed frames,
+ * no per-session tombstones needed. A stale frame (frameTs older than a device row's
  * last_seen_at) never regresses newer state: upserts are last_seen_at-guarded
  * and the not-in-set delete only removes rows older than the frame.
  */
@@ -40,7 +40,7 @@ export interface ApplySessionSetInput {
  */
 export const SESSION_ROW_REFRESH_FLOOR_MS = 15_000;
 
-/** Replace one device's session-presence set (upsert entries + drop absentees). */
+/** Replace one device's pot-scoped session-presence set (upsert + drop absentees). */
 export async function applySessionPresenceSet(
   input: ApplySessionSetInput,
   sqlIn?: postgres.Sql,
@@ -109,15 +109,17 @@ export async function applySessionPresenceSet(
         )
     `;
   }
-  // Drop this device's rows absent from the set — but only rows OLDER than the
-  // frame (an out-of-order stale frame must not delete a newer session row).
-  // An empty set clears everything older ("all my agents ended").
+  // Drop this device's rows for this pot absent from the set — but only rows
+  // OLDER than the frame (an out-of-order stale frame must not delete a newer
+  // session row). An empty set clears this pot's older rows ("all my agents
+  // ended here"), while preserving the same device's other-pot rows.
   if (keep.length > 0) {
     await sql`
       DELETE FROM harness_shared.shared_session_presence
       WHERE workspace_id = ${input.workspaceId}
         AND device_pubkey = ${input.devicePubkey}
         AND machine_label = ${input.machineLabel}
+        AND pot_slug IS NOT DISTINCT FROM ${input.potSlug}::text
         AND last_seen_at <= to_timestamp(${input.frameTs} / 1000.0)
         AND owner_id NOT IN ${sql(keep)}
     `;
@@ -127,6 +129,7 @@ export async function applySessionPresenceSet(
       WHERE workspace_id = ${input.workspaceId}
         AND device_pubkey = ${input.devicePubkey}
         AND machine_label = ${input.machineLabel}
+        AND pot_slug IS NOT DISTINCT FROM ${input.potSlug}::text
         AND last_seen_at <= to_timestamp(${input.frameTs} / 1000.0)
     `;
   }
