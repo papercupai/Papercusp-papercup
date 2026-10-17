@@ -17,5 +17,5 @@ export function readRetentionLeases(dir: string): { leases: RetentionLease[]; er
 export function readRetentionPins(options?: PinReadOptions): { pins: RetentionPin[]; errors: string[] };
 export function readRetentionPinsAsync(options?: PinReadOptions): Promise<{ pins: RetentionPin[]; errors: string[] }>;
 export function retentionPinProtectsPath(path: string, pins: readonly RetentionPinProtection[], nowMs?: number): boolean;
-export function pinProtection(pins: readonly RetentionPinProtection[], nowMs?: number): (path: string) => boolean;
-export function withRetentionPinProtection<T>(work: (isPinned: (path: string) => boolean) => T | Promise<T>, options?: PinReadOptions & { onWaiting?: (info: { owner: string; elapsedMs: number }) => void }): Promise<T>;
+export function pinProtection(pins: readonly RetentionPinProtection[], nowMs?: number, resolvePath?: (path: string) => string): (path: string) => boolean;
+export function withRetentionPinProtection<T>(work: (isPinned: (path: string) => boolean) => T | Promise<T>, options?: PinReadOptions & { resolvePath?: (path: string) => string; onWaiting?: (info: { owner: string; elapsedMs: number }) => void }): Promise<T>;

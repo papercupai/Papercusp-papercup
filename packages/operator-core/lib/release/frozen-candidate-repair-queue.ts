@@ -27,6 +27,7 @@ import {
 } from './repair-manifest';
 import { createHash } from 'node:crypto';
 import type { AdmissionRadius, FixPrecheckVerdict } from './admission-fix-precheck';
+import { roundMeasurementFromKinds, type FrozenRepairRoundMeasurement } from './round-one-measurement';
 
 /**
  * Schema 4 (P-006, frozen-candidate-stays-frozen-through-all-fixes-2026-09-03): the row
@@ -389,6 +390,9 @@ export const FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS = 15 * 60 * 1_000;
 export const FROZEN_REPAIR_CONVERGENCE_HOLD_MS = 4 * 60 * 60 * 1_000;
 
 const MAX_PERSISTED_FAILURES = 50;
+/** P-016: a round count AT this cap means "at least the cap" — the like-for-like trajectory
+ *  skips it (see `likeForLikeTrajectory`). */
+export const FROZEN_REPAIR_PERSISTED_FAILURE_CAP = MAX_PERSISTED_FAILURES;
 const MAX_PERSISTED_FAILURE_CHARS = 500;
 
 export type FrozenCandidateRepairPhase =
@@ -1052,6 +1056,10 @@ export interface FrozenRepairConvergenceRound {
   /** WI-10007489: the radius this round executed. Absent on legacy rows and on reds whose
    *  runner did not report it, which is "not recorded", never "nothing ran". */
   executed?: FrozenRepairRoundExecution;
+  /** P-016 (green-main-ratchet-convergence-2026-10-17#D-004): whether this round's run measured
+   *  the test population (`suite`) or stopped before the sweep (`non-test-only`, whose count is
+   *  carried entries plus non-test ids). Absent on legacy rows, which read as `suite`. */
+  measurement?: FrozenRepairRoundMeasurement;
   /**
    * P-007 (green-main-cycle-time-2026-10-08#D-040): each entry this round newly turned red,
    * attributed to the admissions in the round's window. Absent = nothing newly red, a legacy
@@ -2108,6 +2116,9 @@ function parseConvergenceRounds(value: unknown): FrozenRepairConvergenceRound[] 
       ...(failingTests ? { failingTests } : {}),
       atMs: row.atMs as number,
       ...(executed ? { executed } : {}),
+      ...(row.measurement === 'suite' || row.measurement === 'non-test-only'
+        ? { measurement: row.measurement as FrozenRepairRoundMeasurement }
+        : {}),
       ...(attributions ? { attributions } : {}),
     };
     // Rounds are append-only history: carry a newer build's keys forward (see trackEntryReads).
@@ -2141,6 +2152,8 @@ function appendConvergenceRound(
     executed?: FrozenRepairRoundExecution;
     /** P-007 (#D-040): this round's newly red entries, attributed to its window admissions. */
     attributions?: readonly FrozenRepairRedAttribution[];
+    /** P-016: the kinds this round's run measured; decides `measurement`. */
+    measuredKinds?: readonly RepairSignatureKind[];
   },
 ): FrozenRepairConvergenceRound[] {
   const existing = queue.convergenceRounds ?? [];
@@ -2157,6 +2170,10 @@ function appendConvergenceRound(
       failingTests,
       atMs: input.nowMs,
       ...(executed ? { executed } : {}),
+      // Persisted only when it departs from the legacy reading (absent = `suite`).
+      ...(roundMeasurementFromKinds(input.measuredKinds) === 'non-test-only'
+        ? { measurement: 'non-test-only' as const }
+        : {}),
       ...(attributions.length > 0 ? { attributions: [...attributions] } : {}),
     },
   ]);
@@ -2934,6 +2951,7 @@ export function markFrozenCandidateVerificationRed(
       failingTests,
       nowMs: input.nowMs,
       executed: input.executed,
+      ...(input.measuredKinds ? { measuredKinds: input.measuredKinds } : {}),
     }),
     failingTests: boundedFailures(failingTests),
     signature,
@@ -3370,6 +3388,7 @@ export function markFrozenRepairVerificationRed(
       failingTests,
       nowMs: input.nowMs,
       executed: input.executed,
+      ...(input.measuredKinds ? { measuredKinds: input.measuredKinds } : {}),
       attributions: attributeRoundReds(queue, signature, input.repairHead),
     }),
     failingTests: boundedFailures(failingTests),
@@ -3433,6 +3452,7 @@ export function recordFrozenRepairSupersededRed(
       failingTests,
       nowMs: input.nowMs,
       executed: input.executed,
+      ...(input.measuredKinds ? { measuredKinds: input.measuredKinds } : {}),
       attributions: attributeRoundReds(queue, signature, input.measuredHead),
     }),
     failingTests: boundedFailures(failingTests),

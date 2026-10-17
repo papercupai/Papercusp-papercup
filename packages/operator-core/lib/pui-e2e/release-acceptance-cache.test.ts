@@ -3,9 +3,13 @@ import { chmod, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { once } from 'node:events';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { retireAcceptanceDependencies } from './release-acceptance-cache';
 import type { HolderScan } from '../release-cut-reclaim';
+
+vi.mock('../release-cut-reclaim', () => ({
+  scanProcHolders: vi.fn(async (): Promise<HolderScan> => ({ verified: true, holders: new Map() })),
+}));
 
 const idle = async (): Promise<HolderScan> => ({ verified: true, holders: new Map() });
 describe('PUI acceptance dependency retirement', () => {
@@ -59,6 +63,21 @@ describe('PUI acceptance dependency retirement', () => {
       expect(await readFile(join(checkout, 'node_modules/package.txt'), 'utf8')).toBe('rebuildable');
     }
   });
+  it('uses the maintained holder guard when a caller omits the scan seam', async () => {
+    const { scanProcHolders } = await import('../release-cut-reclaim');
+    vi.mocked(scanProcHolders).mockClear();
+    const options = { checkout, expectedSha: sha, trees: ['node_modules'], execute: true };
+    expect((await retireAcceptanceDependencies(options)).removed).toEqual([join(checkout, 'node_modules')]);
+    expect(scanProcHolders).toHaveBeenCalledTimes(2);
+    expect(scanProcHolders).toHaveBeenCalledWith([{ key: checkout, prefixes: [checkout] }]);
+  });
+  it('preserves dependencies when the default holder guard cannot verify idleness', async () => {
+    const { scanProcHolders } = await import('../release-cut-reclaim');
+    vi.mocked(scanProcHolders).mockResolvedValueOnce({ verified: false, holders: new Map() });
+    await expect(retireAcceptanceDependencies({ checkout, expectedSha: sha, trees: ['node_modules'], execute: true }))
+      .rejects.toThrow('process-use scan unverified');
+    expect(await readFile(join(checkout, 'node_modules/package.txt'), 'utf8')).toBe('rebuildable');
+  });
   it('discovers completed-slot copies while preserving archives, source and receipts', async () => {
     await mkdir(join(checkout, 'packages/example/node_modules'), { recursive: true });
     await writeFile(join(checkout, 'packages/example/node_modules/package.txt'), 'rebuildable');
@@ -97,6 +116,17 @@ describe('PUI acceptance dependency retirement', () => {
     await mkdir(join(fixture, 'apps/tui/scripts'), { recursive: true });
     await writeFile(wrapper, await readFile(join(repo, 'apps/tui/scripts/release-acceptance.sh')));
     await mkdir(join(fixture, 'scripts'));
+    // Database authority/authentication has its own executable wrapper cases in
+    // release-acceptance.test.ts. Keep these cache-lifecycle cases offline while
+    // still running the real wrapper's precheck before dependency retirement.
+    await mkdir(join(fixture, 'scripts/lib'));
+    await writeFile(join(fixture, 'scripts/lib/pg-url.mjs'), `
+export const resolveScriptPgUrl = () => ({ url: 'postgresql://fixture@localhost:6543/ledger' });
+export const describePgUrlResolution = () => 'offline cache fixture';
+`);
+    await mkdir(join(fixture, 'node_modules/pg'), { recursive: true });
+    await writeFile(join(fixture, 'node_modules/pg/index.js'),
+      'exports.Client = class { async connect() {} async query() {} async end() {} };');
     // Emulate materialization after the real wrapper has retired crash residue.
     await writeFile(join(fixture, 'scripts/npm-install-safe.mjs'), `import fs from 'node:fs';
 const checkout=${JSON.stringify(checkout)};
@@ -109,6 +139,22 @@ fs.mkdirSync(checkout+'/apps/operator/node_modules', {recursive:true});
 fs.writeFileSync(checkout+'/apps/operator/node_modules/package.txt', 'rebuildable');
 fs.writeFileSync(checkout+'/.papercusp-artifacts/prepared.json', 'old copies retired');
 `);
+    // Exercise the real retirement implementation through its existing scan
+    // seam. A host-wide scan would start privileged managed workers and write
+    // telemetry through the fake DB authority that this wrapper now pins.
+    // Holder safety and default delegation are covered independently above.
+    const helper = join(fixture, 'retire-fixture.mts');
+    await writeFile(helper, `
+import { retireAcceptanceDependencies } from ${JSON.stringify(join(repo, 'packages/operator-core/lib/pui-e2e/release-acceptance-cache.ts'))};
+const [checkout, expectedSha, ...args] = process.argv.slice(2);
+try {
+  console.log(JSON.stringify(await retireAcceptanceDependencies({
+    checkout, expectedSha, execute: args.includes('--execute'),
+    trees: args.includes('--all-dependencies') ? undefined : args.filter(arg => arg !== '--execute'),
+    scan: async () => ({ verified: true, holders: new Map() }),
+  })));
+} catch (error) { console.error(String(error)); process.exitCode = 2; }
+`);
     const shim = join(fixture, 'node_modules/.bin/tsx');
     await mkdir(join(fixture, 'node_modules/.bin'), { recursive: true });
     await writeFile(shim, `#!/usr/bin/env node
@@ -118,7 +164,9 @@ const n=fs.existsSync(calls)?Number(fs.readFileSync(calls,'utf8')):0;
 fs.writeFileSync(calls,String(n+1));
 ${cleanupRefused ? 'if(n>0) process.exit(2);' : ''}
 const {spawnSync} = require('node:child_process');
-const r=spawnSync(${JSON.stringify(join(repo, 'node_modules/.bin/tsx'))}, [${JSON.stringify(join(repo, 'packages/operator-core/lib/pui-e2e/release-acceptance-cache.ts'))}, ...process.argv.slice(3)], {stdio:'inherit'});
+console.error('cache fixture helper start call='+n);
+const r=spawnSync(${JSON.stringify(join(repo, 'node_modules/.bin/tsx'))}, [${JSON.stringify(helper)}, ...process.argv.slice(3)], {stdio:'inherit', timeout: 30_000});
+console.error('cache fixture helper end call='+n+' status='+r.status+' error='+(r.error?.code ?? 'none'));
 process.exit(r.status ?? 2);
 `);
     await chmod(shim, 0o755);
@@ -134,12 +182,25 @@ process.exit(r.status ?? 2);
     execFileSync('tar', ['-czf', archive, '-C', archiveSource, 'pui']);
     const child = spawn('bash', [wrapper, '--archive', archive], {
       cwd: repo, env: { ...process.env, PUI_ACCEPTANCE_ISOLATED: '', PUI_ACCEPTANCE_ALLOW_LIVE_TREE: '', PUI_ACCEPTANCE_CHECKOUT_ROOT: cache },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'], detached: true,
     });
-    let stderr = '';
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
-    const [code] = await once(child, 'close');
-    expect(code, stderr).toBe(cleanupRefused ? 2 : status);
+    let stderr = '', stdout = '', timedOut = false;
+    child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-64_000); });
+    child.stdout.on('data', (chunk) => { stdout = (stdout + chunk).slice(-64_000); });
+    const killGroup = () => {
+      try { process.kill(-child.pid!, 'SIGKILL'); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+    };
+    const deadline = setTimeout(() => { timedOut = true; killGroup(); }, 40_000);
+    let code;
+    try {
+      [code] = await once(child, 'close');
+    } finally {
+      clearTimeout(deadline);
+      if (child.exitCode === null && child.signalCode === null) killGroup();
+    }
+    expect({ code, timedOut }, stderr + stdout).toEqual({ code: cleanupRefused ? 2 : status, timedOut: false });
     if (symlinkedSlotOne) expect(stderr).toContain('skipping symlinked checkout slot 1');
     if (cleanupRefused) {
       expect(stderr).toContain('dependency retirement refused');

@@ -34,6 +34,7 @@ import { resolveDependencyGenerationRoot } from './dependency-generation-root';
 import type { RepairSignatureEntry, RepairSignatureKind } from './frozen-candidate-repair-queue';
 import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-lock';
 import { dependencyGenerationInfraCode } from './checkpoint-log-tags';
+import { evaluateAdmissionRatchet, impliedPreviousHead, type RatchetNewFailure } from './admission-ratchet';
 export { dependencyGenerationInfraCode, DEPENDENCY_GENERATION_INFRA_EXITS,
   type DependencyGenerationInfraCode } from './checkpoint-log-tags';
 // Reuse the focused runner's maintained assertion-summary parser.
@@ -272,13 +273,23 @@ export type FixPrecheckVerdict =
       reportOnlyRed?: string[];
       /** P-007: the previously green legs the imported reds belong to, when known. */
       newlyRedLegs?: string[];
+      /**
+       * green-main-ratchet-convergence-2026-10-17 P-006: the admission ratchet's attribution —
+       * each imported red with what it was at the previous head, and the actor the refusal is for.
+       */
+      ratchet?: { newFailures: RatchetNewFailure[]; routeTo: { actor: string | null; unattributed: boolean } };
     };
 
 /**
  * Pure verdict. Missing measurements refuse as unavailable before drawing a code conclusion.
  * With complete measurements, does-not-fix precedes imports-red and retains both findings.
  */
-export function evaluateFixPrecheck(population: FixPrecheckPopulation, run: FixPrecheckRunResult): FixPrecheckVerdict {
+export function evaluateFixPrecheck(
+  population: FixPrecheckPopulation,
+  run: FixPrecheckRunResult,
+  /** The admitting actor: an `admission-imports-red` refusal is routed to it (P-006). */
+  opts: { actor?: string | null } = {},
+): FixPrecheckVerdict {
   if (population.files.length === 0) return { ok: true, ran: false, reason: 'nothing-to-run', population };
   if (!run.ran) {
     return run.reason === 'runner-failed'
@@ -304,8 +315,21 @@ export function evaluateFixPrecheck(population: FixPrecheckPopulation, run: FixP
   const fixes = population.signatureTestFiles.filter((p) => passing.includes(p));
   // P-007: guarded radius files are previously green, so a failure there imports a red exactly like
   // an admitted test file. Report-only radius files sit in a leg the signature already names red.
-  const importedRed = [...population.admittedTestFiles, ...(population.radius?.guarded ?? [])]
-    .filter((p) => failing.includes(p));
+  // green-main-ratchet-convergence-2026-10-17 P-006: the ADMISSION RATCHET owns that decision —
+  // a test that passed (guarded) or was absent (admitted) at the previous head and fails now.
+  const ratchet = evaluateAdmissionRatchet({
+    admission: { actor: opts.actor ?? null, commit: run.commit },
+    radius: [...population.admittedTestFiles, ...(population.radius?.guarded ?? [])],
+    previousHead: impliedPreviousHead({
+      signatureTestFiles: population.signatureTestFiles,
+      guardedRadius: population.radius?.guarded ?? [],
+    }),
+    postAdmission: Object.fromEntries(results.map((r) => [r.path, r.status] as const)),
+  });
+  const importedRed = ratchet.verdict === 'reject' ? ratchet.newFailures.map((f) => f.test) : [];
+  const ratchetFinding = ratchet.verdict === 'reject'
+    ? { ratchet: { newFailures: ratchet.newFailures, routeTo: ratchet.routeTo } }
+    : {};
   const reportOnlyRed = (population.radius?.reportOnly ?? []).filter((p) => failing.includes(p));
   const newlyRedLegs = [...new Set(importedRed.map((p) => population.radius?.legs[p]).filter((leg): leg is string => !!leg))].sort();
   const radiusFindings = population.radius ? { reportOnlyRed, newlyRedLegs } : {};
@@ -314,6 +338,22 @@ export function evaluateFixPrecheck(population: FixPrecheckPopulation, run: FixP
   const doesNotFix = population.canProveDoesNotFix && fixes.length === 0;
   const importsRed = importedRed.length > 0;
   const base = { ran: true as const, commit: run.commit, population, results, passing, failing, unmeasured };
+  // P-006: an admission whose radius was not measured cannot be shown to add no failure, so it
+  // never publishes on the ratchet's behalf. The reasoned `skipPrecheck` override is the one way past.
+  if (population.radius?.status === 'skipped' && importedRed.length === 0) {
+    return {
+      ok: false,
+      ...base,
+      code: 'admission-precheck-unavailable',
+      detail:
+        `admission ratchet: the admitted paths' radius was not measured (${population.radius.reason}` +
+        `${population.radius.detail ? `: ${population.radius.detail}` : ''}), so this admission cannot be shown to ` +
+        'add no failure; split it into narrower admissions, or opt out deliberately with skipPrecheck:true + precheckReason',
+      importedRed,
+      alsoImportsRed: false,
+      ...radiusFindings,
+    };
+  }
   if (unmeasured.length > 0) {
     return {
       ok: false,
@@ -341,6 +381,7 @@ export function evaluateFixPrecheck(population: FixPrecheckPopulation, run: FixP
       importedRed,
       alsoImportsRed: importsRed,
       ...radiusFindings,
+      ...ratchetFinding,
     };
   }
   if (importsRed) {
@@ -350,10 +391,12 @@ export function evaluateFixPrecheck(population: FixPrecheckPopulation, run: FixP
       code: 'admission-imports-red',
       detail:
         `${importedRed.length} ${population.radius ? "test file(s) outside the frozen signature (admitted, or in the admitted paths' radius)" : 'admitted test file(s) outside the frozen signature'} fail at the built admission commit ` +
-        `${run.commit.slice(0, 12)}: ${importedList} — the admission would import a new red onto the lineage${legNote}`,
+        `${run.commit.slice(0, 12)}: ${importedList} — the admission would import a new red onto the lineage${legNote}` +
+        (ratchet.verdict === 'reject' && ratchet.routeTo.actor ? ` (admission ratchet: routed to ${ratchet.routeTo.actor})` : ''),
       importedRed,
       alsoImportsRed: false,
       ...radiusFindings,
+      ...ratchetFinding,
     };
   }
   return { ok: true, ...base, fixes, ...(population.radius ? { reportOnlyRed } : {}) };

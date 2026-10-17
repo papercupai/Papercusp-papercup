@@ -47,6 +47,32 @@ describe('papercusp-compaction.protocol.md names the real set-compaction-limit c
     expect(PROTOCOL).toContain(`\`${toolName} { ${argKey} }\``);
   });
 
+  it('states the real clamp and force-respawn numbers (WI-6554700010016934)', () => {
+    // The prompt said `L × 1.25` / "125% of L" while the code clamps at COMPACTION_OVERSHOOT_FACTOR
+    // and forces at FORCE_COMPACT_FRACTION — a number that matched neither. Both are READ FROM
+    // SOURCE so changing a constant fails this test until the prompt is updated with it.
+    const constantsSrc = readFileSync(join(REPO, 'packages/operator-core/lib/agent-config-constants.ts'), 'utf8');
+    const watchdogSrc = readFileSync(
+      join(REPO, 'packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts'),
+      'utf8',
+    );
+    const overshoot = /export const COMPACTION_OVERSHOOT_FACTOR = ([\d.]+);/.exec(constantsSrc)?.[1];
+    const force = /const FORCE_COMPACT_FRACTION = ([\d.]+);/.exec(watchdogSrc)?.[1];
+    const overLimit = /const OVER_LIMIT_FRACTION = ([\d.]+);/.exec(watchdogSrc)?.[1];
+    // Calibration: an extraction miss would compare against `undefined` — fail loud instead.
+    expect(overshoot).toMatch(/^\d+(\.\d+)?$/);
+    expect(force).toMatch(/^\d+(\.\d+)?$/);
+    expect(overLimit).toMatch(/^\d+(\.\d+)?$/);
+    // Prose wraps across lines, so compare against whitespace-normalised text.
+    const flat = PROTOCOL.replace(/\s+/g, ' ');
+    const pct = (s: string) => `${Math.round(Number(s) * 100)}% of L`;
+    expect(flat).toContain(`\`L × ${Number(overshoot)}\``);
+    expect(flat).toContain(`Aim not to exceed ${pct(overshoot!)}`);
+    expect(flat).toContain(`warns at ${pct(overLimit!)}`);
+    expect(flat).toContain(`force-respawns at ${pct(force!)}`);
+    expect(flat).not.toMatch(/1\.25|125%/);
+  });
+
   it('does not carry the retired underscore spelling or the invented `tokens` arg', () => {
     // `set_compaction_limit` is the pre-registration spelling; `{ tokens }` was never an arg.
     // Both are strings an agent will copy verbatim into a tool call.

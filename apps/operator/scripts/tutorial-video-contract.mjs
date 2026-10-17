@@ -49,7 +49,7 @@ export function webVtt(cues) {
 /**
  * Check the exact published bytes and two seek ranges, without treating HTTP
  * success as proof that a browser can decode the video or display its captions.
- * @param {{ videoUrl: string, captionsUrl: string, videoSha256: string, captionsSha256: string, videoBytes: number }} publication
+ * @param {{ videoUrl: string, captionsUrl: string, videoSha256: string, captionsSha256: string, videoBytes: number, portalCaptionsUrl?: string, transcriptUrl?: string, transcriptSha256?: string }} publication
  * @param {{ fetcher?: typeof fetch, signal?: AbortSignal }} [options]
  */
 export async function verifyPublishedTutorial(publication, { fetcher = fetch, signal } = {}) {
@@ -60,6 +60,14 @@ export async function verifyPublishedTutorial(publication, { fetcher = fetch, si
     if (url.protocol !== 'https:' || url.hostname !== 'clips.papercusp.com' || url.port || url.username || url.password || url.hash) throw new Error('Use exact public R2 clips URLs');
   }
   if (videoUrl === captionsUrl || !/^[a-f0-9]{64}$/.test(videoSha256) || !/^[a-f0-9]{64}$/.test(captionsSha256) || !Number.isSafeInteger(videoBytes) || videoBytes <= 0) throw new Error('Published media identity is incomplete');
+  const portalAssets = publication.portalCaptionsUrl !== undefined || publication.transcriptUrl !== undefined || publication.transcriptSha256 !== undefined;
+  if (portalAssets) {
+    for (const value of [publication.portalCaptionsUrl, publication.transcriptUrl]) {
+      const url = new URL(value || '');
+      if (url.origin !== 'https://app.papercusp.com' || url.username || url.password || url.hash) throw new Error('Portal caption and transcript copies must use the Portal origin');
+    }
+    if (publication.portalCaptionsUrl === publication.transcriptUrl || !/^[a-f0-9]{64}$/.test(publication.transcriptSha256 || '')) throw new Error('Portal transcript identity is incomplete');
+  }
   const request = (url, method = 'GET', headers = {}) => fetcher(url, { method, headers: { 'Accept-Encoding': 'identity', ...headers }, redirect: 'error', signal });
   const head = await request(videoUrl, 'HEAD');
   if (head.status !== 200 || !/^(video|application)\/mp4(?:;|$)/i.test(head.headers.get('content-type') || '')) throw new Error('Published video HEAD is not an MP4');
@@ -83,5 +91,36 @@ export async function verifyPublishedTutorial(publication, { fetcher = fetch, si
   const captions = Buffer.from(await captionsResponse.arrayBuffer());
   const text = captions.toString('utf8').replace(/^\uFEFF/, '');
   if (hash(captions) !== captionsSha256 || !/^WEBVTT(?:[ \t]|\r?\n)/.test(text) || !text.includes(' --> ')) throw new Error('Published captions differ from production or contain no cues');
-  return { videoUrl, captionsUrl, videoSha256, captionsSha256, videoBytes, captionsBytes: captions.length, ranges };
+  if (portalAssets) {
+    const copy = await request(publication.portalCaptionsUrl);
+    if (copy.status !== 200 || !/^text\/vtt(?:;|$)/i.test(copy.headers.get('content-type') || '') || hash(Buffer.from(await copy.arrayBuffer())) !== captionsSha256) throw new Error('Portal captions differ from production or are unavailable');
+    const transcript = await request(publication.transcriptUrl);
+    if (transcript.status !== 200 || !/^text\/html(?:;|$)/i.test(transcript.headers.get('content-type') || '') || hash(Buffer.from(await transcript.arrayBuffer())) !== publication.transcriptSha256) throw new Error('Portal transcript differs from production or is unavailable');
+  }
+  return { videoUrl, captionsUrl, videoSha256, captionsSha256, videoBytes, captionsBytes: captions.length, ranges,
+    ...(portalAssets ? { portalCaptionsUrl: publication.portalCaptionsUrl, transcriptUrl: publication.transcriptUrl, transcriptSha256: publication.transcriptSha256 } : {}) };
+}
+
+/** Map measured production + verified uploads to the guide's existing media prop.
+ * This creates no authentication, project, or browser playback evidence.
+ * @param {any} production
+ * @param {Awaited<ReturnType<typeof verifyPublishedTutorial>>} published
+ * @returns {import('@papercusp/operator-core/lib/onboarding/product-tutorial-lesson').ProductTutorialVideoMedia}
+ */
+export function tutorialVideoMedia(production, published) {
+  if (production?.schemaVersion !== 1 || !published.portalCaptionsUrl || !published.transcriptUrl
+    || !published.transcriptSha256 || !Number.isFinite(production.durationSeconds) || production.durationSeconds <= 0
+    || ['videoSha256', 'captionsSha256', 'transcriptSha256', 'videoBytes'].some(key => production[key] !== published[key])) throw new Error('Verified publication does not match the production receipt');
+  const expected = PRODUCT_TUTORIAL_CHAPTERS.map(chapter => chapter.id);
+  if (!Array.isArray(production.chapters) || production.chapters.map(chapter => chapter.id).join(',') !== expected.join(',')) throw new Error('Production chapters must match the complete curriculum');
+  let end = 0;
+  const chapters = production.chapters.map(chapter => {
+    if (!Number.isFinite(chapter.startSeconds) || Math.abs(chapter.startSeconds - end) > .001
+      || !Number.isFinite(chapter.durationSeconds) || chapter.durationSeconds <= 0 || !chapter.transcript?.trim()) throw new Error('Production chapter offsets or transcript are invalid');
+    end = chapter.startSeconds + chapter.durationSeconds;
+    return { id: chapter.id, startSeconds: chapter.startSeconds, transcript: chapter.transcript };
+  });
+  if (Math.abs(end - production.durationSeconds) > .3) throw new Error('Production chapter timeline differs from the video');
+  const identity = createHash('sha256').update(JSON.stringify([production.videoSha256, production.captionsSha256, production.transcriptSha256])).digest('hex');
+  return { id: `cloud-portal-tutorial-${identity}`, src: published.videoUrl, captionsSrc: published.portalCaptionsUrl, transcriptHref: published.transcriptUrl, chapters };
 }

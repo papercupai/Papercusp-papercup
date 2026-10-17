@@ -1584,6 +1584,38 @@ describe('retention on a real fixture tree', () => {
     expect(receipt.delegates).toMatchObject([{ classId: 'independent-owner', ok: true, detail: 'independent owner completed' }]);
     for (const path of paths) expect(await stat(path)).toBeTruthy();
   });
+  it('reserves the shared run budget for later independent owners and policy census', async () => {
+    const { options } = await setup();
+    const started = Date.now();
+    let clock = started;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const deadlines: number[] = [];
+    const owners = ['first-owner', 'second-owner'].map(classId => ({
+      classId, run: vi.fn(async (_dryRun: boolean, _onPhase: unknown, notAfterMs?: number) => {
+        expect(notAfterMs).toBeDefined();
+        deadlines.push(notAfterMs!);
+        // A productive scan may consume its whole allowance. Its bounded
+        // refusal must still leave the other owner and policy census runnable.
+        clock = notAfterMs!;
+        return { ok: false, detail: `${classId} measurement remains incomplete` };
+      }),
+    }));
+    const inspectTrees = vi.fn(async () => {
+      expect(clock).toBeLessThan(started + 90);
+      return { entries: [], retained: [], inspectedNodes: 1, retainedRecentTrees: 0 };
+    });
+    try {
+      const receipt = await runDiskReclaimOnce({ ...options, runBudgetMs: 90, delegates: owners, inspectTrees });
+      expect(deadlines).toEqual([started + 30, started + 60]);
+      for (const owner of owners) expect(owner.run).toHaveBeenCalledOnce();
+      expect(inspectTrees).toHaveBeenCalledOnce();
+      expect(receipt.delegates).toMatchObject(owners.map(({ classId }) => ({ classId, ok: false })));
+      expect(receipt.complete).toBe(false);
+      expect(receipt.policyExhausted).toBeNull();
+      expect(receipt.errors.join(' ')).not.toContain('run budget exhausted');
+    } finally { now.mockRestore(); }
+  });
+
   it('runs independent owners when a whole-root census exhausts the run deadline', async () => {
     const { root, options } = await setup();
     const path = join(root, 'old'); await writeFile(path, 'keep on incomplete census');

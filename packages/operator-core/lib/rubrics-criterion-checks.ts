@@ -700,8 +700,18 @@ export type CriterionCheckRunner = (opts: {
 }) => Promise<CriterionCheckRunnerResult>;
 
 /** The normal scorecard test route, also used by restart recovery for a fresh attempt. */
-export async function runCriterionCheckFiles(opts: Parameters<CriterionCheckRunner>[0]): Promise<CriterionCheckRunnerResult> {
-  const result = await runTestFilesCore(opts);
+export async function runCriterionCheckFiles(
+  opts: Parameters<CriterionCheckRunner>[0],
+  deps: { runFiles?: typeof runTestFilesCore } = {},
+): Promise<CriterionCheckRunnerResult> {
+  // Only the maintained Papercusp integration route needs its owned PG
+  // supervisor. Unit-only checks and unrelated checkouts retain their router.
+  const privatePg = opts.files.some((file) => /\.integration\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file))
+    && existsSync(join(opts.root, 'scripts', 'with-test-pg.mjs'));
+  const result = await (deps.runFiles ?? runTestFilesCore)({
+    ...opts,
+    ...(privatePg ? { privatePg: true, allowDetachedRecovery: false } : {}),
+  });
   if (
     result.error !== undefined ||
     typeof opts.workspaceId !== 'string' ||

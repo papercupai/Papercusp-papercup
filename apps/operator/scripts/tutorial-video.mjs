@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { PRODUCT_TUTORIAL_CHAPTERS } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
 import { prepareNarration, renderPreview } from './tutorial-character-preview.mjs';
-import { captionCues, escapeHtml, validateManifest, verifyPublishedTutorial, webVtt } from './tutorial-video-contract.mjs';
+import { captionCues, escapeHtml, tutorialVideoMedia, validateManifest, verifyPublishedTutorial, webVtt } from './tutorial-video-contract.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -60,7 +60,7 @@ export async function renderTutorial({ manifestPath, outDir }) {
   await writeFile(join(outDir, 'cloud-portal-tutorial.vtt'), captions);
   const transcript = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Build a project with PaperCup — transcript</title><style>body{font:18px/1.6 system-ui;max-width:75ch;margin:auto;padding:2rem}a{color:#245870}section{margin-block:3rem}</style><main><h1>Build a project with PaperCup</h1>${chapters.map(chapter => `<section id="${chapter.id}"><h2>${escapeHtml(PRODUCT_TUTORIAL_CHAPTERS.find(item => item.id === chapter.id).title)}</h2><p>${escapeHtml(chapter.transcript)}</p></section>`).join('')}</main></html>`;
   await writeFile(join(outDir, 'cloud-portal-tutorial-transcript.html'), transcript);
-  const receipt = { schemaVersion: 1, project: manifest.project, provider: 'elevenlabs', producedAt: new Date().toISOString(), durationSeconds: measured, videoSha256: digest(await readFile(output)), videoBytes: (await stat(output)).size, captionsSha256: digest(captions), chapters };
+  const receipt = { schemaVersion: 1, project: manifest.project, provider: 'elevenlabs', producedAt: new Date().toISOString(), durationSeconds: measured, videoSha256: digest(await readFile(output)), videoBytes: (await stat(output)).size, captionsSha256: digest(captions), transcriptSha256: digest(transcript), chapters };
   await writeFile(join(outDir, 'delivery-receipt.json'), JSON.stringify(receipt, null, 2));
   return { output, receipt: join(outDir, 'delivery-receipt.json'), durationSeconds: measured };
 }
@@ -70,10 +70,15 @@ export async function verifyTutorialPublication({ publicationPath, outDir }) {
   if (!publicationPath || !outDir) throw new Error('--verify-delivery and --out are required');
   const publication = JSON.parse(await readFile(publicationPath, 'utf8'));
   const checked = await verifyPublishedTutorial(publication, { signal: AbortSignal.timeout(120_000) });
+  // R2's caption object remains independently checked. The Portal's track uses
+  // its hash-matched same-origin copy, without assuming cross-origin CORS.
+  const media = checked.portalCaptionsUrl ? tutorialVideoMedia(JSON.parse(await readFile(join(resolve(outDir), 'delivery-receipt.json'), 'utf8')), checked) : null;
   await mkdir(resolve(outDir), { recursive: true });
   const receipt = join(resolve(outDir), 'delivery-verification.json');
   await writeFile(receipt, JSON.stringify({ ...checked, checkedAt: new Date().toISOString(), browserPlayback: 'not-assessed' }, null, 2));
-  return { receipt, browserPlayback: 'not-assessed' };
+  const mediaPath = media ? join(resolve(outDir), 'portal-video-media.json') : null;
+  if (mediaPath) await writeFile(mediaPath, JSON.stringify(media, null, 2));
+  return { receipt, mediaPath, browserPlayback: 'not-assessed' };
 }
 if (import.meta.url === `file://${process.argv[1]}`) {
   const option = key => process.argv[process.argv.indexOf(key) + 1];

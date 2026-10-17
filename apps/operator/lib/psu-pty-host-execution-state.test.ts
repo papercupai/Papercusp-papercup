@@ -65,6 +65,38 @@ describe('native execution observations', () => {
     }
   });
 
+  it.each(['settled', 'running', 'accepted', 'partial'])('recovers Claude %s state behind an oversized trailing attachment', phase => {
+    const root = mkdtempSync(join(tmpdir(), 'claude-native-execution-attachment-'));
+    const sessionDir = join(root, 'projects', 'fixture-project');
+    const nativeSessionId = '6a011c2d-09bb-4561-9470-ff284f407657';
+    try {
+      mkdirSync(sessionDir, { recursive: true });
+      const rows: any[] = [
+        { type: 'user', timestamp, message: { role: 'user', content: 'review current evidence' } },
+        { type: 'assistant', uuid: 'assistant-1', timestamp,
+          message: { role: 'assistant', stop_reason: phase === 'running' ? 'tool_use' : 'end_turn',
+            content: phase === 'running' ? [{ type: 'tool_use', id: 'review-tool' }] : [] } },
+      ];
+      if (phase === 'accepted') rows.push({ type: 'user', timestamp,
+        message: { role: 'user', content: 'a newer turn has been accepted' } });
+      rows.push({ type: 'attachment', timestamp, attachment: { content: 'x'.repeat(337_363) } });
+      const transcriptPath = join(sessionDir, `${nativeSessionId}.jsonl`);
+      writeFileSync(transcriptPath, rows.map(row => JSON.stringify(row)).join('\n') + (phase === 'partial' ? '' : '\n'));
+      expect(statSync(transcriptPath).size).toBeGreaterThan(256 * 1024);
+      const options = { agent: 'claude', env: { CLAUDE_CONFIG_DIR: root }, nativeSessionId, ...ctx };
+      const observed = nativeLatestExecution(options);
+      expect(observed).toMatchObject({ phase: phase === 'accepted' || phase === 'partial' ? 'unknown' : phase,
+        pendingTools: phase === 'running' ? 1 : 0 });
+      expect(nativeLatestTurnCompleted({ ...options, completedAtOrAfterMs: ctx.receivedAtMs }))
+        .toBe(phase === 'settled');
+      const retained = retainRunningNativeExecution(
+        { phase: 'running', turnStartedAt: 1000, lastProgressAt: 1000, pendingTools: 0 }, observed);
+      expect(nativeExecutionBlocksInjection(retained)).toBe(phase !== 'settled');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('retains verified running state when a bounded transcript tail evicts task_started', () => {
     const previous = { phase: 'running', turnStartedAt: 1000, lastProgressAt: 1500, pendingTools: 0 };
     const evicted = { phase: 'unknown', turnStartedAt: null, lastProgressAt: null, pendingTools: 0 };

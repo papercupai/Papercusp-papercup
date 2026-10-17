@@ -19,6 +19,7 @@ import {
   validateCriterionCheckPaths,
   assertCriterionCheckPathsResolve,
   selectCriterionCheckRoot,
+  runCriterionCheckFiles,
   runCargoCriterionCheck,
   evaluateCriterionCargoChecks,
   evaluateCriterionTestChecks,
@@ -72,6 +73,32 @@ symlinkSync(siblingRepo, siblingRepoLink, 'dir');
 afterAll(() => rmSync(siblingWorkspace, { recursive: true, force: true }));
 
 const testsCheck = (files: string[]) => ({ kind: 'tests' as const, files });
+describe('scorecard integration PG route', () => {
+  it.each([
+    { integration: true, wrapper: true, privatePg: true },
+    { integration: false, wrapper: true, privatePg: false },
+    { integration: true, wrapper: false, privatePg: false },
+  ])('selects owned PG only for a supported integration batch: %j', async (route) => {
+    const checkout = mkdtempSync(join(tmpdir(), 'criterion-private-pg-'));
+    try {
+      if (route.wrapper) {
+        mkdirSync(join(checkout, 'scripts'));
+        writeFileSync(join(checkout, 'scripts', 'with-test-pg.mjs'), 'export {};\n');
+      }
+      const files = [route.integration ? 'mixed.integration.test.ts' : 'unit.test.ts'];
+      const runFiles = vi.fn<typeof import('./agent-tools/testing/run').runTestFilesCore>()
+        .mockResolvedValue({ ok: false, error: 'no_report', root: checkout, runId: 'owned-pg-route-control' });
+      await runCriterionCheckFiles({ root: checkout, files, runId: 'owned-pg-route-control' }, { runFiles });
+      expect(runFiles).toHaveBeenCalledOnce();
+      const request = runFiles.mock.calls[0]![0];
+      expect(request).toMatchObject({ root: checkout, files, runId: 'owned-pg-route-control' });
+      expect(request.privatePg === true).toBe(route.privatePg);
+      if (route.privatePg) expect(request.allowDetachedRecovery).toBe(false);
+    } finally {
+      rmSync(checkout, { recursive: true, force: true });
+    }
+  });
+});
 const cargoCheck = (manifestPath: string, sourceFiles: string[], test?: string) => ({
   kind: 'cargo' as const,
   manifestPath,

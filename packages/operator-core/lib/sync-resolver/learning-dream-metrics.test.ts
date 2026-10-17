@@ -3,13 +3,14 @@ import { getRegistryEntryV2, resolveNamedQueryV2 } from './index';
 import { queryNamesForTriggerEvent } from './table-to-query-names';
 
 const mocks = vi.hoisted(() => ({
-  metrics: vi.fn(), controls: vi.fn(), history: vi.fn(), detail: vi.fn(), tx: {},
+  metrics: vi.fn(), controls: vi.fn(), history: vi.fn(), detail: vi.fn(), observations: vi.fn(), tx: {},
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'metrics-workspace' }));
 vi.mock('../route-workspace', () => ({ routeWithWorkspace: (fn: (tx: unknown) => unknown) => fn(mocks.tx) }));
 vi.mock('../dream/dream-metrics', () => ({ readDreamMetrics: mocks.metrics }));
 vi.mock('../dream/dream-control', () => ({ readDreamControlSnapshot: mocks.controls }));
 vi.mock('../dream/dream-read', () => ({ readDreamHistory: mocks.history, readDreamDetail: mocks.detail }));
+vi.mock('../dream/dream-control-observations', () => ({ readDreamControlObservations: mocks.observations }));
 
 describe('learning.dream metrics use the existing scoped sync path', () => {
   beforeEach(() => {
@@ -17,6 +18,7 @@ describe('learning.dream metrics use the existing scoped sync path', () => {
     mocks.controls.mockReset().mockResolvedValue({ potSlug: 'pot', manual: { active: false } });
     mocks.history.mockReset().mockResolvedValue({ runs: [], nextCursor: null });
     mocks.detail.mockReset().mockResolvedValue(null);
+    mocks.observations.mockReset().mockResolvedValue({ status: 'unknown', reason: 'wrong-or-unproven-serving-runtime' });
   });
   it('preserves the default control read and resolves explicit metrics with the requested window', async () => {
     await expect(resolveNamedQueryV2('learning.dream', { potSlug: 'pot' })).resolves.toEqual([
@@ -58,5 +60,19 @@ describe('learning.dream metrics use the existing scoped sync path', () => {
     expect(() => getRegistryEntryV2('learning.dream')!.argsSchema!.parse({ potSlug: 'pot', view: 'run' })).toThrow();
     mocks.detail.mockRejectedValue(new Error('failed detail read'));
     await expect(resolveNamedQueryV2('learning.dream', { potSlug: 'pot', view: 'run', runId: 'r' })).rejects.toThrow('failed detail read');
+  });
+
+  it('routes observations through the existing scoped read and requires runtime/window evidence', async () => {
+    const schema = getRegistryEntryV2('learning.dream')!.argsSchema!;
+    expect(() => schema.parse({ potSlug: 'pot', view: 'observations' })).toThrow();
+    const args = schema.parse({ potSlug: 'pot', view: 'observations', since: '2026-10-16T12:00:00Z', until: '2026-10-17T12:00:00Z',
+      expectedRuntime: { host: 'port-3170', processId: 'process', buildSha: 'build' } });
+    const observationArgs = args as { potSlug: string; view: 'observations'; since: string; until: string; expectedRuntime: { host: string; processId: string; buildSha: string } };
+    await resolveNamedQueryV2('learning.dream', args);
+    expect(mocks.observations).toHaveBeenCalledWith(mocks.tx, { workspaceId: 'metrics-workspace', potSlug: 'pot',
+      since: observationArgs.since, until: observationArgs.until, expectedRuntime: observationArgs.expectedRuntime });
+    expect(mocks.controls).not.toHaveBeenCalled();
+    for (const table of ['gym_autoloop_config', 'operator_gym_gates', 'scout_ticks'])
+      expect(queryNamesForTriggerEvent(`harness_shared.${table}.changed`)).toContain('learning.dream');
   });
 });

@@ -100,7 +100,7 @@ export const COMPACTION_MARKER = '<!-- PAPERCUSP-SU:COMPACTION -->';
 /**
  * Marker for the generated per-result DOOR section (agent-context-firewall P-015) —
  * the effective `resultEach` cap and the `projection` knob, taught ONCE in standing
- * context instead of in ~550 tool descriptions (which the P-011 prompt-weight budget
+ * context instead of in every tool description (which the P-011 prompt-weight budget
  * would red on). Rendered by `renderResultDoorSection()` from `computeTurnDoors`, the
  * SAME function `applyResultDoor` enforces with, so the number in the prompt cannot
  * drift from the number in the door. Same splice contract as the others: an absent

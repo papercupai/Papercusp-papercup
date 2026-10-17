@@ -1877,7 +1877,7 @@ describe('release:repair-queue', () => {
       expect(dryRuns()).toEqual([true]);
     });
 
-    it('checkpoint-tree-busy settles as the explicit pass-through and publishes loud only on the follow-up', async () => {
+    it('checkpoint-tree-busy settles as a deferral and the follow-up re-measures instead of publishing (P-006 ratchet)', async () => {
       mocks.admit.mockReturnValue(admissionOf(true));
       mocks.precheckFactory.mockReturnValue(async () => ({
         ran: false as const,
@@ -1905,9 +1905,10 @@ describe('release:repair-queue', () => {
           { role: 'su' } as never,
         ),
       );
-      expect(result).toMatchObject({ ok: true, admitted: true });
-      expect(dryRuns()).toEqual([true, true, false]);
-      expect(JSON.stringify(result.precheck)).toContain('checkpoint-tree-busy');
+      // green-main-ratchet-convergence-2026-10-17 P-006: the admission ratchet never publishes an
+      // unmeasured admission — the follow-up re-measures instead of adopting the busy deferral.
+      expect(result).toMatchObject({ admitted: false });
+      expect(dryRuns()).not.toContain(false);
     });
 
     it('retryPrecheck:true refreshes a busy-tree deferral without publishing until the new measured pass', async () => {

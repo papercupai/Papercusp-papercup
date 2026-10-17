@@ -457,6 +457,101 @@ describe('selectTestFileRoot (WI-41400 phantom-root fallback)', () => {
   });
 });
 
+describe('owned private PG router supervision', () => {
+  it.each([{ privatePg: true }, { allowDetachedRecovery: false }])(
+    'preserves the no-replay contract after a mixed-checkout timeout: %j', async (options) => {
+      const roots = [
+        await makeScratchTestCheckout('papercusp-testing-owned-pg-timeout-a-'),
+        await makeScratchTestCheckout('papercusp-testing-owned-pg-timeout-b-'),
+      ];
+      for (const root of roots) {
+        await mkdir(join(root, 'scripts'), { recursive: true });
+        await writeFile(join(root, 'scripts', 'test-files.mjs'), 'process.exit(0);\n');
+        await writeFile(join(root, 'scripts', 'with-test-pg.mjs'), 'process.exit(0);\n');
+        await sealScratchTestCheckout(root);
+      }
+      const runRouterFn = vi.fn(async () => ({
+        code: null, signal: null, timedOut: true, aborted: false, output: '',
+      }));
+      const out = await runTestFilesCore({
+        root: roots[0]!,
+        files: ['packages/x/real.test.ts', join(roots[1]!, 'packages/x/real.test.ts')],
+        timeoutMs: 10_000, ...options,
+      }, { runRouterFn });
+      expect(out, JSON.stringify(out)).toMatchObject({ ok: false, error: 'timeout', roots });
+      expect(out).not.toHaveProperty('detachedRunId');
+      expect(runRouterFn).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([false, true])('selects the requested supervisor and preserves the ledger/scope: privatePg=%s', async (privatePg) => {
+    const file = 'packages/x/real.integration.test.ts';
+    const root = await makeScratchTestCheckout('papercusp-testing-owned-pg-', file);
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const capture = join(root, 'captured-environment.json');
+    const report = {
+      numTotalTests: 1, numPassedTests: 1, numFailedTests: 0, numPendingTests: 0,
+      numTotalTestSuites: 1, numPassedTestSuites: 1, numFailedTestSuites: 0,
+      startTime: Date.now(), success: true,
+      testResults: [{ name: join(root, file), status: 'passed',
+        assertionResults: [{ fullName: 'owned private route control', status: 'passed' }] }],
+    };
+    await writeFile(join(root, 'scripts', 'with-test-pg.mjs'), [
+      "import { spawnSync } from 'node:child_process';",
+      "const command = process.argv.slice(process.argv.indexOf('--') + 1);",
+      "const result = spawnSync(command[0], command.slice(1), { stdio: 'inherit', env: { ...process.env, PAPERCUSP_TEST_PG_ADMIN_URL: 'postgresql://127.0.0.1/owned-route-fixture' } });",
+      'process.exitCode = result.status ?? 1;',
+    ].join('\n'));
+    await writeFile(join(root, 'scripts', 'test-files.mjs'), [
+      "import { writeFileSync } from 'node:fs';",
+      `writeFileSync(${JSON.stringify(capture)}, JSON.stringify({ privatePg: process.env.PAPERCUSP_TEST_PG_ADMIN_URL, sink: process.env.PAPERCUSP_TEST_RUNS_DB_URL, run: process.env.PAPERCUSP_TEST_RUN_GROUP, harness: process.env.PAPERCUSP_TEST_RUN_HARNESS, workspace: process.env.PAPERCUSP_WORKSPACE_ID }));`,
+      `writeFileSync(process.argv.find(a => a.startsWith('--outputFile=')).slice('--outputFile='.length), ${JSON.stringify(JSON.stringify(report))});`,
+      "console.log('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');",
+    ].join('\n'));
+    await sealScratchTestCheckout(root);
+    const previousSink = process.env.PAPERCUSP_TEST_RUNS_DB_URL;
+    const previousPrivate = process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+    try {
+      process.env.PAPERCUSP_TEST_RUNS_DB_URL = 'postgresql://127.0.0.1/durable-ledger-fixture';
+      delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+      const result = await runTestFilesCore({
+        root, files: [file], privatePg, runId: 'owned-private-pg-control',
+        workspaceId: 'owned-private-pg-workspace', harnessSlug: 'owned-private-pg-harness', timeoutMs: 15_000,
+      });
+      expect(result, JSON.stringify(result)).toMatchObject({ ok: true, passed: 1, skipped: 0 });
+      const observed = JSON.parse(await readFile(capture, 'utf8'));
+      expect(observed).toMatchObject({
+        sink: 'postgresql://127.0.0.1/durable-ledger-fixture', run: 'owned-private-pg-control',
+        harness: 'owned-private-pg-harness', workspace: 'owned-private-pg-workspace',
+      });
+      if (privatePg) expect(observed.privatePg).toBe('postgresql://127.0.0.1/owned-route-fixture');
+      else expect(observed.privatePg).toBeUndefined();
+    } finally {
+      if (previousSink === undefined) delete process.env.PAPERCUSP_TEST_RUNS_DB_URL;
+      else process.env.PAPERCUSP_TEST_RUNS_DB_URL = previousSink;
+      if (previousPrivate === undefined) delete process.env.PAPERCUSP_TEST_PG_ADMIN_URL;
+      else process.env.PAPERCUSP_TEST_PG_ADMIN_URL = previousPrivate;
+    }
+  });
+
+  it('refuses an unsuccessful private-PG preflight without starting the shared router', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-owned-pg-refusal-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    const marker = join(root, 'shared-router-started');
+    await writeFile(join(root, 'scripts', 'with-test-pg.mjs'),
+      "console.error('private PG preflight refused'); process.exitCode = 42;\n");
+    await writeFile(join(root, 'scripts', 'test-files.mjs'),
+      `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'unsafe fallback');\n`);
+    await sealScratchTestCheckout(root);
+    const result = await runTestFilesCore({
+      root, files: ['packages/x/real.test.ts'], privatePg: true, allowDetachedRecovery: false, timeoutMs: 10_000,
+    });
+    expect(result).toMatchObject({ ok: false, error: 'no_report' });
+    expect(result.routerOutput).toContain('private PG preflight refused');
+    expect(existsSync(marker)).toBe(false);
+  });
+});
+
 describe('completed child with failed router finalization (WI-10004947)', () => {
   it.each(['vitest-json', 'node-summary'])('preserves measured counts and the cause without an overall green: %s', async (reportKind) => {
     const file = 'packages/x/completed.test.ts';

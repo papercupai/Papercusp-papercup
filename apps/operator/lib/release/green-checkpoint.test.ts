@@ -6555,7 +6555,11 @@ describe("runGreenCheckpoint", () => {
     expect(calls.includes("advance")).toBe(fullGateGreen);
   });
 
-  it("WI-38422: a failed changed-file typecheck returns the ordinary not-green verdict without entering the affected sweep", async () => {
+  // P-016 (green-main-ratchet-convergence-2026-10-17#D-004) changed this contract for ROUND 1:
+  // a run that is not verifying a repair head keeps the early red AND runs the affected sweep,
+  // so the queue's first count measures the tests. Repair-head rounds keep the WI-38422 early
+  // stop — pinned by the repair-head test below.
+  it("WI-38422 / P-016: on round 1 a failed changed-file typecheck keeps the not-green verdict AND runs the affected sweep", async () => {
     const c1 = await commit(
       "packages/operator-core/lib/a.ts",
       "export const a = 1;\n",
@@ -6600,32 +6604,98 @@ describe("runGreenCheckpoint", () => {
       from: c1,
       green: false,
       reason: "not-green",
-      failingTests: [
+      // The early red survives the merge with a passing sweep.
+      failingTests: expect.arrayContaining([
         "lint:tsc",
         "lint:tsc:scripts",
         "lint:guard-reachability",
-      ],
-      postSuiteMeasured: true,
-      postSuiteLegs: expect.arrayContaining([
-        expect.objectContaining({ id: "lint:tsc:scripts", status: "failed" }),
-        expect.objectContaining({
-          id: "lint:guard-reachability",
-          status: "failed",
-        }),
       ]),
     });
     expect(r.summary).toContain(
       "Early changed-file typecheck failed before the affected-test sweep",
     );
     expect(r.summary).toContain("Early non-test gate inventory");
-    expect(r.summary).toContain("POST_SUITE_RESULT status=failed");
-    expect(calls).not.toContain("runGreen");
+    expect(r.summary).toContain("Affected-test sweep (P-016");
+    expect(calls).toContain("runGreen");
     expect(calls).not.toContain("advance");
     expect(
       logs.some((line) =>
-        line.includes("rejecting before the affected-test sweep"),
+        line.includes("P-016: running the affected-test sweep anyway"),
       ),
     ).toBe(true);
+  });
+
+  // The production shape: the stable-candidate queue is persisted BEFORE the early preflight
+  // on a candidate's first run. The first P-016 wiring keyed on "a queue is open" and so never
+  // ran the round-1 sweep in production — only in tests that stubbed no queue writer.
+  it("P-016: a queue persisted before the preflight does not turn round 1 into a later round", async () => {
+    const c1 = await commit("packages/operator-core/lib/a.ts", "export const a = 1;\n", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    await commit("packages/operator-core/lib/a.ts", 'export const a: number = "bad";\n', "c2");
+    const { deps, calls } = stubDeps(true);
+    let queue: FrozenCandidateRepairQueue | null = null;
+    const writes: Array<FrozenCandidateRepairQueue | null> = [];
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      writes.push(next);
+      queue = next;
+    };
+    deps.changedFilesForRange = async () => ["packages/operator-core/lib/a.ts"];
+    deps.runChangedFileTypecheckPreflight = async () => ({
+      status: "failed",
+      summary: "packages/operator-core/lib/a.ts(1,14): error TS2322",
+      failingSignatures: ["lint:tsc"],
+    });
+
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    // The queue really was written before the suite (the precondition of this regression)...
+    expect(writes.length).toBeGreaterThan(0);
+    // ...and round 1 still measured the suite.
+    expect(calls).toContain("runGreen");
+    expect(calls).not.toContain("advance");
+    expect(r.green, JSON.stringify(r)).toBe(false);
+  });
+
+  it("WI-38422 / P-016: on a repair-head round a failed changed-file typecheck still rejects before the affected sweep", async () => {
+    const pin = await commit("packages/operator-core/lib/backlog.ts", "export const backlog = 1;\n", "pin");
+    await git(repo, ["branch", "ready", pin]);
+    const frozen = await commit("packages/operator-core/lib/backlog.ts", "export const backlog = 2;\n", "frozen backlog");
+    const repaired = await commit("packages/operator-core/lib/repair.ts", 'export const repair: number = "bad";\n', "repair delta");
+    await git(repo, ["update-ref", frozenLineageRef(frozen), repaired]);
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: pin,
+      repairHead: repaired,
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: null,
+      failingTests: [],
+      signature: [],
+    };
+    const { deps, calls } = stubDeps(true);
+    const logs: string[] = [];
+    deps.log = (line) => logs.push(line);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => { queue = next; };
+    deps.changedFilesForRange = async () => ["packages/operator-core/lib/repair.ts"];
+    deps.runChangedFileTypecheckPreflight = async () => ({
+      status: "failed",
+      summary: "packages/operator-core/lib/repair.ts(1,14): error TS2322",
+      failingSignatures: ["lint:tsc"],
+    });
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(calls).not.toContain("runGreen");
+    expect(calls).not.toContain("advance");
+    expect(result.green, JSON.stringify(result)).toBe(false);
+    expect(result.advanced).toBe(false);
+    expect(logs.some((line) => line.includes("P-016: running the affected-test sweep"))).toBe(false);
   });
 
   it("WI-38422: an unavailable changed-file diff falls back to the unchanged full gate", async () => {
@@ -8150,25 +8220,27 @@ describe("runGreenCheckpoint", () => {
       return { c2, deps, calls };
     }
 
-    it("WI-41655: an early-preflight red measured NO suite, so it falls back to the conservative whole-run estimate and SKIPS the salvage", async () => {
+    // P-016 (green-main-ratchet-convergence-2026-10-17#D-004): this fixture is round 1, which
+    // now MEASURES the suite after an early-preflight red, so the confirm estimate seeds from
+    // that measured suite rather than the whole run. The skipped-suite whole-run fallback now
+    // applies only on repair-head rounds and is pinned directly on
+    // `confirmSuiteEstimateSeedMs` in green-checkpoint-round-one.test.ts.
+    it("WI-41655 / P-016: round 1 measures the suite after an early-preflight red, so the estimate is that suite, not the 55m of setup", async () => {
       const { c2, deps, calls } = await earlyPreflightRedFixture();
       const now = Date.now();
 
       const r = await runGreenCheckpoint(cfg(), deps, {
         candidate: c2,
         noPush: true,
-        // 55m of one-time setup already spent, 10m of budget left: a confirm suite cannot
-        // fit. ONLY a near-zero estimate would admit it.
+        // 55m of one-time setup already spent, 10m of budget left: a whole-run seed would
+        // decline the salvage; the measured round-1 suite (near-zero here) admits it.
         runStartedAtMs: now - 55 * 60_000,
         salvageDeadlineMs: now + 10 * 60_000,
       });
 
-      // The preflight really did short-circuit the affected-test sweep...
       expect(calls).toContain("runChangedFileTypecheckPreflight");
-      expect(calls).not.toContain("runGreen");
-      // ...and the expensive salvage never STARTED — commitsInRange is its first call.
-      expect(calls).not.toContain("commitsInRange");
-      // The verdict still lands intact. That is the whole point of declining.
+      expect(calls).toContain("runGreen");
+      expect(calls).toContain("commitsInRange");
       expect(r.green).toBe(false);
       expect(r.candidate).toBe(c2);
     });

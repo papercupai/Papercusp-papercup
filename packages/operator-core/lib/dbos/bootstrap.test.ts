@@ -147,6 +147,7 @@ describe('isRetryableDbosLaunchError (EI-22022209900260112)', () => {
     ).toBe(true);
     expect(isRetryableDbosLaunchError(new Error('Connection terminated unexpectedly'))).toBe(true);
     expect(isRetryableDbosLaunchError(new Error('timeout exceeded when trying to connect'))).toBe(true);
+    expect(isRetryableDbosLaunchError(new Error('timeout expired when trying to connect'))).toBe(true);
   });
 
   it('retries connection-class SQLSTATEs and socket errnos', () => {

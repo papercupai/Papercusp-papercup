@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { pruneRunsWithReport, pruneStaleForeign } from '../../../../libs/generic/verification-harness/src/runner';
 import { isLeaseLive, readRetentionLeases } from '../release-cut-reclaim';
 import { createRetentionPin, pinProtectsPath, readRetentionPins, readRetentionPinsAsync, removeRetentionPin } from './retention-pins';
+import { withRetentionPinProtection as withPortablePinProtection } from '../../../../scripts/lib/retention-pins.mjs';
 
 const roots: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -16,6 +17,40 @@ function fixture() {
 }
 
 describe('agent retention pins in the existing lease store', () => {
+  it('keeps caller-registry descendant pins when a privileged reader resolves the store alias', async () => {
+    const f = fixture();
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(f.root, 'mutex'));
+    const child = join(f.target, 'review'); mkdirSync(child);
+    createRetentionPin({ path: child, owner: 'a', reason: 'retained rootful artifact', expiresAt: f.expiresAt }, f);
+    const alias = join(f.root, 'rootful-store');
+    const resolvePath = vi.fn((path: string) => path === alias ? f.target : path);
+    await withPortablePinProtection(isPinned => {
+      expect(isPinned(alias)).toBe(true);
+      expect(isPinned(`${alias}-other`)).toBe(false);
+    }, { dir: f.dir, nowMs: f.nowMs, resolvePath });
+    expect(resolvePath).toHaveBeenCalledWith(alias);
+  });
+
+  it('fails closed when the privileged path reader is refused', async () => {
+    const f = fixture();
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(f.root, 'mutex'));
+    await expect(withPortablePinProtection(isPinned => isPinned(f.target), {
+      dir: f.dir, nowMs: f.nowMs,
+      resolvePath: () => { throw Object.assign(new Error('privileged read refused'), { code: 'EACCES' }); },
+    })).rejects.toThrow('privileged read refused');
+  });
+
+  it('refuses corrupt caller pins before admitting a privileged path reader', async () => {
+    const f = fixture();
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(f.root, 'mutex'));
+    mkdirSync(f.dir); writeFileSync(join(f.dir, 'lease-agent-pin-broken.tsv'), 'broken');
+    const resolvePath = vi.fn((path: string) => path);
+    await expect(withPortablePinProtection(isPinned => isPinned(f.target), {
+      dir: f.dir, nowMs: f.nowMs, resolvePath,
+    })).rejects.toThrow('retention pins unreadable');
+    expect(resolvePath).not.toHaveBeenCalled();
+  });
+
   it('VH count and pressure passes retain pinned runs through a physical alias and expiry restores eligibility', async () => {
     const f = fixture();
     vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', f.dir);

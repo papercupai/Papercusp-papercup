@@ -142,7 +142,7 @@ const RETRYABLE_SQLSTATES = new Set([
 ]);
 const RETRYABLE_ERRNOS = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'EAI_AGAIN']);
 const RETRYABLE_MESSAGE =
-  /lock(?:[_ ]timeout|[_ ]not[_ ]available)|connection terminated (?:due to connection timeout|unexpectedly)|timeout exceeded when trying to connect|connect(?:ion)? timeout|too many clients already|the database system is (?:starting up|in recovery mode|shutting down)/i;
+  /lock(?:[_ ]timeout|[_ ]not[_ ]available)|connection terminated (?:due to connection timeout|unexpectedly)|timeout (?:exceeded|expired) when trying to connect|connect(?:ion)? timeout|too many clients already|the database system is (?:starting up|in recovery mode|shutting down)/i;
 
 export function isRetryableDbosLaunchError(error: unknown): boolean {
   const seen = new Set<object>();

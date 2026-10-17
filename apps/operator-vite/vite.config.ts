@@ -203,7 +203,7 @@ export default defineConfig({
       // { ...fetch...; return; }` — a RUNTIME guard Rolldown can't see, so it
       // still traces the dynamic import() target statically. delegated-tasks.ts
       // in turn statically imports work-items.ts, which fans out into dbos/*,
-      // sync/hyperbee/*, and the whole ~550-tool agent-tools/index.ts catalog —
+      // sync/hyperbee/*, and the whole agent-tools/index.ts tool catalog —
       // all reachable-but-dead server code no browser code path ever executes,
       // and that competing static edge is exactly what Rollup flags as
       // INEFFECTIVE_DYNAMIC_IMPORT for work-items.ts/boot-all.ts/

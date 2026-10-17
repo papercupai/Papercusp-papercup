@@ -10,7 +10,7 @@
  * downstream graph. That happened via `commands/defs/delegation.ts`'s
  * `await import('../../delegated-tasks')`: delegated-tasks.ts statically
  * imports `work-items.ts`, which fans out into `dbos/*`, `sync/hyperbee/*`,
- * and the entire ~550-tool `agent-tools/index.ts` catalog — none of it ever
+ * and the entire `agent-tools/index.ts` tool catalog — none of it ever
  * reachable from real browser code, all of it shipped anyway (52 MB -> 26 MB
  * minified JS once fixed; see apps/operator-vite/src/shims/delegated-tasks-browser.ts
  * and the vite.config.ts alias next to it).

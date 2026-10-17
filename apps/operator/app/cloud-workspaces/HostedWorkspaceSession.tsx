@@ -28,7 +28,9 @@ import {
   type HostedWorkspaceUploadLimits,
 } from "./hosted-workspace-session-protocol";
 import { planChunks } from "@papercusp/sync";
+import { useVisibleRefresh } from "@/app/_components/desktop-grid/use-visible-refresh";
 import { normalizeBrowserSession, normalizeHostedConnectorStatus } from "../settings/remote-access/connection-inventory";
+import type { WorkspaceHostControlRow } from "./workspace-view-model";
 import {
   parseHostedDesktopProtocolMessage,
   type HostedDesktopRosterEntry,
@@ -82,6 +84,7 @@ export interface HostedWorkspaceSessionProps {
   hostId: string;
   routeLabel: string;
   workspaceName: string;
+  connectorStatus?: WorkspaceHostControlRow['hostedConnector'];
   onWorkspaceIdChange?: (workspaceId: string) => void;
   /** Authenticated host-specific relay receipt; null revokes a previous binding. */
   onWorkspaceBound?: (workspaceId: string | null) => void;
@@ -171,6 +174,7 @@ export function HostedWorkspaceSession({
   hostId,
   routeLabel,
   workspaceName,
+  connectorStatus,
   onWorkspaceIdChange,
   onWorkspaceBound,
   onDesktopBridgeChange,
@@ -239,6 +243,15 @@ export function HostedWorkspaceSession({
   const [meta, setMeta] = useState<SessionMeta>({});
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [connectorNow, setConnectorNow] = useState(Date.now);
+  const [revokeOpen, setRevokeOpen] = useState(false);
+  const [revoking, setRevoking] = useState(false);
+  const [revokedGeneration, setRevokedGeneration] = useState<number | null>(null);
+
+  useEffect(() => {
+    setConnectorNow(Date.now());
+  }, [connectorStatus]);
+  useVisibleRefresh(() => setConnectorNow(Date.now()), 15_000, Boolean(connectorStatus));
   const [path, setPath] = useState(".");
   const [entries, setEntries] = useState<HostedWorkspaceFileEntry[]>([]);
   const [preview, setPreview] = useState<{ path: string; text: string } | null>(
@@ -783,6 +796,25 @@ export function HostedWorkspaceSession({
     );
   }, [dispose]);
 
+  const revokeConnector = async () => {
+    if (!connectorStatus || connectorStatus.routeLabel !== routeLabel) return;
+    setRevoking(true);
+    try {
+      const response = await fetch(`/api/hosted/workspaces/${encodeURIComponent(connectorStatus.customerWorkspaceId)}/connectors/revoke`, {
+        method: "POST", credentials: "same-origin", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ hostId, routeLabel, transport: connectorStatus.transport }),
+      });
+      const result: unknown = await response.json();
+      if (!response.ok || record(result)?.ok !== true) throw new Error(responseError(result, "Could not revoke connector"));
+      setRevokedGeneration(connectorStatus.generation);
+      setRevokeOpen(false);
+      disconnect();
+      setNotice("Connector revoked. Re-enroll it to restore hosted access. Other credentials are unchanged.");
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : "Could not revoke connector");
+    } finally { setRevoking(false); }
+  };
+
   const paste = useCallback(async () => {
     if (role !== "controller") return;
     try {
@@ -954,11 +986,19 @@ export function HostedWorkspaceSession({
   const controller = live && role === "controller";
   const statusTone =
     status === "live" ? "good" : status === "error" ? "bad" : "neutral";
-  // Saved route configuration proves identity, never connector liveness. This
-  // browser has no authoritative connector heartbeat, so keep that health unknown.
+  // Only the scoped ledger projection certifies connector liveness. Its expiry
+  // is enforced locally too, so a quiet sync stream cannot leave stale green UI.
+  const connector = connectorStatus?.routeLabel === routeLabel ? connectorStatus : undefined;
+  const connectorRevoked = connector?.state === "revoked" ||
+    (connector !== undefined && revokedGeneration === connector.generation);
+  const connectorLive = connector?.state === "active" && connector.transport === "websocket" &&
+    connector.liveUntil !== null && connectorNow <= connector.liveUntil && !connectorRevoked;
   const connectorInventory = normalizeHostedConnectorStatus({
-    id: hostId, routeLabel, transport: "websocket", state: "unknown",
-    sourceRef: `workspace-host:${hostId}`,
+    id: hostId, routeLabel, transport: "websocket", scope: connector?.customerWorkspaceId,
+    state: connectorRevoked ? "revoked" : connectorLive ? "connected" : connector?.state === "pending" ? "connecting" : connector ? "disconnected" : "unknown",
+    health: connectorLive ? "healthy" : connector?.state === "pending" ? "degraded" : connector ? "offline" : "unknown",
+    lastSeenAt: connector?.lastSeenAt,
+    sourceRef: `hosted-connector:${connector?.customerWorkspaceId ?? "unknown"}:${hostId}`,
   });
   // Only the authenticated session.bound receipt identifies this browser session;
   // a successful sign-in, ticket, or PTY output alone cannot invent that binding.
@@ -984,11 +1024,13 @@ export function HostedWorkspaceSession({
             {routeLabel}
           </small>
           <small data-testid="hosted-connector-inventory" data-connection-class={connectorInventory.class}
-            data-connection-health={connectorInventory.health}>
-            {connectorInventory.authoritySummary} · Scope: {connectorInventory.scope} · Transport: {connectorInventory.transport.toUpperCase()} · Liveness unknown
+            data-connection-health={connectorInventory.health} data-connection-state={connectorInventory.state}>
+            {connectorInventory.authoritySummary} · Scope: {connectorInventory.scope} · Transport: {connectorInventory.transport.toUpperCase()} · {connectorRevoked ? "Revoked" : connectorLive ? "Connected" : connector?.state === "pending" ? "Connecting" : connector ? "Offline" : "Liveness unknown"}
           </small>
         </div>
         <div className={styles.headerActions}>
+          <Button type="button" variant="ghost" size="sm" disabled={!connector || connectorRevoked || revoking}
+            onClick={() => setRevokeOpen(true)}>Revoke connector</Button>
           {role === "observer" ? (
             <button
               type="button"
@@ -1020,6 +1062,12 @@ export function HostedWorkspaceSession({
           )}
         </div>
       </div>
+
+      {revokeOpen && <div role="dialog" aria-label="Revoke hosted connector">
+        <p>Revoke this hosted connector and close its active channels? Re-enrollment is required to reconnect. SSH keys, phone pairings, and your browser sign-in remain unchanged.</p>
+        <Button type="button" disabled={revoking} onClick={() => void revokeConnector()}>Confirm revoke connector</Button>
+        <Button type="button" variant="ghost" disabled={revoking} onClick={() => setRevokeOpen(false)}>Cancel</Button>
+      </div>}
 
       <div className={styles.body}>
         <div className={styles.terminalPane}>

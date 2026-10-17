@@ -240,9 +240,10 @@ function lateStandingPrReconciler(sql: AdmissionDb, workspaceId: string, deps: S
     if (!listings.has(remote)) listings.set(remote, reader.listPrs({ remote, state: 'closed', per_page: 100 }));
     const listed = await listings.get(remote)!;
     if (!listed.ok) throw new Error(listed.error.message);
+    // A historical PR can target a branch that is no longer the default. The
+    // existing auditor verifies its actual target head and first-parent history.
     const candidates = listed.data.filter(pr => pr.state === 'merged' && !pr.is_draft
-      && pr.head_ref === STANDING_PR_BRANCH && pr.head_repo?.toLowerCase() === fork.toLowerCase()
-      && (!project.github_default_branch || pr.base_ref === project.github_default_branch));
+      && pr.head_ref === STANDING_PR_BRANCH && pr.head_repo?.toLowerCase() === fork.toLowerCase());
     if (candidates.length > 100) throw new Error('Historical standing PR reconciliation exceeds its bounded candidate budget');
     const { auditGit, inspectPrDeliveryRow } = await import('./pr-delivery-audit');
     const git = deps.git ?? auditGit;

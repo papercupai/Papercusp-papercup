@@ -1493,33 +1493,45 @@ function openIsolatedNativeTranscript({ agent, env = process.env, transcriptPath
   }
 }
 
-/** Read a bounded, complete TAIL from one isolated transcript. Used by the
- * turn-boundary probe, which only needs the newest rows. */
+/** Read a complete tail through a real turn boundary. Provider bookkeeping
+ * (notably Claude attachments) can exceed the initial tail window after an
+ * end_turn. Expand within the existing native scan ceiling rather than losing
+ * that boundary and retaining an obsolete running observation forever. */
 function readIsolatedNativeTranscriptWindow(options) {
   const opened = openIsolatedNativeTranscript(options);
   if (!opened) return null;
   const { fd, info } = opened;
   try {
-    const length = Math.min(info.size, NATIVE_TURN_TAIL_BYTES);
-    const bytes = Buffer.alloc(length);
-    const read = readSync(fd, bytes, 0, length, info.size - length);
-    let tailBytes = bytes.subarray(0, read);
-    if (!tailBytes.length || tailBytes[tailBytes.length - 1] !== 0x0a) return null; // newest row is being written
-    if (info.size > length) {
-      const firstNewline = tailBytes.indexOf(0x0a);
-      if (firstNewline < 0) return null; // the first complete row is outside the bounded window
-      tailBytes = tailBytes.subarray(firstNewline + 1);
+    const ceiling = Math.min(info.size, NATIVE_KICKOFF_SCAN_BYTES);
+    const classify = TURN_ROW_CLASSIFIERS[options.agent];
+    for (let length = Math.min(ceiling, NATIVE_TURN_TAIL_BYTES);;) {
+      const bytes = Buffer.alloc(length);
+      let read = 0;
+      while (read < length) {
+        const count = readSync(fd, bytes, read, length - read, info.size - length + read);
+        if (count <= 0) return null; // the snapshot shrank or became unreadable
+        read += count;
+      }
+      let tailBytes = bytes;
+      if (tailBytes[tailBytes.length - 1] !== 0x0a) return null; // newest row is being written
+      if (info.size > length) {
+        const firstNewline = tailBytes.indexOf(0x0a);
+        tailBytes = firstNewline < 0 ? tailBytes.subarray(tailBytes.length) : tailBytes.subarray(firstNewline + 1);
+      }
+      const rows = [];
+      let cursor = 0;
+      while (cursor < tailBytes.length) {
+        const newline = tailBytes.indexOf(0x0a, cursor);
+        if (newline < 0) return null;
+        const line = tailBytes.subarray(cursor, newline).toString('utf8');
+        if (line.trim()) rows.push(JSON.parse(line));
+        cursor = newline + 1;
+      }
+      const hasBoundary = classify && rows.some((row) =>
+        classify(row, { receivedAtMs: 0, nowMs: Date.now() }) !== 'ignore');
+      if (hasBoundary || length === ceiling) return rows;
+      length = Math.min(ceiling, length * 2);
     }
-    const rows = [];
-    let cursor = 0;
-    while (cursor < tailBytes.length) {
-      const newline = tailBytes.indexOf(0x0a, cursor);
-      if (newline < 0) return null;
-      const line = tailBytes.subarray(cursor, newline).toString('utf8');
-      if (line.trim()) rows.push(JSON.parse(line));
-      cursor = newline + 1;
-    }
-    return rows;
   } catch {
     return null;
   } finally {
@@ -1527,7 +1539,7 @@ function readIsolatedNativeTranscriptWindow(options) {
   }
 }
 
-/** Read parsed rows from the bounded native tail window. */
+/** Read parsed rows from the bounded, boundary-aware native tail window. */
 function readIsolatedNativeTranscriptRows(options) {
   return readIsolatedNativeTranscriptWindow(options);
 }

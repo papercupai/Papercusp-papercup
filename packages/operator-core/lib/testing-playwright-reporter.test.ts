@@ -239,7 +239,9 @@ describe('portable Playwright ledger reporter', () => {
       vi.stubEnv('PAPERCUSP_TEST_RUN_RECEIPT_FILE', receipts);
       sql.mockReset().mockResolvedValue([{ id: '12345' }]);
       const reporter = new Reporter();
+      const beforeBegin = Date.now();
       reporter.onBegin({ rootDir: '/portal/e2e' });
+      const afterBegin = Date.now();
       const cases = [
         ['new account', 'passed'] as const,
         ...Array.from({ length: MAX_RECORDED_PASSED_CASES }, (_, index) => ['passed case ' + index, 'passed'] as const),
@@ -273,8 +275,22 @@ describe('portable Playwright ledger reporter', () => {
       expect((details as { passedCaseTitles: string[] }).passedCaseTitles[0])
         .toBe('account-first > new account');
       expect(parseTestRunExecutionDetails(details)).toEqual(details);
-      expect(JSON.parse(readFileSync(receipts, 'utf8').trim())).toEqual({
+      const runStartedAt = parseTestRunExecutionDetails(details)?.runStartedAt;
+      expect(runStartedAt).toBeDefined();
+      // Case timestamps deliberately use the epoch; source custody must name
+      // this run's onBegin, rather than those timestamps or insertion time.
+      expect(Date.parse(runStartedAt!)).toBeGreaterThanOrEqual(beforeBegin);
+      expect(Date.parse(runStartedAt!)).toBeLessThanOrEqual(afterBegin);
+      const receipt = JSON.parse(readFileSync(receipts, 'utf8').trim());
+      expect(receipt).toEqual({
         filePath: 'e2e/portal-product-tutorial.spec.ts', status: 'fail', outcome: 'inserted', id: '12345',
+        attempt: 0, receiptId: expect.any(String),
+        row: {
+          filePath: 'e2e/portal-product-tutorial.spec.ts', status: 'fail', durationMs: 10,
+          startedAt: '1970-01-01T00:00:00.000Z', finishedAt: '1970-01-01T00:00:00.010Z',
+          outputTail: 'curriculum mismatch', isScratchConfig: false, worktreeDirty: false,
+          commitSha: 'a'.repeat(40), receiptId: receipt.receiptId, receiptAttempt: 0,
+        },
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });

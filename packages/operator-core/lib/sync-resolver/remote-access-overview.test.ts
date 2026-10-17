@@ -11,6 +11,8 @@ const H = vi.hoisted(() => ({
   listRemoteAccessEntries: vi.fn(),
   ownTunnelStatus: vi.fn(),
   portalRelayStatus: vi.fn(),
+  loadPsuConnectionStore: vi.fn(),
+  readWorkspaceHostControl: vi.fn(),
 }));
 
 vi.mock('../connected-apps/remote-access', () => ({
@@ -19,6 +21,8 @@ vi.mock('../connected-apps/remote-access', () => ({
 }));
 vi.mock('../own-tunnel/service', () => ({ ownTunnelStatus: H.ownTunnelStatus }));
 vi.mock('../remote-access/relay-opt-in', () => ({ portalRelayStatus: H.portalRelayStatus }));
+vi.mock('../../../../apps/operator/scripts/psu-connection-front-controller.mjs', () => ({ loadPsuConnectionStore: H.loadPsuConnectionStore }));
+vi.mock('../workspace-host/observability-store', () => ({ readWorkspaceHostControl: H.readWorkspaceHostControl }));
 
 import { knownQueryNamesV2, resolveNamedQueryV2 } from './index';
 
@@ -31,6 +35,8 @@ describe('remoteAccess.overview named query', () => {
     H.listRemoteAccessEntries.mockReset().mockResolvedValue([{ id: 'pcapp_1' }]);
     H.ownTunnelStatus.mockReset().mockResolvedValue({ configured: false });
     H.portalRelayStatus.mockReset().mockResolvedValue(RELAY);
+    H.loadPsuConnectionStore.mockReset().mockReturnValue({ profiles: [] });
+    H.readWorkspaceHostControl.mockReset().mockResolvedValue([]);
   });
 
   it('returns the switch, the entries and both routes for the workspace', async () => {
@@ -44,6 +50,7 @@ describe('remoteAccess.overview named query', () => {
         ownTunnelError: null,
         portalRelay: RELAY,
         portalRelayError: null,
+        sshProfiles: [], sshProfilesError: null, hostedConnectors: [], hostedConnectorsError: null,
       },
     ]);
     expect(H.getRemoteAccess).toHaveBeenCalledWith('ws1');
@@ -65,5 +72,42 @@ describe('remoteAccess.overview named query', () => {
     H.ownTunnelStatus.mockRejectedValue(new Error('tunnel row unreadable'));
     const [row] = (await resolveNamedQueryV2('remoteAccess.overview', { workspaceId: 'ws1' })) as Array<Record<string, unknown>>;
     expect(row).toMatchObject({ ownTunnel: null, ownTunnelError: 'tunnel row unreadable', portalRelay: RELAY, portalRelayError: null });
+  });
+
+  it('reads actual SSH profiles and scoped hosts while excluding login and provider credentials', async () => {
+    H.loadPsuConnectionStore.mockReturnValue({ profiles: [
+      { kind: 'ssh', name: 'laptop', host: 'laptop.private', sshUser: 'avi', identityFile: 'PRIVATE_KEY_PATH' },
+      { kind: 'papercusp-hosted', name: 'portal', token: 'HOSTED_LOGIN_SECRET' },
+    ] });
+    const connector = { customerWorkspaceId: 'customer-ws', routeLabel: 'route', state: 'active',
+      transport: 'websocket', generation: 7, lastSeenAt: '2026-10-17T20:00:00Z', liveUntil: 1792267350000 };
+    H.readWorkspaceHostControl.mockResolvedValue([
+      { kind: 'connection', id: 'provider', credentialRef: 'PROVIDER_CREDENTIAL' },
+      { kind: 'workspace', id: 'host1', name: 'Desktop', observedState: 'running', hostedConnector: connector, endpoint: 'PRIVATE_ENDPOINT' },
+      { kind: 'workspace', id: 'deleted', name: 'Gone', observedState: 'absent' },
+      { kind: 'workspace', id: 'unknown', name: 'No heartbeat authority', observedState: 'running' },
+    ]);
+    const [row] = await resolveNamedQueryV2('remoteAccess.overview', { workspaceId: 'ws1' }) as Array<Record<string, unknown>>;
+    expect(H.readWorkspaceHostControl).toHaveBeenCalledWith('ws1');
+    expect(row.sshProfiles).toEqual([{ id: 'laptop', label: 'laptop', host: 'laptop.private', scope: 'This computer',
+      state: 'unknown', health: 'unknown', sourceRef: 'psu-ssh:laptop' }]);
+    expect(row.hostedConnectors).toEqual([
+      { id: 'host1', label: 'Desktop', connector },
+      { id: 'unknown', label: 'No heartbeat authority', connector: null },
+    ]);
+    for (const secret of ['PRIVATE_KEY_PATH', 'HOSTED_LOGIN_SECRET', 'PROVIDER_CREDENTIAL', 'PRIVATE_ENDPOINT']) {
+      expect(JSON.stringify(row)).not.toContain(secret);
+    }
+  });
+
+  it('keeps phones, keys and routes visible when either machine source is unavailable', async () => {
+    H.loadPsuConnectionStore.mockImplementation(() => { throw new Error('secret local path'); });
+    H.readWorkspaceHostControl.mockRejectedValue(new Error('private database details'));
+    const [row] = await resolveNamedQueryV2('remoteAccess.overview', { workspaceId: 'ws1' }) as Array<Record<string, unknown>>;
+    expect(row).toMatchObject({ entries: [{ id: 'pcapp_1' }], portalRelay: RELAY,
+      sshProfiles: [], sshProfilesError: 'Saved SSH profiles could not be read.',
+      hostedConnectors: [], hostedConnectorsError: 'Hosted connector status could not be read.' });
+    expect(JSON.stringify(row)).not.toContain('secret local path');
+    expect(JSON.stringify(row)).not.toContain('private database details');
   });
 });

@@ -937,7 +937,7 @@ export async function pruneEvidenceRoot(
 /** Retention is retried on every run and by the standing reclaim. A busy writer
  * must not consume the proof's deadline or turn completed phases into a failure.
  * Abort only our own contention signal; pin/read/deletion errors still propagate. */
-async function pruneForHarness(evidenceRoot: string, stage: 'before' | 'after'): Promise<void> {
+export async function pruneForHarness(evidenceRoot: string, stage: 'before' | 'after'): Promise<void> {
   const busy = new Error('retention-mutex-busy');
   const onWaiting = () => { throw busy; };
   try {

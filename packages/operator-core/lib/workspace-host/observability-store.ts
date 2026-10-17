@@ -2026,6 +2026,36 @@ export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): P
       ORDER BY host_id, observed_at DESC, id DESC
     `;
 
+    // Saved tunnel configuration is not liveness. Read the same heartbeat ledger
+    // used by hosted CLI reachability, scoped through the current customer/host
+    // binding. Keep the privileged read separate from the control transaction:
+    // harness_app cannot read the auth ledger, and a failed read means unknown.
+    type ConnectorRow = {
+      host_id: string; customer_workspace_id: string; route_label: string;
+      state: 'pending' | 'active' | 'revoked'; transport: 'sse' | 'websocket';
+      generation: number; heartbeat_at: Date | string | null;
+    };
+    let connectors: ConnectorRow[] = [];
+    if (hosts.length) {
+      try {
+        const read = async (sql: Sql) => await sql<ConnectorRow[]>`
+          SELECT connector.host_id, connector.customer_workspace_id, connector.route_label,
+                 connector.state, connector.transport, connector.generation, connector.heartbeat_at
+          FROM papercusp_auth.hosted_workspace_connectors connector
+          JOIN harness_shared.customer_workspaces customer
+            ON customer.workspace_id = connector.control_workspace_id
+           AND customer.organization_id = connector.organization_id
+           AND customer.id = connector.customer_workspace_id
+           AND customer.workspace_host_id = connector.host_id
+          WHERE connector.control_workspace_id = ${workspaceId}
+            AND connector.host_id = ANY(${hosts.map(host => host.id)}::text[])
+            AND customer.kind = 'hosted' AND customer.state <> 'deleted'
+        `;
+        connectors = tx ? await read(tx) : await withWorkspace(workspaceId, read,
+          { bypassRlsForAdmin: true, statementTimeoutMs: 2_000, lockTimeoutMs: 500 });
+      } catch { /* Unavailable authority remains unknown, never a cached live result. */ }
+    }
+
     const latestOperation = new Map(operations.map((row) => [row.host_id, row]));
     const eventsByOperation = new Map<string, EventDbRow[]>();
     for (const event of events) {
@@ -2066,6 +2096,10 @@ export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): P
     }));
 
     const hostRows = hosts.map((row) => {
+      const bindings = connectors.filter(connector => connector.host_id === row.id);
+      // An ambiguous binding cannot certify either workspace.
+      const connector = bindings.length === 1 ? bindings[0] : undefined;
+      const heartbeatAt = connector ? iso(connector.heartbeat_at) : undefined;
       // A fully absent host is a tombstone, not an active controller target. Its
       // latest operation may be a stale running row left behind by an interrupted
       // destroy, so do not project that row as current progress.
@@ -2131,6 +2165,15 @@ export async function readWorkspaceHostControl(workspaceId: string, tx?: Sql): P
           : undefined,
         versionDrift: row.version_drift,
         tunnel: row.tunnel_status,
+        hostedConnector: connector ? {
+          customerWorkspaceId: connector.customer_workspace_id,
+          routeLabel: connector.route_label,
+          state: connector.state,
+          transport: connector.transport,
+          generation: Number(connector.generation),
+          lastSeenAt: heartbeatAt ?? null,
+          liveUntil: heartbeatAt ? Date.parse(heartbeatAt) + HOSTED_CONNECTOR_LIVENESS_FRESH_MS : null,
+        } : undefined,
         costSignals: row.cost_signals,
         quotaSignals: row.quota_signals,
         logs: (logsByHost.get(row.id) ?? []).map((log) => ({

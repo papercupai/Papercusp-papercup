@@ -147,6 +147,44 @@ describe('coalescing identical decisions (WI-6554700010009713)', () => {
     await flushFallbackObservations();
     expect(written.map((r) => r.samples)).toEqual([1, 1]);
   });
+
+  it('drains unbound rows enqueued during an explicit flush and preserves row handles', async () => {
+    const rowOwned = fakeSql();
+    const explicit = fakeSql();
+    let releaseFirstWrite!: () => void;
+    let signalFirstWrite!: () => void;
+    const firstWriteGate = new Promise<void>((resolve) => { releaseFirstWrite = resolve; });
+    const firstWriteStarted = new Promise<void>((resolve) => { signalFirstWrite = resolve; });
+    let firstWriteBlocked = false;
+    const rowSql = ((first: unknown, ...rest: unknown[]) => {
+      const args = [first, ...rest];
+      if (Array.isArray(first) && 'raw' in first && !firstWriteBlocked) {
+        firstWriteBlocked = true;
+        signalFirstWrite();
+        return firstWriteGate.then(() => Reflect.apply(rowOwned.sql, rowOwned.sql, args));
+      }
+      return Reflect.apply(rowOwned.sql, rowOwned.sql, args);
+    }) as unknown as Sql;
+
+    try {
+      observeFallback('explicit-flush-race', {
+        eligible: 1, applied: 0, reason: 'row-owned', scope: 'flush-test',
+      }, { sql: rowSql });
+      const drain = flushFallbackObservations({ sql: explicit.sql });
+      await firstWriteStarted;
+      observeFallback('explicit-flush-race', {
+        eligible: 2, applied: 0, reason: 'enqueued-during-write', scope: 'flush-test',
+      });
+      releaseFirstWrite();
+
+      await expect(drain).resolves.toMatchObject({ written: 2, failed: 0 });
+      expect(rowOwned.inserts.flat().map((row) => row.reason)).toEqual(['row-owned']);
+      expect(explicit.inserts.flat().map((row) => row.reason)).toEqual(['enqueued-during-write']);
+      expect(_pendingFallbackObservationCount()).toBe(0);
+    } finally {
+      releaseFirstWrite();
+    }
+  });
 });
 
 describe('summarizeFallbackWindow', () => {

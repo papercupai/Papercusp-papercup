@@ -55,6 +55,10 @@ import { HELPER_FRAME_FN, type HelperSection, nextForkSlot, parseHelperFrames } 
 import { RETENTION_POLICY } from './storage/retention-policy';
 import { DEFAULT_RECLAIM_RUN_BUDGET_MS, type RetentionCapReceipt } from './storage/disk-reclaim';
 import { openWriterPidsMany, type OpenWriterScan } from './native-bg-task-ledger';
+import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
+import { CENSUS_DU_TIMEOUT_MS } from './storage/disk-consumer-census';
+import { DetachedWalkAbandoned, readWalkState, runDetachedDuUsage, walkAttemptFiles, walkProcessAlive,
+  type DetachedWalkOptions } from './storage/disk-census-detached-walk';
 
 export { type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
 
@@ -1022,8 +1026,14 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
 // ---------------------------------------------------------------- removal (effectful)
 
 export interface ReclaimExecDeps {
+  /** Standing reclaim's single durable census slot; direct callers may measure inline. */
+  usageWalk?: Omit<DetachedWalkOptions, 'signal'>;
+  /** Re-read published/authored/lease/holder protection after adopting a measurement. */
+  refreshPlan?: () => Promise<ReclaimPlan>;
   /** Set by a caller that already holds papercusp-disk-retention (the scheduled adapter). */
   retentionMutexHeld?: boolean;
+  /** Stop admitting removals at this shared run deadline; finish an admitted rename/removal. */
+  notAfterMs?: number;
   /** Re-read under the retention mutex immediately before destructive work. */
   pinProtection?: (path: string) => boolean;
   nowMs?: () => number;
@@ -1133,9 +1143,16 @@ async function executeCutReclaimUnlocked(
   const auditFile = deps.auditFile ?? path.join(defaultRetentionDir(), 'deletion-audit.tsv');
   const results: ReclaimExecResult[] = [];
   const isPinned = deps.pinProtection ?? (() => false);
+  const deadlineExhausted = () => deps.notAfterMs !== undefined &&
+    (!Number.isFinite(deps.notAfterMs) || now() >= deps.notAfterMs);
+  const deadlineReason = 'release-cut execution run deadline exhausted; resume with a fresh plan';
   for (const v of resolved.verdicts) {
     const started = now();
     const done = (r: Omit<ReclaimExecResult, 'path' | 'ms'>) => results.push({ path: v.path, ms: now() - started, ...r });
+    if (deadlineExhausted()) {
+      done({ removed: false, reason: deadlineReason });
+      continue;
+    }
     const real = v.realPath ?? v.path;
     if (isPinned(v.path) || (real !== v.path && isPinned(real))) {
       done({ removed: false, reason: 'active retention pin' });
@@ -1177,6 +1194,10 @@ async function executeCutReclaimUnlocked(
       });
       continue;
     }
+    if (deadlineExhausted()) {
+      done({ removed: false, reason: deadlineReason });
+      continue;
+    }
     const stamp = new Date(now()).toISOString().replace(/[:.]/g, '-');
     const archive = path.join(archiveDir, `${stamp}-${path.basename(v.path)}.patch`);
     try {
@@ -1185,6 +1206,13 @@ async function executeCutReclaimUnlocked(
       done({ removed: false, reason: `archive failed: ${errText(e)}` });
       continue;
     }
+    if (deadlineExhausted()) {
+      done({ removed: false, archive, reason: deadlineReason });
+      continue;
+    }
+    // From the durable removal receipt through physical deletion and Git bookkeeping,
+    // finish this one admitted operation even if it crosses the deadline. The next
+    // target must return to a fresh plan and its current pin/holder checks.
     const trash = path.join(path.dirname(real), `.reclaim-trash-${path.basename(real)}-${stamp}`);
     try {
       const stat = fs.lstatSync(real);
@@ -1327,6 +1355,59 @@ function measureCutUsage(roots: readonly string[], notAfterMs: number): Promise<
   });
 }
 
+/** One slot per canonical repository, independent of population changes. A live obsolete
+ * population must finish before replacement, otherwise each scheduled call forks more du.
+ * The existing census lifetime also bounds the age of an unconsumed terminal receipt. */
+async function measureDetachedCutUsage(roots: readonly string[], notAfterMs: number, opts: Omit<DetachedWalkOptions, 'signal'>) {
+  const remaining = () => notAfterMs - Date.now();
+  if (!Number.isFinite(notAfterMs) || remaining() <= 0) throw new Error('release-cut usage run deadline exhausted');
+  return withFsMutex(`release-cut-usage:${path.resolve(opts.dir)}`, async () => {
+    const state = await readWalkState(opts.dir);
+    const terminal = !!state && !walkProcessAlive(state) && fs.existsSync(walkAttemptFiles(opts.dir, state.attempt).exit);
+    const consumed = path.join(opts.dir, 'consumed');
+    if (fs.existsSync(consumed)) {
+      if (!terminal) throw new Error('release-cut usage previous measurement is still retiring');
+      await fs.promises.rm(opts.dir, { recursive: true, force: true });
+    } else if (!state && fs.existsSync(opts.dir) && (await fs.promises.readdir(opts.dir)).length) {
+      throw new Error('release-cut usage slot has unreadable state');
+    }
+    const controller = new AbortController();
+    const waitMs = Math.min(10_000, remaining());
+    if (waitMs <= 0) throw new Error('release-cut usage run deadline exhausted');
+    const timer = setTimeout(() => controller.abort(), waitMs);
+    try {
+      const run = () => runDetachedDuUsage(roots, { ...opts, pollMs: Math.min(opts.pollMs ?? 250, 250), signal: controller.signal });
+      let result;
+      try { result = await run(); }
+      catch (e) {
+        // A different root order or inode cannot adopt the old allocation table.
+        // Retire only a terminal, dead worker; a live mismatch remains unknown.
+        if (!terminal || !(e instanceof Error) || !e.message.includes('census walk request changed')) throw e;
+        await fs.promises.rm(opts.dir, { recursive: true, force: true });
+        result = await run();
+      }
+      if (!result.complete || !result.bytes || result.finishedAt === null) {
+        const ended = await readWalkState(opts.dir);
+        if (ended && fs.existsSync(walkAttemptFiles(opts.dir, ended.attempt).exit)) {
+          await fs.promises.writeFile(consumed, 'failed\n');
+        }
+        throw new Error(result.error ?? 'incomplete release-cut usage measurement');
+      }
+      // Mark consumed BEFORE effects. A crash or a subsequent removal can never
+      // turn the old before-reclaim allocation into a fresh after-reclaim total.
+      await fs.promises.writeFile(consumed, 'consumed\n');
+      if (Date.now() - result.finishedAt > CENSUS_DU_TIMEOUT_MS ||
+          !Number.isSafeInteger([...result.bytes.values()].reduce((sum, n) => sum + n, 0))) {
+        throw new Error('stale or unsafe release-cut usage measurement');
+      }
+      return result.bytes;
+    } catch (e) {
+      if (e instanceof DetachedWalkAbandoned) throw new Error('release-cut usage pending; managed census continues for adoption');
+      throw e;
+    } finally { clearTimeout(timer); }
+  }, { timeoutMs: Math.max(1, Math.min(1000, remaining())), retryMs: 25 });
+}
+
 /** The scheduled adapter holds the pin mutex across discovery and this owner call.
  * A cap never overrides the existing published/authored/lease/holder guards. All
  * expired eligible cuts are still collected, even when usage is already below cap. */
@@ -1365,8 +1446,8 @@ export async function reclaimCutWorktrees(
     ])];
   };
   // GNU du supplies allocated bytes without following descendant symlinks or
-  // opening FIFOs. One process and the existing run deadline cover the population. A
-  // failed/partial measurement refuses deletion rather than treating it as zero.
+  // opening FIFOs. The standing caller adopts one managed multi-root census;
+  // direct callers retain the inline progress/deadline contract.
   const measure = async () => {
     const existing: string[] = [];
     for (const p of population()) {
@@ -1380,7 +1461,7 @@ export async function reclaimCutWorktrees(
     const pinned = (p: string) => plan.verdicts.some((v) => pinnedPaths.includes(v.path) && pathsOverlap(p, v.realPath!));
     roots.sort((a, b) => Number(pinned(b)) - Number(pinned(a)) || a.localeCompare(b));
     if (!roots.length) return new Map<string, number>();
-    return measureCutUsage(roots, notAfterMs);
+    return deps.usageWalk ? measureDetachedCutUsage(roots, notAfterMs, deps.usageWalk) : measureCutUsage(roots, notAfterMs);
   };
   // Error.message starts with du's complete argument list. Retain the actual
   // failure before that list consumes the bounded receipt's diagnostic budget.
@@ -1392,22 +1473,31 @@ export async function reclaimCutWorktrees(
   };
   try {
     const before = await measure();
+    if (deps.refreshPlan) {
+      const fresh = await deps.refreshPlan();
+      const guards = (p: ReclaimPlan) => JSON.stringify([p.canonicalRoot, p.failClosed, p.latestPublished,
+        (p.interrupted ?? []).map(v => v.trash).sort(),
+        p.verdicts.map(v => [v.path, v.realPath, v.head, v.disposition, v.reasons]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))]);
+      if (fresh.failClosed.length || guards(fresh) !== guards(plan)) {
+        throw new Error('release-cut protection or population changed; resume with a fresh plan');
+      }
+    }
     cap.beforeBytes = [...before.values()].reduce((sum, n) => sum + n, 0);
     cap.pinnedBytes = [...before].filter(([p]) => plan.verdicts.some((v) => pinnedPaths.includes(v.path) && pathsOverlap(p, v.realPath!)))
       .reduce((sum, [, n]) => sum + n, 0);
     cap.pinnedOverageBytes = Math.max(0, cap.pinnedBytes - maxBytes);
-    if (options.dryRun) {
+    if (options.dryRun || (deps.usageWalk && targets.length === 0)) {
       cap.afterBytes = cap.beforeBytes;
       cap.overByBytes = Math.max(0, cap.afterBytes - maxBytes);
       cap.retainedPaths = [...before.keys()];
-      return { ok: true, dryRun: true, targets, errors, cap };
+      return { ok: true, dryRun: !!options.dryRun, targets, errors, cap };
     }
   } catch (e) {
     errors.push(`release-cut usage before reclaim: ${usageFailure(e)}`);
     return { ok: false, dryRun: !!options.dryRun, targets, errors, cap };
   }
   let execution: Awaited<ReturnType<typeof executeCutReclaim>> = { ok: true, results: [] };
-  try { if (targets.length) execution = await executeCutReclaim(plan, targets, deps); }
+  try { if (targets.length) execution = await executeCutReclaim(plan, targets, { ...deps, notAfterMs }); }
   catch (e) { errors.push(`release-cut execution: ${errText(e)}`); }
   try {
     const after = await measure();

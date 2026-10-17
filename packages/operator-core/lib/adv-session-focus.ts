@@ -98,7 +98,7 @@ export async function focusSessionWindow(
           focused: false,
           windowId,
           code: 'focus_failed',
-          reason: 'could not verify the target as active and visible on the current workspace; check desktop permissions and platform workspace support (Linux: current/window, Windows: current, macOS: window)',
+          reason: 'could not verify the target as active and visible on the requested workspace; check desktop permissions and platform support (Linux: current/window, Windows: window by default and current when the OS permits the move, macOS: window)',
         };
   } catch (error) {
     return {

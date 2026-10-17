@@ -4,6 +4,8 @@ const H = vi.hoisted(() => ({
   withWorkspace: vi.fn(),
   notify: vi.fn(),
   rows: new Map<string, unknown[]>(),
+  queries: [] as Array<{ sql: string; values: unknown[] }>,
+  connectorUnavailable: false,
 }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -27,8 +29,12 @@ import {
   upsertWorkspaceHostConnection,
 } from './observability-store';
 
-function fakeTx(strings: TemplateStringsArray, ..._values: unknown[]): Promise<unknown[]> {
+function fakeTx(strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]> {
   const sql = strings.join(' ').replace(/\s+/g, ' ').trim();
+  H.queries.push({ sql, values });
+  if (H.connectorUnavailable && sql.includes('FROM papercusp_auth.hosted_workspace_connectors connector')) {
+    return Promise.reject(new Error('authority unavailable'));
+  }
   const match = [...H.rows]
     .filter(([needle]) => sql.includes(needle))
     .sort(([left], [right]) => right.length - left.length)[0];
@@ -39,11 +45,47 @@ Object.assign(fakeTx, { json: (value: unknown) => value });
 
 beforeEach(() => {
   H.rows.clear();
+  H.queries.length = 0;
+  H.connectorUnavailable = false;
   H.notify.mockReset().mockResolvedValue(undefined);
   H.withWorkspace.mockReset().mockImplementation(async (_workspaceId, run) => run(fakeTx));
 });
 
 describe('workspace-host observability store', () => {
+  it('projects only scoped connector identity and heartbeat, with unknown on ambiguity or authority failure', async () => {
+    H.rows.set('FROM harness_shared.workspace_hosts', [{
+      id: 'host-1', name: 'research', target: 'gcp', observed_state: 'running',
+      desired_state: 'running', created_at: '2026-08-20T00:00:00Z',
+      tunnel_status: { connector: { routeLabel: 'saved-route', transport: 'websocket', health: 'healthy' } },
+    }]);
+    const connector = {
+      host_id: 'host-1', customer_workspace_id: 'customer-1', route_label: 'real-route',
+      state: 'active', transport: 'websocket', generation: 4,
+      heartbeat_at: '2026-10-17T18:00:00Z', credential_hash: 'DO-NOT-EXPORT',
+    };
+    H.rows.set('FROM papercusp_auth.hosted_workspace_connectors connector', [connector]);
+    const rows = await readWorkspaceHostControl('ws-1');
+    expect(rows[0]).toMatchObject({ hostedConnector: {
+      customerWorkspaceId: 'customer-1', routeLabel: 'real-route', state: 'active',
+      transport: 'websocket', generation: 4, lastSeenAt: '2026-10-17T18:00:00.000Z',
+      liveUntil: Date.parse('2026-10-17T18:00:00Z') + 90_000,
+    } });
+    expect(JSON.stringify(rows)).not.toContain('DO-NOT-EXPORT');
+    const sourceRead = H.queries.find(query => query.sql.includes('FROM papercusp_auth.hosted_workspace_connectors connector'))!;
+    expect(sourceRead.sql).toContain('customer.organization_id = connector.organization_id');
+    expect(sourceRead.sql).toContain('customer.workspace_host_id = connector.host_id');
+    expect(sourceRead.sql).toContain('connector.control_workspace_id =');
+    expect(sourceRead.values).toEqual(['ws-1', ['host-1']]);
+    expect(H.withWorkspace).toHaveBeenCalledWith('ws-1', expect.any(Function), {
+      bypassRlsForAdmin: true, statementTimeoutMs: 2_000, lockTimeoutMs: 500,
+    });
+
+    H.rows.set('FROM papercusp_auth.hosted_workspace_connectors connector', [connector, { ...connector, customer_workspace_id: 'customer-2' }]);
+    expect((await readWorkspaceHostControl('ws-1'))[0]).toMatchObject({ hostedConnector: undefined });
+    H.connectorUnavailable = true;
+    expect((await readWorkspaceHostControl('ws-1'))[0]).toMatchObject({ hostedConnector: undefined });
+  });
+
   it('projects scoped control-plane counts without exporting underlying private fields', async () => {
     H.rows.set('FROM harness_shared.workspace_host_operations operation', [{
       succeeded: '3', failed: '1', queued: '2', running: '1', success_p95_ms: 1250,

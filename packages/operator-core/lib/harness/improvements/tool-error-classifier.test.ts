@@ -368,6 +368,14 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     }
   });
 
+  it('classifies terminal MCP proxy failures as transient by code, not generic 502 prose', () => {
+    const captured = TOOL_ERROR_CORPUS.find((row) => row.errorCode === 'mcp_proxy_upstream_error')!;
+    expect(classifyToolError(captured.errorCode, captured.status, captured.message)).toBe('transient');
+    // The captured HTTP 502 wording/status alone must not reclassify an
+    // unrelated tool failure as shared transport infrastructure.
+    expect(classifyToolError(null, captured.status, captured.message)).toBe('structural');
+  });
+
   it('REGRESSION GUARD: handler_error + an invalid_args: message classifies caller in BOTH paths (the drift that motivated P-011)', () => {
     // Old TS fn: structural (its error_code branch never checked the message
     // prefix). Old SQL: caller (LIKE 'invalid_args:%'). They MUST agree now.
@@ -536,6 +544,29 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
         actual: message,
       },
     })).toMatchObject({ class: 'caller', direct: false });
+  });
+
+  it('classifies the persisted abbreviated native cleanup refusal without promoting its expected/actual prose', () => {
+    const message = 'Rejected rm -f style commands; use safer approach';
+    expect(classifyToolError('shell-command-rejected', undefined, message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'exec_command',
+      errorCode: 'shell-command-rejected',
+      message,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'Verifier command starts after removing stale unique receipt paths',
+        actual: 'CreateProcess rejected command containing rm -f before node ran.',
+      },
+    })).toMatchObject({ class: 'caller', direct: false });
+
+    for (const unrelated of [
+      'The shell command validator crashed before dispatch.',
+      'rm -f returned permission denied from the container filesystem',
+      message + '; the guard then crashed with an internal error',
+    ]) {
+      expect(classifyToolError('shell-command-rejected', 'error', unrelated)).toBe('structural');
+    }
   });
 
   it('classifies stopped or reassigned resolver-run refusals as expected caller control flow', () => {
@@ -1303,6 +1334,8 @@ describe('SQL generators are driven by the table (structural check; real-PG pari
     expect(sqlCase).toContain('error_code = ANY');
     expect(sqlCase).toContain('exceeded timeout');
     expect(sqlCase).toContain('openai_embed_failed_429');
+    expect(sqlCase).toContain('mcp_proxy_upstream_error');
+    expect(sqlCase).toContain('mcp_proxy_upstream_unavailable');
   });
 
   it('emits the specific structured-result code before the verifier message branch', () => {

@@ -23,6 +23,7 @@
  * its record can never interleave with its replacement.
  */
 import { createReadStream, promises as fsp, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { linuxProcStateFromStat, readProcessIdentity } from '../process-identity';
@@ -59,6 +60,8 @@ export interface DetachedWalkState {
   deadlineAt: number;
   /** Times a caller other than the launcher picked this walk up (one per operator restart). */
   adoptions: number;
+  /** Exact ordered population/identity and output contract for a multi-root usage walk. */
+  requestKey?: string;
 }
 
 export interface WalkLaunch {
@@ -208,6 +211,29 @@ export const managedWalkLauncher: WalkLauncher = async (cmd, args, meta) => {
 export async function runDetachedDuWalk(root: string, opts: DetachedWalkOptions): Promise<DuRun> {
   const floorBytes = opts.floorBytes ?? CENSUS_FLOOR_BYTES;
   const maxDepth = opts.maxDepth ?? CENSUS_MAX_DEPTH;
+  const privileged = Boolean(opts.sudo) || process.getuid?.() === 0;
+  return runDetachedWalk(root, opts, censusDuArgs(root, maxDepth), async (state, exitCode, overdue, failure) => {
+    const files = walkAttemptFiles(opts.dir, state.attempt);
+    const parser = new DuOutputParser(new DuTreeAccumulator(root, { floorBytes, maxDepth }));
+    await streamInto(files.out, (c) => parser.stdout(c));
+    await streamInto(files.err, (c) => parser.stderr(c));
+    const summary = parser.end();
+    const error = failure ??
+      (exitCode !== null && exitCode >= 125 && exitCode <= 127 ? `walk command could not run (exit ${exitCode})` : undefined);
+    return {
+      summary, deniedCount: parser.deniedCount, deniedSample: parser.deniedSample,
+      timedOut: overdue || exitCode === TIMEOUT_EXIT_STATUS, exitCode, privileged,
+      walkNote: walkNote(state), ...(error ? { error } : {}),
+    };
+  });
+}
+
+/** Shared launch/adopt/timeout transport; each reader owns its output contract. */
+async function runDetachedWalk<T>(
+  root: string, opts: DetachedWalkOptions, duArgs: string[],
+  read: (state: DetachedWalkState, exitCode: number | null, overdue: boolean, failure?: string) => Promise<T>,
+  requestKey?: string,
+): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? CENSUS_DU_TIMEOUT_MS;
   const pollMs = opts.pollMs ?? CENSUS_WALK_POLL_MS;
   const graceMs = opts.graceMs ?? CENSUS_WALK_GRACE_MS;
@@ -217,30 +243,8 @@ export async function runDetachedDuWalk(root: string, opts: DetachedWalkOptions)
   const isAlive = opts.isAlive ?? walkProcessAlive;
   const kill = opts.kill ?? killWalkGroup;
   const launch = opts.launch ?? managedWalkLauncher;
-  const privileged = Boolean(opts.sudo) || process.getuid?.() === 0;
   const dir = opts.dir;
   await fsp.mkdir(dir, { recursive: true });
-
-  const read = async (state: DetachedWalkState, exitCode: number | null, overdue: boolean, failure?: string): Promise<DuRun> => {
-    const files = walkAttemptFiles(dir, state.attempt);
-    const parser = new DuOutputParser(new DuTreeAccumulator(root, { floorBytes, maxDepth }));
-    await streamInto(files.out, (c) => parser.stdout(c));
-    await streamInto(files.err, (c) => parser.stderr(c));
-    const summary = parser.end();
-    const error =
-      failure ??
-      (exitCode !== null && exitCode >= 125 && exitCode <= 127 ? `walk command could not run (exit ${exitCode})` : undefined);
-    return {
-      summary,
-      deniedCount: parser.deniedCount,
-      deniedSample: parser.deniedSample,
-      timedOut: overdue || exitCode === TIMEOUT_EXIT_STATUS,
-      exitCode,
-      privileged,
-      walkNote: walkNote(state),
-      ...(error ? { error } : {}),
-    };
-  };
 
   let launchedHere = false;
   let adoptionCounted = false;
@@ -248,6 +252,9 @@ export async function runDetachedDuWalk(root: string, opts: DetachedWalkOptions)
     if (opts.signal?.aborted) throw new DetachedWalkAbandoned();
     const state = await readWalkState(dir);
     if (state) {
+      if (state.root !== root || state.requestKey !== requestKey) {
+        throw new Error('census walk request changed; retire its previous attempt before replacing it');
+      }
       const files = walkAttemptFiles(dir, state.attempt);
       const exitCode = await readExitStatus(files.exit);
       if (exitCode !== null) return read(state, exitCode, false);
@@ -278,7 +285,6 @@ export async function runDetachedDuWalk(root: string, opts: DetachedWalkOptions)
   async function launchAttempt(walkRoot: string, attempt: number, adoptions: number): Promise<void> {
     const files = walkAttemptFiles(dir, attempt);
     await Promise.all([files.out, files.err, files.exit, `${files.exit}.part`].map((p) => fsp.rm(p, { force: true })));
-    const duArgs = censusDuArgs(walkRoot, maxDepth);
     const [cmd, args] = opts.command
       ? opts.command(duArgs)
       : censusCommand('du', duArgs, {
@@ -303,6 +309,7 @@ export async function runDetachedDuWalk(root: string, opts: DetachedWalkOptions)
       launchedAt,
       deadlineAt: launchedAt + timeoutMs,
       adoptions,
+      ...(requestKey ? { requestKey } : {}),
     };
     // Recorded BEFORE the fork: a crash between here and the pid write reads as a vanished
     // attempt and the next caller moves to attempt+1, never re-using this attempt's files.
@@ -322,6 +329,142 @@ export async function runDetachedDuWalk(root: string, opts: DetachedWalkOptions)
       confinementSkippedReason: launched.confinementSkippedReason ?? null,
     });
   }
+}
+
+export interface DetachedUsageRun {
+  /** Null on ANY partial/failed measurement; never a lower bound posing as a cap total. */
+  bytes: Map<string, number> | null;
+  complete: boolean;
+  startedAt: number;
+  finishedAt: number | null;
+  exitCode: number | null;
+  timedOut: boolean;
+  error?: string;
+  walkNote?: string;
+}
+
+// This collector runs INSIDE the existing managed census scope. It keeps du's one
+// cross-root inode table, but persists only root totals and a bounded progress row,
+// rather than gigabytes of --all output. Neither stderr nor partial records renew
+// its inactivity timer. The caller may leave; timeout(1) still bounds the worker.
+const USAGE_COLLECTOR = String.raw`
+const { spawn } = require('node:child_process');
+const { writeFileSync, renameSync } = require('node:fs');
+const { resolve } = require('node:path');
+const roots = JSON.parse(process.argv[1]), progressPath = process.argv[2];
+const totals = new Map();
+let pending = '', stderr = '', failure = '', records = 0, stdoutBytes = 0;
+let lastMetadataAt = null, lastMetadataPath = null, savedAt = 0, timer;
+const startedAt = Date.now();
+const child = spawn(process.argv[3], process.argv.slice(4), { stdio: ['ignore', 'pipe', 'pipe'] });
+function progress(finishedAt = null) {
+  const at = Date.now();
+  if (finishedAt === null && at - savedAt < 1000) return;
+  savedAt = at;
+  const row = { startedAt, finishedAt, metadataRecords: records, stdoutBytes,
+    completedRoots: totals.size, totalRoots: roots.length, lastMetadataAt,
+    lastMetadataPath, error: failure || null };
+  writeFileSync(progressPath + '.part', JSON.stringify(row));
+  renameSync(progressPath + '.part', progressPath);
+}
+function stop(reason) { failure ||= reason; child.kill('SIGKILL'); }
+function arm() {
+  clearTimeout(timer);
+  timer = setTimeout(() => stop('usage walk made no metadata progress for 10 seconds'), 10000);
+}
+progress(); arm();
+child.stdout.setEncoding('utf8');
+child.stdout.on('data', chunk => {
+  if (failure) return;
+  stdoutBytes += Buffer.byteLength(chunk);
+  const rows = (pending + chunk).split('\0'); pending = rows.pop() || '';
+  for (const row of rows) {
+    const tab = row.indexOf('\t'), value = row.slice(0, tab), p = row.slice(tab + 1), n = Number(value);
+    if (tab < 1 || !/^\d+$/.test(value) || !Number.isSafeInteger(n) || resolve(p) !== p ||
+        !roots.some(root => p === root || p.startsWith(root + '/')) || totals.has(p)) {
+      stop('invalid usage walk output'); return;
+    }
+    records++; lastMetadataAt = Date.now(); lastMetadataPath = p.slice(-1024);
+    if (roots.includes(p)) totals.set(p, n);
+  }
+  if (pending.length > 65536) { stop('oversized usage walk record'); return; }
+  if (rows.length) arm();
+  progress();
+});
+child.stderr.setEncoding('utf8');
+child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4096); });
+child.once('error', error => { failure ||= error.message; });
+child.once('close', (code, signal) => {
+  clearTimeout(timer);
+  if (code !== 0 || signal || pending || totals.size !== roots.length) failure ||= 'incomplete usage walk';
+  progress(Date.now());
+  if (failure) { process.stderr.write(failure + '\n' + stderr); process.exitCode = 1; }
+  else for (const [p, bytes] of totals) process.stdout.write(bytes + '\t' + p + '\0');
+});
+`;
+
+/** Ordered, non-overlapping roots are one allocation population (pinned roots first).
+ * Reusing a directory with another population refuses before launching any process.
+ * Callers serialize directory ownership, bound waiting with signal, and retire a
+ * consumed/obsolete attempt before requesting a new measurement. */
+export async function runDetachedDuUsage(roots: readonly string[], opts: DetachedWalkOptions): Promise<DetachedUsageRun> {
+  if (!roots.length || roots.some((p, i) => resolve(p) !== p || p === '/' ||
+      roots.some((other, j) => i !== j && (p === other || p.startsWith(other + sep))))) {
+    throw new Error('usage walk requires unique non-overlapping absolute roots');
+  }
+  const identities = async () => Promise.all(roots.map(async p => {
+    const st = await fsp.lstat(p);
+    if (!st.isDirectory()) throw new Error('usage walk root is not a directory');
+    return [p, st.dev, st.ino];
+  }));
+  const population = JSON.stringify(await identities());
+  const requestKey = createHash('sha256').update('root-usage-v1\0' + population).digest('hex');
+  const progressPath = join(opts.dir, 'usage-progress.json');
+  const duArgs = ['--all', '--one-file-system', '--block-size=1', '--null', '--', ...roots];
+  const command = opts.command ?? ((args: string[]) => censusCommand('du', args, bins));
+  const bins = {
+    ionice: await resolveCensusBin('ionice'), nice: await resolveCensusBin('nice'), sudo: opts.sudo ?? null,
+  };
+  return runDetachedWalk(roots[0]!, { ...opts, command: args => {
+    const [cmd, argv] = command(args);
+    return [process.execPath, ['-e', USAGE_COLLECTOR, JSON.stringify(roots), progressPath, cmd, ...argv]];
+  } }, duArgs, async (state, exitCode, overdue, failure) => {
+    const files = walkAttemptFiles(opts.dir, state.attempt);
+    let error = failure, pending = '', finishedAt: number | null = null;
+    const bytes = new Map<string, number>();
+    await streamInto(files.out, chunk => {
+      if (error) return;
+      const rows = (pending + chunk).split('\0'); pending = rows.pop() ?? '';
+      for (const row of rows) {
+        const tab = row.indexOf('\t'), value = row.slice(0, tab), p = row.slice(tab + 1), n = Number(value);
+        if (tab < 1 || !/^\d+$/.test(value) || !Number.isSafeInteger(n) || !roots.includes(p) || bytes.has(p)) {
+          error = 'invalid usage walk root totals'; return;
+        }
+        bytes.set(p, n);
+      }
+      if (pending.length > 65536) error = 'oversized usage walk root record';
+    });
+    let stderr = '';
+    await streamInto(files.err, chunk => { stderr = (stderr + chunk).slice(-4096); });
+    try {
+      const progress = JSON.parse(await fsp.readFile(progressPath, 'utf8'));
+      if (Number.isSafeInteger(progress.startedAt) && progress.startedAt >= state.launchedAt &&
+          Number.isSafeInteger(progress.finishedAt) && progress.finishedAt >= progress.startedAt &&
+          progress.finishedAt <= (opts.now ?? Date.now)() && progress.error === null &&
+          Number.isSafeInteger(progress.metadataRecords) && progress.metadataRecords >= roots.length &&
+          progress.totalRoots === roots.length && progress.completedRoots === roots.length) finishedAt = progress.finishedAt;
+    } catch { /* Missing terminal metadata cannot certify a complete measurement. */ }
+    if (overdue || exitCode !== 0 || pending || bytes.size !== roots.length || finishedAt === null) {
+      error ??= `incomplete usage walk (exit ${exitCode}): ${stderr}`;
+    }
+    try { if (JSON.stringify(await identities()) !== population) error ??= 'usage walk root identity changed'; }
+    catch { error ??= 'usage walk root identity unavailable'; }
+    return {
+      bytes: error ? null : bytes, complete: !error, startedAt: state.launchedAt, finishedAt,
+      exitCode, timedOut: overdue || exitCode === TIMEOUT_EXIT_STATUS,
+      ...(error ? { error } : {}), walkNote: walkNote(state),
+    };
+  }, requestKey);
 }
 
 async function waitForWalk(

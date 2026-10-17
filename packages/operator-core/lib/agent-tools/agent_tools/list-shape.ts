@@ -1,6 +1,6 @@
 /**
  * agent_tools:list payload-tier shapers (context-trimming-tiers-2026-07-01
- * P-023). 7d MCP telemetry: avg 108KB/call — the full ~550-tool catalog with
+ * P-023). 7d MCP telemetry: avg 108KB/call — the full tool catalog with
  * descriptions + resolved guidance per row. A trimmed session is discovering
  * a tool NAME (tools:find is the semantic front door) — it needs name /
  * capability / allowed + a description excerpt, not the whole playbook.

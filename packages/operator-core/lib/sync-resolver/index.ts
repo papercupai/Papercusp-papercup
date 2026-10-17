@@ -5204,20 +5204,27 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
 
   'learning.dream': {
-    backingTables: ['harness_shared.routines', 'harness_shared.dream_runs', 'harness_shared.pot_settings', 'harness_shared.learning_spend_events', 'harness_shared.learning_governor_loops', 'harness_shared.learning_pot_scope', 'harness_shared.scout_routed_ideas', 'harness_shared.experiment_runs'],
+    backingTables: ['harness_shared.routines', 'harness_shared.dream_runs', 'harness_shared.pot_settings', 'harness_shared.learning_spend_events', 'harness_shared.learning_governor_loops', 'harness_shared.learning_pot_scope', 'harness_shared.scout_routed_ideas', 'harness_shared.experiment_runs', 'harness_shared.gym_autoloop_config', 'harness_shared.operator_gym_gates', 'harness_shared.scout_ticks'],
     argsSchema: z.object({
       potSlug: z.string().trim().min(1).max(120),
       mode: z.enum(['manual', 'auto']).optional(),
-      view: z.enum(['controls', 'metrics', 'history', 'run']).optional(),
+      view: z.enum(['controls', 'metrics', 'history', 'run', 'observations']).optional(),
+      expectedRuntime: z.object({ host: z.string().trim().min(1), processId: z.string().trim().min(1), buildSha: z.string().trim().min(1) }).strict().optional(),
       since: z.string().datetime().optional(), until: z.string().datetime().optional(),
       cursor: z.string().max(800).optional(), runId: z.string().trim().min(1).max(500).optional(),
-    }).refine(args => args.view !== 'run' || Boolean(args.runId), 'A run id is required for Dream detail'),
+    }).refine(args => args.view !== 'run' || Boolean(args.runId), 'A run id is required for Dream detail')
+      .refine(args => args.view !== 'observations' || Boolean(args.expectedRuntime && args.since && args.until), 'Observations require an exact expected runtime and window'),
     resolve: async (raw: unknown) => {
-      const args = raw as { potSlug: string; mode?: 'manual' | 'auto'; view?: 'controls' | 'metrics' | 'history' | 'run'; since?: string; until?: string; cursor?: string; runId?: string };
+      const args = raw as { potSlug: string; mode?: 'manual' | 'auto'; view?: 'controls' | 'metrics' | 'history' | 'run' | 'observations'; since?: string; until?: string; cursor?: string; runId?: string; expectedRuntime?: { host: string; processId: string; buildSha: string } };
       const [{ activeWorkspaceId }, { routeWithWorkspace }, { readDreamControlSnapshot }] = await Promise.all([
         import('../workspace-registry'), import('../route-workspace'), import('../dream/dream-control'),
       ]);
       const workspaceId = activeWorkspaceId();
+      if (args.view === 'observations') {
+        const { readDreamControlObservations } = await import('../dream/dream-control-observations');
+        return routeWithWorkspace(async tx => [await readDreamControlObservations(tx as unknown as import('postgres').Sql,
+          { workspaceId, potSlug: args.potSlug, since: args.since!, until: args.until!, expectedRuntime: args.expectedRuntime! })]);
+      }
       if (args.view === 'run') {
         const { readDreamDetail } = await import('../dream/dream-read');
         return routeWithWorkspace(async tx => {
@@ -6404,7 +6411,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // (P-009) and Papercusp relay state (P-008). The screen's writes (routes/remote-access,
   // /connected-apps/rotate) and the relay's reconciler invalidate it.
   'remoteAccess.overview': {
-    backingTables: ['harness_shared.connected_apps', 'harness_shared.connected_app_access_settings'],
+    backingTables: ['harness_shared.connected_apps', 'harness_shared.connected_app_access_settings',
+      'harness_shared.workspace_hosts', 'harness_shared.workspace_host_connections'],
     argsSchema: z.object({ workspaceId: z.string().trim().min(1).max(200).default('default') }),
     resolve: async (args) => {
       const { workspaceId } = args as { workspaceId: string };
@@ -6428,7 +6436,35 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       } catch (err) {
         portalRelayError = err instanceof Error ? err.message : String(err);
       }
-      return [{ workspaceId, remoteAccess, entries, ownTunnel, ownTunnelError, portalRelay, portalRelayError }];
+      // Reuse the CLI's validated local store; never project hosted login tokens,
+      // SSH identities, or provider credentials into this presentation model.
+      let sshProfiles: unknown[] = [];
+      let sshProfilesError: string | null = null;
+      try {
+        const { loadPsuConnectionStore } = await import('../../../../apps/operator/scripts/psu-connection-front-controller.mjs');
+        const profiles = loadPsuConnectionStore().profiles as Array<{ kind: string; name: string; host?: string }>;
+        sshProfiles = profiles.filter(profile => profile.kind === 'ssh').map(profile => ({
+          id: profile.name, label: profile.name, host: profile.host,
+          scope: 'This computer', state: 'unknown', health: 'unknown',
+          sourceRef: `psu-ssh:${profile.name}`,
+        }));
+      } catch {
+        sshProfilesError = 'Saved SSH profiles could not be read.';
+      }
+      let hostedConnectors: unknown[] = [];
+      let hostedConnectorsError: string | null = null;
+      try {
+        const { readWorkspaceHostControl } = await import('../workspace-host/observability-store');
+        const hosts = await readWorkspaceHostControl(workspaceId) as Array<{
+          kind: string; id: string; name: string; observedState?: string; hostedConnector?: unknown;
+        }>;
+        hostedConnectors = hosts.filter(host => host.kind === 'workspace' && host.observedState !== 'absent')
+          .map(host => ({ id: host.id, label: host.name, connector: host.hostedConnector ?? null }));
+      } catch {
+        hostedConnectorsError = 'Hosted connector status could not be read.';
+      }
+      return [{ workspaceId, remoteAccess, entries, ownTunnel, ownTunnelError, portalRelay, portalRelayError,
+        sshProfiles, sshProfilesError, hostedConnectors, hostedConnectorsError }];
     },
   },
 

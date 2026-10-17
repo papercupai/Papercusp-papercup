@@ -240,6 +240,68 @@ async function ready(
 }
 
 describe("HostedWorkspaceSession", () => {
+  it("consumes authoritative connector liveness through the workspace panel and ages out without a sync update", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-10-17T18:00:00Z'));
+      const workspace: WorkspaceHostControlRow = {
+        kind: 'workspace', id: 'host-1', name: 'Workspace', connectionId: 'connection-1',
+        target: 'gcp', scopeLabel: 'project', region: 'us-central1', size: 'small', image: 'linux',
+        diskGiB: 30, network: 'default', desiredState: 'running', observedState: 'running',
+        recoverability: { kind: 'none', label: 'None' }, capabilities: {},
+        tunnel: { connector: { routeLabel: 'route-1', transport: 'websocket', health: 'healthy' } },
+        hostedConnector: {
+          customerWorkspaceId: 'ws-1', routeLabel: 'route-1', state: 'active', transport: 'websocket',
+          generation: 1, lastSeenAt: new Date().toISOString(), liveUntil: Date.now() + 90_000,
+        },
+      };
+      renderConnection(<HostedDesktopConnection workspace={workspace} showDesktop={false} />);
+      const inventory = screen.getByTestId('hosted-connector-inventory');
+      expect(inventory.dataset.connectionHealth).toBe('healthy');
+      expect(inventory.textContent).toContain('Scope: ws-1 · Transport: WEBSOCKET · Connected');
+      act(() => vi.advanceTimersByTime(105_000));
+      expect(inventory.dataset.connectionHealth).toBe('offline');
+      expect(inventory.textContent).toContain('Offline');
+      expect(screen.queryByTestId('browser-session-inventory')).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['pending', 'revoked'] as const)('shows %s connector state independently of saved configuration', state => {
+    render(<HostedWorkspaceSession hostId="host-1" routeLabel="route-1" workspaceName="Workspace"
+      connectorStatus={{ customerWorkspaceId: 'ws-1', routeLabel: 'route-1', state, transport: 'websocket',
+        generation: 2, lastSeenAt: new Date().toISOString(), liveUntil: Date.now() + 90_000 }} />);
+    const inventory = screen.getByTestId('hosted-connector-inventory');
+    expect(inventory.dataset.connectionHealth).toBe(state === 'pending' ? 'degraded' : 'offline');
+    expect(inventory.textContent).toContain(state === 'pending' ? 'Connecting' : 'Revoked');
+    expect(screen.getByRole('button', { name: 'Revoke connector' }).hasAttribute('disabled')).toBe(state === 'revoked');
+  });
+
+  it('confirms connector-specific revocation, preserves errors, and routes only to the existing scoped endpoint', async () => {
+    const original = M.fetch.getMockImplementation()!;
+    let refused = true;
+    M.fetch.mockImplementation((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).endsWith('/connectors/revoke')
+        ? Promise.resolve(Response.json(refused ? { ok: false, error: { code: 'workspace_binding_mismatch' } } : { ok: true }, { status: refused ? 403 : 200 }))
+        : original(input, init));
+    render(<HostedWorkspaceSession hostId="host-1" routeLabel="route-1" workspaceName="Workspace"
+      connectorStatus={{ customerWorkspaceId: 'ws-1', routeLabel: 'route-1', state: 'active', transport: 'websocket',
+        generation: 2, lastSeenAt: new Date().toISOString(), liveUntil: Date.now() + 90_000 }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke connector' }));
+    expect(screen.getByRole('dialog', { name: 'Revoke hosted connector' }).textContent).toContain('SSH keys, phone pairings, and your browser sign-in remain unchanged');
+    expect(M.fetch).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm revoke connector' }));
+    await screen.findByText('Could not revoke connector: workspace_binding_mismatch');
+    expect(screen.getByTestId('hosted-connector-inventory').dataset.connectionHealth).toBe('healthy');
+    refused = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm revoke connector' }));
+    await screen.findByText('Connector revoked. Re-enroll it to restore hosted access. Other credentials are unchanged.');
+    expect(M.fetch).toHaveBeenLastCalledWith('/api/hosted/workspaces/ws-1/connectors/revoke', expect.objectContaining({
+      method: 'POST', credentials: 'same-origin', body: JSON.stringify({ hostId: 'host-1', routeLabel: 'route-1', transport: 'websocket' }),
+    }));
+    expect(screen.getByTestId('hosted-connector-inventory').dataset.connectionState).toBe('revoked');
+    expect(screen.getByTestId('hosted-connector-inventory').dataset.connectionHealth).toBe('offline');
+  });
+
   it("projects real browser binding separately from saved connector configuration and clears liveness on close", async () => {
     render(<HostedWorkspaceSession hostId="host-1" routeLabel="saved-route" workspaceName="Workspace" />);
     const connector = screen.getByTestId("hosted-connector-inventory");

@@ -118,7 +118,7 @@ export interface MintBlindGapReviewerDeps {
 
 export type MintBlindGapReviewerResult =
   | { ok: true; launch: unknown; kickoff: string; activationAuditSeq: number }
-  | { ok: false; code: 'workspace_required' | 'no_activation_audit' | 'invalid_product_reads'; message: string };
+  | { ok: false; code: 'workspace_required' | 'no_activation_audit' | 'no_owner_turns' | 'invalid_product_reads'; message: string };
 
 async function defaultLauncher(): Promise<{ handler: LaunchHandler; confinementKey: symbol }> {
   const mod = await import('./agent-tools/capability/launch-agent');
@@ -142,6 +142,10 @@ export async function mintBlindGapReviewer(
   if (!brief) {
     return { ok: false, code: 'no_activation_audit',
       message: `${input.slug} has no activation audit, so there are no owner turns to brief a reviewer with.` };
+  }
+  if (brief.ownerTurns.length === 0) {
+    return { ok: false, code: 'no_owner_turns',
+      message: `${input.slug}'s activation audit resolves no authenticated owner turns. Repair source-origin enrollment and audit mappings before minting a blind reviewer.` };
   }
   const productReads = input.productReads ? { harness: input.harness,
     docsHarness: input.productReads.docsHarness ?? input.harness,

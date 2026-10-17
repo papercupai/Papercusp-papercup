@@ -356,7 +356,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     roots: ['/var/lib/docker', '/var/lib/containers'],
     stores: ['docker:'],
     keep: { kind: 'native', manager: 'docker/podman', rule: 'build cache 24h, unreferenced images 168h, dangling anonymous volumes 24h' },
-    enforcers: [{ kind: 'existing', ref: 'papercusp/bin/reclaim-docker-disk.sh', schedule: 'papercup-docker-reclaim.timer, hourly at :17', sourceSha256: '76d38327c9c582b5123ef78592ac3a6154799e491a21881f6028f325e72c818f' }],
+    enforcers: [{ kind: 'existing', ref: 'papercusp/bin/reclaim-docker-disk.sh', schedule: 'papercup-docker-reclaim.timer, hourly at :17', sourceSha256: '1f259799b926a0e127e73b17234c741222bf38b36935fc1cfe7cd12e0d63172d' }],
     note: 'Leaked Postgres test containers are fixed at the source by P-005 (R-4).',
   },
   {

@@ -4,7 +4,7 @@
  *
  * WHY THIS EXISTS. opencode interpolates its live cap constants straight into its
  * bash tool description, so the model learns the cap BEFORE tripping it. We cannot
- * copy that shape: with ~550 tools against the P-011 prompt-weight budget (1500
+ * copy that shape: with hundreds of tools against the P-011 prompt-weight budget (1500
  * soft / 1600 hard chars per tool), per-tool cap text is the expensive form and
  * `tools-md-sync` would red on it. The same property is available for the price of
  * ONE section in standing context — the door number, and the knob that avoids it.

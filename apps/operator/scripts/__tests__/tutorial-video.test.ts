@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { PRODUCT_TUTORIAL_CHAPTERS } from '../../../../packages/operator-core/lib/onboarding/product-tutorial-lesson';
-import { captionCues, validateManifest, verifyPublishedTutorial, vttTimestamp, webVtt } from '../tutorial-video-contract.mjs';
+import { captionCues, tutorialVideoMedia, validateManifest, verifyPublishedTutorial, vttTimestamp, webVtt } from '../tutorial-video-contract.mjs';
 
 const manifest = () => ({ project: { workspaceId: 'same-cloud', projectSlug: 'workshop-planner', portalOrigin: 'https://app.papercusp.com' },
   chapters: PRODUCT_TUTORIAL_CHAPTERS.map(chapter => ({ id: chapter.id, text: 'Actual narration.', recordingPath: '/recorded/portal.webm', recordingStartSeconds: 0, recordingDurationSeconds: 5,
@@ -109,5 +109,58 @@ describe('published tutorial object verification', () => {
     const fetcher: typeof fetch = async (input, init) => String(input).endsWith('.vtt')
       ? new Response(text, { headers: { 'content-type': 'text/vtt' } }) : served(String(input), init);
     await expect(verifyPublishedTutorial({ ...publication(), captionsSha256: hash(text) }, { fetcher })).rejects.toThrow('no cues');
+  });
+  const transcript = '<!doctype html><p>Real captions.</p>';
+  const portalPublication = () => ({ ...publication(), portalCaptionsUrl: 'https://app.papercusp.com/tutorial/v1.vtt',
+    transcriptUrl: 'https://app.papercusp.com/tutorial/v1.html', transcriptSha256: hash(transcript) });
+  const portalServed: typeof fetch = async (input, init) => String(input).startsWith('https://app.papercusp.com/')
+    ? new Response(String(input).endsWith('.vtt') ? captions : transcript, { headers: { 'content-type': String(input).endsWith('.vtt') ? 'text/vtt' : 'text/html' } })
+    : served(String(input), init);
+  const production = () => ({ schemaVersion: 1, ...publication(), transcriptSha256: hash(transcript), durationSeconds: 60,
+    chapters: PRODUCT_TUTORIAL_CHAPTERS.map((chapter, index) => ({ id: chapter.id, startSeconds: index * 5, durationSeconds: 5, transcript: `Narration ${chapter.id}.` })) });
+  it('checks the exact Portal caption/transcript copies and maps measured chapters to the existing guide prop', async () => {
+    const checked = await verifyPublishedTutorial(portalPublication(), { fetcher: portalServed });
+    const media = tutorialVideoMedia(production(), checked);
+    expect(media).toMatchObject({ src: publication().videoUrl, captionsSrc: portalPublication().portalCaptionsUrl, transcriptHref: portalPublication().transcriptUrl });
+    expect(media.chapters).toEqual(production().chapters.map(({ durationSeconds: _, ...chapter }) => chapter));
+    expect(media.id).toMatch(/^cloud-portal-tutorial-[a-f0-9]{64}$/);
+    expect(tutorialVideoMedia(production(), checked).id).toBe(media.id);
+  });
+  it.each(['captions', 'transcript', 'mime', 'missing'])('rejects a stale or unavailable Portal %s copy despite valid R2 objects', async fault => {
+    const fetcher: typeof fetch = async (input, init) => {
+      if (!String(input).startsWith('https://app.papercusp.com/')) return portalServed(input, init);
+      if (fault === 'missing') return new Response(null, { status: 404 });
+      if (fault === 'mime') return new Response(captions, { headers: { 'content-type': 'text/html' } });
+      if (String(input).endsWith(fault === 'captions' ? '.vtt' : '.html')) return new Response('stale', { headers: { 'content-type': fault === 'captions' ? 'text/vtt' : 'text/html' } });
+      return portalServed(input, init);
+    };
+    await expect(verifyPublishedTutorial(portalPublication(), { fetcher })).rejects.toThrow(/Portal/);
+  });
+  it('refuses cross-origin Portal assets before any network call', async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(verifyPublishedTutorial({ ...portalPublication(), portalCaptionsUrl: 'https://other.example/v1.vtt' }, { fetcher })).rejects.toThrow('Portal origin');
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it.each(['videoSha256', 'captionsSha256', 'transcriptSha256', 'videoBytes'])('refuses a %s mismatch between production and verified uploads', async key => {
+    const checked = await verifyPublishedTutorial(portalPublication(), { fetcher: portalServed });
+    expect(() => tutorialVideoMedia({ ...production(), [key]: key === 'videoBytes' ? 1 : 'a'.repeat(64) }, checked)).toThrow('production receipt');
+  });
+  it.each(['missing', 'order', 'offset', 'duration', 'transcript', 'total'])('refuses %s chapter metadata rather than guessing guide offsets', async fault => {
+    const checked = await verifyPublishedTutorial(portalPublication(), { fetcher: portalServed });
+    const receipt = production();
+    if (fault === 'missing') receipt.chapters.pop();
+    if (fault === 'order') receipt.chapters.reverse();
+    if (fault === 'offset') receipt.chapters[3].startSeconds += 1;
+    if (fault === 'duration') receipt.chapters[3].durationSeconds = NaN;
+    if (fault === 'transcript') receipt.chapters[3].transcript = ' ';
+    if (fault === 'total') receipt.durationSeconds += 2;
+    expect(() => tutorialVideoMedia(receipt, checked)).toThrow(/chapter|timeline/);
+  });
+  it('changes saved-position identity when the delivered caption edition changes', async () => {
+    const checked = await verifyPublishedTutorial(portalPublication(), { fetcher: portalServed });
+    const before = tutorialVideoMedia(production(), checked);
+    const captionsSha256 = 'b'.repeat(64);
+    const after = tutorialVideoMedia({ ...production(), captionsSha256 }, { ...checked, captionsSha256 });
+    expect(after.id).not.toBe(before.id);
   });
 });

@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { copyTree, overlayLayout, parseCgroupStats, prepareWorkdir, removeTree, sessionSpawn, systemdRunArgs, wrapperScript, STATS_MARKER } from './session-process';
+import { capacityCacheRoot } from './host-admission';
 
 describe('cgroup accounting', () => {
   it('parses the last epilogue line and tolerates a missing value', () => {
@@ -65,6 +66,61 @@ describe('sessionSpawn', () => {
 });
 
 describe('copyTree / removeTree', () => {
+  it.skipIf(process.platform !== 'linux')('uses the native data filesystem for capacity copies and preserves root-backed destinations before refusal', async () => {
+    const cache = capacityCacheRoot(__dirname);
+    const rootDevice = statSync('/').dev;
+    // Calibrate the two actual devices. tmpdir may already be redirected to
+    // data storage by the test runner, so it cannot stand in for root here.
+    expect(cache).toBe('/mnt/data/agent-capacity');
+    expect(statSync('/mnt/data').dev).not.toBe(rootDevice);
+    expect(statSync(homedir()).dev).toBe(rootDevice);
+    mkdirSync(cache, { recursive: true });
+    const dataRoot = realpathSync(mkdtempSync(path.join(cache, 'placement-native-')));
+    const rootRoot = realpathSync(mkdtempSync(path.join(homedir(), '.capacity-placement-native-')));
+    try {
+      const src = path.join(dataRoot, 'prepared');
+      mkdirSync(src);
+      writeFileSync(path.join(src, 'source.txt'), 'native capacity source');
+      symlinkSync('source.txt', path.join(src, 'source-link'));
+      const dst = path.join(dataRoot, 'replay-work', 'session');
+      const workdir = await prepareWorkdir('copy', src, dst);
+      expect(statSync(dst).dev).toBe(statSync('/mnt/data').dev);
+      expect(readFileSync(path.join(dst, 'source-link'), 'utf8')).toBe('native capacity source');
+      writeFileSync(path.join(dst, 'source.txt'), 'private session write');
+      expect(readFileSync(path.join(src, 'source.txt'), 'utf8')).toBe('native capacity source');
+      await workdir.teardown(false);
+      expect(existsSync(dst)).toBe(false);
+
+      const existing = path.join(rootRoot, 'existing');
+      mkdirSync(existing);
+      const sentinel = path.join(existing, 'keep.txt');
+      writeFileSync(sentinel, 'owned root-side destination');
+      const identity = statSync(sentinel);
+      await expect(copyTree(src, existing)).rejects.toThrow(/refuse the root filesystem/);
+      expect(readFileSync(sentinel, 'utf8')).toBe('owned root-side destination');
+      expect(statSync(sentinel).ino).toBe(identity.ino);
+      expect(existsSync(path.join(existing, 'source.txt'))).toBe(false);
+
+      const absent = path.join(rootRoot, 'uncreated', 'session');
+      await expect(prepareWorkdir('copy', src, absent)).rejects.toThrow(/refuse the root filesystem/);
+      await expect(prepareWorkdir('overlay', src, absent)).rejects.toThrow(/refuse the root filesystem/);
+      expect(existsSync(path.dirname(absent))).toBe(false);
+      expect(existsSync(`${absent}.ovl`)).toBe(false);
+
+      const alias = path.join(dataRoot, 'root-alias');
+      symlinkSync(rootRoot, alias);
+      await expect(copyTree(src, path.join(alias, 'existing'))).rejects.toThrow(/refuse the root filesystem/);
+      await expect(prepareWorkdir('overlay', src, path.join(alias, 'uncreated', 'session')))
+        .rejects.toThrow(/refuse the root filesystem/);
+      expect(readFileSync(sentinel, 'utf8')).toBe('owned root-side destination');
+      expect(statSync(sentinel).ino).toBe(identity.ino);
+      expect(existsSync(path.dirname(absent))).toBe(false);
+    } finally {
+      rmSync(rootRoot, { recursive: true, force: true });
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a root-side repository copy before replacing or creating its destination', async () => {
     if (process.platform !== 'linux') return;
     await expect(copyTree('/unread-source', '/capacity-uncreated/child')).rejects.toThrow(/refuse the root filesystem/);

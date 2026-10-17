@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 977,
+  "count": 978,
   "tools": [
     {
       "name": "ablation:report",
@@ -7215,7 +7215,7 @@
           "POST"
         ]
       },
-      "description": "Focus, raise, activate, or bring to the foreground an EXISTING live managed agent's desktop terminal window by coordination ownerId. Workspace-aware on Linux/X11, Windows (including WSL desktop hosts), and macOS. Linux supports workspace current (bring here, default) or window (switch there); Windows brings here; macOS switches to the window's Space and needs Accessibility/Screen Recording permission. Reuses the same observed-activation backend as the HUD's Focus window button and never resumes, forks, terminates, or duplicates the agent. Returns focused:false when visibility or activation cannot be verified.",
+      "description": "Focus, raise, activate, or bring to the foreground an EXISTING live managed agent's desktop terminal window by coordination ownerId. Workspace-aware on Linux/X11, Windows (including WSL desktop hosts), and macOS. Linux defaults to current (bring here); Windows defaults to window (switch there), and explicit current refuses when Windows denies moving the foreign window; macOS switches to the window's Space and needs Accessibility/Screen Recording permission. Reuses the same observed-activation backend as the HUD's Focus window button and never resumes, forks, terminates, or duplicates the agent. Returns focused:false when visibility or activation cannot be verified.",
       "capabilities": [
         "coord:mark-terminal"
       ],
@@ -29002,6 +29002,39 @@
         "when": "After a gate-red fix is committed on staging, use `admit{paths}` for exactly the changed files; also inspect a frozen, blocked, or dead-fixer queue.",
         "notWhen": "Use the selected harness scope, not a harness/workspace key in the payload. Never catch up to tip, retire live/unknown work, launch a checkpoint, or deploy.",
         "chaining": "`get` → dry-run `admit{paths, expectedCandidate, expectedRepairHead, expectedUpdatedAtMs}` → verify proof → repeat with `confirm:true`. If staging may move between preview and confirmation, use `wholeBlob:true, sourceCommit:<reviewed integration ancestor SHA>, reason`. If R6 returns `precheck-running`, read it via `get`, then repeat with refreshed identity after pass; retry only a terminal failed pre-check. For missed hook capture, `patchCommit:<full SHA>, reason` replays that commit’s named-path delta. Retire only when `get` proves `retireAllowed` and pass its exact identity."
+      }
+    },
+    {
+      "name": "release:test-downgrade",
+      "http": {
+        "path": "/api/agent-tools/release/test-downgrade",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Downgrade ONE failing test case so it stops blocking main promotion, after fixing and ejecting were ruled out. Refused unless reason, owner and a filed bugId are given; a critical-area test also needs acknowledgement { area, risk } and notifies the owner at once. Ops: create, list, revoke (blocking again), digest (created today).",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "release-fixer",
+        "release-manager"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A blocking test fails on the gate candidate and can be neither fixed now nor ejected by attribution.",
+        "notWhen": "Before trying a fix or an eject, or to silence a whole file: downgrade the failing case only.",
+        "chaining": "file the bug → release:test-downgrade { op:create } → fix → { op:revoke }."
       }
     },
     {

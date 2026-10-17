@@ -168,6 +168,16 @@ export interface WorkspaceHostControlRow {
   };
   versionDrift?: unknown[];
   tunnel?: Record<string, unknown>;
+  /** Redacted authoritative connector ledger; never inferred from saved tunnel config. */
+  hostedConnector?: {
+    customerWorkspaceId: string;
+    routeLabel: string;
+    state: 'pending' | 'active' | 'revoked';
+    transport: 'sse' | 'websocket';
+    generation: number;
+    lastSeenAt: string | null;
+    liveUntil: number | null;
+  };
   costSignals?: unknown[];
   quotaSignals?: unknown[];
   logs?: WorkspaceHostLogRow[];

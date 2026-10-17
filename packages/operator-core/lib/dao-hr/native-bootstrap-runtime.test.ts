@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { describe, expect, it } from 'vitest';
-import { nativeBootstrapEnvironment, runNativeVerifier } from './native-bootstrap-runtime';
+import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics } from './native-bootstrap-runtime';
 import { verifierSourceFiles } from '../verifier-source';
 
 const repo = resolve(import.meta.dirname, '../../../..');
@@ -25,6 +25,57 @@ describe('native bootstrap admission and lifecycle', () => {
   it('refuses missing ledger scope before allocation', () => {
     expect(() => nativeBootstrapEnvironment({}, 'postgresql://fixture/ledger')).toThrow('WORKSPACE');
     expect(() => nativeBootstrapEnvironment({ PAPERCUSP_WORKSPACE: 'fixture' }, '')).toThrow('DB_URL');
+  });
+
+  it('retains failed verifier assertion snapshots through scratch teardown without copying credentials', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'daohr-diagnostic-retention-'));
+    const scratch = join(dir, 'private'), evidence = join(dir, 'evidence');
+    mkdirSync(scratch); mkdirSync(evidence);
+    const result = join(scratch, 'result.json'), log = join(evidence, 'native.log');
+    const suffixes = ['.text-failure.json', '.response-failure.json', '.wallet-render-failure.json'];
+    const snapshots = suffixes.map((suffix, i) => ({ failure: suffix, step: i, text: 'Native candidate' }));
+    writeFileSync(join(scratch, 'native-config.json'), '{"privateKey":"secret"}');
+    writeFileSync(join(scratch, 'candidate-provider.json'), '{"cookies":["secret"]}');
+    writeFileSync(log + suffixes[0], 'stale', { mode: 0o644 });
+    try {
+      try {
+        const code = await runNativeVerifier(process.execPath, ['-e',
+          `const fs=require('node:fs'); ${JSON.stringify(suffixes)}.forEach((suffix,i)=>fs.writeFileSync(${JSON.stringify(result)}+suffix,JSON.stringify(${JSON.stringify(snapshots)}[i]))); process.exitCode=1;`],
+        { signal: new AbortController().signal, timeoutMs: 10_000, stdio: 'ignore' });
+        expect(code).toBe(1);
+        throw new Error('native assertion failed');
+      } finally {
+        expect(retainNativeDiagnostics(result, log)).toEqual(suffixes.map(suffix =>
+          ({ suffix, status: 'retained', path: log + suffix })));
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    } catch (error) {
+      expect((error as Error).message).toBe('native assertion failed');
+      expect(existsSync(scratch)).toBe(false);
+      expect(readdirSync(evidence).sort()).toEqual(suffixes.map(suffix => 'native.log' + suffix).sort());
+      for (const [i, suffix] of suffixes.entries()) {
+        expect(JSON.parse(readFileSync(log + suffix, 'utf8'))).toEqual(snapshots[i]);
+        expect(statSync(log + suffix).mode & 0o777).toBe(0o600);
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('bounds diagnostic retention and leaves missing snapshots optional', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'daohr-diagnostic-bounds-'));
+    const result = join(dir, 'result.json'), log = join(dir, 'native.log');
+    try {
+      expect(retainNativeDiagnostics(result, log)).toEqual([]);
+      writeFileSync(result + '.text-failure.json', Buffer.alloc(1024 * 1024 + 1));
+      mkdirSync(result + '.response-failure.json');
+      writeFileSync(join(dir, 'private-config.json'), 'secret');
+      symlinkSync(join(dir, 'private-config.json'), result + '.wallet-render-failure.json');
+      expect(retainNativeDiagnostics(result, log)).toEqual([
+        { suffix: '.text-failure.json', status: 'skipped', reason: 'exceeds-1MiB' },
+        { suffix: '.response-failure.json', status: 'skipped', reason: 'not-regular-file' },
+        { suffix: '.wallet-render-failure.json', status: 'error', reason: 'ELOOP' },
+      ]);
+      expect(readdirSync(dir).some(name => name.startsWith('native.log'))).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it('checks the DAO assertion run group before native preparation', () => {
@@ -169,7 +220,8 @@ describe('nested frozen verifier scratch boundary', () => {
     const select = shell.match(/select_verifier_snapshot_root\(\) \{[\s\S]*?\n\}/)![0];
     try {
       const parent = execFileSync('bash', ['-c',
-        'stat() { if [ "${@: -1}" = "$TMPDIR" ]; then echo 2; else echo 1; fi; }\n' + select + '\nselect_verifier_snapshot_root'], {
+        // Model an eligible data-device donor, distinct from both / and TMPDIR.
+        'stat() { if [ "${@: -1}" = / ]; then echo 0; elif [ "${@: -1}" = "$TMPDIR" ]; then echo 2; else echo 1; fi; }\n' + select + '\nselect_verifier_snapshot_root'], {
         encoding: 'utf8', env: { ...process.env, REPO_DIR: sourceRoot, TMPDIR: temporary,
           VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'hardlink' } }).trim();
       expect(parent).toBe(dir);

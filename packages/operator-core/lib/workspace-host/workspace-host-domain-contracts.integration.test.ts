@@ -13,12 +13,12 @@ import { fileURLToPath } from 'node:url';
 import type { WorkspaceHostDesiredSpec, WorkspaceHostRuntimeRelease } from '@papercusp/deployment-driver';
 import type { OrgTestDb } from '../../test/_org-test-db';
 
-const h = vi.hoisted(() => ({ appSql: null as any }));
+const h = vi.hoisted(() => ({ appSql: null as any, adminSql: null as any }));
 
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
-  withWorkspace: async <T>(workspaceId: string, run: (tx: unknown) => Promise<T>): Promise<T> =>
-    h.appSql.begin(async (tx: any) => {
+  withWorkspace: async <T>(workspaceId: string, run: (tx: unknown) => Promise<T>, options?: { bypassRlsForAdmin?: boolean }): Promise<T> =>
+    (options?.bypassRlsForAdmin ? h.adminSql : h.appSql).begin(async (tx: any) => {
       await tx`SELECT set_config('app.workspace_id', ${workspaceId}, true)`;
       return run(tx);
     }),
@@ -114,11 +114,59 @@ describe('workspace-host domain contracts (real PG + real RLS)', () => {
   beforeAll(async () => {
     db = await createOrgTestDb();
     h.appSql = db.appSql;
+    h.adminSql = db.adminSql;
     await db.adminSql.unsafe(MIGRATION_SQL).simple();
   }, 180_000);
 
   afterAll(async () => {
     await db?.cleanup();
+  });
+
+  it('projects authoritative connector heartbeats through current tenant and host bindings without credentials', async () => {
+    const workspaceA = freshWorkspace();
+    const workspaceB = freshWorkspace();
+    const hostId = 'host-connector-source';
+    const heartbeat = new Date('2026-10-17T18:00:00Z');
+    for (const workspaceId of [workspaceA, workspaceB]) {
+      const connectionId = await seedConnection(workspaceId);
+      await upsertWorkspaceHost(hostInput(workspaceId, connectionId, hostId));
+      await db.adminSql`INSERT INTO harness_shared.customer_workspaces
+        (workspace_id, id, organization_id, workspace_host_id, display_name, state,
+         created_by_principal_kind, created_by_principal_id)
+        VALUES (${workspaceId}, 'customer-source', ${'org-' + workspaceId}, ${hostId}, 'Fixture', 'active',
+          'hosted-user', 'user-fixture')`;
+      await db.adminSql`INSERT INTO papercusp_auth.hosted_workspace_connectors
+        (control_workspace_id, organization_id, customer_workspace_id, host_id, route_label,
+         generation, credential_hash, state, transport, registered_at, heartbeat_at)
+        VALUES (${workspaceId}, ${'org-' + workspaceId}, 'customer-source', ${hostId}, ${'route-' + workspaceId},
+          3, ${'c'.repeat(64)}, 'active', 'websocket', ${heartbeat}, ${heartbeat})`;
+    }
+    const rows = await readWorkspaceHostControl(workspaceA);
+    expect(rows).toContainEqual(expect.objectContaining({
+      id: hostId, hostedConnector: {
+        customerWorkspaceId: 'customer-source', routeLabel: 'route-' + workspaceA,
+        generation: 3, state: 'active', transport: 'websocket',
+        lastSeenAt: heartbeat.toISOString(), liveUntil: heartbeat.getTime() + 90_000,
+      },
+    }));
+    expect(JSON.stringify(rows)).not.toContain('route-' + workspaceB);
+    expect(JSON.stringify(rows)).not.toContain('c'.repeat(64));
+    await db.adminSql`UPDATE papercusp_auth.hosted_workspace_connectors
+      SET heartbeat_at = NULL WHERE control_workspace_id = ${workspaceA}`;
+    expect(await readWorkspaceHostControl(workspaceA)).toContainEqual(expect.objectContaining({
+      id: hostId, hostedConnector: expect.objectContaining({ lastSeenAt: null, liveUntil: null }),
+    }));
+    await db.adminSql`UPDATE papercusp_auth.hosted_workspace_connectors
+      SET state = 'revoked', credential_hash = NULL, revoked_at = now()
+      WHERE control_workspace_id = ${workspaceA}`;
+    expect(await readWorkspaceHostControl(workspaceA)).toContainEqual(expect.objectContaining({
+      id: hostId, hostedConnector: expect.objectContaining({ state: 'revoked' }),
+    }));
+    await db.adminSql`UPDATE harness_shared.customer_workspaces
+      SET state = 'deleted', deleted_at = now() WHERE workspace_id = ${workspaceA} AND id = 'customer-source'`;
+    expect(await readWorkspaceHostControl(workspaceA)).toContainEqual(expect.objectContaining({
+      id: hostId, hostedConnector: undefined,
+    }));
   });
 
   it('installs the explicit connection, host, and operation domain columns', async () => {

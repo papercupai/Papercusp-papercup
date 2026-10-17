@@ -71,6 +71,11 @@ import {
   type RedLegsAtR1,
 } from "@papercusp/operator-core/lib/release/known-good-freeze";
 import {
+  classifyEnvironmentDominatedRun,
+  mergeEarlyTypecheckRedIntoSuite,
+  shouldRunSuiteAfterEarlyTypecheckFailure,
+} from "@papercusp/operator-core/lib/release/round-one-measurement";
+import {
   buildFrozenRepairBoundedLifeRecord,
   decideFrozenRepairBoundedLife,
   frozenRepairBoundedLifeRateLimitedBody,
@@ -6695,6 +6700,9 @@ export function repairSignatureFromVerdict(result: {
   postSuiteMeasured?: boolean;
   postSuiteLegs?: readonly Pick<PostSuiteLegRecord, "id" | "status">[];
   typecheckPreflight?: { status: string } | null;
+  /** P-016: whether the affected-test sweep ran. Round 1 runs it even after an early
+   *  typecheck red, so the preflight status alone no longer answers this. */
+  suiteMeasured?: boolean;
 }): {
   failingTests: string[];
   measuredKinds: RepairSignatureKind[];
@@ -6706,7 +6714,8 @@ export function repairSignatureFromVerdict(result: {
   const failingTests = [
     ...new Set([...(result.failingTests ?? []), ...redLegIds]),
   ];
-  const suiteRan = result.typecheckPreflight?.status !== "failed";
+  const suiteRan =
+    result.suiteMeasured ?? result.typecheckPreflight?.status !== "failed";
   const measuredKinds: RepairSignatureKind[] = suiteRan
     ? [
         "test-file",
@@ -9420,7 +9429,10 @@ export interface InfraFaultClassification {
     // P-002: a vitest worker-pool crash (WI-806 markers) that the workspace-re-run
     // absorber could NOT absorb — the no-signature crash whose re-run crashed again,
     // errored, or was too broad / unlocalizable to attempt.
-    | "worker-pool-crash";
+    | "worker-pool-crash"
+    // P-016 (green-main-ratchet-convergence-2026-10-17#D-004): most failing files failed with
+    // a host-resource signature (ENOSPC, EMFILE, …) — see classifyEnvironmentDominatedInfraFault.
+    | "environment-dominated";
   /** how many matching fault lines the output carried. */
   occurrences: number;
   /** WI-1761602: for a `suite-refused` fault, the runner's own `reason=` token
@@ -9649,7 +9661,55 @@ export function classifyInfraFault(
     }
   }
 
-  return classifyDiskInfraFault(output, disk);
+  return classifyDiskInfraFault(output, disk) ?? classifyEnvironmentDominatedInfraFault(output);
+}
+
+/**
+ * PURE: the seed for the salvage confirm-suite estimate (WI-41655). A run that measured the
+ * candidate suite seeds from that suite's own duration; a run that SKIPPED it (an early
+ * typecheck red on a repair-head round — since P-016, round 1 always runs the sweep) has no
+ * suite to measure, so it falls back to the conservative whole-run figure. That fallback is an
+ * over-estimate, which is the fail-safe direction: a near-zero seed would admit a confirm suite
+ * that cannot fit the remaining budget and lose the verdict.
+ */
+export function confirmSuiteEstimateSeedMs(input: {
+  suiteSkipped: boolean;
+  nowMs: number;
+  runStartedAtMs: number;
+  candidateSuiteStartedAtMs: number;
+}): number {
+  return input.suiteSkipped
+    ? Math.max(1, input.nowMs - input.runStartedAtMs)
+    : Math.max(1, input.nowMs - input.candidateSuiteStartedAtMs);
+}
+
+/**
+ * P-016 (green-main-ratchet-convergence-2026-10-17#D-004): a red whose failing files are
+ * dominated by a host-resource signature (ENOSPC, EDQUOT, EMFILE/ENFILE, ENOMEM) measures the
+ * host, not the candidate. `classifyDiskInfraFault` needs a low post-suite disk sample, so a run
+ * whose space was freed before sampling (54150acf: 1,474 failures from ENOSPC) still counted
+ * as red. This reads the per-file failure output instead; the thresholds live in
+ * `classifyEnvironmentDominatedRun`.
+ */
+export function classifyEnvironmentDominatedInfraFault(
+  output: string,
+): InfraFaultClassification | null {
+  const dominance = classifyEnvironmentDominatedRun(output);
+  if (!dominance) return null;
+  const signatures = Object.entries(dominance.signatures)
+    .map(([id, files]) => `${id}×${files}`)
+    .join(", ");
+  return {
+    kind: "environment-dominated",
+    occurrences: dominance.taintedFiles,
+    note:
+      `infra fault: ${dominance.taintedFiles} of ${dominance.failingFiles} failing file(s) ` +
+      `(${Math.round(dominance.share * 100)}%) failed with a host-resource signature ` +
+      `(${signatures}; e.g. ${dominance.sampleFiles.slice(0, 3).join(", ")}). A run dominated by ` +
+      `the host's resources measures the host, not the candidate, so no code verdict is rendered ` +
+      `and no repair round is recorded; the next fire measures again (P-016). Do NOT triage these ` +
+      `files; relieve the resource first.`,
+  };
 }
 
 const DISK_ENOSPC_LINE_RE = /no space left on device/i;
@@ -14076,8 +14136,24 @@ async function runGreenCheckpointInner(
   // the number is still complete, and the first at which it is actionable. Fail-soft in every
   // direction: a git failure here degrades to logging the gap alone, and nothing below reads
   // the result. See `candidateSelectedAtMs` for why this exists.
+  // P-016 (green-main-ratchet-convergence-2026-10-17#D-004): ROUND 1 MEASURES THE SUITE. A run
+  // that is not verifying a repair head judges the queue's immutable candidate, and an early
+  // stop would record that candidate's count with no tests measured — the low every later
+  // round is then judged against (P-001: 311 of 361 count rises were tests the previous
+  // measurement never ran). Keep the early red, but run the sweep too; repair-head rounds keep
+  // the early stop and record `non-test-only`. Keyed on `repairVerification`, NOT on an open
+  // queue: the queue is persisted above, before this preflight, on a candidate's first run.
+  const roundOneMeasuresSuite =
+    earlyPreflightFailure !== null &&
+    shouldRunSuiteAfterEarlyTypecheckFailure({ verifyingRepairHead: repairVerification });
+  if (roundOneMeasuresSuite)
+    deps.log(
+      "early changed-file typecheck failed on the candidate's own round (not a repair head) — " +
+        "P-016: running the affected-test sweep anyway so round 1 measures the full failing set",
+    );
+  const suiteSkipped = earlyPreflightFailure !== null && !roundOneMeasuresSuite;
   let candidateCommittedAtSecForVerdict: number | null = null;
-  if (!earlyPreflightFailure) {
+  if (!suiteSkipped) {
     const selectionToSuiteMs = Date.now() - candidateSelectedAtMs;
     // P-005: attribute the stretch to its stamped phases. Rendered on BOTH branches, so a
     // healthy run leaves a baseline in every log and a slow one names its dominant phase.
@@ -14131,7 +14207,7 @@ async function runGreenCheckpointInner(
   // verdict chain; every unverifiable branch and every resolver FAULT degrades to the
   // historical last-green pin (fail-safe, never narrower). Extracted helper so the
   // wiring is directly testable (the P-009 augmentWithRepairTickLegs pattern).
-  const suiteSelectionBase: string | null = earlyPreflightFailure
+  const suiteSelectionBase: string | null = suiteSkipped
     ? lastReady
     : await resolveSuiteSelectionBaseForRun(deps, cfg.checkpointRoot, {
         lastReady,
@@ -14140,9 +14216,9 @@ async function runGreenCheckpointInner(
           repairVerification && repairQueue ? repairQueue.candidate : null,
       });
   const candidateSuiteStartedAtMs = Date.now();
-  const candidateSuiteResult =
-    earlyPreflightFailure ??
-    (await deps.runGreen(cfg.checkpointRoot, suiteSelectionBase, {
+  const suiteRun = suiteSkipped
+    ? null
+    : await deps.runGreen(cfg.checkpointRoot, suiteSelectionBase, {
       candidate,
       headAtStart: candidate,
       ...(setupIdentity ? { setup: setupIdentity } : {}),
@@ -14154,10 +14230,24 @@ async function runGreenCheckpointInner(
       ...(repairVerification && repairQueue?.affectedTestProofGroup
         ? { affectedTestProofGroup: repairQueue.affectedTestProofGroup }
         : {}),
-    }));
+    });
+  // P-016: `suiteMeasured` is whether THIS verdict measured the test population. A round-1
+  // suite that came back infra-inconclusive measured nothing reliable, so the early red stands
+  // alone and the round records as `non-test-only`.
+  let suiteMeasured = suiteRun !== null;
+  let candidateSuiteResult: NonNullable<typeof suiteRun>;
+  if (suiteRun === null) {
+    candidateSuiteResult = earlyPreflightFailure as NonNullable<typeof suiteRun>;
+  } else if (earlyPreflightFailure) {
+    const merged = mergeEarlyTypecheckRedIntoSuite(suiteRun, earlyPreflightFailure);
+    candidateSuiteResult = merged.result;
+    suiteMeasured = merged.suiteMeasured;
+  } else {
+    candidateSuiteResult = suiteRun;
+  }
   // P-013: the candidate suite is the round's main phase. Stamp it into the same recorder the
   // setup phases use so the round breakdown adds up; never stamped when the suite did not run.
-  if (!earlyPreflightFailure) setupStretch.stamp("candidate-suite", candidateSuiteStartedAtMs);
+  if (!suiteSkipped) setupStretch.stamp("candidate-suite", candidateSuiteStartedAtMs);
   // EI-21434759422783893: the best first-confirm predictor is the candidate suite we
   // just measured, not the whole process lifetime. `runStartedAtMs` also includes checkout
   // setup, dependency generation, preflights, and slot waits; using it reduced the admission
@@ -14175,9 +14265,12 @@ async function runGreenCheckpointInner(
   // SIGTERM-mid-confirm verdict loss WI-39450 added this gate to prevent. With no measured
   // suite there is nothing to seed from, so fall back to the prior conservative whole-run
   // figure (setup-inclusive, and an over-estimate — which is the fail-safe direction here).
-  const candidateSuiteDurationMs = earlyPreflightFailure
-    ? Math.max(1, Date.now() - runStartedAtMs)
-    : Math.max(1, Date.now() - candidateSuiteStartedAtMs);
+  const candidateSuiteDurationMs = confirmSuiteEstimateSeedMs({
+    suiteSkipped,
+    nowMs: Date.now(),
+    runStartedAtMs,
+    candidateSuiteStartedAtMs,
+  });
   let {
     green,
     summary,
@@ -14616,8 +14709,9 @@ async function runGreenCheckpointInner(
           postSuiteMeasured,
           postSuiteLegs,
           typecheckPreflight,
+          suiteMeasured,
         }),
-        ...(earlyPreflightFailure
+        ...(!suiteMeasured
           ? {}
           : {
               executed: frozenRepairRoundExecution({
@@ -14651,7 +14745,7 @@ async function runGreenCheckpointInner(
         // The superseded arm below records no receipt: the head it measured is no longer the
         // row's head. The queue reducer still refuses the receipt unless the admission chain
         // and the failure frontier are lossless, and the full gate stays the promotion proof.
-        const fullGateSuiteRan = !earlyPreflightFailure;
+        const fullGateSuiteRan = suiteMeasured;
         repairQueue = await commitFrozenRepairQueueTransition(
           deps,
           repairQueue,

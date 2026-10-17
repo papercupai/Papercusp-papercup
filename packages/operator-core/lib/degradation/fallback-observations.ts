@@ -397,15 +397,31 @@ export async function flushFallbackObservations(opts: { sql?: Sql } = {}): Promi
     clearTimeout(state.timer);
     state.timer = null;
   }
-  while (state.flushing) await state.flushing;
-  const p = flushOnce(opts.sql);
-  state.flushing = p;
-  try {
-    return await p;
-  } finally {
-    state.flushing = null;
-    // Pick up whatever was enqueued while this flush was writing.
+  const result: FlushResult = { written: 0, failed: 0, dropped: 0, rejected: 0 };
+  while (true) {
+    while (state.flushing) await state.flushing;
+    const p = flushOnce(opts.sql);
+    state.flushing = p;
+    let flushed: FlushResult;
+    try {
+      flushed = await p;
+    } finally {
+      state.flushing = null;
+    }
+    result.written += flushed.written;
+    result.failed += flushed.failed;
+    result.dropped += flushed.dropped;
+    result.rejected += flushed.rejected;
+
+    // An explicit handle usually means the caller is retiring that database.
+    // Drain rows that arrived while the first INSERT was in flight with the
+    // same handle before returning, so the caller cannot close the pool while
+    // an unawaited default-handle follow-up is still scheduled. The no-arg
+    // path retains its debounced best-effort behavior for normal production
+    // telemetry.
+    if (opts.sql && state.pending.length > 0) continue;
     if (state.pending.length > 0) scheduleFlush();
+    return result;
   }
 }
 

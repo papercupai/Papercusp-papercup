@@ -178,7 +178,7 @@ export function parseProjection(rawInput: unknown): ProjectionParseResult {
   // own sake — without it the knob is UNREACHABLE from an entire class of client.
   //
   // `projection` is reserved at the DISPATCH layer, so it is deliberately absent
-  // from every tool's advertised inputSchema (declaring it on ~550 tools is the
+  // from every tool's advertised inputSchema (declaring it on every tool is the
   // expensive form this design exists to avoid). But a client that types its
   // outgoing args FROM that schema has no type for an undeclared key, so it sends
   // the value as a STRING. Claude Code does exactly this — measured 2026-08-02,

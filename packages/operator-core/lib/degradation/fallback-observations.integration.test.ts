@@ -15,7 +15,7 @@ import { createTextCollector } from '../child-output.js';
 import { recordGateReuseDecision } from '../../../../scripts/lib/test-pass-reuse.mjs';
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
-const { readFallbackWindow, readFallbackWindowsByScope, pruneFallbackObservations, observeFallback, flushFallbackObservations, fallbackObservationCounters } =
+const { readFallbackWindow, readFallbackWindowsByScope, pruneFallbackObservations, observeFallback, flushFallbackObservations, fallbackObservationCounters, _pendingFallbackObservationCount, _resetFallbackObservationsForTests } =
   await import('./fallback-observations');
 
 const MODULE_URL = new URL('./fallback-observations.ts', import.meta.url).href;
@@ -205,6 +205,61 @@ describe('fallback observations — durable and readable across processes (real 
     const scoped = await readFallbackWindowsByScope('coalesce.mechanism', hour, { sql: db.adminSql, workspaceId: WS });
     expect(scoped.map((s) => [s.scope, s.window.samples])).toEqual([['op', 4]]);
   });
+
+  it('drains observations enqueued during an explicit flush through the same SQL handle', async () => {
+    _resetFallbackObservationsForTests();
+    let releaseFirstWrite!: () => void;
+    let signalFirstWrite!: () => void;
+    const firstWriteGate = new Promise<void>((resolve) => { releaseFirstWrite = resolve; });
+    const firstWriteStarted = new Promise<void>((resolve) => { signalFirstWrite = resolve; });
+    let blocked = false;
+    let insertCalls = 0;
+    let drain: ReturnType<typeof flushFallbackObservations> | undefined;
+    const sql = new Proxy(db.adminSql, {
+      apply(target, thisArg, args) {
+        const query = Array.isArray(args[0]) ? args[0].join('') : '';
+        if (query.includes('INSERT INTO harness_shared.fallback_observations')) {
+          insertCalls += 1;
+          if (!blocked) {
+            blocked = true;
+            signalFirstWrite();
+            return (async () => {
+              await firstWriteGate;
+              return Reflect.apply(target, thisArg, args);
+            })();
+          }
+        }
+        return Reflect.apply(target, thisArg, args);
+      },
+    });
+
+    try {
+      observeFallback('explicit-flush-follow-up', {
+        eligible: 1, applied: 0, reason: 'first-batch', scope: 'flush-test',
+      }, { workspaceId: WS });
+      drain = flushFallbackObservations({ sql });
+      await firstWriteStarted;
+      observeFallback('explicit-flush-follow-up', {
+        eligible: 2, applied: 0, reason: 'enqueued-during-write', scope: 'flush-test',
+      }, { workspaceId: WS });
+      releaseFirstWrite();
+
+      await expect(drain).resolves.toMatchObject({ written: 2, failed: 0 });
+      expect(insertCalls).toBe(2);
+      expect(_pendingFallbackObservationCount()).toBe(0);
+      const rows = await db.adminSql<Array<{ reason: string }>>`
+        SELECT reason FROM harness_shared.fallback_observations
+         WHERE workspace_id = ${WS} AND mechanism = 'explicit-flush-follow-up'
+         ORDER BY reason
+      `;
+      expect(rows.map((row) => row.reason)).toEqual(['enqueued-during-write', 'first-batch']);
+    } finally {
+      releaseFirstWrite();
+      if (drain) await drain;
+      await flushFallbackObservations({ sql: db.adminSql });
+      _resetFallbackObservationsForTests();
+    }
+  }, 30_000);
 
   it('filters scoped windows by the explicit workspace and producer context', async () => {
     const gateTag = 'gate-reuse:green-checkpoint';

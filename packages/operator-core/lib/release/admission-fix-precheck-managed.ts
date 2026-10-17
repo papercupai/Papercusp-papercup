@@ -261,7 +261,8 @@ export async function runAdmissionPrecheckWorker(
     };
   }
 
-  const verdict = evaluateFixPrecheck(population, run);
+  // P-006: the admission ratchet routes an imports-red refusal to the admitting actor.
+  const verdict = evaluateFixPrecheck(population, run, { actor: operation.actor ?? null });
   const settledAtMs = (deps.now ?? Date.now)();
   await deps.transition(input.queueTarget, (fresh) =>
     admissionPrecheckSettlementTransition(fresh, input.operationId, verdict, settledAtMs));

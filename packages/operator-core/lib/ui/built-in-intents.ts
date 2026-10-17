@@ -25,14 +25,17 @@ export function registerBuiltInIntents(): void {
     if (args.action === 'list') return commands.listWindowsByTitle('Papercup — ');
     if (args.action !== 'focus' || typeof args.title !== 'string' || !args.title || args.title.length > 1024) throw new Error('exact native window title required');
     if (typeof args.expiresAt !== 'number' || !Number.isFinite(args.expiresAt) || args.expiresAt <= Date.now()) throw new Error('native focus request expired');
+    const workspace = args.workspace ?? 'window';
+    if (workspace !== 'current' && workspace !== 'window') throw new Error('workspace must be current or window');
     // Existing native command performs restoration, virtual-desktop placement,
     // activation and observed visibility. Browser DOM focus is not a substitute.
     const { invoke } = await import('@tauri-apps/api/core');
-    const result = await invoke<unknown>('focus_window_by_title', { title: args.title, verification: true });
+    const result = await invoke<unknown>('focus_window_by_title', { title: args.title, verification: true, workspace });
     // Old shells ignore the extra argument and return only a Boolean. A
     // successful request is not a visibility receipt; fail closed on that wire.
-    if (!result || typeof result !== 'object' || !('protocol' in result) || result.protocol !== 'visible-window-v1') return { focused: false };
-    return { protocol: 'visible-window-v1', focused: 'focused' in result && result.focused === true };
+    if (!result || typeof result !== 'object' || !('protocol' in result) || result.protocol !== 'visible-window-v2'
+      || !('workspace' in result) || result.workspace !== workspace) return { focused: false };
+    return { protocol: 'visible-window-v2', workspace, focused: 'focused' in result && result.focused === true };
   }, { builtIn: true });
 
   registerIntent(

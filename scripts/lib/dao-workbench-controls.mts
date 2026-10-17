@@ -12,8 +12,18 @@ export function workbenchVerifiedWallet(address: string, chainId: number): strin
   return `[...document.querySelectorAll('p')].some(p=>p.textContent.trim().toLowerCase()===${JSON.stringify(text.toLowerCase())})`;
 }
 
+/** Action buttons must not resolve to a Select trigger showing the same text. */
+export function clickWorkbenchButton(label: string, scope = 'document'): string {
+  return `(()=>{const b=[...${scope}.querySelectorAll('button:not([role="combobox"])')].find(e=>e.textContent.trim()===${JSON.stringify(label)});if(!b||b.disabled)throw Error('Unavailable control '+${JSON.stringify(label)});b.click();return true})()`;
+}
+
 export function workbenchTextField(label: string, value: string, scope = '.dao-governance'): string {
   return `(()=>{const l=[...document.querySelectorAll(${JSON.stringify(scope + ' label')})].find(e=>e.firstChild?.textContent?.trim()===${JSON.stringify(label)});const e=l?.querySelector('input:not([type="hidden"]),textarea,select');if(!e)throw Error('Missing text field '+${JSON.stringify(label)});const p=e instanceof HTMLInputElement?HTMLInputElement.prototype:e instanceof HTMLSelectElement?HTMLSelectElement.prototype:HTMLTextAreaElement.prototype;Object.getOwnPropertyDescriptor(p,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event(e instanceof HTMLSelectElement?'change':'input',{bubbles:true}));return true})()`;
+}
+
+/** Open the named disclosure through its summary, preserving an already-open form. */
+export function openWorkbenchDisclosure(label: string, scope = '.dao-governance'): string {
+  return `(()=>{const e=[...document.querySelectorAll(${JSON.stringify(scope + ' details > summary')})].find(e=>e.textContent.trim()===${JSON.stringify(label)});if(!e)throw Error('Missing disclosure '+${JSON.stringify(label)});if(!e.parentElement.open)e.click();return true})()`;
 }
 
 export function openWorkbenchSelect(label: string, scope = '.dao-governance'): string {

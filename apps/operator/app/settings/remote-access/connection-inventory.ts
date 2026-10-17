@@ -86,7 +86,7 @@ export interface HostedConnectorConnectionSource {
   label?: string | null;
   scope?: string | null;
   transport?: 'websocket' | 'https';
-  state?: 'connected' | 'connecting' | 'disconnected' | 'unknown';
+  state?: 'connected' | 'connecting' | 'disconnected' | 'revoked' | 'unknown';
   health?: ConnectionHealth;
   lastSeen?: string | null;
   sourceRef?: string;
@@ -95,9 +95,10 @@ export interface HostedConnectorConnectionSource {
 /** Redacted hosted connector/tunnel projection. Heartbeats are liveness only. */
 export interface HostedConnectorStatusConnectionSource {
   id: string;
+  scope?: string | null;
   routeLabel?: string | null;
   transport?: 'websocket' | 'https';
-  state?: 'connected' | 'connecting' | 'disconnected' | 'unknown';
+  state?: 'connected' | 'connecting' | 'disconnected' | 'revoked' | 'unknown';
   health?: ConnectionHealth;
   lastSeenAt?: string | null;
   sourceRef?: string;
@@ -262,7 +263,7 @@ export function normalizePortalRelayStatus(source: PortalRelayStatusConnectionSo
 export function normalizeHostedConnector(source: HostedConnectorConnectionSource, options: ConnectionInventoryOptions = {}): ConnectionInventoryEntry {
   const id = text(source.id, 'hosted-connector');
   const lastSeen = isoOrNull(source.lastSeen);
-  const state: ConnectionState = source.state === 'connected'
+  const state: ConnectionState = source.state === 'revoked' ? 'revoked' : source.state === 'connected'
     ? 'active'
     : source.state === 'disconnected'
       ? 'unavailable'
@@ -288,6 +289,7 @@ export function normalizeHostedConnectorStatus(source: HostedConnectorStatusConn
   return normalizeHostedConnector({
     id: source.id,
     label: source.routeLabel,
+    scope: source.scope,
     transport: source.transport,
     state: source.state,
     health: source.health,

@@ -1376,7 +1376,8 @@ export async function getFeedbackCore(
         ` settled a highly similar question (sim ${archiveHit.sim.toFixed(2)} ≥ floor ${archiveFloor}). ` +
         'The structured answer + provenance are in `archive` — no one was woken. ' +
         'RECONCILE if your context differs: the archived answer predates your current state; ' +
-        'if it does not fit, re-call with archiveFloor: 2 to force fresh routing.',
+        // The MCP arg is archive_floor (agent-tools/consult/get-feedback.ts); archiveFloor is this core field.
+        'if it does not fit, re-call with archive_floor: 2 to force fresh routing.',
     };
   }
 

@@ -29,10 +29,12 @@
  * the same file by construction; only a known-good target OLDER than a fix can lack it, and those
  * paths are listed in `readmitPaths` for re-admission onto the new candidate.
  */
-import type {
-  FrozenCandidateRepairQueue,
-  FrozenRepairConvergenceRound,
+import {
+  FROZEN_REPAIR_PERSISTED_FAILURE_CAP,
+  type FrozenCandidateRepairQueue,
+  type FrozenRepairConvergenceRound,
 } from './frozen-candidate-repair-queue';
+import { likeForLikeTrajectory } from './round-one-measurement';
 
 /** Consecutive rounds without a new failing-count low that end a queue's life. */
 export const FROZEN_REPAIR_BOUNDED_LIFE_ROUNDS_WITHOUT_LOW = 4;
@@ -71,9 +73,12 @@ export interface FrozenRepairRecutTarget {
 
 export interface FrozenRepairConvergenceTrajectory {
   roundsRecorded: number;
-  /** Rounds after the last round that set a new strict low (the first round sets the first low). */
+  /** P-016: rounds whose count is comparable (measured the test population, below the cap). */
+  comparableRounds: number;
+  /** COMPARABLE rounds after the last one that set a new strict low (the first sets the first low). */
   roundsSinceLow: number;
   lowestFailingCount: number | null;
+  /** The latest comparable round's count. */
   latestFailingCount: number | null;
 }
 
@@ -151,22 +156,18 @@ export type FrozenRepairBoundedLifeDecision =
 export function frozenRepairConvergenceTrajectory(
   rounds: readonly FrozenRepairConvergenceRound[] | undefined,
 ): FrozenRepairConvergenceTrajectory {
-  const ordered = [...(rounds ?? [])].sort((a, b) => a.round - b.round);
-  let lowest: number | null = null;
-  let lowIndex = -1;
-  for (let index = 0; index < ordered.length; index += 1) {
-    const count = (ordered[index] as FrozenRepairConvergenceRound).failingCount;
-    if (lowest === null || count < lowest) {
-      lowest = count;
-      lowIndex = index;
-    }
-  }
-  const latest = ordered[ordered.length - 1];
+  // P-016 (green-main-ratchet-convergence-2026-10-17#D-004): compare like with like. A round
+  // that measured no tests, or whose count hit the persistence cap, neither sets a low nor
+  // counts as a round without improvement (see `likeForLikeTrajectory`).
+  const trajectory = likeForLikeTrajectory(rounds, {
+    saturationCap: FROZEN_REPAIR_PERSISTED_FAILURE_CAP,
+  });
   return {
-    roundsRecorded: ordered.length,
-    roundsSinceLow: lowIndex < 0 ? 0 : ordered.length - 1 - lowIndex,
-    lowestFailingCount: lowest,
-    latestFailingCount: latest ? latest.failingCount : null,
+    roundsRecorded: trajectory.roundsRecorded,
+    comparableRounds: trajectory.comparableRounds,
+    roundsSinceLow: trajectory.roundsSinceLow,
+    lowestFailingCount: trajectory.lowestFailingCount,
+    latestFailingCount: trajectory.latestFailingCount,
   };
 }
 

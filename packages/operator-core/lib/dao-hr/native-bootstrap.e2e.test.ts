@@ -12,7 +12,7 @@ import { register, authenticatedAccount, accountToken } from '../../../../script
 import { resolveExecutedMapPgUrl } from '../../../../scripts/lib/executed-source-map.mjs';
 import { prepareVerifierSource, prepareVerifierDependencies, verifyVerifierSource, verifierSourceChildEnv } from '../../../../scripts/source-preview.mjs';
 import { checkNativeLedger } from '../../../../scripts/tauri-surface-verify-reports.mts';
-import { nativeBootstrapEnvironment, runNativeVerifier, NATIVE_BOOTSTRAP_TIMEOUT_MS,
+import { nativeBootstrapEnvironment, runNativeVerifier, retainNativeDiagnostics, NATIVE_BOOTSTRAP_TIMEOUT_MS,
   NATIVE_BOOTSTRAP_TEARDOWN_MS, NATIVE_VERIFIER_PHASE_BUDGETS } from './native-bootstrap-runtime';
 
 const NATIVE_SOURCE_INPUTS = [
@@ -138,6 +138,8 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
       writeFileSync(logPath + '.result.json', JSON.stringify(result), { mode: 0o600 });
       console.log('DAO_HR_NATIVE_RESULT=' + JSON.stringify(result));
     } finally {
+      const diagnostics = retainNativeDiagnostics(join(directory, 'result.json'), logPath);
+      if (diagnostics.length) console.error('DAO_HR_NATIVE_DIAGNOSTICS=' + JSON.stringify(diagnostics));
       await browser?.close(); await wallet?.stop(); await chain?.stop(); restoreIdentity?.();
       if (priorIsolation === undefined) delete process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED;
       else process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED = priorIsolation;

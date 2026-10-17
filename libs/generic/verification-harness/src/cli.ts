@@ -25,9 +25,8 @@ import {
   deriveVerdict,
   formatRunRetentionLine,
   formatSummaryLine,
-  formatForeignPruneLine,
   linkLatest,
-  pruneEvidenceRoot,
+  pruneForHarness,
   pruneRunsWithReport,
   loadRunResult,
   PREFLIGHT_PHASE_ID,
@@ -127,11 +126,7 @@ export async function finalizeCommand(argv: string[]): Promise<{ line: string; r
   Object.assign(result, deriveVerdict(result));
   await writeRunResult(result, retainedArtifacts);
   await linkLatest(evidenceRoot, runDir);
-  const pruned = await pruneEvidenceRoot(evidenceRoot);
-  const runRetentionLine = formatRunRetentionLine(pruned.runRetention);
-  if (runRetentionLine) process.stderr.write(runRetentionLine + '\n');
-  const prunedLine = formatForeignPruneLine(pruned.foreign);
-  if (prunedLine) process.stderr.write(`${prunedLine}\n`);
+  await pruneForHarness(evidenceRoot, 'after');
   return { line: formatSummaryLine(result), result };
 }
 

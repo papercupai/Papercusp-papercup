@@ -491,7 +491,7 @@ function hasOnlyRecoverableCoordThreadMarkers(
  * P-020 / D-041 discoverability. The projection stage is a DISPATCH-level
  * reserved arg, so it appears in no tool's inputSchema — which means no agent
  * would ever learn it exists, and a built-but-unreachable feature is dead code
- * however green its tests. Injecting the schema into all ~550 tools would blow
+ * however green its tests. Injecting the schema into every tool would blow
  * the P-011 prompt-weight budget for a knob most calls never use.
  *
  * A truncated result is the one moment the answer is both relevant and earned:

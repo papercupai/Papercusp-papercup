@@ -131,7 +131,7 @@ export function playwrightCaseTitle(test: Partial<Pick<TestCase, 'titlePath' | '
  */
 export function playwrightExecutionDetails(
   row: TestRunRow,
-  run: { root: string; runGroupId: string | null; workspaceId: string | null; harnessSlug: string | null; commitSha: string | null },
+  run: { root: string; runGroupId: string | null; workspaceId: string | null; harnessSlug: string | null; commitSha: string | null; runStartedAt?: string | null },
 ): TestRunExecutionDetails {
   return {
     schemaVersion: TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
@@ -142,6 +142,7 @@ export function playwrightExecutionDetails(
     harnessSlug: run.harnessSlug,
     testNamePattern: null,
     testLayer: 'e2e',
+    ...(run.runStartedAt ? { runStartedAt: run.runStartedAt } : {}),
     passed: row.passed,
     failed: row.failed,
     skipped: row.skipped,
@@ -229,7 +230,7 @@ function settleWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boo
   });
 }
 
-async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, root: string): Promise<void> {
+async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, root: string, runStartedAt: string | null): Promise<void> {
   let branch: string | null = null;
   try {
     // The ambient resolver describes the agent's tree. It cannot name the
@@ -271,7 +272,7 @@ async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, ro
       VALUES
         (${row.filePath}, 'playwright', ${row.status}, ${row.durationMs}, ${row.startedAt},
          ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${row.worktreeDirty},
-         ${playwrightExecutionDetails(row, { root, runGroupId, workspaceId, harnessSlug, commitSha: commit }) as never}::jsonb)
+         ${playwrightExecutionDetails(row, { root, runGroupId, workspaceId, harnessSlug, commitSha: commit, runStartedAt }) as never}::jsonb)
       RETURNING id
     `).then((result) => {
     const first = Array.isArray(result) ? result[0] as { id?: unknown } | undefined : undefined;
@@ -323,6 +324,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
   private pending: Promise<void>[] = [];
   /** Captured before Playwright begins executing tests. */
   private worktreeBefore: WorktreeGitSnapshot | null = null;
+  private runStartedAt: string | null = null;
   private runRoot = resolveAgentWorkspaceRoot({});
   private runtimeReader?: RuntimeReader;
   private runtimePreparationFailed = false;
@@ -334,6 +336,9 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
   }
 
   onBegin(config?: Pick<FullConfig, 'rootDir'>): void {
+    // Bind mutable-checkout evidence to the source window before preparation,
+    // rather than to a file's first completed test or the later ledger write.
+    this.runStartedAt = new Date().toISOString();
     this.runRoot = resolveReporterSourceRoot(config?.rootDir);
     this.worktreeBefore = captureTestSourceSnapshot(this.runRoot);
     this.mutationInvocation = readMutationInvocationDescriptor();
@@ -473,7 +478,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
               ...(agg.passedCaseTitlesTruncated ? { passedCaseTitlesTruncated: true as const } : {}),
               runtimeEnvironmentBefore: this.runtimeBefore,
               runtimeEnvironmentAfter: runtimeAfter,
-            }, worktreeAfter, this.runRoot),
+            }, worktreeAfter, this.runRoot, this.runStartedAt),
           );
         } catch {
           /* swallow per-file */

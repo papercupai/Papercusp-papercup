@@ -1,12 +1,13 @@
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, platform, tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeChunk, type RecordedExchange } from './record-proxy';
 import type { Corpus, SessionMeta } from './record-session';
 import { startReplayServer } from './replay-server';
+import { capacityCacheRoot } from './host-admission';
 import { achievedConcurrency, checkParkedPlan, drive, loadMetas, nodeMajor, nodeMismatches, parseAgentEnv, replayPath, replayTimeoutMs, selectSessions, sessionFor, summarize, summarizeParked, toolOutcomesDiverge, versionMismatches, type ParkRelease } from './load-driver';
 
 vi.mock('node:fs', async importOriginal => {
@@ -332,6 +333,61 @@ const call = async (n) => {
     expect(readFileSync(path.join(root, 'out', 'served.jsonl'), 'utf8').trim().split('\n')).toHaveLength(6);
     expect(() => readFileSync(path.join(root, 'cache', 'replay-work', 'T', 's0-i0', 'README'))).toThrow();
     expect(summarize(runs)).toMatchObject({ runs: 3, clean: 3, failed: 0, diverged: 0, served: { exact: 6, exhausted: 0 } });
+  });
+
+  it.skipIf(platform() !== 'linux')('drives a private copy on the native default data device through the local CLI fixture', async () => {
+    const cacheRoot = capacityCacheRoot(__dirname);
+    expect(cacheRoot).toBe('/mnt/data/agent-capacity');
+    expect(statSync(cacheRoot).dev).not.toBe(statSync('/').dev);
+    const cacheDir = realpathSync(mkdtempSync(path.join(cacheRoot, 'drive-placement-')));
+    const prepared = path.join(cacheDir, 'prepared', 'r');
+    mkdirSync(prepared, { recursive: true });
+    writeFileSync(path.join(prepared, 'README'), 'native prepared source');
+    try {
+      const [result] = await drive({
+        cacheDir, agents: 1, sessions: [meta({ id: 'claude-s1' })], corpus,
+        corpusDir: path.join(root, 'corpus'), outDir: path.join(root, 'out'), runId: 'N',
+        speed: 0, staggerMs: 0, durationSec: 0, isolation: 'none', keepWork: true,
+      });
+      expect(result).toMatchObject({ exitCode: 0, timedOut: false, diverged: false });
+      const printed = JSON.parse(readFileSync(path.join(root, 'out', 'sessions', `${result!.instance}.cli.jsonl`), 'utf8'));
+      const checkout = path.join(cacheDir, 'replay-work', 'N', 's0-i0');
+      expect(realpathSync(printed.cwd)).toBe(realpathSync(checkout));
+      expect(statSync(printed.cwd).dev).toBe(statSync(cacheRoot).dev);
+      expect(readFileSync(path.join(checkout, 'README'), 'utf8')).toBe('native prepared source');
+      writeFileSync(path.join(checkout, 'README'), 'private session write');
+      expect(readFileSync(path.join(prepared, 'README'), 'utf8')).toBe('native prepared source');
+      expect(statSync(path.join(cacheDir, 'replay-home', 'N', 's0-i0')).dev).toBe(statSync(cacheRoot).dev);
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(platform() !== 'linux').each(['copy', 'overlay'] as const)('refuses a native root-backed %s at driver setup without replacing its destination or starting the CLI', async (workdir) => {
+    const cacheDir = realpathSync(mkdtempSync(path.join(homedir(), '.capacity-drive-refusal-')));
+    expect(statSync(cacheDir).dev).toBe(statSync('/').dev);
+    const prepared = path.join(cacheDir, 'prepared', 'r');
+    const checkout = path.join(cacheDir, 'replay-work', 'N', 's0-i0');
+    mkdirSync(prepared, { recursive: true });
+    mkdirSync(checkout, { recursive: true });
+    writeFileSync(path.join(prepared, 'README'), 'prepared source');
+    const sentinel = path.join(checkout, 'sentinel');
+    writeFileSync(sentinel, 'existing root destination');
+    const identity = statSync(sentinel);
+    try {
+      await expect(drive({
+        cacheDir, agents: 1, sessions: [meta({ id: 'claude-s1' })], corpus,
+        corpusDir: path.join(root, 'corpus'), outDir: path.join(root, 'out'), runId: 'N',
+        speed: 0, staggerMs: 0, durationSec: 0, isolation: 'none', keepWork: false, workdir,
+      })).rejects.toThrow(/refuse the root filesystem/);
+      expect(readFileSync(sentinel, 'utf8')).toBe('existing root destination');
+      expect(statSync(sentinel).ino).toBe(identity.ino);
+      expect(existsSync(`${checkout}.ovl`)).toBe(false);
+      expect(existsSync(path.join(cacheDir, 'replay-home'))).toBe(false);
+      expect(existsSync(path.join(root, 'out', 'sessions'))).toBe(false);
+    } finally {
+      rmSync(cacheDir, { recursive: true, force: true });
+    }
   });
 
   it('shared workdir: every session runs in the prepared checkout itself and gets the agent env', async () => {

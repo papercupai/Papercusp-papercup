@@ -15,7 +15,7 @@
  * against the same 60s the dispatcher will actually abort it at.
  *
  * Split on purpose: this module is PURE (rows + budgets in, signals out) so the threshold
- * calibration is unit-testable without a database or the 550-tool registry. The SQL
+ * calibration is unit-testable without a database or the full tool registry. The SQL
  * aggregate and the lazy registry read live in `collectToolErrorSignals` (watchdog.ts).
  */
 import type { WatchdogSignal } from './watchdog';

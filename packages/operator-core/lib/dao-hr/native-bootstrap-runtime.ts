@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { spawn, type SpawnOptions } from 'node:child_process';
-import { writeSync } from 'node:fs';
+import { closeSync, constants, fchmodSync, fstatSync, openSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { killSpawnedProcessTree } from '../../../../scripts/lib/batch-watchdog.mjs';
 
@@ -12,6 +12,34 @@ export const NATIVE_BOOTSTRAP_TEARDOWN_MS = 60_000;
 export const NATIVE_BOOTSTRAP_TIMEOUT_MS = 5 * 60_000
   + Object.values(NATIVE_VERIFIER_PHASE_BUDGETS).reduce((sum, value) => sum + value, 0)
   + NATIVE_BOOTSTRAP_TEARDOWN_MS;
+
+/** Retain only assertion snapshots; config and provider sessions stay in private scratch. */
+export function retainNativeDiagnostics(resultPath: string, logPath: string) {
+  const retained: Array<{ suffix: string; status: 'retained' | 'skipped' | 'error'; path?: string; reason?: string }> = [];
+  for (const suffix of ['.text-failure.json', '.response-failure.json', '.wallet-render-failure.json']) {
+    let input: number | undefined, output: number | undefined;
+    try {
+      input = openSync(resultPath + suffix, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      const stat = fstatSync(input);
+      if (!stat.isFile() || stat.size > 1024 * 1024) {
+        retained.push({ suffix, status: 'skipped', reason: !stat.isFile() ? 'not-regular-file' : 'exceeds-1MiB' });
+        continue;
+      }
+      const path = logPath + suffix;
+      output = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+      fchmodSync(output, 0o600);
+      writeFileSync(output, readFileSync(input));
+      retained.push({ suffix, status: 'retained', path });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') retained.push({ suffix, status: 'error', reason: code || 'retention-failed' });
+    } finally {
+      if (output !== undefined) closeSync(output);
+      if (input !== undefined) closeSync(input);
+    }
+  }
+  return retained;
+}
 
 /** Establish attribution before source preparation or provider allocation. */
 export function nativeBootstrapEnvironment(env: NodeJS.ProcessEnv, ledgerUrl: string): NodeJS.ProcessEnv {

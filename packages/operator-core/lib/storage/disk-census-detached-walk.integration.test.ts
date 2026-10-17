@@ -4,8 +4,8 @@
  * mid-walk; the next caller must ADOPT the still-running walk rather than start a second
  * one, and a walk killed mid-run must be relaunched rather than read as a result.
  */
-import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -14,7 +14,9 @@ import {
   DetachedWalkAbandoned,
   readWalkState,
   runDetachedDuWalk,
+  runDetachedDuUsage,
   TIMEOUT_EXIT_STATUS,
+  walkAttemptFiles,
   walkProcessAlive,
   type WalkLauncher,
 } from './disk-census-detached-walk';
@@ -73,6 +75,86 @@ afterAll(() => {
 });
 
 describe.skipIf(!linux)('detached census walk (real du, real processes)', () => {
+  it('preserves ordered cross-root hardlink allocation and stores only root totals', async () => {
+    const roots = [join(base, 'usage pinned'), join(base, 'usage\nevictable')];
+    roots.forEach(root => mkdirSync(root));
+    writeFileSync(join(roots[0]!, 'shared'), Buffer.alloc(128 * 1024, 7));
+    linkSync(join(roots[0]!, 'shared'), join(roots[1]!, 'shared'));
+    for (let i = 0; i < 300; i++) writeFileSync(join(roots[1]!, `f${i}`), 'x');
+    const reference = execFileSync('du', ['--summarize', '--one-file-system', '--block-size=1', '--null', '--', ...roots], { encoding: 'utf8' });
+    const expected = new Map(reference.split('\0').filter(Boolean).map(row => {
+      const tab = row.indexOf('\t'); return [row.slice(tab + 1), Number(row.slice(0, tab))] as const;
+    }));
+    const dir = join(base, 'usage-totals'), { launch, launches } = countingLauncher();
+    const run = await runDetachedDuUsage(roots, { dir, launch, pollMs: 25 });
+    expect(run.complete).toBe(true);
+    expect(run.bytes).toEqual(expected);
+    expect(launches).toEqual([1]);
+    expect(run.finishedAt).toBeGreaterThanOrEqual(run.startedAt);
+    const output = readFileSync(walkAttemptFiles(dir, 1).out, 'utf8');
+    expect(output.split('\0').filter(Boolean)).toHaveLength(2);
+    expect(output).not.toContain('/f299');
+    const progress = JSON.parse(readFileSync(join(dir, 'usage-progress.json'), 'utf8'));
+    expect(progress.metadataRecords).toBeGreaterThan(300);
+    expect(progress.completedRoots).toBe(2);
+    expect(progress.error).toBeNull();
+    // Reversing roots changes who owns the shared allocation and cannot adopt
+    // this result, nor start a parallel process in its directory.
+    await expect(runDetachedDuUsage([...roots].reverse(), { dir, launch })).rejects.toThrow('request changed');
+    expect(launches).toEqual([1]);
+  });
+
+  it('resumes a usage scan after its caller budget expires, without replaying the population', async () => {
+    const dir = join(base, 'usage-adopt'), first = countingLauncher();
+    const ctl = new AbortController();
+    await expect(runDetachedDuUsage([tree], {
+      dir, launch: async (...args) => {
+        const result = await first.launch(...args); ctl.abort(); return result;
+      }, command: slowDu(1), pollMs: 25, signal: ctl.signal,
+    })).rejects.toBeInstanceOf(DetachedWalkAbandoned);
+    const state = (await readWalkState(dir))!;
+    expect(walkProcessAlive(state)).toBe(true);
+    const second = countingLauncher();
+    const addedRoot = join(base, 'usage-added'); mkdirSync(addedRoot);
+    await expect(runDetachedDuUsage([tree, addedRoot], { dir, launch: second.launch })).rejects.toThrow('request changed');
+    expect(second.launches).toEqual([]);
+    const run = await runDetachedDuUsage([tree], { dir, launch: second.launch, pollMs: 25 });
+    expect(run.complete).toBe(true);
+    expect(run.bytes?.get(tree)).toBeGreaterThan(0);
+    expect(first.launches).toEqual([1]);
+    expect(second.launches).toEqual([]);
+    expect((await readWalkState(dir))?.adoptions).toBe(1);
+  });
+
+  it('keeps cap bytes unknown after failed, partial, duplicate or malformed output', async () => {
+    const cases = [
+      ['partial', 'printf "1\\t%s/child\\0" "$1"'],
+      ['duplicate', 'printf "1\\t%s\\0" "$1" "$1"'],
+      ['malformed', 'printf "bad\\t%s\\0" "$1"'],
+      ['exit-failure', 'printf "1\\t%s\\0" "$1"; exit 1'],
+    ] as const;
+    for (const [name, script] of cases) {
+      const { launch } = countingLauncher();
+      const run = await runDetachedDuUsage([tree], {
+        dir: join(base, `usage-${name}`), launch, pollMs: 25,
+        command: () => ['sh', ['-c', script, 'bad-du', tree]],
+      });
+      expect(run.complete, name).toBe(false);
+      expect(run.bytes, name).toBeNull();
+      expect(run.error, name).toBeTruthy();
+    }
+  });
+
+  it('refuses a replaced root identity instead of reusing its finished totals', async () => {
+    const root = join(base, 'usage-replace'); mkdirSync(root);
+    writeFileSync(join(root, 'file'), 'before');
+    const dir = join(base, 'usage-replace-state'), { launch, launches } = countingLauncher();
+    expect((await runDetachedDuUsage([root], { dir, launch, pollMs: 25 })).complete).toBe(true);
+    renameSync(root, root + '-old'); mkdirSync(root);
+    await expect(runDetachedDuUsage([root], { dir, launch })).rejects.toThrow('request changed');
+    expect(launches).toEqual([1]);
+  });
+
   it('measures exactly what the in-process walk measures', async () => {
     const reference = await runDuTree(tree, { floorBytes, maxDepth });
     const { launch, launches } = countingLauncher();

@@ -79,6 +79,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
+import { resolveTestRunsPgUrl } from '@papercusp/test-config/admin-test-runs-reporter';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
 import {
   boundTestRunPayload,
@@ -2658,10 +2659,14 @@ function runRouter(
   signal?: AbortSignal,
   fileCount = 1,
   phaseTimings?: TestingRunPhaseTimings,
+  privatePg = false,
 ): Promise<RouterOutcome> {
+  const router = join(cwd, 'scripts', 'test-files.mjs');
   return runTestProcess(
     process.execPath,
-    [join(cwd, 'scripts', 'test-files.mjs')],
+    privatePg
+      ? [join(cwd, 'scripts', 'with-test-pg.mjs'), '--', process.execPath, router]
+      : [router],
     args,
     cwd,
     cwd,
@@ -3264,6 +3269,8 @@ export async function runTestFilesCore(opts: {
   runId?: string;
   /** Recursive mixed-root groups defer detached recovery to their outer operation. */
   allowDetachedRecovery?: boolean;
+  /** Internal scorecard route: own test PG while retaining the original reporter sink. */
+  privatePg?: boolean;
   /** Explicit registered roots keep relative paths inside that checkout. */
   allowSiblingCheckoutFallback?: boolean;
   /** Optional handler-owned timing accumulator; omitted by internal callers. */
@@ -3293,6 +3300,7 @@ export async function runTestFilesCore(opts: {
           ...opts,
           files: group.files,
           root: group.root,
+          ...(opts.privatePg ? { privatePg: existsSync(join(group.root, 'scripts', 'with-test-pg.mjs')) } : {}),
           runId,
           timeoutMs: Math.max(1000, deadline - Date.now()),
           allowDetachedRecovery: false,
@@ -3303,7 +3311,9 @@ export async function runTestFilesCore(opts: {
       }
       const timeout = errors.find((result) => result.error === 'timeout');
       if (timeout) {
-        if (timeout.terminationUnconfirmed) {
+        // A detached replay must not discard an owned PG route or an explicit
+        // no-recovery request when a batch spans multiple checkouts.
+        if (timeout.terminationUnconfirmed || opts.privatePg || opts.allowDetachedRecovery === false) {
           return {
             ...timeout,
             runId,
@@ -3467,6 +3477,11 @@ export async function runTestFilesCore(opts: {
     // to this invocation).
     delete childEnv.PC_HEAVY_PREEMPT_READY_FILE;
     delete childEnv.PC_HEAVY_PSI_FINALIZATION_FILE;
+    if (opts.privatePg) {
+      // Resolve the reporter's existing destination BEFORE the maintained wrapper
+      // replaces product/test database discovery with its disposable cluster.
+      childEnv.PAPERCUSP_TEST_RUNS_DB_URL = resolveTestRunsPgUrl(childEnv);
+    }
     let directReportPaths: string[] | null = null;
     let outcome: RouterOutcome;
     if (hasRouter) {
@@ -3485,6 +3500,7 @@ export async function runTestFilesCore(opts: {
         opts.signal,
         pathResolution.files.length,
         opts.phaseTimings,
+        opts.privatePg,
       );
     } else {
       const groups = groupDirectVitestRoutes(pathResolution.files, root);
@@ -3601,7 +3617,7 @@ export async function runTestFilesCore(opts: {
       // checkouts have no scripts/test-files.mjs route, so they retain the
       // existing explicit recovery hint until that route can be represented as
       // one store run.
-      const detachedEnabled = hasRouter && opts.allowDetachedRecovery !== false;
+      const detachedEnabled = hasRouter && !opts.privatePg && opts.allowDetachedRecovery !== false;
       const detachedHarnessSlug = await resolveDetachedHarnessSlug({
         root,
         detachedEnabled,

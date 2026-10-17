@@ -29,7 +29,11 @@ import { ConfirmModal } from '@/app/harness/ConfirmModal';
 import { RadioGroup } from '@/app/harness/RadioGroup';
 import { Select } from '@/app/harness/Select';
 import { StepOwnTunnel, type OwnTunnelStatusView } from '@/app/_components/SetupWizard/StepOwnTunnel';
-import { connectionConfirmationCopy, connectionStatusCopy, normalizePortalRelayStatus, normalizeRemoteAccessEntry } from './connection-inventory';
+import { connectionConfirmationCopy, connectionStatusCopy, normalizeBrowserSession, normalizeHostedConnectorStatus,
+  normalizePortalRelayStatus, normalizeRemoteAccessEntry, normalizeSshProfile,
+  type ConnectionInventoryEntry, type SshProfileConnectionSource } from './connection-inventory';
+import type { CloudWorkspacesControlRow, WorkspaceHostControlRow } from '../../cloud-workspaces/workspace-view-model';
+import { useVisibleRefresh } from '@/app/_components/desktop-grid/use-visible-refresh';
 
 export type EntryKind = 'mobile' | 'app' | 'service';
 
@@ -59,6 +63,10 @@ export interface RemoteAccessOverviewRow {
   ownTunnelError: string | null;
   portalRelay?: PortalRelayStatusView | null;
   portalRelayError?: string | null;
+  sshProfiles?: SshProfileConnectionSource[];
+  sshProfilesError?: string | null;
+  hostedConnectors?: Array<{ id: string; label: string; connector: WorkspaceHostControlRow['hostedConnector'] | null }>;
+  hostedConnectorsError?: string | null;
 }
 
 /** The subset of relay-opt-in.ts PortalRelayStatus the screen shows (external-app-access P-008). */
@@ -193,12 +201,15 @@ export default function RemoteAccessSettingsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const { data, loading, error } = useSyncQuery<RemoteAccessOverviewRow>({
+  const { data, loading, error, invalidate } = useSyncQuery<RemoteAccessOverviewRow>({
     queryName: 'remoteAccess.overview',
     args: { workspaceId: ws || 'default' },
     enabled: ws !== '',
   });
   const row = data?.[0] ?? null;
+  // Connector heartbeats and local SSH file writes do not share the app-key
+  // table's push trigger. Re-read their existing source while this page is visible.
+  useVisibleRefresh(invalidate, 30_000, row !== null);
   const entries = useMemo(() => row?.entries ?? [], [row]);
   const now = Date.now();
 
@@ -267,8 +278,7 @@ export default function RemoteAccessSettingsPage() {
       <header>
         <h1>Remote access</h1>
         <p className="pc-settings-intro">
-          Let apps and phones outside this computer — Claude.ai, ChatGPT, scripts, Papercup Mobile — reach a workspace, and
-          take that access back.
+          Review machine connections, browser sign-in, apps and phones that reach a workspace, and take that access back.
         </p>
       </header>
 
@@ -370,6 +380,8 @@ export default function RemoteAccessSettingsPage() {
         {row?.portalRelay && <PortalRelayCard workspaceId={row.workspaceId} relay={row.portalRelay} busy={busy !== null} run={run} />}
       </section>
 
+      {ws && <MachineConnectionInventory key={ws} row={row?.workspaceId === ws ? row : { workspaceId: ws }} run={run} busy={busy !== null} />}
+
       <section className="pc-settings-section" data-testid="remote-access-list">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
           <h2 style={{ margin: 0 }}>Apps and devices</h2>
@@ -384,7 +396,7 @@ export default function RemoteAccessSettingsPage() {
         </div>
         {issued && <IssuedKeyBox issued={issued} onDone={() => setIssued(null)} />}
         {row && entries.length === 0 && (
-          <p className="pc-settings-hint" style={{ marginTop: 12 }}>Nothing is connected to this workspace.</p>
+          <p className="pc-settings-hint" style={{ marginTop: 12 }}>No apps or devices are connected to this workspace.</p>
         )}
         <ul style={{ marginTop: 12, listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {entries.map((e) => (
@@ -510,6 +522,141 @@ const entryStyle = {
   borderRadius: 6,
   padding: '12px 16px',
 } as const;
+
+/** Each row keeps its own authority. A browser sign-in never certifies a live machine channel. */
+function MachineConnectionInventory({ row, run, busy }: {
+  row: Pick<RemoteAccessOverviewRow, 'workspaceId' | 'sshProfiles' | 'sshProfilesError' | 'hostedConnectors' | 'hostedConnectorsError'>;
+  run: (what: string, fn: () => Promise<void>) => Promise<void>;
+  busy: boolean;
+}) {
+  const [now, setNow] = useState(Date.now);
+  const [browser, setBrowser] = useState<{ id: string; expiresAt: number } | null>(null);
+  const [browserStatus, setBrowserStatus] = useState('Checking browser sign-in…');
+  const [confirmation, setConfirmation] = useState<string | null>(null);
+  const [revoked, setRevoked] = useState<ReadonlySet<string>>(new Set());
+  // Hosted browsers cannot read the loopback-only app/key overview. Their existing
+  // allowlisted control query is tenant-scoped; enable it only after the current
+  // authenticated session confirms the selected workspace.
+  const hostedControl = useSyncQuery<CloudWorkspacesControlRow>({ queryName: 'workspaceHosts.control',
+    enabled: row.hostedConnectors === undefined && browser !== null });
+  const hostedConnectors = row.hostedConnectors ?? (browser && !hostedControl.loading && !hostedControl.error
+    ? hostedControl.data.filter((host): host is WorkspaceHostControlRow => host.kind === 'workspace' && host.observedState !== 'absent')
+      .map(host => ({ id: host.id, label: host.name, connector: host.hostedConnector ?? null })) : undefined);
+  const hostedConnectorsError = row.hostedConnectorsError ?? hostedControl.error?.message;
+  // Read the current authenticated session, never a saved profile or localStorage identity.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch('/api/hosted/auth/session', { cache: 'no-store' });
+        if (!response.ok && ![401, 403, 404].includes(response.status)) throw new Error('browser_session_unavailable');
+        const result = await response.json();
+        if (cancelled) return;
+        const session = result?.session;
+        if (!response.ok || result?.ok !== true || typeof session?.sessionId !== 'string' || !session.sessionId ||
+          session.workspaceId !== row.workspaceId || !Number.isFinite(session.expiresAtMs)) {
+          setBrowserStatus('No authenticated browser session is available for this workspace.');
+          return;
+        }
+        setBrowser({ id: session.sessionId, expiresAt: session.expiresAtMs });
+      } catch {
+        if (!cancelled) setBrowserStatus('Browser session status is unavailable.');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [row.workspaceId]);
+  useVisibleRefresh(() => setNow(Date.now()), 15_000, Boolean(browser) || Boolean(hostedConnectors?.length));
+  useVisibleRefresh(hostedControl.invalidate, 30_000, row.hostedConnectors === undefined && browser !== null);
+  const selectedHost = hostedConnectors?.find(host => `connector:${host.id}` === confirmation);
+  const selectedConnector = selectedHost?.connector;
+  const browserEntry = browser ? normalizeBrowserSession({
+    id: browser.id, label: 'Current browser sign-in', scope: row.workspaceId, transport: 'https',
+    state: revoked.has(`browser:${browser.id}`) ? 'revoked' : browser.expiresAt <= now ? 'expired' : 'active',
+    health: 'unknown', sourceRef: `hosted-session:${browser.id}`,
+  }, { now }) : null;
+  const confirm = async () => {
+    if (confirmation === 'browser' && browserEntry?.state === 'active') {
+      await run('Signing out of this browser', async () => {
+        await postJson('/api/hosted/auth/logout', {});
+        setRevoked(previous => new Set([...previous, `browser:${browserEntry.id}`]));
+        setConfirmation(null);
+      });
+    } else if (selectedHost && selectedConnector) {
+      await run('Revoking hosted connector', async () => {
+        await postJson(`/api/hosted/workspaces/${encodeURIComponent(selectedConnector.customerWorkspaceId)}/connectors/revoke`,
+          { hostId: selectedHost.id, routeLabel: selectedConnector.routeLabel, transport: selectedConnector.transport });
+        setRevoked(previous => new Set([...previous, `${selectedHost.id}:${selectedConnector.generation}`]));
+        setConfirmation(null);
+      });
+    }
+  };
+  const details = (entry: ConnectionInventoryEntry, status: string) => <>
+    <strong>{entry.label}</strong>
+    <div className="pc-settings-hint">{entry.authoritySummary} · {status}</div>
+    <div className="pc-settings-hint">Scope: {entry.scope} · Transport: {entry.transport.toUpperCase()}</div>
+    <div className="pc-settings-hint">Last seen: {entry.lastSeen ? when(entry.lastSeen) : 'unknown'}</div>
+  </>;
+  return <section className="pc-settings-section" data-testid="machine-connection-inventory">
+    <h2>Machine connections and browser</h2>
+    <h3>Saved SSH profiles</h3>
+    <p className="pc-settings-hint">These profiles belong to this computer and can be used with any workspace. Saving a profile does not prove the machine is online.</p>
+    {row.sshProfilesError ? <p role="status">{row.sshProfilesError}</p> : !row.sshProfiles ?
+      <p role="status">SSH profile inventory is unavailable.</p> : row.sshProfiles.length === 0 ?
+      <p className="pc-settings-hint">No SSH profiles are saved on this computer.</p> : null}
+    <ul style={{ listStyle: 'none', padding: 0 }}>
+      {row.sshProfiles?.map(source => {
+        const entry = normalizeSshProfile(source);
+        return <li key={entry.sourceRef} style={entryStyle} data-testid="ssh-profile-inventory"
+          data-connection-class={entry.class} data-connection-state={entry.state} data-connection-health={entry.health}>
+          {details(entry, 'Liveness unknown')}
+          <details><summary>Forget local profile</summary>
+            <p>Run <code>psu --connect-remove={source.id}</code> on this computer. This only forgets the saved profile; it does not revoke its SSH key or stop running agents.</p>
+          </details>
+          <details><summary>Revoke remote key</summary>
+            <p>Remove the authorized SSH public key on the remote computer using its SSH administrator. Forgetting this profile alone leaves that key authorized. Phone pairings, relay access and browser sign-in are separate.</p>
+          </details>
+        </li>;
+      })}
+    </ul>
+    <h3>Hosted connectors</h3>
+    {hostedConnectorsError ? <p role="status">{hostedConnectorsError}</p> : !hostedConnectors ?
+      <p role="status">Hosted connector inventory is unavailable.</p> : hostedConnectors.length === 0 ?
+      <p className="pc-settings-hint">No hosted machines are registered in this workspace.</p> : null}
+    <ul style={{ listStyle: 'none', padding: 0 }}>
+      {hostedConnectors?.map(host => {
+        const connector = host.connector;
+        const isRevoked = connector?.state === 'revoked' || Boolean(connector && revoked.has(`${host.id}:${connector.generation}`));
+        const live = connector?.state === 'active' && connector.transport === 'websocket' &&
+          connector.liveUntil !== null && now <= connector.liveUntil && !isRevoked;
+        const entry = normalizeHostedConnectorStatus({ id: host.id, routeLabel: host.label,
+          scope: connector?.customerWorkspaceId ?? row.workspaceId,
+          transport: connector?.transport === 'websocket' ? 'websocket' : 'https',
+          state: isRevoked ? 'revoked' : live ? 'connected' : connector?.state === 'pending' ? 'connecting' : connector ? 'disconnected' : 'unknown',
+          health: live ? 'healthy' : connector?.state === 'pending' ? 'degraded' : connector ? 'offline' : 'unknown',
+          lastSeenAt: connector?.lastSeenAt, sourceRef: `hosted-connector:${row.workspaceId}:${host.id}`,
+        }, { now });
+        return <li key={entry.sourceRef} style={entryStyle} data-testid="hosted-connector-inventory"
+          data-connection-class={entry.class} data-connection-state={entry.state} data-connection-health={entry.health}>
+          {details(entry, isRevoked ? 'Revoked' : live ? 'Connected' : connector?.state === 'pending' ? 'Connecting' : connector ? 'Offline' : 'Liveness unknown')}
+          <button type="button" disabled={busy || !connector || isRevoked}
+            onClick={() => setConfirmation(`connector:${host.id}`)}>Revoke connector</button>
+        </li>;
+      })}
+    </ul>
+    <h3>Browser session</h3>
+    {browserEntry ? <div style={entryStyle} data-testid="browser-session-inventory"
+      data-connection-class={browserEntry.class} data-connection-state={browserEntry.state} data-connection-health={browserEntry.health}>
+      {details(browserEntry, browserEntry.state === 'active' ? 'Signed in · machine connection unknown' : browserEntry.state === 'expired' ? 'Session expired' : 'Signed out')}
+      <p className="pc-settings-hint">A sign-in grants browser access within its permissions. Only an authenticated machine channel can confirm a live machine connection.</p>
+      <button type="button" disabled={busy || browserEntry.state !== 'active'} onClick={() => setConfirmation('browser')}>Sign out of this browser</button>
+    </div> : <p role="status">{browserStatus}</p>}
+    <ConfirmModal open={confirmation !== null} onOpenChange={open => { if (!open) setConfirmation(null); }}
+      title={confirmation === 'browser' ? 'Sign out of this browser?' : `Revoke connector for ${selectedHost?.label ?? 'hosted machine'}?`}
+      body={confirmation === 'browser' ? 'This browser session is revoked and must sign in again. Machine SSH keys, hosted connectors and phone pairings are unchanged.' :
+        'This closes the connector’s active channels. Re-enrollment is required to reconnect. SSH keys, phone pairings and browser sign-in are unchanged.'}
+      confirmLabel={confirmation === 'browser' ? 'Confirm sign out' : 'Confirm revoke connector'} destructive onConfirm={confirm} />
+  </section>;
+}
 
 /**
  * The opt-in Papercusp relay (P-008, D-001 / D-009): the alternative to the user's own tunnel.

@@ -35,7 +35,7 @@ interface FocusCommandResult {
 type X11CommandRunner = (command: string, args: string[]) => FocusCommandResult | Promise<FocusCommandResult>;
 
 export interface FocusWindowOptions {
-  /** Omitted: bring here on Linux/Windows; switch Spaces on macOS. */
+  /** Omitted: bring here on Linux; switch to the window on Windows/macOS. */
   workspace?: 'current' | 'window';
 }
 
@@ -210,10 +210,7 @@ export async function focusWindowId(
 ): Promise<boolean> {
   if (isWindowsDesktopHost()) {
     try {
-      // Windows' public desktop API supports moving an existing window here,
-      // not selecting an arbitrary virtual desktop. Never silently change mode.
-      if (deps.workspace === 'window') return false;
-      return await focusWindowByTitle(windowId);
+      return await focusWindowByTitle(windowId, deps.workspace ?? 'window');
     } catch {
       return false;
     }

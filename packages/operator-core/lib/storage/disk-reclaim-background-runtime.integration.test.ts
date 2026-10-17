@@ -15,6 +15,7 @@ const filePath = 'packages/operator-core/lib/storage/disk-reclaim-background-run
 const assertion = 'packages/operator-core/lib/storage/disk-reclaim.integration.test.ts';
 const releaseAssertion = 'packages/operator-core/lib/release-cut-reclaim.test.ts';
 const releaseSource = 'packages/operator-core/lib/release-cut-reclaim.ts';
+const usageSource = 'packages/operator-core/lib/storage/disk-census-detached-walk.ts';
 const censusAssertion = 'packages/operator-core/lib/storage/disk-consumer-census.test.ts';
 const reclaimSource = 'packages/operator-core/lib/storage/disk-reclaim.ts';
 const censusSource = 'packages/operator-core/lib/storage/disk-consumer-census.ts';
@@ -67,6 +68,7 @@ const options = isolatedTestFileWorkerOptions(process.env, 1);
 type RuntimeSelection = {
   reclaimTitles: string[]; expectedReclaimCases: number; census: boolean;
   assertion?: string; source?: string;
+  observedSources?: string[];
 };
 const runSelection = async (selection: RuntimeSelection, context: TestContext) => {
   const selectedAssertion = selection.assertion ?? assertion;
@@ -76,7 +78,7 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
   const runId = await recordIsolatedIntegrationProof({
     root, filePath,
     sourcePaths: [...new Set([assertion, selectedAssertion, censusAssertion, reclaimSource, censusSource,
-      releaseSource,
+      releaseSource, usageSource,
       'packages/operator-core/lib/native-bg-task-ledger.ts',
       'packages/operator-core/lib/storage/retention-policy.ts',
       'packages/operator-core/lib/storage/retention-pins.ts',
@@ -146,6 +148,11 @@ const runSelection = async (selection: RuntimeSelection, context: TestContext) =
           expect(original.sources.find((value: any) => value.path === sourceFile), mapFile)
             .toMatchObject({ basis: 'vite-pre-transform',
               sha256: createHash('sha256').update(readFileSync(join(root, sourceFile))).digest('hex') });
+          for (const observedSource of selection.observedSources ?? []) {
+            expect(original.sources.find((value: any) => value.path === observedSource), mapFile)
+              .toMatchObject({ basis: 'vite-pre-transform',
+                sha256: createHash('sha256').update(readFileSync(join(root, observedSource))).digest('hex') });
+          }
           if (sourceFile === reclaimSource) {
             expect(original.sources.find((value: any) => value.path === censusSource), mapFile)
               .toMatchObject({ basis: 'vite-pre-transform',
@@ -205,3 +212,15 @@ it('supervises release usage progress and refuses incomplete measurement in the 
     'charges shared hardlink allocation to pins before unpinned cuts',
     'waits for a pin writer before its final protection read',
   ], expectedReclaimCases: 11, census: false }, context), options.testTimeoutMs);
+it('adopts scheduled release usage without overlapping workers and refreshes guards in the observed private background runtime',
+  context => runSelection({ assertion: releaseAssertion, source: releaseSource, observedSources: [usageSource], reclaimTitles: [
+    'adopts the same scheduled usage worker after a bounded wait and refuses a live changed population',
+    ...['authored', 'published', 'lease', 'holder'].map(kind => `rechecks ${kind} protection after scheduled measurement before any removal`),
+    'retires a terminal obsolete population before launching its replacement',
+    'keeps a failed terminal measurement unknown and permits a fresh worker on the next call',
+    'invalidates adopted usage before effects and measures the remaining pinned hardlinks in a fresh worker',
+    'refuses a stale scheduled terminal receipt instead of assigning cap totals',
+    'retains every cut when its execution deadline has already expired',
+    ...['holder', 'archive'].map(phase => `rechecks its execution deadline after the ${phase} phase before admitting a removal`),
+    'finishes an admitted cut removal but leaves the next cut for a fresh guarded plan after the shared deadline',
+  ], expectedReclaimCases: 13, census: false }, context), options.testTimeoutMs);

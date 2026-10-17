@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { lstat, readdir, realpath, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { isCliEntry } from '../util/cli-entry';
-import { scanProcHolders, type HolderScan } from '../release-cut-reclaim';
+import type { scanProcHolders, HolderScan } from '../release-cut-reclaim';
 
 export interface RetireAcceptanceDependenciesOptions {
   checkout: string;
@@ -40,7 +40,10 @@ export async function retireAcceptanceDependencies(options: RetireAcceptanceDepe
     }
     identities.set(target, { dev: value.dev, ino: value.ino });
   }
-  const scan = options.scan ?? scanProcHolders;
+  // Offline callers can supply the existing scan seam without loading the
+  // host-wide privileged worker/telemetry graph. Production still uses the
+  // maintained fail-closed guard whenever no scan was injected.
+  const scan = options.scan ?? (await import('../release-cut-reclaim')).scanProcHolders;
   const assertIdle = (result: HolderScan) => {
     if (!result.verified) throw new Error(`process-use scan unverified: ${result.reason ?? 'unknown'}`);
     if ((result.holders.get(checkout) ?? []).length > 0) throw new Error('acceptance slot is in use');

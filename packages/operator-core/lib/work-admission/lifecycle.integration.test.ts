@@ -220,7 +220,7 @@ beforeEach(async () => {
 });
 
 describe('admission lifecycle (P-003)', () => {
-  it.each(['merged', 'merged-after-comment', 'wrong-fork', 'wrong-head', 'wrong-base', 'closed',
+  it.each(['merged', 'merged-after-comment', 'merged-after-default-change', 'wrong-fork', 'wrong-head', 'wrong-base', 'closed',
     'base-already-fixed', 'merge-lacks-fix', 'reopened', 'completion-changed'])(
     'reconciles completion after publication and merge, refusing unrelated evidence: %s', async (scenario) => {
       const root = mkdtempSync(join(tmpdir(), 'admission-late-completion-'));
@@ -303,7 +303,7 @@ describe('admission lifecycle (P-003)', () => {
         };
         const deps = { standingPr: { projects: async () => [{ slug: 'repo-member', hive_slug: HARNESS, path: root,
           github_remote: 'https://github.com/acme/widgets', fork_remote: 'https://github.com/pot/widgets',
-          github_default_branch: 'main' }], host,
+          github_default_branch: scenario === 'merged-after-default-change' ? 'staging' : 'main' }], host,
           git: async (dir: string, args: string[]) => args[0] === 'ls-remote'
             ? { code: 0, stdout: `${merge}\trefs/heads/main` } : auditGit(dir, args),
         } };
@@ -317,7 +317,7 @@ describe('admission lifecycle (P-003)', () => {
         // A changed completion can be reconciled on its next pass, after a fresh audit.
         if (scenario !== 'completion-changed') await reconcileAdmissionLifecycle(sql, { workspaceId: WS, dataSourceId: source }, deps);
         const receipt = ((await item(id)).payload as Record<string, unknown>).standingPr;
-        if (scenario === 'merged' || scenario === 'merged-after-comment') {
+        if (scenario === 'merged' || scenario === 'merged-after-comment' || scenario === 'merged-after-default-change') {
           expect(receipt).toMatchObject({ url: publication.url, testedSha: head, targetSha: target, mergedSha: merge });
           const comments = callsFor('LATE-PR').filter(([capability, text]) => capability === 'ticket.comment'
             && String(text).includes(publication.url));

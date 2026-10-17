@@ -33,6 +33,50 @@ run_in() {
 }
 fail() { echo "release-acceptance: ERROR: $*" >&2; exit 2; }
 
+# Resolve the admin authority in the shared caller before materializing the
+# immutable candidate checkout. The checkout's source is deliberately frozen,
+# but its test-runs/disclosure-ledger reporter still needs the caller's actual
+# database credentials; without this pin, the candidate can fall through to a
+# stale discovery/default URL and refuse before any product test starts.
+preflight_acceptance_database() {
+  local resolved
+  resolved="$(node --input-type=module - "$ROOT" <<'NODE'
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+const deadline = setTimeout(() => {
+  console.error('release-acceptance: database preflight exceeded 15000ms');
+  process.exit(1);
+}, 15_000);
+let client;
+try {
+  const root = process.argv[2];
+  const { resolveScriptPgUrl, describePgUrlResolution } = await import(pathToFileURL(root + '/scripts/lib/pg-url.mjs').href);
+  const resolution = resolveScriptPgUrl();
+  console.error('release-acceptance: ' + describePgUrlResolution(resolution));
+  const { Client } = createRequire(root + '/package.json')('pg');
+  client = new Client({ connectionString: resolution.url, connectionTimeoutMillis: 5000,
+    query_timeout: 5000, statement_timeout: 5000 });
+  await client.connect();
+  await client.query('SELECT 1');
+  await client.end();
+  client = undefined;
+  process.stdout.write(resolution.url);
+} catch (error) {
+  // A malformed DSN or driver error may contain credentials. Report only a
+  // bounded machine code; the resolver diagnostic above already names the host.
+  const code = typeof error?.code === 'string' && /^[A-Z0-9_]{1,40}$/i.test(error.code) ? error.code : 'failed';
+  console.error('release-acceptance: database authentication/read preflight ' + code);
+  process.exitCode = 1;
+} finally {
+  if (client) await client.end().catch(() => {});
+  clearTimeout(deadline);
+}
+NODE
+)" || fail 'disclosure-ledger database preflight failed before candidate checkout'
+  [ -n "$resolved" ] || fail 'database resolver returned an empty HARNESS_ADMIN_DATABASE_URL'
+  export HARNESS_ADMIN_DATABASE_URL="$resolved"
+}
+
 # Retire only explicitly named rebuildable dependencies of an idle slot. Source,
 # archives and acceptance evidence stay in place; normal preparation restores
 # these trees from its required immutable generation on the next use.
@@ -75,6 +119,8 @@ sha="$(printf '%s' "$provenance" | node -e '
     if (!/^[0-9a-f]{40}$/.test(commit)) process.exit(1);
     process.stdout.write(commit);
   });')" || fail "$archive PROVENANCE.json has no 40-hex source.commit"
+
+preflight_acceptance_database
 
 checkouts="${PUI_ACCEPTANCE_CHECKOUT_ROOT:-$HOME/.cache/pui-acceptance-checkouts}"
 mkdir -p "$checkouts"

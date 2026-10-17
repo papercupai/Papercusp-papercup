@@ -242,6 +242,7 @@ function DesktopConnection({
           hostId={workspace.id}
           routeLabel={routeLabel}
           workspaceName={workspace.name}
+          connectorStatus={workspace.hostedConnector}
           onWorkspaceIdChange={setWorkspaceId}
           onWorkspaceBound={id => onWorkspaceBound?.(workspace.id, id)}
           onDesktopBridgeChange={onBridgeChange}

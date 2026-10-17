@@ -606,7 +606,7 @@ jobs:
       # Client bundle-budget guard (EI-13213, 2026-07-19): apps/operator-vite
       # is a pure-browser SPA, but a `typeof window`-runtime-guarded dynamic
       # import can still be traced STATICALLY by Rolldown and drag a whole
-      # server-only subtree (agent-tools' ~550 tools, dbos/*, sync/hyperbee/*)
+      # server-only subtree (the whole agent-tools catalog, dbos/*, sync/hyperbee/*)
       # into the client build as dead weight invisible to unit tests. Runs the
       # real `vite build` into a throwaway outDir and asserts on what Rolldown
       # itself reports: zero INEFFECTIVE_DYNAMIC_IMPORT warnings, and the eager

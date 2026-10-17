@@ -55,6 +55,7 @@ describe('P-021 convergence trajectory', () => {
   it('counts rounds since the last strict new low; ties are not new lows', () => {
     expect(frozenRepairConvergenceTrajectory([])).toEqual({
       roundsRecorded: 0,
+      comparableRounds: 0,
       roundsSinceLow: 0,
       lowestFailingCount: null,
       latestFailingCount: null,

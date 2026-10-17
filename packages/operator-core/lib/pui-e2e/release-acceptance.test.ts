@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { parseCLI, resolveConfig } from 'vitest/node';
 import { ADMIN_TEST_RUNS_REPORTER_PATH } from '@papercusp/test-config/vitest-config';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { createServer as createTcpServer, type AddressInfo, type Socket } from 'node:net';
 import type { SuSessionEvent } from '@papercusp/chat-protocol';
 import * as path from 'node:path';
 import { assertInstalledPuiStore, checkReleaseAcceptance, disqualification, HARNESS_TAG, loadAcceptanceMatrix, loadRequiredMatrix, nativeApprovalFollowupDecline, nativeApprovalRequest, nativeApprovalTurnSettled, nativeInterruptRequest, parseAcceptanceLines, parseHarnessLine, REPO_ROOT, suToolApproval, type Candidate, type EvidenceRow } from './release-acceptance';
@@ -220,6 +220,166 @@ describe('installed PUI store admission', () => {
 });
 
 describe('release acceptance checkout helper snapshot', () => {
+  const callerDsn = 'postgresql://fixture:PRIVATE_CALLER_PASSWORD@127.0.0.1:6543/ledger';
+  const explicitDsn = 'postgresql://fixture:PRIVATE_EXPLICIT_PASSWORD@127.0.0.1:6544/ledger';
+  const privateTestDsn = 'postgresql://fixture:PRIVATE_TEST_PASSWORD@127.0.0.1:6545/private_tests';
+
+  function databaseFixture() {
+    const root = mkdtempSync(path.join(tmpdir(), 'pui-db-preflight-'));
+    const put = (relative: string, body: string, executable = false) => {
+      const file = path.join(root, relative);
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, body, executable ? { mode: 0o755 } : undefined);
+      return file;
+    };
+    const wrapper = put('apps/tui/scripts/release-acceptance.sh',
+      readFileSync(path.join(REPO_ROOT, 'apps/tui/scripts/release-acceptance.sh'), 'utf8'));
+    put('package.json', '{"private":true}');
+    put('scripts/lib/pg-url.mjs', readFileSync(path.join(REPO_ROOT, 'scripts/lib/pg-url.mjs'), 'utf8'));
+    put('packages/operator-core/lib/embedded-pg-discovery.ts',
+      'export function getHarnessAdminUrlWithSource() { throw new Error("unselected discovery must not be used"); }');
+    put('apps/operator/.env.local', `DATABASE_URL=${callerDsn}\n`);
+    const receipt = path.join(root, 'receipt.json');
+    const events = path.join(root, 'events');
+    put('node_modules/pg/index.js', `const { appendFileSync } = require('node:fs');
+module.exports.Client = class {
+  constructor(options) {
+    for (const name of ['connectionTimeoutMillis', 'query_timeout', 'statement_timeout']) {
+      if (!(options[name] > 0 && options[name] <= 5000)) throw new Error('unbounded precheck');
+    }
+    new URL(options.connectionString);
+  }
+  async connect() {
+    appendFileSync(process.env.PUI_FIXTURE_EVENTS, 'connect\\n');
+    if (process.env.PUI_FIXTURE_FAIL === 'auth') throw Object.assign(new Error('PRIVATE_DRIVER_ERROR'), { code: '28P01' });
+  }
+  async query(sql) {
+    if (sql !== 'SELECT 1') throw new Error('unexpected database write');
+    appendFileSync(process.env.PUI_FIXTURE_EVENTS, 'query\\n');
+    if (process.env.PUI_FIXTURE_FAIL === 'query') throw Object.assign(new Error('PRIVATE_DRIVER_ERROR'), { code: '57014' });
+  }
+  async end() { appendFileSync(process.env.PUI_FIXTURE_EVENTS, 'end\\n'); }
+};
+`);
+    const tsx = put('node_modules/.bin/tsx', `#!/usr/bin/env node
+const { appendFileSync, writeFileSync } = require('node:fs');
+if (process.argv[2].endsWith('release-acceptance-cache.ts')) {
+  appendFileSync(process.env.PUI_FIXTURE_EVENTS, 'retire\\n');
+} else {
+  appendFileSync(process.env.PUI_FIXTURE_EVENTS, 'candidate\\n');
+  writeFileSync(process.env.PUI_FIXTURE_RECEIPT, JSON.stringify({
+    admin: process.env.HARNESS_ADMIN_DATABASE_URL, privateTest: process.env.PAPERCUSP_TEST_PG_ADMIN_URL,
+    isolated: process.env.PUI_ACCEPTANCE_ISOLATED,
+  }));
+}
+`, true);
+    put('scripts/npm-install-safe.mjs', `import { spawnSync } from 'node:child_process';
+const args = process.argv.slice(2);
+if (args[0] !== '--repo-root' || args[2] !== '--exec-under-lock' || args[3] !== '--') process.exit(42);
+const child = spawnSync(args[4], args.slice(5), { stdio: 'inherit' });
+process.exit(child.status ?? 1);
+`);
+    put('apps/operator/scripts/systemd/papercusp-script-snapshot.sh',
+      readFileSync(path.join(REPO_ROOT, 'apps/operator/scripts/systemd/papercusp-script-snapshot.sh'), 'utf8'));
+    put('apps/operator/bin/release/setup-release-checkout.sh', `#!/usr/bin/env bash
+set -eu
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = --release ]; then target="$2"; fi
+  shift
+done
+printf 'checkout\\n' >> "$PUI_FIXTURE_EVENTS"
+mkdir -p "$target/node_modules/.bin"
+cp "$PUI_FIXTURE_TSX" "$target/node_modules/.bin/tsx"
+`);
+    const sha = 'a'.repeat(40);
+    put('bin/git', `#!/usr/bin/env bash\nprintf '%s\\n' '${sha}'\n`, true);
+    put('archive/PROVENANCE.json', JSON.stringify({ source: { commit: sha } }));
+    const archive = path.join(root, 'candidate.tar.gz');
+    execFileSync('tar', ['-czf', archive, '-C', root, 'archive/PROVENANCE.json']);
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${path.join(root, 'bin')}${path.delimiter}${process.env.PATH}`,
+      PUI_ACCEPTANCE_ISOLATED: '', PUI_ACCEPTANCE_ALLOW_LIVE_TREE: '', PUI_ACCEPTANCE_CHECKOUT_ROOT: path.join(root, 'cache'),
+      PUI_FIXTURE_EVENTS: events, PUI_FIXTURE_RECEIPT: receipt, PUI_FIXTURE_TSX: tsx,
+      PAPERCUSP_TEST_PG_ADMIN_URL: privateTestDsn, PAPERCUSP_SCRIPT_SNAPSHOT_GIT_REF: '',
+    };
+    for (const key of ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL',
+      'PAPERCUSP_PG_PORT', 'PAPERCUSP_SKIP_PG_DISCOVERY', 'PUI_FIXTURE_FAIL']) delete env[key];
+    return { root, wrapper, archive, receipt, events, env };
+  }
+
+  it.each(['operator environment', 'explicit admin pin', 'isolated PG port'])(
+    'forwards %s authority and keeps the product test database private', (source) => {
+      const fixture = databaseFixture();
+      let expected = callerDsn;
+      if (source === 'explicit admin pin') {
+        fixture.env.HARNESS_ADMIN_DATABASE_URL = explicitDsn;
+        expected = explicitDsn;
+      } else if (source === 'isolated PG port') {
+        fixture.env.PAPERCUSP_PG_PORT = '6546';
+        fixture.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
+        expected = 'postgresql://harness_admin:harness_admin_pwd@localhost:6546/papercusp';
+      }
+      try {
+        const result = spawnSync('bash', [fixture.wrapper, '--archive', fixture.archive], {
+          env: fixture.env, encoding: 'utf8', timeout: 10_000,
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(readFileSync(fixture.receipt, 'utf8'))).toEqual({
+          admin: expected, privateTest: privateTestDsn, isolated: path.join(fixture.root, 'cache/slot-1'),
+        });
+        expect(readFileSync(fixture.events, 'utf8').trim().split('\n'))
+          .toEqual(['connect', 'query', 'end', 'checkout', 'candidate', 'retire']);
+        expect(result.stdout + result.stderr).not.toContain('PRIVATE_');
+      } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+    },
+  );
+
+  it.each(['auth', 'query', 'resolution'])('stops on %s failure before allocating a checkout and redacts credentials', (failure) => {
+    const fixture = databaseFixture();
+    fixture.env.PUI_FIXTURE_FAIL = failure;
+    if (failure === 'resolution') rmSync(path.join(fixture.root, 'apps/operator/.env.local'));
+    try {
+      const result = spawnSync('bash', [fixture.wrapper, '--archive', fixture.archive], {
+        env: fixture.env, encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.status, result.stderr).toBe(2);
+      expect(result.stderr).toContain('disclosure-ledger database preflight failed before candidate checkout');
+      expect(result.stdout + result.stderr).not.toContain('PRIVATE_');
+      expect(existsSync(path.join(fixture.root, 'cache'))).toBe(false);
+      expect(existsSync(fixture.receipt)).toBe(false);
+      expect(existsSync(fixture.events) ? readFileSync(fixture.events, 'utf8').trim().split('\n') : [])
+        .toEqual(failure === 'auth' ? ['connect', 'end'] : failure === 'query' ? ['connect', 'query', 'end'] : []);
+    } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+  });
+
+  it('bounds authentication against a listener that never answers the PostgreSQL handshake', async () => {
+    const fixture = databaseFixture();
+    const sockets = new Set<Socket>();
+    const server = createTcpServer(socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    // Exercise the real driver's connection deadline, without a real database.
+    rmSync(path.join(fixture.root, 'node_modules/pg'), { recursive: true });
+    const require = createRequire(path.join(REPO_ROOT, 'package.json'));
+    symlinkSync(path.dirname(require.resolve('pg/package.json')), path.join(fixture.root, 'node_modules/pg'));
+    fixture.env.HARNESS_ADMIN_DATABASE_URL = `postgresql://fixture:PRIVATE_SOCKET_PASSWORD@127.0.0.1:${(server.address() as AddressInfo).port}/ledger`;
+    const child = spawn('bash', [fixture.wrapper, '--archive', fixture.archive], { env: fixture.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', chunk => { output += chunk.toString(); });
+    child.stderr.on('data', chunk => { output += chunk.toString(); });
+    const exited = new Promise<number | null>((resolve, reject) => { child.once('error', reject); child.once('close', resolve); });
+    try {
+      expect(await exited).toBe(2);
+      expect(output).toContain('disclosure-ledger database preflight failed before candidate checkout');
+      expect(output).not.toContain('PRIVATE_');
+      expect(existsSync(path.join(fixture.root, 'cache'))).toBe(false);
+    } finally {
+      child.kill();
+      for (const socket of sockets) socket.destroy();
+      await exited;
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it('keeps the admitted helper stable when the shared source changes during checkout', async () => {
     const wrapper = readFileSync(path.join(REPO_ROOT, 'apps/tui/scripts/release-acceptance.sh'), 'utf8');
     const invocation = wrapper.match(/node "\$ROOT\/scripts\/npm-install-safe\.mjs"[\s\S]*?(?=\nlanded=)/)?.[0];

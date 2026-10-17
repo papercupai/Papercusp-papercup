@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { existsSync, readFileSync, statfsSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { beforeAll, expect, it } from 'vitest';
 import { ensurePapercuspTmpdir, tmpdirHasCriticalHeadroom } from '@papercusp/test-config/tmpdir-guard';
 import { tmpdir } from 'node:os';
+import { defaultEvidenceRoot } from '@papercusp/verification-harness';
 import type { SeedObserverFixtureInput, SeedObserverFixtureEvent } from '../test/fixtures/seed-restore-observer-worker.mts';
 import { captureIsolatedWorker, isolatedWorkerFailureDetail, isolatedWorkerOptions,
   recordIsolatedIntegrationProof, withIsolatedIntegrationSourceObserver } from '../test/isolated-integration-proof';
@@ -20,6 +21,11 @@ const workerPath = 'packages/operator-core/test/fixtures/seed-restore-observer-w
 const entry = join(root, workerPath);
 const fixtureSources = [workerPath, 'libs/generic/seed-bundle/src/restore.ts',
   'libs/generic/seed-bundle/src/registry.ts', 'libs/generic/seed-bundle/src/manifest.ts'].sort();
+const bootstrapSources = [...fixtureSources,
+  'packages/operator-core/lib/harness/bootstrap-papercusp-hive.ts',
+  'packages/operator-core/lib/sync/hyperbee/restore-hive-seed.ts',
+  'packages/operator-core/lib/sync/hyperbee/seed-provider-corestore.ts',
+  'packages/operator-core/lib/build-info.ts'];
 const sourcePaths = [...fixtureSources, 'scripts/with-test-pg.mjs', 'scripts/cdp-inspector.mjs',
   'scripts/cpu-sample.mjs', 'scripts/proc-guard.mjs',
   'packages/operator-core/test/isolated-integration-proof.ts'];
@@ -31,25 +37,42 @@ const eventPrefix = 'SEED_RESTORE_OBSERVER_EVENT ';
 // freezes source. Setup work is not charged to the bounded CDP observation.
 beforeAll(async () => {
   ensurePapercuspTmpdir();
-  assert.ok(tmpdirHasCriticalHeadroom(tmpdir()), 'private runtime storage preflight');
+  const evidenceRoot = defaultEvidenceRoot('isolated-integration');
+  await mkdir(evidenceRoot, { recursive: true });
+  for (const path of [tmpdir(), evidenceRoot]) {
+    assert.ok(tmpdirHasCriticalHeadroom(path), 'private proof storage preflight: ' + path);
+    const stat = statfsSync(path);
+    assert.ok(stat.bavail * stat.bsize >= 2 * 1024 ** 3 + 64 * 1024 ** 2,
+      'planned private PG (2GiB) and synthetic source/seed/target (64MiB) footprint');
+  }
   await withIsolatedIntegrationSourceObserver(async () => true);
 }, 180_000);
 
-for (const phase of ['verify', 'restore'] as const) {
+for (const phase of ['verify', 'restore', 'bootstrap'] as const) {
 it.runIf(process.platform === 'linux')(
-  `qualifies a real isolated CDP child while provider.${phase} is held and proves original teardown`,
+  phase === 'bootstrap' ? 'qualifies production bootstrap seed restore with real providers and private state'
+    : `qualifies a real isolated CDP child while provider.${phase} is held and proves original teardown`,
   async context => {
     let inputPath = '';
     let inputs: SeedObserverFixtureInput;
     const runId = await recordIsolatedIntegrationProof({ root,
       filePath: 'packages/operator-core/lib/seed-restore-observer.integration.test.ts',
-      sourcePaths,
+      sourcePaths: phase === 'bootstrap' ? [...sourcePaths, ...bootstrapSources] : sourcePaths,
       retainedArtifacts: ['phases/prepare/fixture-inputs.json', 'phases/execute/seed-restore-observation.json'],
       prepare: async evidenceDir => {
-        const files = fixtureSources.map(path => ({ path, sha256: digest(readFileSync(join(root, path))) }));
+        // Recheck the pre-freeze admission on the actual retained-evidence path.
+        for (const path of [tmpdir(), evidenceDir]) assert.ok(tmpdirHasCriticalHeadroom(path), 'private proof storage preflight: ' + path);
+        const files = (phase === 'bootstrap' ? bootstrapSources : fixtureSources)
+          .map(path => ({ path, sha256: digest(readFileSync(join(root, path))) }));
         inputs = { phase, files, buildSha: digest(JSON.stringify(files)), entrySha256: digest(readFileSync(entry)) };
         inputPath = join(evidenceDir, 'fixture-inputs.json');
-        await writeFile(inputPath, JSON.stringify(inputs), { flag: 'wx' });
+        const storage = [tmpdir(), evidenceDir].map(path => {
+          const stat = statfsSync(path);
+          return { path, availableBytes: stat.bavail * stat.bsize, totalBytes: stat.blocks * stat.bsize };
+        });
+        await writeFile(inputPath, JSON.stringify({ ...inputs, storage,
+          plannedFootprint: { privatePgBytes: 2 * 1024 ** 3, sourceSeedTargetBytes: 64 * 1024 ** 2 },
+          footprint: 'two synthetic records, three tiny corestores plus canonical migrated private PG; no installed seed' }), { flag: 'wx' });
       },
       execute: async (observe, evidenceDir) => {
         const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0' };
@@ -97,7 +120,7 @@ it.runIf(process.platform === 'linux')(
           assert.ok(remaining > 0, '120s original observation deadline');
           let timeout: ReturnType<typeof setTimeout> | undefined;
           try {
-            return await Promise.race([action(), new Promise<never>((_, reject) => {
+            return await Promise.race([action(), exitedBefore, new Promise<never>((_, reject) => {
               timeout = setTimeout(() => reject(new Error('120s original observation deadline')), remaining);
             })]);
           } finally { clearTimeout(timeout); }
@@ -107,8 +130,22 @@ it.runIf(process.platform === 'linux')(
           const startedAt = Date.now();
           deadline = startedAt + 120_000;
           const lifecycle = JSON.parse(readFileSync(join(evidenceDir, 'lifecycle-observation.json'), 'utf8')).lifecycle;
+          const expectedBuildSha = phase === 'bootstrap' ? ready.buildSha : inputs!.buildSha;
           expect(ready).toMatchObject({ phase, pid: lifecycle.worker.pid, entry,
-            sourceSha256: inputs!.entrySha256, buildSha: inputs!.buildSha, files: inputs!.files });
+            sourceSha256: inputs!.entrySha256, buildSha: expectedBuildSha, files: inputs!.files });
+          if (phase === 'bootstrap') {
+            assert.ok(ready.bootstrap);
+            expect(ready.processInstanceId).toBeNull();
+            expect(ready.bootstrap.sourceReceiptSha256).toBe(inputs!.buildSha);
+            expect(ready.bootstrap.buildInfo.sha).toBe(ready.buildSha);
+            expect(ready.bootstrap.buildProvenance).toMatch(/^bare-tsx development git fallback: [0-9a-f]{40}$/);
+            expect(ready.bootstrap.runtime).toMatchObject({ home: join(lifecycle.runtimeRoot, 'home'),
+              pgPort: String(lifecycle.pgPort), skipDiscovery: '1' });
+            expect(ready.bootstrap.runtime.workspaceId).toMatch(/^test-runtime-/);
+            for (const path of Object.values(ready.bootstrap.paths)) expect(path.startsWith(lifecycle.runtimeRoot + '/')).toBe(true);
+            expect(ready.bootstrap.paths.targetStoreDir).toBe(join(ready.bootstrap.runtime.workspacesRoot,
+              'papercusp-workspace', '.papercusp', 'papercusp', 'hyperbee'));
+          }
           // stdout readiness and stderr inspector publication have independent
           // delivery order. Await a complete URL from its own stream, bounded
           // by the original observation deadline and original worker lifetime.
@@ -120,7 +157,7 @@ it.runIf(process.platform === 'linux')(
             webSocketOptions: { handshakeTimeout: 2_000, maxPayload: 1024 * 1024 } });
           await within(() => client!.connect());
           const expected = { expectedPid: ready.pid, expectedEntry: entry,
-            expectedBuildSha: inputs!.buildSha, expectedSourceSha256: inputs!.entrySha256 };
+            expectedBuildSha, expectedSourceSha256: inputs!.entrySha256 };
           const unsupported = await within(() => readSeedRestoreDiagnostics(client!, expected));
           expect(unsupported).toMatchObject({ available: false, reason: 'seed restore phase journal unavailable' });
           const control = (method: 'begin' | 'release' | 'finish') => within(() => client!.evaluate(
@@ -135,12 +172,30 @@ it.runIf(process.platform === 'linux')(
           assert.ok(snapshot.available);
           expect(snapshot.operations).toHaveLength(1);
           const operation = snapshot.operations[0];
-          expect(operation).toMatchObject({ pid: ready.pid, status: 'running', droppedEvents: 0,
+          expect(operation).toMatchObject({ pid: ready.pid, status: phase === 'bootstrap' ? 'succeeded' : 'running', droppedEvents: 0,
             identity: { processInstanceId: ready.processInstanceId } });
-          expect(operation.events.at(-1)).toMatchObject({ kind: 'corestore', phase, state: 'started' });
-          expect(operation.events).not.toContainEqual(expect.objectContaining({ phase, state: 'succeeded' }));
-          if (phase === 'verify') expect(operation.events.some((event: { phase: string }) => event.phase === 'restore')).toBe(false);
-          else expect(operation.events).toContainEqual(expect.objectContaining({ phase: 'verify', state: 'succeeded' }));
+          if (phase === 'bootstrap') {
+            expect(operation.identity).toMatchObject({ buildSha: ready.buildSha, sourceSha256: inputs!.entrySha256, script: entry });
+            expect(operation.events.map((event: { kind: string; phase: string; state: string }) =>
+              [event.kind, event.phase, event.state])).toEqual([
+              ['corestore', 'resolve', 'started'], ['corestore', 'resolve', 'succeeded'],
+              ['corestore', 'verify', 'started'], ['corestore', 'verify', 'succeeded'],
+              ['corestore', 'restore', 'started'], ['corestore', 'restore', 'succeeded'],
+            ]);
+            expect(operation.outcomeOk).toBe(true);
+            assert.ok(held.bootstrap);
+            expect(held.bootstrap.restoredRecords).toEqual(ready.bootstrap!.records);
+            expect(held.bootstrap.restoredRecords).toHaveLength(2);
+            expect(held.bootstrap.seedAfter).toBe(ready.bootstrap!.seedBefore);
+            expect(held.bootstrap.sourceAfter).toBe(ready.bootstrap!.sourceBefore);
+            expect(held.bootstrap.joinCalls).toBe(1);
+            expect(held.bootstrap.unexpectedEffects).toEqual([]);
+          } else {
+            expect(operation.events.at(-1)).toMatchObject({ kind: 'corestore', phase, state: 'started' });
+            expect(operation.events).not.toContainEqual(expect.objectContaining({ phase, state: 'succeeded' }));
+            if (phase === 'verify') expect(operation.events.some((event: { phase: string }) => event.phase === 'restore')).toBe(false);
+            else expect(operation.events).toContainEqual(expect.objectContaining({ phase: 'verify', state: 'succeeded' }));
+          }
           await expect(within(() => readSeedRestoreDiagnostics(client!, {
             ...expected, expectedSourceSha256: '0'.repeat(64), expectedOperationId: operation.id,
           }))).rejects.toThrow('source identity mismatch');
@@ -149,8 +204,9 @@ it.runIf(process.platform === 'linux')(
           expect(JSON.parse(markerBytes.toString())).toEqual({ pid: ready.pid, processInstanceId: ready.processInstanceId, phase });
           receipt = { ...receipt, expected, processPin, processInstanceId: ready.processInstanceId,
             lifecycle, unsupported, held: snapshot, operationId: operation.id,
+            ...(phase === 'bootstrap' ? { bootstrap: held.bootstrap } : {}),
             privateState: { path: ready.marker, sha256: digest(markerBytes) } };
-          // Retain the distinguishing sample BEFORE releasing the provider.
+          // Retain the sample before releasing the provider or post-restore join.
           await writeFile(join(evidenceDir, 'seed-restore-observation.json'), JSON.stringify(receipt));
           await control('release');
           const terminal = await within(() => captureSeedRestorePhases(client!, { ...expected,

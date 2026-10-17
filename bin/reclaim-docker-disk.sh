@@ -130,6 +130,9 @@ container_pin_guard_acquire() {
   coproc CONTAINER_PIN_GUARD {
     exec node --input-type=module -e '
       import { pathToFileURL } from "node:url";
+      import { realpathSync } from "node:fs";
+      import { execFileSync } from "node:child_process";
+      import { isAbsolute } from "node:path";
       const released = new Promise(resolve => {
         process.stdin.once("end", resolve);
         process.stdin.once("data", resolve);
@@ -137,17 +140,32 @@ container_pin_guard_acquire() {
       });
       try {
         const { withRetentionPinProtection } = await import(pathToFileURL(process.argv[1]).href);
+        // Keep the registry and mutex under the caller identity. Only resolving
+        // a rootful store needs privilege; sudoing the guard would switch both.
+        const resolvePath = path => {
+          try { return realpathSync(path); } catch (error) {
+            if (process.argv[3] !== "podman-rootful" ||
+                !["EACCES", "EPERM"].includes(error.code)) throw error;
+            const physical = execFileSync("sudo", ["-n", "realpath", "-e", "--", path], {
+              encoding: "utf8", timeout: 30000, stdio: ["ignore", "pipe", "pipe"],
+            }).replace(/\n$/, "");
+            if (!isAbsolute(physical) || /[\r\n\0]/.test(physical)) {
+              throw new Error("rootful storage canonical path is invalid");
+            }
+            return physical;
+          }
+        };
         await withRetentionPinProtection(async isPinned => {
           process.stdout.write(isPinned(process.argv[2]) ? "PINNED\n" : "LOCKED\n");
           await released;
-        });
+        }, { resolvePath });
       } catch (error) {
         console.error(String(error));
         process.stdout.write("ERROR\n");
         await released;
       }
       process.stdin.destroy();
-    ' "$module" "$root"
+    ' "$module" "$root" "$label"
   }
   PIN_GUARD_PID="${CONTAINER_PIN_GUARD_PID:-}"
   PIN_GUARD_INPUT="${CONTAINER_PIN_GUARD[1]:-}"

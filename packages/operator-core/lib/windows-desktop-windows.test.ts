@@ -153,11 +153,22 @@ describe('platform guard — listWindowsByTitle/focusWindowByTitle never reached
   it('routes WSL focus through Session-1 and accepts only an observed true result', async () => {
     setPlatform('linux');
     readFileSyncMock.mockReturnValue(WSL2_PROC_VERSION);
-    nativeIntent.mockResolvedValueOnce({ protocol: 'visible-window-v1', focused: true }).mockResolvedValueOnce({ protocol: 'visible-window-v1', focused: false }).mockResolvedValueOnce({ focused: true });
+    nativeIntent.mockResolvedValueOnce({ protocol: 'visible-window-v2', workspace: 'window', focused: true }).mockResolvedValueOnce({ protocol: 'visible-window-v2', workspace: 'window', focused: false }).mockResolvedValueOnce({ focused: true });
     expect(await focusWindowByTitle('Papercup — exact')).toBe(true);
     expect(await focusWindowByTitle('Papercup — exact')).toBe(false);
     expect(await focusWindowByTitle('Papercup — exact')).toBe(false);
-    expect(nativeIntent).toHaveBeenCalledWith({ action: 'focus', title: 'Papercup — exact' });
+    expect(nativeIntent).toHaveBeenCalledWith({ action: 'focus', title: 'Papercup — exact', workspace: 'window' });
+  });
+  it('rejects old receipts and mismatched workspace receipts for explicit bring-here', async () => {
+    setPlatform('linux');
+    readFileSyncMock.mockReturnValue(WSL2_PROC_VERSION);
+    nativeIntent.mockResolvedValueOnce({ protocol: 'visible-window-v1', focused: true })
+      .mockResolvedValueOnce({ protocol: 'visible-window-v2', workspace: 'window', focused: true })
+      .mockResolvedValueOnce({ protocol: 'visible-window-v2', workspace: 'current', focused: true });
+    expect(await focusWindowByTitle('Agent', 'current')).toBe(false);
+    expect(await focusWindowByTitle('Agent', 'current')).toBe(false);
+    expect(await focusWindowByTitle('Agent', 'current')).toBe(true);
+    expect(nativeIntent).toHaveBeenLastCalledWith({ action: 'focus', title: 'Agent', workspace: 'current' });
   });
   it('listWindowsByTitle short-circuits to [] on a native Linux/macOS host (no spawn attempted)', async () => {
     setPlatform('linux');

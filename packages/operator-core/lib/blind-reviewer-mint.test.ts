@@ -195,7 +195,8 @@ describe('mintBlindGapReviewer', () => {
   function deps(brief: BlindReviewBrief | null = BRIEF) {
     const handler = vi.fn(async () => ({ ok: true, ownerId: 'su-reviewer-1' }));
     const loadBrief = vi.fn(async () => brief);
-    return { handler, loadBrief, deps: { loadBrief, launcher: async () => ({ handler, confinementKey: KEY }) } };
+    const launcher = vi.fn(async () => ({ handler, confinementKey: KEY }));
+    return { handler, loadBrief, launcher, deps: { loadBrief, launcher } };
   }
 
   it('attaches the nominated product read boundary before launch and supplies executable read hints', async () => {
@@ -274,6 +275,21 @@ describe('mintBlindGapReviewer', () => {
     const d = deps(null);
     const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
     expect(result).toMatchObject({ ok: false, code: 'no_activation_audit' });
+    expect(d.handler).not.toHaveBeenCalled();
+  });
+
+  it.each(['no mapped sources', 'only excluded sources'] as const)('refuses an empty owner brief with %s before loading the launcher', async sourceCase => {
+    const d = deps({
+      ...BRIEF,
+      ownerTurns: [],
+      excludedRefs: sourceCase === 'only excluded sources'
+        ? [{ ref: 'codex:unenrolled:1', reason: 'not-owner' }]
+        : [],
+    });
+    const result = await mintBlindGapReviewer({ slug: SLUG, harness: 'papercusp', ctx: { workspaceId: 'ws-1' } }, d.deps);
+    expect(result).toMatchObject({ ok: false, code: 'no_owner_turns' });
+    expect(d.loadBrief).toHaveBeenCalledTimes(1);
+    expect(d.launcher).not.toHaveBeenCalled();
     expect(d.handler).not.toHaveBeenCalled();
   });
 });

@@ -126,10 +126,10 @@ export function retentionPinProtectsPath(path, pins, nowMs = Date.now()) {
 }
 
 /** For callers ALREADY holding papercusp-disk-retention. Never acquires a second lock. */
-export function pinProtection(pins, nowMs = Date.now()) {
+export function pinProtection(pins, nowMs = Date.now(), resolvePath = realpathSync) {
   return path => {
     let physical = path;
-    try { physical = realpathSync(path); } catch (error) {
+    try { physical = resolvePath(path); } catch (error) {
       if (error.code !== 'ENOENT') throw error;
     }
     return retentionPinProtectsPath(path, pins, nowMs) || retentionPinProtectsPath(physical, pins, nowMs);
@@ -142,6 +142,6 @@ export async function withRetentionPinProtection(work, options = {}) {
     const nowMs = options.nowMs ?? Date.now();
     const read = await readRetentionPinsAsync({ ...options, nowMs });
     if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
-    return work(pinProtection(read.pins, nowMs));
+    return work(pinProtection(read.pins, nowMs, options.resolvePath));
   }, { onWaiting: options.onWaiting });
 }

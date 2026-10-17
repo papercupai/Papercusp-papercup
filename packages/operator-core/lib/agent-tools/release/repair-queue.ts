@@ -76,6 +76,7 @@ import {
   type FixPrecheckPopulation,
   type FixPrecheckVerdict,
 } from '../../release/admission-fix-precheck';
+import { ratchetAllowsPublication } from '../../release/admission-ratchet';
 import {
   settleAdmissionPrecheck,
   startAdmissionPrecheckWorker,
@@ -1832,11 +1833,11 @@ export default defineTool({
               '.',
           });
         }
+        // green-main-ratchet-convergence-2026-10-17 P-006: a DEFERRED (checkpoint-tree-busy)
+        // pre-check is not a measurement, so it is never adopted for publication — a repeat
+        // confirm re-measures instead (the admission ratchet admits only measured results).
         if (
-          (matchingPrecheck?.status === 'passed' && matchingPrecheck.verdict?.ok === true && matchingPrecheck.verdict.ran) ||
-          (matchingPrecheck?.status === 'deferred' && matchingPrecheck.verdict?.ok === true &&
-            !matchingPrecheck.verdict.ran && matchingPrecheck.verdict.reason === 'checkpoint-tree-busy' &&
-            args.retryPrecheck !== true)
+          matchingPrecheck?.status === 'passed' && matchingPrecheck.verdict?.ok === true && matchingPrecheck.verdict.ran
         ) {
           precheck = matchingPrecheck.verdict;
         } else if (
@@ -1993,6 +1994,30 @@ export default defineTool({
                 'Fix the red at the built commit (or, for a deliberate wide admission, re-run with skipPrecheck:true + precheckReason).'
               : 'R6: nothing was published — the admission commit was built, but the pre-check runner could not measure it. ' +
                 'Repair the runner/setup failure, or deliberately opt out with skipPrecheck:true + precheckReason.',
+          });
+        }
+        if (!ratchetAllowsPublication(precheck)) {
+          // P-006: only a measured result (or nothing to run) publishes; a busy tree defers.
+          return json({
+            ...base,
+            ok: false,
+            admitted: false,
+            refused: false,
+            deferred: true,
+            dryRun: false,
+            verdict: 'deferred',
+            reason: precheck.ran ? 'unmeasured' : precheck.reason,
+            detail: precheck.ran
+              ? 'the pre-check did not produce a publishable verdict'
+              : 'detail' in precheck ? precheck.detail : precheck.reason,
+            precheck: precheckRecordOf(precheck, { skipPrecheck, precheckReason, dryRun, population }),
+            builtCommit,
+            judgedSha: queue.repairHead,
+            mode,
+            note:
+              'P-006 admission ratchet: nothing was published — the pre-check could not measure this admission ' +
+              '(the checkpoint tree is busy with a gate run), and an unmeasured admission never advances the repair head. ' +
+              'Repeat this confirmed admit after the active run ends; it re-measures automatically.',
           });
         }
       }

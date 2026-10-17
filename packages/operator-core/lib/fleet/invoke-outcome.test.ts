@@ -226,7 +226,7 @@ describe('agentProducedTurn — capacity_shed vs infra_loss classification (P-00
 });
 
 // B3 / autonomous-loop-hardening F1 — a "Prompt is too long" death (B1: overwatch launched
-// with an unscoped ~550-tool MCP surface on a small-context model) was being misattributed
+// with the unscoped full-catalog MCP surface on a small-context model) was being misattributed
 // to a "gateway stall / 429 storm" infra_loss, sending debuggers hunting phantom gateway
 // capacity for hours. It is now classified `context_overflow` (a LAUNCH-CONFIG bug),
 // detected BEFORE the capacity_shed/infra_loss fallthrough.

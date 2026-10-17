@@ -774,9 +774,17 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
       // Independent owners must not wait behind a whole-root census: a large
       // root can spend the entire pass deadline before reaching this lane.
       // Keep their existing protection, mutex and deadline contracts intact.
-      for (const delegate of options.delegates ?? []) {
+      const delegates = options.delegates ?? [];
+      for (const [index, delegate] of delegates.entries()) {
         if (Date.now() >= runDeadline) { receipt.errors.push(`retention run budget exhausted before delegate:${delegate.classId}`); break; }
         yield* yieldToWaiter();
+        // One productive owner must not spend the entire pass before the
+        // remaining owners or policy census get a turn. Reuse its existing
+        // deadline seam, reserving one equal share for each remaining lane.
+        // An incomplete measurement still refuses effects and stays incomplete.
+        const remainingMs = runDeadline - Date.now();
+        if (remainingMs <= 0) { receipt.errors.push(`retention run budget exhausted before delegate:${delegate.classId}`); break; }
+        const delegateDeadline = Date.now() + Math.floor(remainingMs / (delegates.length - index + 1));
         const delegateStarted = performance.now();
         const phases: NonNullable<DiskReclaimReceipt['delegates'][number]['phases']> = [];
         let omittedPhases = 0, acceptingPhases = true;
@@ -794,7 +802,7 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         };
         await options.record?.('progress', { phase: 'delegate-start', classId: delegate.classId });
         let result: { ok: boolean; detail: unknown };
-        try { result = await delegate.run(receipt.dryRun, onPhase, runDeadline); }
+        try { result = await delegate.run(receipt.dryRun, onPhase, delegateDeadline); }
         catch (err) { result = { ok: false, detail: message(err) }; }
         finally { acceptingPhases = false; await phaseWrites; }
         const measured = { classId: delegate.classId, ...result, elapsedMs: performance.now() - delegateStarted,
@@ -1493,7 +1501,7 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
     { classId: 'release-cut-worktrees', run: async (dryRun, onPhase, notAfterMs) => {
       const { gatherCutReclaimPlan, reclaimCutWorktrees } = await import('../release-cut-reclaim');
       const { isAutoManagedCutWorktree, RELEASE_RESUME_VERSION_PATHS } = await import('../agent-tools/release/cut');
-      const plan = await gatherCutReclaimPlan({
+      const gather = () => gatherCutReclaimPlan({
         repoPath: repoRoot, isAutoManaged: isAutoManagedCutWorktree, releaseVersionPaths: RELEASE_RESUME_VERSION_PATHS,
         onPhase,
         loadReleases: async () => {
@@ -1503,7 +1511,14 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
           return rows.map((row) => ({ version: row.version, gitSha: row.git_sha, cutAtMs: new Date(row.cut_at).getTime(), publishedAtMs: row.published_at ? new Date(row.published_at).getTime() : null }));
         },
       });
-      const detail = await reclaimCutWorktrees(plan, { dryRun, notAfterMs }, { retentionMutexHeld: true });
+      const { createHash } = await import('node:crypto');
+      const plan = await gather();
+      const detail = await reclaimCutWorktrees(plan, { dryRun, notAfterMs }, {
+        retentionMutexHeld: true, refreshPlan: gather,
+        // This is persistent retention-owner state, not a per-run census. Its
+        // lifecycle is consumption/terminal retirement, never generic census GC.
+        usageWalk: { dir: join(defaultRetentionDir(), 'reclaim-usage', createHash('sha256').update(plan.canonicalRoot ?? repoRoot).digest('hex')) },
+      });
       return { ok: detail.ok, detail };
     } },
     { classId: 'unregistered-workspaces', run: async () => {

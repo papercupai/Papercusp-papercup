@@ -8,7 +8,7 @@ import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { type HarnessContract, HarnessContractError, validateContract } from './contract.js';
 import { formatSummaryLine, loadRunResult, parseSummaryLine, pruneEvidenceRoot, pruneRuns, pruneRunsWithReport, runHarness, writeRunResult } from './runner.js';
 import { symlinkSync } from 'node:fs';
-import { retainRunsCommand } from './cli.js';
+import { planCommand, retainRunsCommand } from './cli.js';
 import { parseSelectionArgs, planSelection } from './select.js';
 
 const contract: HarnessContract = {
@@ -36,6 +36,48 @@ afterEach(() => {
 });
 
 describe('harness retention admission', () => {
+  it.each([true, false])('shell finalization defers busy GC and retains the original %s verdict and declared receipt', async passes => {
+    const root = tmp();
+    const old = '20200101T000000Z-1', runId = '20260101T000000Z-1';
+    const runDir = path.join(root, runId);
+    vi.stubEnv('VH_KEEP_RUNS', '1');
+    mkdirSync(path.join(root, old));
+    writeFileSync(path.join(root, old, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: old,
+      endedAt: '2020-01-01T00:00:00.000Z', verdict: 'pass' }));
+    mkdirSync(runDir);
+    writeFileSync(path.join(runDir, 'contract.json'), JSON.stringify({ name: 'shell-busy', phases: [{ id: 'proof' }] }));
+    await planCommand(['--run-dir', runDir]);
+    writeFileSync(path.join(runDir, 'phases.jsonl'), JSON.stringify({ phase: 'proof',
+      status: passes ? 'passed' : 'failed', reasonCode: passes ? null : 'original-failure' }) + '\n');
+    writeFileSync(path.join(runDir, 'original.json'), '{"original":"phase receipt"}\n');
+    try {
+      await withFsMutex('papercusp-disk-retention', async () => {
+        // Exercise the real shell CLI entry point under an independently held mutex.
+        // Bound the child so a regression cannot consume the production 180s lock wait.
+        const child = spawnSync(process.execPath, ['--import', 'tsx', new URL('./cli.ts', import.meta.url).pathname,
+          'finalize', '--run-dir', runDir, '--evidence-root', root, '--retain-artifact', 'original.json'],
+        { encoding: 'utf8', env: process.env, timeout: 8000 });
+        expect(child.error).toBeUndefined();
+        expect(child.status).toBe(passes ? 0 : 1);
+        expect(child.stdout).toContain(`HARNESS_RESULT harness=shell-busy`);
+        expect(child.stderr).toContain('VH_RETENTION_DEFERRED stage=after reason=retention-mutex-busy');
+        const result = await loadRunResult(runDir);
+        expect(result.verdict).toBe(passes ? 'pass' : 'fail');
+        expect(result.firstFailure?.reasonCode ?? null).toBe(passes ? null : 'original-failure');
+        expect(readlinkSync(path.join(root, 'latest'))).toBe(runId);
+        expect(readFileSync(path.join(root, 'retained', runId, 'result.json'), 'utf8'))
+          .toBe(readFileSync(path.join(runDir, 'result.json'), 'utf8'));
+        expect(readFileSync(path.join(root, 'retained', runId, 'original.json'), 'utf8'))
+          .toBe(readFileSync(path.join(runDir, 'original.json'), 'utf8'));
+        expect(existsSync(path.join(root, old))).toBe(true);
+        expect(readdirSync(path.join(privateRetention, 'mutex', 'papercusp-disk-retention.queue'))).toHaveLength(0);
+      });
+      expect((await pruneEvidenceRoot(root)).runs).toEqual([old]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20000);
+
   it.each([true, false])('defers busy GC before and after phases while preserving the original %s verdict', async passes => {
     const root = tmp(), mutexRoot = tmp(), pins = tmp();
     vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', mutexRoot);
@@ -710,8 +752,8 @@ describe('verify-tauri-headless prepare diagnostics', () => {
   it('captures the prepare phase and names its major fallible stages before boot', () => {
     const verifier = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../../scripts/verify-tauri-headless.sh');
     const source = readFileSync(verifier, 'utf8');
-    const prepareStart = source.indexOf('vh_begin prepare');
-    const bootStart = source.indexOf('vh_begin boot', prepareStart);
+    const prepareStart = source.indexOf('verifier_begin_phase prepare');
+    const bootStart = source.indexOf('verifier_begin_phase boot', prepareStart);
     expect(prepareStart).toBeGreaterThanOrEqual(0);
     expect(bootStart).toBeGreaterThan(prepareStart);
     const prepare = source.slice(prepareStart, bootStart);

@@ -16,7 +16,7 @@
  * ask a fresh native UI client through the existing ui_intents transport.
  * Focus always runs in that client's interactive Tauri process. WSL-side
  * PowerShell is Session-0-blind and is not a focus fallback. The native command
- * restores, moves to the current virtual desktop, and observes foreground,
+ * restores, switches to the window's desktop by default, and observes foreground,
  * visibility, minimization and DWM cloaking before returning true.
  *
  * Fail-soft throughout, mirroring desktop-window-liveness.ts's wmctrl contract:
@@ -179,11 +179,12 @@ export function parseSessionIdFromWindowTitle(title: string): string | null {
  * (feedback_e2e_no_focus_steal): never call this from an automated driver.
  * Best-effort: false on no native client, missing window, denial or timeout.
  */
-export async function focusWindowByTitle(title: string): Promise<boolean> {
+export async function focusWindowByTitle(title: string, workspace: 'current' | 'window' = 'window'): Promise<boolean> {
   if (!isWindowsDesktopHost()) return false;
   try {
     const { dispatchNativeWindowIntent } = await import('./ui/dispatch-intent');
-    const result = await dispatchNativeWindowIntent({ action: 'focus', title });
-    return result !== null && typeof result === 'object' && 'protocol' in result && result.protocol === 'visible-window-v1' && 'focused' in result && result.focused === true;
+    const result = await dispatchNativeWindowIntent({ action: 'focus', title, workspace });
+    return result !== null && typeof result === 'object' && 'protocol' in result && result.protocol === 'visible-window-v2'
+      && 'workspace' in result && result.workspace === workspace && 'focused' in result && result.focused === true;
   } catch { return false; }
 }

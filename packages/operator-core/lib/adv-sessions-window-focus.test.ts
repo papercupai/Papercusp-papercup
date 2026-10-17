@@ -79,11 +79,12 @@ describe('resolveWindowIdForTitleFragment — Windows-desktop-host branch', () =
 });
 
 describe('focusWindowId — Windows-desktop-host branch', () => {
-  it('refuses unsupported desktop-switch mode rather than silently moving a Windows window', async () => {
+  it('passes an explicit Windows workspace policy to the native adapter', async () => {
     isWindowsDesktopHostMock.mockReturnValue(true);
+    focusWindowByTitleMock.mockResolvedValue(true);
     const { focusWindowId } = await import('./adv-session-windows');
-    expect(await focusWindowId('Papercup — abc-123', { workspace: 'window' })).toBe(false);
-    expect(focusWindowByTitleMock).not.toHaveBeenCalled();
+    expect(await focusWindowId('Papercup — abc-123', { workspace: 'current' })).toBe(true);
+    expect(focusWindowByTitleMock).toHaveBeenCalledWith('Papercup — abc-123', 'current');
   });
   it('treats windowId as a TITLE and delegates to focusWindowByTitle', async () => {
     isWindowsDesktopHostMock.mockReturnValue(true);
@@ -91,7 +92,7 @@ describe('focusWindowId — Windows-desktop-host branch', () => {
     const { focusWindowId } = await import('./adv-session-windows');
     const ok = await focusWindowId('Papercup — abc-123');
     expect(ok).toBe(true);
-    expect(focusWindowByTitleMock).toHaveBeenCalledWith('Papercup — abc-123');
+    expect(focusWindowByTitleMock).toHaveBeenCalledWith('Papercup — abc-123', 'window');
   });
 
   it('fails soft to false if the helper throws', async () => {

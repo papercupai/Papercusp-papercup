@@ -21,7 +21,7 @@ export function webVtt(cues: any): string;
 /**
  * Check the exact published bytes and two seek ranges, without treating HTTP
  * success as proof that a browser can decode the video or display its captions.
- * @param {{ videoUrl: string, captionsUrl: string, videoSha256: string, captionsSha256: string, videoBytes: number }} publication
+ * @param {{ videoUrl: string, captionsUrl: string, videoSha256: string, captionsSha256: string, videoBytes: number, portalCaptionsUrl?: string, transcriptUrl?: string, transcriptSha256?: string }} publication
  * @param {{ fetcher?: typeof fetch, signal?: AbortSignal }} [options]
  */
 export function verifyPublishedTutorial(publication: {
@@ -30,10 +30,16 @@ export function verifyPublishedTutorial(publication: {
     videoSha256: string;
     captionsSha256: string;
     videoBytes: number;
+    portalCaptionsUrl?: string;
+    transcriptUrl?: string;
+    transcriptSha256?: string;
 }, { fetcher, signal }?: {
     fetcher?: typeof fetch;
     signal?: AbortSignal;
 }): Promise<{
+    portalCaptionsUrl?: string | undefined;
+    transcriptUrl?: string | undefined;
+    transcriptSha256?: string | undefined;
     videoUrl: string;
     captionsUrl: string;
     videoSha256: string;
@@ -46,4 +52,11 @@ export function verifyPublishedTutorial(publication: {
         total: number;
     }[];
 }>;
+/** Map measured production + verified uploads to the guide's existing media prop.
+ * This creates no authentication, project, or browser playback evidence.
+ * @param {any} production
+ * @param {Awaited<ReturnType<typeof verifyPublishedTutorial>>} published
+ * @returns {import('@papercusp/operator-core/lib/onboarding/product-tutorial-lesson').ProductTutorialVideoMedia}
+ */
+export function tutorialVideoMedia(production: any, published: Awaited<ReturnType<typeof verifyPublishedTutorial>>): import("@papercusp/operator-core/lib/onboarding/product-tutorial-lesson").ProductTutorialVideoMedia;
 export function escapeHtml(value: any): string;

@@ -8,8 +8,8 @@
  * Rolldown can't see that guard at build time though: it still traces the
  * `import()` target statically, and `delegated-tasks.ts` in turn statically
  * imports `work-items.ts`, which fans out (via its own further imports) into
- * `dbos/*`, the substrate `sync/hyperbee/*` layer, and the whole ~550-tool
- * `agent-tools/index.ts` catalog. Because that reachable static edge competes
+ * `dbos/*`, the substrate `sync/hyperbee/*` layer, and the whole
+ * `agent-tools/index.ts` tool catalog. Because that reachable static edge competes
  * with every OTHER dynamic `import('.../work-items')` call site elsewhere in
  * the server tree, Rollup reports them all as `INEFFECTIVE_DYNAMIC_IMPORT`
  * (their split gets defeated) — and the operator-vite client build ships

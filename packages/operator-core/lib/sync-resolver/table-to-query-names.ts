@@ -809,7 +809,9 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.pot_eval_runs': ['learning.hiveEvalTrend'],
   'harness_shared.pot_eval_scores': ['learning.hiveEvalTrend'],
   'harness_shared.scout_cycle_stage_artifacts': ['learning.analyze', 'learning.analyzeCycle'],
-  'harness_shared.scout_ticks': ['learning.analyze', 'learning.analyzeCycle', 'learning.frontier'],
+  'harness_shared.scout_ticks': ['learning.analyze', 'learning.analyzeCycle', 'learning.frontier', 'learning.dream'],
+  'harness_shared.gym_autoloop_config': ['learning.dream'],
+  'harness_shared.operator_gym_gates': ['learning.dream'],
   'harness_shared.scout_routed_ideas': [
     'learning.analyze',
     'learning.analyzeCycle',

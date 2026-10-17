@@ -17,19 +17,45 @@ const RUNTIME_FACING = [
   '../../../../apps/operator/prompts/papercusp-su.codex.md',
 ] as const;
 
-/** "~550-tool", "~ 550 tools", "(~550 tools)", or a bare "550-tool catalog". */
-const HARDCODED_TOOL_COUNT = /~\s?\d{3,4}(?:-tool|\s+tools)\b|\b\d{3,4}-tool catalog\b/;
+/**
+ * WI-6554700010016871 — code comments that DESCRIBE the catalog (its size against the
+ * prompt-weight budget, the bundle it drags in, a past full-surface incident) carried the same
+ * stale "~550" figure. They are not shipped as instructions, but they are read as fact by the
+ * next agent sizing a change, so they are pinned count-free too.
+ */
+const CATALOG_COMMENT_SITES = [
+  '../../../../.github/workflows/test.yml',
+  '../../../../apps/operator-vite/src/shims/delegated-tasks-browser.ts',
+  '../../../../apps/operator-vite/vite.config.ts',
+  '../../../../scripts/check-bundle-budget.mjs',
+  '../agent-tools/agent_tools/list-shape.ts',
+  '../desktop-install/splice-tooling-overlay.ts',
+  '../fleet/invoke-outcome.test.ts',
+  '../harness/improvements/tool-latency-budget.ts',
+  '../result-door-prompt.ts',
+  '../result-door.ts',
+  '../result-projection/parse.ts',
+  '../result-projection/types.ts',
+  '../../../../libs/papercusp/packages/orchestrator/src/invoke.ts',
+  '../../../../libs/papercusp/packages/orchestrator/src/invoke.test.ts',
+  '../../../../libs/papercusp/packages/orchestrator/src/native-tool-search-deny.ts',
+] as const;
+
+/** "~550-tool", "~ 550 tools", "(~550 tools)", or a bare "550-tool catalog/registry/surface". */
+const HARDCODED_TOOL_COUNT = /~\s?\d{3,4}(?:-tool|\s+tools)\b|\b\d{3,4}-tool (?:catalog|registry|surface)\b/;
 
 describe('runtime-facing prompt text carries no hand-maintained tool-catalog count', () => {
   it('the pattern catches every phrasing that drifted (positive control)', () => {
     expect(HARDCODED_TOOL_COUNT.test('Find tools by INTENT across the full ~550-tool catalog')).toBe(true);
     expect(HARDCODED_TOOL_COUNT.test('the superuser MCP catalog is large (~550 tools).')).toBe(true);
     expect(HARDCODED_TOOL_COUNT.test('a seed of the 977-tool catalog')).toBe(true);
+    expect(HARDCODED_TOOL_COUNT.test('without a database or the 550-tool registry.')).toBe(true);
+    expect(HARDCODED_TOOL_COUNT.test('rendered truncated at ~550 chars;')).toBe(false);
     expect(HARDCODED_TOOL_COUNT.test('the full tool catalog (hybrid lexical + semantic)')).toBe(false);
     expect(HARDCODED_TOOL_COUNT.test('the superuser MCP catalog is large (hundreds of tools).')).toBe(false);
   });
 
-  for (const rel of RUNTIME_FACING) {
+  for (const rel of [...RUNTIME_FACING, ...CATALOG_COMMENT_SITES]) {
     it(`${rel.split('/').pop()} states no tool count`, () => {
       const text = readFileSync(new URL(rel, import.meta.url), 'utf8');
       expect(text.length).toBeGreaterThan(0);

@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { nativeChildEnvironment } from '../../../../scripts/tauri-surface-verify-reports.mts';
 import { readNativeHostHealth, selectIdentityFixtureActor } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
 import { sign } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
-import { workbenchTextField, openWorkbenchSelect, chooseWorkbenchOption, captureWorkbenchResponses, workbenchVerifiedWallet } from '../../../../scripts/lib/dao-workbench-controls.mts';
+import { workbenchTextField, openWorkbenchDisclosure, openWorkbenchSelect, chooseWorkbenchOption, captureWorkbenchResponses, workbenchVerifiedWallet, clickWorkbenchButton } from '../../../../scripts/lib/dao-workbench-controls.mts';
 import { insertHiveIfAbsent } from '../hive-store';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../harness-registry';
 import { upsertHiveMember } from '../hive-membership-store';
@@ -39,9 +39,21 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
     const value = <T = any>(code: string): T => JSON.parse(ev('JSON.stringify(' + code + ')'));
     const reload = () => native('navigate', value<string>('location.href'), '--json');
     const wait = (code: string) => native('wait', '--eval', code, '--timeout', '60000', '--interval', '500');
-    const click = (text: string, scope = 'document') => ev("(()=>{const b=[..." + scope + ".querySelectorAll('button')].find(e=>e.textContent.trim()===" + JSON.stringify(text) + ");if(!b||b.disabled)throw Error('Unavailable control '+ " + JSON.stringify(text) + ");b.click();return true})()");
+    const click = (text: string, scope = 'document') => ev(clickWorkbenchButton(text, scope));
     const field = (label: string, input: string) => ev(workbenchTextField(label, input, '[data-testid=dao-workspace]'));
-    const textHas = (text: string) => wait('document.body.innerText.includes(' + JSON.stringify(text) + ')');
+    const textHas = (text: string) => {
+      try { wait('document.body.innerText.includes(' + JSON.stringify(text) + ')'); }
+      catch (cause) {
+        writeFileSync(config.resultPath + '.text-failure.json', JSON.stringify({ expectedText: text,
+          ...value<object>('({url:location.href,text:document.body.innerText,alerts:[...document.querySelectorAll(\'[role=alert]\')].map(e=>e.textContent),disclosures:[...document.querySelectorAll(\'details\')].map(e=>({summary:e.querySelector(\'summary\')?.textContent,open:e.open}))})') }, null, 2));
+        throw cause;
+      }
+    };
+    const select = (label: string, option: string) => {
+      ev(openWorkbenchSelect(label, '[data-testid=dao-workspace]'));
+      wait('[...document.querySelectorAll(\'[role=option]\')].some(e=>e.textContent.trim()===' + JSON.stringify(option) + ')');
+      ev(chooseWorkbenchOption(option));
+    };
     const navigate = (search: object) => {
       ev("window.__TSR_ROUTER__.navigate({to:'/daos',search:" + JSON.stringify({ dao: slug, daoSection: 'members', ...search }) + "})");
       wait("!!document.querySelector('[data-testid=dao-workspace]')");
@@ -98,7 +110,7 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
     };
     const prepareGovernor = async (name: string, args: unknown[]) => {
       navigate({ daoSection: 'ownership' }); textHas('Equity deployment & holder records'); captureResponses();
-      ev(openWorkbenchSelect('Equity action', '[data-testid=dao-workspace]')); ev(chooseWorkbenchOption('EquityGovernorV2 · ' + name));
+      select('Equity action', 'EquityGovernorV2 · ' + name);
       field('Action arguments (JSON array)', JSON.stringify(args)); click('Prepare unsigned wallet transaction');
       return signWallet(response('prepare-equity').unsignedTransaction);
     };
@@ -138,16 +150,17 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       expect(signed.ok).toBe(true);
       native('navigate', '/daos', '--json'); wait("!!document.querySelector('[data-testid=dao-workspace]')");
       await bindFinanceWallet(config.accounts[0]);
-      navigate({ peopleTab: 'hiring' }); textHas('Create role'); captureResponses();
+      navigate({ peopleTab: 'hiring' }); textHas('Create a role');
+      ev(openWorkbenchDisclosure('Create a role', '[data-testid=dao-workspace]')); textHas('Create role'); captureResponses();
       field('Role title', 'Native engineer'); field('Level', 'L3'); click('Create role'); response('role');
       textHas('Native engineer'); click('Native engineer'); textHas('Add candidate');
-      field('Candidate', 'PER-native-candidate'); click('Add candidate'); response('candidate');
+      select('Candidate', 'Native candidate'); click('Add candidate'); response('candidate');
       field('Jurisdiction', 'US-DE'); field('Pay amount', '5000'); field('Shares override', '1000'); click('Create offer'); response('offer');
       textHas('Native candidate'); click('Native candidate'); textHas('Another HR admin must approve your offer.');
       expect(value("[...document.querySelectorAll('button')].find(b=>b.textContent==='Approve offer').disabled")).toBe(true);
       const offerId = value("new URLSearchParams(location.search).get('hiringOffer')") as string; expect(offerId).toBeTruthy();
       actor('approver'); reload(); textHas('Approve offer'); captureResponses(); click('Approve offer'); response('approve'); textHas('Generate contract');
-      field('Company countersigner', 'PER-native-approver'); field('Start date', '2026-11-01'); click('Generate contract'); response('prepare');
+      select('Company countersigner', 'Native approver'); field('Start date', '2026-11-01'); click('Generate contract'); response('prepare');
       textHas('Non-binding sample.'); click('Start signatures'); response('start');
       const contract = await getContractExecution({ ...key, offerId }, { sql });
       expect(contract.can_bind).toBe(false);

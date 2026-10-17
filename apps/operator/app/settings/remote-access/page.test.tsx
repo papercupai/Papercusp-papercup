@@ -17,6 +17,10 @@ const H = vi.hoisted(() => ({
   query: {} as Record<string, unknown>,
   setters: {} as Record<string, ReturnType<typeof vi.fn>>,
   rows: [] as unknown[],
+  browser: null as null | { sessionId: string; workspaceId: string | null; expiresAtMs: number },
+  invalidate: vi.fn(),
+  control: [] as unknown[],
+  controlQueries: [] as Array<{ queryName: string; enabled?: boolean }>,
 }));
 
 vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }));
@@ -34,7 +38,10 @@ vi.mock('nuqs', () => {
   };
 });
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: () => ({ data: H.rows, loading: false, error: null }),
+  useSyncQuery: (query: { queryName: string; enabled?: boolean }) => {
+    if (query.queryName === 'workspaceHosts.control') H.controlQueries.push(query);
+    return { data: query.queryName === 'workspaceHosts.control' ? H.control : H.rows, loading: false, error: null, invalidate: H.invalidate };
+  },
 }));
 vi.mock('@/app/harness/Select', () => ({
   Select: ({ value }: { value: string }) => <span data-testid="ws-select">{value}</span>,
@@ -96,6 +103,10 @@ beforeEach(() => {
   H.setters = {};
   H.rows = [overview()];
   posts = [];
+  H.browser = null;
+  H.invalidate.mockReset();
+  H.control = [];
+  H.controlQueries = [];
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string, init?: RequestInit) => {
@@ -105,6 +116,9 @@ beforeEach(() => {
       }
       if (url === '/api/workspaces') {
         return new Response(JSON.stringify({ current: 'ws1', workspaces: [{ id: 'ws1', name: 'One' }] }), { status: 200 });
+      }
+      if (url === '/api/hosted/auth/session' && H.browser) {
+        return new Response(JSON.stringify({ ok: true, session: H.browser }), { status: 200 });
       }
       return new Response('{}', { status: 404 });
     }),
@@ -117,6 +131,140 @@ afterEach(() => {
 });
 
 describe('Remote access screen', () => {
+  it('renders actual SSH and hosted sources with distinct authority, liveness and removal consequences', async () => {
+    H.rows = [{ ...overview(),
+      sshProfiles: [{ id: 'laptop', host: 'laptop.private', scope: 'This computer', state: 'unknown' }],
+      hostedConnectors: [
+        { id: 'live', label: 'Live machine', connector: { customerWorkspaceId: 'customer-ws', routeLabel: 'route', state: 'active', transport: 'websocket', generation: 7, lastSeenAt: new Date().toISOString(), liveUntil: Date.now() + 60_000 } },
+        { id: 'stale', label: 'Stale machine', connector: { customerWorkspaceId: 'customer-ws', routeLabel: 'stale-route', state: 'active', transport: 'websocket', generation: 7, lastSeenAt: '2000-01-01T00:00:00Z', liveUntil: 0 } },
+        { id: 'unknown', label: 'Unknown machine', connector: null },
+      ],
+    }];
+    render(<RemoteAccessSettingsPage />);
+    const ssh = screen.getByTestId('ssh-profile-inventory');
+    expect(ssh.dataset.connectionClass).toBe('ssh-profile');
+    expect(ssh.dataset.connectionHealth).toBe('unknown');
+    expect(ssh.textContent).toContain('psu --connect-remove=laptop');
+    expect(ssh.textContent).toContain('does not revoke its SSH key');
+    expect(ssh.textContent).toContain('Revoke remote key');
+    const hosts = screen.getAllByTestId('hosted-connector-inventory');
+    expect(hosts.map(host => [host.dataset.connectionState, host.dataset.connectionHealth])).toEqual([
+      ['active', 'healthy'], ['unavailable', 'offline'], ['unknown', 'unknown'],
+    ]);
+    expect(within(hosts[0]!).getByText(/Scope: customer-ws · Transport: WEBSOCKET/)).toBeTruthy();
+    expect((within(hosts[2]!).getByRole('button') as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect(screen.getByText(/No authenticated browser session/)).toBeTruthy());
+  });
+
+  it('confirms connector revocation through its own workspace endpoint without revoking phones or keys', async () => {
+    H.rows = [{ ...overview(), sshProfiles: [], hostedConnectors: [{ id: 'host1', label: 'Desktop', connector: {
+      customerWorkspaceId: 'customer/ws', routeLabel: 'route', state: 'active', transport: 'websocket', generation: 9, lastSeenAt: null, liveUntil: null,
+    } }] }];
+    render(<RemoteAccessSettingsPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke connector' }));
+    expect(posts).toHaveLength(0);
+    const dialog = screen.getByRole('dialog', { name: 'Revoke connector for Desktop?' });
+    expect(dialog.textContent).toContain('Re-enrollment is required');
+    expect(dialog.textContent).toContain('phone pairings and browser sign-in are unchanged');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm revoke connector' }));
+    await waitFor(() => expect(posts).toEqual([{ url: '/api/hosted/workspaces/customer%2Fws/connectors/revoke', body: { hostId: 'host1', routeLabel: 'route', transport: 'websocket' } }]));
+    await waitFor(() => expect(screen.getByTestId('hosted-connector-inventory').dataset.connectionState).toBe('revoked'));
+    expect(screen.getAllByTestId('remote-access-entry')).toHaveLength(3);
+  });
+
+  it('lists the authenticated current browser session without inventing a live machine binding, and signs out separately', async () => {
+    H.browser = { sessionId: 'current-session', workspaceId: 'ws1', expiresAtMs: Date.now() + 60_000 };
+    render(<RemoteAccessSettingsPage />);
+    const browser = await screen.findByTestId('browser-session-inventory');
+    expect(browser.dataset.connectionClass).toBe('browser-session');
+    expect(browser.dataset.connectionState).toBe('active');
+    expect(browser.dataset.connectionHealth).toBe('unknown');
+    expect(browser.textContent).toContain('Signed in · machine connection unknown');
+    fireEvent.click(within(browser).getByRole('button', { name: 'Sign out of this browser' }));
+    const dialog = screen.getByRole('dialog', { name: 'Sign out of this browser?' });
+    expect(dialog.textContent).toContain('hosted connectors and phone pairings are unchanged');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm sign out' }));
+    await waitFor(() => expect(posts).toEqual([{ url: '/api/hosted/auth/logout', body: {} }]));
+    await waitFor(() => expect(browser.dataset.connectionState).toBe('revoked'));
+  });
+
+  it.each([null, 'other-workspace'])('does not substitute a browser sign-in scoped to %s for this workspace', async workspaceId => {
+    H.browser = { sessionId: 'wrong-scope', workspaceId, expiresAtMs: Date.now() + 60_000 };
+    render(<RemoteAccessSettingsPage />);
+    await waitFor(() => expect(screen.getByText(/No authenticated browser session/)).toBeTruthy());
+    expect(screen.queryByTestId('browser-session-inventory')).toBeNull();
+  });
+
+  it('preserves source failures as unavailable rather than an empty healthy inventory', async () => {
+    H.rows = [{ ...overview(), sshProfiles: [], sshProfilesError: 'Saved SSH profiles could not be read.',
+      hostedConnectors: [], hostedConnectorsError: 'Hosted connector status could not be read.' }];
+    render(<RemoteAccessSettingsPage />);
+    expect(screen.getByText('Saved SSH profiles could not be read.')).toBeTruthy();
+    expect(screen.getByText('Hosted connector status could not be read.')).toBeTruthy();
+    expect(screen.queryByText('No SSH profiles are saved on this computer.')).toBeNull();
+    expect(screen.getAllByTestId('remote-access-entry')).toHaveLength(3);
+    await waitFor(() => expect(screen.getByText(/No authenticated browser session/)).toBeTruthy());
+  });
+
+  it('shows expired browser authority and disables sign out without describing a healthy connection', async () => {
+    H.browser = { sessionId: 'expired', workspaceId: 'ws1', expiresAtMs: 1 };
+    render(<RemoteAccessSettingsPage />);
+    const browser = await screen.findByTestId('browser-session-inventory');
+    expect(browser.dataset.connectionState).toBe('expired');
+    expect(browser.dataset.connectionHealth).toBe('offline');
+    expect(browser.textContent).toContain('Session expired');
+    expect((within(browser).getByRole('button') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('keeps a refused connector revoke visible and preserves its observed state', async () => {
+    H.rows = [{ ...overview(), hostedConnectors: [{ id: 'host1', label: 'Desktop', connector: {
+      customerWorkspaceId: 'customer-ws', routeLabel: 'route', state: 'active', transport: 'websocket', generation: 9,
+      lastSeenAt: new Date().toISOString(), liveUntil: Date.now() + 60_000,
+    } }] }];
+    const original = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'POST') return new Response(JSON.stringify({ ok: false, error: { code: 'permission_denied' } }), { status: 403 });
+      return original(url, init);
+    }));
+    render(<RemoteAccessSettingsPage />);
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke connector' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm revoke connector' }));
+    const { toast } = await import('sonner');
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Revoking hosted connector failed: permission_denied'));
+    expect(screen.getByRole('dialog', { name: 'Revoke connector for Desktop?' })).toBeTruthy();
+    expect(screen.getByTestId('hosted-connector-inventory').dataset.connectionState).toBe('active');
+  });
+
+  it('re-reads source projections only while the inventory is visible', () => {
+    vi.useFakeTimers();
+    try {
+      render(<RemoteAccessSettingsPage />);
+      expect(H.invalidate).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(30_000);
+      expect(H.invalidate).toHaveBeenCalledTimes(2);
+      cleanup();
+      vi.advanceTimersByTime(60_000);
+      expect(H.invalidate).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('renders authenticated hosted inventory even when the local app-key overview is unavailable', async () => {
+    H.rows = [];
+    H.browser = { sessionId: 'hosted-browser', workspaceId: 'ws1', expiresAtMs: Date.now() + 60_000 };
+    H.control = [{ kind: 'workspace', id: 'hosted', name: 'Hosted desktop', observedState: 'running', hostedConnector: {
+      customerWorkspaceId: 'ws1', routeLabel: 'route', state: 'active', transport: 'websocket', generation: 3,
+      lastSeenAt: new Date().toISOString(), liveUntil: Date.now() + 60_000,
+    } }];
+    render(<RemoteAccessSettingsPage />);
+    expect(H.controlQueries[0]?.enabled).toBe(false);
+    await screen.findByTestId('browser-session-inventory');
+    const host = await screen.findByTestId('hosted-connector-inventory');
+    expect(host.dataset.connectionClass).toBe('hosted-connector');
+    expect(host.dataset.connectionHealth).toBe('healthy');
+    expect(H.controlQueries.at(-1)?.enabled).toBe(true);
+    expect(screen.getByText('SSH profile inventory is unavailable.')).toBeTruthy();
+  });
+
   it('offers session access only for a phone and enables its workspace-scoped grant', async () => {
     render(<RemoteAccessSettingsPage />);
     const grant = screen.getByRole('checkbox', { name: 'Agent sessions for Avi phone' });

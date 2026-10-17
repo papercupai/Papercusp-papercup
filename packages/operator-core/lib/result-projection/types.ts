@@ -54,7 +54,7 @@
  * logs:read already pushes `--grep` into journalctl (tier 1); capability:read
  * reading a file is where a native head/tail wrapper would belong (tier 2). This
  * stage does not replace either — it is the universal floor beneath both, for
- * every one of the ~550 tools that will never get bespoke filter params.
+ * every tool in the catalog that will never get bespoke filter params.
  *
  * ── REGEX FLAVOR IS DECLARED, NEVER ASSUMED ───────────────────────────────────
  * `grep` here is a JavaScript RegExp, not GNU ERE/BRE. Most patterns mean the
