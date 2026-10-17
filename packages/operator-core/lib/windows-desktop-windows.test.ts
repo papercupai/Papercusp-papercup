@@ -21,6 +21,8 @@ import {
 } from './windows-desktop-windows';
 
 const readFileSyncMock = vi.fn();
+const nativeIntent = vi.hoisted(() => vi.fn());
+vi.mock('./ui/dispatch-intent', () => ({ dispatchNativeWindowIntent: nativeIntent }));
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -44,6 +46,7 @@ afterEach(() => {
   setPlatform(realPlatform);
   __resetIsWindowsDesktopHostCache();
   readFileSyncMock.mockReset();
+  nativeIntent.mockReset();
 });
 
 describe('on-desktop window cache (WI-1675 renderer push)', () => {
@@ -76,6 +79,15 @@ describe('on-desktop window cache (WI-1675 renderer push)', () => {
     readFileSyncMock.mockReturnValue(WSL2_PROC_VERSION);
     setOnDesktopWindowsCache(w, 1_000); // push far in the past → stale → treated as no data
     expect(await listWindowsByTitle(undefined)).toEqual([]);
+  });
+
+  it('enumerates through the native UI when the old page-specific cache is absent', async () => {
+    setPlatform('linux');
+    readFileSyncMock.mockReturnValue(WSL2_PROC_VERSION);
+    setOnDesktopWindowsCache([], 1);
+    nativeIntent.mockResolvedValueOnce(w);
+    expect(await listWindowsByTitle(WINDOW_TITLE_PREFIX)).toEqual(w.slice(0, 1));
+    expect(nativeIntent).toHaveBeenCalledWith({ action: 'list' });
   });
 });
 
@@ -138,6 +150,15 @@ describe('isWindowsDesktopHost (the P-025/WI-1646-sibling platform-detection fix
 });
 
 describe('platform guard — listWindowsByTitle/focusWindowByTitle never reached off a Windows desktop host', () => {
+  it('routes WSL focus through Session-1 and accepts only an observed true result', async () => {
+    setPlatform('linux');
+    readFileSyncMock.mockReturnValue(WSL2_PROC_VERSION);
+    nativeIntent.mockResolvedValueOnce({ protocol: 'visible-window-v1', focused: true }).mockResolvedValueOnce({ protocol: 'visible-window-v1', focused: false }).mockResolvedValueOnce({ focused: true });
+    expect(await focusWindowByTitle('Papercup — exact')).toBe(true);
+    expect(await focusWindowByTitle('Papercup — exact')).toBe(false);
+    expect(await focusWindowByTitle('Papercup — exact')).toBe(false);
+    expect(nativeIntent).toHaveBeenCalledWith({ action: 'focus', title: 'Papercup — exact' });
+  });
   it('listWindowsByTitle short-circuits to [] on a native Linux/macOS host (no spawn attempted)', async () => {
     setPlatform('linux');
     readFileSyncMock.mockReturnValue(NATIVE_LINUX_PROC_VERSION);

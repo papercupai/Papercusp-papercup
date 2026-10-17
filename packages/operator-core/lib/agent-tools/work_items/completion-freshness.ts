@@ -6,7 +6,7 @@
  * resolution here as a small leaf so both the close path and read path share
  * the same exact observation, without importing the complete tool into reads.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
@@ -1275,8 +1275,10 @@ async function contentIdentity(
 
 /**
  * Resolve ignore state for a bounded set of working-tree files absent from HEAD.
- * --ignored=matching reports ignored (!!) and ordinary untracked paths for
- * explicit literal pathspecs. Missing output is not evidence of being unignored.
+ * --ignored=traditional with --untracked-files=all reports ignored (!!) files
+ * for explicit literal pathspecs. `matching` collapses an ignored parent such as
+ * NVM's versions/ into one directory row, losing the requested file's status.
+ * Missing output is not evidence of being unignored.
  */
 async function completionGitIgnoreStatusMap(
   repoRoot: string,
@@ -1293,7 +1295,7 @@ async function completionGitIgnoreStatusMap(
       'status',
       '--porcelain=v1',
       '-z',
-      '--ignored=matching',
+      '--ignored=traditional',
       '--untracked-files=all',
       '--',
       ...boundedPaths.map((path) => ':(literal)' + path),
@@ -1704,6 +1706,8 @@ export interface CompletionTreeStampForEvidenceProbe {
     | ReadonlyMap<string, HeadBlobResolution>
     | undefined
     | Promise<ReadonlyMap<string, HeadBlobResolution> | undefined>;
+  /** Forward the existing measured-ignore seam to each owning checkout. */
+  gitIgnoreStatusProbe?: CompletionTreeStampProbe['gitIgnoreStatusProbe'];
 }
 
 /**
@@ -1959,6 +1963,7 @@ export async function completionTreeStampForEvidence(
   const groups = new Map<string, string[]>();
   const deletedGroups = new Map<string, string[]>();
   const artifactPaths: { path: string; deletion: boolean }[] = [];
+  const installedRuntimeCandidates = new Map<string, Map<string, string>>();
   for (const raw of declared) {
     const declaredPath = raw.trim();
     // A glob or empty citation is INVALID, not an artifact. WI-312624 made the
@@ -1975,19 +1980,54 @@ export async function completionTreeStampForEvidence(
     const group = targetGroups.get(owner) ?? [];
     group.push(file);
     targetGroups.set(owner, group);
+    // A toolchain manager can itself be a Git checkout (e.g. ~/.nvm), while
+    // installed npm packages underneath it are external runtime artifacts.
+    // The supplied roots include inferred path owners, so membership there is
+    // not proof that NVM's checkout is managed project source. Recognize only
+    // a global npm install layout outside the primary checkout. Ordinary local
+    // node_modules paths, source paths and relative citations remain Git-backed.
+    if (!deletion && nodePath.isAbsolute(declaredPath) &&
+        owner !== primaryRoot && !owner.startsWith(primaryRoot + nodePath.sep) &&
+        /^(?:versions\/[^/]+\/[^/]+\/)?lib\/node_modules\/(?:@[^/]+\/)?[^/]+\//.test(file)) {
+      const absolutePath = nodePath.resolve(declaredPath);
+      try {
+        // npm link can point a global installation at project source. Keep
+        // symlinked or unreadable paths Git-backed rather than excusing that code.
+        if (realpathSync(absolutePath) === absolutePath) {
+          const candidates = installedRuntimeCandidates.get(owner) ?? new Map<string, string>();
+          candidates.set(file, absolutePath);
+          installedRuntimeCandidates.set(owner, candidates);
+        }
+      } catch {
+        // A failed path observation cannot establish an installed artifact.
+      }
+    }
   }
+
+  const classifyInstalledRuntime = (stamp: CompletionTreeStamp, repoRoot: string) =>
+    (stamp.contentIdentity ?? []).map((entry): CompletionTreeContentIdentity => {
+      const absolutePath = installedRuntimeCandidates.get(repoRoot)?.get(entry.path);
+      // Reuse the measured HEAD/ignore result. Never exempt a tracked package,
+      // missing file, unreadable HEAD, or failed/unknown ignore observation.
+      if (absolutePath && entry.workingTreeBlobSha != null && entry.headBlobSha === null &&
+          !entry.headBlobUnresolvable && entry.gitIgnoreStatus === 'ignored') {
+        return { path: absolutePath, workingTreeBlobSha: null, headBlobSha: null, outOfRepoArtifact: true };
+      }
+      return entry;
+    });
 
   const primaryStamp = await completionTreeStamp({
     repoRoot: selectedRoot,
     readFile: probe.readFile,
     readBytes: probe.readBytes,
     headBlobs: probe.headBlobs,
+    gitIgnoreStatusProbe: probe.gitIgnoreStatusProbe,
     filesChanged: groups.get(selectedRoot) ?? [],
     filesDeleted: deletedGroups.get(selectedRoot) ?? [],
   });
   if (!primaryStamp) return undefined;
 
-  const identity: CompletionTreeContentIdentity[] = [...(primaryStamp.contentIdentity ?? [])];
+  const identity: CompletionTreeContentIdentity[] = classifyInstalledRuntime(primaryStamp, selectedRoot);
   for (const repoRoot of new Set([...groups.keys(), ...deletedGroups.keys()])) {
     if (repoRoot === selectedRoot) continue;
     const files = groups.get(repoRoot) ?? [];
@@ -1997,6 +2037,7 @@ export async function completionTreeStampForEvidence(
       readFile: probe.readFile,
       readBytes: probe.readBytes,
       headBlobs: probe.headBlobs,
+      gitIgnoreStatusProbe: probe.gitIgnoreStatusProbe,
       filesChanged: files,
       filesDeleted: deletedFiles,
     });
@@ -2015,8 +2056,8 @@ export async function completionTreeStampForEvidence(
       }
       continue;
     }
-    for (const entry of stamp.contentIdentity) {
-      identity.push({ ...entry, repositoryRoot: repoRoot, headSha: stamp.headSha });
+    for (const entry of classifyInstalledRuntime(stamp, repoRoot)) {
+      identity.push(entry.outOfRepoArtifact ? entry : { ...entry, repositoryRoot: repoRoot, headSha: stamp.headSha });
     }
   }
   for (const { path, deletion } of artifactPaths) {

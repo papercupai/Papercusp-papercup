@@ -5,21 +5,21 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Remote access: a user guide"
-description: "How to let outside apps reach a Papercusp workspace from Settings → Remote access: the on/off kill switch, your own tunnel vs the opt-in Papercusp relay (limits, consent, offline behavior), connecting apps and service keys, pause/rotate/revoke, activity, spend caps and alerts, signed webhooks, and what each refusal means."
+description: "App and device access, full personal-computer terminal and browser GUI connections, managed process flow, SSH trust, relay consent, revocation and offline behavior."
 type: Guide
 discovered: 2026-09-30
-tags: ["remote-access", "connected-apps", "external-app-access", "tunnel", "relay", "webhooks"]
+tags: ["remote-access", "connected-apps", "external-app-access", "tunnel", "relay", "webhooks", "personal-machine", "psu"]
 status: active
 documents:
   - "apps/operator/app/settings/remote-access/page.tsx"
-  - "apps/operator/bin/external-ingress-paths.ts"
-  - "packages/operator-core/lib/workspace-host/hosted-app-relay.ts"
-  - "packages/operator-core/lib/connected-apps/alert-sweep.ts"
-  - "packages/operator-core/lib/connected-apps/spend.ts"
-  - "packages/operator-core/lib/connected-apps/store.ts"
-  - "packages/operator-core/lib/external-triggers/webhook.ts"
+  - "apps/operator/scripts/psu-connection-front-controller.mjs"
+  - "apps/operator/app/cloud-workspaces/MachineSwitcher.tsx"
+  - "packages/operator-core/lib/workspace-host/hosted-psu-session.ts"
+  - "packages/operator-core/lib/workspace-host/hosted-session-host.ts"
+  - "packages/operator-core/lib/workspace-host/hosted-agent-identity.ts"
 plans:
   - "external-app-access-to-workspaces-2026-09-29"
+  - "machine-first-access-and-signup-utility-download-2026-10-15"
 ---
 
 Remote access lets apps that run somewhere else call this workspace: another server, a laptop on
@@ -175,3 +175,59 @@ signing key is shown once, when the webhook is created. The quickstart has a sig
 | `429 rate_limited` | A relay limit in section 2 was reached. |
 | `503 workspace_offline` | The relay cannot reach this computer; retry later. |
 | `spend_cap_reached` | The key's spending cap was reached. |
+
+
+## 7. Full remote terminal and browser GUI
+
+External-app keys and the scoped relay above do not provide full GUI or shell access. The machine control beside workspace selection in the portal and local GUI offers Connect your computer for the private SSH path. Use a utility version that includes the personal SSH profile options below.
+
+
+For a complete remote terminal and GUI session, use a customer-owned computer and its OpenSSH trust boundary. Enable SSH there, authorize your public key, install Papercusp and tmux, and make the operator listen on loopback port 3070. Verify the host key and add an SSH alias or private/VPN address locally:
+
+`psu --connect-add-ssh=my-computer --connect-host=my-computer`
+
+Use `psu --connect=my-computer` for a remote psu session. The front controller chooses the machine before the remote launch choices, forwards the remaining argv unchanged, and runs the remote process in a reattachable tmux session. Use `psu --connect=my-computer --connect-gui` for the browser GUI; it forwards 127.0.0.1:3070 to a local port, checks the operator health endpoint, opens the browser, and keeps the tunnel until you press Enter or interrupt. The SSH host key, identity and authorization remain OpenSSH policy. Removing the saved profile forgets it locally; revoke the SSH key on the remote computer to remove access. An offline host or refused key cannot open a terminal or browser.
+
+This is full computer access. It is separate from an external-app MCP key and from the scoped hosted relay. The browser tunnel is local-only and does not publish the GUI.
+
+
+### Local, managed and BYOC machines
+
+Local psu stays on this computer. A Papercusp cloud sign-in lists workspaces for that account and organization. For your own cloud machine, saved GCP IAP and AWS SSM profiles use customer-controlled OpenSSH tunnels with host-key verification. Personal SSH profiles use an SSH config alias or reachable private/VPN address. Your SSH config may specify a user, port and identity. Machine choice precedes remote launch context; subsequent argv is forwarded, with the connection picker suppressed on the remote psu.
+
+An external-app pairing code does not authorize a full shell. BYOC content must use an authorized sealed channel or customer-controlled ingress. The managed cloud terminal must never be treated as evidence that an unsealed BYOC relay works.
+
+### What runs where
+
+
+For a personal SSH connection, the laptop terminal runs the local front controller; OpenSSH reaches the customer computer; the remote tmux session runs psu; psu starts the customer-account agent in its workspace; the agent reads the selected context and sends model requests through the configured provider account. Only the credentials authorized on that computer are used. A hosted relay adds the portal connector and its ticket before the host supervisor starts psu. The relay is a transport boundary, not a replacement for the host's identity or workspace authorization.
+
+
+```mermaid
+sequenceDiagram
+  participant L as Laptop psu front controller
+  participant P as Portal ticket and connector relay
+  participant H as Host psu supervisor
+  participant A as Customer-account agent
+  participant O as Workspace operator
+  participant M as Model provider
+  L->>P: Account-scoped token and selected workspace
+  P-->>L: Single-use terminal ticket
+  L->>P: Attach with ticket
+  P->>H: psu channel and allowlisted argv
+  H->>A: Launch with customer identity and workspace cwd
+  A->>O: Retrieve context and call authorized tools
+  A->>M: Model requests using configured account route
+  M-->>A: Model replies
+  A-->>H: Terminal output
+  H-->>P: Connector output
+  P-->>L: Output; keyboard input travels in reverse
+```
+
+The laptop keeps its portal CLI token. The host starts psu as its supervisor, then uses the customer identity wrapper to start the agent in the workspace directory. The agent does not receive arbitrary service credentials or a service-user shell. Context and tool calls belong to the selected remote workspace; model-provider authentication uses that agent's configured account route. For a personal machine, SSH replaces the portal relay and uses the remote account you approved.
+
+After the last terminal channel detaches, the host retains the managed terminal for 15 minutes after detachment by default, then ends that terminal. A host may configure a different idle window. Reconnecting before expiry attaches to the retained session; a reboot, process exit or expired window can require a new session.
+
+A managed reconnect obtains a fresh one-use ticket and reuses the hosted session key. Waiting for a dropped machine link has one bounded budget; failure names a resume command when a session was bound, and does not claim a session exists when none started. A personal connection uses remote tmux so the same profile and arguments can reattach. Closing the local browser tunnel does not terminate running agents.
+
+The utility archive includes psu (the launcher) and pui (the terminal interface). The signup welcome requests one compatible published download, offers a manual retry, and lets you continue to the GUI. A requested download does not prove that a file was saved or installed. Unsupported or unpublished platforms show a fallback rather than success.

@@ -105,6 +105,49 @@ export function hasAdoptedSpawnerSidecar(): boolean {
 // the pid-keyed socket. This holds the in-flight attempt so they share one.
 let spawnInFlight: Promise<void> | null = null;
 
+export const DEFAULT_SPAWNER_READY_TIMEOUT_MS = 10_000;
+export const SPAWNER_WARMUP_READY_TIMEOUT_MS = 30_000;
+
+interface StartupBudget {
+  readyTimeoutMs: number;
+  startedAt: number | null;
+  deadlineAt: number | null;
+  timer: ReturnType<typeof setTimeout> | null;
+  timedOut: boolean;
+  settled: boolean;
+  reschedule: (() => void) | null;
+}
+
+let inFlightStartupBudget: StartupBudget | null = null;
+
+function normalizeReadyTimeoutMs(value?: number): number {
+  if (value === undefined) return DEFAULT_SPAWNER_READY_TIMEOUT_MS;
+  if (!Number.isInteger(value)
+    || value < DEFAULT_SPAWNER_READY_TIMEOUT_MS
+    || value > SPAWNER_WARMUP_READY_TIMEOUT_MS) {
+    throw new RangeError(
+      `readyTimeoutMs must be an integer from ${DEFAULT_SPAWNER_READY_TIMEOUT_MS} through ${SPAWNER_WARMUP_READY_TIMEOUT_MS}`,
+    );
+  }
+  return value;
+}
+
+function extendStartupBudget(budget: StartupBudget | null, requestedMs: number): void {
+  if (!budget || budget.settled || budget.timedOut || requestedMs <= budget.readyTimeoutMs) return;
+  budget.readyTimeoutMs = requestedMs;
+  if (budget.startedAt === null) return;
+  const deadlineAt = budget.startedAt + requestedMs;
+  if (deadlineAt <= (budget.deadlineAt ?? 0)) return;
+  budget.deadlineAt = deadlineAt;
+  budget.reschedule?.();
+}
+
+function clearStartupTimer(budget: StartupBudget): void {
+  if (budget.timer) clearTimeout(budget.timer);
+  budget.timer = null;
+  budget.reschedule = null;
+}
+
 /** One UNCONFINED warning per process — see the spawn site for why. */
 let warnedUnconfined = false;
 
@@ -174,7 +217,12 @@ function scheduleRespawn(socketPath: string): void {
  * Spawn the spawner sidecar process.
  * Waits for the PAPERCUSP_SPAWNER_READY handshake line.
  */
-export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
+export async function spawnSpawnerSidecar(
+  socketPath?: string,
+  options: { readyTimeoutMs?: number } = {},
+): Promise<void> {
+  const requestedReadyTimeoutMs = normalizeReadyTimeoutMs(options.readyTimeoutMs);
+
   // WI-7249 / D-011: shutdown-hook registration is a property of SPAWNING, not of
   // each caller remembering. It used to live at exactly one call site
   // (host-bootstrap.ts, bg-host only), so the entry points ordinary AGENT processes
@@ -194,12 +242,16 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
 
   // Join the shared startup promise before checking for its child: the child is
   // assigned before its ready handshake, while spawnInFlight remains pending.
-  if (spawnInFlight) return spawnInFlight;
+  if (spawnInFlight) {
+    extendStartupBudget(inFlightStartupBudget, requestedReadyTimeoutMs);
+    return spawnInFlight;
+  }
 
   if (sidecarProcess) {
     // Already running
     if (sidecarReady) return;
     // Wait for ready
+    extendStartupBudget(inFlightStartupBudget, requestedReadyTimeoutMs);
     return new Promise((resolve) => {
       readyWaiters.push(resolve);
     });
@@ -215,6 +267,16 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
   // lives INSIDE the guarded promise, not before it. (Caught by
   // spawner-sidecar-cgroup-confinement.test.ts's "exactly ONE sidecar" guard when
   // this was first written the other way round.)
+  const startupBudget: StartupBudget = {
+    readyTimeoutMs: requestedReadyTimeoutMs,
+    startedAt: null,
+    deadlineAt: null,
+    timer: null,
+    timedOut: false,
+    settled: false,
+    reschedule: null,
+  };
+  inFlightStartupBudget = startupBudget;
   spawnInFlight = (async () => {
     // ── CROSS-PROCESS ADOPTION (plan spawner-sidecar-cluster-fanout-2026-08-12) ──
     //
@@ -238,8 +300,11 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
       adoptedSocketPath = probeSocket;
       return;
     }
-    return spawnSpawnerSidecarInner(socketPath);
+    return spawnSpawnerSidecarInner(socketPath, startupBudget);
   })().finally(() => {
+    startupBudget.settled = true;
+    clearStartupTimer(startupBudget);
+    if (inFlightStartupBudget === startupBudget) inFlightStartupBudget = null;
     spawnInFlight = null;
   });
   return spawnInFlight;
@@ -247,7 +312,7 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
 
 /** The actual spawn. Split out of `spawnSpawnerSidecar` only so the in-flight
  *  guard above can wrap exactly one attempt. */
-async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
+async function spawnSpawnerSidecarInner(socketPath: string | undefined, startupBudget: StartupBudget): Promise<void> {
   // A fresh spawn attempt — clear any pending backoff timer and the deliberate-stop
   // flag so the crash-respawn machinery is armed for this (re)spawn (mirrors
   // substrate-sidecar-spawn.ts's reset at the top of spawnSubstrateSidecar).
@@ -422,33 +487,56 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
   const child = sidecarProcess;
   return new Promise<void>((resolve, reject) => {
     let childReady = false;
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-      // Settle the deadline before kill(): injected children can emit exit
-      // synchronously, but that exit is the guard's effect, not its cause.
-      timedOut = true;
-      reject(new Error('Spawner sidecar startup timeout'));
-      if (!childReady && sidecarProcess === child) {
-        // EI-20200233989444731: kill the SCOPE first. This path then drops the only
-        // reference we hold (`sidecarProcess = null`), so a payload that survived a
-        // client-only signal here would be orphaned with nothing left to stop it —
-        // a live process in a scope no ledger row claims, i.e. the "unaccounted
-        // cgroup" the task-manager alarm reports. A sidecar that missed its 10s
-        // handshake is exactly the case most likely to still be mid-startup.
-        const proc = sidecarProcess;
-        const scopeUnit = sidecarScopeUnit;
-        sidecarProcess = null;
-        sidecarScopeUnit = null;
-        sidecarReady = false;
-        void killOwnedScope(scopeUnit).then(() => {
-          try {
-            proc.kill();
-          } catch {
-            /* already gone */
+    const scheduleReadyTimeout = () => {
+      if (startupBudget.timer) clearTimeout(startupBudget.timer);
+      const deadlineAt = startupBudget.deadlineAt;
+      if (deadlineAt === null) return;
+      startupBudget.timer = setTimeout(() => {
+        startupBudget.timer = null;
+        // Timers run before the poll phase. A child can write its ready line before
+        // this deadline while the stdout `data` callback is already waiting in the
+        // poll queue; rejecting in the timer phase turns that successful startup
+        // into a false timeout. Let one poll pass deliver any queued handshake before
+        // declaring failure (the same ordering guard used by probeUnixSocketAlive).
+        setImmediate(() => {
+          if (childReady || startupBudget.settled || startupBudget.timedOut || sidecarProcess !== child) return;
+          if (startupBudget.deadlineAt !== null && Date.now() < startupBudget.deadlineAt) {
+            if (!startupBudget.timer) scheduleReadyTimeout();
+            return;
+          }
+          // Settle the deadline before kill(): injected children can emit exit
+          // synchronously, but that exit is the guard's effect, not its cause.
+          startupBudget.timedOut = true;
+          startupBudget.settled = true;
+          startupBudget.reschedule = null;
+          reject(new Error('Spawner sidecar startup timeout'));
+          if (!childReady && sidecarProcess === child) {
+            // EI-20200233989444731: kill the SCOPE first. This path then drops the only
+            // reference we hold (`sidecarProcess = null`), so a payload that survived a
+            // client-only signal here would be orphaned with nothing left to stop it —
+            // a live process in a scope no ledger row claims, i.e. the "unaccounted
+            // cgroup" the task-manager alarm reports. A sidecar that missed its READY
+            // deadline is exactly the case most likely to still be mid-startup.
+            const proc = sidecarProcess;
+            const scopeUnit = sidecarScopeUnit;
+            sidecarProcess = null;
+            sidecarScopeUnit = null;
+            sidecarReady = false;
+            void killOwnedScope(scopeUnit).then(() => {
+              try {
+                proc.kill();
+              } catch {
+                /* already gone */
+              }
+            });
           }
         });
-      }
-    }, 10000);
+      }, Math.max(0, deadlineAt - Date.now()));
+    };
+    startupBudget.startedAt = Date.now();
+    startupBudget.deadlineAt = startupBudget.startedAt + startupBudget.readyTimeoutMs;
+    startupBudget.reschedule = scheduleReadyTimeout;
+    scheduleReadyTimeout();
 
     // Listen for ready handshake. Decode across chunk boundaries — the
     // handshake line carries a socket PATH, which can contain non-ASCII.
@@ -462,12 +550,13 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
       stdoutBuffer = lines[lines.length - 1] || '';
 
       for (const line of lines.slice(0, -1)) {
-        console.log('[spawner-sidecar]', line);
+        console.log(`[spawner-sidecar pid=${child.pid}]`, line);
 
-        if (!timedOut && line.includes('PAPERCUSP_SPAWNER_READY')) {
+        if (!startupBudget.timedOut && line.includes('PAPERCUSP_SPAWNER_READY')) {
           childReady = true;
+          startupBudget.settled = true;
           sidecarReady = true;
-          clearTimeout(timeout);
+          clearStartupTimer(startupBudget);
           // A sidecar is long-lived while its host is alive, but it must not
           // be the last referenced handle keeping a short-lived diagnostic
           // process alive. Drop the child and its handshake pipes from the
@@ -514,7 +603,8 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
     });
 
     child.on('error', (err) => {
-      clearTimeout(timeout);
+      startupBudget.settled = true;
+      clearStartupTimer(startupBudget);
       if (sidecarProcess === child) {
         sidecarProcess = null;
         sidecarScopeUnit = null;
@@ -527,7 +617,8 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
       // This child's handshake cannot arrive after exit. Clear its timer even
       // when crash recovery starts another child before the original deadline.
       const exitedBeforeReady = !childReady;
-      clearTimeout(timeout);
+      startupBudget.settled = true;
+      clearStartupTimer(startupBudget);
       // The child found a LIVE sidecar on the shared path and declined to start
       // (listenUnixSocketExclusive). Same outcome as the stderr bind-race case above,
       // read off the exit code because this event can arrive before that stderr line.
@@ -551,12 +642,13 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
       // Bind-race loser: our child exited because a SIBLING already owns the shared
       // socket, which the stderr handler above detected and recorded. The awaited
       // handshake will now never arrive, so settle the promise HERE rather than let
-      // it sit until the 10s startup timeout and reject — the sidecar this caller
+      // it sit until the configured READY deadline and reject — the sidecar this caller
       // asked for does exist, it simply belongs to a sibling. Without this, a losing
-      // worker reports "Spawner sidecar startup timeout" 10s later and degrades its
+      // worker reports "Spawner sidecar startup timeout" later and degrades its
       // agent-spawn path for a condition that is actually success.
       if (adoptedSocketPath) {
-        clearTimeout(timeout);
+        startupBudget.settled = true;
+        clearStartupTimer(startupBudget);
         resolve();
         for (const waiter of readyWaiters) waiter();
         readyWaiters.length = 0;
@@ -700,6 +792,11 @@ export function _resetSpawnerSidecarSpawnStateForTests(): void {
   // would be RETURNED to the next caller instead of spawning, so every later
   // assertion reads "spawn called 0 times" for a reason that is not the subject.
   spawnInFlight = null;
+  if (inFlightStartupBudget) {
+    inFlightStartupBudget.settled = true;
+    clearStartupTimer(inFlightStartupBudget);
+    inFlightStartupBudget = null;
+  }
   warnedUnconfined = false;
 }
 

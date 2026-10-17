@@ -116,14 +116,16 @@ export function nearestTsconfigAliases({ root, hasTsconfig, entriesFor }: {
  * each one. A specifier naming a TRACKED workspace package resolves into that package (these
  * undeclared cross-workspace edges are what the snapshot exists to add); every other bare
  * specifier is out of graph by design. An unresolved specifier is COUNTED, never guessed.
- * @param {{ files: string[], readSource: (rel: string) => string | null, aliasesForImporter?: (importer: string) => Array<[string, string, boolean]>, workspacePackages?: Array<[string, string[]]>, resolvePackageDir?: (name: string, importer: string) => string | null }} o
+ * @param {{ files: string[], readSource: (rel: string) => string | null, aliasesForImporter?: (importer: string) => Array<[string, string, boolean]>, workspacePackages?: Array<[string, string[]]>, resolvePackageDir?: (name: string, importer: string) => string | null, importerFiles?: string[], knownFiles?: Set<string> }} o
  */
-export function deriveFirstPartyEdges({ files, readSource, aliasesForImporter, workspacePackages, resolvePackageDir }: {
+export function deriveFirstPartyEdges({ files, readSource, aliasesForImporter, workspacePackages, resolvePackageDir, importerFiles, knownFiles }: {
     files: string[];
     readSource: (rel: string) => string | null;
     aliasesForImporter?: (importer: string) => Array<[string, string, boolean]>;
     workspacePackages?: Array<[string, string[]]>;
     resolvePackageDir?: (name: string, importer: string) => string | null;
+    importerFiles?: string[];
+    knownFiles?: Set<string>;
 }): {
     edges: {
         importer: string;

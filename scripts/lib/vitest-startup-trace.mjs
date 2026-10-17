@@ -1,6 +1,6 @@
 /** Passive, bounded diagnostics for Vitest's real forks lifecycle protocol. */
 import childProcess from 'node:child_process';
-import { syncBuiltinESMExports } from 'node:module';
+import { registerHooks, syncBuiltinESMExports } from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -142,6 +142,39 @@ function installNativeProcessTrace(out) {
     return child;
   };
   syncBuiltinESMExports();
+
+  // Process entry alone cannot distinguish a loader wait from Vitest startup.
+  // A synchronous hook observes the call into the remaining loader chain,
+  // including async hooks on Node's loader thread. Persist the attempt before
+  // delegation so a killed/stuck child still names its last file boundary.
+  // These are load observations, never claims that a module was evaluated.
+  let loadSequence = 0;
+  try {
+    registerHooks({ load(url, context, nextLoad) {
+      if (!url.startsWith('file:')) return nextLoad(url, context);
+      if (loadSequence >= 128) {
+        if (loadSequence++ === 128) emit('module-load-limit', { limit: 128 });
+        return nextLoad(url, context);
+      }
+      const loadId = ++loadSequence;
+      const started = performance.now();
+      const fields = { loadId, url, scope: 'node-sync-load-hook' };
+      emit('module-load-start', fields);
+      try {
+        const result = nextLoad(url, context);
+        emit('module-load-return', { ...fields, elapsedMs: performance.now() - started,
+          format: result.format ?? null });
+        return result;
+      } catch (error) {
+        emit('module-load-error', { ...fields, elapsedMs: performance.now() - started,
+          errorCode: typeof error?.code === 'string' ? error.code : null,
+          errorName: typeof error?.name === 'string' ? error.name : typeof error });
+        throw error;
+      }
+    } });
+  } catch (error) {
+    emit('module-load-unavailable', { errorCode: error?.code ?? null });
+  }
 }
 
 if (process.env.PC_EXECUTED_SOURCE_MAP_OUT?.trim()) {

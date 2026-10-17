@@ -330,6 +330,7 @@ import './chat/reply';
 import './ticket/file';
 import './social/delete';
 import './social/post';
+import './blog/post';
 import './social/read';
 import './social/reply';
 import './social/search';
@@ -1589,6 +1590,7 @@ import './cupboard/install-event';
 // (cupboard:search over browse-listings.ts) + the universal delist
 // (cupboard:unpublish over delete-listing.ts, shared with unlist-hive-rows).
 import './cupboard/search';
+import './cupboard/my-listings';
 import './cupboard/unpublish';
 // shared-pot-dao-cupboard-v1-2026-09-04 D-045 §3d — the four P-011 commerce doors.
 // Before these, commerce-accounts.ts and commerce-dashboards.ts had ZERO production
@@ -1717,6 +1719,7 @@ import './events/graph';
 import './events/watch';
 import './events/await';
 import './events/emit';
+import './rules/lifecycle';
 import './events/cancel';
 import './events/status';
 // external-triggers-gmail-slack-2026-08-22 P-005 — source/binding inventory,
@@ -1948,6 +1951,10 @@ import '../work-item-completion-event-reconciler';
 // Importing this registry from a script, a build generator or a vitest worker no
 // longer starts them. The wrapper keeps the never-block-boot contract.
 whenOperatorHostProcess('await-event-sweeper', startAwaitSweeper);
+
+// Local authored rules restore enabled Postgres rows on every trigger after boot.
+import { startLocalRuleRuntime } from '../events/local-rule-runtime';
+whenOperatorHostProcess('local-rule-runtime', startLocalRuleRuntime);
 
 // fleet-deltas-leader-primitives-2026-07-10 P-008 — the predicate-watch poller
 // (engine-side "wake me when a tool result crosses a threshold"). Boot-started so

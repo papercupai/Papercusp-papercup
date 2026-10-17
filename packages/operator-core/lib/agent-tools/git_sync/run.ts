@@ -339,7 +339,7 @@ export default defineTool({
               // synchronization. Whether a TARGETED retry signal is coming depends on
               // the refusal CLASS, so only advertise an await that will actually fire.
               //
-              ...(outcome.reason === 'held_exclusive'
+              ...(outcome.reason === 'held_exclusive' || outcome.reason === 'exclusive_pending'
                 ? {
                     completion_event: {
                       key: resourceReleasedEventKey(outcome.blockedOn ?? ''),
@@ -391,12 +391,16 @@ export default defineTool({
           : outcome?.status === 'skipped-locked'
             ? 'git-sync completed with a structured skipped-locked outcome; inspect outcome.skippedPaths and committedCount for the locked paths and any work this fire committed.'
           : outcome?.status === 'skipped'
-            ? outcome.reason === 'held_exclusive'
+            ? outcome.reason === 'held_exclusive' || outcome.reason === 'exclusive_pending'
               ? // This is emitted at the actual release boundary, not at refusal
-                // time, so it cannot wake into the same held_exclusive state.
-                `git-sync skipped: ${blockedByInFlightGitSync ? 'an in-flight git-sync auto-commit' : 'a peer'} holds ` +
+                // time, so it cannot wake into the same held/pending state.
+                `git-sync skipped: ${
+                  outcome.reason === 'held_exclusive'
+                    ? `${blockedByInFlightGitSync ? 'an in-flight git-sync auto-commit' : 'a peer'} holds`
+                    : 'a peer or pending exclusive request blocks'
+                } ` +
                 `${outcome.blockedOn ?? 'the git-sync resource'} ` +
-                '(held_exclusive). Wait for the exact resource release event in ' +
+                `(${outcome.reason}). Wait for the exact resource release event in ` +
                 'continuation.completion_event, then retry git-sync:run. Your changes are ' +
                 'not lost; continuation.progress_ref retains live holder state.'
               : `git-sync completed with status skipped (${outcome.reason}); await ${GIT_SYNC_LOCK_RETRY_EVENT} ` +

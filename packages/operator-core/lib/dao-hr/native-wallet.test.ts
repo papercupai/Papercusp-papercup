@@ -1,6 +1,8 @@
 /** Real hosted route + SQLite constraints + signatures for the native fixture. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
@@ -10,6 +12,34 @@ import { readWalletBinding, requestWalletBindingChallenge, submitWalletBinding }
 
 afterEach(() => vi.unstubAllEnvs());
 describe('native DAO HR hosted wallet fixture', () => {
+  it('loads the isolated hive epoch zero through real crypto while refusing other scopes and keychain writes', async () => {
+    vi.stubEnv('PAPERCUSP_VERIFY_TAURI_ISOLATED', '1');
+    vi.stubEnv('PAPERCUSP_IDENTITY_MODE', 'load-only');
+    const directory = mkdtempSync(join(tmpdir(), 'dao-hr-epoch-'));
+    vi.stubEnv('PAPERCUSP_IDENTITY_DIR', directory);
+    const identity = JSON.parse(readFileSync(prepareIdentityFixture(directory), 'utf8'));
+    const restore = installIdentityFixture(identity);
+    try {
+      const { createHiveEpochCrypto } = await import('../sync/hyperbee/hive-epoch-crypto-impl');
+      const { keychainStore } = await import('../identity/keychain');
+      const crypto = createHiveEpochCrypto();
+      const key = await crypto.deriveEpochKey('workbench-native', 0);
+      expect(key).toHaveLength(32);
+      expect(Buffer.from(key).toString('base64')).toBe(identity.hiveEpoch0);
+      expect(await crypto.deriveEpochKey('workbench-native', 0)).toEqual(key);
+      const lookup = (account: string) => promisify(execFile)('secret-tool',
+        ['lookup', 'service', 'papercusp-hive-epoch-key', 'account', account]);
+      await expect(lookup('workbench-native:1')).rejects.toThrow('unknown keychain identity');
+      await expect(lookup('foreign-' + identity.keychainId + ':0')).rejects.toThrow('unknown keychain identity');
+      await expect(keychainStore('workbench-native:0', Buffer.alloc(32), 'papercusp-hive-epoch-key'))
+        .rejects.toThrow('load-only');
+      await expect(promisify(execFile)('secret-tool', ['store', 'service', 'papercusp-hive-epoch-key',
+        'account', 'workbench-native:0'])).rejects.toThrow('refuses OS keychain writes');
+      expect(readdirSync(directory).sort()).toEqual(['announce.json', 'identity.json']);
+    } finally {
+      restore(); rmSync(directory, { recursive: true, force: true });
+    }
+  });
   it('refuses allocation outside explicitly isolated verification', async () => {
     vi.stubEnv('PAPERCUSP_VERIFY_TAURI_ISOLATED', '0');
     await expect(startDaoHrWalletBindingFixture()).rejects.toThrow('requires explicit isolated verification');

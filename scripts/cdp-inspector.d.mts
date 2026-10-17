@@ -20,6 +20,49 @@ export function readProcessMemory(client: Pick<ReturnType<typeof createCdpClient
     hostFacts?: boolean;
     allocationDetails?: boolean;
 }): Promise<any>;
+/**
+ * Read the process-global seed restore phase journal from an exact Node target.
+ * Missing journal state is an explicit unsupported result: an older installed
+ * script cannot be upgraded by the observer and must not be read as evidence
+ * that verify or restore completed.
+ *
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
+ * Build and source hash pins are required before any target evaluation.
+ * @param {{ expectedPid: number, expectedBuildSha: string, expectedSourceSha256: string,
+ *   expectedEntry?: string, expectedOperationId?: string }} options
+ */
+export function readSeedRestoreDiagnostics(client: Pick<ReturnType<typeof createCdpClient>, "evaluate">, { expectedPid, expectedBuildSha, expectedSourceSha256, expectedEntry, expectedOperationId, }: {
+    expectedPid: number;
+    expectedBuildSha: string;
+    expectedSourceSha256: string;
+    expectedEntry?: string;
+    expectedOperationId?: string;
+}): Promise<any>;
+/**
+ * Observe one restore operation until it reaches a terminal state. The poll
+ * budget includes protocol awaits and is capped at two minutes. An unavailable
+ * journal rejects immediately; it cannot produce qualifying phase evidence. The first
+ * observed operation is pinned across polls; later operations cannot replace
+ * it. The caller's CDP transport is closed on timeout/failure.
+ * `resumeStartup` mirrors the CPU helper's exact --inspect-wait cleanup: if
+ * setup fails before the resume, a best-effort resume is attempted in finally.
+ *
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate' | 'send' | 'close'>} client
+ * @param {{ expectedPid: number, expectedBuildSha: string, expectedSourceSha256: string,
+ *   expectedEntry?: string, expectedOperationId?: string, durationMs?: number,
+ *   pollIntervalMs?: number, resumeStartup?: boolean, sleepImpl?: InspectorSleep }} options
+ */
+export function captureSeedRestorePhases(client: Pick<ReturnType<typeof createCdpClient>, "evaluate" | "send" | "close">, { expectedPid, expectedBuildSha, expectedSourceSha256, expectedEntry, expectedOperationId, durationMs, pollIntervalMs, resumeStartup, sleepImpl, }: {
+    expectedPid: number;
+    expectedBuildSha: string;
+    expectedSourceSha256: string;
+    expectedEntry?: string;
+    expectedOperationId?: string;
+    durationMs?: number;
+    pollIntervalMs?: number;
+    resumeStartup?: boolean;
+    sleepImpl?: InspectorSleep;
+}): Promise<any>;
 /** Bind existing singleton values to a preceding snapshot's numeric V8 IDs.
  * Remote handles are released before returning and never enter the report.
  * Missing, unsafe and uncaptured roots stay explicit; no getter or proxy runs.
@@ -301,6 +344,12 @@ export class CdpTransportClosedError extends Error {
     constructor(method: any);
     method: any;
 }
+/**
+ * Name of the bounded restore-phase slot published by
+ * `@papercusp/seed-bundle`.  The inspector is intentionally kept as a plain
+ * Node script, so this literal is the cross-runtime seam rather than an import.
+ */
+export const SEED_RESTORE_DIAGNOSTIC_SLOT: "@papercusp/seed-bundle.restore-diagnostics";
 export type CacheHeapObject = {
     phase: string;
     status: string;

@@ -6,7 +6,7 @@
  * peers see). Always dry-run first.
  *
  * Bloat-queue categories (substrate_outbox) also VACUUM FULL to return disk,
- * coordinated via the db:migrate exclusive resource lock with drain.
+ * coordinated via the db-schema exclusive resource lock with drain.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';

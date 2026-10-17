@@ -7,6 +7,8 @@ import {
   readFileSync,
   existsSync,
   mkdirSync,
+  linkSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -122,6 +124,61 @@ describe("pretooluse-generated-file-edit-guard — falsifiability in both direct
 
   it("ALLOWS apply_patch on a hand-authored file", () => {
     expect(runHook(applyPatch(handAuthored)).denied).toBe(false);
+  });
+
+  it.each(["Edit", "Write", "MultiEdit", "mcp__papercusp-su__capability_edit"])(
+    "DENIES %s on installed dependency bytes shared with a frozen snapshot",
+    (tool) => {
+      const packageDir = join(dir, tool, "node_modules", "postgres");
+      mkdirSync(packageDir, { recursive: true });
+      const installed = join(packageDir, "connection.js");
+      const snapshot = join(dir, tool, "frozen-connection.js");
+      writeFileSync(installed, "export const generation = 'frozen';\n");
+      linkSync(installed, snapshot);
+      const result = runHook(edit(installed, tool));
+      expect(result.denied).toBe(true);
+      expect(result.reason).toMatch(/installed dependency/i);
+      expect(result.reason).toContain("frozen");
+      expect(result.reason).toContain("donor");
+      expect(readFileSync(snapshot, "utf8")).toContain("'frozen'");
+    },
+  );
+
+  it("DENIES Codex apply_patch through an alias to an installed package", () => {
+    const packageDir = join(dir, "aliased", "node_modules", "postgres");
+    mkdirSync(packageDir, { recursive: true });
+    const installed = join(packageDir, "connection.js");
+    writeFileSync(installed, "export default 1;\n");
+    const alias = join(dir, "package-alias");
+    symlinkSync(packageDir, alias, "dir");
+    expect(runHook(applyPatch(join(alias, "connection.js"))).denied).toBe(true);
+  });
+
+  it("DENIES installed package edits before a snapshot is linked and despite the generated-file bypass", () => {
+    const packageDir = join(dir, "unique", "node_modules", "postgres");
+    mkdirSync(packageDir, { recursive: true });
+    const installed = join(packageDir, "connection.js");
+    writeFileSync(installed, "export default 1;\n");
+    expect(runHook(edit(installed), { PAPERCUSP_ALLOW_GENERATED_EDIT: "1" }).denied).toBe(true);
+  });
+
+  it("ALLOWS a workspace source reached through a node_modules symlink", () => {
+    const sourceDir = join(dir, "workspace-package");
+    mkdirSync(sourceDir);
+    const source = join(sourceDir, "source.js");
+    writeFileSync(source, "export default 1;\n");
+    const moduleDir = join(dir, "workspace-links", "node_modules");
+    mkdirSync(moduleDir, { recursive: true });
+    symlinkSync(sourceDir, join(moduleDir, "workspace"), "dir");
+    expect(runHook(edit(join(moduleDir, "workspace", "source.js"))).denied).toBe(false);
+  });
+
+  it("ALLOWS an ordinary hardlinked source outside installed packages", () => {
+    const original = join(dir, "ordinary-source.js");
+    const alias = join(dir, "ordinary-source-alias.js");
+    writeFileSync(original, "export default 1;\n");
+    linkSync(original, alias);
+    expect(runHook(edit(alias)).denied).toBe(false);
   });
 
   it("DENIES when any path in a multi-file apply_patch is generated", () => {

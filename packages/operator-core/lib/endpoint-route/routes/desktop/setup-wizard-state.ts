@@ -8,6 +8,7 @@
  */
 import { readOperatorState, updateOperatorState } from '../../../operator-state-pg';
 import { ensureInstallId } from '../../../setup-wizard-install-id';
+import { ManagedUpdatePolicyError, readManagedUpdateChannel } from '../../../managed-update-policy';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const KEY = 'setup_wizard_state';
@@ -76,7 +77,14 @@ const patch = defineTool({
     if (!body || typeof body !== 'object') {
       return Response.json({ error: 'invalid body' }, { status: 400 });
     }
-    return Response.json(await mergeSetupWizardState(body as Record<string, unknown>));
+    try {
+      return Response.json(await mergeSetupWizardState(body as Record<string, unknown>));
+    } catch (error) {
+      if (error instanceof ManagedUpdatePolicyError) {
+        return Response.json({ error: error.code, message: error.message }, { status: error.status });
+      }
+      throw error;
+    }
   },
 });
 
@@ -90,6 +98,12 @@ const patch = defineTool({
 export async function mergeSetupWizardState(
   body: Record<string, unknown>,
 ): Promise<SetupWizardState> {
+  if (typeof body.update_channel === 'string' && ALLOWED_CHANNELS.has(body.update_channel as UpdateChannel)) {
+    const managed = readManagedUpdateChannel();
+    if (managed && body.update_channel !== managed) {
+      throw new ManagedUpdatePolicyError('update_channel_managed', `The administrator manages the update channel as ${managed}.`);
+    }
+  }
   return updateOperatorState<SetupWizardState>(KEY, defaults(), (current) => {
   const next: SetupWizardState = { ...current };
 

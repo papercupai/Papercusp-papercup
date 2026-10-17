@@ -1,0 +1,7 @@
+---
+rel_path: "audits/parked-agent-resumption-2026-10-09/fire83-r12-current-baseline-launch-424d5.json"
+updated_at: 1792127217475
+_body: "content"
+---
+
+{"schemaVersion": 1, "edition": "Fire83", "at": "2026-10-16T05:06:56.494696+00:00", "workItem": "WI-6554700010008887", "preparation": {"relPath": "audits/parked-agent-resumption-2026-10-09/fire83-r12-adequacy-preparation-and-current-proof-recipe-424d5.json", "chars": 202863, "sha256": "22f0e07e79459b149d18f2152bafb86eaec6135c25e3b5279f30639ba15cf737", "fullExactReadback": true}, "launch": {"ok": true, "bash_id": "5c194d48-4af", "task_id": "0mvai8u7hrl3w0har5g", "status": "running", "cwd": "/home/marsh-office/papercupai-workspace/papercusp", "log_path": "/home/marsh-office/papercupai-workspace/papercusp/.papercusp/scratch/bash-5c194d48-4af.log", "timeout_ms": 7200000, "deadline": "2026-10-16T07:06:09.819Z", "advice": "Background shell started. Preserve durable task_id \"0mvai8u7hrl3w0har5g\" across carry. Read output: capability:bash_output { task_id: \"0mvai8u7hrl3w0har5g\" } (or { bash_id: \"5c194d48-4af\" } in this launching context). Stop: processes:kill { taskId: \"0mvai8u7hrl3w0har5g\" }. It is terminated at 2026-10-16T07:06:09.819Z — re-launch with a larger `timeout` (max 43200000ms) if the shell job needs longer. All descendants in this task's confined service share that deadline; use a dedicated service launcher when a descendant needs a separate lifetime."}, "scope": "New changed-source baseline, no verdict yet. Do not duplicate task or replay old21268585/binding51188."}

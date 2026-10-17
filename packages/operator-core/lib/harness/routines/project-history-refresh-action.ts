@@ -257,6 +257,33 @@ export interface GenerateRunResult {
   timedOut: boolean;
 }
 
+export interface ProjectHistoryHealthOutcome {
+  success: boolean;
+  timedOut: boolean;
+  code: number;
+  stdout: string;
+  stderr: string;
+  timeoutMs: number;
+  output: string | null;
+  /** A precondition can fail before there is a generator exit code or output path. */
+  reason?: string;
+}
+
+export interface ProjectHistoryRefreshDeps {
+  env?: NodeJS.ProcessEnv;
+  exists?: (file: string) => boolean;
+  resolveCliBin?: (env: NodeJS.ProcessEnv) => string;
+  resolvePtool?: (env: NodeJS.ProcessEnv) => string | null;
+  runGenerate?: (
+    cliBin: string,
+    config: ProjectHistoryConfig,
+    timeoutMs: number,
+    env: NodeJS.ProcessEnv,
+  ) => Promise<GenerateRunResult>;
+  recordHealth?: (ctx: SystemActionCtx, outcome: ProjectHistoryHealthOutcome) => Promise<void>;
+  now?: () => number;
+}
+
 /**
  * Spawn the generator, bounded by `timeoutMs`.
  *
@@ -355,65 +382,10 @@ export function decideProjectHistoryHealthUpdate(
   };
 }
 
-registerSystemAction('project-history-refresh', async (ctx: SystemActionCtx) => {
-  const cfg = ctx.triggerConfig ?? {};
-  const resolved = resolveProjectHistoryConfig(cfg, ctx.installSlug, ctx.workspaceId);
-  if (!resolved.ok) {
-    // A misconfigured row can never be fixed by retrying, so this is a loud,
-    // non-throwing refusal: it must not fail the whole routines tick for its peers.
-    console.error(`[project-history-refresh] MISCONFIGURED on "${ctx.installSlug}": ${resolved.reason}`);
-    return;
-  }
-  const config = resolved.config;
-
-  if (!existsSync(config.repoRoot)) {
-    console.error(`[project-history-refresh] skip: repo_root does not exist: ${config.repoRoot}`);
-    return;
-  }
-
-  // PRECONDITION 1 — the pinned CLI. Never an ambient PATH lookup (file header).
-  const cliBin = resolveCliBin();
-  if (!existsSync(cliBin)) {
-    console.error(
-      `[project-history-refresh] ABORT: Papercusp CLI not found at "${cliBin}". ` +
-        'Set PAPERCUSP_CLI to the CLI bin, or check the integration root. ' +
-        'Refusing to fall back to a PATH lookup — the installed dispatcher is regenerated per boot and flaps.',
-    );
-    return;
-  }
-
-  // PRECONDITION 2 — `ptool`, which the generator shells out to for every read and
-  // which has no env override of its own. Checked BEFORE spawning so a missing
-  // binary is reported as a missing binary, rather than as a short artifact.
-  const ptool = resolvePtool();
-  if (!ptool) {
-    console.error(
-      '[project-history-refresh] ABORT: `ptool` does not resolve on PATH. ' +
-        'project-history-cli.ts shells out to a bare `ptool` for every plan/work-item read, so ' +
-        'generation would fail partway and could write a TRUNCATED artifact over a good one. ' +
-        `Set PAPERCUSP_PTOOL, or add its directory to the operator service PATH. (PATH=${process.env.PATH ?? ''})`,
-    );
-    return;
-  }
-
-  const timeoutMs = num(cfg, 'timeout_ms', PROJECT_HISTORY_TIMEOUT_MS);
-  const startedAt = Date.now();
-  console.log(
-    `[project-history-refresh] generating ${config.projectId} history -> ${config.output} ` +
-      `(harness=${config.harness} prefix="${config.planPrefix}" cli=${cliBin} ptool=${ptool})`,
-  );
-  const r = await runProjectHistoryGenerate(cliBin, config, timeoutMs);
-  const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
-  const success = !r.timedOut && r.code === 0;
-
-  if (r.timedOut) {
-    console.warn(`[project-history-refresh] TIMED OUT after ${timeoutMs}ms (${elapsedSec}s) — process tree killed`);
-  } else if (r.code !== 0) {
-    console.warn(`[project-history-refresh] exited ${r.code} after ${elapsedSec}s — ${(r.stderr || r.stdout).slice(-500)}`);
-  } else {
-    console.log(`[project-history-refresh] ok in ${elapsedSec}s — ${config.output}`);
-  }
-
+async function persistProjectHistoryHealth(
+  ctx: SystemActionCtx,
+  outcome: ProjectHistoryHealthOutcome,
+): Promise<void> {
   // Persist the streak and alert past the threshold. Fail-soft: a DB or notify
   // hiccup must never fail the tick — it only costs this tick's bookkeeping, which
   // the next tick re-derives.
@@ -426,7 +398,12 @@ registerSystemAction('project-history-refresh', async (ctx: SystemActionCtx) => 
       [ctx.installSlug],
     )) as Array<{ ph: Partial<ProjectHistoryHealth> | null }>;
     const prevHealth: ProjectHistoryHealth = { ...PROJECT_HISTORY_HEALTH_DEFAULT, ...(rows[0]?.ph ?? {}) };
-    const update = decideProjectHistoryHealthUpdate(prevHealth, success, PROJECT_HISTORY_FAILURE_ALERT_THRESHOLD, Date.now());
+    const update = decideProjectHistoryHealthUpdate(
+      prevHealth,
+      outcome.success,
+      PROJECT_HISTORY_FAILURE_ALERT_THRESHOLD,
+      Date.now(),
+    );
     await sql.unsafe(
       `UPDATE harness_shared.routines
           SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
@@ -434,12 +411,19 @@ registerSystemAction('project-history-refresh', async (ctx: SystemActionCtx) => 
       [ctx.installSlug, JSON.stringify({ project_history_health: update.next })],
     );
     const conditionKey = `alarm:project-history-refresh:${ctx.installSlug}`;
-    if (success) await resolveAlarm(conditionKey, 'project-history-refresh');
+    if (outcome.success) await resolveAlarm(conditionKey, 'project-history-refresh');
     else if (update.next.consecutiveFailures >= PROJECT_HISTORY_FAILURE_ALERT_THRESHOLD) {
       await broadcastSevereEvent({ conditionKey, oneShot: true,
         summary: `Project history for ${ctx.installSlug} has failed ${update.next.consecutiveFailures} consecutive refreshes`,
       }).catch(() => false);
     }
+    const failureDetail = outcome.reason ?? (
+      outcome.timedOut
+        ? `timed out after ${outcome.timeoutMs}ms`
+        : outcome.code !== 0
+          ? `exited ${outcome.code}`
+          : (outcome.stderr || outcome.stdout).slice(-300) || 'unknown failure'
+    );
     if (update.shouldAlert) {
       const { notifyAttention } = await import('../../attention-notify');
       await notifyAttention({
@@ -447,13 +431,19 @@ registerSystemAction('project-history-refresh', async (ctx: SystemActionCtx) => 
         title: 'project-history-refresh failing — the History artifact is going stale again',
         body:
           `system:project-history-refresh has now failed ${update.next.consecutiveFailures} consecutive time(s) on ` +
-          `${ctx.installSlug}. The committed History artifact (${config.output}) is no longer being refreshed, which is ` +
+          `${ctx.installSlug}. The committed History artifact (${outcome.output ?? 'unresolved output path'}) is no longer being refreshed, which is ` +
           'the exact unowned-decay condition EI-20475585438015488 was filed for. Latest failure: ' +
-          `${r.timedOut ? `timed out after ${timeoutMs}ms` : `exited ${r.code}`} — ${(r.stderr || r.stdout).slice(-300)}`,
+          `${failureDetail}`,
         importance: 'urgent',
         workspaceId: ctx.workspaceId,
         harnessSlug: ctx.installSlug,
-        data: { consecutiveFailures: update.next.consecutiveFailures, timedOut: r.timedOut, code: r.code, output: config.output },
+        data: {
+          consecutiveFailures: update.next.consecutiveFailures,
+          timedOut: outcome.timedOut,
+          code: outcome.code,
+          output: outcome.output,
+          reason: outcome.reason ?? null,
+        },
       });
     } else if (update.shouldResolve) {
       console.log(`[project-history-refresh] recovered after a ${prevHealth.consecutiveFailures}-failure streak`);
@@ -461,5 +451,112 @@ registerSystemAction('project-history-refresh', async (ctx: SystemActionCtx) => 
   } catch (e) {
     console.warn(`[project-history-refresh] health bookkeeping skipped: ${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+export async function runProjectHistoryRefreshAction(
+  ctx: SystemActionCtx,
+  overrides: ProjectHistoryRefreshDeps = {},
+): Promise<void> {
+  const cfg = ctx.triggerConfig ?? {};
+  const env = overrides.env ?? process.env;
+  const exists = overrides.exists ?? existsSync;
+  const cliResolver = overrides.resolveCliBin ?? ((input: NodeJS.ProcessEnv) => resolveCliBin(input));
+  const ptoolResolver = overrides.resolvePtool ?? ((input: NodeJS.ProcessEnv) => resolvePtool(input));
+  const generator = overrides.runGenerate ?? ((
+    bin: string,
+    config: ProjectHistoryConfig,
+    timeoutMs: number,
+    input: NodeJS.ProcessEnv,
+  ) => runProjectHistoryGenerate(bin, config, timeoutMs, input));
+  const recordHealth = overrides.recordHealth ?? persistProjectHistoryHealth;
+  const now = overrides.now ?? Date.now;
+  const timeoutMs = num(cfg, 'timeout_ms', PROJECT_HISTORY_TIMEOUT_MS);
+  const recordFailure = async (reason: string, output: string | null = null): Promise<void> => {
+    await recordHealth(ctx, {
+      success: false,
+      timedOut: false,
+      code: 1,
+      stdout: '',
+      stderr: reason,
+      timeoutMs,
+      output,
+      reason,
+    });
+  };
+
+  const resolved = resolveProjectHistoryConfig(cfg, ctx.installSlug, ctx.workspaceId);
+  if (!resolved.ok) {
+    // A misconfigured row can never be fixed by retrying, so this is a loud,
+    // non-throwing refusal: it must not fail the whole routines tick for its peers.
+    console.error(`[project-history-refresh] MISCONFIGURED on "${ctx.installSlug}": ${resolved.reason}`);
+    await recordFailure(resolved.reason);
+    return;
+  }
+  const config = resolved.config;
+
+  if (!exists(config.repoRoot)) {
+    const reason = `repo_root does not exist: ${config.repoRoot}`;
+    console.error(`[project-history-refresh] skip: ${reason}`);
+    await recordFailure(reason, config.output);
+    return;
+  }
+
+  // PRECONDITION 1 — the pinned CLI. Never an ambient PATH lookup (file header).
+  const cliBin = cliResolver(env);
+  if (!exists(cliBin)) {
+    const reason =
+      `Papercusp CLI not found at "${cliBin}". ` +
+      'Set PAPERCUSP_CLI to the CLI bin, or check the integration root. ' +
+      'Refusing to fall back to a PATH lookup — the installed dispatcher is regenerated per boot and flaps.';
+    console.error(`[project-history-refresh] ABORT: ${reason}`);
+    await recordFailure(reason, config.output);
+    return;
+  }
+
+  // PRECONDITION 2 — `ptool`, which the generator shells out to for every read and
+  // which has no env override of its own. Checked BEFORE spawning so a missing
+  // binary is reported as a missing binary, rather than as a short artifact.
+  const ptool = ptoolResolver(env);
+  if (!ptool) {
+    const reason =
+      '`ptool` does not resolve on PATH. ' +
+      'project-history-cli.ts shells out to a bare `ptool` for every plan/work-item read, so ' +
+      'generation would fail partway and could write a TRUNCATED artifact over a good one. ' +
+      `Set PAPERCUSP_PTOOL, or add its directory to the operator service PATH. (PATH=${env.PATH ?? ''})`;
+    console.error(`[project-history-refresh] ABORT: ${reason}`);
+    await recordFailure(reason, config.output);
+    return;
+  }
+
+  const startedAt = now();
+  console.log(
+    `[project-history-refresh] generating ${config.projectId} history -> ${config.output} ` +
+      `(harness=${config.harness} prefix="${config.planPrefix}" cli=${cliBin} ptool=${ptool})`,
+  );
+  const r = await generator(cliBin, config, timeoutMs, env);
+  const elapsedSec = Math.round((now() - startedAt) / 1000);
+  const success = !r.timedOut && r.code === 0;
+
+  if (r.timedOut) {
+    console.warn(`[project-history-refresh] TIMED OUT after ${timeoutMs}ms (${elapsedSec}s) — process tree killed`);
+  } else if (r.code !== 0) {
+    console.warn(`[project-history-refresh] exited ${r.code} after ${elapsedSec}s — ${(r.stderr || r.stdout).slice(-500)}`);
+  } else {
+    console.log(`[project-history-refresh] ok in ${elapsedSec}s — ${config.output}`);
+  }
+
+  await recordHealth(ctx, {
+    success,
+    timedOut: r.timedOut,
+    code: r.code,
+    stdout: r.stdout,
+    stderr: r.stderr,
+    timeoutMs,
+    output: config.output,
+  });
   // WI-10005745: spawns the tree's own CLI bin (libs/papercusp/packages/cli/bin/papercusp).
+}
+
+registerSystemAction('project-history-refresh', async (ctx: SystemActionCtx) => {
+  await runProjectHistoryRefreshAction(ctx);
 }, { executesIntegrationTreeCode: true });

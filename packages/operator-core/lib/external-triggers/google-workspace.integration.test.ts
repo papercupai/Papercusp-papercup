@@ -117,10 +117,54 @@ describe('Google Workspace owned trigger-source provisioning', () => {
       { kind: 'gmail', count: 1 },
     ]);
 
+    const policies = await sql<Array<{ kind: string; policy: Record<string, unknown> }>>`
+      SELECT kind, destination_policy AS policy
+        FROM harness_shared.data_sources
+       WHERE workspace_id = ${WS} AND owner_user_id = ${userId}::uuid
+       ORDER BY kind`;
+    expect(policies).toEqual([
+      { kind: 'contacts', policy: { contact: ['document', 'event'] } },
+      { kind: 'gcal', policy: { 'calendar-event': ['document', 'event'], person: ['record'] } },
+      { kind: 'gmail', policy: { 'email-message': ['document', 'event'], person: ['record'] } },
+    ]);
+
     // Connect and re-consent create no binding on any Google source: Gmail
     // drafts are opt-in through a trigger pack (D-019.3) and Calendar meeting
     // prep is submitted by the Calendar app (app-agent-tasks D-011).
     expect(await allBindings()).toEqual([]);
+  });
+
+  it('does not grant CRM person records to a personal Gmail account on connect or reconnect', async () => {
+    const first = await provisionOwnedGoogleWorkspaceSources(sql, {
+      workspaceId: WS,
+      ownerUserId: userId,
+      providerAccountId: 'aviynw@gmail.com',
+      field: 'aviynw',
+    });
+    const policyRows = async () => sql<Array<{ kind: string; providerAccountId: string; policy: Record<string, unknown> }>>`
+      SELECT kind, provider_account_id AS "providerAccountId", destination_policy AS policy
+        FROM harness_shared.data_sources
+       WHERE workspace_id = ${WS} AND owner_user_id = ${userId}::uuid
+         AND provider_account_id = 'aviynw@gmail.com'
+       ORDER BY kind`;
+    expect(first.map((row) => row.kind).sort()).toEqual(['contacts', 'gcal', 'gmail']);
+    expect(await policyRows()).toEqual([
+      { kind: 'contacts', providerAccountId: 'aviynw@gmail.com', policy: { contact: ['document', 'event'] } },
+      { kind: 'gcal', providerAccountId: 'aviynw@gmail.com', policy: { 'calendar-event': ['document', 'event'] } },
+      { kind: 'gmail', providerAccountId: 'aviynw@gmail.com', policy: { 'email-message': ['document', 'event'] } },
+    ]);
+
+    await provisionOwnedGoogleWorkspaceSources(sql, {
+      workspaceId: WS,
+      ownerUserId: userId,
+      providerAccountId: 'aviynw@gmail.com',
+      field: 'aviynw-rotated',
+    });
+    expect(await policyRows()).toEqual([
+      { kind: 'contacts', providerAccountId: 'aviynw@gmail.com', policy: { contact: ['document', 'event'] } },
+      { kind: 'gcal', providerAccountId: 'aviynw@gmail.com', policy: { 'calendar-event': ['document', 'event'] } },
+      { kind: 'gmail', providerAccountId: 'aviynw@gmail.com', policy: { 'email-message': ['document', 'event'] } },
+    ]);
   });
 
   it('keeps a second account and its reconnect isolated across sources, cursors, credentials, and bindings', async () => {

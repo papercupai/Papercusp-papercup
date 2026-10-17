@@ -5,6 +5,7 @@ const markMissingM = vi.hoisted(() => vi.fn());
 const clearMissingM = vi.hoisted(() => vi.fn());
 const listFleetRosterM = vi.hoisted(() => vi.fn());
 const takeFleetLeadershipM = vi.hoisted(() => vi.fn());
+const resumeLeaderM = vi.hoisted(() => vi.fn());
 
 vi.mock('../agent-fleets-store', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -87,6 +88,7 @@ beforeEach(() => {
   markMissingM.mockResolvedValue(fleet({ leaderMissingSinceMs: 1_000 }));
   clearMissingM.mockResolvedValue(fleet({ leaderMissingSinceMs: null }));
   takeFleetLeadershipM.mockResolvedValue({ leader: 'su-member' });
+  resumeLeaderM.mockReset().mockResolvedValue('failed');
 });
 
 describe('diagnoseFleetScopeLeaderLiveness — complete roster evidence', () => {
@@ -231,6 +233,52 @@ describe('reconcileFleetScopeLeaderSuccession', () => {
         },
       },
     );
+  });
+
+  it('resumes the ended leader before promotion and clears the vacancy clock after verification', async () => {
+    const nowMs = 1_000 + FLEET_LEADER_MISSING_GRACE_MS;
+    getFleetM.mockResolvedValueOnce(fleet({ leaderMissingSinceMs: 1_000 }));
+    listFleetRosterM.mockResolvedValueOnce(roster({ leaderLiveness: absentLeader() }));
+    resumeLeaderM.mockResolvedValueOnce('resumed');
+
+    await expect(reconcileFleetScopeLeaderSuccession({
+      scope: scope as never,
+      identity,
+      nowMs,
+      resumeLeader: resumeLeaderM,
+    })).resolves.toBe('live');
+
+    expect(resumeLeaderM).toHaveBeenCalledWith({
+      leaderOwnerId: 'su-leader',
+      fleetSlug: SLUG,
+      missingSinceMs: 1_000,
+      nowMs,
+    });
+    expect(clearMissingM).toHaveBeenCalledWith({
+      workspaceId: WS,
+      fleetSlug: SLUG,
+      expectedLeaderOwnerId: 'su-leader',
+      expectedLeaderMissingSinceMs: 1_000,
+      expectedUpdatedAtMs: 100,
+      observedAtMs: nowMs,
+    });
+    expect(takeFleetLeadershipM).not.toHaveBeenCalled();
+  });
+
+  it('does not promote while a leader resume is enqueued but pickup remains unconfirmed', async () => {
+    const nowMs = 1_000 + FLEET_LEADER_MISSING_GRACE_MS;
+    getFleetM.mockResolvedValueOnce(fleet({ leaderMissingSinceMs: 1_000 }));
+    listFleetRosterM.mockResolvedValueOnce(roster({ leaderLiveness: absentLeader() }));
+    resumeLeaderM.mockResolvedValueOnce('pending');
+
+    await expect(reconcileFleetScopeLeaderSuccession({
+      scope: scope as never,
+      identity,
+      nowMs,
+      resumeLeader: resumeLeaderM,
+    })).resolves.toBe('unavailable');
+    expect(takeFleetLeadershipM).not.toHaveBeenCalled();
+    expect(clearMissingM).not.toHaveBeenCalled();
   });
 
   it('keeps a confirmed vacancy unavailable when no positively-live su member can lead', async () => {

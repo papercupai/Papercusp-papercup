@@ -145,6 +145,7 @@ import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import {
   agentReviewPendingAdmissionSql,
+  agentReviewClaimPayloadSql,
   intakeStageClaimFloorSql,
   matchesAgentReviewClaimAdmission,
   matchesAgentReviewRevisionAdoptionAdmission,
@@ -253,7 +254,9 @@ import {
   EXACT_LIST_MAX_AND_ROWS,
   lexicalLeg,
   mergeExactAndBm25,
+  runBm25TopK,
   usesWebsearchOperators,
+  type LexicalLeg,
 } from './search/lexical/rank';
 // Installs papercusp's engine-level ranking policy (P-017) on import — the
 // same side-effect import every other engine caller uses. Without it this
@@ -1857,8 +1860,29 @@ async function getFeatureWorkItemOnly(
 export interface WorkItemDetail extends WorkItem {
   topics: string[];
   posts: ThreadPostRow[];
+  /** Total posts when the detail read used a bounded thread window. */
+  postsTotal?: number;
   /** Edges OUT of this work-item (e.g. blocks → feature|plan_item), excluding tag edges. */
   links: { rel: string; dst: ObjectRef }[];
+}
+
+/**
+ * Maximum thread slice used by callers that need detail metadata without
+ * allowing an unbounded full-thread read. The ordinary `getWorkItemDetail`
+ * contract remains full when this option is omitted.
+ */
+export const WORK_ITEM_DETAIL_THREAD_LIMIT = 10;
+
+export interface WorkItemDetailReadOptions {
+  /** Read at most this many recent posts and return the same-snapshot total. */
+  threadLimit?: number;
+}
+
+/** Test seams for the bounded detail reader; production uses the defaults. */
+export interface WorkItemDetailReadDeps {
+  getWorkItem?: typeof getWorkItem;
+  getWorkItemThreadWindow?: typeof getWorkItemThreadWindow;
+  listOut?: (ref: ObjectRef) => Promise<Array<{ rel: string; dst: ObjectRef }>>;
 }
 
 /** The last-N slice of a work-item's thread, plus what frames it. */
@@ -1875,11 +1899,10 @@ export interface WorkItemThreadWindow {
 /**
  * The LAST `limit` posts of a work-item's thread, bounded, plus its total and topics.
  *
- * The bounded sibling of {@link getWorkItemDetail}, which reads a thread in FULL
- * because it backs a full render. This exists for cell resolvers and other hot
- * read paths, where pulling a 121-post thread to display 3 is the over-fetch the
- * performance doc lists — see PgThreadStore.listRecentPosts for why the count
- * rides the same query rather than a second one.
+ * The bounded thread reader used by cell resolvers and the bounded detail path.
+ * Pulling a 121-post thread to display 3 is the over-fetch the performance doc
+ * lists — see PgThreadStore.listRecentPosts for why the count rides the same
+ * query rather than a second one.
  *
  * ⚠ DISPATCHES BY FAMILY, exactly like {@link getWorkItemDetail} — and the reason
  * is a trap worth stating, because getting it wrong FAILS SILENTLY. The two
@@ -1923,9 +1946,35 @@ export async function getWorkItemThreadWindow(
 }
 
 /** A work-item plus its coord-substrate detail (topics, thread posts, outgoing links). */
-export async function getWorkItemDetail(id: string, harness?: string): Promise<WorkItemDetail | null> {
-  const wi = await getWorkItem(id, harness);
+export async function getWorkItemDetail(
+  id: string,
+  harness?: string,
+  opts: WorkItemDetailReadOptions = {},
+  deps: WorkItemDetailReadDeps = {},
+): Promise<WorkItemDetail | null> {
+  const wi = await (deps.getWorkItem ?? getWorkItem)(id, harness);
   if (!wi) return null;
+  const boundedThreadLimit = opts.threadLimit === undefined
+    ? undefined
+    : Math.max(0, Math.min(WORK_ITEM_DETAIL_THREAD_LIMIT, Math.trunc(opts.threadLimit)));
+  if (boundedThreadLimit !== undefined) {
+    // `detail:true` is shaped after this helper returns, so loading every post
+    // here only to discard most of them defeats the result-door bound. Reuse the
+    // family-dispatching bounded window reader; its database transaction carries
+    // a statement timeout and returns the exact total alongside the slice.
+    const thread = await (deps.getWorkItemThreadWindow ?? getWorkItemThreadWindow)(id, boundedThreadLimit, harness, {
+      getWorkItem: async () => wi,
+    });
+    const ref = workItemObjectRef(wi);
+    const out = await (deps.listOut ?? ((source) => blockingLinks.listOut(source)))(ref);
+    return {
+      ...wi,
+      topics: thread?.topics ?? [],
+      posts: thread?.posts ?? [],
+      ...(thread ? { postsTotal: thread.total } : {}),
+      links: out.filter((l) => l.rel !== 'tagged').map((l) => ({ rel: l.rel, dst: l.dst })),
+    };
+  }
   if (wi.family === 'issue') {
     const d = await getIssueDetail(id);
     return { ...wi, topics: d?.topics ?? [], posts: d?.posts ?? [], links: d?.links ?? [] };
@@ -2116,6 +2165,39 @@ async function workItemChunkLeg(
 }
 
 type WorkItemLexicalRow = { id: string; title: string; body: string | null; score: number };
+type WorkItemBm25Row = WorkItemLexicalRow & { bm25_d: number };
+
+/** Run the common direct-search top-k query without re-scoring each selected document. */
+async function runWorkItemBm25TopK(
+  sql: OrgSql,
+  opts: {
+    table: 'harness_shared.work_items' | 'harness_shared.harness_features_consolidated';
+    scope: (sql: OrgSql) => Fragment;
+    limit: number;
+    leg: LexicalLeg;
+  },
+): Promise<WorkItemLexicalRow[]> {
+  if (!opts.leg.distance) throw new Error('BM25 top-k requires a distance fragment.');
+  const dbSql = sql as unknown as Sql;
+  const rows = await runBm25TopK(
+    dbSql,
+    dbSql,
+    {
+      distance: opts.leg.distance,
+      scanScore: opts.leg.scanScore ?? null,
+      columns: sql`feature_id AS id, title, summary AS body`,
+      from: sql.unsafe(opts.table),
+      where: opts.scope(sql),
+      limit: opts.limit,
+    },
+    async (topK) => await sql<WorkItemBm25Row[]>`
+      SELECT id, title, body, (-bm25_d)::float8 AS score, bm25_d
+        FROM (${topK}) bm25
+    ORDER BY bm25_d`,
+    (row) => Number(row.bm25_d),
+  );
+  return rows.map(({ id, title, body, score }) => ({ id, title, body, score }));
+}
 
 /**
  * D-016: preserve the exact AND list beside BM25 for the direct work-item search families.
@@ -2208,14 +2290,17 @@ function issueSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSele
           match: sql`_search @@ websearch_to_tsquery('english', ${query})`,
         },
       });
-      const rows = await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
-        SELECT feature_id AS id, title, summary AS body, ${leg.score} AS score
-          FROM harness_shared.work_items
-         WHERE ${scoped(sql)}
-           AND ${leg.match}
-      ORDER BY ${leg.order}
-         LIMIT ${limit}`;
-      const rankedRows = leg.engine === 'bm25' && !usesWebsearchOperators(query)
+      const plainBm25 = leg.engine === 'bm25' && !usesWebsearchOperators(query);
+      const rows = plainBm25 && leg.distance
+        ? await runWorkItemBm25TopK(sql, { table: 'harness_shared.work_items', scope: scoped, limit, leg })
+        : await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
+            SELECT feature_id AS id, title, summary AS body, ${leg.score} AS score
+              FROM harness_shared.work_items
+             WHERE ${scoped(sql)}
+               AND ${leg.match}
+          ORDER BY ${leg.order}
+             LIMIT ${limit}`;
+      const rankedRows = plainBm25
         ? await mergeExactWorkItemBm25(sql, {
             table: 'harness_shared.work_items', scope: scoped, query, limit, bm25Rows: rows,
           })
@@ -2283,14 +2368,19 @@ function featureSearchSource(f: WorkItemSearchFilters, selection: ProseProfileSe
           match: sql`_search @@ websearch_to_tsquery('english', ${query})`,
         },
       });
-      const rows = await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
-        SELECT feature_id AS id, title, summary AS body, ${leg.score} AS score
-          FROM harness_shared.harness_features_consolidated
-         WHERE ${scoped(sql)}
-           AND ${leg.match}
-      ORDER BY ${leg.order}
-         LIMIT ${limit}`;
-      const rankedRows = leg.engine === 'bm25' && !usesWebsearchOperators(query)
+      const plainBm25 = leg.engine === 'bm25' && !usesWebsearchOperators(query);
+      const rows = plainBm25 && leg.distance
+        ? await runWorkItemBm25TopK(sql, {
+            table: 'harness_shared.harness_features_consolidated', scope: scoped, limit, leg,
+          })
+        : await sql<Array<{ id: string; title: string; body: string | null; score: number }>>`
+            SELECT feature_id AS id, title, summary AS body, ${leg.score} AS score
+              FROM harness_shared.harness_features_consolidated
+             WHERE ${scoped(sql)}
+               AND ${leg.match}
+          ORDER BY ${leg.order}
+             LIMIT ${limit}`;
+      const rankedRows = plainBm25
         ? await mergeExactWorkItemBm25(sql, {
             table: 'harness_shared.harness_features_consolidated', scope: scoped, query, limit, bm25Rows: rows,
           })
@@ -4235,6 +4325,39 @@ export async function setWorkItemState(
   // work_items:set_state { force: true } instead.
   const isUnblockingTransition = wi.state === 'blocked' && state !== 'blocked';
   const isCompletingTransition = !isSettledWorkItemState(wi.state) && isSettledWorkItemState(state);
+  // EI-6554700010011175: a terminal close must not strand an announced event
+  // gate that still has live waiters. The announcement is deliberately durable
+  // across owner death, so generic lifecycle-binding cleanup cannot retire it
+  // for us. Check both declarations that explicitly reference this item and
+  // gates declared by the closer; the latter is the common case for a worker
+  // that announces a handoff before finishing its work. Complete or retire the
+  // gate first, then retry the close. `force` is the explicit set_state escape
+  // hatch; trusted system paths use skipCompletionGate.
+  if (!opts.force && !opts.skipCompletionGate && isCompletingTransition) {
+    const { findPendingAnnouncementsForTerminalClose } = await import('./events/await/store');
+    let pending: Awaited<ReturnType<typeof findPendingAnnouncementsForTerminalClose>>;
+    try {
+      pending = await findPendingAnnouncementsForTerminalClose({ ownerId: opts.by, workItemId: id });
+    } catch (error) {
+      throw new Error(
+        `completion gate unavailable for work_item '${id}': could not verify announced event gates ` +
+        `before closing (${error instanceof Error ? error.message : String(error)}). Retry the close; ` +
+        'no terminal state transition was written.',
+      );
+    }
+    if (pending.length > 0) {
+      const gates = pending.slice(0, 10).map(({ announcement, liveWaiters }) =>
+        `${announcement.eventKey} (announcement ${announcement.id}, ${liveWaiters} live waiter${liveWaiters === 1 ? '' : 's'})`,
+      );
+      const more = pending.length - gates.length;
+      throw new Error(
+        `refusing to complete work_item '${id}': announced event gate${pending.length === 1 ? '' : 's'} ` +
+        `remain declared and unfired with live waiters: ${gates.join('; ')}${more > 0 ? `; plus ${more} more` : ''}. ` +
+        'Fire each exact key with events:emit, or explicitly retire its declaration with events:cancel ' +
+        '{ announcement_id }; then retry the terminal close. No terminal state transition was written.',
+      );
+    }
+  }
   if (!opts.force && (isUnblockingTransition || isCompletingTransition)) {
     const { planItemLaneBlockReason } = await import('./scheduler/plan-item-lane-guard');
     const block = await planItemLaneBlockReason(wi).catch(() => null);
@@ -5838,6 +5961,9 @@ export async function claimWorkItem(
           OR ${agentReviewPendingAdmissionSql(sql, agentReviewAdmission, {
             payload: 'target.payload',
             admission: 'target.admission',
+          itemKind: 'target.item_kind',
+          title: 'target.title',
+          summary: 'target.summary',
           })}
         )`
       : admittedWhereSql(sql);
@@ -5847,23 +5973,25 @@ export async function claimWorkItem(
         harness: 'target.harness_slug', goal: 'target.goal_id', payload: 'target.payload',
         sourcePlan: 'target.source_plan_slug', holder: 'target.taken_by',
       }, assignee);
+      const claimPayload = sql`CASE
+        WHEN target.taken_by = ${assignee}
+          OR (target.taken_by IS NOT NULL AND target.taken_by <> '' AND position(target.taken_by in ${assignee}) = 1)
+        THEN target.payload
+        ELSE jsonb_set(
+          COALESCE(target.payload, '{}'::jsonb),
+          '{claim_history_post_id}',
+          to_jsonb(COALESCE((
+            SELECT max(post.id)
+              FROM harness_shared.coord_thread_posts post
+             WHERE post.workspace_id = ${ws}
+          ), 0)),
+          true
+        )
+      END`;
+      const claimPayloadWithReviewRevision = agentReviewClaimPayloadSql(sql, claimPayload, agentReviewAdmission);
       return sql<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated AS target
-         SET payload = CASE
-               WHEN target.taken_by = ${assignee}
-                 OR (target.taken_by IS NOT NULL AND target.taken_by <> '' AND position(target.taken_by in ${assignee}) = 1)
-               THEN target.payload
-               ELSE jsonb_set(
-                 COALESCE(target.payload, '{}'::jsonb),
-                 '{claim_history_post_id}',
-                 to_jsonb(COALESCE((
-                   SELECT max(post.id)
-                     FROM harness_shared.coord_thread_posts post
-                    WHERE post.workspace_id = ${ws}
-                 ), 0)),
-                 true
-               )
-             END,
+         SET payload = ${claimPayloadWithReviewRevision},
              taken_by = ${assignee}, taken_at = now(),
              -- P-001: a NEW holder starts with a clean progress slate (so the grace
              -- window anchors on the fresh taken_at, not a prior holder's stale
@@ -5876,6 +6004,10 @@ export async function claimWorkItem(
              updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
          AND ${selection.where}
+         -- The reviewer admission is used by self-selecting pickup after a queue read. It
+         -- lifts only the pending-review intake floor; it must retain the durable self-select
+         -- park even though ordinary named claims may intentionally bypass that floor.
+         AND ${agentReviewAdmission ? claimHoldExclusionSql(sql, 'target.payload') : sql`TRUE`}
          AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
            payload: 'target.payload', id: 'target.feature_id', harness: 'target.harness_slug',
          })}
@@ -7116,7 +7248,7 @@ export function claimHoldExclusionSql(
   // caller (harness_features_consolidated, unaliased) passes 'payload'; the stranded
   // checkpoint reader uses the explicit `ei` view alias. A closed literal union, never
   // interpolated user input, so composing it via sql.unsafe is injection-safe.
-  payloadCol: 'wi.payload' | 'payload' | 'ei.payload' = 'wi.payload',
+  payloadCol: 'wi.payload' | 'payload' | 'ei.payload' | 'target.payload' = 'wi.payload',
 ) {
   // COALESCE the payload so a NULL-payload row (no hold tag) reads as '{}'::jsonb->>'...' =
   // NULL, and `NULL IS DISTINCT FROM 'true'` = TRUE ⇒ the row is INCLUDED (never excluded).
@@ -9151,8 +9283,9 @@ export async function claimNextIssueWorkItem(
   // postgres-js cannot cancel an in-flight query from JS once it stalls. Every SQL
   // fragment below is compiled against the TRANSACTION client `tx` — not the outer
   // `sql` — so it belongs to the same connection that carries the SET LOCAL timeouts.
-  const claimed = await measureResolutionStep('candidate-issue-claim-transaction', () => boundedOrgTxn(
-    async (tx) => {
+  const claimed = await measureResolutionStep('candidate-issue-claim-transaction', () => withPgContentionRetry(
+    () => boundedOrgTxn(
+      async (tx) => {
       // Cross-family priority comparison (EI-21288979130080074): an issue may jump ahead of
       // the feature-family ladder only when it has an explicit priority and no eligible
       // feature with an equal-or-better (lower) feature_order exists. Build the feature side
@@ -9372,7 +9505,14 @@ export async function claimNextIssueWorkItem(
       }
       return { issue };
     },
-    { client: sql, signal: opts.signal, acquirePool: opts.acquirePool },
+        { client: sql, signal: opts.signal, acquirePool: opts.acquirePool },
+      ),
+    // The transaction is fully atomic: a 55P03/57014 abort rolls back both the
+    // candidate UPDATE and its in-transaction facade read, so a short retry is
+    // safe and prevents a transient goal/policy lock race from surfacing as a
+    // failed scheduler pull. Keep this to one retry because the claim's own
+    // lock timeout is already bounded and the caller has a ladder deadline.
+    { backoffsMs: [100] },
   )).catch(async (error) => {
     const { CurrentBugReproductionRefusal } = await import('./attention/bug-reproduction');
     if (error instanceof CurrentBugReproductionRefusal) return null;
@@ -9498,6 +9638,13 @@ export async function observeWorkItem(
   // through getWorkItem's mapping layer (normalizeTakenBy already applied there), so this
   // is belt-and-suspenders — mirrors classifyClaimFailure's own defense-in-depth call.
   const unclaimed = !normalizeTakenBy(wi.assignee);
+  // WI-6554700010009219: lifecycle terminality is a claim floor, not an admission
+  // gate. A settled row has no claimable seat even when it is unassigned; return
+  // before the caller-relative admission checks so observe agrees with the claim
+  // paths' `not-claimable-status` floor.
+  if (isSettledWorkItemState(wi.state)) {
+    return { item: wi, available: false, claimedBy: wi.assignee };
+  }
   // Dispatch replay preserves ownership but must re-read admission/trust/origin.
   // Ordinary rd callers retain the historical holder-only observation contract.
   const checkAdmission = unclaimed || opts.revalidateHeld === true;

@@ -6,6 +6,13 @@
 export const FLAGS_CHANGED_EVENT = "flags.changed";
 
 export const FLAGS = {
+  // Native code-intelligence proactive legs (P-034/D-016). Default ON; each can be withdrawn independently.
+  CODE_INTEL_PUSH_GREP: "papercusp-code-intel-push-grep",
+  CODE_INTEL_PUSH_FIRST_TOUCH: "papercusp-code-intel-push-first-touch",
+  CODE_INTEL_PUSH_INTERFACE: "papercusp-code-intel-push-interface",
+  CODE_INTEL_PUSH_INCIDENT: "papercusp-code-intel-push-incident",
+  CODE_INTEL_PUSH_COMPLETION: "papercusp-code-intel-push-completion",
+  CODE_INTEL_PUSH_INTENT: "papercusp-code-intel-push-intent",
   // reports-library-2026-09-15 P-004: owner-facing publishing, browsing and reading.
   // Default ON (derived FLAG_DEFAULTS, not DARK_FLAGS); OFF is the shared
   // tools/UI kill-switch, not a hidden rollout of otherwise finished work.
@@ -515,6 +522,10 @@ export const FLAGS = {
   // accumulate as in the old world (session-dir-gc live-protection is
   // unaffected, and the P-006 reconciler is separately gated by this flag).
   SESSION_ARCHIVE_AT_END: "papercusp-session-archive-at-end",
+  // P-010 destructive PG-payload cutover: background writers stay OFF until
+  // the backup succeeds and every shared-DB reader supports cold_storage.
+  // Cold readers remain available independently of this rollout interlock.
+  SESSION_ARCHIVE_COLD_MIGRATION: "papercusp-session-archive-cold-migration",
   // agent-managed-compaction-2026-07-01 P-012 (L2 mechanical backstop): the
   // compaction-compliance watchdog's FORCE rung. When ON, a limit-carrying
   // session that ran PAST its soft compaction limit WITHOUT self-cutting gets a
@@ -713,8 +724,9 @@ export const FLAGS = {
   // the Scout `rubric` rail. ON ⇒ on a detected RUBRIC GAP (corpus-digest rubricGaps,
   // P-008) Scout AUTHORS a `template: rubric` DRAFT plan → the existing queen↔scout
   // loop ratifies it into an active rubric; OFF ⇒ the gap is detected (visible in the
-  // digest) but no draft is auto-authored. DARK by default — a brand-new autonomous
-  // PLAN-WRITE behavior; the owner flips it after observing gap quality. Idempotent
+  // digest) but no draft is auto-authored. Runtime default ON: it is not in DARK_FLAGS,
+  // so the derived FLAG_DEFAULTS enable it (it was first planned dark as a new
+  // autonomous PLAN-WRITE behavior; `flags:attest` shows the live value). Idempotent
   // (one stable slug/gap) + best-effort (never disturbs the cycle); drafts are
   // Queen-gated (invisible to rubrics:list until promoted active+templateData).
   SCOUT_RUBRIC_RAIL: "papercusp-scout-rubric-rail",
@@ -3188,6 +3200,10 @@ export const DARK_FLAGS: ReadonlyMap<
   FlagKey,
   { case: DarkCase; reason: string }
 > = new Map<FlagKey, { case: DarkCase; reason: string }>([
+  [FLAGS.SESSION_ARCHIVE_COLD_MIGRATION, {
+    case: "cutover",
+    reason: "disk-durable-headroom-2026-10-15 P-010 / EI-26074325417052646: destructive PG-payload migration. Keep scheduled writers OFF until a successful pre-destructive backup and compatible cold_storage readers are verified on every runtime sharing the database. Enable through flags:set in the P-010 rollout after those checks; cold readers and non-destructive export remain available while OFF.",
+  }],
   // parked — deliberately out of V1 scope (built-or-not, simply not shipping yet)
   [
     FLAGS.CLOUDFLARE_PUBLISH,

@@ -54,6 +54,8 @@ import {
   spawnSpawnerSidecar,
   stopSpawnerSidecar,
   MAX_RESPAWN_ATTEMPTS,
+  DEFAULT_SPAWNER_READY_TIMEOUT_MS,
+  SPAWNER_WARMUP_READY_TIMEOUT_MS,
 } from './spawner-sidecar-spawn';
 import { _resetSidecarShutdownHookRegistryForTests, respawnBackoffMs } from '../process-supervision/sidecar-spawn-shared';
 import {
@@ -288,6 +290,96 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
     await firstRejection;
     await Promise.resolve();
     expect(secondSettled).toBe(true);
+  });
+
+  it('extends a coalesced lazy spawn to the bounded warm-up deadline', async () => {
+    const child = makeChild();
+    spawnMock.mockReturnValueOnce(child);
+    const lazy = spawnSpawnerSidecar('/tmp/spawner-sidecar-lazy-warmup.sock');
+    await vi.waitFor(() => expect(getSpawnerSidecarProcess()).toBe(child));
+
+    await vi.advanceTimersByTimeAsync(DEFAULT_SPAWNER_READY_TIMEOUT_MS - 1_000);
+    const warmup = spawnSpawnerSidecar('/tmp/spawner-sidecar-lazy-warmup.sock', {
+      readyTimeoutMs: SPAWNER_WARMUP_READY_TIMEOUT_MS,
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(child.kill).not.toHaveBeenCalled();
+    child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+    await expect(Promise.all([lazy, warmup])).resolves.toEqual([undefined, undefined]);
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps warm-up bounded at the configured maximum', async () => {
+    const child = makeChild();
+    child.kill.mockImplementation(() => {
+      child.killed = true;
+      return true;
+    });
+    spawnMock.mockReturnValueOnce(child);
+    const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar-bounded-warmup.sock', {
+      readyTimeoutMs: SPAWNER_WARMUP_READY_TIMEOUT_MS,
+    });
+    await vi.waitFor(() => expect(getSpawnerSidecarProcess()).toBe(child));
+    const rejection = expect(ready).rejects.toThrow('Spawner sidecar startup timeout');
+
+    await vi.advanceTimersByTimeAsync(SPAWNER_WARMUP_READY_TIMEOUT_MS);
+    await rejection;
+
+    expect(child.kill).toHaveBeenCalled();
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects READY timeout requests above the warm-up bound', async () => {
+    await expect(spawnSpawnerSidecar('/tmp/spawner-sidecar-unbounded.sock', {
+      readyTimeoutMs: SPAWNER_WARMUP_READY_TIMEOUT_MS + 1,
+    })).rejects.toThrow('readyTimeoutMs must be an integer');
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('logs a late READY line with the timed-out child PID and does not revive it', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const child = makeChild();
+    child.kill.mockImplementation(() => {
+      child.killed = true;
+      return true;
+    });
+    spawnMock.mockReturnValueOnce(child);
+    const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar-late-ready.sock');
+    await vi.waitFor(() => expect(getSpawnerSidecarProcess()).toBe(child));
+    const rejection = expect(ready).rejects.toThrow('Spawner sidecar startup timeout');
+    await vi.advanceTimersByTimeAsync(DEFAULT_SPAWNER_READY_TIMEOUT_MS);
+    await rejection;
+
+    child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+
+    expect(log).toHaveBeenCalledWith('[spawner-sidecar pid=4242]', 'PAPERCUSP_SPAWNER_READY');
+    expect(getSpawnerSidecarProcess()).toBeNull();
+    expect(isSpawnerSidecarRunning()).toBe(false);
+  });
+
+  it('accepts a ready line delivered in the poll phase as the startup timer expires', async () => {
+    const child = makeChild();
+    spawnMock.mockReturnValueOnce(child);
+    const ready = spawnSpawnerSidecar('/tmp/spawner-sidecar-ready-at-deadline.sock');
+    await vi.waitFor(() => expect(getSpawnerSidecarProcess()).toBe(child));
+
+    // Hold the timeout's setImmediate callback to model a ready line already
+    // queued for the poll phase when Node runs the deadline timer first.
+    const pendingImmediate: Array<() => void> = [];
+    vi.spyOn(globalThis, 'setImmediate').mockImplementation(((callback: (...args: never[]) => void) => {
+      pendingImmediate.push(() => callback());
+      return {} as ReturnType<typeof setImmediate>;
+    }) as typeof setImmediate);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(pendingImmediate).toHaveLength(1);
+    child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+    pendingImmediate.shift()?.();
+
+    await expect(ready).resolves.toBeUndefined();
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(isSpawnerSidecarRunning()).toBe(true);
   });
 
   it('retains the startup timeout cause when its kill emits exit synchronously', async () => {

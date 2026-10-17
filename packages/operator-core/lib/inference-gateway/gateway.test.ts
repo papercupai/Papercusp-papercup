@@ -23,6 +23,11 @@ import {
 } from './gateway';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
+import {
+  configureGatewayRequestOutcomeStore,
+  InMemoryGatewayRequestOutcomeStore,
+  resetGatewayRequestOutcomeStore,
+} from './gateway-request-outcome-store';
 import { createDurableGatewayAdmissionGovernor } from './durable-admission';
 import type { GatewayPayloadSpool } from './payload-spool';
 import { MemoryAdmissionQueueStore } from '../resource-governor/memory-admission-queue-store';
@@ -169,11 +174,15 @@ let gw: ReturnType<typeof createInferenceGateway>;
 let port = 0;
 let invalidated = 0;
 
+// Owner reports include durable outcomes; unit fixtures must not query PostgreSQL.
+beforeEach(() => configureGatewayRequestOutcomeStore(new InMemoryGatewayRequestOutcomeStore()));
+
 afterEach(async () => {
   await gw?.close();
   await upstream?.close();
   invalidated = 0;
   resetScheduledRegistry();
+  resetGatewayRequestOutcomeStore();
 });
 
 async function boot(

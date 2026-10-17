@@ -607,6 +607,14 @@ export function scanCarryDrillDrops(
     if (!DROP_ALERT_KINDS.has(event.kind) || !event.drillId) continue;
     const tsMs = Date.parse(event.ts);
     if (!Number.isFinite(tsMs) || tsMs <= sinceMs) continue;
+    // A superseded carry is an intentional retirement after a newer respawn,
+    // not a lost continuation. Preserve its event in the ledger, but do not
+    // page it as a failed drill; advance the scan watermark so it is not
+    // reconsidered on every sweep.
+    if (event.kind === 'carry-drill-carry-dropped' && event.reason === 'superseded') {
+      if (tsMs > watermarkMs) watermarkMs = tsMs;
+      continue;
+    }
     const dedupeKey = `${event.drillId}\x00${event.kind}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);

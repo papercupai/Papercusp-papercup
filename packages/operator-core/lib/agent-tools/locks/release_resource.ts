@@ -128,7 +128,7 @@ export default defineTool({
           return r;
         }
       }
-      return { released: 0, releasedModes: [], exclusiveResources: [], expired: [], waiters: {} };
+      return { released: 0, releasedModes: [], exclusiveResources: [], expired: [], heldResourceSuggestions: [], waiters: {} };
     }
 
     const env = await runBulk(
@@ -136,6 +136,23 @@ export default defineTool({
       async (item) => {
         const r = await releaseOne(item);
         const expiredLocks = r.expired ?? [];
+        const heldResourceSuggestions = r.heldResourceSuggestions ?? [];
+        if (r.released === 0 && expiredLocks.length === 0) {
+          const selector = item.resource ? `resource \"${item.resource}\"` : `lock_id \"${item.lock_id}\"`;
+          return {
+            ok: false as const,
+            ...(item.lock_id ? { lock_id: item.lock_id } : {}),
+            ...(item.resource ? { resource: item.resource } : {}),
+            released: 0,
+            released_modes: r.releasedModes,
+            exclusive_resources: r.exclusiveResources,
+            expired: false,
+            error: 'resource_not_held',
+            code: 'resource_not_held',
+            message: `No live named-resource lock owned by this caller matched ${selector}.`,
+            held_resource_suggestions: heldResourceSuggestions,
+          };
+        }
         return {
           ok: true as const,
           ...(item.lock_id ? { lock_id: item.lock_id } : {}),

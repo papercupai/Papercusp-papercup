@@ -69,8 +69,8 @@ function inventoryErrors(value: Inventory): string[] {
 }
 
 describe('PARITY-P001 inventory completeness detector', () => {
-  it('accepts all 36 individually identified destinations, eligibility rules and honest dispositions', () => {
-    expect(inventory.rows).toHaveLength(36);
+  it('accepts all 37 individually identified destinations, eligibility rules and honest dispositions', () => {
+    expect(inventory.rows).toHaveLength(37);
     expect(inventoryErrors(inventory)).toEqual([]);
     expect(inventory.rows.filter(row => row.disposition === 'reviewed-native-only').map(row => row.id))
       .toEqual(['native.os-window-focus']);
@@ -82,9 +82,10 @@ describe('PARITY-P001 inventory completeness detector', () => {
   });
   it('detects duplicate identities and scenarios instead of accepting the same row twice', () => {
     const changed = structuredClone(inventory);
+    const removedId = changed.rows[0].id;
     changed.rows[0] = { ...changed.rows[1] };
     expect(inventoryErrors(changed)).toContain('population cardinality');
-    expect(inventoryErrors(changed)).toContain('missing:adv.overview');
+    expect(inventoryErrors(changed)).toContain(`missing:${removedId}`);
   });
   it.each(['destination', 'scenario', 'eligibility', 'owner', 'disposition'] as const)
   ('detects an unmeasured or misrouted %s', field => {
@@ -96,14 +97,14 @@ describe('PARITY-P001 inventory completeness detector', () => {
     const changed = structuredClone(inventory);
     changed.rows[0].disposition = 'reviewed-native-only';
     changed.nativeExceptionDecision = '';
-    expect(inventoryErrors(changed)).toContain('native-exception:adv.overview');
+    expect(inventoryErrors(changed)).toContain(`native-exception:${changed.rows[0].id}`);
     expect(inventoryErrors(changed)).toContain('native-exception authority');
   });
 });
 
 describe('portal surface registry covers every ADV tab', () => {
   it('maps every ADV_TAB_IDS entry to a registered operator surface', () => {
-    expect(ADV_TAB_IDS.length).toBe(20);
+    expect(ADV_TAB_IDS.length).toBe(21);
     for (const tab of ADV_TAB_IDS) {
       const kind = ADV_TAB_SURFACE_KINDS[tab];
       expect(kind, `ADV tab "${tab}" has no portal surface kind`).toBeTruthy();

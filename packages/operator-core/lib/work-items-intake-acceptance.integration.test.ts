@@ -34,6 +34,7 @@ import {
   IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER,
   IMPLEMENTATION_ACCEPTANCE_ENFORCEMENT_CUTOVER_MS,
   WORK_ITEM_PRESENTATION_STAGES,
+  acceptanceSourceRevision,
   countWorkItemPresentationStages,
   createImplementationReadiness,
   createVerificationTask,
@@ -42,6 +43,7 @@ import {
   evaluateImplementationAcceptance,
   implementationReadinessAdmitsClaim,
   mintAgentReviewClaimAdmission,
+  readAgentReviewState,
   sealImplementationAcceptance,
   type AgentReviewState,
   type ImplementationAcceptanceAuthority,
@@ -378,10 +380,17 @@ describe('R-24 weak acceptance substitutes never qualify', () => {
 
 describe('R-25 reviewer access stays scoped to the intake row', () => {
   const review = { status: 'pending', submittedBy: 'su-author', ledgerIdeaId: 'idea-r25', round: 1, submittedAt: AT } as unknown as AgentReviewState;
+  const source = { kind: 'bug', title: TITLE, summary: SUMMARY };
 
   it('the minted reviewer admission opens only that row to that reviewer; workers stay refused and the row stays unadvertised', async () => {
-    await seed('WI-R25-PENDING', { createdTs: POST, payload: { agentReview: review, ...readiness('unknown', 'creation-enrollment') } });
-    await seed('WI-R25-OTHER', { createdTs: POST, payload: { agentReview: { ...review, ledgerIdeaId: 'idea-other' }, ...readiness('unknown', 'creation-enrollment') } });
+    await seed('WI-R25-PENDING', {
+      createdTs: POST, admission: 'pending',
+      payload: { agentReview: review, ...readiness('unknown', 'creation-enrollment') },
+    });
+    await seed('WI-R25-OTHER', {
+      createdTs: POST, admission: 'pending',
+      payload: { agentReview: { ...review, ledgerIdeaId: 'idea-other' }, ...readiness('unknown', 'creation-enrollment') },
+    });
     expect(await viewIds('WI-R25-')).toEqual([]);
     expect(await byIdClaims('WI-R25-PENDING', 'worker-r25')).toBe(false);
     const admission = mintAgentReviewClaimAdmission({
@@ -389,12 +398,37 @@ describe('R-25 reviewer access stays scoped to the intake row', () => {
       reviewer: 'su-reviewer',
       harnessSlug: H,
       review,
+      source,
       parties: { reporters: [], implementers: [] },
     });
     expect(admission).not.toBeNull();
     // The admission is bound to its row: presenting it for the sibling row admits nothing.
     expect(await byIdClaims('WI-R25-OTHER', 'su-reviewer', { agentReviewAdmission: admission })).toBe(false);
     expect(await byIdClaims('WI-R25-PENDING', 'su-reviewer', { agentReviewAdmission: admission })).toBe(true);
+    expect(readAgentReviewState(await payloadOf('WI-R25-PENDING'))?.reviewedSourceRevision)
+      .toBe(acceptanceSourceRevision(source));
+
+    await seed('WI-R25-STALE', {
+      createdTs: POST,
+      admission: 'pending',
+      payload: { agentReview: { ...review, ledgerIdeaId: 'idea-r25-stale' }, ...readiness('unknown', 'creation-enrollment') },
+    });
+    const staleAdmission = mintAgentReviewClaimAdmission({
+      itemId: 'WI-R25-STALE',
+      reviewer: 'su-reviewer',
+      harnessSlug: H,
+      review: { ...review, ledgerIdeaId: 'idea-r25-stale' },
+      source,
+      parties: { reporters: [], implementers: [] },
+    });
+    expect(staleAdmission).not.toBeNull();
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET summary = 'Corrected issue body.'
+       WHERE workspace_id = ${WS} AND feature_id = 'WI-R25-STALE'`;
+    expect(await byIdClaims('WI-R25-STALE', 'su-reviewer', { agentReviewAdmission: staleAdmission })).toBe(false);
+    expect(await holder('WI-R25-STALE')).toBeNull();
+
     // ...and the submitter can never mint one for its own filing.
     expect(
       mintAgentReviewClaimAdmission({
@@ -402,6 +436,7 @@ describe('R-25 reviewer access stays scoped to the intake row', () => {
         reviewer: 'su-author',
         harnessSlug: H,
         review,
+        source,
         parties: { reporters: [], implementers: [] },
       }),
     ).toBeNull();

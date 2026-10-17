@@ -1,0 +1,237 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "papercusp.com/cupboard — verbs presented as available exist on origin/main (SPEC-P-001-brief-live-verbs, plan papercusp-com-cupboard-page-2026-10-15)",
+  "framework": "node",
+  "command": [
+    "node",
+    ".papercusp/scratch/cupboard-verbs-tree.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-16T06:00:27.799Z",
+  "finishedAt": "2026-10-16T06:00:34.638Z",
+  "summary": "21 verbs presented as available on live https://papercusp-com.pages.dev/cupboard/ (excluding [data-soon] elements); 21/21 have a non-test name: declaration under packages/operator-core/lib/agent-tools at origin/main b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f (remote-verified). Positive control cupboard:publish-widgets rejected: true.",
+  "assertions": [
+    {
+      "id": "tree: origin/main ref is current with the remote",
+      "passed": true,
+      "evidence": "git rev-parse origin/main=b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f git ls-remote origin refs/heads/main=b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "live: /cupboard/ answers 200",
+      "passed": true,
+      "evidence": "GET https://papercusp-com.pages.dev/cupboard/ status=200 sha256=ea60623c96e9e2ad518fd53b7520d571eeff25d93b63a1125a5f9ec43110bb1e"
+    },
+    {
+      "id": "live: page presents at least one verb as available",
+      "passed": true,
+      "evidence": "available=21 coming-soon-only=0"
+    },
+    {
+      "id": "tree: blueprint:extend is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/blueprint/extend.ts:18 (blob 735ebb698f0d68ee170765d53dcc5bb73dfb2483) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: blueprint:publish is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/blueprint/publish.ts:99 (blob 49b01907d12b990fd75a97d8c9e9ad2186b3ea73) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: code:run is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/code/run.ts:150 (blob 59899fa22ee445fb7b6e1f50b86bb373ad7bf527) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: cupboard:publish-app is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/cupboard/publish-app.ts:40 (blob f41575036691608d37abd0c8c1035c97a3142b0a) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: cupboard:publish-datatype is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/cupboard/publish-datatype.ts:20 (blob d98d6ad9919c4c9d41995411ed27a1f4a01ee0db) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: cupboard:publish-event is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/cupboard/publish-event.ts:24 (blob 4392321b02c571b156484460718bc74b38c21b78) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: cupboard:publish-goal is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/cupboard/publish-goal.ts:22 (blob 4c93b4ad7e84333d7e737246895a9bf9251cacb6) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: cupboard:publish-plan is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/cupboard/publish-plan.ts:22 (blob 5fe23462559e91a394f28d74e275ac0313d57a67) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: cupboard:publish-plugin is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/cupboard/publish-plugin.ts:26 (blob 7c414ef566168cd0a916ba276c1b18d7d268784a) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: cupboard:publish-recipe is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/cupboard/publish-recipe.ts:25 (blob a3745432608917645c6bc02297e6f89c7df93f12) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: cupboard:publish-rubric is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/cupboard/publish-rubric.ts:20 (blob 7e855d9d84e9e99da0ab46b893dbe2ce6a7fdd9f) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: cupboard:publish-rule is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/cupboard/publish-rule.ts:20 (blob 95fb4b28cdee80add3b83d4c2f7b49ed4e00ada4) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: cupboard:publish-template is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/cupboard/publish-template.ts:21 (blob 5643395ba15d60ef9546ba33c95a70207249e89f) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: cupboard:publish-theme is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/cupboard/publish-theme.ts:9 (blob be555f7189794cd8dbc8f69978bf4df418a58200) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: cupboard:unpublish is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/cupboard/unpublish.ts:21 (blob 2ceed3ed88ff4e3d73baf31b3ba9884851f321a6) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: identities:create is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/identities/create.ts:9 (blob e8523c1a348caaed52cd0796167ea6e44cfdffd8) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: meta:define-datatype is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/datatypes/declare.ts:55 (blob e7356f0508fd83fa2a0164d68e6529c96cf09d0c) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: meta:define-tool is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/tools/define.ts:24 (blob 744d74e2232eafc482fe7cacf1ba2ab43d425ff9) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: plans:new is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/plans/new.ts:400 (blob d1a7fc9d966d673e622929405757e8f9eae35f3c) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: rubrics:propose is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/rubrics/propose.ts:375 (blob 70e9c6301c88b12ef359b6dae75009e4a7fef920) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "tree: templates:new-app is declared under packages/operator-core/lib/agent-tools on origin/main",
+      "passed": true,
+      "evidence": "packages/operator-core/lib/agent-tools/templates/new-app.ts:639 (blob aac7f978fbbc14bc1dae760ac490198e809b0e9c) at b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f"
+    },
+    {
+      "id": "control: the check rejects a non-existent verb (cupboard:publish-widgets)",
+      "passed": true,
+      "evidence": "hits=0"
+    }
+  ],
+  "originMain": "b1f1d0cd2ba4ef591824d2f8cd9ca198210acd0f",
+  "livePageSha256": "ea60623c96e9e2ad518fd53b7520d571eeff25d93b63a1125a5f9ec43110bb1e",
+  "availableVerbs": [
+    "blueprint:extend",
+    "blueprint:publish",
+    "code:run",
+    "cupboard:publish-app",
+    "cupboard:publish-datatype",
+    "cupboard:publish-event",
+    "cupboard:publish-goal",
+    "cupboard:publish-plan",
+    "cupboard:publish-plugin",
+    "cupboard:publish-recipe",
+    "cupboard:publish-rubric",
+    "cupboard:publish-rule",
+    "cupboard:publish-template",
+    "cupboard:publish-theme",
+    "cupboard:unpublish",
+    "identities:create",
+    "meta:define-datatype",
+    "meta:define-tool",
+    "plans:new",
+    "rubrics:propose",
+    "templates:new-app"
+  ],
+  "comingSoonOnlyVerbs": [],
+  "declarations": {
+    "blueprint:extend": [
+      "packages/operator-core/lib/agent-tools/blueprint/extend.ts:18"
+    ],
+    "blueprint:publish": [
+      "packages/operator-core/lib/agent-tools/blueprint/publish.ts:99"
+    ],
+    "code:run": [
+      "packages/operator-core/lib/agent-tools/code/run.ts:150"
+    ],
+    "cupboard:publish-app": [
+      "packages/operator-core/lib/agent-tools/cupboard/publish-app.ts:40"
+    ],
+    "cupboard:publish-datatype": [
+      "packages/operator-core/lib/agent-tools/cupboard/publish-datatype.ts:20"
+    ],
+    "cupboard:publish-event": [
+      "packages/operator-core/lib/agent-tools/cupboard/publish-event.ts:24"
+    ],
+    "cupboard:publish-goal": [
+      "packages/operator-core/lib/agent-tools/cupboard/publish-goal.ts:22"
+    ],
+    "cupboard:publish-plan": [
+      "packages/operator-core/lib/agent-tools/cupboard/publish-plan.ts:22"
+    ],
+    "cupboard:publish-plugin": [
+      "packages/operator-core/lib/agent-tools/cupboard/publish-plugin.ts:26"
+    ],
+    "cupboard:publish-recipe": [
+      "packages/operator-core/lib/agent-tools/cupboard/publish-recipe.ts:25"
+    ],
+    "cupboard:publish-rubric": [
+      "packages/operator-core/lib/agent-tools/cupboard/publish-rubric.ts:20"
+    ],
+    "cupboard:publish-rule": [
+      "packages/operator-core/lib/agent-tools/cupboard/publish-rule.ts:20"
+    ],
+    "cupboard:publish-template": [
+      "packages/operator-core/lib/agent-tools/cupboard/publish-template.ts:21"
+    ],
+    "cupboard:publish-theme": [
+      "packages/operator-core/lib/agent-tools/cupboard/publish-theme.ts:9"
+    ],
+    "cupboard:unpublish": [
+      "packages/operator-core/lib/agent-tools/cupboard/unpublish.ts:21"
+    ],
+    "identities:create": [
+      "packages/operator-core/lib/agent-tools/identities/create.ts:9"
+    ],
+    "meta:define-datatype": [
+      "packages/operator-core/lib/agent-tools/datatypes/declare.ts:55"
+    ],
+    "meta:define-tool": [
+      "packages/operator-core/lib/agent-tools/tools/define.ts:24"
+    ],
+    "plans:new": [
+      "packages/operator-core/lib/agent-tools/plans/new.ts:400"
+    ],
+    "rubrics:propose": [
+      "packages/operator-core/lib/agent-tools/rubrics/propose.ts:375"
+    ],
+    "templates:new-app": [
+      "packages/operator-core/lib/agent-tools/templates/new-app.ts:639"
+    ]
+  },
+  "siteCommit": "fd3bcbe91ad4b1b0303074bdfa6c8db955df6186",
+  "scope": "Tree plane: the deployed page is the source of the verb list; origin/main of the papercusp repo is the tree checked.",
+  "notExercised": [
+    "Whether each verb behaves as the page describes (covered by the tools' own suites, not this check)"
+  ]
+}

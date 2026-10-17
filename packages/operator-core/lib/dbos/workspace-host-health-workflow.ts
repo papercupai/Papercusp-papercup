@@ -15,6 +15,7 @@ import { DBOS } from '@dbos-inc/dbos-sdk';
 import { idempotentRegisterWorkflow } from './idempotent-register-workflow';
 import { resolveWorkspaceHostSoakSeams } from '../workspace-host/soak-seams';
 import { recordWorkspaceHostHealth } from '../workspace-host/observability-store';
+import { refreshHostedPoolObservation } from '../workspace-host/hosted-lifecycle-store';
 import { DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY } from '../workspace-host/provisioning-runner';
 import { hostedGcpWorkspaceProject } from '../workspace-host/hosted-gcp-hosting';
 import {
@@ -79,7 +80,11 @@ export function workspaceHostStandingHealthDbosRuntime(): WorkspaceHostStandingH
     controllerId: DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY.controllerId,
     listTargets: (controllerId) => listWorkspaceHostStandingHealthTargets(controllerId),
     resolveSeams: (input) => resolveWorkspaceHostSoakSeams(input),
-    recordHealth: recordWorkspaceHostHealth,
+    recordHealth: async (workspaceId, attestation) => {
+      await recordWorkspaceHostHealth(workspaceId, attestation);
+      await refreshHostedPoolObservation({ workspaceId, attestation,
+        controllerId: DEFAULT_WORKSPACE_HOST_CONTROLLER_AUTHORITY.controllerId });
+    },
     now: () => new Date(),
     reclaim: workspaceHostReclaimRestartSeams(),
   };

@@ -2,6 +2,8 @@
  * mocked here; core lifecycle and atomic row semantics live in
  * conversations-core.test.ts. */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { lookupByMcpName } from '@papercusp/agent-mcp';
+import type { z } from 'zod';
 import { mockResolvedTyped } from '../../../testing/typed-mock';
 
 vi.mock('../identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
@@ -51,6 +53,20 @@ const openConversationFixture = (over: Partial<OpenConversationResult> = {}): Op
 beforeEach(() => vi.clearAllMocks());
 
 describe('conversations:supersede handler', () => {
+  it('publishes the bulk result contract for its authored return guidance', () => {
+    const projected = lookupByMcpName('conversations:supersede')!;
+    expect(projected.guidance?.returns).toBeTruthy();
+    expect(projected.outputJsonSchema).toMatchObject({
+      type: 'object',
+      required: expect.arrayContaining(['ok', 'results', 'counts']),
+      properties: {
+        ok: { type: 'boolean' },
+        results: { type: 'array', items: { properties: { ok: { type: 'boolean' } } } },
+        counts: { properties: { ok: { type: 'integer' }, failed: { type: 'integer' } } },
+      },
+    });
+  });
+
   it('maps a lifecycle error to the item instead of failing the whole call', async () => {
     mockResolvedTyped(supersedeM, { error: 'already_superseded' });
     const result = await body({
@@ -59,6 +75,7 @@ describe('conversations:supersede handler', () => {
     });
     expect(result).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
     expect(result.results[0]).toMatchObject({ ok: false, id: 'conv-old', error: 'already_superseded' });
+    expect((tool.result as z.ZodType).parse(result)).toEqual(result);
   });
 
   it('returns the RETRACTED pointer and replacement thread id', async () => {
@@ -85,6 +102,7 @@ describe('conversations:supersede handler', () => {
       replacement: { id: 'conv-new', state: 'open', thread_id: 'thr-conv-new' },
       notified_subscribers: 2,
     });
+    expect((tool.result as z.ZodType).parse(result)).toEqual(result);
     expect(supersedeM).toHaveBeenCalledWith({ ownerId: 'me' }, {
       conversation_id: 'conv-old',
       replacement: { body: 'corrected question', topics: ['release'] },

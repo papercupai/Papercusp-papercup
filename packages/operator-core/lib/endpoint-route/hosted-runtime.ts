@@ -14,6 +14,9 @@ import {
 } from '../auth/hosted/workos-lifecycle-postgres';
 import { WorkosLifecycleWorker } from '../auth/hosted/workos-lifecycle-worker';
 import { HostedDirectoryBindingManager } from '../auth/hosted/governance';
+import { PostgresHostedSelfSignupAdmission } from '../auth/hosted/self-signup';
+import { backfillHostedTrialEntitlementAuthority, parseHostedTrialEntitlementPolicy,
+  type HostedTrialEntitlementPolicy } from '../auth/hosted-entitlement-store';
 import { createWorkOSHostedIdentityProvider } from '../auth/hosted/workos-provider';
 import {
   HostedRuntimeMembershipAuthority,
@@ -102,6 +105,7 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'POST /hosted/connectors/heartbeat',
   'GET /hosted/connectors/events',
   'GET /hosted/connectors/socket',
+  'POST /hosted/connectors/agent-admission',
   'POST /hosted/workspaces/:workspaceId/provider-delegations/onboard',
   'POST /hosted/workspaces/:workspaceId/provider-delegations/verify',
   'POST /hosted/workspaces/:workspaceId/provider-delegations/rotate',
@@ -139,6 +143,8 @@ export interface HostedRuntimeConfiguration {
   readonly workosCookiePasswordRef: string;
   readonly workosWebhookSecretRef: string;
   readonly workosWebhookSignatureKeyRef?: string;
+  /** Same server-owned policy as the narrow auth runtime; absent grants no pool allowances. */
+  readonly trialEntitlementPolicy?: HostedTrialEntitlementPolicy;
   /** Organizations admitted through the first-workspace door (D-384). Absent = closed. */
   readonly firstWorkspaceOrganizations?: ReadonlySet<string>;
   /**
@@ -289,6 +295,9 @@ export function readHostedRuntimeConfiguration(env: NodeJS.ProcessEnv = process.
     workosApiKeyRef: requiredConfiguration(env.WORKOS_API_KEY_REF, 'WORKOS_API_KEY_REF'),
     workosCookiePasswordRef: requiredConfiguration(env.WORKOS_COOKIE_PASSWORD_REF, 'WORKOS_COOKIE_PASSWORD_REF'),
     workosWebhookSecretRef: requiredConfiguration(env.WORKOS_WEBHOOK_SECRET_REF, 'WORKOS_WEBHOOK_SECRET_REF'),
+    ...(env.PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT?.trim() ? {
+      trialEntitlementPolicy: parseHostedTrialEntitlementPolicy(JSON.parse(env.PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT)),
+    } : {}),
     ...(env.WORKOS_WEBHOOK_SECRET_KEY_REF?.trim()
       ? { workosWebhookSignatureKeyRef: env.WORKOS_WEBHOOK_SECRET_KEY_REF.trim() }
       : {}),
@@ -507,6 +516,12 @@ export async function createHostedRuntime(
     sessionStore,
     membershipAuthority,
     identityDirectory,
+    selfSignup: new PostgresHostedSelfSignupAdmission(runService, { trialPolicy: configuration.trialEntitlementPolicy }),
+    ...(configuration.trialEntitlementPolicy ? {
+      onSessionEstablished: session => runService(tx => backfillHostedTrialEntitlementAuthority(tx, {
+        organizationId: session.organizationId, policy: configuration.trialEntitlementPolicy!,
+      })),
+    } : {}),
     connectorGateway,
     providerDelegationManager,
     directoryBindingManager: new HostedDirectoryBindingManager(runService),

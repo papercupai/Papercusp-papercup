@@ -32,6 +32,7 @@ export async function recordNativeCollectionJourney(input: {
   const result = await runHarness({
     contract: { name: 'native-journey', phases: [{ id: 'native' }] },
     evidenceRoot: input.evidenceRoot ?? defaultEvidenceRoot('native-journey'),
+    retainedArtifacts: ['phases/native/manifest.json'],
     runPhase: async ({ evidenceDir }) => {
       try {
         const before = await measure();

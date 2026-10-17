@@ -112,6 +112,118 @@ describe('disposable operator-api monitoring sources', () => {
 });
 
 describe('disposable operator-api device lifecycle', () => {
+  it('proves advertised-route pairing belongs to the private real operator and cleans up the probe', () => {
+    const probe = `
+      import assert from 'node:assert/strict';
+      import { execFileSync, spawn } from 'node:child_process';
+      import { randomUUID, createHash } from 'node:crypto';
+      import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+      import { join } from 'node:path';
+      const { fixtureIdentity, verifyAdvertisedFixtureRoute, waitForFixtureHost } =
+        await import('./packages/operator-core/lib/native-device-fixture.ts');
+      const e = { ...process.env, MOBILE_JWT_SECRET: 'private-route-probe-' + randomUUID(),
+        MOBILE_DESKTOP_PUBLIC_URL: 'https://api.papercuspai.com', MOBILE_DESKTOP_HOST: 'api.papercuspai.com' };
+      const identity = fixtureIdentity(e);
+      // Exercise the maintained host artifact path. Loading hono-host.ts via
+      // tsx here would transform a runtime source import and correctly trip
+      // the committed-source guard; the production route runs the plain ESM
+      // bundle emitted by bundle-host.sh instead.
+      const bundleDir = mkdtempSync(join(process.cwd(), 'apps/operator/dist-host-native-fixture-'));
+      const bundlePath = join(bundleDir, 'hono-host.mjs');
+      const committedLoader = join(process.cwd(), 'scripts/lib/committed-source-loader.mjs');
+      const bundleEnv = { ...e, NODE_OPTIONS: '--import=' + committedLoader };
+      const logPath = join(e.HOME, 'advertised-route-host.log');
+      let fd;
+      let host;
+      let hostError;
+      try {
+        const buildLog = join(e.HOME, 'advertised-route-host-bundle.log');
+        try {
+          const output = execFileSync('bash', [join(process.cwd(), 'apps/operator/bin/bundle-host.sh'),
+            'bin/hono-host.ts', bundlePath], {
+            cwd: process.cwd(), env: bundleEnv, encoding: 'utf8', timeout: 180000,
+            maxBuffer: 8 * 1024 * 1024,
+          });
+          writeFileSync(buildLog, output, { mode: 0o600 });
+        } catch (error) {
+          const detail = error && typeof error === 'object'
+            ? String(error.stdout ?? '') + String(error.stderr ?? '')
+            : String(error);
+          writeFileSync(buildLog, detail.slice(-32000), { mode: 0o600 });
+          throw error;
+        }
+        fd = openSync(logPath, 'wx', 0o600);
+        host = spawn(process.execPath, [bundlePath],
+          { cwd: process.cwd(), env: bundleEnv, stdio: ['ignore', fd, fd] });
+        host.once('error', error => { hostError = error; });
+        try {
+          await waitForFixtureHost(host, logPath, async () => {
+            if (hostError) throw hostError;
+            const health = await fetch(identity.base + '/api/health', { signal: AbortSignal.timeout(2000) });
+            assert.equal((await health.json()).service, 'papercusp-operator');
+            const registry = await (await fetch(identity.base + '/api/workspaces')).json();
+            assert.equal(registry.current, identity.workspaceId);
+            assert.deepEqual(registry.workspaces.map(w => w.id), [identity.workspaceId]);
+          }, { timeoutMs: 180000, pollMs: 500, record: () => {} });
+        } catch (error) {
+          // The disposable runtime removes its HOME, including this log. Retain
+          // bounded startup evidence before teardown, before any token is minted.
+          let diagnostic = readFileSync(logPath, 'utf8').split('\\n')
+            .filter(line => /error|fatal|refus|withheld|missing/i.test(line)).slice(-12).join('\\n');
+          for (const [key, value] of Object.entries(e)) {
+            if (/secret|token|password|key|url/i.test(key) && typeof value === 'string' && value.length >= 8)
+              diagnostic = diagnostic.split(value).join('[REDACTED]');
+          }
+          console.error('PRIVATE_ADVERTISED_ROUTE_STARTUP=' + JSON.stringify({
+            exitCode: host.exitCode, signal: host.signalCode, diagnostic: diagnostic.slice(-3000) }));
+          throw error;
+        }
+        // Exercise real HTTP, the maintained protected listener, real one-shot
+        // tokens/JWTs and disposable Postgres. Only DNS/TLS transport is mapped;
+        // this test makes no claim about a public provider or native UI.
+        const mappedFetch = (input, init) => {
+          const url = new URL(String(input));
+          assert([identity.base, 'https://api.papercuspai.com'].includes(url.origin));
+          return fetch(url.origin === 'https://api.papercuspai.com'
+            ? 'http://127.0.0.1:' + identity.ingressPort + url.pathname : input, init);
+        };
+        const receipt = await verifyAdvertisedFixtureRoute(e, mappedFetch);
+        const local = await (await fetch(identity.base + '/api/device/desktop/devices')).json();
+        assert.deepEqual(local.devices, [], 'Probe must leave no active private device');
+        assert.equal(receipt.privatePairVerified, true);
+        console.log('PRIVATE_ADVERTISED_ROUTE_PROOF=' + JSON.stringify({ ...receipt,
+          home: e.HOME, transport: 'real-private-http-with-mapped-public-url',
+          database: 'disposable-migrated-postgres', activeDevicesAfterCleanup: local.devices.length,
+          fixtureSourceSha256: createHash('sha256').update(readFileSync(
+            'packages/operator-core/lib/native-device-fixture.ts')).digest('hex') }));
+      } finally {
+        if (host?.exitCode === null && host.signalCode === null) {
+          const closed = new Promise(resolve => host.once('exit', resolve));
+          host.kill('SIGTERM');
+          const timeout = setTimeout(() => host.kill('SIGKILL'), 5000);
+          await closed;
+          clearTimeout(timeout);
+        }
+        if (fd !== undefined) closeSync(fd);
+        rmSync(bundleDir, { recursive: true, force: true });
+      }
+    `;
+    const result = spawnSync(process.execPath, [resolve(root, 'scripts/with-test-pg.mjs'),
+      '--isolated-runtime=operator-api', '--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', probe], {
+      cwd: root, encoding: 'utf8', timeout: 240_000, maxBuffer: 4 * 1024 * 1024,
+    });
+    console.log(result.stdout);
+    if (result.stderr) console.log('[private advertised-route child stderr]\n' + result.stderr);
+    expect(result.status, (result.stderr ?? '').slice(-3000)).toBe(0);
+    const line = result.stdout.split('\n').find(row => row.startsWith('PRIVATE_ADVERTISED_ROUTE_PROOF='));
+    expect(line, 'Real private pair/auth/revoke must execute').toBeDefined();
+    const proof = JSON.parse(line!.slice('PRIVATE_ADVERTISED_ROUTE_PROOF='.length));
+    expect(proof).toMatchObject({ workspaceId: expect.stringMatching(/^test-runtime-/),
+      privatePairVerified: true, activeDevicesAfterCleanup: 0,
+      transport: 'real-private-http-with-mapped-public-url', database: 'disposable-migrated-postgres' });
+    expect(existsSync(proof.home), 'Private advertised-route runtime must be disposed').toBe(false);
+  }, 260_000);
+
   it('enforces expiry, revocation and workspace isolation through real HTTP and Postgres', () => {
     const probe = `
       import assert from 'node:assert/strict';

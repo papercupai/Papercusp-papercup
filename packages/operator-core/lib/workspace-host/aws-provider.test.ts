@@ -215,6 +215,9 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
     this.volumeTokens.set(input.ClientToken, volumeId);
     this.volumes.set(volumeId, {
       volumeId,
+      availabilityZone: input.AvailabilityZone,
+      encrypted: input.Encrypted,
+      tags: Object.fromEntries(input.TagSpecifications[0].Tags.map((tag) => [tag.Key, tag.Value])),
       state: 'creating',
       observedAt: NOW,
     });
@@ -1376,7 +1379,19 @@ describe('AWS workspace-host bootstrap push (aws-byoc-gcp-parity D-013)', () => 
       id: 'start-host-bootstrap',
       dependsOn: ['attach-data-volume'],
       destructive: false,
-      input: { op: 'start-host-bootstrap', hostId: 'host-aws-1', script: HOST_BOOTSTRAP },
+      input: { op: 'start-host-bootstrap', hostId: 'host-aws-1', script: HOST_BOOTSTRAP, dataMode: 'fresh' },
+    });
+  });
+
+  it('persists the controller tenant identity in its replayable bootstrap step', async () => {
+    const { provider } = providerAndClient();
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'tenant', idempotencyKey: 'tenant', desired: desired() },
+      { ...context(), hostBootstrapScript: HOST_BOOTSTRAP, durableTenantIdentity: 'a'.repeat(64),
+        durableStorageAllocation: { dbGiB: 256, workspaceGiB: 32 } },
+    );
+    expect(plan.steps.find(({ id }) => id === 'start-host-bootstrap')!.input).toMatchObject({
+      dataMode: 'fresh', tenantIdentity: 'a'.repeat(64), allocation: { dbGiB: 256, workspaceGiB: 32 },
     });
   });
 
@@ -1409,6 +1424,7 @@ describe('AWS workspace-host bootstrap push (aws-byoc-gcp-parity D-013)', () => 
       { id: 'repair-instance', dependsOn: [] },
       { id: 'start-host-bootstrap', dependsOn: ['repair-instance'] },
     ]);
+    expect(repair.steps.find(step => step.id === 'start-host-bootstrap')?.input.dataMode).toBe('existing');
     // Lifecycle actions that keep the boot disk need no bootstrap — and do not demand one.
     for (const action of ['start', 'stop', 'restart'] as const) {
       const plan = await provider.plan({ action, operationId: action, idempotencyKey: action, host }, context({}, null));
@@ -1691,6 +1707,36 @@ describe('AWS restore and upgrade (WI-10005971, plan Decisions D-037/D-038)', ()
     expect(known.map((item) => item.providerId).sort()).toEqual([replacement, volume].sort());
   });
 
+  it('persists the exact AWS scope when reconciling an ambiguously created volume', async () => {
+    const { provider } = providerAndClient();
+    const plan = await provider.plan({ action: 'provision', operationId: 'scope-reconcile', idempotencyKey: 'scope-reconcile', desired: desired() }, context());
+    const request = { planId: plan.planId, operationId: plan.operationId, step: plan.steps[0]!, knownResources: [] };
+    await provider.apply(request, context());
+    const result = await provider.reconcile({ ...request, reason: 'ambiguous-timeout' }, context());
+    expect(result.state).toBe('unchanged');
+    expect(requireAppliedResource(result)).toMatchObject({ parentProviderId: '123456789012', region: 'us-east-1', zone: 'us-east-1a' });
+  });
+
+  it.each(['account', 'zone', 'multi-writer', 'tenant'])('refuses an AWS replacement with foreign %s before quiescing', async (mismatch) => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    const disk = host.resources.find((item) => item.kind === 'disk')!;
+    const describe = client.describeVolume.bind(client);
+    client.describeVolume = async (id) => {
+      const observed = await describe(id);
+      return observed ? { ...observed,
+        ...(mismatch === 'zone' ? { availabilityZone: 'us-east-1b' } : {}),
+        ...(mismatch === 'multi-writer' ? { attachedInstanceIds: [observed.attachedInstanceId!, 'i-foreign'] } : {}),
+        ...(mismatch === 'tenant' ? { tags: { ...observed.tags, 'papercusp:host-id': 'foreign-host' } } : {}),
+      } : observed;
+    };
+    const resources = host.resources.map((item) => item === disk && mismatch === 'account'
+      ? { ...item, parentProviderId: '999999999999' } : item);
+    await expect(provider.plan({ action: 'upgrade', operationId: 'upgrade-foreign', idempotencyKey: 'upgrade-foreign',
+      host: { ...host, resources }, desired: desired(), image: { id: 'ami-0123456789abcdef0' } }, context())).rejects.toThrow(/retained_volume/);
+    expect(client.detachVolumeCalls).toHaveLength(0);
+  });
+
   it('rolls a failed launch back by re-attaching the data volume to the original and starting it', async () => {
     const { client, provider } = providerAndClient();
     const { host } = await provision(client, provider);
@@ -1749,6 +1795,7 @@ describe('AWS restore and upgrade (WI-10005971, plan Decisions D-037/D-038)', ()
     const attach = plan.steps.find((step) => step.id === `attach-replacement-volume:${original}`)!;
     const bootstrap = plan.steps.find((step) => step.id === 'start-host-bootstrap')!;
     const reinstate = { op: 'reinstate-instance', instanceId: original, volumeId: volume, retireReplacement: true };
+    expect(bootstrap.input.dataMode).toBe('existing');
     expect(attach.rollback?.input).toMatchObject(reinstate);
     expect(bootstrap.rollback?.input).toMatchObject(reinstate);
     // lifecycle-runner strandedByFailure() rolls back only a step that depends on an applied

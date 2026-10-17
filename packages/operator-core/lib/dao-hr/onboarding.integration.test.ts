@@ -14,7 +14,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { equityV2Evm } from '../equity/evm-test-helpers';
 import { unsafeFederatedPotScope } from '../federated-pot-scope';
 import { listHiveMembers, upsertHiveMember } from '../hive-membership-store';
-import { createContractTemplate, generateContract, grantDaoHrAdmin, installSampleTemplates, isDaoHrAdmin } from './contract-templates';
+import { createContractTemplate, generateContract, grantDaoHrAdmin, installSampleTemplates, isDaoHrAdmin, recordCounselApproval, recordIssuingEntity } from './contract-templates';
 import { completeEngagementAmendment, completeEngagementEnd, prepareEngagementAmendment, prepareEngagementFire, prepareEngagementResignation } from './engagement-changes';
 import { addHiringCandidate, approveHiringOffer, createHiringOffer, createHiringRole, getHiringOffer, HiringError, listHiringHistory } from './hiring';
 import { completeContractSigning, prepareContractExecution, startContractSigning } from './contracts-esign';
@@ -32,6 +32,10 @@ let db:OrgTestDb,e:Awaited<ReturnType<typeof equityV2Evm>>,roleId:string,policy:
 const scope=unsafeFederatedPotScope(key.daoSlug,'Test writes and reads the same synthetic owner scope');
 const candidate:CandidateIdentity={githubUserId:42,githubLogin:'new-member',verifiedEmails:['candidate@example.test']};
 const wallet=(index=1)=>async()=>({ok:true as const,status:200,value:{bound:true,binding:{walletAddress:e.accounts[index],chainId:1,challengeId:'signed-server-challenge',verifiedAtMs:Date.now()}}});
+const chainFor=(evm:Awaited<ReturnType<typeof equityV2Evm>>):OnboardingChain=>({getChainId:async()=>1,getBlockNumber:async()=>evm.blockNumber(),
+  getCode:async({address})=>bytesToHex(await evm.vm.stateManager.getCode(createAddressFromString(address))),
+  readContract:async({address,abi,functionName,args})=>evm.read({address:address as Address,abi},functionName,args),
+  getTransaction:evm.getTransaction,getTransactionReceipt:evm.getTransactionReceipt,getBlock:evm.getBlock});
 const deps=():OnboardingDeps=>({sql:db.adminSql,chain,identity:async()=>candidate,wallet:wallet(),adminPerson:async()=> 'PER-author',scope:async()=>scope});
 const confirm=()=>{e.advance(1);e.advance(1);};
 const row=async(offerId:string)=>(await db.adminSql<OnboardingContract[]>`SELECT * FROM harness_shared.dao_hr_contracts WHERE offer_id=${offerId}`)[0]!;
@@ -86,8 +90,7 @@ beforeAll(async()=>{
   await updateEquityPolicy({...key,actorPersonId:'PER-author',changes:{startRule:'hire_passed'}},{sql:db.adminSql});
   roleId=(await createHiringRole({...key,actorPersonId:'PER-author',title:'Engineer',level:'L3'},{sql:db.adminSql})).roleId;
   policy={finance:{equity:{chainId:1,equity:e.equity.address,governor:e.governor.address,timelock:e.timelock.address}}} as HivePolicy;
-  chain={getChainId:async()=>1,getBlockNumber:async()=>e.blockNumber(),getCode:async({address})=>bytesToHex(await e.vm.stateManager.getCode(createAddressFromString(address))),
-    readContract:async({address,abi,functionName,args})=>e.read({address:address as Address,abi},functionName,args),getTransaction:e.getTransaction,getTransactionReceipt:e.getTransactionReceipt,getBlock:e.getBlock};
+  chain=chainFor(e);
 },180_000);
 afterAll(async()=>{await db?.cleanup();});
 describe('P007 — identity, one hire vote, acceptance and membership',()=>{
@@ -411,5 +414,48 @@ describe('P008 — proved engagement end retains records and earned equity',()=>
     expect((await row(k.offerId)).sealed_pdf).toBeTruthy();
     expect(await e.getContractEvents({address:e.governor.address,abi:e.governor.abi,eventName:'ProposalCreated',fromBlock:0n,toBlock:e.blockNumber()})).toEqual(before);
     e.advance(100*86400);expect(String(await e.read(e.equity,'earnedGrant',[p.grantId]))).toBe(proof.retainedEarned);
+  },120_000);
+});
+describe('P006 — approved contract binding and sealed grant identity',()=>{
+  it('keeps an approved formed-issuer contract signed until hire execution, then binds the sealed PDF hash to the actual grant',async()=>{
+    // Prior engagement scenarios change voting membership; this contract journey owns its chain.
+    const e=await equityV2Evm(),confirm=()=>{e.advance(1);e.advance(1);};
+    const personId='PER-binding',email='binding@example.test';
+    await db.adminSql`INSERT INTO harness_shared.work_items (workspace_id,harness_slug,feature_id,item_kind,title,payload)
+      VALUES (${key.workspaceId},'papercusp',${personId},'person','Binding contract candidate',${db.adminSql.json({email})})`;
+    await recordIssuingEntity({...key,registeredTitle:'Fixture DAO LLC',jurisdiction:'US-NY',registrationReference:'fixture-formed-issuer',formedOn:'2026-10-01',actorPersonId:'PER-author'},{sql:db.adminSql});
+    const templates=[];
+    for(const documentKind of ['employment-agreement','equity-grant-agreement']){
+      const templateKey='binding-'+documentKind;
+      await createContractTemplate({...key,templateKey,documentKind,engagementType:'employee',jurisdiction:'US-NY',title:'Approved fixture agreement',
+        body:'Fixture agreement for {{person_ref}} with {{share_amount}} shares.',mergeFields:['person_ref','share_amount'],actorPersonId:'PER-author'},{sql:db.adminSql});
+      await recordCounselApproval({...key,templateKey,version:1,approverRef:'Fixture counsel',approvedOn:'2026-10-01',reference:'fixture-approval',actorPersonId:'PER-author'},{sql:db.adminSql});
+      templates.push({templateKey,version:1});
+    }
+    await addHiringCandidate({...key,roleId,personId,actorPersonId:'PER-author'},{sql:db.adminSql});
+    const offer=await createHiringOffer({...key,roleId,personId,actorPersonId:'PER-author',engagementType:'employee',jurisdiction:'US-NY',
+      pay:{amount:'5000',currency:'USD',cadence:'monthly'},overrides:{shares:1000}},{sql:db.adminSql});
+    await approveHiringOffer({...key,offerId:offer.offerId,actorPersonId:'PER-reviewer'},{sql:db.adminSql});
+    const k=await signExistingOffer(offer.offerId,templates),who={githubUserId:47,githubLogin:'binding',verifiedEmails:[email]};
+    const d={...deps(),chain:chainFor(e),identity:async()=>who,wallet:wallet(4)},admin={...d,wallet:wallet(0)};
+    const signed=await row(k.offerId),sealedHash=('0x'+createHash('sha256').update(signed.sealed_pdf!).digest('hex')) as Hex;
+    expect(signed.can_bind).toBe(true);expect(signed.state).toBe('signed');expect(signed.hire_execution_proof).toBeNull();
+    await expect(db.adminSql`UPDATE harness_shared.dao_hr_contracts SET state='binding' WHERE offer_id=${k.offerId}`).rejects.toThrow();
+    await verifyOnboardingIdentity(k,d);
+    const prepared=await prepareHireProposal(k,policy,admin),p=prepared.plan;
+    expect(p.grantId).toBe(sealedHash);expect((await row(k.offerId)).state).toBe('signed');
+    const creation=await e.raw(prepared.unsignedTransaction.data,prepared.unsignedTransaction.to,0,e.governor.abi);confirm();
+    await recordHireProposal(k,policy,creation.transactionHash,admin);
+    expect((await row(k.offerId)).state).toBe('signed');
+    await expect(recordHireExecution(k,policy,creation.transactionHash,d)).rejects.toMatchObject({code:'invalid_proof'});
+    expect((await row(k.offerId)).state).toBe('signed');
+    expect(String((await e.read(e.equity,'grants',[sealedHash]) as unknown[])[0])).toBe('0');
+    await e.finish({targets:p.targets,values:p.values.map(BigInt),calldatas:p.calldatas,descriptionHash:p.descriptionHash,id:BigInt(p.proposalId)});
+    const execution=e.lastTransactionHash()!;confirm();
+    await recordHireExecution(k,policy,execution,d);
+    const bound=await row(k.offerId);
+    expect(bound.state).toBe('binding');expect(bound.grant_id).toBe(sealedHash);expect(bound.document_hash).toBe(sealedHash);
+    expect(String((await e.read(e.equity,'grants',[sealedHash]) as unknown[])[0])).not.toBe('0');
+    expect(bound.hire_execution_proof?.transactionHash).toBe(execution);
   },120_000);
 });

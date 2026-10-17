@@ -1,24 +1,154 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import * as ts from 'typescript';
-import { buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator } from './private-http-workspace-preflight';
-import { createHash } from 'node:crypto';
+import { buildPrivateOperatorApiBundle, preparePrivateOperatorApiBundle, privateBundleRuntimeEnv, privatePgStartupIdentity, waitForPrivateOperator } from './private-http-workspace-preflight';
+import { createHash, randomUUID } from 'node:crypto';
 
 const dirs: string[] = [];
 const common = resolve(import.meta.dirname, '../../../apps/operator/bin/bundle-host-common.sh');
-afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+function privateBudgetEnvironment() {
+  const home = mkdtempSync(join(tmpdir(), 'private-budget-auth-'));
+  dirs.push(home);
+  vi.stubEnv('HOME', home);
+  vi.stubEnv('PAPERCUSP_HOME', join(home, '.papercusp'));
+  vi.stubEnv('PAPERCUSP_WORKSPACE_ID', 'test-runtime-budget-auth');
+  vi.stubEnv('PC_ISOLATED_RUNTIME_PROOF', '1');
+  vi.stubEnv('PAPERCUSP_BACKGROUND_WORKERS', '0');
+  vi.stubEnv('PAPERCUSP_DBOS_ENABLE', '0');
+  return home;
+}
+
+it('prepares a disposable native login for the budget bootstrap without changing the account route', async () => {
+  const home = privateBudgetEnvironment();
+  const { prepareCodexBudgetScenario } = await import('./codex-budget-http-scenario');
+  await prepareCodexBudgetScenario('test-runtime-budget-auth');
+  const authPath = join(home, '.codex', 'auth.json');
+  expect(JSON.parse(readFileSync(authPath, 'utf8'))).toEqual({ auth_mode: 'chatgpt', tokens: {
+    access_token: expect.stringMatching(/^private-budget-no-provider-/), account_id: 'private-budget' } });
+  expect(statSync(authPath).mode & 0o777).toBe(0o600);
+  expect(process.env.PAPERCUSP_WORKSPACE_ID).toBe('test-runtime-budget-auth');
+});
+
+it('refuses the budget scenario before touching auth outside its isolated runtime', async () => {
+  const home = privateBudgetEnvironment();
+  vi.stubEnv('PC_ISOLATED_RUNTIME_PROOF', undefined);
+  const { measureCodexBudgetScenario } = await import('./codex-budget-http-scenario');
+  await expect(measureCodexBudgetScenario({ workspace: 'test-runtime-budget-auth',
+    base: 'http://127.0.0.1:1', headers: {}, evidenceDir: home })).rejects.toThrow();
+  expect(existsSync(join(home, '.codex'))).toBe(false);
+});
+
+it('refuses to overwrite an existing login in the budget fixture', async () => {
+  const home = privateBudgetEnvironment();
+  const { prepareCodexBudgetScenario } = await import('./codex-budget-http-scenario');
+  mkdirSync(join(home, '.codex'));
+  const authPath = join(home, '.codex', 'auth.json');
+  const original = JSON.stringify({ tokens: { access_token: randomUUID() } });
+  writeFileSync(authPath, original, { mode: 0o600 });
+  await expect(prepareCodexBudgetScenario('test-runtime-budget-auth')).rejects.toThrow(/EEXIST/);
+  expect(readFileSync(authPath, 'utf8')).toBe(original);
+});
+
+function pgStartup(fields: Record<string, string>) {
+  const body = Buffer.from(Object.entries(fields).flatMap(([key, value]) => [key, value]).join('\0') + '\0\0');
+  const header = Buffer.alloc(8);
+  header.writeUInt32BE(header.length + body.length, 0);
+  header.writeUInt32BE(196608, 4);
+  return Buffer.concat([header, body]);
+}
+
+it('retains only the database and application identity from a private PG startup', () => {
+  const packet = pgStartup({ user: 'private-user', database: 'other-private-db',
+    application_name: 'pcusp:other-pool:p123', password: 'private-password', options: 'private-options' });
+  expect(privatePgStartupIdentity(Buffer.concat([packet, Buffer.from('private query content')]))).toEqual({
+    database: 'other-private-db', applicationName: 'pcusp:other-pool:p123' });
+});
+
+it('ignores SSL, cancellation and query packets in private socket evidence', () => {
+  for (const code of [80877103, 80877102]) {
+    const packet = Buffer.alloc(16);
+    packet.writeUInt32BE(packet.length, 0);
+    packet.writeUInt32BE(code, 4);
+    expect(privatePgStartupIdentity(packet)).toBeNull();
+  }
+  expect(privatePgStartupIdentity(Buffer.from('Qprivate SQL text\0'))).toBeNull();
+  expect(privatePgStartupIdentity('private text')).toBeNull();
+});
+
+it('rejects truncated, unterminated and oversized private startup packets', () => {
+  const packet = pgStartup({ database: 'private-db', application_name: 'private-pool' });
+  expect(privatePgStartupIdentity(packet.subarray(0, -1))).toBeNull();
+  const malformed = Buffer.from(packet);
+  malformed[malformed.length - 1] = 1;
+  expect(privatePgStartupIdentity(malformed)).toBeNull();
+  const oversized = pgStartup({ database: 'x'.repeat(16_384) });
+  expect(privatePgStartupIdentity(oversized)).toBeNull();
+});
+
+it('does not retain unbounded or control-character startup identity values', () => {
+  expect(privatePgStartupIdentity(pgStartup({ database: 'x'.repeat(129), application_name: 'line\nbreak' }))).toEqual({
+    database: null, applicationName: null });
+});
+
+it('retires the roster worker auth listener before its shared database pools', () => {
+  const file = 'roster-stop-http-fixture.ts';
+  const source = ts.createSourceFile(file, readFileSync(join(import.meta.dirname, file), 'utf8'),
+    ts.ScriptTarget.Latest, true);
+  const cleanup = source.statements.find((node): node is ts.TryStatement =>
+    ts.isTryStatement(node) && Boolean(node.finallyBlock));
+  expect(cleanup?.finallyBlock, 'worker cleanup must also run after a rejected browser assertion').toBeDefined();
+  const phases: Array<{ name: string; body: string }> = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+      && node.expression.text === 'cleanupPhase' && ts.isStringLiteral(node.arguments[0])) {
+      expect(ts.isAwaitExpression(node.parent), 'worker cleanup must await owned resources').toBe(true);
+      phases.push({ name: node.arguments[0].text, body: node.arguments[1].getText(source) });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(cleanup!.finallyBlock!);
+  const auth = phases.findIndex(phase => phase.name === 'auth-invalidation-listener-stop');
+  const pools = phases.findIndex(phase => phase.name === 'db-org-pools-reset');
+  expect(auth, 'lazy principal LISTEN must not keep the proof worker alive').toBeGreaterThanOrEqual(0);
+  expect(pools, 'all db-org pools must retire after the listener stops').toBeGreaterThan(auth);
+  expect(phases[auth].body).toContain('await _stopInvalidationListenerForTests()');
+  expect(phases[pools].body).toContain('_resetForTests()');
+  const census = phases.findIndex(phase => phase.name === 'database-census');
+  const hub = phases.findIndex(phase => phase.name === 'listen-hub-stop');
+  const closed = phases.findIndex(phase => phase.name === 'database-resources-closed');
+  expect(census, 'capture actual pool labels before retiring query pools').toBeLessThan(pools);
+  expect(hub, 'retain hub connection labels before closing subscriptions').toBeGreaterThan(census);
+  expect(hub, 'collector LISTEN subscriptions must retire before the shared pools').toBeLessThan(pools);
+  expect(phases[hub].body).toContain('await _stopHubForTests()');
+  const lockListeners = phases.findIndex(phase => phase.body.includes('await _resetListenersForTests()'));
+  const lockPools = phases.findIndex(phase => phase.body.includes('await resetLockPools()'));
+  expect(lockListeners, 'acknowledgement opens locks listeners outside db-org').toBeGreaterThan(census);
+  expect(lockPools, 'the separate su-lock-tx pool must retire after its listeners').toBeGreaterThan(lockListeners);
+  expect(lockPools, 'locks teardown must precede retirement of the shared database pools').toBeLessThan(pools);
+  expect(phases[lockListeners].body).toContain("import('@papercusp/locks')");
+  expect(phases[lockPools].body).toContain('_resetForTests: resetLockPools');
+  expect(closed, 'verify referenced private sockets after pool close callbacks').toBeGreaterThan(pools);
+  expect(phases[closed].body).toContain('assert.equal(retained.length, 0');
+});
 
 it('keeps request fixtures on the bounded progress-aware builder path', () => {
   const callers: string[] = [];
   const routingProof = '../lib/blueprint/launch-blueprint-account-route.e2e.test.ts';
+  const nativeProof = '../lib/external-bench/current-su-native.integration.test.ts';
+  const preparationProofs = [routingProof, nativeProof];
   for (const file of [...readdirSync(import.meta.dirname).filter(name =>
-    name.endsWith('-http-fixture.ts') || name === 'knowledge-native-fixture.ts'), routingProof]) {
+    name.endsWith('-http-fixture.ts') || name === 'knowledge-native-fixture.ts'), ...preparationProofs]) {
     const source = ts.createSourceFile(file, readFileSync(join(import.meta.dirname, file), 'utf8'),
       ts.ScriptTarget.Latest, true);
     const visit = (node: ts.Node) => {
@@ -29,11 +159,11 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
       }
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
         && (node.expression.text === 'buildPrivateOperatorApiBundle'
-          || file === routingProof && node.expression.text === 'preparePrivateOperatorApiBundle')) {
+          || preparationProofs.includes(file) && node.expression.text === 'preparePrivateOperatorApiBundle')) {
         callers.push(file);
         expect(ts.isAwaitExpression(node.parent), `${file} must await build completion`).toBe(true);
         let policy: ts.Expression | undefined = node.arguments[2];
-        if (file === routingProof && policy && ts.isObjectLiteralExpression(policy))
+        if (preparationProofs.includes(file) && policy && ts.isObjectLiteralExpression(policy))
           policy = policy.properties.find((property): property is ts.PropertyAssignment =>
             ts.isPropertyAssignment(property) && property.name.getText(source) === 'builder')?.initializer;
         expect(policy && ts.isObjectLiteralExpression(policy), `${file} needs a bounded progress policy`).toBe(true);
@@ -49,7 +179,7 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
     };
     visit(source);
   }
-  expect(callers.sort()).toEqual([routingProof, 'consult-cascade-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
+  expect(callers.sort()).toEqual([routingProof, nativeProof, 'blog-post-http-fixture.ts', 'consult-cascade-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
     'governance-http-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
     'roster-stop-http-fixture.ts', 'staging-first-http-fixture.ts']);
 });
@@ -58,6 +188,7 @@ it('prepares every roster API bundle before the private execute phase', () => {
   const file = join(import.meta.dirname, '../lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts');
   const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
   let contracts = 0;
+  let cleanupProofs = 0;
   const visit = (node: ts.Node) => {
     if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
       && node.expression.text === 'recordIsolatedIntegrationProof') {
@@ -66,6 +197,13 @@ it('prepares every roster API bundle before the private execute phase', () => {
         const properties = Object.fromEntries(contract.properties.flatMap(property =>
           ts.isPropertyAssignment(property) ? [[property.name.getText(source), property.initializer]] : []));
         if (properties.sourcePaths?.getText(source).includes('roster-stop-http-fixture.ts')) {
+          if (properties.execute?.getText(source).includes("'--health-cleanup-proof'")) {
+            // This original worker path only seeds readers and exits through
+            // cleanup; it never starts an API or needs an API bundle.
+            expect(properties.prepare).toBeUndefined();
+            cleanupProofs++;
+            return;
+          }
           contracts++;
           const line = source.getLineAndCharacterOfPosition(contract.getStart(source)).line + 1;
           const context = `roster proof at line ${line}`;
@@ -112,7 +250,8 @@ it('prepares every roster API bundle before the private execute phase', () => {
     ts.forEachChild(node, visit);
   };
   visit(source);
-  expect(contracts).toBe(17);
+  expect(contracts).toBe(18);
+  expect(cleanupProofs).toBe(1);
 });
 
 it('stops builder descendants on timeout and retains the original diagnostics', async () => {
@@ -191,6 +330,26 @@ it('prepares the real bundle receipt after progress renews the build checkpoint'
   expect(build.elapsedMs).toBeGreaterThan(600);
   expect(build.progress.extensions).toBeGreaterThan(0);
   expect(build.status).toBe(0);
+});
+
+it('reports only distinct completed build steps to the enclosing watchdog', async () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-progress-')); dirs.push(evidenceDir);
+  const journal = join(evidenceDir, 'hono-host.mjs.build-steps.jsonl');
+  const completed: Array<{ step: string; completedSteps: number }> = [];
+  await buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
+    args: ['-c', `source "$1"; BUNDLE_HOST_STEP_LOG="$2";
+      bundle_host_run_step first true;
+      bundle_host_run_step first true;
+      (bundle_host_run_step first true);
+      bundle_host_run_step failed false;
+      printf '{"at":%s,"pid":%s,"step":"unpaired","event":"end","status":0}\n' "$(date +%s.%N)" "$$" >> "$2";
+      bundle_host_run_step last true;
+      printf '{"at":' >> "$2";
+      echo bundle > "$3"`, '_', common, journal, join(evidenceDir, 'hono-host.mjs')],
+    timeoutMs: 600, maxMs: 2400, pollMs: 20,
+    onProgress: progress => completed.push(progress),
+  });
+  expect(completed).toEqual([{ step: 'first', completedSteps: 1 }, { step: 'last', completedSteps: 2 }]);
 });
 
 it('withholds a prepared receipt when the progress builder stalls', async () => {

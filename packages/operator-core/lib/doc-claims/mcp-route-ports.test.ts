@@ -37,6 +37,26 @@ const docFixture = (...ports: number[]) =>
 
 describe('mcp-route-ports doc claim', () => {
   describe('fixture controls (the detector must be able to FAIL)', () => {
+    it('reads a declared default actually passed through a shorthand proxy option', () => {
+      for (const port of [9071, 9099]) {
+        const source = proxyFixture(port, 3070).replace(
+          /startProxy\(\{[\s\S]*?\}\);/,
+          `const listenPort = Number(process.env.PAPERCUSP_MCP_PROXY_PORT ?? ${port});\nstartMcpProxy({ listenPort, retryWindowMs: 100 });`,
+        );
+        const verdict = judgeMcpRoutePorts({ proxySource: source, unitSource: unitFixture(port), docSource: docFixture(port, 3070) });
+        expect(verdict.ok).toBe(true);
+        expect(verdict.listenPort).toBe(port);
+        expect(judgeMcpRoutePorts({ proxySource: source, unitSource: unitFixture(port), docSource: docFixture(9000, 3070) }).ok).toBe(false);
+      }
+    });
+
+    it('does not credit an unused constant or a commented shorthand connection', () => {
+      for (const connection of ['startMcpProxy({ targetPort: 3070 });', '// startMcpProxy({ listenPort });']) {
+        const source = `const listenPort = Number(process.env.PAPERCUSP_MCP_PROXY_PORT ?? 9071);\nconst targetPort = Number(process.env.UPSTREAM ?? 3070);\n${connection}`;
+        expect(judgeMcpRoutePorts({ proxySource: source, unitSource: unitFixture(9071), docSource: docFixture(9071, 3070) }).listenPort).toBeNull();
+      }
+    });
+
     it('accepts a tree where code, unit and doc all agree', () => {
       const v = judgeMcpRoutePorts({
         proxySource: proxyFixture(9071, 3070),

@@ -60,6 +60,9 @@ describe('readyProviderRegistry', () => {
  */
 const BARE_READERS: Record<string, string> = {
   'integrations/provider-registry.ts': 'the definition itself',
+  'capability-verbs/social.ts': 'synchronous helpers run after tool/async seams await readyProviderRegistry, or with an explicitly supplied test registry',
+  'capability-verbs/social-read.ts': 'synchronous scope and ref helpers run after the async read/search seams await readyProviderRegistry, or with an explicit registry',
+  'capability-verbs/social-provider.fixture.ts': 'test-only fixture registers synthetic providers; product request paths never import it',
   'plugin-host-runtime.ts': 'the plugin host registers and unregisters providers during discovery',
   'integrations/connection-lifecycle.ts':
     'descriptorGroupMembers: resolveOAuthProvider, connectionAccessToken and both OAuth routes await awaitDescriptorProviders() before reaching it',

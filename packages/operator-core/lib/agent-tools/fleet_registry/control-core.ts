@@ -80,6 +80,14 @@ const ACTION_TO_STATE: Record<FleetControlAction, FleetControlState> = {
 export const FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS = 2_000;
 /** The typed state flip is durable before this bounded best-effort saga starts. */
 export const FLEET_CONTROL_RESPONSE_TIMEOUT_MS = 5_000;
+/**
+ * The resume gate is receipt-critical: a successful resume must prove that the
+ * parked members' wake was emitted before returning. Give that emit the full
+ * control response budget instead of the shorter optional-leg budget, whose
+ * timeout produced false `resume_gate_not_confirmed` failures under normal
+ * event-store latency.
+ */
+export const FLEET_CONTROL_RESUME_GATE_TIMEOUT_MS = FLEET_CONTROL_RESPONSE_TIMEOUT_MS;
 
 export interface FleetControlResult {
   ok: boolean;
@@ -538,7 +546,7 @@ async function fireFleetResumeGate(args: {
         payload: { fleet: args.slug, controlState: 'active', by: args.ownerId, reason: args.reason },
       });
     },
-    { fallback: null, timeoutMs: FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS, label: 'fleet:resume:fireGate' },
+    { fallback: null, timeoutMs: FLEET_CONTROL_RESUME_GATE_TIMEOUT_MS, label: 'fleet:resume:fireGate' },
   );
   const emitted = fireWork.value as { waiters?: number } | null;
   if (emitted) {

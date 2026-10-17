@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "native-p042-distribution-selection-v1",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "workItem": "WI-6554700010015356",
+  "scope": "Current-source licence exclusion and maintained synthetic fixture export/installer selection parity. No finished installer, public export, release or shipment claim.",
+  "authority": [
+    "gitnexus-deterministic-integration-2026-10-05#D-004",
+    "gitnexus-deterministic-integration-2026-10-05#D-005",
+    "open-source-release-2026-09-29#R-10"
+  ],
+  "reusedSurface": "Existing papercusp-desktop/bin/lib/source-tree-selection.sh is shared by scripts/source-preview.mjs and installer source selection; no new selection policy or packaging surface.",
+  "exclusions": [
+    "./libs/papercusp/plugins/gitnexus-bridge",
+    "./node_modules/@papercupai/gitnexus-bridge",
+    "./patches/gitnexus-vendor+*"
+  ],
+  "sourceWitness": "source-tree-selection.sh lines122-135 identifies the Noncommercial licence restriction and excludes the bridge, its package symlink, and vendor patch.",
+  "verification": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/native-p042-distribution-selection-source-20261017.json npm run test:file -- packages/operator-core/lib/source-preview-export.test.ts --testNamePattern='source-preview export.*R-1 selection parity'",
+    "log": "/tmp/native-p042-distribution-selection-20261017.log",
+    "exitCode": 0,
+    "discoveryMs": 3768,
+    "reason": "passed",
+    "unhandledErrorCount": 0,
+    "state": "passed",
+    "passed": 4,
+    "failed": 0,
+    "skipped": 165,
+    "passedCaseTitles": [
+      "source-preview export — R-1 selection parity with the installer cut > ships every selected tracked file, including the submodule contents",
+      "source-preview export — R-1 selection parity with the installer cut > drops every excluded class, node_modules at any depth, and all git metadata",
+      "source-preview export — R-1 selection parity with the installer cut > retains the exact eligible bytes from both internal documentation roots",
+      "source-preview export — R-1 selection parity with the installer cut > equals the installer selection over the same clean commit, minus node_modules"
+    ],
+    "childSubstituted": 0,
+    "selection": "Four name-matched selection-parity cases;165 other cases skipped by explicit filter. This is not a full-suite verdict.",
+    "capture": "/tmp/native-p042-distribution-selection-source-20261017.json",
+    "captureSha256": "44d2c25cd0a3660c30c0432917c098f63cea26942eacfc1c8e218cda315b6f86",
+    "workerSourceEvidence": {
+      "scope": "Named repository worker Vite original sources only",
+      "status": "stable",
+      "namedCount": 102,
+      "currentHashMismatches": [],
+      "principalOriginals": {
+        "packages/operator-core/lib/source-preview-export.test.ts": "2dcc29b6ce616c41faee9cd200825ff5875df82ea4b7d31bd6cc5298d093dbcd",
+        "packages/operator-core/lib/source-preview.fixture.ts": "4a221e79999a4726dcdee01a0ebac73fd35ea73f0147580e3ca18e142a3209b2",
+        "scripts/source-preview.mjs": "a0261c20bb5f595aabc6293fb2aa22891bce6dd2fa0fae2d7b5e123b67b5d80e"
+      }
+    },
+    "diskSourceSamples": {
+      "scope": "The four named disk hashes sampled during the run and after terminal completion agree. Shell script bytes are not a captured worker original.",
+      "duringRun": {
+        "scripts/source-preview.mjs": "a0261c20bb5f595aabc6293fb2aa22891bce6dd2fa0fae2d7b5e123b67b5d80e",
+        "papercusp-desktop/bin/lib/source-tree-selection.sh": "0a22758e33c9cd019f5632da41cee8c885950187441ba2b7a3105c34247b3c95",
+        "packages/operator-core/lib/source-preview-export.test.ts": "2dcc29b6ce616c41faee9cd200825ff5875df82ea4b7d31bd6cc5298d093dbcd",
+        "packages/operator-core/lib/source-preview.fixture.ts": "4a221e79999a4726dcdee01a0ebac73fd35ea73f0147580e3ca18e142a3209b2"
+      },
+      "afterTerminal": {
+        "scripts/source-preview.mjs": "a0261c20bb5f595aabc6293fb2aa22891bce6dd2fa0fae2d7b5e123b67b5d80e",
+        "papercusp-desktop/bin/lib/source-tree-selection.sh": "0a22758e33c9cd019f5632da41cee8c885950187441ba2b7a3105c34247b3c95",
+        "packages/operator-core/lib/source-preview-export.test.ts": "2dcc29b6ce616c41faee9cd200825ff5875df82ea4b7d31bd6cc5298d093dbcd",
+        "packages/operator-core/lib/source-preview.fixture.ts": "4a221e79999a4726dcdee01a0ebac73fd35ea73f0147580e3ca18e142a3209b2"
+      }
+    },
+    "configLoadedSources": "unknown",
+    "mainProcessLoadedSources": "unknown"
+  },
+  "limits": [
+    "Synthetic fixture parity does not inspect a finished shipped installer or complete actual public export.",
+    "No engine invocation, benefit outcome measurement, commercial licence clearance, LIVE_GATE_OPS or final acceptance claimed.",
+    "P042 remains open; actual artifact exclusion, per-consumer outcomes and inherited P018 deployed freshness remain."
+  ]
+}

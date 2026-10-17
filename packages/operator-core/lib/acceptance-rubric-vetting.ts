@@ -16,6 +16,7 @@ import {
   type Rubric,
 } from './rubrics';
 import { settledGradingAuditIsCurrent, type ScorecardRow } from './scorecards';
+import { readCurrentAcceptanceRubricCritique, type AcceptanceRubricCritique } from './acceptance-rubric-critique';
 
 export type AcceptanceRubricVettingState = 'not-required' | 'disabled' | 'unvetted' | 'vetted';
 
@@ -49,6 +50,8 @@ export interface AcceptanceRubricVettingCandidate {
 }
 
 export interface AcceptanceRubricVettingStatus {
+  /** Direct critique carries no meta-scorecard or grade-the-grader prerequisite. */
+  critique?: AcceptanceRubricCritique;
   /** Whether this rubric must carry a current meta-rubric attestation. */
   required: boolean;
   /** Whether the current rubric may proceed to grading/completion. */
@@ -148,6 +151,7 @@ export interface GradingAuditDispatchSuppression {
 }
 
 export interface AcceptanceRubricVettingDeps {
+  readCurrentCritique?: typeof readCurrentAcceptanceRubricCritique;
   /** Required at call sites so this policy module does not import scorecards at runtime. */
   listScorecards: (filter: {
     rubricRef?: string;
@@ -320,14 +324,21 @@ export async function getAcceptanceRubricVettingStatus(
   const metaRubric = await getRubric(META_ACCEPTANCE_RUBRIC_ID);
   if (!metaRubric) return notRequired('meta-rubric-missing', gateEnabled);
 
-  const [currentRevision, metaCards] = await Promise.all([
-    getRubricPlanRevision(rubric.rubricId),
-    deps.listScorecards({
-      rubricRef: META_ACCEPTANCE_RUBRIC_ID,
-      subjectRef: rubric.rubricId,
-      limit: 50,
-    }),
-  ]);
+  const currentRevision = await getRubricPlanRevision(rubric.rubricId);
+  const critique = await (deps.readCurrentCritique ?? readCurrentAcceptanceRubricCritique)(rubric, currentRevision);
+  if (critique) {
+    return {
+      ...notRequired('current', gateEnabled), required: true, state: 'vetted',
+      currentRevision, currentCriteriaHash: rubric.criteriaHash ?? null,
+      attestedRevision: critique.rubricRevision, attestedCriteriaHash: critique.criteriaHash,
+      consultId: critique.consultId, workItemId: critique.workItemId, critique,
+    };
+  }
+  // Historical stamps remain readable. A current critique never needs this
+  // legacy channel, its ratings, or its grade-the-grader audit.
+  const metaCards = await deps.listScorecards({
+    rubricRef: META_ACCEPTANCE_RUBRIC_ID, subjectRef: rubric.rubricId, limit: 50,
+  });
   // Judge every card ONCE and keep the per-card verdict, rather than filtering
   // the population down and then inferring a cause from how many survived.  The
   // policy is unchanged — the checks and their order are the same, and

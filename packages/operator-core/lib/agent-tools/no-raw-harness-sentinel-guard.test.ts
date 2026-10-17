@@ -9,9 +9,14 @@ import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no declaration file; keep this import on one line so
 // the suppression covers TS7016 on the module specifier.
-import { BASELINE, findOffenders, findRawHarnessSentinelUses, findingKey } from '../../../../scripts/check-no-raw-harness-sentinel.mjs';
+import { BASELINE, findOffenders, findRawHarnessSentinelUses, findingKey, isExcluded } from '../../../../scripts/check-no-raw-harness-sentinel.mjs';
 
 describe('raw ctx.harnessSlug sentinel detector', () => {
+  it('excludes generated native fixture debug bundles from source scanning', () => {
+    expect(isExcluded('apps/operator/apps/operator/dist-host-native-fixture-debug-2001983/hono-host.mjs')).toBe(true);
+    expect(isExcluded('apps/operator/lib/hono-host.ts')).toBe(false);
+  });
+
   it('flags a nullish fallback that lets the truthy * sentinel win', () => {
     const [finding] = findRawHarnessSentinelUses(
       'const harness = args.harness ?? ctx.harnessSlug ?? undefined;',

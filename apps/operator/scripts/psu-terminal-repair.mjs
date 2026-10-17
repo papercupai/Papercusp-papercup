@@ -28,6 +28,7 @@ export const LEGACY_IDENTITY_FUNCTION = `export function codexNativeIdForPty(cod
   }
 }`;
 const MARKER = '/* psu-terminal-identity-fdinfo-v1 */';
+const INSPECTOR_PUBLISH_UID_FLAG = '--inspect-publish-uid=';
 const hash = (text) => createHash('sha256').update(text).digest('hex');
 // Read original ESM bytes: Function#toString on a bundled/test-transformed
 // module carries synthetic import bindings that do not exist in a live host.
@@ -39,6 +40,31 @@ function productionFunction(name) {
   return launcherSource.slice(start, end + 2);
 }
 const readerSource = productionFunction('readLinuxProcessFlockText').slice('export '.length);
+
+/**
+ * Node's SIGUSR1 inspector activation writes its URL to fd 2 when the
+ * `stderr` publish destination is enabled. Interactive psu hosts must publish
+ * the URL through HTTP only so a repair cannot append a debugger banner to the
+ * owner's TUI. The last option wins, matching Node's command-line handling.
+ * @param {{cmdline?:string[],environment?:string}} [options]
+ */
+export function hasTerminalSafeInspectorPublication({ cmdline = [], environment = '' } = {}) {
+  let destinations = null;
+  const options = [];
+  for (const value of String(environment).split('\0')) {
+    if (value.startsWith('NODE_OPTIONS=')) options.push(...value.slice('NODE_OPTIONS='.length).trim().split(/\s+/));
+  }
+  options.push(...(Array.isArray(cmdline) ? cmdline : []));
+  for (let i = 0; i < options.length; i += 1) {
+    const option = String(options[i]);
+    let value = option.startsWith(INSPECTOR_PUBLISH_UID_FLAG)
+      ? option.slice(INSPECTOR_PUBLISH_UID_FLAG.length)
+      : null;
+    if (option === '--inspect-publish-uid' && i + 1 < options.length) value = String(options[++i]);
+    if (value !== null) destinations = value.split(',').map((part) => part.trim()).filter(Boolean);
+  }
+  return Boolean(destinations?.includes('http') && !destinations.includes('stderr'));
+}
 
 /** A function-body-only change is safe for V8 live edit of an existing module.
  * Inline the SAME production reader because legacy modules lack its binding.
@@ -88,6 +114,60 @@ export async function applyTerminalIdentityRepair(client, { scriptId, source, ap
   return { ...receipt, applied: true };
 }
 
+/**
+ * SIGUSR1 activation can be delayed behind a blocked Node main thread. Keep the
+ * activation attempt owned after the caller's short foreground budget expires,
+ * and close only a target that proves it is the same PID/incarnation and
+ * launcher entry. A late target belonging to another process is never closed.
+ * @param {{pid:number,entry:string,started:string,maxWaitMs?:number,pollIntervalMs?:number,
+ *   discover?:typeof discoverInspector,create?:typeof createCdpClient,close?:typeof closeInspector,
+ *   sleepImpl?:(ms:number)=>Promise<unknown>}} options
+ */
+export async function closeLateInspectorWhenAvailable({
+  pid,
+  entry,
+  started,
+  maxWaitMs = 30_000,
+  pollIntervalMs = 100,
+  discover = discoverInspector,
+  create = createCdpClient,
+  close = closeInspector,
+  sleepImpl = sleep,
+}) {
+  const deadline = Date.now() + maxWaitMs;
+  try {
+    while (Date.now() < deadline) {
+      const target = await discover({ portCount: 1, requestTimeoutMs: 250 });
+      if (!target) {
+        await sleepImpl(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())));
+        continue;
+      }
+      const client = create(target.wsUrl, { requestTimeoutMs: 5_000 });
+      try {
+        await client.connect();
+        const identity = (await client.evaluate(
+          '({pid:process.pid,entry:process.argv[1]})',
+          { returnByValue: true },
+        )).result.value;
+        const exact = identity?.pid === pid && identity.entry === entry && startTicks(pid) === started;
+        if (exact) {
+          await close(client, target.port);
+          return { closed: true, port: target.port };
+        }
+      } finally {
+        // A verified close can fail before it releases the transport. Ownership
+        // of this connection ends here on success, refusal, and failure alike.
+        client.close();
+      }
+      return { closed: false, reason: 'identity-mismatch' };
+    }
+    return { closed: false, reason: 'activation-timeout' };
+  } catch (error) {
+    return { closed: false, reason: 'cleanup-error',
+      error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function startTicks(pid) {
   const text = readFileSync('/proc/' + pid + '/stat', 'utf8');
   return text.slice(text.lastIndexOf(')') + 1).trim().split(/\s+/)[19];
@@ -112,6 +192,13 @@ export async function repairTerminalHost({ pid, ownerId, apply = false }) {
   const executable = basename(readlinkSync('/proc/' + pid + '/exe')).replace(/ \(deleted\)$/, '');
   if (!entry || !/^node(?:js)?$/.test(executable))
     throw new Error('Discovery PID is not a Node terminal host; repair refused before signaling');
+  const environment = readFileSync('/proc/' + pid + '/environ', 'utf8');
+  if (!hasTerminalSafeInspectorPublication({ cmdline: argv, environment })) {
+    throw new Error(
+      'Terminal inspector attachment refused: launch the host with --inspect-publish-uid=http ' +
+      '(stderr publication is unsafe for an interactive TUI)',
+    );
+  }
   const started = startTicks(pid);
   if (await discoverInspector({ portCount: 1 })) throw new Error('Inspector port is already occupied; leave the existing debugger alone');
   process.kill(pid, 'SIGUSR1');
@@ -121,7 +208,15 @@ export async function repairTerminalHost({ pid, ownerId, apply = false }) {
     if (target) break;
     await sleep(100);
   }
-  if (!target) throw new Error('Terminal inspector did not open on loopback');
+  if (!target) {
+    // The signal may have been accepted while the main thread was blocked. Keep
+    // Own cleanup until its bounded attempt settles. A detached promise loses
+    // the close verdict when the repair caller exits; attach the full receipt
+    // to the original activation failure so unresolved cleanup stays visible.
+    const inspectorCleanup = await closeLateInspectorWhenAvailable({ pid, entry, started });
+    throw Object.assign(new Error('Terminal inspector did not open on loopback; cleanup: ' +
+      (inspectorCleanup.closed ? 'closed' : inspectorCleanup.reason)), { inspectorCleanup });
+  }
   const client = createCdpClient(target.wsUrl, { requestTimeoutMs: 5000 });
   let verified = false;
   let receipt;

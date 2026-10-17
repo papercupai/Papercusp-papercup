@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('../severe-event-broadcast', () => ({ broadcastSevereEvent: vi.fn(async () => true),
   broadcastSevereEventResolved: vi.fn(async () => true) }));
 vi.mock('../agent-tools/coordination/tools/conditions', () => ({ readConditionEnvelopes: async () => [],
+  readLatestConditionEnvelope: async () => null,
   computeConditionStates: () => [] }));
 import {
   detectBreaches,
@@ -11,7 +12,13 @@ import {
   formatGrowthEscalation,
   formatUndeclaredToast,
   formatUndeclaredDiskToast,
-  runStorageGrowthAlarmOnce,
+  runStorageGrowthAlarmOnce as runStorageGrowthAlarmWithDefaults,
+  runDiskHeadroomAlarmOnce,
+  detectDiskHeadroom,
+  detectDiskGrowthWarnings,
+  assessNativeDiskHeadroomAlarm,
+  formatDiskHeadroomToast,
+  DISK_HEADROOM_FLOORS,
   categoryCeilingBytes,
   RETENTION_COVERED_ELSEWHERE,
   detectExemptSubsetGrowth,
@@ -33,8 +40,165 @@ import {
 } from './storage-growth-alarm';
 import type { DiskEntry, DiskRootChildScan } from './disk';
 import type { StorageUsageRow } from './usage';
+import type { CensusDeviceView } from './disk-consumer-census';
 
 const GIB = 1024 ** 3;
+
+describe('native headroom acceptance evidence', () => {
+  function fixture() {
+    const now = Date.parse('2026-10-16T12:00:00Z');
+    const devices: CensusDeviceView[] = ['/', '/mnt/data', '/mnt/cold-a', '/mnt/cold-b'].map(device => ({
+      device, host: 'native-host', runId: `latest:${device}`, baselineRunId: `base:${device}`,
+      producerBuildSha: 'build', baselineProducerBuildSha: 'build', truncatedByLimit: false,
+      complete: true, stale: false, coverageGap: false, sizeBytes: 2e12, availBytes: 200e9,
+      sampledAt: new Date(now - 60_000).toISOString(), baselineAt: new Date(now - 60_000 - 86400_000).toISOString(),
+      baselineSizeBytes: 2e12, baselineAvailBytes: 300e9,
+      consumers: [{ consumer: `${device}/grower`, kind: 'dir', depth: 1, bytes: 200e9,
+        baselineBytes: 100e9, growth24hBytes: 100e9 }],
+    }));
+    const breaches = detectDiskHeadroom(devices), growth = detectDiskGrowthWarnings(devices);
+    const notification = { id: '42', ...formatDiskHeadroomToast(breaches, growth) };
+    const observation = { schemaVersion: 1, observedAt: new Date(now).toISOString(),
+      runtime: { host: 'native-host', pid: 123, startedAt: new Date(now - 3600_000).toISOString(), buildSha: 'build' },
+      floors: { ...DISK_HEADROOM_FLOORS }, horizonDays: 7, devices: structuredClone(devices),
+      breaches, growth, projectionUnknown: [] as string[], notification: { ...notification } };
+    const scope = { host: 'native-host', buildSha: 'build', now, hourlyCoverage: true };
+    return { devices, notification, observation, scope };
+  }
+  const assess = (s: ReturnType<typeof fixture>) => assessNativeDiskHeadroomAlarm(s.observation, s.devices, s.notification, s.scope);
+  it('recomputes exact native floors, forecast and top growers and matches the persisted notification', () => {
+    expect(assess(fixture()).verdict).toBe('pass');
+  });
+  it.each(['host', 'build', 'producer', 'baseline-producer', 'legacy-producer', 'truncated', 'unknown-truncation', 'future', 'stale', 'coverage', 'device', 'duplicate', 'baseline', 'partial', 'attribution', 'run', 'notification'])(
+    'refuses missing or mismatched %s evidence', missing => {
+      const s = fixture();
+      if (missing === 'host') s.observation.runtime.host = 'other';
+      if (missing === 'build') s.observation.runtime.buildSha = 'other';
+      if (missing === 'producer') s.devices[0]!.producerBuildSha = 'older-build';
+      if (missing === 'baseline-producer') s.devices[0]!.baselineProducerBuildSha = 'older-build';
+      if (missing === 'legacy-producer') delete s.devices[0]!.producerBuildSha;
+      if (missing === 'truncated') s.devices[0]!.truncatedByLimit = true;
+      if (missing === 'unknown-truncation') delete s.devices[0]!.truncatedByLimit;
+      if (missing === 'future') s.scope.now -= 1;
+      if (missing === 'stale') s.scope.now += 91 * 60_000;
+      if (missing === 'coverage') s.scope.hourlyCoverage = false;
+      if (missing === 'device') s.devices.pop();
+      if (missing === 'duplicate') s.devices.push(s.devices[0]!);
+      if (missing === 'baseline') s.devices[0]!.baselineRunId = null;
+      if (missing === 'partial') s.devices[0]!.complete = false;
+      if (missing === 'attribution') s.devices[0]!.coverageGap = true;
+      if (missing === 'run') s.observation.devices[0]!.runId = 'unrelated';
+      if (missing === 'notification') s.notification.id = 'missing';
+      expect(assess(s).verdict).toBe('unknown');
+    });
+  it('ignores an unrelated unmeasured native device outside the four-volume population', () => {
+    const s = fixture();
+    s.devices.push({ device: '/mnt/unrelated', missing: true });
+    expect(assess(s).verdict).toBe('pass');
+  });
+  it('verifies the same saved notification when native device query order changes', () => {
+    const s = fixture();
+    s.devices.reverse();
+    expect(assess(s).verdict).toBe('pass');
+  });
+  it.each(['floor', 'forecast', 'grower', 'unknown'])( 'rejects a false native %s decision', wrong => {
+    const s = fixture();
+    if (wrong === 'floor') Object.assign(s.observation.floors, { rootBytes: 1 });
+    if (wrong === 'forecast') s.observation.growth[0]!.daysToFull = 8;
+    if (wrong === 'grower') s.observation.growth[0]!.topGrowers[0]!.consumer = '/invented';
+    if (wrong === 'unknown') s.observation.projectionUnknown.push('/');
+    expect(assess(s).verdict).toBe('fail');
+  });
+});
+
+// Other alarm legs must not read the live host's census during unit tests.
+function runStorageGrowthAlarmOnce(deps: Parameters<typeof runStorageGrowthAlarmWithDefaults>[0] = {}) {
+  return runStorageGrowthAlarmWithDefaults({ readDiskCensus: async () => [], ...deps });
+}
+
+describe('disk durable headroom (P-011 / R-9)', () => {
+  const census = (over: Partial<CensusDeviceView> = {}): CensusDeviceView => ({
+    device: '/', complete: true, stale: false, sizeBytes: 2e12, availBytes: 600e9,
+    sampledAt: '2026-10-16T12:00:00Z', baselineAt: '2026-10-15T12:00:00Z',
+    baselineSizeBytes: 2e12, baselineAvailBytes: 700e9,
+    consumers: [
+      { consumer: '/parent', kind: 'dir', depth: 1, bytes: 400e9, baselineBytes: 300e9, growth24hBytes: 100e9 },
+      { consumer: '/parent/child', kind: 'dir', depth: 2, bytes: 400e9, baselineBytes: 300e9, growth24hBytes: 100e9 },
+    ], ...over,
+  });
+
+  it('alarms at the decimal root/data floors and both real cold-tier mount names; equality passes', () => {
+    const bad = [census({ availBytes: 250e9 - 1 }), census({ device: '/mnt/data', availBytes: 1e12 - 1 }),
+      census({ device: '/mnt/cold-a', availBytes: 400e9 - 1 }), census({ device: '/mnt/cold-b', availBytes: 400e9 - 1 })];
+    expect(detectDiskHeadroom(bad).map(b => b.device)).toEqual(['/', '/mnt/data', '/mnt/cold-a', '/mnt/cold-b']);
+    expect(detectDiskHeadroom([census({ availBytes: 250e9 }), census({ device: '/mnt/data', availBytes: 1e12 }),
+      census({ device: '/mnt/cold-a', availBytes: 400e9 })])).toEqual([]);
+  });
+
+  it('projects total free-space consumption and names top growers without summing nested paths', () => {
+    const warning = detectDiskGrowthWarnings([census()]);
+    expect(warning).toHaveLength(1);
+    expect(warning[0]).toMatchObject({ device: '/', daysToFull: 6, growthBytesPerDay: 100e9,
+      topGrowers: [{ consumer: '/parent', growthBytes: 100e9 }, { consumer: '/parent/child', growthBytes: 100e9 }] });
+    // No alarm at 7 days; counting the nested directories twice would produce 3.5d.
+    expect(detectDiskGrowthWarnings([census({ availBytes: 700e9, baselineAvailBytes: 800e9 })])).toEqual([]);
+    expect(detectDiskGrowthWarnings([census({ availBytes: 600e9, baselineAvailBytes: 600e9 })])).toEqual([]);
+    expect(detectDiskGrowthWarnings([census({ baselineAvailBytes: 500e9 })])).toEqual([]);
+  });
+
+  it('uses actual elapsed time and detects a full filesystem independently of consumer availability', () => {
+    expect(detectDiskGrowthWarnings([census({ baselineAt: '2026-10-15T18:00:00Z', consumers: [] })])[0]!.daysToFull).toBe(4.5);
+    expect(detectDiskGrowthWarnings([census({ availBytes: 0 })])[0]!.daysToFull).toBe(0);
+  });
+
+  it('keeps unmeasured, stale, resized and non-comparable histories unknown', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    for (const change of [{ missing: true }, { stale: true }, { complete: false }, { complete: undefined },
+      { baselineAvailBytes: null }, { baselineAt: null }, { baselineSizeBytes: 3e12 },
+      { baselineAt: '2026-10-16T13:00:00Z' }, { baselineAt: '2026-10-10T12:00:00Z' }]) {
+      expect(detectDiskGrowthWarnings([census(change as Partial<CensusDeviceView>)])).toEqual([]);
+    }
+    const emitToast = vi.fn(async () => {});
+    const result = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [census({ missing: true })], emitToast });
+    expect(result.diskProjectionUnknown).toEqual(['/']); expect(emitToast).not.toHaveBeenCalled();
+    expect((await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => { throw new Error('read failed'); }, emitToast })).diskProjectionUnknown)
+      .toEqual(['census read failed']);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('disk headroom projection skipped (UNKNOWN'));
+  });
+
+  it('emits the new warning even when the independent category scan fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const emitToast = vi.fn(async (_toast: { level: string; message: string; description: string }) => {});
+    const result = await runStorageGrowthAlarmOnce({ computeUsage: async () => { throw new Error('category unavailable'); },
+      listTableSizes: async () => [], listDiskRootChildren: emptyDiskScan, countExemptSubsets: async () => [],
+      readRetentionAges: healthyRetentionAges, readDiskCensus: async () => [census({ availBytes: 200e9, baselineAvailBytes: 300e9 })], emitToast });
+    expect(result.diskHeadroom).toHaveLength(1); expect(result.diskGrowth).toHaveLength(1);
+    expect(emitToast).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('Disk headroom alarm'),
+      description: expect.stringContaining('full in 2.0d') }), expect.objectContaining({ schemaVersion: 1 }));
+    expect(emitToast.mock.calls.some(([t]) => t.description.includes('/parent/child'))).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('usage scan skipped'));
+  });
+
+  it('binds the alarm decision to saved census identities and retains unknown inputs', async () => {
+    const emitToast = vi.fn(async () => {});
+    const devices = [census({ host: 'saved-host', runId: 'latest', baselineRunId: 'baseline' }),
+      census({ device: '/mnt/cold-b', missing: true, host: undefined, runId: undefined, baselineRunId: null })];
+    await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => devices, emitToast });
+    expect(emitToast).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('Disk headroom alarm') }),
+      expect.objectContaining({ schemaVersion: 1, devices,
+        projectionUnknown: ['/mnt/cold-b'], horizonDays: 7,
+        runtime: expect.objectContaining({ pid: process.pid }),
+        growth: [expect.objectContaining({ device: '/', daysToFull: 6 })] }));
+  });
+
+  it('does not report an emitted alarm when notification persistence fails', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => [census()],
+      emitToast: async () => { throw new Error('notification refused'); } });
+    expect(result.diskGrowth).toEqual([]);
+    expect(result.diskProjectionUnknown).toEqual(['census read failed']);
+  });
+});
 
 /** Keep legacy alarm-leg tests independent from the host filesystem. */
 const emptyDiskScan = async (_registeredPaths: readonly string[]): Promise<DiskRootChildScan> => ({

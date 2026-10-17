@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "kind": "runtime-observation",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "workItem": "WI-6554700010015276",
+  "recordedAt": "2026-10-16T16:14:00Z",
+  "status": "snapshot-performance-acceptance-open",
+  "shipment": "unverified",
+  "runtime": {
+    "route": "operator-api",
+    "endpoint": "http://127.0.0.1:9171",
+    "buildSha": "25a4d82162",
+    "role": "su",
+    "containmentEvidence": "/tmp/native-p040-route-containment-20261016.json",
+    "containedFiles": [
+      "packages/operator-core/lib/agent-tools/gitnexus/query.ts",
+      "packages/operator-core/lib/code-intelligence/push-snapshot.ts",
+      "packages/operator-core/lib/code-intelligence/lsp-facade.ts"
+    ]
+  },
+  "samples": [
+    { "name": "mapInsertBindsByName", "backend": "typescript-service", "dispatchWallMs": 2189, "answerLatencyMs": 1170, "evidence": "/tmp/native-p040-runtime-sample-20261016.json" },
+    { "name": "mapInsertBindsByName", "backend": "typescript-service", "dispatchWallMs": 2924, "answerLatencyMs": 1236, "evidence": "/tmp/native-p040-runtime-warm-20261016.json" },
+    { "name": "outputTail", "backend": "typescript-service", "dispatchWallMs": 1498, "answerLatencyMs": 746, "evidence": "/tmp/native-p040-runtime-positive-20261016.json" }
+  ],
+  "sourceChecks": {
+    "snapshotGeneratedAt": "2026-10-15T19:43:57.923Z",
+    "snapshotCommit": "ec311ee1563a079bfffbc84d4bd3c1a6a389c4fa",
+    "fakeD1": {
+      "path": "apps/operator-public/src/__tests__/fake-d1.ts",
+      "snapshotSha256": "e7fc6150a8fe0864e81e518aaf9cc46e03829e8487099e208c48a8a8279813ab",
+      "currentSha256": "374416738851732bb3bc4eebfb76633a3e1f5ef099638071fbe5b5b83c3960fc"
+    },
+    "outputTail": {
+      "declarationAndCallerHashMatch": true,
+      "supportingSource": "packages/operator-core/package.json",
+      "snapshotSha256": "3cfe70259e200ff19e7572b47596e2ed5583239bbbc62769b73fea82d7fe0add",
+      "currentSha256": "6518ffdf37df447fa1176e32f088ca4b556bf42087a66e14eb87c1c351397807"
+    },
+    "interpretation": "Both candidate proofs contain a stale source. queryPushSnapshot corroborates every symbol.sources entry, definition and caller before admitting a snapshot answer. These are disqualified snapshot-performance samples, not evidence of a fast-path regression. Verify all symbol.sources for the next positive control."
+  },
+  "limits": [
+    "Sequences stopped on the first snapshot miss; no definition request followed and no global p50 is calculated.",
+    "Dispatch wall measures code:run child dispatch; answerLatencyMs is the backend writer's own interval and excludes outer dispatch work.",
+    "No judge-role, final release or whole-plan acceptance is claimed. Existing 24-case source qualification remains separate."
+  ],
+  "next": "Select an unchanged symbol whose entire sources array and caller/definition hashes match, or refresh through maintained source-snapshot maintenance after its containing commit. Then run bounded definition/caller acceptance and judge-role evidence."
+}

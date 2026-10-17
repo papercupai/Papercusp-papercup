@@ -60,10 +60,24 @@ import {
 import { gatherOnDesktopSessions } from '../../desktop-window-liveness';
 import { gatherViewerAttachedOwners } from '../../pty-viewer-heartbeat';
 import type { Watermark } from '@papercusp/coordination/core';
+import { withBoundedTimeout } from '../../bounded-timeout';
 
 /** Hard GC threshold: rows whose heartbeat is older than this are dead beyond
  *  any doubt and are swept on read so the roster stays bounded. */
 const PRESENCE_GC_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Optional attribution must never hold the roster hostage. This is the caller
+ * deadline for desktop, coupling, and mode enrichment; the base presence rows
+ * remain useful when any one of those legs is slow or wedged.
+ */
+export const PRESENCE_OPTIONAL_LEG_TIMEOUT_MS = 5_000;
+/**
+ * Source reads are the base roster input, but a stalled PG query must not hold
+ * the transport open indefinitely. A timed-out source contributes its empty
+ * best-effort fallback and is marked degraded in the snapshot diagnostics.
+ */
+export const PRESENCE_SOURCE_LEG_TIMEOUT_MS = 8_000;
 
 export interface PresenceSnapshotDiagnostic {
   phase: 'source' | 'enrichment' | 'post-enrichment' | 'derivation' | 'detail';
@@ -481,6 +495,39 @@ export async function assemblePresenceSnapshot(
       throw error;
     }
   };
+  const boundedLeg = async <T>(
+    phase: PresenceSnapshotDiagnostic['phase'],
+    name: string,
+    work: Promise<T> | ((signal: AbortSignal) => Promise<T>),
+    fallback: T,
+    timeoutMs = PRESENCE_OPTIONAL_LEG_TIMEOUT_MS,
+  ): Promise<T> => {
+    // Preserve the snapshot's existing fail-soft contract: ordinary source
+    // errors are recorded as degraded diagnostics, not emitted as a warning for
+    // every best-effort leg. Timeout warnings remain visible because a deadline
+    // breach is the transport-safety signal this guard is meant to catch.
+    let workErrored = false;
+    const guardedWork = async (signal: AbortSignal): Promise<T> => {
+      try {
+        return await (typeof work === 'function' ? work(signal) : work);
+      } catch {
+        workErrored = true;
+        return fallback;
+      }
+    };
+    const result = await withBoundedTimeout(guardedWork, {
+      fallback,
+      timeoutMs,
+      label: `coord:presence:${name}`,
+    });
+    reportDiagnostic({
+      phase,
+      name,
+      elapsedMs: result.elapsedMs,
+      status: result.degraded || workErrored ? 'error' : 'ok',
+    });
+    return result.value;
+  };
   const { wsId, potId, scope, scopeNote } = resolved;
   // EI-9454: a `{ owner }` read is a TARGETED point-lookup — source queries and
   // downstream enrichment must receive only the bounded owner selectors, and it
@@ -492,16 +539,16 @@ export async function assemblePresenceSnapshot(
     'source',
     'initialReadBatch',
     () => Promise.all([
-    timeAsync('source', 'listPresence', () => listPresence({
+    boundedLeg('source', 'listPresence', () => listPresence({
       workspaceId: wsId,
       potSlug: potId,
       ...(targetedOwnerIds ? { ownerIds: targetedOwnerIds } : {}),
-    })),
-    timeAsync('source', 'listFederatedPresence', () => listFederatedPresence({
+    }), [] as Awaited<ReturnType<typeof listPresence>>, PRESENCE_SOURCE_LEG_TIMEOUT_MS),
+    boundedLeg('source', 'listFederatedPresence', () => listFederatedPresence({
       workspaceId: wsId,
       potSlug: potId,
       ...(targetedOwnerIds ? { ownerIds: targetedOwnerIds } : {}),
-    })),
+    }), [] as Awaited<ReturnType<typeof listFederatedPresence>>, PRESENCE_SOURCE_LEG_TIMEOUT_MS),
     // The AUTHORITATIVE-session-log leg (P-001): live recorded sessions of ANY
     // CLI not yet self-registered in coord_presence — so a recorded session is
     // visible the instant it launches, never gated on a self-heartbeat. Skipped
@@ -509,12 +556,14 @@ export async function assemblePresenceSnapshot(
     // including it could leak cross-hive agents; P-002 adds hive_slug). Runs for
     // the workspace/all views — the su/operator/admin roster where the gap lives.
     // listRecordedLiveSessions is itself best-effort ([] on DB error).
-    timeAsync('source', 'listRecordedLiveSessions', () => potId == null
+    boundedLeg('source', 'listRecordedLiveSessions', () => potId == null
       ? listRecordedLiveSessions({
           workspaceId: wsId,
           ...(targetedOwnerIds ? { ownerIds: targetedOwnerIds } : {}),
         })
-      : Promise.resolve([] as Awaited<ReturnType<typeof listRecordedLiveSessions>>)),
+      : Promise.resolve([] as Awaited<ReturnType<typeof listRecordedLiveSessions>>),
+      [] as Awaited<ReturnType<typeof listRecordedLiveSessions>>,
+      PRESENCE_SOURCE_LEG_TIMEOUT_MS),
     // Blunt 24h GC of long-dead rows (the pre-existing backstop, still here as a
     // final safety net). NOTE: the READ side additionally excludes `ended` rows from
     // the default payload (`selectRosterRows`) WITHOUT deleting them — that's a
@@ -529,9 +578,9 @@ export async function assemblePresenceSnapshot(
     // a targeted { owner } lookup is the hot "is this agent alive?" point-read and
     // must not queue a write behind a starved pool. The hourly presence-reaper and
     // every default read keep the sweep cadence, so retention is unaffected.
-    timeAsync('source', 'sweepStalePresence', () => targeted
+    boundedLeg('source', 'sweepStalePresence', () => targeted
       ? Promise.resolve(0)
-      : sweepStalePresence(PRESENCE_GC_MS)).catch(() => 0),
+      : sweepStalePresence(PRESENCE_GC_MS), 0, PRESENCE_SOURCE_LEG_TIMEOUT_MS),
     // EI-16639: the alias-aware nursery-liveness leg (nursery-alias-liveness.ts)
     // — closes the same identity-alias gap migration 225/EI-311 already closed
     // for fleet_assignment. Gated the SAME way as the recordedLive leg above
@@ -540,12 +589,14 @@ export async function assemblePresenceSnapshot(
     // cross-hive bee. A targeted read scopes the query to just the requested
     // owner (EI-9454 point-lookup-cost discipline); a full-roster read takes the
     // bounded (500-row) default. Best-effort ([] on any DB error).
-    timeAsync('source', 'listRunningNurseryAliasRows', () => potId == null
+    boundedLeg('source', 'listRunningNurseryAliasRows', () => potId == null
       ? listRunningNurseryAliasRows({
           workspaceId: wsId,
           ...(targeted ? { ownerIds: [...ownerSelectors] } : {}),
         })
-      : Promise.resolve([] as NurseryAliasRow[])).catch(() => [] as NurseryAliasRow[]),
+      : Promise.resolve([] as NurseryAliasRow[]),
+      [] as NurseryAliasRow[],
+      PRESENCE_SOURCE_LEG_TIMEOUT_MS),
   ]),
   );
   // Reconcile the two liveness sources: a fresh presence row wins; a live
@@ -580,11 +631,13 @@ export async function assemblePresenceSnapshot(
   if (targeted) {
     const needle = opts.owner as string;
     if (!all.some((r) => matchesOwner(r, needle))) {
-      const endedRows = await timeAsync(
+      const endedRows = await boundedLeg(
         'source',
         'listEndedAdvSessionsByOwners',
         () => listEndedAdvSessionsByOwners([needle]),
-      ).catch(() => []);
+        [],
+        PRESENCE_SOURCE_LEG_TIMEOUT_MS,
+      );
       const endedSynth = synthesizeEndedRosterRows(endedRows, new Set(all.map((r) => r.ownerId)));
       if (endedSynth.length > 0) {
         all = [...all, ...endedSynth];
@@ -645,12 +698,12 @@ export async function assemblePresenceSnapshot(
   let selfWakeSignals = new Map<string, SelfWakeSignals>();
   await timeAsync('enrichment', 'enrichmentBatch', () => Promise.all([
     // each best-effort + independent — presence must list even if any join fails.
-    timeAsync('enrichment', 'fetchPresenceTier1', () => fetchPresenceTier1(localActiveIds))
+    boundedLeg('enrichment', 'fetchPresenceTier1', () => fetchPresenceTier1(localActiveIds), new Map())
       .then((m) => {
         joins = m;
       })
       .catch(() => {}),
-    timeAsync('enrichment', 'fetchWakeability', () => fetchWakeability(localAllIds))
+    boundedLeg('enrichment', 'fetchWakeability', () => fetchWakeability(localAllIds), new Map())
       .then((m) => {
         wakeability = m;
       })
@@ -659,7 +712,7 @@ export async function assemblePresenceSnapshot(
     // adv_session is live rescue a not-wakeable row to `recorded` instead of
     // `ended` — the SAME leg fleet:assignments has applied since EI-6374, now
     // uniform here via the oracle's deriveVerdict. Best-effort like every join.
-    timeAsync('enrichment', 'recordedLiveOwnerIds', () => recordedLiveOwnerIds(localAllIds))
+    boundedLeg('enrichment', 'recordedLiveOwnerIds', () => recordedLiveOwnerIds(localAllIds), new Set<string>())
       .then((s) => {
         // EI-16639: fold the alive nursery-alias ids in too, so deriveVerdict's
         // `recordedLiveOnly` (liveness-oracle.ts) classifies an alias-only bee as
@@ -681,8 +734,8 @@ export async function assemblePresenceSnapshot(
     // positive rescue below still applies. Best-effort: a read failure degrades
     // to the older verdict, never to a death claim. Deferred through a thunk so a
     // throwing accessor (a partial test mock) lands in the catch, not the batch.
-    timeAsync('enrichment', 'endedRecordedOwnerIds', () =>
-      Promise.resolve().then(() => endedRecordedOwnerIds(localAllIds)))
+    boundedLeg('enrichment', 'endedRecordedOwnerIds', () =>
+      Promise.resolve().then(() => endedRecordedOwnerIds(localAllIds)), new Set<string>())
       .then((s) => {
         recordedEndedOwners = s;
       })
@@ -695,35 +748,40 @@ export async function assemblePresenceSnapshot(
     // ancestry traversal; normal presence reads retain the desktop enrichment.
     opts.includeDesktopEnrichment === false
       ? Promise.resolve()
-      : timeAsync('enrichment', 'gatherOnDesktopSessions', () =>
-          gatherOnDesktopSessions({
-            // This snapshot already knows its complete local owner set. Keep
-            // desktop attribution within those rows instead of making a broad
-            // presence read scan every PSU-PTY discovery record on disk. The
-            // reaper still uses the unfiltered census because it must protect
-            // desktop sessions that are absent from the current presence rows.
-            ownerIds: localAllIds,
-            onDiagnostic: (diagnostic) => reportDiagnostic({
-              phase: 'enrichment',
-              name: `gatherOnDesktopSessions.${diagnostic.name}`,
-              elapsedMs: diagnostic.elapsedMs,
-              status: diagnostic.status,
+      : timeAsync('enrichment', 'gatherOnDesktopSessions', async () => {
+          const bounded = await withBoundedTimeout(
+            () => gatherOnDesktopSessions({
+              // This snapshot already knows its complete local owner set. Keep
+              // desktop attribution within those rows instead of making a broad
+              // presence read scan every PSU-PTY discovery record on disk. The
+              // reaper still uses the unfiltered census because it must protect
+              // desktop sessions that are absent from the current presence rows.
+              ownerIds: localAllIds,
+              onDiagnostic: (diagnostic) => reportDiagnostic({
+                phase: 'enrichment',
+                name: `gatherOnDesktopSessions.${diagnostic.name}`,
+                elapsedMs: diagnostic.elapsedMs,
+                status: diagnostic.status,
+              }),
             }),
-          }))
-          .then((s) => {
-            onDesktopOwners = s.owners;
-          })
-          .catch(() => {}),
+            {
+              fallback: null,
+              timeoutMs: PRESENCE_OPTIONAL_LEG_TIMEOUT_MS,
+              label: 'coord:presence:gatherOnDesktopSessions',
+            },
+          );
+          if (bounded.value) onDesktopOwners = bounded.value.owners;
+        }).catch(() => {}),
     // PTY-panel viewer-attach owners (pty-viewer-heartbeat.ts) — the no-OS-window
     // sibling of on-desktop. Best-effort + independent so a DB hiccup never affects
     // the other joins.
-    timeAsync('enrichment', 'gatherViewerAttachedOwners', () => gatherViewerAttachedOwners())
+    boundedLeg('enrichment', 'gatherViewerAttachedOwners', () => gatherViewerAttachedOwners(), new Set<string>())
       .then((s) => {
         viewerAttachedOwners = s;
       })
       .catch(() => {}),
     // Named-fleet membership (P-005) — best-effort + independent of the other joins.
-    timeAsync('enrichment', 'fetchPresenceFleet', () => fetchPresenceFleet(localAllIds))
+    boundedLeg('enrichment', 'fetchPresenceFleet', () => fetchPresenceFleet(localAllIds), new Map())
       .then((m) => {
         fleet = m;
       })
@@ -733,13 +791,13 @@ export async function assemblePresenceSnapshot(
     // a failed read leaves `loops` empty, which surfaces as `dormantScheduled:null`
     // (NOT MEASURED) on every row — never as `false`, which would assert that
     // nothing will wake an agent when we simply failed to look.
-    timeAsync('enrichment', 'getLoopStatuses', () => getLoopStatuses(localAllIds))
+    boundedLeg('enrichment', 'getLoopStatuses', () => getLoopStatuses(localAllIds), new Map())
       .then((m) => {
         loops = m;
         loopsRead = true;
       })
       .catch(() => {}),
-    timeAsync('enrichment', 'fetchSelfWake', () => fetchSelfWake(localAllIds))
+    boundedLeg('enrichment', 'fetchSelfWake', () => fetchSelfWake(localAllIds), new Map())
       .then((m) => {
         selfWakeSignals = m;
       })
@@ -756,11 +814,12 @@ export async function assemblePresenceSnapshot(
   let fleetControl = new Map<string, { controlState: 'active' | 'winding-down'; controlReason: string | null }>();
   if (wsId && fleet.size > 0) {
     try {
-      await timeAsync('post-enrichment', 'getFleetControlStates', async () => {
+      fleetControl = await boundedLeg('post-enrichment', 'getFleetControlStates', async () => {
         const { getFleetControlStates } = await import('../../agent-fleets-store');
         const slugs = [...new Set([...fleet.values()].map((m) => m.fleetSlug).filter((s): s is string => !!s))];
         fleetControl = await getFleetControlStates(wsId, slugs);
-      });
+        return fleetControl;
+      }, new Map(), PRESENCE_OPTIONAL_LEG_TIMEOUT_MS);
     } catch {
       /* fail-soft — see comment above */
     }
@@ -781,7 +840,7 @@ export async function assemblePresenceSnapshot(
     .filter((r) => !isFederated(r) && wakeability.has(r.ownerId))
     .map((r) => r.ownerId))];
   const liveHostsByOwner = new Map<string, unknown | null>();
-  await timeAsync('enrichment', 'findLiveHostsAsync', async () => {
+  await boundedLeg('enrichment', 'findLiveHostsAsync', async () => {
     // A synchronous `existsSync` in this same psu-pty directory was measured
     // holding the staging API's event loop in D state for 24 seconds (the
     // accept-loop wedge). Keep these per-owner lookups off-loop and bounded.
@@ -803,7 +862,7 @@ export async function assemblePresenceSnapshot(
         }
       }));
     }
-  });
+  }, undefined, PRESENCE_OPTIONAL_LEG_TIMEOUT_MS);
   const findHostForVerdict = (ownerId: string) => liveHostsByOwner.get(ownerId) ?? null;
   // P-011(a) / D-011: every verdict this surface derives, kept so the shared
   // host-condition leg (applyHostConditionLeg) can judge it after the synchronous
@@ -974,7 +1033,7 @@ export async function assemblePresenceSnapshot(
   // take a turn: a dead-auth / quota-walled / unbound / stuck-pending host makes
   // the row `suspect` and names the condition in `wedged`. Hosts were already
   // looked up above, so there is no fallback lookup; fail-soft like every join.
-  await timeAsync('enrichment', 'hostConditionLeg', async () => {
+  await boundedLeg('enrichment', 'hostConditionLeg', async () => {
     try {
       await applyHostConditionLeg(derivedVerdicts, derivedSubjects, {
         nowMs,
@@ -984,7 +1043,7 @@ export async function assemblePresenceSnapshot(
     } catch {
       /* fail-soft: an unjudged row keeps its plain derivation */
     }
-  });
+  }, undefined, PRESENCE_OPTIONAL_LEG_TIMEOUT_MS);
   const withHostCondition = (r: RosterRow): RosterRow => {
     const v = derivedVerdicts.get(r.ownerId);
     if (v?.wedged == null) return r;
@@ -1021,7 +1080,13 @@ export async function assemblePresenceSnapshot(
   // escalation detail keeps its dedicated tools (events:* / coord:inbox) rather
   // than being duplicated into this org-PG read.
   if (opts.detail) {
-    const held = await fetchPresenceHeldLocks(localActiveIds, opts.detail.coordinationDomain);
+    const held = await boundedLeg(
+      'detail',
+      'fetchPresenceHeldLocks',
+      () => fetchPresenceHeldLocks(localActiveIds, opts.detail!.coordinationDomain),
+      new Map<string, PresenceHeldLock[]>(),
+      PRESENCE_OPTIONAL_LEG_TIMEOUT_MS,
+    );
     activeRows = activeRows.map((r) => {
       const locks = held.get(r.ownerId as string);
       if (!locks || locks.length === 0) return r;

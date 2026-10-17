@@ -53,7 +53,7 @@ describe('shared adv-session focus service', () => {
       /import\s*\{[^}]*\bfocusSessionWindow\b[^}]*\}\s*from\s*['"]\.\.\/\.\.\/\.\.\/adv-session-focus['"]/,
     );
     expect(AGENT_FOCUS_TOOL_SOURCE).toMatch(
-      /await focusSessionWindow\(\{\s*id:\s*row\.id\s*\},\s*row\)/,
+      /await focusSessionWindow\(\{\s*id:\s*row\.id,\s*workspace:\s*args\.workspace\s*\},\s*row\)/,
     );
     expect(AGENT_FOCUS_TOOL_SOURCE.match(/\bfocusSessionWindow\b/g)).toHaveLength(2);
   });
@@ -64,7 +64,13 @@ describe('shared adv-session focus service', () => {
       focused: true,
       windowId: '0xabc',
     });
-    expect(focus).toHaveBeenCalledWith('0xabc');
+    expect(focus).toHaveBeenCalledWith('0xabc', { workspace: undefined });
+  });
+
+  it('passes the same workspace option from GUI and agent callers to the shared backend', async () => {
+    const focus = vi.fn(async () => true);
+    await focusSessionWindow({ windowId: '0xabc', workspace: 'window' }, null, { focus });
+    expect(focus).toHaveBeenCalledWith('0xabc', { workspace: 'window' });
   });
 
   it('resolves a psu window by owner-title fallback and remembers the hit', async () => {

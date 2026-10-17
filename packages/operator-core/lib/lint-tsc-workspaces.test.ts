@@ -704,6 +704,13 @@ describe('the REAL tree', () => {
     expect(selected.stillInvisible.map((p: { rel: string }) => p.rel)).not.toContain('apps/operator');
   });
 
+  it('packages/docs-engine declares a typecheck script so explicit --files routing can reach it', () => {
+    const repoRoot = join(__dirname, '..', '..', '..');
+    const docsEngineRoot = join(repoRoot, 'packages', 'docs-engine');
+    const found = discover(docsEngineRoot, 0, repoRoot);
+    expect(found.map((p: { rel: string }) => p.rel)).toContain('packages/docs-engine');
+  });
+
   // THE anti-silent-un-gating guard for WI-7155 specifically. Its whole complaint was that
   // libs/generic/* was typechecked by no routine gate; the fix works only while these packages
   // keep declaring a typecheck script. Removing one silently un-gates it again — that reds HERE,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { containmentForPaths, realGitProbe, type GitProbe } from './judged-sha-containment';
+import { containmentForPaths, isAncestorAsync, realGitProbe, revParseAsync, type GitProbe } from './judged-sha-containment';
 
 const A = 'a'.repeat(40);
 
@@ -119,5 +119,77 @@ describe('realGitProbe — the documented rev-parse footgun must not reach calle
     expect(realGitProbe.isAncestor(root, head as string, head as string)).toBe(true);
     // A bad object must be UNKNOWN (null), not false.
     expect(realGitProbe.isAncestor(root, 'f'.repeat(40), head as string)).toBeNull();
+  });
+});
+
+describe('revParseAsync — live callers must not block the operator event loop', () => {
+  const root = process.cwd();
+
+  it('runs the next event-loop timer while ref resolution is still pending', async () => {
+    let commandFinished = false;
+    let timerRan = false;
+    const probe = revParseAsync(root, 'HEAD', async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      return A;
+    }).then((result) => {
+      commandFinished = true;
+      return result;
+    });
+
+    await new Promise<void>((resolve) => setTimeout(() => {
+      timerRan = true;
+      resolve();
+    }, 0));
+
+    expect(timerRan).toBe(true);
+    expect(commandFinished).toBe(false);
+    await expect(probe).resolves.toBe(A);
+  });
+
+  it('returns null for invalid output or a failed Git command', async () => {
+    await expect(revParseAsync(root, 'HEAD', async () => 'not-a-sha')).resolves.toBeNull();
+    await expect(revParseAsync(root, 'HEAD', async () => {
+      throw new Error('git is unavailable');
+    })).resolves.toBeNull();
+  });
+});
+
+describe('isAncestorAsync — live callers must not block the operator event loop', () => {
+  const root = process.cwd();
+
+  it('runs the next event-loop timer while an ancestry command is still pending', async () => {
+    let commandFinished = false;
+    let timerRan = false;
+    const probe = isAncestorAsync(root, 'a'.repeat(40), 'b'.repeat(40), async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }).then((result) => {
+      commandFinished = true;
+      return result;
+    });
+
+    await new Promise<void>((resolve) => setTimeout(() => {
+      timerRan = true;
+      resolve();
+    }, 0));
+
+    expect(timerRan).toBe(true);
+    expect(commandFinished).toBe(false);
+    await expect(probe).resolves.toBe(true);
+  });
+
+  it('keeps true, non-ancestor, and probe-failure results distinct', async () => {
+    const head = realGitProbe.revParse(root, 'HEAD');
+    expect(head).not.toBeNull();
+    await expect(isAncestorAsync(root, head as string, head as string)).resolves.toBe(true);
+
+    const notAncestor = Object.assign(new Error('not an ancestor'), { code: 1 });
+    await expect(isAncestorAsync(root, 'a'.repeat(40), 'b'.repeat(40), async () => {
+      throw notAncestor;
+    })).resolves.toBe(false);
+
+    const unavailable = Object.assign(new Error('git is unavailable'), { code: 'ENOENT' });
+    await expect(isAncestorAsync(root, 'a'.repeat(40), 'b'.repeat(40), async () => {
+      throw unavailable;
+    })).resolves.toBeNull();
   });
 });

@@ -16,9 +16,11 @@
 
 import { useCallback, useState, type CSSProperties, type FormEvent } from 'react';
 import { toast } from 'sonner';
+import { normalizeProviderInstanceOrigin, providerInstanceEndpointIssue, type ProviderAppRegistrationView } from '@papercusp/plugin-sdk';
 import type { ProviderOAuthClientSummary } from '@papercusp/operator-core/lib/integrations/ticket-integrations';
 import { Button } from '../../harness/Button';
 import { formatTime, IntegrationRequestError } from './ticket-integrations-client';
+import { ProviderAppRegistration } from './ProviderAppRegistration';
 
 export const providerOAuthClientPath = (providerId: string): string =>
   `/api/user/integrations/providers/${encodeURIComponent(providerId)}/oauth-client`;
@@ -33,20 +35,32 @@ export function ProviderOAuthClientForm({
   providerId,
   displayName,
   client,
+  appRegistration = null,
 }: {
   providerId: string;
   displayName: string;
   client: ProviderOAuthClientSummary | null;
+  appRegistration?: ProviderAppRegistrationView | null;
 }) {
   // Mid-edit drafts and whether a saved registration is being replaced: transient form state.
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
+  const [userAgentDraft, setUserAgentDraft] = useState<string | null>(null);
+  const [instanceOrigin, setInstanceOrigin] = useState<string | null>(null);
   const [replacing, setReplacing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   const editing = Boolean(client && (!client.configured || replacing));
-  const secretNeeded = Boolean(client && client.secretRequired && !client.hasClientSecret);
+  const origin = instanceOrigin ?? client?.origin ?? '';
+  const userAgent = userAgentDraft ?? client?.userAgent ?? '';
+  const setupOrigin = normalizeProviderInstanceOrigin(origin);
+  const setupPath = appRegistration?.createUrl;
+  const registration = setupPath?.startsWith('/')
+    ? setupOrigin && providerInstanceEndpointIssue(setupPath) === null ? { ...appRegistration!, createUrl: new URL(setupPath, setupOrigin).href } : null
+    : appRegistration;
+  const secretNeeded = Boolean(client && client.secretRequired && (!client.hasClientSecret ||
+    (client.instanceRequired && normalizeProviderInstanceOrigin(origin) !== client.origin)));
 
   const save = useCallback(
     async (event: FormEvent) => {
@@ -54,6 +68,16 @@ export function ProviderOAuthClientForm({
       setFormError(null);
       const id = clientId.trim();
       const secret = clientSecret.trim();
+      const identification = userAgent.trim();
+      if ((client?.userAgentRequired && !identification) || /[^\x20-\x7e]/.test(userAgent) || identification.length > 512) {
+        setFormError('Enter your app’s User-Agent as one printable ASCII line, at most 512 characters.');
+        return;
+      }
+      const savedOrigin = client?.instanceRequired ? normalizeProviderInstanceOrigin(origin.trim()) : null;
+      if (client?.instanceRequired && !savedOrigin) {
+        setFormError('Enter the instance’s HTTPS origin, such as https://your.instance, without a path or port.');
+        return;
+      }
       if (!id) {
         setFormError('Enter the app’s client ID.');
         return;
@@ -73,7 +97,7 @@ export function ProviderOAuthClientForm({
           method: 'PUT',
           cache: 'no-store',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(secret ? { clientId: id, clientSecret: secret } : { clientId: id }),
+          body: JSON.stringify({ clientId: id, ...(secret ? { clientSecret: secret } : {}), ...(savedOrigin ? { origin: savedOrigin } : {}), ...(client?.userAgentRequired || userAgentDraft !== null ? { userAgent: identification } : {}) }),
         });
         const json = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; detail?: string } | null;
         if (!res.ok || !json || json.ok === false) {
@@ -81,6 +105,8 @@ export function ProviderOAuthClientForm({
         }
         setClientId('');
         setClientSecret('');
+        setUserAgentDraft(null);
+        setInstanceOrigin(null);
         setReplacing(false);
         toast.success(`${displayName} OAuth app saved.`);
       } catch (err) {
@@ -89,7 +115,7 @@ export function ProviderOAuthClientForm({
         setBusy(false);
       }
     },
-    [clientId, clientSecret, displayName, providerId, secretNeeded],
+    [clientId, clientSecret, client?.instanceRequired, client?.userAgentRequired, userAgent, userAgentDraft, origin, displayName, providerId, secretNeeded],
   );
 
   if (!client) return null;
@@ -113,8 +139,20 @@ export function ProviderOAuthClientForm({
       <p style={hintText}>
         Redirect URL for the app: <code data-oauth-redirect-uri>{client.redirectUri}</code>
       </p>
+      {client.origin && !editing ? <p style={hintText}>Instance: {client.origin}</p> : null}
+      {client.userAgent && !editing ? <p style={hintText}>User-Agent: {client.userAgent}</p> : null}
       {editing ? (
         <>
+          {client.instanceRequired ? <input
+            type="text" name="oauth-instance-origin" aria-label="Instance origin" autoComplete="off" spellCheck={false}
+            placeholder="https://your.instance" value={origin} onChange={(event) => setInstanceOrigin(event.target.value)} style={inputStyle}
+          /> : null}
+          {client.instanceRequired ? <ProviderAppRegistration providerId={providerId} displayName={displayName} registration={registration} /> : null}
+          {client.userAgentRequired || client.userAgent ? <input
+            type="text" name="oauth-user-agent" aria-label="User-Agent" autoComplete="off" spellCheck={false}
+            placeholder="Your app’s User-Agent, including the contact required by the provider" value={userAgent}
+            onChange={(event) => setUserAgentDraft(event.target.value)} style={inputStyle}
+          /> : null}
           <input
             type="text"
             name="oauth-client-id"
@@ -158,6 +196,8 @@ export function ProviderOAuthClientForm({
                   setReplacing(false);
                   setClientId('');
                   setClientSecret('');
+                  setUserAgentDraft(null);
+                  setInstanceOrigin(null);
                   setFormError(null);
                 }}
               >

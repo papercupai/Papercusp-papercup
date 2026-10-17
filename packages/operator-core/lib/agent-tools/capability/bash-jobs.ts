@@ -207,6 +207,24 @@ const MAX_RETAINED_JOBS = 64;
  * `queued-while-killed` deadline test.
  */
 export const PC_HEAVY_SLOT_ACQUIRED_MARKER = '[pc-heavy] slot acquired — starting real work';
+/**
+ * A queued marker is the minimum evidence needed to say that a deadline fired
+ * before pc-heavy admitted the command. Absence of the acquired marker alone is
+ * insufficient: commands that never invoke pc-heavy have the same absence.
+ */
+export const PC_HEAVY_QUEUE_WAIT_MARKER = '[pc-heavy] queued for';
+export const PC_HEAVY_QUEUE_ABORT_MARKER = '[pc-heavy] QUEUE_ABORTED status=retryable reason=caller-signal';
+
+export type BashDeadlineReason = 'deadline_before_slot_acquired' | 'deadline_after_slot_acquired';
+
+/** Classify a timeout only when the command's own output proves the pc-heavy phase. */
+export function classifyDeadlineReason(output: string): BashDeadlineReason | undefined {
+  if (output.includes(PC_HEAVY_SLOT_ACQUIRED_MARKER)) return 'deadline_after_slot_acquired';
+  if (output.includes(PC_HEAVY_QUEUE_WAIT_MARKER) || output.includes(PC_HEAVY_QUEUE_ABORT_MARKER)) {
+    return 'deadline_before_slot_acquired';
+  }
+  return undefined;
+}
 
 /**
  * A generic preflight failure marker. Managed witness commands are often inline
@@ -528,6 +546,8 @@ export interface BashJob {
   timeoutMs?: number;
   /** Epoch ms of that deadline (`startedAt + timeoutMs`). */
   deadlineAt?: number;
+  /** Evidence-backed phase when the execution deadline terminated the job. */
+  deadlineReason?: BashDeadlineReason;
   /** Observed operator-side phases. A pipe byte is not proof that the payload
    *  started: confined jobs record their own unit/payload phases in logPath. */
   phaseTiming?: {
@@ -1732,6 +1752,7 @@ export function detectSelfOutputRedirect(command: string): SelfOutputRedirect | 
   const commandNames = new Map<number, string | null>();
   const candidates: RedirectCandidate[] = [];
   const pendingHeredocs: HeredocDeclaration[] = [];
+  let arithmeticParenDepth = 0;
 
   const commandBasename = (value: string): string => {
     const slash = value.lastIndexOf('/');
@@ -1839,6 +1860,32 @@ export function detectSelfOutputRedirect(command: string): SelfOutputRedirect | 
     // A backslash-newline is continuation whitespace, not a command boundary.
     if (ch === '\\' && command[i + 1] === '\n') {
       i += 1;
+      continue;
+    }
+
+    // Bash arithmetic commands and expansions use the same `>` character for
+    // comparison and shift operators. Keep their expression body out of the
+    // shell redirect scanner so `SECONDS >= deadline` cannot become a false
+    // `> =` stdout redirect when a later command has a real heredoc/redirect.
+    if (ch === '(' && command[i + 1] === '(') {
+      arithmeticParenDepth = 1;
+      i += 1;
+      continue;
+    }
+    if (arithmeticParenDepth > 0) {
+      if (ch === '(') {
+        arithmeticParenDepth += 1;
+        continue;
+      }
+      if (ch === ')') {
+        if (arithmeticParenDepth === 1 && command[i + 1] === ')') {
+          arithmeticParenDepth = 0;
+          i += 1;
+        } else {
+          arithmeticParenDepth -= 1;
+        }
+        continue;
+      }
       continue;
     }
 
@@ -2104,6 +2151,8 @@ export interface ForegroundResult {
   truncated: boolean;
   logPath: string;
   durationMs: number;
+  /** Evidence-backed phase when the execution deadline terminated the job. */
+  reason?: BashDeadlineReason;
 }
 
 export class BashTaskConfinementRequiredError extends Error {
@@ -2886,16 +2935,15 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     //
     // EI-19315037905600226: a SECOND, narrower ambiguity hides inside "deadline
     // reached" itself — it does not say whether the job ever got to DO anything.
-    // If the job's output never showed pc-heavy's slot-acquired marker, this
-    // deadline is very likely a QUEUE timeout (killed waiting for a heavy-command
-    // semaphore slot), not a real-work timeout — say so, whenever it's knowable.
-    const neverAcquiredSlot = !job.buffer.includes(PC_HEAVY_SLOT_ACQUIRED_MARKER);
-    const queuedHint = neverAcquiredSlot
-      ? ` This job's output never showed pc-heavy's "slot acquired" marker — if it runs ` +
-        `through scripts/pc-heavy.sh, it most likely died QUEUED on the heavy-command ` +
-        `semaphore (see PC_HEAVY_TIMEOUT_SEC / host load) and never began real work, rather ` +
-        `than timing out mid-execution. (If this job does not use pc-heavy.sh, disregard.)`
-      : '';
+    // A missing slot-acquired marker is not enough to diagnose queueing: a
+    // command that never invokes pc-heavy has the same output shape. Require
+    // pc-heavy's own queue marker before emitting the retryable queue reason.
+    job.deadlineReason = classifyDeadlineReason(job.buffer);
+    const queuedHint =
+      job.deadlineReason === 'deadline_before_slot_acquired'
+        ? ` This job emitted pc-heavy's queue marker but never showed its "slot acquired" marker, ` +
+          `so the deadline fired before heavy-command admission and the real command did not begin.`
+        : '';
     const deadlineDiagnostic =
       `\n[capability:bash] deadline reached: exceeded ${effectiveTimeoutMs}ms wall-clock.` +
       queuedHint +
@@ -3131,6 +3179,7 @@ export function snapshotJobResult(job: BashJob, peek = false): ForegroundResult 
     truncated,
     logPath: job.logPath,
     durationMs: (job.endedAt ?? Date.now()) - job.startedAt,
+    ...(job.deadlineReason ? { reason: job.deadlineReason } : {}),
   };
 }
 

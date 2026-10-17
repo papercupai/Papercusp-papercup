@@ -664,10 +664,67 @@ export async function resolveSavedFleetLaunchSpec(opts: {
   requireSaved?: boolean;
   readTarget?: typeof getFleetHeadcountTarget;
   memberOwnerId?: string;
+  /** Read this owner's durable launch record before the fleet-wide recipe. Used
+   * by retained-leader recovery, where the leader's own settings are authoritative. */
+  preferMemberRecord?: boolean;
   readLegacy?: typeof readAdvSessionLaunchRecordByOwner;
   legacyFallbacks?: LegacyLaunchSpecFallbacks;
 }): Promise<SavedFleetLaunchSpecResolution> {
   const readTarget = opts.readTarget ?? getFleetHeadcountTarget;
+  if (opts.preferMemberRecord && opts.memberOwnerId) {
+    const provenance = provenanceFor(opts.workspaceId, opts.fleetSlug, null, LEGACY_FLEET_LAUNCH_SPEC_SOURCE);
+    let legacy: AdvSessionLaunchRecord | null;
+    try {
+      legacy = await (opts.readLegacy ?? readAdvSessionLaunchRecordByOwner)(opts.memberOwnerId, opts.workspaceId);
+    } catch (error) {
+      return {
+        ok: false,
+        found: false,
+        error: 'saved_launch_spec_read_failed',
+        message: `Could not read the retained leader launch spec for fleet \`${opts.fleetSlug}\`: ${error instanceof Error ? error.message : String(error)}. Refusing recovery through ${opts.reusePath}.`,
+        conflicts: [],
+        provenance,
+        reusePath: opts.reusePath,
+      };
+    }
+    if (!legacy) {
+      return {
+        ok: false,
+        found: false,
+        error: 'saved_launch_spec_missing',
+        message: `No retained leader launch spec exists for owner \`${opts.memberOwnerId}\` in fleet \`${opts.fleetSlug}\`; refusing recovery through ${opts.reusePath}.`,
+        conflicts: [],
+        provenance,
+        reusePath: opts.reusePath,
+      };
+    }
+    const parsed = savedFleetLaunchSpecFromLegacyRecord(
+      legacy,
+      opts.workspaceId,
+      opts.fleetSlug,
+      opts.legacyFallbacks,
+    );
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        found: true,
+        error: 'saved_launch_spec_invalid',
+        message: `${parsed.message} Refusing recovery through ${opts.reusePath}.`,
+        conflicts: [],
+        provenance,
+        reusePath: opts.reusePath,
+      };
+    }
+    return resolveLoadedSavedFleetLaunchSpec({
+      ...opts,
+      target: null,
+      saved: parsed.saved,
+      config: parsed.config,
+      source: LEGACY_FLEET_LAUNCH_SPEC_SOURCE,
+      syntheticTarget: 1,
+      normalizedLegacyContextSize: parsed.normalizedLegacyContextSize,
+    });
+  }
   let target: FleetHeadcountTarget | null;
   try {
     target = await readTarget(opts.workspaceId, opts.fleetSlug);

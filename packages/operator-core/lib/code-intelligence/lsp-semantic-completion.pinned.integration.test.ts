@@ -9,7 +9,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { createTextCollector } from '../child-output';
 import { transformSync } from 'esbuild';
-import { CancellationTokenSource, createMessageConnection, StreamMessageReader, StreamMessageWriter } from 'vscode-jsonrpc/node';
+import { CancellationTokenSource, createMessageConnection, StreamMessageReader, StreamMessageWriter } from 'vscode-jsonrpc/node.js';
 
 const storage = vi.hoisted(() => ({ sql: undefined as postgres.Sql | undefined, tasks: [] as string[] }));
 vi.mock('@papercusp/db-org', async importOriginal => ({

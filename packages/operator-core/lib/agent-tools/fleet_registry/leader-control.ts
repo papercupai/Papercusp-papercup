@@ -215,8 +215,8 @@ export interface LeaderControlOutcome {
     harness: string | null;
     intervalSec: number | null;
     mode: LoopStatus['mode'] | null;
-    /** An intentional inactive monitor is healthy, not a missing wake source to repair. */
-    standdown?: 'no_delta_budget_exhausted';
+    /** Intentional inactivity is healthy while push watches remain available. */
+    standdown?: 'no_delta_budget_exhausted' | 'explicit_loop_end';
     error?: string;
   };
   watches: {
@@ -414,6 +414,9 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
       (!priorMonitor && priorLoop?.monitorStanddown?.code === 'no_delta_budget_exhausted'));
   if (priorLoopHealthy) {
     loop.healthy = true;
+  } else if (priorLoop?.explicitlyEnded) {
+    loop.healthy = true;
+    loop.standdown = 'explicit_loop_end';
   } else if (priorMonitorExhausted) {
     // Recovery is not a new monitoring mandate. Keep the row inactive and its
     // budget untouched, while continuing inbox/transition-watch reconciliation

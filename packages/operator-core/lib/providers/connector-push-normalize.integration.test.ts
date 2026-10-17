@@ -77,6 +77,21 @@ describe('signed push normalization through the existing hook route', () => {
     expect(source!.wake).toBeNull();
   });
 
+  it('ignores an authenticated event for another account before lookup or admission', async () => {
+    // One Meta app secret can sign events for several connected accounts. A valid
+    // signature alone must not select a different account than this source owns.
+    const body = JSON.stringify({ object: 'instagram', entry: [{ id: '17841499999999999', changes: [{ field: 'mentions', value: { media_id: '333' } }] }] });
+    const signature = `sha256=${createHmac('sha256', 'test-app-secret').update(body).digest('hex')}`;
+    const lookup = vi.fn(fetch);
+    const priorAdmissions = admit.mock.calls.length;
+    const result = await handleConnectorPushDelivery({ sourceId, rawBody: Buffer.from(body), headers: new Headers({ 'x-hub-signature-256': signature }) }, {
+      ...dependencies(), hostFetchFor: () => lookup,
+    });
+    expect(result).toMatchObject({ status: 200, body: { ok: true, records: 0 } });
+    expect(lookup).not.toHaveBeenCalled();
+    expect(admit).toHaveBeenCalledTimes(priorAdmissions);
+  });
+
   it('refuses to acknowledge failed normalization and never returns provider error text', async () => {
     const body = JSON.stringify({ object: 'instagram', entry: [{ id: IG, changes: [{ field: 'mentions', value: { media_id: '333' } }] }] });
     const signature = `sha256=${createHmac('sha256', 'test-app-secret').update(body).digest('hex')}`;
@@ -103,8 +118,8 @@ describe('signed push normalization through the existing hook route', () => {
     const body = JSON.stringify({ object: 'instagram', entry: [{ id: IG, changes: [{ field: 'mentions', value: { media_id: '333' } }] }] });
     const signature = `sha256=${createHmac('sha256', 'test-app-secret').update(body).digest('hex')}`;
     const deliver = () => handleConnectorPushDelivery({ sourceId, rawBody: Buffer.from(body), headers: new Headers({ 'x-hub-signature-256': signature }) }, { ...dependencies(), admit: realAdmit });
-    expect((await deliver()).status).toBe(200);
-    expect((await deliver()).status).toBe(200);
+    expect((await deliver())?.status).toBe(200);
+    expect((await deliver())?.status).toBe(200);
     expect(admissions).toEqual(['admitted', 'deduped']);
     expect(emitted).toEqual(['ext:instagram:mention']);
     const rows = await org.adminSql<{ sink_kind: string; n: number }[]>`

@@ -94,10 +94,12 @@ const FOUND_ZERO = /^Found 0 errors?\.?$/;
  * The nested lines are usually where the actual cause is ("Types of property
  * 'a' are incompatible"), so dropping them entirely would hand back a message
  * an agent has to go re-read the raw log for — re-creating the pipe this tool
- * exists to remove. But an assignability error between two large object types
- * can nest for dozens of lines, so it is bounded rather than unbounded.
+ * exists to remove. A 400-character cap cut real TS2322 property names out of
+ * the response before the useful nested line arrived. Keep a larger bounded
+ * budget so ordinary object-assignability chains remain self-contained while
+ * still protecting the response from pathological compiler output.
  */
-const MAX_MESSAGE_CHARS = 400;
+const MAX_MESSAGE_CHARS = 2_000;
 
 /**
  * Parse raw `tsc` output. Tolerates the `--pretty` layout being absent (we always

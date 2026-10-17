@@ -111,7 +111,7 @@ function authError(c: Context<{ Bindings: Env }>, e: unknown): Response | null {
   return null;
 }
 
-function draftResponse(draft: CreatorDraftRow, uploadUrl?: string): Record<string, unknown> {
+export function draftResponse(draft: CreatorDraftRow, uploadUrl?: string): Record<string, unknown> {
   return {
     id: draft.id,
     state: draft.state,

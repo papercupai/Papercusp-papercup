@@ -161,6 +161,28 @@ describe('hosted tutorial progress through real Postgres and composed browser ro
     expect((results.find(result => result.status === 'rejected') as PromiseRejectedResult).reason).toBeInstanceOf(AccountTutorialProgressConflict);
     expect(await withScope(cloudScope, tx => readTutorialProgress(tx, cloudScope))).toEqual(cloud);
   });
+  it('saves video resume state under account RLS without altering task receipts, and preserves it for older clients', async () => {
+    const account = { tenantId: tenantA, userId: randomUUID() };
+    await withAccount(account, tx => enrollAccountTutorial(tx, account));
+    const cloudScope = { ...account, workspaceId: 'video-practice-workspace' };
+    const cloud = await withScope(cloudScope, tx => updateTutorialProgress(tx, cloudScope, change({}, cloudScope)));
+    const patch: AccountTutorialProgressUpdate = { expectedScope: account, expectedRevision: 0, mutationId: randomUUID(), version: 3,
+      disposition: 'paused', currentLessonId: 'work', reviewedLessonIds: [],
+      video: { mediaId: 'tutorial-20261016-v1', chapterId: 'visible-fleet', positionSeconds: 94.5 } };
+    const saved = await withAccount(account, tx => updateAccountTutorialProgress(tx, account, patch));
+    expect((await withAccount(account, tx => readAccountTutorialProgress(tx, account)))?.video).toEqual(patch.video);
+    expect(await withAccount(account, tx => updateAccountTutorialProgress(tx, account, patch))).toEqual(saved);
+    await expect(withAccount(account, tx => updateAccountTutorialProgress(tx, account, { ...patch, video: { ...patch.video!, positionSeconds: 95 } }))).rejects.toThrow('tutorial_mutation_reused');
+    const { video: _omitted, ...legacy } = patch;
+    const next = await withAccount(account, tx => updateAccountTutorialProgress(tx, account, { ...legacy, expectedRevision: saved.revision, mutationId: randomUUID(), disposition: 'active' }));
+    expect(next.video).toEqual(patch.video);
+    expect(next.reviewedLessonIds).toEqual([]);
+    expect(await withScope(cloudScope, tx => readTutorialProgress(tx, cloudScope))).toEqual(cloud);
+    expect(await withAccount({ ...account, tenantId: tenantB }, tx => readAccountTutorialProgress(tx, { ...account, tenantId: tenantB }))).toBeNull();
+    expect(await withAccount({ ...account, userId: userB }, tx => readAccountTutorialProgress(tx, { ...account, userId: userB }))).toBeNull();
+    const restarted = await withAccount(account, tx => updateAccountTutorialProgress(tx, account, { ...legacy, restart: true, expectedRevision: next.revision, mutationId: randomUUID(), disposition: 'active', currentLessonId: 'welcome' }));
+    expect(restarted).not.toHaveProperty('video');
+  });
   function context(p: HostedPrincipal | undefined = principal()): RouteContext {
     return { principal: p, input: undefined, params: {}, log: () => {}, signal: new AbortController().signal };
   }

@@ -42,6 +42,7 @@ import type { HostedIdentityProvider } from '../auth/hosted/provider';
 import type { RouteDefinition } from './define-route';
 import { createHostedControlPlane, type HostedControlPlane, type HostedRouteAllowlistEntry } from './hosted-profile';
 import type { HostedAuthFlowStore } from './routes/hosted-auth/flow';
+import type { HostedAuthRouteDependencies } from './routes/hosted-auth';
 import { HostedWorkspaceConnectorGateway } from './hosted-workspace-connector';
 import {
   createHostedProviderDelegationRoutes,
@@ -84,6 +85,9 @@ export interface HostedControlPlaneConfig {
   readonly staticAllowlist?: ReadonlyArray<HostedRouteAllowlistEntry>;
   /** Server-owned OAuth state; injectable so boot/route tests remain hermetic. */
   readonly flowStore?: HostedAuthFlowStore;
+  /** Reuse the auth route's canonical signup and established-session seams. */
+  readonly selfSignup?: HostedAuthRouteDependencies['selfSignup'];
+  readonly onSessionEstablished?: HostedAuthRouteDependencies['onSessionEstablished'];
   readonly clock?: () => Date;
   /** Cryptographic entropy source. Production uses node:crypto; tests may fix it. */
   readonly randomBytes?: (size: number) => Uint8Array;
@@ -177,6 +181,8 @@ export function assembleHostedControlPlane(config: HostedControlPlaneConfig): As
       sessionStore,
       sessionCookieCodec,
       publicOrigin: config.publicOrigin,
+      ...(config.selfSignup ? { selfSignup: config.selfSignup } : {}),
+      ...(config.onSessionEstablished ? { onSessionEstablished: config.onSessionEstablished } : {}),
       ...(config.flowStore ? { flowStore: config.flowStore } : {}),
       ...(config.clock ? { clock: config.clock } : {}),
       ...(config.randomBytes ? { randomBytes: config.randomBytes } : {}),

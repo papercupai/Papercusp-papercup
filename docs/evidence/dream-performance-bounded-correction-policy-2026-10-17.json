@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "kind": "bounded-correction-policy",
+  "policyId": "dream-performance-p003-bounded-correction-20261017",
+  "status": "authored",
+  "acceptanceApproved": false,
+  "plan": "dream-performance-grading-papercusp-2026-10-07",
+  "workItem": "WI-6554700010016592",
+  "accountableOwner": "su-e41f796d-eaeb-458d-8e7b-f957a79a2445",
+  "sourceHive": "papercusp",
+  "scope": "This plan lane's additional Dream performance grading and correction, including continuations of this session. This policy grants no new Dream executions and does not alter the separately enabled routine.",
+  "proposalOriginAt": "2026-10-17T11:16:07.772Z",
+  "authoredAt": "2026-10-17T11:31:16Z",
+  "allowanceWindowStart": "2026-10-17T11:16:07.772Z",
+  "deadline": "2026-10-18T11:16:07.772Z",
+  "baseline": {
+    "scorecardId": "EI-25657185915177038",
+    "rubricRef": "dream-performance",
+    "rubricRevision": 2,
+    "criteriaHash": "54dfcd550bc3b4b9d632966dd2c54b9f7568d8869eeb087affb3f3f3969fb9e7",
+    "historicalManualCohort": "9007f776-d8ab-4551-87cd-3b192b9526ca",
+    "immutable": true,
+    "countsAsNewAutomaticUsefulness": false
+  },
+  "bounds": {
+    "maxAdditionalPerformanceScorecards": 1,
+    "maxAdditionalCorrectionPasses": 1,
+    "maxForcedDreamCycles": 0,
+    "resetOnWake": false,
+    "resetOnCompaction": false,
+    "deadlineCanExtendAutomatically": false
+  },
+  "prerequisites": [
+    "Current P-001/P-002 author proofs have passed their required independent audits.",
+    "The R-3 METHOD and executable contract have outside-lineage approval.",
+    "Current baseline grading audit and complete indexed evidence pages satisfy that contract."
+  ],
+  "measurement": {
+    "rubricRef": "dream-performance",
+    "rubricRevision": 2,
+    "fromLedger": true,
+    "requireCompleteScorecard": true,
+    "preserveUnknown": true,
+    "separateAutomaticManualAndHistoricalEvidence": true,
+    "requireCycleSourceModelUsageAndCostProvenance": true,
+    "newAutomaticUsefulnessCriterion": "measured-downstream-benefit"
+  },
+  "spendPolicy": {
+    "preserveExistingConfiguration": true,
+    "mayIncreaseLimits": false,
+    "referenceDefaults": {
+      "sourcePath": "packages/operator-core/lib/dream/dream-config.ts",
+      "maxDreamsPerCycle": 3,
+      "maxCostUsd": 1,
+      "rolling24hCostUsd": 5,
+      "timeoutMs": 600000,
+      "note": "Reference source defaults, not an assertion about effective runtime overrides. Read dream:control and the governor before any execution."
+    }
+  },
+  "stop": {
+    "when": "Stop this lane's autonomous performance grading at the first of: the single additional scorecard, the single correction pass, or the fixed deadline. Do not create another initial baseline or restart these counters in a continuation.",
+    "success": "The complete independently checked follow-up demonstrates a new ordinary automatic measured-downstream-benefit outcome with attributable provenance; preserve the scientific acceptance requirements.",
+    "noBenefit": "If that outcome remains unknown or broken at the bound, record the exact unmet criterion and stop further grading iterations. Ask the human to choose whether to approve a new scoped usefulness study, change an operating policy, or pause further performance work. No option is pre-authorized by this policy.",
+    "prerequisiteFailure": "If a prerequisite is still unmet at the deadline, report that exact blocker and stop; lack of proof is not an outcome failure and does not extend the deadline.",
+    "mechanism": "End any engine loop owned by this lane and leave its durable work-item checkpoint with the measured result and explicit next decision. Do not replace the loop with a recurring poll."
+  },
+  "startingObservation": {
+    "source": "scorecards:list",
+    "observedAt": "2026-10-17T11:29:56Z",
+    "filters": {
+      "rubricRef": "dream-performance",
+      "sourceHive": "papercusp",
+      "since": "2026-10-17T11:16:07.772Z"
+    },
+    "scorecards": [],
+    "hasMore": false,
+    "note": "Historical starting observation only. Re-read the canonical ledger when consuming the single additional scorecard allowance. This policy is not a passing outcome, a completed experiment, or independent acceptance evidence."
+  }
+}

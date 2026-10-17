@@ -79,7 +79,7 @@ When you raise a `needs-human` item (a REVIEW / spec-suspect gate), set its impo
 
 1. `features:get` + `features:list_related` — context.
 2. `goals:get` — what is this feature serving?
-3. When the gitnexus-bridge plugin is installed, `gitnexus.api_impact` shows the API-surface blast radius of the proposed change.
+3. Use `lsp:query` for symbol definitions and references, and `graph:query` for bounded first-party topology around the proposed change; preserve their coverage limits. When the gitnexus-bridge plugin is installed, `gitnexus.api_impact` is an optional internal comparison of API-surface blast radius; check index freshness and retain its authority limits.
 4. `artifacts:save` the design doc + chunk list.
 5. `coord:send` with the plan to the scoper (who then drives workers).
 

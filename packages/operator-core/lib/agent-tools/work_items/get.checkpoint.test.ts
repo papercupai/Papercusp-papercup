@@ -111,6 +111,13 @@ it('documents checkpointUpdatedAtMs as the checkpoint-change marker, not workIte
   expect(returns).toContain('\`checkpointUpdatedAtMs\` is the CANONICAL checkpoint-change marker');
   expect(returns).toContain('do not infer checkpoint authorship from \`workItem.updatedAt\`');
 });
+
+it('documents the projected work-item prose path and rejects body aliases', () => {
+  const returns = (get as unknown as { guidance?: { returns?: string } }).guidance?.returns ?? '';
+  expect(returns).toContain('`results[].workItem.summary`');
+  expect(returns).toContain('`results[].workItem.body` and `results[].workItem.description` are not response fields');
+  expect(returns).not.toContain('read `results[].workItem.body`');
+});
 // P-002 (WI-2145856) rewrote this contract rather than removing its guard. The
 // cap used to REJECT: `threadLimit:11` threw, which is what this test pinned. It
 // is now CLAMPED, because 50 filings of that rejection were pure round-trips that
@@ -470,7 +477,7 @@ describe('work_items:get — checkpoint field', () => {
     });
   });
 
-  it('includes the issue body before the result-door expands the summary shorthand', async () => {
+  it('returns projected prose at results[].workItem.summary without body aliases', async () => {
     const item = {
       id: 'WI-summary-shorthand',
       harness: 'papercusp',
@@ -498,6 +505,8 @@ describe('work_items:get — checkpoint field', () => {
       payloadProjection: 'none',
     });
     expect(result.data.results[0].workItem.summary).toBe(item.summary);
+    expect(result.data.results[0].workItem).not.toHaveProperty('body');
+    expect(result.data.results[0].workItem).not.toHaveProperty('description');
   });
 
   it('checksOnly reads only the stored row identities and skips the full enrichment ladder', async () => {
@@ -946,7 +955,7 @@ describe('work_items:get — checkpoint field', () => {
     getWorkItemDetail.mockResolvedValue({ id: 'WI-11', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open', topics: [], posts: [], links: [] });
     getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: 'detail-path checkpoint', updatedAtMs: Date.now() });
     const r = await one({ id: 'WI-11', detail: true });
-    expect(getWorkItemDetail).toHaveBeenCalled();
+    expect(getWorkItemDetail).toHaveBeenCalledWith('WI-11', undefined, { threadLimit: 10 });
     expect(r).toMatchObject({ ok: true, id: 'WI-11', checkpoint: 'detail-path checkpoint' });
   });
 

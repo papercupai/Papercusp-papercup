@@ -40,11 +40,14 @@
  * mutated COPY outside the tree (CLAUDE.md mutation-probe tier 2) — never by
  * mutating the shared tree, where the git-sync sweep can commit the mutant.
  */
-import { existsSync, readFileSync, statSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync, statSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { promisify } from 'node:util';
+import { describe, expect, it, vi } from 'vitest';
+import { createRetentionPin } from '../../../packages/operator-core/lib/storage/retention-pins';
+import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 
 const SCRIPT = process.env.PROBE_SCRIPT
   ? resolve(process.env.PROBE_SCRIPT)
@@ -161,21 +164,91 @@ describe('WI-39305 — docker reclaim removes ONLY anonymous volumes', () => {
 });
 
 describe('Podman stores use the existing guarded image policy', () => {
-  const runFixture = (overrides: Record<string, string> = {}) => {
+  const fixture = () => {
     const root = mkdtempSync(join(tmpdir(), 'reclaim-container-fixture-'));
     const log = join(root, 'calls');
     const executable = (name: string, body: string) => writeFileSync(join(root, name), '#!/bin/bash\n' + body, { mode: 0o755 });
-    try {
-      executable('docker', 'exit 1\n');
-      executable('sudo', '[[ "$1" == "-n" ]] && shift\nexport STORE=rootful\nexec "$@"\n');
-      executable('podman', 'if [[ "$1" == "info" ]]; then exit "${PODMAN_DOWN:-0}"; fi\nprintf "%s %s\\n" "${STORE:-rootless}" "$*" >>"$FIXTURE_LOG"\n');
-      executable('df', 'if [[ "$*" == *--output=avail* ]]; then echo "${FIXTURE_AVAILABLE:-100000000000}"; else echo 100000000000; fi\n');
-      const output = execFileSync('bash', [SCRIPT], { encoding: 'utf8', timeout: 5000,
-        env: { ...process.env, PATH: root + ':' + process.env.PATH, FIXTURE_LOG: log,
-          DRY_RUN: '0', SKIP_IMAGES: '0', IMAGE_MAX_AGE: '168h', RECLAIM_MIN_FREE_PCT: '101', ...overrides } });
-      return { output, calls: existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [] };
-    } finally { rmSync(root, { recursive: true, force: true }); }
+    for (const name of ['docker', 'rootless', 'rootful']) mkdirSync(join(root, 'stores', name), { recursive: true });
+    executable('docker', '[[ "${DOCKER_UP:-0}" == 1 ]] || exit 1\nif [[ "$1" == info ]]; then [[ "$*" != *--format* ]] || echo "$FIXTURE_ROOT/stores/docker"; exit 0; fi\nprintf "docker %s\\n" "$*" >>"$FIXTURE_LOG"\n');
+    executable('sudo', '[[ "$1" == "-n" ]] && shift\nexport STORE=rootful\nexec "$@"\n');
+    executable('podman', 'if [[ "$1" == "info" ]]; then [[ "$*" != *--format* ]] || echo "${FIXTURE_ALIAS:-$FIXTURE_ROOT/stores/${STORE:-rootless}}"; exit "${PODMAN_DOWN:-0}"; fi\nprintf "%s %s\\n" "${STORE:-rootless}" "$*" >>"$FIXTURE_LOG"\nif [[ -n "${FIXTURE_PAUSE:-}" && "${STORE:-rootless}" == rootless ]]; then touch "$FIXTURE_PAUSE"; while [[ ! -e "$FIXTURE_PAUSE.continue" ]]; do sleep 0.01; done; fi\n');
+    executable('df', 'if [[ "$*" == *--output=avail* ]]; then echo "${FIXTURE_AVAILABLE:-100000000000}"; else echo 100000000000; fi\n');
+    const env = { ...process.env, PATH: root + ':' + process.env.PATH, FIXTURE_ROOT: root, FIXTURE_LOG: log,
+      PAPERCUSP_RELEASE_RETENTION_ROOT: join(root, 'pins'), PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, 'mutex'),
+      PAPERCUSP_FS_MUTEX_TIMEOUT_MS: '2000', DRY_RUN: '0', SKIP_IMAGES: '0', SKIP_TESTCONTAINERS: '1',
+      FIXTURE_ALIAS: '', IMAGE_MAX_AGE: '168h', RECLAIM_MIN_FREE_PCT: '101' };
+    return { root, env, calls: () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n') : [] };
   };
+  const pin = (f: ReturnType<typeof fixture>, path: string, expired = false) => {
+    const nowMs = Date.now() - (expired ? 120_000 : 0);
+    return createRetentionPin({ path, owner: 'fixture', reason: 'review', expiresAt: new Date(nowMs + 60_000).toISOString() },
+      { dir: f.env.PAPERCUSP_RELEASE_RETENTION_ROOT, nowMs });
+  };
+  const runFixture = (overrides: Record<string, string> = {}, prepare?: (f: ReturnType<typeof fixture>) => void) => {
+    const f = fixture();
+    try {
+      prepare?.(f);
+      const output = execFileSync('bash', [SCRIPT], { encoding: 'utf8', timeout: 5000,
+        env: { ...f.env, ...overrides } });
+      return { output, calls: f.calls() };
+    } finally { rmSync(f.root, { recursive: true, force: true }); }
+  };
+
+  it('retains a Docker store with a live descendant pin while other stores still collect', () => {
+    const result = runFixture({ DOCKER_UP: '1' }, f => pin(f, join(f.root, 'stores/docker')));
+    expect(result.calls.some(call => call.startsWith('docker '))).toBe(false);
+    expect(result.calls).toHaveLength(2);
+    expect(result.output).toContain('retention pin protects docker');
+  });
+
+  it('protects a custom physical Podman store through its logical alias', () => {
+    const result = runFixture({}, f => {
+      const child = join(f.root, 'stores/rootless/evidence'); mkdirSync(child); pin(f, child);
+      const alias = join(f.root, 'alias'); symlinkSync(join(f.root, 'stores/rootless'), alias);
+      f.env.FIXTURE_ALIAS = alias;
+    });
+    expect(result.calls).toEqual([]);
+    expect(result.output).toContain('retention pin protects podman-rootless');
+  });
+
+  it('expired pins restore native collection and sibling prefixes remain eligible', () => {
+    const result = runFixture({}, f => {
+      pin(f, join(f.root, 'stores/rootless'), true);
+      const sibling = join(f.root, 'stores/rootful-other'); mkdirSync(sibling); pin(f, sibling);
+    });
+    expect(result.calls).toHaveLength(2);
+  });
+
+  it('refuses native mutation when the retention store is malformed', () => {
+    const result = runFixture({ DOCKER_UP: '1' }, f => {
+      mkdirSync(f.env.PAPERCUSP_RELEASE_RETENTION_ROOT);
+      writeFileSync(join(f.env.PAPERCUSP_RELEASE_RETENTION_ROOT, 'lease-broken.tsv'), 'broken');
+    });
+    expect(result.calls).toEqual([]);
+    expect(result.output).toContain('retention pin admission failed');
+  });
+
+  it('holds the shared pin mutex until the native prune command finishes', async () => {
+    const f = fixture(); const pause = join(f.root, 'pruning');
+    const running = promisify(execFile)('bash', [SCRIPT], { env: { ...f.env, FIXTURE_PAUSE: pause }, timeout: 10_000 });
+    let entered = false;
+    let writer: Promise<unknown> | undefined;
+    try {
+      await vi.waitFor(() => expect(existsSync(pause)).toBe(true), { timeout: 3000 });
+      vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', f.env.PAPERCUSP_FS_MUTEX_LOCK_DIR);
+      writer = withFsMutex('papercusp-disk-retention', async () => { entered = true; },
+        { timeoutMs: 5000, retryMs: 10 });
+      await new Promise(resolve => setTimeout(resolve, 100));
+      expect(entered).toBe(false);
+    } finally {
+      writeFileSync(pause + '.continue', '');
+      await running;
+      await writer;
+      vi.unstubAllEnvs();
+      rmSync(f.root, { recursive: true, force: true });
+    }
+    expect(entered).toBe(true);
+  });
 
   it('collects only old unused images in both Podman stores even when Docker is unavailable', () => {
     const result = runFixture();

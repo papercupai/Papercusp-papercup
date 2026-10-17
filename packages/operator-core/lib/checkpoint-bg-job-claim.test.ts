@@ -72,6 +72,25 @@ describe('detectBgJobCheckpointClaim (EI-18654296679612119 — unverifiable bg-j
       ).toBe(true);
     });
 
+    it('does not flag a historical task id with an exact terminal ledger read and no live process/log', () => {
+      const checkpoint = [
+        'Task ID 0mv2kuyk2ctvxu6p7qd encodes mint time 2026-10-10T15:57:11.666Z.',
+        "Current processes:list exact-task read returned state=stranded, exitReason='unaccounted residue no longer present', livePids=null, logPath=null, launchedBy='unknown', workItemId=null.",
+        'There is no live process or recorded log to wait on; there is no background job to await.',
+        "Rerunnable re-check: processes:list {taskId:'0mv2kuyk2ctvxu6p7qd', live:true, includeEnded:true}.",
+      ].join('\n');
+
+      expect(detectBgJobCheckpointClaim(checkpoint)).toEqual({ detected: false });
+    });
+
+    it('does not flag a negated background phrase or a bare historical handle', () => {
+      expect(detectBgJobCheckpointClaim('The task is not running in the background.').detected).toBe(false);
+      expect(detectBgJobCheckpointClaim('Historical task id 0mv2kuyk2ctvxu6p7qd is retained for audit.').detected).toBe(
+        false,
+      );
+      expect(detectBgJobCheckpointClaim('There is no background job to await.').detected).toBe(false);
+    });
+
     it('does NOT treat an SQL task_id column as a background-job handle', () => {
       expect(
         detectBgJobCheckpointClaim(

@@ -51,6 +51,54 @@ interface SharedBanner {
   defines: Record<string, string>;
 }
 
+describe('EI-26045992788438631 — host runtime dependencies', () => {
+  it('keeps heavy root dependencies external and loads their APIs under plain Node', async () => {
+    const source = readFileSync(join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh'), 'utf8');
+    const start = source.indexOf('\nHOST_EXTERNALS+=(\n') + 1;
+    const end = source.indexOf('\n)', start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const selected = spawnSync('bash', ['-c', 'set -euo pipefail;\n' + source.slice(start, end + 2) +
+      '\nprintf "%s\\0" "${HOST_EXTERNALS[@]}"'], { encoding: 'utf8' });
+    expect(selected.status, selected.stderr).toBe(0);
+    const external = selected.stdout.split('\0').filter(Boolean).map(flag => flag.replace(/^--external:/, ''));
+    const apis = {
+      vite: 'searchForWorkspaceRoot', rollup: 'rollup', zod: 'z',
+      '@workos-inc/node': 'WorkOS', '@redis/client': 'createClient', 'encoding-japanese': 'default.convert',
+      '@anthropic-ai/sdk': 'Anthropic', '@xterm/headless': 'Terminal', jiti: 'createJiti',
+      'drizzle-orm': 'sql', '@aws-sdk/client-iam': 'IAMClient', luxon: 'DateTime', yaml: 'parse',
+      'google-auth-library': 'GoogleAuth', '@scure/bip39': 'generateMnemonic', ajv: 'Ajv',
+    };
+    const dir = mkdtempSync(join(tmpdir(), 'host-runtime-externals-'));
+    try {
+      // Match custom-output bundles: native Node resolves beside the output,
+      // without a TypeScript loader, a provider call or a shared host restart.
+      symlinkSync(join(REPO_ROOT, 'node_modules'), join(dir, 'node_modules'), 'dir');
+      const outfile = join(dir, 'host.mjs');
+      const imports = Object.entries(apis).map(([pkg, api], i) =>
+        `import * as dep${i} from ${JSON.stringify(pkg)};\n` +
+        `if (dep${i}${api.split('.').map(key => '[' + JSON.stringify(key) + ']').join('')} === undefined) throw new Error(${JSON.stringify(pkg + ':' + api)});`);
+      const result = await build({
+        stdin: { contents: imports.join('\n') + '\nconsole.log("HOST_RUNTIME_EXTERNALS_OK");', resolveDir: REPO_ROOT },
+        bundle: true, platform: 'node', format: 'esm', outfile, external, metafile: true,
+      });
+      const output = Object.values(result.metafile!.outputs)[0];
+      expect(output.imports.filter(row => row.external).map(row => row.path).sort())
+        .toEqual(Object.keys(apis).filter(pkg => pkg !== '@xterm/headless').sort());
+      // pty-bridge requires namespace.Terminal. The bundled positive control
+      // must retain it: Node's native CJS namespace exposes default.Terminal.
+      const bundled = Object.keys(output.inputs).filter(path => path.includes('node_modules/'));
+      expect(bundled.length).toBeGreaterThan(0);
+      expect(bundled.every(path => path.includes('node_modules/@xterm/headless/'))).toBe(true);
+      const runtime = spawnSync(process.execPath, [outfile], {
+        encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' }, timeout: 30_000,
+      });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout.trim()).toBe('HOST_RUNTIME_EXTERNALS_OK');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }, 60_000);
+});
+
 describe('WI-10007604 — frozen host source identity', () => {
   const source = readFileSync(join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh'), 'utf8');
   const block = source.slice(source.indexOf('if [[ -f "$REPO_ROOT/.verifier-source.json" ]]'), source.indexOf('# EI-9413:'));

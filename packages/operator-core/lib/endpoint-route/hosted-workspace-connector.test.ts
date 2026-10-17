@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '@papercusp/agent-mcp';
 import { createHostedPrincipal } from '../auth/hosted-principal';
+const agentReservationCalls = vi.hoisted(() => ({ factory: vi.fn(), run: vi.fn() }));
+vi.mock('../workspace-host/hosted-agent-admission', () => ({
+  createHostedPoolAgentReservations: (...args: unknown[]) => {
+    agentReservationCalls.factory(...args); return agentReservationCalls.run;
+  },
+}));
 import {
   HOSTED_CONNECTOR_LIVENESS_FRESH_MS,
   HostedWorkspaceConnectorGateway,
@@ -79,6 +85,31 @@ class MemoryStore implements HostedWorkspaceConnectorStore {
 }
 
 const binding={controlPlaneWorkspaceId:'control',organizationId:'org-1',customerWorkspaceId:'workspace-1',hostId:'host-1',routeLabel:'alpha',transport:'websocket' as const};
+
+describe('connector agent admission authentication', () => {
+  it('derives the quota tenant from the bearer and rejects request-provided tenant authority', async () => {
+    agentReservationCalls.factory.mockClear(); agentReservationCalls.run.mockReset();
+    agentReservationCalls.run.mockResolvedValue({ receiptId: 'RG-server', state: 'queued' });
+    const authenticated = { ...binding, state: 'active', generation: 2 };
+    const gateway = { authenticate: vi.fn(async () => authenticated) } as unknown as HostedWorkspaceConnectorGateway;
+    const route = createHostedWorkspaceConnectorRoutes(gateway)[8];
+    const request = (input: unknown, authorization = `Bearer hc_${'a'.repeat(43)}`) => new Request(
+      'https://app.papercusp.com/api/hosted/connectors/agent-admission', { method: 'POST',
+        headers: { authorization, 'content-type': 'application/json' }, body: JSON.stringify(input) });
+    expect((await route.handler(request({ action: 'reserve', processKey: 'p' }, ''), {} as RouteContext)).status).toBe(401);
+    expect(agentReservationCalls.factory).not.toHaveBeenCalled();
+    expect((await route.handler(request({ action: 'reserve', processKey: 'p', organizationId: 'forged' }), {} as RouteContext)).status).toBe(400);
+    expect(agentReservationCalls.factory).not.toHaveBeenCalled();
+    const response = await route.handler(request({ action: 'reserve', processKey: 'p' }), {} as RouteContext);
+    expect(await response.json()).toMatchObject({ ok: true, receiptId: 'RG-server' });
+    expect(agentReservationCalls.factory).toHaveBeenCalledWith(authenticated);
+    expect(agentReservationCalls.run).toHaveBeenCalledWith('reserve', 'p');
+    agentReservationCalls.run.mockRejectedValueOnce(new Error('postgres://private-credential'));
+    const refused = await route.handler(request({ action: 'start', processKey: 'p' }), {} as RouteContext);
+    expect(refused.status).toBe(409);
+    expect(await refused.text()).not.toContain('private-credential');
+  });
+});
 function entropy(){let byte=0;return(size:number)=>new Uint8Array(size).fill(++byte);}
 
 async function activeGateway(clock: { now: Date }) {

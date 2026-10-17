@@ -4,6 +4,99 @@
  * Persistence lives in hosted-lifecycle-store.ts. Keeping the decision layer pure makes quota,
  * budget, approval, idle-stop, and recovery behavior deterministic and cheap to falsify.
  */
+import { checkHostedEntitlement, type ResolvedHostedEntitlements } from '../auth/hosted-entitlements';
+
+/** Unit-bearing keys in the existing hosted entitlement quota map (P-537/D-067). */
+export const HOSTED_POOL_RESOURCE_QUOTAS = {
+  agents: 'pool.agents',
+  hosts: 'pool.hosts',
+  cpuMillicores: 'pool.cpu-millicores',
+  memoryMiB: 'pool.memory-mib',
+  dbGiB: 'pool.db-gib',
+  workspaceGiB: 'pool.workspace-gib',
+} as const;
+export const HOSTED_POOL_TRIAL_DB_GIB = 256;
+export type HostedPoolResources = Record<keyof typeof HOSTED_POOL_RESOURCE_QUOTAS, number>;
+
+/** Read canonical allowances and these counters under the existing tenant/provider locks.
+ * Allocated and pending are DISJOINT: a started reservation moves from one to the other.
+ * No tier/model label, subscription claim or browser counter is an authority input.
+ */
+export interface HostedPoolResourceAdmissionInput {
+  organizationId: string;
+  entitlements: ResolvedHostedEntitlements | null;
+  nowMs: number;
+  allocated: HostedPoolResources;
+  pending: HostedPoolResources;
+  requested: HostedPoolResources;
+  budget: { currency: string; usedMinor: number; pendingMinor: number; requestedMinor: number };
+  capacity: { freeHosts: number; reservedForOtherCustomers: number; olderBurstWaiters: number;
+    /** Provisioning consumes allowance, but no existing warm VM. Defaults to requested.hosts. */
+    requestedWarmHosts?: number };
+}
+
+/** Pure resource half of admission; the caller persists its receipt atomically with reservation.
+ * Downgrade blocks NEW demand without terminating work or deleting retained data.
+ */
+export function evaluateHostedPoolResourceAdmission(input: HostedPoolResourceAdmissionInput): {
+  allowed: boolean;
+  reasons: string[];
+  guaranteed: boolean;
+  audit: ReturnType<typeof checkHostedEntitlement>['audit'][];
+} {
+  const reasons: string[] = [];
+  const audit: ReturnType<typeof checkHostedEntitlement>['audit'][] = [];
+  const entitlement = input.entitlements;
+  if (!entitlement || entitlement.organizationId !== input.organizationId || !input.organizationId.trim() ||
+      !entitlement.auditReceiptIds.length || !Number.isSafeInteger(input.nowMs) || input.nowMs < 0 ||
+      (entitlement.recheckAt !== null &&
+        (!Number.isFinite(entitlement.recheckAt.getTime()) || entitlement.recheckAt.getTime() <= input.nowMs))) {
+    return { allowed: false, reasons: ['pool entitlement authority missing, foreign or stale'], guaranteed: false, audit };
+  }
+  for (const resource of Object.keys(HOSTED_POOL_RESOURCE_QUOTAS) as Array<keyof HostedPoolResources>) {
+    const values = [input.allocated[resource], input.pending[resource], input.requested[resource]];
+    if (!values.every(finiteInteger) || !Number.isSafeInteger(values.reduce((a, b) => a + b, 0))) {
+      reasons.push(`invalid pool resource counters: ${resource}`);
+      continue;
+    }
+    // Reconnect and a downgrade must preserve existing data/work. An additive zero requests
+    // no new allowance; positive demand must include both allocated and queued reservations.
+    if (input.requested[resource] === 0) continue;
+    const decision = checkHostedEntitlement(entitlement, { kind: 'quota', key: HOSTED_POOL_RESOURCE_QUOTAS[resource],
+      used: input.allocated[resource] + input.pending[resource], requested: input.requested[resource] });
+    audit.push(decision.audit);
+    if (!decision.allowed) reasons.push(`${HOSTED_POOL_RESOURCE_QUOTAS[resource]}: ${decision.reason}`);
+  }
+  const budget = input.budget;
+  if (!/^[A-Z]{3}$/.test(budget.currency) ||
+      ![budget.usedMinor, budget.pendingMinor, budget.requestedMinor].every(finiteInteger) ||
+      !Number.isSafeInteger(budget.usedMinor + budget.pendingMinor + budget.requestedMinor)) {
+    reasons.push('invalid pool currency or budget counters');
+  } else if (budget.requestedMinor > 0) {
+    const decision = checkHostedEntitlement(entitlement, { kind: 'budget',
+      key: `pool.cost.${budget.currency.toLowerCase()}.minor`,
+      used: budget.usedMinor + budget.pendingMinor, requested: budget.requestedMinor });
+    audit.push(decision.audit);
+    if (!decision.allowed) reasons.push(`pool cost: ${decision.reason}`);
+  }
+  const capacity = input.capacity;
+  const warmDemand = capacity.requestedWarmHosts === undefined ? input.requested.hosts : capacity.requestedWarmHosts;
+  const reservedHosts = entitlement.quotas['pool.reserved-hosts'] ?? 0;
+  const guaranteed = finiteInteger(reservedHosts) && input.requested.hosts > 0 &&
+    input.allocated.hosts + input.pending.hosts + input.requested.hosts <= reservedHosts;
+  if (![capacity.freeHosts, capacity.reservedForOtherCustomers, capacity.olderBurstWaiters, warmDemand].every(finiteInteger) ||
+      capacity.reservedForOtherCustomers > capacity.freeHosts || warmDemand > input.requested.hosts) {
+    reasons.push('invalid pool capacity snapshot');
+  } else if (input.requested.hosts > 0) {
+    // Paid guarantees compete atomically for actual inventory. Subtracting all
+    // other guarantees from each paid request would deadlock a short pool.
+    if (warmDemand > capacity.freeHosts - (guaranteed ? 0 : capacity.reservedForOtherCustomers)) {
+      reasons.push('pool capacity reserved or exhausted');
+    }
+    if (!guaranteed && capacity.olderBurstWaiters > 0) reasons.push('older pool burst requests have priority');
+  }
+  return { allowed: reasons.length === 0, reasons, guaranteed, audit };
+}
 
 export type HostedLifecycleRiskTier = 'low' | 'moderate' | 'high' | 'critical';
 export type HostedLifecycleApprovalStatus = 'not-required' | 'pending' | 'approved' | 'rejected';
@@ -253,6 +346,8 @@ export interface HostedWorkspaceActivity {
   lastActivityAt?: string | null;
   idleStopAfterMinutes?: number | null;
   activeLifecycleJobs: number;
+  /** Controller observation, including admitted starts that have not spawned yet. */
+  activeWork?: { activeAgents: number; pendingAgentStarts: number; activeCommands: number };
   /**
    * Desktop viewers attached to this workspace. OMITTING it is a valid state and means the caller
    * had no viewer signal to offer — which is reported back as `desktopViewerSignal: 'absent'`
@@ -266,7 +361,7 @@ export interface HostedIdleStopDecision {
   idleForMs: number;
   reason?: string;
   /** Present only when something actively held the stop off. */
-  hold?: 'desktop-viewer';
+  hold?: 'desktop-viewer' | 'active-work';
   /**
    * Whether this verdict actually consulted a desktop-viewer signal.
    *
@@ -288,6 +383,10 @@ export function evaluateHostedIdleStop(
   if (workspace.state !== 'active') return { due: false, idleForMs: 0 };
   if (workspace.observedState !== 'running') return { due: false, idleForMs: 0 };
   if (workspace.activeLifecycleJobs > 0) return { due: false, idleForMs: 0 };
+  if (workspace.activeWork && [workspace.activeWork.activeAgents, workspace.activeWork.pendingAgentStarts,
+    workspace.activeWork.activeCommands].some(value => !finiteInteger(value) || value > 0)) {
+    return { due: false, idleForMs: 0, hold: 'active-work' };
+  }
   const minutes = workspace.idleStopAfterMinutes;
   if (minutes == null || !Number.isSafeInteger(minutes) || minutes < 1) {
     return { due: false, idleForMs: 0 };
@@ -320,5 +419,165 @@ export function evaluateHostedIdleStop(
     ...(due ? { reason: `workspace idle for ${Math.floor(idleForMs / 60_000)} minutes` } : {}),
     desktopViewerSignal,
   };
+}
+
+/** Inventory for one authoritative pool scope, read with its generation/fence.
+ * Pending hosts are disjoint from ready hosts and include admitted, unstarted creates.
+ * queuedHosts is exclusive-VM demand after placement, not a count of assigned agents.
+ */
+export interface HostedPoolCapacityHost {
+  hostId: string;
+  generation: number;
+  controllerFence: number;
+  state: 'ready' | 'pending' | 'draining' | 'unavailable';
+  observedAtMs: number;
+  customerWorkspaceId: string | null;
+  reservationId: string | null;
+  activity: HostedWorkspaceActivity | null;
+}
+
+export interface HostedPoolCapacityInput {
+  nowMs: number;
+  observedAtMs: number;
+  maxObservationAgeMs: number;
+  generation: number;
+  controllerFence: number;
+  lastChangeAtMs: number | null;
+  cooldownMs: number;
+  queuedHosts: number;
+  /** Zero permits a pool with no always-on spare VM (D-074). */
+  minimumSpareHosts: number;
+  hosts: readonly HostedPoolCapacityHost[];
+  provision: {
+    profileRef: string;
+    market: 'on-demand' | 'spot';
+    estimate: HostedCostEstimate;
+    /** Canonical allowances and disjoint allocated/pending counters, read under locks. */
+    admission: HostedPoolResourceAdmissionInput;
+    reclaimRecovery: null | {
+      profileRef: string;
+      result: 'passed' | 'failed' | 'unknown';
+      evidenceRef: string;
+      verifiedAtMs: number;
+    };
+  };
+}
+
+export type HostedPoolCapacityDecision = {
+  readyHosts: number;
+  pendingHosts: number;
+  reasons: string[];
+} & (
+  | { kind: 'hold' }
+  | {
+      kind: 'provision';
+      profileRef: string;
+      market: 'on-demand' | 'spot';
+      generation: number;
+      controllerFence: number;
+    }
+  | {
+      kind: 'drain';
+      hostId: string;
+      hostGeneration: number;
+      hostControllerFence: number;
+      generation: number;
+      controllerFence: number;
+    }
+);
+
+/** Proposes ONE ordinary-VM change; never acquires a lease or executes it.
+ * The existing durable lifecycle executor must CAS/increment the pool generation,
+ * reserve quota/budget, and recheck host assignment/activity under the same fence.
+ * A replay of this pure decision is not permission to launch another operation.
+ */
+export function evaluateHostedPoolCapacity(input: HostedPoolCapacityInput): HostedPoolCapacityDecision {
+  const hold = (reason: string, readyHosts = 0, pendingHosts = 0): HostedPoolCapacityDecision =>
+    ({ kind: 'hold', readyHosts, pendingHosts, reasons: [reason] });
+  const positive = (value: number): boolean => finiteInteger(value) && value > 0;
+  const validRef = (value: string): boolean => typeof value === 'string' && nonEmpty(value);
+  const fresh = (at: number): boolean => finiteInteger(at) && at <= input.nowMs &&
+    input.nowMs - at <= input.maxObservationAgeMs;
+  if (![input.nowMs, input.cooldownMs, input.queuedHosts, input.minimumSpareHosts].every(finiteInteger) ||
+      !positive(input.maxObservationAgeMs) || !positive(input.generation) || !positive(input.controllerFence) ||
+      !Number.isSafeInteger(input.queuedHosts + input.minimumSpareHosts)) {
+    return hold('invalid pool capacity controls');
+  }
+  if (!fresh(input.observedAtMs)) return hold('pool observation missing, stale or future');
+  if (input.lastChangeAtMs !== null &&
+      (!finiteInteger(input.lastChangeAtMs) || input.lastChangeAtMs > input.nowMs)) {
+    return hold('invalid pool last-change observation');
+  }
+  const ids = new Set<string>();
+  for (const host of input.hosts) {
+    if (!validRef(host.hostId) || ids.has(host.hostId) || !positive(host.generation) ||
+        !positive(host.controllerFence) || !fresh(host.observedAtMs) ||
+        ![host.customerWorkspaceId, host.reservationId].every(value => value === null || validRef(value))) {
+      return hold('invalid, duplicate or stale pool host observation');
+    }
+    ids.add(host.hostId);
+    if (host.state !== 'ready' && host.state !== 'pending') return hold('pool host needs reconciliation');
+    if (host.state === 'ready' && (!host.activity || host.activity.state !== 'active' ||
+        host.activity.observedState !== 'running' || !finiteInteger(host.activity.activeLifecycleJobs) ||
+        !host.activity.activeWork ||
+        ![host.activity.activeWork.activeAgents, host.activity.activeWork.pendingAgentStarts,
+          host.activity.activeWork.activeCommands].every(finiteInteger))) {
+      return hold('pool host work observation missing or invalid');
+    }
+  }
+  const unassigned = (host: HostedPoolCapacityHost): boolean =>
+    host.customerWorkspaceId === null && host.reservationId === null;
+  const ready = input.hosts.filter(host => host.state === 'ready' && unassigned(host) &&
+    host.activity!.activeLifecycleJobs === 0 &&
+    Object.values(host.activity!.activeWork!).every(value => value === 0));
+  const pendingHosts = input.hosts.filter(host => host.state === 'pending' && unassigned(host)).length;
+  const readyHosts = ready.length;
+  const pause = (reason: string): HostedPoolCapacityDecision => hold(reason, readyHosts, pendingHosts);
+  if (input.lastChangeAtMs !== null && input.nowMs - input.lastChangeAtMs < input.cooldownMs) {
+    return pause('pool cooldown active');
+  }
+  const target = input.queuedHosts + input.minimumSpareHosts;
+  const preconditions = { generation: input.generation, controllerFence: input.controllerFence };
+  if (readyHosts + pendingHosts < target) {
+    const { provision } = input;
+    const { admission, estimate } = provision;
+    if (!validRef(provision.profileRef) || !['on-demand', 'spot'].includes(provision.market) ||
+        validateHostedCostEstimate(estimate).length || !fresh(Date.parse(estimate.estimatedAt)) ||
+        !positive(estimate.cents) ||
+        admission.nowMs !== input.nowMs || admission.requested.hosts !== 1 ||
+        admission.capacity.requestedWarmHosts !== 0 || admission.budget.requestedMinor !== estimate.cents ||
+        admission.budget.currency !== estimate.currency ||
+        admission.allocated.hosts !== input.hosts.filter(host => host.state === 'ready').length ||
+        admission.pending.hosts !== input.hosts.filter(host => host.state === 'pending').length ||
+        !positive(admission.requested.cpuMillicores) || !positive(admission.requested.memoryMiB)) {
+      return pause('invalid pool provision estimate or reservation snapshot');
+    }
+    const allowed = evaluateHostedPoolResourceAdmission(admission);
+    if (!allowed.allowed) return { kind: 'hold', readyHosts, pendingHosts, reasons: allowed.reasons };
+    if (provision.market === 'spot') {
+      const proof = provision.reclaimRecovery;
+      if (!proof || proof.result !== 'passed' || proof.profileRef !== provision.profileRef ||
+          !validRef(proof.evidenceRef) || !fresh(proof.verifiedAtMs)) {
+        return pause('spot reclaim recovery not verified for this profile');
+      }
+    }
+    return { kind: 'provision', readyHosts, pendingHosts, reasons: [], ...preconditions,
+      profileRef: provision.profileRef, market: provision.market };
+  }
+  // Do not shrink around an admitted create, including one already reserved to a tenant.
+  if (input.hosts.some(host => host.state === 'pending')) return pause('pool creates still pending');
+  if (readyHosts <= target) return pause('pool capacity meets demand');
+  const drainable = ready.filter(host => {
+    const activity = host.activity!;
+    const viewers = activity.desktopViewers;
+    // The general idle helper permits absent viewer telemetry; pool scale-in requires
+    // an explicit measured absence as well as the existing idle/activity protections.
+    return viewers != null && viewers.attachedViewers === 0 &&
+      finiteInteger(viewers.holdSec) && evaluateHostedIdleStop(activity, input.nowMs).due;
+  }).sort((a, b) => a.hostId < b.hostId ? -1 : a.hostId > b.hostId ? 1 : 0);
+  const host = drainable[0];
+  if (!host) return pause('no verified idle unassigned pool host');
+  return { kind: 'drain', readyHosts, pendingHosts, reasons: [], ...preconditions,
+    hostId: host.hostId, hostGeneration: host.generation, hostControllerFence: host.controllerFence };
 }
 

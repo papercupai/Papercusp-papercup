@@ -11,7 +11,8 @@
     "./types": "./src/types.ts"
   },
   "scripts": {
-    "test": "vitest"
+    "test": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "js-yaml": "*",

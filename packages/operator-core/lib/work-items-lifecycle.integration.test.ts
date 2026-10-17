@@ -46,7 +46,7 @@ import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import { emitFlagChange } from '@papercusp/flags/server';
 import { readAgentStateStamp, resetAgentStateStamps } from './agent-state-stamp';
-import { getKeyFireLatch } from './events/await/store';
+import { getKeyFireLatch, registerAnnouncement, registerAwait, retireAnnouncement } from './events/await/store';
 import { awaitWorkItemCompletionEvent } from './dbos/work-item-event-await';
 import { completionEventIntentIdOf } from './work-items-events';
 import { setAutoPumpEnabledForTests } from './events/await/engine';
@@ -1378,6 +1378,62 @@ describe('P-020 completion event intent', () => {
     } finally {
       setAutoPumpEnabledForTests(priorAutoPump);
     }
+  });
+});
+
+describe('EI-6554700010011175 — terminal closes protect announced gates', () => {
+  it('refuses a close while the closer or item-linked announcement still has live waiters', async () => {
+    const item = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'announced gate close guard',
+      harness: 'papercup',
+      workspaceId: 'default',
+      createdBy: 'fixture-author',
+    });
+    const ownerKey = `gate:closer:${item.id}`;
+    const itemKey = `gate:item:${item.id}`;
+    const ownerAnnouncement = await registerAnnouncement({
+      subscriberId: 'close-owner',
+      eventKey: ownerKey,
+      scopeKind: 'global',
+    });
+    const itemAnnouncement = await registerAnnouncement({
+      subscriberId: 'other-declarer',
+      eventKey: itemKey,
+      logicalGateKey: item.id,
+      note: `handoff for ${item.id}`,
+      scopeKind: 'global',
+    });
+    await registerAwait({ subscriberId: 'owner-waiter', eventKey: ownerKey });
+    await registerAwait({ subscriberId: 'item-waiter', eventKey: itemKey });
+
+    const refusal = await wi.setWorkItemState(item.id, 'resolved', {
+      harness: 'papercup',
+      by: 'close-owner',
+      completionRef: 'terminal-close-gate regression test',
+    }).then(() => null, (error: unknown) => error);
+    expect(refusal).toBeInstanceOf(Error);
+    expect(String(refusal)).toContain('announced event gates remain declared and unfired with live waiters');
+    expect(String(refusal)).toContain(ownerKey);
+    expect(String(refusal)).toContain(itemKey);
+    expect((await wi.getWorkItem(item.id, 'papercup'))?.state).toBe('open');
+
+    await expect(retireAnnouncement({
+      announcementId: ownerAnnouncement.id,
+      subscriberId: 'close-owner',
+    })).resolves.toMatchObject({ retired: true });
+    await expect(retireAnnouncement({
+      announcementId: itemAnnouncement.id,
+      subscriberId: 'other-declarer',
+    })).resolves.toMatchObject({ retired: true });
+
+    await expect(
+      wi.setWorkItemState(item.id, 'resolved', {
+        harness: 'papercup',
+        by: 'close-owner',
+        completionRef: 'terminal-close-gate regression test',
+      }),
+    ).resolves.toMatchObject({ state: 'done' });
   });
 });
 

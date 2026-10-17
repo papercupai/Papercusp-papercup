@@ -335,11 +335,25 @@ function defaultLedger(sql: Sql): ReproductionLedgerDeps {
       return row ? { status: row.status, commitSha: row.commit_sha, worktreeDirty: row.worktree_dirty } : null;
     },
     readToolInvocation: async (id) => {
-      const [row] = await sql.unsafe<Array<{ status: string | null; serving_build_sha: string | null }>>(
-        'SELECT status, serving_build_sha FROM harness_shared.tool_invocations WHERE id = $1',
+      const [row] = await sql.unsafe<Array<{
+        status: string | null;
+        serving_build_sha: string | null;
+        result_outcome: string | null;
+        soft_failure_reason: string | null;
+      }>>(
+        `SELECT status, serving_build_sha,
+                metadata_json->>'resultOutcome' AS result_outcome,
+                metadata_json->>'softFailureReason' AS soft_failure_reason
+           FROM harness_shared.tool_invocations
+          WHERE id = $1`,
         [id],
       );
-      return row ? { status: row.status, servingBuildSha: row.serving_build_sha } : null;
+      return row ? {
+        status: row.status,
+        servingBuildSha: row.serving_build_sha,
+        resultOutcome: row.result_outcome,
+        softFailureReason: row.soft_failure_reason,
+      } : null;
     },
     now: () => new Date(),
   };

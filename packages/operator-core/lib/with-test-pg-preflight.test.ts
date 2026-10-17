@@ -11,11 +11,88 @@ import { assertPrivateManagedTaskRoute, preparePrivateOperatorApiBundle } from '
 
 const root = resolve(import.meta.dirname, '../../..');
 
+describe('required private database extensions', () => {
+  it.each([false, true])('checks required extensions before runtime allocation (ready=%s)', ready => {
+    const entry = join(root, 'scripts/with-test-pg.mjs');
+    // Replace only the prerequisite provider. The real entry must call it and
+    // stop before importing runtime dependencies when the extension is absent.
+    const extension = 'data:text/javascript,' + encodeURIComponent(
+      `export function ensureRequiredEmbeddedExtensions() { ${ready ? '' : "throw new Error('REQUIRED_EXTENSION_NOT_READY');"} }`,
+    );
+    const hook = `export async function resolve(specifier, context, next) {
+      if (specifier === './install-embedded-pgvector.mjs') return { url: ${JSON.stringify(extension)}, shortCircuit: true };
+      if (specifier === 'async-exit-hook') throw new Error('EXTENSION_ADMISSION_REACHED');
+      return next(specifier, context);
+    }`;
+    const script = `import { register } from 'node:module';
+      register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
+      process.argv = [process.execPath, ${JSON.stringify(entry)}, '--', process.execPath, '-e', 'process.exit(91)'];
+      await import(${JSON.stringify(pathToFileURL(entry).href)});`;
+    const startedAt = performance.now();
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: root, encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, PC_ISOLATED_RUNTIME_PROOF: undefined },
+    });
+    const diagnostic = childDiagnostic(result, startedAt);
+    expect(result.status, diagnostic).toBe(1);
+    expect(result.signal, diagnostic).toBeNull();
+    expect(result.stderr, diagnostic).toContain(ready ? 'EXTENSION_ADMISSION_REACHED' :
+      '[with-test-pg] extension preflight failed: REQUIRED_EXTENSION_NOT_READY');
+    expect(result.stderr, diagnostic).not.toContain(ready ? 'REQUIRED_EXTENSION_NOT_READY' : 'EXTENSION_ADMISSION_REACHED');
+    expect(result.stdout, diagnostic).not.toContain('booting throwaway PG');
+  });
+});
+
 function childDiagnostic(result: SpawnSyncReturns<string>, startedAt: number): string {
   return JSON.stringify({ elapsedMs: performance.now() - startedAt, status: result.status, signal: result.signal,
     error: result.error && { name: result.error.name, message: result.error.message,
       code: (result.error as NodeJS.ErrnoException).code }, stdout: result.stdout, stderr: result.stderr });
 }
+
+describe('private proof IPC admission', () => {
+  it.each([
+    { isolated: true, proof: true, ipc: false, admitted: false },
+    { isolated: false, proof: true, ipc: true, admitted: false },
+    { isolated: true, proof: true, ipc: true, admitted: true },
+    { isolated: true, proof: false, ipc: false, admitted: true },
+  ])('checks the actual parent channel before allocation: %j', async ({ isolated, proof, ipc, admitted }) => {
+    const entry = join(root, 'scripts/with-test-pg.mjs');
+    // Stop at the real allocation dependency boundary; admission must not create
+    // a database, runtime root, migration copy or test child in any of these cases.
+    const hook = `export async function resolve(specifier, context, next) {
+      if (specifier === 'async-exit-hook') throw new Error('PROOF_ADMISSION_REACHED');
+      return next(specifier, context);
+    }`;
+    const script = `import { register } from 'node:module';
+      register(${JSON.stringify('data:text/javascript,' + encodeURIComponent(hook))});
+      process.argv = [process.execPath, ${JSON.stringify(entry)}, ${isolated ? "'--isolated-runtime'," : ''}
+        '--', process.execPath, '-e', 'process.exit(91)'];
+      await import(${JSON.stringify(pathToFileURL(entry).href)});`;
+    const env = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: proof ? '1' : undefined,
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://unused-test-ledger.invalid/test' };
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      cwd: root, env, stdio: ipc ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = ''; let stderr = '';
+    child.stdout!.on('data', chunk => { stdout += chunk; });
+    child.stderr!.on('data', chunk => { stderr += chunk; });
+    const closed = once(child, 'close');
+    const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
+    try {
+      const [status, signal] = await closed;
+      const diagnostic = JSON.stringify({ status, signal, stdout, stderr });
+      expect(status, diagnostic).toBe(1);
+      expect(signal, diagnostic).toBeNull();
+      expect(stderr, diagnostic).toContain(admitted ? 'PROOF_ADMISSION_REACHED' : 'proof preflight failed');
+      expect(stderr, diagnostic).not.toContain(admitted ? 'proof preflight failed' : 'PROOF_ADMISSION_REACHED');
+      expect(stdout).not.toContain('booting throwaway PG');
+    } finally {
+      clearTimeout(timer);
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      await closed;
+    }
+  });
+});
 
 describe('private admission pinned manager route', () => {
   async function withRoute(route: string, check: (fixture: {
@@ -334,6 +411,42 @@ describe('private API bundle durable evidence preflight', () => {
 });
 
 describe('isolated PostgreSQL durable evidence preflight', () => {
+  describe.each([{ mode: [] }, { mode: ['--isolated-runtime'] },
+    { mode: ['--isolated-runtime=operator-api'] }])('explicit sink validation ($mode)', ({ mode }) => {
+    it.each(['[object Object]', 'postgresql://fixture:redact-me@[broken/evidence',
+      'https://fixture:redact-me@unused.invalid/evidence'])(
+      'refuses malformed or non-PostgreSQL sink %j before bootstrapping', sink => {
+        const startedAt = performance.now();
+        const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), ...mode,
+          '--', process.execPath, '-e', 'process.exit(91)'], {
+          cwd: root, env: { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: sink },
+          encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+        });
+        const diagnostic = childDiagnostic(result, startedAt);
+        expect(result.status, diagnostic).toBe(1);
+        expect(result.stderr, diagnostic).toContain('PAPERCUSP_TEST_RUNS_DB_URL must be a valid PostgreSQL URL');
+        expect(result.stderr).not.toContain(sink);
+        expect(result.stderr).not.toContain('redact-me');
+        expect(result.stdout).not.toContain('booting throwaway PG');
+      });
+  });
+
+  it.each(['postgres://unused.invalid/evidence', ' postgresql://unused.invalid/evidence ',
+    'postgresql:///evidence?host=/tmp/owned-pg'])(
+    'accepts a valid explicit sink %j through the next preflight without connecting', sink => {
+      const startedAt = performance.now();
+      const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'), '--',
+        'papercusp-missing-evidence-preflight-child'], {
+        cwd: root, env: { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: sink },
+        encoding: 'utf8', timeout: 5000, stdio: 'pipe',
+      });
+      const diagnostic = childDiagnostic(result, startedAt);
+      expect(result.status, diagnostic).toBe(1);
+      expect(result.stderr, diagnostic).toContain('child preflight failed');
+      expect(result.stderr).not.toContain('evidence preflight failed');
+      expect(result.stdout).not.toContain('booting throwaway PG');
+    });
+
   it.each(['', '  '])('refuses an explicitly blank sink before allocating ordinary PostgreSQL (%j)', sink => {
     const env = { ...process.env, PAPERCUSP_TEST_RUNS_DB_URL: sink };
     const startedAt = performance.now();

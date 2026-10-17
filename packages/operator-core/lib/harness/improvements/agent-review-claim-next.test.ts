@@ -143,6 +143,66 @@ describe('P-026 review pickup scope and cancellation', () => {
     expect(deps.readLedgerGrade).not.toHaveBeenCalledWith('WI-A');
   });
 
+  it('applies the fleet kind filter to loaded candidates before any claim', async () => {
+    const { items, deps, claimWorkItem } = build({});
+    items.set('WI-B', { ...items.get('WI-B')!, kind: 'bug' });
+
+    const claimed = await claimNextAgentReview({
+      reviewer: 'su-reviewer',
+      filter: { field: 'kind', op: 'in', value: ['bug'] },
+    }, deps);
+
+    expect(claimed?.id).toBe('WI-B');
+    expect(claimWorkItem.mock.calls.map((call) => call[0])).toEqual(['WI-B']);
+  });
+
+  it('skips durable claim holds during candidate lookup and rechecks them after claim', async () => {
+    const { items, deps, claimWorkItem, releaseWorkItem } = build({});
+    items.set('WI-A', {
+      ...items.get('WI-A')!,
+      kind: 'bug',
+      payload: {
+        ...(items.get('WI-A')!.payload as Record<string, unknown>),
+        _claimHold: true,
+      },
+    });
+    items.set('WI-B', { ...items.get('WI-B')!, kind: 'bug' });
+
+    const claimed = await claimNextAgentReview({
+      reviewer: 'su-reviewer',
+      filter: { field: 'kind', op: 'in', value: ['bug'] },
+    }, deps);
+
+    expect(claimed?.id).toBe('WI-B');
+    expect(claimWorkItem.mock.calls.map((call) => call[0])).toEqual(['WI-B']);
+    expect(h.sqlSources.join('\n')).toContain("->> '_claimHold'");
+
+    // Simulate the park racing the candidate query. The post-claim predicate must
+    // release the temporary claim and continue to the next eligible candidate.
+    claimWorkItem.mockImplementationOnce(async (id, assignee) => {
+      const held = {
+        ...items.get(id)!,
+        assignee,
+        payload: { ...(items.get(id)!.payload as Record<string, unknown>), _claimHold: true },
+      } as WorkItem;
+      items.set(id, held);
+      return held;
+    });
+    items.set('WI-A', {
+      ...items.get('WI-A')!,
+      payload: { agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-A', round: 1 } },
+    });
+    const afterRace = await claimNextAgentReview({
+      reviewer: 'su-reviewer',
+      filter: { field: 'kind', op: 'in', value: ['bug'] },
+    }, deps);
+
+    expect(afterRace?.id).toBe('WI-B');
+    expect(releaseWorkItem).toHaveBeenCalledWith('WI-A', {
+      harness: 'papercusp', expectedAssignee: 'su-reviewer', announceClaimable: false,
+    });
+  });
+
   it('releases a scope change racing the review claim', async () => {
     const { items, deps, claimWorkItem, releaseWorkItem } = build({});
     claimWorkItem.mockImplementationOnce(async (id, assignee) => {

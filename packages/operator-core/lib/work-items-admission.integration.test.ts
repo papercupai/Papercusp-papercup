@@ -37,6 +37,7 @@ const { claimReplicaSlot } = await import('./work-item-redundancy');
 const { claimNextAgentReview } = await import('./harness/improvements/agent-review');
 const { autoPickableWhereSql, resolveVerifiedAuthorGithubId } = await import('./work-items-admission');
 const {
+  acceptanceSourceRevision,
   agentReviewPendingAdmissionSql,
   matchesAgentReviewClaimAdmission,
   mintAgentReviewClaimAdmission,
@@ -145,12 +146,38 @@ beforeAll(async () => {
   db = await createFreshPgDb('work-items-admission');
   h.sql = db.sql;
   await db.sql.unsafe(HFC_DDL);
+  // claimNextAgentReview uses the production stored projection so its candidate lookup can
+  // use the partial index without detoasting payload. This focused schema predates migration
+  // 1294; mirror the one projection this fixture's reviewer-lane query requires.
+  await db.sql.unsafe(`
+    ALTER TABLE harness_shared.work_items
+      ADD COLUMN IF NOT EXISTS agent_review_projection jsonb
+      GENERATED ALWAYS AS (NULLIF(payload -> 'agentReview', 'null'::jsonb)) STORED
+  `).simple();
   await db.sql.unsafe(HFC_FED_HLC_PATCH);
   await db.sql.unsafe(CLAIM_SESSION_DDL);
   await db.sql.unsafe(REPLICAS_DDL);
   await db.sql.unsafe(ISSUES_DDL);
   await applyClaimPathReadDeps((ddl) => db.sql.unsafe(ddl).simple()); // event tables + any later claim-path dep (WI-10005130)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
+  // claimNextAgentReview orders by reporter corroboration from migration 831. This
+  // isolated fixture exercises that reviewer lane without applying the full migration
+  // chain, so keep the canonical ledger's queried columns available here.
+  await db.sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.work_item_occurrences (
+      occurrence_id bigserial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      canonical_harness_slug text NOT NULL,
+      canonical_work_item_id text NOT NULL,
+      reporter text,
+      source_tool text NOT NULL,
+      report_kind text NOT NULL,
+      reported_title text NOT NULL,
+      evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
+      admission_identity jsonb,
+      occurred_at timestamptz NOT NULL DEFAULT now()
+    )
+  `).simple();
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(HIVE_MEMBERS_DDL);
 }, 60_000);
@@ -441,16 +468,17 @@ describe('pending agent-review claims keep the shared admission floor narrow (re
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'F-REVIEW'`;
 
     expect(await claimWorkItem('F-REVIEW', 'su-reviewer', { harness: HARNESS })).toBeNull();
+    const candidate = await getWorkItem('F-REVIEW', HARNESS);
+    expect(candidate).not.toBeNull();
     const admission = mintAgentReviewClaimAdmission({
       itemId: 'F-REVIEW',
       reviewer: 'su-reviewer',
       harnessSlug: HARNESS,
       review: payload.agentReview,
+      source: candidate!,
       parties: { reporters: [], implementers: [] },
     });
     expect(admission).not.toBeNull();
-    const candidate = await getWorkItem('F-REVIEW', HARNESS);
-    expect(candidate).not.toBeNull();
     expect(candidate).toMatchObject({
       id: 'F-REVIEW',
       family: 'feature',
@@ -464,6 +492,7 @@ describe('pending agent-review claims keep the shared admission floor narrow (re
       submittedBy: 'su-filer',
       ledgerIdeaId: 'F-REVIEW',
       round: 1,
+      reviewedSourceRevision: acceptanceSourceRevision(candidate!),
     });
     expect(matchesAgentReviewClaimAdmission(admission, candidate!, 'su-reviewer')).toBe(true);
     const [claimFloor] = await h.sql<{
@@ -479,6 +508,9 @@ describe('pending agent-review claims keep the shared admission floor narrow (re
              ${agentReviewPendingAdmissionSql(h.sql, admission, {
                payload: 'target.payload',
                admission: 'target.admission',
+               itemKind: 'target.item_kind',
+               title: 'target.title',
+               summary: 'target.summary',
              })} AS review_allowed,
              ${autoPickableWhereSql(h.sql, WS)} AS auto_pickable
         FROM harness_shared.harness_features_consolidated AS target
@@ -497,6 +529,9 @@ describe('pending agent-review claims keep the shared admission floor narrow (re
       agentReviewAdmission: admission!,
     });
     expect(claimed).toMatchObject({ id: 'F-REVIEW', assignee: 'su-reviewer' });
+    expect(readAgentReviewState(claimed!.payload)).toMatchObject({
+      reviewedSourceRevision: acceptanceSourceRevision(candidate!),
+    });
 
     const nextPayload = {
       agentReview: { status: 'pending' as const, submittedBy: 'su-filer', ledgerIdeaId: 'F-REVIEW-NEXT', round: 1 },
@@ -508,6 +543,9 @@ describe('pending agent-review claims keep the shared admission floor narrow (re
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'F-REVIEW-NEXT'`;
     const nextClaim = await claimNextAgentReview({ reviewer: 'su-next-reviewer', harnessSlug: HARNESS });
     expect(nextClaim).toMatchObject({ id: 'F-REVIEW-NEXT', assignee: 'su-next-reviewer' });
+    expect(readAgentReviewState(nextClaim!.payload)).toMatchObject({
+      reviewedSourceRevision: acceptanceSourceRevision(nextClaim!),
+    });
 
     const stalePayload = {
       agentReview: {
@@ -522,18 +560,34 @@ describe('pending agent-review claims keep the shared admission floor narrow (re
       UPDATE harness_shared.harness_features_consolidated
          SET admission = 'pending', payload = ${JSON.stringify(stalePayload)}::text::jsonb
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'F-REVIEW-STALE'`;
+    const staleCandidate = await getWorkItem('F-REVIEW-STALE', HARNESS);
+    expect(staleCandidate).not.toBeNull();
     const staleAdmission = mintAgentReviewClaimAdmission({
       itemId: 'F-REVIEW-STALE',
       reviewer: 'su-reviewer',
       harnessSlug: HARNESS,
       review: stalePayload.agentReview,
+      source: staleCandidate!,
       parties: { reporters: [], implementers: [] },
     });
     expect(staleAdmission).not.toBeNull();
     await h.sql`
       UPDATE harness_shared.harness_features_consolidated
-         SET payload = jsonb_set(payload, '{agentReview,status}', '"approved"'::jsonb)
+         SET title = 'F-REVIEW-STALE corrected'
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'F-REVIEW-STALE'`;
+    const [staleFloor] = await h.sql<{ review_allowed: boolean }[]> `
+      SELECT ${agentReviewPendingAdmissionSql(h.sql, staleAdmission, {
+        payload: 'target.payload',
+        admission: 'target.admission',
+        itemKind: 'target.item_kind',
+        title: 'target.title',
+        summary: 'target.summary',
+      })} AS review_allowed
+        FROM harness_shared.harness_features_consolidated AS target
+       WHERE target.workspace_id = ${WS}
+         AND target.harness_slug = ${HARNESS}
+         AND target.feature_id = 'F-REVIEW-STALE'`;
+    expect(staleFloor?.review_allowed).toBe(false);
     expect(await claimWorkItem('F-REVIEW-STALE', 'su-reviewer', {
       harness: HARNESS,
       agentReviewAdmission: staleAdmission!,

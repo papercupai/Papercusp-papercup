@@ -14,6 +14,10 @@ import type { HostedIdentityBinding } from '../../endpoint-route/routes/hosted-a
 import type { HostedSession } from '../hosted-session';
 import type { HostedVerifiedIdentity } from './provider';
 import { hostedMembershipAuthorityVersion } from '../hosted-membership-authority';
+import {
+  initializeHostedTrialEntitlementAuthority, parseHostedTrialEntitlementPolicy,
+  type HostedTrialEntitlementPolicy,
+} from '../hosted-entitlement-store';
 import type { HostedServiceContextRunner } from './workos-lifecycle-postgres';
 
 export type HostedSelfSignupFailureCode =
@@ -151,7 +155,11 @@ type AttemptGate = 'proceed' | 'rate_limited' | 'state_conflict';
 
 /** Hosted-service adapter. `run` is injectable for hermetic tests. */
 export class PostgresHostedSelfSignupAdmission implements HostedSelfSignupAdmission {
-  constructor(private readonly run: HostedServiceContextRunner = (fn) => withHostedServiceContext(fn)) {}
+  private readonly trialPolicy: HostedTrialEntitlementPolicy | undefined;
+  constructor(private readonly run: HostedServiceContextRunner = (fn) => withHostedServiceContext(fn),
+    options: { trialPolicy?: HostedTrialEntitlementPolicy } = {}) {
+    this.trialPolicy = options.trialPolicy === undefined ? undefined : parseHostedTrialEntitlementPolicy(options.trialPolicy);
+  }
 
   async complete(input: HostedSelfSignupInput): Promise<HostedSelfSignupResult> {
     try {
@@ -394,6 +402,9 @@ export class PostgresHostedSelfSignupAdmission implements HostedSelfSignupAdmiss
       VALUES (${organizationId}::uuid, ${userId}::uuid, 'hosted-free', 'self_signup')
       ON CONFLICT (organization_id, user_id, kind) DO NOTHING
     `;
+    if (this.trialPolicy) await initializeHostedTrialEntitlementAuthority(sql, {
+      organizationId, userId, policy: this.trialPolicy,
+    });
 
     const id = sessionId();
     const sessions = await sql<SessionRow[]>`

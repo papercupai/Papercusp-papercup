@@ -114,6 +114,7 @@ export function registryInputFromPackage(
     keyPattern: event.keyPattern,
     contributor: `cupboard:${event.packageRef}`,
     tags: event.tags,
+    ...(event.payloadSchema ? { payloadSchema: event.payloadSchema } : {}),
     ...(createdBy ? { createdBy } : {}),
   };
 }

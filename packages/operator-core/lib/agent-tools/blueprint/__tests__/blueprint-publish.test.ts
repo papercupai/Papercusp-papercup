@@ -201,6 +201,8 @@ describe('blueprint:publish tool', () => {
     );
     expect(res).toMatchObject({ ok: true, listingId: 'listing-1', blueprintKind: 'hive', review_status: 'pending' });
     expect(res.hint).toMatch(/PENDING/);
+    expect(res.mySubmissionsPath).toBe('/cupboard?kind=my-submissions');
+    expect(res.mySubmissionsTool).toBe('cupboard:my-listings');
   });
 
   it("defaults blueprint_kind to 'harness' when the blueprint.yaml declares no hive kind", async () => {
@@ -239,6 +241,8 @@ describe('blueprint:publish tool', () => {
     } as unknown as Awaited<ReturnType<typeof publishListingToCupboard>>);
     const res = body(await call(publishTool, { blueprintId: 'my-bp', title: 'T', description: 'D', repoDir: repo }));
     expect(res).toMatchObject({ ok: true, listingId: 'listing-2', review_status: 'approved' });
-    expect(res.hint).toBeUndefined();
+    expect(res.hint).toContain('approved');
+    expect(res.hint).toContain('My submissions');
+    expect(res.hint).not.toContain('PENDING');
   });
 });

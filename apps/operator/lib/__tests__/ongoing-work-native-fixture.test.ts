@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { recordNativeCollectionJourney } from '../../e2e/_ongoing-work-native-fixture';
+import { pruneRuns } from '@papercusp/verification-harness';
 
 describe('native collection journey custody', () => {
   it.each(['pass', 'assertion-failure', 'source-drift', 'missing-test'])(
@@ -42,6 +43,17 @@ describe('native collection journey custody', () => {
         expect(Date.parse(result.endedAt)).toBeLessThanOrEqual(Date.now());
         expect(manifest).toMatchObject({ result: 'pass', sourceCommit: receipt.sourceCommit,
           sourceFingerprints: receipt.testedInputs, verifierRunId: selector.verifierRunId });
+        const original = await readFile(join(root, 'evidence', selector.journeyRunId, 'phases/native/manifest.json'));
+        await recordNativeCollectionJourney({ sourceRoot: root, sourceReceipt: receipt,
+          verifierRunId: selector.verifierRunId, evidenceRoot: join(root, 'evidence'),
+          testPath: 'test/native.spec.mts', run });
+        await pruneRuns(join(root, 'evidence'), 1);
+        await expect(readFile(join(root, 'evidence', selector.journeyRunId, 'result.json')))
+          .rejects.toMatchObject({ code: 'ENOENT' });
+        expect(await readFile(join(root, 'evidence', 'retained', selector.journeyRunId,
+          'phases/native/manifest.json'))).toEqual(original);
+        expect(JSON.parse(await readFile(join(root, 'evidence', 'retained', selector.journeyRunId,
+          'result.json'), 'utf8'))).toEqual(result);
       } finally { await rm(root, { recursive: true, force: true }); }
     });
 });

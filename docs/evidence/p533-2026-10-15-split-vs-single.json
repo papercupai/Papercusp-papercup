@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "storage-layout-comparison-v1",
+  "workItem": "WI-6554700010015437",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "sourceArchive": "/tmp/p533-hb-split-vs-single.tgz",
+  "sourceArchiveSha256": "317e3103b5cb46ed0a2aeb956dff6de314ebad1d93cd56e7e2b008e7b497c9aa",
+  "status": "bounded-evidence-complete",
+  "provenance": {
+    "provider": "gcp",
+    "project": "pc-agent-capacity-0930",
+    "zone": "us-central1-a",
+    "instance": "cap-hb-split-vs-single-1016",
+    "machineType": "c4-standard-8",
+    "runLabel": "hb-4x64-vs-256-1016",
+    "bootDisk": "32 GiB Hyperdisk Balanced",
+    "singleDisk": "256 GiB Hyperdisk Balanced, 16000 IOPS, 400 MiB/s",
+    "splitDisks": "4 x 64 GiB Hyperdisk Balanced, 4000 IOPS, 140 MiB/s each",
+    "instanceCreatedAt": "2026-10-15T17:18:15.397077-07:00",
+    "instanceDeletedAt": "2026-10-15T17:24:28.555935-07:00",
+    "auditSource": "/tmp/p544-compute-admin-history.json"
+  },
+  "comparison": {
+    "single": "one 256-GiB-equivalent device",
+    "split": "four 64-GiB-equivalent devices",
+    "fioVersion": "fio-3.36",
+    "singleDevicePath": "/dev/nvme1n1",
+    "splitDevicePaths": ["/dev/nvme2n1", "/dev/nvme3n1", "/dev/nvme4n1", "/dev/nvme5n1"]
+  },
+  "measurements": {
+    "randread4kQd1": {
+      "single": {"iops": 4581.350397, "medianClatNs": 166912},
+      "split": {"iops": 4289.180721, "medianClatNs": 175104}
+    },
+    "randread4kQd32": {
+      "single": {"iops": 16172.565487, "medianClatNs": 1957888},
+      "split": {"iops": 16190.095314, "medianClatNs": 1056768}
+    },
+    "randrw4k90ReadQd32": {
+      "single": {"readIops": 14469.635358, "readMedianClatNs": 1957888, "writeIops": 1613.725752},
+      "split": {"readIops": 14493.134249, "readMedianClatNs": 268288, "writeIops": 1616.217838}
+    }
+  },
+  "boundedFinding": "On the measured GCP C4-standard-8 host, splitting equal-capacity Hyperdisk Balanced storage did not materially improve aggregate qd32 throughput; qd1 split latency was slightly worse. The qd32 swap-mix median favored split in this run, but the short fio run does not establish a production-wide provider ranking.",
+  "limitations": [
+    "The fio archive is bound to the GCP run by the audited instance name, run label, disk layout, and teardown records; the archive itself carries device paths only.",
+    "This is a bounded storage comparison, not a production-wide performance or capacity guarantee.",
+    "No production settings were changed."
+  ]
+}

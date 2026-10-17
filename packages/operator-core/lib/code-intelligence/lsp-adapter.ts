@@ -41,7 +41,7 @@ import {
   StreamMessageReader,
   StreamMessageWriter,
   type MessageConnection,
-} from 'vscode-jsonrpc/node';
+} from 'vscode-jsonrpc/node.js';
 
 import { pinModuleState } from '@papercusp/module-singleton';
 import type { LspCacheRevision, MeasuredLspInputs } from './lsp-daemon-cache';

@@ -58,6 +58,7 @@ import {
   formatRouteError,
   failedAssertionsFromReport,
   groupRoutes,
+  hasVitestWorkerTerminationWarning,
   isTestFilePath,
   listedFiles,
   loadNodeTestLedger,
@@ -143,31 +144,73 @@ describe('test-files router', () => {
   it('hands the private command to verifier-run before any list or test child is started', async () => {
     const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
     const oldOptions = process.env.NODE_OPTIONS;
+    const oldAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
     const list = vi.fn(), run = vi.fn(); let receiptDir: string | undefined;
     const stages: string[] = [];
-    const preflight = vi.fn(async () => { stages.push('pg-preflight'); });
+    const preflight = vi.fn(async () => {
+      stages.push('pg-preflight');
+      return { url: 'postgresql://harness_admin:test-only@127.0.0.1:54321/papercusp', source: 'operator-env-file' };
+    });
+    const restricted = vi.fn(() => { stages.push('restricted-preflight'); return { verdict: 'admit' }; });
     const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
+      delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
       const frozen = vi.fn(async options => {
         stages.push('source-freeze'); receiptDir = join(options.receiptPath, '..'); return 7;
       });
       expect(await main([resolve(REPO_ROOT, file), '--', '--testNamePattern=private Create'], {
         preflightPrivateIntegrationPgImpl: preflight,
+        restrictedHoldPreflightImpl: restricted,
         runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
       })).toBe(7);
-      expect(stages).toEqual(['pg-preflight', 'source-freeze']);
+      expect(stages).toEqual(['restricted-preflight', 'pg-preflight', 'source-freeze']);
+      expect(restricted).toHaveBeenCalledExactlyOnceWith({ repoRoot: REPO_ROOT, files: [resolve(REPO_ROOT, file)] });
       expect(list).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
       expect(frozen).toHaveBeenCalledWith(expect.objectContaining({ repo: REPO_ROOT,
         ref: expect.stringMatching(/^[a-f0-9]{40}$/), inputs: expect.arrayContaining([file]),
         command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs', file,
           '--', '--testNamePattern=private Create'],
+        env: expect.objectContaining({ PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT: 'admitted-by-test-router' }),
+      }));
+      expect(frozen.mock.calls[0][0].env).toEqual(expect.objectContaining({
+        HARNESS_ADMIN_DATABASE_URL: 'postgresql://harness_admin:test-only@127.0.0.1:54321/papercusp',
       }));
     } finally {
       if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions;
+      if (oldAdmission === undefined) delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+      else process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT = oldAdmission;
       warning.mockRestore(); if (receiptDir) rmSync(receiptDir, { recursive: true, force: true });
     }
   });
+
+  it.each(['restricted_write_held', 'restricted_hold_state_unknown'])(
+    'refuses private proof %s before PG admission, source copying or any test child', async error => {
+      const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
+      const oldOptions = process.env.NODE_OPTIONS;
+      const oldAdmission = process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+      const frozen = vi.fn(), preflight = vi.fn(), list = vi.fn(), run = vi.fn();
+      const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        process.env.NODE_OPTIONS = '--import=/repo/scripts/lib/committed-source-loader.mjs';
+        delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+        expect(await main([resolve(REPO_ROOT, file)], {
+          restrictedHoldPreflightImpl: () => ({ verdict: 'refuse', error, hint: 'Fixture census refused.' }),
+          preflightPrivateIntegrationPgImpl: preflight,
+          runPrivateVerifierImpl: frozen, runVitestListImpl: list, runCapturedTestProcessImpl: run,
+        })).toBe(2);
+        expect(preflight).not.toHaveBeenCalled(); expect(frozen).not.toHaveBeenCalled();
+        expect(list).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
+        expect(process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT).toBeUndefined();
+        expect(warning).toHaveBeenCalledWith(expect.stringContaining(error));
+      } finally {
+        if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions;
+        if (oldAdmission === undefined) delete process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT;
+        else process.env.PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT = oldAdmission;
+        warning.mockRestore();
+      }
+    },
+  );
 
   it('refuses an unavailable private-proof PG before source copying or any test child', async () => {
     const file = 'packages/operator-core/lib/endpoint-route/__tests__/portal-aggregate-create-private.e2e.test.ts';
@@ -950,6 +993,20 @@ describe('vitestRunFailed — exit code and summary must agree (EI-2112468250477
   });
 });
 
+describe('Vitest worker termination warning is a finalization error', () => {
+  it('recognizes pool timeout and failed-termination diagnostics but ignores ordinary output', () => {
+    expect(hasVitestWorkerTerminationWarning(
+      '[vitest-pool]: Timeout terminating forks worker for test files x.test.ts.\n',
+    )).toBe(true);
+    expect(hasVitestWorkerTerminationWarning(
+      '\u001b[31m[vitest-pool]: Failed to terminate forks worker for test files x.test.ts.\u001b[39m',
+    )).toBe(true);
+    expect(hasVitestWorkerTerminationWarning(
+      'Tests 1 passed (1)\nA test title mentions Timeout terminating forks worker.\n',
+    )).toBe(false);
+  });
+});
+
 describe('collection child identity evidence (WI-10007991)', () => {
   it('retains only bounded identities from the owned tree without reading argv or scanning the host', () => {
     const readFileImpl = vi.fn((path: string) => {
@@ -991,6 +1048,74 @@ describe('collection child identity evidence (WI-10007991)', () => {
     expect(readTestChildDiagnostic(undefined)).toMatchObject({ status: 'unavailable', processes: [] });
   });
 
+  it('retains blocked-child IO mechanisms before reap without opening file contents (EI-25918888568694335)', () => {
+    const readFileImpl = vi.fn((path: string) => {
+      if (path.endsWith('/children')) return '';
+      if (path.endsWith('/status')) return 'Name:\tnode\nState:\tD (disk sleep)\nPPid:\t4000\n';
+      if (path.endsWith('/wchan')) return 'folio_wait_bit_common\n';
+      if (path.endsWith('/io')) return 'rchar: 9007199254740993\nwchar: 0\nsyscr: 2\nsyscw: 0\nread_bytes: 8192\nwrite_bytes: 0\n';
+      if (path.endsWith('/syscall')) return '17 0x7 0xabcd 0x1000 0x0 0x0 0x0 0xffff 0xeeee\n';
+      if (path.endsWith('/stack')) return '[<0>] folio_wait_bit_common+0x10/0x20\n[<0>] filemap_read+0x12/0x20\n';
+      throw new Error('must not open the blocked descriptor, cmdline or environ');
+    });
+    const readdirImpl = vi.fn((path: string) => path.endsWith('/task') ? ['4310'] : ['8', '7']);
+    const readlinkImpl = vi.fn((path: string) => path.endsWith('/7') ? '/repo/node_modules/vitest/module.mjs' : 'pipe:[123]');
+    const snapshot = readTestChildDiagnostic(4310, { readFileImpl, readdirImpl, readlinkImpl });
+    expect(snapshot).toMatchObject({ status: 'measured', unreadableFields: 0, truncated: false,
+      processes: [{ pid: 4310, state: 'D', blockedIo: { status: 'measured', scope: 'single-snapshot',
+        io: { rchar: '9007199254740993', read_bytes: '8192' },
+        syscall: { number: 17, arguments: ['0x7', '0xabcd', '0x1000', '0x0', '0x0', '0x0'],
+          stackPointer: '0xffff', instructionPointer: '0xeeee' },
+        kernelStack: ['folio_wait_bit_common', 'filemap_read'],
+        files: [{ fd: 7, path: '/repo/node_modules/vitest/module.mjs', kind: 'path' },
+          { fd: 8, path: null, kind: 'pipe' }], unavailable: [], truncated: false } }] });
+    expect(readlinkImpl.mock.calls.map(([path]) => path)).toEqual(['/proc/4310/fd/7', '/proc/4310/fd/8']);
+    expect(readFileImpl.mock.calls.every(([path]) => /^\/proc\/4310\/(task\/4310\/children|status|wchan|io|syscall|stack)$/.test(path))).toBe(true);
+  });
+
+  it('keeps denied blocked-child evidence explicitly unknown', () => {
+    const readFileImpl = (path: string) => {
+      if (path.endsWith('/children')) return '';
+      if (path.endsWith('/status')) return 'Name:\tnode\nState:\tD (disk sleep)\nPPid:\t4000\n';
+      if (path.endsWith('/wchan')) return 'folio_wait_bit_common';
+      throw new Error('EACCES');
+    };
+    const readdirImpl = (path: string) => {
+      if (path.endsWith('/task')) return ['4320'];
+      throw new Error('EACCES');
+    };
+    expect(readTestChildDiagnostic(4320, { readFileImpl, readdirImpl })).toMatchObject({
+      status: 'partial', unreadableFields: 4, processes: [{ blockedIo: {
+        status: 'partial', syscall: null, kernelStack: null, files: null,
+        io: { rchar: null, read_bytes: null }, unavailable: ['io', 'syscall', 'kernelStack', 'files'] } }],
+    });
+  });
+
+  it('bounds blocked IO details and rejects malformed syscall text without retaining it', () => {
+    const readFileImpl = (path: string) => {
+      if (path.endsWith('/children')) return path.includes('/4330/') ? '4331 4332 4333 4334' : '';
+      if (path.endsWith('/status')) return 'Name:\tnode\nState:\tD (disk sleep)\nPPid:\t4330\n';
+      if (path.endsWith('/wchan')) return 'folio_wait_bit_common';
+      if (path.endsWith('/io')) return 'rchar: 1\nwchar: 2\nsyscr: 3\nsyscw: 4\nread_bytes: 5\nwrite_bytes: 6';
+      if (path.endsWith('/syscall')) return 'malformed-secret-must-not-be-retained';
+      return Array.from({ length: 30 }, () => '[<ffffffff>] filemap_read+0x1/0x2').join('\n');
+    };
+    const readdirImpl = vi.fn((path: string) => path.endsWith('/task') ? [path.split('/')[2]]
+      : Array.from({ length: 50 }, (_, i) => String(i)));
+    const readlinkImpl = vi.fn(() => '/repo/' + 'a'.repeat(500));
+    const snapshot = readTestChildDiagnostic(4330, { readFileImpl, readdirImpl, readlinkImpl });
+    expect(snapshot.status).toBe('partial');
+    expect(snapshot.truncated).toBe(true);
+    expect(snapshot.processes[0].blockedIo).toMatchObject({ syscall: null, unavailable: ['syscall'], truncated: true });
+    expect(snapshot.processes[0].blockedIo.kernelStack).toHaveLength(8);
+    expect(snapshot.processes[0].blockedIo.files).toHaveLength(8);
+    expect(snapshot.processes[0].blockedIo.files[0].path.length).toBeLessThanOrEqual(161);
+    expect(snapshot.processes[4].blockedIo).toEqual({ status: 'unavailable', reason: 'blocked-detail-cap', scope: 'single-snapshot' });
+    expect(readlinkImpl).toHaveBeenCalledTimes(4 * 8);
+    expect(JSON.stringify(snapshot)).not.toContain('malformed-secret');
+    expect(readdirImpl).not.toHaveBeenCalledWith('/proc');
+  });
+
   it('calibrates the pre-reap evidence guard against a permanently disabled-reader control', async () => {
     // The same behavioral guard must accept the real runner and reject this
     // deliberately wrong wrapper; no mutation of the shared source is needed.
@@ -1003,7 +1128,9 @@ describe('collection child identity evidence (WI-10007991)', () => {
           stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
         const events: string[] = [];
         const snapshot = { status: 'partial', rootPid: 4350,
-          processes: [{ pid: 4350, name: 'vitest', state: 'S', waitChannel: 'futex_wait_queue' }] };
+          processes: [{ pid: 4350, name: 'vitest', state: 'D', waitChannel: 'folio_wait_bit_common',
+            blockedIo: { status: 'partial', scope: 'single-snapshot', syscall: null,
+              kernelStack: ['filemap_read'], files: [{ fd: 7, path: '/repo/module.mjs', kind: 'path' }] } }] };
         const pending = run('npx', ['vitest', 'list', '--filesOnly', 'a.test.ts'], {
           env: { PATH: '/usr/bin' }, timeoutMs: 100, killGraceMs: 20,
           systemdRunPath: null, setsidPath: '/usr/bin/setsid',
@@ -2588,6 +2715,47 @@ describe('governed admission refusal terminal marker (EI-21984099786606751)', ()
     expect(errors).toContain('original settlement stack');
     expect(errors).not.toContain('TEST_FILE_ADMISSION_ERROR');
     expect(errors).not.toContain('no test file ran');
+  });
+
+  it('refuses an overall green when Vitest reports a timed-out fork worker after passing tests', async () => {
+    const readyMarker = process.env.PC_HEAVY_PREEMPT_READY_FILE;
+    const finalizationMarker = process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
+    delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+    // main forwards child bytes directly. Keep this synthetic warning inside
+    // the fixture so the outer real router does not diagnose its own worker.
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let capturedStderr = '';
+    let code: number;
+    try {
+      code = await main(['packages/operator-core/lib/__tests__/test-file-router.test.ts'], {
+        runCapturedTestProcessImpl: async () => ({
+          status: 0,
+          signal: null,
+          stdout: 'Test Files 1 passed (1)\nTests 1 passed (1)\n',
+          stderr: '[vitest-pool]: Timeout terminating forks worker for test files x.test.ts.\n',
+          error: null,
+          timedOut: false,
+        }),
+      });
+    } finally {
+      if (readyMarker === undefined) delete process.env.PC_HEAVY_PREEMPT_READY_FILE;
+      else process.env.PC_HEAVY_PREEMPT_READY_FILE = readyMarker;
+      if (finalizationMarker === undefined) delete process.env.PC_HEAVY_PSI_FINALIZATION_FILE;
+      else process.env.PC_HEAVY_PSI_FINALIZATION_FILE = finalizationMarker;
+      capturedStderr = stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join('');
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+    const output = logSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+    const errors = errSpy.mock.calls.map((call: unknown[]) => String(call[0])).join('\n');
+    expect(code).toBe(3);
+    expect(output).toContain('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed');
+    expect(output).toContain('finalizationError=true');
+    expect(errors).toContain('TEST_FILE_WORKER_TERMINATION_FINALIZATION_ERROR');
+    expect(capturedStderr)
+      .toContain('[vitest-pool]: Timeout terminating forks worker for test files x.test.ts.');
   });
 
   it.each(['admission-starved', 'undetermined'])('preserves the admission cause alongside NOT-MEASURED for %s', async (failureKind) => {

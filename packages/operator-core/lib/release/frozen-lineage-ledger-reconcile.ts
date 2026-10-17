@@ -95,6 +95,8 @@ export function parseAdmissionCommitMessage(body: string): ParsedAdmissionCommit
 export type LineageLedgerReconcileStatus =
   /** The ref is at the row's repairHead (or absent while the row is still at the candidate). */
   | 'in-sync'
+  /** The ref was safely advanced to a row head whose first-parent admissions are all ledgered. */
+  | 'ref-advanced-to-row'
   /** Entries were rebuilt for every lineage commit beyond the row's repairHead; `queue` carries them. */
   | 'reconciled'
   /** No lineage ref exists although the row's repairHead is not the candidate — the row is ahead of git. */
@@ -175,10 +177,63 @@ export function reconcileFrozenRepairQueueWithLineageRef(
     }
     const refInRow = run(['merge-base', '--is-ancestor', refHead, queue.repairHead]);
     if (refInRow.status === 0) {
-      return untouched(
-        'ref-behind-row',
+      // A failed queue-row write can leave the row AHEAD of the ref even though the row already
+      // carries the published admission. That is recoverable: only advance the ref when every
+      // first-parent commit from the ref to the row is represented by a matching ledger entry.
+      // Without this proof (including on a deliberately reset ref), preserve the old refusal.
+      const chain = run(['rev-list', '--reverse', '--first-parent', `${refHead}..${queue.repairHead}`]);
+      if (chain.status !== 0) {
+        return untouched('git-failed', refHead, `rev-list failed: ${(chain.stderr || chain.stdout).trim().slice(0, 200)}`);
+      }
+      const commits = chain.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+      let expectedParent = refHead;
+      for (const sha of commits) {
+        const meta = run(['show', '-s', '--format=%P', sha]);
+        if (meta.status !== 0) {
+          return untouched('git-failed', refHead, `show ${sha.slice(0, 12)} failed`);
+        }
+        const parents = meta.stdout.trim().split(/\s+/).filter(Boolean);
+        if (parents.length !== 1 || parents[0] !== expectedParent) {
+          return untouched(
+            'ref-behind-row',
+            refHead,
+            `${ref} is behind the row, but ${sha.slice(0, 12)} is not a single-parent continuation from ` +
+              `${expectedParent.slice(0, 12)} — not repaired here`,
+          );
+        }
+        const ledgered = (queue.admissions ?? []).some(
+          (entry) => entry.toRepairHead === sha && entry.fromRepairHead === expectedParent,
+        );
+        if (!ledgered) {
+          return untouched(
+            'ref-behind-row',
+            refHead,
+            `${ref} is behind the row at ${queue.repairHead.slice(0, 12)}, but the row has no ledger entry ` +
+              `for ${sha.slice(0, 12)} from ${expectedParent.slice(0, 12)} — not repaired here`,
+          );
+        }
+        expectedParent = sha;
+      }
+      const advance = run([
+        'update-ref',
+        '-m',
+        `reconcile frozen lineage ref to ledgered row ${queue.repairHead.slice(0, 12)}`,
+        ref,
+        queue.repairHead,
         refHead,
-        `${ref} is at ${refHead.slice(0, 12)}, an ANCESTOR of the row's repairHead ${queue.repairHead.slice(0, 12)} — the ref was reset below the row; not repaired here`,
+      ]);
+      if (advance.status === 0) {
+        return untouched(
+          'ref-advanced-to-row',
+          queue.repairHead,
+          `${ref} advanced from ${refHead.slice(0, 12)} to the ledger-covered row repairHead ` +
+            `${queue.repairHead.slice(0, 12)}`,
+        );
+      }
+      return untouched(
+        'git-failed',
+        refHead,
+        `update-ref ${ref} to ${queue.repairHead.slice(0, 12)} failed: ${(advance.stderr || advance.stdout).trim().slice(0, 200)}`,
       );
     }
     if (refInRow.status !== 1) {

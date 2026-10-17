@@ -42,6 +42,7 @@ const h = vi.hoisted(() => ({
     reconcileFiredWakeDeliveries: vi.fn(async () => 0),
     cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
     listActiveAwaitsForKey: vi.fn(async (_key: string): Promise<AwaitRow[]> => []),
+    refreshStandingClaimableAwaitPayloadFilters: vi.fn(async (): Promise<AwaitRow[]> => []),
     claimSpecificOnceAwaits: vi.fn(async (ids: number[]): Promise<AwaitRow[]> =>
       ids.map((id) => awaitRow({ id })),
     ),
@@ -596,6 +597,48 @@ describe('wakeClaimableAwaitersForSubscribers — EI-20079462322478221', () => {
         wakeClaimableAwaitersForSubscribers({ subscriberIds: ['su-target'], specId: 'lane', revision: 2 }),
       ).resolves.toBe(0);
       expect(h.store.insertDeliveries).not.toHaveBeenCalled();
+    } finally {
+      setAutoPumpEnabledForTests(previousAutoPump);
+    }
+  });
+
+  it('refreshes and wakes a standing filtered watch when the claim spec changes', async () => {
+    const previousAutoPump = setAutoPumpEnabledForTests(false);
+    try {
+      const payloadFilter = {
+        all: [{ harness: { equals: 'papercusp' } }, { id: { in: ['EI-new'] } }],
+      };
+      const standing = awaitRow({
+        id: 31,
+        eventKey: 'work-item:claimable',
+        subscriberId: 'su-target',
+        once: false,
+        firedAt: null,
+        firedReason: null,
+        payloadFilter: { id: { in: ['EI-old'] } },
+      });
+      h.store.listActiveAwaitsForKey.mockResolvedValueOnce([standing]);
+      h.store.refreshStandingClaimableAwaitPayloadFilters.mockResolvedValueOnce([standing]);
+
+      await expect(
+        wakeClaimableAwaitersForSubscribers({
+          subscriberIds: ['su-target'],
+          specId: 'bugs-lane',
+          revision: 8,
+          payloadFilter,
+        }),
+      ).resolves.toBe(1);
+      expect(h.store.refreshStandingClaimableAwaitPayloadFilters).toHaveBeenCalledWith({
+        subscriberIds: ['su-target'],
+        payloadFilter,
+      });
+      expect(h.store.claimSpecificOnceAwaits).not.toHaveBeenCalled();
+      expect(h.store.insertDeliveries).toHaveBeenCalledWith({
+        awaits: [expect.objectContaining({ id: 31, once: false })],
+        payload: { reason: 'claim-spec-revision', specId: 'bugs-lane', revision: 8 },
+        summary: 'Claim spec bugs-lane@8 changed; re-run scheduler:get_next to re-evaluate the live lane.',
+        source: 'scheduler:set_claim_spec',
+      });
     } finally {
       setAutoPumpEnabledForTests(previousAutoPump);
     }
@@ -1980,6 +2023,87 @@ describe('pumpWakeDeliveries — EI-18673058981655804: redundant-inbox-wake supp
     expect(h.store.markDeliveryDelivered).not.toHaveBeenCalled();
     expect(h.store.markDeliveryParked).toHaveBeenCalledWith(52, expect.any(String), expect.any(Number));
     expect(stats.parked).toBe(1);
+  });
+
+  describe('WI5883 persisted host cancellation retries', () => {
+  afterEach(() => {
+    // A red before the final retry must not leak queued responses into other cases.
+    h.executeWake.mockReset().mockResolvedValue({ kind: 'delivered', channel: 'resume' });
+    h.readWatermark.mockReset().mockResolvedValue({ messages_shown_ts: '' });
+    h.getLineEnvelopeById.mockReset().mockResolvedValue(null);
+  });
+
+  it.each([
+    'psu-host accepted the cancellation request; waiting for its exact pre-write receipt',
+    'psu-host still owns the accepted delivery; cancellation is unsupported and the retry remains durable',
+    'psu-host accepted the fail-open wake retry; waiting for its delivery outcome',
+    'psu-host coalesced-into-pending-turn: delivery accepted before turn-start proof; retry remains durable',
+    'psu-host accepted: delivery accepted before turn-start proof; retry remains durable',
+    'psu-host pending-delivery-id: delivery accepted before turn-start proof; retry remains durable',
+  ])('retries host cancellation through persisted park reason %s until its exact receipt', async (cancellationParkReason) => {
+    const acceptedReason = 'psu-host accepted: delivery accepted before turn-start proof; retry remains durable';
+    const envelope = {
+      msg_id: 'm-fyi',
+      ts: new Date(5000).toISOString(),
+      from: 'su-b',
+      kind: 'message',
+      expects: 'none',
+    };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      h.readWatermark.mockResolvedValueOnce({ messages_shown_ts: new Date(6000).toISOString() });
+      h.getLineEnvelopeById.mockResolvedValueOnce(envelope);
+    }
+    h.store.claimDueDeliveries
+      .mockResolvedValueOnce([
+        workRow({
+          id: 54,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          payload: { msg_id: 'm-fyi' },
+          lastError: acceptedReason,
+        }),
+      ])
+      .mockResolvedValueOnce([
+        workRow({
+          id: 54,
+          subscriberId: 'su-a',
+          eventKey: 'coord:inbox-wake:su-a',
+          payload: { msg_id: 'm-fyi' },
+          attempts: 2,
+          lastError: cancellationParkReason,
+        }),
+      ]);
+    h.executeWake
+      .mockResolvedValueOnce({ kind: 'park', reason: cancellationParkReason, hostCommitPending: true })
+      .mockResolvedValueOnce({ kind: 'park', reason: cancellationParkReason, hostCommitPending: true });
+
+    await pumpWakeDeliveries('ws-test');
+    await pumpWakeDeliveries('ws-test');
+
+    expect(h.executeWake).toHaveBeenCalledTimes(2);
+    expect(h.executeWake.mock.calls[1][0]).toMatchObject({
+      hostCancellation: { deliveryIds: ['54'], handledMsgIds: ['m-fyi'] },
+    });
+    expect(h.store.markDeliveryDelivered).not.toHaveBeenCalledWith(54, 'suppressed-redundant', 1);
+    expect(h.store.markDeliveryParked).toHaveBeenCalledTimes(2);
+
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 54,
+        subscriberId: 'su-a',
+        eventKey: 'coord:inbox-wake:su-a',
+        payload: { msg_id: 'm-fyi' },
+        attempts: 3,
+        lastError: cancellationParkReason,
+      }),
+    ]);
+    h.executeWake.mockResolvedValueOnce({ kind: 'delivered', channel: 'suppressed-redundant' });
+    await pumpWakeDeliveries('ws-test');
+    expect(h.executeWake.mock.calls[2][0]).toMatchObject({
+      hostCancellation: { deliveryIds: ['54'], handledMsgIds: ['m-fyi'] },
+    });
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledExactlyOnceWith(54, 'suppressed-redundant', 1);
+  });
   });
 
   it('carries every nested coalesced msg_id into the host cancellation request', async () => {

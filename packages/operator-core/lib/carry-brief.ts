@@ -525,7 +525,8 @@ export function renderHeldItemOwnershipWarning(
 
 export interface ReadHeldWorkItemsOpts {
   sql?: Sql;
-  limit?: number;
+  /** null reads the complete held population for durable host snapshots. */
+  limit?: number | null;
   getWorkItemCheckpointWithMetaFn?: (ref: WorkItemCheckpointRef) => Promise<WorkItemCheckpointWithMeta>;
   getWorkItemCheckpointFn?: (ref: {
     harness: string | null;
@@ -545,7 +546,7 @@ export async function readHeldWorkItems(
   opts: ReadHeldWorkItemsOpts = {},
 ): Promise<CarryBriefHeldItem[]> {
   const sql = opts.sql ?? getOrgPg().sql;
-  const limit = opts.limit ?? CARRY_BRIEF_MAX_HELD_ITEMS;
+  const limit = opts.limit === null ? null : opts.limit ?? CARRY_BRIEF_MAX_HELD_ITEMS;
   // EI-9013: canonicalize the workspace — an unscoped su session's '*' (or a raw
   // ctx pass-through) previously scoped this query + the checkpoint reads to a
   // workspace that holds no rows, so the fold showed NOTHING held.
@@ -626,8 +627,11 @@ export async function readHeldWorkItems(
         const { getWorkItemCheckpointWithMeta } = await import('./work-item-checkpoint');
         return getWorkItemCheckpointWithMeta(ref);
       });
-  const out: CarryBriefHeldItem[] = [];
-  for (const h of held) {
+  // Checkpoint metadata is independent per held item. Read every row together so
+  // the carry/flush gate pays one round-trip window instead of the sum of each
+  // checkpoint read (the latter can consume the whole bounded gate budget when a
+  // host holds several items). Promise.all preserves the SQL row order.
+  return Promise.all(held.map(async (h): Promise<CarryBriefHeldItem> => {
     // EI-8813: reuse the SAME scope→harness resolution the write/read paths use
     // (harnessOfScope — null for the explicit global `operator` scope), instead of
     // an ad-hoc parse that defaulted a harness-null item to the literal string
@@ -650,7 +654,7 @@ export async function readHeldWorkItems(
       concreteHolderIdentity(h.taken_by) && concreteHolderIdentity(h.workspace_id)
         ? { ownerId: h.taken_by!, workspaceId: h.workspace_id! }
         : null;
-    out.push({
+    return {
       id: h.issue_id,
       title: h.title,
       body: h.body,
@@ -662,9 +666,8 @@ export async function readHeldWorkItems(
       ...(holderProof ? { holderProof } : {}),
       ...(h.source_plan_slug !== undefined ? { sourcePlanSlug: h.source_plan_slug } : {}),
       ...(h.source_plan_item_ids !== undefined ? { sourcePlanItemIds: h.source_plan_item_ids } : {}),
-    });
-  }
-  return out;
+    };
+  }));
 }
 
 // ── Deferred-work read (shared by carry surfaces and wind-down receipts) ──────

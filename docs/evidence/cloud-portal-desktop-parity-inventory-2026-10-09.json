@@ -14,6 +14,14 @@
   },
   "rows": [
     {
+      "id": "adv.enterprise",
+      "destination": "?app=enterprise",
+      "scenario": "adv.enterprise",
+      "eligibility": "workspace",
+      "disposition": "mapping-reviewed-functional-pending",
+      "owner": "WI-10007907"
+    },
+    {
       "id": "adv.overview",
       "destination": "?app=overview",
       "scenario": "adv.overview",

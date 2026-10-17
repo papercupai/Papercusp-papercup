@@ -6,7 +6,10 @@
  * Hourly at :35 — clear of green-checkpoint (:15), cargo-test (:45) and the :00/:05
  * cluster, so a ~4-minute indexer never starts in the same tick minute as the gate.
  *
- * The hourly fire is only a CHECK. The action reads the registry, git and loadavg
+ * Native plan D-018/P-042 narrows the default fire to first-party snapshot refresh.
+ * Optional internal GitNexus maintenance requires trigger_config.analyze_enabled:true;
+ * that setting preserves the existing internal licence route, not distribution approval.
+ * When explicitly enabled, the action reads the registry, git and loadavg
  * (all cheap) and re-indexes only when the graph is genuinely behind, the box is not
  * oversubscribed, and the interval floor has passed — `analyze` is a full re-index
  * (234s even against a fresh index), so an unconditional hourly run would be
@@ -45,6 +48,8 @@ async function main(): Promise<void> {
   const triggerConfig = {
     cron: CRON,
     repo_name: GITNEXUS_REPO_NAME,
+    snapshot_backend: 'first-party-imports',
+    analyze_enabled: false,
     min_commits_behind: DEFAULT_MIN_COMMITS_BEHIND,
     max_load_per_core: DEFAULT_MAX_LOAD_PER_CORE,
     min_interval_sec: DEFAULT_MIN_INTERVAL_SEC,
@@ -66,7 +71,7 @@ async function main(): Promise<void> {
   `;
   console.log(
     `[seed-gitnexus-reindex-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
-      `hourly (:35) staleness/load-gated gitnexus re-index of the "${GITNEXUS_REPO_NAME}" graph. ` +
+      `hourly (:35) first-party dependency snapshot; optional GitNexus analyze requires analyze_enabled:true. ` +
       (active ? 'Cadence LIVE.' : 'Inactive — enable with the routines admin.'),
   );
   await sql.end({ timeout: 5 });

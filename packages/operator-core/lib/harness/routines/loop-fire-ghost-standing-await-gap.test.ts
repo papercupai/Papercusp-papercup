@@ -47,8 +47,9 @@ import { fireLoopWake, type LoopFireDeps } from './loop-fire';
 
 function mkDeps(
   over: Partial<LoopFireDeps> = {},
-): Required<Pick<LoopFireDeps, 'checkFireGate' | 'recordFire' | 'wake' | 'costCap'>> {
+): Required<Pick<LoopFireDeps, 'checkFireGate' | 'recordFire' | 'wake' | 'costCap' | 'readWakeDelta'>> {
   return {
+    readWakeDelta: vi.fn(async () => null),
     checkFireGate: vi.fn(async () => ({ allow: true, consecutiveErrors: 0 })) as never,
     recordFire: vi.fn(async () => {}) as never,
     wake: vi.fn(async () => ({ targets: ['su-dead'], keys: ['coord:inbox-wake:su-dead'], woken: 1, staged: 0 })) as never,

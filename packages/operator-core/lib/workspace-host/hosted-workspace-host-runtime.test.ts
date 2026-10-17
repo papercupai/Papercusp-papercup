@@ -159,6 +159,37 @@ function runtime(overrides: Record<string, unknown> = {}) {
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
+it('reports measured workload on the existing connector cadence and keeps failed reads unknown', async () => {
+  const read = vi.fn(async () => 2);
+  const h = runtime({ readActiveCommands: read });
+  h.value.start(); const socket = h.sockets[0]!; socket.emitOpen();
+  socket.emitMessage({ type: 'bound', role: 'connector', protocol: 'papercusp-hosted-workspace.v1',
+    binding: { ...BINDING, hosting: 'papercusp' } });
+  await vi.advanceTimersByTimeAsync(0);
+  const reports = () => socket.sent.map(s => JSON.parse(s)).filter(m => m.type === 'activity.report');
+  expect(reports().at(-1)).toEqual({ type: 'activity.report', activity: { activeCommands: 2, attachedViewers: 0 } });
+  read.mockRejectedValueOnce(new Error('PRIVATE_COMMAND_CONTENT'));
+  await vi.advanceTimersByTimeAsync(25_000);
+  expect(reports().at(-1).activity.activeCommands).toBeNull();
+  expect(JSON.stringify(reports())).not.toContain('PRIVATE_COMMAND_CONTENT');
+  h.value.stop();
+});
+
+it('drops late workload reads across a binding change and exports no BYOC workload', async () => {
+  let finish!: (n: number) => void;
+  const read = vi.fn(() => new Promise<number>(resolve => { finish = resolve; }));
+  const h = runtime({ readActiveCommands: read });
+  h.value.start(); const socket = h.sockets[0]!; socket.emitOpen();
+  const bind = (hosting: string, generation: number) => socket.emitMessage({ type: 'bound', role: 'connector',
+    protocol: 'papercusp-hosted-workspace.v1', binding: { ...BINDING, hosting, generation } });
+  bind('papercusp', 3); expect(read).toHaveBeenCalledTimes(1);
+  bind('byoc', 4); const before = socket.sent.length;
+  finish(0); await vi.advanceTimersByTimeAsync(25_000);
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(socket.sent).toHaveLength(before);
+  h.value.stop();
+});
+
 describe('readHostedWorkspaceHostConfig', () => {
   const full = {
     PAPERCUSP_HOSTED_CONNECTOR_BEARER: 'b',

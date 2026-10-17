@@ -17,8 +17,10 @@
  *    singleton (cluster primary + background owner). cloudflared dials 127.0.0.1, so the
  *    connector and the listener only need to share the machine, not the process.
  *  - The desktop's operator port is a cold-start hint and can change between launches. The
- *    host singleton therefore adopts the tunnel (rewrites operator_port to its own port)
- *    when it serves requests itself and the recorded operator no longer answers.
+ *    desktop host singleton therefore adopts the tunnel (rewrites operator_port to its
+ *    own port) when it serves requests itself and the recorded operator no longer answers.
+ *    Server operators retain their explicitly configured owner across health/restart gaps;
+ *    owning background work does not grant custody of another operator's listener.
  *  - PAPERCUSP_EXTERNAL_INGRESS_PORT (P-004) still works and wins: hono-host then opens a
  *    static listener at boot and this module never opens or closes one.
  *
@@ -500,9 +502,12 @@ async function reconcileOnce(deps: OwnTunnelDeps): Promise<ReconcileResult> {
   let adoptedOperatorPort: number | null = null;
   let error: string | null = null;
 
-  // Adopt a tunnel whose recorded operator is gone (the desktop's port hint moved).
+  // Only desktop cold starts have a movable port hint. On a shared server database,
+  // a health timeout/restart is not permission for the background host to take the
+  // configured serving operator's listener (EI-26083644504454454).
   if (
     row &&
+    deps.env.PAPERCUSP_DESKTOP === '1' &&
     opPort !== null &&
     row.operatorPort !== opPort &&
     row.ingressPort !== opPort &&
@@ -576,6 +581,12 @@ async function reconcileOnce(deps: OwnTunnelDeps): Promise<ReconcileResult> {
   }
 
   if (row && error && error !== row.lastError) await deps.store.recordError(error);
+  // Manual tunnels have no connector health transition to retire a listener
+  // failure. Only the serving operator's successful open proves recovery;
+  // another process closing its own listener must not erase the shared error.
+  else if (row?.mode === 'manual' && row.lastError && !error && listener === 'open') {
+    await deps.store.recordError(null);
+  }
   return { listener, connector, adoptedOperatorPort, error };
 }
 

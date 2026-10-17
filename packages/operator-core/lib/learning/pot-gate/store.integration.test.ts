@@ -33,6 +33,7 @@ import {
   setPotLearningScope,
 } from './store';
 import { isDeliberatePause } from './core';
+import { observeFallback } from '../../degradation/fallback-observations';
 
 // These tests exercise transactional gate reads, not the separate durable recorder.
 vi.mock('../../degradation/fallback-observations', () => ({ observeFallback: vi.fn(() => true) }));
@@ -71,6 +72,8 @@ afterAll(async () => {
 describe('learning-pot-scope store', () => {
   it('missing-relation fallbacks leave an enclosing transaction usable', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const observations = vi.mocked(observeFallback);
+    observations.mockClear();
     try {
       await sql.begin(async tx => {
         await tx`ALTER TABLE harness_shared.learning_pot_scope RENAME TO learning_pot_scope_unavailable`;
@@ -80,6 +83,8 @@ describe('learning-pot-scope store', () => {
           expect(await listPotLearningScope(client, { workspaceId: WS })).toEqual([]);
           expect(await disabledPotSlugs(client, { workspaceId: WS })).toEqual([]);
           expect(await tx`SELECT 1 AS alive`).toMatchObject([{ alive: 1 }]);
+          expect(observations).toHaveBeenCalled();
+          expect(observations.mock.calls.every(([, , options]) => options?.sql === client && options.workspaceId === WS)).toBe(true);
         } finally {
           await tx`ALTER TABLE harness_shared.learning_pot_scope_unavailable RENAME TO learning_pot_scope`;
         }

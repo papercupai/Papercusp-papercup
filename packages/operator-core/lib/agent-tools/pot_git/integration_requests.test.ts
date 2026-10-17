@@ -70,6 +70,32 @@ describe('pot_git:integration_requests', () => {
     expect(b).toMatchObject({ ok: true, workspaceId: ACTIVE_WS });
   });
 
+  it("a scoped principal cannot list or ratify another workspace's requests", async () => {
+    const t = await tool();
+    const list = await t.handler(
+      { action: 'list', workspaceId: 'ws-foreign' },
+      ctxWith({ workspaceId: 'ws-1' }),
+    );
+    expect(list.isError).toBe(true);
+    expect(list.content?.[0]?.text).toContain('workspace_forbidden');
+    expect(listIntegrationRequests).not.toHaveBeenCalled();
+
+    const ratify = await t.handler(
+      {
+        action: 'ratify',
+        workspaceId: 'ws-foreign',
+        potSlug: 'pot-1',
+        repoKey: 'papercup',
+        devicePubkey: 'dev-pk',
+        headSha: SAMPLE_ROW.headSha,
+      },
+      ctxWith({ workspaceId: 'ws-1' }),
+    );
+    expect(ratify.isError).toBe(true);
+    expect(ratify.content?.[0]?.text).toContain('workspace_forbidden');
+    expect(ratifyIntegrationRequest).not.toHaveBeenCalled();
+  });
+
   it("action:'list' threads state/limit/scope filters through to the store", async () => {
     const t = await tool();
     await t.handler(

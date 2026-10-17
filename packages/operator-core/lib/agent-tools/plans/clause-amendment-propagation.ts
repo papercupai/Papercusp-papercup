@@ -44,6 +44,10 @@ export async function propagateClauseAmendment(tx: SpecClauseSql, amendment: Cla
      WHERE w.workspace_id = ${a.workspaceId} AND w.harness_slug = ${a.harnessSlug}
        AND COALESCE(w.status, '') NOT IN ('done','dropped','resolved','closed','passed','deprecated')
        AND w.feature_id IN (SELECT id FROM candidates)
+     -- Every concurrent amendment locks the shared work-item set in the same order. Without
+     -- this explicit order, two bulk workers can take overlapping candidates in opposite
+     -- orders and deadlock while each amendment is still inside its clause transaction.
+     ORDER BY w.feature_id
      FOR UPDATE OF w`;
   if (!rows.length) return;
   const key = createHash('sha256').update(JSON.stringify([a.planSlug, a.specId])).digest('hex');

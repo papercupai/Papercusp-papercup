@@ -71,7 +71,12 @@ vi.mock('../coordination/identity');
 vi.mock('../../modes/store', () => ({ getModes: vi.fn(async () => []) }));
 // P-013 (D-024): the filing door resolves a receipt's ledger ref through this seam.
 const reproLedger = vi.hoisted(() => ({
-  invocations: new Map<number, { status: string | null; servingBuildSha: string | null }>(),
+  invocations: new Map<number, {
+    status: string | null;
+    servingBuildSha: string | null;
+    resultOutcome?: string | null;
+    softFailureReason?: string | null;
+  }>(),
 }));
 vi.mock('../../attention/intake-promotion', async (original) => ({
   ...(await original<typeof import('../../attention/intake-promotion')>()),
@@ -3147,6 +3152,24 @@ describe('improvements:capture reproduction receipt (D-024)', () => {
     });
     expect(passedPayload().reproduction).toMatchObject({ verification: { status: 'refuted' } });
     expect(JSON.parse(result.content[0].text).reproduction).toMatchObject({ status: 'refuted' });
+  });
+
+  it('accepts a transport-ok invocation when metadata records a semantic soft failure', async () => {
+    reproLedger.invocations.set(9, {
+      status: 'ok',
+      servingBuildSha: BUILD,
+      resultOutcome: 'soft-failure',
+      softFailureReason: 'not_found',
+    });
+    const result = await callTool({
+      title: 'writer rejects a valid state',
+      kind: 'bug',
+      reproduction: { ref: 'tool_invocations:9', buildSha: BUILD },
+    });
+    expect(passedPayload().reproduction).toMatchObject({
+      verification: { status: 'verified', detail: expect.stringContaining('soft failure (not_found)') },
+    });
+    expect(JSON.parse(result.content[0].text).reproduction).toMatchObject({ status: 'verified' });
   });
 
   it('a caller-classified tool failure keeps its probation path: the receipt is stored as not-eligible', async () => {

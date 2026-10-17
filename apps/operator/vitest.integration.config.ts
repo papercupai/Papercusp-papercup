@@ -34,6 +34,10 @@ export default mergeConfig(defineVitestConfig({
     resolve(__dirname, 'vitest-shims/radix-jsdom.ts'),
     resolve(__dirname, 'vitest-shims/psu-pty-temp-dir.ts'),
     resolve(__dirname, '../../packages/operator-core/lib/coverage-census/attribution/setup-vitest.ts'),
+    // WI-6554700010008603: integration tests can trigger tracked fire-and-forget
+    // work-item events. Drain them before DB/server teardown so late event writes
+    // cannot hit a closed connection.
+    resolve(__dirname, '../../packages/operator-core/lib/detached-imports/setup-vitest.ts'),
   ],
 }), {
   resolve: {

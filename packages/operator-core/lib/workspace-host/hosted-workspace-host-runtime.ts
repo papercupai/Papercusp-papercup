@@ -104,6 +104,8 @@ export interface HostedWorkspaceHostRuntimeOptions {
   createClient?: (options: ConstructorParameters<typeof HostedWorkspaceConnectorClient>[0]) => HostedWorkspaceConnectorClient;
   /** Test seam — swap the PTY factory every adapter this runtime builds uses. */
   createPty?: HostedWorkspaceHostOptions['createPty'];
+  /** Existing guest task ledger; a failed or capped read stays unknown. */
+  readActiveCommands?: (binding: HostedConnectorBinding) => Promise<number>;
   /**
    * The channel kinds every adapter this runtime builds serves. Absent on a Papercusp-hosted
    * machine (all kinds); a relay-linked local install passes LOCAL_RELAY_CHANNEL_KINDS (D-031 #7).
@@ -148,6 +150,16 @@ export function defaultHostedAudit(event: HostedHostAuditEvent): void {
  * `desktop.start` coalesces onto `ensureHiveDesktop`'s existing lease.
  */
 export const HOSTED_WORKSPACE_DESKTOP_LEASE = 'hosted-workspace';
+
+async function readHostedActiveCommands(binding: HostedConnectorBinding): Promise<number> {
+  const { listTasks } = await import('../task-manager/store');
+  const tasks = await listTasks({ workspaceId: binding.customerWorkspaceId,
+    states: ['pending', 'running', 'unaccounted'], limit: 2000 });
+  if (tasks.length >= 2000) throw new Error('hosted_workload_inventory_capped');
+  // The task ledger owns process liveness. Substrate services are not customer
+  // commands; unknown classes hold rather than being silently discarded.
+  return tasks.filter(task => !['sidecar', 'service', 'desktop'].includes(task.class)).length;
+}
 
 /**
  * The default relay-usage sink: the relay-limit alert on this operator's attention rail.
@@ -238,6 +250,26 @@ export function createHostedWorkspaceHostRuntime(
   // PTY sessions a dropped connector released ALIVE, waiting for the next `bound` to adopt them
   // (P-318 J5, D-392). A Papercusp outage must not kill the customer's running processes.
   let parked: HostedHostSessionHandoff[] = [];
+  let activityReadInFlight = false;
+  const reportActivity = async (): Promise<void> => {
+    const current = adapter, currentBinding = binding;
+    if (!current || currentBinding?.hosting !== 'papercusp') return;
+    const send = (commands: number | null) => {
+      if (adapter !== current || binding !== currentBinding) return;
+      const activity = current.workloadActivity();
+      client.send({ type: 'activity.report', activity: { ...activity,
+        activeCommands: commands === null ? null : Math.max(commands, activity.activeCommands ?? 0) } });
+    };
+    // A slow inventory read must never publish a guessed idle zero.
+    send(null);
+    if (activityReadInFlight) return;
+    activityReadInFlight = true;
+    try {
+      const commands = await (options.readActiveCommands ?? readHostedActiveCommands)(currentBinding);
+      send(Number.isSafeInteger(commands) && commands >= 0 ? commands : null);
+    } catch { send(null); }
+    finally { activityReadInFlight = false; }
+  };
 
   // D-013 #6: the sealed phone channel's machine key. By default it is loaded only where the
   // pair QR advertises it (a hosted connector bearer is configured, see pair.ts), so the
@@ -274,6 +306,7 @@ export function createHostedWorkspaceHostRuntime(
   const clientOptions: ConstructorParameters<typeof HostedWorkspaceConnectorClient>[0] = {
     url: options.url,
     bearer: options.bearer,
+    onHeartbeat: () => { void reportActivity(); },
     onEnvelope: (envelope) => {
       // Envelopes arriving before `bound` have no binding to be audited against, so
       // they are dropped rather than served by an adapter with a guessed identity.
@@ -318,6 +351,7 @@ export function createHostedWorkspaceHostRuntime(
       });
       for (const handoff of parked) adapter.adopt(handoff);
       parked = [];
+      void reportActivity();
     },
     onDisconnect: (reason) => release(`connector_closed: ${reason}`),
     onTerminal: (reason, detail) => {

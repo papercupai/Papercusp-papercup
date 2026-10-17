@@ -976,6 +976,57 @@ describe.skipIf(process.platform !== 'linux')('wrapWithStagingSyncLock — real 
     expect(r.restartAfter).toBe(0);
   });
 
+  it('blocks synchronization and coordinated restart during a bounded exclusive window without leaking the lock', () => {
+    const r = runCutScenario((command, lockPath) =>
+      wrapWithStagingSyncLock(command, lockPath, 1, { mode: 'exclusive', timeoutSec: 5 }));
+    expect(r.stdout).toContain('SYNC=blocked');
+    expect(r.stdout).toContain('RESTART=blocked');
+    expect(r.daemonAlive).toBe(true);
+    expect(r.syncAfter).toBe(0);
+    expect(r.restartAfter).toBe(0);
+  });
+
+  it('expires an exclusive window and releases it before another shared restart', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'validation-staging-lock-'));
+    const lock = path.join(dir, 'staging-sync.lock');
+    const holding = path.join(dir, 'holding');
+    try {
+      const command = wrapWithStagingSyncLock(`sh -c 'touch "${holding}"; sleep 300'`, lock, 1,
+        { mode: 'exclusive', timeoutSec: 1 });
+      const r = spawnSync('bash', ['-c', `${command} & holder=$!; ` +
+        `while [ ! -e '${holding}' ]; do sleep 0.01; done; ` +
+        `if flock -s -n '${lock}' true; then echo RESTART=ok; else echo RESTART=blocked; fi; ` +
+        'wait "$holder"; status=$?; echo EXIT=$status; ' +
+        `if flock -s -n '${lock}' true; then echo AFTER=ok; else echo AFTER=blocked; fi`],
+      { encoding: 'utf8', timeout: 20_000 });
+      expect(r.error).toBeUndefined();
+      expect(r.stdout).toContain('RESTART=blocked');
+      expect(r.stdout).toContain('EXIT=124');
+      expect(r.stdout).toContain('AFTER=ok');
+      expect(spawnSync('flock', ['-n', lock, 'true']).status).toBe(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('releases an exclusive window when its command fails', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'validation-staging-lock-'));
+    const lock = path.join(dir, 'staging-sync.lock');
+    try {
+      const command = wrapWithStagingSyncLock('false', lock, 1, { mode: 'exclusive', timeoutSec: 5 });
+      expect(spawnSync('bash', ['-c', command]).status).toBe(1);
+      expect(spawnSync('flock', ['-n', lock, 'true']).status).toBe(0);
+      expect(spawnSync('flock', ['-s', '-n', lock, 'true']).status).toBe(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([0, -1, 1.5, Infinity, NaN])('refuses an unbounded or invalid exclusive deadline: %s', timeoutSec => {
+    expect(() => wrapWithStagingSyncLock('true', '/unused', 1, { mode: 'exclusive', timeoutSec }))
+      .toThrow('positive integer timeoutSec');
+  });
+
   it('control: the same scenario DETECTS a wrapper that lets the spawned daemon inherit the lock', () => {
     // Calibrates the instrument above: without --close the daemon keeps staging frozen after
     // the cut exits, and this scenario must be able to see that.

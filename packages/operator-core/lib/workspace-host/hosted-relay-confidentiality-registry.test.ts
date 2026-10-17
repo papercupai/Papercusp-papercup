@@ -63,6 +63,13 @@ function routeInvocationColumns(source: string): string[] {
   return [...columns].sort();
 }
 
+function addRouteInvocationColumn(source: string, column: string): string {
+  return source.replace(
+    /(\bINSERT\s+INTO\s+harness_shared\.route_invocations\s*\([^)]*)\)/i,
+    `$1, ${column})`,
+  );
+}
+
 
 /** Inspect SQL template literals, omitting JS expressions so nested commas cannot hide columns. */
 function sqlWriterColumns(source: string): Map<string, Set<string>> {
@@ -288,7 +295,18 @@ describe('hosted relay confidentiality registry (P-001)', () => {
 
   it('detects a new persisted telemetry field instead of silently ignoring it', () => {
     const source = readFileSync(resolve(REPO, 'packages/operator-core/lib/endpoint-route/telemetry.ts'), 'utf8');
-    const changed = source.replace('resolved_path, response_bytes)', 'resolved_path, response_bytes, customer_payload)');
+    const changed = addRouteInvocationColumn(source, 'customer_payload');
+    expect(changed).not.toBe(source);
+    const registered = HOSTED_CONTROL_PLANE_FIELD_REGISTRY['route-invocations']!;
+    expect(routeInvocationColumns(changed).filter((column) => !(column in registered))).toEqual(['customer_payload']);
+  });
+
+  it.each([
+    'INSERT INTO harness_shared.route_invocations (workspace_id, resolved_path, response_bytes)',
+    'INSERT INTO harness_shared.route_invocations\n (workspace_id, resolved_path, response_bytes, metadata_json)',
+    'insert into harness_shared.route_invocations\n (workspace_id, metadata_json, response_bytes, resolved_path)',
+  ])('detects an added telemetry column across SQL layouts: %s', (source) => {
+    const changed = addRouteInvocationColumn(source, 'customer_payload');
     expect(changed).not.toBe(source);
     const registered = HOSTED_CONTROL_PLANE_FIELD_REGISTRY['route-invocations']!;
     expect(routeInvocationColumns(changed).filter((column) => !(column in registered))).toEqual(['customer_payload']);

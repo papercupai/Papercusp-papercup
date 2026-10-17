@@ -164,6 +164,23 @@ describe("work_items:list — cache wiring", () => {
     );
   });
 
+  it("explicit lean source flags override a full compound context and remain cache-keyed", async () => {
+    // coord:orient clears the ambient context tier while redispatching this read.
+    // Keep the override effective even when the handler sees a full-tier context,
+    // and keep that lean source entry separate from the ordinary full read.
+    await list({ includeBody: false, includePayload: false }, "ws-wi", "full");
+    await list({ includeBody: false, includePayload: false }, "ws-wi", "full");
+    await list({}, "ws-wi", "full");
+
+    expect(M.listWorkItems).toHaveBeenCalledTimes(2);
+    expect(M.listWorkItems.mock.calls[0]![0]).toEqual(
+      expect.objectContaining({ includeBody: false, includePayload: false }),
+    );
+    expect(M.listWorkItems.mock.calls[1]![0]).toEqual(
+      expect.objectContaining({ includeBody: true, includePayload: true }),
+    );
+  });
+
   it("keeps full and lean source reads in separate cache entries, with an explicit full escape", async () => {
     await list({}, "ws-wi", "trimmed");
     await list({}, "ws-wi");

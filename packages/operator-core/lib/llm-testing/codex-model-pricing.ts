@@ -15,10 +15,10 @@
  * the call-time rail and the write-time advisory cannot drift apart.
  */
 import { priceFor } from '@papercusp/model-pricing';
-import { normalizeCodexCliModel } from '../model-context-budget.mjs';
+import { bareModelId, CODEX_SAFE_DEFAULT_MODEL, normalizeCodexCliModel } from '../model-context-budget.mjs';
 
 /** The model llmCall's Codex bridge uses (and prices) when the caller passes none. */
-export const CODEX_LLM_DEFAULT_MODEL = 'gpt-5.5';
+export const CODEX_LLM_DEFAULT_MODEL = bareModelId(CODEX_SAFE_DEFAULT_MODEL);
 
 /** True when llmCall routes this spec to the Codex Responses bridge — the price-gated path. */
 export function isCodexModel(model: string | undefined): boolean {

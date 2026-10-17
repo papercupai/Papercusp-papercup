@@ -27,6 +27,18 @@ export function deadProxyAlerts(stats: any, { minAttempts, rateThreshold }?: {
     attempts: number;
     fails: number;
 }[];
+/** Rank direct-route transport failures separately from proxy failures. A direct route is an upstream/network
+ *  problem, not a dead proxy; keeping the signal visible prevents the fix from becoming a silent suppression.
+ *  The function requires proxy-specific counters, so older deploys remain unknown rather than misclassified. */
+export function upstreamTransportAlerts(stats: any, { minAttempts, rateThreshold }?: {
+    minAttempts?: number | undefined;
+    rateThreshold?: number | undefined;
+}): {
+    accountId: string;
+    rate: number;
+    attempts: number;
+    fails: number;
+}[];
 /** Pool-wide EGRESS-DOWN alert (EI-18664933641195210) — the entry-level signal `deadProxyAlerts` above
  *  structurally cannot see. That one keys on the PER-ACCOUNT fail rate, but an account whose pool is
  *  [deadProxy, {}] ROTATES onto box-direct and the request then SUCCEEDS, so its account-level rate stays

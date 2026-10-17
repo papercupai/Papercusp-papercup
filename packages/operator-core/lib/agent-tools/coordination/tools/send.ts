@@ -3448,9 +3448,12 @@ export default defineTool({
     const expanded: Array<{
       msg: SendMsg;
       chunk?: ChunkPartMeta;
+      /** Unique per logical message; `chunk.group` is content-derived and may collide in items[]. */
+      chunkRunId?: number;
       refusal?: { error: string; message: string } & Record<string, unknown>;
       goalReportPreVerdict?: GoalOwnerReportVerdict;
     }> = [];
+    let nextChunkRunId = 0;
     for (const original of list) {
       if (original.report && typeof original.report === 'object' && 'goalReport' in original.report) {
         expanded.push({ msg: original });
@@ -3471,11 +3474,13 @@ export default defineTool({
           expanded.push({ msg: original, refusal: refusal as { error: string; message: string } });
           continue;
         }
+        const chunkRunId = nextChunkRunId++;
         for (const part of plan.parts) {
           const isFinal = part.meta.part === part.meta.of;
           expanded.push({
             msg: part.message,
             chunk: part.meta,
+            chunkRunId,
             goalReportPreVerdict: isFinal ? verdict : { kind: 'skip' },
           });
         }
@@ -3490,14 +3495,14 @@ export default defineTool({
     // aborted before persistence, suppress the rest too, so no tail can land by
     // itself. A returned msg_id is the append receipt (even if a later wake step
     // makes the per-part result unsuccessful).
-    const chunkCompletion = new Map<string, 'persisted' | 'aborted-before-persist'>();
+    const chunkCompletion = new Map<number, 'persisted' | 'aborted-before-persist'>();
     const env = await runBulk(
       expanded,
-      async ({ msg, refusal, goalReportPreVerdict, chunk }, itemIndex): Promise<BulkItemResult> => {
+      async ({ msg, refusal, goalReportPreVerdict, chunk, chunkRunId }, itemIndex): Promise<BulkItemResult> => {
         if (refusal) return { ok: false, to: msg.to, ...refusal };
         const phaseTimer: CoordSendPhaseTimer = { startedAt: performance.now() };
         phaseTimers.set(itemIndex, phaseTimer);
-        const priorChunkState = chunk ? chunkCompletion.get(chunk.group) : undefined;
+        const priorChunkState = chunkRunId === undefined ? undefined : chunkCompletion.get(chunkRunId);
         if (chunk && priorChunkState === 'aborted-before-persist') {
           return {
             ok: false,
@@ -3582,11 +3587,11 @@ export default defineTool({
           phaseTimer,
           chunk && priorChunkState === 'persisted' ? undefined : ctx.signal,
         );
-        if (chunk && priorChunkState !== 'persisted') {
+        if (chunkRunId !== undefined && priorChunkState !== 'persisted') {
           if (typeof result.msg_id === 'string' && result.msg_id.length > 0) {
-            chunkCompletion.set(chunk.group, 'persisted');
+            chunkCompletion.set(chunkRunId, 'persisted');
           } else if (result.error === 'request_aborted') {
-            chunkCompletion.set(chunk.group, 'aborted-before-persist');
+            chunkCompletion.set(chunkRunId, 'aborted-before-persist');
           }
         }
         return { ...result, phaseTimingsMs: coordSendPhaseTimingsMs(phaseTimer) };

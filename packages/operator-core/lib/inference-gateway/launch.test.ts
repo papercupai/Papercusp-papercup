@@ -758,8 +758,9 @@ test('credit projection records depletion immediately even when the included met
   const codexTokenPath = join(tempDir, 'codex.token');
   writeFileSync(codexTokenPath, 'test-codex-token\n', { mode: 0o600 });
   let available = true;
+  let responseStatus = 200;
   upstream = http.createServer((_req, res) => {
-    res.writeHead(200, {
+    res.writeHead(responseStatus, {
       'content-type': 'application/json',
       'x-codex-primary-used-percent': '100',
       'x-codex-primary-window-minutes': '10080',
@@ -782,24 +783,30 @@ test('credit projection records depletion immediately even when the included met
     resolveLocalBackends: async () => [],
     poolReloadIntervalMs: 0, localBackendReloadIntervalMs: 0,
   });
-  const send = async () => {
+  const send = async (expectedStatus = 200) => {
     const response = await fetch('http://127.0.0.1:' + svc!.port + '/v1/responses', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'gpt-6.1-sol', input: 'credit projection' }),
     });
     const responseBody = await response.text();
-    assert.equal(response.status, 200, responseBody);
+    assert.equal(response.status, expectedStatus, responseBody);
   };
   await send();
   await vi.waitFor(() => assert.equal(recorded.mock.calls.length, 1));
   assert.equal(recorded.mock.calls[0]![1].usageCreditsAvailable, true);
   assert.deepEqual(recorded.mock.calls[0]![1].creditBalance, { amount: 50000, unit: 'credits', source: 'codex', unlimited: false });
   assert.equal(recorded.mock.calls[0]![1].utilization7d, 1);
+  responseStatus = 429;
+  await send(429);
+  await vi.waitFor(() => assert.equal(recorded.mock.calls.length, 2));
+  assert.equal(recorded.mock.calls[1]![1].usageCreditsAvailable, true, 'a Codex 429 with credits must preserve the parser signal');
+  assert.equal(recorded.mock.calls[1]![1].creditBalance?.amount, 50000);
+  responseStatus = 200;
   available = false;
   await send();
-  await vi.waitFor(() => assert.equal(recorded.mock.calls.length, 2));
-  assert.equal(recorded.mock.calls[1]![1].usageCreditsAvailable, false);
-  assert.equal(recorded.mock.calls[1]![1].creditBalance?.amount, 0);
+  await vi.waitFor(() => assert.equal(recorded.mock.calls.length, 3));
+  assert.equal(recorded.mock.calls[2]![1].usageCreditsAvailable, false);
+  assert.equal(recorded.mock.calls[2]![1].creditBalance?.amount, 0);
 });
 
 test('/admin/config exposes the live codexAccounts alongside the claude pool', async () => {

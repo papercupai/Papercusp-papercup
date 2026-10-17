@@ -56,6 +56,23 @@ const judgeOne = (subject: ProseSubject) => judgeSelectionPolicyProse([subject])
 
 describe('selection-policy prose stays derived (P-006)', () => {
   describe('fixture controls — the detector must be able to FAIL', () => {
+    it('distinguishes the no-expert result description from a prescribed zero count', () => {
+      const description = '`min_agents: 0` returns\n"no one knows more than you do — proceed", never a costumed expert.';
+      const clean = `${cleanProse}\n\n${description}`;
+      expect(judgeOne({ label: 'fixture/result-description', kind: 'prose', text: clean }).ok).toBe(true);
+      expect(censusHandTypedBoundSites({ files: ['fixture'], read: () => clean }).sites).toEqual([]);
+      for (const prescription of [
+        `Pass ${description}`,
+        'Use `min_agents: 0` for rubric vetting.',
+        '`min_agents: 1` returns "no one knows more than you do — proceed".',
+        '`max_agents: 0` returns "no one knows more than you do — proceed".',
+      ]) {
+        const text = `${cleanProse}\n\n${prescription}`;
+        expect(judgeOne({ label: 'fixture/prescription', kind: 'prose', text }).ok).toBe(false);
+        expect(censusHandTypedBoundSites({ files: ['fixture'], read: () => text }).sites.length).toBeGreaterThan(0);
+      }
+    });
+
     it('catches the pre-P-006 CLAUDE.md line verbatim', () => {
       const verdict = judgeOne({
         label: 'fixture/CLAUDE.md',

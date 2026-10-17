@@ -1,5 +1,5 @@
 /**
- * session-archive.ts — PG as the canonical archive of ended CLI sessions
+ * session-archive.ts — canonical archive of ended CLI sessions
  * (plan session-db-archive-retire-dirs-2026-07-10 P-002/P-003; schema:
  * libs/db/sql/539-session-archives.sql).
  *
@@ -8,8 +8,11 @@
  * irreplaceable bytes — zstd-compressed, sha256-verified — into
  * harness_shared.session_archive_files (one row per file) plus ONE
  * session_archives STAMP row whose existence == "archive is complete".
- * After that, deleteArchivedSessionFiles() may remove the on-disk copies,
- * and a later resume rematerializes them byte-exactly from PG on disk-miss
+ * After that, deleteArchivedSessionFiles() may remove the on-disk copies.
+ * P-010 moves verified payloads to independent cold-a/cold-b copies while
+ * retaining the PG stamp and discovery indexes; its cold_storage pointer and
+ * blob deletion commit atomically. A later resume rematerializes byte-exactly
+ * from PG or the checksum-verified cold payloads on disk-miss
  * (rematerializeSession → `claude --resume <uuid>` / `codex resume <uuid>`
  * replay normally; wake-executor wiring is P-008).
  *
@@ -33,23 +36,27 @@
  *    it may be newer than the archive); the conflict is reported instead.
  */
 
-import { createHash } from 'node:crypto';
-import type { Dirent, Stats } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { constants as fsConstants, type Dirent, type Stats } from 'node:fs';
 import {
   lstat,
   mkdir,
+  open,
   readdir,
   readFile,
   rename,
   realpath,
+  stat,
   unlink,
   utimes,
   writeFile,
 } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as zlib from 'node:zlib';
 import { getOrgPg } from '@papercusp/db-org';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 
 // ── zstd (node:zlib ≥22.15/23.8; typed defensively — @types/node may lag) ──
 
@@ -223,6 +230,17 @@ export interface ArchiveStampRow {
   bytes_stored: number;
   manifest: ArchiveManifestEntry[];
   archived_by: string | null;
+  /** PG completeness/index row is retained after its payloads move. */
+  cold_storage?: ColdArchiveLocation | null;
+  /** Server revision used to refuse a concurrent archive rewrite. */
+  archived_at?: string;
+}
+
+export interface ColdArchiveLocation {
+  root: string;
+  manifestSha256: string;
+  /** Independent cold volume; the same manifest hash addresses its copy. */
+  replicaRoot?: string;
 }
 
 /** Thin PG boundary, injected in tests (pattern: session-dir-gc's pure core). */
@@ -242,8 +260,8 @@ export interface SessionArchiveStore {
    */
   readStamp(sourceKind: string, sessionId: string): Promise<ArchiveStampRow | null>;
   readFiles(sourceKind: string, sessionId: string): Promise<ArchiveFileRow[]>;
-  /** Remove the canonical PG rows only after a verified cold export. */
-  deleteArchiveRows?(stamp: Pick<ArchiveStampRow, 'workspace_id' | 'source_kind' | 'session_id' | 'manifest'>): Promise<void>;
+  /** Atomically persist the verified locator and remove ONLY PG blob rows. */
+  moveArchivePayloadsToCold?(stamp: ArchiveStampRow, location: ColdArchiveLocation): Promise<void>;
   stampAdvSessionArchived(advSessionId: number): Promise<void>;
   /** Capture parser compatibility before the bounded ingest-state ledger is pruned. */
   readTurnParsingOffset?(sourceKind: string, filePath: string): Promise<number | null>;
@@ -253,12 +271,15 @@ export interface SessionArchiveStore {
  * is deliberately outside the repository and PGDATA. */
 export const SESSION_ARCHIVE_COLD_ROOT =
   process.env.PAPERCUSP_SESSION_ARCHIVE_COLD_ROOT ?? '/mnt/cold-a/Backup/session-archives';
+export const SESSION_ARCHIVE_COLD_REPLICA_ROOT =
+  process.env.PAPERCUSP_SESSION_ARCHIVE_COLD_REPLICA_ROOT ?? '/mnt/cold-b/Backup/session-archives';
 
 export interface ColdArchiveExportResult {
   root: string;
   manifestPath: string;
   fileCount: number;
   bytesStored: number;
+  location: ColdArchiveLocation;
 }
 
 /**
@@ -272,50 +293,123 @@ export async function exportArchiveToColdTier(
   rows: readonly ArchiveFileRow[],
   root: string = SESSION_ARCHIVE_COLD_ROOT,
 ): Promise<ColdArchiveExportResult> {
-  if (!root || isAbsolute(root) === false) throw new Error('cold archive root must be absolute');
-  if (rows.length !== stamp.file_count || rows.length === 0) throw new Error('archive row count does not match complete stamp');
+  await validateColdRoot(root);
+  validateArchiveKeys(stamp);
+  if (rows.length !== stamp.file_count || !rows.length || rows.length > SESSION_ARCHIVE_MAX_FILES) {
+    throw new Error('archive row count does not match complete stamp');
+  }
   const byRel = new Map(rows.map((row) => [row.relpath, row]));
-  if (byRel.size !== rows.length || stamp.manifest.length !== rows.length) throw new Error('archive manifest is incomplete or duplicated');
-  const target = join(root, stamp.workspace_id, stamp.source_kind, stamp.session_id);
-  await mkdir(target, { recursive: true, mode: 0o700 });
-  const manifestRows: Array<{ relpath: string; sha256: string; bytes_raw: number; bytes_stored: number }> = [];
-  let bytesStored = 0;
-  for (const entry of stamp.manifest) {
+  if (byRel.size !== rows.length || stamp.manifest.length !== rows.length ||
+      new Set(stamp.manifest.map((entry) => entry.relpath)).size !== rows.length) {
+    throw new Error('archive manifest is incomplete or duplicated');
+  }
+  const files: ColdArchiveFile[] = [];
+  for (const [index, entry] of stamp.manifest.entries()) {
     if (isUnsafeArchiveRelpath(entry.relpath)) throw new Error(`unsafe archive relpath: ${entry.relpath}`);
     const row = byRel.get(entry.relpath);
-    if (!row || row.sha256 !== entry.sha256 || row.bytes_raw !== entry.bytes_raw || row.bytes_stored !== row.blob.length) {
+    if (!row || row.workspace_id !== stamp.workspace_id || row.source_kind !== stamp.source_kind ||
+        row.session_id !== stamp.session_id || row.codec !== 'zstd' || row.sha256 !== entry.sha256 ||
+        row.bytes_raw !== entry.bytes_raw || row.bytes_stored !== row.blob.length) {
       throw new Error(`archive row/manifest mismatch: ${entry.relpath}`);
     }
-    const raw = await zstdDecompress(row.blob);
+    const raw = await decompressArchiveBlobBounded(row, SESSION_ARCHIVE_MAX_TOTAL_RAW_BYTES);
     if (raw.length !== row.bytes_raw || sha256Hex(raw) !== row.sha256) {
       throw new Error(`archive blob integrity mismatch: ${entry.relpath}`);
     }
-    const blobPath = join(target, `${entry.relpath}.zst`);
-    await mkdir(dirname(blobPath), { recursive: true, mode: 0o700 });
-    try {
-      const prior = await readFile(blobPath);
-      if (!prior.equals(row.blob)) throw new Error(`cold archive differs: ${entry.relpath}`);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      await writeFile(blobPath, row.blob, { mode: 0o600 });
-    }
-    manifestRows.push({ relpath: entry.relpath, sha256: row.sha256, bytes_raw: row.bytes_raw, bytes_stored: row.bytes_stored });
-    bytesStored += row.bytes_stored;
+    files.push({ ...entry, bytes_stored: row.bytes_stored, blobName: `blob-${index}.zst`,
+      blobSha256: sha256Hex(row.blob), mtime: row.mtime?.toISOString() ?? null });
   }
+  if (files.reduce((sum, row) => sum + row.bytes_raw, 0) !== stamp.bytes_raw ||
+      files.reduce((sum, row) => sum + row.bytes_stored, 0) !== stamp.bytes_stored ||
+      stamp.bytes_raw > SESSION_ARCHIVE_MAX_TOTAL_RAW_BYTES) throw new Error('archive totals mismatch');
+  // Content-address the complete version, including parser compatibility and
+  // mtimes. A later re-archive never overwrites a reader's earlier cold copy.
+  const { cold_storage: _oldLocation, archived_at: _revision, ...metadata } = stamp;
+  const payload = Buffer.from(JSON.stringify({ schemaVersion: 2, ...metadata, files }) + '\n');
+  const location = { root, manifestSha256: sha256Hex(payload) };
+  const target = coldArchiveDir(stamp, location);
+  await ensureColdDir(root, target);
+  for (const file of files) await writeColdFile(join(target, file.blobName), byRel.get(file.relpath)!.blob);
   const manifestPath = join(target, 'MANIFEST.json');
-  const payload = JSON.stringify({ schemaVersion: 1, ...stamp, files: manifestRows }, null, 2) + '\n';
-  const temp = `${manifestPath}.tmp-${process.pid}`;
-  await writeFile(temp, payload, { mode: 0o600 });
-  await rename(temp, manifestPath);
-  // Read back the complete manifest before the caller can treat the export as durable.
-  const readback = JSON.parse(await readFile(manifestPath, 'utf8')) as { files?: unknown[] };
-  if (!Array.isArray(readback.files) || readback.files.length !== rows.length) throw new Error('cold archive manifest readback incomplete');
-  return { root, manifestPath, fileCount: rows.length, bytesStored };
+  await writeColdFile(manifestPath, payload);
+  const coldStamp = await readColdArchiveStamp(stamp.source_kind, stamp.session_id, location);
+  await readColdArchiveFiles(coldStamp);
+  return { root, manifestPath, fileCount: rows.length, bytesStored: stamp.bytes_stored, location };
+}
+
+interface ColdArchiveFile extends ArchiveManifestEntry {
+  bytes_stored: number;
+  blobName: string;
+  blobSha256: string;
+  mtime: string | null;
+}
+
+function validateArchiveKeys(stamp: Pick<ArchiveStampRow, 'workspace_id' | 'source_kind' | 'session_id'>): void {
+  if (stamp.workspace_id !== 'default' || !['claude', 'codex', 'omp'].includes(stamp.source_kind) ||
+      !/^[a-zA-Z0-9_-]+$/.test(stamp.session_id)) throw new Error('unsafe cold archive identity');
+}
+
+async function validateColdRoot(root: string): Promise<void> {
+  if (!isAbsolute(root) || resolve(root) !== root || await realpath(root) !== root || !(await lstat(root)).isDirectory()) {
+    throw new Error('cold archive root must be an existing absolute real directory');
+  }
+}
+
+/** A missing mount must never silently redirect cold payloads onto root. */
+export async function assertArchiveColdMount(root: string): Promise<void> {
+  await validateColdRoot(root);
+  if ((await stat(root)).dev === (await stat('/')).dev) throw new Error('cold archive volume is not mounted separately from root');
+}
+
+function coldArchiveDir(stamp: Pick<ArchiveStampRow, 'workspace_id' | 'source_kind' | 'session_id'>, location: ColdArchiveLocation): string {
+  validateArchiveKeys(stamp);
+  if (!isAbsolute(location.root) || !/^[a-f0-9]{64}$/.test(location.manifestSha256)) throw new Error('invalid cold archive locator');
+  return join(location.root, stamp.workspace_id, stamp.source_kind, stamp.session_id, location.manifestSha256);
+}
+
+async function syncColdDir(path: string): Promise<void> {
+  const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+  try { await handle.sync(); } finally { await handle.close(); }
+}
+
+async function ensureColdDir(root: string, target: string): Promise<void> {
+  let current = root;
+  for (const part of target.slice(root.length + 1).split('/')) {
+    const parent = current;
+    current = join(parent, part);
+    try { await mkdir(current, { mode: 0o700 }); await syncColdDir(parent); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    if (!(await lstat(current)).isDirectory() || await realpath(current) !== current) throw new Error('cold archive directory is not real');
+  }
+}
+
+async function readColdFile(path: string, maxBytes: number): Promise<Buffer> {
+  const handle = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > maxBytes) throw new Error('invalid cold archive file');
+    return await handle.readFile();
+  } finally { await handle.close(); }
+}
+
+async function writeColdFile(path: string, payload: Buffer): Promise<void> {
+  try {
+    const prior = await readColdFile(path, payload.length);
+    if (!prior.equals(payload)) throw new Error('cold archive differs');
+    return;
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  const temp = `${path}.tmp-${randomUUID()}`;
+  const handle = await open(temp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+  try { await handle.writeFile(payload); await handle.sync(); }
+  finally { await handle.close(); }
+  try { await rename(temp, path); await syncColdDir(dirname(path)); }
+  finally { await unlink(temp).catch((error) => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }); }
 }
 
 export interface ColdArchiveMigrationResult {
   ok: boolean;
   reason?: 'not_archived' | 'delete_unsupported' | 'export_failed';
+  error?: string;
   fileCount: number;
   bytesStored: number;
   manifestPath?: string;
@@ -332,24 +426,27 @@ export async function migrateArchiveToColdTier(
   sessionId: string,
   root: string = SESSION_ARCHIVE_COLD_ROOT,
   store: SessionArchiveStore = pgSessionArchiveStore(),
+  replicaRoot?: string,
 ): Promise<ColdArchiveMigrationResult> {
   const stamp = await store.readStamp(sourceKind, sessionId);
   if (!stamp) return { ok: false, reason: 'not_archived', fileCount: 0, bytesStored: 0 };
-  if (!store.deleteArchiveRows) {
+  if (stamp.cold_storage) return { ok: true, fileCount: stamp.file_count, bytesStored: 0 };
+  if (!store.moveArchivePayloadsToCold) {
     return { ok: false, reason: 'delete_unsupported', fileCount: stamp.file_count, bytesStored: 0 };
   }
   let exported: ColdArchiveExportResult;
   try {
-    exported = await exportArchiveToColdTier(stamp, await store.readFiles(sourceKind, sessionId), root);
-  } catch {
-    return { ok: false, reason: 'export_failed', fileCount: stamp.file_count, bytesStored: 0 };
+    const rows = await store.readFiles(sourceKind, sessionId);
+    exported = await exportArchiveToColdTier(stamp, rows, root);
+    if (replicaRoot) {
+      const replica = await exportArchiveToColdTier(stamp, rows, replicaRoot);
+      if (replica.location.manifestSha256 !== exported.location.manifestSha256) throw new Error('cold replica manifest mismatch');
+      exported.location.replicaRoot = replicaRoot;
+    }
+  } catch (error) {
+    return { ok: false, reason: 'export_failed', error: String(error), fileCount: stamp.file_count, bytesStored: 0 };
   }
-  await store.deleteArchiveRows({
-    workspace_id: stamp.workspace_id,
-    source_kind: stamp.source_kind,
-    session_id: stamp.session_id,
-    manifest: stamp.manifest,
-  });
+  await store.moveArchivePayloadsToCold(stamp, exported.location);
   return {
     ok: true,
     fileCount: exported.fileCount,
@@ -358,49 +455,129 @@ export async function migrateArchiveToColdTier(
   };
 }
 
+/** Reuse the hourly archive reconciler and daily telemetry janitor. Each pass
+ * has a ten-minute start budget and a hard archive-count ceiling. The stamp's
+ * cold locator is the durable cursor, so retries select only remaining blobs. */
+export async function runScheduledColdArchiveMigration(opts: { root?: string; replicaRoot?: string; maxArchives?: number } = {}): Promise<{
+  scanned: number; migrated: number; bytesStored: number; failed: number; errors: string[];
+  skipped?: 'rollout_not_enabled';
+}> {
+  // A staging writer can share PG with an older release reader. Schema and
+  // mount readiness alone must never authorize removal of their shared blobs.
+  // This destructive cutover is armed only after backup + reader verification.
+  const enabled = await getFlag(FLAGS.SESSION_ARCHIVE_COLD_MIGRATION, 'system').catch(() => false);
+  if (!enabled) return { scanned: 0, migrated: 0, bytesStored: 0, failed: 0, errors: [], skipped: 'rollout_not_enabled' };
+  const root = opts.root ?? SESSION_ARCHIVE_COLD_ROOT;
+  const replicaRoot = opts.replicaRoot ?? SESSION_ARCHIVE_COLD_REPLICA_ROOT;
+  await assertArchiveColdMount(root);
+  await assertArchiveColdMount(replicaRoot);
+  if ((await stat(root)).dev === (await stat(replicaRoot)).dev) throw new Error('cold archive replica must use an independent volume');
+  const maxArchives = Number.isFinite(opts.maxArchives) && (opts.maxArchives ?? 0) > 0
+    ? Math.min(10_000, Math.max(1, Math.floor(opts.maxArchives!))) : 10_000;
+  const deadline = Date.now() + 600_000;
+  const candidates = await getOrgPg().sql<Array<{ source_kind: string; session_id: string }>>`
+    SELECT source_kind, session_id FROM harness_shared.session_archives
+     WHERE workspace_id = 'default' AND cold_storage IS NULL AND file_count > 0
+     ORDER BY archived_at, source_kind, session_id LIMIT ${maxArchives}`;
+  const summary = { scanned: 0, migrated: 0, bytesStored: 0, failed: 0, errors: [] as string[] };
+  for (const candidate of candidates) {
+    if (Date.now() >= deadline) break;
+    summary.scanned += 1;
+    try {
+      const result = await migrateArchiveToColdTier(candidate.source_kind, candidate.session_id, root, pgSessionArchiveStore(), replicaRoot);
+      if (result.ok) { summary.migrated += 1; summary.bytesStored += result.bytesStored; }
+      else throw new Error(result.error ?? result.reason);
+    } catch (error) {
+      summary.failed += 1;
+      if (summary.errors.length < 20) summary.errors.push(`${candidate.source_kind}/${candidate.session_id}: ${String(error)}`);
+    }
+  }
+  return summary;
+}
+
 /** Read the cold manifest used after a successful PG-row migration. */
 export async function readColdArchiveStamp(
   sourceKind: string,
   sessionId: string,
-  root: string = SESSION_ARCHIVE_COLD_ROOT,
-): Promise<ArchiveStampRow | null> {
-  const manifestPath = join(root, WS_DEFAULT, sourceKind, sessionId, 'MANIFEST.json');
-  try {
-    const value = JSON.parse(await readFile(manifestPath, 'utf8')) as Partial<ArchiveStampRow> & { files?: ArchiveManifestEntry[] };
-    if (value.workspace_id !== WS_DEFAULT || value.source_kind !== sourceKind || value.session_id !== sessionId ||
-        !Array.isArray(value.files) || value.files.length === 0 ||
-        value.files.some((entry) => !entry || isUnsafeArchiveRelpath(entry.relpath))) return null;
-    return {
-      workspace_id: WS_DEFAULT, source_kind: sourceKind, session_id: sessionId,
-      owner: value.owner ?? null, harness_slug: value.harness_slug ?? null, cwd: value.cwd ?? null,
-      adv_session_id: value.adv_session_id == null ? null : Number(value.adv_session_id),
-      session_root: value.session_root ?? '', file_count: value.files.length,
-      bytes_raw: Number(value.bytes_raw ?? 0), bytes_stored: Number(value.bytes_stored ?? 0),
-      manifest: value.files, archived_by: value.archived_by ?? 'cold-tier',
-    };
-  } catch {
-    return null;
-  }
+  location: ColdArchiveLocation,
+): Promise<ArchiveStampRow> {
+  await validateColdRoot(location.root);
+  const dir = coldArchiveDir({ workspace_id: WS_DEFAULT, source_kind: sourceKind, session_id: sessionId }, location);
+  if (await realpath(dir) !== dir) throw new Error('unsafe cold archive directory');
+  const payload = await readColdFile(join(dir, 'MANIFEST.json'), 1024 * 1024);
+  if (sha256Hex(payload) !== location.manifestSha256) throw new Error('cold manifest checksum mismatch');
+  const value = JSON.parse(payload.toString('utf8')) as ArchiveStampRow & { schemaVersion: number; files: ColdArchiveFile[] };
+  if (value.schemaVersion !== 2 || value.workspace_id !== WS_DEFAULT || value.source_kind !== sourceKind ||
+      value.session_id !== sessionId || !Array.isArray(value.files) || !value.files.length ||
+      value.file_count !== value.files.length || value.files.length > SESSION_ARCHIVE_MAX_FILES ||
+      new Set(value.files.map((file) => file.relpath)).size !== value.files.length ||
+      value.files.some((file, i) => !file || isUnsafeArchiveRelpath(file.relpath) || file.blobName !== `blob-${i}.zst` ||
+        !/^[a-f0-9]{64}$/.test(file.blobSha256) || !Number.isSafeInteger(file.bytes_raw) || file.bytes_raw < 0 ||
+        !Number.isSafeInteger(file.bytes_stored) || file.bytes_stored < 0) ||
+      value.bytes_raw !== value.files.reduce((sum, file) => sum + file.bytes_raw, 0) ||
+      value.bytes_stored !== value.files.reduce((sum, file) => sum + file.bytes_stored, 0) ||
+      value.bytes_raw > SESSION_ARCHIVE_MAX_TOTAL_RAW_BYTES) throw new Error('invalid cold archive manifest');
+  return { ...value, cold_storage: location, manifest: value.files };
 }
 
 export async function readColdArchiveFiles(
   stamp: ArchiveStampRow,
-  root: string = SESSION_ARCHIVE_COLD_ROOT,
 ): Promise<ArchiveFileRow[]> {
-  const dir = join(root, stamp.workspace_id, stamp.source_kind, stamp.session_id);
+  if (!stamp.cold_storage) throw new Error('cold archive locator missing');
+  const verified = await readColdArchiveStamp(stamp.source_kind, stamp.session_id, stamp.cold_storage);
+  const dir = coldArchiveDir(stamp, stamp.cold_storage);
   const rows: ArchiveFileRow[] = [];
-  for (const entry of stamp.manifest) {
-    if (isUnsafeArchiveRelpath(entry.relpath)) throw new Error(`unsafe cold archive relpath: ${entry.relpath}`);
-    const blob = await readFile(join(dir, `${entry.relpath}.zst`));
-    const raw = await zstdDecompress(blob);
+  for (const entry of verified.manifest as ColdArchiveFile[]) {
+    const blob = await readColdFile(join(dir, entry.blobName), SESSION_ARCHIVE_MAX_TOTAL_RAW_BYTES);
+    if (blob.length !== entry.bytes_stored || sha256Hex(blob) !== entry.blobSha256) throw new Error('cold blob checksum mismatch');
+    const raw = await decompressArchiveBlobBounded({ codec: 'zstd', blob, bytes_raw: entry.bytes_raw }, SESSION_ARCHIVE_MAX_TOTAL_RAW_BYTES);
     if (raw.length !== entry.bytes_raw || sha256Hex(raw) !== entry.sha256) {
       throw new Error(`cold archive integrity mismatch: ${entry.relpath}`);
     }
     rows.push({ workspace_id: stamp.workspace_id, source_kind: stamp.source_kind, session_id: stamp.session_id,
       relpath: entry.relpath, codec: 'zstd', blob, sha256: entry.sha256, bytes_raw: entry.bytes_raw,
-      bytes_stored: blob.length, mtime: null });
+      bytes_stored: blob.length, mtime: entry.mtime ? new Date(entry.mtime) : null });
   }
   return rows;
+}
+
+/** Read-only integrity evidence for an existing cutover. A PG locator alone is
+ * not proof: read both manifests and every compressed/raw checksum, compare the
+ * retained PG index, and require two volumes independent of each other and root.
+ * The test seam changes only stat identity; the actual file readers still run. */
+export async function verifyColdArchiveIntegrity(stamp: ArchiveStampRow, deps: {
+  statRoot?: (path: string) => Promise<{ dev: number; ino: number }>;
+} = {}): Promise<{ fileCount: number; bytesRaw: number; bytesStored: number;
+  manifestSha256: string; primaryDevice: number; replicaDevice: number }> {
+  const location = stamp.cold_storage;
+  if (!location?.replicaRoot || location.root === location.replicaRoot) {
+    throw new Error('cold archive requires a distinct replica');
+  }
+  const inspect = deps.statRoot ?? stat;
+  const roots = ['/', location.root, location.replicaRoot];
+  await Promise.all(roots.slice(1).map(validateColdRoot));
+  const before = await Promise.all(roots.map(path => inspect(path)));
+  if (new Set(before.map(info => info.dev)).size !== 3) {
+    throw new Error('cold archive copies must use independent mounted volumes');
+  }
+  const canonicalManifest = (value: ArchiveStampRow) => JSON.stringify(value.manifest.map(entry => ({
+    relpath: entry.relpath, sha256: entry.sha256, bytes_raw: entry.bytes_raw,
+    short_user_turns_offset: entry.short_user_turns_offset ?? null,
+  })));
+  for (const root of roots.slice(1)) {
+    const copy = await readColdArchiveStamp(stamp.source_kind, stamp.session_id, { ...location, root });
+    if (copy.file_count !== stamp.file_count || copy.bytes_raw !== stamp.bytes_raw ||
+        copy.bytes_stored !== stamp.bytes_stored || canonicalManifest(copy) !== canonicalManifest(stamp)) {
+      throw new Error('cold archive differs from retained PG index');
+    }
+    await readColdArchiveFiles(copy);
+  }
+  const after = await Promise.all(roots.map(path => inspect(path)));
+  if (before.some((info, i) => info.dev !== after[i]!.dev || info.ino !== after[i]!.ino)) {
+    throw new Error('cold archive volume changed during verification');
+  }
+  return { fileCount: stamp.file_count, bytesRaw: stamp.bytes_raw, bytesStored: stamp.bytes_stored,
+    manifestSha256: location.manifestSha256, primaryDevice: before[1]!.dev, replicaDevice: before[2]!.dev };
 }
 
 const WS_DEFAULT = 'default';
@@ -990,6 +1167,7 @@ export function pgSessionArchiveStore(): SessionArchiveStore {
     async upsertArchive(files, stamp) {
       const { sql } = getOrgPg();
       await sql.begin(async (tx) => {
+        await tx`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([stamp.workspace_id, stamp.source_kind, stamp.session_id])}, 0))`;
         for (const f of files) {
           await tx`
             INSERT INTO harness_shared.session_archive_files
@@ -1027,7 +1205,7 @@ export function pgSessionArchiveStore(): SessionArchiveStore {
             session_root = EXCLUDED.session_root, file_count = EXCLUDED.file_count,
             bytes_raw = EXCLUDED.bytes_raw, bytes_stored = EXCLUDED.bytes_stored,
             manifest = EXCLUDED.manifest, archived_by = EXCLUDED.archived_by,
-            archived_at = now()`;
+            archived_at = now(), cold_storage = NULL`;
       });
     },
 
@@ -1044,11 +1222,11 @@ export function pgSessionArchiveStore(): SessionArchiveStore {
       >`
         SELECT workspace_id, source_kind, session_id, owner, harness_slug, cwd,
                adv_session_id, session_root, file_count, bytes_raw, bytes_stored,
-               manifest, archived_by
+               manifest, archived_by, archived_at::text AS archived_at, cold_storage
           FROM harness_shared.session_archives
          WHERE workspace_id = ${workspaceId} AND source_kind = ${sourceKind}
            AND session_id = ${sessionId}`;
-      if (!rows.length) return readColdArchiveStamp(sourceKind, sessionId);
+      if (!rows.length) return null;
       const r = rows[0];
       return {
         ...r,
@@ -1074,8 +1252,8 @@ export function pgSessionArchiveStore(): SessionArchiveStore {
          WHERE workspace_id = ${workspaceId} AND source_kind = ${sourceKind}
            AND session_id = ${sessionId}`;
       if (!rows.length) {
-        const coldStamp = await readColdArchiveStamp(sourceKind, sessionId);
-        return coldStamp ? readColdArchiveFiles(coldStamp) : [];
+        const stamp = await pgSessionArchiveStore().readStamp(sourceKind, sessionId);
+        return stamp?.cold_storage ? readColdArchiveFiles(stamp) : [];
       }
       return rows.map((r) => ({
         ...r,
@@ -1087,18 +1265,23 @@ export function pgSessionArchiveStore(): SessionArchiveStore {
       }));
     },
 
-    async deleteArchiveRows(stamp) {
+    async moveArchivePayloadsToCold(stamp, location) {
+      const revision = stamp.archived_at;
+      if (!revision) throw new Error('archive revision missing');
       const { sql } = getOrgPg();
       await sql.begin(async (tx) => {
-        // The manifest predicate prevents deleting a newer archive that was
-        // written after the cold export began.
-        const deleted = await tx`
-          DELETE FROM harness_shared.session_archives
+        // Serialize with upsertArchive BEFORE either leg touches blob rows.
+        // Retain the PG stamp: owner/adv-session discovery must still work.
+        await tx`SELECT pg_advisory_xact_lock(hashtextextended(${JSON.stringify([stamp.workspace_id, stamp.source_kind, stamp.session_id])}, 0))`;
+        const moved = await tx`
+          UPDATE harness_shared.session_archives
+             SET cold_storage = ${JSON.stringify(location)}::text::jsonb
            WHERE workspace_id = ${stamp.workspace_id} AND source_kind = ${stamp.source_kind}
              AND session_id = ${stamp.session_id}
              AND manifest = ${JSON.stringify(stamp.manifest)}::text::jsonb
+             AND archived_at::text = ${revision} AND cold_storage IS NULL
           RETURNING session_id`;
-        if (deleted.length === 0) throw new Error('archive changed during cold migration');
+        if (moved.length === 0) throw new Error('archive changed during cold migration');
         await tx`
           DELETE FROM harness_shared.session_archive_files
            WHERE workspace_id = ${stamp.workspace_id} AND source_kind = ${stamp.source_kind}

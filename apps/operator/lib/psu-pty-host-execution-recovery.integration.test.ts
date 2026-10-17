@@ -57,7 +57,8 @@ async function fixture(agent: string, autoStart: boolean, failInitially = false)
   const config = join(root, '.papercusp', `session-${agent}`);
   const nativeDir = agent === 'omp' ? join(config, 'agent', 'sessions')
     : join(config, agent === 'claude' ? 'projects' : 'sessions');
-  const transcript = join(nativeDir, 'fixture.jsonl');
+  const nativeId = agent === 'codex' ? '12345678-1234-4234-8234-123456789abc' : undefined;
+  const transcript = join(nativeDir, nativeId ? `rollout-${nativeId}.jsonl` : 'fixture.jsonl');
   mkdirSync(nativeDir, { recursive: true });
   if (agent === 'codex') writeFileSync(join(config, 'config.toml'), '');
   const ownerId = `rx-${process.pid}-${agent[0]}-${++ownerCounter}`;
@@ -113,9 +114,11 @@ async function fixture(agent: string, autoStart: boolean, failInitially = false)
       : { type: 'message', message: { role: 'assistant', stopReason: 'stop' } };
   writeFileSync(transcript, JSON.stringify({ ...settled, id: 'fixture-complete', uuid: 'fixture-complete',
     timestamp: new Date().toISOString() }) + '\n');
-  expect(nativeLatestExecution({ agent, env }).phase, `${agent} fixture native root preflight`).toBe('settled');
+  expect(nativeLatestExecution({ agent, env, nativeSessionId: nativeId }).phase,
+    `${agent} fixture exact native binding preflight`).toBe('settled');
   const done = hostThroughPty({ command: process.execPath, args: ['-e', code], cwd: root,
-    ownerId, env, io: { stdin, stdout }, bridgeTty: false, activityPersistMs: 25, onExit: () => {} });
+    ownerId, env, io: { stdin, stdout }, bridgeTty: false, activityPersistMs: 25,
+    resolveRespawnNativeId: nativeId ? () => nativeId : null, onExit: () => {} });
   await until(() => output.includes('READY') && existsSync(metaPathFor(ownerId)) && existsSync(sock));
   const meta = JSON.parse(readFileSync(metaPathFor(ownerId), 'utf8'));
   expect(meta.execution, `${agent} metadata must carry native observation`).toBeDefined();

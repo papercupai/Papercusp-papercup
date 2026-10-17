@@ -102,8 +102,8 @@ const DAY = 24;
  */
 export const AGENT_MAX_AGE_HOURS = 3 * DAY;
 
-/** Default per-root ceiling for agent age/count collectors. Native/lease
- * collectors retain their owning program's admission and size limits. */
+/** Default per-root ceiling. Lease collectors keep their live/archive guards
+ * and report protected overage; native managers own their admission limits. */
 export const AGENT_ROOT_MAX_BYTES = 20 * 1024 ** 3;
 export function retentionRootSizeCap(cls: RetentionClass): number | undefined {
   return cls.origin === 'agent' && (cls.keep.kind === 'max-age' || cls.keep.kind === 'newest')
@@ -356,7 +356,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     roots: ['/var/lib/docker', '/var/lib/containers'],
     stores: ['docker:'],
     keep: { kind: 'native', manager: 'docker/podman', rule: 'build cache 24h, unreferenced images 168h, dangling anonymous volumes 24h' },
-    enforcers: [{ kind: 'existing', ref: 'papercusp/bin/reclaim-docker-disk.sh', schedule: 'papercup-docker-reclaim.timer, hourly at :17', sourceSha256: '9d78516da4748a88f44cc72c92134b32be0a21950c561ddcba862046c855f6ad' }],
+    enforcers: [{ kind: 'existing', ref: 'papercusp/bin/reclaim-docker-disk.sh', schedule: 'papercup-docker-reclaim.timer, hourly at :17', sourceSha256: '76d38327c9c582b5123ef78592ac3a6154799e491a21881f6028f325e72c818f' }],
     note: 'Leaked Postgres test containers are fixed at the source by P-005 (R-4).',
   },
   {
@@ -384,6 +384,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
       '/mnt/data/tmp/papercusp-codex-sqlite-homes',
     ],
     keep: { kind: 'lease', record: 'a live or resumable session', graceHours: 2 },
+    maxBytes: AGENT_ROOT_MAX_BYTES,
     enforcers: [{ kind: 'existing', ref: 'papercusp/packages/operator-core/lib/session-dir-gc.ts', schedule: 'DBOS sessionDirGc (periodic)' }],
   },
   {
@@ -419,7 +420,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     id: 'vh-release-runs',
     title: 'Verification-harness release runs',
     origin: 'agent',
-    roots: ['~/.local/state/verification-harness/release-local'],
+    roots: ['~/.local/state/verification-harness/release-local', '/mnt/data/offload/verification-harness/release-local'],
     keep: { kind: 'newest', keep: 30 },
     enforcers: [
       {
@@ -437,8 +438,9 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     origin: 'agent',
     roots: ['~/papercupai-workspace/papercusp-relcut-*', '~/papercupai-workspace/papercup-relcut-*'],
     keep: { kind: 'lease', record: 'a release retention lease (~/.papercusp/release-retention) or a registered worktree', graceHours: 24 },
+    maxBytes: AGENT_ROOT_MAX_BYTES,
     enforcers: [{ kind: 'standing-reclaim', via: 'papercusp/packages/operator-core/lib/release-cut-reclaim.ts' }],
-    note: 'release-cut-reclaim decides which trees may go; today it only runs on demand (release:cut op:reclaim).',
+    note: 'The scheduled owner collects eligible cuts oldest first, measures their allocated bytes against the 20 GiB cap and reports protected overage. Published, authored, live, leased and named-only worktrees retain their existing guards.',
   },
   {
     id: 'cargo-target-slots',
@@ -446,10 +448,12 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     origin: 'agent',
     roots: ['/mnt/data/cargo-target/.papercusp-target-slots'],
     keep: { kind: 'lease', record: 'a claimant lock, a live reference or a release retention lease', graceHours: 1 },
+    maxBytes: AGENT_ROOT_MAX_BYTES,
     enforcers: [
-      { kind: 'existing', ref: 'papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh', schedule: 'every desktop launch', sourceSha256: '27353fcb4de3df8425f80602ea2df0f0b951ff860f16606ffc19c80cb6d66dd7' },
+      { kind: 'existing', ref: 'papercusp/papercusp-desktop/bin/lib/claim-target-dir.sh', schedule: 'every desktop launch', sourceSha256: '689b5f70267a30f78cda18495ef29fc9e73e2e415c52b09357623394facaa13e' },
       { kind: 'standing-reclaim', via: 'papercusp/papercusp-desktop/bin/reap-private-target-slots.sh', sourceSha256: '45737910e89b2154dfbc6d0cc83ba190a1f53433a79cfde167bef7b69d3a9416' },
     ],
+    note: 'The native owner eagerly removes every eligible dead private slot, oldest first; a 20 GiB cap receipt counts retained live/leased/recent roots and interrupted deletions. Protected overage is reported, never permission to bypass the owner guards.',
   },
   {
     id: 'repo-scratch',
@@ -565,9 +569,9 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
   {
     id: 'papercusp-backups',
-    title: 'Workspace backups on /mnt/data/papercusp-backups',
+    title: 'Workspace backups on the cold tier and retained legacy path',
     origin: 'agent',
-    roots: ['/mnt/data/papercusp-backups'],
+    roots: ['/mnt/data/papercusp-backups', '/mnt/cold-a/papercusp-backups'],
     keep: { kind: 'review', reason: 'backups; a newest-N rule needs the backup writer’s own index' },
     enforcers: [{ kind: 'none' }],
   },
@@ -854,8 +858,8 @@ export function validatePolicy(policy: readonly RetentionClass[] = RETENTION_POL
     ids.add(cls.id);
     if (!cls.keep) problems.push(`${cls.id}: no keep rule`);
     if (cls.maxBytes !== undefined && (!Number.isSafeInteger(cls.maxBytes) || cls.maxBytes <= 0 ||
-        cls.origin !== 'agent' || !['max-age', 'newest'].includes(cls.keep.kind))) {
-      problems.push(`${cls.id}: size cap requires positive safe-integer bytes on an agent age/count class`);
+        cls.origin !== 'agent' || !['max-age', 'newest', 'lease'].includes(cls.keep.kind))) {
+      problems.push(`${cls.id}: size cap requires positive safe-integer bytes on an agent age/count/lease class`);
     }
     if (cls.roots.length === 0 && (cls.stores ?? []).length === 0) problems.push(`${cls.id}: no roots`);
     if (cls.enforcers.length === 0) problems.push(`${cls.id}: no enforcer entry`);

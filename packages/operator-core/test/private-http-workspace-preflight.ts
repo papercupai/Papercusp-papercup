@@ -21,6 +21,131 @@ import type { CommittedReaderObservationCohort, CommittedReaderObservationIdenti
 // @ts-ignore -- reuse the maintained JS router's watchdog policy, as isolated-integration-proof does.
 import { decideWatchdogExpiry } from '../../../scripts/lib/batch-watchdog.mjs';
 
+export interface PrivateUnrelatedCheckpointObservation {
+  workspace: string;
+  base: string;
+  expectedBuildSha: string;
+  healthBefore: { service: string; sha: string; bundleStale?: unknown };
+  healthAfter: { service: string; sha: string; bundleStale?: unknown };
+  itemId: string;
+  harness: string;
+  checkpoint: string;
+  /** All times use the observing worker's monotonic clock, including body drainage. */
+  startedAtMs: number;
+  completedAtMs: number;
+  response: { status: number; envelope: unknown };
+  /** Correlate this backend with the fixture's held row before collecting these samples. */
+  stallBefore: PrivateCheckpointStallSample;
+  stallAfter: PrivateCheckpointStallSample;
+  readback: { observedAtMs: number; workspace: string; harness: string; itemId: string; checkpoint: string };
+}
+
+interface PrivateCheckpointStallSample {
+  observedAtMs: number;
+  itemId: string;
+  pid: number;
+  backendStart: string;
+  queryStart: string;
+  state: string;
+  waitEventType: string;
+}
+
+/** D-007/R-003's unrelated-write detector for the existing private HTTP worker.
+ * This validates observations, never manufactures them. Unit inputs are not HTTP
+ * acceptance evidence; the real caller still owes original source/preparation,
+ * backend correlation, lifecycle cleanup, and the rest of the fault matrix.
+ */
+export function assertPrivateUnrelatedCheckpointObservation(o: PrivateUnrelatedCheckpointObservation) {
+  assert.match(o.workspace, /^test-runtime-[a-z0-9-]+$/);
+  const base = new URL(o.base);
+  assert.equal(base.protocol, 'http:');
+  assert.ok(['127.0.0.1', 'localhost'].includes(base.hostname), 'private HTTP host must be loopback');
+  assert.ok(base.port && !['3070', '3170', '3055'].includes(base.port), 'use the existing disposable HTTP host');
+  assert.equal(base.pathname, '/');
+  assert.ok(!base.username && !base.password && !base.search && !base.hash);
+  assert.match(o.expectedBuildSha, /^[a-f0-9]{10,40}$/);
+  for (const health of [o.healthBefore, o.healthAfter]) {
+    assert.equal(health.service, 'papercusp-operator');
+    assert.equal(health.sha, o.expectedBuildSha, 'serving build changed or is not the selected build');
+    assert.equal(health.bundleStale, undefined, 'stale bundle cannot qualify');
+  }
+  assert.ok(o.itemId && o.harness && o.checkpoint, 'select the exact item, canonical harness and nonempty checkpoint');
+  const times = [o.startedAtMs, o.completedAtMs, o.stallBefore?.observedAtMs,
+    o.stallAfter?.observedAtMs, o.readback?.observedAtMs];
+  assert.ok(times.every(value => Number.isFinite(value) && value >= 0), 'finite monotonic observations required');
+  const elapsedMs = o.completedAtMs - o.startedAtMs;
+  assert.ok(elapsedMs >= 0 && elapsedMs <= 20_000, 'unrelated checkpoint must finish within D-007 20 seconds');
+  for (const sample of [o.stallBefore, o.stallAfter]) {
+    assert.ok(sample.itemId && sample.itemId !== o.itemId, 'stall must belong to another item');
+    assert.ok(Number.isSafeInteger(sample.pid) && sample.pid > 0 && sample.backendStart && sample.queryStart,
+      'retain the observed PostgreSQL backend and query identity');
+    assert.equal(sample.state, 'active', 'stalled query must still be active');
+    assert.equal(sample.waitEventType, 'Lock', 'retain an actual PostgreSQL lock wait');
+  }
+  for (const key of ['itemId', 'pid', 'backendStart', 'queryStart'] as const)
+    assert.equal(o.stallAfter[key], o.stallBefore[key], 'the same stalled query must span the HTTP write');
+  assert.ok(o.stallBefore.observedAtMs <= o.startedAtMs && o.stallAfter.observedAtMs >= o.completedAtMs,
+    'stall observations must bracket the complete HTTP write');
+  assert.equal(o.response.status, 200, 'an HTTP error is not a successful mutation receipt');
+  const envelope = o.response.envelope as any;
+  assert.equal(envelope?.ok, true, 'HTTP dispatch must succeed');
+  assert.notEqual(envelope.result?.isError, true, 'tool refusal is not a successful mutation receipt');
+  let receipt = envelope.result?.structuredContent;
+  if (!receipt) {
+    const json = envelope.result?.content?.filter((part: any) =>
+      part.type === 'text' && typeof part.text === 'string' && part.text.trim().startsWith('{'));
+    assert.equal(json?.length, 1, 'one unambiguous authoritative JSON receipt required');
+    receipt = JSON.parse(json[0].text);
+  }
+  assert.equal(receipt?.ok, true, 'unavailable or outcome-unknown is not write success');
+  assert.deepEqual(receipt.counts, { ok: 1, failed: 0 });
+  assert.equal(receipt.results?.length, 1, 'receipt must name only the requested mutation');
+  const row = receipt.results[0];
+  assert.equal(row.ok, true);
+  assert.ok(!row.error && !row.errorCode, 'a failed or ambiguous write cannot qualify');
+  assert.equal(row.id, o.itemId);
+  assert.equal(row.harness, o.harness);
+  assert.equal(row.cleared, false);
+  assert.equal(row.verified, true, 'checkpoint writer must verify persistence through its reader');
+  assert.equal(row.length, o.checkpoint.length);
+  assert.equal(row.contentHash, createHash('sha256').update(o.checkpoint, 'utf8').digest('hex').slice(0, 12));
+  assert.ok(o.readback.observedAtMs >= o.completedAtMs, 'readback must follow the completed response');
+  assert.equal(o.readback.workspace, o.workspace);
+  assert.equal(o.readback.harness, o.harness);
+  assert.equal(o.readback.itemId, o.itemId);
+  assert.equal(o.readback.checkpoint, o.checkpoint, 'independent readback must contain the exact submitted checkpoint');
+}
+
+/** Identify a private PG socket without retaining authentication or query bytes.
+ * postgres-js writes the complete startup packet before its first query. Ignore
+ * SSL/cancel requests, incomplete packets and everything after that packet. */
+export function privatePgStartupIdentity(chunk: unknown): { database: string | null; applicationName: string | null } | null {
+  if (!(chunk instanceof Uint8Array)) return null;
+  const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  if (bytes.length < 9) return null;
+  const length = bytes.readUInt32BE(0);
+  if (length < 9 || length > 16_384 || length > bytes.length || bytes.readUInt32BE(4) !== 196608) return null;
+  if (bytes[length - 1] !== 0) return null;
+  let database: string | null = null, applicationName: string | null = null;
+  let offset = 8;
+  while (offset < length - 1) {
+    const keyEnd = bytes.indexOf(0, offset);
+    if (keyEnd < offset || keyEnd >= length - 1) return null;
+    const valueEnd = bytes.indexOf(0, keyEnd + 1);
+    if (valueEnd < keyEnd + 1 || valueEnd >= length - 1) return null;
+    const key = bytes.toString('utf8', offset, keyEnd);
+    if (key === 'database' || key === 'application_name') {
+      const value = bytes.toString('utf8', keyEnd + 1, valueEnd);
+      if (value.length <= 128 && !/[\x00-\x1f\x7f]/.test(value)) {
+        if (key === 'database') database = value;
+        else applicationName = value;
+      }
+    }
+    offset = valueEnd + 1;
+  }
+  return offset === length - 1 ? { database, applicationName } : null;
+}
+
 /** Retain the actual provider refusal before a disposable journey asserts success.
  * Drain a clone, preserving the consumer's original body. Successful model content
  * and request content are never retained; failure details use the gateway scrubber. */
@@ -732,7 +857,8 @@ function assertPrivatePreparationEvidence() {
   'PAPERCUSP_TEST_RUNS_DB_URL is required for durable isolated test receipts');
 }
 
-type PrivateBundleBuilder = { command?: string; args?: string[]; timeoutMs: number; maxMs?: number; pollMs?: number };
+type PrivateBundleBuilder = { command?: string; args?: string[]; timeoutMs: number; maxMs?: number; pollMs?: number;
+  onProgress?: (progress: { step: string; completedSteps: number }) => void };
 type PrivateBundleReceipt = { path: string; sha256: string };
 export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
   builder: PrivateBundleBuilder & { maxMs: number }): Promise<PrivateBundleReceipt>;
@@ -801,6 +927,7 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
         if (!existsSync(stepPath)) return;
         // Only fully appended rows can advance. Nested shell steps may interleave.
         const lines = readFileSync(stepPath, 'utf8').split('\n').slice(0, -1);
+        const progress: Array<{ step: string; completedSteps: number }> = [];
         for (const line of lines.slice(rowsSeen)) {
           try {
             const step = JSON.parse(line);
@@ -810,10 +937,14 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
             if (step.event === 'start' && !completed.has(step.step)) openSteps.add(key);
             else if (step.event === 'end' && step.status === 0 && openSteps.delete(key) && !completed.has(step.step)) {
               completed.add(step.step); lastProgressAt = Date.now();
+              progress.push({ step: step.step, completedSteps: completed.size });
             }
           } catch { /* an invalid journal row cannot extend the deadline */ }
         }
         rowsSeen = lines.length;
+        // Forward the same validated completions that renew this builder's
+        // deadline, so enclosing watchdogs need no synthetic heartbeat.
+        for (const step of progress) builder.onProgress?.(step);
       };
       const observeProgress = () => {
         try { sample(); }
@@ -838,6 +969,7 @@ export function buildPrivateOperatorApiBundle(root: string, evidenceDir: string,
       child.once('error', error => { failure = error; stopGroup(child.pid); });
       child.once('close', (status, signal) => {
         poll.stop(); clearTimeout(deadline);
+        observeProgress();
         receipt = { ...receipt, pid: child.pid, status, signal,
           progress: { extensions, completedSteps: completed.size },
           error: failure && { code: (failure as NodeJS.ErrnoException).code, message: failure.message } };

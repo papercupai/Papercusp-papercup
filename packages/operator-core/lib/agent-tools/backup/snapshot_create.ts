@@ -38,7 +38,7 @@ export default defineTool({
   capability: 'backup:write',
   guidance: {
     when: `Create a new backup snapshot of the workspace. Use before risky migrations or major state changes.`,
-    notWhen: `For routine commits, this isn't needed — backup snapshots are heavyweight (whole-workspace). For per-harness portable snapshots, use the snapshots tools instead. To reconcile a still-running receipt returned by an earlier call, pass that row as resumeSnapshotId instead of creating another snapshot.`,
+    notWhen: `For routine commits, this isn't needed — backup snapshots are heavyweight (whole-workspace). For per-harness portable snapshots, use the snapshots tools instead. To reconcile a still-running receipt, pass resumeSnapshotId. If its producer was lost before an artifact exists, also pass resumeProducer:true to re-drive that SAME receipt under the cross-process backup lock; no sibling receipt is created.`,
     seeAlso: [
       'backup:snapshot_list (list existing snapshots)',
       'backup:settings_set (schedule recurring backups instead of one-shot)',
@@ -57,14 +57,20 @@ export default defineTool({
     ]).default('pre_destructive'),
     note: softText(LIMITS.ANNOTATION).optional(),
     resumeSnapshotId: z.number().int().positive().optional(),
+    resumeProducer: z.boolean().optional().describe('Explicitly re-drive resumeSnapshotId after producer loss. Serializes with existing producers and rechecks the exact receipt/artifact before work; never creates a new row.'),
   }),
   async handler(args) {
+    if (args.resumeProducer && args.resumeSnapshotId === undefined) {
+      throw new Error('resumeProducer requires resumeSnapshotId');
+    }
     const ws = activeWorkspaceId();
     const note = clampText(args.note, LIMITS.ANNOTATION);
     const context = note ? { note } : undefined;
     if (args.resumeSnapshotId !== undefined) {
       const receipt = await workspaceBackupFor(ws).reconcileSnapshotReceipt(args.resumeSnapshotId);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(receipt) }] };
+      if (!args.resumeProducer || !receipt.stillRunning) {
+        return { content: [{ type: 'text' as const, text: JSON.stringify(receipt) }] };
+      }
     }
     // Deliberately does NOT route through `triggerSnapshotEvent`, so it bypasses the
     // per-workspace `eventTriggers` gate. That gate answers "should this AUTOMATIC
@@ -79,7 +85,7 @@ export default defineTool({
     // StepRunner seam); otherwise call snapshot() directly. `getResult` is
     // awaited so the tool keeps its synchronous request→result contract.
     let result: SnapshotResult;
-    if (dbosBackupActive() && dbosStarted()) {
+    if (args.resumeSnapshotId === undefined && dbosBackupActive() && dbosStarted()) {
       const { startBackupSnapshotWorkflow } = await import('../../dbos/backup-workflow');
       const nonce = Date.now().toString(36) + randomBytes(4).toString('hex');
       result = await startBackupSnapshotWorkflow({ workspaceId: ws, reason: args.reason, context }, nonce);
@@ -98,6 +104,7 @@ export default defineTool({
       const wb = workspaceBackupFor(ws);
       const snapshotPromise = wb.snapshot(args.reason, context, {
         onStarted: (id) => { startedId = id; },
+        resumeSnapshotId: args.resumeSnapshotId,
       });
       const deadline = new Promise<{ timedOut: true }>((resolve) => {
         setTimeout(() => resolve({ timedOut: true }), SAFE_DEADLINE_MS).unref();

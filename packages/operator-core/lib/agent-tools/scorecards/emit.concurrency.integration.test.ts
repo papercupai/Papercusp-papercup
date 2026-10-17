@@ -42,6 +42,7 @@ const {
   listScorecards,
   isCurrentSourceAuditResponder,
 } = await import('../../scorecards');
+const { getLongLivedAdminPool } = await import('../../long-lived-admin-pool');
 const { createIssue } = await import('../../issues-engineer');
 const { closeTask, registerTask } = await import('../../task-manager/store');
 const { OBSERVATION_TOPIC } = await import('../../harness/improvements/read-items');
@@ -128,7 +129,7 @@ afterAll(async () => {
   await _closeGradingAuditSubjectMutexForTests();
   if (db) {
     const fallbackFlush = await flushFallbackObservations({ sql: db.adminSql });
-    expect(fallbackFlush.failed).toBe(0, 'fallback observations must flush before their private PG pool closes');
+    expect(fallbackFlush.failed, 'fallback observations must flush before their private PG pool closes').toBe(0);
   }
   await db?.cleanup();
   _resetHarnessAdminUrlCacheForTests();
@@ -246,6 +247,36 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
     await retryRelease();
   }, 120_000);
 
+  it('bounds grading-audit mutex pool acquisition and releases a late reservation', async () => {
+    await _closeGradingAuditSubjectMutexForTests();
+    const pool = getLongLivedAdminPool('grading-audit-subject', { max: 8 });
+    const holders = await Promise.all(Array.from({ length: 8 }, () => pool.reserve()));
+    const phases = createPhaseTracker();
+    const subject = { workspaceId: activeWorkspaceId(), subjectIssueId: 'EI-MUTEX-POOL-TIMEOUT-SUBJECT' };
+    try {
+      const startedAt = Date.now();
+      await expect(acquireGradingAuditSubjectMutex(subject, phases, 150)).rejects.toMatchObject({
+        name: 'ScorecardEmitMutexWaitTimeoutError',
+        code: 'scorecard_emit_mutex_timeout',
+        phase: 'pool-reservation',
+      });
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+      expect(phases.intervals()).toContainEqual(expect.objectContaining({
+        phase: 'scorecards:emit:mutex:grading-audit-subject:pool-reservation',
+        durationMs: expect.any(Number),
+      }));
+    } finally {
+      holders.forEach((holder) => holder.release());
+      // The timed-out reserve may resolve after the holders are released. Give
+      // its expired() branch time to release the late connection before the
+      // pool is closed and re-used by the next case.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await _closeGradingAuditSubjectMutexForTests();
+    }
+    const retryRelease = await acquireGradingAuditSubjectMutex(subject, undefined, 150);
+    await retryRelease();
+  }, 120_000);
+
   it('serializes concurrent identical emits and persists exactly one scorecard', async () => {
     const input = {
       createdBy: OWNER,
@@ -349,6 +380,88 @@ describe('scorecards:emit final dedup read-to-write mutex, real PG', () => {
     }));
     expect(blockedIntervals.find(({ phase }) => phase === 'scorecards:emit:mutex:dedup:advisory-lock')?.durationMs)
       .toBeGreaterThan(0);
+  }, 120_000);
+
+  it('does not block a different typed subject behind an emitter waiting on PostgreSQL', async () => {
+    const input = {
+      createdBy: OWNER,
+      ctxHarness: SOURCE_HIVE,
+      workspaceId: activeWorkspaceId(),
+    };
+    const subjectA = { kind: 'scorecard' as const, ref: 'scorecard-subject-a' };
+    const subjectB = { kind: 'scorecard' as const, ref: 'scorecard-subject-b' };
+    const blockedKey = scorecardEmitMutexKey({
+      workspaceId: input.workspaceId,
+      rubricRef: RUBRIC,
+      sourceHive: SOURCE_HIVE,
+      subjectKind: subjectA.kind,
+      subjectRef: subjectA.ref,
+    });
+    const applicationName = `pcusp:scorecard-emit-mutex:p${process.pid}`.slice(0, 63);
+    const postgresModule = await import('postgres');
+    const holder = postgresModule.default(db.adminDsn, { max: 1, onnotice: () => {} });
+    const blockedPhases = createPhaseTracker();
+    let held = false;
+    let blockedOutcome: Promise<
+      | { state: 'resolved'; result: Awaited<ReturnType<typeof emitScorecard>> }
+      | { state: 'rejected'; error: string }
+    > | undefined;
+    let unrelatedOutcome: typeof blockedOutcome;
+    let unrelatedBeforeRelease: Awaited<NonNullable<typeof unrelatedOutcome>> | { state: 'timeout' } | undefined;
+
+    try {
+      await holder`SELECT pg_advisory_lock(hashtextextended(${blockedKey}, 0))`;
+      held = true;
+      blockedOutcome = emitScorecard(
+        { rubricRef: RUBRIC, ratings: RATINGS, subject: subjectA },
+        { ...input, phases: blockedPhases },
+      ).then(
+        (result) => ({ state: 'resolved' as const, result }),
+        (error) => ({ state: 'rejected' as const, error: String(error) }),
+      );
+      await waitForScorecardMutexWait(applicationName);
+
+      unrelatedOutcome = emitScorecard(
+        { rubricRef: RUBRIC, ratings: RATINGS, subject: subjectB },
+        input,
+      ).then(
+        (result) => ({ state: 'resolved' as const, result }),
+        (error) => ({ state: 'rejected' as const, error: String(error) }),
+      );
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      unrelatedBeforeRelease = await Promise.race([
+        unrelatedOutcome,
+        new Promise<{ state: 'timeout' }>((resolve) => {
+          timer = setTimeout(() => resolve({ state: 'timeout' }), 2_000);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+    } finally {
+      if (held) {
+        await holder`SELECT pg_advisory_unlock(hashtextextended(${blockedKey}, 0))`.catch(() => {});
+      }
+      await holder.end({ timeout: 5 });
+      await Promise.all([blockedOutcome, unrelatedOutcome].filter(Boolean));
+    }
+
+    expect(unrelatedBeforeRelease?.state).toBe('resolved');
+    const [blocked, unrelated] = await Promise.all([blockedOutcome, unrelatedOutcome]);
+    expect(blocked).toMatchObject({ state: 'resolved', result: { ok: true, created: true } });
+    expect(unrelated).toMatchObject({ state: 'resolved', result: { ok: true, created: true } });
+    const persistedA = await listScorecards({
+      rubricRef: RUBRIC,
+      sourceHive: SOURCE_HIVE,
+      subjectRef: subjectA.ref,
+      limit: 10,
+    });
+    const persistedB = await listScorecards({
+      rubricRef: RUBRIC,
+      sourceHive: SOURCE_HIVE,
+      subjectRef: subjectB.ref,
+      limit: 10,
+    });
+    expect(persistedA).toHaveLength(1);
+    expect(persistedB).toHaveLength(1);
   }, 120_000);
 
   it('does not file a second audit when two direct-fallback emitters share one pending lease', async () => {

@@ -191,11 +191,14 @@ describe('substrate sidecar spawn hardening (WI-1504)', () => {
     first.stdout.emit('data', Buffer.from('PAPERCUSP_SUBSTRATE_READY\n'));
     await ready;
 
-    first.stderr.emit('data', Buffer.from('Failed to connect to bus: No medium found\n'));
+    const diagnostic = Buffer.from('Failed to connect to bus: No medium found ⚠\n');
+    const splitAt = diagnostic.indexOf(Buffer.from('⚠')) + 1;
+    first.stderr.emit('data', diagnostic.subarray(0, splitAt));
+    first.stderr.emit('data', diagnostic.subarray(splitAt));
     first.emit('exit', 1);
 
     expect(warn).toHaveBeenCalledWith(
-      expect.stringMatching(/^\[substrate-sidecar\] died \(exit code 1\) — stderr tail: Failed to connect to bus: No medium found$/),
+      expect.stringMatching(/^\[substrate-sidecar\] died \(exit code 1\) — stderr tail: Failed to connect to bus: No medium found ⚠$/),
     );
   });
 

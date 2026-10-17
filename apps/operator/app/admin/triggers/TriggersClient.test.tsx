@@ -32,8 +32,7 @@ const payload = {
       social: null,
     },
     {
-      // A social source whose cursor carries NO timestamp (reddit's fullname).
-      // Its verdict must read as advancing, never as "never synced".
+      // An opaque provider position without host sync time must not look cold.
       id: "20000000-0000-4000-8000-000000000002",
       kind: "reddit",
       status: "connected",
@@ -41,7 +40,7 @@ const payload = {
       // Deliberately unconnected: keeps "credential: configured" unique to the
       // gmail row, and matches today's reality (no social credential is wired).
       credentialRef: null,
-      cursor: { newestFullname: "t3_abc123" },
+      cursor: { provider: "opaque:t3_abc123" },
       lastConnectedAt: "2026-08-22T00:00:00.000Z",
       lastError: null,
       bindingCount: 0,
@@ -50,17 +49,16 @@ const payload = {
       social: {
         platformId: "reddit",
         label: "Reddit",
-        wave: "A" as const,
         verified: true,
         blockedOn: null,
         authMode: "self-serve-oauth",
-        readTransport: "poll-cursor",
+        readTransport: "poll",
         cursor: {
           state: "position-only" as const,
           at: null,
           ageMs: null,
-          position: "newestFullname=t3_abc123",
-          detail: "cursor advancing at newestFullname=t3_abc123; this platform's cursor carries no timestamp",
+          position: "opaque:t3_abc123",
+          detail: "provider cursor is present; its internal shape is opaque",
         },
         rateBudget: { maxRuns: 6, windowSeconds: 300, basis: "rate-budget", hold: null },
         writeVerified: true,
@@ -167,14 +165,14 @@ describe("/admin/triggers client", () => {
     expect(await screen.findByText(/credential:\s*configured/)).toBeTruthy();
     expect(screen.queryByText("google-oauth:fixture")).toBeNull();
     expect(screen.getByText("1 binding · 0 armed")).toBeTruthy();
+    expect(screen.getByText("poll")).toBeTruthy();
+    expect(screen.queryByText(/wave [ABC]/)).toBeNull();
   });
 
-  it("renders a timeless social cursor as advancing, not as never synced", async () => {
-    // The regression under test: reporting a healthy reddit source — whose
-    // cursor is a `t3_…` fullname and can never carry a time — as dead.
+  it("renders an opaque provider position without inventing a vendor timestamp contract", async () => {
     renderClient("?view=sources");
     expect(await screen.findByText(/cursor:\s*advancing/)).toBeTruthy();
-    expect(screen.getByText(/newestFullname=t3_abc123/)).toBeTruthy();
+    expect(screen.getByText(/opaque:t3_abc123.*host sync time not recorded/)).toBeTruthy();
     expect(screen.queryByText(/never synced/)).toBeNull();
   });
 

@@ -35,4 +35,15 @@ describe('plans:set-specs recorded test layers (EI-25307246967369800)', () => {
     expect(parsed.spec?.requiredTestLayers).toEqual([...RECORDED_TEST_LAYERS]);
     expect(parsed.spec?.requiredEvidence).toEqual(['live']);
   });
+
+  it('requires an outer plan slug for bulk items so plan-bound clauses cannot fall back to ad-hoc scope', () => {
+    const missingSlug = tool.args.safeParse({ items: [clause] });
+    expect(missingSlug.success).toBe(false);
+    if (!missingSlug.success) {
+      expect(missingSlug.error.issues.some((issue) => issue.path.includes('slug'))).toBe(true);
+    }
+
+    expect(tool.args.safeParse({ spec: clause }).success).toBe(true);
+    expect(tool.args.safeParse({ slug: 'adhoc-work-item-specs', items: [clause] }).success).toBe(true);
+  });
 });

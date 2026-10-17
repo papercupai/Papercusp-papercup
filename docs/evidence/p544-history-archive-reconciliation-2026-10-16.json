@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "item": "P-544",
+  "workItem": "WI-6554700010016625",
+  "parentWorkItem": "WI-6554700010016277",
+  "recordedDate": "2026-10-16",
+  "scope": "Local evidence reconciliation and maintained archive regression only; no new benchmark, cloud resources, capacity acceptance or shipment claim",
+  "run": {
+    "task": "0mvbkg7v21gzgtc1nu4",
+    "startUtc": "2026-10-16T22:55:45.923324Z",
+    "endUtc": "2026-10-16T23:03:29.484680Z",
+    "provider": "GCP",
+    "machine": "e2-custom-4-8192",
+    "assignedAgents": 50,
+    "model": "gpt-6-luna",
+    "effort": "low"
+  },
+  "preservedArchive": {
+    "path": "docs/evidence/p544-clean4cpu8-2026-10-16.tar.gz",
+    "originalLocalPath": "/tmp/p544-4cpu8-guest-native.tar.gz",
+    "bytes": 102157,
+    "sha256": "0620bb2b8d33f3e2456aa34fbacd3f801ee095ce2e5203545a6438413bbeee59",
+    "contents": [
+      "p544-4cpu8-run-v2/results.jsonl",
+      "p544-4cpu8-run-v2/summary.json",
+      "p544-4cpu8-run-v2/probe.csv",
+      "p544-evidence/native4cpu8-server.jsonl",
+      "p544-evidence/native4cpu8-boot-id.txt",
+      "p544-evidence/native4cpu8-vmstat-before.txt",
+      "p544-evidence/native4cpu8-vmstat-after.txt"
+    ],
+    "rawNativeSessionHistories": "ABSENT",
+    "hashes": {
+      "results.jsonl": "e18a91c50c378a68629bde01db10c41d7ac02b824beaa2a8daf2ea1c5c08d26d",
+      "probe.csv": "84185b125a3f006c15d6106ceff829511e041372d1bde270d8b3605ec942eca3",
+      "summary.json": "4dc3a8af128d6c7f12fc8c75ecbf49bb76a24888f35fca5ae4d106331b234b90"
+    }
+  },
+  "historyReconciliation": {
+    "inspectedLocalRoot": "/tmp/p544-native-evidence",
+    "rawSessionFilesInspected": 280,
+    "latestEventTimestamp": "2026-10-16T22:30:28.472Z",
+    "filesWithEventsAtOrAfter4CpuRunStart": [],
+    "olderHistoryArchive": "/tmp/p544-native-evidence/p544-native8g-v4-histories.tgz",
+    "olderHistoryArchiveSha256": "e1a84be64da713e4aa1a394f1c155003a8a947fd89b6031ccc0e0c9d23e5b6ea",
+    "conclusion": "The inspected local copies cover earlier runs. No current 4 CPU raw native history was recovered. Guest and disks were already deleted at the fixed deadline; retain the evidence gap on parent P-544. Do not replay the benchmark solely to reconstruct proof."
+  },
+  "descriptiveSummaryOnly": {
+    "writer": "scripts/agent-capacity/vm/swap-tier.py summarize",
+    "activeCohorts": [
+      { "uniqueAgents": 1, "tasks": 3, "failed": 0 },
+      { "uniqueAgents": 5, "tasks": 15, "failed": 0 },
+      { "uniqueAgents": 10, "tasks": 30, "failed": 0 }
+    ],
+    "burst": { "uniqueAgents": 50, "tasks": 50, "failed": 0, "echoP95Sec": 2.069, "allDoneSec": 44.773 },
+    "interpretation": "Summary output only. Missing raw native histories preclude full evidence acceptance. No causal resource claim."
+  },
+  "rootCause": "Caller assembled an archive from run outputs and selected server telemetry without requiring a native-session population manifest before guest deletion.",
+  "recurrenceGuard": {
+    "reusedSurface": "Existing swap-tier.py driver and its Vitest suite",
+    "behavior": "Codex runs automatically package raw histories, dummy-data bytes and exact results with a population/hash manifest after stopping agents, including a rejected partial artifact on failed runs. Standalone verification requires the exact copied results file and replays native completion records within that run's time window. The fixed provider deletion deadline remains authoritative even when evidence is incomplete.",
+    "verificationCommand": "python3 scripts/agent-capacity/vm/swap-tier.py verify-archive --archive LOCAL/native-evidence.tar.gz --results LOCAL/results.jsonl",
+    "sourceSha256": "885c6d3fb60b931801db82198ec51c1f95fc213285c422630fc5104393bdbde6",
+    "testSha256": "71d6f98551403357a71d7df87fb97b89462d981beb95b83b8dc8f30690b87e15",
+    "tests": {
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- scripts/agent-capacity/vm/swap-tier.test.ts",
+      "passed": 78,
+      "failed": 0,
+      "skipped": 0,
+      "log": "/tmp/p544-native-archive-regression-verified.log",
+      "scope": "Local working-tree bytes with source/test hashes above; background git-sync owns commit and publication"
+    }
+  },
+  "completionBoundary": "Archive recurrence guard verified; historical native evidence was not recovered. P-544 remains open for that gap, valid application-readiness timing and D-076 measured all-in monthly cost below $20. P-537 and P-538 through P-542 remain separate unfinished shipment work."
+}

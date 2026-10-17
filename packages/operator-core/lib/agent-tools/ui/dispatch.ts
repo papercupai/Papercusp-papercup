@@ -23,12 +23,10 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { getOrgPg } from '@papercusp/db-org';
 import { uiCrossWorkspaceBlock } from './_workspace-guard';
 import { hardText, LIMITS } from '../limits';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { dispatchUiIntent } from '../../ui/dispatch-intent';
 
-const POLL_MS = 100;
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 60_000;
 
@@ -75,68 +73,11 @@ export default defineTool({
       return { isError: true, content: [{ type: 'text', text: block }] };
     }
     const timeoutMs = args.timeout_ms ?? DEFAULT_TIMEOUT_MS;
-    const intentArgs = args.args ?? {};
-
-    const { sql } = getOrgPg();
-
     const principalSlug = ctx.principal?.slug ?? (ctx.isSuperuser ? 'system:operator' : `agent:${ctx.role ?? 'unknown'}`);
-    const argsJson = JSON.stringify(intentArgs);
-
-    const inserted = await sql<Array<{ id: number }>>`
-      INSERT INTO harness_shared.ui_intents (client_id, intent, args, requested_by, workspace_id)
-      VALUES (${clientId}, ${args.intent}, ${argsJson}::text::jsonb, ${principalSlug}, ${activeWorkspaceId()})
-      RETURNING id
-    `;
-    const id = Number(inserted[0]!.id);
-
-    // P-010 (agent-tool-delta-protocol): wake the /api/ui/intents/stream LISTEN bus
-    // so it drains this intent immediately — replaces the route's old 250ms poll.
-    // Fires after the INSERT commits; payload is the client_id the stream filters on.
-    await sql`SELECT pg_notify('ui_intents', ${clientId})`;
-
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const rows = await sql<Array<{ status: string; result: unknown; error_message: string | null }>>`
-        SELECT status, result, error_message
-        FROM harness_shared.ui_intents
-        WHERE id = ${id}
-        LIMIT 1
-      `;
-      const row = rows[0];
-      if (row && row.status !== 'pending') {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              id,
-              status: row.status,
-              result: row.result ?? null,
-              error: row.error_message ?? null,
-            }),
-          }],
-          isError: row.status === 'error',
-        };
-      }
-      await new Promise((r) => setTimeout(r, POLL_MS));
-    }
-    // Timeout: mark the row so the browser tab won't act on it
-    // even if it comes back online later.
-    await sql`
-      UPDATE harness_shared.ui_intents
-      SET status = 'timeout', completed_at = now(),
-          error_message = 'dispatch_timeout'
-      WHERE id = ${id} AND status = 'pending'
-    `;
+    const result = await dispatchUiIntent({ clientId, intent: args.intent, args: args.args ?? {}, requestedBy: principalSlug, timeoutMs });
     return {
-      isError: true,
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          id,
-          status: 'timeout',
-          error: `dispatch_timeout: no response from client_id=${clientId} within ${timeoutMs}ms. The tab may be closed or unresponsive.`,
-        }),
-      }],
+      isError: result.status === 'error' || result.status === 'timeout',
+      content: [{ type: 'text', text: JSON.stringify(result) }],
     };
   },
 });

@@ -91,6 +91,7 @@ export default defineTool({
       filter: dataConditionSchema.optional().describe('payload condition using the shared rules vocabulary'),
       stormPolicy: z
         .object({
+          mode: z.enum(['skip', 'coalesce-with-cap']).optional(),
           maxRuns: z.number().int().positive().max(1_000_000).nullable().optional(),
           windowSeconds: z
             .number()

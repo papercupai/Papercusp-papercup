@@ -278,6 +278,8 @@ export interface DiskSpaceSnapshot {
 export interface RunPruneOptions {
   /** Judge only: never removes evidence or writes retention metadata. */
   dryRun?: boolean;
+  /** Called on actual mutex contention, before waiting or touching protected evidence. */
+  onWaiting?: () => void;
   env?: NodeJS.ProcessEnv;
   /** Injectable for deterministic retention-policy tests. */
   measureDisk?: (evidenceRoot: string) => Promise<DiskSpaceSnapshot | null>;
@@ -412,9 +414,10 @@ async function removeRunIfEligible(
  * those entries consume space but never become deletion candidates. */
 async function retentionRootUsage(root: string): Promise<{ bytes: number; runs: Map<string, { bytes: number; newest: number }> }> {
   let budget = 100000;
+  const deadline = Date.now() + 30000;
   const seen = new Set<string>();
   const walk = async (target: string): Promise<{ bytes: number; newest: number }> => {
-    if (--budget < 0) throw new Error('retention byte census budget exceeded');
+    if (--budget < 0 || Date.now() >= deadline) throw new Error('retention byte census budget exceeded');
     const s = await lstat(target);
     const key = `${s.dev}:${s.ino}`;
     if (seen.has(key)) return { bytes: 0, newest: s.mtimeMs };
@@ -457,7 +460,7 @@ export async function pruneRunsWithReport(
   options: RunPruneOptions = {},
 ): Promise<RunPruneReport> {
   return withRetentionPinProtection(isPinned => pruneRunsWithProtection(evidenceRoot, keep, now, options, isPinned),
-    { dir: options.env?.PAPERCUSP_RELEASE_RETENTION_ROOT, nowMs: now });
+    { dir: options.env?.PAPERCUSP_RELEASE_RETENTION_ROOT, nowMs: now, onWaiting: options.onWaiting });
 }
 
 async function pruneRunsWithProtection(
@@ -921,9 +924,34 @@ export async function pruneEvidenceRoot(
   now = Date.now(),
   options: RunPruneOptions = {},
 ): Promise<EvidenceRootPruneResult> {
-  const runRetention = await pruneRunsWithReport(evidenceRoot, keepRunsFromEnv(env), now, { ...options, env });
-  const foreign = await pruneStaleForeign(evidenceRoot, { maxAgeHours: foreignMaxAgeHoursFromEnv(env), now });
-  return { runs: runRetention.removed, runRetention, foreign };
+  // One pin snapshot and one admission cover both destructive passes. In particular,
+  // a harness finalizer must be able to yield before either pass on contention.
+  return withRetentionPinProtection(async isPinned => {
+    const runRetention = await pruneRunsWithProtection(evidenceRoot, keepRunsFromEnv(env), now, { ...options, env }, isPinned);
+    const foreign = await pruneStaleForeignWithProtection(evidenceRoot,
+      { maxAgeHours: foreignMaxAgeHoursFromEnv(env), now, dryRun: options.dryRun }, isPinned);
+    return { runs: runRetention.removed, runRetention, foreign };
+  }, { dir: env.PAPERCUSP_RELEASE_RETENTION_ROOT, nowMs: now, onWaiting: options.onWaiting });
+}
+
+/** Retention is retried on every run and by the standing reclaim. A busy writer
+ * must not consume the proof's deadline or turn completed phases into a failure.
+ * Abort only our own contention signal; pin/read/deletion errors still propagate. */
+async function pruneForHarness(evidenceRoot: string, stage: 'before' | 'after'): Promise<void> {
+  const busy = new Error('retention-mutex-busy');
+  const onWaiting = () => { throw busy; };
+  try {
+    const report = stage === 'before'
+      ? { runRetention: await pruneRunsWithReport(evidenceRoot, undefined, undefined, { onWaiting }), foreign: null }
+      : await pruneEvidenceRoot(evidenceRoot, undefined, undefined, { onWaiting });
+    const line = formatRunRetentionLine(report.runRetention);
+    if (line) process.stderr.write(line + '\n');
+    const foreignLine = report.foreign && formatForeignPruneLine(report.foreign);
+    if (foreignLine) process.stderr.write(foreignLine + '\n');
+  } catch (error) {
+    if (error !== busy) throw error;
+    process.stderr.write(`VH_RETENTION_DEFERRED stage=${stage} reason=retention-mutex-busy evidence=${evidenceRoot}\n`);
+  }
 }
 
 /** One stderr-ready line naming what retention removed or could not judge, or null when nothing happened. */
@@ -1120,9 +1148,7 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
   const codeRoot = args.codeRoot ?? args.guardRailCwd ?? process.cwd();
   const receiptsPath = args.tierReceipts ?? defaultTierReceiptsPath(args.evidenceRoot);
   await mkdir(args.evidenceRoot, { recursive: true });
-  const preRunRetention = await pruneRunsWithReport(args.evidenceRoot);
-  const preRunRetentionLine = formatRunRetentionLine(preRunRetention);
-  if (preRunRetentionLine) process.stderr.write(preRunRetentionLine + '\n');
+  await pruneForHarness(args.evidenceRoot, 'before');
   const startedAt = now();
   const runId = await claimRunDir(args.evidenceRoot, args.runId, startedAt);
   const runDir = path.join(args.evidenceRoot, runId);
@@ -1279,10 +1305,6 @@ export async function runHarness(args: RunHarnessArgs): Promise<HarnessRunResult
   result.endedAt = now().toISOString();
   await checkpoint();
   await linkLatest(args.evidenceRoot, runDir);
-  const pruned = await pruneEvidenceRoot(args.evidenceRoot);
-  const runRetentionLine = formatRunRetentionLine(pruned.runRetention);
-  if (runRetentionLine) process.stderr.write(runRetentionLine + '\n');
-  const prunedLine = formatForeignPruneLine(pruned.foreign);
-  if (prunedLine) process.stderr.write(`${prunedLine}\n`);
+  await pruneForHarness(args.evidenceRoot, 'after');
   return result;
 }

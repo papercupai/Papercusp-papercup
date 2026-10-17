@@ -1,0 +1,79 @@
+{
+  "item": "P-544",
+  "workItem": "WI-6554700010016598",
+  "relatedWorkItem": "WI-6554700010016277",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "measuredAtUtc": "2026-10-16T21:43:00Z",
+  "classification": "Read-only IaC fit and acceptance-gap reconciliation; no VM mutation, cloud spend, claim of P-544, or Terraform/OpenTofu migration.",
+  "decisionRefs": [
+    "D-074: evaluate Terraform/OpenTofu for slow-changing foundation while retaining existing DBOS lifecycle; no migration authorized by the decision alone",
+    "D-075: minimum-profile acceptance requires the 50-assigned/1-5-10-active/burst UX evidence plus cold wake, durability, cost and cleanup evidence"
+  ],
+  "currentP544Boundary": {
+    "liveTrial": "The peer-owned 8GiB GCP trial is already admitted and running; this review did not touch it.",
+    "fixedDeadline": "The peer-owned checkpoint carries the fixed provider delete deadline; this review does not extend or mutate it.",
+    "remainingP544Acceptance": ["8GiB benchmark verdict", "timed cold wake", "resize/disk-growth durability", "actual-hour costs", "IaC fit"]
+  },
+  "repositoryCensus": {
+    "command": "rg --files -g '*.tf' -g '*.tfvars' -g '*terraform*' -g '*tofu*' -g '*opentofu*' -g 'Pulumi*'",
+    "matchedFileCount": 0,
+    "interpretation": "No Terraform/OpenTofu/Pulumi module or state/config filename is enrolled in this repository census. This is scoped repository evidence, not a claim about external repositories or customer infrastructure."
+  },
+  "existingIaCSurfaces": [
+    {
+      "surface": "AWS customer-run CloudFormation setup",
+      "source": "packages/operator-core/lib/workspace-host/aws-customer-setup-template.ts",
+      "covers": ["IAM operator role", "VPC/subnet/security group", "instance profile", "KMS key", "launch template"],
+      "guards": ["packages/operator-core/lib/workspace-host/cloudformation-references.ts", "secret-isolation assertion", "least-privilege policy generation"],
+      "status": "existing reusable surface; closest current equivalent to slow-changing IaC foundation"
+    },
+    {
+      "surface": "Provider-delegation templates",
+      "source": "packages/operator-core/lib/workspace-host/hosted-provider-delegation.ts",
+      "formats": ["gcp-iam-json", "aws-cloudformation-json", "azure-arm-json"],
+      "covers": ["provider identity and least-privilege delegation"],
+      "doesNotCover": ["full GCP network/VM/storage foundation", "Terraform/OpenTofu state", "per-user lifecycle/wake/resize orchestration"],
+      "status": "existing provider contract surface; not a complete minimum-trial IaC module"
+    }
+  ],
+  "acceptanceEvidence": {
+    "testCommand": "npm run test:file -- packages/operator-core/lib/workspace-host/aws-customer-setup-template.test.ts packages/operator-core/lib/workspace-host/cloudformation-references.test.ts packages/operator-core/lib/workspace-host/hosted-provider-delegation.test.ts",
+    "head": "fa395f735c",
+    "testFiles": 3,
+    "testsPassed": 27,
+    "testsFailed": 0,
+    "uncommittedTestPaths": 0,
+    "checks": [
+      "AWS customer setup template generation and input validation: 6 passed",
+      "CloudFormation whole-document dangling-reference guard: 5 passed",
+      "GCP/AWS/Azure provider-delegation template generation and secret isolation: 16 passed"
+    ]
+  },
+  "p544FitMatrix": [
+    {
+      "requirement": "Slow-changing AWS IAM/network/KMS/launch-template foundation",
+      "evidence": "Existing CloudFormation generator plus 27 focused tests",
+      "verdict": "partially covered by an existing CloudFormation surface; not Terraform/OpenTofu"
+    },
+    {
+      "requirement": "Slow-changing GCP network/VM/storage foundation",
+      "evidence": "Provider-delegation emits GCP IAM JSON only; repository census found no Terraform/OpenTofu module",
+      "verdict": "IaC gap remains"
+    },
+    {
+      "requirement": "Per-user wake/drain/data attach, dynamic resize, growth and teardown",
+      "evidence": "Existing runtime/provider rails and DBOS lifecycle are the maintained operational surfaces; D-074 assigns these to the existing lifecycle writer",
+      "verdict": "not an IaC acceptance claim; runtime evidence remains in P-544"
+    },
+    {
+      "requirement": "Terraform/OpenTofu migration or new backend",
+      "evidence": "D-074 explicitly says no migration or new serverless backend is authorized by that decision alone",
+      "verdict": "not implemented and requires a separate plan decision before code is added"
+    }
+  ],
+  "smallestAcceptancePackage": {
+    "now": "Use this fit matrix plus the existing CloudFormation/provider-template tests as the current IaC evidence. It identifies the AWS foundation surface and records the GCP/Terraform gap without mutating the live trial.",
+    "requiresNewDecision": "A new Terraform/OpenTofu module, provider migration, or IaC ownership boundary would require an explicit plan decision; none was created by this review.",
+    "notClaimed": ["P-544 minimum-profile pass", "under-$20 all-in customer price", "Terraform/OpenTofu implementation", "P-537/P-538/P-542 shipment"]
+  }
+}

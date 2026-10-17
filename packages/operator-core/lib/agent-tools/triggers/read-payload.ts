@@ -26,7 +26,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES, 'papercup', 'papercup-deep'],
   description:
-    'Read the external event that triggered one plan run or trigger-fired operation (inbound Gmail message, Slack mention, calendar event), resolved server-side from planRunId or the operation work item id.',
+    'Read the external events that triggered one plan run or trigger-fired operation, resolved server-side from planRunId or the operation work item id. When events is present, it is the complete coalesced batch: process every entry, including its own routing and payload. Top-level fields describe only the first event.',
   guidance: {
     when: 'An external-trigger plan item or trigger-fired operation tells you to read the triggering message. Pass payload.plan_run.runId as planRunId, or your operation work item id as workItemId.',
     notWhen:

@@ -104,7 +104,13 @@ const rebindCurrentCallerDispatch: WrapDispatch = async (tool, _toolName, args, 
 
   const baseCtx: UnifiedToolContext = {
     ...ctx,
-    contextTier: undefined,
+    // A direct facade call has no tools:invoke target argument on which the
+    // projected dispatcher can carry `payloadTier:'full'`. Match that route's
+    // materialization contract in the context as well: raw handlers that
+    // derive their result shape from the resolved tier must see full detail,
+    // just like handlers reached through the universal invoke door.
+    contextTier: 'full',
+    payloadTierOverride: 'full',
     transportCapExempt: true,
     codeMode: true,
     indirectDispatch: true,

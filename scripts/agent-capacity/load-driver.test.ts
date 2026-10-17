@@ -1,11 +1,38 @@
 import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, platform, tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeChunk, type RecordedExchange } from './record-proxy';
 import type { Corpus, SessionMeta } from './record-session';
-import { achievedConcurrency, checkParkedPlan, drive, nodeMajor, nodeMismatches, parseAgentEnv, replayPath, replayTimeoutMs, selectSessions, sessionFor, summarize, summarizeParked, toolOutcomesDiverge, versionMismatches, type ParkRelease } from './load-driver';
+import { startReplayServer } from './replay-server';
+import { achievedConcurrency, checkParkedPlan, drive, loadMetas, nodeMajor, nodeMismatches, parseAgentEnv, replayPath, replayTimeoutMs, selectSessions, sessionFor, summarize, summarizeParked, toolOutcomesDiverge, versionMismatches, type ParkRelease } from './load-driver';
+
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, readdirSync: vi.fn(actual.readdirSync) };
+});
+
+vi.mock('./replay-server', async importOriginal => {
+  const actual = await importOriginal<typeof import('./replay-server')>();
+  return { ...actual, startReplayServer: vi.fn(actual.startReplayServer) };
+});
+
+describe('default corpus placement', () => {
+  it('reads the shared-host data corpus by default and preserves an explicit corpus', () => {
+    const read = vi.mocked(fs.readdirSync).mockReturnValueOnce([]).mockReturnValueOnce([]);
+    try {
+      expect(loadMetas()).toEqual([]);
+      expect(read).toHaveBeenLastCalledWith(path.join(platform() === 'linux'
+        ? '/mnt/data/agent-capacity' : path.join(homedir(), '.cache', 'agent-capacity'), 'corpus'));
+      expect(loadMetas('/explicit/corpus')).toEqual([]);
+      expect(read).toHaveBeenLastCalledWith('/explicit/corpus');
+    } finally {
+      read.mockReset();
+    }
+  });
+});
 
 describe('parseAgentEnv', () => {
   it('absent or blank is no extra env', () => {
@@ -228,6 +255,7 @@ const call = async (n) => {
   return [r.status, text];
 };
 (async () => {
+  if (base.includes('/T-p')) await new Promise(r => setTimeout(r, Number(process.env.CAPDRV_PARK_SETUP_DELAY_MS ?? 0)));
   const out = [await call(2), await call(4)];
   if (process.env.FAKE_EXTRA === '1') out.push(await call(6));
   for (const l of results) console.log(l);
@@ -442,9 +470,22 @@ const call = async (n) => {
     });
   });
 
-  it('parked (P-015): extra claude sessions idle on a held reply until one shared release, then finish intact, reported apart', async () => {
+  it.each([0, 1200])('parked (P-015): sessions wait for one shared release and finish intact with %i ms CLI setup', async (setupDelayMs) => {
     let release: ParkRelease | null = null;
-    const runs = await drive({
+    let releaseNow: (() => void) | undefined;
+    const completed: Awaited<ReturnType<typeof drive>> = [];
+    // Keep real HTTP, child processes, and elapsed-time measurements. Capture only the driver's
+    // release timer so setup speed cannot decide whether either parked reply was actually held.
+    const realSetTimeout = globalThis.setTimeout;
+    const timer = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+      const handle = realSetTimeout(callback, ms, ...args);
+      if (ms === 30_000) releaseNow = () => {
+        clearTimeout(handle);
+        callback(...args);
+      };
+      return handle;
+    }) as typeof setTimeout);
+    const driving = drive({
       cacheDir: path.join(root, 'cache'),
       agents: 1,
       sessions: [meta({ id: 'claude-s1' })],
@@ -457,15 +498,35 @@ const call = async (n) => {
       durationSec: 0,
       isolation: 'none',
       keepWork: false,
-      parked: { agents: 2, atRequest: 2, releaseAtSec: 1 },
+      parked: { agents: 2, atRequest: 2, releaseAtSec: 30 },
+      agentEnv: { CAPDRV_PARK_SETUP_DELAY_MS: String(setupDelayMs) },
+      onRun: (r) => completed.push(r),
       onRelease: (e) => (release = e),
     });
+    let runs: Awaited<typeof driving>;
+    try {
+      const server = await vi.mocked(startReplayServer).mock.results.at(-1)!.value;
+      await vi.waitFor(() => {
+        expect(server.held()).toBe(2);
+        expect(completed.map((r) => r.instance)).toEqual(['T-s0-i0']);
+        expect(releaseNow).toBeTypeOf('function');
+        expect(release).toBeNull();
+      }, { timeout: 10_000, interval: 10 });
+      releaseNow!();
+      runs = await driving;
+    } catch (error) {
+      releaseNow?.();
+      await driving;
+      throw error;
+    } finally {
+      timer.mockRestore();
+    }
     const active = runs.filter((r) => !r.parked);
     const parked = runs.filter((r) => r.parked);
     expect(active.map((r) => r.instance)).toEqual(['T-s0-i0']);
     expect(parked.map((r) => r.instance).sort()).toEqual(['T-p0-i0', 'T-p1-i0']);
     for (const r of runs) expect(r).toMatchObject({ exitCode: 0, timedOut: false, diverged: false, served: { exact: 2, exhausted: 0 } });
-    // The active session finished before the release (1 s after the start); each parked one sat on
+    // The active session finished before the release; each parked one sat on
     // its 2nd reply and finished only after it, with the reply intact.
     expect(release).toMatchObject({ held: 2, parked: 2 });
     const releasedAt = Date.parse((release as unknown as ParkRelease).at);
@@ -479,7 +540,8 @@ const call = async (n) => {
     const served = readFileSync(path.join(root, 'out', 'served.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { instance: string; seq: number; heldMs?: number });
     const held = served.filter((s) => s.heldMs !== undefined);
     expect(held.map((s) => [s.instance, s.seq]).sort()).toEqual([['T-p0-i0', 1], ['T-p1-i0', 1]]);
-    for (const s of held) expect(s.heldMs).toBeGreaterThanOrEqual(500);
+    // heldMs starts at request arrival, not at drive() startup; there is no fixed lower bound.
+    for (const s of held) expect(s.heldMs).toBeGreaterThanOrEqual(0);
     expect(readFileSync(path.join(root, 'out', 'parked.jsonl'), 'utf8')).toContain('"event":"release"');
     expect(summarizeParked(runs, release)).toMatchObject({ runs: 2, heldAtRelease: 2, failed: 0 });
     expect(summarize(active)).toMatchObject({ runs: 1, clean: 1, failed: 0 });

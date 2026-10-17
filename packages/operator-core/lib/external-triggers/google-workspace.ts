@@ -46,6 +46,11 @@ function normalizedEmail(value: unknown): string | null {
   return normalized && normalized.includes('@') ? normalized : null;
 }
 
+/** D-039: consumer Gmail accounts never receive the CRM relationship-graph grant. */
+export function isPersonalGmailAccount(value: string | null | undefined): boolean {
+  return normalizedEmail(value)?.endsWith('@gmail.com') ?? false;
+}
+
 /** Read the canonical mailbox identity persisted by the Gmail adapter. */
 export function googleWorkspaceSourceEmail(source: GoogleWorkspaceSourceIdentity): string | null {
   if (source.kind !== 'gmail') return null;
@@ -78,6 +83,40 @@ export function googleWorkspaceSourceAccountId(
       candidate.providerAccountId?.trim().toLowerCase() === normalizedProviderAccountId,
   );
   return googleWorkspaceSourceEmail(gmailSource ?? source) ?? providerAccountId;
+}
+
+/**
+ * D-039's legacy guard: old rows can retain a provisional account id while the Gmail sibling's
+ * cursor carries the canonical mailbox. Keep the account-aware exclusion at the participant seam
+ * until those rows are explicitly reconnected or retired.
+ */
+export function googleWorkspaceSourceIsPersonalGmail(
+  source: GoogleWorkspaceSourceIdentity,
+  sources: readonly GoogleWorkspaceSourceIdentity[] = [source],
+): boolean {
+  if (source.kind !== 'gmail' && source.kind !== 'gcal') return false;
+  return isPersonalGmailAccount(googleWorkspaceSourceAccountId(source, sources));
+}
+
+/** Starting routing for one first-party Google source, with D-039 account-aware CRM exclusion. */
+export function googleWorkspaceDestinationPolicy(
+  kind: (typeof GOOGLE_WORKSPACE_SOURCE_KINDS)[number],
+  providerAccountId: string,
+): Record<string, string[]> {
+  const includePersonRecord = !isPersonalGmailAccount(providerAccountId);
+  if (kind === 'gmail') {
+    return {
+      'email-message': ['document', 'event'],
+      ...(includePersonRecord ? { person: ['record'] } : {}),
+    };
+  }
+  if (kind === 'gcal') {
+    return {
+      'calendar-event': ['document', 'event'],
+      ...(includePersonRecord ? { person: ['record'] } : {}),
+    };
+  }
+  return { contact: ['document', 'event'] };
 }
 
 /** Resolve the provider-native identity behind a freshly exchanged token. */
@@ -235,6 +274,9 @@ export async function provisionOwnedGoogleWorkspaceSources(
         credentialRef,
         status: 'connected',
         config: { capabilityEnabled: true },
+        // Do not let the kind-only database default grant personal Gmail accounts access to the
+        // relationship graph. Workspace accounts retain the existing person -> record routing.
+        destinationPolicy: googleWorkspaceDestinationPolicy(kind, input.providerAccountId),
         createdBy: input.createdBy ?? `owner:${ownerUserId}`,
       }),
     );

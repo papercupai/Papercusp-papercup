@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { resolveScorecardInstrumentSnapshots } from './scorecards';
 import { getRegisteredInstrument } from './rubric-instrument-registry';
 import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
+import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
+import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import type { Rubric } from './rubrics';
 
 const key = DISK_HEADROOM_SOAK_INSTRUMENT_KEY;
@@ -27,6 +29,23 @@ const measurement = (verdict: 'pass' | 'fail' | 'unknown') => ({
 });
 
 describe('ledger-backed disk headroom scorecard instrument', () => {
+  it.each([COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY])(
+    'replaces supplied pass for %s with native failure, and rejects historical host reads', async instrumentKey => {
+      const liveSubject = { ...subject, windowEnd: new Date(now()).toISOString(),
+        windowStart: new Date(now() - 72 * 3_600_000).toISOString() };
+      const scopedRubric = { ...rubric, criteria: [{ key: 'r', check: { kind: 'instrument', instrumentKey } }] } as unknown as Rubric;
+      const coldEvidence = vi.fn(async () => ({ verdict: 'fail' as const, detail: 'native failure' }));
+      const snapshots = await resolveScorecardInstrumentSnapshots({ rubric: scopedRubric, subject: liveSubject,
+        supplied: { [instrumentKey]: supplied[key]! } }, { now, coldEvidence });
+      expect(snapshots?.[instrumentKey]).toMatchObject({ verdict: 'fail', provenance: 'platform-computed' });
+      expect(coldEvidence).toHaveBeenCalledWith(instrumentKey, expect.objectContaining({ workspaceId: 'workspace', harnessSlug: 'install' }));
+      if (instrumentKey !== DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY) {
+        coldEvidence.mockClear();
+        const historical = await resolveScorecardInstrumentSnapshots({ rubric: scopedRubric, subject, supplied: { [instrumentKey]: supplied[key]! } }, { now, coldEvidence });
+        expect(historical?.[instrumentKey]?.verdict).toBe('unknown');
+        expect(coldEvidence).not.toHaveBeenCalled();
+      }
+    });
   it('is registered on the existing platform snapshot seam', () => {
     expect(getRegisteredInstrument(key)).toMatchObject({ evaluator: 'platform', resolvedBy: 'scorecards:instrument-snapshots' });
   });

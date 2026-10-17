@@ -19,12 +19,14 @@
  */
 import { configureLocks } from '@papercusp/locks';
 import { setAdminPoolStatementTimeoutProvider } from '@papercusp/db-org';
+import { beginAcquire, recordPoolMax } from '@papercusp/db-org/acquire-registry';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { adminPoolStatementTimeoutMs, txnTimeoutsConfig } from '../../txn-timeouts-config';
 
 configureLocks({
   getAdminBaseUrl: () => getHarnessAdminUrl(),
   getTxnTimeouts: () => txnTimeoutsConfig(),
+  acquireDiagnostics: { beginAcquire, recordPoolMax },
 });
 
 // WI-832: inject the admin-pool default statement_timeout into the low-level db connection

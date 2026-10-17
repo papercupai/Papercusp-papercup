@@ -11,8 +11,14 @@ import * as nativeAdoption from './code-intelligence/native-adoption';
 import { HOLDER_BEHAVIOR_INSTRUMENT_KEYS } from './goal-holder-behavior-metrics';
 import { GOAL_MODE_INSTRUMENT_KEYS } from './goal-mode-computed-instruments';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY } from './release/gate-fire-ledger';
+import { PG_TABLE_GROWTH_INSTRUMENT_KEY } from './storage/pg-table-growth';
+import { WORK_OVERHEAD_INSTRUMENT_KEYS } from './agent-work-overhead-metrics';
+import { PROVIDER_PACKAGE_INSTRUMENT_KEYS } from './integrations/provider-package-acceptance';
+import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
+import { DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY } from './storage/retention-interval-evidence';
 import {
   BM25_LATENCY_INSTRUMENT_KEY,
+  NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY,
   GATE_SENTINEL_HEALTH_COMMAND,
   GATE_SENTINEL_HEALTH_INSTRUMENT_KEY,
   parseGateSentinelHealth,
@@ -186,17 +192,25 @@ describe('the registry seed set', () => {
   it('registers exactly the keys scorecards resolves as platform-computed', () => {
     const expected = [
       'woe.goal-mode-base-scorecard',
+      ...Object.values(PROVIDER_PACKAGE_INSTRUMENT_KEYS),
       GATE_REUSE_AUDIT_INSTRUMENT_KEY,
       'storage:disk-headroom-post-shipment-72h',
+      DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY,
+      COLD_MOUNTS_INSTRUMENT_KEY,
+      COLD_MOVES_INSTRUMENT_KEY,
+      NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY,
+      PG_TABLE_GROWTH_INSTRUMENT_KEY,
+      ...Object.values(WORK_OVERHEAD_INSTRUMENT_KEYS),
       ...Object.values(HOLDER_BEHAVIOR_INSTRUMENT_KEYS),
       ...Object.values(GOAL_MODE_INSTRUMENT_KEYS),
       ...Object.values(nativeAdoption.NATIVE_ADOPTION_INSTRUMENT_KEYS),
+      ...Object.values(nativeAdoption.NATIVE_PUSH_INSTRUMENT_KEYS),
     ];
     expect(platformComputedInstrumentKeys().sort()).toEqual([...expected].sort());
     for (const key of expected) expect(instrumentRegistry().get(key)?.evaluator, key).toBe('platform');
   });
 
-  it('only adoption instruments opt into scheduled windows and use the real adoption rater', async () => {
+  it('only registered scheduled families opt into windows and adoption uses its real rater', async () => {
     const window = { workspaceId: 'ws-native', windowStart: '2026-10-10T04:00:00.000Z', windowEnd: '2026-10-13T04:00:00.000Z' };
     const metrics = nativeAdoption.summarizeNativeAdoption({ window, invocations: [], shellCommands: [] });
     const measure = vi.spyOn(nativeAdoption, 'measureNativeAdoptionWindow').mockResolvedValue(metrics);
@@ -207,7 +221,14 @@ describe('the registry seed set', () => {
         if (instrument?.evaluator !== 'platform') throw new Error('expected platform instrument');
         const criterion = nativeAdoption.nativeAdoptionCriterionForInstrument(key);
         if (!criterion) {
-          expect(instrument.rescore).toBeUndefined();
+          const harnessFamilies = [COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY, NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY,
+            DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, ...Object.values(WORK_OVERHEAD_INSTRUMENT_KEYS)];
+          if (harnessFamilies.includes(key) || Object.values(nativeAdoption.NATIVE_PUSH_INSTRUMENT_KEYS).some(k => k === key)) {
+            expect(instrument.rescore?.windowMs).toBe(key === NATIVE_DISK_HEADROOM_ALARM_INSTRUMENT_KEY ? 90 * 60_000
+              : Object.values(WORK_OVERHEAD_INSTRUMENT_KEYS).some(k => k === key) ? 24 * 60 * 60_000 : 72 * 60 * 60_000);
+            expect(instrument.rescore?.unit).toBe('count');
+            if (harnessFamilies.includes(key)) expect(instrument.rescore?.scope).toBe('harness');
+          } else expect(instrument.rescore).toBeUndefined();
           continue;
         }
         expect(instrument.rescore?.windowMs).toBe(72 * 60 * 60_000);

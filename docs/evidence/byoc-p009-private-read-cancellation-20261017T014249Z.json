@@ -1,0 +1,223 @@
+{
+  "schemaVersion": 1,
+  "kind": "private-http-caller-cancellation-control",
+  "workItem": "WI-6554700010016666",
+  "parent": "WI-10000407",
+  "runId": "20261017T014249Z-561655",
+  "outerRecovery": {
+    "runId": "0debe050-77fc-4f03-8dda-60a4d5120b1f",
+    "taskId": "0mvbqeqm81kx6srlop6",
+    "status": "pass",
+    "exitCode": 0
+  },
+  "resultPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T014249Z-561655/result.json",
+  "sourcePath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T014249Z-561655/phases/prepare/source.json",
+  "observationPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T014249Z-561655/phases/execute/read-cancellation-observation.json",
+  "diagnosticsPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T014249Z-561655/phases/execute/read-cancellation-pg.ndjson",
+  "lifecyclePath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T014249Z-561655/phases/execute/lifecycle.json",
+  "sourceCommit": "688eeab44276bd21b92a1bd393fdcfc8f373d551",
+  "sourceFiles": [
+    {
+      "path": "apps/operator/bin/hono-host.ts",
+      "sha256": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580",
+      "gitSha256": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580"
+    },
+    {
+      "path": "apps/operator/bin/host-handler.ts",
+      "sha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0",
+      "gitSha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0"
+    },
+    {
+      "path": "libs/generic/tooldef/src/dispatch-stack.ts",
+      "sha256": "26fbeb666bfbc575f2a312e2df9c41671e1483f8f6a3a894a35587ba8aceed9b",
+      "gitSha256": "26fbeb666bfbc575f2a312e2df9c41671e1483f8f6a3a894a35587ba8aceed9b"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/private-read-cancellation-http.integration.test.ts",
+      "sha256": "52d393ccc288ab82b968439cca6ea4553f7510cf8663f907764406ba99bc3e64",
+      "gitSha256": null
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/work_items/get.ts",
+      "sha256": "2ee16d4f2d06fa9920e62bf3a22941f9283e2b4c1d34b9088587faa5afefc53d",
+      "gitSha256": "2ee16d4f2d06fa9920e62bf3a22941f9283e2b4c1d34b9088587faa5afefc53d"
+    },
+    {
+      "path": "packages/operator-core/lib/capabilities/invoke.ts",
+      "sha256": "d38e35e116ca1d7fcc002a25d5b1e9a0bfa1263d9ad8b54836dd5da56080d3f5",
+      "gitSha256": "d38e35e116ca1d7fcc002a25d5b1e9a0bfa1263d9ad8b54836dd5da56080d3f5"
+    },
+    {
+      "path": "packages/operator-core/lib/carry-note.ts",
+      "sha256": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72",
+      "gitSha256": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts",
+      "sha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4",
+      "gitSha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4"
+    },
+    {
+      "path": "packages/operator-core/lib/pg-read-query.ts",
+      "sha256": "9f3150caaac9a47bd86dc42e81635700ac0f0d457565e920320c748940aa8c54",
+      "gitSha256": "9f3150caaac9a47bd86dc42e81635700ac0f0d457565e920320c748940aa8c54"
+    },
+    {
+      "path": "packages/operator-core/lib/projected-tool-deps.ts",
+      "sha256": "848a8d9d60249f76587ce15e14b15582ee8474f1c92f4c134bc4ffa55e6a387e",
+      "gitSha256": "848a8d9d60249f76587ce15e14b15582ee8474f1c92f4c134bc4ffa55e6a387e"
+    },
+    {
+      "path": "packages/operator-core/lib/work-item-checkpoint.ts",
+      "sha256": "0db6153cdd1142b467e940c003ea52c72a2714da6d3dcd04c5c05acf920e8e1a",
+      "gitSha256": "0db6153cdd1142b467e940c003ea52c72a2714da6d3dcd04c5c05acf920e8e1a"
+    },
+    {
+      "path": "packages/operator-core/lib/work-items.ts",
+      "sha256": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d",
+      "gitSha256": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d"
+    },
+    {
+      "path": "packages/operator-core/test/isolated-integration-proof.ts",
+      "sha256": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d",
+      "gitSha256": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d"
+    },
+    {
+      "path": "packages/operator-core/test/private-http-workspace-preflight.ts",
+      "sha256": "1ad346261702d8b1620cd7482f9fa3131f43d4558a7218029bcc104159f25ff3",
+      "gitSha256": "1ad346261702d8b1620cd7482f9fa3131f43d4558a7218029bcc104159f25ff3"
+    },
+    {
+      "path": "packages/operator-core/test/private-read-cancellation-http-scenario.ts",
+      "sha256": "87e00b008fd1c040bf3c3dabfea0e157e83244e4c4d07b4344b001eb255ce46e",
+      "gitSha256": null
+    },
+    {
+      "path": "packages/operator-core/test/staging-first-http-fixture.ts",
+      "sha256": "ea98a4a04fff19fbdab2784ef512c093ef9be5f5ea734a1e7adef983c478336b",
+      "gitSha256": "8272ace05fc1525f00e1ae326cadc62421fc08c4b47e081b812f78f4291cc927"
+    },
+    {
+      "path": "packages/tooldef-mcp/src/index.ts",
+      "sha256": "bfb7cec8c7f48ef5b0ac2abc03041c47913a2feba91634ced520b204d3a39e74",
+      "gitSha256": "bfb7cec8c7f48ef5b0ac2abc03041c47913a2feba91634ced520b204d3a39e74"
+    },
+    {
+      "path": "scripts/lib/isolated-runtime-start.mjs",
+      "sha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d",
+      "gitSha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d"
+    },
+    {
+      "path": "scripts/with-test-pg.mjs",
+      "sha256": "86539e9179ba12216d323c0844c92fe93222e54796ce4677e9ea7e759318f0d7",
+      "gitSha256": "86539e9179ba12216d323c0844c92fe93222e54796ce4677e9ea7e759318f0d7"
+    },
+    {
+      "path": "scripts/lib/with-test-pg-cleanup.mjs",
+      "sha256": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61",
+      "gitSha256": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61"
+    }
+  ],
+  "phases": [
+    {
+      "phase": "prepare",
+      "status": "passed",
+      "elapsedMs": 9434
+    },
+    {
+      "phase": "execute",
+      "status": "passed",
+      "elapsedMs": 119061
+    },
+    {
+      "phase": "teardown",
+      "status": "passed",
+      "elapsedMs": 0
+    }
+  ],
+  "measurement": {
+    "workspace": "test-runtime-83fd0c5e-ef6",
+    "harness": "test-runtime-83fd0c5e-ef6-guard",
+    "itemId": "WI-1",
+    "expectedSha": "688eeab442",
+    "holderPid": 682898,
+    "wait": {
+      "pid": 682291,
+      "backendStart": "2026-10-16 21:44:54.268384-04",
+      "queryStart": "2026-10-16 21:44:56.35798-04",
+      "state": "active",
+      "waitEventType": "Lock",
+      "blockingPids": [
+        682898
+      ]
+    },
+    "abortedAtMs": 97165.625745,
+    "serverSettledAtMs": 97196.976161,
+    "cancellationObservedMs": 31.350416000001132,
+    "clientResult": {
+      "error": {
+        "name": "AbortError",
+        "message": "private HTTP caller disconnected"
+      }
+    },
+    "ledger": {
+      "id": "2",
+      "status": "ok",
+      "errorCode": null,
+      "errorMessage": "cancelled",
+      "durationMs": 34,
+      "metadata": {
+        "resultOutcome": "soft-failure",
+        "softFailureReason": "cancelled"
+      }
+    },
+    "recoveredHttpStatus": 200,
+    "recoveredCounts": {
+      "ok": 1,
+      "failed": 0
+    },
+    "exactReadback": true,
+    "remainingWaits": []
+  },
+  "diagnosticStages": [
+    "selected-http-wait",
+    "cancellation-settled",
+    "post-rollback",
+    "direct-readback-pending",
+    "direct-readback-settled"
+  ],
+  "holderAfterRollback": {
+    "pid": 682898,
+    "state": "idle",
+    "xactStart": null,
+    "queryStart": "2026-10-16 21:44:56.415338-04",
+    "waitEventType": "Client",
+    "blockingPids": [],
+    "query": "ROLLBACK"
+  },
+  "postRollbackLocks": [],
+  "lifecycleEnded": {
+    "kind": "isolated-runtime-end",
+    "childPid": 600344,
+    "exitCode": 0,
+    "signal": null,
+    "runtimeRemoved": true,
+    "pgDataRemoved": true,
+    "observedAt": "2026-10-17T01:44:58.198Z"
+  },
+  "typecheck": {
+    "engine": "tsc-service",
+    "scopedVerdict": "requested-files-clean",
+    "errors": 0,
+    "namedFiles": 3,
+    "durationMs": 8409
+  },
+  "writerInterpretation": "The invocation status is call-level. Explicit resultOutcome=soft-failure plus softFailureReason=cancelled proves cooperative server cancellation; status=ok alone would not qualify. Client AbortError alone is insufficient.",
+  "limitations": [
+    "Local current-build private HTTP/PG proof on uncommitted inputs, not deployed acceptance.",
+    "This observes cancellation of the governed HTTP read; it does not claim immediate cancellation of the underlying PostgreSQL statement.",
+    "The added shared fixture branch changes the input fingerprint of the earlier deadline preparation6645; its saved pass stays historical and cannot settle the changed-input close merely by waiting for git-sync.",
+    "Historical direct-readback timeout6657 remains open/owned and was not reproduced or declared resolved.",
+    "No full P009, deployed R003/R006, source-producer revival, native/provider campaign, or shipment established."
+  ]
+}

@@ -49,6 +49,34 @@ describe('refreshLiveSessionsBeforeRead', () => {
     expect(ingest).toHaveBeenCalledWith('/tmp/su-b.jsonl', { owner: 'su-b', sessionId: 'session-su-b' });
   });
 
+  it('forwards per-leg timing events to the request-scoped observer', async () => {
+    const timings: Array<[string, number, string]> = [];
+    const resolveStates = vi.fn(async (
+      subjects: readonly { ownerId: string }[],
+      options: {
+        hydrateBatch: true;
+        onTiming?: (leg: string, durationMs: number, outcome: 'ok' | 'error') => void;
+      },
+    ) => {
+      options.onTiming?.('fetchWakeability', 19, 'ok');
+      return new Map(subjects.map(({ ownerId }) => [ownerId, { sessionState: 'live' as const }]));
+    });
+
+    const result = await refreshLiveSessionsBeforeRead(sqlReturningLiveOwners(['su-a']) as never, ['su-a'], {
+      resolveStates,
+      resolve: async () => ({ filePath: '/tmp/su-a.jsonl', sessionId: 'session-su-a' }),
+      ingest: async () => undefined,
+      onLivenessTiming: (leg, durationMs, outcome) => timings.push([leg, durationMs, outcome]),
+    });
+
+    expect(result).toEqual({ attempted: 1, refreshed: 1 });
+    expect(resolveStates).toHaveBeenCalledWith(
+      [{ ownerId: 'su-a' }],
+      { hydrateBatch: true, onTiming: expect.any(Function) },
+    );
+    expect(timings).toEqual([['fetchWakeability', 19, 'ok']]);
+  });
+
   it('fails soft per live session instead of failing the read surface', async () => {
     const resolveStates = livenessResolver();
     const result = await refreshLiveSessionsBeforeRead(sqlReturningLiveOwners(['su-missing', 'su-live']) as never, ['su-missing', 'su-live'], {

@@ -14,6 +14,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolvePlanScope } from '../plans/source';
 import { forceReleaseClaim, getClaim, releaseClaim } from '../../plan-items/claims';
+import { releaseLinkedWorkItemForPlanItem } from '../../plan-items/claim-discipline';
 import { planItemEffectiveStatuses } from '../../plan-items/assignments';
 import { isTerminalPlanItemStatus } from '../../work-item-plan-item-landed';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -200,6 +201,7 @@ export default defineTool({
                 : 'the authorized claim disappeared before the force release',
             };
           }
+          await releaseLinkedWorkItemForPlanItem(it.plan, it.item, currentOwner);
           const forced = {
             holder: current.owner,
             basis: verdict.basis as ForceReleaseBasis,
@@ -251,6 +253,7 @@ export default defineTool({
             note: raced ? 'the claim changed before release; no claim was cleared' : 'the claim disappeared before release',
           };
         }
+        await releaseLinkedWorkItemForPlanItem(it.plan, it.item, currentOwner);
         return { ok: true, plan: it.plan, item: it.item, released: true };
       },
       { keyOf: (it) => ({ plan: it.plan, item: it.item }) },

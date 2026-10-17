@@ -36,7 +36,7 @@ import {
 export default defineTool({
   name: 'reports:publish',
   description:
-    'Publish a finished owner-facing Markdown report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. The server stamps author, pot, and session. Over-cap bodies are refused, not truncated; corrections use `supersedes` and preserve the prior body. Returns a stable `report_id` and UI path. After publish, call `reports:get { id: report_id }` and verify the complete body and visibility. Cite a descriptive Markdown link to the GUI report page, using the returned same-origin path directly as its Markdown target. Use an absolute HTTP(S) URL only when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link.',
+    'Publish a finished owner-facing Markdown report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. The server stamps author, pot, and session. Over-cap bodies are refused, not truncated; corrections use `supersedes` and preserve the prior body. Returns a stable `report_id` and UI path. After publish, call `reports:get { id: report_id }` (or pass the receipt value as `report_id`) and verify the complete body and visibility. Cite a descriptive Markdown link to the GUI report page, using the returned same-origin path directly as its Markdown target. Use an absolute HTTP(S) URL only when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link.',
   guidance: {
     when: 'For completed audits, reviews, analyses, postmortems, status digests, or proposals.',
     notWhen:

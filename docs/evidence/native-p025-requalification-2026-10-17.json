@@ -1,0 +1,924 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-10007888",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "planItem": "P-025",
+  "kind": "focused-test-source-requalification",
+  "observedAt": "2026-10-17T04:18:00Z",
+  "testRunId": 21300921,
+  "sourceCommit": "f6d5ab2202bc2ec8b953cbb474fa16bbe4d9b150",
+  "command": "npm run lint:as-committed -- test:file --any -- packages/operator-core/lib/dream/dream-evaluation.test.ts",
+  "result": {
+    "exitCode": 0,
+    "filesPassed": 1,
+    "testsPassed": 27,
+    "testsFailed": 0,
+    "skipped": 0,
+    "childSubstituted": 0,
+    "unhandledErrors": 0
+  },
+  "logs": {
+    "testLog": "/tmp/native-p025-evaluation-tests-20261017.log",
+    "testLogSha256": "a8ff793eaac487da191a010153d7c31d5e0dd31856df504cd0d8ff03f6d17c94",
+    "sourceCapture": "/tmp/native-p025-evaluation-source-20261017.json",
+    "sourceCaptureSha256": "b388fe5236eb97608b7d7b6e6660a43e51a3c7749f9f0a3a1fdd5673235ed20b",
+    "priorBindingRead": "/tmp/native-p025-evidence-current-20261017-0419.json",
+    "priorBindingReadSha256": "072e6f744e7c1aa4a22fdccebfc942b28e7199bbe96e4795f74d4e38906f0b18"
+  },
+  "sourceEvidence": {
+    "schemaVersion": "vite-collected-source-evidence-v1",
+    "scope": "repository-worker-vite-original-sources",
+    "status": "stable",
+    "sources": [
+      {
+        "path": "libs/flags/src/env-resolution.ts",
+        "sha256": "49a46adc31647d90a2f5f350fad26141000919f1e6a54f53078b887f198fc6a8",
+        "basis": "vite-pre-transform",
+        "currentSha256": "49a46adc31647d90a2f5f350fad26141000919f1e6a54f53078b887f198fc6a8"
+      },
+      {
+        "path": "libs/flags/src/index.ts",
+        "sha256": "89461511cb251f0d4b9fb7b8ea5c4043e227231c1b07c7943f7415747e8ca60a",
+        "basis": "vite-pre-transform",
+        "currentSha256": "89461511cb251f0d4b9fb7b8ea5c4043e227231c1b07c7943f7415747e8ca60a"
+      },
+      {
+        "path": "libs/flags/src/server.ts",
+        "sha256": "ebca92f58f88b7e990e015ffde6e4380d6abcb5f15d4b231174822a7e115576e",
+        "basis": "vite-pre-transform",
+        "currentSha256": "ebca92f58f88b7e990e015ffde6e4380d6abcb5f15d4b231174822a7e115576e"
+      },
+      {
+        "path": "libs/flags/src/test.ts",
+        "sha256": "d03ec419430f4fdc10aa84fe1d7784e6764acd041d08b1cdb2de86dad8a932fb",
+        "basis": "vite-pre-transform",
+        "currentSha256": "d03ec419430f4fdc10aa84fe1d7784e6764acd041d08b1cdb2de86dad8a932fb"
+      },
+      {
+        "path": "libs/flags/src/types.ts",
+        "sha256": "7f8bbe0cfb883e99140d370b458e876169cffb06e2711238dccc7af211279e4d",
+        "basis": "vite-pre-transform",
+        "currentSha256": "7f8bbe0cfb883e99140d370b458e876169cffb06e2711238dccc7af211279e4d"
+      },
+      {
+        "path": "libs/generic/embedded-pg-discovery/src/index.ts",
+        "sha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d",
+        "basis": "vite-pre-transform",
+        "currentSha256": "6b22262efbeb1c47611ac63b323184e88690a7743a79f3f813a034b52665807d"
+      },
+      {
+        "path": "libs/generic/module-singleton/src/index.ts",
+        "sha256": "4d8852efe38c7fddf07a77c821ba0bb704df0e52c7324182a2941db564712dbf",
+        "basis": "vite-pre-transform",
+        "currentSha256": "4d8852efe38c7fddf07a77c821ba0bb704df0e52c7324182a2941db564712dbf"
+      },
+      {
+        "path": "libs/generic/resource-profile/src/index.ts",
+        "sha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502",
+        "basis": "vite-pre-transform",
+        "currentSha256": "56f66433a734833dcb5c85b6f9c0f780b2d6a34a2c711c1c844c4b7c1266a502"
+      },
+      {
+        "path": "libs/generic/rrf/src/index.ts",
+        "sha256": "79fe56fc00be1bc1392e8579fcf70a469c100d6a89894c13ae3c438c0020d532",
+        "basis": "vite-pre-transform",
+        "currentSha256": "79fe56fc00be1bc1392e8579fcf70a469c100d6a89894c13ae3c438c0020d532"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/contract.ts",
+        "sha256": "7639eae8328508f476fb9c3370285a680bcacd6fc694938531e5316dfa42f219",
+        "basis": "vite-pre-transform",
+        "currentSha256": "7639eae8328508f476fb9c3370285a680bcacd6fc694938531e5316dfa42f219"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/converge.ts",
+        "sha256": "a57388ea06071add01afb7b246900728c780cc268c5875bd3e702e09d909d979",
+        "basis": "vite-pre-transform",
+        "currentSha256": "a57388ea06071add01afb7b246900728c780cc268c5875bd3e702e09d909d979"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/evidence-root.ts",
+        "sha256": "fa50575a6f0ff923a44231b3cbbbc044d8da54abc977335c2eba24ff80745ac9",
+        "basis": "vite-pre-transform",
+        "currentSha256": "fa50575a6f0ff923a44231b3cbbbc044d8da54abc977335c2eba24ff80745ac9"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/guard-rails.ts",
+        "sha256": "33f70e97ef1c7f91898ceaf5ce8a988fc850911927c62a680c66fb10057edadc",
+        "basis": "vite-pre-transform",
+        "currentSha256": "33f70e97ef1c7f91898ceaf5ce8a988fc850911927c62a680c66fb10057edadc"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/index.ts",
+        "sha256": "9c2207750409f92bb41fba70121835607ac1dd2a82b06faad352711d5cc2761e",
+        "basis": "vite-pre-transform",
+        "currentSha256": "9c2207750409f92bb41fba70121835607ac1dd2a82b06faad352711d5cc2761e"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/runner.ts",
+        "sha256": "d312e0a83bb2050ef18341a2f31b8d43f9790fc3a67e245e8405de3bbe23cd6a",
+        "basis": "vite-pre-transform",
+        "currentSha256": "d312e0a83bb2050ef18341a2f31b8d43f9790fc3a67e245e8405de3bbe23cd6a"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/select.ts",
+        "sha256": "a48b3c0dea416c814baea724140756bad3263391aa71f5df8868bf8cc00be57a",
+        "basis": "vite-pre-transform",
+        "currentSha256": "a48b3c0dea416c814baea724140756bad3263391aa71f5df8868bf8cc00be57a"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/tier-gate.ts",
+        "sha256": "9979a508b73f5a66ed3dcb038cd1b5824c4b95deffc2298a89d207bc01908aa7",
+        "basis": "vite-pre-transform",
+        "currentSha256": "9979a508b73f5a66ed3dcb038cd1b5824c4b95deffc2298a89d207bc01908aa7"
+      },
+      {
+        "path": "libs/papercusp-db/src/index.ts",
+        "sha256": "b09c6dec8d40b1308137fbb7e1fbabb0e6fbff265b3754aa6b8d8c7822c4548c",
+        "basis": "vite-pre-transform",
+        "currentSha256": "b09c6dec8d40b1308137fbb7e1fbabb0e6fbff265b3754aa6b8d8c7822c4548c"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/acquire-registry.ts",
+        "sha256": "e27c99e45c2135c0fafb7d320ee42cfb5202bcf502cc56e71b9fc2cf669d8cd4",
+        "basis": "vite-pre-transform",
+        "currentSha256": "e27c99e45c2135c0fafb7d320ee42cfb5202bcf502cc56e71b9fc2cf669d8cd4"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/atomic-checkout.ts",
+        "sha256": "a128776cb36af1bb62141a82949218baf1f2b950b0f27fbcc9660a66086049e7",
+        "basis": "vite-pre-transform",
+        "currentSha256": "a128776cb36af1bb62141a82949218baf1f2b950b0f27fbcc9660a66086049e7"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/budget-enforcement.ts",
+        "sha256": "a7d13c1a863b59cd045305a8f6143dac4b275e86a94b3d2e1138e2346012468a",
+        "basis": "vite-pre-transform",
+        "currentSha256": "a7d13c1a863b59cd045305a8f6143dac4b275e86a94b3d2e1138e2346012468a"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/build-stamp.ts",
+        "sha256": "e42d482bb3deb905f2b4a226942675639bdab23c7cef21d19722330fc69b9f4e",
+        "basis": "vite-pre-transform",
+        "currentSha256": "e42d482bb3deb905f2b4a226942675639bdab23c7cef21d19722330fc69b9f4e"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/connect-retry.ts",
+        "sha256": "845a2a7e09e5164b51ea579fbdbeda56a8ce88e83934ee6fb9d2b8ddb6189d9a",
+        "basis": "vite-pre-transform",
+        "currentSha256": "845a2a7e09e5164b51ea579fbdbeda56a8ce88e83934ee6fb9d2b8ddb6189d9a"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/connection.ts",
+        "sha256": "835914038e9d8ab894eaf533c465475ab0c016349d4c2579e4f27837008af31e",
+        "basis": "vite-pre-transform",
+        "currentSha256": "835914038e9d8ab894eaf533c465475ab0c016349d4c2579e4f27837008af31e"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/goal-lineage.ts",
+        "sha256": "7f62d8cd25f0c601a0e7e19be16df391e7a4af5de6f12cf88b7340555a01d618",
+        "basis": "vite-pre-transform",
+        "currentSha256": "7f62d8cd25f0c601a0e7e19be16df391e7a4af5de6f12cf88b7340555a01d618"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/goal-pots.ts",
+        "sha256": "d71454955050551f8940750cffcdd39f8403c5bbf0b09f8abbc3abe1ab1a6023",
+        "basis": "vite-pre-transform",
+        "currentSha256": "d71454955050551f8940750cffcdd39f8403c5bbf0b09f8abbc3abe1ab1a6023"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/index.ts",
+        "sha256": "91a6117eb6e2d96094d01d5cb8949ca64839370e954c2cc1a89b8dab651aba15",
+        "basis": "vite-pre-transform",
+        "currentSha256": "91a6117eb6e2d96094d01d5cb8949ca64839370e954c2cc1a89b8dab651aba15"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/legacy-shim.ts",
+        "sha256": "f02fff0fe14010ae3161cdd9f0cc2bbf8be9cb399d912ca0b47f39b8b81bfaea",
+        "basis": "vite-pre-transform",
+        "currentSha256": "f02fff0fe14010ae3161cdd9f0cc2bbf8be9cb399d912ca0b47f39b8b81bfaea"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/on-conflict-diagnostic.ts",
+        "sha256": "111498940bdd8cfa01ed2284b431ffe86aaf573408a4b4f05901b44435e83ec9",
+        "basis": "vite-pre-transform",
+        "currentSha256": "111498940bdd8cfa01ed2284b431ffe86aaf573408a4b4f05901b44435e83ec9"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/operator-db-env.ts",
+        "sha256": "61cdcfdd96f6963f7cd00f62044b23a270572a0c5f242fe7d56fbccdcb762b74",
+        "basis": "vite-pre-transform",
+        "currentSha256": "61cdcfdd96f6963f7cd00f62044b23a270572a0c5f242fe7d56fbccdcb762b74"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/pending-events.ts",
+        "sha256": "f701e0f194189bfeb6b1541fd29e8af333639d14ec72a0db9ef93fd9ecbf841c",
+        "basis": "vite-pre-transform",
+        "currentSha256": "f701e0f194189bfeb6b1541fd29e8af333639d14ec72a0db9ef93fd9ecbf841c"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/production-database-policy.ts",
+        "sha256": "79ffa7f060328358f70c545ddc34039930bc937153de4bf64df2d2382049effd",
+        "basis": "vite-pre-transform",
+        "currentSha256": "79ffa7f060328358f70c545ddc34039930bc937153de4bf64df2d2382049effd"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/raw-serializers.ts",
+        "sha256": "930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401",
+        "basis": "vite-pre-transform",
+        "currentSha256": "930ad0b8fce1834ed84e25777ca2f2f22405ac16dd8503030393f842b29a8401"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/routines-runtime.ts",
+        "sha256": "c7e6cb9db68640e5320066983d724a32ca3f28b592fdb70423e7c3544882bc26",
+        "basis": "vite-pre-transform",
+        "currentSha256": "c7e6cb9db68640e5320066983d724a32ca3f28b592fdb70423e7c3544882bc26"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/schema/generated-relations.ts",
+        "sha256": "6341f8bf3e582dfde49479555ea53f3069f085752d4f2de1f115767d9e0d8120",
+        "basis": "vite-pre-transform",
+        "currentSha256": "6341f8bf3e582dfde49479555ea53f3069f085752d4f2de1f115767d9e0d8120"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/schema/generated.ts",
+        "sha256": "47bea66a37ebfe4e8bca3c0c30b56aadbe20c97a1f28d1dc0abee0e3cad92793",
+        "basis": "vite-pre-transform",
+        "currentSha256": "47bea66a37ebfe4e8bca3c0c30b56aadbe20c97a1f28d1dc0abee0e3cad92793"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/schema/index.ts",
+        "sha256": "42d5aacb53dad06d6529aaff49bd0a118a5e5c43ee4c1f61ba2cacfbfbec78ba",
+        "basis": "vite-pre-transform",
+        "currentSha256": "42d5aacb53dad06d6529aaff49bd0a118a5e5c43ee4c1f61ba2cacfbfbec78ba"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/schema/zod.ts",
+        "sha256": "e8422b041db52155c23662fb2b39310e9b7679ac9829d0a18603133d72304290",
+        "basis": "vite-pre-transform",
+        "currentSha256": "e8422b041db52155c23662fb2b39310e9b7679ac9829d0a18603133d72304290"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/store-identity.ts",
+        "sha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22",
+        "basis": "vite-pre-transform",
+        "currentSha256": "74f0477b1edaba6a800091b0652a02fdd4cd6364be78b9aad65cdf30d0d16d22"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/tenant-context.ts",
+        "sha256": "b1014e83c21ac1e182c4585f7f4c9a99754c263c5a5762d3c789dd1681cf9880",
+        "basis": "vite-pre-transform",
+        "currentSha256": "b1014e83c21ac1e182c4585f7f4c9a99754c263c5a5762d3c789dd1681cf9880"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/with-serializable-retry.ts",
+        "sha256": "f4b3a385af72e5972a0a0d487625e07494c23acfdf03f7831c33b3476bbef7d4",
+        "basis": "vite-pre-transform",
+        "currentSha256": "f4b3a385af72e5972a0a0d487625e07494c23acfdf03f7831c33b3476bbef7d4"
+      },
+      {
+        "path": "libs/papercusp/libs/db/src/workspace-context.ts",
+        "sha256": "04cd21723a241d0badda56be34265b2a73370bc2dfdcf8896201ac9837230d17",
+        "basis": "vite-pre-transform",
+        "currentSha256": "04cd21723a241d0badda56be34265b2a73370bc2dfdcf8896201ac9837230d17"
+      },
+      {
+        "path": "libs/test-config/src/admin-test-runs-reporter.ts",
+        "sha256": "5704b6aad29a79fae598c62196a1f6fc3d79188d7220357234709a7609dad18c",
+        "basis": "vite-pre-transform",
+        "currentSha256": "5704b6aad29a79fae598c62196a1f6fc3d79188d7220357234709a7609dad18c"
+      },
+      {
+        "path": "libs/test-config/src/configuration-snapshot.ts",
+        "sha256": "8f55385b29a9cc6e5dcf2acdd73fdf2c0faeefc854216e66661052cfb22e73b1",
+        "basis": "vite-pre-transform",
+        "currentSha256": "8f55385b29a9cc6e5dcf2acdd73fdf2c0faeefc854216e66661052cfb22e73b1"
+      },
+      {
+        "path": "libs/test-config/src/console-noise-filter.ts",
+        "sha256": "3d6a101a6935f02a9189a98b6e4124f5f791c82e0daaefcc6c6b724a5673d888",
+        "basis": "vite-pre-transform",
+        "currentSha256": "3d6a101a6935f02a9189a98b6e4124f5f791c82e0daaefcc6c6b724a5673d888"
+      },
+      {
+        "path": "libs/test-config/src/executed-inputs-capture-setup.ts",
+        "sha256": "f6ead51b45d50e4a586520f87b68be06a6f95bc3473963f869e71a9f7e345233",
+        "basis": "vite-pre-transform",
+        "currentSha256": "f6ead51b45d50e4a586520f87b68be06a6f95bc3473963f869e71a9f7e345233"
+      },
+      {
+        "path": "libs/test-config/src/executed-inputs-capture.ts",
+        "sha256": "5bbbc6d86e8df3c8dc7d53f4a3b8aa14bad21115a1b85208508bc38072649a90",
+        "basis": "vite-pre-transform",
+        "currentSha256": "5bbbc6d86e8df3c8dc7d53f4a3b8aa14bad21115a1b85208508bc38072649a90"
+      },
+      {
+        "path": "libs/test-config/src/execution-details.ts",
+        "sha256": "f1617f1b42dde0bd19096ba1244addaf05da5cb98411e76c44cf9b616e80c2d3",
+        "basis": "vite-pre-transform",
+        "currentSha256": "f1617f1b42dde0bd19096ba1244addaf05da5cb98411e76c44cf9b616e80c2d3"
+      },
+      {
+        "path": "libs/test-config/src/handle-leak-delta.ts",
+        "sha256": "b39b39d4f30ea67994a797204132a38a0d32b110a893da1aa671b38dcd46869c",
+        "basis": "vite-pre-transform",
+        "currentSha256": "b39b39d4f30ea67994a797204132a38a0d32b110a893da1aa671b38dcd46869c"
+      },
+      {
+        "path": "libs/test-config/src/hermetic-tmpdir.ts",
+        "sha256": "ae76382cac590062b0b8e4a127fae780802c98151c09423b66c3655fa81322aa",
+        "basis": "vite-pre-transform",
+        "currentSha256": "ae76382cac590062b0b8e4a127fae780802c98151c09423b66c3655fa81322aa"
+      },
+      {
+        "path": "libs/test-config/src/mutation-descriptor.ts",
+        "sha256": "bbdf14344ef6ab8a61c66087624385dff4190330120381bfe04da4d16f994c40",
+        "basis": "vite-pre-transform",
+        "currentSha256": "bbdf14344ef6ab8a61c66087624385dff4190330120381bfe04da4d16f994c40"
+      },
+      {
+        "path": "libs/test-config/src/setup-fail-on-console.ts",
+        "sha256": "f740bb992a61c9d75a37f3791161d36a6b3220615e91c6e2ab4ad4bca56540bb",
+        "basis": "vite-pre-transform",
+        "currentSha256": "f740bb992a61c9d75a37f3791161d36a6b3220615e91c6e2ab4ad4bca56540bb"
+      },
+      {
+        "path": "libs/test-config/src/setup-handle-leak-detector.ts",
+        "sha256": "56b9f669f67d9d12e9a8e8b80f197c9203a516845a33127a17705300f365c3d8",
+        "basis": "vite-pre-transform",
+        "currentSha256": "56b9f669f67d9d12e9a8e8b80f197c9203a516845a33127a17705300f365c3d8"
+      },
+      {
+        "path": "libs/test-config/src/setup-hermetic-env.ts",
+        "sha256": "2616f4dd67e40012ec790aa029907f640e8dda4295ee4f47893cb04e717a0acd",
+        "basis": "vite-pre-transform",
+        "currentSha256": "2616f4dd67e40012ec790aa029907f640e8dda4295ee4f47893cb04e717a0acd"
+      },
+      {
+        "path": "libs/test-config/src/setup-no-real-pg.ts",
+        "sha256": "2f2147c36d0d0132d66aaf1d2eee66ec76fab04d85828117416c9b4d9f262906",
+        "basis": "vite-pre-transform",
+        "currentSha256": "2f2147c36d0d0132d66aaf1d2eee66ec76fab04d85828117416c9b4d9f262906"
+      },
+      {
+        "path": "libs/test-config/src/setup-testing-library-timeout.ts",
+        "sha256": "424be5f6c7d32b05373f95d2f1418fa8a6faf0ce2cd786a304472654a0e30274",
+        "basis": "vite-pre-transform",
+        "currentSha256": "424be5f6c7d32b05373f95d2f1418fa8a6faf0ce2cd786a304472654a0e30274"
+      },
+      {
+        "path": "libs/test-config/src/silenced-console-census.ts",
+        "sha256": "91bf40c41d514f9cfc2e5f5d9bec3ea871b13e05d46c518ff37118bdf82b6d9f",
+        "basis": "vite-pre-transform",
+        "currentSha256": "91bf40c41d514f9cfc2e5f5d9bec3ea871b13e05d46c518ff37118bdf82b6d9f"
+      },
+      {
+        "path": "libs/test-config/src/timer-leak-ledger.ts",
+        "sha256": "e032992f18c1d6bf75071546030db33e3d998ebde81d0fc26865ffc5636d2e6f",
+        "basis": "vite-pre-transform",
+        "currentSha256": "e032992f18c1d6bf75071546030db33e3d998ebde81d0fc26865ffc5636d2e6f"
+      },
+      {
+        "path": "libs/test-config/src/tmpdir-guard.ts",
+        "sha256": "7d50fde3eab79e25c94304ed1cf93aa0c9a529142006207994c380c5a3943b10",
+        "basis": "vite-pre-transform",
+        "currentSha256": "7d50fde3eab79e25c94304ed1cf93aa0c9a529142006207994c380c5a3943b10"
+      },
+      {
+        "path": "libs/test-config/src/verifier-source.ts",
+        "sha256": "1c89b4e9907edfa63b457168a5b837bd72ce02590e1b5eba6ff3bfc175a828a8",
+        "basis": "vite-pre-transform",
+        "currentSha256": "1c89b4e9907edfa63b457168a5b837bd72ce02590e1b5eba6ff3bfc175a828a8"
+      },
+      {
+        "path": "packages/backup/src/application-names.ts",
+        "sha256": "f85c497bbe876d999935f32bcfd7e0bb01e37f0f49d919661612f00cdac29dba",
+        "basis": "vite-pre-transform",
+        "currentSha256": "f85c497bbe876d999935f32bcfd7e0bb01e37f0f49d919661612f00cdac29dba"
+      },
+      {
+        "path": "packages/backup/src/config.ts",
+        "sha256": "a0e9390f1c0d147c64c4518a417fb114d15f06d6bbccccc912d1939b1da123d5",
+        "basis": "vite-pre-transform",
+        "currentSha256": "a0e9390f1c0d147c64c4518a417fb114d15f06d6bbccccc912d1939b1da123d5"
+      },
+      {
+        "path": "packages/backup/src/hook.ts",
+        "sha256": "187e74960e73cccf04b6ff493772c54df1009d7b1718891f50b11c33a81b42f9",
+        "basis": "vite-pre-transform",
+        "currentSha256": "187e74960e73cccf04b6ff493772c54df1009d7b1718891f50b11c33a81b42f9"
+      },
+      {
+        "path": "packages/backup/src/host-dump-coverage.ts",
+        "sha256": "f0622623637d0a2a8bb10d2f3039dbf5a9e939a62f973fa06a8c8f8bab4a6427",
+        "basis": "vite-pre-transform",
+        "currentSha256": "f0622623637d0a2a8bb10d2f3039dbf5a9e939a62f973fa06a8c8f8bab4a6427"
+      },
+      {
+        "path": "packages/backup/src/types.ts",
+        "sha256": "ac202f409d23f7e9b1eabe291541af332ad824114b6688337369eb39ace1b83f",
+        "basis": "vite-pre-transform",
+        "currentSha256": "ac202f409d23f7e9b1eabe291541af332ad824114b6688337369eb39ace1b83f"
+      },
+      {
+        "path": "packages/operator-core/lib/auth/forwarded-request-trust.ts",
+        "sha256": "0dd2808af6347fa472e3c54f3f1ff0069fe5468411fe050304d9be26e02ccf7c",
+        "basis": "vite-pre-transform",
+        "currentSha256": "0dd2808af6347fa472e3c54f3f1ff0069fe5468411fe050304d9be26e02ccf7c"
+      },
+      {
+        "path": "packages/operator-core/lib/auth/loopback-peer-trust.ts",
+        "sha256": "b57b82068c573ba197aa4e94cb5a0bd7f4debf153f179b3be02bfd76d44cd973",
+        "basis": "vite-pre-transform",
+        "currentSha256": "b57b82068c573ba197aa4e94cb5a0bd7f4debf153f179b3be02bfd76d44cd973"
+      },
+      {
+        "path": "packages/operator-core/lib/background-workers.ts",
+        "sha256": "6f44bb5794a88fa60af6e6041e0cb96543bc551b17289be567599c4c7a644735",
+        "basis": "vite-pre-transform",
+        "currentSha256": "6f44bb5794a88fa60af6e6041e0cb96543bc551b17289be567599c4c7a644735"
+      },
+      {
+        "path": "packages/operator-core/lib/bounded-timeout.ts",
+        "sha256": "d7c8fec68e2fab15da8693048b9729662c23f41cf870adf55cb50c229aa12040",
+        "basis": "vite-pre-transform",
+        "currentSha256": "d7c8fec68e2fab15da8693048b9729662c23f41cf870adf55cb50c229aa12040"
+      },
+      {
+        "path": "packages/operator-core/lib/build-info.ts",
+        "sha256": "6d271f5721a0d47c68fa8f42996a34f7b48fe4c06e414285a3f7fe36bdc44a50",
+        "basis": "vite-pre-transform",
+        "currentSha256": "6d271f5721a0d47c68fa8f42996a34f7b48fe4c06e414285a3f7fe36bdc44a50"
+      },
+      {
+        "path": "packages/operator-core/lib/cache/pg-l2-store.ts",
+        "sha256": "eaf32921ed4ed1a7c039745f6923b79d3b2d77105620e9446ac3d21a77908f3c",
+        "basis": "vite-pre-transform",
+        "currentSha256": "eaf32921ed4ed1a7c039745f6923b79d3b2d77105620e9446ac3d21a77908f3c"
+      },
+      {
+        "path": "packages/operator-core/lib/child-output.ts",
+        "sha256": "f4f3a3192876dc0131edf7b5f70b3b87e4a5763aa728aeae6135234bd7b4e138",
+        "basis": "vite-pre-transform",
+        "currentSha256": "f4f3a3192876dc0131edf7b5f70b3b87e4a5763aa728aeae6135234bd7b4e138"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/contracts.ts",
+        "sha256": "7d1c4ee3f1b7f061fb4c95efc6e0c7869fc3fbb552be2903c6fedeec470272e6",
+        "basis": "vite-pre-transform",
+        "currentSha256": "7d1c4ee3f1b7f061fb4c95efc6e0c7869fc3fbb552be2903c6fedeec470272e6"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/dependency-snapshot-path.ts",
+        "sha256": "0c2a2264d42613e3fc6a01f9df28f1f05ca5c748b6050dc2523356809c68eb56",
+        "basis": "vite-pre-transform",
+        "currentSha256": "0c2a2264d42613e3fc6a01f9df28f1f05ca5c748b6050dc2523356809c68eb56"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/first-party-callers-offthread.ts",
+        "sha256": "2b488b77e535aee13e4ed6845b96a63f4a840d4d2d365bb653e0cefacd62b52b",
+        "basis": "vite-pre-transform",
+        "currentSha256": "2b488b77e535aee13e4ed6845b96a63f4a840d4d2d365bb653e0cefacd62b52b"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/first-party-callers.ts",
+        "sha256": "be13f415fd955d081982196a3637c839c26f80f1ba2840f4fcd965303462a17a",
+        "basis": "vite-pre-transform",
+        "currentSha256": "be13f415fd955d081982196a3637c839c26f80f1ba2840f4fcd965303462a17a"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/first-party-traversal.ts",
+        "sha256": "3007a7c3a491b235197a45154a125bdaa2b29004732516b79c86d6f79aefaaf5",
+        "basis": "vite-pre-transform",
+        "currentSha256": "3007a7c3a491b235197a45154a125bdaa2b29004732516b79c86d6f79aefaaf5"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/gitnexus-facade.ts",
+        "sha256": "14d35e5750eda37145c05e9cc6b722ea515c7f7ef2a1f4aa2e894ae73aa20d06",
+        "basis": "vite-pre-transform",
+        "currentSha256": "14d35e5750eda37145c05e9cc6b722ea515c7f7ef2a1f4aa2e894ae73aa20d06"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/lsp-adapter.ts",
+        "sha256": "a322cd4a71b60c2c3f524f4ba0f501b3c5ce897f55677d88341e643de93dca94",
+        "basis": "vite-pre-transform",
+        "currentSha256": "a322cd4a71b60c2c3f524f4ba0f501b3c5ce897f55677d88341e643de93dca94"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/lsp-capability-matrix.ts",
+        "sha256": "570573ae07b608bd27945fd19b5b750ac1e49c03cce2ecee2f08e72d79633ef8",
+        "basis": "vite-pre-transform",
+        "currentSha256": "570573ae07b608bd27945fd19b5b750ac1e49c03cce2ecee2f08e72d79633ef8"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/lsp-daemon-client.ts",
+        "sha256": "dbf9d7620a4113012057272a68a29c4d0b447d89ddea63e0ca5d9cee288f2986",
+        "basis": "vite-pre-transform",
+        "currentSha256": "dbf9d7620a4113012057272a68a29c4d0b447d89ddea63e0ca5d9cee288f2986"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/lsp-daemon-socket.ts",
+        "sha256": "5865cf5ae6f7b6ae1745888c34160733fc4387ebf09d1a3e63800e0f0d6040b8",
+        "basis": "vite-pre-transform",
+        "currentSha256": "5865cf5ae6f7b6ae1745888c34160733fc4387ebf09d1a3e63800e0f0d6040b8"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/lsp-facade.ts",
+        "sha256": "b518cc8461af559f4ca2709938daf26be788be3315734afdce4710d34aa66aa1",
+        "basis": "vite-pre-transform",
+        "currentSha256": "b518cc8461af559f4ca2709938daf26be788be3315734afdce4710d34aa66aa1"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/lsp-query-evidence.ts",
+        "sha256": "94c08cf91e4a433502a2f30020c1c99e5ac6adb052a04a1e1a9c8059a9698e93",
+        "basis": "vite-pre-transform",
+        "currentSha256": "94c08cf91e4a433502a2f30020c1c99e5ac6adb052a04a1e1a9c8059a9698e93"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/lsp-semantic-completion.ts",
+        "sha256": "926e91decd30960731c0060aeeac24b49853137bd5db50c6a87407a1a33125c8",
+        "basis": "vite-pre-transform",
+        "currentSha256": "926e91decd30960731c0060aeeac24b49853137bd5db50c6a87407a1a33125c8"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/packer-facade.ts",
+        "sha256": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e",
+        "basis": "vite-pre-transform",
+        "currentSha256": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/push-snapshot.ts",
+        "sha256": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44",
+        "basis": "vite-pre-transform",
+        "currentSha256": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44"
+      },
+      {
+        "path": "packages/operator-core/lib/code-intelligence/typescript-service.ts",
+        "sha256": "8389959d2dbbf989b0a7593de98384ac7073ffc121e89ef37aff8058699cc3be",
+        "basis": "vite-pre-transform",
+        "currentSha256": "8389959d2dbbf989b0a7593de98384ac7073ffc121e89ef37aff8058699cc3be"
+      },
+      {
+        "path": "packages/operator-core/lib/control-plane-temp.mjs",
+        "sha256": "7148aa4f4a0b655eb83c17e8e18f3d1463bad7863b37e37338c9cafeea88d7ef",
+        "basis": "vite-pre-transform",
+        "currentSha256": "7148aa4f4a0b655eb83c17e8e18f3d1463bad7863b37e37338c9cafeea88d7ef"
+      },
+      {
+        "path": "packages/operator-core/lib/coverage-census/attribution/context.ts",
+        "sha256": "a67b60bc0ecad9ff7f99dfb03f7cabf5a6443cdee7eb4e4f7bcb0041059dedc1",
+        "basis": "vite-pre-transform",
+        "currentSha256": "a67b60bc0ecad9ff7f99dfb03f7cabf5a6443cdee7eb4e4f7bcb0041059dedc1"
+      },
+      {
+        "path": "packages/operator-core/lib/coverage-census/attribution/setup-vitest.ts",
+        "sha256": "11c0d96a8d1ddc23baad84c3f516a701cbac1392d5e67ddbc7443002c7caf1f9",
+        "basis": "vite-pre-transform",
+        "currentSha256": "11c0d96a8d1ddc23baad84c3f516a701cbac1392d5e67ddbc7443002c7caf1f9"
+      },
+      {
+        "path": "packages/operator-core/lib/degradation/fallback-observations.ts",
+        "sha256": "e3892da87dfd8f2891834e647a74a55d6ed24100eb3f2cb634e11ff8df87bc88",
+        "basis": "vite-pre-transform",
+        "currentSha256": "e3892da87dfd8f2891834e647a74a55d6ed24100eb3f2cb634e11ff8df87bc88"
+      },
+      {
+        "path": "packages/operator-core/lib/detached-imports/index.ts",
+        "sha256": "04a702af3625adf2c7bbcb9742c73c3d26ee58311bc2107148c2bc3aa0cf3f0d",
+        "basis": "vite-pre-transform",
+        "currentSha256": "04a702af3625adf2c7bbcb9742c73c3d26ee58311bc2107148c2bc3aa0cf3f0d"
+      },
+      {
+        "path": "packages/operator-core/lib/detached-imports/setup-vitest.ts",
+        "sha256": "ff26e069491e86d04b09d5444f015dcdf9103b83776755544d4911b8dd2c0526",
+        "basis": "vite-pre-transform",
+        "currentSha256": "ff26e069491e86d04b09d5444f015dcdf9103b83776755544d4911b8dd2c0526"
+      },
+      {
+        "path": "packages/operator-core/lib/dream/capability-contracts.ts",
+        "sha256": "1c666128caeb4cc7e037b9fb6aa11a825c71c66a5bcbd8b0dc5cb6ac8628be1e",
+        "basis": "vite-pre-transform",
+        "currentSha256": "1c666128caeb4cc7e037b9fb6aa11a825c71c66a5bcbd8b0dc5cb6ac8628be1e"
+      },
+      {
+        "path": "packages/operator-core/lib/dream/capability-packets.ts",
+        "sha256": "29d59820a9244860fba8ad7bc775b41c107d3b125731d110983ae06512a4c34a",
+        "basis": "vite-pre-transform",
+        "currentSha256": "29d59820a9244860fba8ad7bc775b41c107d3b125731d110983ae06512a4c34a"
+      },
+      {
+        "path": "packages/operator-core/lib/dream/capability-pass.ts",
+        "sha256": "aca148b8d11635e7f634acde15010e8f7cfce985ee63c50aad60fce05032d3fd",
+        "basis": "vite-pre-transform",
+        "currentSha256": "aca148b8d11635e7f634acde15010e8f7cfce985ee63c50aad60fce05032d3fd"
+      },
+      {
+        "path": "packages/operator-core/lib/dream/capability-sampler.ts",
+        "sha256": "c266107fae8dd7f84530d18207c84072ca28074d13b4966cab7e8aab3ac4fab3",
+        "basis": "vite-pre-transform",
+        "currentSha256": "c266107fae8dd7f84530d18207c84072ca28074d13b4966cab7e8aab3ac4fab3"
+      },
+      {
+        "path": "packages/operator-core/lib/dream/dream-config.ts",
+        "sha256": "db2dccf8142dac98320e70aad37458832118b259ba9354d474b688d348c67197",
+        "basis": "vite-pre-transform",
+        "currentSha256": "db2dccf8142dac98320e70aad37458832118b259ba9354d474b688d348c67197"
+      },
+      {
+        "path": "packages/operator-core/lib/dream/dream-evaluation.test.ts",
+        "sha256": "0b26acd39c2f1d42a80c2834304620e4781890b50994fd85fe7ac316634b731a",
+        "basis": "vite-pre-transform",
+        "currentSha256": "0b26acd39c2f1d42a80c2834304620e4781890b50994fd85fe7ac316634b731a"
+      },
+      {
+        "path": "packages/operator-core/lib/dream/dream-evaluation.ts",
+        "sha256": "1020850d736bd86ab3acd78ae92625b06dfe6cf2d8040b9871131c5e4ede22f8",
+        "basis": "vite-pre-transform",
+        "currentSha256": "1020850d736bd86ab3acd78ae92625b06dfe6cf2d8040b9871131c5e4ede22f8"
+      },
+      {
+        "path": "packages/operator-core/lib/embedded-pg-discovery.ts",
+        "sha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9",
+        "basis": "vite-pre-transform",
+        "currentSha256": "b0f65b448df23c7f8150fb04560e21ae844841f5f2b715e99a15e4675e3d97b9"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/git-via-sidecar.ts",
+        "sha256": "0f2591773d1f9c8f81032dcfe8c2d107ecfdb830a110108a454c711658421edf",
+        "basis": "vite-pre-transform",
+        "currentSha256": "0f2591773d1f9c8f81032dcfe8c2d107ecfdb830a110108a454c711658421edf"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/sidecar-dispatch-fault.ts",
+        "sha256": "d73aef78317ab2228762a440b4e6ddac3dcbf3e7b3b7c6df30543fe414c6ba0b",
+        "basis": "vite-pre-transform",
+        "currentSha256": "d73aef78317ab2228762a440b4e6ddac3dcbf3e7b3b7c6df30543fe414c6ba0b"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/sidecar-exec-lifetime.ts",
+        "sha256": "0a7be3946fafdbec4ccc191e2b6e55e97ad35c945805469aa0feaa596ce4dbd6",
+        "basis": "vite-pre-transform",
+        "currentSha256": "0a7be3946fafdbec4ccc191e2b6e55e97ad35c945805469aa0feaa596ce4dbd6"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/sidecar-read-only-git.ts",
+        "sha256": "2d505860398c203d9554df8703e5e7591946bc68860ea988ffd89c73d4f9a724",
+        "basis": "vite-pre-transform",
+        "currentSha256": "2d505860398c203d9554df8703e5e7591946bc68860ea988ffd89c73d4f9a724"
+      },
+      {
+        "path": "packages/operator-core/lib/fleet/spawner-socket-path.ts",
+        "sha256": "4a9bd486f83e15d83e35466d9aa1035d17613d3caad269d96fb81d076c3fd0d7",
+        "basis": "vite-pre-transform",
+        "currentSha256": "4a9bd486f83e15d83e35466d9aa1035d17613d3caad269d96fb81d076c3fd0d7"
+      },
+      {
+        "path": "packages/operator-core/lib/git-batch.ts",
+        "sha256": "4f4cf386e42e393b4b2b00dfda9b443254aadf7b7bf6b26d9590711955ac8cea",
+        "basis": "vite-pre-transform",
+        "currentSha256": "4f4cf386e42e393b4b2b00dfda9b443254aadf7b7bf6b26d9590711955ac8cea"
+      },
+      {
+        "path": "packages/operator-core/lib/learning/model-policy.ts",
+        "sha256": "e3fcb244341c184b426c636e7685ac00867fdc03a23deb3a017ca073be7b8535",
+        "basis": "vite-pre-transform",
+        "currentSha256": "e3fcb244341c184b426c636e7685ac00867fdc03a23deb3a017ca073be7b8535"
+      },
+      {
+        "path": "packages/operator-core/lib/process-identity.ts",
+        "sha256": "f6b69be467b347a2185cc91637bbee096be04302e193f41e30005c7eb66daefb",
+        "basis": "vite-pre-transform",
+        "currentSha256": "f6b69be467b347a2185cc91637bbee096be04302e193f41e30005c7eb66daefb"
+      },
+      {
+        "path": "packages/operator-core/lib/process-supervision/sidecar-spawn-shared.ts",
+        "sha256": "e89004da80008c7fa8e76487cf21e41d5e6f4bf056c69594a58a33633ad87e39",
+        "basis": "vite-pre-transform",
+        "currentSha256": "e89004da80008c7fa8e76487cf21e41d5e6f4bf056c69594a58a33633ad87e39"
+      },
+      {
+        "path": "packages/operator-core/lib/release/dependency-copy-isolation.setup-vitest.ts",
+        "sha256": "2ebb7872d8e9060543163239c28fa11c6977651495a5ce889baaa8c658809f7e",
+        "basis": "vite-pre-transform",
+        "currentSha256": "2ebb7872d8e9060543163239c28fa11c6977651495a5ce889baaa8c658809f7e"
+      },
+      {
+        "path": "packages/operator-core/lib/resource-profile.ts",
+        "sha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad",
+        "basis": "vite-pre-transform",
+        "currentSha256": "e25e9f6e3d4ec74a4613ec24a712cff66383fa4702333592c8fd9b8464ad24ad"
+      },
+      {
+        "path": "packages/operator-core/lib/scout/llm-deadline.ts",
+        "sha256": "6f332fb16904bbb1fc0f941378e528e0eb5171a45fb4c8059f3ff17c271cbbd3",
+        "basis": "vite-pre-transform",
+        "currentSha256": "6f332fb16904bbb1fc0f941378e528e0eb5171a45fb4c8059f3ff17c271cbbd3"
+      },
+      {
+        "path": "packages/operator-core/lib/sensitive-text.ts",
+        "sha256": "0835486522211e9a3989a20723fd85c41a22c1a044dccf903568926333916e26",
+        "basis": "vite-pre-transform",
+        "currentSha256": "0835486522211e9a3989a20723fd85c41a22c1a044dccf903568926333916e26"
+      },
+      {
+        "path": "packages/operator-core/lib/sidecar-socket/pid-keyed-socket.ts",
+        "sha256": "5d0e43912e116f87e3a29af16a0263a53a62a1122edba2a0bd75528285f5b988",
+        "basis": "vite-pre-transform",
+        "currentSha256": "5d0e43912e116f87e3a29af16a0263a53a62a1122edba2a0bd75528285f5b988"
+      },
+      {
+        "path": "packages/operator-core/lib/superuser-token.ts",
+        "sha256": "940c1bc293d8a43a7907da71c5375c974874b41404b09db8b0ad4f19cf3458cc",
+        "basis": "vite-pre-transform",
+        "currentSha256": "940c1bc293d8a43a7907da71c5375c974874b41404b09db8b0ad4f19cf3458cc"
+      },
+      {
+        "path": "packages/operator-core/lib/systemd-scope.ts",
+        "sha256": "c4214de57bbee85feb6e1d8b0bef18f785ec641b74d14fbd2faa53d5e89f9acf",
+        "basis": "vite-pre-transform",
+        "currentSha256": "c4214de57bbee85feb6e1d8b0bef18f785ec641b74d14fbd2faa53d5e89f9acf"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/cgroup-read.ts",
+        "sha256": "2b7da02cf060e26326c1fd009ec0f87ead103543bc0846fcf6e16bc3a1598d08",
+        "basis": "vite-pre-transform",
+        "currentSha256": "2b7da02cf060e26326c1fd009ec0f87ead103543bc0846fcf6e16bc3a1598d08"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/control.ts",
+        "sha256": "9530c300043cf3b4d4cd3dfa0b2a1f08aa313e17621337dcacd2ef3976764e27",
+        "basis": "vite-pre-transform",
+        "currentSha256": "9530c300043cf3b4d4cd3dfa0b2a1f08aa313e17621337dcacd2ef3976764e27"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/enabled.ts",
+        "sha256": "2724aeeee0ad89c21d390676ececfd83a182d6092529c21314c79bbfd29e7a3e",
+        "basis": "vite-pre-transform",
+        "currentSha256": "2724aeeee0ad89c21d390676ececfd83a182d6092529c21314c79bbfd29e7a3e"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/freeze-deadline.ts",
+        "sha256": "50249b72abbb0e490ff38a3128766b6c6b8d78f27e132e7cd77b35015efb84bf",
+        "basis": "vite-pre-transform",
+        "currentSha256": "50249b72abbb0e490ff38a3128766b6c6b8d78f27e132e7cd77b35015efb84bf"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/kill-notify.ts",
+        "sha256": "854f6c37cd73a0bf9fb39663744f008261c0cdd4de8fd5530ee0085acd54ffe1",
+        "basis": "vite-pre-transform",
+        "currentSha256": "854f6c37cd73a0bf9fb39663744f008261c0cdd4de8fd5530ee0085acd54ffe1"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/managed-spawn.ts",
+        "sha256": "e4778e2affff56a9b37f39abc920313b1b4d2fcc731e0bc647487a1cf4aa1a7f",
+        "basis": "vite-pre-transform",
+        "currentSha256": "e4778e2affff56a9b37f39abc920313b1b4d2fcc731e0bc647487a1cf4aa1a7f"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/scope-terminal-state.ts",
+        "sha256": "eb2b23d05c1f4796fa8db008679359f25025588e6af7daa90822d3772e5d5811",
+        "basis": "vite-pre-transform",
+        "currentSha256": "eb2b23d05c1f4796fa8db008679359f25025588e6af7daa90822d3772e5d5811"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/store.ts",
+        "sha256": "883a8d26227e17f33f8e501e3b1ede1b0acdbd26073f1b2f606839b57c1c6c8a",
+        "basis": "vite-pre-transform",
+        "currentSha256": "883a8d26227e17f33f8e501e3b1ede1b0acdbd26073f1b2f606839b57c1c6c8a"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/task-terminal-events.ts",
+        "sha256": "ccdea5778f00c27579d53cee85d557818f4d1dbcfd4e79e0b155c479e59cc331",
+        "basis": "vite-pre-transform",
+        "currentSha256": "ccdea5778f00c27579d53cee85d557818f4d1dbcfd4e79e0b155c479e59cc331"
+      },
+      {
+        "path": "packages/operator-core/lib/task-manager/types.ts",
+        "sha256": "9e0213fe7dec5579529ad9c99f968151af9911b7ec4cb1965b21da31e9aa4395",
+        "basis": "vite-pre-transform",
+        "currentSha256": "9e0213fe7dec5579529ad9c99f968151af9911b7ec4cb1965b21da31e9aa4395"
+      },
+      {
+        "path": "packages/operator-core/lib/util/cli-entry.ts",
+        "sha256": "4d5c2bb94426a6de67524ca7f265199d606adccc11a473d9f44637493d1fab9a",
+        "basis": "vite-pre-transform",
+        "currentSha256": "4d5c2bb94426a6de67524ca7f265199d606adccc11a473d9f44637493d1fab9a"
+      },
+      {
+        "path": "packages/operator-core/lib/verification-attempts/attempt-ledger.ts",
+        "sha256": "471ccca5244455ed6c9b13285c292c8384515f68ce151bce935f4433048ea52f",
+        "basis": "vite-pre-transform",
+        "currentSha256": "471ccca5244455ed6c9b13285c292c8384515f68ce151bce935f4433048ea52f"
+      },
+      {
+        "path": "packages/operator-core/lib/verification-attempts/failure-fingerprint.ts",
+        "sha256": "ebcf095f956ab662878f366fcd7db06958f81da8ca7591233d95f308193ea7d0",
+        "basis": "vite-pre-transform",
+        "currentSha256": "ebcf095f956ab662878f366fcd7db06958f81da8ca7591233d95f308193ea7d0"
+      },
+      {
+        "path": "packages/operator-core/lib/verification-attempts/loop-gate.ts",
+        "sha256": "49bcdf91edeeadf96edd31f09f4430aea55620da4c03f0d1c702e80a893f80e8",
+        "basis": "vite-pre-transform",
+        "currentSha256": "49bcdf91edeeadf96edd31f09f4430aea55620da4c03f0d1c702e80a893f80e8"
+      },
+      {
+        "path": "packages/operator-core/lib/verifier-source.ts",
+        "sha256": "7e31dd9726fe6ed40ca4ed06c87158931c6b4fb360bd4adfd860230bad237c2e",
+        "basis": "vite-pre-transform",
+        "currentSha256": "7e31dd9726fe6ed40ca4ed06c87158931c6b4fb360bd4adfd860230bad237c2e"
+      },
+      {
+        "path": "packages/operator-core/lib/workspace-als.ts",
+        "sha256": "d4f705f85a7770e51859f0fa308b97d65968a1b842f83df72b478ab471869fd1",
+        "basis": "vite-pre-transform",
+        "currentSha256": "d4f705f85a7770e51859f0fa308b97d65968a1b842f83df72b478ab471869fd1"
+      },
+      {
+        "path": "packages/operator-core/lib/workspace-id-constant.ts",
+        "sha256": "ebc0f73456e4dcefca30714cb0ad02b736bd1966a781b692629844a562287aa4",
+        "basis": "vite-pre-transform",
+        "currentSha256": "ebc0f73456e4dcefca30714cb0ad02b736bd1966a781b692629844a562287aa4"
+      },
+      {
+        "path": "packages/operator-core/lib/workspace-registry.ts",
+        "sha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b",
+        "basis": "vite-pre-transform",
+        "currentSha256": "76d4009a18020fcfb1cbbbd112ae5ae83c970df3f2931ff8e76cecfb3c74983b"
+      },
+      {
+        "path": "packages/operator-core/test/dream-benchmark-cases.ts",
+        "sha256": "ca123c9b6feb13004cd06c1fa7befedc5458e4cfead193f5a35d599a899dbf13",
+        "basis": "vite-pre-transform",
+        "currentSha256": "ca123c9b6feb13004cd06c1fa7befedc5458e4cfead193f5a35d599a899dbf13"
+      },
+      {
+        "path": "packages/operator-core/test/dream-benchmark-labels.ts",
+        "sha256": "817210a18fc56ac5c137e1d5f477e98b6ca2f30a1aa776ea5227ca62c1f7971b",
+        "basis": "vite-pre-transform",
+        "currentSha256": "817210a18fc56ac5c137e1d5f477e98b6ca2f30a1aa776ea5227ca62c1f7971b"
+      },
+      {
+        "path": "packages/operator-core/test/dream-benchmark-review.fixture.json",
+        "sha256": "c1970daec4cdd8f21ee04a494b3adeca087c21366702a4287713e00edc0c5079",
+        "basis": "vite-pre-transform",
+        "currentSha256": "c1970daec4cdd8f21ee04a494b3adeca087c21366702a4287713e00edc0c5079"
+      },
+      {
+        "path": "scripts/lib/fs-mutex.mjs",
+        "sha256": "67b33d62f6bba8869736f41e457360437ee1f4968865666c87a28110f1d5c4a9",
+        "basis": "vite-pre-transform",
+        "currentSha256": "67b33d62f6bba8869736f41e457360437ee1f4968865666c87a28110f1d5c4a9"
+      },
+      {
+        "path": "scripts/lib/identity-leak-patterns.mjs",
+        "sha256": "392ade21171455efa8ad9ef69f72079a4b3b066b143f658d1ea200bffb7540e1",
+        "basis": "vite-pre-transform",
+        "currentSha256": "392ade21171455efa8ad9ef69f72079a4b3b066b143f658d1ea200bffb7540e1"
+      },
+      {
+        "path": "scripts/lib/retention-pins.mjs",
+        "sha256": "bd2430d48d4a07143c42545482b3e55dfe306e6bdfcc71edd9f61170aed93dd6",
+        "basis": "vite-pre-transform",
+        "currentSha256": "bd2430d48d4a07143c42545482b3e55dfe306e6bdfcc71edd9f61170aed93dd6"
+      }
+    ],
+    "reasons": []
+  },
+  "sourceReadback": {
+    "namedOriginalsChecked": 142,
+    "mismatches": []
+  },
+  "limits": [
+    "Focused current-source unit proof; not the complete execution graph, loaded runtime, native adoption or final shipment.",
+    "Config-loaded and main-process source capture remain unknown; config-deps-unavailable is preserved.",
+    "Frozen graph/control study trials were not reset, refrozen or rerun; this maintained test reads the stored evidence and asserts its inconclusive verdict.",
+    "Existing independent audit passes remain historical; current clause revision acceptance requires its own evaluation."
+  ],
+  "reconciliation": {
+    "clauseRevision": 3,
+    "priorClauseRevision": 2,
+    "clauseBehaviorFalsifierAndTestLayerRequirementsUnchanged": true,
+    "sourceBarPinsChanged": true,
+    "reuseCandidateBindingIds": [
+      44537,
+      44539,
+      44536,
+      44535,
+      44534,
+      44533,
+      44531,
+      44420
+    ],
+    "reuseRule": "Reuse original run and measurement recipe only where all non-spec dimensions are current; do not remeasure changed source into an old pass.",
+    "preserveBindingIds": [
+      53692,
+      44543,
+      44530,
+      44529,
+      45150
+    ],
+    "staleDirectBindingId": 53693,
+    "staleCause": "Imported scripts/lib/identity-leak-patterns.mjs changed from its saved original hash. Fresh test run includes its current original bytes."
+  }
+}

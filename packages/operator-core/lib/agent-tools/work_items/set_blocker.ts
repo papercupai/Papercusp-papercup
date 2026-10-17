@@ -8,6 +8,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { trackPhase, type AbortCompletionReceipt, type ToolResult } from '@papercusp/tooldef';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { runBulk, bulkContent } from '../_bulk';
@@ -20,6 +21,7 @@ import {
   mergeWorkItemPayload,
   setWorkItemClaimHold,
   setWorkItemStateWithAliasInfo,
+  type WorkItem,
 } from '../../work-items';
 import {
   activeExternalBlockers,
@@ -43,6 +45,7 @@ import { pureWorkItemDependencyReferents, workItemRefBlockerProblem } from './wo
 import { linkWorkItemRefDependencies } from './work-item-ref-blocker-edges';
 import { workItemRefDependencyRefusal } from './work-item-ref-dependency-refusal';
 import { OWNER_AUTHORITY_TOPICS, type OwnerAuthorityTopic } from '../../consult/decision-review';
+import { asRecord, completedResultPayload } from '../abort-completion-payload';
 
 // Older callers used the missing capability as `kind` (for example,
 // `kind:'credential'`). Keep accepting those inputs at the tool boundary, but
@@ -113,6 +116,37 @@ function normalizeBlockerInput(input: BlockerInput): NormalizedBlockerInput {
     kind: alias.kind,
     capability: input.capability ?? alias.capability,
   };
+}
+
+/**
+ * A clear can persist blocker history before lifecycle restoration discovers that
+ * the linked plan lane is still blocked. Re-run the canonical plan-lane sync so
+ * that recovery writes the provenance-carrying `plan-lane:` blocker instead of
+ * leaving a `blocked` work-item with no active blocker for the scheduler to find.
+ *
+ * This is deliberately best-effort: the original lifecycle failure remains the
+ * caller-visible result, while the reconciler is the single writer for plan-lane
+ * blocker semantics and can retry on its normal cadence if its read also fails.
+ */
+async function resyncLinkedPlanLaneAfterLifecycleFailure(
+  workItem: Pick<WorkItem, 'payload' | 'harness'> &
+    Partial<Pick<WorkItem, 'id' | 'family' | 'sourcePlanSlug' | 'sourcePlanItemIds'>>,
+): Promise<{ planSlug: string; itemIds: string[]; results: unknown[] } | null> {
+  try {
+    const { resolvePlanItemStamp } = await import('../../scheduler/plan-item-lane-guard');
+    const stamp = await resolvePlanItemStamp(workItem);
+    if (!stamp) return null;
+    const { resyncPlanItemLaneNow } = await import('../../plan-items/reconcile-linked-work-items');
+    const results: unknown[] = [];
+    for (const itemId of stamp.item_ids) {
+      results.push(await resyncPlanItemLaneNow(stamp.plan_slug, itemId, workItem.harness ?? null));
+    }
+    return results.some((result) => result !== null)
+      ? { planSlug: stamp.plan_slug, itemIds: [...stamp.item_ids], results }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function directHumanCapabilityChoices(capability: DirectHumanCapability): string[] {
@@ -417,9 +451,58 @@ async function migrateWorkItemRefRows(input: NormalizedBlockerInput, workItem: W
   };
 }
 
+/**
+ * A completed set_blocker envelope can outlive its dispatch deadline after the blocker,
+ * dependency edge, or owner ask already persisted. Name only effects the returned rows prove;
+ * an ambiguous/thrown bulk row stays recovery-incomplete so callers re-read before retrying.
+ */
+export function setBlockerAbortCompletionReceipt(_args: unknown, result: ToolResult): AbortCompletionReceipt {
+  const payload = completedResultPayload(result);
+  const rows = Array.isArray(payload?.results) ? payload.results : [];
+  if (rows.length === 0) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'work_items:set_blocker result did not contain per-item outcomes after abort',
+      failures: ['no-set-blocker-results'],
+    };
+  }
+
+  const effects = new Set<string>();
+  let allExplicitNoOps = true;
+  for (const value of rows) {
+    const row = asRecord(value);
+    const id = typeof row?.id === 'string' ? row.id.trim() : '';
+    if (!row || !id) {
+      allExplicitNoOps = false;
+      continue;
+    }
+    const partial = asRecord(row.partialOutcome);
+    if (row.changed === true || partial?.blockerHistoryPersisted === true) {
+      effects.add(`work-item:${id}`);
+    }
+    if (partial?.ownerAskOpened === true && typeof partial.ownerAskConversationId === 'string') {
+      effects.add(`coord-conversation:${partial.ownerAskConversationId}`);
+    }
+    if (row.ok !== true || row.changed !== false) allExplicitNoOps = false;
+  }
+
+  if (effects.size > 0) {
+    return { status: 'recorded', effectRef: [...effects].sort().join(',') };
+  }
+  if (allExplicitNoOps) {
+    return { status: 'not-recorded', reason: 'every set_blocker row completed with changed:false' };
+  }
+  return {
+    status: 'recovery-incomplete',
+    reason: 'work_items:set_blocker result does not prove whether every requested effect persisted',
+    failures: ['set-blocker-effect-unproven'],
+  };
+}
+
 export default defineTool({
   name: 'work_items:set_blocker',
   profile: 'engineer',
+  abortCompletionReceipt: setBlockerAbortCompletionReceipt,
   description:
     "Set/clear typed external blockers (event, gate, runtime, human capability); internal work-item dependencies use work_items:link {rel:'blocks'}. `kind` names the trigger, `capability` what is missing. Shorthands such as `kind:'credential'` normalize to human/credential. Clear preserves history. Non-final work proceeds on staging/current-build; main/:3070 waits require final shipment or a named deployed-only property staging cannot exercise. Include literal 'deployed-only', the staging limitation, and a concrete reason in summary/evidence.",
   guidance: {
@@ -550,7 +633,9 @@ export default defineTool({
     let autoAuthority = false;
     if (wantsAutoAuthority) {
       try {
-        const modes = await getModes(identity.workspaceId ?? 'default', identity.ownerId);
+        const modes = await trackPhase(ctx.phases, 'set_blocker:get-modes', () =>
+          getModes(identity.workspaceId ?? 'default', identity.ownerId),
+        );
         autoAuthority = modes.some((row) => modeImpliesAutonomy(row.mode));
       } catch {
         // Fail closed: a mode-read outage must never fabricate approval.
@@ -559,7 +644,9 @@ export default defineTool({
     const env = await runBulk(
       items,
       async (input) => {
-        const workItem = await getWorkItem(input.id, input.harness);
+        const workItem = await trackPhase(ctx.phases, 'set_blocker:get-work-item', () =>
+          getWorkItem(input.id, input.harness),
+        );
         if (!workItem) return { ok: false as const, id: input.id, error: `work_item '${input.id}' not found` };
         if (input.migrateWorkItemRefs) {
           return migrateWorkItemRefRows(input, workItem, identity.ownerId);
@@ -599,12 +686,14 @@ export default defineTool({
             );
           const referents = existingSelfOwnerAsk ? null : pureWorkItemDependencyReferents(input.ref);
           if (referents) {
-            const linked = await linkWorkItemRefDependencies({
+          const linked = await trackPhase(ctx.phases, 'set_blocker:link-dependency', () =>
+            linkWorkItemRefDependencies({
               dependentId: input.id,
               harness: input.harness,
               referents,
               by: identity.ownerId,
-            });
+            }),
+          );
             if (!linked.ok) {
               return { ok: false as const, id: input.id, error: linked.error, code: linked.code, refusal: linked.refusal };
             }
@@ -714,7 +803,9 @@ export default defineTool({
           // but discovering it only there would leave a half-written human
           // blocker behind after the state transition is rejected.
           const { planItemNeedsHumanContradiction } = await import('../../scheduler/plan-item-lane-guard');
-          const contradiction = await planItemNeedsHumanContradiction(workItem).catch(() => null);
+          const contradiction = await trackPhase(ctx.phases, 'set_blocker:check-plan-lane', () =>
+            planItemNeedsHumanContradiction(workItem),
+          ).catch(() => null);
           if (contradiction) {
             return {
               ok: false as const,
@@ -746,17 +837,19 @@ export default defineTool({
                   'a park resolves through its decision-review consult. Omit defaultAction. Blocker was not written.',
               };
             }
-            const park = await parkDoor.openDecisionReviewPark(
-              {
-                workItemId: input.id,
-                setterId: identity.ownerId,
-                question: input.summary?.trim() || input.ref || input.id,
-                defaultIfUnanswered: input.defaultIfUnanswered,
-                decideBy: input.decideBy,
-                ownerAuthorityTopic: input.ownerAuthorityTopic ?? null,
-                callerRef: input.ref,
-              },
-              parkDoor.makeProdParkDoorDeps(identity),
+            const park = await trackPhase(ctx.phases, 'set_blocker:open-decision-park', () =>
+              parkDoor.openDecisionReviewPark(
+                {
+                  workItemId: input.id,
+                  setterId: identity.ownerId,
+                  question: input.summary?.trim() || input.ref || input.id,
+                  defaultIfUnanswered: input.defaultIfUnanswered,
+                  decideBy: input.decideBy,
+                  ownerAuthorityTopic: input.ownerAuthorityTopic ?? null,
+                  callerRef: input.ref,
+                },
+                parkDoor.makeProdParkDoorDeps(identity),
+              ),
             );
             if (!park.ok) {
               return { ok: false as const, id: input.id, code: park.code, error: `work_item '${input.id}' ${park.error}` };
@@ -790,12 +883,14 @@ export default defineTool({
             };
           } else {
             try {
-              ownerAsk = await openDirectHumanCapabilityQuestion(
-                input,
-                identity,
-                ctx,
-                effectiveDefault,
-                currentAsk?.ownerAskConversationId,
+              ownerAsk = await trackPhase(ctx.phases, 'set_blocker:open-owner-ask', () =>
+                openDirectHumanCapabilityQuestion(
+                  input,
+                  identity,
+                  ctx,
+                  effectiveDefault,
+                  currentAsk?.ownerAskConversationId,
+                ),
               );
               ownerAskConversationId = ownerAsk.conversationId;
             } catch (error) {
@@ -945,15 +1040,17 @@ export default defineTool({
           kind: resolvedKind,
           cleared: input.clear === true,
         });
-        const updated = await mergeWorkItemPayload(
-          input.id,
-          { externalBlockers: history.blockers },
-          {
-            harness: input.harness,
-            expectedExternalBlockers: (workItem.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
-            requireNonTerminal: !input.clear && !history.autoCleared,
-            ...(ownerFlagUnset.length > 0 ? { unset: ownerFlagUnset } : {}),
-          },
+        const updated = await trackPhase(ctx.phases, 'set_blocker:merge-blocker-history', () =>
+          mergeWorkItemPayload(
+            input.id,
+            { externalBlockers: history.blockers },
+            {
+              harness: input.harness,
+              expectedExternalBlockers: (workItem.payload as { externalBlockers?: unknown } | null)?.externalBlockers,
+              requireNonTerminal: !input.clear && !history.autoCleared,
+              ...(ownerFlagUnset.length > 0 ? { unset: ownerFlagUnset } : {}),
+            },
+          ),
         );
         if (!updated) {
           return {
@@ -977,29 +1074,35 @@ export default defineTool({
         let lifecycle: unknown = null;
         try {
           if (active.length > 0) {
-            lifecycle = await setWorkItemStateWithAliasInfo(
-              input.id,
-              remainingStrictHumanAsk ? 'needs-human' : 'blocked',
-              {
-                harness: input.harness,
-                by: identity.ownerId,
-              },
+            lifecycle = await trackPhase(ctx.phases, 'set_blocker:set-lifecycle', () =>
+              setWorkItemStateWithAliasInfo(
+                input.id,
+                remainingStrictHumanAsk ? 'needs-human' : 'blocked',
+                {
+                  harness: input.harness,
+                  by: identity.ownerId,
+                },
+              ),
             );
           } else if (updated.family === 'feature' && updated.state === 'blocked') {
             // work-item-status-full-unify P-007: restore to the UNIFIED claimable token
             // 'open' directly (was 'todo', which only reached 'open' via the legacy
             // alias-fold + mis-reported the synced state — same class as the
             // planSyncWorkItemState re-open writer fixed in P-005).
-            lifecycle = await setWorkItemStateWithAliasInfo(input.id, 'open', {
-              harness: input.harness,
-              by: identity.ownerId,
-            });
+            lifecycle = await trackPhase(ctx.phases, 'set_blocker:set-lifecycle', () =>
+              setWorkItemStateWithAliasInfo(input.id, 'open', {
+                harness: input.harness,
+                by: identity.ownerId,
+              }),
+            );
           } else if (updated.family === 'issue') {
-            lifecycle = await setWorkItemClaimHold(input.id, false, {
-              harness: input.harness,
-              by: identity.ownerId,
-              reason: `external blocker ${resolvedKind}:${resolvedRef} cleared`,
-            });
+            lifecycle = await trackPhase(ctx.phases, 'set_blocker:release-claim-hold', () =>
+              setWorkItemClaimHold(input.id, false, {
+                harness: input.harness,
+                by: identity.ownerId,
+                reason: `external blocker ${resolvedKind}:${resolvedRef} cleared`,
+              }),
+            );
           }
           if (lifecycle && typeof lifecycle === 'object' && 'workItem' in lifecycle) {
             const lifecycleItem = (lifecycle as { workItem?: typeof updated }).workItem;
@@ -1018,12 +1121,14 @@ export default defineTool({
           // `needs-human` is deliberately excluded: it can be the plan lane's own state.
           const strandedIssueNeedsHuman = updated.family === 'issue' && finalWorkItem.state === 'needs-human';
           if (active.length === 0 && (finalWorkItem.state === 'blocked' || strandedIssueNeedsHuman)) {
-            const restored = await setWorkItemStateWithAliasInfo(
-              input.id,
-              // work-item-status-full-unify P-007: both families restore to the unified
-              // claimable token 'open' (feature `todo`→`open` collapsed the duality).
-              'open',
-              { harness: input.harness, by: identity.ownerId },
+            const restored = await trackPhase(ctx.phases, 'set_blocker:restore-lifecycle', () =>
+              setWorkItemStateWithAliasInfo(
+                input.id,
+                // work-item-status-full-unify P-007: both families restore to the unified
+                // claimable token 'open' (feature `todo`→`open` collapsed the duality).
+                'open',
+                { harness: input.harness, by: identity.ownerId },
+              ),
             );
             if (restored.workItem) finalWorkItem = restored.workItem;
             lifecycle = lifecycle ?? restored;
@@ -1033,10 +1138,29 @@ export default defineTool({
           // partial outcome with the authoritative post-failure row so a caller
           // can recover without blindly repeating a clear that has taken effect.
           // A failed re-read is reported as UNREADABLE, never folded into "no row" (WI-6746).
-          const lookup = await lookupWorkItem(input.id, input.harness);
-          const persisted = lookup.status === 'found' ? lookup.item : null;
-          const persistedActive = persisted ? activeExternalBlockers(persisted.payload) : active;
-          const persistedState = persisted?.state ?? null;
+          const lookup = await trackPhase(ctx.phases, 'set_blocker:recover-work-item', () =>
+            lookupWorkItem(input.id, input.harness),
+          );
+          let persisted = lookup.status === 'found' ? lookup.item : null;
+          let persistedActive = persisted ? activeExternalBlockers(persisted.payload) : active;
+          let persistedState = persisted?.state ?? null;
+          let planLaneRepair: { planSlug: string; itemIds: string[]; results: unknown[] } | null = null;
+          if (input.clear && persisted && persistedState === 'blocked' && persistedActive.length === 0) {
+            planLaneRepair = await resyncLinkedPlanLaneAfterLifecycleFailure(persisted);
+            if (planLaneRepair) {
+              // The reconciler may have added the provenance-carrying plan-lane
+              // blocker or restored the row. Re-read so the partial outcome names
+              // the authoritative post-repair state, not the pre-repair snapshot.
+              const repaired = await trackPhase(ctx.phases, 'set_blocker:recover-work-item-after-plan-lane', () =>
+                lookupWorkItem(input.id, input.harness),
+              );
+              if (repaired.status === 'found') {
+                persisted = repaired.item;
+                persistedActive = activeExternalBlockers(repaired.item.payload);
+                persistedState = repaired.item.state;
+              }
+            }
+          }
           const stateText = persistedState ??
             (lookup.status === 'unreadable' ? `unreadable (${lookup.error})` : 'unavailable (row not found)');
           return {
@@ -1051,13 +1175,16 @@ export default defineTool({
               lifecycleApplied: false,
               currentState: persistedState,
               activeBlockerCount: persistedActive.length,
-              recoveryAction: persistedState === 'blocked' && persistedActive.length === 0
-                ? 'Reopen the item through work_items:set_state after checking for independent work-item dependencies.'
-                : 'Read work_items:get and repair the lifecycle state indicated by the remaining blockers.',
+              recoveryAction: planLaneRepair && persistedActive.length > 0
+                ? `Plan lane ${planLaneRepair.planSlug}#${planLaneRepair.itemIds.join(',')} was re-synced; keep its active plan-lane blocker and retry after the lane clears.`
+                : persistedState === 'blocked' && persistedActive.length === 0
+                  ? 'Reopen the item through work_items:set_state after checking for independent work-item dependencies.'
+                  : 'Read work_items:get and repair the lifecycle state indicated by the remaining blockers.',
             },
             workItem: persisted ?? updated,
             activeBlockers: persistedActive,
-            blockerHistory: history.blockers,
+            blockerHistory: persisted ? readExternalBlockers(persisted.payload) : history.blockers,
+            ...(planLaneRepair ? { planLaneRepair } : {}),
           };
         }
 

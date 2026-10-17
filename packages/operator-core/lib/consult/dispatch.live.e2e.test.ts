@@ -20,7 +20,7 @@ type Profile = { origin: string; runtimeUnits: string[];
   consultBrief: { questions: string[]; existingConversationId?: string } };
 
 function call(name: string, args: Record<string, unknown>, origin: string) {
-  const env = { ...process.env, PAPERCUSP_CONTEXT_TIER: 'full' };
+  const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_CONTEXT_TIER: 'full' };
   // CLI scratch belongs to the serving operator, outside Vitest's private scratch.
   delete env.PAPERCUSP_SCRATCH_ROOT;
   const result = spawnSync(process.execPath, [resolve(root, 'apps/operator/scripts/ptool.mjs'),

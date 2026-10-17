@@ -41,10 +41,11 @@ import type { GateBypass } from '@papercusp/tooldef';
  * `PAPERCUSP_TESTING_FULL_ACCESS_ROLES=off` env is KEPT as a test/launch-time override (still honoured
  * first), the flag being the operator-controllable runtime equivalent.
  *
- * KNOWN GAP: the capability-envelope DENY layer (ROLE_ENVELOPES — e.g. overwatch/
- * sentinel denied capability:fs-write/bash) is a SEPARATE gate; this bypass does
- * not lift it. If a watcher role needs code-exec tools under test, lift its
- * envelope too.
+ * Capability-envelope per-role DENY/allow rules use the same testingFullAccess
+ * decision and are skipped for these roles under test (for example, overwatch/
+ * sentinel can exercise capability:fs-write/bash). The universal protected
+ * capability floor remains enforced even for testing roles; it is intentionally
+ * not part of this bypass.
  */
 export const TESTING_FULL_ACCESS_ROLES: ReadonlySet<string> = new Set([
   'operator',

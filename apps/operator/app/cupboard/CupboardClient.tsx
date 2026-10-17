@@ -64,6 +64,7 @@ import { CupboardErrorState, cupboardHttpError } from './CupboardErrorState';
 import { ToolsSection } from './ToolsSection';
 import InstalledPacksSection from './InstalledPacksSection';
 import IdentityStatements, { formatUsageMicros } from './IdentityStatements';
+import MySubmissions from './MySubmissions';
 import { useLexicon } from '@/lib/useLexicon';
 
 type ClaimFilter = 'all' | 'claimed' | 'unclaimed';
@@ -73,7 +74,7 @@ type KindFilter = 'all' | ListingKind;
  *  RETIRED — pot blueprints now fold into the single 'blueprint' tab, badged
  *  distinctly per-card; the 'template' listing kind gets its own tab for the
  *  app/aspect templates.) */
-type ViewFilter = KindFilter | 'tools' | 'statements';
+type ViewFilter = KindFilter | 'tools' | 'statements' | 'my-submissions';
 
 interface CupboardListingsEnvelope {
   listings?: HarnessListing[];
@@ -86,7 +87,7 @@ interface CupboardListingsEnvelope {
 // 'recipe' get their own tabs. They sit AFTER the code kinds and before 'tools'
 // because they are the judgment/procedure family (what grades work, what work to
 // do, how to do it) rather than things that add runtime surface.
-const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'app', 'theme', 'blueprint', 'template', 'plugin', 'pack', 'knowledge-pack', 'rubric', 'plan', 'recipe', 'goal', 'tools', 'statements'];
+const VIEW_FILTERS: ViewFilter[] = ['all', 'my-submissions', 'harness', 'app', 'theme', 'blueprint', 'template', 'plugin', 'pack', 'knowledge-pack', 'rubric', 'plan', 'recipe', 'goal', 'tools', 'statements'];
 // Tab labels resolve inside the component via the lexicon — see the
 // VIEW_FILTER_LABEL memo in CupboardClient. The `harness` view lists hive-bound
 // listings, so its label is the project term ("Pots"/"Hives"), not "Harnesses".
@@ -200,6 +201,7 @@ export default function CupboardClient() {
       event: 'Events',
       tools: 'Tools',
       statements: 'Statements',
+      'my-submissions': 'My submissions',
     }),
     [t],
   );
@@ -218,6 +220,7 @@ export default function CupboardClient() {
   );
   const toolsView = kindFilter === 'tools';
   const statementsView = kindFilter === 'statements';
+  const submissionsView = kindFilter === 'my-submissions';
   // Per-Hive rollup (D-005): when set, the storefront narrows to one project
   // ("Hive") and presents its recipe/snapshot/plugin/harness facets grouped by
   // kind. `null` = normal flat browse. A Hive is identified by `project_ref`
@@ -245,7 +248,7 @@ export default function CupboardClient() {
       ref.startsWith('identity-release:') && ref.length <= 300))].slice(0, 100), [listings]);
   const outcomeQuery = useSyncQuery<IdentityOutcomeCost>({ queryName: 'cupboard.identityOutcomeCosts',
     args: { releaseRefs: outcomeReleaseRefs, readKey: `${outcomeReadInstance}:${outcomeReadRevision}` },
-    enabled: outcomeReleaseRefs.length > 0 && !loading && !statementsView && !(toolsView && !hive),
+    enabled: outcomeReleaseRefs.length > 0 && !loading && !statementsView && !submissionsView && !(toolsView && !hive),
     staleTime: 0, pollIntervalMs: 0, persist: false });
   const outcomeCosts = useMemo(() => new Map(!loading && !outcomeQuery.loading && !outcomeQuery.fetching && !outcomeQuery.error
     ? (outcomeQuery.data ?? []).map(row => [row.releaseRef, row] as const) : []),
@@ -340,9 +343,9 @@ export default function CupboardClient() {
 
   useEffect(() => {
     // The Tools view has its own fetch (ToolsSection); skip the listings read.
-    if (statementsView || (toolsView && !hive)) return;
+    if (statementsView || submissionsView || (toolsView && !hive)) return;
     void fetchListings();
-  }, [fetchListings, toolsView, statementsView, hive]);
+  }, [fetchListings, toolsView, statementsView, submissionsView, hive]);
 
   // Hive rollup: narrow to the one hive. A pubkey ref matches the member rows'
   // `hive_pubkey` (the hive-native key — comb-hive-native-sharing P-001); a
@@ -447,6 +450,13 @@ export default function CupboardClient() {
     },
     [router, setHive],
   );
+
+  if (submissionsView) return <div style={{ padding: 24 }}>
+    <Button onClick={() => void setKindFilter('all')}>Back to Cupboard</Button>
+    <MySubmissions renderCard={(listing, status, actions) => <ListingCard
+      listing={listing as unknown as HarnessListing} onAction={() => {}} onDetail={() => {}}
+      publisher={{ status, actions }} />} />
+  </div>;
 
   if (statementsView) return <div>
     <Button onClick={() => void setKindFilter('all')}>Back to Cupboard</Button>
@@ -555,13 +565,13 @@ export default function CupboardClient() {
             >
               {k === 'tools' ? (
                 <Wrench size={11} />
-              ) : k === 'statements' ? (
+              ) : k === 'statements' || k === 'my-submissions' ? (
                 <ListChecks size={11} />
               ) : k !== 'all' ? (
                 <KindIcon kind={k} />
               ) : null}
               {VIEW_FILTER_LABEL[k]}
-              {k !== 'tools' && k !== 'statements' && (
+              {k !== 'tools' && k !== 'statements' && k !== 'my-submissions' && (
                 <span data-testid={`cupboard-kind-count-${k}`} style={{ opacity: 0.72 }}>
                   {k === 'all' ? allKindsTotal ?? '—' : kindCounts.get(k as ListingKind) ?? '—'}
                 </span>
@@ -957,6 +967,7 @@ export function ListingCard({
   hiveRef,
   onHive,
   suppressViewHive,
+  publisher,
 }: {
   listing: HarnessListing;
   outcomeCost?: IdentityOutcomeCost;
@@ -969,6 +980,8 @@ export function ListingCard({
   /** Rollup mode (P-001): the card already sits inside the hive's rollup, so a
    *  per-row View Hive button is redundant — suppress it. Fork/Install stay. */
   suppressViewHive?: boolean;
+  /** Reuse the kind card for publisher inventory, without consumer install actions. */
+  publisher?: { status: React.ReactNode; actions: React.ReactNode };
 }) {
   const t = useLexicon();
   const kind = listingKindOf(listing);
@@ -983,7 +996,7 @@ export function ListingCard({
     Number.isSafeInteger(outcomeCost.acceptedOutcomes) && outcomeCost.acceptedOutcomes > 0
     ? outcomeCost : null;
   const rawAction = listingActionFor(listing);
-  const action = suppressViewHive && rawAction === 'view-hive' ? null : rawAction;
+  const action = publisher || (suppressViewHive && rawAction === 'view-hive') ? null : rawAction;
   const repoSlug = listingRepoSlug(listing);
   const contributors = listingContributorCount(listing);
   const language = listingTopLanguage(listing);
@@ -1027,11 +1040,12 @@ export function ListingCard({
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
         <button
           onClick={onDetail}
+          disabled={Boolean(publisher)}
           style={{
             background: 'none',
             border: 'none',
             padding: 0,
-            cursor: 'pointer',
+            cursor: publisher ? 'default' : 'pointer',
             fontFamily: FONTS.ui,
             fontWeight: 600,
             fontSize: 15,
@@ -1044,13 +1058,15 @@ export function ListingCard({
         </button>
         <span style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
           <KindBadge kind={kind} potTemplate={isPotTemplate} identity={isIdentity} />
-          <ClaimStatusBadge
+          {!publisher && <ClaimStatusBadge
             status={listing.claim_status}
             claimantLogin={listing.claimant_github_login}
             claimedAt={listing.claimed_at}
-          />
+          />}
         </span>
       </div>
+
+      {publisher?.status}
 
       {/* Description */}
       {listing.description && (
@@ -1152,6 +1168,7 @@ export function ListingCard({
       {/* Footer — per-listing action. Legacy harness rows (no owning Hive)
           have no primary action: per-harness join is retired. */}
       <div style={{ display: 'flex', gap: 8, marginTop: 'auto', paddingTop: 4 }}>
+        {publisher?.actions}
         {action && (
         <Button
           size="lg"

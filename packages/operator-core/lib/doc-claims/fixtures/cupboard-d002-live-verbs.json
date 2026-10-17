@@ -1,0 +1,38 @@
+{
+  "source": {
+    "plan": "papercusp-com-cupboard-page-2026-10-15",
+    "harness": "papercusp",
+    "decision": "D-002",
+    "planVersion": 22,
+    "planContentHash": "34a4ae65ee6a4ca17d64d9256c30243320db9371ed75276e59949dc5a939fbb6",
+    "snapshotAt": "2026-10-16",
+    "note": "Verbs the D-002 content brief presents as available today (live on origin/main). Calibrate against D-002 with plans:get { slug, decisionId: 'D-002' } whenever the decision changes."
+  },
+  "live": [
+    "meta:define-tool",
+    "cupboard:publish-plugin",
+    "identities:create",
+    "blueprint:extend",
+    "blueprint:publish",
+    "cupboard:publish-rule",
+    "cupboard:publish-event",
+    "cupboard:publish-theme",
+    "cupboard:publish-template",
+    "templates:new-app",
+    "cupboard:publish-recipe",
+    "code:run",
+    "rubrics:propose",
+    "cupboard:publish-rubric",
+    "plans:new",
+    "cupboard:publish-plan",
+    "cupboard:publish-goal",
+    "meta:define-datatype",
+    "cupboard:publish-datatype",
+    "cupboard:publish-app",
+    "cupboard:unpublish"
+  ],
+  "comingSoon": [
+    "rules:create",
+    "cupboard:my-listings"
+  ]
+}

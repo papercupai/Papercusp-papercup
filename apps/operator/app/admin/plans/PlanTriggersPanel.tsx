@@ -609,7 +609,7 @@ function SocialSourceNote({ social }: { social: ExternalTriggerSocialAdminFacts 
   return (
     <div className="pc-plan-dialog__note" data-platform={social.platformId}>
       <div>
-        <strong>{social.label}</strong> · wave {social.wave} · {social.authMode}
+        <strong>{social.label}</strong> · {social.authMode} · {social.readTransport ?? 'write-only'}
       </div>
       {social.blockedOn && (
         <div className="pc-plan-dialog__warn">

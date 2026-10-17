@@ -6,13 +6,15 @@
  * current, changed, and not observable.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   completionFreshnessForEvidence,
   completionTreeStamp,
+  completionTreeStampForEvidence,
+  completionSettlementManifest,
   completionTreeContentIdentityMatches,
   unprovenContentIdentityPaths,
   describeUnprovenContentIdentity,
@@ -34,12 +36,12 @@ function gitFixture(cwd: string, ...args: string[]): string {
   }).trim();
 }
 
-function initializeIgnoreFixture(root: string): void {
+function initializeIgnoreFixture(root: string, ignoreRules = ['reports/*.json', '!reports/keep.json']): void {
   gitFixture(root, 'init', '-q');
   gitFixture(root, 'config', 'user.email', 'completion-ignore@example.test');
   gitFixture(root, 'config', 'user.name', 'Completion Ignore Fixture');
   gitFixture(root, 'config', 'commit.gpgsign', 'false');
-  writeFileSync(join(root, '.gitignore'), ['reports/*.json', '!reports/keep.json', ''].join('\n'));
+  writeFileSync(join(root, '.gitignore'), [...ignoreRules, ''].join('\n'));
   gitFixture(root, 'add', '--', '.gitignore');
   gitFixture(root, 'commit', '-qm', 'baseline');
   mkdirSync(join(root, 'reports'), { recursive: true });
@@ -48,6 +50,20 @@ function initializeIgnoreFixture(root: string): void {
 }
 
 describe('completionTreeStamp Git ignore status (WI-10004491)', () => {
+  it('measures an ignored file even when an ancestor directory is ignored', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'completion-ignore-parent-'));
+    try {
+      initializeIgnoreFixture(root, ['reports/']);
+      const stamp = await completionTreeStamp({ repoRoot: root, filesChanged: ['reports/ignored.json'] });
+      expect(stamp?.contentIdentity?.[0]?.gitIgnoreStatus).toBe('ignored');
+      expect(unprovenContentIdentityPaths(stamp)).toEqual([
+        { path: 'reports/ignored.json', reason: 'gitignored-path', settles: 'never' },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('records ignored and negated ignore-pattern results for present files absent from HEAD', async () => {
     const root = mkdtempSync(join(tmpdir(), 'completion-ignore-status-'));
     try {
@@ -100,6 +116,147 @@ describe('completionTreeStamp Git ignore status (WI-10004491)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('installed npm artifacts in incidental toolchain checkouts (WI-6554700010016006)', () => {
+  async function withRuntimeFixture(run: (fixture: {
+    project: string; manager: string; vendor: string; relativeVendor: string;
+  }) => Promise<void>) {
+    const root = mkdtempSync(join(tmpdir(), 'completion-installed-runtime-'));
+    try {
+      const project = join(root, 'project');
+      const manager = join(root, 'home', '.nvm');
+      mkdirSync(project, { recursive: true });
+      mkdirSync(manager, { recursive: true });
+      initializeIgnoreFixture(project);
+      initializeIgnoreFixture(manager, ['versions/', 'reports/', 'src/']);
+      const relativeVendor = 'versions/node/v22/lib/node_modules/@example/cli/package.json';
+      const vendor = join(manager, relativeVendor);
+      mkdirSync(join(vendor, '..'), { recursive: true });
+      writeFileSync(vendor, '{"version":"2.0.0"}\n');
+      await run({ project, manager, vendor, relativeVendor });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('classifies an absolute ignored installed package without requiring a vendor commit', async () => {
+    await withRuntimeFixture(async ({ project, vendor }) => {
+      const stamp = await completionTreeStampForEvidence({ filesChanged: [vendor] }, [project]);
+      expect(stamp?.contentIdentity).toEqual([
+        { path: vendor, workingTreeBlobSha: null, headBlobSha: null, outOfRepoArtifact: true },
+      ]);
+      expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(true);
+      expect(completionSettlementManifest({ treeStamp: stamp })).toBeUndefined();
+    });
+  });
+
+  it('does not let an installed artifact excuse uncommitted project source', async () => {
+    await withRuntimeFixture(async ({ project, vendor }) => {
+      writeFileSync(join(project, 'fix.ts'), 'export const fixed = true;\n');
+      const stamp = await completionTreeStampForEvidence({ filesChanged: [vendor, 'fix.ts'] }, [project]);
+      expect(stamp?.contentIdentity).toContainEqual(expect.objectContaining({ path: vendor, outOfRepoArtifact: true }));
+      expect(stamp?.contentIdentity).toContainEqual(expect.objectContaining({ path: 'fix.ts', headBlobSha: null }));
+      expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(false);
+      expect(completionSettlementManifest({ treeStamp: stamp })?.normalizedPaths).toEqual(['fix.ts']);
+    });
+  });
+
+  it('keeps tracked vendor files subject to exact content checks', async () => {
+    await withRuntimeFixture(async ({ project, manager, vendor, relativeVendor }) => {
+      gitFixture(manager, 'add', '-f', '--', relativeVendor);
+      gitFixture(manager, 'commit', '-qm', 'tracked vendor control');
+      writeFileSync(vendor, '{"version":"3.0.0"}\n');
+      const stamp = await completionTreeStampForEvidence({ filesChanged: [vendor] }, [project]);
+      expect(stamp?.contentIdentity?.[0]?.outOfRepoArtifact).toBeUndefined();
+      expect(stamp?.contentIdentity?.[0]?.headBlobSha).toEqual(expect.any(String));
+      expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(false);
+    });
+  });
+
+  it('does not exempt globally linked project source as an installed artifact', async () => {
+    await withRuntimeFixture(async ({ project, vendor }) => {
+      const source = join(project, 'linked-source.js');
+      writeFileSync(source, 'project source\n');
+      rmSync(vendor);
+      symlinkSync(source, vendor);
+      const stamp = await completionTreeStampForEvidence({ filesChanged: [vendor] }, [project]);
+      expect(stamp?.contentIdentity?.[0]?.outOfRepoArtifact).toBeUndefined();
+      expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(false);
+    });
+  });
+
+  it('still classifies a manager checkout already inferred by the caller root resolver', async () => {
+    await withRuntimeFixture(async ({ project, manager, vendor }) => {
+      const stamp = await completionTreeStampForEvidence({ filesChanged: [vendor] }, [project, manager]);
+      expect(stamp?.contentIdentity?.[0]?.outOfRepoArtifact).toBe(true);
+      expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(true);
+    });
+  });
+
+  it('keeps the primary project checkout Git-backed, even for ignored global-layout paths', async () => {
+    await withRuntimeFixture(async ({ manager, vendor }) => {
+      const stamp = await completionTreeStampForEvidence({ filesChanged: [vendor] }, [manager]);
+      expect(stamp?.contentIdentity?.[0]?.outOfRepoArtifact).toBeUndefined();
+      expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(false);
+    });
+  });
+
+  it('keeps ordinary local npm dependencies in sibling checkouts Git-backed', async () => {
+    await withRuntimeFixture(async ({ project, manager }) => {
+      const dependency = join(manager, 'src', 'node_modules', 'example', 'index.js');
+      mkdirSync(join(dependency, '..'), { recursive: true });
+      writeFileSync(dependency, 'dependency\n');
+      const stamp = await completionTreeStampForEvidence({ filesChanged: [dependency] }, [project]);
+      expect(stamp?.contentIdentity?.[0]?.gitIgnoreStatus).toBe('ignored');
+      expect(stamp?.contentIdentity?.[0]?.outOfRepoArtifact).toBeUndefined();
+      expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(false);
+    });
+  });
+
+  it('keeps ignored source outside managed checkouts Git-backed', async () => {
+    await withRuntimeFixture(async ({ project, manager }) => {
+      const source = join(manager, 'src', 'fix.ts');
+      mkdirSync(join(source, '..'), { recursive: true });
+      writeFileSync(source, 'source\n');
+      const stamp = await completionTreeStampForEvidence({ filesChanged: [source] }, [project]);
+      expect(stamp?.contentIdentity?.[0]?.gitIgnoreStatus).toBe('ignored');
+      expect(stamp?.contentIdentity?.[0]?.outOfRepoArtifact).toBeUndefined();
+      expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(false);
+    });
+  });
+
+  it('does not exempt a missing installed file', async () => {
+    await withRuntimeFixture(async ({ project, vendor }) => {
+      const stamp = await completionTreeStampForEvidence({ filesChanged: [vendor + '.missing'] }, [project]);
+      expect(stamp?.contentIdentity?.[0]?.outOfRepoArtifact).toBeUndefined();
+      expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(false);
+    });
+  });
+
+  it('does not exempt failed or unknown ignore observations', async () => {
+    await withRuntimeFixture(async ({ project, vendor }) => {
+      const stamp = await completionTreeStampForEvidence({ filesChanged: [vendor] }, [project], {
+        gitIgnoreStatusProbe: async () => undefined,
+      });
+      expect(stamp?.contentIdentity?.[0]?.gitIgnoreStatus).toBe('unknown');
+      expect(stamp?.contentIdentity?.[0]?.outOfRepoArtifact).toBeUndefined();
+      expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(false);
+    });
+  });
+
+  it('does not exempt an unreadable HEAD tree', async () => {
+    await withRuntimeFixture(async ({ project, vendor }) => {
+      const stamp = await completionTreeStampForEvidence({ filesChanged: [vendor] }, [project], {
+        headBlobs: (_root, _sha, paths) => new Map(paths.map((path) => [path, {
+          status: 'unresolvable' as const, reason: 'HEAD read failed',
+        }])),
+      });
+      expect(stamp?.contentIdentity?.[0]?.headBlobUnresolvable).toBe('HEAD read failed');
+      expect(stamp?.contentIdentity?.[0]?.outOfRepoArtifact).toBeUndefined();
+      expect(completionTreeContentIdentityMatches(stamp?.contentIdentity)).toBe(false);
+    });
   });
 });
 

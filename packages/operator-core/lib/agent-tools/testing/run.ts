@@ -2002,7 +2002,7 @@ export function createBoundedRouterOutputCapture(
   let finished: string | null = null;
 
   const retainLine = (line: string) => {
-    const normalized = line.trimEnd();
+    const normalized = line.replace(ANSI_SGR, '').trimEnd();
     if (!ROUTER_PRIORITY_DIAGNOSTIC_RE.test(normalized) || seenDiagnostics.has(normalized)) return;
     seenDiagnostics.add(normalized);
     diagnosticLines.push(normalized.slice(0, 1_200));
@@ -2023,7 +2023,8 @@ export function createBoundedRouterOutputCapture(
         if (remainders[channel] !== '') retainLine(remainders[channel]);
         remainders[channel] = '';
       }
-      const missing = diagnosticLines.filter((line) => !tail.includes(line));
+      const normalizedTail = tail.replace(ANSI_SGR, '');
+      const missing = diagnosticLines.filter((line) => !normalizedTail.includes(line));
       if (missing.length === 0) {
         finished = tail;
         return finished;

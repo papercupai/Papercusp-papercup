@@ -63,7 +63,7 @@ function makeFixture(opts: { ids: string[]; busyPorts?: string[] }): Fixture {
     [
       'printf "docker %s\\n" "$*" >>"$FIXTURE_LOG"',
       'case "$1" in',
-      '  info) exit 0 ;;',
+      '  info) [[ "$*" != *--format* ]] || echo "$FIXTURE_ROOT/store"; exit 0 ;;',
       '  ps) printf "%s\\n" $FIXTURE_TC_IDS ;;',
       '  inspect) echo "/fixture-container img created=2026-10-01T00:00:00Z" ;;',
       '  port) p="${2:0:1}"; case "$p" in a) n=41001;; b) n=41002;; c) n=41003;; d) n=41004;; *) n=41009;; esac',
@@ -101,6 +101,9 @@ function makeFixture(opts: { ids: string[]; busyPorts?: string[] }): Fixture {
           ...inherited,
           PATH: `${bin}:${process.env.PATH}`,
           FIXTURE_LOG: log,
+          FIXTURE_ROOT: root,
+          PAPERCUSP_RELEASE_RETENTION_ROOT: join(root, 'pins'),
+          PAPERCUSP_FS_MUTEX_LOCK_DIR: join(root, 'mutex'),
           FIXTURE_TC_IDS: opts.ids.join(' '),
           FIXTURE_BUSY_PORTS: (opts.busyPorts ?? []).join(' '),
           PAPERCUSP_TESTCONTAINERS_LAST_USED_DIR: markers,

@@ -21,6 +21,7 @@ import {
   formatTscServiceBanner,
   lineAndCharacter,
   lineStarts,
+  namedSetFor,
   refreshProjectRootFiles,
   readTextOrNull,
   renderDiagnostics,
@@ -366,6 +367,28 @@ describe('checkedSetFor', () => {
       readText: readTextOrNull,
     });
     expect(scope.importers).toBe(1);
+  });
+
+  it('keeps named consumer scope bounded without resolving reverse importers', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tsc-service-named-scope-'));
+    const abs = (name: string) => join(dir, name);
+    const named = abs('lib/shapes.ts');
+    const caller = abs('app/caller.ts');
+    const missing = abs('missing.ts');
+    const scope = namedSetFor({
+      root: dir,
+      named: ['lib/shapes.ts', 'missing.ts'],
+      programFiles: [named, caller],
+    });
+    expect(scope).toEqual({
+      files: [named],
+      named: 1,
+      typeReferencing: 0,
+      importers: 0,
+      namedNotInProgram: ['missing.ts'],
+    });
+    expect(scope.files).not.toContain(caller);
+    expect(scope.namedNotInProgram).not.toContain(missing);
   });
 
   it('retains every caller through shared barrels and cycles while reading each module once', () => {

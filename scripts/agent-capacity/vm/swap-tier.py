@@ -15,6 +15,12 @@ credentials. Each agent first builds a history of real tool results (WARM prompt
       --arm none --arm zram --arm pd-balanced=/dev/disk/by-id/google-swapbal ...
   swap-tier.py report --out DIR            (also runs at the end of `run`)
 
+P-544 minimum-resource runs add --active 1 --active 5 --active 10 --active-rounds 3
+with --agents 50 --single 0 --cli codex and ONE --arm. Each active cohort performs
+verified native file-hash tasks; the final storm still wakes all fifty agents.
+The one swap arm is enabled before launch and kept until the agents stop, so
+small-RAM runs never have to pull a live cohort out of swap just to start an arm.
+
 Per arm: swap device on -> reclaim every agent (one at a time, like parking) -> drop page cache ->
 idle IDLE_SEC (does an idle TUI page itself back?) -> wake --single agents one at a time ->
 wake the rest at once (storm) -> settle -> record what is still in swap -> swapoff.
@@ -24,21 +30,41 @@ throughout, as the "is the desktop still responsive" signal.
 
 Every measurement is one JSON line in DIR/results.jsonl; `report` reduces them to DIR/summary.json
 and a markdown table. Lines to grep: SWAPTIER <kind>.
+Codex runs also save native-evidence.tar.gz INSIDE DIR after stopping agents, including
+raw histories, dummy data and a population/hash manifest. Copy that file locally and run
+`swap-tier.py verify-archive --archive FILE --results DIR/results.jsonl` BEFORE deleting a guest. An incomplete
+receipt is evidence loss, never capacity acceptance; the fixed deletion deadline still wins.
+Before a cold wake/resize/growth operation, initialize a retained witness explicitly:
+  swap-tier.py witness-create --manifest /data/witness.json --pg-config /data/embedded-pg.json \\
+      --id unique-run-id --file /data/native-evidence.tar.gz --file /data/corpus/tasks.json
+Save that receipt's manifestSha256 and the manifest locally BEFORE the operation. Afterwards use
+witness-verify with the same --manifest/--pg-config and --manifest-sha256 from the saved receipt.
+Verification never recreates a missing SQL row or file. These commands prove retained bytes only;
+application-ready timing, capacity, billed cost and provider teardown are separate acceptance gates.
+Keep this instrument under /data/tooling for lifecycle runs: guest /tmp may be cleared on boot.
+Use `wait-health --port PORT --expected-sha SHA` for strict API readiness; measure the provider
+start request separately so its time is included in cold-wake acceptance.
 Run as root (cgroup writes, swapon); the agents run as --user (claude refuses bypass mode as root).
 """
 import argparse
+import datetime
 import errno
 import glob
 import hashlib
+import http.client
+import io
 import json
 import os
 import re
+import secrets
 import shlex
 import statistics
 import subprocess
 import sys
+import tarfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 SLICE = "swaptier"
@@ -49,7 +75,6 @@ KEY = "swaptier-stub-not-a-real-credential-000000"
 IDLE_SEC = int(os.environ.get("SWAPTIER_IDLE_SEC", "60"))
 REAL_MODEL = False
 CODEX_SESSIONS = {}
-GATEWAY_CHECK = None
 WARM_PREFIX = ""
 WAKE_TIMEOUT = float(os.environ.get("SWAPTIER_WAKE_TIMEOUT", "300"))
 
@@ -64,6 +89,127 @@ def launch_delay_seconds(env=None):
 
 LAUNCH_DELAY_SEC = launch_delay_seconds()
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def wait_for_operator_health(ports, timeout=120, interval=0.2, expected_sha=None):
+    """A listening socket or successful HTML response is not application readiness."""
+    if (not ports or any(type(p) is not int or not 1 <= p <= 65535 for p in ports) or
+            not 0 < timeout <= 600 or not 0 < interval <= 10):
+        raise ValueError("valid ports and bounded positive health timing are required")
+    started = time.monotonic()
+    deadline = started + timeout
+    attempts = 0
+    while time.monotonic() < deadline:
+        for port in dict.fromkeys(ports):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            attempts += 1
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health",
+                                            timeout=min(1, remaining)) as response:
+                    if response.status != 200:
+                        continue
+                    raw = response.read(65537)
+                    if len(raw) > 65536:
+                        continue
+                    health = json.loads(raw)
+                    if (isinstance(health, dict) and health.get("ok") is True and
+                            health.get("service") == "papercusp-operator" and
+                            (expected_sha is None or health.get("sha") == expected_sha)):
+                        return {"ready": True, "port": port, "health": health,
+                                "seconds": time.monotonic() - started, "attempts": attempts}
+            except (OSError, ValueError, http.client.HTTPException):
+                # SSH banners and disconnected non-HTTP sockets must not hide a later valid API.
+                continue
+        time.sleep(max(0, min(interval, deadline - time.monotonic())))
+    return {"ready": False, "seconds": time.monotonic() - started, "attempts": attempts}
+
+
+def durability_file(path):
+    """Hash retained bytes without loading a whole native archive into memory."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as source:
+        before = os.fstat(source.fileno())
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+        after = os.fstat(source.fileno())
+    if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        raise RuntimeError("durability file changed while hashing")
+    return {"path": os.path.abspath(path), "bytes": after.st_size, "sha256": digest.hexdigest()}
+
+
+def durability_sql(config_path, psql, witness_id, value=None):
+    """Only explicit initialization writes; verification is read-only in PostgreSQL too."""
+    if not isinstance(witness_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", witness_id):
+        raise ValueError("invalid durability witness id")
+    with open(config_path) as source:
+        config = json.load(source)
+    url = urllib.parse.urlsplit(config["url"])
+    if url.scheme not in ("postgres", "postgresql") or not url.hostname or not url.path.strip("/"):
+        raise ValueError("invalid embedded PostgreSQL configuration")
+    env = dict(os.environ, PGHOST=url.hostname, PGPORT=str(url.port or 5432),
+               PGUSER=urllib.parse.unquote(url.username or ""),
+               PGPASSWORD=urllib.parse.unquote(url.password or ""),
+               PGDATABASE=urllib.parse.unquote(url.path[1:]), PGCONNECT_TIMEOUT="5",
+               PGOPTIONS="-c statement_timeout=10000 -c default_transaction_read_only=" +
+                         ("off" if value is not None else "on"))
+    if value is not None:
+        if not re.fullmatch(r"[a-f0-9]{64}", value):
+            raise ValueError("invalid durability witness value")
+        # No upsert: a repeated initialization must fail, never replace the old witness.
+        sql = ("BEGIN; CREATE TABLE IF NOT EXISTS public.p544_durability_witness "
+               "(id text PRIMARY KEY, value text NOT NULL); "
+               f"INSERT INTO public.p544_durability_witness VALUES ('{witness_id}', '{value}'); COMMIT;")
+    else:
+        sql = ("SELECT current_setting('transaction_read_only'), value "
+               f"FROM public.p544_durability_witness WHERE id = '{witness_id}';")
+    try:
+        result = subprocess.run([psql, "-X", "-A", "-t", "-q", "-F", "\t", "-v", "ON_ERROR_STOP=1", "-c", sql],
+                                env=env, capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        raise RuntimeError("durability witness SQL unavailable") from None
+    if result.returncode:
+        # Config and provider errors may contain a credential. Never echo subprocess output.
+        raise RuntimeError("durability witness SQL failed")
+    return result.stdout.strip()
+
+
+def create_durability_witness(manifest_path, files, config_path, psql, witness_id):
+    if os.path.exists(manifest_path):
+        raise ValueError("durability manifest already exists")
+    if not files or len(set(map(os.path.abspath, files))) != len(files):
+        raise ValueError("durability witness requires unique retained files")
+    manifest = {"schemaVersion": "swap-tier-durability-witness-v1", "id": witness_id,
+                "value": secrets.token_hex(32), "files": [durability_file(p) for p in files]}
+    durability_sql(config_path, psql, witness_id, manifest["value"])
+    with open(manifest_path, "x") as target:
+        json.dump(manifest, target, sort_keys=True)
+        target.flush()
+        os.fsync(target.fileno())
+    return {"created": True, "manifestSha256": durability_file(manifest_path)["sha256"],
+            "files": len(files)}
+
+
+def verify_durability_witness(manifest_path, expected_sha256, config_path, psql):
+    with open(manifest_path, "rb") as source:
+        raw = source.read()
+    if not re.fullmatch(r"[a-f0-9]{64}", expected_sha256) or hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ValueError("durability manifest hash mismatch")
+    manifest = json.loads(raw)
+    files = manifest.get("files")
+    if (manifest.get("schemaVersion") != "swap-tier-durability-witness-v1" or not isinstance(files, list) or
+            not files or not re.fullmatch(r"[a-f0-9]{64}", str(manifest.get("value", "")))):
+        raise ValueError("invalid durability manifest")
+    paths = [entry.get("path") for entry in files]
+    if any(not isinstance(p, str) or not os.path.isabs(p) for p in paths) or len(set(paths)) != len(paths):
+        raise ValueError("invalid durability manifest paths")
+    for entry in files:
+        if durability_file(entry["path"]) != entry:
+            raise RuntimeError("retained durability file changed")
+    if durability_sql(config_path, psql, manifest.get("id")) != "on\t" + manifest["value"]:
+        raise RuntimeError("retained SQL witness missing, changed or not read-only")
+    return {"verified": True, "manifestSha256": expected_sha256, "files": len(files), "sqlReadOnly": True}
 
 
 # ---------------------------------------------------------------- measurement helpers
@@ -122,6 +268,40 @@ def sh(cmd, check=True):
     if check and r.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd)} failed ({r.returncode}): {r.stderr.strip()}")
     return r
+
+
+def server_population(expected, root="/sys/fs/cgroup"):
+    """Reject a sizing run with missing or additional live Server services.
+
+    Package-wide user-unit activation can start an SSH user's Server outside the
+    measured tenant. Count live cgroups, including descendants, rather than
+    assuming that the measured cgroup is the whole machine's workload.
+    """
+    active = []
+    for service in glob.glob(os.path.join(root, "user.slice", "user-*.slice", "user@*.service",
+                                         "app.slice", "papercusp-server.service")):
+        for directory, _dirs, _files in os.walk(service):
+            try:
+                with open(os.path.join(directory, "cgroup.procs")) as f:
+                    live = any(line.strip() for line in f)
+            except FileNotFoundError:  # a child cgroup may disappear during enumeration
+                continue
+            if live:
+                active.append(os.path.normpath(service))
+                break
+    active.sort()
+    expected = os.path.normpath(expected)
+    if active != [expected]:
+        raise RuntimeError(f"server population mismatch: expected {[expected]}, active {active}")
+    return {"expected": expected, "active": active, "count": len(active)}
+
+
+def native_hash_prompt(marker):
+    # Hashing still reads the whole file. Printing it first floods native output;
+    # a short write_stdin poll can then truncate the only digest we can verify.
+    return (f"Dummy benchmark {marker}. Run exactly this shell command: `sha256sum dummy-data.txt`. "
+            "Use max_output_tokens=512 for execution and any polling so the full digest remains visible. "
+            f"Preserve the file bytes. After the tool succeeds, reply exactly DONE-{marker} with no other text.")
 
 
 def write(path, value):
@@ -355,6 +535,118 @@ def saved_codex_session(config, expected_sha256):
     return {"id": session_id, "path": path, "verifiedWarmMarkers": verified}
 
 
+def native_archive_problems(manifest, files):
+    """Recheck archived bytes and CURRENT-run native completions, without the guest."""
+    problems = []
+    if manifest.get("schemaVersion") != "swap-tier-native-archive-v1":
+        return ["unsupported native archive manifest"]
+    results = files.get("results.jsonl", b"")
+    if hashlib.sha256(results).hexdigest() != manifest.get("resultsSha256"):
+        return ["results hash mismatch"]
+    rows = [json.loads(line) for line in results.splitlines() if line.strip()]
+    starts = [r for r in rows if r.get("kind") == "run-start"]
+    if len(starts) != 1 or starts[0].get("cli") != "codex":
+        return ["archive requires exactly one Codex run-start"]
+    start = starts[0]
+    ends = [r["t"] for r in rows if r.get("kind") == "run-end" and r["t"] >= start["t"]]
+    if not ends:
+        problems.append("run did not complete")
+    end = max(ends) if ends else max(r["t"] for r in rows)
+    names = [f"a{k}" for k in range(1, start["agents"] + 1)]
+    entries = manifest.get("agents", [])
+    if sorted(e.get("agent", "") for e in entries) != sorted(names):
+        problems.append("assigned native population mismatch")
+    for entry in entries:
+        name = entry["agent"]
+        history = files.get(entry["historyPath"], b"")
+        data = files.get(entry["dataPath"], b"")
+        if not history or hashlib.sha256(history).hexdigest() != entry["historySha256"]:
+            problems.append(f"{name}: missing or changed raw history")
+            continue
+        if not data or hashlib.sha256(data).hexdigest() != entry["dataSha256"]:
+            problems.append(f"{name}: missing or changed task data")
+            continue
+        state = {"expected_sha256": entry["dataSha256"]}
+        for line in history.splitlines():
+            row = json.loads(line)
+            stamp = row.get("timestamp")
+            if stamp and start["t"] <= datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() <= end:
+                codex_record(state, row)
+        outcomes = state.get("outcomes", {})
+        warm = sum(k.startswith("WARM-") and v is None for k, v in outcomes.items())
+        wake = sum(k.startswith("WAKE-") and v is None for k, v in outcomes.items())
+        tasks = [r for r in rows if r.get("kind") == "wake" and r.get("agent") == name]
+        expected_warm = start["warm"] + sum(bool(r.get("nativeToolVerified")) for r in tasks)
+        expected_wake = sum(not r.get("nativeToolVerified") for r in tasks)
+        if (warm < expected_warm or wake < expected_wake or not tasks or
+                any(not r.get("tDone") or r.get("error") for r in tasks)):
+            problems.append(f"{name}: current-run native task coverage incomplete")
+    return problems
+
+
+def verify_native_archive(path, results_path):
+    # Read members only: never extract paths supplied by an archive.
+    with tarfile.open(path, "r:gz") as archive:
+        members = archive.getmembers()
+        if any(not m.isfile() for m in members) or len({m.name for m in members}) != len(members):
+            raise RuntimeError("native archive has non-file or duplicate members")
+        files = {m.name: archive.extractfile(m).read() for m in members}
+    if "native-manifest.json" not in files:
+        raise RuntimeError("native archive missing required population manifest")
+    with open(results_path, "rb") as f:
+        if files.get("results.jsonl") != f.read():
+            raise RuntimeError("native archive belongs to different run results")
+    manifest = json.loads(files["native-manifest.json"])
+    problems = native_archive_problems(manifest, files)
+    if problems:
+        raise RuntimeError("native archive incomplete: " + "; ".join(problems))
+    with open(path, "rb") as f:
+        digest = hashlib.file_digest(f, "sha256").hexdigest()
+    return {"verified": True, "archiveSha256": digest, "assignedAgents": len(manifest["agents"]),
+            "resultsSha256": manifest["resultsSha256"]}
+
+
+def archive_native_evidence(out, sessions=None):
+    """Make the run output self-contained before a caller can discard the VM."""
+    sessions = CODEX_SESSIONS if sessions is None else sessions
+    with open(os.path.join(out, "results.jsonl"), "rb") as f:
+        files = {"results.jsonl": f.read()}
+    manifest = {"schemaVersion": "swap-tier-native-archive-v1", "agents": [],
+                "resultsSha256": hashlib.sha256(files["results.jsonl"]).hexdigest()}
+    for name, session in sorted(sessions.items()):
+        if not re.fullmatch(r"a[1-9][0-9]*", name):
+            raise ValueError("invalid native archive agent name")
+        history = session.get("file")
+        if not history:
+            candidates = [p for p in glob.glob(session["root"] + "/**/*.jsonl", recursive=True)
+                          if os.path.getmtime(p) >= session["started"]]
+            history = max(candidates, key=os.path.getmtime) if candidates else None
+        if not history or not os.path.isfile(history):
+            continue
+        data_path = session["data"]
+        if not os.path.isfile(data_path):
+            continue
+        entry = {"agent": name, "historyPath": f"native/{name}/session.jsonl",
+                 "dataPath": f"native/{name}/dummy-data.txt"}
+        for key, path in [("history", history), ("data", data_path)]:
+            with open(path, "rb") as f:
+                content = f.read()
+            files[entry[key + "Path"]] = content
+            entry[key + "Sha256"] = hashlib.sha256(content).hexdigest()
+        manifest["agents"].append(entry)
+    manifest["problems"] = native_archive_problems(manifest, files)
+    files["native-manifest.json"] = json.dumps(manifest, indent=2).encode()
+    path = os.path.join(out, "native-evidence.tar.gz")
+    with tarfile.open(path + ".partial", "w:gz") as archive:
+        for name, content in files.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            member.mode = 0o600
+            archive.addfile(member, io.BytesIO(content))
+    os.replace(path + ".partial", path)
+    return verify_native_archive(path, os.path.join(out, "results.jsonl"))
+
+
 def start_codex_agents(n, user, rec, model, effort, gateway_url, owner, resume=False):
     home = f"/home/{user}"
     names = [f"a{k}" for k in range(1, n + 1)]
@@ -374,6 +666,7 @@ def start_codex_agents(n, user, rec, model, effort, gateway_url, owner, resume=F
         if saved:
             rec.rec("native-resume", agent=name, **saved)
         CODEX_SESSIONS[name] = {"root": config + "/sessions", "started": time.time(),
+                                "data": work + "/dummy-data.txt",
                                 "expected_sha256": expected_sha256}
         sh(["chown", "-R", f"{user}:{user}", work, config])
         env = f"env -i HOME={home} USER={user} LOGNAME={user} CODEX_HOME={config} PATH=/usr/local/bin:/usr/bin:/bin TERM=tmux-256color LANG=C.UTF-8"
@@ -391,27 +684,80 @@ def start_codex_agents(n, user, rec, model, effort, gateway_url, owner, resume=F
                    ";", "set-window-option", "-t", name, "remain-on-exit", "on"])
         time.sleep(LAUNCH_DELAY_SEC)
     deadline, pending = time.time() + 180, set(names)
-    while pending and time.time() < deadline:
-        for name in list(pending):
-            check_codex_terminal(name, rec)
-            text = pane(name)
-            if codex_ready(text, model):
+    startup_failures = []
+    failure_settle_deadline = None
+    while (
+        pending
+        and time.time() < deadline
+        and (failure_settle_deadline is None or time.time() < failure_settle_deadline)
+    ):
+        # Inspect the whole cohort before deciding. Raising from check_codex_terminal
+        # here used to stop at the first dead pane; run()'s finally then destroyed
+        # every other terminal before its exit status and screen could be recorded.
+        for name in sorted(pending):
+            evidence = check_codex_terminal(name, rec)
+            if evidence is not None:
+                pending.discard(name)
+                startup_failures.append(evidence)
+                if failure_settle_deadline is None:
+                    # A short settling window captures siblings that fail together
+                    # during a large native launch without waiting out the full
+                    # readiness timeout after the cohort is already invalid.
+                    failure_settle_deadline = min(deadline, time.time() + 2)
+                continue
+            if codex_ready(pane(name), model):
                 pending.discard(name)
         time.sleep(0.5)
+
+    if startup_failures:
+        pending_evidence = []
+        for name in sorted(pending):
+            evidence = codex_terminal_evidence(name)
+            evidence["reason"] = "sibling-terminal-failed-before-cohort-readiness"
+            rec.rec("startup-aborted", **evidence)
+            pending_evidence.append(evidence)
+        raise RuntimeError(
+            "Codex startup cohort failed before warmup: "
+            f"{len(startup_failures)} terminal(s) exited or could not be inspected; "
+            f"{len(pending_evidence)} other terminal(s) did not reach readiness. "
+            "Per-terminal status and pane evidence recorded in results.jsonl."
+        )
+
     if pending:
         for name in sorted(pending):
-            rec.rec("startup-timeout", agent=name, pane=pane(name))
-        raise RuntimeError(f"Codex agents never ready: {sorted(pending)}; first pane: {pane(sorted(pending)[0])}")
+            rec.rec("startup-timeout", **codex_terminal_evidence(name))
+        raise RuntimeError(
+            f"Codex agents never ready: {sorted(pending)}; "
+            "per-terminal status and pane evidence recorded in results.jsonl"
+        )
     rec.rec("agents-started", agents=len(names), cli="codex", model=model, effort=effort, inference="real")
     return names
 
 
-def check_codex_terminal(name, rec):
+def codex_terminal_evidence(name):
     state = sh(TMUX + ["display-message", "-p", "-t", name, "#{pane_dead} #{pane_dead_status}"], check=False)
-    if state.returncode or state.stdout.split()[:1] == ["1"]:
-        evidence = {"agent": name, "state": state.stdout.strip(), "stderr": state.stderr.strip(), "pane": pane(name)}
+    parts = state.stdout.split()
+    return {
+        "agent": name,
+        "state": state.stdout.strip(),
+        "stderr": state.stderr.strip(),
+        "pane": pane(name),
+        "dead": parts[:1] == ["1"],
+        "inspectionFailed": state.returncode != 0,
+    }
+
+
+def check_codex_terminal(name, rec):
+    evidence = codex_terminal_evidence(name)
+    if evidence["dead"]:
         rec.rec("startup-failed", **evidence)
-        raise RuntimeError(f"Codex terminal exited before readiness: {json.dumps(evidence)}")
+        return evidence
+    if evidence["inspectionFailed"]:
+        # A vanished pane or failed tmux query is not proof of a process exit, but
+        # it is still unsafe to admit this terminal into the benchmark cohort.
+        rec.rec("startup-inspection-failed", **evidence)
+        return evidence
+    return None
 
 
 def start_agents(n, user, rec, cli="claude", model="gpt-6-luna", effort="low", gateway_url=None, owner=None, resume=False):
@@ -467,8 +813,10 @@ def prompt_all(names, marker_for, prompt_for, timeout, on_done=None):
     """Type a prompt into every agent, press Enter once its echo shows, wait for DONE-<marker>.
 
     Returns {name: {t0, tEcho, tEnter, tDone}} (None where a step never happened)."""
-    if GATEWAY_CHECK:
-        GATEWAY_CHECK()
+    # run() authenticates the model route once before launching agents. After
+    # that, each native task's completion/error and deadline are authoritative.
+    # A separate monitoring request can time out while that route still works;
+    # using it as a batch veto discards work without measuring the agents.
     state = {}
     for name in names:
         if REAL_MODEL:
@@ -483,15 +831,17 @@ def prompt_all(names, marker_for, prompt_for, timeout, on_done=None):
         for name, s in state.items():
             if s["tDone"] is not None or s["error"]:
                 continue
-            text = pane(name)
             if s["tEnter"] is None:
+                text = pane(name)
                 if marker_for(name) in text:
                     s["tEcho"] = time.time()
                     press_enter(name)
                     s["tEnter"] = time.time()
             else:
                 try:
-                    completed = codex_completed(name, marker_for(name)) if REAL_MODEL else "DONE-" + marker_for(name) in text
+                    # Native history owns completion. Repeated tmux captures
+                    # here add observer work without providing any evidence.
+                    completed = codex_completed(name, marker_for(name)) if REAL_MODEL else "DONE-" + marker_for(name) in pane(name)
                 except NativeTaskError as e:
                     s["error"] = str(e)
                     continue
@@ -520,8 +870,7 @@ def warm(names, rounds, rec, concurrency=None):
             state = {}
             for start in range(0, len(missing), width):
                 state.update(prompt_all(missing[start:start + width], marker, lambda n: (
-                    f"Dummy benchmark {marker(n)}. Run exactly this shell command: `cat dummy-data.txt; sha256sum dummy-data.txt`. "
-                    f"Preserve the file bytes. After the tool succeeds, reply exactly DONE-{marker(n)} with no other text."
+                    native_hash_prompt(marker(n))
                     if REAL_MODEL else f"Please do step {marker(n)} now"), 300))
             missing = [n for n, s in state.items() if s["tDone"] is None]
             if not missing:
@@ -581,6 +930,47 @@ def swap_off():
         sh(["zramctl", "--reset", "/dev/zram0"], check=False)
 
 
+def configured_swap_devices(path="/proc/swaps"):
+    """Read the kernel inventory; Ubuntu's swapon does not support --json."""
+    devices = []
+    with open(path) as f:
+        header = next(f, "").split()
+        if header != ["Filename", "Type", "Size", "Used", "Priority"]:
+            raise RuntimeError("invalid kernel swap inventory header")
+        for line in f:
+            fields = line.split()
+            if len(fields) != 5:
+                raise RuntimeError("invalid kernel swap inventory row")
+            name = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), fields[0])
+            devices.append({"name": name, "size": int(fields[2]) * 1024,
+                            "prio": int(fields[4])})
+    return devices
+
+
+def active_swap(arm, ram_gb):
+    """Validate externally provisioned swap without draining a live Server."""
+    devices = configured_swap_devices()
+    if arm["kind"] == "none":
+        if devices:
+            raise RuntimeError("active none arm requires no configured swap")
+        return {"device": None, "devices": devices}
+    for device in devices:
+        name = device["name"]
+        if arm["kind"] == "device":
+            if os.path.realpath(name) == os.path.realpath(arm["device"]):
+                return {"device": name, "devices": devices}
+        elif re.fullmatch(r"zram\d+", os.path.basename(name)):
+            # swapon's usable size excludes the first page of the device.
+            if int(device["size"]) + 4096 < ram_gb * (1 << 30):
+                continue
+            with open(f"/sys/block/{os.path.basename(name)}/comp_algorithm") as f:
+                algorithm = f"[{arm.get('algorithm', 'zstd')}]"
+                if algorithm not in f.read().split():
+                    continue
+            return {"device": name, "devices": devices}
+    raise RuntimeError("active swap arm must be configured before starting the Server and benchmark")
+
+
 def swap_on(arm, ram_gb):
     if arm["kind"] == "none":
         return None
@@ -616,10 +1006,15 @@ def reclaim(name):
     return time.time() - t0
 
 
-def run_arm(arm, names, single, ram_gb, rec, stub_log):
-    swap_off()
-    device = swap_on(arm, ram_gb)
-    rec.rec("arm-start", arm=arm["name"], device=device, host=host_stats(), agents={n: agent_stats(n) for n in names})
+def run_arm(arm, names, single, ram_gb, rec, stub_log, active=None, active_rounds=3,
+            swap_ready=False, keep_swap=False):
+    if not swap_ready:
+        swap_off()
+        device = swap_on(arm, ram_gb)
+    else:
+        device = arm.get("device")
+    rec.rec("arm-start", arm=arm["name"], device=device, assignedAgents=len(names),
+            host=host_stats(), agents={n: agent_stats(n) for n in names})
     if arm["kind"] != "none":
         rec.rec("phase", arm=arm["name"], phase="reclaim", edge="start")
         for name in names:
@@ -636,23 +1031,35 @@ def run_arm(arm, names, single, ram_gb, rec, stub_log):
         rec.rec("phase", arm=arm["name"], phase="idle", edge="end")
     nonce = f"{re.sub('[^A-Za-z0-9]', '', arm['name'])[:6]}{int(time.time()) % 100000}"
 
-    def wake(group, phase, emit_phase=True):
+    def wake(group, phase, emit_phase=True, task_round=None):
         pre = {n: agent_stats(n) for n in group}
         host_pre = host_stats()
+        # Reuse WARM native evidence validation for real shell work; WAKE remains
+        # the separate light model-response burst. Include width/round identity
+        # so a previous completion can never satisfy another active round.
+        marker = (lambda n: f"WARM-{nonce}c{len(group)}{n}-{task_round}") if task_round is not None else (
+            lambda n: f"WAKE-{nonce}{n}")
         if emit_phase:
             rec.rec("phase", arm=arm["name"], phase=phase, edge="start")
-        state = prompt_all(group, lambda n: f"WAKE-{nonce}{n}", lambda n: (
-            f"Dummy wake task WAKE-{nonce}{n}. Compute 17+25 mentally. Reply exactly DONE-WAKE-{nonce}{n} with no other text."
-            if REAL_MODEL else f"Wake up WAKE-{nonce}{n} please"), WAKE_TIMEOUT)
+        state = prompt_all(group, marker, lambda n: (
+            native_hash_prompt(marker(n))
+            if task_round is not None else (
+                f"Dummy wake task {marker(n)}. Compute 17+25 mentally. Reply exactly DONE-{marker(n)} with no other text."
+                if REAL_MODEL else f"Wake up {marker(n)} please")), WAKE_TIMEOUT)
         if emit_phase:
             rec.rec("phase", arm=arm["name"], phase=phase, edge="end")
         time.sleep(2)
         for n in group:
             s = state[n]
             rec.rec("wake", arm=arm["name"], phase=phase, agent=n, **s,
-                    tRequest=stub_request_times(stub_log, f"WAKE-{nonce}{n}"), pre=pre[n], post=agent_stats(n))
+                    concurrentAgents=len(group), assignedAgents=len(names),
+                    nativeToolVerified=task_round is not None and s["tDone"] is not None and not s.get("error"),
+                    tRequest=stub_request_times(stub_log, marker(n)), pre=pre[n], post=agent_stats(n))
         rec.rec("wake-host", arm=arm["name"], phase=phase, pre=host_pre, post=host_stats())
 
+    for width in active or []:
+        for round_index in range(active_rounds):
+            wake(names[:width], f"active-{width}", task_round=round_index)
     for n in names[:single]:
         wake([n], "single")
         time.sleep(1)
@@ -663,12 +1070,13 @@ def run_arm(arm, names, single, ram_gb, rec, stub_log):
             wake(storm[offset:offset + arm["batch"]], "storm", emit_phase=False)
         rec.rec("phase", arm=arm["name"], phase="storm", edge="end")
     else:
-        wake(storm, "storm")
+        wake(storm, "storm", task_round=active_rounds if active else None)
     time.sleep(20)
     rec.rec("arm-end", arm=arm["name"], host=host_stats(), agents={n: agent_stats(n) for n in names})
     t0 = time.time()
-    swap_off()
-    rec.rec("swapoff", arm=arm["name"], seconds=time.time() - t0)
+    if not keep_swap:
+        swap_off()
+        rec.rec("swapoff", arm=arm["name"], seconds=time.time() - t0)
 
 
 # ---------------------------------------------------------------- disk benchmark
@@ -738,12 +1146,13 @@ def summarize(rows, probe):
         k = r["kind"]
         if k == "arm-start":
             s["device"] = r.get("device")
+            s["assignedAgents"] = r.get("assignedAgents")
         elif k == "reclaimed":
             s["reclaimed"].append(r)
         elif k == "idle":
             s["idleRegainedMiB"] = mib(sum(regained(r["before"][n], r["after"][n]) for n in r["before"]))
         elif k == "wake":
-            s["wakes"][r["phase"]].append(r)
+            s["wakes"].setdefault(r["phase"], []).append(r)
         elif k == "arm-end":
             s["swapAfterMiB"] = mib(sum(v["swap"] or 0 for v in r["agents"].values()))
             s["residentAfterMiB"] = mib(sum(v["anon"] or 0 for v in r["agents"].values()))
@@ -751,7 +1160,11 @@ def summarize(rows, probe):
             if zr:
                 s["zramEnd"] = zr
         elif k == "phase" and r.get("edge") in ("start", "end"):
-            phases.setdefault((a, r["phase"]), {})[r["edge"]] = r["t"]
+            windows = phases.setdefault((a, r["phase"]), [])
+            if r["edge"] == "start":
+                windows.append({"start": r["t"]})
+            elif windows and "end" not in windows[-1]:
+                windows[-1]["end"] = r["t"]
         elif k == "phase" and r.get("phase") == "reclaim":
             pass
         if k == "phase" and r.get("phase") == "reclaim" and r.get("edge") == "end":
@@ -762,7 +1175,7 @@ def summarize(rows, probe):
     out = []
     for a, s in arms.items():
         rc = s["reclaimed"]
-        res = {"arm": a, "device": s.get("device")}
+        res = {"arm": a, "device": s.get("device"), "assignedAgents": s.get("assignedAgents")}
         if rc:
             swapped = [r["after"]["swap"] or 0 for r in rc]
             res["reclaim"] = {
@@ -775,8 +1188,7 @@ def summarize(rows, probe):
             }
             res["idleRegainedMiB"] = s.get("idleRegainedMiB")
             res["zram"] = s.get("zramAfterReclaim")
-        for ph in ("single", "storm"):
-            ws = s["wakes"][ph]
+        for ph, ws in s["wakes"].items():
             if not ws:
                 continue
             total = [(w["tDone"] - w["t0"]) if w.get("tDone") else None for w in ws]
@@ -784,19 +1196,21 @@ def summarize(rows, probe):
             submit = [(w["tDone"] - w["tEnter"]) if w.get("tDone") and w.get("tEnter") else None for w in ws]
             back = [regained(w["pre"], w["post"]) for w in ws]
             majflt = [max(0, (w["post"]["majflt"] or 0) - (w["pre"]["majflt"] or 0)) for w in ws]
-            block = {"agents": len(ws), "failed": sum(1 for t in total if t is None),
-                     "totalSec": {"p50": _r(pctl(total, 50)), "p90": _r(pctl(total, 90)), "max": _r(pctl(total, 100))},
-                     "echoSec": {"p50": _r(pctl(echo, 50)), "max": _r(pctl(echo, 100))},
-                     "submitToReplySec": {"p50": _r(pctl(submit, 50)), "max": _r(pctl(submit, 100))},
+            block = {"agents": len({w["agent"] for w in ws}), "tasks": len(ws),
+                     "failed": sum(1 for t in total if t is None),
+                     "totalSec": {"p50": _r(pctl(total, 50)), "p90": _r(pctl(total, 90)), "p95": _r(pctl(total, 95)), "max": _r(pctl(total, 100))},
+                     "echoSec": {"p50": _r(pctl(echo, 50)), "p95": _r(pctl(echo, 95)), "max": _r(pctl(echo, 100))},
+                     "submitToReplySec": {"p50": _r(pctl(submit, 50)), "p95": _r(pctl(submit, 95)), "max": _r(pctl(submit, 100))},
                      "regainedMiBPerAgent": mib(statistics.mean(back)),
                      "majfltPerAgent": round(statistics.mean(majflt))}
             if ph == "storm":
                 done = [w["tDone"] for w in ws if w.get("tDone")]
                 block["allDoneSec"] = _r(max(done) - min(w["t0"] for w in ws)) if len(done) == len(ws) else None
-            win = phases.get((a, ph), {})
-            samples = [p for p in probe if win.get("start") is not None and win.get("end") is not None and win["start"] <= p[0] <= win["end"]]
+            windows = phases.get((a, ph), [])
+            samples = [p for p in probe if any(w.get("start") is not None and w.get("end") is not None
+                                              and w["start"] <= p[0] <= w["end"] for w in windows)]
             if samples:
-                block["probeExecMs"] = {"p50": _r(pctl([p[1] for p in samples], 50)), "p99": _r(pctl([p[1] for p in samples], 99)),
+                block["probeExecMs"] = {"p50": _r(pctl([p[1] for p in samples], 50)), "p95": _r(pctl([p[1] for p in samples], 95)), "p99": _r(pctl([p[1] for p in samples], 99)),
                                         "max": _r(pctl([p[1] for p in samples], 100)), "samples": len(samples)}
             res[ph] = block
         res["swapAfterStormMiB"] = s.get("swapAfterMiB")
@@ -860,14 +1274,24 @@ def probe(out_path):
 # ---------------------------------------------------------------- main
 
 def run(a):
-    global REAL_MODEL, GATEWAY_CHECK, WARM_PREFIX
+    population = server_population(a.server_cgroup) if getattr(a, "server_cgroup", None) else None
+    arms = [parse_arm(s) for s in a.arm]
+    # Fail before recorder/probe/agent mutation. Active runs share a live Server;
+    # swapoff -a can OOM it even after all benchmark agents have stopped.
+    configured_swap = active_swap(arms[0], a.ram_gb) if a.active else None
+    if configured_swap:
+        arms[0]["device"] = configured_swap["device"]
+    global REAL_MODEL, WARM_PREFIX
     REAL_MODEL = a.cli == "codex"
+    CODEX_SESSIONS.clear()
     # Resumed JSONL may replay old rounds; only fresh unpredictable markers can
     # admit this run's new verification turn.
     WARM_PREFIX = os.urandom(6).hex() if a.resume_native else ""
     rec = Recorder(a.out)
-    GATEWAY_CHECK = (lambda: gateway_preflight(a.gateway_url, a.owner, rec, catalog=False)) if REAL_MODEL else None
-    arms = [parse_arm(s) for s in a.arm]
+    if population:
+        rec.rec("server-population-preflight", **population)
+    if configured_swap:
+        rec.rec("active-swap-preflight", **configured_swap)
     stub_log = os.path.join(a.out, "stub.jsonl")
     warm_files = sorted(glob.glob("/usr/lib/python3*/*.py"), key=os.path.getsize, reverse=True)[:16]
     procs = [subprocess.Popen([sys.executable, os.path.abspath(__file__), "probe", "--out", os.path.join(a.out, "probe.csv")])]
@@ -876,26 +1300,41 @@ def run(a):
                                      "--warm-files", *warm_files], stdout=open(os.path.join(a.out, "stub.out"), "a"), stderr=subprocess.STDOUT))
     try:
         time.sleep(1)
-        swap_off()
-        rec.rec("run-start", agents=a.agents, warm=a.warm, warmConcurrency=a.warm_concurrency or a.agents,
+        warm_width = a.warm_concurrency or (min(a.active) if a.active else a.agents)
+        rec.rec("run-start", agents=a.agents, warm=a.warm, warmConcurrency=warm_width,
                 resumeNative=a.resume_native,
-                single=a.single, arms=arms, idleSec=IDLE_SEC,
+                single=a.single, active=a.active, activeRounds=a.active_rounds, arms=arms, idleSec=IDLE_SEC,
                 kernel=os.uname().release, host=host_stats(), cli=a.cli, model=a.model if REAL_MODEL else None,
                 effort=a.effort if REAL_MODEL else None, inference="real" if REAL_MODEL else "stub")
         stop_agents()
+        if not a.active:
+            swap_off()
         if REAL_MODEL:
             gateway_preflight(a.gateway_url, a.owner, rec)
             codex_sandbox_preflight(a.user, rec)
         names = start_agents(a.agents, a.user, rec, a.cli, a.model, a.effort, a.gateway_url, a.owner, a.resume_native)
-        warm(names, a.warm, rec, a.warm_concurrency)
+        warm(names, a.warm, rec, warm_width)
         for arm in arms:
-            run_arm(arm, names, a.single, a.ram_gb, rec, stub_log)
+            run_arm(arm, names, a.single, a.ram_gb, rec, stub_log, active=a.active, active_rounds=a.active_rounds,
+                    swap_ready=bool(a.active), keep_swap=bool(a.active))
         rec.rec("run-end")
     finally:
         stop_agents()
         for p in procs:
             p.terminate()
-        swap_off()
+        if not a.active:
+            swap_off()
+        if REAL_MODEL:
+            # Preserve partial evidence on failure too. Never mask the original
+            # native error, and never delay mandatory provider deadline deletion.
+            failing = sys.exc_info()[0] is not None
+            try:
+                receipt = archive_native_evidence(a.out)
+                print("SWAPTIER native-archive " + json.dumps(receipt), flush=True)
+            except Exception as error:
+                print("SWAPTIER native-archive-incomplete " + str(error), file=sys.stderr, flush=True)
+                if not failing:
+                    raise
     report(a.out)
 
 
@@ -904,11 +1343,14 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
     r.add_argument("--out", required=True)
+    r.add_argument("--server-cgroup", help="require exactly this one live Server service before launching agents")
     r.add_argument("--agents", type=int, default=24)
     r.add_argument("--warm", type=int, default=8)
     r.add_argument("--warm-concurrency", type=int, help="limit warm-up requests; wake storm still uses all agents")
     r.add_argument("--resume-native", action="store_true", help="resume recorded native sessions, then verify fresh warm turns")
     r.add_argument("--single", type=int, default=8)
+    r.add_argument("--active", type=int, action="append", help="active native tool cohort width; repeat for moderate-load scenarios")
+    r.add_argument("--active-rounds", type=int, default=3, help="verified tool rounds per active cohort")
     r.add_argument("--ram-gb", type=int, default=16)
     r.add_argument("--user", default="agent")
     r.add_argument("--arm", action="append", required=True)
@@ -926,8 +1368,30 @@ def main(argv=None):
     p.add_argument("--out", required=True)
     q = sub.add_parser("probe")
     q.add_argument("--out", required=True)
+    v = sub.add_parser("verify-archive")
+    v.add_argument("--archive", required=True, help="locally copied native-evidence.tar.gz; required before teardown")
+    v.add_argument("--results", required=True, help="locally copied results.jsonl from the exact run being torn down")
+    h = sub.add_parser("wait-health", help="wait for strict operator API health, tolerating non-HTTP candidates")
+    h.add_argument("--port", type=int, action="append", required=True)
+    h.add_argument("--timeout", type=float, default=120)
+    h.add_argument("--expected-sha")
+    for command in ("witness-create", "witness-verify"):
+        w = sub.add_parser(command, help="retained file/SQL witness before or after cold wake/disk growth")
+        w.add_argument("--manifest", required=True)
+        w.add_argument("--pg-config", required=True, help="guest embedded-pg.json; credentials are never printed")
+        w.add_argument("--psql", default="/usr/lib/Papercusp Server/sidecar/bin/psql")
+        if command == "witness-create":
+            w.add_argument("--file", required=True, action="append")
+            w.add_argument("--id", required=True)
+        else:
+            w.add_argument("--manifest-sha256", required=True, help="receipt saved locally BEFORE the lifecycle operation")
     a = ap.parse_args(argv)
     if a.cmd == "run":
+        if a.active and (a.cli != "codex" or a.warm < 1 or a.single != 0 or len(a.arm) != 1 or
+                         a.active_rounds < 1 or len(set(a.active)) != len(a.active) or
+                         any(not 1 <= width <= a.agents for width in a.active) or
+                         any(parse_arm(spec).get("batch") for spec in a.arm)):
+            ap.error("active cohort requires Codex, fresh warm>=1, --single 0, one unbatched arm, unique widths between 1 and --agents, and positive rounds")
         if a.resume_native and (a.cli != "codex" or a.warm < 1):
             ap.error("--resume-native requires Codex and at least one fresh verified warm round")
         if a.warm_concurrency is not None and not 1 <= a.warm_concurrency <= a.agents:
@@ -943,6 +1407,16 @@ def main(argv=None):
         report(a.out)
     elif a.cmd == "probe":
         probe(a.out)
+    elif a.cmd == "verify-archive":
+        print(json.dumps(verify_native_archive(a.archive, a.results)))
+    elif a.cmd == "wait-health":
+        receipt = wait_for_operator_health(a.port, a.timeout, expected_sha=a.expected_sha)
+        print(json.dumps(receipt))
+        return 0 if receipt["ready"] else 1
+    elif a.cmd == "witness-create":
+        print(json.dumps(create_durability_witness(a.manifest, a.file, a.pg_config, a.psql, a.id)))
+    elif a.cmd == "witness-verify":
+        print(json.dumps(verify_durability_witness(a.manifest, a.manifest_sha256, a.pg_config, a.psql)))
     return 0
 
 

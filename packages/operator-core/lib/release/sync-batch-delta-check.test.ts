@@ -563,6 +563,44 @@ describe('runSyncBatchDeltaCheck — reds, confirmation, filing', () => {
     expect(state.cursor?.openReds?.[0]?.confirmations).toBe(2);
   });
 
+  it('retries a notification miss on the next cursor tick and preserves the filing error', async () => {
+    const openRed = {
+      path: failingFile.file,
+      workspace: failingFile.workspace,
+      introducedBy: SHA_C,
+      firstSeenMs: 500,
+      confirmations: 1,
+    };
+    let deliveryAttempts = 0;
+    const { deps, state } = makeDeps(
+      {
+        headSha: async () => SHA_A,
+        confirmOne: async () => false,
+        fileRed: async (finding) => {
+          deliveryAttempts += 1;
+          state.filed.push(finding);
+          return deliveryAttempts === 1
+            ? { ok: true, id: 'WI-77', notificationError: 'required wake not queued' }
+            : { ok: true, id: 'WI-77' };
+        },
+      },
+      { sha: SHA_A, updatedAtMs: 1, openReds: [openRed] },
+    );
+
+    const first = await runSyncBatchDeltaCheck(deps);
+    expect(first.status).toBe('up-to-date');
+    expect(first.filed).toMatchObject([{ id: 'WI-77', notificationError: 'required wake not queued' }]);
+    expect(state.cursor?.openReds?.[0]?.confirmations).toBe(2);
+    expect(deliveryAttempts).toBe(1);
+
+    const second = await runSyncBatchDeltaCheck(deps);
+    expect(second.status).toBe('up-to-date');
+    expect(second.filed).toMatchObject([{ id: 'WI-77' }]);
+    expect(second.filed[0]).not.toHaveProperty('notificationError');
+    expect(state.cursor?.openReds?.[0]?.confirmations).toBe(3);
+    expect(deliveryAttempts).toBe(2);
+  });
+
   it('a held-open red that re-runs green stops being held', async () => {
     const openRed = { path: failingFile.file, workspace: null, introducedBy: null, firstSeenMs: 500, confirmations: 1 };
     const { deps, state } = makeDeps(
@@ -778,7 +816,7 @@ describe('runSyncBatchDeltaCheck — P-011 typecheck-first and budget-exhaustion
     expect(state.cursor?.windowCommitCap).toBeUndefined();
   });
 
-  it('a held typecheck red is not re-filed by the next tick that re-reports it', async () => {
+  it('a held typecheck red re-runs the typecheck leg and refreshes the same filing', async () => {
     let affectedResult: Awaited<ReturnType<SyncBatchDeltaDeps['runAffected']>> = affectedTimeout;
     const { deps, state } = makeDeps(
       {
@@ -795,8 +833,8 @@ describe('runSyncBatchDeltaCheck — P-011 typecheck-first and budget-exhaustion
     await runSyncBatchDeltaCheck(deps);
     affectedResult = { ok: true, failing: [] };
     const second = await runSyncBatchDeltaCheck(deps);
-    expect(second.status).toBe('green');
-    expect(state.filed).toHaveLength(1);
+    expect(second.status).toBe('red');
+    expect(state.filed).toHaveLength(2);
     expect(state.cursor?.openReds?.map((r) => r.path)).toEqual([TYPE_ERROR_FILE]);
   });
 });

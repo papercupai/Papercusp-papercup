@@ -24,6 +24,65 @@ import { join, resolve } from 'node:path';
 const ROOT = resolve(__dirname, '../../../../../..');
 const HOOK = resolve(__dirname, '../posttooluse-required-field-strand-nudge.mjs');
 
+describe('P-037 merged interface consequence collector', () => {
+  it('optionally measures a body-only symbol change without inventing an interface consequence', async () => {
+    const hook = await loadHook();
+    const before = 'export function changed() { return 1; }\nexport const same = 2;';
+    const after = before.replace('return 1', 'return 3');
+    const result = await hook.consequenceFor(resolve(ROOT, 'packages/operator-core/lib/example.ts'), {
+      sizeOf: () => after.length, readFile: () => after, showAt: () => before,
+      resolveBase: () => 'a'.repeat(40), includeSourceChanges: true,
+    });
+    expect(result?.changes).toEqual([]);
+    expect(result?.sourceChange).toMatchObject({ root: ROOT, path: 'packages/operator-core/lib/example.ts',
+      symbols: [{ name: 'changed', line: 1 }], base: 'a'.repeat(40) });
+    expect(result?.sourceChange?.sha256).not.toBe(result?.sourceChange?.beforeSha256);
+  });
+  async function collect(before: string, after: string) {
+    const hook = await loadHook();
+    return hook.consequenceFor(resolve(ROOT, 'packages/operator-core/lib/example.ts'), {
+      sizeOf: () => after.length, readFile: () => after, showAt: () => before,
+      resolveBase: () => 'a'.repeat(40),
+    });
+  }
+  it.each([
+    ['export function f(a: string) { return a; }', 'export function f(a: number) { return a; }', 'signature f'],
+    ['export function f() { return { x: 1 }; }', 'export function f() { return { y: 1 }; }', 'returned fields f'],
+    ['export class C { result() { return { x: 1 }; } }', 'export class C { result() { return { y: 1 }; } }', 'returned fields C.result'],
+    ['export class C { get result() { return { x: 1 }; } }', 'export class C { get result() { return { y: 1 }; } }', 'returned fields C.result'],
+    ['export const f = () => ({ x: 1 });', 'export const f = () => ({ y: 1 });', 'returned fields f'],
+    ['export const t = defineTool({ name: "t", parameters: { x: "string" } });', 'export const t = defineTool({ name: "t", parameters: { x: "number" } });', 'registered tool'],
+    ['export const t = defineTool({ name: "t", argSchema: { x: "string" } });', 'export const t = defineTool({ name: "t", argSchema: { x: "number" } });', 'registered tool'],
+    ['export const t = defineTool({ name: "t" });', 'export const t = defineTool({ name: "t", argSchema: {} });', 'registered tool'],
+    ['export function f() { return null; }', 'export function f() { return { x: 1 }; }', 'returned fields f'],
+    ['export const f = () => null;', 'export const f = () => ({ x: 1 } as const);', 'returned fields f'],
+    ['export function f() { return { x: 1 }; }', 'export function f() { return null; }', 'returned fields f'],
+    ['', 'export function f(a: string) { return a; }', 'signature f'],
+    ['export function f(a: string) { return a; }', '', 'signature f'],
+    ['export interface R { x: string }', 'export interface R { x: string; y: number }', 'required R.y'],
+  ])('detects the actual %s -> %s change', async (before, after, expected) => {
+    const result = await collect(before, after);
+    expect(result?.changes.join(';')).toContain(expected);
+    expect(result?.checks.join('\n')).toContain(`--base ${'a'.repeat(40)} --files=packages/operator-core/lib/example.ts`);
+  });
+  it('keeps private body-only edits quiet and combines required-field and behavioural risks', async () => {
+    expect(await collect('export function f() { const x = 1; return x; }', 'export function f() { const x = 2; return x; }')).toBeNull();
+    const result = await collect('export interface R { x: string }; export function f() { return { ok: 1 }; }',
+      'export interface R { x: string; y: number }; export function f() { return { ok: 2 }; }');
+    expect(result?.changes).toContain('required R.y');
+    expect(result?.changes).toContain('behavioural strand risk');
+    expect(result?.checks).toHaveLength(2);
+  });
+  it('ignores an inner callback return and formatting-only return edits', async () => {
+    expect(await collect('export class C { private result() { return { a: 1 }; } }',
+      'export class C { private result() { return { b: 1 }; } }')).toBeNull();
+    expect(await collect('export function f() { const x = () => ({ a: 1 }); return null; }',
+      'export function f() { const x = () => ({ b: 1 }); return null; }')).toBeNull();
+    expect(await collect('export function f() { return { a: 1 }; }',
+      'export function f() { return { /* note */ a: 1 }; }')).toBeNull();
+  });
+});
+
 // The REAL detector — the whole value of this suite is that it is not a fake.
 async function realDiffer() {
   const mod = await import(`file://${resolve(ROOT, 'scripts/check-required-field-strands.mjs')}`);
@@ -32,6 +91,8 @@ async function realDiffer() {
 
 async function loadHook() {
   return (await import(`file://${HOOK}`)) as {
+    consequenceFor: (p: string, deps?: Record<string, unknown>) => Promise<{ path: string; base: string; changes: string[]; checks: string[];
+      sourceChange?: { root: string; path: string; symbols: { name: string; line: number }[]; sha256: string; beforeSha256: string } } | null>;
     nudgeFor: (p: string, deps?: Record<string, unknown>) => Promise<string | null>;
     isCandidateFile: (p: string) => boolean;
     formatNudge: (rel: string, added: Array<{ path: string; reason: string }>) => string;

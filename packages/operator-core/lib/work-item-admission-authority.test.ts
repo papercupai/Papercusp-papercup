@@ -5,7 +5,8 @@ import type { KernelEnforcementRequest, UnifiedToolContext } from '@papercusp/ag
 
 const h = vi.hoisted(() => ({
   state: {} as Record<string, unknown>, auditMode: false, audit: vi.fn(),
-  sql: vi.fn(), token: 'hermetic-test-token', expectedAdvSessionId: null as number | null,
+  sql: Object.assign(vi.fn(), { reserve: vi.fn() }),
+  token: 'hermetic-test-token', expectedAdvSessionId: null as number | null,
 }));
 vi.mock('@papercusp/db-org', async (original) => ({
   ...await original<typeof import('@papercusp/db-org')>(), getOrgPg: () => ({ sql: h.sql }),
@@ -93,6 +94,10 @@ beforeEach(() => {
       } : {}),
     }];
   });
+  h.sql.reserve.mockReset().mockImplementation(async () => Object.assign(
+    vi.fn((parts: TemplateStringsArray, ...values: unknown[]) => h.sql(parts, ...values)),
+    { release: vi.fn() },
+  ));
   installControlAnchorKernelResolver(); // same installation as events/index at tool bootstrap
   setSessionConfinementResolver(() => null);
 });

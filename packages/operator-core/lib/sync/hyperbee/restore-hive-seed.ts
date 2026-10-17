@@ -36,6 +36,8 @@ import {
   type SeedManifest,
   type SeedStoreEntry,
   type SeedPayload,
+  type SeedRestoreDiagnosticIdentity,
+  type SeedRestorePhaseEvent,
   type StoreRestoreOutcome,
 } from '@papercusp/seed-bundle';
 import { createGitSeedProvider } from './seed-provider-git';
@@ -148,6 +150,8 @@ export interface RestoreHiveSeedCtx {
    *  re-restore ONLY the now-decryptable git store, without re-copying the corestore
    *  that already restored pre-join. */
   readonly onlyKinds?: readonly string[];
+  /** Optional build/source identity carried into the inspector-readable phase journal. */
+  readonly diagnosticIdentity?: SeedRestoreDiagnosticIdentity;
   /** Seams (tests inject; defaults are the real filesystem + providers). */
   readonly readManifest?: (seedDir: string) => Promise<SeedManifest | null>;
   readonly registry?: SeedProviderRegistry;
@@ -270,6 +274,13 @@ export async function restoreHiveSeed(ctx: RestoreHiveSeedCtx): Promise<RestoreH
     targetStoreDir: ctx.targetStoreDir,
     ...(ctx.decryptionKey ? { decryptionKey: ctx.decryptionKey } : {}),
     ...(ctx.originUrl ? { originUrl: ctx.originUrl } : {}),
+    ...(ctx.diagnosticIdentity ? { diagnosticIdentity: ctx.diagnosticIdentity } : {}),
+    // WI-6554700010011908: publish phase boundaries through the existing host log
+    // so a slow restore can be attributed to verify or restore independently.
+    onPhase: (event: SeedRestorePhaseEvent) => {
+      const reason = event.reason ? `: ${event.reason}` : '';
+      log(`[seed] ${event.kind} ${event.phase} ${event.state}${reason}`);
+    },
   };
   const result = await restoreSeed(subManifest, registry, resolvePayload, restoreCtx);
   for (const o of result.outcomes) {

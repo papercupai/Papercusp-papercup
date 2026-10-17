@@ -1,4 +1,4 @@
-import { runInNewContext } from 'node:vm';
+import { compileFunction, createContext } from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { DREAM_BENCHMARK_CASES } from '../../test/dream-benchmark-cases';
@@ -381,7 +381,12 @@ describe('source-grounded benchmark validity and honest confusion denominators',
   it('executes curated source counterexamples rather than inferring labels from fluent text', () => {
     const evaluate = (id: string, expression: string, vars: Record<string, unknown> = {}) => {
       const c = DREAM_BENCHMARK_CASES.find((c) => c.id === id)!;
-      return runInNewContext(`const A=${c.a}; const B=${c.b}; const C=${c.c}; ${expression}`, vars, { timeout: 100 });
+      // These bounded fragments and expressions are trusted repository fixtures.
+      // Check their semantics in a fresh context under the test runner's deadline;
+      // a separate 100ms VM timer measures scheduling rather than correctness.
+      const run = compileFunction(`const A=${c.a}; const B=${c.b}; const C=${c.c}; return (${expression});`,
+        Object.keys(vars), { parsingContext: createContext() });
+      return run(...Object.values(vars));
     };
     const rows = [{ cents: 40 }, { cents: 70 }];
     expect(evaluate('H01', '[B(A(rows),100),B(A(rows),60)]', { rows })).toEqual([false, true]);

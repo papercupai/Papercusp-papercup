@@ -8,7 +8,7 @@
  *     see; D-002/D-003). Only `sync:'none'` PG + local disk stores trim.
  *   • PG deletes are CHUNKED (ctid batches) so a multi-million-row trim never
  *     takes a long lock; a bloat-queue table (substrate_outbox) then gets a
- *     VACUUM FULL to actually return disk, coordinated via the `db:migrate`
+ *     VACUUM FULL to actually return disk, coordinated via the `db-schema`
  *     exclusive resource lock with drain (the plan's lock requirement).
  *   • Disk session-dir trims reuse the audited session-dir-gc planner with a
  *     FAIL-CLOSED protected set (a live/resumable session is never collected),
@@ -43,6 +43,8 @@ export interface PruneRequest {
   /** workspace for the VACUUM resource-lock coordination domain. */
   workspaceId: string;
   signal?: AbortSignal;
+  /** Test-only seam for the foreground scratch-scan budget; omitted in production calls. */
+  scanBudgetMs?: number;
   /**
    * Wall-time budget (ms) for the chunked PG delete loop (EI-11379). When the
    * budget is hit mid-drain, the loop stops and returns a continuation instead
@@ -109,6 +111,7 @@ function num(v: unknown): number {
 type Sql = {
   (strings: TemplateStringsArray, ...vals: unknown[]): Promise<Array<Record<string, unknown>>>;
   unsafe: (q: string) => Promise<Array<Record<string, unknown>>>;
+  begin: <T>(fn: (tx: Sql) => Promise<T>) => Promise<T>;
 };
 
 function validDays(d: number | null): boolean {
@@ -139,6 +142,27 @@ async function relationStats(sql: Sql, schema: string, table: string): Promise<{
   return { bytes: num(rows[0]?.b), rows: num(rows[0]?.r) };
 }
 
+/**
+ * Keep the preview read below the MCP transport envelope. A dry-run is read-only,
+ * but its exact COUNT(*) can still scan a multi-million-row telemetry table; an
+ * unbounded scan leaves the caller with an opaque upstream reset instead of a
+ * result it can act on.
+ */
+const DRY_RUN_STATEMENT_TIMEOUT_MS = 15_000;
+
+function isStatementTimeout(error: unknown): boolean {
+  const value = error as { code?: unknown; pgCode?: unknown; message?: unknown } | null;
+  const code = value?.code ?? value?.pgCode;
+  return code === '57014' || /statement timeout|canceling statement/i.test(String(value?.message ?? error));
+}
+
+async function boundedRead<T>(sql: Sql, timeoutMs: number, run: (tx: Sql) => Promise<T>): Promise<T> {
+  return sql.begin(async (tx) => {
+    await tx.unsafe(`SET LOCAL statement_timeout = ${Math.max(1, Math.trunc(timeoutMs))}`);
+    return run(tx);
+  });
+}
+
 async function prunePg(sql: Sql, cat: PgStorageCategory, req: PruneRequest): Promise<PruneResult> {
   const result: PruneResult = {
     ok: true,
@@ -151,17 +175,34 @@ async function prunePg(sql: Sql, cat: PgStorageCategory, req: PruneRequest): Pro
   };
   const t = `${ident(cat.schema)}.${ident(cat.table)}`;
   const where = pgWhere(cat, req.olderThanDays);
-  const { bytes: sizeBefore, rows: rowsBefore } = await relationStats(sql, cat.schema, cat.table);
-  const perRow = rowsBefore > 0 ? sizeBefore / rowsBefore : 0;
 
   if (req.dryRun) {
-    const rows = await sql.unsafe(`SELECT count(*)::bigint AS n FROM ${t} ${where}`);
-    const matched = num(rows[0]?.n);
-    result.removed = matched;
-    result.reclaimedBytes = Math.round(perRow * matched);
-    result.reclaimEstimated = true;
-    return result;
+    try {
+      const preview = await boundedRead(sql, DRY_RUN_STATEMENT_TIMEOUT_MS, async (tx) => {
+        const { bytes: sizeBefore, rows: rowsBefore } = await relationStats(tx, cat.schema, cat.table);
+        const rows = await tx.unsafe(`SELECT count(*)::bigint AS n FROM ${t} ${where}`);
+        return { sizeBefore, rowsBefore, matched: num(rows[0]?.n) };
+      });
+      const perRow = preview.rowsBefore > 0 ? preview.sizeBefore / preview.rowsBefore : 0;
+      result.removed = preview.matched;
+      result.reclaimedBytes = Math.round(perRow * preview.matched);
+      result.reclaimEstimated = true;
+      return result;
+    } catch (error) {
+      if (isStatementTimeout(error)) {
+        return {
+          ...result,
+          ok: false,
+          reason: 'dry_run_timed_out',
+          note: `dry-run count exceeded the ${DRY_RUN_STATEMENT_TIMEOUT_MS / 1000}s read budget; no rows were deleted — use storage:usage for a bounded estimate or retry with a narrower age window`,
+        };
+      }
+      throw error;
+    }
   }
+
+  const { bytes: sizeBefore, rows: rowsBefore } = await relationStats(sql, cat.schema, cat.table);
+  const perRow = rowsBefore > 0 ? sizeBefore / rowsBefore : 0;
 
   // Execute — chunked deletes so no single statement takes a long lock, under a
   // wall-time budget (EI-11379): a multi-million-row trim must return a
@@ -217,7 +258,7 @@ async function prunePg(sql: Sql, cat: PgStorageCategory, req: PruneRequest): Pro
   }
 
   // Bloat-queue: logical delete does not return disk → VACUUM FULL under the
-  // db:migrate exclusive lock with drain (the plan's coordination requirement).
+  // db-schema exclusive lock with drain (the plan's coordination requirement).
   // Skipped while the trim is still partial — VACUUM FULL is a long, locking op
   // that would itself blow the budget; it runs on the final draining call.
   if (cat.bloats && removed > 0 && result.complete) {
@@ -235,7 +276,7 @@ async function prunePg(sql: Sql, cat: PgStorageCategory, req: PruneRequest): Pro
             workspaceId: req.workspaceId,
             userId: null,
           },
-          resource: 'db:migrate',
+          resource: 'db-schema',
           mode: 'exclusive',
           maxDrainSec: 30,
           reason: `VACUUM FULL ${cat.table} (storage trim)`,
@@ -249,7 +290,7 @@ async function prunePg(sql: Sql, cat: PgStorageCategory, req: PruneRequest): Pro
       );
       result.vacuumed = outcome.acquired === true;
       if (!result.vacuumed) {
-        result.note = `rows deleted; VACUUM FULL skipped (db:migrate ${outcome.acquired === false ? outcome.reason : 'busy'}) — space is freed for reuse, but relation/OS bytes are not guaranteed to shrink without a table rewrite or truncation`;
+        result.note = `rows deleted; VACUUM FULL skipped (db-schema ${outcome.acquired === false ? outcome.reason : 'busy'}) — space is freed for reuse, but relation/OS bytes are not guaranteed to shrink without a table rewrite or truncation`;
       }
     } catch (err) {
       result.note = `rows deleted; VACUUM FULL failed: ${(err as Error)?.message ?? 'error'}`;
@@ -372,8 +413,12 @@ function pruneDiskPlain(cat: DiskStorageCategory, req: PruneRequest): PruneResul
   return result;
 }
 
+/** Keep a foreground scratch preview well below the MCP transport deadline. */
+const SCRATCH_PRUNE_SCAN_BUDGET_MS = 20_000;
+
 /** Scratch entries are workspace trees, not independent disposable top-level directories. */
 async function pruneScratch(cat: DiskStorageCategory, req: PruneRequest): Promise<PruneResult> {
+  const scanBudgetMs = req.scanBudgetMs ?? SCRATCH_PRUNE_SCAN_BUDGET_MS;
   const requestedMs = req.olderThanDays == null ? 0 : req.olderThanDays * 86400000;
   const categoryFloorMs = (cat.minOlderThanDays ?? 0) * 86400000;
   const retentionMs = Math.max(RETENTION_MS, categoryFloorMs, requestedMs);
@@ -384,6 +429,7 @@ async function pruneScratch(cat: DiskStorageCategory, req: PruneRequest): Promis
     retentionMs,
     quietMs: retentionMs,
     enforceQuota: false,
+    maxDurationMs: scanBudgetMs,
   });
   const removed = gc.retentionEvictions + gc.deadWorkspaces;
   const notes: string[] = [];
@@ -394,14 +440,24 @@ async function pruneScratch(cat: DiskStorageCategory, req: PruneRequest): Promis
   if (gc.deadWorkspacesDeferred.length > 0) {
     notes.push(`kept ${gc.deadWorkspacesDeferred.length} marked workspace root(s) without complete quiet/open-writer proof`);
   }
+  if (gc.truncated) {
+    notes.push(`scratch scan budget of ${scanBudgetMs}ms exhausted; this result is partial — re-run with the same arguments to continue`);
+  }
   return {
     ok: true,
     categoryId: cat.id,
     dryRun: req.dryRun,
     removed,
     reclaimedBytes: gc.retentionEvictedBytes + gc.deadWorkspaceBytes,
-    reclaimEstimated: false,
+    reclaimEstimated: Boolean(gc.truncated && req.dryRun),
     vacuumed: false,
+    ...(gc.truncated
+      ? {
+          partial: true,
+          complete: false,
+          continuation: { categoryId: cat.id, olderThanDays: req.olderThanDays },
+        }
+      : {}),
     ...(notes.length > 0 ? { note: notes.join('; ') } : {}),
   };
 }

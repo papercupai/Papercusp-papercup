@@ -364,13 +364,13 @@ interface ScriptRunResult {
 }
 
 async function runScript(input: ScriptRunInputs): Promise<ScriptRunResult> {
-  let prepared: ReturnType<typeof prepareSandboxCommand>;
-  try { prepared = prepareSandboxCommand(input.sandbox, ['/bin/bash', input.scriptPath]); }
+  let prepared: Awaited<ReturnType<typeof prepareSandboxCommand>>;
+  try { prepared = await prepareSandboxCommand(input.sandbox, ['/bin/bash', input.scriptPath]); }
   catch (error) { return { ok: false, exitCode: null, error: String(error) }; }
   try {
     return await runPreparedScript(input, prepared.argv);
   } finally {
-    prepared.cleanup();
+    await prepared.cleanup();
   }
 }
 

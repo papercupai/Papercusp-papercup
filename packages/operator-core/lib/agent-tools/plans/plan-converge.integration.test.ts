@@ -59,9 +59,11 @@ function execute(tools: Body, inputs: Body = {}) {
   return vm.runInNewContext(`(async () => {\n${script}\n})()`, { tools, inputs: checked.value.inputs }) as Promise<Body>;
 }
 function controls(rows: Body[], options: { audit?: Body; certify?: Body; filed?: Body } = {}) {
-  const evaluate = vi.fn(async (_args: Body) => ({ ok: true, rows }));
+  // Typed as the recipe sees it (an untyped tool envelope), so a case can resolve a
+  // deliberately malformed body — e.g. `{ ok: true }` with no rows — without a mock cast.
+  const evaluate = vi.fn(async (_args: Body): Promise<Body> => ({ ok: true, rows }));
   const audit = vi.fn(async () => options.audit ?? { ok: true });
-  const certify = vi.fn(async (_args: Body = {}) => options.certify ?? { ok: true, counts: { filed: 0 } });
+  const certify = vi.fn(async (_args: Body) => options.certify ?? { ok: true, counts: { filed: 0 } });
   const create = vi.fn(async () => options.filed ?? { ok: true, results: [{ ok: true, id: 'WI-gap', workItem: { id: 'WI-gap', assignee: 'converge-owner' } }] });
   const tools = { plans: { evaluateSpecTestAdequacy: evaluate, audit, certifySpecClauses: certify },
     coord: { whoami: async () => ({ ownerId: 'converge-owner' }) }, workItems: { create } };
@@ -87,7 +89,7 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
       deps: {}, inputs: { planSlug: 'converge-pg', harness: 'papercusp',
         classRef: 'plan-class-feature-ship', auditItems },
       tools: [tool('plans:audit', 'read', () => c.audit()),
-        tool('plans:certify-spec-clauses', 'write', () => c.certify()),
+        tool('plans:certify-spec-clauses', 'write', args => c.certify(args)),
         tool('plans:evaluate-spec-test-adequacy', 'read', args => c.evaluate(args))],
       wrapDispatch: bindCurrentCallerDispatch,
     });
@@ -113,7 +115,7 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
   });
   it('refuses missing classification rows without filing gaps or retrying certification', async () => {
     const c = controls([]);
-    c.evaluate.mockResolvedValueOnce({ ok: true } as never);
+    c.evaluate.mockResolvedValueOnce({ ok: true });
     expect(await execute(c.tools)).toMatchObject({ ok: false, phase: 'evaluate' });
     expect(c.audit).toHaveBeenCalledOnce();
     expect(c.certify).toHaveBeenCalledOnce();
@@ -227,8 +229,11 @@ describe('converge recipe controls (not PostgreSQL proof)', () => {
   });
 });
 
-describe('converge real PostgreSQL composition', () => {
+// Reuse the exact identities in two independent databases. This catches both
+// retained clause revisions and the fixed proof WI leaking between runs.
+describe.each([1, 2])('converge real PostgreSQL composition (isolated run %i)', () => {
   let fx: PlanPgFixture;
+  let previousWorkspaceId: string | undefined;
   const slug = 'converge-real-pg-fixture';
   const ctx = { isSuperuser: true, uiClientId: 'su-converge-pg', ownerId: 'su-converge-pg',
     workspaceId: PAPERCUSP_WORKSPACE_ID, harnessSlug: 'papercusp', log: () => {}, metadata: () => {},
@@ -247,7 +252,18 @@ describe('converge real PostgreSQL composition', () => {
     return evaluateTool.handler(evaluateTool.args.parse(toolArgs) as never, ctx);
   };
   beforeAll(async () => {
-    fx = await setupPlanPgFixture();
+    // setup-hermetic-env clears inherited workspace pins so tests cannot leak a
+    // fleet runner's scope. This fixture intentionally seeds the operator-home
+    // sentinel below; pin the same scope while the real handlers read it.
+    previousWorkspaceId = process.env.PAPERCUSP_WORKSPACE_ID;
+    process.env.PAPERCUSP_WORKSPACE_ID = PAPERCUSP_WORKSPACE_ID;
+    fx = await setupPlanPgFixture({ isolated: true });
+    expect(await fx.admin`SELECT spec_id FROM harness_shared.plan_spec_clauses
+      WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND harness_slug = 'papercusp' AND plan_slug = ${slug}`)
+      .toHaveLength(0);
+    expect(await fx.admin`SELECT feature_id FROM harness_shared.work_items
+      WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND feature_id = 'WI-CONVERGE-PROOF'`)
+      .toHaveLength(0);
     // The certifier writes through scorecards:emit, which resolves its own
     // spec-test-adequacy rubric from the workspace store. Seed the bundled
     // production rubric into this disposable database so this composition test
@@ -268,9 +284,13 @@ describe('converge real PostgreSQL composition', () => {
       behaviorClass: 'boundary', requiredEvidence: ['real PostgreSQL row'], requiredTestLayers: ['integration'],
       lifecycleStatus: 'active', acceptanceRef: 'fixture-accepted', actorId: 'su-converge-pg',
       falsifier: { observation: 'Unproved completion succeeds.', probeMethod: 'Attempt completion without proof.' } });
-    expect(written.status).toBe('created');
+    expect(written, JSON.stringify(written)).toMatchObject({ status: 'created' });
   }, 120_000);
-  afterAll(async () => { await fx?.dispose(); });
+  afterAll(async () => {
+    await fx?.dispose();
+    if (previousWorkspaceId === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+    else process.env.PAPERCUSP_WORKSPACE_ID = previousWorkspaceId;
+  }, 30_000);
   it('reads a persisted unbound clause through all three real handlers and writes no gap in default preview', async () => {
     const evaluate = vi.fn((args: Body) => call(evaluateTool, args));
     const audit = vi.fn((args: Body) => call(auditTool, args));

@@ -1,0 +1,968 @@
+{
+  "recordedAt": "2026-10-17T02:30:52.317826+00:00",
+  "workItem": "WI-6554700010016164",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "item": "P-039",
+  "plane": "private-current-build-operator-api",
+  "status": "intent-completion-native-qualified",
+  "shipment": "unverified",
+  "reuse": "Extended the maintained private incident CLI/operator/PG fixture with a separate task-brief mode and reused the shared native process/bundle runner. No new product surface.",
+  "runs": [
+    {
+      "name": "intent-completion",
+      "log": "/tmp/native-p039-journey-20261017.log",
+      "logSha256": "7eab9782abbcbabd20d213a05f4659cd25d3cfee475fd392ce8576cb864983d0",
+      "capture": "/tmp/native-p039-journey-source-20261017.json",
+      "captureSha256": "f542e2011d61a202d062515575ab848e39956d9afab4fbde086a76935a3b5d70",
+      "nativeRun": {
+        "schemaVersion": "native-vitest-run-v1",
+        "scope": "vitest-reporter-callbacks",
+        "pid": 2909027,
+        "ppid": 2909026,
+        "startedAtMs": 1792203815554,
+        "finishedAtMs": 1792203995461,
+        "terminalHook": "onTestRunEnd",
+        "reason": "passed",
+        "unhandledErrorCount": 0,
+        "reportedModulePaths": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts"
+        ],
+        "modulePopulationMatched": true,
+        "files": [
+          {
+            "testFile": "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts",
+            "state": "passed",
+            "observedAtMs": 1792203994548,
+            "firstAttemptVerdict": "unknown",
+            "execution": {
+              "passed": 1,
+              "failed": 0,
+              "skipped": 8,
+              "collectionFailed": false,
+              "passedCaseTitles": [
+                "native P039 private operator intent and completion briefs > delivers no-claim declare/orient scope and a pre-review receipt without inventing test execution"
+              ]
+            },
+            "cases": [
+              {
+                "caseIndex": 0,
+                "caseKey": "native P019 actual cross-repository response field change > exposes the incompatible known consumer through the public interface report before its next HTTP call fails",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 1,
+                "caseKey": "native P018 private operator CLI incident claim and resume > carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 2,
+                "caseKey": "native P039 private operator intent and completion briefs > delivers no-claim declare/orient scope and a pre-review receipt without inventing test execution",
+                "occurrence": 1,
+                "status": "pass",
+                "durationMs": 158188,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 3,
+                "caseKey": "native P013 real CLI graph planning advice > orders scoped producer/consumer references and reports overlap without changing live assignments or file claims",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 4,
+                "caseKey": "native P021 real CLI source/path expansion > expands budget-omitted captured records through capability:read after the source changes",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 5,
+                "caseKey": "native P014 required BAR real CLI interface change report > exposes the changed response field and its incompatible registered fixture client, then clears the mismatch after the client adapts",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 6,
+                "caseKey": "native P012 required BAR real CLI claim and resume > attributes claim/resume source to the held task and registered repository",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 7,
+                "caseKey": "native P017 required BAR real CLI runtime provenance > identifies a containing current-build artifact and keeps a newer private source distinct",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 8,
+                "caseKey": "native P010 required BAR real CLI change report > cites both reference consumers and rechecks the remaining consumer after a source edit",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              }
+            ]
+          }
+        ],
+        "gaps": []
+      },
+      "workerSourceStatus": "stable",
+      "selectedViteSources": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-cli.fixture.ts",
+          "sha256": "20bf8d53a255d6a50fa9a984b20dc8f6ac8ee1c640e6ee22a4153e102efdd603",
+          "basis": "vite-pre-transform",
+          "currentSha256": "20bf8d53a255d6a50fa9a984b20dc8f6ac8ee1c640e6ee22a4153e102efdd603"
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts",
+          "sha256": "b4fb97bd90e9290f33ae8ed50b3b9df7b75fcda8a9b8d1c855778ac0828d08eb",
+          "basis": "vite-pre-transform",
+          "currentSha256": "b4fb97bd90e9290f33ae8ed50b3b9df7b75fcda8a9b8d1c855778ac0828d08eb"
+        }
+      ],
+      "namedCurrentHashes": {
+        "packages/operator-core/lib/code-intelligence/push-channel.ts": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4",
+        "packages/operator-core/lib/code-intelligence/push-snapshot.ts": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44",
+        "packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts": "b4c63d961872e9927c9398b609c6629359ae9002c8dd9c1be6bb662dabba6e33",
+        "packages/operator-core/lib/edit-attribution.ts": "936a3d5406d66b67a2e3c0ea182b94f4c3e84c851a5902a7d625fef37a5fd150",
+        "apps/operator/scripts/hooks/inject/core.mjs": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+        "apps/operator/scripts/hooks/inject/index.mjs": "365141c2db306726af17f5f3bd4bcb17b26fd7ef672aed334401d59f73f11562",
+        "apps/operator/scripts/hooks/inject/ports.mjs": "7a2c5db543ab45df56853e5af19323df574958cb264c657784e956476a9bf464",
+        "apps/operator/scripts/hooks/inject/adapters/codex.mjs": "a39b9729a14df31f91f7b5ee009f1a382ce618fa2bead5b1303e101421652fc0",
+        "apps/operator/scripts/hooks/inject/delivery-ledger.mjs": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+        "packages/operator-core/lib/desktop-install/papercusp-files.ts": "4e4c3b506461035e39e052a83158057599e98c4b187d1b1dac62adb34e39dcc4",
+        "packages/operator-core/lib/desktop-install/install-provenance.ts": "0deb32319aa6e5cf0b801763e0d5b3ab9a6c6c4dc114d35f63dda1a2aa1cd36f",
+        "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec",
+        "scripts/check-required-field-strands.mjs": "20901dddaef557b9c2eb24399025c532f2b38c82806d830ac202e550bfa51113",
+        "scripts/check-behavioural-strands.mjs": "ef6a441182e1c9693b1f2a54c2975ed128940ad0a5eac0ed712f84e41460d6df",
+        "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts": "6c86d9b17692511adcb506ed183ea24cc66765378c28e7ec6a48109ce60b2429",
+        "packages/operator-core/lib/code-intelligence/task-brief.ts": "2d6afe7c742686f87566e8892de6c5c3429764e93802df28a4c94227e4854278",
+        "packages/operator-core/lib/code-intelligence/packer-facade.ts": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e",
+        "packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.ts": "aa5f4c31015afb11a791729a6e715d1e0276f05a9646741ea2844851b1962b60",
+        "packages/operator-core/lib/agent-tools/coordination/tools/orient.ts": "6054c7d0e56dd723f8ce17f903c03344a41df25d79c52949b6b214d9bfc80efe",
+        "packages/operator-core/lib/agent-tools/work_items/complete.ts": "6d68afd4a33d2c3ca57e085a9ba5d4e43193a492c094756dea1e3009f3445f37"
+      },
+      "configLoadedStatus": "unknown",
+      "mainLoadedStatus": "unknown",
+      "opaqueReasons": [
+        "child-process",
+        "config-deps-unavailable"
+      ],
+      "parentFileResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=8fdb7d2043 uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-17T02:23:22.767Z childSubstituted=0 skippedTests=8",
+      "phaseProgress": [
+        {
+          "stage": "pinned-assets-ready",
+          "elapsedMs": 31253,
+          "remainingMs": 148747
+        },
+        {
+          "stage": "import-start:first-party-callers-offthread",
+          "elapsedMs": 31254,
+          "remainingMs": 148746
+        },
+        {
+          "stage": "import-ready:first-party-callers-offthread",
+          "elapsedMs": 31371,
+          "remainingMs": 148629
+        },
+        {
+          "stage": "import-start:lsp-adapter",
+          "elapsedMs": 31371,
+          "remainingMs": 148629
+        },
+        {
+          "stage": "import-ready:lsp-adapter",
+          "elapsedMs": 32947,
+          "remainingMs": 147053
+        },
+        {
+          "stage": "import-start:handler-artifact",
+          "elapsedMs": 34692,
+          "remainingMs": 145308
+        },
+        {
+          "stage": "handler-loaded",
+          "elapsedMs": 43457,
+          "remainingMs": 136543
+        },
+        {
+          "stage": "import-start:fixture-stores",
+          "elapsedMs": 43458,
+          "remainingMs": 136542
+        },
+        {
+          "stage": "import-ready:fixture-stores",
+          "elapsedMs": 47209,
+          "remainingMs": 132791
+        },
+        {
+          "stage": "cli-start:coord:whoami",
+          "elapsedMs": 47573,
+          "remainingMs": 132427
+        },
+        {
+          "stage": "cli-finished:coord:whoami",
+          "elapsedMs": 51193,
+          "remainingMs": 128807
+        },
+        {
+          "stage": "cli-start:coord:declare-intent",
+          "elapsedMs": 51203,
+          "remainingMs": 128797
+        },
+        {
+          "stage": "cli-finished:coord:declare-intent",
+          "elapsedMs": 57239,
+          "remainingMs": 122761
+        },
+        {
+          "stage": "cli-start:coord:orient",
+          "elapsedMs": 57240,
+          "remainingMs": 122760
+        },
+        {
+          "stage": "cli-finished:coord:orient",
+          "elapsedMs": 71696,
+          "remainingMs": 108304
+        },
+        {
+          "stage": "cli-start:work_items:create",
+          "elapsedMs": 71697,
+          "remainingMs": 108303
+        },
+        {
+          "stage": "cli-finished:work_items:create",
+          "elapsedMs": 73260,
+          "remainingMs": 106740
+        },
+        {
+          "stage": "cli-start:coord:declare-intent",
+          "elapsedMs": 73261,
+          "remainingMs": 106739
+        },
+        {
+          "stage": "cli-finished:coord:declare-intent",
+          "elapsedMs": 74603,
+          "remainingMs": 105397
+        },
+        {
+          "stage": "cli-start:work_items:complete",
+          "elapsedMs": 75238,
+          "remainingMs": 104762
+        },
+        {
+          "stage": "cli-finished:work_items:complete",
+          "elapsedMs": 89463,
+          "remainingMs": 90537
+        },
+        {
+          "stage": "cli-start:work_items:get",
+          "elapsedMs": 89464,
+          "remainingMs": 90536
+        },
+        {
+          "stage": "cli-finished:work_items:get",
+          "elapsedMs": 93379,
+          "remainingMs": 86621
+        }
+      ],
+      "proof": {
+        "workspace": "test-runtime-cb584566-42c",
+        "transport": "real-cli-http",
+        "noClaimBeforeIntent": true,
+        "declare": {
+          "status": "current",
+          "scope": {
+            "harness": "test-runtime-cb584566-42c",
+            "paths": [
+              "a-target.ts",
+              "b-consumer.ts",
+              "target.test.ts"
+            ]
+          },
+          "sourceFingerprint": "c7d8362fcb3791e041af35a6a1bc03a250e57673afc3d4ae5449d06ab6219255",
+          "commit": null,
+          "intent": {
+            "text": "Inspect the bounded target and its consumer before implementing the completion fixture",
+            "fingerprint": "08aea91a294b1b7e1d2fb65d3978325517f6dca8c74bf9952d0fc464fcdfabe9"
+          },
+          "files": [
+            {
+              "path": "a-target.ts",
+              "sha256": "7c0c54e03759eb9b354c5192053aa327ca44050a8f3d554dd40f5e9e2354cbbf",
+              "kind": "implementation"
+            },
+            {
+              "path": "b-consumer.ts",
+              "sha256": "78c87aa8de1be15c6242e6f1776b7714718f5046f292f52f159dc6067c1d4bca",
+              "kind": "implementation"
+            },
+            {
+              "path": "target.test.ts",
+              "sha256": "42c2bec4288ee7f94e8ea10abb09e784a8a695c4de0e80e9014cf1e71b1a7b36",
+              "kind": "test"
+            }
+          ],
+          "excerpts": [
+            {
+              "path": "a-target.ts",
+              "text": "export function briefTarget() { return 1; }"
+            },
+            {
+              "path": "b-consumer.ts",
+              "text": "import { briefTarget } from \"./a-target.ts\";\nexport function consumer() { return briefTarget(); }"
+            },
+            {
+              "path": "target.test.ts",
+              "text": "import { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { briefTarget } from \"./a-target.ts\";\ntest(\"native completion assertion\", () => assert.equal(briefTarget(), 2));"
+            }
+          ],
+          "graph": {
+            "status": "measured",
+            "consumers": [
+              "b-consumer.ts:2",
+              "target.test.ts:4"
+            ],
+            "relationships": [
+              "observed:callers:?->?",
+              "observed:callers:?->?"
+            ]
+          },
+          "exclusions": [
+            "Evidence outside the stored task scope is excluded; compiler dependencies may be read internally. Static consumers do not prove runtime execution."
+          ],
+          "recover": {
+            "tool": "code:pack",
+            "args": {
+              "op": "pack",
+              "include": [
+                "a-target.ts",
+                "b-consumer.ts",
+                "target.test.ts"
+              ],
+              "rootPath": "/tmp/pcv/papercusp-test-runtime-Eo3EBT/workspaces/test-runtime-cb584566-42c/operator-home"
+            }
+          },
+          "repository": {
+            "workspaceId": "test-runtime-cb584566-42c",
+            "rootPath": "/tmp/pcv/papercusp-test-runtime-Eo3EBT/workspaces/test-runtime-cb584566-42c/operator-home"
+          }
+        },
+        "orient": {
+          "status": "current",
+          "scope": {
+            "harness": "test-runtime-cb584566-42c",
+            "paths": [
+              "a-target.ts",
+              "b-consumer.ts",
+              "target.test.ts"
+            ]
+          },
+          "sourceFingerprint": "c7d8362fcb3791e041af35a6a1bc03a250e57673afc3d4ae5449d06ab6219255",
+          "commit": null,
+          "intent": {
+            "text": "Inspect the bounded target and its consumer before implementing the completion fixture",
+            "fingerprint": "08aea91a294b1b7e1d2fb65d3978325517f6dca8c74bf9952d0fc464fcdfabe9"
+          },
+          "files": [
+            {
+              "path": "a-target.ts",
+              "sha256": "7c0c54e03759eb9b354c5192053aa327ca44050a8f3d554dd40f5e9e2354cbbf",
+              "kind": "implementation"
+            },
+            {
+              "path": "b-consumer.ts",
+              "sha256": "78c87aa8de1be15c6242e6f1776b7714718f5046f292f52f159dc6067c1d4bca",
+              "kind": "implementation"
+            },
+            {
+              "path": "target.test.ts",
+              "sha256": "42c2bec4288ee7f94e8ea10abb09e784a8a695c4de0e80e9014cf1e71b1a7b36",
+              "kind": "test"
+            }
+          ],
+          "excerpts": [
+            {
+              "path": "a-target.ts",
+              "text": "export function briefTarget() { return 1; }"
+            },
+            {
+              "path": "b-consumer.ts",
+              "text": "import { briefTarget } from \"./a-target.ts\";\nexport function consumer() { return briefTarget(); }"
+            },
+            {
+              "path": "target.test.ts",
+              "text": "import { test } from \"node:test\";\nimport assert from \"node:assert/strict\";\nimport { briefTarget } from \"./a-target.ts\";\ntest(\"native completion assertion\", () => assert.equal(briefTarget(), 2));"
+            }
+          ],
+          "graph": {
+            "status": "measured",
+            "consumers": [
+              "b-consumer.ts:2",
+              "target.test.ts:4"
+            ],
+            "relationships": [
+              "observed:callers:?->?",
+              "observed:callers:?->?"
+            ]
+          },
+          "exclusions": [
+            "Evidence outside the stored task scope is excluded; compiler dependencies may be read internally. Static consumers do not prove runtime execution."
+          ],
+          "recover": {
+            "tool": "code:pack",
+            "args": {
+              "op": "pack",
+              "include": [
+                "a-target.ts",
+                "b-consumer.ts",
+                "target.test.ts"
+              ],
+              "rootPath": "/tmp/pcv/papercusp-test-runtime-Eo3EBT/workspaces/test-runtime-cb584566-42c/operator-home"
+            }
+          },
+          "repository": {
+            "workspaceId": "test-runtime-cb584566-42c",
+            "rootPath": "/tmp/pcv/papercusp-test-runtime-Eo3EBT/workspaces/test-runtime-cb584566-42c/operator-home"
+          }
+        },
+        "heldClaimSuppressed": true,
+        "completion": {
+          "phase": "pre-review",
+          "status": "measured",
+          "scope": {
+            "paths": [
+              "a-target.ts"
+            ],
+            "processed": [
+              "a-target.ts"
+            ]
+          },
+          "changes": [
+            {
+              "file": "a-target.ts",
+              "symbol": "briefTarget",
+              "sourceFingerprint": "21916e9b87761a6f887674e8353dd1af788cffe20298c937d0a832d813b1dff6",
+              "consumers": [
+                "b-consumer.ts:2",
+                "target.test.ts:4"
+              ]
+            }
+          ],
+          "tests": [
+            {
+              "path": "target.test.ts",
+              "execution": "not-recorded-in-bound-run",
+              "runGroupId": null,
+              "status": null
+            }
+          ],
+          "testsWithoutRunEvidence": [
+            "target.test.ts"
+          ],
+          "executionCoverage": "unmeasured",
+          "limitations": [
+            "Bounded static source reach, not complete change coverage. A recorded file run may be filtered or stale; current-source test execution is unmeasured."
+          ],
+          "recover": {
+            "tool": "code:pack",
+            "args": {
+              "op": "diff",
+              "include": [
+                "a-target.ts"
+              ],
+              "rootPath": "/tmp/pcv/papercusp-test-runtime-Eo3EBT/workspaces/test-runtime-cb584566-42c/operator-home",
+              "explain": {
+                "file": "a-target.ts",
+                "symbol": "briefTarget",
+                "phase": "pre-review"
+              }
+            }
+          }
+        },
+        "terminal": true,
+        "testOutputSha256": "bdee26fbe3f649b5a1e016a6c00ec767685a576bb1ecb6972bea72a2abb7c8e2",
+        "scope": "private current-source CLI requests; compiler and safe packer; no model session or final shipment",
+        "beforeHashes": {
+          "packages/operator-core/lib/code-intelligence/push-channel.ts": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4",
+          "packages/operator-core/lib/code-intelligence/push-snapshot.ts": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44",
+          "packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts": "b4c63d961872e9927c9398b609c6629359ae9002c8dd9c1be6bb662dabba6e33",
+          "packages/operator-core/lib/edit-attribution.ts": "936a3d5406d66b67a2e3c0ea182b94f4c3e84c851a5902a7d625fef37a5fd150",
+          "apps/operator/scripts/hooks/inject/core.mjs": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+          "apps/operator/scripts/hooks/inject/index.mjs": "365141c2db306726af17f5f3bd4bcb17b26fd7ef672aed334401d59f73f11562",
+          "apps/operator/scripts/hooks/inject/ports.mjs": "7a2c5db543ab45df56853e5af19323df574958cb264c657784e956476a9bf464",
+          "apps/operator/scripts/hooks/inject/adapters/codex.mjs": "a39b9729a14df31f91f7b5ee009f1a382ce618fa2bead5b1303e101421652fc0",
+          "apps/operator/scripts/hooks/inject/delivery-ledger.mjs": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+          "packages/operator-core/lib/desktop-install/papercusp-files.ts": "4e4c3b506461035e39e052a83158057599e98c4b187d1b1dac62adb34e39dcc4",
+          "packages/operator-core/lib/desktop-install/install-provenance.ts": "0deb32319aa6e5cf0b801763e0d5b3ab9a6c6c4dc114d35f63dda1a2aa1cd36f",
+          "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec",
+          "scripts/check-required-field-strands.mjs": "20901dddaef557b9c2eb24399025c532f2b38c82806d830ac202e550bfa51113",
+          "scripts/check-behavioural-strands.mjs": "ef6a441182e1c9693b1f2a54c2975ed128940ad0a5eac0ed712f84e41460d6df",
+          "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts": "6c86d9b17692511adcb506ed183ea24cc66765378c28e7ec6a48109ce60b2429",
+          "packages/operator-core/lib/code-intelligence/task-brief.ts": "2d6afe7c742686f87566e8892de6c5c3429764e93802df28a4c94227e4854278",
+          "packages/operator-core/lib/code-intelligence/packer-facade.ts": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e",
+          "packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.ts": "aa5f4c31015afb11a791729a6e715d1e0276f05a9646741ea2844851b1962b60",
+          "packages/operator-core/lib/agent-tools/coordination/tools/orient.ts": "6054c7d0e56dd723f8ce17f903c03344a41df25d79c52949b6b214d9bfc80efe",
+          "packages/operator-core/lib/agent-tools/work_items/complete.ts": "6d68afd4a33d2c3ca57e085a9ba5d4e43193a492c094756dea1e3009f3445f37"
+        },
+        "afterHashes": {
+          "packages/operator-core/lib/code-intelligence/push-channel.ts": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4",
+          "packages/operator-core/lib/code-intelligence/push-snapshot.ts": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44",
+          "packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts": "b4c63d961872e9927c9398b609c6629359ae9002c8dd9c1be6bb662dabba6e33",
+          "packages/operator-core/lib/edit-attribution.ts": "936a3d5406d66b67a2e3c0ea182b94f4c3e84c851a5902a7d625fef37a5fd150",
+          "apps/operator/scripts/hooks/inject/core.mjs": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+          "apps/operator/scripts/hooks/inject/index.mjs": "365141c2db306726af17f5f3bd4bcb17b26fd7ef672aed334401d59f73f11562",
+          "apps/operator/scripts/hooks/inject/ports.mjs": "7a2c5db543ab45df56853e5af19323df574958cb264c657784e956476a9bf464",
+          "apps/operator/scripts/hooks/inject/adapters/codex.mjs": "a39b9729a14df31f91f7b5ee009f1a382ce618fa2bead5b1303e101421652fc0",
+          "apps/operator/scripts/hooks/inject/delivery-ledger.mjs": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+          "packages/operator-core/lib/desktop-install/papercusp-files.ts": "4e4c3b506461035e39e052a83158057599e98c4b187d1b1dac62adb34e39dcc4",
+          "packages/operator-core/lib/desktop-install/install-provenance.ts": "0deb32319aa6e5cf0b801763e0d5b3ab9a6c6c4dc114d35f63dda1a2aa1cd36f",
+          "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec",
+          "scripts/check-required-field-strands.mjs": "20901dddaef557b9c2eb24399025c532f2b38c82806d830ac202e550bfa51113",
+          "scripts/check-behavioural-strands.mjs": "ef6a441182e1c9693b1f2a54c2975ed128940ad0a5eac0ed712f84e41460d6df",
+          "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts": "6c86d9b17692511adcb506ed183ea24cc66765378c28e7ec6a48109ce60b2429",
+          "packages/operator-core/lib/code-intelligence/task-brief.ts": "2d6afe7c742686f87566e8892de6c5c3429764e93802df28a4c94227e4854278",
+          "packages/operator-core/lib/code-intelligence/packer-facade.ts": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e",
+          "packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.ts": "aa5f4c31015afb11a791729a6e715d1e0276f05a9646741ea2844851b1962b60",
+          "packages/operator-core/lib/agent-tools/coordination/tools/orient.ts": "6054c7d0e56dd723f8ce17f903c03344a41df25d79c52949b6b214d9bfc80efe",
+          "packages/operator-core/lib/agent-tools/work_items/complete.ts": "6d68afd4a33d2c3ca57e085a9ba5d4e43193a492c094756dea1e3009f3445f37"
+        }
+      }
+    },
+    {
+      "name": "shared-incident-regression",
+      "log": "/tmp/native-p039-incident-regression-20261017.log",
+      "logSha256": "1560dd547633de28863374c6c790ecee62966b7f71dabce379ed300681c3bdd2",
+      "capture": "/tmp/native-p039-incident-regression-source-20261017.json",
+      "captureSha256": "c96dabe048df6f1e9a3d74a9a2f99fdf092084e25b402ea593d290a0ae9bc2f2",
+      "nativeRun": {
+        "schemaVersion": "native-vitest-run-v1",
+        "scope": "vitest-reporter-callbacks",
+        "pid": 3140589,
+        "ppid": 3140586,
+        "startedAtMs": 1792204047185,
+        "finishedAtMs": 1792204213835,
+        "terminalHook": "onTestRunEnd",
+        "reason": "passed",
+        "unhandledErrorCount": 0,
+        "reportedModulePaths": [
+          "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts"
+        ],
+        "modulePopulationMatched": true,
+        "files": [
+          {
+            "testFile": "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts",
+            "state": "passed",
+            "observedAtMs": 1792204213619,
+            "firstAttemptVerdict": "unknown",
+            "execution": {
+              "passed": 1,
+              "failed": 0,
+              "skipped": 8,
+              "collectionFailed": false,
+              "passedCaseTitles": [
+                "native P018 private operator CLI incident claim and resume > carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun"
+              ]
+            },
+            "cases": [
+              {
+                "caseIndex": 0,
+                "caseKey": "native P019 actual cross-repository response field change > exposes the incompatible known consumer through the public interface report before its next HTTP call fails",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 1,
+                "caseKey": "native P018 private operator CLI incident claim and resume > carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun",
+                "occurrence": 1,
+                "status": "pass",
+                "durationMs": 143374,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 2,
+                "caseKey": "native P039 private operator intent and completion briefs > delivers no-claim declare/orient scope and a pre-review receipt without inventing test execution",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 3,
+                "caseKey": "native P013 real CLI graph planning advice > orders scoped producer/consumer references and reports overlap without changing live assignments or file claims",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 4,
+                "caseKey": "native P021 real CLI source/path expansion > expands budget-omitted captured records through capability:read after the source changes",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 5,
+                "caseKey": "native P014 required BAR real CLI interface change report > exposes the changed response field and its incompatible registered fixture client, then clears the mismatch after the client adapts",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 6,
+                "caseKey": "native P012 required BAR real CLI claim and resume > attributes claim/resume source to the held task and registered repository",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 7,
+                "caseKey": "native P017 required BAR real CLI runtime provenance > identifies a containing current-build artifact and keeps a newer private source distinct",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              },
+              {
+                "caseIndex": 8,
+                "caseKey": "native P010 required BAR real CLI change report > cites both reference consumers and rechecks the remaining consumer after a source edit",
+                "occurrence": 1,
+                "status": "skip",
+                "durationMs": null,
+                "errorTail": null
+              }
+            ]
+          }
+        ],
+        "gaps": []
+      },
+      "workerSourceStatus": "stable",
+      "selectedViteSources": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-cli.fixture.ts",
+          "sha256": "20bf8d53a255d6a50fa9a984b20dc8f6ac8ee1c640e6ee22a4153e102efdd603",
+          "basis": "vite-pre-transform",
+          "currentSha256": "20bf8d53a255d6a50fa9a984b20dc8f6ac8ee1c640e6ee22a4153e102efdd603"
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts",
+          "sha256": "b4fb97bd90e9290f33ae8ed50b3b9df7b75fcda8a9b8d1c855778ac0828d08eb",
+          "basis": "vite-pre-transform",
+          "currentSha256": "b4fb97bd90e9290f33ae8ed50b3b9df7b75fcda8a9b8d1c855778ac0828d08eb"
+        }
+      ],
+      "namedCurrentHashes": {
+        "packages/operator-core/lib/code-intelligence/push-channel.ts": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4",
+        "packages/operator-core/lib/code-intelligence/push-snapshot.ts": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44",
+        "packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts": "b4c63d961872e9927c9398b609c6629359ae9002c8dd9c1be6bb662dabba6e33",
+        "packages/operator-core/lib/edit-attribution.ts": "936a3d5406d66b67a2e3c0ea182b94f4c3e84c851a5902a7d625fef37a5fd150",
+        "apps/operator/scripts/hooks/inject/core.mjs": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+        "apps/operator/scripts/hooks/inject/index.mjs": "365141c2db306726af17f5f3bd4bcb17b26fd7ef672aed334401d59f73f11562",
+        "apps/operator/scripts/hooks/inject/ports.mjs": "7a2c5db543ab45df56853e5af19323df574958cb264c657784e956476a9bf464",
+        "apps/operator/scripts/hooks/inject/adapters/codex.mjs": "a39b9729a14df31f91f7b5ee009f1a382ce618fa2bead5b1303e101421652fc0",
+        "apps/operator/scripts/hooks/inject/delivery-ledger.mjs": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+        "packages/operator-core/lib/desktop-install/papercusp-files.ts": "4e4c3b506461035e39e052a83158057599e98c4b187d1b1dac62adb34e39dcc4",
+        "packages/operator-core/lib/desktop-install/install-provenance.ts": "0deb32319aa6e5cf0b801763e0d5b3ab9a6c6c4dc114d35f63dda1a2aa1cd36f",
+        "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec",
+        "scripts/check-required-field-strands.mjs": "20901dddaef557b9c2eb24399025c532f2b38c82806d830ac202e550bfa51113",
+        "scripts/check-behavioural-strands.mjs": "ef6a441182e1c9693b1f2a54c2975ed128940ad0a5eac0ed712f84e41460d6df",
+        "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts": "6c86d9b17692511adcb506ed183ea24cc66765378c28e7ec6a48109ce60b2429",
+        "packages/operator-core/lib/code-intelligence/task-brief.ts": "2d6afe7c742686f87566e8892de6c5c3429764e93802df28a4c94227e4854278",
+        "packages/operator-core/lib/code-intelligence/packer-facade.ts": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e",
+        "packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.ts": "aa5f4c31015afb11a791729a6e715d1e0276f05a9646741ea2844851b1962b60",
+        "packages/operator-core/lib/agent-tools/coordination/tools/orient.ts": "6054c7d0e56dd723f8ce17f903c03344a41df25d79c52949b6b214d9bfc80efe",
+        "packages/operator-core/lib/agent-tools/work_items/complete.ts": "6d68afd4a33d2c3ca57e085a9ba5d4e43193a492c094756dea1e3009f3445f37"
+      },
+      "configLoadedStatus": "unknown",
+      "mainLoadedStatus": "unknown",
+      "opaqueReasons": [
+        "child-process",
+        "config-deps-unavailable"
+      ],
+      "parentFileResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=8fdb7d2043 uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-17T02:27:11.194Z childSubstituted=0 skippedTests=8",
+      "phaseProgress": [
+        {
+          "stage": "pinned-assets-ready",
+          "elapsedMs": 34773,
+          "remainingMs": 145227
+        },
+        {
+          "stage": "import-start:first-party-callers-offthread",
+          "elapsedMs": 34774,
+          "remainingMs": 145226
+        },
+        {
+          "stage": "import-ready:first-party-callers-offthread",
+          "elapsedMs": 34884,
+          "remainingMs": 145116
+        },
+        {
+          "stage": "import-start:lsp-adapter",
+          "elapsedMs": 34884,
+          "remainingMs": 145116
+        },
+        {
+          "stage": "import-ready:lsp-adapter",
+          "elapsedMs": 36942,
+          "remainingMs": 143058
+        },
+        {
+          "stage": "import-start:handler-artifact",
+          "elapsedMs": 37100,
+          "remainingMs": 142900
+        },
+        {
+          "stage": "handler-loaded",
+          "elapsedMs": 44659,
+          "remainingMs": 135341
+        },
+        {
+          "stage": "import-start:fixture-stores",
+          "elapsedMs": 44659,
+          "remainingMs": 135341
+        },
+        {
+          "stage": "import-ready:fixture-stores",
+          "elapsedMs": 49782,
+          "remainingMs": 130218
+        },
+        {
+          "stage": "cli-start:coord:whoami",
+          "elapsedMs": 50138,
+          "remainingMs": 129862
+        },
+        {
+          "stage": "cli-finished:coord:whoami",
+          "elapsedMs": 54079,
+          "remainingMs": 125921
+        },
+        {
+          "stage": "compiler-relationship-ready",
+          "elapsedMs": 56470,
+          "remainingMs": 123530
+        },
+        {
+          "stage": "cli-start:work_items:create",
+          "elapsedMs": 56471,
+          "remainingMs": 123529
+        },
+        {
+          "stage": "cli-finished:work_items:create",
+          "elapsedMs": 58204,
+          "remainingMs": 121796
+        },
+        {
+          "stage": "cli-start:work_items:get",
+          "elapsedMs": 58900,
+          "remainingMs": 121100
+        },
+        {
+          "stage": "cli-finished:work_items:get",
+          "elapsedMs": 60289,
+          "remainingMs": 119711
+        },
+        {
+          "stage": "cli-start:work_items:claim",
+          "elapsedMs": 61068,
+          "remainingMs": 118932
+        },
+        {
+          "stage": "cli-finished:work_items:claim",
+          "elapsedMs": 66240,
+          "remainingMs": 113760
+        },
+        {
+          "stage": "cli-start:work_items:get",
+          "elapsedMs": 66240,
+          "remainingMs": 113760
+        },
+        {
+          "stage": "cli-finished:work_items:get",
+          "elapsedMs": 69616,
+          "remainingMs": 110384
+        },
+        {
+          "stage": "cli-start:work_items:get",
+          "elapsedMs": 70198,
+          "remainingMs": 109802
+        },
+        {
+          "stage": "cli-finished:work_items:get",
+          "elapsedMs": 73951,
+          "remainingMs": 106049
+        }
+      ],
+      "proof": {
+        "workspace": "test-runtime-3b9ea35d-12f",
+        "transport": "real-cli-http",
+        "failure": "actual-node-assertion",
+        "staticCandidate": true,
+        "cause": "unknown",
+        "runtimeExecution": "unmeasured",
+        "resume": "current",
+        "repaired": true,
+        "push": {
+          "delivered": "## Code intelligence (incident)\nSnapshot aaaaaaaaaaaa \u00b7 2026-10-17T02:29:55.759Z\nObserved failing test files: target.test.ts. The observed failure is authoritative.\nStatic reach candidates (unverified): a-target.ts.\nSymbols on static reach (change status unknown): incidentTarget:a-target.ts:1; observed turn edit strands: unknown.\nRecently changed symbols (measured ledger attribution): incidentTarget:a-target.ts:1.\nWork items changed/open on these paths: WI-1 [wip] (file-edit-ledger) Private native incident request fixture; WI-1 [wip] (open-on-path) Private native incident request fixture. File-edit attribution does not prove symbol authorship. Graph paths are hypotheses only; cause, runtime execution and dynamic dispatch are unknown. Recover recorded failures with testing:runs {\"testRunIds\":[2],\"harness\":\"test-runtime-3b9ea35d-12f\"}.",
+          "duplicateSuppressed": true,
+          "ledger": {
+            "id": 1,
+            "subject": "failed-tests:target.test.ts",
+            "chars": 847,
+            "cited_paths": [
+              "target.test.ts",
+              "a-target.ts"
+            ]
+          },
+          "attribution": {
+            "status": "measured",
+            "recentEdits": [
+              {
+                "root": "/tmp/pcv/papercusp-test-runtime-Mm1dUf/workspaces/test-runtime-3b9ea35d-12f/operator-home",
+                "path": "a-target.ts",
+                "base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "symbols": [
+                  {
+                    "name": "incidentTarget",
+                    "line": 1
+                  }
+                ],
+                "beforeSha256": "5826b7634d5d8f9e95112f458007acfdf0e01910dabe0afd5b7b45bb9343120b",
+                "sha256": "5580682278f26696bc880919f155f7416286770dedf20d56daaf2b8a8635f9da",
+                "at": 1792204193848,
+                "workspace": "test-runtime-3b9ea35d-12f",
+                "harness": "test-runtime-3b9ea35d-12f",
+                "agentId": "native-incident-private-owner"
+              }
+            ]
+          },
+          "testRunId": 2,
+          "handlerHash": "29eac3771fcbaaf51712bc6699c57661a8f124793ee7c9a6db7d056cd60f4f32",
+          "deliveryBoundary": "installed Codex dispatcher/native PostToolUse event to stdout context envelope",
+          "installed": {
+            "hashes": {
+              "index.mjs": "365141c2db306726af17f5f3bd4bcb17b26fd7ef672aed334401d59f73f11562",
+              "core.mjs": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+              "ports.mjs": "7a2c5db543ab45df56853e5af19323df574958cb264c657784e956476a9bf464",
+              "delivery-ledger.mjs": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+              "adapters/codex.mjs": "a39b9729a14df31f91f7b5ee009f1a382ce618fa2bead5b1303e101421652fc0"
+            },
+            "stamp": {
+              "sourceDir": "apps/operator/scripts/hooks/inject",
+              "sourceSha": "8fdb7d20436896addb05b9055e306907eaa29d7e",
+              "sourceCommittedAt": "2026-10-17T02:22:35.000Z",
+              "installedAt": "2026-10-17T02:29:55.812Z",
+              "pid": 3248860,
+              "installedBy": "repomix",
+              "files": [
+                "core.mjs",
+                "delivery-ledger.mjs",
+                "index.mjs",
+                "ports.mjs",
+                "adapters/claude.mjs",
+                "adapters/codex.mjs",
+                "adapters/omp.mjs"
+              ]
+            },
+            "processes": 3,
+            "nodeOptions": "",
+            "envelope": {
+              "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": "## Code intelligence (incident)\nSnapshot aaaaaaaaaaaa \u00b7 2026-10-17T02:29:55.759Z\nObserved failing test files: target.test.ts. The observed failure is authoritative.\nStatic reach candidates (unverified): a-target.ts.\nSymbols on static reach (change status unknown): incidentTarget:a-target.ts:1; observed turn edit strands: unknown.\nRecently changed symbols (measured ledger attribution): incidentTarget:a-target.ts:1.\nWork items changed/open on these paths: WI-1 [wip] (file-edit-ledger) Private native incident request fixture; WI-1 [wip] (open-on-path) Private native incident request fixture. File-edit attribution does not prove symbol authorship. Graph paths are hypotheses only; cause, runtime execution and dynamic dispatch are unknown. Recover recorded failures with testing:runs {\"testRunIds\":[2],\"harness\":\"test-runtime-3b9ea35d-12f\"}."
+              }
+            },
+            "duplicateEnvelope": null
+          },
+          "snapshotSha256": "2257ac9de6a70d6f9627518cd0b6aaa18adb801a27397a56c88b40ae45a99169",
+          "sourceBeforeSha256": "5826b7634d5d8f9e95112f458007acfdf0e01910dabe0afd5b7b45bb9343120b",
+          "sourceAfterSha256": "5580682278f26696bc880919f155f7416286770dedf20d56daaf2b8a8635f9da",
+          "observationProducer": "maintained collector and delivery ledger with controlled before image",
+          "scope": "private current-source installed dispatcher replay; automatic symbol collection and edit/open-WI lookup; synthetic snapshot commit and controlled source-history seam; no live Codex model session"
+        },
+        "beforeHashes": {
+          "packages/operator-core/lib/code-intelligence/push-channel.ts": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4",
+          "packages/operator-core/lib/code-intelligence/push-snapshot.ts": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44",
+          "packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts": "b4c63d961872e9927c9398b609c6629359ae9002c8dd9c1be6bb662dabba6e33",
+          "packages/operator-core/lib/edit-attribution.ts": "936a3d5406d66b67a2e3c0ea182b94f4c3e84c851a5902a7d625fef37a5fd150",
+          "apps/operator/scripts/hooks/inject/core.mjs": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+          "apps/operator/scripts/hooks/inject/index.mjs": "365141c2db306726af17f5f3bd4bcb17b26fd7ef672aed334401d59f73f11562",
+          "apps/operator/scripts/hooks/inject/ports.mjs": "7a2c5db543ab45df56853e5af19323df574958cb264c657784e956476a9bf464",
+          "apps/operator/scripts/hooks/inject/adapters/codex.mjs": "a39b9729a14df31f91f7b5ee009f1a382ce618fa2bead5b1303e101421652fc0",
+          "apps/operator/scripts/hooks/inject/delivery-ledger.mjs": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+          "packages/operator-core/lib/desktop-install/papercusp-files.ts": "4e4c3b506461035e39e052a83158057599e98c4b187d1b1dac62adb34e39dcc4",
+          "packages/operator-core/lib/desktop-install/install-provenance.ts": "0deb32319aa6e5cf0b801763e0d5b3ab9a6c6c4dc114d35f63dda1a2aa1cd36f",
+          "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec",
+          "scripts/check-required-field-strands.mjs": "20901dddaef557b9c2eb24399025c532f2b38c82806d830ac202e550bfa51113",
+          "scripts/check-behavioural-strands.mjs": "ef6a441182e1c9693b1f2a54c2975ed128940ad0a5eac0ed712f84e41460d6df",
+          "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts": "6c86d9b17692511adcb506ed183ea24cc66765378c28e7ec6a48109ce60b2429",
+          "packages/operator-core/lib/code-intelligence/task-brief.ts": "2d6afe7c742686f87566e8892de6c5c3429764e93802df28a4c94227e4854278",
+          "packages/operator-core/lib/code-intelligence/packer-facade.ts": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e",
+          "packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.ts": "aa5f4c31015afb11a791729a6e715d1e0276f05a9646741ea2844851b1962b60",
+          "packages/operator-core/lib/agent-tools/coordination/tools/orient.ts": "6054c7d0e56dd723f8ce17f903c03344a41df25d79c52949b6b214d9bfc80efe",
+          "packages/operator-core/lib/agent-tools/work_items/complete.ts": "6d68afd4a33d2c3ca57e085a9ba5d4e43193a492c094756dea1e3009f3445f37"
+        },
+        "afterHashes": {
+          "packages/operator-core/lib/code-intelligence/push-channel.ts": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4",
+          "packages/operator-core/lib/code-intelligence/push-snapshot.ts": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44",
+          "packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts": "b4c63d961872e9927c9398b609c6629359ae9002c8dd9c1be6bb662dabba6e33",
+          "packages/operator-core/lib/edit-attribution.ts": "936a3d5406d66b67a2e3c0ea182b94f4c3e84c851a5902a7d625fef37a5fd150",
+          "apps/operator/scripts/hooks/inject/core.mjs": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+          "apps/operator/scripts/hooks/inject/index.mjs": "365141c2db306726af17f5f3bd4bcb17b26fd7ef672aed334401d59f73f11562",
+          "apps/operator/scripts/hooks/inject/ports.mjs": "7a2c5db543ab45df56853e5af19323df574958cb264c657784e956476a9bf464",
+          "apps/operator/scripts/hooks/inject/adapters/codex.mjs": "a39b9729a14df31f91f7b5ee009f1a382ce618fa2bead5b1303e101421652fc0",
+          "apps/operator/scripts/hooks/inject/delivery-ledger.mjs": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+          "packages/operator-core/lib/desktop-install/papercusp-files.ts": "4e4c3b506461035e39e052a83158057599e98c4b187d1b1dac62adb34e39dcc4",
+          "packages/operator-core/lib/desktop-install/install-provenance.ts": "0deb32319aa6e5cf0b801763e0d5b3ab9a6c6c4dc114d35f63dda1a2aa1cd36f",
+          "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec",
+          "scripts/check-required-field-strands.mjs": "20901dddaef557b9c2eb24399025c532f2b38c82806d830ac202e550bfa51113",
+          "scripts/check-behavioural-strands.mjs": "ef6a441182e1c9693b1f2a54c2975ed128940ad0a5eac0ed712f84e41460d6df",
+          "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts": "6c86d9b17692511adcb506ed183ea24cc66765378c28e7ec6a48109ce60b2429",
+          "packages/operator-core/lib/code-intelligence/task-brief.ts": "2d6afe7c742686f87566e8892de6c5c3429764e93802df28a4c94227e4854278",
+          "packages/operator-core/lib/code-intelligence/packer-facade.ts": "2a7c7b6178b00142fc00f05a52d7549d9f73d19147d8f7047281251fcda4088e",
+          "packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.ts": "aa5f4c31015afb11a791729a6e715d1e0276f05a9646741ea2844851b1962b60",
+          "packages/operator-core/lib/agent-tools/coordination/tools/orient.ts": "6054c7d0e56dd723f8ce17f903c03344a41df25d79c52949b6b214d9bfc80efe",
+          "packages/operator-core/lib/agent-tools/work_items/complete.ts": "6d68afd4a33d2c3ca57e085a9ba5d4e43193a492c094756dea1e3009f3445f37"
+        }
+      }
+    }
+  ],
+  "types": {
+    "log": "/tmp/native-p039-journey-types-20261017.log",
+    "logSha256": "9d16d67be34942b0bf9e5ba5104621930e5a16bf0b9fba9cd85b08a9fab7c259",
+    "exitCode": 0,
+    "result": "LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean at=2026-10-17T02:20:40.462Z head=62994650ca",
+    "scope": "two named TypeScript files; fixture kind literal changed from task to change after typecheck began"
+  },
+  "priorLocalEvidence": "docs/evidence/native-p039-completion-2026-10-16.json",
+  "limits": [
+    "One P039 case and one shared-incident regression case passed in separate runs; eight other cases were filtered in each run.",
+    "Private compiler/packer and CLI response delivery, not a live model session or final release shipment.",
+    "Twenty named disk hashes and two selected Vite original-source hashes match; the complete process dependency graph is not qualified.",
+    "Config and main-process loaded-source evidence remain unknown. Parent childSubstituted=0 does not census native child substitutions hidden by bounded success capture.",
+    "Completion identifies missing server-bound run evidence; an actual private node:test run does not become a recorded testing:run invocation.",
+    "Parent-plan adoption windows, independent verification and final shipment remain separate.",
+    "Public evidence uses the maintained identity-safe JSON serializer vocabulary for sourceDir; original machine provenance remains in the referenced private captures. Counters, source hashes and recorded results are unchanged."
+  ]
+}

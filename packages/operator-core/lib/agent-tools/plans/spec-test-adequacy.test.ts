@@ -20,6 +20,7 @@ import {
   supersedeEligibilityGaps,
 } from './spec-test-adequacy';
 import { argsSchema as evaluatorArgsSchema } from './evaluate-spec-test-adequacy';
+import getSpecEvidenceTool from './get-spec-evidence';
 import { scorecardEmitArgs } from '../scorecards/emit';
 import { classifySpecEvidenceCurrentness, type EvidenceCurrentInput } from './spec-evidence-store';
 import { asStructuredObservation } from '../../harness/improvements/observation-types';
@@ -72,6 +73,52 @@ describe('shared adequacy-card binding evidence', () => {
         `Replay result: rows[0].ratings[${JSON.stringify(criterion)}] via rerunRecipe.`,
       );
     }
+  });
+
+  it.each([true, false])('makes every criterion evidence probe executable with exact selectors (binding ids: %s)', (withIds) => {
+    const rows = [evidence({ ...(withIds ? { id: 41001 } : {}) })];
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: rows,
+      harness: 'papercusp',
+      classRef: 'plan-class-feature-ship',
+    });
+
+    for (const criterion of ADEQUACY_CRITERIA) {
+      const text = result.scorecardDraft.ratings[criterion].evidence;
+      const match = text.match(/Evidence probe: plans:get-spec-evidence (\{[^\n]*\})\. Inspect evidence\[\]/);
+      expect(match, criterion).not.toBeNull();
+      const args = getSpecEvidenceTool.args.parse(JSON.parse(match![1]!));
+      expect(args).toMatchObject({
+        harness: 'papercusp',
+        slug: 'reconnect-plan',
+        specIds: ['SPEC-003-01'],
+        detail: 'full',
+      });
+      if (withIds) {
+        expect(args.bindingIds).toEqual([41001]);
+        expect(args.includeRetracted).toBe(true);
+      } else {
+        expect(args.evidenceRefs).toEqual(['surface:reconnect']);
+        expect(args).not.toHaveProperty('bindingIds');
+      }
+      expect(text).toContain('specRevision=1');
+      expect(text).toContain('specFingerprint="sha256:spec-v1"');
+      expect(text).toContain('bounded.truncatedByLimit=false');
+      expect(text).toContain(`rows[0].ratings[${JSON.stringify(criterion)}]`);
+    }
+  });
+
+  it('keeps the empty evidence probe empty after later bindings are added', () => {
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(), evidence: [], harness: 'papercusp', classRef: 'plan-class-feature-ship',
+    });
+    const text = result.scorecardDraft.ratings.traceability.evidence;
+    const match = text.match(/Evidence probe: plans:get-spec-evidence (\{[^\n]*\})\. Inspect evidence\[\]/);
+    expect(match).not.toBeNull();
+    const args = getSpecEvidenceTool.args.parse(JSON.parse(match![1]!));
+    expect(args.bindingIds).toEqual([]);
+    expect(args).not.toHaveProperty('includeRetracted');
   });
 
   it('keeps a large multi-binding proof valid for the actual emit schema without losing binding details', () => {
@@ -807,6 +854,18 @@ describe('active registered test attempts (EI-22773954051523742)', () => {
     expect(activeSpecEvidence([...fresh, ...matching])).toEqual([matching[1]]);
   });
 
+  it('keeps attempts on different nested evidence planes distinct', () => {
+    const nestedAttempt = (n: number, plane: string) => attempt(n).map((row) => ({
+      ...row,
+      details: { ...row.details, adequacy: { ...(row.details.adequacy as object), evidencePlane: plane } },
+    }));
+    const live = nestedAttempt(1, 'live');
+    const tree = nestedAttempt(2, 'tree');
+    expect(activeSpecEvidence([...live, ...tree])).toEqual([live[1], tree[1]]);
+    const matching = nestedAttempt(3, 'tree');
+    expect(activeSpecEvidence([...tree, ...matching])).toEqual([matching[1]]);
+  });
+
   it('fails closed without original registration and for altered registered obligations', () => {
     const old = attempt(1, { outcome: 'failed' });
     const fresh = attempt(2);
@@ -866,6 +925,36 @@ describe('active registered test attempts (EI-22773954051523742)', () => {
 });
 
 describe('spec-test-adequacy per-clause evaluator', () => {
+  it.each([41, 43])('preserves explicit proof over a late automatic receipt %i in either input order', (testRunId) => {
+    const explicit = evidence({ id: 70, evidenceKind: 'test', createdBy: 'su-reviewer',
+      createdAt: '2026-10-16T21:36:00Z', testRunId: 43 });
+    const automatic = evidence({ ...explicit, id: 71, createdBy: 'system:spec-evidence-autobind',
+      createdAt: '2026-10-16T21:42:00Z', testRunId, details: { adequacy: { executed: true } } });
+    for (const rows of [[explicit, automatic], [automatic, explicit]]) {
+      expect(latestLogicalEvidence(rows)).toEqual([explicit]);
+      expect(activeSpecEvidence(rows)[0]?.details.adequacy).toEqual(explicit.details.adequacy);
+    }
+  });
+
+  it('allows a genuinely newer automatic receipt to replace explicit proof without inheriting calibration', () => {
+    const explicit = evidence({ id: 70, evidenceKind: 'test', createdBy: 'su-reviewer',
+      createdAt: '2026-10-16T21:36:00Z', testRunId: 43 });
+    const automatic = evidence({ ...explicit, id: 71, createdBy: 'system:spec-evidence-autobind',
+      createdAt: '2026-10-16T21:42:00Z', testRunId: 44, details: { adequacy: { executed: true } } });
+    expect(latestLogicalEvidence([explicit, automatic])).toEqual([automatic]);
+    expect(activeSpecEvidence([explicit, automatic])[0]?.details.adequacy).toEqual(automatic.details.adequacy);
+  });
+
+  it('preserves the latest explicit correction rather than reviving richer explicit history', () => {
+    const original = evidence({ id: 70, evidenceKind: 'test', createdBy: 'su-reviewer',
+      createdAt: '2026-10-16T21:36:00Z', testRunId: 43 });
+    const corrected = evidence({ ...original, id: 71, createdAt: '2026-10-16T21:40:00Z',
+      details: { adequacy: { executed: true, fixtureCalibrated: false } } });
+    const automatic = evidence({ ...original, id: 72, createdBy: 'system:spec-evidence-autobind',
+      createdAt: '2026-10-16T21:42:00Z', details: { adequacy: { executed: true } } });
+    expect(latestLogicalEvidence([automatic, original, corrected])).toEqual([corrected]);
+  });
+
   it('grades the newest server-created version even when an older row has a future observedAt', () => {
     const evidenceRef = 'test/reconnect.integration.ts#recorded';
     const older = evidence({
@@ -2021,6 +2110,74 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings['plan-class-risk-floor'].rating).toBe('pass');
   });
 
+  describe('explicit shared-run scenario case associations', () => {
+    const testPath = 'packages/operator-core/lib/dao-hr/hiring.integration.test.ts';
+    const cases = ['hiring requirements > missing offer amount is refused', 'hiring requirements > missing currency is refused'];
+    const targets = ['missing-amount', 'missing-currency'];
+    const scenarioClause = () => clause({ falsifier: { observation: 'An incomplete offer is accepted.', requiredScenarios: targets } });
+    const mutationFor = (index: number, testCases: string[]) => negativeEvidence({
+      id: 40101 + index,
+      evidenceKind: 'mutation',
+      evidenceRef: 'test-run 21169434 mutation-probe mutant fail hiring.integration.test.ts',
+      testRunId: 21169434,
+      testRunProvenance: {
+        filePath: testPath, commitSha: 'abc123', worktreeDirty: false,
+        source: 'mutation-probe', mutationPhase: 'mutant', mutationFailedCaseTitles: cases,
+        mutationFailureLines: cases.map(title => `${title}: expected refusal`),
+      },
+      details: { adequacy: { targeted: targets[index], scenarioIds: [targets[index]], testCases,
+        outcome: 'caught', collected: true, skipped: false, executed: true } },
+    });
+    const evaluate = (mutations: SpecEvidenceForAdequacy[]) => evaluateSpecTestAdequacy({
+      clause: scenarioClause(), evidence: [successfulTestBinding(testPath, { testCases: cases }), ...mutations],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    it('keeps declared case and scenario metadata confined to each mutation target', () => {
+      const rows = activeSpecEvidence(targets.map((_, index) => mutationFor(index, [cases[index]!])));
+      expect(rows.map(row => row.details.adequacy)).toEqual(targets.map((target, index) => expect.objectContaining({
+        targeted: target, scenarioIds: [target], testCases: [cases[index]],
+      })));
+    });
+
+    it('credits exact declared colon-free cases with measured failures and passing baselines', () => {
+      const result = evaluate(targets.map((_, index) => mutationFor(index, [cases[index]!])));
+      expect(result.ratings.falsifiability.rating, result.ratings.falsifiability.evidence).toBe('pass');
+      expect(result.ratings.falsifiability.evidence).toContain('id=40101');
+      expect(result.ratings.falsifiability.evidence).toContain('id=40102');
+    });
+
+    it('refuses a measured case declared for different targets on the shared run', () => {
+      const result = evaluate([mutationFor(0, [cases[0]!]), mutationFor(1, [cases[0]!])]);
+      expect(result.ratings.falsifiability.rating).not.toBe('pass');
+    });
+
+    it('does not rescue ambiguous explicit mappings through the legacy colon fallback', () => {
+      const colonCase = 'hiring requirements > missing-amount: offer amount is refused';
+      const rows = targets.map((_, index) => mutationFor(index, [colonCase]));
+      rows.forEach(row => { row.testRunProvenance!.mutationFailedCaseTitles = [colonCase]; });
+      const result = evaluateSpecTestAdequacy({ clause: scenarioClause(),
+        evidence: [successfulTestBinding(testPath, { testCases: [colonCase] }), ...rows],
+        classRef: 'plan-class-feature-ship' });
+      expect(result.ratings.falsifiability.rating).not.toBe('pass');
+    });
+
+    it('recognizes the canonical full-title joiner in explicit associations', () => {
+      const rows = targets.map((_, index) => mutationFor(index, [cases[index]!.replace(' > ', ' ')]));
+      const result = evaluate(rows);
+      expect(result.ratings.falsifiability.rating, result.ratings.falsifiability.evidence).toBe('pass');
+    });
+
+    it.each(['unmeasured', 'off-scenario', 'missing-baseline'] as const)('refuses an explicit %s association', mode => {
+      const rows = targets.map((_, index) => mutationFor(index, [cases[index]!]));
+      if (mode === 'unmeasured') rows.forEach(row => { row.testRunProvenance!.mutationFailedCaseTitles = ['another failed case']; });
+      if (mode === 'off-scenario') rows.forEach(row => { (row.details.adequacy as Record<string, unknown>).targeted = 'unregistered'; });
+      const baseline = successfulTestBinding(testPath, { testCases: mode === 'missing-baseline' ? ['another passing case'] : cases });
+      const result = evaluateSpecTestAdequacy({ clause: scenarioClause(), evidence: [baseline, ...rows], classRef: 'plan-class-feature-ship' });
+      expect(result.ratings.falsifiability.rating).not.toBe('pass');
+    });
+  });
+
   it('preserves same-run mutation targets and credits only the measured scenario case', () => {
     const testPath = 'packages/operator-core/lib/dao-hr/work-profile.integration.test.ts';
     const evidenceRef = 'test-run 21094686 mutation-probe mutant fail packages/operator-core/lib/dao-hr/work-profile.integration.test.ts @484a585cc8a6+dirty';
@@ -2050,6 +2207,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
           outcome: 'caught',
         },
       };
+      // This exercises the legacy title convention without an explicit mapping.
+      delete (mutation.details.adequacy as Record<string, unknown>).testCases;
       return mutation;
     };
     const baseline = successfulTestBinding(testPath, { testCases: [employeeCase, contractorCase] });
@@ -2525,6 +2684,41 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.verdict).not.toBe('pass');
   });
 
+  it.each(['evidencePlane', 'evidence_plane', 'plane'].flatMap((key) =>
+    ['tree', 'live', 'deployed'].map((plane) => ({ key, plane })),
+  ))('reads nested adequacy.$key=$plane for required planes and traceability', ({ key, plane }) => {
+    const base = evidence();
+    const proof = evidence({
+      details: { adequacy: { ...(base.details.adequacy as object), [key]: plane } },
+    });
+    const target = clause({ requiredEvidence: [plane], requiredTestLayers: [] });
+    const grade = (row: SpecEvidenceForAdequacy) => evaluateSpecTestAdequacy({
+      clause: target, evidence: [row], classRef: 'plan-class-feature-ship',
+    });
+    const covered = grade(proof);
+    expect(covered.ratings['correct-layer'].rating).toBe('pass');
+    expect(covered.ratings.traceability.evidence).toContain(`evidencePlane="${plane}"`);
+
+    const stale = grade({ ...proof, currentness: { ...proof.currentness, overall: 'stale' } });
+    expect(stale.ratings['correct-layer'].rating).toBe('fail');
+    expect(stale.ratings['correct-layer'].evidence).toContain('Required evidence plane(s) are absent');
+    expect(grade(base).ratings['correct-layer'].rating).toBe('fail');
+    const mismatched = grade(evidence({
+      details: { adequacy: { ...(base.details.adequacy as object), [key]: plane === 'tree' ? 'live' : 'tree' } },
+    }));
+    expect(mismatched.ratings['correct-layer'].rating).toBe('fail');
+  });
+
+  it('preserves an explicit root plane over conflicting nested adequacy metadata', () => {
+    const proof = evidence({ details: { evidencePlane: 'tree', adequacy: { evidencePlane: 'live' } } });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['live'], requiredTestLayers: [] }), evidence: [proof],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['correct-layer'].rating).toBe('fail');
+    expect(result.ratings.traceability.evidence).toContain('evidencePlane="tree"');
+  });
+
   it('requires live evidence for a standalone clause that declares requiredEvidence live', () => {
     const liveClause = clause({ requiredEvidence: ['live'], requiredTestLayers: [] });
     const treeProof = evidence();
@@ -2535,6 +2729,8 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     });
     expect(missing.ratings['correct-layer'].rating).toBe('fail');
     expect(missing.ratings['correct-layer'].evidence).toContain('Required evidence plane(s) are absent');
+    expect(missing.ratings['correct-layer'].suggestion).toContain('details.evidencePlane');
+    expect(missing.ratings['correct-layer'].suggestion).toContain('environmentFingerprint');
     expect(missing.wouldBlock).toContain('correct-layer');
 
     const liveProof = evidence({
@@ -2556,6 +2752,54 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(covered.ratings['correct-layer'].rating).toBe('pass');
     expect(covered.ratings['correct-layer'].evidence).toContain('Current bindings cover the required evidence plane(s)');
     expect(covered.ratings['correct-layer'].evidence).toContain('ref="live:verified-report"');
+  });
+
+  it('requires tree evidence when binder-authored falsifiability targets a tree clause', () => {
+    const testPath = 'packages/operator-core/lib/agent-tools/plans/tree-plane-proof.integration.test.ts';
+    const treeClause = clause({
+      requiredEvidence: ['tree'],
+      requiredTestLayers: [],
+      falsifier: { observation: 'A verb missing from the agent-tools tree is reported.' },
+    });
+    const mutation = evidence({
+      evidenceKind: 'mutation',
+      evidenceRef: 'mutation:tree-plane-proof',
+      testRunProvenance: { filePath: testPath, commitSha: 'abc123', worktreeDirty: false },
+      details: {
+        adequacy: {
+          ...((evidence().details.adequacy ?? {}) as Record<string, unknown>),
+          targeted: treeClause.specId,
+          outcome: 'killed',
+          falsifiable: true,
+          oracleIndependent: true,
+        },
+      },
+    });
+    const baseline = successfulTestBinding(testPath, { targeted: treeClause.specId });
+    const missingTree = evaluateSpecTestAdequacy({
+      clause: treeClause,
+      evidence: [baseline, mutation],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(missingTree.ratings.falsifiability.rating).toBe('pass');
+    expect(missingTree.ratings['correct-layer'].rating).toBe('fail');
+    expect(missingTree.ratings['correct-layer'].evidence).toContain('Required evidence plane(s) are absent');
+    expect(missingTree.verdict).not.toBe('pass');
+
+    const treeProof = evidence({
+      evidenceKind: 'operational',
+      evidenceRef: 'tree:measured-proof',
+      testRunId: null,
+      coverageEvidenceRef: null,
+      details: { evidencePlane: 'tree' },
+    });
+    const covered = evaluateSpecTestAdequacy({
+      clause: treeClause,
+      evidence: [baseline, mutation, treeProof],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(covered.ratings['correct-layer'].rating).toBe('pass');
   });
 
   it('names active non-mutation bindings when correct-layer is not applicable', () => {
@@ -3272,6 +3516,37 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(conflict.ratings['correct-layer'].evidence).toContain('testLayer-claim-mismatch:integration!=unit');
   });
 
+  it('does not count a BAR case for a sibling clause when the binding target was rewritten', () => {
+    const barClause = clause({
+      planSlug: 'pui-first-party-public-release-2026-09-07',
+      specId: 'AUTO-BAR-R-03-P-006',
+      contentHash: 'sha256:pui-p006',
+    });
+    const siblingCase =
+      'PUI P-008 sessions and context (spec clauses) > AUTO-BAR-R-03-P-008: Context follows the selected session';
+    const mismatched = successfulTestBinding('packages/operator-core/lib/pui-e2e/agent-chat-pty.integration.test.ts', {
+      targeted: barClause.specId,
+      testCases: [siblingCase],
+    });
+    mismatched.planSlug = barClause.planSlug;
+    mismatched.specId = barClause.specId;
+    mismatched.specFingerprint = barClause.contentHash;
+
+    const result = evaluateSpecTestAdequacy({
+      clause: barClause,
+      evidence: [mismatched],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings.traceability.rating).toBe('unknown');
+    expect(result.ratings.traceability.evidence).toContain('AUTO-BAR-R-03-P-008');
+    expect(result.ratings.traceability.evidence).toContain('targets AUTO-BAR-R-03-P-006');
+    expect(result.ratings['correct-layer'].rating).toBe('unknown');
+    expect(result.ratings['correct-layer'].evidence).toContain('binding target does not identify the exact clause');
+    expect(result.ratings['correct-layer'].evidence).toContain('AUTO-BAR-R-03-P-008');
+    expect(result.wouldBlock).toContain('correct-layer');
+  });
+
   describe('canonical LLM scenario reachability (EI-25409108464228474)', () => {
     const scenarioId = 'su-S38-reports-capture';
     const filePath = 'packages/operator-core/lib/llm-testing/scenarios/su/S38-reports-capture.ts';
@@ -3465,7 +3740,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(29);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(35);
   });
 
   it('keeps fixture calibration unknown when a null fingerprint has no independent fixture-free measurement', () => {
@@ -4392,6 +4667,65 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 });
 
 describe('rerunRecipe is submittable to its own evaluator', () => {
+  it('pins certified fixture-absence verifier bindings in the replay population', () => {
+    const base = evidence();
+    const cited = evidence({
+      id: 45649,
+      evidenceKind: 'test',
+      evidenceRef: 'test:fixture-free-proof',
+      fingerprints: { ...base.fingerprints, fixtureFingerprint: null },
+      details: {
+        ...base.details,
+        adequacy: {
+          ...(base.details.adequacy as Record<string, unknown>),
+          fixtureFree: true,
+          fixtureCalibrated: undefined,
+        },
+      },
+      fixtureAbsenceVerification: { verifierBindingIds: [45679] },
+    });
+    const verifier = evidence({
+      id: 45679,
+      evidenceKind: 'independent-verification',
+      evidenceRef: 'verification:fixture-free-proof',
+      fingerprints: { ...cited.fingerprints },
+      details: {
+        ...cited.details,
+        adequacy: {
+          ...(cited.details.adequacy as Record<string, unknown>),
+          fixtureFree: true,
+        },
+      },
+    });
+    const original = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['tree'] }),
+      // The shared reader can attach the certificate to the cited row while the
+      // verifier is outside a caller's selected cohort.
+      evidence: [cited],
+      classRef: 'plan-class-feature-ship',
+    });
+    const recipe = original.scorecardDraft.rerunRecipe;
+
+    expect(recipe.args.bindingIds).toEqual([45649, 45679]);
+    expect(recipe.selection.bindingIds).toEqual([45649, 45679]);
+    expect(original.ratings['fixture-calibration'].rating).toBe('not-applicable');
+
+    const replayCited = { ...cited, fixtureAbsenceVerification: undefined };
+    const replayWithoutVerifier = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['tree'] }),
+      evidence: [replayCited],
+      classRef: 'plan-class-feature-ship',
+    });
+    const replayWithRecipePopulation = evaluateSpecTestAdequacy({
+      clause: clause({ requiredEvidence: ['tree'] }),
+      evidence: [replayCited, verifier],
+      fixtureAbsenceVerifications: new Map([[45649, [45679]]]),
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(replayWithoutVerifier.ratings['fixture-calibration'].rating).toBe('unknown');
+    expect(replayWithRecipePopulation.ratings['fixture-calibration'].rating).toBe('not-applicable');
+  });
+
   it('pins original same-kind binding ids when a later binding reuses the evidence ref', () => {
     const sharedRef = 'packages/operator-core/lib/doc-claims/bm25-config-doc.test.ts';
     const selectedTest = evidence({ id: 37383, evidenceKind: 'test', evidenceRef: sharedRef });
@@ -4725,6 +5059,17 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
   });
 
   it.each([
+    'Clean as-committed re-proof after P-016 at e0c02c627b (lint:as-committed --materialize-only root, worktree clean): same test file as the superseded binding.',
+    'The probe ran with --dry-run-only and the same test fixture remained green.',
+  ])('does not treat a CLI flag ending in -only as a coverage limitation: %s', observations => {
+    const base = evidence();
+    const result = evaluateSpecTestAdequacy({ clause: clause(),
+      evidence: [evidence({ details: { ...base.details, observations } })], classRef: 'plan-class-feature-ship' });
+    expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
+    expect(result.wouldBlock).not.toContain('disclosed-gap');
+  });
+
+  it.each([
     'Client-only coverage leaves the broader proof incomplete.',
     'Ledger-only re-aim detection is measured. Only the happy path is covered.',
     'The read-only query is verified, but the failure path is not covered.',
@@ -4770,6 +5115,36 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
       'Record any coverage limitation under details.adequacy.disclosedGap',
     );
     expect(result.wouldBlock).not.toContain('disclosed-gap');
+  });
+
+  it('labels universal notes by selected scope and truncates at a word boundary', () => {
+    const longNote = 'Historical R7cleanup ownerauthorization ' + 'detail '.repeat(100);
+    const noted = (id: number, note: string) => {
+      const base = evidence({
+        id,
+        evidenceKind: 'test',
+        evidenceRef: `test-run:${id}`,
+        coverageEvidenceRef: null,
+      });
+      return { ...base, details: { ...base.details, note } };
+    };
+    const selected = [noted(41767, 'selected proof note'), noted(41777, 'selected companion note')];
+    const other = [noted(41765, longNote), noted(41725, 'other current binding note')];
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: selected,
+      disclosedGapEvidence: [...selected, ...other],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    const rendered = result.ratings['disclosed-gap'].evidence;
+    expect(rendered).toContain('Checked 4 active binding(s) for the clause.');
+    expect(rendered).toContain('id=41767 scope=selected note="selected proof note"');
+    expect(rendered).toContain('id=41777 scope=selected note="selected companion note"');
+    expect(rendered).toContain('id=41765 scope=other-current note=');
+    expect(rendered).toContain('id=41725 scope=other-current note=');
+    expect(rendered).toContain('detail…[truncated]');
+    expect(rendered).not.toContain('detai…[truncated]');
   });
 
   it('blocks a proof whose observations explicitly limit coverage to one leg', () => {
@@ -5027,6 +5402,29 @@ describe('disclosed-gap criterion (P-002: a disclosure cannot coexist with a mac
     });
     expect(result.ratings['disclosed-gap'].rating).toBe('not-applicable');
     expect(result.wouldBlock).not.toContain('disclosed-gap');
+  });
+
+  it('does not treat a resolved proof reference as an open gap, while preserving an adjacent live limitation', () => {
+    const base = evidence();
+    const resolved =
+      'The exact live dossier gap was resolved by separate CURRENT live binding34743; only test-run20987792 is cited as its durable proof reference.';
+    const stillOpen = `${resolved} The cancellation retry is not covered.`;
+    const resolvedResult = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ details: { ...base.details, scopeNote: resolved } })],
+      classRef: 'plan-class-feature-ship',
+    });
+    const openResult = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence({ details: { ...base.details, scopeNote: stillOpen } })],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(resolvedResult.ratings['disclosed-gap'].rating).toBe('not-applicable');
+    expect(resolvedResult.wouldBlock).not.toContain('disclosed-gap');
+    expect(openResult.ratings['disclosed-gap'].rating).toBe('fail');
+    expect(openResult.ratings['disclosed-gap'].evidence).toContain(stillOpen);
+    expect(openResult.wouldBlock).toContain('disclosed-gap');
   });
 
   it.each([

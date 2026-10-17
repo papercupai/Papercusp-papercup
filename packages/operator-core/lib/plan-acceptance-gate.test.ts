@@ -7,6 +7,7 @@
  * teaching message), and the independent-grader satisfaction path.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+vi.mock('./acceptance-rubric-critique', () => ({ readCurrentAcceptanceRubricCritique: vi.fn(async () => null) }));
 import {
   ACCEPTANCE_VERDICT_REQUIRED_AFTER,
   evaluatePlanAcceptanceGate,
@@ -691,6 +692,25 @@ describe('evaluatePlanAcceptanceGate', () => {
       },
     );
 
+    it('threads explicit pending delivery only to pre-grading and retains the strict ship refusal', async () => {
+      mockRubric.mockResolvedValue(acceptanceRubric());
+      mockScorecards.mockResolvedValue([]);
+      mockBarLifecycle.mockImplementation(async (_slug, phase, options) => verdict(phase,
+        phase === 'ship' ? ['bar_snapshot_grading_missing', 'bar_snapshot_evidence_plane_unmet']
+          : options?.pendingDeliveryBarKeys?.includes('R-15') ? [] : ['bar_snapshot_evidence_plane_unmet']));
+      expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { pendingDeliveryBarKeys: ['R-15'] }))
+        .toMatchObject({ satisfied: false, code: 'acceptance_ungraded' });
+      expect(mockBarLifecycle).toHaveBeenCalledWith('some-plan-2026-08-11', 'pre-grading', {
+        expectedApplicable: true, pendingDeliveryBarKeys: ['R-15'],
+      });
+      const shipOptions = mockBarLifecycle.mock.calls.find((call) => call[1] === 'ship')?.[2];
+      expect(shipOptions).not.toHaveProperty('pendingDeliveryBarKeys');
+      // Once grading is present, the same missing public proof still blocks shipment.
+      mockBarLifecycle.mockImplementation(async (_slug, phase) => verdict(phase, ['bar_snapshot_evidence_plane_unmet']));
+      expect(await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { pendingDeliveryBarKeys: ['R-15'] }))
+        .toMatchObject({ satisfied: false, code: 'acceptance_bar_contract_not_ready', blockingPhase: 'ship' });
+    });
+
     // plan-verification-friction-reduction-2026-10-11 P-002 / R-2 (D-001): a ship call that
     // omits `current` must hand the lifecycle NO caller tuple. listSpecEvidence then
     // re-measures every binding from its recorded recipe, so unchanged proof rates current
@@ -1350,6 +1370,17 @@ describe('evaluatePlanAcceptanceGate', () => {
     });
   });
 
+  it('teaches verdict-only acceptance of the independent grade', async () => {
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockScorecards.mockResolvedValue([
+      scorecard({ issueId: 'EI-independent', createdAt: '2026-08-21T01:00:00Z', createdBy: 'su-grader' }),
+    ]);
+    const result = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(result).toMatchObject({ satisfied: false, code: 'acceptance_not_recorded' });
+    expect(result.message).toContain("acceptanceOf:'EI-independent'");
+    expect(result.message).not.toContain('ratings:{');
+  });
+
   it('a post-grading implementer accept satisfies and a newer reject refuses', async () => {
     mockRubric.mockResolvedValue(acceptanceRubric());
     const independent = scorecard({ createdAt: '2026-08-21T01:00:00Z', createdBy: 'su-grader' });
@@ -1795,8 +1826,8 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_unvetted', rubricId: 'ar-some-plan' });
     // The refusal is the teaching surface: it must name the full flow.
-    expect(v.message).toContain('vettingConsult');
-    expect(v.message).toContain('meta-acceptance-rubric');
+    expect(v.message).toContain('Current independent critique is read directly');
+    expect(v.message).toContain('criteriaHash');
     expect(v.message).toContain('consult:get_feedback');
   });
 

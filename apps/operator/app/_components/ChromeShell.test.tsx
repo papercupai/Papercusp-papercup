@@ -74,6 +74,7 @@ vi.mock('./voice/AriaLiveRegions', () => ({ AriaLiveRegions: () => null }));
 vi.mock('./voice/VoiceLeaderBootstrap', () => ({ VoiceLeaderBootstrap: () => null }));
 vi.mock('./HostCheckBanner', () => ({ HostCheckBanner: () => null }));
 vi.mock('./WorkspaceSwitcher', () => ({ default: () => null }));
+vi.mock('../cloud-workspaces/MachineSwitcher', () => ({ default: () => <span data-testid="machine-switcher" /> }));
 vi.mock('./ThemeSelector', () => ({ default: () => null }));
 vi.mock('./BrandSwitcher', () => ({ default: () => null }));
 vi.mock('./UserPicker', () => ({ default: () => null }));

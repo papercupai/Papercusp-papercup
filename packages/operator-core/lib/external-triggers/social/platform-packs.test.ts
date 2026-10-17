@@ -9,7 +9,7 @@
  * here. A per-platform pack's scope is exactly one platform, so its default IS
  * that platform's derivation with nothing to take a minimum over, and the set of
  * packs is not a curated list at all — it is every registry row that passes
- * `isSocialPlatformVerified`. Reusing that table would have forced a hand-kept
+ * `isProviderVerified`. Reusing that table would have forced a hand-kept
  * list of platforms, which is the drift this file is built to prevent.
  *
  * THE THREE PROPERTIES THIS FILE EXISTS FOR — each a second copy of a truth
@@ -20,7 +20,7 @@
  *    until its pack exists; an unverified one reds it if a pack appears early.
  *
  * 2. THE STORM POLICY NUMBERS. A manifest is static JSON: it cannot import
- *    `socialStormPolicyFor`, so every maxRuns/windowSeconds in it is a copy of a
+ *    `providerStormPolicyFor`, so every maxRuns/windowSeconds in it is a copy of a
  *    number the registry derivation owns. Recomputed here and compared.
  *
  * 3. WHETHER A PACK DECLARES OAUTH. D-045 ruled that no social pack declares an
@@ -53,23 +53,12 @@ import {
   type PluginOAuthRequirement,
   type PluginTriggerPack,
   type ProviderAdapter,
+  type HostFetch,
 } from '@papercusp/plugin-sdk';
-import {
-  isSocialPlatformVerified,
-  listSocialPlatforms,
-  type SocialPlatformRow,
-} from './platform-registry';
-import { socialStormPolicyFor } from './storm-policy';
-import {
-  FACEBOOK_ALLOWED_OAUTH_SCOPES,
-  GOOGLE_WORKSPACE_ALLOWED_SCOPES,
-} from '../../oauth/providers';
-import { blueskyEventName } from './bluesky-adapter';
-import { mastodonEventName } from './mastodon-adapter';
-import { redditEventName } from './reddit-adapter';
-import { youtubeActivityEventName } from './youtube-activities-adapter';
-import { youtubeCommentEventName } from './youtube-comments-adapter';
-import { threadsReplyEventName } from './threads-conversation-adapter';
+import { providerCapabilityVerificationIssue, type ProviderDescriptor } from '@papercusp/plugin-sdk';
+import { bundledSocialProviderDescriptors } from '../../capability-verbs/social-provider.fixture';
+import { providerStormPolicyFor } from '../provider-storm-policy';
+const isProviderVerified = (descriptor: ProviderDescriptor) => !providerCapabilityVerificationIssue(descriptor);
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
@@ -98,19 +87,10 @@ const readManifest = (id: string) =>
   JSON.parse(readFileSync(resolve(packDir(id), 'papercusp.json'), 'utf8')) as Manifest;
 const readPlan = (id: string) => readFileSync(resolve(packDir(id), 'plan.md'), 'utf8');
 
-/** Registered OAuth providers, and the scopes each will actually consent to. */
-const PROVIDER_ALLOWED: ReadonlyArray<{ provider: string; allowed: ReadonlySet<string> }> = [
-  { provider: 'google', allowed: new Set<string>(GOOGLE_WORKSPACE_ALLOWED_SCOPES as readonly string[]) },
-  { provider: 'facebook', allowed: new Set<string>(FACEBOOK_ALLOWED_OAUTH_SCOPES as readonly string[]) },
-];
-
-/** The containment rule — the whole of property 3 above, as one function. */
-function providerFor(row: SocialPlatformRow): string | null {
-  if (row.auth.scopes.length === 0) return null;
-  for (const { provider, allowed } of PROVIDER_ALLOWED) {
-    if (row.auth.scopes.every((scope) => allowed.has(scope))) return provider;
-  }
-  return null;
+/** Consent requirements follow the installed package descriptor. */
+function providerFor(descriptor: ProviderDescriptor): { provider: string; scopes: string[] } | null {
+  const oauth = descriptor.oauth;
+  return oauth && oauth.scopes.length > 0 ? { provider: oauth.clientRegistrationRef ?? descriptor.id, scopes: oauth.scopes } : null;
 }
 
 /**
@@ -124,31 +104,19 @@ function providerFor(row: SocialPlatformRow): string | null {
  */
 const PRODUCIBLE: Record<string, { names: Set<string>; closed: boolean }> = {
   bluesky: {
-    names: new Set([
-      blueskyEventName({ reply: { root: 'r', parent: 'p' } } as never, null),
-      blueskyEventName({ mentions: ['did:self'] } as never, 'did:self'),
-      blueskyEventName({} as never, null),
-    ]),
+    names: new Set<string>(), // Filled by the actual provider's notifications and author feed.
     closed: true,
   },
   mastodon: {
-    names: new Set([
-      mastodonEventName({ source: 'notification-mention' } as never),
-      mastodonEventName({ inReplyToId: '1' } as never),
-      mastodonEventName({} as never),
-    ]),
+    names: new Set<string>(), // Filled by the actual instance-scoped provider below.
     closed: true,
   },
   reddit: {
-    names: new Set([redditEventName({ kind: 't1' }), redditEventName({ kind: 't3' })]),
+    names: new Set<string>(), // Filled by the actual Reddit provider's three streams below.
     closed: true,
   },
   youtube: {
-    names: new Set([
-      youtubeActivityEventName({ type: 'upload' }),
-      youtubeCommentEventName({ parentId: undefined }),
-      youtubeCommentEventName({ parentId: 'p' }),
-    ]),
+    names: new Set<string>(), // Filled by the real provider's multi-stream scan below.
     closed: false, // snippet.type is provider-controlled.
   },
   'facebook-pages': {
@@ -160,18 +128,11 @@ const PRODUCIBLE: Record<string, { names: Set<string>; closed: boolean }> = {
     closed: true,
   },
   threads: {
-    names: new Set([
-      threadsReplyEventName({ is_reply: false } as never),
-      threadsReplyEventName({ is_reply: true } as never),
-    ]),
+    names: new Set<string>(), // Filled by the real provider's conversation scan below.
     closed: true,
   },
   tiktok: {
-    // tiktok-videos-adapter emits the literal.
-    // ONE name, and that is the platform speaking rather than a gap: TikTok
-    // exposes no comment surface at all at this grant tier, so an upload is the
-    // only inbound event that can exist.
-    names: new Set(['post']),
+    names: new Set<string>(), // Filled by the real Display API provider below.
     closed: true,
   },
 };
@@ -219,6 +180,67 @@ beforeAll(async () => {
   } }, { fetch: async () => jsonResponse(200, { id: config.igUserId, mentioned_media: { id: '333', caption: 'mention', timestamp: created_time } }) }) as { records: Array<{ event: string }> };
   for (const record of mentions.records) PRODUCIBLE.instagram!.names.add(record.event);
   expect(PRODUCIBLE.instagram!.names).toEqual(new Set(['comment', 'reply', 'mention']));
+
+  const harvest = async (id: string, config: Record<string, unknown>, fetch: HostFetch, expected: string[]) => {
+    const provider = createRequire(import.meta.url)(resolve(REPO_ROOT, `libs/papercusp/plugins/${id}/index.cjs`)).providerAdapter as ProviderAdapter;
+    let cursor: string | null = null;
+    let completed = false;
+    for (let n = 0; n < 10; n++) {
+      const page = await provider.syncPage({ source: `${id}-events`, config, cursor, mode: cursor ? 'incremental' : 'backfill' }, { fetch });
+      for (const record of page.records) PRODUCIBLE[id]!.names.add(record.event!);
+      cursor = page.nextCursor;
+      if (!page.hasMore) { completed = true; break; }
+    }
+    expect(completed, `${id} event fixture must complete`).toBe(true);
+    expect(PRODUCIBLE[id]!.names).toEqual(new Set(expected));
+  };
+  await harvest('bluesky', { accountId: 'did:plc:owner' }, async ({ request }) => {
+    const post = (key: string, reply = false) => ({ uri: `at://did:plc:owner/app.bsky.feed.post/${key}`, cid: `cid-${key}`,
+      author: { did: 'did:plc:owner', handle: 'owner.example' }, indexedAt: created_time,
+      record: { $type: 'app.bsky.feed.post', text: key, createdAt: created_time,
+        ...(reply ? { reply: { root: { uri: 'at://did:plc:owner/app.bsky.feed.post/root', cid: 'root-cid' },
+          parent: { uri: 'at://did:plc:owner/app.bsky.feed.post/parent', cid: 'parent-cid' } } } : {}) } });
+    return jsonResponse(200, new URL(request.url).pathname.endsWith('/app.bsky.notification.listNotifications')
+      ? { notifications: [{ ...post('mention'), reason: 'mention' }] }
+      : { feed: [{ post: post('post') }, { post: post('reply', true) }] });
+  }, ['post', 'reply', 'mention']);
+  await harvest('reddit', { accountLabel: 'fixture-user' }, async ({ request }) => {
+    const submitted = new URL(request.url).pathname.endsWith('/submitted');
+    return jsonResponse(200, { kind: 'Listing', data: { children: [{
+      kind: submitted ? 't3' : 't1',
+      data: { name: submitted ? 't3_post' : 't1_comment', created_utc: 1_800_000_000,
+        edited: false, author: 'fixture-user', subreddit: 'papercusp',
+        ...(submitted ? { title: 'post', selftext: 'post' } : { body: 'reply or mention', was_comment: true }) },
+    }], after: null } });
+  }, ['post', 'reply', 'mention']);
+  await harvest('mastodon', { connectionOrigin: 'https://mastodon.social', connectionAccountId: 'owner' }, async ({ request }) => {
+    const url = new URL(request.url);
+    if (url.searchParams.has('max_id') || url.searchParams.has('min_id')) return jsonResponse(200, []);
+    const status = (id: string, reply: boolean) => ({ id, uri: `https://mastodon.social/users/owner/statuses/${id}`,
+      content: '<p>status</p>', created_at: created_time, in_reply_to_id: reply ? 'parent' : null,
+      visibility: 'public', account: { id: 'owner', acct: 'owner' } });
+    return jsonResponse(200, url.pathname.endsWith('/notifications')
+      ? [{ id: 'notification', type: 'mention', status: status('mention', false) }]
+      : [status('post', false), status('reply', true)]);
+  }, ['post', 'reply', 'mention']);
+  await harvest('threads', { userId: '42' }, async ({ request }) => jsonResponse(200, {
+    data: new URL(request.url).pathname.endsWith('/threads')
+      ? [{ id: '100', timestamp: created_time, text: 'post', is_reply: false }]
+      : [{ id: '101', timestamp: created_time, text: 'reply', is_reply: true, root_post: { id: '100' }, replied_to: { id: '100' } }],
+  }), ['post', 'reply']);
+  await harvest('youtube', { channelId: 'UC42' }, async ({ request }) => {
+    const path = new URL(request.url).pathname;
+    const snippet = { publishedAt: created_time, textOriginal: 'comment' };
+    return jsonResponse(200, { items: path.endsWith('/activities')
+      ? [{ id: 'activity', snippet: { publishedAt: created_time, type: 'upload', title: 'upload' } }]
+      : path.endsWith('/commentThreads')
+        ? [{ id: 'thread', snippet: { topLevelComment: { id: 'comment', snippet }, totalReplyCount: 1, videoId: 'video' } }]
+        : [{ id: 'reply', snippet: { ...snippet, parentId: 'comment' } }],
+    });
+  }, ['upload', 'comment', 'reply']);
+  await harvest('tiktok', { openId: 'owner' }, async () => jsonResponse(200, {
+    data: { videos: [{ id: 'video', create_time: Date.parse(created_time) / 1000, title: 'video' }], has_more: false }, error: { code: 'ok' },
+  }), ['post']);
 });
 
 /**
@@ -237,8 +259,8 @@ beforeAll(async () => {
  * only new thing is that LinkedIn reaches the condition by a restricted read
  * scope instead of by price.
  */
-const verifiedRows = listSocialPlatforms().filter(isSocialPlatformVerified);
-const packRows = verifiedRows.filter((row) => row.read !== null);
+const verifiedRows = bundledSocialProviderDescriptors().filter(isProviderVerified);
+const packRows = verifiedRows.filter((row) => row.sync !== false);
 const verifiedIds = packRows.map((row) => row.id);
 
 describe('P-025 per-platform social trigger packs', () => {
@@ -249,12 +271,12 @@ describe('P-025 per-platform social trigger packs', () => {
   });
 
   it('a pack exists for exactly the VERIFIED, READABLE platforms — the list is derived, never enumerated', () => {
-    for (const row of listSocialPlatforms()) {
+    for (const row of bundledSocialProviderDescriptors()) {
       const hasPack = existsSync(resolve(packDir(row.id), 'papercusp.json'));
-      const shouldHavePack = isSocialPlatformVerified(row) && row.read !== null;
-      const why = !isSocialPlatformVerified(row)
+      const shouldHavePack = isProviderVerified(row) && row.sync !== false;
+      const why = !isProviderVerified(row)
         ? `platform ${row.id} is NOT verified (verifiedAt is null) — D-005 forbids shipping a pack that would assert facts nobody read`
-        : row.read === null
+        : row.sync === false
           ? `platform ${row.id} is verified but WRITE-ONLY — a trigger pack turns inbound events into plan runs and this platform emits none, so a pack would be a hollow shell that reads as support (D-002's reasoning)`
           : `platform ${row.id} is verified and readable but has no pack at social-${row.id}`;
       expect(hasPack, why).toBe(shouldHavePack);
@@ -265,7 +287,7 @@ describe('P-025 per-platform social trigger packs', () => {
     // Without this, narrowing the derivation to "readable" would look identical
     // to leaving it at "verified" — and a future row that quietly became
     // write-only would drop out of every per-platform assertion below unnoticed.
-    const writeOnlyVerified = verifiedRows.filter((row) => row.read === null).map((row) => row.id);
+    const writeOnlyVerified = verifiedRows.filter((row) => row.sync === false).map((row) => row.id);
     expect(writeOnlyVerified).toEqual(['linkedin']);
     expect(verifiedIds).not.toContain('linkedin');
   });
@@ -278,7 +300,7 @@ describe('P-025 per-platform social trigger packs', () => {
     });
 
     it('pins its storm policy to the registry read derivation', () => {
-      const derived = socialStormPolicyFor(row, 'read');
+      const derived = providerStormPolicyFor(row, 'read');
       expect(readManifest(id).triggerPack?.defaultStormPolicy).toEqual({
         maxRuns: derived.maxRuns,
         windowSeconds: derived.windowSeconds,
@@ -294,7 +316,7 @@ describe('P-025 per-platform social trigger packs', () => {
       if (provider === null) {
         expect(
           manifest.oauth ?? [],
-          `${id} has no provider whose allowedScopes contain ${JSON.stringify(row.auth.scopes)} — declaring one would fail at consent time, not build time`,
+          `${id} has no provider whose allowedScopes contain ${JSON.stringify(row.oauth?.scopes ?? [])} — declaring one would fail at consent time, not build time`,
         ).toEqual([]);
         // …and no binding may name an oauthField it cannot honour.
         for (const binding of manifest.triggerPack?.bindings ?? []) {
@@ -307,10 +329,11 @@ describe('P-025 per-platform social trigger packs', () => {
 
       expect(manifest.oauth).toHaveLength(1);
       const requirement = manifest.oauth![0]!;
-      expect(requirement.provider).toBe(provider);
+      expect(requirement.provider).toBe(provider.provider);
       expect(requirement.fieldName).toBe(credField);
-      // The scope list is the REGISTRY's, not a copy typed into the manifest.
-      expect([...(requirement.scopes ?? [])].sort()).toEqual([...row.auth.scopes].sort());
+      // Actual packages declare their read/write scope union. Legacy providers
+      // keep using the registry until their packages are delivered.
+      expect([...(requirement.scopes ?? [])].sort()).toEqual([...provider.scopes].sort());
       for (const binding of manifest.triggerPack?.bindings ?? []) {
         if (binding.source.kind === 'external') {
           expect(binding.source.oauthField).toBe(credField);
@@ -327,9 +350,11 @@ describe('P-025 per-platform social trigger packs', () => {
       expect(cred.snapshotPolicy).toBe('strip');
       expect(cred.shareable).toBe(false);
 
-      // Exactly one other field: the environment identifier, which DOES travel.
+      // Account-scoped Reddit gets its username from the connected identity;
+      // it needs no separately shared environment identifier.
       const others = Object.keys(props).filter((key) => key !== credField);
-      expect(others).toHaveLength(1);
+      expect(others).toHaveLength(id === 'reddit' ? 0 : 1);
+      if (others.length === 0) return;
       const identifier = props[others[0]!]!;
       expect(identifier.secret ?? false).toBe(false);
       expect(identifier.shareable).toBe(true);
@@ -405,6 +430,14 @@ describe('P-025 per-platform social trigger packs', () => {
           `social-${id}'s STEPS invoke ${verb}; this pack records and stops`,
         ).not.toContain(verb);
       }
+    });
+
+    it('processes the complete delivered batch with per-entry routing', () => {
+      const plan = readPlan(id);
+      expect(plan).toContain('response.events');
+      expect(plan).toContain('process every entry');
+      expect(plan).toContain('top-level fields describe only the first event');
+      expect(plan).toContain('each entry independently');
     });
 
     it('its plan names no capability the agent cannot reach', () => {

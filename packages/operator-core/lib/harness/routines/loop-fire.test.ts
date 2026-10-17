@@ -35,6 +35,7 @@ function mkDeps(
   Pick<
     LoopFireDeps,
     | 'checkFireGate'
+    | 'readWakeDelta'
     | 'recordFire'
     | 'recordWithheld'
     | 'wake'
@@ -57,6 +58,7 @@ function mkDeps(
   >
 > {
   return {
+    readWakeDelta: vi.fn(async () => null),
     checkFireGate: vi.fn(async () => ({ allow: true, consecutiveErrors: 0 })) as never,
     // EI-21526226279199560: defaults to the UNMEASURED verdict, so every unrelated test
     // keeps its wake text stamp-free — an unresolved blocker yields no line by design.

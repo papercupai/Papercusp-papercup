@@ -11,6 +11,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import type { SessionState } from '../coordination/presence-wakeability';
+import type { LivenessTimingCallback } from '../coordination/liveness-oracle';
 
 export const SESSION_SOURCE_KINDS = ['claude', 'omp', 'codex', 'agent_chat'] as const;
 export const SESSION_TURN_REF_PREFIX = 'session_turn:';
@@ -236,8 +237,9 @@ interface LiveRefreshDeps {
   ingest?: (filePath: string, opts: { owner: string; sessionId: string }) => Promise<unknown>;
   resolveStates?: (
     subjects: readonly { ownerId: string }[],
-    opts: { hydrateBatch: true },
+    opts: { hydrateBatch: true; onTiming?: LivenessTimingCallback },
   ) => Promise<ReadonlyMap<string, { sessionState: SessionState | null }>>;
+  onLivenessTiming?: LivenessTimingCallback;
 }
 
 interface TargetSessionRow {
@@ -443,8 +445,12 @@ export async function refreshLiveSessionsBeforeRead(
 
   const resolveStates = deps.resolveStates ??
     (await import('../coordination/liveness-oracle')).resolveSessionStates;
+  const livenessOptions = {
+    hydrateBatch: true as const,
+    ...(deps.onLivenessTiming ? { onTiming: deps.onLivenessTiming } : {}),
+  };
   const liveness = await withBoundedTimeout(
-    () => resolveStates(candidateOwners.map((ownerId) => ({ ownerId })), { hydrateBatch: true }),
+    () => resolveStates(candidateOwners.map((ownerId) => ({ ownerId })), livenessOptions),
     {
       fallback: new Map<string, { sessionState: SessionState | null }>(),
       timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,

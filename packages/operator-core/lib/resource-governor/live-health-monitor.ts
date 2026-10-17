@@ -921,6 +921,7 @@ export class LiveHealthMonitor {
     const previousTiming = this.lastSampleTiming;
     if (previousTiming && started - previousTiming.startedAt > LIVE_HEALTH_SNAPSHOT_MAX_AGE_MS) {
       this.log('[resource-governor-health] sample gap exceeded freshness: ' + JSON.stringify({
+        writer: this.writer,
         gapMs: started - previousTiming.startedAt,
         previousSampleMs: previousTiming.completedAt === null ? null : previousTiming.completedAt - previousTiming.startedAt,
         sinceCompletionMs: previousTiming.completedAt === null ? null : Math.max(0, started - previousTiming.completedAt),
@@ -1000,7 +1001,7 @@ export class LiveHealthMonitor {
         // Collection latency alone cannot explain an archive stall or an idle
         // cadence gap. Log measurements, retaining the existing unknown policy.
         this.log('[resource-governor-health] sample exceeded freshness: ' + JSON.stringify({
-          sequence: this.sequence, outcome: complete ? 'complete' : 'failed', sampleMs, phases: timing.phases,
+          writer: this.writer, sequence: this.sequence, outcome: complete ? 'complete' : 'failed', sampleMs, phases: timing.phases,
         }));
       }
     }

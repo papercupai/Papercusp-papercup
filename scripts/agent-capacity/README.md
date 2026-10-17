@@ -52,8 +52,20 @@ Each step's output feeds the next one. All commands run from the repo root.
      a join, so the script refuses an --out inside the repo and writes the file mode 0600.
      `python3 vm/backfill-split.py <fp.jsonl> <serve.log> [from_epoch]` splits its footprint
      samples by whether an embed-backfill drain overlapped them.
-   - `vm/build-test-deb.sh` builds a test-artifact .deb from the working tree and checks that it
-     carries the fixes named in a MARKERS_FILE. `vm/deb-soak-chain.sh` waits for that build,
+   - `vm/build-test-deb.sh` builds a test-artifact .deb from detached, prepared source and checks
+     that it carries the fixes named in `MARKERS_FILE`. Prepare the selected committed revision
+     with `apps/operator/bin/release/setup-release-checkout.sh --ref <sha> --integration <staging>
+     --release <candidate> --source-only --source-root-mode clone --source-integrity object-sourced`,
+     then prepare dependencies with the same ref/paths and `--prepare-existing
+     --node-modules-copy copy --node-modules-generation required`. Choose a candidate filesystem
+     with room for source, independent dependencies, sidecar staging and the package; the
+     materializer's headroom guard must pass without reducing its reserve or margin. Before a
+     long preparation, use `dependency-generation.sh --integration <staging>
+     --generation-root <candidate-parent> --check-headroom` for its read-only minimum-space check;
+     this does not include the later copy sizes. Run the wrapper from staging with
+     `REPO_ROOT=<candidate> MARKERS_FILE=<absolute-manifest>`. A moving staging branch is refused
+     before either build phase because background sync can change its revision during preflight.
+     `CHECK_ONLY=1` can still inspect live inputs without building. `vm/deb-soak-chain.sh` waits for that build,
      uploads the .deb, takes the rig lock and runs `vm/p2p-join-soak.sh` on it.
    - `vm/gce-resize.sh` times a GCE machine-type resize (D-053).
 4. **Build the capacity table** from the pulled-back ramp results:

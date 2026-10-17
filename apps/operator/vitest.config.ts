@@ -31,6 +31,10 @@ export default mergeConfig(
         __dirname,
         '../../packages/operator-core/lib/release/dependency-copy-isolation.setup-vitest.ts',
       ),
+      // WI-6554700010008603: apps/operator tests can trigger tracked fire-and-forget
+      // work-item events too. Drain those promises before DB/server teardown so a late
+      // event cannot write through a closed connection and fail vitest-fail-on-console.
+      resolve(__dirname, '../../packages/operator-core/lib/detached-imports/setup-vitest.ts'),
     ],
   }),
   {

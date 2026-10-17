@@ -57,6 +57,28 @@ beforeEach(() => {
 });
 
 describe('production conformance closure adapter', () => {
+  it('refuses a mapped close with no requirement declaration', async () => {
+    expect(await conformanceClosureRefusal({ ...input, completion: {} })).toMatchObject({
+      code: 'conformance_requirements_missing', requirements: ['R-1'],
+    });
+    expect(ports.tests).not.toHaveBeenCalled();
+    expect(ports.checks).not.toHaveBeenCalled();
+  });
+  it('accepts a contribution without reading the requirement done-when result', async () => {
+    ports.tests.mockResolvedValue({ verdict: 'fail' });
+    expect(await conformanceClosureRefusal({
+      ...input, completion: { contributesTo: ['R-1'] },
+    })).toBeNull();
+    expect(ports.tests).not.toHaveBeenCalled();
+    expect(ports.checks).not.toHaveBeenCalled();
+  });
+  it('keeps mapped drift blocking a contribution-only close', async () => {
+    ports.alarms.mockResolvedValue([{ id: 'EI-adapter-drift', barKey: 'R-1', doneWhenRegressed: true }]);
+    expect(await conformanceClosureRefusal({
+      ...input, completion: { contributesTo: ['R-1'] },
+    })).toMatchObject({ code: 'conformance_drift_alarm_open', alarmIds: ['EI-adapter-drift'] });
+    expect(ports.tests).not.toHaveBeenCalled();
+  });
   it('reads the linked plan and canonical test ledger in the caller workspace', async () => {
     expect(await conformanceClosureRefusal(input)).toBeNull();
     expect(ports.plan).toHaveBeenCalledWith(input.planSlug, {

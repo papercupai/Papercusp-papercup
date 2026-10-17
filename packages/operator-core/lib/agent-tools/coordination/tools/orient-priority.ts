@@ -114,6 +114,7 @@ export const ORIENT_OPTIONAL_PRIORITY = {
     { name: 'host', fields: ['host'], recoverVia: 'next coord:orient (host snapshot is always re-delivered)' },
     { name: 'memory', fields: ['memory'], recoverVia: 'memory:search { query }' },
     { name: 'planNow', fields: ['planNow'], recoverVia: 'plans:get { slug }' },
+    { name: 'taskBrief', fields: ['taskBrief'], recoverVia: 'coord:declare-intent { intent, current_files, harness }' },
     { name: 'planEvents', fields: ['planEvents'], recoverVia: 'coord:plan-events' },
     { name: 'fleetControl', fields: ['fleetControl'], recoverVia: 'fleet:assignments' },
     { name: 'fleetCatchUp', fields: ['fleetCatchUp'], recoverVia: "coord:catch-up { audience:'@fleet:<slug>' }" },

@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "kind": "private-fixture-verification-observation",
+  "workItem": "WI-6554700010016626",
+  "parent": "WI-10000407",
+  "sourceCommit": "8db7240ba44f234dca73f475d43683099ba3ae4b",
+  "uncommittedAtMeasurement": true,
+  "sourceFiles": [
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/private-unrelated-write-http.integration.test.ts",
+      "sha256": "49cb3944b3bb337ba79f50f2501509726e351071b6df082c0d77ea768e625f75",
+      "gitSha256": "692790d032cca1aecf03f71f7467393c64bd9fc9944c0fafa4d64d2786bf0d8c"
+    },
+    {
+      "path": "packages/operator-core/test/private-unrelated-write-http-scenario.ts",
+      "sha256": "843fe7855b4bf58fa2788a8095c8e003d9f8f41bb2af3d1fb8774e66abde7768",
+      "gitSha256": "77bed9e195f2d7a5c1200fff9844dc4e369789a75d41752bd31b33c597839504"
+    }
+  ],
+  "red": {
+    "recoveryRun": "df1c5216-1cbf-4eb5-aaa8-ee53e387cb48",
+    "testRunId": 21296298,
+    "runId": "20261016T232424Z-1437357",
+    "verdict": "fail",
+    "failure": "Observed query was not blocked by the selected holder: the oldest table-matching wait was the decoy.",
+    "resultPath": "/mnt/data/offload/verification-harness/isolated-integration/20261016T232424Z-1437357/result.json"
+  },
+  "corrected": {
+    "recoveryRun": "2d404eb9-7128-4746-bd26-c0322eb5fd88",
+    "runId": "20261016T233119Z-1848629",
+    "verdict": "pass",
+    "phases": [
+      {
+        "phase": "prepare",
+        "status": "passed"
+      },
+      {
+        "phase": "execute",
+        "status": "passed"
+      },
+      {
+        "phase": "teardown",
+        "status": "passed"
+      }
+    ],
+    "resultPath": "/mnt/data/offload/verification-harness/isolated-integration/20261016T233119Z-1848629/result.json",
+    "sourcePath": "/mnt/data/offload/verification-harness/isolated-integration/20261016T233119Z-1848629/phases/prepare/source.json",
+    "workerPath": "/mnt/data/offload/verification-harness/isolated-integration/20261016T233119Z-1848629/phases/execute/worker.log",
+    "correlation": {
+      "holderPid": 1967460,
+      "lockedScope": "workitem:test-runtime-be8b41e3-313-guard:WI-1",
+      "decoyPid": 1967064,
+      "decoyQueryStart": "2026-10-16 19:33:46.867191-04",
+      "selectedPid": 1965599,
+      "selectedQueryStart": "2026-10-16 19:33:46.964646-04"
+    },
+    "unrelatedWriteElapsedMs": 69.1131180000084,
+    "deadlineMs": 20000,
+    "readbackEqualsSubmitted": true,
+    "hostStopped": true,
+    "lifecycleEnded": {
+      "kind": "isolated-runtime-end",
+      "childPid": 1884662,
+      "exitCode": 0,
+      "signal": null,
+      "runtimeRemoved": true,
+      "pgDataRemoved": true,
+      "observedAt": "2026-10-16T23:33:54.960Z"
+    }
+  },
+  "typecheck": {
+    "command": "npm run lint:tsc -- --files=packages/operator-core/test/private-unrelated-write-http-scenario.ts,packages/operator-core/lib/agent-tools/plans/private-unrelated-write-http.integration.test.ts",
+    "log": "/tmp/byoc-p009-correlation-final-type-20261016T2331Z.log",
+    "exitCode": 0,
+    "namedFileErrors": 0
+  },
+  "limitations": [
+    "The corrected inner verification harness passed prepare, execute and teardown; the detached outer Vitest report was lost and no complete outer Vitest pass is asserted.",
+    "Runner lifecycle disagreement is owned in EI-26181066903166448.",
+    "No deployed R003/R006 acceptance, full P009 matrix, acceptance evidence binding or shipment is established."
+  ]
+}

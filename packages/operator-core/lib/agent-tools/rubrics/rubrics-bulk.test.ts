@@ -34,6 +34,12 @@ vi.mock('../../rubrics', async (importOriginal) => {
     rubricCompleteness: vi.fn(() => ({ criteriaWithoutReplication: [], methodRefMissing: false, complete: true })),
   };
 });
+// The production vetting path probes the current critique channel before falling
+// back to meta-scorecards. Keep this handler unit suite on its existing rubric /
+// scorecard seams instead of opening a real Postgres connection for that probe.
+vi.mock('../../acceptance-rubric-critique', () => ({
+  readCurrentAcceptanceRubricCritique: vi.fn(async () => null),
+}));
 vi.mock('../../scorecards', () => ({
   listScorecards: vi.fn(),
   settledGradingAuditIsCurrent: (row: {

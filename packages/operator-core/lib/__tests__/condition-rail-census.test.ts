@@ -1,14 +1,43 @@
 /** P-017: independent, tracked-tree git-grep census; scanner predicates are not the enumerator. */
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { isScannable, scanSites } from '../../../../scripts/lib/condition-rail-inventory.mjs';
 import { stripCommentsAndStrings } from '../../../../scripts/lib/strip-comments-and-strings.mjs';
+import { presentOnDisk } from '../../../../scripts/lib/tracked-files.mjs';
 
 const root = fileURLToPath(new URL('../../../../', import.meta.url));
+
+function readCensusSource(file: string, sourceRoot = root): string | null {
+  try {
+    return readFileSync(resolve(sourceRoot, file), 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+it('tolerates a tracked source deleted before the census read', () => {
+  const fixture = mkdtempSync(resolve(tmpdir(), 'condition-census-deleted-'));
+  try {
+    execFileSync('git', ['init', '-q'], { cwd: fixture });
+    writeFileSync(resolve(fixture, 'deleted-watchdog.ts'), 'export const alarm = true;\n');
+    execFileSync('git', ['add', 'deleted-watchdog.ts'], { cwd: fixture });
+    rmSync(resolve(fixture, 'deleted-watchdog.ts'));
+    expect(execFileSync('git', ['ls-files'], { cwd: fixture, encoding: 'utf8' })).toContain('deleted-watchdog.ts');
+    expect(readCensusSource('deleted-watchdog.ts', fixture)).toBeNull();
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+it('does not suppress census source read errors other than a missing file', () => {
+  expect(() => readCensusSource('.', root)).toThrow();
+});
 const pattern = 'notifyAttention|escalateAlarm|console\\.(warn|error|log|info)|logger\\.(warn|error|info)|LOG\\.(warn|error|info)|log\\.(warn|error|info)|managedSetInterval|waiver[[:space:]]*:|(alarm|alarming|alert|alerting|degraded|unhealthy|breached)[[:space:]]*:';
 
 type Candidate = { class: string; line: number };
@@ -185,9 +214,11 @@ it('accounts for independently grepped signal tokens as sites or reasoned exclus
   const missing: string[] = [];
   const exclusions: Record<string, number> = {};
   const exclude = (reason: string) => { exclusions[reason] = (exclusions[reason] ?? 0) + 1; };
-  for (const [file, lines] of files) {
+  for (const file of presentOnDisk([...files.keys()], root)) {
+    const lines = files.get(file)!;
     if (!isScannable(file)) { exclude('test, generated, vendored, retired, declaration, or non-source path'); continue; }
-    const raw = readFileSync(resolve(root, file), 'utf8');
+    const raw = readCensusSource(file);
+    if (raw === null) { exclude('tracked source disappeared before read'); continue; }
     const masked = stripCommentsAndStrings(raw, file);
     const maskedLines = masked.split('\n');
     const sites = scanSites(raw, file);

@@ -663,6 +663,28 @@ describe('WorkItemAdmissionQueueDriver', () => {
     await expect(api.status('release-rides-out')).resolves.toMatchObject({ state: 'completed' });
   });
 
+  it('uses the claimed receipt identity without a pre-settlement identity lookup', async () => {
+    const store = new MemoryQueueStore();
+    const { governor: api, driver } = governor(store, () => 1_000, { sleep: async () => {} });
+    const admitted = await api.admit({ idempotencyKey: 'receipt-targeted-release', admissionClass: 'process' });
+    if (admitted.kind !== 'queued') throw new Error('expected a queued receipt');
+    const claim = await driver.leaseReceipt({
+      receiptId: admitted.receipt.receiptId,
+      owner: 'worker',
+      ttlMs: 1_000,
+    });
+    if (!claim) throw new Error('expected a targeted lease');
+
+    const find = vi.spyOn(store, 'find').mockImplementation(async () => {
+      throw new Error('pre-settlement identity lookup must not run for a claimed receipt');
+    });
+    await expect(api.release(claim.context, { cpuWeight: 1 })).resolves.toEqual({
+      requestId: claim.context.requestId,
+      released: true,
+    });
+    expect(find).not.toHaveBeenCalled();
+  });
+
   it('does not retry a non-contention terminal release failure', async () => {
     const store = new MemoryQueueStore();
     store.failReleaseClaimTimes = 1;

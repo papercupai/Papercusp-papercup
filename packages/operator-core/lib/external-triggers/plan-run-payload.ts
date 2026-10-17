@@ -85,10 +85,16 @@ export interface TriggerPlanRunPayload {
   dedupeKey: string;
   occurredAt: string | null;
   payload: Record<string, unknown>;
+  /** When present, consume every event. The top-level fields describe the leader. */
+  events?: TriggerPayloadEvent[];
 }
+
+export type TriggerPayloadEvent = Omit<TriggerPlanRunPayload, 'events'>;
 
 interface TriggerPayloadRow {
   triggerRunId: string;
+  bindingId: string;
+  isBatch?: boolean;
   args: unknown;
 }
 
@@ -124,15 +130,18 @@ export async function readTriggerPlanRunPayload(
   if (!Number.isSafeInteger(planRunId) || planRunId <= 0) throw new Error('trigger_payload_plan_run_id_invalid');
   const rows = await sql<TriggerPayloadRow[]>`
     SELECT tr.id::text AS "triggerRunId",
+           tr.binding_id::text AS "bindingId",
+           tr.outcome ->> 'coalescedBatch' = 'true' AS "isBatch",
            tr.args
       FROM harness_shared.trigger_runs tr
      WHERE tr.workspace_id = ${workspaceId}
        AND tr.plan_run_ref = ${String(planRunId)}
+       AND tr.outcome ->> 'coalescedInto' IS NULL
      ORDER BY tr.completed_at DESC NULLS LAST, tr.id
      LIMIT 1`;
   const row = rows[0];
   if (!row) throw new Error(`trigger_payload_run_not_found:${planRunId}`);
-  return payloadFromRow(row);
+  return payloadWithBatch(sql, workspaceId, row);
 }
 
 /**
@@ -161,6 +170,8 @@ export async function readTriggerOperationPayload(
   if (!id) throw new Error('trigger_payload_work_item_id_invalid');
   const rows = await sql<TriggerPayloadRow[]>`
     SELECT tr.id::text AS "triggerRunId",
+           tr.binding_id::text AS "bindingId",
+           tr.outcome ->> 'coalescedBatch' = 'true' AS "isBatch",
            tr.args
       FROM harness_shared.blueprint_operation_invocations i
       JOIN harness_shared.trigger_runs tr
@@ -174,7 +185,19 @@ export async function readTriggerOperationPayload(
      LIMIT 1`;
   const row = rows[0];
   if (!row) throw new Error(`trigger_payload_operation_not_found:${id}`);
-  return payloadFromRow(row);
+  return payloadWithBatch(sql, workspaceId, row);
+}
+
+async function payloadWithBatch(sql: Db, workspaceId: string, leader: TriggerPayloadRow): Promise<TriggerPlanRunPayload> {
+  const result = payloadFromRow(leader);
+  if (!leader.isBatch) return result;
+  const members = await sql<TriggerPayloadRow[]>`
+    SELECT id::text AS "triggerRunId", binding_id::text AS "bindingId", args
+      FROM harness_shared.trigger_runs
+     WHERE workspace_id = ${workspaceId} AND binding_id = ${leader.bindingId}
+       AND outcome ->> 'coalescedInto' = ${leader.triggerRunId}
+     ORDER BY triggered_at, id`;
+  return members.length ? { ...result, events: [result, ...members.map(payloadFromRow)] } : result;
 }
 
 function payloadFromRow(row: TriggerPayloadRow): TriggerPlanRunPayload {

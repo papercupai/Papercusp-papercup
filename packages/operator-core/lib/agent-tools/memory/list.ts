@@ -38,7 +38,7 @@ export default defineTool({
   name: 'memory:list',
   capability: 'memory:read',
   description:
-    'List all memories for the current user. Supports filtering by kind and harness scope.',
+    'List memories for the current user in a bounded page. Supports filtering by kind and harness scope; use next_offset while truncated is true.',
   guidance: {
     when:
       'When the user asks to inspect their memory ("what have you stored about me?") or you need a filter-only query. Default listing returns only facts CURRENT now. Pass `as_of:<ISO timestamp>` for the rows valid at a historical instant, or `include_superseded:true` for the full lifecycle; temporal rows carry `metadata.validity`.',
@@ -97,23 +97,25 @@ export default defineTool({
 
       // User pool + (when requested) one harness pool + one hive pool. Kind
       // filtering and the per-pool fan-out are the backend's concern.
-      const entries = await withMemoryToolTimeout(
-        backend.list({
-          scope: [
-            user.id,
-            ...(args.harness_slug ? [`harness:${args.harness_slug}`] : []),
-            ...(args.hive_slug ? [`hive:${args.hive_slug}`] : []),
-          ],
-          kind: args.kind,
-          ...(args.as_of !== undefined ? { asOf: args.as_of } : {}),
-          ...(args.include_superseded ? { includeSuperseded: true } : {}),
-        }),
-        'memory:list list',
-      );
-
       const offset = args.offset ?? 0;
       const limit = args.limit ?? MEMORY_LIST_DEFAULT_LIMIT;
-      const page = entries.slice(offset, offset + limit);
+      const listOptions = {
+        scope: [
+          user.id,
+          ...(args.harness_slug ? [`harness:${args.harness_slug}`] : []),
+          ...(args.hive_slug ? [`hive:${args.hive_slug}`] : []),
+        ],
+        kind: args.kind,
+        ...(args.as_of !== undefined ? { asOf: args.as_of } : {}),
+        ...(args.include_superseded ? { includeSuperseded: true } : {}),
+      };
+      const pageResult = backend.listPage
+        ? await withMemoryToolTimeout(backend.listPage({ ...listOptions, limit, offset }), 'memory:list list')
+        : await withMemoryToolTimeout(backend.list(listOptions), 'memory:list list').then((entries) => ({
+            entries: entries.slice(offset, offset + limit),
+            total: entries.length,
+          }));
+      const page = pageResult.entries;
       let outcomes: Awaited<ReturnType<typeof loadOutcomeCounts>> | undefined;
       let outcomeCountsUnavailable: string | undefined;
       try {
@@ -122,13 +124,13 @@ export default defineTool({
       } catch (error) {
         outcomeCountsUnavailable = error instanceof Error ? error.message : String(error);
       }
-      const truncated = offset + page.length < entries.length;
+      const truncated = offset + page.length < pageResult.total;
       return {
         content: [{ type: 'text', text: JSON.stringify({
           ok: true,
           results: page.map(row => ({ ...toWireRow(row), outcomeCounts: outcomes?.get(row.id) ?? null })),
           ...(outcomeCountsUnavailable ? { outcomeCountsUnavailable } : {}),
-          total: entries.length,
+          total: pageResult.total,
           ...(truncated ? { truncated: true, next_offset: offset + page.length } : {}),
         }) }],
       };

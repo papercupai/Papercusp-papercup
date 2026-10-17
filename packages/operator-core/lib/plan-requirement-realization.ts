@@ -62,6 +62,7 @@ import type { AcceptanceBarContractSnapshot, AcceptanceBarTrace } from './accept
 import { barRequiresAutomatedProof } from './acceptance-bar-contract-snapshot';
 import { isEnforceableSpecLifecycle, type SpecClauseRevision } from './agent-tools/plans/spec-clauses-store';
 import { validExplicitExemption } from './agent-tools/plans/spec-quality';
+import { readSpecEvidencePlane } from './agent-tools/plans/spec-evidence-store';
 
 /** Derived from the canonical BAR evaluator, never from a doc citation or a completion claim. */
 export interface NonCodeItemProof {
@@ -100,7 +101,8 @@ export function deriveNonCodeExemptionProofs(input: {
 
 /**
  * D-008 keeps non-code outcomes out of verifiedAgainstCode. Their realization can
- * instead be established by current operational/check evidence for EVERY exact BAR
+ * instead be established by current operational/check evidence, or a measured manual
+ * observation for an explicitly manual BAR, for EVERY exact BAR
  * projection owned by the item. A passing sibling projection cannot vouch for it.
  * Grading is intentionally not required here: the same proof feeds the grader.
  */
@@ -161,8 +163,18 @@ export function deriveNonCodeItemProofs(snapshot: AcceptanceBarContractSnapshot)
         contract.current && contract.specId === mapping.specId && contract.specRevision === mapping.specRevision &&
         contract.specFingerprint === mapping.specContentHash)) return false;
       const evidence = (bar.proof.history ?? []).filter((row) => {
-        const plane = row.details.evidencePlane ?? row.details.evidence_plane ?? row.details.plane;
-        return (row.evidenceKind === 'operational' || row.evidenceKind === 'check') &&
+        const plane = readSpecEvidencePlane(row.details);
+        const instrument = row.details.instrument as { none?: unknown; reason?: unknown } | undefined;
+        // Manual content inspection is a supported proof kind. Keep bare claims out:
+        // the contract must explicitly require manual proof, the binding must declare
+        // the absence of an instrument, and the server must measure source + runtime.
+        // Independent live verification is still enforced by its separate ship gate.
+        const measuredManual = manual && row.evidenceKind === 'manual' &&
+          instrument?.none === true && typeof instrument.reason === 'string' &&
+          instrument.reason.trim().length > 0 && row.currentness.provenance === 'server-measured' &&
+          row.currentness.dimensions.source === 'current' &&
+          (bar.evidencePlane === 'tree' || row.currentness.dimensions.environment === 'current');
+        return (row.evidenceKind === 'operational' || row.evidenceKind === 'check' || measuredManual) &&
           row.matchesCurrentSpec && row.specId === mapping.specId && row.specRevision === mapping.specRevision &&
           row.specFingerprint === mapping.specContentHash && row.currentness.comparisonSupplied === true &&
           row.currentness.overall === 'current' &&

@@ -2551,6 +2551,7 @@ export default defineTool({
           let restartCommandExitCode: number | null = null;
           let restartCommandSignal: string | null = null;
           let restartCommandExited = false;
+          const requestAuditRequired = target === 'bg-host' || target === 'staging';
           // Typed by assertion, not annotation: a `T | null = null` initializer narrows the
           // variable to `null` in this scope (TS does not see the executor's assignment), so
           // the synchronous catch below would read it as uncallable (WI-10006260).
@@ -2609,7 +2610,7 @@ export default defineTool({
                 : {}),
               quiesceOverridden: quiesce?.overridden ? { marker: quiesce.marker } : null,
             };
-            if (target === 'bg-host') {
+            if (requestAuditRequired) {
               requestId = randomUUID();
               requestAuditPersisted = await writeRestartAudit(ownerId, {
                 ...restartAuditDetails,
@@ -2619,10 +2620,10 @@ export default defineTool({
                 restartCommand: scheduledRestartCmd,
               });
               if (!requestAuditPersisted) {
-                // The bg-host request row is the durable attribution record for
-                // the detached systemctl action. Without it, a restart could
-                // happen with no persisted requester/trigger evidence, so fail
-                // closed before releasing the child handoff or spawning it.
+                // The request row is the durable attribution record for the
+                // detached systemctl action. Without it, a restart could happen
+                // with no persisted requester/trigger evidence, so fail closed
+                // before releasing the child handoff or spawning it.
                 if (stagingHandoff?.acquired) stagingHandoff.abort();
                 return json({
                   ok: false,
@@ -2632,17 +2633,20 @@ export default defineTool({
                   restartScheduled: false,
                   audited: false,
                   requestAuditPersisted: false,
-                  reason: 'bg_host_restart_request_audit_failed',
+                  reason:
+                    target === 'bg-host'
+                      ? 'bg_host_restart_request_audit_failed'
+                      : 'staging_restart_request_audit_failed',
                   note:
-                    'Restart REFUSED after the drain because the bg-host request audit row could not be persisted. No restart command was scheduled; check audit database availability and retry after it is writable.',
+                    `Restart REFUSED after the drain because the ${target} request audit row could not be persisted. No restart command was scheduled; check audit database availability and retry after it is writable.`,
                 });
               }
             } else {
               void writeRestartAudit(ownerId, restartAuditDetails);
             }
             if (stagingHandoff?.acquired) {
-              restartScheduled = true;
               stagingHandoff.start();
+              restartScheduled = true;
             } else {
               const child = spawn('sh', ['-c', `sleep 1; ${scheduledRestartCmd}`], {
                 detached: true,
@@ -2676,9 +2680,38 @@ export default defineTool({
               throw error;
             }
           }
+          // A staging restart kills the operator process that is handling this
+          // request. Return the durable request handle immediately after the
+          // detached handoff; waiting for MainPID/listener readiness here loses
+          // the response on the self-restart. Callers reconcile the outcome by
+          // reading the request audit row (audit:list detail:full action:dev:restart)
+          // and probing :3170 with the returned restartRequestId as correlation.
+          if (target === 'staging') {
+            return json({
+              ok: true,
+              target,
+              drained: true,
+              restarted: false,
+              restartScheduled,
+              restartObserved: false,
+              fence_seq: fence.seq,
+              restartedFromPid: before.mainPid ?? null,
+              restartRequestId: requestId,
+              requestAuditPersisted,
+              enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
+              audited: requestAuditPersisted,
+              systemdDaemonReloaded,
+              ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
+              ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
+              verifyWith: restartVerificationHint(target, cfg.unit, before.mainPid ?? null),
+              note:
+                `Staging restart scheduled (~1s) with request ID ${requestId}. The operator connection may drop while ` +
+                `papercusp-staging-api.service restarts; reconcile the request via audit:list detail:full action:dev:restart ` +
+                `and verify the replacement MainPID owns :${RESTART_TARGET_PORTS.staging}.`,
+            });
+          }
           const gatewayReadiness =
             target === 'gateway' ? await waitForGatewayRestartReadiness(before.mainPid ?? null) : null;
-          const stagingReadiness = target === 'staging' ? await stagingRestartReadinessReader(before) : null;
           let bgHostReadiness: BgHostRestartReadiness | null = null;
           if (target === 'bg-host') {
             if (restartSpawnError) {
@@ -2860,31 +2893,6 @@ export default defineTool({
                   : ` A new live MainPID was not observed (last observed: ${gatewayReadiness.observedPid ?? 'none'}).`),
             });
           }
-          if (stagingReadiness && !stagingReadiness.ready) {
-            const starting = stagingReadiness.outcome === 'starting';
-            return json({
-              ok: starting,
-              target,
-              drained: true,
-              restarted: false,
-              restartScheduled: true,
-              restartObserved: stagingReadiness.observed,
-              fence_seq: fence.seq,
-              restartedFromPid: before.mainPid ?? null,
-              enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
-              audited: true,
-              systemdDaemonReloaded,
-              ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
-              ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
-              stagingReadiness,
-              verifyWith: restartVerificationHint(target, cfg.unit, before.mainPid ?? null),
-              note: starting
-                ? `Staging restart execution was observed, but :3170 is still starting; restarted remains false until the new MainPID owns the listener.`
-                : `Staging restart was scheduled, but no successful systemd/listener transition was observed within the bounded wait. The unit ended ${
-                    stagingReadiness.activeState ?? 'unknown'
-                  } with Result=${stagingReadiness.result ?? 'unknown'}; do not claim it restarted.`,
-            });
-          }
           return json({
             ok: true,
             target,
@@ -2919,7 +2927,6 @@ export default defineTool({
                 }
               : {}),
             ...(gatewayReadiness ? { gatewayReadiness } : {}),
-            ...(stagingReadiness ? { stagingReadiness } : {}),
             ...(peerInFlightEdits?.checked && peerInFlightEdits.total > 0 ? { peerInFlightEdits } : {}),
             ...(stagingSchemaPreparation
               ? {
@@ -2940,13 +2947,7 @@ export default defineTool({
               ? `Gateway restart completed: MainPID changed to ${gatewayReadiness.observedPid}; ${gatewayHealthUrl()} responded ${
                   gatewayReadiness.health?.detail ?? 'successfully'
                 } after ${gatewayReadiness.waitedMs}ms.`
-              : stagingReadiness
-                ? `Staging restart completed: MainPID changed to ${stagingReadiness.observedPid} and owns :${
-                    stagingReadiness.listener?.port ?? RESTART_TARGET_PORTS.staging
-                  } after ${stagingReadiness.waitedMs}ms.${
-                    resetFailedBeforeRestart ? ' reset-failed cleared the prior failed/start-limited unit first.' : ''
-                  }`
-                : `Restart scheduled (~1s)${
+              : `Restart scheduled (~1s)${
                     resetFailedBeforeRestart
                       ? ` — systemd reported start-limit-hit; reset-failed will clear the latched failure before restart.`
                       : ''

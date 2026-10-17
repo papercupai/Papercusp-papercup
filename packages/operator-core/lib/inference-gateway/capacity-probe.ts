@@ -431,8 +431,6 @@ export async function probeAccountCapacity(
       });
       const windows = parseCapacityHeaders(h);
       const sawHeader = Object.keys(windows).length > 0;
-      // A real upstream quota refusal wins over a positive wallet balance.
-      if (res.status === 429) windows.usageCreditsAvailable = false;
       if (sawHeader) {
         void res.body?.cancel().catch(() => undefined);
         ac.abort();

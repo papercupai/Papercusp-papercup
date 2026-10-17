@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "kind": "runtime-observation",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "workItem": "WI-6554700010015276",
+  "recordedAt": "2026-10-16T16:51:00Z",
+  "status": "bounded-positive-control-passed",
+  "shipment": "unverified",
+  "runtime": {
+    "endpoint": "http://127.0.0.1:3170",
+    "buildSha": "25a4d82162",
+    "role": "su",
+    "route": "operator-api staging operator",
+    "containment": "dev:pipeline_position returned containsChange=true for lsp-facade.ts on staging-operator25a4d82162; prior three-path containment receipt remains /tmp/native-p040-route-containment-20261016.json."
+  },
+  "qualification": {
+    "symbol": "promptAblationRegistrationInput",
+    "snapshotGeneratedAt": "2026-10-16T16:35:11.574Z",
+    "snapshotCommit": "e9f309520660140ccb2189c88ca3357aa412621e",
+    "sourceFingerprint": "d2427c528ed5a146048321a544c8150545f20b23d4a1d8e1f9437a275744bc93",
+    "supportingFiles": [
+      {"path": "packages/operator-core/lib/ablation/governor.test.ts", "sha256": "290184941e69317e0a77f275e7ec636077dd542739448d2e7abc0c712dc8708f"},
+      {"path": "packages/operator-core/lib/ablation/governor.ts", "sha256": "47615b28afa1cea78589b2f844c89f11cafc673552bddc1b4e7e51e05c688380"},
+      {"path": "packages/operator-core/package.json", "sha256": "6518ffdf37df447fa1176e32f088ca4b556bf42087a66e14eb87c1c351397807"}
+    ],
+    "method": "Selected a unique symbol only after checking every symbol.sources entry, definition and caller hash against canonical current source. Both runtime answers returned these same supporting files and fingerprint.",
+    "latencyWriter": "queryPushSnapshot sets latencyMs to Date.now() minus its start, after registry, root, snapshot lookup and source corroboration. This excludes outer CLI and dispatch latency."
+  },
+  "samples": [
+    {
+      "op": "callers",
+      "backend": "first-party-snapshot",
+      "answerLatencyMs": 4,
+      "sites": ["packages/operator-core/lib/ablation/governor.test.ts:73", "packages/operator-core/lib/ablation/governor.ts:69"],
+      "command": "ptool graph:query --url=http://127.0.0.1:3170 --workspace=papercusp-workspace --harness=papercusp --json -",
+      "args": {"op": "callers", "name": "promptAblationRegistrationInput", "limit": 8},
+      "receipt": "/tmp/native-p040-qualified-callers-20261016.json"
+    },
+    {
+      "op": "definition",
+      "backend": "first-party-snapshot",
+      "answerLatencyMs": 2,
+      "sites": ["packages/operator-core/lib/ablation/governor.ts:31"],
+      "command": "ptool lsp:query --url=http://127.0.0.1:3170 --workspace=papercusp-workspace --harness=papercusp --json -",
+      "args": {"op": "symbol", "file": "packages/operator-core/lib/ablation/governor.test.ts", "line1": 73, "character": 11, "limit": 8},
+      "receipt": "/tmp/native-p040-qualified-definition-20261016.json"
+    }
+  ],
+  "limits": [
+    "Two positive su-role samples on one symbol establish the staging snapshot route only; no population p50, cold-load, judge-role or final-release proof is claimed.",
+    "Syntax-bound caller sites are a lower bound; compiler binding, dynamic dispatch and runtime execution remain unmeasured.",
+    "The prior three compiler fallback samples remain disqualified snapshot-performance observations in native-p040-runtime-2026-10-16.json."
+  ],
+  "maintainedRecipeObservation": {
+    "id": "p040-current-build-snapshot-caller-and-definition-sample",
+    "revision": "c5cea7f57cb5ae62b5a9c1b216080464b2c1ebd1c6e62e17ec46c8fd7351890e",
+    "endpoint": "http://127.0.0.1:3170",
+    "receipt": "/tmp/native-p040-qualified-recipe-20261016.json",
+    "wrapperOk": false,
+    "wrapperError": "recipe_field_miss",
+    "childResultOk": true,
+    "interpretation": "All six read calls settled and returned the first-party snapshot with the same corroborated fingerprint. The recipe wrapper failed its field contract; no successful recipe receipt is claimed. Prior known defect EI-25501199711218705 remains separate from these child observations.",
+    "samples": [
+      {"op": "callers", "dispatchWallMs": 54, "answerLatencyMs": 7},
+      {"op": "symbol", "dispatchWallMs": 25, "answerLatencyMs": 6},
+      {"op": "callers", "dispatchWallMs": 31, "answerLatencyMs": 12},
+      {"op": "symbol", "dispatchWallMs": 23, "answerLatencyMs": 6},
+      {"op": "callers", "dispatchWallMs": 36, "answerLatencyMs": 8},
+      {"op": "symbol", "dispatchWallMs": 24, "answerLatencyMs": 12}
+    ]
+  },
+  "next": "Obtain judge-role and deployed acceptance under the parent plan; the bounded su-role child observations do not establish a global p50. Preserve P038 fixture HEAD parity requirement."
+}

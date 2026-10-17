@@ -519,7 +519,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
   const rawItems = readRawPlanItems(read);
   const openItems: OpenPlanItem[] = rawItems
     .filter((i) => isOpenStatus(i.status))
-    .map((i) => ({ id: i.id, text: i.text }));
+    .map((i) => ({ id: i.id, text: i.text, phase: i.phase }));
   if (openItems.length === 0) return { promoted: 0, skipped: 0, ...NO_EDGES };
 
   // P-009: direct promotion is independently callable, so plans:start's guard

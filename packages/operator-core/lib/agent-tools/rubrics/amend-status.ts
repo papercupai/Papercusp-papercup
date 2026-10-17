@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { findAmendmentDecisionByKey } from '../../rubrics';
-import { getAmendReceipt } from './amend-receipts';
+import { getAmendReceipt, isRunningReceiptOrphaned } from './amend-receipts';
 
 export const rubricsAmendStatusArgs = z
   .object({
@@ -29,12 +29,12 @@ export default defineTool({
   // @not-a-cell This keyed receipt and Decision lookup has one read door; no other resolver derives its per-key status.
   profile: 'engineer',
   description:
-    'Poll a rubrics:amend receipt: running, committed (apply result), previewed (dry-run result), failed, or not_found. A missing dry-run receipt is safe to regenerate because dryRun does not write.',
+    'Poll a rubrics:amend receipt: running, orphaned (executor restarted and reclaimable now), committed (apply result), previewed (dry-run result), failed, or not_found. A missing dry-run receipt is safe to regenerate because dryRun does not write.',
   guidance: {
     when: 'A rubrics:amend returned { pending:true, receipt } and you need its outcome.',
     notWhen: 'You have no receipt — read the rubric with rubrics:get instead.',
     returns:
-      "{ ok, state: 'running'|'committed'|'previewed'|'failed'|'not_found', source: 'receipt'|'decision'|'none', result?, error?, decisionId?, ageSec? }.",
+      "{ ok, state: 'running'|'orphaned'|'committed'|'previewed'|'failed'|'not_found', source: 'receipt'|'decision'|'none', result?, error?, decisionId?, ageSec?, reclaimableAt? }.",
   },
   capability: 'coord:read',
   requirePrincipal: false,
@@ -44,12 +44,13 @@ export default defineTool({
   result: z
     .object({
       ok: z.boolean(),
-      state: z.enum(['running', 'committed', 'previewed', 'failed', 'not_found']),
+      state: z.enum(['running', 'orphaned', 'committed', 'previewed', 'failed', 'not_found']),
       source: z.enum(['receipt', 'decision', 'none']),
       result: z.record(z.string(), z.unknown()).optional(),
       error: z.string().optional(),
       decisionId: z.string().optional(),
       ageSec: z.number().optional(),
+      reclaimableAt: z.number().optional(),
     })
     .passthrough(),
   async handler(args) {
@@ -64,6 +65,14 @@ export default defineTool({
           state: 'committed', source: 'decision', decisionId: decision.decisionId,
           subjectPlan: decision.subjectPlan,
           note: 'Committed; read the new revision with rubrics:get.',
+        });
+      }
+      if (isRunningReceiptOrphaned(receipt)) {
+        return reply({
+          state: 'orphaned', source: 'receipt',
+          ageSec: Math.round((Date.now() - receipt.startedAt) / 1000),
+          reclaimableAt: Date.now(),
+          note: 'The recorded executor is no longer running; retry rubrics:amend with the same key to reclaim it now.',
         });
       }
     }

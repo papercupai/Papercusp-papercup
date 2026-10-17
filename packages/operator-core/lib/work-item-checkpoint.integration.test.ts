@@ -11,6 +11,8 @@
  * Gated on Docker like the other *-integration tests.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 
@@ -125,6 +127,50 @@ async function rowCount(): Promise<number> {
 }
 
 describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote semantics', () => {
+  it('persists all four cited reference kinds and excludes its own item through the work-item checkpoint writer (R-13)', async () => {
+    const ref = { harness: HARNESS, workItemId: 'WI-5000', workspaceId: 'default' };
+    await db.sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, status, updated_ts)
+      VALUES ('default', ${HARNESS}, 'WI-5000', 'open', 1),
+             ('default', ${HARNESS}, 'WI-1313', 'open', 10),
+             ('other-workspace', ${HARNESS}, 'WI-1313', 'done', 99)`;
+    await db.sql`CREATE TABLE harness_shared.harness_plans (
+      workspace_id text, harness_slug text, plan_slug text, decisions jsonb)`;
+    await db.sql`INSERT INTO harness_shared.harness_plans VALUES
+      ('default', ${HARNESS}, 'reference-plan', '[{"id":"D-001","title":"Keep baseline","body":"Read before replacing"}]'::jsonb)`;
+    await db.sql`CREATE TABLE harness_shared.agent_facts (
+      workspace_id text, key text, id bigint, updated_at timestamptz,
+      retracted_at timestamptz, superseded_at timestamptz, evicted_at timestamptz, expires_at timestamptz)`;
+    await db.sql`INSERT INTO harness_shared.agent_facts (workspace_id, key, id, updated_at)
+      VALUES ('default', 'reference-fact', 1313, ${new Date(10)})`;
+    const citations = 'WI-5000 waits on WI-1313 reference-plan#D-001 fact:reference-fact packages/operator-core/lib/carry-ref-stamps.test.ts';
+    const hash = (value: string | Buffer) => `sha256:${createHash('sha256').update(value).digest('hex').slice(0, 16)}`;
+    const expected = [
+      { dep: 'work-item:WI-1313', token: 'open@10', at: expect.any(Number) },
+      { dep: 'decision:reference-plan#D-001', token: hash('Keep baseline\nRead before replacing'), at: expect.any(Number) },
+      { dep: 'fact:reference-fact', token: 'live:1313@10', at: expect.any(Number) },
+      { dep: 'file:packages/operator-core/lib/carry-ref-stamps.test.ts', token: hash(readFileSync(new URL('./carry-ref-stamps.test.ts', import.meta.url))), at: expect.any(Number) },
+    ];
+
+    await setWorkItemCheckpointWithPrior(ref, citations);
+    const [saved] = await db.sql<{ deps: { refs: unknown[] } }[]>`
+      SELECT deps FROM harness_shared.carry_notes
+      WHERE workspace_id = 'default' AND scope = ${workItemScope(HARNESS, ref.workItemId)}`;
+    expect(saved?.deps.refs).toEqual(expected);
+
+    await db.sql`UPDATE harness_shared.work_items SET updated_ts = 20
+      WHERE workspace_id = 'default' AND feature_id = 'WI-1313'`;
+    const [baseline] = await db.sql<{ deps: { refs: unknown[] } }[]>`
+      SELECT deps FROM harness_shared.carry_notes
+      WHERE workspace_id = 'default' AND scope = ${workItemScope(HARNESS, ref.workItemId)}`;
+    expect(baseline?.deps).toEqual(saved?.deps);
+    await setWorkItemCheckpointWithPrior(ref, `Still: ${citations}`);
+    const [refreshed] = await db.sql<{ deps: { refs: unknown[] } }[]>`
+      SELECT deps FROM harness_shared.carry_notes
+      WHERE workspace_id = 'default' AND scope = ${workItemScope(HARNESS, ref.workItemId)}`;
+    expect(refreshed?.deps.refs).toEqual([{ ...expected[0], token: 'open@20' }, ...expected.slice(1)]);
+  });
+
   it('persists the authoritative subject fingerprint on each journal entry and returns the newest one', async () => {
     const ref = { harness: HARNESS, workItemId: 'WI-subject-fingerprint' };
     const subject = {

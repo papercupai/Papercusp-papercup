@@ -130,6 +130,8 @@ import { markSpawnOffloadHost } from '@papercusp/operator-core/lib/fleet/git-via
 import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
 import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
 import { runLiveHealthMonitorMain } from '@papercusp/operator-core/lib/resource-governor/live-health-monitor-main';
+import { startSidecarParentDeathWatch } from '@papercusp/operator-core/lib/process-supervision/parent-death-watch';
+import { createLspDaemonShutdown } from '../lib/lsp-daemon-shutdown.mts';
 import { runAdmissionPrecheckWorkerMain } from '@papercusp/operator-core/lib/release/admission-fix-precheck-managed';
 import { assertMobileJwtSecretDurableForCluster } from '@papercusp/operator-core/lib/device-jwt';
 import { installStdioPeerGuard } from '@papercusp/operator-core/lib/process-supervision/stdio-peer-guard';
@@ -186,11 +188,19 @@ const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-hea
             : process.env.PAPERCUSP_REPAIR_PRECHECK_WORKER_MODE === '1'
               ? 'repair-precheck'
             : null;
+// WI-6554700010015388: arm the parent-death watch BEFORE any sidecar divert,
+// exactly as serve.ts main() does for its packaged sidecar modes. Without it,
+// every sidecar re-exec'd from THIS bundle (the :3070 / :3170 / bg-host
+// deployments) ran unwatched: the WI-6554700010011963 off-desktop arming never
+// reached them, so LSP daemons outlived their :3170 generation and pinned
+// superseded staging checkouts until / filled (6 orphans, 2026-10-15). The
+// watch is a no-op off-desktop unless the launcher declared a parent pid.
+if (sidecarMode !== null) startSidecarParentDeathWatch();
 if (sidecarMode === 'substrate') runSubstrateSidecarServer();
 if (sidecarMode === 'spawner') runSpawnerSidecarServer();
 if (sidecarMode === 'lsp') {
   void import('@papercusp/operator-core/lib/code-intelligence/lsp-daemon-server').then(
-    ({ runLspDaemonServer }) => runLspDaemonServer(),
+    ({ runLspDaemonServer }) => runLspDaemonServer(undefined, undefined, createLspDaemonShutdown()),
     (error) => { console.error('[lsp-daemon] fatal boot:', error); process.exit(1); },
   );
 }

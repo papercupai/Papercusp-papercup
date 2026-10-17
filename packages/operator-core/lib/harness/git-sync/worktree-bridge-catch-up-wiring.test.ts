@@ -118,4 +118,15 @@ describe('WI-10003772: runWorktreeBridgeLeg runs the deferred-advance retry swee
     expect(prompt).toMatch(/do NOT fetch/);
     expect(prompt).toMatch(/never a rebase/);
   });
+
+  it('the merge-resolver prompt fetches the checked-out branch into its remote-tracking ref', () => {
+    const prompt = readFileSync(
+      process.env.MERGE_RESOLVER_PROMPT_SOURCE ??
+        join(here, '../../../../../libs/papercusp/packages/harness/blueprints/base/prompts/merge-resolver.md'),
+      'utf8',
+    );
+    expect(prompt).toContain('git fetch origin "+refs/heads/$BR:refs/remotes/origin/$BR"');
+    expect(prompt).toContain('git merge --no-edit "origin/$BR"');
+    expect(prompt).not.toContain('git fetch origin "$BR"');
+  });
 });

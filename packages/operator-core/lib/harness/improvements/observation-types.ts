@@ -263,6 +263,95 @@ export interface SpecTestAdequacyEvaluatorBuild {
   version: string;
 }
 
+/**
+ * The evidence-currentness portion of a grading-audit reservation lease.
+ *
+ * This deliberately lives in the observation leaf rather than scorecards.ts so
+ * the persisted lease can be parsed by both the write and read paths without a
+ * scorecards ↔ grading-integrity import cycle.  `reason` remains open-ended:
+ * scorecards owns the live classifier vocabulary, while the lease only needs a
+ * stable point-in-time value to compare transactionally.
+ */
+export interface GradingAuditReservationBindingCurrentnessSnapshot {
+  state: 'current' | 'stale' | 'unknown';
+  reason: string;
+  citedBindingCount: number;
+  retractedBindingIds: string[];
+  unavailableBindingIds: string[];
+}
+
+/** Immutable evidence/evaluator identity captured when an audit lease is won. */
+export interface ScorecardGradingAuditReservationSnapshot {
+  evidenceFingerprint: string | null;
+  evaluatorBuild: SpecTestAdequacyEvaluatorBuild | null;
+  bindingIds: number[];
+  bindingCurrentness: GradingAuditReservationBindingCurrentnessSnapshot | null;
+}
+
+/** Parse the optional snapshot carried by a grading-audit reservation. */
+export function parseGradingAuditReservationSnapshot(value: unknown): ScorecardGradingAuditReservationSnapshot | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const evidenceFingerprint = raw.evidenceFingerprint == null
+    ? null
+    : typeof raw.evidenceFingerprint === 'string' && raw.evidenceFingerprint.trim()
+      ? raw.evidenceFingerprint
+      : undefined;
+  if (evidenceFingerprint === undefined) return undefined;
+
+  let evaluatorBuild: SpecTestAdequacyEvaluatorBuild | null = null;
+  if (raw.evaluatorBuild != null) {
+    if (typeof raw.evaluatorBuild !== 'object' || Array.isArray(raw.evaluatorBuild)) return undefined;
+    const build = raw.evaluatorBuild as Record<string, unknown>;
+    if (
+      (build.sha !== null && typeof build.sha !== 'string') ||
+      typeof build.version !== 'string' ||
+      !build.version.trim()
+    ) return undefined;
+    evaluatorBuild = { sha: typeof build.sha === 'string' ? build.sha : null, version: build.version };
+  }
+
+  if (!Array.isArray(raw.bindingIds)) return undefined;
+  const bindingIds = raw.bindingIds.map((id) => id);
+  if (
+    bindingIds.some((id) => !Number.isSafeInteger(id) || (id as number) <= 0) ||
+    new Set(bindingIds as number[]).size !== bindingIds.length
+  ) return undefined;
+
+  let bindingCurrentness: GradingAuditReservationBindingCurrentnessSnapshot | null = null;
+  if (raw.bindingCurrentness != null) {
+    if (typeof raw.bindingCurrentness !== 'object' || Array.isArray(raw.bindingCurrentness)) return undefined;
+    const current = raw.bindingCurrentness as Record<string, unknown>;
+    const states = new Set(['current', 'stale', 'unknown']);
+    if (
+      typeof current.state !== 'string' ||
+      !states.has(current.state) ||
+      typeof current.reason !== 'string' ||
+      !current.reason.trim() ||
+      !Number.isSafeInteger(current.citedBindingCount) ||
+      (current.citedBindingCount as number) < 0 ||
+      !Array.isArray(current.retractedBindingIds) ||
+      !Array.isArray(current.unavailableBindingIds) ||
+      current.retractedBindingIds.some((id) => typeof id !== 'string') ||
+      current.unavailableBindingIds.some((id) => typeof id !== 'string')
+    ) return undefined;
+    bindingCurrentness = {
+      state: current.state as GradingAuditReservationBindingCurrentnessSnapshot['state'],
+      reason: current.reason,
+      citedBindingCount: current.citedBindingCount as number,
+      retractedBindingIds: [...(current.retractedBindingIds as string[])],
+      unavailableBindingIds: [...(current.unavailableBindingIds as string[])],
+    };
+  }
+
+  return {
+    evidenceFingerprint,
+    evaluatorBuild,
+    bindingIds: bindingIds as number[],
+    bindingCurrentness,
+  };
+}
+
 /** Server-measured provenance for one selected evidence binding. */
 export interface SpecTestAdequacyBindingMeasurement {
   bindingId: number;
@@ -271,6 +360,8 @@ export interface SpecTestAdequacyBindingMeasurement {
   status: 'measured' | 'unavailable' | 'unmeasured';
   /** Commit whose repository objects were measured; absent for ledger or non-git measurements. */
   measuredAtCommit?: string;
+  /** Digest of server-measured content dimensions, independent of repository HEAD. */
+  measurementFingerprint?: string;
 }
 
 /** Measurement summary returned by the evaluator and pinned in newly minted recipes. */
@@ -790,6 +881,7 @@ export interface ScorecardGradingAudit {
   dispatchReservation?: {
     key: string;
     reservedAt: string;
+    snapshot?: ScorecardGradingAuditReservationSnapshot;
   };
   /**
    * Latest fencing epoch, retained when the active dispatch reservation is
@@ -799,6 +891,7 @@ export interface ScorecardGradingAudit {
   lastDispatchReservation?: {
     key: string;
     reservedAt: string;
+    snapshot?: ScorecardGradingAuditReservationSnapshot;
   };
   /** Why the source card must be re-emitted before its audit can be retried. */
   reemitRequired?: {
@@ -1718,6 +1811,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       const reservationKey = typeof dispatchReservation?.key === 'string' ? dispatchReservation.key : undefined;
       const reservationTimestamp =
         typeof dispatchReservation?.reservedAt === 'string' ? dispatchReservation.reservedAt : undefined;
+      const reservationSnapshot = parseGradingAuditReservationSnapshot(dispatchReservation?.snapshot);
       const lastDispatchReservation =
         g.lastDispatchReservation && typeof g.lastDispatchReservation === 'object' && !Array.isArray(g.lastDispatchReservation)
           ? (g.lastDispatchReservation as Record<string, unknown>)
@@ -1726,6 +1820,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         typeof lastDispatchReservation?.key === 'string' ? lastDispatchReservation.key : undefined;
       const lastReservationTimestamp =
         typeof lastDispatchReservation?.reservedAt === 'string' ? lastDispatchReservation.reservedAt : undefined;
+      const lastReservationSnapshot = parseGradingAuditReservationSnapshot(lastDispatchReservation?.snapshot);
       const rawReemitRequired =
         g.reemitRequired && typeof g.reemitRequired === 'object' && !Array.isArray(g.reemitRequired)
           ? (g.reemitRequired as Record<string, unknown>)
@@ -1761,6 +1856,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
               dispatchReservation: {
                 key: reservationKey,
                 reservedAt: reservationTimestamp,
+                ...(reservationSnapshot ? { snapshot: reservationSnapshot } : {}),
               },
             }
           : {}),
@@ -1772,6 +1868,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
               lastDispatchReservation: {
                 key: lastReservationKey,
                 reservedAt: lastReservationTimestamp,
+                ...(lastReservationSnapshot ? { snapshot: lastReservationSnapshot } : {}),
               },
             }
           : {}),

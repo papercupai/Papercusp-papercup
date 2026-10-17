@@ -1002,7 +1002,7 @@ describe('engineer issues surface (real PG)', () => {
     const plan = await db.sql.begin(async (tx) => {
       await tx.unsafe('SET LOCAL enable_seqscan = off');
       const where = issues.issueMatchWhereSql(
-        tx as Parameters<typeof issues.issueMatchWhereSql>[0],
+        tx as unknown as Parameters<typeof issues.issueMatchWhereSql>[0],
         false,
         { q: 'needle' },
       );

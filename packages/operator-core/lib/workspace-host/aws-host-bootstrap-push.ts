@@ -55,7 +55,7 @@ export interface AwsHostBootstrapPush {
  * attached data volume. Refuses a payload over the ceiling here, with the ceiling named, instead of
  * letting SSM reject it with a generic size error mid-provision.
  */
-export function renderAwsHostBootstrapPush(input: { volumeId: string; hostBootstrapScript: string }): AwsHostBootstrapPush {
+export function renderAwsHostBootstrapPush(input: { volumeId: string; hostBootstrapScript: string; dataMode?: 'fresh' | 'existing'; tenantIdentity?: string; allocation?: { dbGiB: number; workspaceGiB: number } }): AwsHostBootstrapPush {
   return renderAwsHostBootstrapPushCore({
     ...input,
     statusMarker: WORKSPACE_HOST_BOOTSTRAP_STATUS_CONSOLE_MARKER,

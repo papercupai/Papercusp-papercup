@@ -364,6 +364,12 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
     ).toBe(true);
   });
 
+  it('documents required evidence planes and live environment currentness on the binding schema', () => {
+    expect(bindingSchema.shape.details.description).toContain('details.evidencePlane');
+    expect(bindingSchema.shape.details.description).toContain('environmentFingerprint');
+    expect(bindingSchema.shape.environmentFingerprint.description).toContain('runtime/environment');
+  });
+
   it('accepts stable scenario and causal-pair ids on executable proof', () => {
     const parsed = bindingSchema.safeParse({
       ...measuredBinding,
@@ -391,6 +397,28 @@ describe('plans:bind-spec-evidence adequacy completeness metadata', () => {
         details: { adequacy: { testCases: value } },
       }).success).toBe(false);
     }
+  });
+
+  it.each([
+    ['calibrated', true],
+    ['caseTitles', ['suite > selected case']],
+    ['assertion', 'a hand-written assertion'],
+    ['falsifier', 'a hand-written falsifier'],
+  ] as const)('rejects non-canonical nested adequacy key %s instead of persisting inert metadata', (field, value) => {
+    const parsed = bindingSchema.safeParse({
+      ...measuredBinding,
+      details: { adequacy: { [field]: value } },
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: ['details', 'adequacy'],
+          message: expect.stringContaining(field),
+        }),
+      ]),
+    );
   });
 
   it('accepts an uppercase platform-generated clause ID as targeted adequacy metadata', () => {

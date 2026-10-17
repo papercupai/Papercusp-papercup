@@ -28,6 +28,10 @@
  */
 import { registerSystemAction } from './system-actions';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import type { AcceptanceBarPinSweepCursor, AcceptanceBarPinSweepResult } from '../../acceptance-bar-pin-sweep';
+
+// Advance past permanently held pins so one bad batch cannot starve the rest.
+let subjectPinCursor: AcceptanceBarPinSweepCursor | null = null;
 
 /** Cadence hint consumed by the seeder; 10 minutes is far below every threshold the
  *  decision core uses (2h re-dispatch, 12h escalate), so the sweep's own timing can
@@ -63,6 +67,21 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
 
   const { sql } = getOrgPg();
   const gradingLaunch = gradingLaunchProfile({ gradingLaunch: ctx.payloadTemplate?.gradingLaunch });
+
+  // WI-6554700010014766: a post-start neutral edit may strand a pin. Recover it
+  // before grading, using the same clock rather than adding another routine.
+  let subjectPins: AcceptanceBarPinSweepResult | undefined;
+  let subjectPinError: string | undefined;
+  try {
+    const { runAcceptanceBarPinSweep } = await import('../../acceptance-bar-pin-sweep');
+    subjectPins = await runAcceptanceBarPinSweep({ after: subjectPinCursor });
+    subjectPinCursor = subjectPins.nextCursor;
+    if (subjectPins.errors.length > 0) {
+      subjectPinError = `subject-pin reconciliation failed for ${subjectPins.errors.length} plan(s)`;
+    }
+  } catch (error) {
+    subjectPinError = `subject-pin reconciliation failed: ${error instanceof Error ? error.message : error}`;
+  }
 
   try {
     const result = await reconcilePendingGradingAudits({
@@ -244,4 +263,11 @@ registerSystemAction('acceptance-grading-sweep', async (ctx) => {
       }
     },
   });
+
+  // A failed sub-pass remains visible through routine health without suppressing
+  // independent grading/audit recovery or making a partial scan look healthy.
+  return {
+    diagnostics: { subjectPins: subjectPins ?? { error: subjectPinError } },
+    ...(subjectPinError ? { softError: subjectPinError } : {}),
+  };
 });

@@ -154,6 +154,18 @@ describe('Remote access screen', () => {
     expect(within(items[2]!).getByText('Resume')).toBeTruthy();
   });
 
+  it('projects class-specific authority, status and revoke copy into each row', () => {
+    render(<RemoteAccessSettingsPage />);
+    const items = screen.getAllByTestId('remote-access-entry');
+    expect(items.map((li) => li.dataset.connectionClass)).toEqual(['mobile-device', 'browser-session', 'browser-session']);
+    expect(within(items[0]!).getByTestId('remote-access-entry-authority').textContent).toContain('Paired mobile device · Connected');
+    expect(within(items[0]!).getByRole('button', { name: 'Unpair phone' })).toBeTruthy();
+    expect(within(items[1]!).getByTestId('remote-access-entry-authority').textContent).toContain('User app key access · Connected');
+    expect(within(items[1]!).getByRole('button', { name: 'Revoke app access' })).toBeTruthy();
+    expect(within(items[2]!).getByTestId('remote-access-entry-authority').textContent).toContain('Workspace service key access · Paused');
+    expect(within(items[2]!).getByRole('button', { name: 'Revoke service key' })).toBeTruthy();
+  });
+
   it('wraps each entry so its controls never overlap the label in a narrow pane', () => {
     // Measured in the Tauri shell: in the ~190px settings pane a non-wrapping row with
     // flexShrink:0 controls drew Pause over the key's name and clipped Rotate/Revoke.

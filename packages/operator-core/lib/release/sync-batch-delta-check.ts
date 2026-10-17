@@ -10,7 +10,7 @@
  *   What changed in P-001: the check no longer SKIPS under ordinary host load or
  *   while a green-checkpoint suite runs — that skip silently dropped most batches on
  *   this box, where load sits above 1.2x cores for most of the day. It now runs every
- *   heavy leg at idle CPU/IO priority (`idlePriorityArgv`) and, under load or during a
+ *   heavy leg at low CPU / best-effort I/O priority (`idlePriorityArgv`) and, under load or during a
  *   gate run, with a REDUCED confirm/attribution budget (`evaluateCapacity`). It skips
  *   only above a hard ceiling or when load is unreadable, and records per-tick
  *   coverage with an alarm when coverage drops (`recordCoverageTick` /
@@ -116,7 +116,7 @@ import type { KnownGoodPoint } from './known-good-freeze';
 export const LOAD_SKIP_FACTOR = 1.2;
 
 /** Above `cores * this` the tick SKIPS (P-001). Between LOAD_SKIP_FACTOR and this it
- *  runs with REDUCED_BUDGET at idle priority — the old behaviour skipped there. */
+ *  runs with REDUCED_BUDGET at the low-priority wrapper — the old behaviour skipped there. */
 export const HARD_LOAD_CEILING_FACTOR = 3;
 
 /** How far before the oldest batch commit the edit ledger is searched. git-sync
@@ -186,6 +186,12 @@ export interface OpenRed {
   workspace: string | null;
   /** The batch commit this check attributed it to, or null when unattributed. */
   introducedBy: string | null;
+  /** The leg that discovered this red; optional for cursors written before P-037. */
+  leg?: 'affected-tests' | 'lint-tsc';
+  /** The owner attributed at discovery, carried so retries notify the same holder. */
+  assignee?: string | null;
+  /** Evidence source for the carried owner attribution. */
+  authorSource?: AuthorSource;
   /** Epoch ms this red was first filed. */
   firstSeenMs: number;
   /** How many runs have re-confirmed it (1 = the filing run). */
@@ -617,13 +623,14 @@ export interface CheckBudget {
  * `cores * LOAD_SKIP_FACTOR` and whenever a green-checkpoint suite ran. On this box
  * load sits above that line for most of the day and the gate runs for hours, so the
  * check judged almost nothing — exactly the per-commit signal it exists to provide.
- * Every heavy leg now runs at idle CPU/IO priority (`idlePriorityArgv`), which is
- * what actually keeps it from competing with the gate; load and the gate only shrink
+ * Every heavy leg now runs at low CPU / best-effort I/O priority (`idlePriorityArgv`), which
+ * keeps it from competing with the gate without placing it in the idle I/O class that
+ * mq-deadline can starve under fleet load; load and the gate only shrink
  * the confirm/attribution budget. The radius caps are NOT reduced, so no batch window
  * is dropped as too wide because of load.
  *
  * Skips remain for two cases only: load above the hard ceiling (the box is genuinely
- * saturated — even idle-priority children add memory and IO pressure) and an
+ * saturated — even deprioritized children add memory and I/O pressure) and an
  * UNREADABLE load, which never runs blind.
  */
 export type CapacityVerdict =
@@ -669,12 +676,13 @@ export function evaluateCapacity(input: {
   };
 }
 
-/** Wrap a heavy leg so it runs at the lowest CPU and IO priority. `nice -n 19`
- *  yields CPU to every normal-priority process (the gate included); `ionice -c 3`
- *  (idle class) only gets disk time when no one else wants it. Both are unprivileged.
- *  This wrapper, not a load threshold, is what bounds the check's cost. */
+/** Wrap a heavy leg so it runs at low CPU and best-effort I/O priority. `nice -n 19`
+ *  yields CPU to every normal-priority process (the gate included); `ionice -c 2 -n 7`
+ *  is the lowest best-effort class priority and still makes progress under mq-deadline.
+ *  The idle I/O class (`-c 3`) can be starved for minutes on this host's scheduler.
+ *  Both are unprivileged, and this wrapper—not a load threshold—is what bounds the check's cost. */
 export function idlePriorityArgv(cmd: string, args: readonly string[]): { cmd: string; args: string[] } {
-  return { cmd: 'nice', args: ['-n', '19', 'ionice', '-c', '3', cmd, ...args] };
+  return { cmd: 'nice', args: ['-n', '19', 'ionice', '-c', '2', '-n', '7', cmd, ...args] };
 }
 
 // ── coverage (P-001 / R-2) ───────────────────────────────────────────────────
@@ -1282,6 +1290,8 @@ export interface SyncBatchDeltaFiling {
   id?: string;
   adopted?: boolean;
   error?: string;
+  /** Owner notification or required-wake delivery failed; the red remains retryable. */
+  notificationError?: string;
 }
 
 export interface SyncBatchDeltaResult {
@@ -1508,7 +1518,7 @@ async function runSyncBatchDeltaTick(
 ): Promise<SyncBatchDeltaResult> {
   const caps = opts?.caps ?? DEFAULT_RADIUS_CAPS;
 
-  // ── 1. capacity: idle-priority legs always; load and the gate shrink the budget ──
+  // ── 1. capacity: deprioritized legs always; load and the gate shrink the budget ──
   const capacity = evaluateCapacity({
     reading: deps.hostLoad(),
     gateRunning: await deps.greenCheckpointRunning(),
@@ -1550,21 +1560,43 @@ async function runSyncBatchDeltaTick(
       continue;
     }
     confirmBudget -= 1;
-    const verdict = await deps.confirmOne(red.path);
-    if (verdict === null || verdict === true) {
-      // undetermined ⇒ keep holding; green ⇒ the red cleared, stop holding it.
-      if (verdict === null) stillOpen.push(red);
-      continue;
+    const leg = red.leg ?? 'affected-tests';
+    let remainsRed = false;
+    if (leg === 'lint-tsc') {
+      // Typecheck reds must be re-measured by the same leg. A single-file test
+      // confirmation cannot prove that a typecheck failure cleared, and would
+      // silently change the finding's owner/leg on the next tick.
+      const tsc = await deps.runTsc([red.path]);
+      if (tsc.ok || !tsc.failing.includes(red.path)) {
+        // A clean run clears the red; a failed run that names another file (or
+        // no file at all) is not evidence about this one, so keep it held.
+        if (!tsc.ok) stillOpen.push(red);
+        continue;
+      }
+      remainsRed = true;
+    } else {
+      const verdict = await deps.confirmOne(red.path);
+      if (verdict === null || verdict === true) {
+        // undetermined ⇒ keep holding; green ⇒ the red cleared, stop holding it.
+        if (verdict === null) stillOpen.push(red);
+        continue;
+      }
+      remainsRed = true;
     }
+    if (!remainsRed) continue;
     // Still red: refresh the SAME conditionKey so the incumbent is bumped, not duplicated.
     const finding = buildRedFinding({
       failing: { file: red.path, workspace: red.workspace },
       attribution: { batch: null, how: 'unattributed', probesUsed: 0 },
       batches: [],
-      leg: 'affected-tests',
+      leg,
       prior: red,
+      author: {
+        agent: red.assignee ?? null,
+        source: red.authorSource ?? 'none',
+      },
     });
-    const res = await deps.fileRed(finding);
+    const res = await fileRoutedRed(deps, finding);
     filed.push({
       file: red.path,
       conditionKey: finding.conditionKey,
@@ -1572,8 +1604,13 @@ async function runSyncBatchDeltaTick(
       ...(res.id ? { id: res.id } : {}),
       ...(res.adopted ? { adopted: true } : {}),
       ...(res.error ? { error: res.error } : {}),
+      ...(res.notificationError ? { notificationError: res.notificationError } : {}),
     });
-    stillOpen.push({ ...red, confirmations: red.confirmations + 1 });
+    stillOpen.push({
+      ...red,
+      ...(res.assignee !== undefined ? { assignee: res.assignee } : {}),
+      confirmations: red.confirmations + 1,
+    });
   }
 
   if (cursor.sha === head) {
@@ -1808,11 +1845,15 @@ async function runSyncBatchDeltaTick(
         ...(res.id ? { id: res.id } : {}),
         ...(res.adopted ? { adopted: true } : {}),
         ...(res.error ? { error: res.error } : {}),
+        ...(res.notificationError ? { notificationError: res.notificationError } : {}),
       });
       stillOpen.push({
         path: cand.failing.file,
         workspace: cand.failing.workspace,
         introducedBy: attribution.batch?.sha ?? null,
+        leg: cand.leg,
+        assignee: res.assignee ?? author.agent,
+        authorSource: author.source,
         firstSeenMs: deps.now(),
         confirmations: 1,
       });

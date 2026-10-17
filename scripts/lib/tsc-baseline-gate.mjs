@@ -2361,7 +2361,7 @@ export function judgeCrossLegMembers({ members, errors, baselineByFile, foreignB
  * files are foreign by construction), no full compile, no ratchet. A baseline or program failure
  * prints `status=undetermined` and a non-1 code, so the parent can never read it as clean or red.
  *
- * @param {{root: string, tscCommand: string, baselineFile: string, foreignBaselines?: {prefix: string, baselineFile: string}[], label: string, files: string[], diagnose?: (args: {root: string, tscCommand: string, files: string[]}) => {members: string[], nonMembers: string[], output: string}, log?: (line: string) => void, warn?: (line: string) => void}} opts
+ * @param {{root: string, tscCommand: string, baselineFile: string, foreignBaselines?: {prefix: string, baselineFile: string}[], label: string, files: string[], diagnose?: (args: {root: string, tscCommand: string, files: string[]}) => {members: string[], nonMembers: string[], output: string}, serviceCheck?: typeof typecheckViaService, log?: (line: string) => void, warn?: (line: string) => void}} opts
  * @returns {Promise<number>} The exit code: 0 clean, 1 regressed, 66/70 undetermined.
  */
 export async function runCrossLegConsumer({
@@ -2372,6 +2372,7 @@ export async function runCrossLegConsumer({
   label,
   files,
   diagnose,
+  serviceCheck,
   log = (line) => console.log(line),
   warn = (line) => console.error(line),
 }) {
@@ -2393,8 +2394,57 @@ export async function runCrossLegConsumer({
   }
   let result;
   try {
-    const legDiagnostics = diagnose ?? (await import('./tsc-cross-leg-check.mjs')).legFileDiagnostics;
-    result = legDiagnostics({ root, tscCommand, files });
+    // A consumer used to construct a cold TypeScript program here even though the owning gate's
+    // scoped check already has the same project loaded in the shared service. On operator-core
+    // and operator-vite that duplicate createProgram crossed the 120 s child deadline before
+    // diagnostics began. Reuse the service when the leg command has the same supported shape;
+    // its response still reports named membership and diagnostics in the full project program.
+    const serviceProject = serviceProjectFromTscCommand(tscCommand);
+    const serviceRoute = serviceProject === null
+      ? { eligible: false, reason: 'tscCommand has flags the service does not reproduce' }
+      : tscServiceEligibility({
+          tscCommand,
+          explicitFiles: new Set(files),
+          argv: ['--files'],
+          root,
+        });
+    const served = serviceRoute.eligible
+      ? await (serviceCheck ?? typecheckViaService)({
+          root,
+          project: serviceRoute.project,
+          files,
+          label: `${label} cross-leg consumer`,
+          scope: 'named',
+          log: warn,
+        })
+      : null;
+    if (served !== null) {
+      const normalize = (file) => {
+        const absolute = isAbsolute(file) ? resolve(file) : resolve(root, file);
+        const relativePath = relative(root, absolute).replace(/\\/g, '/');
+        return relativePath === '' || relativePath.startsWith('../') ? String(file).replace(/^\.\//, '') : relativePath;
+      };
+      const named = files.map(normalize);
+      const nonMemberSet = new Set((served.namedNotInProgram ?? []).map(normalize));
+      result = {
+        members: named.filter((file) => !nonMemberSet.has(file)),
+        nonMembers: named.filter((file) => nonMemberSet.has(file)),
+        output: served.output,
+      };
+      log(
+        `TSC_SERVICE consumer used=1 named=${named.length} members=${result.members.length} ` +
+        `nonMembers=${result.nonMembers.length} errors=${served.errorCount} ` +
+        `queuedMs=${served.queuedMs} checkMs=${served.checkMs}`,
+      );
+    } else {
+      const legDiagnostics = diagnose ?? (await import('./tsc-cross-leg-check.mjs')).legFileDiagnostics;
+      const started = Date.now();
+      result = legDiagnostics({ root, tscCommand, files, onProgress: (event) => {
+        log(`LINT_TSC_CROSS_LEG_PROGRESS leg=${label} phase=${event.phase} elapsedMs=${Date.now() - started}` +
+          (event.file ? ` file=${JSON.stringify(event.file)}` : '') +
+          (event.sourceFiles !== undefined ? ` sourceFiles=${event.sourceFiles}` : ''));
+      } });
+    }
   } catch (error) {
     warn(`❌ ${label} cross-leg consumer could not build its program: ${String(error?.message ?? error)}`);
     log(`${CROSS_LEG_MARKER} leg=${label} status=undetermined reason=program-failed`);
@@ -2470,6 +2520,10 @@ export async function runCrossLegChecks({ root, plans, concurrency = 2, childTim
       new Promise((done) => {
         const filesArg = scopedFilesArg(plan.files);
         let settled = false;
+        // Keep the last bounded evidence even when execFile's callback never
+        // arrives after SIGTERM (for example a child stuck in filesystem wait).
+        let stdoutTail = '';
+        let stderrTail = '';
         const finish = (outcome) => {
           if (settled) return;
           settled = true;
@@ -2491,6 +2545,8 @@ export async function runCrossLegChecks({ root, plans, concurrency = 2, childTim
             finish({ status: error ? (Number.isInteger(code) ? code : null) : 0, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
           },
         );
+        child.stdout?.on('data', (chunk) => { stdoutTail = (stdoutTail + String(chunk)).slice(-4096); });
+        child.stderr?.on('data', (chunk) => { stderrTail = (stderrTail + String(chunk)).slice(-4096); });
         // EI-26062308784379661 — a cross-leg child can enter uninterruptible filesystem wait.
         // Waiting for execFile's callback in that state blocks the owning-leg verdict forever:
         // SIGTERM remains pending until the kernel wait clears. Bound OUR wait independently,
@@ -2501,7 +2557,7 @@ export async function runCrossLegChecks({ root, plans, concurrency = 2, childTim
           child.stdout?.destroy();
           child.stderr?.destroy();
           child.unref();
-          finish({ status: null, stdout: '', stderr: '', timedOut: true });
+          finish({ status: null, stdout: stdoutTail, stderr: stderrTail, timedOut: true });
         }, Math.max(1, childTimeoutMs));
         timer.unref();
       }));
@@ -2521,7 +2577,11 @@ export async function runCrossLegChecks({ root, plans, concurrency = 2, childTim
   plans.forEach((plan, index) => {
     const { status, stdout, stderr, timedOut } = outcomes[index];
     if (timedOut) {
-      report.undetermined.push({ npmScript: plan.npmScript, reason: `timed out after ${childTimeoutMs}ms` });
+      const progress = stdout.split(/\r?\n/).filter((line) => line.startsWith('LINT_TSC_CROSS_LEG_PROGRESS ')).at(-1);
+      const diagnostic = stderr.trim().slice(-1000);
+      report.undetermined.push({ npmScript: plan.npmScript, reason: `timed out after ${childTimeoutMs}ms` +
+        (progress ? `; last progress: ${progress.slice(0, 1000)}` : '') +
+        (diagnostic ? `; stderr: ${diagnostic}` : '') });
       return;
     }
     const marker = stdout.split(/\r?\n/).filter((line) => line.startsWith(`${CROSS_LEG_MARKER} `)).at(-1) ?? '';

@@ -1,6 +1,6 @@
 /** Exact work-item/spec-revision coverage and immutable evidence bindings (P-005). */
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, open, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { hostname } from 'node:os';
@@ -27,7 +27,9 @@ import { ADHOC_WORK_ITEM_SPEC_SCOPE, resolveSpecScopeSlug } from './adhoc-spec-s
 import type { SpecClauseSql } from './spec-clauses-store';
 import { declaredConfigurationFingerprint, parseProductionConfiguration } from './declared-configuration';
 import { resolvePlanScope } from './source';
+import { trackDetached } from '../../detached-imports';
 import { measurePackagedArtifactEnvironment } from './packaged-artifact-evidence';
+import { measureNativeColdEnvironment, nativeColdInstrumentKeySchema } from '../../storage/cold-tier-evidence';
 import { ensureBootstrap, getTxPool, readQueue } from '../locks/su-lock-store';
 import {
   createCommittedTreeDiagnostics,
@@ -181,6 +183,8 @@ export const repoFilesEvidenceMeasurementSchema = z
     runtimeUnits: runtimeUnitsSchema.optional(),
     /** Final package environment, independently rehashed from a measured operational receipt. */
     artifactReceiptPath: repoMeasurementPathSchema.optional(),
+    /** Native physical storage observations re-run their registered instrument on this host. */
+    nativeInstrumentKey: nativeColdInstrumentKeySchema.optional(),
     /** Completed isolated tests certify retained source/lifecycle artifacts, not a live deployment. */
     completedRuntime: z.discriminatedUnion('kind', [z.object({
       kind: z.literal('verification-harness'),
@@ -198,6 +202,10 @@ export const repoFilesEvidenceMeasurementSchema = z
   })
   .strict()
   .superRefine((measurement, ctx) => {
+    if (measurement.nativeInstrumentKey && (measurement.runtimeUnits || measurement.completedRuntime || measurement.artifactReceiptPath)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['nativeInstrumentKey'],
+        message: 'native instrument environment cannot also select a process runtime or packaged artifact' });
+    }
     if (measurement.artifactReceiptPath && (!measurement.artifactReceiptPath.startsWith('docs/evidence/') ||
       !measurement.sourcePaths.includes(measurement.artifactReceiptPath) ||
       measurement.runtimeUnits || measurement.completedRuntime)) {
@@ -795,6 +803,9 @@ export async function measureAndPinRepoFilesEvidenceAtCommitForScope(
   at: { commitSha: string; repoPrefix: string | null },
   options: { git?: GitRunner } = {},
 ): Promise<MeasuredRepoEvidenceFingerprints & { pin: MeasurementPin }> {
+  if (measurement.nativeInstrumentKey) {
+    throw new Error('Native storage observations cannot certify a historical test commit; bind a new live observation.');
+  }
   const root = await realpath(await resolveMeasurementRoot(workspaceId, harnessSlug, measurement));
   const fixtureRootHarnessSlug = measurement.fixtureRootHarnessSlug;
   const fixtureRoot = hasRepoFixturePaths(measurement)
@@ -850,9 +861,11 @@ export async function measureRepoFilesEvidence(
     ? await resolveMeasurementRoot(workspaceId, harnessSlug, measurement, 'fixture')
     : root;
   const fixtureRootHarnessSlug = measurement.fixtureRootHarnessSlug;
-  return measureRepoFilesEvidenceAtRoot(root, measurement, {
+  const measured = await measureRepoFilesEvidenceAtRoot(root, measurement, {
     ...(hasRepoFixturePaths(measurement) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
   });
+  return { ...measured, ...(measurement.nativeInstrumentKey
+    ? await liveRuntimeEnvironment(workspaceId, harnessSlug, measurement) : {}) };
 }
 
 /**
@@ -864,8 +877,12 @@ export async function measureRepoFilesEvidence(
  */
 async function liveRuntimeEnvironment(
   workspaceId: string,
+  harnessSlug: string,
   measurement: RepoFilesEvidenceMeasurement,
 ): Promise<{ environmentFingerprint?: string | null }> {
+  if (measurement.nativeInstrumentKey) return {
+    environmentFingerprint: await measureNativeColdEnvironment(workspaceId, harnessSlug, measurement.nativeInstrumentKey, true),
+  };
   if (!measurement.runtimeUnits || measurement.completedRuntime) return {};
   return {
     environmentFingerprint: await measureRuntimeEnvironment(
@@ -890,7 +907,7 @@ export async function measureAndPinRepoFilesEvidence(
     ...(hasRepoFixturePaths(measurement) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
   });
   // Spread last: like the read path, named runtimes take precedence over an artifact receipt.
-  return { ...measured, ...(await liveRuntimeEnvironment(workspaceId, measurement)) };
+  return { ...measured, ...(await liveRuntimeEnvironment(workspaceId, harnessSlug, measurement)) };
 }
 
 /**
@@ -1116,6 +1133,13 @@ export interface EvidenceFingerprints {
   environmentFingerprint?: string | null;
 }
 
+export interface DuplicateLiveTestRunBindingAdvisory {
+  code: 'duplicate_live_test_run_bindings';
+  testRunId: number;
+  bindingIds: number[];
+  message: string;
+}
+
 export interface BindSpecEvidenceInput extends EvidenceFingerprints {
   harnessSlug?: string;
   /**
@@ -1171,6 +1195,7 @@ export type BindSpecEvidenceResult =
       specRevision: number;
       specFingerprint: string;
       bindingFingerprint: string;
+      advisory?: DuplicateLiveTestRunBindingAdvisory;
     }
   | { status: 'work_item_not_found'; workItemId: string }
   | { status: 'spec_not_found'; specId?: string; sourceValId?: string; message?: string }
@@ -1191,6 +1216,16 @@ export type BindSpecEvidenceResult =
       status: 'test_cases_not_in_run';
       testRunId: number;
       declaredCaseCount: number;
+      failedCaseTitleCount: number;
+      source: 'mutation-failed-case-titles';
+      /** Declared titles that are not exact identities in this mutant run's measured failures. */
+      unmatchedTestCases: string[];
+      message: string;
+    }
+  | {
+      status: 'test_cases_not_in_run';
+      testRunId: number;
+      declaredCaseCount: number;
       passedCaseTitleCount: number;
       /** Which record judged the declared cases: the per-case ledger, or the run's capped title list. */
       source?: 'case-ledger' | 'passed-case-titles';
@@ -1203,6 +1238,15 @@ export type BindSpecEvidenceResult =
       testRunId: number;
       previousSpecRevision: number;
       specRevision: number;
+      message: string;
+    }
+  // An isolated integration run's retained source receipt is the execution-time
+  // witness for the repo-files source set. Refuse a hand-built recipe that names
+  // source paths the run never recorded, instead of persisting proof whose later
+  // environment re-measurement can only return unknown.
+  | {
+      status: 'completed_runtime_source_not_in_receipt';
+      gaps: Array<{ runId: string; missingSourcePaths: string[] }>;
       message: string;
     }
   // The test-run lookup is tenant-scoped, so a row that EXISTS but carries a
@@ -1388,8 +1432,8 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
     const runtimeRecipe = measurementFromDetails(input.details ?? {});
     const runtimeUnits = runtimeRecipe?.runtimeUnits;
     if (input.testRunId != null) {
-      const rows = await tx<{ id: number; status: string | null; execution_details?: unknown }[]>`
-        SELECT id, status, execution_details FROM harness_shared.test_runs
+      const rows = await tx<{ id: number; status: string | null; source: string | null; execution_details?: unknown }[]>`
+        SELECT id, status, source, execution_details FROM harness_shared.test_runs
          WHERE id = ${input.testRunId}
            AND workspace_id = ${scope.workspaceId}
            AND harness_slug = ${scope.harnessSlug}`;
@@ -1431,6 +1475,37 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
             .filter((title): title is string => typeof title === 'string' && title.trim().length > 0)
             .map((title) => title.trim())
         : [];
+      const mutationCases =
+        (input.evidenceKind === 'mutation' || input.evidenceKind === 'counterexample') &&
+        rows[0].source === 'mutation-probe' &&
+        parsedRunExecution?.mutationPhase === 'mutant'
+          ? mutationFailedCaseTitles(rows[0].execution_details)
+          : undefined;
+      // A mutation binding claims a measured failing assertion, so its adequacy.testCases
+      // must name the failed mutant's canonical case identities. The evaluator already uses
+      // these same identities; checking only evidenceKind='test' here let a binder attach an
+      // unrelated passing title and have it accepted as mutation evidence.
+      if (mutationCases !== undefined && declaredTestCases.length > 0) {
+        const unmatched = declaredTestCases.filter(
+          (testName) => !mutationCases.some((measuredTitle) => hasSameCaseTitleIdentity(testName, measuredTitle)),
+        );
+        if (unmatched.length > 0) {
+          return {
+            status: 'test_cases_not_in_run',
+            testRunId: input.testRunId,
+            declaredCaseCount: declaredTestCases.length,
+            failedCaseTitleCount: mutationCases.length,
+            source: 'mutation-failed-case-titles',
+            unmatchedTestCases: unmatched,
+            message:
+              unmatched.length + ' of ' + declaredTestCases.length +
+              ' declared details.adequacy.testCases entries matched no exact measured failed case among the ' +
+              mutationCases.length + ' failedCaseTitles in mutation test-run ' + input.testRunId + ' (' +
+              unmatched.map((title) => JSON.stringify(title)).join(', ') +
+              '). A mutation binding must name a measured failing case; correct the title or bind a run that failed it.',
+          };
+        }
+      }
       // P-002 / R-2: when the per-case ledger (migration 1478) recorded this run's cases,
       // EVERY declared case must resolve to an executed recorded case through the shared
       // resolver. The capped passedCaseTitles list below could only check "at least one
@@ -1504,6 +1579,24 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
             .map(receipt => `isolated-integration:${receipt.runId}`).sort())) {
           executionRuntimeFingerprint = isolatedIntegrationFingerprint(execution.isolatedRuntimeReceipts);
         }
+      }
+    }
+
+    if (input.testRunId != null && runtimeRecipe?.kind === 'repo-files'
+      && runtimeRecipe.completedRuntime?.kind === 'isolated-integration') {
+      const gaps = await isolatedIntegrationSourceReceiptGaps(runtimeRecipe);
+      if (gaps.length > 0) {
+        const rendered = gaps
+          .map(({ runId, missingSourcePaths }) => `${runId}: ${missingSourcePaths.join(', ')}`)
+          .join('; ');
+        return {
+          status: 'completed_runtime_source_not_in_receipt',
+          gaps,
+          message:
+            'Cannot bind isolated-integration evidence because its retained source receipt does not cover ' +
+            `every declared source path (${rendered}). Re-run the integration with a complete source receipt ` +
+            'or correct the measurement.sourcePaths before binding.',
+        };
       }
     }
 
@@ -1765,6 +1858,40 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
     // If it does not, throwing is correct: a loud failure beats a wrong id.
     if (!existing) throw new Error(`spec_evidence_binding_insert_failed:${bindingFingerprint}`);
 
+    const duplicateLiveTestRunBindingIds = inserted[0] && canonical.testRunId != null
+      ? (
+          await tx<{ id: number }[]>`
+        SELECT id
+          FROM harness_shared.spec_evidence_bindings
+         WHERE workspace_id = ${scope.workspaceId}
+           AND harness_slug = ${scope.harnessSlug}
+           AND work_item_id = ${input.workItemId}
+           AND plan_slug = ${planSlug}
+           AND spec_id = ${identity.spec_id}
+           AND spec_revision = ${specRevision}
+           AND evidence_kind = ${input.evidenceKind}
+           AND evidence_ref = ${evidenceRef}
+           AND coverage_evidence_ref IS NOT DISTINCT FROM ${input.coverageEvidenceRef ?? null}
+           AND test_run_id = ${canonical.testRunId}
+           AND retracted_at IS NULL
+           AND id <> ${existing.id}
+         ORDER BY id ASC`
+        ).map((row) => Number(row.id))
+      : [];
+    const duplicateLiveTestRunAdvisory = duplicateLiveTestRunBindingIds.length > 0
+      ? {
+          code: 'duplicate_live_test_run_bindings' as const,
+          testRunId: canonical.testRunId!,
+          bindingIds: duplicateLiveTestRunBindingIds,
+          message:
+            `Test run ${canonical.testRunId} is already live in binding(s) ${duplicateLiveTestRunBindingIds.join(', ')} ` +
+            `for ${input.evidenceKind} evidence '${evidenceRef}' on ${identity.spec_id}@${specRevision}. ` +
+            'This new binding remains live as well. If it replaces the earlier proof, re-bind with ' +
+            'supersedeAtRevision:true; otherwise retract the stale binding(s) with ' +
+            'plans:bind-spec-evidence retract.',
+        }
+      : undefined;
+
     return {
       status: inserted[0] ? 'created' : 'unchanged',
       id: Number(existing.id),
@@ -1775,6 +1902,7 @@ export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<Bi
       specRevision,
       specFingerprint: revision.content_hash,
       bindingFingerprint,
+      ...(duplicateLiveTestRunAdvisory ? { advisory: duplicateLiveTestRunAdvisory } : {}),
     };
   });
 }
@@ -2013,6 +2141,16 @@ function compareFingerprint(stored: string | null, current: string | null | unde
   return stored === current ? 'current' : 'stale';
 }
 
+/** Read both supported metadata locations, preserving explicit root-plane precedence. */
+export function readSpecEvidencePlane(details?: Record<string, unknown>): unknown {
+  const nested = details?.adequacy;
+  const adequacy = nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? nested as Record<string, unknown>
+    : undefined;
+  return details?.evidencePlane ?? details?.evidence_plane ?? details?.plane ??
+    adequacy?.evidencePlane ?? adequacy?.evidence_plane ?? adequacy?.plane;
+}
+
 /** Pure, four-state currentness classifier; no drifting boolean is persisted. */
 export function classifySpecEvidenceCurrentness(
   row: CurrentnessRow,
@@ -2024,7 +2162,7 @@ export function classifySpecEvidenceCurrentness(
     adequacy !== null && typeof adequacy === 'object' && !Array.isArray(adequacy) &&
     (adequacy as Record<string, unknown>).fixtureCalibrated === true;
   const fixtureExpected = row.evidence_kind === 'fixture' || fixtureCalibrationAttested;
-  const evidencePlane = row.details?.evidencePlane ?? row.details?.evidence_plane ?? row.details?.plane;
+  const evidencePlane = readSpecEvidencePlane(row.details);
   const ledgerMeasurement = workItemsEvidenceMeasurementSchema.safeParse(row.details?.currentMeasurement);
   // A live ledger-state observation measures dispositions, not a serving process.
   // Only a valid ledger-only recipe can omit runtime identity; runtime-dependent
@@ -2558,6 +2696,45 @@ export interface RetractedBindingRow {
   retraction_reason: string | null;
 }
 
+type CancelledAuditorNotifier = (input: {
+  workspaceId: string;
+  issueIds: readonly string[];
+  harness?: string | null;
+  reason?: string;
+}) => Promise<unknown>;
+
+interface SpecEvidenceGradingAuditNotificationDeps {
+  /** Test seam; production resolves the shared notifier after the write commits. */
+  notifyCancelledAuditors?: CancelledAuditorNotifier;
+}
+
+async function notifyCancelledAuditorsAfterCommit(
+  input: {
+    workspaceId: string;
+    harnessSlug: string;
+    issueIds: readonly string[];
+    reason: string;
+  },
+  deps: SpecEvidenceGradingAuditNotificationDeps,
+): Promise<void> {
+  if (input.issueIds.length === 0) return;
+  try {
+    const notify = deps.notifyCancelledAuditors ??
+      (await import('../../grading-integrity')).notifyCancelledGradingAuditors;
+    await notify({
+      workspaceId: input.workspaceId,
+      harness: input.harnessSlug,
+      issueIds: input.issueIds,
+      reason: input.reason,
+    });
+  } catch (error) {
+    // The binding withdrawal is already committed. Keep notification degradation
+    // visible without turning a durable evidence repair into a false failure.
+    console.warn('[spec-evidence] cancelled grading-auditor notification failed:',
+      error instanceof Error ? error.message : error);
+  }
+}
+
 /**
  * Record a one-way, attributable withdrawal of a single evidence binding (D-011).
  *
@@ -2569,11 +2746,14 @@ export interface RetractedBindingRow {
  * clause revision purely to shed failing evidence — which D-011 forbids as gate
  * evasion, since a bar whose hash moved has genuinely different meaning.
  */
-export async function retractSpecEvidence(options: RetractSpecEvidenceOptions) {
+export async function retractSpecEvidence(
+  options: RetractSpecEvidenceOptions,
+  deps: SpecEvidenceGradingAuditNotificationDeps = {},
+) {
   const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
   const reason = options.reason.trim();
   const actorId = options.actorId.trim();
-  return withWorkspace(scope.workspaceId, async (tx) => {
+  const result = await withWorkspace(scope.workspaceId, async (tx) => {
     const [existing] = await tx<RetractedBindingRow[]>`
       SELECT id, work_item_id, plan_slug, spec_id, spec_revision,
              evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason
@@ -2597,8 +2777,44 @@ export async function retractSpecEvidence(options: RetractSpecEvidenceOptions) {
       RETURNING id, work_item_id, plan_slug, spec_id, spec_revision,
                 evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason`;
     if (!updated) return { status: 'already_retracted' as const, bindingId: existing.id, binding: existing };
-    return { status: 'retracted' as const, bindingId: updated.id, binding: updated };
+    // The binding row is withdrawn before the audit row is fenced, but both writes
+    // share this transaction. A dispatcher cannot win a reservation in the gap
+    // between the evidence update and cancellation (EI-26089859582727160).
+    // Keep this import lazy: scorecards' evaluator path consumes this store's
+    // schemas, so a static edge would make the schema undefined during module
+    // initialization (the cancellation runs only after the store is ready).
+    const { cancelPendingGradingAuditsForBindingInTransaction } = await import('../../scorecards');
+    const cancelledAuditIssueIds = await cancelPendingGradingAuditsForBindingInTransaction(
+      tx,
+      scope.workspaceId,
+      updated.id,
+    );
+    return {
+      status: 'retracted' as const,
+      bindingId: updated.id,
+      binding: updated,
+      cancelledAuditIssueIds,
+    };
   });
+  // Notify readers only after the transaction has committed. The cancellation is
+  // part of the same transaction as the binding retraction, so a pushed read can
+  // never observe the binding withdrawn while its audit lease remains pending.
+  if (result.status === 'retracted') {
+    await notifyCancelledAuditorsAfterCommit({
+      workspaceId: scope.workspaceId,
+      harnessSlug: scope.harnessSlug,
+      issueIds: result.cancelledAuditIssueIds ?? [],
+      reason: `binding ${result.bindingId} was retracted: ${reason}`,
+    }, deps);
+    void trackDetached(import('../../sync-sse'))
+      .then((m) => {
+        m.notifySyncInvalidate('scorecards.list');
+        m.notifySyncInvalidate('rubrics.trend');
+        m.notifySyncInvalidate('learning.releaseReadiness');
+      })
+      .catch(() => {});
+  }
+  return result;
 }
 
 export interface SupersedeSpecEvidenceOptions {
@@ -2638,6 +2854,8 @@ export interface SupersessionResult {
   retracted: RetractedBindingRow[];
   /** Same-kind live siblings left standing, each with the claim that protected it. */
   kept: SupersessionKeptRow[];
+  /** Pending grading-audit targets fenced in the same withdrawal transaction. */
+  cancelledAuditIssueIds?: string[];
 }
 
 /**
@@ -2666,12 +2884,13 @@ export interface SupersessionResult {
  */
 export async function supersedeSpecEvidenceAtRevision(
   options: SupersedeSpecEvidenceOptions,
+  deps: SpecEvidenceGradingAuditNotificationDeps = {},
 ): Promise<SupersessionResult> {
   const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
   const actorId = options.actorId.trim();
   const reason = `superseded by binding ${options.supersedingBindingId} (plans:bind-spec-evidence supersedeAtRevision)`;
   const keep = [...new Set([options.supersedingBindingId, ...options.keepBindingIds])];
-  return withWorkspace(scope.workspaceId, async (tx) => {
+  const result = await withWorkspace(scope.workspaceId, async (tx) => {
     const siblings = await tx<
       Array<Omit<SupersessionKeptRow, 'keep_reason'> & { keep_reason: SupersessionKeepReason | null }>
     >`
@@ -2733,8 +2952,39 @@ export async function supersedeSpecEvidenceAtRevision(
          AND retracted_at IS NULL
       RETURNING id, work_item_id, plan_slug, spec_id, spec_revision,
                 evidence_kind, evidence_ref, retracted_at, retracted_by, retraction_reason`;
-    return { retracted, kept };
+    // The binding withdrawals and audit fences share this transaction. Capture
+    // issue ids here; the owner notification is deliberately deferred until the
+    // transaction has committed below.
+    const { cancelPendingGradingAuditsForBindingInTransaction } = await import('../../scorecards');
+    const cancelledAuditIssueIds = [...new Set((await Promise.all(
+      retracted.map((binding) => cancelPendingGradingAuditsForBindingInTransaction(
+        tx,
+        scope.workspaceId,
+        Number(binding.id),
+      )),
+    )).flat())].sort();
+    return {
+      retracted,
+      kept,
+      ...(cancelledAuditIssueIds.length > 0 ? { cancelledAuditIssueIds } : {}),
+    };
   });
+  await notifyCancelledAuditorsAfterCommit({
+    workspaceId: scope.workspaceId,
+    harnessSlug: scope.harnessSlug,
+    issueIds: 'cancelledAuditIssueIds' in result ? result.cancelledAuditIssueIds ?? [] : [],
+    reason: `spec evidence was superseded by binding ${options.supersedingBindingId}`,
+  }, deps);
+  if (result.retracted.length > 0) {
+    void trackDetached(import('../../sync-sse'))
+      .then((m) => {
+        m.notifySyncInvalidate('scorecards.list');
+        m.notifySyncInvalidate('rubrics.trend');
+        m.notifySyncInvalidate('learning.releaseReadiness');
+      })
+      .catch(() => {});
+  }
+  return result;
 }
 
 /**
@@ -2819,6 +3069,48 @@ function completedRuntimeArtifactRefs(selector: NonNullable<RepoFilesEvidenceMea
   ] as const : [];
 }
 
+/**
+ * Bind-time coverage fence for isolated integration source receipts. A missing artifact
+ * remains a legacy unknown (the read-side certifier will fail closed); once a receipt is
+ * available, however, every explicit source path must be represented in that receipt before
+ * a binding can claim the completed runtime. This catches hand-built recipes that otherwise
+ * pin a null environment fingerprint and only surface the gap during a later read.
+ */
+async function isolatedIntegrationSourceReceiptGaps(
+  recipe: RepoFilesEvidenceMeasurement,
+): Promise<Array<{ runId: string; missingSourcePaths: string[] }>> {
+  const selector = recipe.completedRuntime;
+  if (selector?.kind !== 'isolated-integration') return [];
+  const gaps: Array<{ runId: string; missingSourcePaths: string[] }> = [];
+  await Promise.all(selector.runIds.map(async (runId) => {
+    let receipt: unknown;
+    try {
+      receipt = (await readCompletedRuntimeArtifact(
+        'isolated-integration', runId, 'phases/prepare/source.json',
+      )).data;
+    } catch {
+      // Preserve the pre-existing read-side behavior for missing/expired artifacts. A
+      // receipt that is present is still checked below; the certifier keeps absent
+      // artifacts fail-closed as unknown.
+      return;
+    }
+    const files = receipt && typeof receipt === 'object' && !Array.isArray(receipt)
+      ? (receipt as Record<string, unknown>).files
+      : undefined;
+    if (!Array.isArray(files)) return;
+    const recordedPaths = new Set(
+      files.flatMap((file) => {
+        if (!file || typeof file !== 'object' || Array.isArray(file)) return [];
+        const path = (file as Record<string, unknown>).path;
+        return typeof path === 'string' ? [path] : [];
+      }),
+    );
+    const missingSourcePaths = recipe.sourcePaths.filter((path) => !recordedPaths.has(path));
+    if (missingSourcePaths.length > 0) gaps.push({ runId, missingSourcePaths });
+  }));
+  return gaps.sort((a, b) => a.runId.localeCompare(b.runId));
+}
+
 async function readCompletedRuntimeArtifact(harness: string, runId: string, file: string) {
   // EI-25420516419064831: reuse the maintained driver's existing root contract;
   // measurement selectors still cannot supply an arbitrary filesystem path.
@@ -2878,11 +3170,24 @@ function certifiesCompletedTestRow(kind: string): boolean {
   return kind === 'test' || kind === 'independent-verification';
 }
 
+/** Resolve legacy isolated bindings from their original ledger, without rewriting a recipe or any pin. */
+function completedTestRuntimeRecipe(row: EvidenceRow, recipe: RepoFilesEvidenceMeasurement): RepoFilesEvidenceMeasurement | null {
+  if (recipe.completedRuntime) return recipe;
+  const execution = parseTestRunExecutionDetails(row.test_run_execution_details);
+  const runIds = execution?.isolatedRuntimeReceipts?.map(receipt => receipt.runId).sort();
+  if (!runIds || !recipe.runtimeUnits
+    || JSON.stringify([...recipe.runtimeUnits].sort()) !== JSON.stringify(runIds.map(id => `isolated-integration:${id}`))) return null;
+  // The existing certifier still verifies original hashes, Git objects, scope,
+  // intervals and teardown. An explicit selector is authoritative, and no
+  // selector can turn a completed test into a current deployed runtime.
+  return { ...recipe, completedRuntime: { kind: 'isolated-integration', runIds } };
+}
+
 /**
  * A disposed verifier cannot be re-probed through /proc. Certify its completed
  * execution from the retained harness lifecycle and independently rehashed source
- * instead. This opt-in applies only to clean native/LLM test receipts on the live
- * test plane; it never certifies a serving/deployed production process.
+ * instead. This applies only to clean test receipts on their supported evidence
+ * planes; it never certifies a serving/deployed production process.
  */
 export async function measureCompletedTestRuntime(
   row: EvidenceRow,
@@ -3046,9 +3351,13 @@ async function measureCompletedIntegrationRuntime(row: EvidenceRow, recipe: Repo
   const isolatedHarnessMatches = execution?.harnessSlug === scope.harnessSlug
     || (execution?.harnessSlug === null && row.test_run_present
       && (row.test_run_source === 'local' || row.test_run_source === 'mutation-probe'));
+  // A completed private runtime can prove committed-tree behavior as well as
+  // a live test. Its receipts never establish the currently deployed artifact.
+  const evidencePlane = readSpecEvidencePlane(row.details);
+  const completedTestPlane = evidencePlane === 'tree' || evidencePlane === 'live';
   if (selector?.kind !== 'isolated-integration' || !execution?.isolatedRuntimeReceipts || !recipe.runtimeUnits
     || !row.test_run_present
-    || !certifiesCompletedTestRow(row.evidence_kind) || row.details.evidencePlane !== 'live' || row.test_run_status !== 'pass'
+    || !certifiesCompletedTestRow(row.evidence_kind) || !completedTestPlane || row.test_run_status !== 'pass'
     || row.test_run_framework !== 'vitest' || (execution.testLayer !== 'integration' && execution.testLayer !== 'e2e')
     || row.test_run_worktree_dirty !== false || execution.worktreeDirty || execution.collectionFailed
     || execution.failed !== 0 || execution.passed !== selector.runIds.length
@@ -3404,7 +3713,11 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       const path = await resolveMeasurementRoot(scope.workspaceId, scope.harnessSlug, recipe, dimension);
       recordMaxPhase('measurementRootRegistryLookupMaxMs', registryLookupStartedAt);
       const realpathStartedAt = diagnostics ? Date.now() : 0;
-      const resolved = await realpath(path);
+      // Root canonicalization is metadata-only. Keep it off libuv's shared
+      // threadpool so a busy operator cannot turn one symlink lookup into a
+      // multi-minute evidence request; the returned value is still a fresh
+      // realpath for every evaluation and preserves symlink identity.
+      const resolved = realpathSync(path);
       recordMaxPhase('measurementRootRealpathMaxMs', realpathStartedAt);
       return resolved;
     })();
@@ -3521,7 +3834,18 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
           const fixtureRoot = hasRepoFixturePaths(recipe)
             ? await measurementRootFor(recipe, 'fixture')
             : measurementRoot;
-          const fixtureRootHarnessSlug = recipe.fixtureRootHarnessSlug;
+          // A historical recipe may omit fixtureRootHarnessSlug even though its
+          // measurement pin recorded the default/explicit fixture root identity.
+          // Reusing that pin identity keeps diffMeasuredFiles keyed to the same
+          // root instead of reporting one changed file as an added + removed pair.
+          const pinnedFixtureRootHarnesses = new Set(
+            (readMeasurementPin(row.details)?.files ?? [])
+              .filter((file) => file.dimension === 'fixture' && typeof file.rootHarnessSlug === 'string')
+              .map((file) => file.rootHarnessSlug as string),
+          );
+          const fixtureRootHarnessSlug = recipe.fixtureRootHarnessSlug ?? (
+            pinnedFixtureRootHarnesses.size === 1 ? [...pinnedFixtureRootHarnesses][0] : undefined
+          );
           measuredAtCommit = await measurementCommitFor(measurementRoot);
           const fixtureCommit = fixtureRoot === measurementRoot
             ? measuredAtCommit
@@ -3598,7 +3922,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
                   ...primary.files,
                   ...fixtureFiles.map((file) => ({
                     ...file,
-                    ...(recipe.fixtureRootHarnessSlug ? { rootHarnessSlug: recipe.fixtureRootHarnessSlug } : {}),
+                    ...(fixtureRootHarnessSlug ? { rootHarnessSlug: fixtureRootHarnessSlug } : {}),
                     dimension: 'fixture' as const,
                   })),
                 ],
@@ -3617,6 +3941,7 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
               ...(hasRepoFixturePaths(recipe) ? { fixtureRoot, fixtureRootHarnessSlug } : {}),
             });
           }
+          const completedRecipe = completedTestRuntimeRecipe(row, recipe);
           measured = {
             sourceFingerprint: detailed.sourceFingerprint,
             testFingerprint: detailed.testFingerprint,
@@ -3624,8 +3949,10 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
             ...(recipe.artifactReceiptPath ? { environmentFingerprint: await measurePackagedArtifactEnvironment(
               measurementRoot, recipe.artifactReceiptPath,
               detailed.files.find(file => file.path === recipe.artifactReceiptPath && file.dimension === 'source')!.sha256) } : {}),
-            ...(recipe.runtimeUnits ? { environmentFingerprint: recipe.completedRuntime
-              ? await measureCompletedTestRuntime(row, recipe, detailed.files, scope, measurementRoot,
+            ...(recipe.nativeInstrumentKey ? { environmentFingerprint: await measureNativeColdEnvironment(
+              scope.workspaceId, scope.harnessSlug, recipe.nativeInstrumentKey) } : {}),
+            ...(recipe.runtimeUnits ? { environmentFingerprint: completedRecipe
+              ? await measureCompletedTestRuntime(row, completedRecipe, detailed.files, scope, measurementRoot,
                 { onStaticGuidanceEquivalence: value => { sourceEquivalence = value; } })
               : await measureRuntimeEnvironment(
                 await (runtimeRows ??= listRuntimeVintage(scope.workspaceId)), recipe.runtimeUnits,

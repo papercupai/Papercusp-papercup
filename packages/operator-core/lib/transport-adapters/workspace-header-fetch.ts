@@ -17,7 +17,7 @@
  * Streams (`EventSource`/`IpcEventSource`, WS) can't carry a custom header and
  * are handled separately (D-001/P-015); this is the request/fetch path only.
  */
-import { getBrowserWorkspaceId } from '../browser-workspace';
+import { getBrowserMachineId, getBrowserWorkspaceId } from '../browser-workspace';
 import { isOperatorApiUrl } from './workspace-api-target';
 
 const WORKSPACE_HEADER = 'x-papercusp-workspace';
@@ -38,7 +38,7 @@ function rawUrlOf(input: RequestInfo | URL): string {
  * window's workspace. Safe to call repeatedly; a no-op when already wrapped or
  * outside a browser.
  */
-export function installWorkspaceHeaderFetch(): void {
+export function installWorkspaceHeaderFetch(options: { workspace?: boolean } = {}): void {
   if (typeof window === 'undefined') return;
   const current = window.fetch as (typeof window.fetch & { [WRAPPED_MARK]?: boolean }) | undefined;
   if (!current || current[WRAPPED_MARK]) return;
@@ -50,9 +50,11 @@ export function installWorkspaceHeaderFetch(): void {
         const headers = new Headers(
           init?.headers ?? (input instanceof Request ? input.headers : undefined),
         );
-        if (!headers.has(WORKSPACE_HEADER)) {
+        if (options.workspace !== false && !headers.has(WORKSPACE_HEADER)) {
           headers.set(WORKSPACE_HEADER, getBrowserWorkspaceId());
         }
+        const machineId = getBrowserMachineId();
+        if (machineId && !headers.has('x-papercusp-machine')) headers.set('x-papercusp-machine', machineId);
         return inner(input, { ...init, headers });
       }
     } catch {

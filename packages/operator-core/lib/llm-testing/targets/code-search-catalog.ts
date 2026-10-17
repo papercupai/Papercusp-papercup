@@ -10,10 +10,18 @@
  *   - `worker`  — the coding-role prompt (`worker.base.md` + `worker.md`) with
  *                 these tools plus `capability:read`.
  *
- * Descriptions restate the live registry entries' opening sentences, so the SUT
- * is offered what a real session is offered — no extra steering. Every call is
- * answered by the scenario's world (`scenarios/su/S37-code-search-discipline.ts`);
- * nothing here reaches a real index, compiler or shell.
+ * This is the frozen GitNexus-era catalogue for the original S37/W01 baseline,
+ * not a mirror of the current registry. In that fixture graph:query means the
+ * indexed GitNexus route; the current native tool uses first-party producers.
+ * Keep these descriptions and schemas stable so historical baseline comparisons
+ * retain the same instrument. A current native-route measurement needs an explicit
+ * scenario-version change and its own qualified world/assertions; updating this
+ * catalogue alone would leave the scenario identity unchanged.
+ *
+ * Every call is answered by the scenario's world
+ * (`scenarios/su/S37-code-search-discipline.ts`); nothing here reaches a real
+ * index, compiler or shell. Do not count fixture calls as live engine use or
+ * compare this baseline directly with current native-route outcomes.
  */
 import type { SuCatalogEntry } from './su-catalog';
 

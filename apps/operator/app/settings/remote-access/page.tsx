@@ -29,6 +29,7 @@ import { ConfirmModal } from '@/app/harness/ConfirmModal';
 import { RadioGroup } from '@/app/harness/RadioGroup';
 import { Select } from '@/app/harness/Select';
 import { StepOwnTunnel, type OwnTunnelStatusView } from '@/app/_components/SetupWizard/StepOwnTunnel';
+import { connectionConfirmationCopy, connectionStatusCopy, normalizeRemoteAccessEntry } from './connection-inventory';
 
 export type EntryKind = 'mobile' | 'app' | 'service';
 
@@ -387,7 +388,11 @@ export default function RemoteAccessSettingsPage() {
         )}
         <ul style={{ marginTop: 12, listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {entries.map((e) => (
-            <li key={e.id} data-testid="remote-access-entry" data-entry-id={e.id} data-kind={e.kind} style={entryStyle}>
+            (() => {
+              const inventory = normalizeRemoteAccessEntry(e, { now });
+              const statusCopy = connectionStatusCopy(inventory);
+              return <li key={e.id} data-testid="remote-access-entry" data-entry-id={e.id} data-kind={e.kind}
+                data-connection-class={inventory.class} data-connection-state={inventory.state} style={entryStyle}>
               <div
                 data-testid="remote-access-entry-row"
                 style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}
@@ -395,6 +400,9 @@ export default function RemoteAccessSettingsPage() {
                 <div style={{ minWidth: 0, flex: '1 1 220px', overflowWrap: 'anywhere' }}>
                   <div style={{ fontSize: 13, fontWeight: 500 }}>
                     {e.label ?? '(unnamed)'} <span className="pc-settings-hint">· {KIND_LABEL[e.kind]}</span>
+                  </div>
+                  <div className="pc-settings-hint" data-testid="remote-access-entry-authority" style={{ marginTop: 2 }}>
+                    {inventory.authoritySummary} · {statusCopy.status}
                   </div>
                   <div className="pc-settings-hint" style={{ marginTop: 2 }}>
                     Added by {e.creator} on {when(e.pairedAt)} · last used {when(e.lastSeen)}
@@ -447,14 +455,15 @@ export default function RemoteAccessSettingsPage() {
                     onClick={() => void setConfirmTarget(`revoke:${e.id}`)}
                     style={{ color: 'var(--bad, #f87171)' }}
                   >
-                    Revoke
+                    {statusCopy.revokeLabel}
                   </button>
                 </div>
               </div>
               {editId === e.id && e.kind !== 'mobile' && (
                 <ScopeEditor entry={e} workspaceId={ws} onClose={() => void setEditId(null)} />
               )}
-            </li>
+              </li>;
+            })()
           ))}
         </ul>
       </section>
@@ -628,9 +637,7 @@ export function PortalRelayCard(props: {
 function confirmBody(c: { action: string; entry: RemoteAccessEntryView } | null): ReactNode {
   if (!c) return null;
   if (c.action === 'revoke') {
-    return c.entry.kind === 'mobile'
-      ? 'The phone is signed out on its next request and has to be paired again.'
-      : 'Its next request is refused. This cannot be undone — connect the app again to give it access back.';
+    return connectionConfirmationCopy(normalizeRemoteAccessEntry(c.entry)).body;
   }
   return c.entry.kind === 'mobile'
     ? 'A phone’s access is its pairing: rotating revokes this phone and opens pairing so you can pair it again.'

@@ -1,5 +1,5 @@
 import { fork } from 'node:child_process';
-import { mkdtemp, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { expect, it } from 'vitest';
@@ -10,6 +10,86 @@ import { startPrivateCupboardCatalog } from '../../../test/portal-cupboard-fixtu
 
 const root = resolve(import.meta.dirname, '../../../../..');
 const options = isolatedWorkerOptions(360_000);
+
+it('private Health seed and browser readers release their worker database resources', async context => {
+  preparePrivateRosterSocketRoot();
+  const runId = await recordIsolatedIntegrationProof({ root,
+    filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
+    sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+      'packages/operator-core/lib/pg-listen-hub.ts',
+      'packages/operator-core/test/portal-roster-browser-fixture.ts',
+      'packages/operator-core/test/isolated-integration-proof.ts'],
+    execute: async (observe, evidenceDir) => {
+      await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
+      const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+        ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir, ROSTER_COORD_BROWSER_PROOF: '1', ROSTER_HEALTH_BROWSER_PROOF: '1' };
+      for (const key of Object.keys(env)) if (key.startsWith('ROSTER_') && key.endsWith('_PROOF') &&
+        !['ROSTER_COORD_BROWSER_PROOF', 'ROSTER_HEALTH_BROWSER_PROOF'].includes(key)) delete env[key];
+      const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
+        '--health-cleanup-proof'],
+      { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+      observe(child);
+      let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
+      try { result = await captureIsolatedWorker(child, evidenceDir, options); }
+      finally { await rm(join(evidenceDir, 'node_modules')); }
+      expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 0, signal: null,
+        timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+      expect(result.output).toContain('ROSTER_HEALTH_CLEANUP_SEEDED ');
+      expect(result.output).toContain('"stage":"database-resources-closed","status":"complete"');
+    },
+  });
+  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+  console.info('ROSTER_HEALTH_CLEANUP_PROOF_RUN ' + runId);
+}, options.testTimeoutMs);
+
+it('private Health HTTP reader observes a shared publication after its acknowledgement tick', async context => {
+  preparePrivateRosterSocketRoot();
+  let preparedApi!: ReturnType<typeof preparePrivateOperatorApiBundle>;
+  const runId = await recordIsolatedIntegrationProof({ root,
+    filePath: 'packages/operator-core/lib/endpoint-route/__tests__/portal-roster-private.e2e.test.ts',
+    sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/roster-stop-http-fixture.ts',
+      'packages/operator-core/lib/pg-listen-hub.ts', 'packages/operator-core/lib/derived-reads/shared-snapshot.ts',
+      'packages/operator-core/lib/system-health/compute.ts', 'packages/operator-core/test/portal-roster-browser-fixture.ts',
+      'packages/operator-core/test/private-http-workspace-preflight.ts', 'packages/operator-core/test/isolated-integration-proof.ts',
+      'apps/operator/bin/bundle-host.sh', 'apps/operator/bin/bundle-host-common.sh'],
+    prepare: async evidenceDir => { preparedApi = await preparePrivateOperatorApiBundle(root, evidenceDir,
+      { builder: { timeoutMs: 240_000, maxMs: 420_000 } }); },
+    execute: async (observe, evidenceDir) => {
+      await symlink(join(root, 'node_modules'), join(evidenceDir, 'node_modules'), 'dir');
+      const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', FORCE_COLOR: '0',
+        ROSTER_STOP_HTTP_EVIDENCE_DIR: evidenceDir, ROSTER_COORD_HTTP_PROOF: '1',
+        ROSTER_COORD_BROWSER_PROOF: '1', ROSTER_HEALTH_BROWSER_PROOF: '1' };
+      for (const key of Object.keys(env)) if (key.startsWith('ROSTER_') && key.endsWith('_PROOF') &&
+        !['ROSTER_COORD_HTTP_PROOF', 'ROSTER_COORD_BROWSER_PROOF', 'ROSTER_HEALTH_BROWSER_PROOF'].includes(key)) delete env[key];
+      const child = fork(join(root, 'scripts/with-test-pg.mjs'), ['--isolated-runtime=operator-api', '--',
+        process.execPath, '--import', 'tsx', join(root, 'packages/operator-core/test/roster-stop-http-fixture.ts'),
+        '--health-publication-proof', '--prepared-api-sha=' + preparedApi.sha256],
+      { cwd: root, detached: true, env, execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+      observe(child);
+      let result: Awaited<ReturnType<typeof captureIsolatedWorker>>;
+      try { result = await captureIsolatedWorker(child, evidenceDir, options); }
+      finally { await rm(join(evidenceDir, 'node_modules')); }
+      expect(result, isolatedWorkerFailureDetail(result.output)).toMatchObject({ code: 0, signal: null,
+        timedOut: false, exitWaitTimedOut: false, stdioDrainTimedOut: false });
+      expect(result.output).toContain('ROSTER_HEALTH_PUBLICATION_RECEIPT ');
+      const resources = JSON.parse(await readFile(join(evidenceDir, 'roster-stop-resources.json'), 'utf8')) as {
+        pgConnections: Array<{ datname: string; application_name: string }>;
+        retained: unknown[];
+        activeResources: string[];
+      };
+      // The acknowledgement path opens a separate locks database. Checking
+      // only db-org's pools missed the live socket that pinned this worker.
+      expect(resources.pgConnections).toEqual(expect.arrayContaining([
+        expect.objectContaining({ datname: 'papercusp_su', application_name: expect.stringContaining('su-lock-tx') }),
+      ]));
+      expect(resources.retained).toEqual([]);
+      expect(resources.activeResources.filter(type => type === 'FSEventWrap' || type === 'FSWatcher')).toEqual([]);
+    },
+  });
+  Object.assign(context.task.meta, { papercuspIsolatedRuntimeRunId: runId });
+  console.info('ROSTER_HEALTH_PUBLICATION_PROOF_RUN ' + runId);
+}, options.testTimeoutMs);
 
 it('private Cupboard catalog preflight executes the maintained listing filters and excludes private rows before PG allocation', async () => {
   const evidence = await mkdtemp(join(tmpdir(), 'cupboard-preflight-'));

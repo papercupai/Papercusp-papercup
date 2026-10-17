@@ -22,7 +22,6 @@ import { getOrgPg } from '@papercusp/db-org';
 
 // The hook's own digest (clamps every field to 400 chars), so a rebuilt query
 // is the query the server received. Imported by path: it is a client script.
-// @ts-expect-error -- plain .mjs hook module, no declaration file
 import { buildDigest } from '../../../../../apps/operator/scripts/hooks/inject/core.mjs';
 import type { BatchCall } from '../../endpoint-route/routes/agent-mcp/mid-turn-context';
 import { llmCall } from '../../llm-testing/llm-client';

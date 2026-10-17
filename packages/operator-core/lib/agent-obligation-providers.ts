@@ -256,6 +256,7 @@ export function selectGoalPlacementPlan(
 
 const EXACT_PLAN_REFUSAL_GUIDANCE = {
   'plan-not-found': { status: 'unknown', summary: 'refresh the plan link and canonical worklist before deciding whether to create or adopt work' },
+  'invalid-plan-item-scope': { status: 'blocked', summary: 'retarget the launch at plan items that exist in this plan (plans:items), then recheck admission' },
   'no-actionable-plan-items': { status: 'blocked', summary: 'repair the plan DAG or finish evidenced closure; do not open an idle fleet' },
   'promotion-lag': { status: 'blocked', summary: 'run the existing plans:start promotion path after its normal review and approval gates, then recheck admission' },
   'duplicate-coverage': { status: 'blocked', summary: 'reconcile duplicate promoted work-item coverage before launching' },

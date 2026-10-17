@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "planItem": "P-544",
+  "workItem": "WI-6554700010016277",
+  "recordedAtUtc": "2026-10-17T07:30:34Z",
+  "scope": "Read-only recovery of measured native tokens from the preserved 2vCPU/8GiB experiment. Dollar amount is a current list-price estimate; no invoice, monthly qualification, capacity pass or shipment claim.",
+  "reuse": [
+    "Production parseCodexChunk and closedCodexSessionPopulation in packages/operator-core/lib/interactive-usage/ingest-adapters.ts",
+    "Canonical costFromTokens and PRICE_TABLE_VERSION in @papercusp/model-pricing",
+    "Preserved native histories; no new VM, model request or cloud experiment"
+  ],
+  "originalRun": {
+    "evidence": "docs/evidence/p544-clean8g-profile-2026-10-16.json",
+    "taskId": "0mvbj82dovypry3737j",
+    "start": "2026-10-16T22:21:26.039446Z",
+    "end": "2026-10-16T22:30:50.551016Z",
+    "assignedAgents": 50,
+    "verifiedWakeTasks": 98,
+    "warmTurns": 50,
+    "model": "gpt-6-luna",
+    "effort": "low",
+    "cliVersion": "0.163.0",
+    "profilePassed": false,
+    "remainingFailedThreshold": "burst echo p95 6.775 seconds exceeds D-075 limit of 3 seconds"
+  },
+  "archive": {
+    "path": "/tmp/p544-native-evidence/p544-native8g-v4-histories.tgz",
+    "recordedSha256": "e1a84be64da713e4aa1a394f1c155003a8a947fd89b6031ccc0e0c9d23e5b6ea",
+    "shaSource": "Existing immutable archive receipt in p544-clean8g-profile-2026-10-16.json; not rehashed in this read",
+    "root": "/tmp/p544-native-evidence/8g-v4-histories/home/agent/codex-homes",
+    "filesScanned": 180,
+    "filesWithInWindowUsage": 50,
+    "agentsWithInWindowUsage": 50,
+    "sourceManifestSha256": "0b971d4e05dfd72d984ee00720786b7056738490b646ac1f070a5b34faa431b2",
+    "manifestDefinition": "SHA256(JSON.stringify(files)), where files is sorted by absolute source path and includes {path:root-relative POSIX path,bytes:raw.length,sha256:SHA256(raw)} only for files with in-window usage."
+  },
+  "census": {
+    "closedSessions": 50,
+    "closedTurns": 148,
+    "requests": 296,
+    "requestsWithReportedCacheWrite": 296,
+    "pricedRequests": 296,
+    "duplicateParsedIdentities": 0,
+    "unknownEventTime": 0,
+    "censusGaps": [],
+    "coverage": "All 50 session files with in-window usage passed the canonical complete native session census. 180 archived session files were scanned; 130 had no in-window usage. This does not cover the separate 4CPU/8GiB run whose native histories remain unavailable."
+  },
+  "usage": {
+    "inputTotalTokens": 3547776,
+    "cacheReadTokens": 3143680,
+    "cacheWriteTokens": 0,
+    "uncachedInputTokens": 404096,
+    "outputTokens": 8457,
+    "semantics": "OpenAI input includes cached subsets; subtract read and write from input once. Output is the native output counter; reasoning is not charged a second time."
+  },
+  "pricing": {
+    "classification": "estimated",
+    "billedUsd": null,
+    "creditsExcluded": true,
+    "priceTableVersion": "53a578c68ba664e8",
+    "model": "gpt-6-luna",
+    "ratesUsdPerMillion": {
+      "uncachedInput": 0.1,
+      "cacheRead": 0.01,
+      "cacheWrite": 0.125,
+      "output": 0.5
+    },
+    "estimatedUsd": 0.07607490000000004,
+    "formula": "Sum canonical per-request costFromTokens outputs with each request's full input count for tier selection; no unknown-tier floor. The displayed aggregate also reconciles to 404096*0.1/1e6 +3143680*0.01/1e6 +8457*0.5/1e6.",
+    "limitation": "Model list prices do not establish subscription/account allocation or provider-reported dollars."
+  },
+  "verification": {
+    "taskId": "0mvc2ttikhuxgn51b53",
+    "exitCode": 0,
+    "durationMs": 2483,
+    "logPath": ".papercusp/scratch/bash-1a4c4e52-2e2.log",
+    "command": "node --import tsx --input-type=module <<'JS'\nimport {readdirSync,readFileSync} from 'node:fs';\nimport {createHash} from 'node:crypto';\nimport {parseCodexChunk,closedCodexSessionPopulation} from './packages/operator-core/lib/interactive-usage/ingest-adapters.ts';\nimport {costFromTokens,PRICE_TABLE_VERSION} from '@papercusp/model-pricing';\nconst root='/tmp/p544-native-evidence/8g-v4-histories/home/agent/codex-homes';\nconst start=Date.parse('2026-10-16T22:21:26.039446Z'), end=Date.parse('2026-10-16T22:30:50.551016Z');\nconst paths=[]; function walk(p){for(const d of readdirSync(p,{withFileTypes:true})){const f=p+'/'+d.name;if(d.isDirectory())walk(f);else if(d.isFile()&&f.endsWith('.jsonl'))paths.push(f);}} walk(root);\nconst files=[], agents=new Set(),models={};let duplicates=0,unknownTime=0,closedSessions=0,closedTurns=0;const censusGaps=[];\nfor(const file of paths.sort()){const raw=readFileSync(file), parsed=parseCodexChunk(raw.toString('utf8')); const seen=new Set();const events=(parsed.events??[]).filter(e=>{if(e.eventTime===null){unknownTime++;return false;} const t=e.eventTime;return t>=start&&t<=end;});if(!events.length)continue;const header=JSON.parse(raw.toString('utf8').split('\\n')[0]);const census=closedCodexSessionPopulation({transcript:raw.toString('utf8'),file,fileGeneration:0,nativeSessionId:header.payload.id});if(census.ok){closedSessions++;closedTurns+=census.nativeTurnIds.length;}else censusGaps.push({file:file.slice(root.length+1),detail:census.detail});const agent=file.slice(root.length+1).split('/')[0];agents.add(agent);files.push({path:file.slice(root.length+1),bytes:raw.length,sha256:createHash('sha256').update(raw).digest('hex')});for(const e of events){const key=JSON.stringify([e.model,e.sourceId]);if(seen.has(key)){duplicates++;continue;}seen.add(key);const m=models[e.model]??={requests:0,inputTotalTokens:0,cacheReadTokens:0,cacheWriteTokensKnown:0,outputTokens:0,writeKnown:0,priced:0,estimatedUsd:0};m.requests++;m.inputTotalTokens+=e.inputTotalTokens??0;m.cacheReadTokens+=e.usage.cacheReadTokens;m.cacheWriteTokensKnown+=e.usage.cacheCreationTokens;m.outputTokens+=e.usage.outputTokens;m.writeKnown+=Number(!e.usage.cacheCreationUnreported);const c=costFromTokens(e.model,{...e.usage,requestInputTokens:e.inputTotalTokens??undefined});m.priced+=Number(c.priced);m.estimatedUsd=m.estimatedUsd!==null&&c.priced?m.estimatedUsd+c.usd:null;}}\nconsole.log(JSON.stringify({scope:'Archived native tokens; list-price estimate only, never invoice or D076 qualification',window:{start:new Date(start).toISOString(),end:new Date(end).toISOString()},filesScanned:paths.length,filesWithUsage:files.length,agentsWithUsage:agents.size,repeatedObservations:duplicates,unknownTime,closedSessions,closedTurns,censusGaps,models,priceTableVersion:PRICE_TABLE_VERSION,sourceManifestSha256:createHash('sha256').update(JSON.stringify(files)).digest('hex'),sourcePathExamples:files.slice(0,2).map(f=>f.path)},null,2));\nJS",
+    "sourceSha256": {
+      "packages/operator-core/lib/interactive-usage/ingest-adapters.ts": "c7837212d298691d3573dff7e5d62d3441ad3016fde350597f5a45fe8f2f7cf8",
+      "packages/operator-core/lib/interactive-usage/ingest-claude-transcripts.ts": "fed616421e6c2628f2a9d63ce48a4fe3677c67d5e37b9d5b6173e12b08b961ba",
+      "libs/generic/model-pricing/src/index.ts": "e372818fe0d1bcafccdd1f2f31fb61b54b80d21f299daeb6d58278e56f3413f4"
+    },
+    "qualification": "Hashes identify the inspected local canonical parser/pricing files, not a complete executed import graph or a deployed artifact."
+  },
+  "probeCorrection": {
+    "supersededTaskId": "0mvc2s2e3wmbb2hzj59",
+    "reason": "The first read-only probe incorrectly called Date.parse on canonical numeric eventTime milliseconds and returned zero in-window files. That was a caller probe error, not evidence of missing usage. Direct numeric comparisons recover 50 sessions; the final canonical closed-session census confirms 148 closed turns."
+  },
+  "remaining": [
+    "Actual trial monthly task/inference duty profile, beyond VM active hours alone",
+    "Observed applicable compute, retained storage, backup, network, control-plane and inference charges/allocations for the same defined profile",
+    "Valid application cold readiness and resize/growth durability evidence",
+    "A complete D-075 profile passing the burst threshold; preserved 2vCPU/8GiB run does not pass",
+    "D-076 remains open; do not extrapolate this single short-run estimate into an all-in under-$20 result"
+  ]
+}

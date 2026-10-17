@@ -31,6 +31,7 @@
  * it does not exist here. (Derived-truth ladder: DERIVE over CURATED, always.)
  */
 import { createHash } from 'node:crypto';
+import { compileJsonSchema } from '../json-schema-validation';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { papercuspPath } from '../papercusp-root';
@@ -85,6 +86,7 @@ export interface EventPackageManifest {
   /** Optional glob family this key belongs to, e.g. `work-item:done:*`. */
   keyPattern?: string;
   tags?: string[];
+  payloadSchema?: Record<string, unknown>;
 }
 
 export interface InstalledEvent {
@@ -100,6 +102,7 @@ export interface InstalledEvent {
   version: string;
   keyPattern: string | null;
   tags: string[];
+  payloadSchema?: Record<string, unknown>;
   source: string;
   dir: string;
 }
@@ -198,6 +201,17 @@ export function installedEventRef(githubUrl: string, listingRef: string): string
  * Parse the two package files with the exact validation used by enumeration and
  * install. Null means the directory is not a usable event package.
  */
+
+/** Payload contracts are curated data; enforce the same synchronous bound as local authorship. */
+function portablePayloadSchema(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value) || JSON.stringify(value).length > 16_384) throw new Error('invalid event payload schema');
+  const schema = value as Record<string, unknown>;
+  const validator = compileJsonSchema(schema);
+  if ('$async' in validator && validator.$async) throw new Error('event payload schema must be synchronous');
+  return schema;
+}
+
 export function readEventDir(
   dir: string,
   packageRef: string,
@@ -242,6 +256,8 @@ export function readEventDir(
 
   const tags = tagList(manifest.tags);
   if (!tags) return null;
+  let payloadSchema: Record<string, unknown> | undefined;
+  try { payloadSchema = portablePayloadSchema(manifest.payloadSchema); } catch { return null; }
 
   return {
     installed: true,
@@ -256,6 +272,7 @@ export function readEventDir(
     version,
     keyPattern,
     tags,
+    ...(payloadSchema ? { payloadSchema } : {}),
     source,
     dir,
   };
@@ -300,6 +317,7 @@ export interface EventExportSource {
   description?: string | null;
   keyPattern?: string | null;
   tags?: string[] | null;
+  payloadSchema?: Record<string, unknown> | null;
 }
 
 /**
@@ -323,7 +341,7 @@ export function writeEventPackageDir(
   }
 
   const ref = (opts.ref ?? eventKey).trim().replace(/[^A-Za-z0-9._-]+/g, '-');
-  if (!SAFE_REF_RE.test(ref)) throw new Error(`unsafe event ref ${JSON.stringify(ref)}`);
+  if (!SAFE_REF_RE.test(ref) || ref === '.' || ref === '..') throw new Error(`unsafe event ref ${JSON.stringify(ref)}`);
   const version = (opts.version ?? '0.1.0').trim();
   if (!PACKAGE_VERSION_RE.test(version)) throw new Error(`invalid event version ${JSON.stringify(version)}`);
   const source = opts.source.trim();
@@ -334,6 +352,7 @@ export function writeEventPackageDir(
   const description = (opts.description ?? input.description ?? '').trim();
   if (!description) throw new Error('event package description is required');
 
+  const payloadSchema = portablePayloadSchema(input.payloadSchema);
   const root = opts.targetDir ?? papercuspPath('events', 'exports');
   const dir = join(root, ref);
   mkdirSync(dir, { recursive: true });
@@ -345,6 +364,7 @@ export function writeEventPackageDir(
     version,
     ...(input.keyPattern ? { keyPattern: input.keyPattern } : {}),
     ...(input.tags?.length ? { tags: input.tags } : {}),
+    ...(payloadSchema ? { payloadSchema } : {}),
   };
   const manifestPath = join(dir, EVENT_MANIFEST);
   const listingPath = join(dir, 'listing.json');

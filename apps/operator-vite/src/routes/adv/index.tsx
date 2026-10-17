@@ -28,6 +28,7 @@ const HarnessesWorkspace = lazy(() => import('@/app/adv/harnesses/HarnessesWorks
 const AdvCreateDock = lazy(() => import('@/app/adv/create/AdvCreateDock'));
 const HudView = lazy(() => import('@/app/adv/hud/HudView'));
 const AdvWorkflowsTab = lazy(() => import('../../components/adv/AdvWorkflowsTab'));
+const AdvEnterpriseTab = lazy(() => import('../../components/adv/AdvEnterpriseTab'));
 
 const ADV_TAB_IDS = ADV_TABS.map((tab) => tab.id) as [AdvTabId, ...AdvTabId[]];
 
@@ -92,6 +93,8 @@ function renderAdvTab(tab: AdvTabId, potScope: AdvScope) {
   switch (tab) {
     case 'overview':
       return <AdvOverviewTab />;
+    case 'enterprise':
+      return <AdvEnterpriseTab />;
     case 'hud':
       // HUD — the session board: every live session grouped by what it needs
       // (adv-hud-fleet-board-2026-07-25). `/adv/HUD` redirects to ?tab=hud.

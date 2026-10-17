@@ -1,0 +1,938 @@
+{
+  "schemaVersion": 1,
+  "edition": 3,
+  "subjectRubric": "acceptance-disk-headroom-standing-reclaim-2026-10-12",
+  "revision": 6,
+  "criteriaHash": "5ef4d9cdbc924e777f37ea577798cba41996744579eab097eaf0ad23a6000772",
+  "barSetHash": "8e0f9c259adff2bcef3dfc1279b13d92a367a5c76150e5da157b400f45dcf35b",
+  "sourceCommit": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+  "scope": "Rubric-text fitness; source assertion inspection only. No tests executed, no operational acceptance or R5 binding.",
+  "priorAudits": [
+    "EI-26238152854893917",
+    "EI-26238654372906539"
+  ],
+  "failureClasses": [
+    "Exact source bytes lacked a retrieval locator",
+    "Some criterion strings lacked executable per-key selectors",
+    "Weak ratings did not explicitly record currently satisfiable remedies"
+  ],
+  "rubricProbe": {
+    "tool": "rubrics:get",
+    "args": {
+      "rubricRef": "acceptance-disk-headroom-standing-reclaim-2026-10-12",
+      "revision": 6,
+      "detail": "full"
+    },
+    "select": "results[0].rubric.criteria; require keys r-1..r-7 and criteriaHash5ef4d9cdbc924e777f37ea577798cba41996744579eab097eaf0ad23a6000772"
+  },
+  "decisionProbes": [
+    {
+      "tool": "plans:get",
+      "args": {
+        "slug": "disk-headroom-standing-reclaim-2026-10-12",
+        "harness": "papercusp",
+        "decisionId": "D-002"
+      },
+      "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+    },
+    {
+      "tool": "plans:get",
+      "args": {
+        "slug": "disk-headroom-standing-reclaim-2026-10-12",
+        "harness": "papercusp",
+        "decisionId": "D-005"
+      },
+      "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+    },
+    {
+      "tool": "plans:get",
+      "args": {
+        "slug": "disk-headroom-standing-reclaim-2026-10-12",
+        "harness": "papercusp",
+        "decisionId": "D-009"
+      },
+      "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+    },
+    {
+      "tool": "plans:get",
+      "args": {
+        "slug": "disk-headroom-standing-reclaim-2026-10-12",
+        "harness": "papercusp",
+        "decisionId": "D-010"
+      },
+      "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+    },
+    {
+      "tool": "plans:get",
+      "args": {
+        "slug": "disk-headroom-standing-reclaim-2026-10-12",
+        "harness": "papercusp",
+        "decisionId": "D-011"
+      },
+      "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+    },
+    {
+      "tool": "plans:get",
+      "args": {
+        "slug": "disk-headroom-standing-reclaim-2026-10-12",
+        "harness": "papercusp",
+        "decisionId": "D-012"
+      },
+      "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+    },
+    {
+      "tool": "plans:get",
+      "args": {
+        "slug": "disk-headroom-standing-reclaim-2026-10-12",
+        "harness": "papercusp",
+        "decisionId": "D-013"
+      },
+      "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+    },
+    {
+      "tool": "plans:get",
+      "args": {
+        "slug": "disk-headroom-standing-reclaim-2026-10-12",
+        "harness": "papercusp",
+        "decisionId": "D-014"
+      },
+      "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+    }
+  ],
+  "sourceProbes": [
+    {
+      "tool": "capability:git-evidence",
+      "args": {
+        "op": "readFileAtCommit",
+        "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+        "path": "packages/operator-core/lib/storage/usage.test.ts"
+      },
+      "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+    },
+    {
+      "tool": "capability:git-evidence",
+      "args": {
+        "op": "readFileAtCommit",
+        "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+        "path": "packages/operator-core/lib/storage/disk-consumer-census.integration.test.ts"
+      },
+      "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+    },
+    {
+      "tool": "capability:git-evidence",
+      "args": {
+        "op": "readFileAtCommit",
+        "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+        "path": "packages/operator-core/lib/storage/retention-policy.test.ts"
+      },
+      "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+    },
+    {
+      "tool": "capability:git-evidence",
+      "args": {
+        "op": "readFileAtCommit",
+        "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+        "path": "packages/operator-core/lib/storage/prune.test.ts"
+      },
+      "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+    },
+    {
+      "tool": "capability:git-evidence",
+      "args": {
+        "op": "readFileAtCommit",
+        "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+        "path": "packages/operator-core/lib/storage/disk-reclaim.test.ts"
+      },
+      "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+    },
+    {
+      "tool": "capability:git-evidence",
+      "args": {
+        "op": "readFileAtCommit",
+        "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+        "path": "packages/operator-core/lib/storage/disk-reclaim.integration.test.ts"
+      },
+      "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+    },
+    {
+      "tool": "capability:git-evidence",
+      "args": {
+        "op": "readFileAtCommit",
+        "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+        "path": "packages/operator-core/lib/storage/disk-space-alarm.test.ts"
+      },
+      "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+    },
+    {
+      "tool": "capability:git-evidence",
+      "args": {
+        "op": "readFileAtCommit",
+        "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+        "path": "packages/operator-core/lib/storage/storage-growth-alarm.test.ts"
+      },
+      "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+    },
+    {
+      "tool": "capability:git-evidence",
+      "args": {
+        "op": "readFileAtCommit",
+        "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+        "path": "packages/operator-core/lib/storage/pg-table-growth.ts"
+      },
+      "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+    },
+    {
+      "tool": "capability:git-evidence",
+      "args": {
+        "op": "readFileAtCommit",
+        "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+        "path": "packages/operator-core/lib/storage/pg-table-growth.test.ts"
+      },
+      "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+    },
+    {
+      "tool": "capability:git-evidence",
+      "args": {
+        "op": "readFileAtCommit",
+        "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+        "path": "packages/operator-core/lib/scorecards-pg-table-growth-instruments.test.ts"
+      },
+      "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+    },
+    {
+      "tool": "capability:git-evidence",
+      "args": {
+        "op": "readFileAtCommit",
+        "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+        "path": "packages/operator-core/lib/scorecards.ts"
+      },
+      "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+    },
+    {
+      "tool": "capability:git-evidence",
+      "args": {
+        "op": "readFileAtCommit",
+        "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+        "path": "packages/operator-core/lib/storage/retention-interval-evidence.ts"
+      },
+      "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+    },
+    {
+      "tool": "capability:git-evidence",
+      "args": {
+        "op": "readFileAtCommit",
+        "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+        "path": "packages/operator-core/lib/storage/retention-interval-evidence.test.ts"
+      },
+      "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+    }
+  ],
+  "containerProbe": {
+    "tool": "artifacts:load",
+    "args": {
+      "slug": "papercusp",
+      "rel_path": "evidence/disk-headroom-vetting/pg-container.test.8b6cd023cd64f132156271be6fa95cb414e1fd0c673ad75fb5bf3b633580aca7.ts",
+      "offset": 0,
+      "max_chars": 20000
+    },
+    "select": "Read offsets0,20000,40000; require stableupdated_at1792248403724,content_total_chars48470,EOF; UTF8SHA8b6cd023cd64f132156271be6fa95cb414e1fd0c673ad75fb5bf3b633580aca7/48516bytes. Alternative: libs/test-config submodule commitaca559cf60632bc71da6a770016c0b17331af9f8:pathsrc/pg-container.test.ts."
+  },
+  "sourceVerification": "All source files inspected at the pinned parent commit; container file inspected through exact hash-matching submodule and fully retained PG artifact. No current HEAD substitution.",
+  "coverage": {
+    "criteriaExpected": 7,
+    "criteriaObserved": 7,
+    "decisionIdsExpected": [
+      "D-002",
+      "D-005",
+      "D-009",
+      "D-010",
+      "D-011",
+      "D-012",
+      "D-013",
+      "D-014"
+    ],
+    "decisionIdsObserved": [
+      "D-002",
+      "D-005",
+      "D-009",
+      "D-010",
+      "D-011",
+      "D-012",
+      "D-013",
+      "D-014"
+    ],
+    "pairsExpected": 21,
+    "pairsObserved": 21
+  },
+  "pairwiseDistinguishers": [
+    [
+      "r-1",
+      "r-2",
+      "Stale census while the written classes retain exactly one rule."
+    ],
+    [
+      "r-1",
+      "r-3",
+      "A missing large-consumer row while the scheduled receipt shows both device targets."
+    ],
+    [
+      "r-1",
+      "r-4",
+      "Missing census rows while failed/new container cleanup succeeds."
+    ],
+    [
+      "r-1",
+      "r-5",
+      "Missing filesystem attribution while table growth and retention coverage are measured."
+    ],
+    [
+      "r-1",
+      "r-6",
+      "Stale scheduled census while current alarm names consumers from direct attribution."
+    ],
+    [
+      "r-1",
+      "r-7",
+      "Census becomes stale after a separately completed historical72h window."
+    ],
+    [
+      "r-2",
+      "r-3",
+      "A class has no rule, while no artifact in that class is deleted and both targets are met."
+    ],
+    [
+      "r-2",
+      "r-4",
+      "Conflicting scratch rules while container lifecycle cleanup is correct."
+    ],
+    [
+      "r-2",
+      "r-5",
+      "A filesystem class lacks a rule while PostgreSQL growth coverage is complete."
+    ],
+    [
+      "r-2",
+      "r-6",
+      "A missing class rule while the alarm correctly names both consumers."
+    ],
+    [
+      "r-2",
+      "r-7",
+      "A class mapping defect while a historical72h window has no unalarmed dip."
+    ],
+    [
+      "r-3",
+      "r-4",
+      "An incomplete reclaim receipt while test containers leave no residue."
+    ],
+    [
+      "r-3",
+      "r-5",
+      "Reclaim exhausts its effect budget while PostgreSQL growth coverage is complete."
+    ],
+    [
+      "r-3",
+      "r-6",
+      "Root remains below target with eligible artifacts, but the alarm is correct."
+    ],
+    [
+      "r-3",
+      "r-7",
+      "A reclaim misses the target while all dips in the completed72h history have named alarms."
+    ],
+    [
+      "r-4",
+      "r-5",
+      "A failed-start container is left behind while table retention coverage is complete."
+    ],
+    [
+      "r-4",
+      "r-6",
+      "A container leak exists while current disk alarms are correctly named."
+    ],
+    [
+      "r-4",
+      "r-7",
+      "A container leaks after a previously completed healthy72h observation."
+    ],
+    [
+      "r-5",
+      "r-6",
+      "An uncovered growing table exists while the disk alarm is correct."
+    ],
+    [
+      "r-5",
+      "r-7",
+      "Uncovered table growth remains below capacity during a fully observed healthy72h window."
+    ],
+    [
+      "r-6",
+      "r-7",
+      "Present alarm is correct after an earlier unalarmed dip; R7 fails while present-response R6 passes."
+    ]
+  ],
+  "criteria": [
+    {
+      "key": "outcomes-not-diff-restatements",
+      "rating": "pass",
+      "probes": [
+        {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-disk-headroom-standing-reclaim-2026-10-12",
+            "revision": 6,
+            "detail": "full"
+          },
+          "select": "results[0].rubric.criteria; require keys r-1..r-7 and criteriaHash5ef4d9cdbc924e777f37ea577798cba41996744579eab097eaf0ad23a6000772"
+        }
+      ],
+      "selectors": "Read all7 .model/.intent.request fields.",
+      "observation": "Seven positive observable outcomes: persisted census+delta, exact-one keep policy, scheduled per-device receipt target/exhaustion, no container residue, measured table growth+coverage, named alarm, actual post-shipment72h history. None can be decided by diff structure alone.",
+      "falsifier": "A criterion requiring only code rearrangement or symbol presence would fail the meta check."
+    },
+    {
+      "key": "traces-to-goal-or-decision",
+      "rating": "pass",
+      "probes": [
+        {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-disk-headroom-standing-reclaim-2026-10-12",
+            "revision": 6,
+            "detail": "full"
+          },
+          "select": "results[0].rubric.criteria; require keys r-1..r-7 and criteriaHash5ef4d9cdbc924e777f37ea577798cba41996744579eab097eaf0ad23a6000772"
+        },
+        {
+          "tool": "plans:get",
+          "args": {
+            "slug": "disk-headroom-standing-reclaim-2026-10-12",
+            "harness": "papercusp",
+            "decisionId": "D-002"
+          },
+          "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+        },
+        {
+          "tool": "plans:get",
+          "args": {
+            "slug": "disk-headroom-standing-reclaim-2026-10-12",
+            "harness": "papercusp",
+            "decisionId": "D-005"
+          },
+          "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+        },
+        {
+          "tool": "plans:get",
+          "args": {
+            "slug": "disk-headroom-standing-reclaim-2026-10-12",
+            "harness": "papercusp",
+            "decisionId": "D-009"
+          },
+          "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+        },
+        {
+          "tool": "plans:get",
+          "args": {
+            "slug": "disk-headroom-standing-reclaim-2026-10-12",
+            "harness": "papercusp",
+            "decisionId": "D-010"
+          },
+          "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+        },
+        {
+          "tool": "plans:get",
+          "args": {
+            "slug": "disk-headroom-standing-reclaim-2026-10-12",
+            "harness": "papercusp",
+            "decisionId": "D-011"
+          },
+          "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+        },
+        {
+          "tool": "plans:get",
+          "args": {
+            "slug": "disk-headroom-standing-reclaim-2026-10-12",
+            "harness": "papercusp",
+            "decisionId": "D-012"
+          },
+          "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+        },
+        {
+          "tool": "plans:get",
+          "args": {
+            "slug": "disk-headroom-standing-reclaim-2026-10-12",
+            "harness": "papercusp",
+            "decisionId": "D-013"
+          },
+          "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+        },
+        {
+          "tool": "plans:get",
+          "args": {
+            "slug": "disk-headroom-standing-reclaim-2026-10-12",
+            "harness": "papercusp",
+            "decisionId": "D-014"
+          },
+          "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+        }
+      ],
+      "selectors": "Read each single decision completely and map r1..r7 .intent.request.",
+      "observation": "r1/r3/r7 original100GiB goal; D002->r2/r3 never-delete; D005/D010->r3 independent expiry/batches; D009->r7 shipment then actual72h; D011->r7 native binding; D012->r5 native growth; D014->r5 authority distinction, r3 independent cleanup. r4/r5/r6 request fields trace choiceC. D013 successor is excluded from this100GiB fallback; no400GB/2TB assertion.",
+      "falsifier": "Any criterion with no owner goal/decision source, or a gradeable covered decision silently omitted, fails."
+    },
+    {
+      "key": "falsifiable-with-evidence",
+      "rating": "pass",
+      "probes": [
+        {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-disk-headroom-standing-reclaim-2026-10-12",
+            "revision": 6,
+            "detail": "full"
+          },
+          "select": "results[0].rubric.criteria; require keys r-1..r-7 and criteriaHash5ef4d9cdbc924e777f37ea577798cba41996744579eab097eaf0ad23a6000772"
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/pg-table-growth.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        }
+      ],
+      "selectors": "Read each .driftMarkers plus assessPgTableGrowth/measurePgTableGrowthWindow.",
+      "observation": "r1 missing/stale consumer; r2 protected/unmatched/conflicting class; r3 missing receipt/interval/wrong age or remaining eligiblebytes; r4 abandoned owned candidate; r5 uncovered grower; r6 lowspace without names/receipt; r7 unalarmed historical dip. R5 code requires samehost/DB/fullcatalog24–30h, never rounded24h. Each has a concrete rejecting observation.",
+      "falsifier": "Any outcome with no specific observable counterexample fails."
+    },
+    {
+      "key": "failure-mode-coverage",
+      "rating": "pass",
+      "probes": [
+        {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-disk-headroom-standing-reclaim-2026-10-12",
+            "revision": 6,
+            "detail": "full"
+          },
+          "select": "results[0].rubric.criteria; require keys r-1..r-7 and criteriaHash5ef4d9cdbc924e777f37ea577798cba41996744579eab097eaf0ad23a6000772"
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/usage.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/disk-consumer-census.integration.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/retention-policy.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/prune.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/disk-reclaim.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/disk-reclaim.integration.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/disk-space-alarm.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/storage-growth-alarm.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/pg-table-growth.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/pg-table-growth.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/scorecards-pg-table-growth-instruments.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/scorecards.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/retention-interval-evidence.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/retention-interval-evidence.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "artifacts:load",
+          "args": {
+            "slug": "papercusp",
+            "rel_path": "evidence/disk-headroom-vetting/pg-container.test.8b6cd023cd64f132156271be6fa95cb414e1fd0c673ad75fb5bf3b633580aca7.ts",
+            "offset": 0,
+            "max_chars": 20000
+          },
+          "select": "Read offsets0,20000,40000; require stableupdated_at1792248403724,content_total_chars48470,EOF; UTF8SHA8b6cd023cd64f132156271be6fa95cb414e1fd0c673ad75fb5bf3b633580aca7/48516bytes. Alternative: libs/test-config submodule commitaca559cf60632bc71da6a770016c0b17331af9f8:pathsrc/pg-container.test.ts."
+        }
+      ],
+      "selectors": "Read named positive/negative assertions: D002 owner path and live-pin selectors; oldest-first; original caller control; ENOENT and exact receipt; audit-failure-before-effects; new-holder bounded batches; owned SQL-readiness failure removal with removeVolumes:true plus borrowed/published preservation;99GiB alarm both consumers/receipt vs100GiB control; soak middle-dip, missing/foreign/unfinished history and healthy fixture.",
+      "observation": "Negative paths coexist with successful actuation/cleanup/measurement controls, so this is not only happy-path or vacuous absence. R4 exact file has48516UTF8bytes/hash8b6cd023… and full artifact locator.",
+      "falsifier": "Delete a detector assertion or its positive control and the corresponding gradeable failure is no longer covered."
+    },
+    {
+      "key": "non-overlapping",
+      "rating": "weak",
+      "probes": [
+        {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-disk-headroom-standing-reclaim-2026-10-12",
+            "revision": 6,
+            "detail": "full"
+          },
+          "select": "results[0].rubric.criteria; require keys r-1..r-7 and criteriaHash5ef4d9cdbc924e777f37ea577798cba41996744579eab097eaf0ad23a6000772"
+        }
+      ],
+      "selectors": "Compare r6/r7 .model/.method/.driftMarkers and the21 pairwise witnesses in this record.",
+      "observation": "Distinct primary outcomes have witnesses for every pair; r6/r7 still repeat the same alarm falsifier without explicitly explaining current response versus full historical population. This is a method precision weakness, not a claim the entire pair is logically inseparable.",
+      "falsifier": "Without the temporal selector, identical missing-alarm evidence can be reused for r6 andr7 without testing the72h population.",
+      "satisfiability": {
+        "feasibleNow": true,
+        "comparison": "R7 model already requires actual72h whereas R6 model is a present lowspace alarm;21 witnesses show distinct possible outcomes.",
+        "probe": {
+          "tool": "rubrics:amend",
+          "args": {
+            "rubricRef": "acceptance-disk-headroom-standing-reclaim-2026-10-12",
+            "criterion": {
+              "key": "r-7",
+              "field": "method",
+              "mode": "append",
+              "text": "Inspect the complete, exact shipment-linked 72-hour census/alarm population for both devices. R-6 grades the present alarm response; R-7 independently fails on an earlier unalarmed dip in the full post-shipment window even when the present alarm is correct. Missing or incomplete history remains unknown; no shortened window substitutes for the required 72 hours."
+            },
+            "dryRun": true,
+            "expectedRubricRevision": 6,
+            "reason": "Satisfiability preflight for the non-overlapping weak rating: demonstrate an available method-only repair without mutating the rubric or changing its BAR."
+          }
+        },
+        "observed": "Executed dryRun returned ok:true,approvalRequired:false,changedBars:[],sameBarSetHash,method-only6→7 preview; no actual write.",
+        "remedy": "Apply that existing method-only append and re-vet the resulting revision. It requires neither a new platform capability nor BAR weakening."
+      }
+    },
+    {
+      "key": "prefer-structured-check",
+      "rating": "weak",
+      "probes": [
+        {
+          "tool": "rubrics:get",
+          "args": {
+            "rubricRef": "acceptance-disk-headroom-standing-reclaim-2026-10-12",
+            "revision": 6,
+            "detail": "full"
+          },
+          "select": "results[0].rubric.criteria; require keys r-1..r-7 and criteriaHash5ef4d9cdbc924e777f37ea577798cba41996744579eab097eaf0ad23a6000772"
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/usage.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/disk-consumer-census.integration.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/retention-policy.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/prune.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/disk-reclaim.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/disk-reclaim.integration.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/disk-space-alarm.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/storage-growth-alarm.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/pg-table-growth.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/pg-table-growth.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/scorecards-pg-table-growth-instruments.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/scorecards.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/retention-interval-evidence.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "capability:git-evidence",
+          "args": {
+            "op": "readFileAtCommit",
+            "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+            "path": "packages/operator-core/lib/storage/retention-interval-evidence.test.ts"
+          },
+          "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+        },
+        {
+          "tool": "artifacts:load",
+          "args": {
+            "slug": "papercusp",
+            "rel_path": "evidence/disk-headroom-vetting/pg-container.test.8b6cd023cd64f132156271be6fa95cb414e1fd0c673ad75fb5bf3b633580aca7.ts",
+            "offset": 0,
+            "max_chars": 20000
+          },
+          "select": "Read offsets0,20000,40000; require stableupdated_at1792248403724,content_total_chars48470,EOF; UTF8SHA8b6cd023cd64f132156271be6fa95cb414e1fd0c673ad75fb5bf3b633580aca7/48516bytes. Alternative: libs/test-config submodule commitaca559cf60632bc71da6a770016c0b17331af9f8:pathsrc/pg-container.test.ts."
+        },
+        {
+          "tool": "plans:get",
+          "args": {
+            "slug": "disk-headroom-standing-reclaim-2026-10-12",
+            "harness": "papercusp",
+            "decisionId": "D-002"
+          },
+          "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+        },
+        {
+          "tool": "plans:get",
+          "args": {
+            "slug": "disk-headroom-standing-reclaim-2026-10-12",
+            "harness": "papercusp",
+            "decisionId": "D-014"
+          },
+          "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+        }
+      ],
+      "selectors": "Check bound tests' named assertions, plus pg-table-growth.ts lines97-163 and scorecards-pg-table-growth-instruments.test.ts native pass/unknown and foreign-subject controls; scorecards.ts resolveScorecardInstrumentSnapshots and retention-interval-evidence.ts measureDiskHeadroomSoakWindow.",
+      "observation": "All7 checks bind existing files/native instruments and have positive/negative controls; R4 artifact replays exact content. RemainingR5 gap: resolver recognizes registered retention paths but never plan-owner decisions, so that allowed BAR branch stays unknown. D014 agent choice must not be relabeled owner speech.",
+      "falsifier": "An owner decision genuinely recorded with verified authority cannot satisfy coverage in the current resolver because it is never read; this makes the branch under-bound.",
+      "satisfiability": {
+        "feasibleNow": true,
+        "comparison": "The existing R7 resolver already combines scoped native deployment/census/alarm evidence; R5's existing deps.pgTableGrowth seam and pass/unknown/foreign-subject tests allow the same bounded extension. plans:get singleD002/D014 reads succeed now; authority distinction is observable. No missing platform instrument or external permit is needed merely to implement this source change.",
+        "probes": [
+          {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+              "path": "packages/operator-core/lib/storage/pg-table-growth.ts"
+            },
+            "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+          },
+          {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+              "path": "packages/operator-core/lib/scorecards.ts"
+            },
+            "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+          },
+          {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+              "path": "packages/operator-core/lib/scorecards-pg-table-growth-instruments.test.ts"
+            },
+            "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+          },
+          {
+            "tool": "capability:git-evidence",
+            "args": {
+              "op": "readFileAtCommit",
+              "commitSha": "beadc3adac44576be0d46f24a94f3edf0bad19e0",
+              "path": "packages/operator-core/lib/storage/retention-interval-evidence.ts"
+            },
+            "select": "Follow each returned next_cursor unchanged to EOF before inspecting the named assertion; read-only judge instrument. Author verified the same bytes with git show."
+          },
+          {
+            "tool": "plans:get",
+            "args": {
+              "slug": "disk-headroom-standing-reclaim-2026-10-12",
+              "harness": "papercusp",
+              "decisionId": "D-002"
+            },
+            "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+          },
+          {
+            "tool": "plans:get",
+            "args": {
+              "slug": "disk-headroom-standing-reclaim-2026-10-12",
+              "harness": "papercusp",
+              "decisionId": "D-014"
+            },
+            "select": "results[0].decisions must contain the exact requested id; do not infer absence from a multi-decision truncated response."
+          }
+        ],
+        "remedy": "Extend the existing R5 resolver to derive coverage from exact subject-plan decisions with verified owner authority; retain unknown for missing/foreign/agent-only claims. Extend the existing injected-resolver and pure assessor tests with valid-owner, agent-onlyD014, wrong-plan and missing-provenance cases. Same instrument key, no new table/tool/service. This is actionable work available to this source author now, not an unmet duty assigned to an unavailable platform.",
+        "observed": "Existing functions, SQL access, registry and injected test seam were read at full pinned commit; named single-decision reads returned exact records; no code edit/test pass is claimed."
+      }
+    }
+  ]
+}

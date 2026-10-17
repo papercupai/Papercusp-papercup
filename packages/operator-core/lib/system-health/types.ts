@@ -706,12 +706,10 @@ export interface McpProxyHealth {
    */
   handshakeStalls: number;
   /**
-   * EI-19305299022434394 admission-control sheds (`shed_max_in_flight`) — a request refused
-   * with 429 BEFORE it ever opened an upstream socket, because the proxy already held
-   * `maxInFlight` forwards. Agent-facing (the caller really did get a 429) but NOT a hard
-   * failure: shedding is the bound working, and the alternative measured on 2026-08-01 was
-   * 3,450 sockets held open simultaneously with 32-89 minute waits. Sustained nonzero means
-   * :3070 is not draining — the congestion-collapse precursor.
+   * MCP proxy admission sheds (`shed_max_in_flight` and `shed_ordinary_queue_full`) — valid
+   * agent traffic refused before upstream forwarding because either the active-forward budget
+   * or ordinary wait queue is full. Agent-facing, but not a handler failure. Sustained nonzero
+   * means proxy admission capacity is shedding traffic; `byKind` retains which bound filled.
    */
   shed: number;
   /** Distinct requests whose critical-continuation queue dwell reached the five-minute alarm floor. */

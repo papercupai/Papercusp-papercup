@@ -106,6 +106,67 @@ TARGET_FS="${TARGET_FS:-/}"
 
 log() { printf '[docker-reclaim] %s\n' "$*"; }
 
+# Native managers may remove any unreferenced object in their store. Protect
+# the whole actual store on a descendant pin, and serialize the final read
+# through the last native command with storage:pin's existing mutex/parser.
+PIN_GUARD_INPUT=''
+PIN_GUARD_PID=''
+container_pin_guard_release() {
+  if [[ -n "$PIN_GUARD_INPUT" ]]; then
+    exec {PIN_GUARD_INPUT}>&-
+    wait "$PIN_GUARD_PID" || true
+    PIN_GUARD_INPUT=''; PIN_GUARD_PID=''
+  fi
+}
+trap container_pin_guard_release EXIT
+
+container_pin_guard_acquire() {
+  local label="$1" root="$2" module output readiness
+  [[ "$root" == /* && "$root" != *$'\n'* ]] || {
+    log "retention pin admission failed: $label storage root unavailable — skipping store"
+    return 1
+  }
+  module="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/scripts/lib/retention-pins.mjs"
+  coproc CONTAINER_PIN_GUARD {
+    exec node --input-type=module -e '
+      import { pathToFileURL } from "node:url";
+      const released = new Promise(resolve => {
+        process.stdin.once("end", resolve);
+        process.stdin.once("data", resolve);
+        process.stdin.resume();
+      });
+      try {
+        const { withRetentionPinProtection } = await import(pathToFileURL(process.argv[1]).href);
+        await withRetentionPinProtection(async isPinned => {
+          process.stdout.write(isPinned(process.argv[2]) ? "PINNED\n" : "LOCKED\n");
+          await released;
+        });
+      } catch (error) {
+        console.error(String(error));
+        process.stdout.write("ERROR\n");
+        await released;
+      }
+      process.stdin.destroy();
+    ' "$module" "$root"
+  }
+  PIN_GUARD_PID="${CONTAINER_PIN_GUARD_PID:-}"
+  PIN_GUARD_INPUT="${CONTAINER_PIN_GUARD[1]:-}"
+  output="${CONTAINER_PIN_GUARD[0]:-}"
+  if [[ -z "$PIN_GUARD_PID" || -z "$PIN_GUARD_INPUT" || -z "$output" ]]; then
+    log "retention pin admission failed: $label guard unavailable — skipping store"
+    container_pin_guard_release
+    return 1
+  fi
+  IFS= read -r readiness <&"$output" || readiness=ERROR
+  exec {output}<&-
+  if [[ "$readiness" != LOCKED ]]; then
+    if [[ "$readiness" == PINNED ]]; then log "retention pin protects $label — skipping store"
+    else log "retention pin admission failed: $label — skipping store"; fi
+    container_pin_guard_release
+    return 1
+  fi
+}
+
 # `docker` needs root on this box; prefer non-interactive sudo, fall back to a
 # bare call so the script still works where the user is in the docker group.
 DOCKER=(docker)
@@ -155,6 +216,10 @@ run() {
 }
 
 # ── 1. Build cache ───────────────────────────────────────────────────────────
+if (( ${#DOCKER[@]} > 0 )); then
+  docker_root="$("${DOCKER[@]}" info --format '{{.DockerRootDir}}' 2>/dev/null)"
+  container_pin_guard_acquire docker "$docker_root" || DOCKER=()
+fi
 if (( ${#DOCKER[@]} > 0 )); then
 # The single safest reclaim: pure derived data, regenerated on demand. On the
 # measured run this was 34.85 GB with zero active references.
@@ -302,15 +367,16 @@ else
   fi
   log "testcontainers removed=${tc_removed} recently_used=${tc_recent} busy=${tc_busy} first_seen=${tc_first_seen} (idle threshold ${TESTCONTAINER_IDLE_MAX_SECS}s)"
 fi
+container_pin_guard_release
 fi
 
 # Podman does not share Docker's daemon/storage or its anonymous-volume contract.
 # Its image-prune command protects container AND external build references unless
 # --external is passed. Keep the same image age floor; never collect its volumes.
 reclaim_podman_images() {
-  local label="$1"
+  local label="$1" root
   shift
-  if ! timeout 30s "$@" info >/dev/null 2>&1; then
+  if ! root="$(timeout 30s "$@" info --format '{{.Store.GraphRoot}}' 2>/dev/null)"; then
     log "$label unreachable — skipping image store"
     return 0
   fi
@@ -318,8 +384,10 @@ reclaim_podman_images() {
     log "SKIP_IMAGES=1 — skipping $label image sweep"
     return 0
   fi
+  container_pin_guard_acquire "$label" "$root" || return 0
   log "pruning $label unreferenced images older than ${IMAGE_MAX_AGE}"
   run "$@" image prune -af --filter "until=${IMAGE_MAX_AGE}"
+  container_pin_guard_release
 }
 
 if command -v podman >/dev/null 2>&1; then

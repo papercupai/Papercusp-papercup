@@ -140,6 +140,7 @@ export const BASELINE = new Set([
 export const isExcluded = (f) =>
   f.startsWith('_retired/') ||
   f.includes('/_retired/') ||
+  /(?:^|\/)dist-host-native-fixture-debug-[^/]+(?:\/|$)/.test(f) ||
   f.includes('/node_modules/') ||
   f.includes('/dist/') ||
   f.includes('/.next/') ||

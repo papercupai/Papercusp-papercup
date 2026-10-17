@@ -529,16 +529,26 @@ describe('locks:acquire — outcome branches', () => {
   });
 
   it('retries a postgres-js CONNECT_TIMEOUT before the workspace transaction starts, then acquires once', async () => {
+    // Exercise localAcquire through the hook-operation route: its failure is
+    // surfaced directly, so the normal route-error fallback cannot mask a
+    // missing local retry.
+    const hookOperation = {
+      id: '9c912c88-840b-4990-9a75-0c9e736f688d',
+      deadline: '2026-06-05T00:30:00Z',
+      authority: 'original',
+    };
     const connectTimeout = Object.assign(new Error('write CONNECT_TIMEOUT localhost:5432'), {
       code: 'CONNECT_TIMEOUT',
     });
     txnM.mockRejectedValueOnce(connectTimeout);
-    tryAcquireM.mockResolvedValueOnce({
+    const successfulAcquire = {
       ok: true,
       lock_id: 'L-connect-retry',
       expires_ts: new Date('2026-02-01T00:00:00Z'),
       held: ['a.ts'],
-    } as never);
+      newly_held: ['a.ts'],
+    } satisfies Awaited<ReturnType<typeof tryAcquire>>;
+    tryAcquireM.mockResolvedValueOnce(successfulAcquire);
     routeM.mockImplementation(async (_domain, op) => ({
       value: await op.local(),
       via: 'local-authority',
@@ -546,7 +556,7 @@ describe('locks:acquire — outcome branches', () => {
 
     vi.useFakeTimers();
     try {
-      const p = call({});
+      const p = call({ intent: 'PreToolUse:Edit', hook_operation: hookOperation });
       await vi.runAllTimersAsync();
       const b = body(await p);
 

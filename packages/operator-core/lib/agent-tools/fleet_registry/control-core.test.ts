@@ -69,8 +69,10 @@ vi.mock('./pause-holds', () => ({
 import {
   applyFleetControl,
   classifyFleetControlInvoker,
+  FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS,
   FLEET_CONTROL_RECONCILER,
   FLEET_CONTROL_RESPONSE_TIMEOUT_MS,
+  FLEET_CONTROL_RESUME_GATE_TIMEOUT_MS,
   fleetControlCueText,
   isReconciledEmptyFleet,
   windDownGoalFleet,
@@ -886,6 +888,39 @@ describe('applyFleetControl', () => {
       expect(setControlM).toHaveBeenCalledTimes(1);
       expect(r.resumePath).toMatchObject({ gate: 'fleet:backend:resume', fired: false });
       expect(r.resumePath?.warning).toContain('were NOT woken');
+    });
+
+    it('gives the receipt-critical gate the full response budget', async () => {
+      getFleetM.mockResolvedValue(
+        fleet({
+          leaderOwnerId: callerRef.ownerId,
+          controlState: 'winding-down',
+          controlResumeGate: 'fleet:backend:resume',
+        }),
+      );
+      const gateDelayMs = FLEET_CONTROL_OPTIONAL_LEG_TIMEOUT_MS + 1;
+      emitAwaitedEventM.mockImplementationOnce(
+        () =>
+          new Promise<{ waiters: number }>((resolve) => {
+            setTimeout(() => resolve({ waiters: 2 }), gateDelayMs);
+          }),
+      );
+      vi.useFakeTimers();
+      try {
+        const pending = applyFleetControl({} as never, 'backend', 'resume', 'incident cleared');
+        await vi.advanceTimersByTimeAsync(gateDelayMs);
+        const r = await pending;
+
+        expect(FLEET_CONTROL_RESUME_GATE_TIMEOUT_MS).toBeGreaterThan(gateDelayMs);
+        expect(r).toMatchObject({
+          ok: true,
+          controlState: 'active',
+          resumePath: { gate: 'fleet:backend:resume', fired: true, waiters: 2 },
+        });
+        expect(r.error).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('confirms the gate before a slow post-saga can exhaust the receipt budget', async () => {

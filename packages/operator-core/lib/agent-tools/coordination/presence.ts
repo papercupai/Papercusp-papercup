@@ -26,9 +26,45 @@ import { getCachedMachineCapabilityTags } from './machine-capability-tags';
 import { writeSessionBrief } from '../../session-brief';
 import { appendFleetMembershipEvent, appendFleetMembershipIfAbsent } from '../../fleet-membership-store';
 import { refreshControlAnchorAfterMutation } from './control-anchor';
+import { withBoundedTimeout } from '../../bounded-timeout';
 
 export { PRESENCE_STALE_MS };
 export type { PresenceInput, PresenceRecord };
+
+/**
+ * Optional work attached to a presence write must never hold the essential
+ * upsert hostage. Keep this budget aligned with the other presence
+ * enrichment paths (presence-snapshot.ts), and use an explicit fallback for
+ * every leg so a slow or wedged dependency still leaves a usable presence row.
+ */
+export const WRITE_PRESENCE_OPTIONAL_LEG_TIMEOUT_MS = 5_000;
+const DEFAULT_CAPABILITY_TAGS = ['node'];
+
+async function boundedWritePresenceLeg<T>(
+  name: string,
+  work: (signal: AbortSignal) => Promise<T>,
+  fallback: T,
+): Promise<T> {
+  const result = await withBoundedTimeout(
+    async signal => {
+      if (signal.aborted) return fallback;
+      try {
+        const value = await work(signal);
+        return signal.aborted ? fallback : value;
+      } catch {
+        // These enrichments are deliberately fail-soft. A typed fallback keeps
+        // the declaration useful while the next heartbeat retries the leg.
+        return fallback;
+      }
+    },
+    {
+      fallback,
+      timeoutMs: WRITE_PRESENCE_OPTIONAL_LEG_TIMEOUT_MS,
+      label: `coord:presence:writePresence:${name}`,
+    },
+  );
+  return result.value;
+}
 
 const store = new PgPresenceStore({
   getSql: () => getOrgPg().sql,
@@ -94,25 +130,26 @@ export async function writePresence(
   const agentRole = input.agentRole ?? deriveAgentRole(identity);
   let potSlug = input.potSlug ?? null;
   if (harnessSlug && harnessSlug !== '*') {
-    try {
-      const { potHomeSlugForHarness } = await import('../../hive-federation');
-      const derived = await potHomeSlugForHarness(identity.workspaceId ?? 'default', harnessSlug);
-      if (potSlug == null) {
-        potSlug = derived;
-      } else {
+    const requestedPotSlug = potSlug;
+    potSlug = await boundedWritePresenceLeg(
+      'hive-lookup',
+      async signal => {
+        const { potHomeSlugForHarness } = await import('../../hive-federation');
+        if (signal.aborted) return requestedPotSlug;
+        const derived = await potHomeSlugForHarness(identity.workspaceId ?? 'default', harnessSlug);
+        if (requestedPotSlug == null) return derived;
+
         // workspace-work-scope-policy-2026-09-04 P-010: a requested pot that disagrees
         // with the pot DERIVED from the session's harness is how sessions got homed in
         // `sb-devboard-hive` while doing papercusp work (EI-22374455128414213). The
         // derivation wins; the disagreement is logged, never silently persisted.
         const { reconcilePresencePot } = await import('../../work-scope-policy');
-        const r = reconcilePresencePot({ requested: potSlug, derived, harnessSlug });
+        const r = reconcilePresencePot({ requested: requestedPotSlug, derived, harnessSlug });
         if (r.corrected) console.warn(`[presence] ${identity.ownerId}: ${r.note}`);
-        potSlug = r.potSlug;
-      }
-    } catch {
-      // best-effort: presence must write even if hive lookup fails
-      if (potSlug == null) potSlug = null;
-    }
+        return r.potSlug;
+      },
+      requestedPotSlug,
+    );
   }
   // WI-3898 P1: do NOT default host/pid from the operator's OWN process — see
   // the file-header note above. Pass `input.host`/`input.pid` through exactly
@@ -124,7 +161,13 @@ export async function writePresence(
   // availability), true for every process on this box, not a specific agent's
   // OS process. Memoized per-process (see machine-capability-tags.ts) so only
   // the first write on a given operator instance pays the docker probe.
-  const capabilityTags = input.capabilityTags ?? (await getCachedMachineCapabilityTags());
+  const capabilityTags =
+    input.capabilityTags ??
+    (await boundedWritePresenceLeg(
+      'capability-probe',
+      () => getCachedMachineCapabilityTags(),
+      [...DEFAULT_CAPABILITY_TAGS],
+    ));
   const previousIntent = await store.write(identity, { ...input, agentRole, potSlug, capabilityTags });
 
   // Fleet membership (named-su-agent-fleets-2026-06-29 P-005): the SOFT presence label,
@@ -144,13 +187,19 @@ export async function writePresence(
     // COALESCE(fleet_slug, env) "first write populates, later ones preserve" fill. A DB
     // projection trigger mirrors the fact onto the presence row (created by store.write
     // above), so the live fleet_slug label lands exactly as before.
-    await appendFleetMembershipIfAbsent({
-      workspaceId: identity.workspaceId ?? 'default',
-      ownerId: identity.ownerId,
-      ownerLabel: identity.ownerLabel,
-      fleetSlug,
-      fleetRole,
-    });
+    await boundedWritePresenceLeg(
+      'fleet-membership',
+      async () => {
+        await appendFleetMembershipIfAbsent({
+          workspaceId: identity.workspaceId ?? 'default',
+          ownerId: identity.ownerId,
+          ownerLabel: identity.ownerLabel,
+          fleetSlug,
+          fleetRole,
+        });
+      },
+      undefined,
+    );
   }
 
   // (WI-1893: the in-memory "pending fleet placement" that used to be applied here
@@ -166,25 +215,34 @@ export async function writePresence(
   // reads as `ended`. Generalizes psu-launcher's `reportSessionResumed` (psu --resume only) to ANY
   // resume. Fully best-effort + idempotent (0-row no-op when already live); never affects the write
   // above or the brief below.
-  try {
-    const { reactivateAdvSessionByOwner } = await import('../../adv-sessions');
-    await reactivateAdvSessionByOwner(identity.ownerId);
-  } catch {
-    /* best-effort: presence already wrote; honesty-reactivation must never block it */
-  }
+  await boundedWritePresenceLeg(
+    'adv-session-reactivation',
+    async signal => {
+      const { reactivateAdvSessionByOwner } = await import('../../adv-sessions');
+      if (signal.aborted) return;
+      await reactivateAdvSessionByOwner(identity.ownerId);
+    },
+    undefined,
+  );
 
   // EI-1742: persist a durable successor brief on this write path so the agent's last
   // declared lane survives the coord_presence reaper sweep + abrupt session death
   // (a continuing session reads it instead of doing transcript archaeology). Fully
   // isolated/best-effort — never affects the presence write above.
-  await writeSessionBrief(identity, {
-    intent: input.intent,
-    currentPlanSlug: input.currentPlanSlug,
-    currentFiles: input.currentFiles,
-    ambientExcludedRefs: input.ambientExcludedRefs,
-    harnessSlug: harnessSlug ?? null,
-    potSlug,
-  });
+  await boundedWritePresenceLeg(
+    'session-brief',
+    async () => {
+      await writeSessionBrief(identity, {
+        intent: input.intent,
+        currentPlanSlug: input.currentPlanSlug,
+        currentFiles: input.currentFiles,
+        ambientExcludedRefs: input.ambientExcludedRefs,
+        harnessSlug: harnessSlug ?? null,
+        potSlug,
+      });
+    },
+    undefined,
+  );
   return previousIntent;
 }
 

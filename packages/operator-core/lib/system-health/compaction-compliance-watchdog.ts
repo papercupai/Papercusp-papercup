@@ -63,6 +63,11 @@ import type {
   CompactionForceSuccessorInput,
   CompactionForceSuccessorResult,
 } from './compaction-force-successor';
+import {
+  TURN_EVIDENCE_EXCLUDED_AGENT_TOOLS,
+  TURN_EVIDENCE_HOOK_ACTIVITY_PHASES,
+  TURN_EVIDENCE_HOOK_TOOLS,
+} from '../events/await/turn-proof';
 
 type CompactionConditionKind = 'context-death' | 'tool-reference-death' | 'compaction-stranding' |
   'dark-presence' | 'dark-telemetry' | 'implausible-reading' | 'frozen-codex-reading' |
@@ -72,6 +77,7 @@ export interface CompactionConditionDeps {
   rail?: AlarmAttentionDeps;
   readOpenConditions?: () => Promise<Array<{ conditionKey: string; openedAtMs: number }>>;
   observeHealthyTranscript?: typeof observeHealthyClaudeTranscriptForOwner;
+  resolveSessionStatesFn?: typeof import('../agent-tools/coordination/liveness-oracle').resolveSessionStates;
 }
 export function compactionConditionKey(workspace: string, owner: string,
   kind: CompactionConditionKind, subject = ''): string {
@@ -216,9 +222,9 @@ function parseCompactionConditionKey(conditionKey: string): ParsedCompactionCond
   }
 }
 
-/** Current-signal conditions are obsolete when their owner has no active
- * adv-session. Conditions that need an operator or successor action remain
- * open until their own recovery evidence arrives. */
+/** Current-signal conditions are obsolete only when the shared liveness oracle
+ * reports their owner ended. Conditions that need an operator or successor
+ * action remain open until their own recovery evidence arrives. */
 const END_RESOLVABLE_SESSION_SIGNAL_KINDS = new Set<CompactionConditionKind>([
   'dark-telemetry',
   'over-limit',
@@ -234,14 +240,13 @@ const END_RESOLVABLE_SESSION_SIGNAL_KINDS = new Set<CompactionConditionKind>([
  * after that launched session has ended. Condition-staleness deliberately
  * does not infer recovery from silence for one-shot conditions. That is right
  * while the owner is alive, but it strands these episodes when the session
- * exits: the normal sweep only visits heartbeat-fresh presence rows. Query the
- * authoritative adv-session lifecycle for owners named by eligible episodes
- * and resolve only when the read proves there is no unended session. A failed
- * read is fail-open. Conditions that imply an operator/successor action are
+ * exits: the normal sweep only visits heartbeat-fresh presence rows. Resolve
+ * owners named by eligible episodes through the shared liveness oracle and
+ * resolve only on its explicit ended verdict. A failed or inconclusive read
+ * is fail-open. Conditions that imply an operator/successor action are
  * excluded because session end alone does not prove that action happened.
  */
 async function recoverEndedSessionSignalEpisodes(
-  sql: Sql,
   episodes: Array<{ conditionKey: string; openedAtMs: number }>,
   deps: CompactionConditionDeps,
 ): Promise<void> {
@@ -252,23 +257,31 @@ async function recoverEndedSessionSignalEpisodes(
       row.scope.subject === '');
   if (parsed.length === 0) return;
   const owners = [...new Set(parsed.map((row) => row.scope.owner))];
-  let activeOwners: Array<{ owner_id: string }>;
+  let endedOwners: Set<string>;
   try {
-    activeOwners = await sql<{ owner_id: string }[]>`
-      SELECT DISTINCT coord_owner_id AS owner_id
-        FROM harness_shared.adv_sessions
-       WHERE coord_owner_id = ANY(${owners}::text[])
-         AND ended_at IS NULL
-         AND ended_by IS NULL
-    `;
+    const resolveStates = deps.resolveSessionStatesFn ??
+      (await import('../agent-tools/coordination/liveness-oracle')).resolveSessionStates;
+    const verdicts = await resolveStates(
+      owners.map((ownerId) => ({ ownerId })),
+      {
+        // Match coord:presence for bare owner ids: hydrate presence, honor
+        // positive psu-host evidence, include self-wake state, and judge host health.
+        hydrateBatch: true,
+        psuHostPositiveAuthority: true,
+        selfWake: true,
+        hostCondition: true,
+      },
+    );
+    endedOwners = new Set(
+      owners.filter((ownerId) => verdicts.get(ownerId)?.sessionState === 'ended'),
+    );
   } catch (error) {
-    console.warn(`[compaction-watchdog] ended-session lifecycle read failed: ${String(error)}`);
+    console.warn('[compaction-watchdog] ended-session liveness read failed: ' + String(error));
     return;
   }
-  const active = new Set(activeOwners.map((row) => row.owner_id));
   const endedEpisodesByOwner = new Map<string, Array<{ conditionKey: string; openedAtMs: number }>>();
   for (const row of parsed) {
-    if (active.has(row.scope.owner)) continue;
+    if (!endedOwners.has(row.scope.owner)) continue;
     const ownerEpisodes = endedEpisodesByOwner.get(row.scope.owner) ?? [];
     ownerEpisodes.push(row.episode);
     endedEpisodesByOwner.set(row.scope.owner, ownerEpisodes);
@@ -599,8 +612,8 @@ const DARK_TELEMETRY_MAX_NULL_SWEEPS = 3;
 
 /**
  * WI-2140608 — a null sweep advances the dark-telemetry streak ONLY when the session was
- * ACTIVE inside this window (its `last_active_at`, which the 60s keepalive beat never bumps —
- * see CODEX_FROZEN_READING_MAX_LAG_MS). The P-018 hazard is a session CONSUMING context while
+ * ACTIVE inside this window (the latest eligible turn call, not `coord_presence.last_active_at`,
+ * which hook-origin dispatches also refresh). The P-018 hazard is a session CONSUMING context while
  * blind; a blind session that takes no turns cannot overflow anything. Measured 2026-09-01
  * (292 open dark-telemetry rows = ~146 distinct owners/day, 70% codex, one row per owner —
  * the PG dedup was never the problem): the flag fired a median 2–3h after the owner's first
@@ -608,20 +621,20 @@ const DARK_TELEMETRY_MAX_NULL_SWEEPS = 3;
  * again — the null was a transient idle stretch (a carry-respawn successor parked until its
  * wake, a codex rollout stalled at a walled account before its first token_count) that the
  * old "3 consecutive null sweeps" rule read as blindness. 5min = 2.5 sweeps: an idle session
- * falls out of the window inside one sweep; a session mid-turn (every tool dispatch bumps
- * last_active_at) never does.
+ * falls out of the window inside one sweep; a session making eligible tool calls stays active,
+ * while hook-only dispatches do not count.
  */
 const DARK_TELEMETRY_ACTIVE_WINDOW_MS = 5 * 60_000;
 
-function activeWithin(lastActiveAt: string | null | undefined, windowMs: number, nowMs = Date.now()): boolean {
-  if (!lastActiveAt) return false;
-  const t = Date.parse(lastActiveAt);
+function activeWithin(lastTurnAt: string | Date | null | undefined, windowMs: number, nowMs = Date.now()): boolean {
+  if (!lastTurnAt) return false;
+  const t = new Date(lastTurnAt).getTime();
   return Number.isFinite(t) && nowMs - t <= windowMs;
 }
 
 /**
  * EI-21595542328480968 — how far a codex rollout's mtime may lag the session's OWN
- * `last_active_at` before the reading taken from it is treated as FROZEN (belonging
+ * latest eligible turn call before the reading taken from it is treated as FROZEN (belonging
  * to a dead predecessor) rather than as this session's usage.
  *
  * The defect: codex homes are keyed by the adv_sessions ROW id, so an owner holding
@@ -631,18 +644,14 @@ function activeWithin(lastActiveAt: string | null | undefined, windowMs: number,
  * recovery, and eventually SELF-SUPPRESSES, leaving a live over-limit session with
  * its backstop disarmed. That end state was observed on a real session.
  *
- * The margin is drawn from the measured population, not from the handful of sessions
- * that led to the defect (133 live codex sessions, 2026-08-27): the lag is NEGATIVE
- * for healthy sessions — the rollout is written at least as recently as the last tool
- * dispatch — with p50 −0.2min, p95 ≈ 0, and only 3 of 133 above +5min. 15min sits ~5×
- * above the largest healthy positive lag and ~6× below the 90.7min pathology, and is
- * comfortably wider than any single long turn (which can bump `last_active_at`
- * repeatedly before codex writes its next token_count event).
+ * The 15min threshold was calibrated against 133 live codex sessions on 2026-08-27 using
+ * last_active_at. Hook-origin activity also refreshes that proxy, so those historical lag
+ * percentiles do not calibrate the turn timestamp used here. Keep the threshold as a
+ * guardrail pending a fresh cohort; evaluation now requires a recent eligible turn.
  *
- * ⚠ `last_active_at` is load-bearing and only works because the 60s keepalive beat
- * does NOT touch it (presence.ts D-003: `touchHeartbeat` bumps heartbeat_at ONLY).
- * An idle session therefore has an OLD last_active_at and so a small lag — which is
- * exactly the class that sank the first attempt at this fix.
+ * Presence activity is not turn evidence: hook-origin dispatches can refresh
+ * last_active_at without consuming context. This check receives the latest eligible turn
+ * timestamp from a bounded tool_invocations probe; idle sessions have no recent timestamp.
  */
 const CODEX_FROZEN_READING_MAX_LAG_MS = 15 * 60_000;
 
@@ -687,16 +696,16 @@ export function resetCompactionStrandingForTests(): void {
  */
 export async function frozenCodexReading(
   ownerId: string,
-  lastActiveAt: string | Date | null,
+  lastTurnAt: string | Date | null,
 ): Promise<{ lagMs: number; rolloutPath: string } | null> {
-  if (lastActiveAt == null) return null;
-  const lastActiveMs = new Date(lastActiveAt).getTime();
-  if (!Number.isFinite(lastActiveMs)) return null;
+  if (lastTurnAt == null) return null;
+  const lastTurnMs = new Date(lastTurnAt).getTime();
+  if (!Number.isFinite(lastTurnMs)) return null;
   const prov = await codexReadingProvenanceForOwner(ownerId).catch(() => null);
   if (!prov || prov.rolloutMtimeMs == null) return null;
   if (prov.rolloutSessionId == null || prov.refSessionId == null) return null;
   if (prov.rolloutSessionId === prov.refSessionId) return null;
-  const lagMs = lastActiveMs - prov.rolloutMtimeMs;
+  const lagMs = lastTurnMs - prov.rolloutMtimeMs;
   if (lagMs <= CODEX_FROZEN_READING_MAX_LAG_MS) return null;
   return { lagMs, rolloutPath: prov.rolloutPath };
 }
@@ -1580,6 +1589,10 @@ async function maybeForceRespawn(
       '../events/await/psu-pty-discovery'
     );
     const host = await findLiveHostAsync(ownerId);
+    // OMP self-compacts natively and is ineligible for both force paths. Resolve
+    // this before the hostless successor fallback can record force-unavailable.
+    const ref = await resolveSessionRefReconciled(ownerId);
+    if (ref?.agent === 'omp') return false;
     if (!host) {
       const target = conditionDeps.resolveForceSuccessorTarget
         ? await conditionDeps.resolveForceSuccessorTarget(ownerId)
@@ -1636,8 +1649,6 @@ async function maybeForceRespawn(
       return false;
     }
     // EI-13477: reconciled, same reasoning as maybeCarryRespawn above.
-    const ref = await resolveSessionRefReconciled(ownerId);
-    if (ref?.agent === 'omp') return false;
     let transcriptPath: string | null = null;
     let transcriptSourceKind: 'claude' | 'codex' = 'claude';
     if (ref?.agent === 'codex') {
@@ -2478,14 +2489,14 @@ export async function checkCompactionCompliance(
   };
   // One-shot session-signal alarms do not re-emit while true, so the
   // condition-staleness rail cannot use signal absence to close them. Before
-  // scanning live presence rows, close episodes whose adv-session lifecycle is
-  // now definitively ended; active owners and episodes requiring follow-up
+  // scanning live presence rows, close episodes whose shared liveness verdict
+  // is definitively ended; every other verdict and episodes requiring follow-up
   // action remain untouched.
   try {
     const openEpisodes = await (deps.readOpenConditions ?? (() => readOpenCompactionConditions(sql)))();
-    await recoverEndedSessionSignalEpisodes(sql, openEpisodes, deps);
+    await recoverEndedSessionSignalEpisodes(openEpisodes, deps);
   } catch (error) {
-    // A failed lifecycle read must never turn an unknown owner into recovery.
+    // A failed condition or liveness read must never turn an unknown owner into recovery.
     console.warn(`[compaction-watchdog] ended-session recovery failed: ${String(error)}`);
   }
   // P-013 flag mirror: read FLAGS.CONTEXT_GAUGE once per pass and mirror it into the
@@ -2597,6 +2608,9 @@ export async function checkCompactionCompliance(
     );
   }
   try {
+    const excludedAgentTools = [...TURN_EVIDENCE_EXCLUDED_AGENT_TOOLS];
+    const hookTools = [...TURN_EVIDENCE_HOOK_TOOLS];
+    const hookPhases = [...TURN_EVIDENCE_HOOK_ACTIVITY_PHASES];
     const rows = await sql<
       {
         owner_id: string;
@@ -2606,14 +2620,55 @@ export async function checkCompactionCompliance(
         workspace_id: string;
         fleet_slug: string | null;
         fleet_role: string | null;
-        last_active_at: string | null;
+        last_turn_at: string | Date | null;
+        last_turn_session_id: string | null;
+        active_session_id: string | null;
+        active_session_started_at: string | Date | null;
       }[]
     >`
-      SELECT owner_id, owner_label, workspace_id, compaction_limit, compaction_limit_explicit, fleet_slug, fleet_role,
-             last_active_at
-        FROM harness_shared.coord_presence
-       WHERE compaction_limit IS NOT NULL
-         AND heartbeat_at > now() - interval '10 minutes'
+      SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.compaction_limit, cp.compaction_limit_explicit,
+             cp.fleet_slug, cp.fleet_role, turn_evidence.last_turn_at, turn_evidence.last_turn_session_id,
+             active_session.session_id AS active_session_id, active_session.started_at AS active_session_started_at
+        FROM harness_shared.coord_presence cp
+        LEFT JOIN LATERAL (
+          -- Match resolveSessionRef's current-row predicate/order so evidence is bound to
+          -- the same native session whose null estimate the streak will evaluate.
+          SELECT s.session_id, s.started_at
+            FROM harness_shared.adv_sessions s
+           WHERE s.coord_owner_id = cp.owner_id
+             AND s.workspace_id = cp.workspace_id
+             AND (s.session_id IS NOT NULL OR s.agent = 'codex')
+             AND s.ended_at IS NULL
+             AND s.ended_by IS NULL
+           ORDER BY s.started_at DESC, s.id DESC
+           LIMIT 1
+        ) active_session ON TRUE
+        LEFT JOIN LATERAL (
+          -- Top-one probe rides tool_invocations_coord_owner_idx (coord_owner_id, invoked_at DESC).
+          SELECT ti.invoked_at AS last_turn_at,
+                 CASE
+                   WHEN ti.call_origin = 'hook' AND ti.tool_name = 'activity:report'
+                   THEN NULLIF(ti.args_json->>'session_id', '')
+                   ELSE NULL
+                 END AS last_turn_session_id
+            FROM harness_shared.tool_invocations ti
+           WHERE ti.coord_owner_id = cp.owner_id
+             AND ti.workspace_id = cp.workspace_id
+             AND ti.invoked_at > now() - interval '15 minutes'
+             AND active_session.started_at IS NOT NULL
+             AND ti.invoked_at >= active_session.started_at
+             AND (
+               (ti.call_origin = 'agent' AND NOT (ti.tool_name = ANY(${excludedAgentTools})))
+               OR (ti.call_origin = 'hook' AND ti.tool_name = ANY(${hookTools}))
+               OR (ti.call_origin = 'hook' AND ti.tool_name = 'activity:report'
+                   AND ti.args_json->>'phase' = ANY(${hookPhases})
+                   AND ti.args_json->>'session_id' = active_session.session_id)
+             )
+           ORDER BY ti.invoked_at DESC
+           LIMIT 1
+        ) turn_evidence ON TRUE
+       WHERE cp.compaction_limit IS NOT NULL
+         AND cp.heartbeat_at > now() - interval '10 minutes'
     `;
     for (const r of rows) {
       // A duplicate candidate is ambiguous; neither copy may recover an episode.
@@ -2777,7 +2832,27 @@ export async function checkCompactionCompliance(
         // stalled before its first token_count) is not consuming context and cannot overflow.
         // Idle sweeps neither advance nor reset the streak: the hazard is turns-while-blind,
         // and three of those over ANY span is the signal, however much idle time sits between.
-        if (!activeWithin(r.last_active_at, DARK_TELEMETRY_ACTIVE_WINDOW_MS)) continue;
+        const lastTurnAtMs = r.last_turn_at instanceof Date
+          ? r.last_turn_at.getTime()
+          : r.last_turn_at == null ? null : Date.parse(r.last_turn_at);
+        const activeSessionStartedAtMs = r.active_session_started_at instanceof Date
+          ? r.active_session_started_at.getTime()
+          : r.active_session_started_at == null ? null : Date.parse(r.active_session_started_at);
+        const sessionStartCandidates = [activeSessionStartedAtMs, estimateRef?.startedAtMs]
+          .filter((at): at is number => at != null && Number.isFinite(at));
+        const sessionStartedAtMs = sessionStartCandidates.length
+          ? Math.max(...sessionStartCandidates)
+          : null;
+        const evidenceSessionId = r.active_session_id ?? estimateRef?.sessionId ?? null;
+        const sameSessionEvidence =
+          (r.active_session_id == null || estimateRef?.sessionId == null ||
+            r.active_session_id === estimateRef.sessionId) &&
+          (r.last_turn_session_id == null || r.last_turn_session_id === evidenceSessionId);
+        if (
+          !activeWithin(r.last_turn_at, DARK_TELEMETRY_ACTIVE_WINDOW_MS) ||
+          !sameSessionEvidence ||
+          (sessionStartedAtMs != null && lastTurnAtMs != null && lastTurnAtMs < sessionStartedAtMs)
+        ) continue;
         const sessionId = estimateRef?.sessionId ?? null;
         const previous = nullEstimateStreak.get(r.owner_id);
         const streak = previous?.sessionId === sessionId ? previous.count + 1 : 1;
@@ -2967,7 +3042,7 @@ export async function checkCompactionCompliance(
       // session — not the thresholds inside it. See frozenCodexReading's header.
       if (est >= r.compaction_limit * OVER_LIMIT_FRACTION) {
         carryRespawnHealthySampleAt.delete(r.owner_id);
-        const frozen = await frozenCodexReading(r.owner_id, r.last_active_at).catch(() => null);
+        const frozen = await frozenCodexReading(r.owner_id, r.last_turn_at).catch(() => null);
         if (frozen) {
           await raiseCompactionCondition(r.workspace_id, r.owner_id, 'frozen-codex-reading', `Estimate came from mismatched frozen rollout ${frozen.rolloutPath}.`, deps);
           out.frozenCodexReadings.push({ owner: r.owner_id, est, lagMs: frozen.lagMs });

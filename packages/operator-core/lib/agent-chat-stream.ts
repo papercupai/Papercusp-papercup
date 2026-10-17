@@ -31,6 +31,9 @@ import {
   type TurnBackend,
 } from '@papercusp/papercusp-shared/agent';
 import { applyToProcessEnv, readAgentConfig } from './agent-config';
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { reserveHostedAgentSlot } from './workspace-host/hosted-agent-admission-client';
 
 setAgentConfigBootstrap(async () => applyToProcessEnv(await readAgentConfig()));
 
@@ -70,7 +73,29 @@ export async function* runAgentChat(opts: RunAgentChatOptions): AsyncGenerator<C
     yield* fakeRunAgentChat(opts);
     return;
   }
-  yield* realRunAgentChat(opts);
+  yield* realRunAgentChat({ ...opts, spawnProcess: async (command, args, options) => {
+    // Only native CLI processes reach this seam. Stateless HTTP replies do not
+    // consume a native-agent slot; retries that spawn another child do.
+    const reservation = await reserveHostedAgentSlot(`chat:${randomUUID()}`);
+    try {
+      await reservation?.start();
+      const child = opts.spawnProcess ? await opts.spawnProcess(command, args, options) : spawn(command, args, options);
+      if (reservation) {
+        let settled = false;
+        const release = () => {
+          if (settled) return;
+          settled = true;
+          void reservation.finish().catch(() => console.warn('[hosted-agent-admission] settlement_failed_charge_retained'));
+        };
+        child.once('exit', release);
+        child.once('error', release);
+      }
+      return child;
+    } catch (error) {
+      await reservation?.finish().catch(() => console.warn('[hosted-agent-admission] settlement_failed_charge_retained'));
+      throw error;
+    }
+  } });
 }
 
 export type { AgentBackend, ChatEvent, RunAgentChatOptions, TurnError, TurnProvider, TurnBackend };

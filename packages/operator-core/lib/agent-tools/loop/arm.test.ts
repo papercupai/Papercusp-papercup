@@ -300,6 +300,30 @@ describe('loop:arm — awaited helper timings', () => {
   });
 });
 
+describe('loop:arm — materialization contention (EI-26021032500885630)', () => {
+  it('returns a retryable unknown-state result for a raw PostgreSQL lock timeout', async () => {
+    mockRejectedTyped(
+      materializeM,
+      Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' }),
+    );
+
+    const b = body(await call({ carry: 'cold' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      error: 'timeout',
+      retryable: true,
+      pgCode: '55P03',
+      timeoutSource: 'pg',
+      ownerId: 'su-caller-own-id',
+      state: 'unknown',
+    });
+    expect(b.message).toContain('routine mutation was not confirmed');
+    expect(controlAnchorH.refresh).not.toHaveBeenCalled();
+    expect(armWakeM).not.toHaveBeenCalled();
+  });
+});
+
 describe('loop:arm — owner-directed pause guard (EI-24188436415268799)', () => {
   it('refuses to rearm a target whose effective wake mode is manual', async () => {
     wakeModeM.mockResolvedValueOnce('manual');

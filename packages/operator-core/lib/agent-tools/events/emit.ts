@@ -21,6 +21,8 @@ import { registerAnnouncement, countActiveAwaitsByPrefixes, findNearMissKeys, ty
 import { buildAnnouncedKey, defaultAnnounceScope, type AnnounceScopeKind } from '../../events/await/announce-key';
 import { getPresence } from '../coordination/presence';
 import { softText, clampText, LIMITS } from '../limits';
+import { saveEventType, validateSavedEventPayload } from '../../events/saved-event-type';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 
 export default defineTool({
   name: 'events:emit',
@@ -42,6 +44,12 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   args: z.object({
     event: z.string().min(1).max(200).describe('Exact event key to fire.'),
+    save: z.boolean().optional().describe('Persist the event type in the existing registry. With announce:true, declare without firing; otherwise save then fire. Only its contributor can update it.'),
+    title: z.string().trim().min(1).max(200).optional(),
+    description: z.string().trim().min(1).max(2000).optional(),
+    payloadSchema: z.record(z.string(), z.unknown()).optional().describe('Synchronous JSON Schema checked before emitting payloads for this type.'),
+    tags: z.array(z.string().trim().min(1).max(100)).max(32).optional(),
+    eventStatus: z.enum(['active', 'retired']).optional().describe('With save:true, retire or reactivate your saved event type.'),
     summary: softText(LIMITS.ANNOTATION).optional().describe('One human line — rides the wake turn / notify summary. Auto-truncated to 2000 chars if longer.'),
     payload: z.unknown().optional().describe('Structured data carried on the wake (truncated at 400 chars in the turn text).'),
     to: z
@@ -97,6 +105,12 @@ export default defineTool({
       .optional()
       .describe('announce only: a @papercusp/rules DataCondition expected to match the eventual emit payload. Mutually exclusive with expected_sha.'),
   }).superRefine((args, ctx) => {
+    if (!args.save && [args.title, args.description, args.payloadSchema, args.tags, args.eventStatus].some((v) => v !== undefined)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['save'], message: 'Event type metadata requires save:true.' });
+    }
+    if (args.announce && args.eventStatus === 'retired') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['eventStatus'], message: 'A retired event type cannot be announced.' });
+    }
     if (args.announce === true && (args.to?.length ?? 0) > 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -144,6 +158,10 @@ export default defineTool({
         throw new Error(`events:emit — announceScope '${kind}' needs a slug: pass announceScopeRef (your presence carries no ${kind} to default from).`);
       }
       const key = buildAnnouncedKey(args.event, { kind: kind!, ref: kind === 'global' ? null : ref });
+      if (args.save) {
+        await saveEventType({ ...args, event: key, workspaceId: identity.workspaceId!, ownerId: identity.ownerId,
+          description: args.description ?? args.summary });
+      }
       const role = ctx.role?.trim() || deriveAgentRole(identity)?.trim() || null;
       const boundTo = kind === 'fleet' && ref
         ? { kind: 'fleet-leadership', ref }
@@ -178,6 +196,7 @@ export default defineTool({
               ok: true,
               announced: true,
               event: key,
+              ...(args.save ? { saved: true, catalog: 'events:catalog', ...(kind === 'fleet' ? { save_advice: 'Use harness or global announcement scope for event types shared beyond this fleet.' } : {}) } : {}),
               generation: row.causalGeneration,
               scope: { kind, ref: kind === 'global' ? null : ref },
               ...(row.expectedCondition != null ? { expected: row.expectedCondition } : {}),
@@ -191,6 +210,13 @@ export default defineTool({
       };
     }
 
+    if (args.save) {
+      await saveEventType({ ...args, workspaceId: identity.workspaceId!, ownerId: identity.ownerId,
+        description: args.description ?? args.summary });
+      if (args.eventStatus === 'retired') return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, saved: true, event: args.event, status: 'retired', fired: false }) }] };
+    }
+    await validateSavedEventPayload(identity.workspaceId!, args.event, args.payload);
+    const concreteHarnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
     const result = await emitAwaitedEvent({
       key: args.event,
       summary: clampText(args.summary, LIMITS.ANNOTATION),
@@ -198,6 +224,8 @@ export default defineTool({
       to: args.to,
       source: identity.ownerId,
       workspaceId: identity.workspaceId ?? undefined,
+      ...(concreteHarnessSlug ? { harnessSlug: concreteHarnessSlug } : {}),
+      cause: ctx.reactionCause,
     });
     // ── event-key-nearmiss-guard P-004: an emit that reached NO ONE (waiters:0,
     // no `to`) is the key-mismatch failure moment — advisory scan for a
@@ -272,6 +300,7 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             event: result.key,
+            ...(args.save ? { saved: true, catalog: 'events:catalog' } : {}),
             woken: result.woken,
             notified: result.notified.length,
             waiters: result.waiters,

@@ -15,6 +15,11 @@ import type { ReconcileDeclaredClaimsResult } from '../../../plan-items/claim-di
 
 // ── module-seam mocks (arrow-deref so the hoisted vi.mock factory sees them) ──
 const writePresence = vi.fn(async () => 'x' as string | null);
+const clearExplicitInboxWakePark = vi.fn(async () => false);
+vi.mock('../../../events/await/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../events/await/store')>()),
+  clearExplicitInboxWakePark: (...a: unknown[]) => clearExplicitInboxWakePark(...(a as [])),
+}));
 const getPresence = vi.fn(async () => ({ ownerId: 'su-test', intent: 'x' }));
 vi.mock('../presence', async (importOriginal) => ({
   // Spread the real module so PRESENCE_STALE_MS (consumed transitively by
@@ -164,7 +169,31 @@ const rowWithItems = (ids: string[]): Record<string, unknown> => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  clearExplicitInboxWakePark.mockReset().mockResolvedValue(false);
   getPlanRow.mockResolvedValue(null);
+});
+
+describe('coord:declare-intent resumes an explicit inbox park', () => {
+  it('clears the caller park after the work declaration lands', async () => {
+    clearExplicitInboxWakePark.mockResolvedValueOnce(true);
+    const res = parse(await tool.handler({ intent: 'resume owned work' }, ctx));
+    expect(clearExplicitInboxWakePark).toHaveBeenCalledWith('su-test');
+    expect(writePresence.mock.invocationCallOrder[0]).toBeLessThan(clearExplicitInboxWakePark.mock.invocationCallOrder[0]);
+    expect(res.inboxWakePark).toEqual({ cleared: true });
+  });
+
+  it('keeps a rejected declaration from clearing an existing park', async () => {
+    const res = parse(await tool.handler({ intent: 'invalid lane', items: ['P-001'] }, ctx));
+    expect(res.ok).toBe(false);
+    expect(clearExplicitInboxWakePark).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed clear without claiming the park resumed', async () => {
+    clearExplicitInboxWakePark.mockRejectedValueOnce(new Error('database unavailable'));
+    const res = parse(await tool.handler({ intent: 'resume owned work' }, ctx));
+    expect(res.ok).toBe(true);
+    expect(res.inboxWakePark).toEqual({ cleared: false, warning: expect.stringContaining('database unavailable') });
+  });
 });
 
 describe('coord:declare-intent lane validation (EI-356)', () => {
@@ -681,7 +710,7 @@ describe('coord:declare-intent — EI-22662451852499659: the pivot embed race is
   const LONG_A = 'investigate the release gate promotion push failure on the frozen candidate lineage';
   const LONG_B = 'refactor the desktop webview bridge to stream tauri agent tool captures over ipc';
 
-  async function runWith(cheap: boolean, embedImpl: (t: string) => Promise<number[]>) {
+  async function runWith(cheap: boolean, embedImpl: (t: string) => Promise<number[]>, nextIntent = LONG_B) {
     vi.resetModules();
     const embed = vi.fn(embedImpl);
     vi.doMock('../../../memory/embed-sidecar-wiring', () => ({ isLocalEmbedAcquisitionCheap: () => cheap }));
@@ -700,10 +729,10 @@ describe('coord:declare-intent — EI-22662451852499659: the pivot embed race is
     writePresence.mockResolvedValue(LONG_A);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const first = parse(await t.handler({ intent: LONG_B }, ctx));
+      const first = parse(await t.handler({ intent: nextIntent }, ctx));
       // Let the background warm-up settle before the second call.
       await new Promise((r) => setTimeout(r, 0));
-      const second = parse(await t.handler({ intent: LONG_B }, ctx));
+      const second = parse(await t.handler({ intent: nextIntent }, ctx));
       return { first, second, embed, detect, warnings: warnSpy.mock.calls.map((c) => String(c[0])) };
     } finally {
       warnSpy.mockRestore();
@@ -712,6 +741,12 @@ describe('coord:declare-intent — EI-22662451852499659: the pivot embed race is
       vi.doUnmock('../../../intent-pivot');
     }
   }
+
+  it.each(['portal plan', LONG_A])('does not warm a model for an ineligible intent: %s', async intent => {
+    const r = await runWith(true, async () => [1, 0], intent);
+    expect(r.first.ok).toBe(true); expect(r.second.ok).toBe(true);
+    expect(r.embed).not.toHaveBeenCalled(); expect(r.warnings).toEqual([]);
+  });
 
   it('NOT cheap (cold sidecar): every call is lexical, the embedder is never resolved, no deadline warning', async () => {
     const r = await runWith(false, async () => [1, 0]);
@@ -727,7 +762,7 @@ describe('coord:declare-intent — EI-22662451852499659: the pivot embed race is
     const r = await runWith(true, async () => [1, 0]);
     expect(r.detect.mock.calls[0]?.[2]).toEqual({}); // first: lexical, no race
     expect(r.embed).toHaveBeenCalled(); // background warm-up ran
-    expect(r.detect.mock.calls[1]?.[2]).toHaveProperty('embed'); // second: embedding race offered
+    expect(r.detect.mock.calls.at(-1)?.[2]).toHaveProperty('embed'); // final comparison: embedding race offered
     expect(r.warnings.filter((w) => w.includes('intent-pivot-embed'))).toEqual([]);
   });
 

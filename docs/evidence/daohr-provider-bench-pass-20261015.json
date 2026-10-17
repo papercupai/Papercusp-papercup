@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "node",
+  "name": "Frozen DAO HR provider startup and child-failure cleanup on isolated Docker",
+  "workItemId": "EI-25743726287946570",
+  "parentWorkItemId": "WI-6554700010008618",
+  "planSlug": "dao-hr-people-2026-10-11",
+  "taskId": "0mva45o60rikjv415yy",
+  "imagePreparationTaskId": "0mva42f4t1sjjtcdai2",
+  "attemptAuditPostId": 1183910,
+  "exitCode": 0,
+  "evidencePlane": "isolated-real-provider-prerequisite",
+  "nativeAcceptance": false,
+  "rootDaemonIncidentResolved": false,
+  "sourceCommit": "846db000385a1a57ddcdef092b4a13d42d05fe4c",
+  "runtime": {
+    "endpoint": "unix:///run/docker-bench.sock",
+    "remoteSocketPath": "/run/docker-bench.sock",
+    "id": "21300e85-f27c-4975-987b-74a7cc979111",
+    "dockerRootDir": "/mnt/bench/docker",
+    "driver": "overlay2"
+  },
+  "test": {
+    "path": "scripts/with-documenso-sandbox.test.mjs",
+    "title": "real provider starts with a private database and cleans every owned service after child failure",
+    "durationMs": 101898.926818,
+    "passed": 1,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "childSubstituted": 0,
+    "namedUncommittedPaths": 0,
+    "testcaseTimeoutMs": 240000,
+    "fileTimeoutMs": 420000,
+    "outerTimeoutMs": 600000
+  },
+  "phasesMs": {
+    "images": 233,
+    "reaper": 3370,
+    "databaseReady": 296,
+    "providerReady": 26306,
+    "cleanup": 3426
+  },
+  "cleanup": {
+    "owner": "daohr-documenso-3419ad2e-15f",
+    "queries": [
+      { "kind": "containers", "exitCode": 0, "ids": [] },
+      { "kind": "network", "exitCode": 0, "ids": [] },
+      { "kind": "reaper", "exitCode": 0, "ids": [] }
+    ],
+    "ownedAbsent": true
+  },
+  "sourceLoadReceipts": {
+    "boundary": "node-esm-load-return",
+    "scripts/with-documenso-sandbox.mjs": {
+      "kind": "committed",
+      "inputSha256": "6eb49d58ba999982ac3a0510290d645d32f703893f24e2d65e69c83ca4d8fb3d",
+      "returnedSha256": "6eb49d58ba999982ac3a0510290d645d32f703893f24e2d65e69c83ca4d8fb3d"
+    },
+    "scripts/with-documenso-sandbox.test.mjs": {
+      "kind": "committed",
+      "inputSha256": "89cab64d7da61db1fa13016eaf5cb313ca97eb8a9c01ca96f2c72cde281674bd",
+      "returnedSha256": "89cab64d7da61db1fa13016eaf5cb313ca97eb8a9c01ca96f2c72cde281674bd"
+    }
+  },
+  "artifacts": {
+    "directory": ".papercusp/scratch/daohr-provider-bench-20261015-2233",
+    "preflight.json": "8776b8309f57fb05bf77d2728eada6963214b30d196cd64629d2418091dc7fa7",
+    "test.log": "46785a69ec1ee50dbc88781979c54face09c52ec7d30fba170b60aa7a29da0f0",
+    "exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "node-load.jsonl": "281587f93af293deea8d1ec08dce6bb2da7f7a0c19929eecb75117ff0237e189"
+  },
+  "limitations": [
+    "The selected real-provider prerequisite passed; the native hire journey has not passed.",
+    "This isolated-runtime result does not resolve or establish the cause of historical serving-daemon delays.",
+    "Source receipts measure the two named files at the Node ESM load-return boundary; later loader transforms and loader-self remain unmeasured.",
+    "The named test path is clean at the frozen commit; whole-ledger worktree cleanliness was not independently read.",
+    "Phase durations cover the named phases and do not partition the entire testcase duration."
+  ]
+}

@@ -107,6 +107,53 @@ describe('writeShim (WI-4440) — the generated script resolves at run time, not
     expect(body).toContain('>&2');
   });
 
+  it('keeps HTTP-only inspector publication on the launcher without exporting it to native children', async () => {
+    const shimPath = path.join(tmp, 'psu');
+    const launcherPath = path.join(tmp, 'psu-launcher.mjs');
+    await fs.writeFile(launcherPath, `
+      import { execFileSync } from 'node:child_process';
+      process.stdout.write(JSON.stringify({
+        nodeOptions: process.env.NODE_OPTIONS,
+        execArgv: process.execArgv,
+        childNodeOptions: execFileSync(process.execPath,
+          ['-e', 'process.stdout.write(process.env.NODE_OPTIONS ?? "")'], { encoding: 'utf8' }),
+      }));
+    `);
+    await writeShim(
+      shimPath,
+      launcherPath,
+      'superuser launcher (psu)',
+      shimRuntimeOptions(launcherPath, 'PAPERCUSP_PSU_LAUNCHER'),
+    );
+    const inherited = '--max-old-space-size=131072 --expose-gc';
+    const result = spawnSync(shimPath, [], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: tmp, NODE_OPTIONS: inherited, PAPERCUSP_PSU_LAUNCHER: launcherPath },
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      nodeOptions: inherited,
+      execArgv: ['--inspect-publish-uid=http'],
+      childNodeOptions: inherited,
+    });
+
+    const explicit = spawnSync(shimPath, [], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HOME: tmp,
+        NODE_OPTIONS: '--inspect-publish-uid=http,stderr',
+        PAPERCUSP_PSU_LAUNCHER: launcherPath,
+      },
+    });
+    expect(explicit.status).toBe(0);
+    expect(JSON.parse(explicit.stdout)).toEqual({
+      nodeOptions: '--inspect-publish-uid=http,stderr',
+      execArgv: [],
+      childNodeOptions: '--inspect-publish-uid=http,stderr',
+    });
+  });
+
   it('executes the canonical edit-tree launcher when the serving mirror differs', async () => {
     const shimPath = path.join(tmp, 'ptool');
     const canonicalRoot = path.join(tmp, 'canonical');
@@ -136,6 +183,7 @@ describe('writeShim (WI-4440) — the generated script resolves at run time, not
     expect(result.status).toBe(0);
     expect(result.stdout).toBe('canonical');
     expect(result.stderr).toContain(canonicalLauncher);
+    expect((await fs.readFile(shimPath, 'utf8'))).not.toContain('--inspect-publish-uid=http');
   });
 
   it('an explicit per-process override wins outright when the file exists', async () => {

@@ -7,8 +7,9 @@
  * the green pin is automation-only).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync } from 'node:fs';
-import { resolve as resolvePath } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { join, resolve as resolvePath } from 'node:path';
+import { tmpdir } from 'node:os';
 import { renderWorkspaceMapSection, resolveWorkspaceMapConfig } from './workspace-map';
 
 // EI-8794: the fallback-detection tests below stub `execFileSync` itself (rather
@@ -69,6 +70,22 @@ describe('renderWorkspaceMapSection', () => {
     expect(s).toContain('🚫 `/work/papercup-checkpoint`');
   });
 
+  it('does not present configured roots missing from this runtime as usable cwd paths', () => {
+    const s = renderWorkspaceMapSection({
+      ...CFG,
+      integrationRootAvailable: false,
+      releaseRootAvailable: false,
+      checkpointRootAvailable: false,
+    });
+
+    expect(s).toContain('configured integration tree does not exist in this runtime');
+    expect(s).toContain('configured release checkout does not exist in this runtime');
+    expect(s).toContain('configured isolated checkpoint tree does not exist in this runtime');
+    expect(s).not.toContain('✅ `/work/papercup`');
+    expect(s).not.toContain('🚫 `/work/papercup-release`');
+    expect(s).not.toContain('🚫 `/work/papercup-checkpoint`');
+  });
+
   it('renders the canonical ✅ claim when gitDetected is omitted or true (unaffected by the EI-8794 guard)', () => {
     expect(renderWorkspaceMapSection(CFG)).toContain('✅ `/work/papercup`');
     expect(renderWorkspaceMapSection({ ...CFG, gitDetected: true })).toContain('✅ `/work/papercup`');
@@ -80,16 +97,27 @@ describe('resolveWorkspaceMapConfig', () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it('uses the canonical edit tree instead of the staging serving mirror', () => {
-    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', '/ws/papercusp');
-    vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', '/ws/papercusp-staging');
-    vi.stubEnv('PAPERCUSP_RELEASE_ROOT', '/ws/papercup-release');
-    vi.stubEnv('PAPERCUSP_CHECKPOINT_ROOT', '/ws/papercusp-checkpoint');
+    const root = mkdtempSync(join(tmpdir(), 'workspace-map-roots-'));
+    try {
+      const canonical = join(root, 'papercusp');
+      const staging = join(root, 'papercusp-staging');
+      const release = join(root, 'papercup-release');
+      const checkpoint = join(root, 'papercusp-checkpoint');
+      for (const directory of [canonical, staging, release, checkpoint]) mkdirSync(directory);
+      vi.stubEnv('PAPERCUSP_CANONICAL_TREE', canonical);
+      vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', staging);
+      vi.stubEnv('PAPERCUSP_RELEASE_ROOT', release);
+      vi.stubEnv('PAPERCUSP_CHECKPOINT_ROOT', checkpoint);
 
-    const cfg = resolveWorkspaceMapConfig();
-    expect(cfg.integrationRoot).toBe('/ws/papercusp');
-    const rendered = renderWorkspaceMapSection(cfg);
-    expect(rendered).toContain('✅ `/ws/papercusp`');
-    expect(rendered).not.toContain('✅ `/ws/papercusp-staging`');
+      const cfg = resolveWorkspaceMapConfig();
+      expect(cfg.integrationRoot).toBe(canonical);
+      expect(cfg.integrationRootAvailable).toBe(true);
+      const rendered = renderWorkspaceMapSection(cfg);
+      expect(rendered).toContain(`✅ \`${canonical}\``);
+      expect(rendered).not.toContain(`✅ \`${staging}\``);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('honours the release-gate env seams', () => {
@@ -104,6 +132,9 @@ describe('resolveWorkspaceMapConfig', () => {
       checkpointRoot: '/x/chk',
       integrationBranch: 'staging',
       releaseRef: 'main',
+      integrationRootAvailable: false,
+      releaseRootAvailable: false,
+      checkpointRootAvailable: false,
     });
   });
 
@@ -114,6 +145,9 @@ describe('resolveWorkspaceMapConfig', () => {
     expect(cfg.checkpointRoot).toBe('/srv/papercup-checkpoint');
     expect(cfg.integrationBranch).toBe('staging'); // code default mirrors release-config.ts
     expect(cfg.releaseRef).toBe('main');
+    expect(cfg.integrationRootAvailable).toBe(false);
+    expect(cfg.releaseRootAvailable).toBe(false);
+    expect(cfg.checkpointRootAvailable).toBe(false);
   });
 
   it('checkpoint default is per-root (<basename>-checkpoint), matching release-config.ts', () => {
@@ -123,6 +157,9 @@ describe('resolveWorkspaceMapConfig', () => {
     const cfg = resolveWorkspaceMapConfig();
     expect(cfg.releaseRoot).toBe('/srv/papercup-release');
     expect(cfg.checkpointRoot).toBe('/srv/papercusp-checkpoint');
+    expect(cfg.integrationRootAvailable).toBe(false);
+    expect(cfg.releaseRootAvailable).toBe(false);
+    expect(cfg.checkpointRootAvailable).toBe(false);
   });
 
   it('EI-8794: suppresses git stderr (stdio-suppressed) via the execFileSync call', () => {

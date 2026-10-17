@@ -113,6 +113,49 @@ describe('plugin dependency + config fields', () => {
   });
 });
 
+describe('provider rate budget declaration', () => {
+  const provider = { id: 'budget-example', contractVersion: 1, datatypes: ['social-post'],
+    capabilities: ['social.reply'], egressHosts: ['example.test'] };
+  const rateBudget = { verifiedAt: '2026-08-23', sources: ['https://example.test/limits'],
+    requestsPerMinute: 60, budgetHeaders: ['X-Rate-Remaining'],
+    buckets: { general: { appliesTo: 'list and reply', perDay: 10000, unit: 'units', verbs: ['read', 'reply'] } },
+    dynamicQuota: { formula: '4800 * members', driver: 'members', assumedDailyFloor: 4800, retryExtendsBlock: true } };
+  const validate = (budget: unknown) => validateManifest({ name: 'budget-example', version: '0.1.0', provider: { ...provider, rateBudget: budget } });
+  it('accepts dated provider budgets through the real install schema', () => {
+    expect(validate(rateBudget)).toMatchObject({ ok: true, issues: [] });
+  });
+  it.each(['2024-02-29', '2000-02-29', '2026-04-30', '2026-01-31', null])('accepts valid calendar date %s', (verifiedAt) => {
+    expect(validate({ ...rateBudget, verifiedAt }).ok).toBe(true);
+  });
+  it.each([
+    { requestsPerMinute: 0 }, { quotaUnitsPerDay: -1 }, { sources: [] }, { verifiedAt: '2026-02-30' },
+    { verifiedAt: '2025-02-29' }, { verifiedAt: '1900-02-29' }, { verifiedAt: '2100-02-29' },
+    { verifiedAt: '2026-04-31' }, { verifiedAt: '2026-00-10' }, { verifiedAt: '2026-13-10' },
+    { buckets: {} }, { buckets: { broken: { appliesTo: 'read', perDay: 1, unit: 'credits' } } },
+    { budgetHeaders: ['X-Usage\r\nInjected'] }, { unknownBudget: 100 },
+    { dynamicQuota: { formula: 'x', driver: 'members', assumedDailyFloor: 0 } },
+  ])('refuses malformed rate declarations at install time: %j', (mutation) => {
+    expect(validate({ ...rateBudget, ...mutation }).ok).toBe(false);
+  });
+});
+
+describe('provider sync declaration', () => {
+  const provider = { id: 'write-only-example', contractVersion: 1, datatypes: ['social-post'],
+    capabilities: ['social.post'], egressHosts: ['api.example.com'] };
+  const manifest = { name: 'write-only-example', version: '0.1.0', provider };
+
+  it('accepts existing providers and both explicit sync declarations through the install schema', () => {
+    expect(validateManifest(manifest).ok).toBe(true);
+    for (const sync of [true, false]) expect(validateManifest({ ...manifest, provider: { ...provider, sync } }).ok).toBe(true);
+  });
+
+  it.each([null, 'false', 0, {}, []])('rejects malformed sync support %j at installation', (sync) => {
+    const result = validateManifest({ ...manifest, provider: { ...provider, sync } });
+    expect(result.ok).toBe(false);
+    expect(result.issues.some((issue) => issue.path.includes('sync'))).toBe(true);
+  });
+});
+
 describe('triggerPack manifest shape (external-triggers P-012)', () => {
   const triggerPack = {
     inputs: { type: 'object', properties: {} },
@@ -281,22 +324,49 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     method: 'POST',
     body: '{"query":"{ viewer { id } }"}',
   };
-  const oauth: Required<ProviderOAuthDescriptor> = {
+  const allOAuthFields: Required<ProviderOAuthDescriptor> = {
+    instance: true,
     authorizeUrl: 'https://example.com/oauth/authorize',
     tokenUrl: 'https://example.com/oauth/token',
     scopes: ['read'],
     scopeSeparator: ',',
+    clientIdParameter: 'client_id',
+    tokenEndpointAuthMethod: 'client_secret_basic',
+    userAgentRequired: true,
     pkce: true,
     clientRegistrationRef: 'example',
     credentialGroup: 'example-suite',
+    refreshPolicy: 'refresh-token',
+    resourceToken: {
+      url: 'https://example.com/api/resources',
+      hosts: ['example.com'],
+      collectionField: 'data',
+      idField: 'id',
+      tokenField: 'access_token',
+      configKey: 'resourceId',
+    },
     identity,
   };
+  // Instance-scoped and fixed-host providers have mutually exclusive egress rules.
+  // Keep the exhaustive type guard, then exercise the discriminator separately below.
+  const { instance, ...oauth } = allOAuthFields;
   const provider: Required<ProviderDescriptor> = {
     id: 'example-provider',
     contractVersion: 1,
     displayName: 'Example',
     datatypes: ['ticket'],
+    sync: true,
     capabilities: ['ticket.read', 'push.subscribe', 'push.unsubscribe', 'ingress.normalize'],
+    verification: {
+      verifiedAt: '2026-08-23',
+      sources: ['https://example.com/contract'],
+      capabilities: { 'ticket.read': '2026-08-23' },
+    },
+    rateBudget: {
+      verifiedAt: '2026-08-23',
+      sources: ['https://example.com/limits'],
+      requestsPerMinute: 60,
+    },
     oauth,
     egressHosts: ['api.example.com', 'example.com', 'pubsub.example.com'],
     configSchema: { type: 'object' },
@@ -334,6 +404,20 @@ describe('validateManifest: provider descriptor schema matches the SDK type', ()
     const r = validateManifest(manifest(provider));
     expect(r.issues).toEqual([]);
     expect(r.ok).toBe(true);
+  });
+
+  it('accepts instance-scoped OAuth only with connection-owned egress', () => {
+    const instanceProvider = {
+      id: provider.id,
+      contractVersion: provider.contractVersion,
+      datatypes: provider.datatypes,
+      capabilities: provider.capabilities,
+      egressHosts: [],
+      oauth: { instance, authorizeUrl: '/oauth/authorize', tokenUrl: '/oauth/token', scopes: ['read'] },
+    };
+    expect(validateManifest(manifest(instanceProvider))).toMatchObject({ ok: true, issues: [] });
+    expect(validateManifest(manifest({ ...instanceProvider, egressHosts: provider.egressHosts })).ok).toBe(false);
+    expect(validateManifest(manifest({ ...instanceProvider, oauth })).ok).toBe(false);
   });
 
   it('refuses a missing, malformed or extra membership declaration field', () => {

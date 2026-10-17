@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "native-p042-projection-guards-v1",
+  "workItem": "EI-26179606670734857",
+  "recordedAt": "2026-10-17T00:03:09.097305+00:00",
+  "sourceHashes": {
+    "packages/operator-core/lib/doc-claims/lifecycle-judge-pid-namespace-claims.test.ts": "02d9b99596715242b15b03bf62b7a7d902b2a5b822cf7e856dd59283e5d87f17",
+    "packages/operator-core/lib/doc-claims/mcp-route-ports.ts": "cbaf3cd901f616f6f891d5bc47e3ffe49b57e0868185a59c10f0adeb251efac4",
+    "packages/operator-core/lib/doc-claims/mcp-route-ports.test.ts": "5105ff1f747c65e05315fd789161b4df83b07828405c9e96e4d1fbecbbee45fb",
+    "packages/operator-core/lib/doc-claims/selection-policy-prose.ts": "d1675f46d5f801d2ff52902dd045a9a21738aa6aaaa63376b6ea08d6b0bdd523",
+    "packages/operator-core/lib/doc-claims/selection-policy-prose.test.ts": "84b9b514aefe85908334dbf870a33d67c47ddd362e84313ff80e4e22db8ca82c",
+    "packages/operator-core/lib/doc-claims/same-listener-websocket-sites.test.ts": "20484d8bcbbb38eb8cee1cc0321cd69740e24d9158a16a9b6a9e3fe4b40aff92",
+    "apps/operator-docs/src/content/docs/agent-insights/process-lifecycle-judge-verdict-traps.mdx": "0144fbbdeb220cc7a46422fe5de5e47b079754e0cd45614fdfc0e1dd084913c1",
+    "apps/operator-docs/src/content/docs/agent-insights/is-this-process-actually-doing-work.mdx": "095c140c9218160924519ffc8f085f11497d7330d60197c60377ec6649bf1104",
+    "apps/operator/bin/mcp-proxy.ts": "461a69a082204d6ae7e1835b7b959f6f55f1ce2f62758d0e33d889f060886d86",
+    "apps/operator/scripts/systemd/papercup-mcp-proxy.service": "6e9c28b7ec8e696df277cf2aa1c20d5641195ec0a528e0cfd03d28525050995b",
+    "packages/operator-core/lib/task-manager/lifecycle-judgement.ts": "c331d907e67554569f0c557baa1c0b8a8eebf3d5bb425f99d580f55d31efd09a"
+  },
+  "evidenceHashes": {
+    "/tmp/native-p042-projection-guards-v4-source-20261016.json": "c8b6289c967921a979fb097a6e49f5d22c7f42452acd7b80c76823a1ce6807ba",
+    "/tmp/native-p042-projection-guards-v4-tests-20261016.log": "a633c131bbdc99911da12e4dcf644179531b745343010ac6682ee08ff5f81881",
+    "/tmp/native-p042-guards-final-types-20261016.log": "a80f9b0e85efea75680e53b59ad4206e65c7af745b7aed54d59b34dc2e47a558"
+  },
+  "workerOriginalMismatches": [],
+  "opacityByTest": {
+    "packages/operator-core/lib/doc-claims/lifecycle-judge-pid-namespace-claims.test.ts": [
+      "config-deps-unavailable"
+    ],
+    "packages/operator-core/lib/doc-claims/mcp-route-ports.test.ts": [
+      "config-deps-unavailable"
+    ],
+    "packages/operator-core/lib/doc-claims/selection-policy-prose.test.ts": [
+      "child-process",
+      "git-metadata",
+      "config-deps-unavailable"
+    ],
+    "packages/operator-core/lib/doc-claims/same-listener-websocket-sites.test.ts": [
+      "config-deps-unavailable"
+    ]
+  },
+  "recordedHead": "4dd62402e50704d319279596708320c93ccb27dd",
+  "worktreeDirty": true,
+  "rootCauses": [
+    "Proxy port detector recognized only an inline env default and missed the actual const/shorthand call.",
+    "Responder-bound prose detector mistook a documented min_agents:0 refusal outcome for an instruction to hand-type a responder count.",
+    "The primary lifecycle guide guard pinned obsolete group-length availability; the secondary canonical guide still described only an empty-census fallback. Source already governs availability by addressable scope."
+  ],
+  "fixes": [
+    "Accept live const/shorthand proxy wiring and retain changed-port and unused-declaration negative controls.",
+    "Exempt the specific documented zero-minimum refusal result while retaining directive and numeric-bound failures.",
+    "Keep both lifecycle guides aligned with source addressability, terminal controls via includeEnded:true, and unknown on failed available controls. Canonical secondary guide authored via docs:author and read back."
+  ],
+  "verification": {
+    "testCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/native-p042-projection-guards-v4-source-20261016.json npm run test:file -- packages/operator-core/lib/doc-claims/lifecycle-judge-pid-namespace-claims.test.ts packages/operator-core/lib/doc-claims/mcp-route-ports.test.ts packages/operator-core/lib/doc-claims/same-listener-websocket-sites.test.ts packages/operator-core/lib/doc-claims/selection-policy-prose.test.ts",
+    "tests": "4 files, 51 tests passed, zero skips, childSubstituted=0, terminal shell exit=0",
+    "types": "Five named TypeScript files passed scoped lint:tsc, LINT_TSC_RESULT exit=0 status=clean, terminal shell exit=0",
+    "canonicalReadback": "docs:get source:true harness:engineering: found=true, 14442 characters, addressability and includeEnded:true present; empty/nonempty-only control-availability wording removed."
+  },
+  "limits": [
+    "Focused local current-source proof only; no release-gate, full installer suite, final shipment or full execution-graph claim.",
+    "Controller emitted committed-source substitutions; worker raw original sources are separately captured and hash-compared.",
+    "Source capture reports unavailable config dependencies; the corpus scanner also records child-process and git-metadata opacity.",
+    "The source was dirty at execution; this result does not supersede any committed release verdict.",
+    "Historical v3 passed but used an incorrect capture arming variable; no source identity claim rests on v3. V4 enables the actual WORKSPACE reporter and harness scope."
+  ]
+}

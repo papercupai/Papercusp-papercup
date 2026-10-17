@@ -2240,7 +2240,7 @@ export async function reconcileLoopRoutines(
         });
 
         if (toolCalls != null) {
-          let nativeCodexUsageFailure: CodexProviderError | null = null;
+          let nativeCodexFailure: CodexProviderError | null = null;
           if (toolCalls === 0 && row.codex_adv_session_id != null) {
             const nativeError = await runWithWorkspace(row.routine_workspace_id, () =>
               readCodexProviderErrorAfter(row.codex_adv_session_id!, lastFiredMs),
@@ -2250,14 +2250,27 @@ export async function reconcileLoopRoutines(
               );
               return null;
             });
-            if (nativeError && /usage.?limit|quota/i.test(nativeError.code)) {
-              nativeCodexUsageFailure = nativeError;
-              const text = `You've hit your usage limit${nativeError.message ? `: ${nativeError.message}` : ''}`;
+            if (nativeError) {
+              nativeCodexFailure = nativeError;
+              const code = `${nativeError.code} ${nativeError.rawCode}`;
+              const message = nativeError.message?.trim() ?? '';
+              // Native Codex terminal records bypass session_turns ingestion, so they do not
+              // leave assistant text for classifyLoopLifecycleTurn to inspect. Synthesize the
+              // same machine-shaped text for every provider admission failure: usage/quota keeps
+              // its reset-aware path, capacity keeps the shared one-minute floor, and the other
+              // provider failures use the existing API-error model_error taxonomy. Previously
+              // only usage/quota was synthesized, so server_overloaded/provider_error settled as
+              // healthy zero-tool fires and re-armed on the blind interval.
+              const text = /usage.?limit|quota/i.test(code)
+                ? `You've hit your usage limit${message ? `: ${message}` : ''}`
+                : isMachineModelErrorText(message)
+                  ? message
+                  : `API Error: Request rejected (${nativeError.code})${message ? `: ${message}` : ''}`;
               turnDeath = classifyLoopLifecycleTurn(text, intervalMs, nowMs);
               if (turnDeath) {
                 // Keep the native machine cause in the lifecycle escalation. The synthesized
-                // prose above classifies the wall and reset time, but otherwise erases the
-                // provider code that distinguished this failure from a generic usage-limit turn.
+                // prose above supplies the existing lifecycle taxonomy, but otherwise erases the
+                // provider code that distinguished this failure from a generic turn death.
                 turnDeath = {
                   ...turnDeath,
                   evidence:
@@ -2286,9 +2299,9 @@ export async function reconcileLoopRoutines(
               `zero-tool escalation (WI-41228): ${observation.streak} consecutive dispatched turns ` +
               `recorded zero agent-authored tool calls (threshold=${observation.threshold}, ` +
               `last_fire=${observation.fireToken})` +
-              (nativeCodexUsageFailure
-                ? `; native Codex ${nativeCodexUsageFailure.source} reported code=${nativeCodexUsageFailure.code}` +
-                  (nativeCodexUsageFailure.retryAt ? `, retry hint=${nativeCodexUsageFailure.retryAt}` : '')
+              (nativeCodexFailure
+                ? `; native Codex ${nativeCodexFailure.source} reported code=${nativeCodexFailure.code}` +
+                  (nativeCodexFailure.retryAt ? `, retry hint=${nativeCodexFailure.retryAt}` : '')
                 : '');
             // Pause FIRST so this fire cannot be re-armed below. Then reuse the existing terminal
             // path for attributed fire history, ghost-await cancellation, deduped human escalation,

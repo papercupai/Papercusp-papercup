@@ -20,7 +20,7 @@
  * lint-migrations.mjs, and migration-drift.ts's `isRunnerMigration`) — and
  * hands back the shared linted no-clobber command to arm it.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -32,6 +32,7 @@ import {
   armMigration,
   buildAllocationResult,
   describeReservationTarget,
+  main,
   resolveReservationTarget,
   verifyConnectedDatabaseName,
 } from '../../../scripts/next-migration.mjs';
@@ -294,6 +295,33 @@ describe('buildAllocationResult (EI-19366138707071397 — DRAFT-suffix contract)
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('db:next-migration ARM FAILED — A .sql.DRAFT path is required.');
     expect(result.stderr).not.toContain('could not reach the reservation ledger');
+  });
+
+  it('refuses --dry-run with --arm before calling the mutating arm path', async () => {
+    const sqlDir = join(REPO_ROOT, 'libs/papercusp/libs/db/sql');
+    const draftPath = join(sqlDir, `${Date.now()}-dry-run-arm-preview.sql.DRAFT`);
+    const armPath = draftPath.slice(0, -'.DRAFT'.length);
+    expect(existsSync(draftPath)).toBe(false);
+    expect(existsSync(armPath)).toBe(false);
+
+    const originalExitCode = process.exitCode;
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const arm = vi.fn<typeof armMigration>();
+    let result: { status: typeof process.exitCode; stderr: string } = { status: undefined, stderr: '' };
+    try {
+      await main(['--arm', draftPath, '--dry-run'], arm);
+      result = { status: process.exitCode, stderr: error.mock.calls.flat().join('\n') };
+    } finally {
+      process.exitCode = originalExitCode;
+      error.mockRestore();
+    }
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(
+      'db:next-migration REFUSED — --dry-run cannot be combined with --arm; no migration file was changed.',
+    );
+    expect(result.stderr).not.toContain('could not reach the reservation ledger');
+    expect(existsSync(draftPath)).toBe(false);
+    expect(existsSync(armPath)).toBe(false);
   });
 
   it('refuses to arm a draft that fails the boot pre-apply lint and leaves it unchanged', async () => {

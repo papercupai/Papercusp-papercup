@@ -773,6 +773,81 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
 describe('durable detached snapshot lifecycle', () => {
   type Sql = Parameters<Store['persistRunSnapshot']>[1];
 
+  it('retains running output across observer restart before the child closes', async () => {
+    vi.stubEnv('PAPERCUSP_TEST_RUNS_PERSIST', '1');
+    vi.useFakeTimers();
+    let durable: Record<string, unknown> | undefined;
+    const writes: Record<string, unknown>[] = [];
+    persistSqlMock.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = strings.join(' ');
+      if (statement.includes('INSERT INTO harness_shared.testing_run_snapshots')) {
+        durable = insertedColumns(strings, values);
+        writes.push({ ...durable });
+      }
+      if (statement.includes('FROM harness_shared.testing_run_snapshots AS snapshot')) {
+        return durable ? [{ ...durable, task_state: 'running', task_deadline_at: null }] : [];
+      }
+      return [];
+    });
+    try {
+      const run = store.startRun(req());
+      await vi.advanceTimersByTimeAsync(0);
+      lastChild._emitStdout('ADMISSION_HTTP_PHASE preparing-private-runtime\n');
+      lastChild._emitStdout('x'.repeat(20 * 1024) + '\nADMISSION_HTTP_PHASE waiting-for-precheck\n');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(writes).toHaveLength(2); // initial snapshot and one coalesced progress write
+      expect(durable).toMatchObject({ status: 'running', finished_at: null, truncated: true });
+      expect(String(durable?.output)).toHaveLength(16 * 1024);
+      expect(String(durable?.output)).toContain('waiting-for-precheck');
+
+      vi.resetModules(); // lose the observer's local run map, without a child close notification
+      const restarted = await import('./testing-run-store');
+      const recovered = await restarted.getRunAsync(run.runId, persistSqlMock as unknown as Sql);
+      expect(recovered).toMatchObject({ status: 'running', exitCode: null, finishedAt: null, truncated: true });
+      expect(recovered?.output).toBe(durable?.output);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('serializes an in-flight progress write before the terminal snapshot', async () => {
+    vi.stubEnv('PAPERCUSP_TEST_RUNS_PERSIST', '1');
+    vi.useFakeTimers();
+    let releaseProgress: (() => void) | undefined;
+    const writes: Record<string, unknown>[] = [];
+    persistSqlMock.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (!strings.join(' ').includes('INSERT INTO harness_shared.testing_run_snapshots')) return [];
+      const row = insertedColumns(strings, values);
+      if (row.status === 'running' && row.output === 'last observed phase\n') {
+        await new Promise<void>(resolve => { releaseProgress = resolve; });
+      }
+      writes.push(row);
+      return [];
+    });
+    try {
+      const run = store.startRun(req());
+      await vi.advanceTimersByTimeAsync(0);
+      lastChild._emitStdout('last observed phase\n');
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(releaseProgress).toBeTypeOf('function');
+      lastChild._emitClose(1);
+      // The caller's persistence budget can expire while SQL is still live.
+      // Terminal SQL must remain queued behind that actual settlement.
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(writes.some(row => row.status === 'fail')).toBe(false);
+      releaseProgress!();
+      await vi.advanceTimersByTimeAsync(0);
+      const ended = await store.getRunAsync(run.runId);
+      expect(ended).toMatchObject({ status: 'fail', exitCode: 1, output: 'last observed phase\n' });
+      expect(writes.map(row => row.status)).toEqual(['running', 'running', 'fail']);
+    } finally {
+      releaseProgress?.();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.each([
     { name: 'running snapshot', status: 'running', expected: 'pass' },
     { name: 'prior no-verdict error', status: 'error', expected: 'pass' },
@@ -995,15 +1070,18 @@ describe('durable detached snapshot lifecycle', () => {
     }
   });
 
-  it('retries initial snapshot persistence after the foreground durability budget expires', async () => {
+  it('waits for timed-out initial snapshot SQL to settle before retrying', async () => {
     vi.useFakeTimers();
     try {
       let attempts = 0;
+      let rejectInitial!: (reason: Error) => void;
       let releaseRetry!: () => void;
       let retrySettled = false;
       const sql = vi.fn(async () => {
         attempts += 1;
-        if (attempts === 1) return new Promise<unknown[]>(() => {});
+        if (attempts === 1) return new Promise<unknown[]>((_resolve, reject) => {
+          rejectInitial = reject;
+        });
         if (attempts === 2) {
           return new Promise<unknown[]>((resolve) => {
             releaseRetry = () => {
@@ -1019,9 +1097,16 @@ describe('durable detached snapshot lifecycle', () => {
       await vi.advanceTimersByTimeAsync(store.DETACHED_RUN_DURABILITY_RESPONSE_BUDGET_MS + 1);
       const result = await pending;
 
-      // The child-first response contract remains intact even while the
-      // background retry is waiting on a recovered database attempt.
+      // Returning the child handle does not cancel the still-live SQL. A
+      // concurrent retry must not overtake it and later overwrite progress.
       expect(result.durable).toBe(false);
+      expect(attempts).toBe(1);
+      expect(retrySettled).toBe(false);
+
+      // Once the original attempt actually fails, the already-scheduled
+      // bounded retry can use the recovered database and settle independently.
+      rejectInitial(new Error('initial snapshot connection closed'));
+      await vi.advanceTimersByTimeAsync(store.DETACHED_RUN_DURABILITY_RETRY_DELAYS_MS[0]);
       expect(attempts).toBe(2);
       expect(retrySettled).toBe(false);
 

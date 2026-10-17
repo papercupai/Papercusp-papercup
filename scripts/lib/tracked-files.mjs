@@ -233,6 +233,16 @@ export function declaredSubmodules(cwd = ROOT) {
     .sort();
 }
 
+/** Submodule paths registered in the superproject's local .git/config. */
+function registeredSubmodules(cwd = ROOT) {
+  return gitLines('config --get-regexp ^submodule', cwd)
+    .map((line) => line.split(/\s+/, 2)[0])
+    .filter((key) => key.startsWith('submodule.') && key.endsWith('.url'))
+    .map((key) => key.slice('submodule.'.length, -'.url'.length))
+    .filter(Boolean)
+    .sort();
+}
+
 /**
  * Every tracked file in the superproject AND in each checked-out submodule, as
  * superproject-relative paths.
@@ -399,6 +409,15 @@ function hasContentOnDisk(path, cwd) {
   }
 }
 
+/** True when a checked-out submodule directory carries its own Git metadata. */
+function hasGitMetadataOnDisk(path, cwd) {
+  try {
+    return lstatSync(join(cwd, path, '.git'), { throwIfNoEntry: false }) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * One-line coverage suffix for a guard's success message, so a ✓ always states
  * what it did NOT look at. Returns '' when every declared submodule was scanned.
@@ -438,8 +457,9 @@ function hasContentOnDisk(path, cwd) {
  *
  * The suffix therefore names the shape it actually found:
  *
- *   present-on-disk-but-not-enumerable → archive-extracted / worktree (BY DESIGN)
- *   absent-from-disk                   → genuinely not initialized
+ *   present-on-disk with own .git but no local registration → NOT REGISTERED
+ *   present-on-disk without .git       → archive-extracted / worktree (BY DESIGN)
+ *   absent-from-disk                    → genuinely not initialized
  *
  * Reporting the RATIO is the load-bearing part: `0/39` cannot be misread as
  * clean, whereas a bare ✓ over an empty scan reads exactly like a pass.
@@ -455,6 +475,12 @@ export function describeUnscanned(unscannedOrScan, cwd = ROOT) {
     ? unscannedOrScan.unscannedPresent
     : unscanned.filter((p) => hasContentOnDisk(p, cwd));
   const absent = unscanned.filter((p) => !present.includes(p));
+  const registered = new Set(registeredSubmodules(cwd));
+  const pathKey = (path) => path.endsWith('/') ? path.slice(0, -1) : path;
+  const notRegistered = present.filter(
+    (path) => hasGitMetadataOnDisk(path, cwd) && !registered.has(pathKey(path)),
+  );
+  const archiveExtracted = present.filter((path) => !notRegistered.includes(path));
 
   // Cap the name list: in a release-shaped tree EVERY submodule lands in one
   // bucket for one by-design reason, and printing 39 paths every run buries the
@@ -463,10 +489,16 @@ export function describeUnscanned(unscannedOrScan, cwd = ROOT) {
     list.length <= 4 ? list.join(', ') : `${list.slice(0, 4).join(', ')} +${list.length - 4} more`;
 
   const parts = [];
-  if (present.length > 0) {
+  if (notRegistered.length > 0) {
     parts.push(
-      `${present.length} present on disk but NOT git-enumerable — archive-extracted release checkout ` +
-        `or linked worktree (no .git, so --recurse-submodules cannot descend), BY DESIGN: ${names(present)}`,
+      `${notRegistered.length} present on disk but NOT registered with the superproject — ` +
+        `own .git metadata exists, but submodule.<path>.url is absent from .git/config: ${names(notRegistered)}`,
+    );
+  }
+  if (archiveExtracted.length > 0) {
+    parts.push(
+      `${archiveExtracted.length} present on disk but NOT git-enumerable — archive-extracted release checkout ` +
+        `or linked worktree (no .git, so --recurse-submodules cannot descend), BY DESIGN: ${names(archiveExtracted)}`,
     );
   }
   if (absent.length > 0) parts.push(`${absent.length} not initialized: ${names(absent)}`);

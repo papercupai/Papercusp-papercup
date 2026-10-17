@@ -1,22 +1,30 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { CompletionRecordSchema } from '../coord-lifecycle/records';
-import { evaluateConformanceClosure, type ConformanceClosureDeps, type RequirementClosureDeclaration } from './closure-guard';
+import {
+  evaluateConformanceClosure,
+  evaluateConformanceClosureAssessment,
+  type ConformanceClosureDeps,
+  type RequirementClosureDeclaration,
+} from './closure-guard';
 import type { ConformanceCheckVerdict, OpenDriftAlarm } from './conformance-run';
 
-function requirement(key: string, manual = false): string {
+function requirement(key: string, manual = false, withoutCheck = false): string {
+  const verification = withoutCheck
+    ? { method: 'The check is not available yet.' }
+    : { method: 'Run the check.', check: manual ? { kind: 'instrument', instrumentKey: 'none' } : { kind: 'tests', files: ['fixture.test.ts'] } };
   return `**${key} — Outcome.**\n\`\`\`requirement\n${JSON.stringify({
     intent: { request: `Deliver ${key}.`, sourceRefs: ['P-001'] },
     acceptance: { condition: `${key} holds.`, falsifier: `${key} fails.` },
-    verification: { method: 'Run the check.', check: manual ? { kind: 'instrument', instrumentKey: 'none' } : { kind: 'tests', files: ['fixture.test.ts'] } },
+    verification,
   })}\n\`\`\`\n`;
 }
-function plan(options: { manual?: boolean; malformed?: boolean; deviation?: 'proposed' | 'approved' } = {}): string {
+function plan(options: { manual?: boolean; malformed?: boolean; deviation?: 'proposed' | 'approved'; withoutCheck?: 'R-1' | 'R-2' } = {}): string {
   const proposal = { op: 'propose', requirement: 'R-1', reason: 'Replaced.', proposedBy: 'su-test' };
   const approval = { op: 'approve', requirement: 'R-1', proposal: 'D-001', approvedBy: 'su-test', ownerSourced: false };
   const decisions = options.deviation ? `### D-001 — Proposal\n\`\`\`deviation\n${JSON.stringify(proposal)}\n\`\`\`\n` +
     (options.deviation === 'approved' ? `### D-002 — Approval\n\`\`\`deviation\n${JSON.stringify(approval)}\n\`\`\`\n` : '') : '';
-  return `---\nslug: fixture\nstatus: active\n---\n## Requirements\n${requirement('R-1', options.manual)}${requirement('R-2')}
+  return `---\nslug: fixture\nstatus: active\n---\n## Requirements\n${requirement('R-1', options.manual, options.withoutCheck === 'R-1')}${requirement('R-2', false, options.withoutCheck === 'R-2')}
 ## Design
 ### Bar-to-work map for this plan
 | bar | implementing plan items | evidence plane |
@@ -35,7 +43,9 @@ function world(verdict: ConformanceCheckVerdict | null = 'pass', alarms: OpenDri
   const deps: ConformanceClosureDeps = { listOpenDriftAlarms: vi.fn(async () => alarms), readDoneWhenVerdict: vi.fn(async () => verdict) };
   const run = (completion: RequirementClosureDeclaration, planContent = plan(), planItemIds = ['P-001']) =>
     evaluateConformanceClosure({ completion, planContent, planItemIds }, deps);
-  return { deps, run };
+  const assess = (completion: RequirementClosureDeclaration, planContent = plan(), planItemIds = ['P-001']) =>
+    evaluateConformanceClosureAssessment({ completion, planContent, planItemIds }, deps);
+  return { deps, run, assess };
 }
 describe('spec-discharging closure (R-16/R-18/R-19)', () => {
   it.each(['plan.md', 'report.md'])('lets the shipped bug-triage %s close only with executable passing proof', async (file) => {
@@ -55,6 +65,26 @@ describe('spec-discharging closure (R-16/R-18/R-19)', () => {
     expect(await w.run({})).toMatchObject({ code: 'conformance_requirements_missing', requirements: ['R-1'] });
     expect(w.deps.readDoneWhenVerdict).not.toHaveBeenCalled();
     expect(w.deps.listOpenDriftAlarms).not.toHaveBeenCalled();
+  });
+  it('returns mapped and declared requirement keys alongside the refusal assessment', async () => {
+    const assessment = await world().assess({ contributesTo: ['R-999'] });
+    expect(assessment).toMatchObject({
+      applicable: true,
+      mappedRequirements: ['R-1'],
+      declaredRequirements: ['R-999'],
+      declarationSatisfied: false,
+      refusal: { code: 'conformance_requirement_unmapped', requirements: ['R-999'] },
+    });
+  });
+  it('returns declaration metadata when the mapped requirement passes', async () => {
+    const assessment = await world().assess({ discharges: ['R-1'], contributesTo: ['R-1'] });
+    expect(assessment).toMatchObject({
+      applicable: true,
+      mappedRequirements: ['R-1'],
+      declaredRequirements: ['R-1'],
+      declarationSatisfied: true,
+      refusal: null,
+    });
   });
   it('allows a passing discharged requirement', async () => {
     const w = world();
@@ -88,6 +118,19 @@ describe('spec-discharging closure (R-16/R-18/R-19)', () => {
     const w = world('fail');
     expect(await w.run({}, plan(), ['P-003'])).toBeNull();
     expect(w.deps.listOpenDriftAlarms).not.toHaveBeenCalled();
+  });
+  it('does not block a mapped item on an unrelated requirement that is unenforced', async () => {
+    const w = world('pass');
+    expect(await w.run({ discharges: ['R-1'] }, plan({ withoutCheck: 'R-2' }), ['P-001'])).toBeNull();
+    expect(w.deps.readDoneWhenVerdict).toHaveBeenCalledOnce();
+  });
+  it('returns the mapped requirement keys when a plan-level blocker applies to this item', async () => {
+    const assessment = await world('pass').assess({ discharges: ['R-1'] }, plan({ withoutCheck: 'R-1' }), ['P-001']);
+    expect(assessment).toMatchObject({
+      applicable: true,
+      mappedRequirements: ['R-1'],
+      refusal: { code: 'conformance_contract_invalid', requirements: ['R-1'] },
+    });
   });
   it('does not require manual checks to have executable results', async () => {
     const w = world(null);

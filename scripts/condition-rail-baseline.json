@@ -136,6 +136,26 @@
         "reason": "pure goal-plan-fleet verdict builder: returns keyed checks consumed by publishGoalDrainChecks; this function does not publish an alarm or health snapshot"
       },
       "evidenceRef": "WI-6554700010008687/D-077-goal-drain-producer-cases"
+    },
+    {
+      "rowId": "log-only-fallback|apps/operator/scripts/ptool.mjs|main|3",
+      "author": "durable-spawn:launch:papercusp:release-fix:release-fixer:1792226770141",
+      "reason": "explicit safety refusal: rejects a write on an alternate operator and exits with failure before dispatch; no fallback decision is performed at this site",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "explicit safety refusal: rejects a write on an alternate operator and exits with failure before dispatch; no fallback decision is performed at this site"
+      },
+      "evidenceRef": "WI-6554700010016778: verified fail-closed branch and fresh lint reproduction"
+    },
+    {
+      "rowId": "log-only-fallback|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts|runProjectHistoryRefreshAction|1",
+      "author": "durable-spawn:launch:papercusp:release-fix:release-fixer:1792226770141",
+      "reason": "explicit missing-CLI precondition refusal: records failed project history health and returns without running an ambient PATH lookup; no fallback is performed",
+      "change": {
+        "disposition": "not-applicable",
+        "reason": "explicit missing-CLI precondition refusal: records failed project history health and returns without running an ambient PATH lookup; no fallback is performed"
+      },
+      "evidenceRef": "WI-6554700010016778: verified fail-closed branch and fresh lint reproduction"
     }
   ]
 }

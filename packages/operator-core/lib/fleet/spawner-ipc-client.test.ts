@@ -112,6 +112,41 @@ describe('SpawnerIpcClient — id-correlated request/response', () => {
     await expect(client.call('boom')).rejects.toThrow(/RPC error -32001: kaboom/);
   });
 
+  it('scans fragmented large responses in linear work before resolving the exact result', async () => {
+    let assignId!: (id: number) => void;
+    const assigned = new Promise<number>((resolve) => { assignId = resolve; });
+    // The server leaves this request pending. Deliver deterministic socket chunks
+    // ourselves: real writes can coalesce and hide the growing-prefix rescan.
+    const response = client.call<{ output: string }>('hang', {}, {
+      onRequestId: assignId,
+      timeoutMs: 5000,
+    });
+    const id = await assigned;
+    const socket = (client as unknown as { socket: net.Socket | null }).socket;
+    if (!socket) throw new Error('client socket missing before fragmented response');
+    const output = 'x'.repeat(256 * 1024);
+    const wire = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id, result: { output } }) + '\n');
+    const indexOf = String.prototype.indexOf;
+    let scannedCharacters = 0;
+    const scan = vi.spyOn(String.prototype, 'indexOf').mockImplementation(function (
+      this: string, search: string, position?: number,
+    ) {
+      if (search === '\n') scannedCharacters += Math.max(0, this.length - (position ?? 0));
+      return indexOf.call(this, search, position);
+    });
+    try {
+      for (let offset = 0; offset < wire.length; offset += 1024) {
+        socket.emit('data', wire.subarray(offset, offset + 1024));
+      }
+    } finally {
+      scan.mockRestore();
+    }
+    expect(await response).toEqual({ output });
+    // Bound deterministic parser work, rather than elapsed time on a busy host.
+    // JSON parsing sees the same complete frame regardless of chunk boundaries.
+    expect(scannedCharacters).toBeLessThanOrEqual(wire.length * 2);
+  });
+
   it('logs socket-error correlation without RPC params', async () => {
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const accepted: net.Socket[] = [];

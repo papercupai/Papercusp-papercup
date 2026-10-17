@@ -15,12 +15,13 @@
  * every reviewed kind) is subject to the worker's review policy.
  */
 import { z } from 'zod';
+import { withSubmissionReceipt } from '../../cupboard/submission-receipt';
 import { defineTool } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 // { data } shape: the framework owns wire encoding (tool-data-shape ratchet, WI-10002555).
-const text = (payload: Record<string, unknown>) => ({ data: payload });
+const text = (payload: Record<string, unknown>) => ({ data: withSubmissionReceipt(payload) });
 
 export default defineTool({
   name: 'cupboard:publish-plugin',

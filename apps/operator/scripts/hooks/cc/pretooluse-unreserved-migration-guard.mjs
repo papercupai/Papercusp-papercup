@@ -236,13 +236,20 @@ export function migrationTargetFrom(filePath) {
  * (env → .env.local → embedded-pg discovery → native :5432) and the repo's own
  * `postgres` — so the guard reads the SAME database the lint will judge against.
  */
+export function reservationDatabaseRoot(repoRoot) {
+  // Match next-migration.mjs: the operator sources apps/operator/.env.local.
+  // The repository root may have no DSN, causing discovery to select a
+  // sidecar database that cannot know the operator's reservation ledger.
+  return join(repoRoot, 'apps', 'operator');
+}
+
 async function lookupNumber({ num, repoRoot, sqlName }) {
   let sql;
   try {
     const { resolveScriptPgUrl } = await import(
       pathToFileURL(join(repoRoot, 'scripts', 'lib', 'pg-url.mjs')).href
     );
-    const url = resolveScriptPgUrl({ root: repoRoot }).url;
+    const url = resolveScriptPgUrl({ root: reservationDatabaseRoot(repoRoot) }).url;
     const require = createRequire(pathToFileURL(join(repoRoot, 'package.json')).href);
     const postgres = (await import(pathToFileURL(require.resolve('postgres')).href)).default;
     sql = postgres(url, { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });

@@ -341,6 +341,8 @@ export interface OrientArgs {
   planSlug?: string | null;
   /** Plan items to CLAIM as your lane (used with `intent` + `planSlug`). */
   planItems?: string[];
+  /** Explicit repository paths for a no-claim intent brief. */
+  currentFiles?: string[];
   /** Max memory hits to fold (default 5, hard-capped 10). */
   memoryLimit?: number;
   /** Opt into closed memory validity windows for an explicit history recall. */
@@ -641,6 +643,7 @@ export interface OrientResult {
   /** Whether the optional coord:declare-intent succeeded (present only when
    *  `intent` was passed; false = the caller lacked coord:write). */
   intentDeclared?: boolean;
+  taskBrief?: import('../../../code-intelligence/task-brief').TaskBrief;
   /** EI-20013545515660920: the OUTCOME of the `planItems` lane claim that
    *  coord:declare-intent performs on this call's behalf. Present only when
    *  `planItems` was passed.
@@ -1190,10 +1193,11 @@ export async function composeOrient(
     }
   }
   // EI-21239843876346650: a post-compaction successor can recover a durable fleet
-  // route after the live presence projection was resolved. That route is authoritative
-  // for THIS call's roster scope: the old self-only read made a live peer look absent
-  // and enabled a destructive false reclaim. Keep this await before the first
-  // fleet:assignments call, and disclose the widened scope in the core result.
+  // route after the live presence projection was resolved. A recovered leader needs
+  // the fleet roster so a live peer cannot look absent and be falsely reclaimed.
+  // Other roles keep the bounded self-assignment query: they need their own claims,
+  // not peer liveness. Keep this await before the assignments call and disclose the
+  // recovered membership in the core result.
   let recoveredFleetMembership: RecoveredFleetScope | null = null;
   let recoveredFleetScope: OrientResult['recoveredFleetScope'];
   if (args.afterCompaction === true && recoveredFleetScopeFold) {
@@ -1208,7 +1212,7 @@ export async function composeOrient(
           note:
             `RECOVERED FLEET SCOPE: the post-compaction control anchor named fleet ` +
             `'${recovered.fleetSlug}' (role '${recovered.fleetRole ?? 'unknown'}'). ` +
-            "Assignment visibility follows the caller's role-specific scope; self-only readers remain self-scoped.",
+            "Leaders read the fleet roster to preserve peer visibility; other roles remain self-scoped.",
         };
       }
     } catch {
@@ -1225,14 +1229,14 @@ export async function composeOrient(
   // result assembly so their latencies overlap. Publish its early snapshot
   // on settlement even if the backlog chain is still waiting.
   const mePromise = withBoundedTimeout(
-    call('fleet:assignments', {
-      ...(recoveredFleetMembership
+    (signal) => call('fleet:assignments', {
+      ...(recoveredFleetMembership?.fleetRole === 'leader'
         ? { fleet: recoveredFleetMembership.fleetSlug, detail: 'snapshot' }
         : ownerId
-          ? { agent: ownerId }
+          ? { agent: ownerId, detail: 'snapshot' }
           : {}),
       ...(args.harness ? { harness: args.harness } : {}),
-    }),
+    }, signal),
     {
       fallback: { ok: false, degraded: true, agents: [] } as unknown,
       timeoutMs: ORIENT_FLEET_LEG_TIMEOUT_MS,
@@ -1295,18 +1299,28 @@ export async function composeOrient(
     const o = v as { claimable?: unknown[]; data?: unknown[]; items?: unknown[] } | null;
     return o?.claimable ?? o?.data ?? o?.items ?? [];
   };
-  const listLane = (extra: Record<string, unknown>) =>
+  const listLane = (extra: Record<string, unknown>) => (signal: AbortSignal) =>
     call('work_items:list', {
       ...(args.harness ? { harness: args.harness } : {}),
       state: claimableStateArg,
       limit: claimableLimit,
       admissibleOnly: true,
       ...extra,
-    });
+      // WI-6554700010010580: orient's in-process dispatch intentionally clears the
+      // ambient payload tier. Keep this backlog fold source-lean explicitly so
+      // PostgreSQL never materializes large body/payload JSONB values before the
+      // compound result is shaped.
+      includeBody: false,
+      includePayload: false,
+    }, signal);
   /** EI-21127719036550806: bound a core orient leg to ORIENT_CORE_LEG_TIMEOUT_MS,
    *  degrading to `fallback` on EITHER a hang or a rejection — one call site for the
    *  same fail-open contract every other WI-3818 leg already gets. */
-  const boundedCore = <T>(work: Promise<T>, fallback: T, label: string): Promise<T> =>
+  const boundedCore = <T>(
+    work: Promise<T> | ((signal: AbortSignal) => Promise<T>),
+    fallback: T,
+    label: string,
+  ): Promise<T> =>
     withBoundedTimeout(work, { fallback, timeoutMs: ORIENT_CORE_LEG_TIMEOUT_MS, label }).then((r) => r.value);
   let list: unknown;
   /** EI-20113865649946366 — the AUTHORITATIVE issue-family claimable population, taken
@@ -1336,17 +1350,17 @@ export async function composeOrient(
   } else {
     const [issueRes, featureRows] = await Promise.all([
       boundedCore(
-        call('work_items:claimable', {
+        (signal) => call('work_items:claimable', {
           harness: args.harness,
           limit: claimableLimit,
           // Only override the oracle's state floor when the caller asked for one —
           // otherwise the resolved claim-spec's own states win, as get_next uses them.
           ...(args.claimableState ? { states: [args.claimableState] } : {}),
-        }),
+        }, signal),
         null,
         'orient:claimable:issues',
       ),
-      boundedCore(listLane({ kind: 'feature' }).then(unwrapRows), null, 'orient:claimable:features'),
+      boundedCore((signal) => listLane({ kind: 'feature' })(signal).then(unwrapRows), null, 'orient:claimable:features'),
     ]);
     // Unwrap AFTER capturing the count — the count lives on the envelope `unwrapRows`
     // throws away. `null` (the caught failure) must stay distinguishable from `[]`
@@ -1408,10 +1422,10 @@ export async function composeOrient(
     inboxLimit === 0
       ? undefined
       : ((await boundedCore(
-          call('coord:inbox', {
+          (signal) => call('coord:inbox', {
             limit: inboxLimit,
             max_body_chars: args.afterCompaction ? 800 : 300,
-          }),
+          }, signal),
           undefined,
           'orient:coord:inbox',
         )) as { summary?: unknown; entries?: unknown } | undefined);
@@ -1448,12 +1462,12 @@ export async function composeOrient(
         .filter((id): id is string => typeof id === 'string' && id.length > 0);
       if (ids.length > 0) {
         const obs = (await boundedCore(
-          call('work_items:observe', {
+          (signal) => call('work_items:observe', {
             ids,
             ...((claimableHarnessScope?.resolved ?? args.harness)
               ? { harness: claimableHarnessScope?.resolved ?? args.harness }
               : {}),
-          }),
+          }, signal),
           undefined,
           'orient:claimable:observe',
         )) as { results?: Array<{ id: string; ok?: boolean; available?: boolean }> } | undefined;
@@ -1582,12 +1596,12 @@ export async function composeOrient(
   if (effectiveFleetMembership?.fleetRole === 'leader' && effectiveFleetMembership.fleetSlug) {
     const fleetSlug = effectiveFleetMembership.fleetSlug;
     const leaderBriefFold = await withBoundedTimeout(
-      (async () => {
+      (signal) => (async () => {
         try {
           const brief = await call('fleet:leader-brief', {
             fleet: fleetSlug,
             ...(args.harness ? { harness: args.harness } : {}),
-          });
+          }, signal);
       // P-015: hydrate the EXISTING leader brief instead of introducing a parallel
       // monitor surface. These are authoritative reads a leader otherwise re-calls
       // immediately after orient; each remains independently fail-soft.
@@ -1599,7 +1613,7 @@ export async function composeOrient(
       try {
         claimSpec = await call('scheduler:get_claim_spec', {
           fleet: effectiveFleetMembership.fleetSlug,
-        });
+        }, signal);
         hydrated.claimSpec = claimSpec;
       } catch {
         hydrated.claimSpec = null;
@@ -1621,7 +1635,7 @@ export async function composeOrient(
           const scoped = await call('work_items:burn_down', {
             harness: cohortHarness,
             ids: cohortIds.slice(0, 200),
-          });
+          }, signal);
           hydrated.scopedBurndown = scoped;
           const allowed = new Set(cohortIds);
           const members = Array.isArray(hydrated.members) ? (hydrated.members as Array<Record<string, unknown>>) : [];
@@ -1659,7 +1673,7 @@ export async function composeOrient(
       try {
         hydrated.walls = await call('coord:walls', {
           ...(args.harness ? { harness: args.harness } : {}),
-        });
+        }, signal);
       } catch {
           hydrated.walls = null;
       }
@@ -1839,12 +1853,12 @@ export async function composeOrient(
   // coord:whoami sub-call; full mode keeps the existing whoami fold.
   let fleetSlug: string | null = monitor ? (fleetMembership?.fleetSlug ?? null) : null;
   if (!monitor) {
-    try {
-      const who = (await call('coord:whoami', {})) as { fleetSlug?: string | null } | undefined;
-      fleetSlug = who?.fleetSlug ?? null;
-    } catch {
-      fleetSlug = null;
-    }
+    const who = await boundedCore(
+      (signal) => call('coord:whoami', {}, signal) as Promise<{ fleetSlug?: string | null } | undefined>,
+      undefined,
+      'orient:coord:whoami',
+    );
+    fleetSlug = who?.fleetSlug ?? null;
   }
 
   // ── standing-facts fold (queen-memory-hybrid L1c) — the deterministic sibling of
@@ -2074,11 +2088,11 @@ export async function composeOrient(
     // `undefined` here would otherwise read downstream as "zero events happened",
     // which is a false empty rather than the honest "this leg did not answer".
     const peResult = await withBoundedTimeout(
-      call('coord:plan-events', {
+      (signal) => call('coord:plan-events', {
         ...(args.planEventsSince ? { since_ts: args.planEventsSince } : {}),
         ...(effectivePlanSlug ? { plan_slug: effectivePlanSlug } : {}),
         limit: PLAN_EVENTS_FOLD,
-      }) as Promise<{ events?: unknown[]; total?: number } | undefined>,
+      }, signal) as Promise<{ events?: unknown[]; total?: number } | undefined>,
       { fallback: undefined, timeoutMs: ORIENT_CORE_LEG_TIMEOUT_MS, label: 'orient:coord:plan-events' },
     );
     if (peResult.degraded) {
@@ -2122,7 +2136,7 @@ export async function composeOrient(
   // other fan-out leg — a slow plans:get must never block orient past budget.
   if (!monitor) {
     const planNowResult = await withBoundedTimeout(
-      (async () => {
+      (signal) => (async () => {
         if (!effectivePlanSlug) return null;
         const planRes = (await call('plans:get', {
           slug: effectivePlanSlug,
@@ -2132,7 +2146,7 @@ export async function composeOrient(
           // omits `harness` silently lost the whole leg. 'all' is the
           // documented cross-harness scope and resolves a plan by slug.
           harness: args.harness ?? 'all',
-        })) as
+        }, signal)) as
           | {
               results?: Array<{
                 now?: { state?: string | null; next?: string | null } | null;
@@ -2305,10 +2319,19 @@ export async function composeOrient(
       // positive limit, so skip the fold instead of forwarding an invalid request.
       if (cuLimit > 0) {
         try {
-          const cu = (await call('coord:catch-up', {
+          const cuResult = await withBoundedTimeout((signal) => call('coord:catch-up', {
             audience: `@fleet:${fleetSlug}`,
             limit: cuLimit,
-          })) as { total?: number; rows?: unknown[] } | undefined;
+          }, signal).catch(() => undefined) as Promise<{ total?: number; rows?: unknown[] } | undefined>, {
+            fallback: undefined,
+            timeoutMs: ORIENT_FLEET_LEG_TIMEOUT_MS,
+            label: 'orient:coord:catch-up',
+          });
+          if (cuResult.degraded || cuResult.value === undefined) {
+            result.fleetCatchUp = null;
+            throw new Error('coord:catch-up timed out');
+          }
+          const cu = cuResult.value;
           const rows = Array.isArray(cu?.rows) ? (cu!.rows as unknown[]) : [];
           const total = typeof cu?.total === 'number' ? cu.total : rows.length;
           const recent = rows.slice(0, cuLimit);
@@ -2340,7 +2363,7 @@ export async function composeOrient(
       // 55s MCP client timeout; now degrades to null (same as the pre-existing
       // catch-based failure contract) within ORIENT_FLEET_LEG_TIMEOUT_MS.
       const glanceResult = await withBoundedTimeout(
-        call('coord:glance', { audience: 'su', activity_limit: 0 }) as Promise<
+        (signal) => call('coord:glance', { audience: 'su', activity_limit: 0 }, signal) as Promise<
           { bees?: unknown; wake?: unknown; governor?: unknown } | undefined
         >,
         { fallback: undefined, timeoutMs: ORIENT_FLEET_LEG_TIMEOUT_MS, label: 'orient:coord:glance' },
@@ -2664,7 +2687,7 @@ export async function composeOrient(
   // capability-gated at re-dispatch, so a read-only caller gets intentDeclared:false
   // rather than an escalation). BEST-EFFORT.
   if (args.intent) {
-    let declared: { claims?: unknown } | undefined;
+    let declared: { claims?: unknown; taskBrief?: import('../../../code-intelligence/task-brief').TaskBrief } | undefined;
     // `coord:orient.planItems` is intentionally permissive because recovery callers
     // can carry WI-/EI-/F- work-item refs in the same lane-shaped field. The nested
     // coord:declare-intent.items contract is narrower (P-NNN plan items only), so a
@@ -2703,6 +2726,7 @@ export async function composeOrient(
             ? { items: planItemsForDeclaration }
             : {}),
           ...(args.harness ? { harness: args.harness } : {}),
+          ...(args.currentFiles ? { current_files: args.currentFiles } : {}),
           ...(args.declared_goal_refs ? { declared_goal_refs: args.declared_goal_refs } : {}),
         }),
         { fallback: undefined, timeoutMs: declareTimeoutMs, label: 'orient:coord:declare-intent' },
@@ -2710,7 +2734,8 @@ export async function composeOrient(
       if (declareResult.degraded) {
         result.intentDeclared = false;
       } else {
-        declared = declareResult.value as { claims?: unknown } | undefined;
+        declared = declareResult.value as typeof declared;
+        if (declared?.taskBrief) result.taskBrief = declared.taskBrief;
         result.intentDeclared = true;
       }
     }
@@ -3342,6 +3367,8 @@ export default defineTool({
       .describe(
         'Optional typed goal refs explicitly covered by the declared intent — generated goal slugs and WI-/EI- work-item refs are accepted; blank and bare numeric refs are rejected. Omission preserves the untyped path.',
       ),
+    currentFiles: z.array(z.string()).max(20).optional()
+      .describe('Explicit repository-relative files for a bounded task brief when the declared intent has no held work-item.'),
     memoryQuery: z
       .string()
       .max(500)
@@ -3924,16 +3951,16 @@ export default defineTool({
           })()
         : undefined;
     const orientInnerCallBase = inProcessCall(ctx, { telemetrySurface: 'orient', ignoreSessionPayloadTier: true });
-    const orientInnerCall: InnerCall = async (name, callArgs) =>
+    const orientInnerCall: InnerCall = async (name, callArgs, signal) =>
       phaseTracker.track(`inner:${name}`, async () => {
         if (ctx.role === 'judge' && name === 'fleet:assignments') {
           const requestedHarness = (callArgs as Record<string, unknown>).harness;
           return orientInnerCallBase(name, {
             agent: 'self',
             ...(typeof requestedHarness === 'string' ? { harness: requestedHarness } : {}),
-          });
+          }, signal);
         }
-        return orientInnerCallBase(name, callArgs);
+        return orientInnerCallBase(name, callArgs, signal);
       });
     const fleetSummariesFold = readLedFleets
       ? async (homeFleetSlug: string, homeBrief: unknown | null | undefined) => {

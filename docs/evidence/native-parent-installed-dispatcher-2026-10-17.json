@@ -1,0 +1,269 @@
+{
+  "schemaVersion": 1,
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "parentWorkItem": "WI-6554700010016164",
+  "relatedClosedItem": "WI-6554700010015561",
+  "scope": "Parent acceptance witness for previously unrun installed dispatcher extension. The closed P038 item was read, not reopened. P039 intent/completion acceptance is separate.",
+  "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/native-p039-shared-installed-source-20261017.json npm run test:file -- packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts -- --testNamePattern='native P018 private operator CLI incident claim and resume'",
+  "exitCode": 0,
+  "log": "/tmp/native-p039-shared-installed-20261017.log",
+  "logSha256": "455f1b6197c0b53d3aef613c9095bb549e4cf87ad69514849360af43cd67bfd9",
+  "capture": "/tmp/native-p039-shared-installed-source-20261017.json",
+  "captureSha256": "d71cd6dbc0091c7b77aecf38a9b19b15409b6abd8019f51bc4596769713bb25d",
+  "recordedSha": "688eeab44276bd21b92a1bd393fdcfc8f373d551",
+  "selection": {
+    "passed": 1,
+    "failed": 0,
+    "skipped": 7,
+    "unhandledErrorCount": 0,
+    "testResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=688eeab442 uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-17T02:02:52.516Z childSubstituted=10 skippedTests=7"
+  },
+  "proof": {
+    "workspace": "test-runtime-043ec7bc-6c8",
+    "transport": "real-cli-http",
+    "failure": "actual-node-assertion",
+    "staticCandidate": true,
+    "cause": "unknown",
+    "runtimeExecution": "unmeasured",
+    "resume": "current",
+    "repaired": true,
+    "push": {
+      "delivered": "## Code intelligence (incident)\nSnapshot aaaaaaaaaaaa \u00b7 2026-10-17T02:07:16.604Z\nObserved failing test files: target.test.ts. The observed failure is authoritative.\nStatic reach candidates (unverified): a-target.ts.\nSymbols on static reach (change status unknown): incidentTarget:a-target.ts:1; observed turn edit strands: unknown.\nRecently changed symbols (measured ledger attribution): incidentTarget:a-target.ts:1.\nWork items changed/open on these paths: WI-1 [wip] (file-edit-ledger) Private native incident request fixture; WI-1 [wip] (open-on-path) Private native incident request fixture. File-edit attribution does not prove symbol authorship. Graph paths are hypotheses only; cause, runtime execution and dynamic dispatch are unknown. Recover recorded failures with testing:runs {\"testRunIds\":[2],\"harness\":\"test-runtime-043ec7bc-6c8\"}.",
+      "duplicateSuppressed": true,
+      "ledger": {
+        "id": 1,
+        "subject": "failed-tests:target.test.ts",
+        "chars": 847,
+        "cited_paths": [
+          "target.test.ts",
+          "a-target.ts"
+        ]
+      },
+      "attribution": {
+        "status": "measured",
+        "recentEdits": [
+          {
+            "root": "/tmp/pcv/papercusp-test-runtime-5YlKrh/workspaces/test-runtime-043ec7bc-6c8/operator-home",
+            "path": "a-target.ts",
+            "base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbols": [
+              {
+                "name": "incidentTarget",
+                "line": 1
+              }
+            ],
+            "beforeSha256": "5826b7634d5d8f9e95112f458007acfdf0e01910dabe0afd5b7b45bb9343120b",
+            "sha256": "5580682278f26696bc880919f155f7416286770dedf20d56daaf2b8a8635f9da",
+            "at": 1792202834948,
+            "workspace": "test-runtime-043ec7bc-6c8",
+            "harness": "test-runtime-043ec7bc-6c8",
+            "agentId": "native-incident-private-owner"
+          }
+        ]
+      },
+      "testRunId": 2,
+      "handlerHash": "476f3bb09599bc597672bf788c97f8c876f5fbdf3b8ef3044c96d30a765a4a3f",
+      "deliveryBoundary": "installed Codex dispatcher/native PostToolUse event to stdout context envelope",
+      "installed": {
+        "hashes": {
+          "index.mjs": "365141c2db306726af17f5f3bd4bcb17b26fd7ef672aed334401d59f73f11562",
+          "core.mjs": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+          "ports.mjs": "7a2c5db543ab45df56853e5af19323df574958cb264c657784e956476a9bf464",
+          "delivery-ledger.mjs": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+          "adapters/codex.mjs": "a39b9729a14df31f91f7b5ee009f1a382ce618fa2bead5b1303e101421652fc0"
+        },
+        "stamp": {
+          "sourceDir": "apps/operator/scripts/hooks/inject",
+          "sourceSha": "688eeab44276bd21b92a1bd393fdcfc8f373d551",
+          "sourceCommittedAt": "2026-10-17T01:42:10.000Z",
+          "installedAt": "2026-10-17T02:07:16.659Z",
+          "pid": 1902687,
+          "installedBy": "repomix",
+          "files": [
+            "core.mjs",
+            "delivery-ledger.mjs",
+            "index.mjs",
+            "ports.mjs",
+            "adapters/claude.mjs",
+            "adapters/codex.mjs",
+            "adapters/omp.mjs"
+          ]
+        },
+        "processes": 3,
+        "nodeOptions": "",
+        "envelope": {
+          "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": "## Code intelligence (incident)\nSnapshot aaaaaaaaaaaa \u00b7 2026-10-17T02:07:16.604Z\nObserved failing test files: target.test.ts. The observed failure is authoritative.\nStatic reach candidates (unverified): a-target.ts.\nSymbols on static reach (change status unknown): incidentTarget:a-target.ts:1; observed turn edit strands: unknown.\nRecently changed symbols (measured ledger attribution): incidentTarget:a-target.ts:1.\nWork items changed/open on these paths: WI-1 [wip] (file-edit-ledger) Private native incident request fixture; WI-1 [wip] (open-on-path) Private native incident request fixture. File-edit attribution does not prove symbol authorship. Graph paths are hypotheses only; cause, runtime execution and dynamic dispatch are unknown. Recover recorded failures with testing:runs {\"testRunIds\":[2],\"harness\":\"test-runtime-043ec7bc-6c8\"}."
+          }
+        },
+        "duplicateEnvelope": null
+      },
+      "snapshotSha256": "78a1c38706505aa519f5e53fe839aedebb55775b61e995bbf7035c8091f5783c",
+      "sourceBeforeSha256": "5826b7634d5d8f9e95112f458007acfdf0e01910dabe0afd5b7b45bb9343120b",
+      "sourceAfterSha256": "5580682278f26696bc880919f155f7416286770dedf20d56daaf2b8a8635f9da",
+      "observationProducer": "maintained collector and delivery ledger with controlled before image",
+      "scope": "private current-source installed dispatcher replay; automatic symbol collection and edit/open-WI lookup; synthetic snapshot commit and controlled source-history seam; no live Codex model session"
+    },
+    "beforeHashes": {
+      "packages/operator-core/lib/code-intelligence/push-channel.ts": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4",
+      "packages/operator-core/lib/code-intelligence/push-snapshot.ts": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44",
+      "packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts": "304f9435cf3790d76818f800c50ceb5d29feda29c3910aa447a8b2dff5c67488",
+      "packages/operator-core/lib/edit-attribution.ts": "936a3d5406d66b67a2e3c0ea182b94f4c3e84c851a5902a7d625fef37a5fd150",
+      "apps/operator/scripts/hooks/inject/core.mjs": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+      "apps/operator/scripts/hooks/inject/index.mjs": "365141c2db306726af17f5f3bd4bcb17b26fd7ef672aed334401d59f73f11562",
+      "apps/operator/scripts/hooks/inject/ports.mjs": "7a2c5db543ab45df56853e5af19323df574958cb264c657784e956476a9bf464",
+      "apps/operator/scripts/hooks/inject/adapters/codex.mjs": "a39b9729a14df31f91f7b5ee009f1a382ce618fa2bead5b1303e101421652fc0",
+      "apps/operator/scripts/hooks/inject/delivery-ledger.mjs": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+      "packages/operator-core/lib/desktop-install/papercusp-files.ts": "4e4c3b506461035e39e052a83158057599e98c4b187d1b1dac62adb34e39dcc4",
+      "packages/operator-core/lib/desktop-install/install-provenance.ts": "0deb32319aa6e5cf0b801763e0d5b3ab9a6c6c4dc114d35f63dda1a2aa1cd36f",
+      "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec",
+      "scripts/check-required-field-strands.mjs": "20901dddaef557b9c2eb24399025c532f2b38c82806d830ac202e550bfa51113",
+      "scripts/check-behavioural-strands.mjs": "ef6a441182e1c9693b1f2a54c2975ed128940ad0a5eac0ed712f84e41460d6df",
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts": "6c86d9b17692511adcb506ed183ea24cc66765378c28e7ec6a48109ce60b2429"
+    },
+    "afterHashes": {
+      "packages/operator-core/lib/code-intelligence/push-channel.ts": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4",
+      "packages/operator-core/lib/code-intelligence/push-snapshot.ts": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44",
+      "packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts": "304f9435cf3790d76818f800c50ceb5d29feda29c3910aa447a8b2dff5c67488",
+      "packages/operator-core/lib/edit-attribution.ts": "936a3d5406d66b67a2e3c0ea182b94f4c3e84c851a5902a7d625fef37a5fd150",
+      "apps/operator/scripts/hooks/inject/core.mjs": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+      "apps/operator/scripts/hooks/inject/index.mjs": "365141c2db306726af17f5f3bd4bcb17b26fd7ef672aed334401d59f73f11562",
+      "apps/operator/scripts/hooks/inject/ports.mjs": "7a2c5db543ab45df56853e5af19323df574958cb264c657784e956476a9bf464",
+      "apps/operator/scripts/hooks/inject/adapters/codex.mjs": "a39b9729a14df31f91f7b5ee009f1a382ce618fa2bead5b1303e101421652fc0",
+      "apps/operator/scripts/hooks/inject/delivery-ledger.mjs": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+      "packages/operator-core/lib/desktop-install/papercusp-files.ts": "4e4c3b506461035e39e052a83158057599e98c4b187d1b1dac62adb34e39dcc4",
+      "packages/operator-core/lib/desktop-install/install-provenance.ts": "0deb32319aa6e5cf0b801763e0d5b3ab9a6c6c4dc114d35f63dda1a2aa1cd36f",
+      "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec",
+      "scripts/check-required-field-strands.mjs": "20901dddaef557b9c2eb24399025c532f2b38c82806d830ac202e550bfa51113",
+      "scripts/check-behavioural-strands.mjs": "ef6a441182e1c9693b1f2a54c2975ed128940ad0a5eac0ed712f84e41460d6df",
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts": "6c86d9b17692511adcb506ed183ea24cc66765378c28e7ec6a48109ce60b2429"
+    }
+  },
+  "namedDiskIdentity": {
+    "packages/operator-core/lib/code-intelligence/push-channel.ts": {
+      "before": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4",
+      "after": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4",
+      "current": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4"
+    },
+    "packages/operator-core/lib/code-intelligence/push-snapshot.ts": {
+      "before": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44",
+      "after": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44",
+      "current": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44"
+    },
+    "packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts": {
+      "before": "304f9435cf3790d76818f800c50ceb5d29feda29c3910aa447a8b2dff5c67488",
+      "after": "304f9435cf3790d76818f800c50ceb5d29feda29c3910aa447a8b2dff5c67488",
+      "current": "304f9435cf3790d76818f800c50ceb5d29feda29c3910aa447a8b2dff5c67488"
+    },
+    "packages/operator-core/lib/edit-attribution.ts": {
+      "before": "936a3d5406d66b67a2e3c0ea182b94f4c3e84c851a5902a7d625fef37a5fd150",
+      "after": "936a3d5406d66b67a2e3c0ea182b94f4c3e84c851a5902a7d625fef37a5fd150",
+      "current": "936a3d5406d66b67a2e3c0ea182b94f4c3e84c851a5902a7d625fef37a5fd150"
+    },
+    "apps/operator/scripts/hooks/inject/core.mjs": {
+      "before": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+      "after": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+      "current": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8"
+    },
+    "apps/operator/scripts/hooks/inject/index.mjs": {
+      "before": "365141c2db306726af17f5f3bd4bcb17b26fd7ef672aed334401d59f73f11562",
+      "after": "365141c2db306726af17f5f3bd4bcb17b26fd7ef672aed334401d59f73f11562",
+      "current": "365141c2db306726af17f5f3bd4bcb17b26fd7ef672aed334401d59f73f11562"
+    },
+    "apps/operator/scripts/hooks/inject/ports.mjs": {
+      "before": "7a2c5db543ab45df56853e5af19323df574958cb264c657784e956476a9bf464",
+      "after": "7a2c5db543ab45df56853e5af19323df574958cb264c657784e956476a9bf464",
+      "current": "7a2c5db543ab45df56853e5af19323df574958cb264c657784e956476a9bf464"
+    },
+    "apps/operator/scripts/hooks/inject/adapters/codex.mjs": {
+      "before": "a39b9729a14df31f91f7b5ee009f1a382ce618fa2bead5b1303e101421652fc0",
+      "after": "a39b9729a14df31f91f7b5ee009f1a382ce618fa2bead5b1303e101421652fc0",
+      "current": "a39b9729a14df31f91f7b5ee009f1a382ce618fa2bead5b1303e101421652fc0"
+    },
+    "apps/operator/scripts/hooks/inject/delivery-ledger.mjs": {
+      "before": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+      "after": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+      "current": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a"
+    },
+    "packages/operator-core/lib/desktop-install/papercusp-files.ts": {
+      "before": "4e4c3b506461035e39e052a83158057599e98c4b187d1b1dac62adb34e39dcc4",
+      "after": "4e4c3b506461035e39e052a83158057599e98c4b187d1b1dac62adb34e39dcc4",
+      "current": "4e4c3b506461035e39e052a83158057599e98c4b187d1b1dac62adb34e39dcc4"
+    },
+    "packages/operator-core/lib/desktop-install/install-provenance.ts": {
+      "before": "0deb32319aa6e5cf0b801763e0d5b3ab9a6c6c4dc114d35f63dda1a2aa1cd36f",
+      "after": "0deb32319aa6e5cf0b801763e0d5b3ab9a6c6c4dc114d35f63dda1a2aa1cd36f",
+      "current": "0deb32319aa6e5cf0b801763e0d5b3ab9a6c6c4dc114d35f63dda1a2aa1cd36f"
+    },
+    "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs": {
+      "before": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec",
+      "after": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec",
+      "current": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec"
+    },
+    "scripts/check-required-field-strands.mjs": {
+      "before": "20901dddaef557b9c2eb24399025c532f2b38c82806d830ac202e550bfa51113",
+      "after": "20901dddaef557b9c2eb24399025c532f2b38c82806d830ac202e550bfa51113",
+      "current": "20901dddaef557b9c2eb24399025c532f2b38c82806d830ac202e550bfa51113"
+    },
+    "scripts/check-behavioural-strands.mjs": {
+      "before": "ef6a441182e1c9693b1f2a54c2975ed128940ad0a5eac0ed712f84e41460d6df",
+      "after": "ef6a441182e1c9693b1f2a54c2975ed128940ad0a5eac0ed712f84e41460d6df",
+      "current": "ef6a441182e1c9693b1f2a54c2975ed128940ad0a5eac0ed712f84e41460d6df"
+    },
+    "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts": {
+      "before": "6c86d9b17692511adcb506ed183ea24cc66765378c28e7ec6a48109ce60b2429",
+      "after": "6c86d9b17692511adcb506ed183ea24cc66765378c28e7ec6a48109ce60b2429",
+      "current": "6c86d9b17692511adcb506ed183ea24cc66765378c28e7ec6a48109ce60b2429"
+    }
+  },
+  "namedDiskMismatches": [],
+  "childSubstitutions": {
+    "writer": "scripts/test-files.mjs:2216 counts notice records, not distinct paths. A notice means the child used the committed blob rather than the working-tree bytes.",
+    "recordCount": 10,
+    "records": [
+      "substituted esm scripts/with-test-pg.mjs  pid=1868925 entry=scripts/with-test-pg.mjs",
+      "substituted esm apps/operator/scripts/ptool.mjs  pid=1902687 entry=repomix",
+      "substituted esm packages/operator-core/lib/verification-attempts/attempt-ledger.ts  pid=1902687 entry=repomix",
+      "substituted esm packages/operator-core/lib/verification-attempts/loop-gate.ts  pid=1902687 entry=repomix",
+      "substituted esm apps/operator/scripts/ptool.mjs  pid=1920984 entry=apps/operator/scripts/ptool.mjs",
+      "substituted esm apps/operator/scripts/ptool.mjs  pid=1987178 entry=apps/operator/scripts/ptool.mjs",
+      "substituted esm apps/operator/scripts/ptool.mjs  pid=1992441 entry=apps/operator/scripts/ptool.mjs",
+      "substituted esm apps/operator/scripts/ptool.mjs  pid=1994855 entry=apps/operator/scripts/ptool.mjs",
+      "substituted esm apps/operator/scripts/ptool.mjs  pid=2004920 entry=apps/operator/scripts/ptool.mjs",
+      "substituted esm apps/operator/scripts/ptool.mjs  pid=2009609 entry=apps/operator/scripts/ptool.mjs"
+    ],
+    "distinctPaths": [
+      "scripts/with-test-pg.mjs",
+      "apps/operator/scripts/ptool.mjs",
+      "packages/operator-core/lib/verification-attempts/attempt-ledger.ts",
+      "packages/operator-core/lib/verification-attempts/loop-gate.ts"
+    ],
+    "qualification": "Private-runtime wrapper, CLI transport and verification-ledger children measured committed blobs. The test passed under those exact substitutions; it is not proof that their newer working-tree versions work."
+  },
+  "sourcePlanes": {
+    "configSources": "unknown",
+    "configLoadedSources": "unknown",
+    "mainProcessLoadedSources": "unknown"
+  },
+  "workerOriginalEvidence": {
+    "scope": "repository-worker-vite-original-sources",
+    "statusAtCapture": "stable",
+    "currentCompletePopulationRequalification": "not performed; named disk identities above only"
+  },
+  "verifiedBehavior": [
+    "Actual failed assertion and compiler candidate reached a private real-CLI HTTP operator.",
+    "Maintained collector derived incident symbol attribution from a controlled before-image seam.",
+    "Shared injection bundle installed in private HOME with source-byte parity and install stamp.",
+    "Three fresh installed Codex dispatcher processes consumed native PostToolUse events, emitted stdout additionalContext without permission fields, and suppressed duplicate delivery.",
+    "Native private push ledger corroborated the delivered brief; repaired assertion and incident clearing passed."
+  ],
+  "limits": [
+    "Synthetic snapshot identity and controlled source-history seam; not a live Codex model conversation.",
+    "Not P039 no-claim intent/orient delivery or completion pre-review acceptance.",
+    "Seven filtered cases produced no evidence.",
+    "Ten child substitutions cover four paths; config/main-process loaded-source planes remain unknown. No full execution-graph or all-current-source assertion.",
+    "Current-build installed replay only, not final release/installer shipment or parent plan acceptance.",
+    "Public evidence uses the maintained identity-safe JSON serializer vocabulary for sourceDir; original machine provenance remains in the referenced private captures. Counters, source hashes and recorded results are unchanged."
+  ]
+}

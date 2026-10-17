@@ -1,7 +1,8 @@
 /**
- * Dependency admission for raw harness_plans writers that cannot use
+ * Candidate admission for raw harness_plans writers that cannot use
  * withPlanLock's standard content upsert (federation projections, recomposition,
- * and other column-specialized storage paths).
+ * and other column-specialized storage paths). This keeps dependency and plan
+ * lifecycle checks under the same advisory lock as the write.
  *
  * The callback runs under the SAME advisory transaction lock as withPlanLock.
  * The live body/status/op_status read and the caller's write therefore form one
@@ -11,13 +12,19 @@
  */
 
 import type { Sql, TransactionSql } from 'postgres';
-import { parsePlan } from '@papercusp/plan-parser';
+import {
+  findTerminalPlanChildMutations,
+  isTerminalItemStatus,
+  isTerminalPlanStatus,
+  parsePlan,
+} from '@papercusp/plan-parser';
 import {
   isExecutablePlanCandidate,
   validatePlanCandidateDependencyTransition,
   type PlanCandidateDependencyVerdict,
 } from './plan-candidate-dependencies';
 import { acquirePlanAdvisoryLock, planAdvisoryLockKey } from './plan-lock-key';
+import { summarizeForcedPast } from './forced-past-stamp';
 
 export type PlanDependencyAdmissionSql = Sql | TransactionSql;
 
@@ -31,9 +38,19 @@ export interface PlanDependencyAdmissionTransactionArgs {
   candidateStatus?: string | null;
 }
 
+export interface PlanLifecycleAdmissionRejection {
+  code: 'plan_items_unfinished' | 'terminal_parent_child_mutation';
+  message: string;
+  itemIds: string[];
+}
+
 export type PlanDependencyAdmissionTransactionResult<T> =
   | { admitted: true; verdict: PlanCandidateDependencyVerdict; value: T }
-  | { admitted: false; verdict: PlanCandidateDependencyVerdict };
+  | {
+      admitted: false;
+      verdict: PlanCandidateDependencyVerdict;
+      rejection?: PlanLifecycleAdmissionRejection;
+    };
 
 function executableOpStatus(
   lifecycleStatus: string | null | undefined,
@@ -43,6 +60,53 @@ function executableOpStatus(
   return isExecutablePlanCandidate(lifecycleStatus, normalized)
     ? (normalized ?? 'started')
     : normalized;
+}
+
+function terminalPlanLifecycleRejection(args: {
+  before: ReturnType<typeof parsePlan> | null;
+  after: ReturnType<typeof parsePlan>;
+  beforeStatus: string | null;
+  afterStatus: string | null;
+  candidateContent: string;
+}): PlanLifecycleAdmissionRejection | null {
+  const { before, after, beforeStatus, afterStatus, candidateContent } = args;
+  if (!isTerminalPlanStatus(afterStatus)) return null;
+
+  const beforeItems = before?.items.map((item) => ({ id: item.id, status: item.storedStatus })) ?? [];
+  const afterItems = after.items.map((item) => ({ id: item.id, status: item.storedStatus }));
+
+  // A raw writer can change the frontmatter status without going through
+  // plans:set-plan-status. Require the same visible waiver that the canonical
+  // ship/supersede gate writes when it explicitly allows unfinished children.
+  if (!isTerminalPlanStatus(beforeStatus)) {
+    const unfinished = after.items.filter((item) => !isTerminalItemStatus(item.storedStatus));
+    const waived = summarizeForcedPast(candidateContent)?.latest.checks.includes('plan_items_unfinished') === true;
+    if (unfinished.length > 0 && !waived) {
+      const itemIds = unfinished.map((item) => item.id);
+      return {
+        code: 'plan_items_unfinished',
+        message:
+          `Refused terminal plan transition to '${afterStatus}' with unfinished item(s) ` +
+          `${itemIds.join(', ')}; only an explicit plan_items_unfinished waiver can permit this shape.`,
+        itemIds,
+      };
+    }
+    return null;
+  }
+
+  // Keep the existing terminal-parent rule for later writes: no new live child
+  // and no reopening a finished child. Existing live children in old records may
+  // still advance, so unrelated edits do not get frozen by historical drift.
+  const childMutations = findTerminalPlanChildMutations(afterStatus, beforeItems, afterItems);
+  if (childMutations.length === 0) return null;
+  const itemIds = childMutations.map((change) => change.itemId);
+  return {
+    code: 'terminal_parent_child_mutation',
+    message:
+      `Refused adding or reopening unfinished item(s) ${itemIds.join(', ')} ` +
+      `under terminal plan '${afterStatus}'.`,
+    itemIds,
+  };
 }
 
 /** Run one specialized plan write under canonical dependency admission. */
@@ -79,6 +143,7 @@ export async function withPlanDependencyAdmissionTransaction<T>(
     const locator = `plan://${args.harnessSlug}/${args.planSlug}`;
     const before = live ? parsePlan(live.content, { filePath: locator }) : null;
     const after = parsePlan(args.candidateContent, { filePath: locator });
+    const beforeStatus = live?.status ?? before?.frontmatter.status ?? null;
     const beforeOpStatus = executableOpStatus(live?.status, live?.op_status);
     const afterStatus = args.candidateStatus ?? after.frontmatter.status ?? null;
     const afterOpStatus = executableOpStatus(afterStatus, live?.op_status);
@@ -89,6 +154,14 @@ export async function withPlanDependencyAdmissionTransaction<T>(
       afterOpStatus,
     );
     if (verdict.state === 'rejected') return { admitted: false, verdict };
+    const lifecycleRejection = terminalPlanLifecycleRejection({
+      before,
+      after,
+      beforeStatus,
+      afterStatus,
+      candidateContent: args.candidateContent,
+    });
+    if (lifecycleRejection) return { admitted: false, verdict, rejection: lifecycleRejection };
     return { admitted: true, verdict, value: await write(tx) };
   };
 

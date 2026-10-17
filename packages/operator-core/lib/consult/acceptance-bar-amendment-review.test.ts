@@ -222,6 +222,7 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     identity: { ownerId: 'su-implementer', workspaceId: 'ws' },
     workspaceId: 'ws',
   } as unknown as Parameters<typeof openAcceptanceBarAmendmentReview>[0];
+  const noLaterPost = vi.fn(async () => false);
 
   it('routes nothing when the preview needs no approval', async () => {
     const verifyPreviewPost = vi.fn();
@@ -265,10 +266,36 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
   it('carries no routed reference when no eligible reviewer exists', async () => {
     const route = vi.fn().mockResolvedValue({ state: 'no-eligible-reviewer', conversationId: null, reason: 'no_qualified_responder', screenedOut: [] });
     const launchFresh = vi.fn().mockResolvedValue({ state: 'not-launched', reason: 'launcher screened out' });
-    const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route, launchFresh });
+    const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route, launchFresh, hasLaterPost: noLaterPost });
     expect(result).toMatchObject({ state: 'no-eligible-reviewer', previewPostRef: 'thread-post:42' });
     expect(result.next).not.toContain('consult:reply');
     expect(result.next).toContain('launcher screened out');
+  });
+
+  it('does not recruit a fresh reviewer for a preview that already has later thread activity', async () => {
+    const route = vi.fn().mockResolvedValue({
+      state: 'no-eligible-reviewer',
+      conversationId: null,
+      reason: 'no_available_responder',
+      screenedOut: [],
+    });
+    const launchFresh = vi.fn();
+    const hasLaterPost = vi.fn(async () => true);
+    const result = await openAcceptanceBarAmendmentReview(baseInput, {
+      verifyPreviewPost: vi.fn(),
+      route,
+      launchFresh,
+      hasLaterPost,
+    });
+
+    expect(hasLaterPost).toHaveBeenCalledWith({ workspaceId: 'ws', previewPostRef: 'thread-post:42' });
+    expect(launchFresh).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      state: 'no-eligible-reviewer',
+      previewPostRef: 'thread-post:42',
+      freshReviewer: { state: 'not-launched', reason: expect.stringContaining('later thread reply') },
+    });
+    expect(result.next).toContain('reviewEvidencePost');
   });
 
   // WI-10003299: an empty menu used to end the review ("re-request later"), so a
@@ -292,7 +319,7 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     const launchCtx = { ownerId: 'su-implementer', workspaceId: 'ws' };
     const result = await openAcceptanceBarAmendmentReview(
       { ...baseInput, launchCtx },
-      { verifyPreviewPost: vi.fn(), route, launchFresh },
+      { verifyPreviewPost: vi.fn(), route, launchFresh, hasLaterPost: noLaterPost },
     );
     expect(launchFresh).toHaveBeenCalledTimes(1);
     expect(launchFresh.mock.calls[0]![0]).toMatchObject({
@@ -348,7 +375,7 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     const launchFresh = vi.fn().mockResolvedValue({ state: 'blocked', reason: 'account-walled',
       evidence: 'Credit balance is too low', ownerId: 'judge-1', nativeRef: '/retained/review.jsonl',
       taskId: 'task-1', answerOn: { workItemId: 'WI-7', harness: 'papercusp' } });
-    const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route, launchFresh });
+    const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route, launchFresh, hasLaterPost: noLaterPost });
     if (result.state === 'not-required') throw new Error('Expected a reviewer attempt');
     expect(result.freshReviewer).toMatchObject({ state: 'blocked', ownerId: 'judge-1' });
     expect(result.next).toContain('Credit balance is too low');
@@ -363,7 +390,7 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
   it('reports a failed fresh launch instead of throwing away the routing result', async () => {
     const route = vi.fn().mockResolvedValue({ state: 'no-eligible-reviewer', conversationId: 'conv-3', reason: 'x', screenedOut: [] });
     const launchFresh = vi.fn().mockRejectedValue(new Error('rubric unreadable'));
-    const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route, launchFresh });
+    const result = await openAcceptanceBarAmendmentReview(baseInput, { verifyPreviewPost: vi.fn(), route, launchFresh, hasLaterPost: noLaterPost });
     expect(result).toMatchObject({
       state: 'no-eligible-reviewer',
       conversationId: 'conv-3',
@@ -413,6 +440,9 @@ describe('openAcceptanceBarAmendmentReview (P-006)', () => {
     expect(brief.length).toBeGreaterThan(5000);
     expect(brief.indexOf('capability:read')).toBeLessThan(800);
     expect(brief.slice(0, 800)).toContain('eof:true');
+    expect(brief.slice(0, 800)).toContain('byte_offset');
+    expect(brief.slice(0, 800)).toContain('next_cursor:null');
+    expect(brief.slice(0, 800)).not.toContain('through `eof:true`');
   });
 
   it('preserves changed criteria after a large unchanged prefix', () => {
@@ -485,6 +515,8 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
       resolveSteeredModel: vi.fn(async () => undefined),
       // A deduped reviewer is live unless a test says it ended.
       readTaskState: vi.fn(async () => 'running' as const),
+      resolveSessionStates: vi.fn(async (subjects: readonly { ownerId: string }[]) =>
+        new Map(subjects.map(({ ownerId }) => [ownerId, { sessionState: 'live' as const, selfWake: 'loop' as const }] as const))),
       hasReviewerAnswer: vi.fn(async () => false),
       stopFailedLaunch: vi.fn(async () => 'stop unverified'),
       ...overrides,
@@ -500,6 +532,42 @@ describe('launchFreshAmendmentReviewer (WI-10003299)', () => {
       expect(await launchFreshAmendmentReviewer(input, d as never)).toMatchObject({ state: 'launched', taskId: 'task-1', deduped: true });
       expect(d.launch).toHaveBeenCalledTimes(1);
       expect(d.hasReviewerAnswer).not.toHaveBeenCalled();
+    });
+
+    it('replaces a deduped reviewer parked without a self-wake source after stopping the old task', async () => {
+      const launch = vi.fn().mockResolvedValueOnce(dedupedTo('task-1')).mockResolvedValueOnce(fresh('task-2'));
+      let reads = 0;
+      const resolveSessionStates = vi.fn(async () => new Map([
+        ['judge-task-1', { sessionState: 'parked' as const, selfWake: 'none' as const }],
+      ]));
+      const readTaskState = vi.fn(async () => reads++ === 0 ? 'running' as const : 'ended_unobserved' as const);
+      const stopFailedLaunch = vi.fn(async () => 'stopped task task-1');
+      const d = deps({ launch, resolveSessionStates, readTaskState, stopFailedLaunch });
+      const result = await launchFreshAmendmentReviewer(input, d as never);
+
+      expect(resolveSessionStates).toHaveBeenCalledWith([{ ownerId: 'judge-task-1' }], { hydratePerId: true, selfWake: true });
+      expect(d.hasReviewerAnswer).toHaveBeenCalledWith({ workspaceId: 'ws', previewPostRef: 'thread-post:42', authorId: 'judge-task-1' });
+      expect(stopFailedLaunch).toHaveBeenCalledWith('task-1', { answeringOwnerId: 'judge-task-1' });
+      expect(launch).toHaveBeenCalledTimes(2);
+      const firstKey = (launch.mock.calls[0]![0] as { idempotencyKey: string }).idempotencyKey;
+      expect((launch.mock.calls[1]![0] as { idempotencyKey: string }).idempotencyKey).toBe(`${firstKey}:after:task-1`);
+      expect(result).toMatchObject({ state: 'launched', taskId: 'task-2', deduped: false, relaunchedAfter: ['task-1'] });
+    });
+
+    it('does not replace a stranded reviewer when stopping it is unverified', async () => {
+      const launch = vi.fn().mockResolvedValue(dedupedTo('task-1'));
+      const resolveSessionStates = vi.fn(async () => new Map([
+        ['judge-task-1', { sessionState: 'parked' as const, selfWake: 'none' as const }],
+      ]));
+      const readTaskState = vi.fn(async () => 'running' as const);
+      const stopFailedLaunch = vi.fn(async () => 'stop refused');
+      const d = deps({ launch, resolveSessionStates, readTaskState, stopFailedLaunch });
+      await expect(launchFreshAmendmentReviewer(input, d as never)).resolves.toEqual({
+        state: 'not-launched',
+        reason: expect.stringContaining('parked without a self-wake source'),
+      });
+      expect(stopFailedLaunch).toHaveBeenCalledWith('task-1', { answeringOwnerId: 'judge-task-1' });
+      expect(launch).toHaveBeenCalledTimes(1);
     });
 
     it('relaunches under a key derived from the dead task, so the dry run gets a live reviewer', async () => {

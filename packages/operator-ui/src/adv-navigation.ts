@@ -42,6 +42,7 @@ export const ADV_MORE_GROUPS = [
 /** Existing surface mapping, shared without importing the component graph. */
 export const ADV_TAB_SURFACE_KINDS = {
   overview: "overview",
+  enterprise: "enterprise",
   hud: "hud",
   brainstorm: "brainstorm",
   harnesses: "work",

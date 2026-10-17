@@ -1,0 +1,925 @@
+{
+  "schemaVersion": 1,
+  "scope": "Measured historical corpus population and modeled monthly coding workload; not all-in cost, current model/effort capacity, BAR acceptance or shipment.",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "planItem": "P-544",
+  "workItem": "WI-6554700010016277",
+  "decision": "D-081",
+  "recordedAtUtc": "2026-10-17T08:26:15.477Z",
+  "reuse": "Existing cost-model.ts, CLI --report-month and corpus/summarize.py selection rule; no new service/config/backend.",
+  "corpus": {
+    "recordedAtUtc": "2026-10-17T08:24:39.440681+00:00",
+    "recordings": 42,
+    "selectedTasks": 40,
+    "cleanSelectedTasks": 39,
+    "selectedCliVersions": [
+      "2.1.284 (Claude Code)",
+      "codex-cli 0.159.2"
+    ],
+    "selection": "Same rule as corpus/summarize.py: latest clean per CLI/task, otherwise latest censored recording. Censored task wall remains in denominator; not a success or completion-time upper bound.",
+    "sourceLocation": "Existing capacity-cache/corpus outside repository; sessionId identifies its directory. No raw request/response content retained in this artifact.",
+    "manifest": [
+      {
+        "sessionId": "claude-exc-heavy-1-20260930T203830",
+        "metaSha256": "53fb4beda64b842c1b5d29e754a6124af6311328809cec6e3f07fbc3639adba0",
+        "exchangesSha256": "8a113a9502434fedd064a8020143a091c62d0fda66dcd4e70bb9902e13624781"
+      },
+      {
+        "sessionId": "claude-exc-heavy-2-20260930T204100",
+        "metaSha256": "49c15d2bac46fcd27b4642cf5630b72b7ef68119694acdb6b2a58455af378f75",
+        "exchangesSha256": "2cd98cdc556a3396bd4a4f96b8c669e010787e1d54652f1bddb944a551a63550"
+      },
+      {
+        "sessionId": "claude-exc-light-1-20260930T202547",
+        "metaSha256": "afe779f54dcfff6318e0193723381ebcc613da1e7d03c3d458d1f2697ef5a8d3",
+        "exchangesSha256": "8056dcf38786213390fb1bd98c0abb6a23e3663451c3ef5b39d8145d05e03384"
+      },
+      {
+        "sessionId": "claude-exc-light-2-20260930T202621",
+        "metaSha256": "d448ed3bcc9d787f08f76f54805c0f96afc9b81a47fe2a372f50ef915f9b49e9",
+        "exchangesSha256": "0a659549808ece336cf1556c14cb8b76b753a717bcf4bbf481c071a6e0cc7688"
+      },
+      {
+        "sessionId": "claude-exc-light-3-20260930T202752",
+        "metaSha256": "83da679f46ff3ba8088708a7ea55da9a2b07c534eeda88d888293ce50436732b",
+        "exchangesSha256": "0ee13712fe92065dae221030db0ce2e5d7d281cc22fb032b755cf6c9e998841e"
+      },
+      {
+        "sessionId": "claude-exc-light-4-20260930T202951",
+        "metaSha256": "f8e91375f3413baf1a463c4cbf211cea8320d6050d680dc281792f861f54f277",
+        "exchangesSha256": "cdd47c1994daa64bb9b0708db59eb42f549144694c79aa4afb242b96bb77033d"
+      },
+      {
+        "sessionId": "claude-exc-typical-1-20260930T203352",
+        "metaSha256": "b3efe78f2eba18e56339632f69bbf65c4adf578c69b3a694d649bc61df25c995",
+        "exchangesSha256": "d8e416a5b03debb55231ed2683d92b14b2b156aa064992d2095d1259b56f602d"
+      },
+      {
+        "sessionId": "claude-exc-typical-2-20260930T203602",
+        "metaSha256": "5f018baf53fe8bbd0b0da4db8461bb9ac96c057c8309909c5100877934ddea54",
+        "exchangesSha256": "81db82cf3e9894a1694c21f0c30f12f517a0f91adbdd308cc3510abe59c44f80"
+      },
+      {
+        "sessionId": "claude-exc-typical-3-20260930T203735",
+        "metaSha256": "2ada86008523c04142158ef6502fb667ffcdbc687b7b812b6744923a96b5b425",
+        "exchangesSha256": "1baa22442b0d646f3b4b166a27c57b7d9e5dcdc3098c6c48874c93d5d7f37ecf"
+      },
+      {
+        "sessionId": "claude-exc-typical-4-20260930T203759",
+        "metaSha256": "e5862789624dfb92598d19206ac4c005439d4d962cc7487f1365883554ff029f",
+        "exchangesSha256": "bc8b2e55162835b39cdeb3388aea318317f7472bb95b5572c643fdc7b7062bd3"
+      },
+      {
+        "sessionId": "claude-mea-heavy-1-20260930T205658",
+        "metaSha256": "f3c6ccd6c072394126e8f0edcd03396e225f81bba89d487f0097acd7492cc843",
+        "exchangesSha256": "66230f6c511a6500a09d91bdc28b88d69b849d17573ce16df01347a1d85736e0"
+      },
+      {
+        "sessionId": "claude-mea-heavy-1-20260930T215637",
+        "metaSha256": "52f4ab3cfbc9015e0f03e683232c81537005b08c51eac1eae9931d366a3e9ce3",
+        "exchangesSha256": "62c2af535c6b919d41b9eb03473f9efb5e96a29446152e2193143725d1583ccd"
+      },
+      {
+        "sessionId": "claude-mea-heavy-2-20260930T212707",
+        "metaSha256": "efa619953f4bb43e6bf20e0afcae807fbf3752c66cb55793ce48e8fa00e3bbe8",
+        "exchangesSha256": "e9cd888364995d20bfb2a92fc57d341d070b2231abea0a4a60819b1fb6b1822f"
+      },
+      {
+        "sessionId": "claude-mea-light-1-20260930T202751",
+        "metaSha256": "e15630b1c0d6dbb61010437ab29fc6328d7e86ac631b16f88838ab6fdd829f62",
+        "exchangesSha256": "ae4403e002822b9edc39564f0b7d2635f1367e2ad9786dd4fdbe47162d1e70a1"
+      },
+      {
+        "sessionId": "claude-mea-light-2-20260930T203115",
+        "metaSha256": "d8e28b72f77998b79c853d9510c9d96bd234ddcb41f5658ad5fd2a4418301de3",
+        "exchangesSha256": "515b1a728fe5be3c00e0ab9740d03ac5f8fa214e9bd2ed488dd5180fc7b06f78"
+      },
+      {
+        "sessionId": "claude-mea-light-3-20260930T203358",
+        "metaSha256": "db71f46ca3d569ade651fd9161952ac9beada4db144b3a4cb23a5042c4a44286",
+        "exchangesSha256": "3068f8b1afa3e06b23292762cbd247d9a83915e5089bce48257d36b2630553cf"
+      },
+      {
+        "sessionId": "claude-mea-light-4-20260930T203602",
+        "metaSha256": "79e5a07e7945e2a2735dd3e0fc4e442b50249aaf77789b5d3b599462a8f6fcd9",
+        "exchangesSha256": "73f0bd670f4541de28ef7e95f4c6f7ddeea32321e1f24731fa2dbf78735945d8"
+      },
+      {
+        "sessionId": "claude-mea-typical-1-20260930T203702",
+        "metaSha256": "2a896378a9339eb3b87a3a2c65e68eca31d7addfd608fa4cafcd440caee596dc",
+        "exchangesSha256": "8b2a21095d648ab7f7016912b8a4a3e61ebdce11ce68586d7313fc3d7a713171"
+      },
+      {
+        "sessionId": "claude-mea-typical-2-20260930T203813",
+        "metaSha256": "c2d921464611ea89277c476f7790861ce860ba1761e3c2caf9b196314d3cfb43",
+        "exchangesSha256": "f23d43aa9a4ef684022d01567ffbdcbc1bcbc04e6f2e1c78299ed113cf1a950e"
+      },
+      {
+        "sessionId": "claude-mea-typical-3-20260930T204536",
+        "metaSha256": "73e9bfab3817da12ba50aef97852b7d581e72f619286dddfb7c49c624e554b70",
+        "exchangesSha256": "eadb6aabab748af5618c006048ffaa62c9f98313dc0f906bc99aa8cea8108f4a"
+      },
+      {
+        "sessionId": "claude-mea-typical-4-20260930T205558",
+        "metaSha256": "21c718180e8631cd5fcf7e7a2938f18c6653cb84ad10c4258934d806fa5e61c2",
+        "exchangesSha256": "0f16924fb750c468e75a5b8bb75a16fa95beda075183dfcdcd37deb82b9104f8"
+      },
+      {
+        "sessionId": "codex-exc-heavy-1-20260930T204240",
+        "metaSha256": "7cd1449c748a4f607b615fa0676f951e3cd2d404067b143fe192add9e827b1c2",
+        "exchangesSha256": "e331618f57dae6e46dee00a88f3360dddb935e237f8b99a9b214d23bd85a8016"
+      },
+      {
+        "sessionId": "codex-exc-heavy-2-20260930T204647",
+        "metaSha256": "76831204d0a457f74e184408349c6cb8461ceecb41b09da47b1c9c6e75aa99a2",
+        "exchangesSha256": "7f5cc202ab189f8a2ed4a31063f826c77c5bf4d23faeec6c90f5b8d21293dc2e"
+      },
+      {
+        "sessionId": "codex-exc-light-1-20260930T202547",
+        "metaSha256": "c64b1a58f63ab96fc724ea2447a71329973b33e600b2f7a84e7cef54f2b09aff",
+        "exchangesSha256": "496163ecb2ce553e540e560a220897e3e720b51e44909c0651c3147e432fa1b3"
+      },
+      {
+        "sessionId": "codex-exc-light-2-20260930T202621",
+        "metaSha256": "e4be597e3c67894f7fc4e9e660e4481c892107651d1b572a95fe5549a1c9a409",
+        "exchangesSha256": "fedaf49a6bb7e2b953aec9107e475b35433b8075fddb1c4b46d7ae18c2460687"
+      },
+      {
+        "sessionId": "codex-exc-light-3-20260930T202813",
+        "metaSha256": "a0ae7c5a082e6da42d11fce1a71e5d93b9512899e1e5551e15c6e7ff33bdda12",
+        "exchangesSha256": "67e303b919f814ecc5dbabe200488bc16373a6e11591b814231b6a92164661cc"
+      },
+      {
+        "sessionId": "codex-exc-light-4-20260930T202944",
+        "metaSha256": "4f7ec934196833b9bc4e8d77892480f4ab080aca8ac61287c0914cb722471257",
+        "exchangesSha256": "132f05c3bd4845e06edcd5f73ccb1273a12fe8918fc76d3efcfa6ee01f971b96"
+      },
+      {
+        "sessionId": "codex-exc-light-4-20260930T215637",
+        "metaSha256": "f9f0a6c73932a7d4b1ba4f3af420ae40093bf9cb538fba751619c4174eb7c406",
+        "exchangesSha256": "37795ad6317e062569312990ac7bd90db90fd5b185ca0b6dee4d32d0c6f1abce"
+      },
+      {
+        "sessionId": "codex-exc-typical-1-20260930T203405",
+        "metaSha256": "e3e5969203b66108ae580cf3a02bbfb69e3a761968997c9a50c341b8f135427d",
+        "exchangesSha256": "07113ee96fd1f90923447e7dff3b15ea72f68b485199996c18a50a2b5b2c62e0"
+      },
+      {
+        "sessionId": "codex-exc-typical-2-20260930T203612",
+        "metaSha256": "3b47c26d5f465777da9b61069699fbf660ab7c43dd31fe740f444412587715f9",
+        "exchangesSha256": "8508ba7e2abccf06cd88572980de1314b9a3edfe3107ceef4d0f7998688e1282"
+      },
+      {
+        "sessionId": "codex-exc-typical-3-20260930T203740",
+        "metaSha256": "bfb2f28d93f7d00da7c2f7ee56c6e6a83d4f364aed9246a5da6b20a074e13a72",
+        "exchangesSha256": "f06df543b27ab000df3f43a0b556546746e2fb00ff2fb4575957945788cc091e"
+      },
+      {
+        "sessionId": "codex-exc-typical-4-20260930T203828",
+        "metaSha256": "5ef0b0bbf072ef2d5729b6849095ba3882c93f47947b21c152078288e9d50072",
+        "exchangesSha256": "8eb9dcddbb6e0d352af83afb5ede6acc7e212a4cb9f3fd82e8a58e7042e05df5"
+      },
+      {
+        "sessionId": "codex-mea-heavy-1-20260930T205635",
+        "metaSha256": "073d033c5211f2a66d6bce95193f4bbcc14501d118c91ff45aa094a15a954f6b",
+        "exchangesSha256": "cbcb0fe2fc4c6e56bd050af17e332dad51680a0ba83e683f0c7ef77382955d7d"
+      },
+      {
+        "sessionId": "codex-mea-heavy-2-20260930T211011",
+        "metaSha256": "64f0593e9c421cc7f5c0ff10646bb848fe6c48f5c830ab8767afc9def8a2462e",
+        "exchangesSha256": "fa3afdad55ec5f62e8fef97f58d7d5c752fc7677b2337c7df3c9ae43b5bfb435"
+      },
+      {
+        "sessionId": "codex-mea-light-1-20260930T202751",
+        "metaSha256": "bc1987010439c8fbc46d29b2a7ec68c186533dfd5be4c113551fce8c281e20f7",
+        "exchangesSha256": "e8edb59bcf40a823625528b6a4719ba17dcd03291e940e11f14a737ce396a0b5"
+      },
+      {
+        "sessionId": "codex-mea-light-2-20260930T203118",
+        "metaSha256": "776be1cc2a0a8bee1adb2d1a235ef692cf9e17b10eac580f239c5124495dee42",
+        "exchangesSha256": "7a11be18e422854c8a117233f8abe6a29a09ecc315f67f05f939dbd5678f4b28"
+      },
+      {
+        "sessionId": "codex-mea-light-3-20260930T203402",
+        "metaSha256": "dea248fe218b6f05e05140c1987e3b862a1c6544cc248e295b3afd5a996000a2",
+        "exchangesSha256": "6228a7cd150ba2e8fa164c61d8d391c267941c513f204d711c3e2eacea3913d3"
+      },
+      {
+        "sessionId": "codex-mea-light-4-20260930T203634",
+        "metaSha256": "d37868a0f0e6e2fa611d83e1abcf4a71cf19a1aafa60443a612b2f9c69ccd8ed",
+        "exchangesSha256": "cf4a2b8df94e7b9c0a55276f3aa7972fd32552e3a080790b3cc3f9bc876bcc35"
+      },
+      {
+        "sessionId": "codex-mea-typical-1-20260930T203813",
+        "metaSha256": "f8217af7df26a0ab7428e1ee77a2e38e27049d46beea24aec41c333c64d6717b",
+        "exchangesSha256": "5884b9b738bc992c318b3728a72a9e7c30111ab088680921b43f01fb556c9ba6"
+      },
+      {
+        "sessionId": "codex-mea-typical-2-20260930T204328",
+        "metaSha256": "8a50dd097baf352934902babae1421da02b4c9541f91b23133fa500dbca8008c",
+        "exchangesSha256": "1a5c3cb28fe7dfbe4f5479d4fd657a191b951e31209aea62db665ee46ee5b259"
+      },
+      {
+        "sessionId": "codex-mea-typical-3-20260930T204719",
+        "metaSha256": "4875db014af310cd993a6e4798d8466c1bb2bb8a06c1bccaf02ab570a947dd05",
+        "exchangesSha256": "415b2cbdd94ba14ace6a231f6c9be945b53c4b874a5a86ee85e18e1e80b942f1"
+      },
+      {
+        "sessionId": "codex-mea-typical-4-20260930T205238",
+        "metaSha256": "bb67f22b6eb31aa8b54726c3abb8af99ebae4ce2a6b3c480842d4759d5111173",
+        "exchangesSha256": "5fec5410d3210be99a919177d2f65a991f071d85e44be5c049847242bcb229fd"
+      }
+    ],
+    "strata": [
+      {
+        "id": "claude-excalidraw-light",
+        "profile": "light",
+        "cli": "claude",
+        "model": "claude-sonnet-5-5",
+        "effort": null,
+        "observedTasks": 4,
+        "completedTasks": 4,
+        "taskWallSeconds": 593.409,
+        "estimatedInferenceUsd": null,
+        "billedInferenceUsd": null,
+        "sourceRef": "capacity-corpus:claude-exc-light-1-20260930T202547,claude-exc-light-2-20260930T202621,claude-exc-light-3-20260930T202752,claude-exc-light-4-20260930T202951"
+      },
+      {
+        "id": "claude-excalidraw-typical",
+        "profile": "typical",
+        "cli": "claude",
+        "model": "claude-sonnet-5-5",
+        "effort": null,
+        "observedTasks": 4,
+        "completedTasks": 4,
+        "taskWallSeconds": 338.341,
+        "estimatedInferenceUsd": null,
+        "billedInferenceUsd": null,
+        "sourceRef": "capacity-corpus:claude-exc-typical-1-20260930T203352,claude-exc-typical-2-20260930T203602,claude-exc-typical-3-20260930T203735,claude-exc-typical-4-20260930T203759"
+      },
+      {
+        "id": "claude-excalidraw-heavy",
+        "profile": "heavy",
+        "cli": "claude",
+        "model": "claude-sonnet-5-5",
+        "effort": null,
+        "observedTasks": 2,
+        "completedTasks": 2,
+        "taskWallSeconds": 506.682,
+        "estimatedInferenceUsd": null,
+        "billedInferenceUsd": null,
+        "sourceRef": "capacity-corpus:claude-exc-heavy-1-20260930T203830,claude-exc-heavy-2-20260930T204100"
+      },
+      {
+        "id": "claude-mealie-light",
+        "profile": "light",
+        "cli": "claude",
+        "model": "claude-sonnet-5-5",
+        "effort": null,
+        "observedTasks": 4,
+        "completedTasks": 4,
+        "taskWallSeconds": 157.34900000000002,
+        "estimatedInferenceUsd": null,
+        "billedInferenceUsd": null,
+        "sourceRef": "capacity-corpus:claude-mea-light-1-20260930T202751,claude-mea-light-2-20260930T203115,claude-mea-light-3-20260930T203358,claude-mea-light-4-20260930T203602"
+      },
+      {
+        "id": "claude-mealie-typical",
+        "profile": "typical",
+        "cli": "claude",
+        "model": "claude-sonnet-5-5",
+        "effort": null,
+        "observedTasks": 4,
+        "completedTasks": 4,
+        "taskWallSeconds": 1139.73,
+        "estimatedInferenceUsd": null,
+        "billedInferenceUsd": null,
+        "sourceRef": "capacity-corpus:claude-mea-typical-1-20260930T203702,claude-mea-typical-2-20260930T203813,claude-mea-typical-3-20260930T204536,claude-mea-typical-4-20260930T205558"
+      },
+      {
+        "id": "claude-mealie-heavy",
+        "profile": "heavy",
+        "cli": "claude",
+        "model": "claude-sonnet-5-5",
+        "effort": null,
+        "observedTasks": 2,
+        "completedTasks": 1,
+        "taskWallSeconds": 3200.847,
+        "estimatedInferenceUsd": null,
+        "billedInferenceUsd": null,
+        "sourceRef": "capacity-corpus:claude-mea-heavy-1-20260930T215637,claude-mea-heavy-2-20260930T212707"
+      },
+      {
+        "id": "codex-excalidraw-light",
+        "profile": "light",
+        "cli": "codex",
+        "model": "gpt-6.1-sol",
+        "effort": null,
+        "observedTasks": 4,
+        "completedTasks": 4,
+        "taskWallSeconds": 382.567,
+        "estimatedInferenceUsd": null,
+        "billedInferenceUsd": null,
+        "sourceRef": "capacity-corpus:codex-exc-light-1-20260930T202547,codex-exc-light-2-20260930T202621,codex-exc-light-3-20260930T202813,codex-exc-light-4-20260930T215637"
+      },
+      {
+        "id": "codex-excalidraw-typical",
+        "profile": "typical",
+        "cli": "codex",
+        "model": "gpt-6.1-sol",
+        "effort": null,
+        "observedTasks": 4,
+        "completedTasks": 4,
+        "taskWallSeconds": 715.674,
+        "estimatedInferenceUsd": null,
+        "billedInferenceUsd": null,
+        "sourceRef": "capacity-corpus:codex-exc-typical-1-20260930T203405,codex-exc-typical-2-20260930T203612,codex-exc-typical-3-20260930T203740,codex-exc-typical-4-20260930T203828"
+      },
+      {
+        "id": "codex-excalidraw-heavy",
+        "profile": "heavy",
+        "cli": "codex",
+        "model": "gpt-6.1-sol",
+        "effort": null,
+        "observedTasks": 2,
+        "completedTasks": 2,
+        "taskWallSeconds": 442.409,
+        "estimatedInferenceUsd": null,
+        "billedInferenceUsd": null,
+        "sourceRef": "capacity-corpus:codex-exc-heavy-1-20260930T204240,codex-exc-heavy-2-20260930T204647"
+      },
+      {
+        "id": "codex-mealie-light",
+        "profile": "light",
+        "cli": "codex",
+        "model": "gpt-6.1-sol",
+        "effort": null,
+        "observedTasks": 4,
+        "completedTasks": 4,
+        "taskWallSeconds": 338.836,
+        "estimatedInferenceUsd": null,
+        "billedInferenceUsd": null,
+        "sourceRef": "capacity-corpus:codex-mea-light-1-20260930T202751,codex-mea-light-2-20260930T203118,codex-mea-light-3-20260930T203402,codex-mea-light-4-20260930T203634"
+      },
+      {
+        "id": "codex-mealie-typical",
+        "profile": "typical",
+        "cli": "codex",
+        "model": "gpt-6.1-sol",
+        "effort": null,
+        "observedTasks": 4,
+        "completedTasks": 4,
+        "taskWallSeconds": 1039.727,
+        "estimatedInferenceUsd": null,
+        "billedInferenceUsd": null,
+        "sourceRef": "capacity-corpus:codex-mea-typical-1-20260930T203813,codex-mea-typical-2-20260930T204328,codex-mea-typical-3-20260930T204719,codex-mea-typical-4-20260930T205238"
+      },
+      {
+        "id": "codex-mealie-heavy",
+        "profile": "heavy",
+        "cli": "codex",
+        "model": "gpt-6.1-sol",
+        "effort": null,
+        "observedTasks": 2,
+        "completedTasks": 2,
+        "taskWallSeconds": 1869.577,
+        "estimatedInferenceUsd": null,
+        "billedInferenceUsd": null,
+        "sourceRef": "capacity-corpus:codex-mea-heavy-1-20260930T205635,codex-mea-heavy-2-20260930T211011"
+      }
+    ]
+  },
+  "scenarios": [
+    {
+      "cli": "claude",
+      "monthlyTasks": 10,
+      "activeVmHours": 5,
+      "taskCountByStratum": {
+        "claude-excalidraw-light": 2,
+        "claude-excalidraw-typical": 2,
+        "claude-excalidraw-heavy": 1,
+        "claude-mealie-light": 2,
+        "claude-mealie-typical": 2,
+        "claude-mealie-heavy": 1
+      },
+      "result": {
+        "assignedAgents": 50,
+        "activeVmHours": 5,
+        "monthlyTasks": 10,
+        "taskCounts": {
+          "light": 4,
+          "typical": 4,
+          "heavy": 2
+        },
+        "busyAgentHours": 0.8244941666666666,
+        "busyHoursLowerBound": true,
+        "modeledInferenceEstimateUsd": null,
+        "modeledInferenceBilledBasisUsd": null,
+        "censoredStrata": [
+          "claude-mealie-heavy"
+        ],
+        "unknownBindings": [
+          "claude-excalidraw-light",
+          "claude-excalidraw-typical",
+          "claude-excalidraw-heavy",
+          "claude-mealie-light",
+          "claude-mealie-typical",
+          "claude-mealie-heavy"
+        ]
+      },
+      "comparison": {
+        "scope": "Historical achieved-capacity pool rates only; no current-model qualification",
+        "rowIds": [
+          "M2",
+          "M3",
+          "M4",
+          "M5",
+          "H0",
+          "H1",
+          "H2",
+          "H3"
+        ],
+        "inferenceUsd": null,
+        "allInUsd": null,
+        "missingCosts": [
+          "retainedStorageUsd",
+          "provisionedPerformanceUsd",
+          "backupUsd",
+          "objectStorageUsd",
+          "networkUsd",
+          "controlUsd",
+          "warmCapacityUsd",
+          "inferenceUsd"
+        ]
+      }
+    },
+    {
+      "cli": "claude",
+      "monthlyTasks": 120,
+      "activeVmHours": 60,
+      "taskCountByStratum": {
+        "claude-excalidraw-light": 24,
+        "claude-excalidraw-typical": 24,
+        "claude-excalidraw-heavy": 12,
+        "claude-mealie-light": 24,
+        "claude-mealie-typical": 24,
+        "claude-mealie-heavy": 12
+      },
+      "result": {
+        "assignedAgents": 50,
+        "activeVmHours": 60,
+        "monthlyTasks": 120,
+        "taskCounts": {
+          "light": 48,
+          "typical": 48,
+          "heavy": 24
+        },
+        "busyAgentHours": 9.893930000000001,
+        "busyHoursLowerBound": true,
+        "modeledInferenceEstimateUsd": null,
+        "modeledInferenceBilledBasisUsd": null,
+        "censoredStrata": [
+          "claude-mealie-heavy"
+        ],
+        "unknownBindings": [
+          "claude-excalidraw-light",
+          "claude-excalidraw-typical",
+          "claude-excalidraw-heavy",
+          "claude-mealie-light",
+          "claude-mealie-typical",
+          "claude-mealie-heavy"
+        ]
+      },
+      "comparison": {
+        "scope": "Historical achieved-capacity pool rates only; no current-model qualification",
+        "rowIds": [
+          "M2",
+          "M3",
+          "M4",
+          "M5",
+          "H0",
+          "H1",
+          "H2",
+          "H3"
+        ],
+        "inferenceUsd": null,
+        "allInUsd": null,
+        "missingCosts": [
+          "retainedStorageUsd",
+          "provisionedPerformanceUsd",
+          "backupUsd",
+          "objectStorageUsd",
+          "networkUsd",
+          "controlUsd",
+          "warmCapacityUsd",
+          "inferenceUsd"
+        ]
+      }
+    },
+    {
+      "cli": "claude",
+      "monthlyTasks": 240,
+      "activeVmHours": 120,
+      "taskCountByStratum": {
+        "claude-excalidraw-light": 48,
+        "claude-excalidraw-typical": 48,
+        "claude-excalidraw-heavy": 24,
+        "claude-mealie-light": 48,
+        "claude-mealie-typical": 48,
+        "claude-mealie-heavy": 24
+      },
+      "result": {
+        "assignedAgents": 50,
+        "activeVmHours": 120,
+        "monthlyTasks": 240,
+        "taskCounts": {
+          "light": 96,
+          "typical": 96,
+          "heavy": 48
+        },
+        "busyAgentHours": 19.787860000000002,
+        "busyHoursLowerBound": true,
+        "modeledInferenceEstimateUsd": null,
+        "modeledInferenceBilledBasisUsd": null,
+        "censoredStrata": [
+          "claude-mealie-heavy"
+        ],
+        "unknownBindings": [
+          "claude-excalidraw-light",
+          "claude-excalidraw-typical",
+          "claude-excalidraw-heavy",
+          "claude-mealie-light",
+          "claude-mealie-typical",
+          "claude-mealie-heavy"
+        ]
+      },
+      "comparison": {
+        "scope": "Historical achieved-capacity pool rates only; no current-model qualification",
+        "rowIds": [
+          "M2",
+          "M3",
+          "M4",
+          "M5",
+          "H0",
+          "H1",
+          "H2",
+          "H3"
+        ],
+        "inferenceUsd": null,
+        "allInUsd": null,
+        "missingCosts": [
+          "retainedStorageUsd",
+          "provisionedPerformanceUsd",
+          "backupUsd",
+          "objectStorageUsd",
+          "networkUsd",
+          "controlUsd",
+          "warmCapacityUsd",
+          "inferenceUsd"
+        ]
+      }
+    },
+    {
+      "cli": "claude",
+      "monthlyTasks": 480,
+      "activeVmHours": 240,
+      "taskCountByStratum": {
+        "claude-excalidraw-light": 96,
+        "claude-excalidraw-typical": 96,
+        "claude-excalidraw-heavy": 48,
+        "claude-mealie-light": 96,
+        "claude-mealie-typical": 96,
+        "claude-mealie-heavy": 48
+      },
+      "result": {
+        "assignedAgents": 50,
+        "activeVmHours": 240,
+        "monthlyTasks": 480,
+        "taskCounts": {
+          "light": 192,
+          "typical": 192,
+          "heavy": 96
+        },
+        "busyAgentHours": 39.575720000000004,
+        "busyHoursLowerBound": true,
+        "modeledInferenceEstimateUsd": null,
+        "modeledInferenceBilledBasisUsd": null,
+        "censoredStrata": [
+          "claude-mealie-heavy"
+        ],
+        "unknownBindings": [
+          "claude-excalidraw-light",
+          "claude-excalidraw-typical",
+          "claude-excalidraw-heavy",
+          "claude-mealie-light",
+          "claude-mealie-typical",
+          "claude-mealie-heavy"
+        ]
+      },
+      "comparison": {
+        "scope": "Historical achieved-capacity pool rates only; no current-model qualification",
+        "rowIds": [
+          "M2",
+          "M3",
+          "M4",
+          "M5",
+          "H0",
+          "H1",
+          "H2",
+          "H3"
+        ],
+        "inferenceUsd": null,
+        "allInUsd": null,
+        "missingCosts": [
+          "retainedStorageUsd",
+          "provisionedPerformanceUsd",
+          "backupUsd",
+          "objectStorageUsd",
+          "networkUsd",
+          "controlUsd",
+          "warmCapacityUsd",
+          "inferenceUsd"
+        ]
+      }
+    },
+    {
+      "cli": "codex",
+      "monthlyTasks": 10,
+      "activeVmHours": 5,
+      "taskCountByStratum": {
+        "codex-excalidraw-light": 2,
+        "codex-excalidraw-typical": 2,
+        "codex-excalidraw-heavy": 1,
+        "codex-mealie-light": 2,
+        "codex-mealie-typical": 2,
+        "codex-mealie-heavy": 1
+      },
+      "result": {
+        "assignedAgents": 50,
+        "activeVmHours": 5,
+        "monthlyTasks": 10,
+        "taskCounts": {
+          "light": 4,
+          "typical": 4,
+          "heavy": 2
+        },
+        "busyAgentHours": 0.6651097222222222,
+        "busyHoursLowerBound": false,
+        "modeledInferenceEstimateUsd": null,
+        "modeledInferenceBilledBasisUsd": null,
+        "censoredStrata": [],
+        "unknownBindings": [
+          "codex-excalidraw-light",
+          "codex-excalidraw-typical",
+          "codex-excalidraw-heavy",
+          "codex-mealie-light",
+          "codex-mealie-typical",
+          "codex-mealie-heavy"
+        ]
+      },
+      "comparison": {
+        "scope": "Historical achieved-capacity pool rates only; no current-model qualification",
+        "rowIds": [
+          "M2",
+          "M3",
+          "M4",
+          "M5",
+          "H0",
+          "H1",
+          "H2",
+          "H3"
+        ],
+        "inferenceUsd": null,
+        "allInUsd": null,
+        "missingCosts": [
+          "retainedStorageUsd",
+          "provisionedPerformanceUsd",
+          "backupUsd",
+          "objectStorageUsd",
+          "networkUsd",
+          "controlUsd",
+          "warmCapacityUsd",
+          "inferenceUsd"
+        ]
+      }
+    },
+    {
+      "cli": "codex",
+      "monthlyTasks": 120,
+      "activeVmHours": 60,
+      "taskCountByStratum": {
+        "codex-excalidraw-light": 24,
+        "codex-excalidraw-typical": 24,
+        "codex-excalidraw-heavy": 12,
+        "codex-mealie-light": 24,
+        "codex-mealie-typical": 24,
+        "codex-mealie-heavy": 12
+      },
+      "result": {
+        "assignedAgents": 50,
+        "activeVmHours": 60,
+        "monthlyTasks": 120,
+        "taskCounts": {
+          "light": 48,
+          "typical": 48,
+          "heavy": 24
+        },
+        "busyAgentHours": 7.981316666666666,
+        "busyHoursLowerBound": false,
+        "modeledInferenceEstimateUsd": null,
+        "modeledInferenceBilledBasisUsd": null,
+        "censoredStrata": [],
+        "unknownBindings": [
+          "codex-excalidraw-light",
+          "codex-excalidraw-typical",
+          "codex-excalidraw-heavy",
+          "codex-mealie-light",
+          "codex-mealie-typical",
+          "codex-mealie-heavy"
+        ]
+      },
+      "comparison": {
+        "scope": "Historical achieved-capacity pool rates only; no current-model qualification",
+        "rowIds": [
+          "M2",
+          "M3",
+          "M4",
+          "M5",
+          "H0",
+          "H1",
+          "H2",
+          "H3"
+        ],
+        "inferenceUsd": null,
+        "allInUsd": null,
+        "missingCosts": [
+          "retainedStorageUsd",
+          "provisionedPerformanceUsd",
+          "backupUsd",
+          "objectStorageUsd",
+          "networkUsd",
+          "controlUsd",
+          "warmCapacityUsd",
+          "inferenceUsd"
+        ]
+      }
+    },
+    {
+      "cli": "codex",
+      "monthlyTasks": 240,
+      "activeVmHours": 120,
+      "taskCountByStratum": {
+        "codex-excalidraw-light": 48,
+        "codex-excalidraw-typical": 48,
+        "codex-excalidraw-heavy": 24,
+        "codex-mealie-light": 48,
+        "codex-mealie-typical": 48,
+        "codex-mealie-heavy": 24
+      },
+      "result": {
+        "assignedAgents": 50,
+        "activeVmHours": 120,
+        "monthlyTasks": 240,
+        "taskCounts": {
+          "light": 96,
+          "typical": 96,
+          "heavy": 48
+        },
+        "busyAgentHours": 15.962633333333333,
+        "busyHoursLowerBound": false,
+        "modeledInferenceEstimateUsd": null,
+        "modeledInferenceBilledBasisUsd": null,
+        "censoredStrata": [],
+        "unknownBindings": [
+          "codex-excalidraw-light",
+          "codex-excalidraw-typical",
+          "codex-excalidraw-heavy",
+          "codex-mealie-light",
+          "codex-mealie-typical",
+          "codex-mealie-heavy"
+        ]
+      },
+      "comparison": {
+        "scope": "Historical achieved-capacity pool rates only; no current-model qualification",
+        "rowIds": [
+          "M2",
+          "M3",
+          "M4",
+          "M5",
+          "H0",
+          "H1",
+          "H2",
+          "H3"
+        ],
+        "inferenceUsd": null,
+        "allInUsd": null,
+        "missingCosts": [
+          "retainedStorageUsd",
+          "provisionedPerformanceUsd",
+          "backupUsd",
+          "objectStorageUsd",
+          "networkUsd",
+          "controlUsd",
+          "warmCapacityUsd",
+          "inferenceUsd"
+        ]
+      }
+    },
+    {
+      "cli": "codex",
+      "monthlyTasks": 480,
+      "activeVmHours": 240,
+      "taskCountByStratum": {
+        "codex-excalidraw-light": 96,
+        "codex-excalidraw-typical": 96,
+        "codex-excalidraw-heavy": 48,
+        "codex-mealie-light": 96,
+        "codex-mealie-typical": 96,
+        "codex-mealie-heavy": 48
+      },
+      "result": {
+        "assignedAgents": 50,
+        "activeVmHours": 240,
+        "monthlyTasks": 480,
+        "taskCounts": {
+          "light": 192,
+          "typical": 192,
+          "heavy": 96
+        },
+        "busyAgentHours": 31.925266666666666,
+        "busyHoursLowerBound": false,
+        "modeledInferenceEstimateUsd": null,
+        "modeledInferenceBilledBasisUsd": null,
+        "censoredStrata": [],
+        "unknownBindings": [
+          "codex-excalidraw-light",
+          "codex-excalidraw-typical",
+          "codex-excalidraw-heavy",
+          "codex-mealie-light",
+          "codex-mealie-typical",
+          "codex-mealie-heavy"
+        ]
+      },
+      "comparison": {
+        "scope": "Historical achieved-capacity pool rates only; no current-model qualification",
+        "rowIds": [
+          "M2",
+          "M3",
+          "M4",
+          "M5",
+          "H0",
+          "H1",
+          "H2",
+          "H3"
+        ],
+        "inferenceUsd": null,
+        "allInUsd": null,
+        "missingCosts": [
+          "retainedStorageUsd",
+          "provisionedPerformanceUsd",
+          "backupUsd",
+          "objectStorageUsd",
+          "networkUsd",
+          "controlUsd",
+          "warmCapacityUsd",
+          "inferenceUsd"
+        ]
+      }
+    }
+  ],
+  "verification": {
+    "tests": 65,
+    "failed": 0,
+    "skipped": 0,
+    "framework": "Vitest via maintained scripts/test-files.mjs",
+    "command": "node scripts/test-files.mjs scripts/agent-capacity/cost-model.test.ts",
+    "logPath": "/tmp/p544-monthly-task-tests-20261017.log",
+    "logSha256": "f8095a65bd5b730dac7f1dc36adc263e3456c3a3200b8fa9c89d84616e989660",
+    "receipt": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=9a59f25f25 uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-17T08:28:38.608Z childSubstituted=0 skippedTests=0",
+    "sourceSha256": {
+      "scripts/agent-capacity/cost-model.ts": "ad38f71bfe28bde83bd409ab4ecd6eb4fb5b49f4a1391086b13c25428dbde686",
+      "scripts/agent-capacity/cost-model.test.ts": "c9f02b438707ac79577eef2125e64e8e9ed38aed089de36bc38c327af5a684e6",
+      "scripts/agent-capacity/corpus/tasks.json": "16ad574eb07115457089c7fbae36820361647b7c533774ed1905878006dfc704",
+      "scripts/agent-capacity/corpus/summarize.py": "fa846561a9809eb3d2823f8030d955a6a7dec22fc07e186b08dc6fc034399c18",
+      "scripts/agent-capacity/record-session.ts": "7f53baa1084d59b3357f075d575e796ff3b7fc47a834b83cd7061f8658a2c8e3",
+      "scripts/agent-capacity/record-proxy.ts": "3151c3ef5a71a2f520fafe87cacb7e3cf965a4e683fe6f9c5f4114aacc7443c8"
+    },
+    "scenarioCheck": "8 scenarios through maintained aggregator, pricingComparison and renderMarkdown; independent per-stratum duration sum agrees; missing cost categories remain UNKNOWN.",
+    "typecheck": {
+      "command": "node scripts/lint-tsc-scripts.mjs --files=scripts/agent-capacity/cost-model.ts,scripts/agent-capacity/cost-model.test.ts",
+      "exitCode": 0,
+      "logPath": "/tmp/p544-monthly-task-typecheck-20261017.log",
+      "logSha256": "264b1d25bb39a1289d931acb6b0918b28e8317ced09734131328bd6437ab75cd",
+      "receipt": "LINT_TSC_RESULT label=scripts scope=files exit=0 status=clean at=2026-10-17T08:28:34.483Z head=9a59f25f25"
+    },
+    "verifiedAtUtc": "2026-10-17T08:29:45.186451+00:00",
+    "developmentCorrection": "Scoped compiler found TS7053 after Array.isArray narrowed readonly typed strata to any[]. Validate array shape as unknown to preserve element type; final focused compiler is clean and65 maintained tests passed on corrected source."
+  },
+  "remaining": [
+    "Historical samples lack saved effort binding; no current model/effort qualification.",
+    "Coding-task inference costs remain unknown; hash-tool tasks cannot substitute.",
+    "Actual all-category monthly charges/allocation, D075 qualified burst, cold readiness and resize/growth durability remain open.",
+    "Peer69e920 owns billing refresh; do not duplicate.",
+    "P537 authenticated journey/source parity and final shipment remain open."
+  ]
+}

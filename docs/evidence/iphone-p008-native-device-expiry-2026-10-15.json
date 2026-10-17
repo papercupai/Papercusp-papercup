@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "framework": "operational",
+  "name": "P-008 native device JWT expiry, fresh pairing and Keychain recovery",
+  "command": ["tools/ios-ci.py", "--mode", "simulator", "--force", "--paired-ui", "--device-expiry-ui", "--pair-payload-file", "<owner-only private pairing input>"],
+  "startedAt": "2026-10-15T19:13:35.323466+00:00",
+  "finishedAt": "2026-10-15T19:19:14.655651+00:00",
+  "exitCode": 0,
+  "summary": "The maintained Mac VM runner passed 60 native unit tests, five UI smoke tests and one actual device-expiry UI case with zero failures or skips. After visible pairing and authorized access, the owned operator's test-only child clock expired the real signed device JWT without revoking the device or changing its signing identity. The app showed Pair again, cleared credentials across an ordinary unseeded relaunch, accepted a freshly minted pairing and authorized another ordinary relaunch. All 279 declared native artifact hashes and sizes matched. Four screenshots were visually reviewed. Both jobs completed successfully and private inputs, runtime, Postgres and ports were cleaned up; the Mac lease was released. Broader P-008 remains open.",
+  "assertions": [
+    {
+      "id": "PapercupUITests/PairFlowUITests/testLiveDeviceExpiryAndRepairing",
+      "passed": true,
+      "evidence": "paired-ui-summary.json records one passed, zero failed and zero skipped. The actual UI case asserts one original device, visible expiry guidance without the offline banner, cleared pairing after ordinary relaunch, two unrevoked device identities after fresh pairing, and authorized Inbox data after another ordinary relaunch."
+    },
+    {
+      "id": "real signed device expiry with positive control",
+      "passed": true,
+      "evidence": "fixture-runtime.json records a heartbeat before the child clock advanced by 31622400000ms at 2026-10-15T19:18:35.865Z, with originalDevicePreserved and signingIdentityPreserved true. The parent and machine clocks were not changed. The authorized screenshot precedes the advance and native Pair again follows it."
+    },
+    {
+      "id": "native unit and smoke phases",
+      "passed": true,
+      "evidence": "unit-1-summary.json records 60 passed, zero failed and zero skipped; ui-smoke-summary.json records five passed, zero failed and zero skipped."
+    },
+    {
+      "id": "artifact custody and visual review",
+      "passed": true,
+      "evidence": "local-artifact-verification.json rehashed all 279 result.json artifacts directly from native-artifacts.tar.gz with no mismatches. The attachment manifest maps the four reviewed PNGs to authorized access, expiry guidance, cleared Keychain and fresh authorized relaunch."
+    },
+    {
+      "id": "owned runtime and private-input cleanup",
+      "passed": true,
+      "evidence": "Native and fixture durable jobs completed with exit zero. The fixture records processCleanupVerified, cloudCleanupVerified and cleanupVerified true. The local cleanup receipt confirms the three owned processes absent, operator/ingress/Postgres ports closed, private HOME/runtime/Postgres directories absent and spent Linux pairing inputs absent. The guest pair input and reverse port were absent. The resource release returned released:1 and expired:false."
+    }
+  ],
+  "workItemId": "WI-10004735",
+  "sourceWorkItemId": "WI-10007213",
+  "planSlug": "iphone-public-release-2026-08-11",
+  "planItemId": "P-008",
+  "spec": "AUTO-BAR-R-2-P-008@3",
+  "repository": "papercup-rust-mobile (canonical independent mobile repository)",
+  "sourceCommitAtExecution": "38c7e990e948ac0e59d52dd32c47b60483150179",
+  "sourceDirtyAtExecution": false,
+  "sourceFingerprint": "bbd4d59cd8b04abea4e1432e67b818212e0778b7adb3cc1c87c138256bd34551",
+  "nativeTestPath": "ios/PapercupUITests/PairFlowUITests.swift",
+  "nativeTestSha256": "596da2a1d8bb310645dd972a171963a8f3b0f21033e5adc00001905d767e31f4",
+  "fixture": {
+    "path": "packages/operator-core/lib/native-device-fixture.ts",
+    "clockPath": "packages/operator-core/lib/native-device-fixture-clock.ts",
+    "testPath": "packages/operator-core/lib/native-device-fixture.test.ts",
+    "runtimeRoot": ".papercusp/evidence/WI-10004735-device-expiry-20261015T1912Z",
+    "pathBase": "Operating account home directory",
+    "readyAt": "2026-10-15T19:11:46.132Z",
+    "finishedAt": "2026-10-15T19:20:02.506Z",
+    "scope": "Maintained with-test-pg operator-api profile; disposable private loopback operator, owned IPC clock preload, no public tunnel or provider credential. Production token lifetimes and machine clocks are unchanged."
+  },
+  "toolchain": {
+    "xcode": "Xcode 16.4 Build 16F6",
+    "simulatorSDK": "18.5",
+    "simulatorRuntime": "iOS 18.6 (22G86)",
+    "device": "iPhone 16 Pro x86_64",
+    "simulatorUDID": "D80BA4DF-0C1D-40C2-A6D1-F681B98B8DCB"
+  },
+  "retainedEvidence": {
+    "root": ".papercusp/evidence/WI-10004735-device-expiry-native-20261015T1914Z",
+    "pathBase": "Operating account home directory; retained evidence is outside the staging checkout",
+    "attempt": "20261015T191335Z-e7eac044",
+    "archive": "native-artifacts.tar.gz",
+    "archiveSha256": "3b6eb338a23345f17541999c900d00ba7070b8c48af9a832bbe85555ba28fa5e",
+    "archiveBytes": 6942720,
+    "resultPath": "result.json",
+    "resultSha256": "864633b6c8bf8daadac1935e0abc350d3b7ccf2a8397f7d891b03119e335ce02",
+    "verificationFile": "local-artifact-verification.json",
+    "cleanupFile": "local-cleanup-verification.json",
+    "verifiedArtifactCount": 279,
+    "mismatches": [],
+    "nativeJobId": "0mv9x2ouz1tgjh3k1kv",
+    "fixtureJobId": "0mv9wyabnraxzgj178g",
+    "jobDisposition": "Both completed/exit0; do not rerun completed native jobs for recovery"
+  },
+  "screenshots": [
+    {"file": "48366F5A-1229-4900-9D60-B1FAF487AAED.png", "review": "Authorized Inbox data is visible before device-token expiry."},
+    {"file": "5BC5F543-FBB8-4434-9442-BE1A4DBFD208.png", "review": "The app visibly says the phone is no longer paired and offers Pair again; no offline banner is shown."},
+    {"file": "DCD1E319-49C3-4876-A934-94080535212A.png", "review": "An ordinary relaunch remains on current onboarding with Scan QR and Paste manually after clearing expired credentials."},
+    {"file": "3F1BFA68-18B7-4449-A1C2-A1764A0EFF90.png", "review": "After fresh pairing and another ordinary relaunch, authorized Inbox data is visible without Pair again."}
+  ],
+  "priorAttemptDisposition": "The earlier 1837Z attempt remains a retained BrokenPipe failure before paired UI. A separate 1912Z transport failed before runner startup because an unverified absolute Python path was absent. Neither is offered as expiry proof. This successful attempt used verified python3, warm existing caches, a one-hour fixture, a 65-minute transport deadline and a private remote log. No source rsync or cache deletion was performed.",
+  "ownedFollowups": ["WI-6554700010015113", "EI-26070506407068507"],
+  "disclosedGaps": [
+    "This is the selected development-simulator device-expiry journey, not whole-candidate acceptance or a signed release candidate.",
+    "Production hostname configuration and accepted live hosted/BYOC target and entitlement evidence remain open.",
+    "Simulator evidence does not measure physical cellular radio, production APNs, Bluetooth hardware or battery endurance.",
+    "No App Store, TestFlight or final shipment claim is made."
+  ]
+}

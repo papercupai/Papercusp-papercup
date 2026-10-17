@@ -268,5 +268,27 @@ export function rerenderAmendedRequirementBlocks(
     end -= close - index - 2;
     rerendered.push(key);
   }
+  // The map repeats the canonical evidence plane too. Leaving it behind makes
+  // the amended explicit block conflict with its own discharge map at activation.
+  // Only replace that cell: item edges and every other authored column survive.
+  const design = lines.findIndex((line) => /^##\s+Design\s*$/i.test(line.trim()));
+  let inMap = false;
+  for (let index = design + 1; design >= 0 && index < lines.length; index++) {
+    const line = lines[index]!;
+    if (/^##\s+/.test(line)) break;
+    if (/^###\s+Bar-to-work map for this plan\s*$/i.test(line.trim())) {
+      inMap = true;
+      continue;
+    }
+    if (/^###\s+/.test(line)) inMap = false;
+    if (!inMap) continue;
+    const row = /^(\s*\|\s*`?(R-\d+)`?\s*\|[^|]*\|)([^|]*)(\|.*)$/.exec(line);
+    if (!row) continue;
+    const plane = byBar.get(row[2]!)?.evidencePlane;
+    if (!['tree', 'deployed', 'live'].includes(String(plane))) continue;
+    if (row[3]!.replace(/`/g, '').trim() === plane) continue;
+    lines[index] = `${row[1]} ${plane} ${row[4]}`;
+    if (!rerendered.includes(row[2]!)) rerendered.push(row[2]!);
+  }
   return rerendered.length ? { content: lines.join('\n'), rerendered } : unchanged;
 }

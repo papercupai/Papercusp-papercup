@@ -52,10 +52,14 @@ import { GOOGLE_GMAIL_PROFILE_ENDPOINT, GOOGLE_WORKSPACE_OAUTH_PLUGIN } from '..
 /** An ordinary hive harness for the fixture; nothing here depends on its name. */
 const GMAIL_RESPOND_DRAFT_HARNESS = 'email';
 import { providerRegistry } from './provider-registry';
+import { saveOAuthClientRegistration } from './oauth-client-registration';
+import { createSourceHostFetch } from './source-host-fetch';
+import { settableTicketConfigKeys, summarizeIntegrationProvider } from './ticket-integrations';
 import {
   connectionAdapterFor,
   connectionAdapterForPlugin,
   connectionAccessToken,
+  descriptorOAuthPlugin,
   disconnectConnection,
   missingRefreshTokenRefusal,
   refreshConnectionCredential,
@@ -465,6 +469,64 @@ describe('descriptor credential group through the real OAuth callback', () => {
       refreshConnectionCredential(sql, connectionAdapterForPlugin(PLUGIN)!, { workspaceId: WS, harness: HARNESS, field: 'slot-a' }),
     ).rejects.toThrow(/temporarily_unavailable/);
     expect((await sources(SUITE_KINDS)).map((row) => row.status)).toEqual(['connected', 'connected']);
+  });
+});
+
+describe('instance-scoped providers through the real OAuth callback and source fetch', () => {
+  it('keeps two equal local account IDs separate and pins old refresh credentials after changing the selected instance', async () => {
+    const d: ProviderDescriptor = { id: 'instance-fixture', contractVersion: 1, datatypes: ['social-post'], capabilities: [], egressHosts: [],
+      oauth: { instance: true, userAgentRequired: true, authorizeUrl: '/oauth/authorize', tokenUrl: '/oauth/token', scopes: ['read'],
+        identity: { url: '/api/v1/me', idField: 'id', displayNameField: 'name' } },
+      configSchema: { type: 'object', properties: { connectionOrigin: { type: 'string' }, connectionAccountId: { type: 'string' }, label: { type: 'string' } } },
+    };
+    const registry = providerRegistry();
+    const entry = await registry.register({ descriptor: d, adapter: adapter(d), pluginName: PROVIDER_PLUGIN_NAME });
+    expect(summarizeIntegrationProvider(entry, [], { ref: d.id, origin: 'https://first.example.com', configured: true,
+      clientId: 'legacy', hasClientSecret: true, redirectUri: 'https://operator.example.com/api/oauth/callback', savedAt: null }).oauthClient)
+      .toMatchObject({ configured: false, userAgentRequired: true });
+    const tokenRequests: Array<{ origin: string; client: string | null; secret: string | null; refresh: string | null; redirect: RequestRedirect | undefined }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(new Headers(init?.headers).get('user-agent')).toBe(`${url.hostname}-app/1.0`);
+      if (url.pathname === '/api/v1/me') return Response.json({ id: '42', name: url.hostname });
+      if (url.pathname !== '/oauth/token') throw new Error('unexpected instance endpoint');
+      const form = new URLSearchParams(String(init?.body));
+      tokenRequests.push({ origin: url.origin, client: form.get('client_id'), secret: form.get('client_secret'), refresh: form.get('refresh_token'), redirect: init?.redirect });
+      return Response.json({ access_token: `${url.hostname}-access`, refresh_token: `${url.hostname}-refresh`, expires_in: 3600 });
+    }));
+    try {
+      const firstOrigin = 'https://first.example.com'; const secondOrigin = 'https://second.example.com';
+      for (const [origin, slot] of [[firstOrigin, 'first'], [secondOrigin, 'second']]) {
+        const status = await saveOAuthClientRegistration(d.id, { origin, clientId: `${slot}-client`, clientSecret: `${slot}-secret`, userAgent: `${new URL(origin).hostname}-app/1.0` }, { requireSecret: true, requireOrigin: true, requireUserAgent: true });
+        const model = summarizeIntegrationProvider(entry, [], status);
+        expect(model.oauthClient).toMatchObject({ configured: true, userAgent: `${new URL(origin).hostname}-app/1.0`, userAgentRequired: true });
+        const plugin = descriptorOAuthPlugin(d, origin);
+        expect(new URL(model.connectHref!, 'https://operator.example.com').searchParams.get('provider')).toBe(plugin);
+        const claims = { plugin, provider: plugin, providerHost: new URL(origin).hostname, harness: HARNESS, field: slot };
+        await expect(runCallback(claims, { ownerUserId: userId, workspaceId: WS })).resolves.toEqual({ connected: plugin, error: null });
+      }
+      const rows = await sql<Array<{ id: string; provider_account_id: string; config: Record<string, unknown> }>>`
+        SELECT id::text, provider_account_id, config FROM harness_shared.data_sources
+         WHERE workspace_id = ${WS} AND kind = ${d.id} ORDER BY provider_account_id`;
+      expect(rows.map((row) => [row.provider_account_id, row.config.connectionOrigin, row.config.connectionAccountId])).toEqual([
+        ['first.example.com:42', firstOrigin, '42'], ['second.example.com:42', secondOrigin, '42'],
+      ]);
+      expect(settableTicketConfigKeys(d.configSchema!)).toEqual(['label', 'harnessSlug']);
+      const fetchImpl = vi.fn(async (_url: URL | RequestInfo, _init?: RequestInit) => Response.json([]));
+      const host = createSourceHostFetch(sql, { providerId: d.id, workspaceId: WS, harness: HARNESS, sourceIds: [rows[0].id], fetchImpl });
+      await expect(host({ source: rows[0].id, request: { url: `${secondOrigin}/api/v1/timelines/home` } })).rejects.toMatchObject({ code: 'egress-denied' });
+      expect(fetchImpl).not.toHaveBeenCalled();
+      const firstPlugin = descriptorOAuthPlugin(d, firstOrigin);
+      await fsTokenStorage.update(firstPlugin, HARNESS, { first_expires_at: Date.now() - 60_000 });
+      await host({ source: rows[0].id, request: { url: `${firstOrigin}/api/v1/timelines/home`, headers: { 'user-agent': 'package-cannot-override' } } });
+      expect(tokenRequests.at(-1)).toEqual({ origin: firstOrigin, client: 'first-client', secret: 'first-secret', refresh: 'first.example.com-refresh', redirect: 'manual' });
+      expect(new Headers(fetchImpl.mock.calls[0][1]?.headers).get('authorization')).toBe('Bearer first.example.com-access');
+      expect(new Headers(fetchImpl.mock.calls[0][1]?.headers).get('user-agent')).toBe('first.example.com-app/1.0');
+      // Even a corrupted persisted origin cannot move the existing credential to another server.
+      await sql`UPDATE harness_shared.data_sources SET config = jsonb_set(config, '{connectionOrigin}', ${JSON.stringify(secondOrigin)}::text::jsonb) WHERE id = ${rows[0].id}::uuid`;
+      await expect(host({ source: rows[0].id, request: { url: `${secondOrigin}/api/v1/timelines/home` } })).rejects.toMatchObject({ code: 'token-unavailable' });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally { registry.unregister(d.id); }
   });
 });
 

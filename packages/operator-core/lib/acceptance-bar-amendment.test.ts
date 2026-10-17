@@ -19,7 +19,10 @@ import {
 } from './acceptance-bar-amendment';
 import { specEvidenceBindingFingerprint } from './agent-tools/plans/spec-evidence-store';
 import { buildAcceptanceBarSeed } from './acceptance-bar-seed';
-import { normalizeAcceptanceBarCriterion } from './rubrics';
+import {
+  acceptanceCanonicalUnchangedIgnoringLegacyChecks,
+  normalizeAcceptanceBarCriterion,
+} from './rubrics';
 import { OrgTxnTimeoutError } from './pg-bounded-txn';
 import {
   ACCEPTANCE_BAR_MEANING_FIELDS,
@@ -101,6 +104,41 @@ describe('acceptance BAR amendment transaction contract', () => {
     expect(acceptanceBarMeaningField('check')).toBe(true);
     expect(acceptanceBarMeaningField('method')).toBe(false);
     expect(acceptanceBarMeaningField('replication')).toBe(false);
+  });
+
+  it('ignores stale check projections but detects METHOD and class edits', () => {
+    const stored = {
+      kind: 'acceptance',
+      subjectPlan: 'plan',
+      characteristic: 'plan-acceptance',
+      ratingScale: ['healthy', 'unknown'],
+      barSetHash: 'set-hash',
+      criteria: [{
+        key: 'r-1',
+        title: 'Outcome',
+        model: 'The outcome is true.',
+        barKey: 'R-1',
+        barHash: 'bar-hash',
+        driftMarkers: 'The outcome is false.',
+        method: 'Read the old method.',
+        replication: 'Repeat the old method.',
+        criterionClass: 'settle-once',
+        check: { kind: 'tool', tool: 'retired-tool', schemaRevision: 'd084' },
+      }],
+    };
+    const checkMigrated = {
+      ...stored,
+      criteria: [{ ...stored.criteria[0], check: { kind: 'tool', tool: 'current-tool', schemaRevision: 'live' } }],
+    };
+    expect(acceptanceCanonicalUnchangedIgnoringLegacyChecks(stored, checkMigrated)).toBe(true);
+    expect(acceptanceCanonicalUnchangedIgnoringLegacyChecks(stored, {
+      ...checkMigrated,
+      criteria: [{ ...checkMigrated.criteria[0], method: 'Read the complete method.' }],
+    })).toBe(false);
+    expect(acceptanceCanonicalUnchangedIgnoringLegacyChecks(stored, {
+      ...checkMigrated,
+      criteria: [{ ...checkMigrated.criteria[0], criterionClass: 'violatable' }],
+    })).toBe(false);
   });
 
   it('represents BAR additions and removals explicitly in approval receipts', () => {
@@ -503,6 +541,34 @@ describe('approval receipt parsing (EI-22617748468342848)', () => {
         ? [{
             author_id: 'su-reviewer',
             body: '\n  approve thread-post:456\n\nRecomputed the changed BAR hashes and confirmed they match the preview.',
+            approved_at: '2026-10-02T07:11:00.000Z',
+          }]
+        : [{ author_id: 'su-requester', body: JSON.stringify(RECEIPT) }]);
+    }) as unknown as Parameters<typeof resolveAcceptanceBarApproval>[0];
+
+    await expect(resolveAcceptanceBarApproval(sql, {
+      workspaceId: 'papercusp-workspace',
+      approvalRef: 'thread-post:123',
+      expected,
+    })).resolves.toMatchObject({
+      approvalRef: 'thread-post:123',
+      approvedBy: 'su-reviewer',
+      approvedAt: '2026-10-02T07:11:00.000Z',
+    });
+    expect(queries).toHaveLength(2);
+    expect(queries[1]!.values).toEqual(['papercusp-workspace', '456']);
+  });
+
+  it('accepts a first-line reviewer pointer followed by same-line verification notes', async () => {
+    const queries: Array<{ query: string; values: unknown[] }> = [];
+    let call = 0;
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      queries.push({ query: strings.join('?'), values });
+      call += 1;
+      return Promise.resolve(call === 1
+        ? [{
+            author_id: 'su-reviewer',
+            body: 'approve thread-post:456 Reviewed all changed BARs and verified the preview.',
             approved_at: '2026-10-02T07:11:00.000Z',
           }]
         : [{ author_id: 'su-requester', body: JSON.stringify(RECEIPT) }]);

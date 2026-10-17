@@ -1,0 +1,7 @@
+---
+rel_path: "audits/parked-agent-resumption-2026-10-09/fire88-r12-new-source-launch-424d5.json"
+updated_at: 1792130555885
+_body: "content"
+---
+
+{"edition":"Fire88","workItem":"WI-6554700010008887","launch":{"ok":true,"bash_id":"427fcae7-02d","task_id":"0mvak8jvkhzw9ap1u4g","status":"running","cwd":"/home/marsh-office/papercupai-workspace/papercusp","log_path":"/home/marsh-office/papercupai-workspace/papercusp/.papercusp/scratch/bash-427fcae7-02d.log","timeout_ms":7200000,"deadline":"2026-10-16T08:01:55.675Z","advice":"Background shell started. Preserve durable task_id \"0mvak8jvkhzw9ap1u4g\" across carry. Read output: capability:bash_output { task_id: \"0mvak8jvkhzw9ap1u4g\" } (or { bash_id: \"427fcae7-02d\" } in this launching context). Stop: processes:kill { taskId: \"0mvak8jvkhzw9ap1u4g\" }. It is terminated at 2026-10-16T08:01:55.675Z — re-launch with a larger `timeout` (max 43200000ms) if the shell job needs longer. All descendants in this task's confined service share that deadline; use a dedicated service launcher when a descendant needs a separate lifetime."},"preparation":"audits/parked-agent-resumption-2026-10-09/fire88-r12-new-source-proof-preparation-424d5.json","terminalPrevious":"audits/parked-agent-resumption-2026-10-09/fire88-r12-terminal-postflight-custody-424d5.json","reporter":"/tmp/parked-fire88-r12-current-reporter-424d5.jsonl","reason":"One new-source baseline after actual observability-store movement; no mutation/test recall."}

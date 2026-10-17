@@ -348,5 +348,7 @@ export async function publishListingToCupboard(
   if (!upstream.ok) {
     return { ok: false, status: upstream.status, error: 'cupboard_error', detail: parsed, upstream_status: upstream.status };
   }
+  const { notifySyncInvalidate } = await import('../sync-sse');
+  await notifySyncInvalidate('cupboard.myListings').catch(() => {});
   return { ok: true, status: 200, data: parsed };
 }

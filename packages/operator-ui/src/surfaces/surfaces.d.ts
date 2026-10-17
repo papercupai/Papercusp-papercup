@@ -48,6 +48,7 @@ export type OperatorSurfaceKind =
   | 'plans'
   | 'inbox'
   | 'overview'
+  | 'enterprise'
   | 'hud'
   | 'work'
   | 'learning'
@@ -105,6 +106,13 @@ export declare const OPERATOR_SURFACES: Record<
 
 /** Narrow an arbitrary rail kind to one that has a surface behind it. */
 export declare function isOperatorSurfaceKind(kind: string): kind is OperatorSurfaceKind;
+
+export declare const OPERATOR_MACHINE_SWITCHER: LazyExoticComponent<ComponentType<{
+  localMode?: boolean;
+  workspaceSelected?: boolean;
+  onSelect?: (hostId: string) => void;
+  connectHref?: string;
+}>>;
 
 /**
  * The pot scope a host wraps the /adv tab bodies in (portal-parity D-008 /

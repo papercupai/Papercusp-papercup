@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Pure preflight for a file-backed verifier assertion. Read its declared
 // assignments; never source the assertion before the owned Tauri rig exists.
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { basename, dirname, posix } from 'node:path';
 
 const [assertionPath, manifestPath] = process.argv.slice(2);
 const fail = (reason) => {
@@ -16,8 +16,80 @@ const fail = (reason) => {
 // Inspect command arguments too: `node --import tsx driver.mts` is not a shell
 // assertion, but its prerequisites must be checked before native preparation.
 if (assertionPath === '--command') {
+  const args = process.argv.slice(3);
+  const shellCommandIndex = ['bash', 'sh', 'dash'].includes(basename(args[0] ?? ''))
+    ? args.findIndex((arg, index) => index > 0 && /^-[a-z]*c[a-z]*$/.test(arg)) : -1;
+  const shell = shellCommandIndex > 0;
+  const command = shell ? args[shellCommandIndex + 1] ?? '' : args.join(' ');
+  const sourceFailure = () => fail('Playwright assertions must use the effective owned OPERATOR_SOURCE_ROOT: use bash -c with cd "$OPERATOR_SOURCE_ROOT/apps/operator" and an owned --config; only literal cd commands joined by && are supported before playwright test');
+  // Recognize alternate CLI spellings before applying the supported grammar.
+  // Otherwise an absolute executable, package alias/version, or node cli.js
+  // silently bypasses the source check instead of being refused before boot.
+  const isPlaywrightCli = word => typeof word === 'string' && (
+    /^(?:playwright(?:-core)?|@playwright\/test)(?:@[^/]+)?$/.test(word) ||
+    /\/(?:playwright(?:-core)?)(?:\.cmd)?$/.test(word) ||
+    /(?:^|\/)(?:playwright(?:-core)?|@playwright\/test)\/cli\.[cm]?js$/.test(word));
+  const hasPlaywrightTest = words => words.some((word, i) => isPlaywrightCli(word) && words[i + 1] === 'test');
+  if (!shell) {
+    if (hasPlaywrightTest(args)) sourceFailure();
+  } else {
+    // shell-quote treats a comment as lasting to the end of its input. Do not
+    // let a leading comment hide a later unsupported multiline invocation.
+    if (/[\r\n]/.test(command) && /\bplaywright\b/.test(command)) sourceFailure();
+    // Parse quoting without executing shell code or expanding the real root
+    // before boot. A fresh marker distinguishes expansion from literal text.
+    const ownedRoot = `/__verify_owned_source_${randomUUID()}`;
+    let tokens;
+    try {
+      const { default: parse } = await import('shell-quote/parse.js');
+      tokens = parse(command, key => key === 'OPERATOR_SOURCE_ROOT' ? ownedRoot : { unresolved: key })
+        .filter(token => !(token && typeof token === 'object' && 'comment' in token));
+    } catch {
+      fail('OPERATOR_SOURCE_ROOT command preflight requires an installed shell-quote parser and valid shell quoting');
+    }
+    if (hasPlaywrightTest(tokens)) {
+      // This is a deliberately small, verifiable command grammar. Branches,
+      // substitutions and arbitrary shell builtins can change cwd or the root.
+      if (/[\r\n`]|\$\(/.test(command)) sourceFailure();
+      const commands = [[]];
+      for (const token of tokens) {
+        if (typeof token === 'string') commands.at(-1).push(token);
+        else if (token.op === '&&') commands.push([]);
+        else sourceFailure();
+      }
+      let cwd = null;
+      const resolvePath = path => posix.isAbsolute(path) ? posix.normalize(path)
+        : cwd === null ? null : posix.resolve(cwd, path);
+      const isOwned = path => path !== null && (path === ownedRoot || path.startsWith(`${ownedRoot}/`));
+      for (const words of commands) {
+        if (words[0] === 'cd') {
+          const path = words[1] === '--' && words.length === 3 ? words[2]
+            : words.length === 2 ? words[1] : null;
+          if (path === null || path === '-') sourceFailure();
+          cwd = resolvePath(path);
+          continue;
+        }
+        const start = words[0] === 'playwright' ? 0
+          : words[0] === 'npx' ? 1
+            : ['npm', 'pnpm'].includes(words[0]) && words[1] === 'exec' ? 2 : -1;
+        if (start < 0 || words[start] !== 'playwright' || words[start + 1] !== 'test') sourceFailure();
+        const configs = [];
+        for (let i = start + 2; i < words.length; i++) {
+          const word = words[i];
+          if (word === '--config' || word === '-c') {
+            if (!words[i + 1] || words[i + 1].startsWith('-')) sourceFailure();
+            configs.push(words[++i]);
+          } else if (word.startsWith('--config=')) configs.push(word.slice('--config='.length));
+          else if (word.startsWith('-c') && !word.startsWith('--')) configs.push(word.slice(2).replace(/^=/, ''));
+        }
+        // Every explicit config must resolve inside the owned tree, even when
+        // an earlier cd was pinned. Without a config the effective cwd decides.
+        if (configs.length ? configs.some(path => !path || !isOwned(resolvePath(path))) : !isOwned(cwd)) sourceFailure();
+      }
+    }
+  }
   const required = new Set();
-  for (const argument of process.argv.slice(3)) {
+  for (const argument of args) {
     let header;
     let descriptor;
     try {

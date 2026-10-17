@@ -190,6 +190,8 @@ export async function openWriterPidsMany(
     descendants?: boolean;
     /** A process using a tree as its working directory also owns it. */
     includeCwd?: boolean;
+    /** Release worktrees also remain owned through a process root or executable. */
+    includeProcessLinks?: boolean;
     /** Destructive callers must refuse missing/unreadable process evidence. */
     failClosed?: boolean;
     /** Isolated native workers may use direct proc reads; host callers stay async. */
@@ -261,12 +263,12 @@ export async function openWriterPidsMany(
           }
         }
       };
-      if (opts.includeCwd) {
-        const cwdPath = `${pidDir}/cwd`;
+      for (const link of opts.includeProcessLinks ? ['cwd', 'root', 'exe'] : opts.includeCwd ? ['cwd'] : []) {
+        const linkPath = `${pidDir}/${link}`;
         try {
-          const pending = readProcLink(cwdPath);
+          const pending = readProcLink(linkPath);
           record(typeof pending === 'string' ? pending : await pending);
-        } catch (err) { readFailed(err, 'cwd', cwdPath); }
+        } catch (err) { readFailed(err, link, linkPath); }
       }
       let fds: string[];
       try {
@@ -300,7 +302,7 @@ export async function openWriterPidsMany(
   const width = Math.min(Math.max(1, opts.concurrency ?? 32), pids.length);
   await Promise.all(Array.from({ length: width }, worker));
   for (const holders of byPath.values()) holders.sort((a, b) => Number(a) - Number(b));
-  return { byPath, complete, ...(!complete ? { diagnostics: {
+  return { byPath, complete, ...(!complete || opts.includeProcessLinks ? { diagnostics: {
     elapsedMs: Date.now() - started, processesTotal: pids.length, processesScanned, descriptorsScanned,
     deadlineExceeded, readFailures, failureSamples,
   } } : {}) };

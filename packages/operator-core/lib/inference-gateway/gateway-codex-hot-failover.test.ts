@@ -1,17 +1,26 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInferenceGateway, OWNER_HEADER, ROUTED_ACCOUNT_HEADER } from './gateway';
 import { createFailoverPool } from './account-failover';
+import {
+  configureGatewayRequestOutcomeStore,
+  InMemoryGatewayRequestOutcomeStore,
+  resetGatewayRequestOutcomeStore,
+} from './gateway-request-outcome-store';
 
 let gateway: ReturnType<typeof createInferenceGateway> | undefined;
 const homes: string[] = [];
+
+// Owner reports include durable outcomes; unit fixtures must not query PostgreSQL.
+beforeEach(() => configureGatewayRequestOutcomeStore(new InMemoryGatewayRequestOutcomeStore()));
 
 afterEach(async () => {
   await gateway?.close();
   gateway = undefined;
   await Promise.all(homes.splice(0).map(home => fs.rm(home, { recursive: true, force: true })));
+  resetGatewayRequestOutcomeStore();
 });
 
 async function codexHome(accountId: string): Promise<string> {

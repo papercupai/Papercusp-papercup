@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
+import { configureOperatorUi } from '@papercusp/operator-ui/seam';
+import { ADV_TAB_SURFACE_KINDS } from '@papercusp/operator-ui/adv-navigation';
 import type { ReactNode } from 'react';
 import type { AutomationCatalog, AutomationRoutine } from '@papercusp/operator-core/lib/automation/catalog';
 import type { ExternalTriggerAdminSnapshot } from '@papercusp/operator-core/lib/external-triggers/admin';
@@ -35,6 +37,8 @@ const H = vi.hoisted(() => ({
   externalDisarmed: false,
   /** The external bindings belong to an unreviewed trigger pack (P-013): arming answers 409. */
   packOwned: false,
+  enterpriseOperations: false,
+  externalUnavailable: false,
 }));
 
 const PACK_INSTALLATION_ID = '33333333-3333-4333-8333-333333333333';
@@ -176,6 +180,11 @@ vi.mock('@papercusp/sync', () => ({
       const dispatcher = { ...routine(), name: 'external-trigger-dispatch', group: 'external-triggers', active: false };
       return { data: [{ ...catalog, routines: [...catalog.routines, dispatcher] }], loading: false, invalidate };
     }
+    if (queryName === 'automation.catalog' && (args as { supportWorkflow?: unknown })?.supportWorkflow) return {
+      data: [{ supportWorkflow: { harnessSlug: 'papercusp', operationId: 'support-handoff', approvedRevision: 'a'.repeat(64),
+        accountableOwner: 'support-owner', reviewerPrincipals: ['reviewer'], allowedSources: ['slack'],
+        allowedActions: ['prepare-handoff'], maximumCostMicros: 100_000 } }], loading: false, invalidate,
+    };
     if (queryName === 'automation.catalog') return { data: [catalog], loading: false, invalidate };
     if (queryName === 'harnessProjects.lite') return { data: [{ slug: 'papercusp' }], loading: false, invalidate };
     if (queryName === 'plans.list' && H.manyPlans) return { data: BULK_PLANS, loading: false, invalidate };
@@ -232,10 +241,10 @@ import AdvWorkflowsTab from './AdvWorkflowsTab';
 
 const DIGEST = 'plan:papercusp:customer-digest';
 
-function renderTab(searchParams?: Record<string, string>) {
+function renderTab(searchParams?: Record<string, string>, enterprise = false) {
   return render(
     <NuqsTestingAdapter searchParams={searchParams}>
-      <AdvWorkflowsTab />
+      <AdvWorkflowsTab enterprise={enterprise} />
     </NuqsTestingAdapter>,
   );
 }
@@ -270,7 +279,10 @@ beforeEach(() => {
   H.dispatcherPaused = false;
   H.externalDisarmed = false;
   H.packOwned = false;
+  H.enterpriseOperations = false;
+  H.externalUnavailable = false;
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (H.externalUnavailable && String(_input).includes('/api/admin/triggers')) throw new Error('Inventory read refused');
     if (init?.method === 'POST' && String(_input).includes('/agent-chats')) {
       return new Response(JSON.stringify({ id: 'workflow-composer-chat-1' }), { status: 200 });
     }
@@ -313,6 +325,10 @@ beforeEach(() => {
       }
       return new Response(JSON.stringify({ ok: true, binding: { id: request.id } }), { status: 200 });
     }
+    if (H.enterpriseOperations) return Response.json({ ...external, bindings: [...external.bindings, {
+      ...external.bindings[0], id: '22222222-2222-4222-8222-222222222222', planSlug: null,
+      action: { type: 'blueprint-operation', operationHarnessSlug: 'papercusp', operationId: 'support-handoff' },
+    }] });
     if (H.emptyData) {
       return new Response(JSON.stringify({ enabled: true, counts: { sources: 0, bindings: 0, armed: 0, recentFailures: 0 }, sources: [], bindings: [], recentRuns: [] }), { status: 200 });
     }
@@ -347,7 +363,60 @@ beforeEach(() => {
     return new Response(JSON.stringify(external), { status: 200 });
   }));
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); configureOperatorUi({ advNavigation: undefined }); });
+
+describe('Enterprise workspace — D-050', () => {
+  it.each([['Plans', 'create'], ['Calendar', 'scheduled'], ['Evaluations', 'evals'], ['Live work', 'hud'], ['Health', 'health'], ['Learning', 'learning']])(
+    'opens %s through the portal host navigation while retaining the selected workflow and workspace', async (label, destination) => {
+      configureOperatorUi({ advNavigation: { param: 'app', targets: ADV_TAB_SURFACE_KINDS } });
+      H.enterpriseOperations = true;
+      const onUrlUpdate = vi.fn();
+      render(<NuqsTestingAdapter hasMemory searchParams="?app=enterprise&ws=private-workspace&wfSelId=operation:papercusp:support-handoff"
+        onUrlUpdate={onUrlUpdate}><AdvWorkflowsTab enterprise /></NuqsTestingAdapter>);
+      await screen.findByRole('heading', { name: 'Prepare support handoff' });
+      fireEvent.click(within(screen.getByRole('navigation', { name: 'Supporting workspace evidence' })).getByRole('button', { name: label }));
+      await waitFor(() => expect(onUrlUpdate).toHaveBeenCalled());
+      const params = onUrlUpdate.mock.lastCall![0].searchParams as URLSearchParams;
+      expect(params.get('app')).toBe(destination);
+      expect(params.get('tab')).toBeNull();
+      expect(params.get('ws')).toBe('private-workspace');
+      expect(params.get('wfSelId')).toBe('operation:papercusp:support-handoff');
+    },
+  );
+
+  it('keeps the employee, pending reviewer, and admin evidence together for departmental operations', async () => {
+    H.enterpriseOperations = true;
+    renderTab({ wfMode: 'activity', wfState: 'paused', wfKind: 'system', wfQ: 'unrelated', wfId: DIGEST }, true);
+    expect(await screen.findByRole('heading', { name: 'Prepare support handoff' })).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Enterprise workspace' })).toBeTruthy();
+    const picker = screen.getByRole('combobox', { name: 'Departmental workflow' }) as HTMLSelectElement;
+    expect(Array.from(picker.options).map(option => option.text)).toEqual(['support-handoff · papercusp']);
+    expect(screen.queryByRole('button', { name: 'Run manually' })).toBeNull();
+    expect(screen.queryByLabelText('Workflow controls')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Reviewer decision' })).toBeTruthy();
+    expect(screen.getByText(/Business outcome pending/)).toBeTruthy();
+    expect(screen.getByText(/funding\/cost evidence, promotion, rollback, and history have not been read/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Refresh administration' })).toBeTruthy();
+    expect(screen.getByText('a'.repeat(64))).toBeTruthy();
+    expect(H.runTool).not.toHaveBeenCalled();
+    expect(within(screen.getByRole('navigation', { name: 'Supporting workspace evidence' })).getAllByRole('button')).toHaveLength(6);
+  });
+
+  it('distinguishes an unavailable inventory from an installed-workflow count of zero', async () => {
+    H.externalUnavailable = true;
+    renderTab({}, true);
+    expect(await screen.findByText(/Departmental workflow inventory is unavailable: Inventory read refused/)).toBeTruthy();
+    expect(screen.getByText('Inventory unavailable')).toBeTruthy();
+    expect(screen.queryByText('No departmental workflow installed')).toBeNull();
+  });
+
+  it('explains how to start when no departmental operation is installed', async () => {
+    renderTab({}, true);
+    expect(await screen.findByText('No departmental workflow installed')).toBeTruthy();
+    expect(screen.getByText(/Install an approved departmental operation/)).toBeTruthy();
+    expect((screen.getByRole('combobox', { name: 'Departmental workflow' }) as HTMLSelectElement).disabled).toBe(true);
+  });
+});
 
 describe('<AdvWorkflowsTab> — one frame (D-001)', () => {
   it('renders a single frame: one masthead, the ledger and the inspector together', async () => {

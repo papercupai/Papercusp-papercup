@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import test from 'node:test';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +8,7 @@ import {
   EMBEDDED_EXTENSIONS,
   embeddedPgMajor,
   embeddedPgPackageDirs,
+  ensureRequiredEmbeddedExtensions,
   hostPgTextsearchCandidates,
   hostPgvectorCandidates,
   hostServerMinor,
@@ -372,4 +373,45 @@ test('a refused build is not reported as missing from the host', () => {
 test('no embedded-postgres install means nothing to do', () => {
   const root = mkdtempSync(join(tmpdir(), 'emb-pgv-empty-'));
   assert.deepEqual(installEmbeddedExtensions({ root, platform: 'linux', env: {}, log: quiet }), { trees: [], missingSource: [] });
+});
+
+test('private database preflight repairs required extensions after npm replaces a nested native tree', () => {
+  const { root, nestedNative, hoistedNative } = fakeNestedCheckout();
+  const options = { root, platform: 'linux', env: fakeHostPgvector(), log: quiet };
+  ensureRequiredEmbeddedExtensions(options);
+  rmSync(join(nestedNative, 'lib'), { recursive: true });
+  rmSync(join(nestedNative, 'share'), { recursive: true });
+
+  const repaired = ensureRequiredEmbeddedExtensions(options);
+  assert.deepEqual(repaired.trees.map(row => row.status).sort(), ['installed', 'present']);
+  for (const nativeDir of [nestedNative, hoistedNative]) {
+    assert.equal(readFileSync(join(nativeDir, 'lib', 'postgresql', 'vector.so'), 'utf8'), 'ELF');
+    assert.equal(readFileSync(join(nativeDir, 'share', 'postgresql', 'extension', 'vector--0.8.1.sql'), 'utf8'), '-- sql');
+  }
+  assert.ok(repaired.trees.every(row => row.extension === 'pgvector'), 'optional preload libraries are outside the required preflight');
+});
+
+test('private database preflight refuses a missing required host source with its install instructions', () => {
+  const { root } = fakeCheckout({ version: '99.1.0' });
+  assert.throws(() => ensureRequiredEmbeddedExtensions({ root, platform: 'linux', env: {}, log: quiet }),
+    /pgvector for PostgreSQL 99 not found[\s\S]*postgresql-99-pgvector/);
+});
+
+test('private database preflight refuses an unknown server version instead of assuming extensions are ready', () => {
+  const { root } = fakeCheckout({ version: 'unknown' });
+  assert.throws(() => ensureRequiredEmbeddedExtensions({ root, platform: 'linux', env: {}, log: quiet }),
+    /required pgvector unavailable \(unknown-version\)/);
+});
+
+test('private database preflight requires native binaries even though postinstall permits their absence', () => {
+  const root = mkdtempSync(join(tmpdir(), 'emb-pgv-preflight-empty-'));
+  assert.throws(() => ensureRequiredEmbeddedExtensions({ root, platform: 'linux', env: {}, log: quiet }),
+    /no embedded-postgres native installation found/);
+});
+
+test('a provisioned native tree does not need the host extension source again', () => {
+  const { root } = fakeCheckout();
+  ensureRequiredEmbeddedExtensions({ root, platform: 'linux', env: fakeHostPgvector(), log: quiet });
+  const report = ensureRequiredEmbeddedExtensions({ root, platform: 'win32', env: {}, log: quiet });
+  assert.equal(report.trees[0].status, 'present');
 });

@@ -1,0 +1,109 @@
+{
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "item": "P-544",
+  "measuredAtUtc": "2026-10-16T18:59:00Z",
+  "project": "pc-agent-capacity-0930",
+  "programmeCapUsd": 200,
+  "actualBilledSpendUsd": null,
+  "classification": "Conservative resource-and-usage admission estimate; not an invoice or a verified remaining-credit balance. Credits and free allowances are excluded.",
+  "compute": {
+    "source": "/tmp/p544-compute-admin-history.json",
+    "createSource": "/tmp/p544-gcp-create-ledger.json",
+    "extraOperationsSource": "/tmp/p544-cost-extra-operations.json",
+    "adminRows": 291,
+    "adminQueryLimit": 5000,
+    "firstInsertEventsWithoutImmediateError": 71,
+    "distinctNames": 67,
+    "initialMaximumHours": 270.25,
+    "initialCostLabelSumUsd": 93.72,
+    "labelWriter": "scripts/agent-capacity/gcp-rails.ts: buildCreateArgs -> worstCaseCents; includes requested compute, boot/attached disks and provisioned performance for maximum runtime",
+    "method": "Sum insert EVENTS, preserving repeated names. Count complete maximum lifetimes even when manually deleted early or a later operation failed. Add full restart/reset allowances again, rather than infer that their initial deadline was unchanged.",
+    "additionalStartEvents": 4,
+    "additionalResetEvents": 3,
+    "resizeEvents": 2,
+    "stopEvents": 2,
+    "exceptions": [
+      "cap-p007: two starts, each original 3h maximum and 0.28 USD label; deleted 2026-10-02T02:16:54.024283Z.",
+      "cap-wi5210-spot: no provider maxRunDuration in original request; actual create-to-delete interval is 2026-10-02T03:09:48.330676Z to 03:11:14.123824Z. Initial 0.05 USD plus another 0.05 USD restart allocation exceeds this short e2-small lifetime.",
+      "cap-resize10060640: one start and two setMachineType events for the same VM; reserve a full e2-standard-4 hour for each resize event in addition to its original e2-standard-2 label and restart reserve. Deleted 2026-10-06T06:44:45.972810Z.",
+      "Only one non-auto-delete persistent disk attachment: cap-wi5210-data, 10GB pd-balanced, independently created 2026-10-02T03:09:43.122582Z and deleted 03:12:12.311123Z. Other initialized persistent disks are auto-delete. STOP intervals are bounded by later deletion receipts."
+    ]
+  },
+  "providerMeters": {
+    "descriptors": "/tmp/p544-cloud-cost-descriptors.json",
+    "computeSentBytes": 13612497777,
+    "gcsSentBytes": 92475160693,
+    "gcsRequests": 1201,
+    "loggingIngestedBytes": 268546,
+    "gcsV2MaximumStoredBytes": 44095969655,
+    "gcsV2DailyGaugeSamples": 15,
+    "throughUtc": "2026-10-16T18:33:08.525800Z",
+    "sources": [
+      "/tmp/p544-sent_bytes_count-monitoring.json",
+      "/tmp/p544-gcs-sent_bytes_count.json",
+      "/tmp/p544-gcs-request_count.json",
+      "/tmp/p544-bytes_ingested-monitoring.json",
+      "/tmp/p544-storage-v2-total-bytes.json"
+    ],
+    "semantics": "Network/logging/request metrics are DELTA, summed once. Storage v2 is a daily GAUGE including soft-deleted and noncurrent objects; charge its maximum for the entire 17-day window, rather than sum repeated gauges as bytes. No pagination in saved meter responses."
+  },
+  "rateChecks": {
+    "readAtUtc": "2026-10-16T18:58:00Z",
+    "sources": ["https://cloud.google.com/vpc/network-pricing", "https://cloud.google.com/storage/pricing", "https://cloud.google.com/logging/pricing"],
+    "observed": ["Standard VM external IPv4 0.005 USD/hour; Spot 0.0025 USD/hour.", "Network pricing lists 0.23 USD/GiB for the first internet tier to China destinations, excluding Hong Kong.", "Standard GCS Class A/B operations listed at 0.005/0.0004 USD per 1000; logging ingestion listed at 0.50 USD/GiB."],
+    "conservativeAppliedRates": {"allMeasuredNetworkUsdPerGiB": 0.25, "allVmIpv4UsdPerHour": 0.01, "gcsStandardUsdPerGiBMonth": 0.03, "allGcsRequestsUsdPer1000": 0.01},
+    "notes": "Rates used for admission are intentionally padded assumptions, not quotations for a particular traffic destination. Charge all observed network bytes even when same-region or otherwise free. Storage is STANDARD in us-central1. Allow separate uncertainty reserve for meter lag, unclassified services, pricing and taxes."
+  },
+  "historicalAdmissionAllocationsUsd": {
+    "initialVmLabels": 93.72,
+    "starts": 1,
+    "resets": 0.18,
+    "resizeAtLargerShape": 0.3,
+    "stoppedAndIndependentDisk": 0.01,
+    "ipv4": 3,
+    "gcsStorageEntireWindowAtMaximum": 1,
+    "allMeasuredNetwork": 25,
+    "gcsOperations": 1,
+    "logging": 0.01,
+    "uncertainty": 25
+  },
+  "allocationSumUsd": 150.22,
+  "roundedHistoricalReservationUsd": 160,
+  "candidateAdmission": {
+    "machineType": "e2-custom-2-4096",
+    "provisioning": "STANDARD",
+    "maximumHours": 2,
+    "bootDiskGb": 32,
+    "dataDiskGb": 10,
+    "overflowDiskGb": 10,
+    "allDisks": "pd-balanced, auto-delete",
+    "allInReservedUsd": 1,
+    "remainingProgrammeHeadroomAfterReservationUsd": 39,
+    "conditions": ["Extra disks use the maintained 10 GiB minimum; the first 8 GiB request was rejected before provider creation.", "Refresh provider census immediately before create.", "Use maintained gcp-rails admission plus provider-enforced DELETE deadline.", "Verify teardown census, including orphan disks and snapshots.", "No minimum-resource, capacity, customer-price or shipped claim follows from this admission estimate."]
+  },
+  "fallbackAdmission": {
+    "refreshedAtUtc": "2026-10-16T19:54:00Z",
+    "machineType": "e2-custom-2-8192",
+    "existingVm": "cap-p544-min-1016",
+    "providerCensusSource": "/tmp/p544-resize-admission-census.json",
+    "snapshotSource": "/tmp/p544-resize-admission-snapshots.json",
+    "priceSource": "/tmp/p544-resize-admission-price.json",
+    "observedResources": "Only the existing candidate VM; no orphan disks, static addresses or snapshots.",
+    "twoFullHoursComputeAndAllDisksUsd": 0.14826941534246577,
+    "paddedIpv4Usd": 0.02,
+    "additionalReservationUsd": 0.5,
+    "remainingProgrammeHeadroomAfterBothReservationsUsd": 38.5,
+    "conditions": [
+      "Run only after the 4 GiB profile fails its predeclared acceptance thresholds.",
+      "Resize the same stopped VM; retain its 32+10+10 GB disks and original DELETE deadline of 2026-10-16T21:19:07Z.",
+      "Set absolute termination-time while stopped and verify it before restart; do not reset the two-hour lifetime.",
+      "This additional reservation is conservative double accounting for a full two hours at the larger shape, not measured billed spend.",
+      "Preserve the first run before mutation and verify final teardown census. No further profile is admitted by this edition."
+    ]
+  },
+  "limitations": [
+    "No BigQuery billing export exists in the dedicated project; exact actual spend and credit balance remain unknown.",
+    "The 25 USD uncertainty reserve and rounding are explicit risk allowances, not measured charges or a mathematical guarantee against unobserved usage.",
+    "This permits the stated bounded candidate and conditional same-VM 8 GiB fallback only. Refresh admission before any further profile. P-537 deployed journey and shipment remain open."
+  ]
+}

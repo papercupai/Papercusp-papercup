@@ -35,11 +35,12 @@
 
 /**
  * Match a checkpoint that cites detached/session-local execution as evidence of
- * in-flight or completed work. A generic statement that a server-side operation
- * may continue "in the background" is not enough: it does not imply a process
- * owned by the checkpoint writer. A `task_id`/`bash_id` marker is different:
- * count it only when a handle-shaped value follows, so an SQL column name alone
- * is not a background-job claim.
+ * work still in flight. A generic statement that a server-side operation may
+ * continue "in the background" is not enough: it does not imply a process owned
+ * by the checkpoint writer. A handle-shaped `task_id`/`bash_id` is also not
+ * enough by itself: checkpoints can contain historical task-ledger rows, including
+ * explicit evidence that the task is stranded and has no live PID or log. Bare
+ * handles count only when their clause also says the reader is waiting for output.
  */
 /**
  * WI-38297 — WIDENED, because the original alternation MISSED the single most common
@@ -66,15 +67,20 @@
  * is excluded because it also describes server-side deferred work, not only a
  * writer-owned process.
  *
- * The detector is warn-only, but its warning names the writer's process/shell and asks
- * for a live handle check. Keep it specific enough that generic background work does
- * not send readers to inspect a nonexistent session-local job. The negative
- * controls that keep it honest ("this task is about…", "filed a follow-up job in the
- * queue") are pinned in checkpoint-bg-job-claim.test.ts and still hold — `task[_ -]?id`
- * cannot match "task identifier" (the trailing \b rejects it).
+ * A later false alarm showed why the handle and noun patterns must stay claim-shaped:
+ * a checkpoint can quote a historical task ID, then say "no background job to await"
+ * after an exact ledger read reports `state=stranded`, `livePids=null`, and
+ * `logPath=null`. Those phrases do not claim active detached work. A bare task handle
+ * now needs same-clause pending-output language; explicit launch/background wording,
+ * a background handle, or an in-flight job phrase still fires. Negated phrases such
+ * as "not running in the background" are excluded.
+ *
+ * The detector is warn-only and cannot establish that a referenced process is live or
+ * owned by the current reader. Keep the negative controls ("this task is about…",
+ * "filed a follow-up job in the queue", historical/terminal task rows) pinned below.
  */
 const BG_JOB_REFERENCE_RE =
-  /\b(?:bg\s*jobs?|background\s+(?:job|task|process|verification)s?|(?:running|executing|launched|started)\s+in\s+(?:the\s+)?background|run_in_background|in[- ]?flight\s+(?:verification|job|task)s?)\b/i;
+  /\b(?:running|executing|launched|started)\s+in\s+(?:the\s+)?background\b|\brun_in_background\b|\b(?:kicked off|started|launched|spawned)\s+(?:an?\s+)?background\s+(?:job|task|process|verification)s?\b|\bbackground\s+verification\s+jobs?\s+in[- ]?flight\b|\b(?:in[- ]?flight|inflight)\s+(?:verification|job|task)s?\b/i;
 
 // Native task IDs are generated handles (typically mixed letters and digits);
 // requiring the value after the label prevents a generic SQL `task_id` column
@@ -83,6 +89,32 @@ const TASK_JOB_HANDLE_RE =
   /\btask[_\s-]?id\s*(?:[:=#]\s*)?(?:[a-z0-9_-]*[a-z][a-z0-9_-]*\d[a-z0-9_-]*|\d{4,})\b/i;
 const BASH_JOB_HANDLE_RE =
   /\bbash[_\s-]?id\s*(?:[:=#]\s*)?(?:[a-z0-9_-]*[a-z][a-z0-9_-]*\d[a-z0-9_-]*|\d{4,})\b/i;
+const BG_JOB_HANDLE_RE =
+  /\b(?:bg\s*jobs?|background\s+(?:job|task|process|verification)s?)\s*(?:id\s*)?(?:[:=#]\s*)?(?:[a-z0-9_-]*[a-z][a-z0-9_-]*\d[a-z0-9_-]*|\d{4,})\b/i;
+const PENDING_HANDLE_CONTEXT_RE =
+  /\b(?:waiting|awaiting)\s+(?:for\s+)?(?:the\s+)?(?:job|task|process|output|result|verdict)\b|\bwhen\s+(?:it|the\s+(?:output|result|job|task))\s+(?:lands|arrives|finishes|completes|returns)\b|\b(?:once|after)\s+(?:it|the\s+(?:job|task|process|output|result))\s+(?:lands|arrives|finishes|completes|returns)\b|\bfor\s+(?:the\s+)?(?:verdict|output|result)\b|\bif\s+green\s*(?:->|→|then)\b/i;
+const NEGATED_PREFIX_RE =
+  /\b(?:no|not|never|without|isn't|is not|wasn't|was not|doesn't|does not|didn't|did not|cannot|can't)(?:\s+(?:any|a|an|the|live|active|longer|still|currently|yet)){0,3}\s*$/i;
+
+function clauses(text: string): string[] {
+  return text.split(/[\r\n.!?;]+/).map((part) => part.trim()).filter(Boolean);
+}
+
+function hasUnnegatedMatch(text: string, pattern: RegExp): boolean {
+  const matcher = new RegExp(pattern.source, `${pattern.flags}g`);
+  return [...text.matchAll(matcher)].some((match) => {
+    const prefix = text.slice(0, match.index ?? 0);
+    return !NEGATED_PREFIX_RE.test(prefix);
+  });
+}
+
+function hasPendingHandleClaim(text: string): boolean {
+  return clauses(text).some(
+    (clause) =>
+      (hasUnnegatedMatch(clause, TASK_JOB_HANDLE_RE) || hasUnnegatedMatch(clause, BASH_JOB_HANDLE_RE)) &&
+      hasUnnegatedMatch(clause, PENDING_HANDLE_CONTEXT_RE),
+  );
+}
 
 export interface BgJobCheckpointWarning {
   /** True when the checkpoint text cites a background job/task as evidence. */
@@ -98,7 +130,11 @@ export function detectBgJobCheckpointClaim(
   const text = (checkpoint ?? '').trim();
   if (
     !text ||
-    (!BG_JOB_REFERENCE_RE.test(text) && !TASK_JOB_HANDLE_RE.test(text) && !BASH_JOB_HANDLE_RE.test(text))
+    (!clauses(text).some(
+      (clause) =>
+        hasUnnegatedMatch(clause, BG_JOB_REFERENCE_RE) || hasUnnegatedMatch(clause, BG_JOB_HANDLE_RE),
+    ) &&
+      !hasPendingHandleClaim(text))
   ) {
     return { detected: false };
   }

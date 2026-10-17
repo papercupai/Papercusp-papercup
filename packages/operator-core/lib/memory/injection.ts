@@ -442,6 +442,7 @@ export async function buildMemoryContextBlock(input: MemoryInjectionInput): Prom
       return emptyCorpusLeg('Related context (matched excerpts)', false, 0, null, {
         outcome: 'timed-out', selected: 0, dropped: emptyCorpusDrops(),
         sessionDedup: 0, legs: null, retrievalDepth: 0, rerank: 'nothing-to-reorder',
+        timeout: memoryTimeoutTelemetry(error),
       });
     });
     let memoryTimedOut = false;
@@ -508,6 +509,8 @@ interface CorpusLegResult {
    */
   gate: CorpusGateDecision | null;
   outcome: CorpusAdmissionStats['outcome'];
+  /** Safe timeout facts for the corpus leg, when its own or parent bound expired. */
+  timeout?: MemoryTimeoutTelemetry;
   /** Lines selected before the coverage gate and cross-moment dedup. */
   selected: number;
   dropped: Record<CorpusAdmissionDropReason, number>;
@@ -534,6 +537,7 @@ function corpusAdmissionStats(corpus: CorpusLegResult | null): CorpusAdmissionSt
     sessionDedup: corpus.sessionDedup,
     embedderAvailable: corpus.embedderAvailable,
     legs: corpus.legs,
+    ...(corpus.timeout ? { timeout: corpus.timeout } : {}),
     ...(corpus.stages ? { stages: corpus.stages } : {}),
     retrievalDepth: corpus.retrievalDepth,
     rerank: corpus.rerank,
@@ -576,7 +580,7 @@ function emptyCorpusLeg(
   gate: CorpusGateDecision | null = null,
   telemetry: Pick<
     CorpusLegResult,
-    'outcome' | 'selected' | 'dropped' | 'sessionDedup' | 'legs' | 'retrievalDepth' | 'rerank'
+    'outcome' | 'selected' | 'dropped' | 'sessionDedup' | 'legs' | 'timeout' | 'retrievalDepth' | 'rerank'
   > = {
     outcome: 'ok',
     selected: 0,
@@ -811,12 +815,13 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         dropped: countCorpusDrops(res.dropped),
         sessionDedup: 0,
         legs: (res.legs as Record<string, unknown> | null | undefined) ?? null,
+        ...(res.timeout ? { timeout: res.timeout } : {}),
         ...(res.stages ? { stages: res.stages as unknown as Record<string, unknown>[] } : {}),
         retrievalDepth: res.retrievalDepth ?? 0,
         rerank: res.rerank ?? 'nothing-to-reorder',
       } satisfies Pick<
         CorpusLegResult,
-        'outcome' | 'selected' | 'dropped' | 'sessionDedup' | 'legs' | 'retrievalDepth' | 'rerank'
+        'outcome' | 'selected' | 'dropped' | 'sessionDedup' | 'legs' | 'timeout' | 'retrievalDepth' | 'rerank'
       >;
 
       // P-001: a leg that ran and admitted nothing still reports HOW it ran.
@@ -891,8 +896,21 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         ...baseTelemetry,
         sessionDedup,
       };
-    } catch {
-      return null;
+    } catch (error) {
+      // Keep a corpus timeout observable even when the shared deadline expires
+      // while this inner leg is awaiting its dynamic search/import path. A
+      // blanket fail-soft null here used to erase the leg's outcome entirely.
+      if (!(error instanceof MemoryTimeoutError)) return null;
+      return emptyCorpusLeg('Related context (matched excerpts)', false, 0, null, {
+        outcome: 'timed-out',
+        selected: 0,
+        dropped: emptyCorpusDrops(),
+        sessionDedup: 0,
+        legs: null,
+        retrievalDepth: 0,
+        rerank: 'nothing-to-reorder',
+        timeout: memoryTimeoutTelemetry(error),
+      });
     }
   })();
 }

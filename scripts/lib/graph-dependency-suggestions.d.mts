@@ -61,18 +61,9 @@ export function packageNameReader(readSource: (rel: string) => string | null): (
  * @returns {boolean}
  */
 export function sourceCorroborates(source: string, importer: string, imported: string, packageNameAt?: ((dir: string) => string | null) | null): boolean;
-/**
- * Verify ONE snapshot edge against the current tree.
- * @param {{ importer: string, imported: string, importerSha256: string }} edge
- * @param {{ readSource: (rel: string) => string | null, packageNameAt?: (dir: string) => string | null }} deps
- */
-export function verifyEdge(edge: {
-    importer: string;
-    imported: string;
-    importerSha256: string;
-}, { readSource, packageNameAt }: {
-    readSource: (rel: string) => string | null;
-    packageNameAt?: (dir: string) => string | null;
+export function verifyEdge(edge: any, { readSource, packageNameAt }: {
+    readSource: any;
+    packageNameAt?: ((dir: string) => string | null) | undefined;
 }): {
     ok: boolean;
     reason: string;
@@ -97,9 +88,7 @@ export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSour
     rejected: never[];
     reason?: undefined;
     index?: undefined;
-    dependencyPaths?: undefined;
-    pathsTruncated?: undefined;
-    truncated?: undefined;
+    state?: undefined;
 } | {
     status: string;
     reason: string;
@@ -107,32 +96,55 @@ export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSour
     accepted: never[];
     rejected: never[];
     index: any;
-    dependencyPaths?: undefined;
-    pathsTruncated?: undefined;
-    truncated?: undefined;
+    state?: undefined;
 } | {
     status: string;
     suggestedFiles: any[];
-    dependencyPaths: {
-        changed: any;
-        consumer: any;
-        files: any[];
-        hops: any[];
-    }[];
-    pathsTruncated: boolean;
-    accepted: {
-        importer: any;
-        imported: any;
-    }[];
-    rejected: {
-        importer: any;
-        imported: any;
-        reason: string | undefined;
-    }[];
-    truncated: boolean;
+    dependencyPaths: any;
+    pathsTruncated: any;
+    accepted: any;
+    rejected: any;
+    truncated: any;
     index: any;
-    reason?: undefined;
 };
+/**
+ * Async counterpart to `suggestFromSnapshot`. It preloads only importers structurally
+ * reachable from each BFS frontier, plus target package manifests, with bounded parallel reads.
+ * The same `verifyEdge` check still decides every accepted/rejected edge.
+ * @param {{ changed: string[], snapshot: any, now: number, maxAgeMs?: number, readSource: (rel: string) => Promise<string | null> }} args
+ */
+export function suggestFromSnapshotAsync({ changed, snapshot, now, maxAgeMs, readSource }: {
+    changed: string[];
+    snapshot: any;
+    now: number;
+    maxAgeMs?: number;
+    readSource: (rel: string) => Promise<string | null>;
+}): Promise<{
+    status: string;
+    suggestedFiles: never[];
+    accepted: never[];
+    rejected: never[];
+    reason?: undefined;
+    index?: undefined;
+    state?: undefined;
+} | {
+    status: string;
+    reason: string;
+    suggestedFiles: never[];
+    accepted: never[];
+    rejected: never[];
+    index: any;
+    state?: undefined;
+} | {
+    status: string;
+    suggestedFiles: any[];
+    dependencyPaths: any;
+    pathsTruncated: any;
+    accepted: any;
+    rejected: any;
+    truncated: any;
+    index: any;
+}>;
 /** baseline ∪ suggested, asserting the one invariant this whole feature exists to keep:
  * the result is a superset of the baseline. Returns the names added beyond it. */
 export function unionSuperset(baseline: any, suggested: any): {
@@ -218,22 +230,51 @@ export function computeGraphSuggestions({ changed, snapshotPath, readFile, readS
     pathsTruncated?: undefined;
 } | {
     status: string;
-    reason: string | null;
+    reason: any;
     workspaces: any[];
-    accepted: number;
-    rejected: number;
-    rejectedReasons: (string | undefined)[];
+    accepted: any;
+    rejected: any;
+    rejectedReasons: any[];
     truncated: boolean;
-    dependencyPaths: {
-        changed: any;
-        consumer: any;
-        files: any[];
-        hops: any[];
-    }[];
+    dependencyPaths: any;
     pathsTruncated: boolean;
     index: any;
     ageMs: number | null;
 };
+/** Async selector path used by affected-tests; snapshot loading stays sync, source verification does not. */
+export function computeGraphSuggestionsAsync({ changed, snapshotPath, readFile, readSource, ownerOfPath, now, maxAgeMs }: {
+    changed: any;
+    snapshotPath: any;
+    readFile: any;
+    readSource: any;
+    ownerOfPath: any;
+    now: any;
+    maxAgeMs: any;
+}): Promise<{
+    status: string;
+    reason: string | null;
+    workspaces: never[];
+    accepted: number;
+    rejected: number;
+    index: null;
+    ageMs: null;
+    rejectedReasons?: undefined;
+    truncated?: undefined;
+    dependencyPaths?: undefined;
+    pathsTruncated?: undefined;
+} | {
+    status: string;
+    reason: any;
+    workspaces: any[];
+    accepted: any;
+    rejected: any;
+    rejectedReasons: any[];
+    truncated: boolean;
+    dependencyPaths: any;
+    pathsTruncated: boolean;
+    index: any;
+    ageMs: number | null;
+}>;
 /** Snapshot age as hours with one decimal, or `none` when nothing was loaded. */
 export function formatSnapshotAge(ageMs: any): string;
 /**
@@ -289,6 +330,8 @@ export const GRAPH_SNAPSHOT_SCHEMA: "graph-dependency-snapshot-v1";
 export const DEFAULT_MAX_AGE_MS: number;
 /** Hard cap on files visited by one suggestion walk — a bound, never a verdict. */
 export const MAX_VISITED_FILES: 20000;
+/** Bound concurrent current-source reads while keeping independent edge checks parallel. */
+export const MAX_CONCURRENT_SOURCE_READS: 16;
 /** Evidence stays bounded independently of the add-only selection walk. */
 export const MAX_DEPENDENCY_PATH_DEPTH: 64;
 export const MAX_DEPENDENCY_PATHS: 100;

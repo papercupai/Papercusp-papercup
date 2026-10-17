@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "kind": "source-functional-test-evidence",
+  "workItem": "EI-26216391163556311",
+  "parentWorkItem": "WI-6554700010016277",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "planItem": "P-544",
+  "measuredAt": "2026-10-17T09:12:32.462Z",
+  "scope": "Maintained local fake-provider regression. No real GCP lifecycle, application cold readiness, retained-data growth, cost acceptance or shipment claim.",
+  "rootCause": "The Bash benchmark captured lifecycle exit codes only for logging, then continued. Restarting a maxRunDuration VM resets its relative lifetime; no absolute-deadline conservation was checked. The old fake provider covered create and SSH failure only.",
+  "baseline": {
+    "log": "/tmp/p544-resize-guard-before-20261017.log",
+    "sha256": "61609d19addafc96ed0d677a7109067a77921c0221e2480c00cb285144ef0590",
+    "exitCode": 1,
+    "newCasesFailed": 3,
+    "observations": [
+      "Stop failure 17 continued to set/start and DONE with exit 0.",
+      "Set-machine-type failure 19 continued to start and DONE with exit 0.",
+      "Start failure 23 continued to SSH instead of aborting immediately."
+    ]
+  },
+  "fix": [
+    "Abort immediately on failed stop, set-machine-type, set-scheduling or start.",
+    "Read provider JSON before measurement; require a future DELETE schedule.",
+    "Convert relative creation-time lifetime conservatively to its original absolute bound while stopped; clear maxRunDuration.",
+    "Read provider JSON before and after start; require exact original absolute deadline, DELETE, expected status and target machine type.",
+    "Propagate unsuccessful teardown; emit DONE only after successful measurement and cleanup."
+  ],
+  "verification": {
+    "command": {
+      "tool": "testing:run",
+      "args": {
+        "files": [
+          "scripts/agent-capacity/vm/gce-resize.test.ts"
+        ],
+        "harness": "papercusp",
+        "timeoutMs": 180000,
+        "maxFailures": 8
+      }
+    },
+    "runId": "bb944076-937d-4698-a759-4dc4d0754c48",
+    "testRunIds": [
+      21317994
+    ],
+    "passed": 23,
+    "failed": 0,
+    "skipped": 0,
+    "typecheck": {
+      "command": "npm run lint:tsc:scripts -- --files scripts/agent-capacity/vm/gce-resize.test.ts",
+      "exitCode": 0,
+      "checked": 1,
+      "named": 1,
+      "errors": 0,
+      "log": "/tmp/p544-resize-guard-final-typecheck-20261017.log",
+      "sha256": "0318c7f8ec6714fd93beeb89e6e5ad9e13ad1c2bf6d6f76e1806eee07cddb8d2"
+    },
+    "shellSyntax": {
+      "command": "bash -n scripts/agent-capacity/vm/gce-resize.sh",
+      "exitCode": 0
+    },
+    "diffCheck": {
+      "exitCode": 0
+    },
+    "coverage": [
+      "Positive relative and absolute deadline preservation across restart.",
+      "Immediate stop/set/scheduling/start failure propagation with teardown.",
+      "Missing, expired, non-DELETE and malformed initial schedules.",
+      "Unchanged relative, extended, expired or STOP readback before start.",
+      "Deadline drift after start before downstream SSH.",
+      "Provider describe failure and invalid JSON.",
+      "Teardown failure and primary failure preservation."
+    ]
+  },
+  "sourceHashes": {
+    "scripts/agent-capacity/vm/gce-resize.sh": "62bb43289b80dafd342775250fd3e0e5f5ae6cc7b02731d73df9c28b49a3fa17",
+    "scripts/agent-capacity/vm/gce-resize.test.ts": "ceb3413f57130d176410e6ba2d4d30a8482efb325c0f43cb203935511bcb4854"
+  },
+  "providerSemantics": {
+    "source": "Installed gcloud compute instances set-scheduling --help, read 2026-10-17",
+    "observations": [
+      "set-scheduling requires TERMINATED.",
+      "maxRunDuration is relative to the last RUNNING transition.",
+      "terminationTime stays fixed across reruns; expired timestamps refuse restart.",
+      "clear-max-run-duration and termination-time are independently supported flags."
+    ]
+  },
+  "remainingAcceptance": [
+    "D-075 real candidate capacity and cold application readiness.",
+    "D-074 real retained-data growth durability.",
+    "D-076 actual all-category monthly billed cost under $20.",
+    "P-537 authenticated product journey, source-to-serving parity and final shipment."
+  ]
+}

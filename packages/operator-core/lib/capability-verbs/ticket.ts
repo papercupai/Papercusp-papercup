@@ -15,7 +15,9 @@
  * inside the caller's own workspace.
  *
  * Idempotency is the in-app filer's, unchanged: an `attempted` record commits on the trigger run
- * BEFORE any provider HTTP, keyed by a correlation id derived from (workspace, trigger run). A replay
+ * BEFORE any provider HTTP. When the canonical trigger envelope has `sourceId` and `externalId`,
+ * the correlation is stable across runs and scoped to (workspace, pack installation, sourceId,
+ * externalId); legacy envelopes fall back to the trigger-run scope. A replay or a matching run
  * reads that record instead of filing twice, and a provider that already holds the correlation id
  * answers it (`recoveryOnly`) without creating a second ticket. No provider id is checked anywhere:
  * any installed provider serving `ticket.create` + an option capability works.
@@ -118,8 +120,9 @@ export type FileTicketResult =
 interface RunRow {
   triggerRunId: string;
   outcome: Record<string, unknown> | null;
-  args: { trigger?: { payload?: Record<string, unknown> } } | null;
+  args: { trigger?: { payload?: Record<string, unknown>; sourceId?: unknown; externalId?: unknown } } | null;
   ownerUserId: string | null;
+  packInstallationId: string;
   inputs: Record<string, unknown> | null;
   manifest: Record<string, unknown> | null;
   pluginName: string;
@@ -138,6 +141,7 @@ async function readRun(sql: postgres.Sql | postgres.TransactionSql, workspaceId:
   const rows = await sql<RunRow[]>`
     SELECT tr.id::text AS "triggerRunId", tr.outcome, tr.args,
            s.owner_user_id::text AS "ownerUserId",
+           i.id::text AS "packInstallationId",
            i.inputs, i.manifest, i.plugin_name AS "pluginName"
       FROM harness_shared.trigger_runs tr
       JOIN harness_shared.trigger_bindings b ON b.workspace_id = tr.workspace_id AND b.id = tr.binding_id
@@ -151,6 +155,81 @@ async function readRun(sql: postgres.Sql | postgres.TransactionSql, workspaceId:
   const row = rows[0];
   if (!row || !row.ownerUserId) throw new TicketFilingError('ticket_origin_invalid', 'no trigger-pack run for this plan run');
   return row as RunRow & { ownerUserId: string };
+}
+
+interface TriggerMessageIdentity {
+  packInstallationId: string;
+  sourceId: string;
+  externalId: string;
+}
+
+/** Stable message coordinates shared by independently-triggered runs. */
+function triggerMessageIdentity(row: RunRow): TriggerMessageIdentity | null {
+  const trigger = record(row.args?.trigger);
+  const sourceId = text(trigger?.sourceId);
+  const externalId = text(trigger?.externalId);
+  if (!row.packInstallationId || !sourceId || !externalId) return null;
+  return { packInstallationId: row.packInstallationId, sourceId, externalId };
+}
+
+/** Serialize first-attempt selection for every run from one pack installation. */
+async function lockPackInstallation(
+  sql: postgres.TransactionSql,
+  workspaceId: string,
+  packInstallationId: string,
+): Promise<void> {
+  const rows = await sql<Array<{ id: string }>>`
+    SELECT id::text
+      FROM harness_shared.trigger_pack_installations
+     WHERE workspace_id = ${workspaceId}
+       AND id = ${packInstallationId}::uuid
+     FOR UPDATE`;
+  if (rows.length === 0) throw new TicketFilingError('ticket_origin_invalid', 'trigger-pack installation not found');
+}
+
+/** Find a filing attempt made by another trigger run for this same message. */
+async function existingMessageAttempt(
+  sql: postgres.TransactionSql,
+  workspaceId: string,
+  row: RunRow & { ownerUserId: string },
+): Promise<TicketFilingAttempt | null> {
+  const identity = triggerMessageIdentity(row);
+  if (!identity) return null;
+  const rows = await sql<RunRow[]>`
+    SELECT tr.id::text AS "triggerRunId", tr.outcome, tr.args,
+           s.owner_user_id::text AS "ownerUserId",
+           i.id::text AS "packInstallationId",
+           i.inputs, i.manifest, i.plugin_name AS "pluginName"
+      FROM harness_shared.trigger_runs tr
+      JOIN harness_shared.trigger_bindings b
+        ON b.workspace_id = tr.workspace_id AND b.id = tr.binding_id
+      JOIN harness_shared.data_sources s
+        ON s.workspace_id = b.workspace_id AND s.id = b.source_id
+      JOIN harness_shared.trigger_pack_installations i
+        ON i.workspace_id = b.workspace_id AND i.id = b.pack_installation_id
+     WHERE tr.workspace_id = ${workspaceId}
+       AND i.id = ${identity.packInstallationId}::uuid
+       AND tr.id <> ${row.triggerRunId}::uuid
+       AND tr.args -> 'trigger' ->> 'sourceId' = ${identity.sourceId}
+       AND tr.args -> 'trigger' ->> 'externalId' = ${identity.externalId}
+       AND tr.outcome ? ${TICKET_FILING_OUTCOME_KEY}
+     ORDER BY CASE WHEN tr.outcome -> ${TICKET_FILING_OUTCOME_KEY} ->> 'state' = 'created' THEN 0 ELSE 1 END,
+              tr.completed_at DESC NULLS LAST, tr.id
+     LIMIT 1
+     FOR UPDATE OF tr`;
+  const candidate = rows[0];
+  if (!candidate) return null;
+  const attempt = existingAttempt(candidate);
+  if (attempt && attempt.ownerUserId !== row.ownerUserId) throw new TicketFilingError('ticket_owner_changed');
+  return attempt;
+}
+
+function ticketCorrelationId(workspaceId: string, row: RunRow): string {
+  const identity = triggerMessageIdentity(row);
+  const scope = identity
+    ? [workspaceId, identity.packInstallationId, identity.sourceId, identity.externalId].join(':')
+    : `${workspaceId}:${row.triggerRunId}`;
+  return 'papercusp-ticket-' + createHash('sha256').update(scope).digest('hex');
 }
 
 function existingAttempt(row: RunRow): TicketFilingAttempt | null {
@@ -304,13 +383,23 @@ export async function fileTicketFromPlanRun(
     const sourceId = matches[0].sourceId;
 
     // 2. Commit the attempt under the run's row lock. A concurrent filer that won the race leaves its
-    //    attempt here, and this caller recovers it instead of writing a second one.
+    //    attempt here, and this caller recovers it instead of writing a second one. The installation
+    //    lock extends that serialization across independent trigger runs for the same message.
     prepared = await sql.begin(async (tx) => {
       const row = await readRun(tx, workspaceId, planRunId, true);
       if (row.triggerRunId !== seen.triggerRunId) throw new TicketFilingError('ticket_origin_invalid', 'trigger run changed');
       const raced = existingAttempt(row);
       if (raced) return { attempt: raced, fresh: false };
-      const correlationId = 'papercusp-ticket-' + createHash('sha256').update(workspaceId + ':' + row.triggerRunId).digest('hex');
+      await lockPackInstallation(tx, workspaceId, row.packInstallationId);
+      const messageAttempt = await existingMessageAttempt(tx, workspaceId, row);
+      if (messageAttempt) {
+        await tx`UPDATE harness_shared.trigger_runs SET
+          outcome = COALESCE(outcome, '{}'::jsonb) || ${JSON.stringify({ [TICKET_FILING_OUTCOME_KEY]: messageAttempt })}::text::jsonb,
+          updated_at = now()
+          WHERE workspace_id = ${workspaceId} AND id = ${row.triggerRunId}::uuid`;
+        return { attempt: messageAttempt, fresh: false };
+      }
+      const correlationId = ticketCorrelationId(workspaceId, row);
       const attempt: TicketFilingAttempt = {
         sourceId, containerId: destination, correlationId, title,
         body: ticketBody({ triggerRunId: row.triggerRunId, pluginName: row.pluginName, observed, expected,

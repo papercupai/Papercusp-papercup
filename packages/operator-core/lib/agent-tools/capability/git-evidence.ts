@@ -4,12 +4,15 @@
  * compare two full commit ids or read one bounded file from a full commit id
  * in their resolved harness repository.
  */
+import { createHash } from 'node:crypto';
 import { lstat, realpath } from 'node:fs/promises';
+import { availableParallelism } from 'node:os';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { createCache, type Cache } from '@papercusp/cache';
 import { defineTool } from '@papercusp/agent-mcp';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { createConcurrencyGate, type ConcurrencyGate } from '@papercusp/sync';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { locateCommittedBlobs, type CommittedBlobLocation } from '../plans/committed-tree-reader';
@@ -22,15 +25,27 @@ const fullCommitSha = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i);
 export const MAX_GIT_EVIDENCE_INLINE_BYTES = 128 * 1024;
 export const MAX_GIT_EVIDENCE_PAGE_BYTES = 4 * 1024;
 const PAGE_RESPONSE_MARGIN_CHARS = 256;
-const MAX_CACHED_GIT_EVIDENCE_BLOB_BYTES = 1024 * 1024;
+// Keep the page-chain cache bounded, while covering the multi-megabyte source
+// blobs that are common in grading evidence. Without this floor, a blob just
+// over 1 MiB was evicted immediately and every cursor repeated ls-tree plus
+// cat-file for the entire file.
+const MAX_CACHED_GIT_EVIDENCE_BLOB_BYTES = 8 * 1024 * 1024;
 const GIT_EVIDENCE_CACHE_MAX_ENTRIES = 16;
 const GIT_EVIDENCE_CACHE_TTL_MS = 5 * 60_000;
+// Historical reads are intentionally fan-out friendly, but each read performs
+// several short Git subprocesses. Letting an audit launch one child per command
+// makes the operator's process-spawn path queue behind itself (the first read is
+// fast while the rest wait for the host's fixed child-admission timeout). Share a
+// bounded command gate across requests so callers keep their own results and
+// cancellation while subprocesses make steady progress.
+const GIT_EVIDENCE_COMMAND_CONCURRENCY = Math.min(8, Math.max(2, availableParallelism()));
+const gitEvidenceCommandGate = createConcurrencyGate(GIT_EVIDENCE_COMMAND_CONCURRENCY);
 
 // A byte-page cursor is a separate tool invocation. Cache the validated immutable
 // blob so following its cursor does not repeat repository discovery, commit/type/
 // size probes, or re-read the complete blob for every page. The generic cache and
 // module-singleton helpers keep the working set bounded across operator module
-// graphs; 16 entries × 1 MiB is the maximum retained payload.
+// graphs; 16 entries × 8 MiB is the maximum retained payload.
 const gitEvidenceCacheState = pinModuleState<{ cache: Cache | null }>(
   '@papercusp/operator-core.gitEvidenceBlobCache',
   () => ({ cache: null }),
@@ -93,7 +108,7 @@ const readFileAtCommitArgs = z.object({
   op: z.literal('readFileAtCommit').describe('Read a UTF-8 blob from an immutable commit. Oversized blobs are returned in bounded byte pages.'),
   commitSha: fullCommitSha.describe('Full 40- or 64-character commit SHA; refs and abbreviations are refused.'),
   path: relativeFilePath.describe('Repository-relative POSIX file path; absolute paths and traversal are refused.'),
-  rootHarnessSlug: z.string().trim().min(1).max(120).optional().describe('Registered harness whose repository contains the cited commit, taken from the evidence measurement. Resolved only in the caller workspace; no arbitrary directory is accepted.'),
+  rootHarnessSlug: z.string().trim().min(1).max(120).optional().describe('Registered harness whose repository contains the cited commit, taken from the evidence measurement. Resolved only in the caller workspace; no arbitrary directory is accepted. A hive-scoped session is also confined by the transport hive clamp: sibling-hive roots are refused with harness_forbidden before this handler runs. Use an authorized session in the target hive for sibling-hive evidence.'),
   repositoryPath: relativeRepositoryPath.optional().describe('Optional nested Git repository path under the resolved root, taken from the evidence measurement pin. It must resolve inside that root and contain its own .git entry.'),
   byte_offset: z.number().int().nonnegative().optional().describe('0-based byte offset for an exact page. Pair with byte_limit; the first page of an oversized blob defaults to 0.'),
   byte_limit: z.number().int().positive().max(MAX_GIT_EVIDENCE_PAGE_BYTES).optional().describe(`Maximum exact bytes in this page (≤${MAX_GIT_EVIDENCE_PAGE_BYTES}). Follow next_cursor for the next page.`),
@@ -130,7 +145,7 @@ export interface GitEvidenceResolvedBlob {
 
 export type GitEvidenceResult =
   | { ok: true; op: 'isAncestor'; ancestorSha: string; descendantSha: string; isAncestor: boolean }
-  | { ok: true; op: 'readFileAtCommit'; commitSha: string; path: string; resolved: GitEvidenceResolvedBlob; bytes: number; content: string }
+  | { ok: true; op: 'readFileAtCommit'; commitSha: string; path: string; resolved: GitEvidenceResolvedBlob; bytes: number; contentSha256: string; content: string }
   | {
       ok: true;
       op: 'readFileAtCommit';
@@ -138,6 +153,7 @@ export type GitEvidenceResult =
       path: string;
       resolved: GitEvidenceResolvedBlob;
       encoding: 'base64';
+      contentSha256: string;
       byte_offset: number;
       byte_length: number;
       total_bytes: number;
@@ -168,6 +184,7 @@ export function doorSafeGitEvidencePageBytes(
     ...(repositoryPath ? { repositoryPath } : {}),
     ...(resolved ? { resolved } : {}),
     encoding: 'base64',
+    contentSha256: '0'.repeat(64),
     byte_offset: Number.MAX_SAFE_INTEGER,
     byte_length: Number.MAX_SAFE_INTEGER,
     total_bytes: Number.MAX_SAFE_INTEGER,
@@ -203,6 +220,8 @@ interface GitEvidenceOptions {
   runner?: typeof runGitReadOnlyEvidence;
   /** Internal cache seam for exercising bounded page reuse. */
   cache?: Cache;
+  /** Internal gate seam for proving command admission under concurrent reads. */
+  commandGate?: ConcurrencyGate;
 }
 
 /** Execute only the two operations admitted by the judge evidence contract. */
@@ -243,7 +262,8 @@ async function runJudgeGitEvidenceInner(
     repositoryDir = registeredRoot;
   }
   const runner = options.runner ?? runGitReadOnlyEvidence;
-  const invokeAt = async (cwd: string, argv: string[]) => {
+  const commandGate = options.commandGate ?? gitEvidenceCommandGate;
+  const invokeAt = (cwd: string, argv: string[]) => commandGate.run(async () => {
     const result = await runner(
       argv,
       cwd,
@@ -252,14 +272,14 @@ async function runJudgeGitEvidenceInner(
       options.sandboxEnabled,
       options.sandboxRequired,
     );
-    if (options.signal.aborted && result.code === null) {
-      const message = result.output.slice(0, 300);
-      throw new Error(
-        `git_command_interrupted: ${message || `git ${argv.join(' ')} was aborted before returning a result`}`,
-      );
+    if (options.signal.aborted && result.code !== 0) {
+      // Git's stdout is the blob itself for cat-file blob. Never copy combined
+      // stdout/stderr into an interruption diagnostic: a killed read can expose
+      // the first bytes of the file as the error message.
+      throw new Error(`git_command_interrupted: git ${argv.join(' ')} was aborted before returning a result`);
     }
     return result;
-  };
+  }, options.signal);
   const invoke = (argv: string[]) => invokeAt(repositoryDir, argv);
 
   let selectedRepositoryPath = '.';
@@ -311,7 +331,12 @@ async function runJudgeGitEvidenceInner(
       };
     }
 
-    const loadPinnedBlob = async (): Promise<{ commitSha: string; contentBytes: Buffer; resolved: GitEvidenceResolvedBlob }> => {
+    const loadPinnedBlob = async (): Promise<{
+      commitSha: string;
+      contentBytes: Buffer;
+      contentSha256: string;
+      resolved: GitEvidenceResolvedBlob;
+    }> => {
       const top = await invoke(['rev-parse', '--show-toplevel']);
       if (top.code !== 0) {
         const message = top.output.slice(0, 300);
@@ -440,7 +465,8 @@ async function runJudgeGitEvidenceInner(
       if (contentBytes.length !== size) {
         throw new GitEvidenceReadFailure({ ok: false, reason: 'file_is_not_valid_utf8' });
       }
-      return { commitSha, contentBytes, resolved };
+      const contentSha256 = createHash('sha256').update(contentBytes).digest('hex');
+      return { commitSha, contentBytes, contentSha256, resolved };
     };
 
     const workspaceId = options.workspaceId;
@@ -454,7 +480,12 @@ async function runJudgeGitEvidenceInner(
       options.sandboxEnabled ?? false,
       options.sandboxRequired ?? false,
     ])}`;
-    let pinnedBlob: { commitSha: string; contentBytes: Buffer; resolved: GitEvidenceResolvedBlob };
+    let pinnedBlob: {
+      commitSha: string;
+      contentBytes: Buffer;
+      contentSha256: string;
+      resolved: GitEvidenceResolvedBlob;
+    };
     try {
       pinnedBlob = cacheableScope
         ? await cache!.getOrSet(workspaceId, cacheKey, loadPinnedBlob, {
@@ -470,7 +501,7 @@ async function runJudgeGitEvidenceInner(
       cache!.forget(workspaceId, cacheKey);
     }
 
-    const { commitSha, contentBytes, resolved } = pinnedBlob;
+    const { commitSha, contentBytes, contentSha256, resolved } = pinnedBlob;
     const size = contentBytes.length;
     if (size <= MAX_GIT_EVIDENCE_INLINE_BYTES && args.byte_offset === undefined) {
       return {
@@ -480,6 +511,7 @@ async function runJudgeGitEvidenceInner(
         path: args.path,
         resolved,
         bytes: size,
+        contentSha256,
         content: contentBytes.toString('utf8'),
       };
     }
@@ -505,6 +537,7 @@ async function runJudgeGitEvidenceInner(
       path: args.path,
       resolved,
       encoding: 'base64',
+      contentSha256,
       byte_offset: byteOffset,
       byte_length: page.length,
       total_bytes: size,
@@ -573,12 +606,12 @@ async function runJudgeGitEvidenceInner(
 export default defineTool({
   name: 'capability:git-evidence',
   description:
-    'Judge-only read-only Git evidence: check ancestry between full commit SHAs or read a file pinned to a full commit SHA in the active harness repository or an explicitly registered evidence harness. Historical reads follow gitlinks pinned by the commit and return the resolved repository, commit, and blob identity. Oversized files return bounded byte pages.',
+    'Judge-only read-only Git evidence: check ancestry between full commit SHAs or read a file pinned to a full commit SHA in the active harness repository or an explicitly registered evidence harness in the caller\'s allowed hive. Historical reads follow gitlinks pinned by the commit and return the resolved repository, commit, and blob identity.',
   guidance: {
     when: 'A grading method requires proof about commit ancestry or the exact contents of a file at a pinned commit.',
     notWhen: 'For general Git commands, worktree state, mutation, refs, or scratch clones, use the separately authorized engineering tools.',
     chaining:
-      'Use op:"isAncestor" with two full SHAs, or op:"readFileAtCommit" with a full SHA and repository-relative path. Paths below a submodule follow the child commit pinned by each parent gitlink; the result reports resolved.repositoryPath, resolved.commitSha, and resolved.blobSha while commitSha remains the requested superproject commit. When a binding measurement pins a nested repository HEAD directly, pass its path as repositoryPath and use the child-relative file path and commit; the nested repository must resolve inside the selected root. For an external test checkout, copy rootHarnessSlug from the cited binding measurement. For a whole-file read, omit byte_offset and byte_limit: blobs up to 128 KiB return {bytes, content} in one call (including a 94,304-byte blob). Larger blobs, or deliberate pages, return {encoding:"base64", byte_offset, byte_length, total_bytes, eof, data, next_cursor} and have no content field. Base64-decode data, follow next_cursor.args unchanged to preserve the pinned commit/path/root, and stop only when eof is true and next_cursor is null.',
+      'isAncestor: two full SHAs. readFileAtCommit: full SHA + repository-relative path; submodule paths follow parent gitlinks, resolved.{repositoryPath, commitSha, blobSha} name the read, commitSha keeps the requested superproject commit. Nested HEAD binding: repositoryPath inside the registered root + child-relative path and commit. Copy rootHarnessSlug from the cited external-checkout measurement; a hive-scoped session reads only roots in its own hive (sibling-hive: harness_forbidden at the transport), so use a session scoped to that hive, never a bypass. contentSha256 hashes exact committed blob bytes. Whole blobs up to 128 KiB: omit byte_offset/byte_limit, get {bytes, content, contentSha256}. Larger or paged: base64 {byte_offset, byte_length, total_bytes, contentSha256, eof, data, next_cursor}; decode data, follow next_cursor.args unchanged until eof:true and next_cursor null.',
   },
   capability: 'capability:git-evidence:read',
   effect: 'read',

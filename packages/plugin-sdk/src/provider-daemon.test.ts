@@ -77,6 +77,19 @@ describe('portable provider daemon protocol', () => {
     d.close();
   });
 
+  it('preserves an unconfirmed operation receipt alongside its normalized typed fault', async () => {
+    const sent: ProviderDaemonMessage[] = [];
+    const receipt = { containerId: 'container-1', observedStatus: 'PUBLISHED', retrySafe: false, kind: 'wrong' };
+    const d = createProviderDaemon(adapter({ invoke: async () => {
+      throw Object.assign(new Error('publish_ambiguous_do_not_retry'), { kind: 'transient', data: receipt });
+    } }), (m) => sent.push(JSON.parse(JSON.stringify(m))));
+    d.receive(call(1, 'a', 'provider.invoke'));
+    await flush();
+    expect(sent[0]!.error?.data).toEqual({ ...receipt, kind: 'transient', message: 'publish_ambiguous_do_not_retry' });
+    expect(providerSyncErrorOf(sent[0]!.error)).toEqual({ kind: 'transient', message: 'publish_ambiguous_do_not_retry' });
+    d.close();
+  });
+
   it('expires unanswered fetches and ignores late replies', async () => {
     vi.useFakeTimers();
     const sent: ProviderDaemonMessage[] = [];

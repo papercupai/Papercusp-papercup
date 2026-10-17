@@ -42,6 +42,8 @@
  * boundary the operator's own route-level code-splitting gives them.
  */
 import { lazy, type ComponentProps, type ComponentType, type LazyExoticComponent } from 'react';
+// The persistent machine control shares the same host inventory and URL state in both shells.
+export const OPERATOR_MACHINE_SWITCHER = lazy(() => import('../../../../apps/operator/app/cloud-workspaces/MachineSwitcher'));
 import '../../../../apps/operator/app/harness/harness.css';
 // The DEV console's stylesheet. The operator loads it from `dev/layout.tsx`, a
 // route-level layout a host never renders; it is namespaced (`.pc-dev-*`), so
@@ -81,6 +83,7 @@ export type OperatorSurfaceKind =
   | 'plans'
   | 'inbox'
   | 'overview'
+  | 'enterprise'
   | 'hud'
   | 'work'
   | 'learning'
@@ -192,6 +195,7 @@ export const OPERATOR_SURFACES: Record<
   // tab → kind map and is typed over the full AdvTabId union, so a NEW desktop
   // tab fails to compile until it is registered for the portal too.
   overview: lazy(() => import('../../../../apps/operator-vite/src/components/adv/AdvOverviewTab')),
+  enterprise: lazy(() => import('../../../../apps/operator-vite/src/components/adv/AdvEnterpriseTab')),
   hud: lazy(() => import('../../../../apps/operator/app/adv/hud/HudView')),
   work: lazy(() => import('../../../../apps/operator/app/adv/harnesses/HarnessesWorkspace')),
   learning: lazy(() => import('../../../../apps/operator-vite/src/components/adv/LearningTab')),

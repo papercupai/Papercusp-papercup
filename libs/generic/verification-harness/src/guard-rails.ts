@@ -97,11 +97,15 @@ export function runGuardRailProbe(
       cwd: opts.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    child.stdout.on('data', (d: Buffer) => {
-      stdout = tail(stdout + d.toString('utf8'));
+    // Decode at the stream boundary so a multi-byte UTF-8 character split across
+    // data events cannot become replacement characters.
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (d: string) => {
+      stdout = tail(stdout + d);
     });
-    child.stderr.on('data', (d: Buffer) => {
-      stderr = tail(stderr + d.toString('utf8'));
+    child.stderr.on('data', (d: string) => {
+      stderr = tail(stderr + d);
     });
     const finish = (exitCode: number | null, spawnError?: Error) => {
       const timedOut = (exitCode === 124 || exitCode === 137) && Date.now() - t0 >= secs * 1000;

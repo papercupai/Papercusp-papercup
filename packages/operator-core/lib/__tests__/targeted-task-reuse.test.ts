@@ -337,8 +337,11 @@ describe('armTargetedTaskReuse', () => {
     expect(armed.env.PC_EXECUTED_SOURCE_MAP_NO_PERSIST).toBeUndefined();
     expect(armed.lines).toHaveLength(1);
     expect(armed.lines[0]).toMatch(
-      /^TARGETED_TEST_PASS_REUSE ws=@fixture\/lane-ws::test:lane-stateful candidates=2 reused=1 .*inputChanged=1 .* scope=targeted-gate rows=2 sha=aaaaaaaaaaaa lane=stateful otherLane=0$/,
+      /^TARGETED_TEST_PASS_REUSE ws=@fixture\/lane-ws::test:lane-stateful candidates=2 reused=1 .*inputChanged=1 .* scope=targeted-gate rows=2 sha=aaaaaaaaaaaa auditRate=0 lane=stateful otherLane=0 runtime=/,
     );
+    const runtime = JSON.parse(decodeURIComponent(armed.lines[0]!.split(' runtime=')[1]!));
+    expect(runtime).toEqual({ version: 1, judgedSha: HEAD, runnerIdentity: RUNNER,
+      runContext: CTX, runGroupId: null, dirty: false });
     expect(ended).toBe(1);
 
     // The skip list is what the workspace's vitest config reads: workspace-relative, and accepted
@@ -382,7 +385,7 @@ describe('armTargetedTaskReuse', () => {
     });
     expect(armed.reused).toBe(2);
     expect(armed.lines[0]).toMatch(/ otherRunner=0 /);
-    expect(armed.lines[0]).toMatch(/ proofFormat=proof-v2\(legacy\) lane=stateful otherLane=0$/);
+    expect(armed.lines[0]).toMatch(/ proofFormat=proof-v2\(legacy\) auditRate=0 lane=stateful otherLane=0 runtime=/);
     const list = parseReuseSkipList(readFileSync(armed.env.PC_TEST_REUSE_SKIP_LIST!, 'utf8'));
     expect(list.runnerIdentity).toBe(LEGACY_RUNNER);
     // The judged tree's own consumer computes ITS identity, so it accepts the list.
@@ -461,7 +464,7 @@ describe('armTargetedTaskReuse', () => {
     armed.finish();
   });
 
-  it('the real Vitest consumer skips an unchanged pass and executes changed and unproven files', async () => {
+  it('the real Vitest consumer preserves passes across lint-only repair, then executes changed and unproven files', async () => {
     fixture('vitest run');
     const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
     const wsRoot = join(root, 'packages/lane-ws');
@@ -484,21 +487,43 @@ describe('armTargetedTaskReuse', () => {
       expect(result.error, result.stderr).toBeUndefined();
       return { status: result.status, report: JSON.parse(result.stdout) };
     };
-    const env = { ...process.env, ...baseEnv(), PC_TEST_LANE: undefined, PC_TEST_REUSE_SKIP_LIST: undefined,
+    const runGroupId = '64eab084-4e87-4e2b-99bd-3be2eb7c191f';
+    const env = { ...process.env, ...baseEnv(), PAPERCUSP_TEST_RUN_GROUP: runGroupId,
+      PC_TEST_LANE: undefined, PC_TEST_REUSE_SKIP_LIST: undefined,
       PC_EXECUTED_SOURCE_MAP_WORKSPACE: undefined, PC_EXECUTED_SOURCE_MAP_RESULT: undefined,
       PC_EXECUTED_SOURCE_MAP_OUT: undefined, PC_TEST_FILTER_LIST: undefined };
     const first = run(env);
     expect(first.status).toBe(0);
     expect(first.report.testResults.map((r: { name: string }) => r.name.split('/').at(-1)).sort()).toEqual(['a.test.ts', 'b.test.ts']);
+    const identity = `proof-v3 ${process.version} ${process.platform} ${process.arch}`;
+    const loadProofs = async () => ({ rows: 2, proofs: new Map(
+      ['a', 'b'].map(name => [`packages/lane-ws/${name}.test.ts`, {
+        ...proof(OLD, [`packages/lane-ws/${name}.test.ts`, `packages/lane-ws/src/${name}.ts`]), runnerIdentity: identity,
+      }]),
+    ) });
+    // A lint implementation outside both recorded input closures must preserve BOTH passes.
+    // Exercise the actual consumer, rather than treating a selector count as an executed skip.
+    mkdirSync(join(root, 'scripts'));
+    writeFileSync(join(root, 'scripts/check-lint-fixture.mjs'), 'export const lintFixed = true;\n');
+    const lintRepair = await armTargetedTaskReuse({ root, workspace: WS, script: SCRIPT, expectedSha: HEAD, env,
+      deps: deps({ runnerIdentity: () => identity, loadProofs,
+        changedBetween: () => () => new Set(['scripts/check-lint-fixture.mjs']) }) });
+    try {
+      const list = parseReuseSkipList(readFileSync(lintRepair.env.PC_TEST_REUSE_SKIP_LIST!, 'utf8'));
+      expect(decideReuseSkip(list, { runContext: CTX, runnerIdentity: identity })).toMatchObject({ applied: true, skipped: 2 });
+      const runtime = JSON.parse(decodeURIComponent(lintRepair.lines[0]!.split(' runtime=')[1]!));
+      expect(runtime).toEqual({ version: 1, judgedSha: HEAD, runnerIdentity: identity,
+        runContext: CTX, runGroupId, dirty: false });
+      expect(lintRepair.lines[0]).toMatch(/candidates=2 reused=2 .*inputChanged=0 /);
+      const preserved = run(lintRepair.env, lintRepair.args);
+      expect(preserved.status).toBe(0);
+      expect(preserved.report.testResults).toEqual([]);
+      expect(preserved.report.numTotalTests).toBe(0);
+    } finally { lintRepair.finish(); }
     writeFileSync(join(wsRoot, 'src/b.ts'), 'export const value = false;\n');
     writeFileSync(join(wsRoot, 'c.test.ts'), "import { it, expect } from 'vitest'; it('c', () => expect(true).toBe(true));\n");
-    const identity = `proof-v3 ${process.version} ${process.platform} ${process.arch}`;
     const armed = await armTargetedTaskReuse({ root, workspace: WS, script: SCRIPT, expectedSha: HEAD, env,
-      deps: deps({ runnerIdentity: () => identity, loadProofs: async () => ({ rows: 2, proofs: new Map(
-        ['a', 'b'].map(name => [`packages/lane-ws/${name}.test.ts`, {
-          ...proof(OLD, [`packages/lane-ws/${name}.test.ts`, `packages/lane-ws/src/${name}.ts`]), runnerIdentity: identity,
-        }]),
-      ) }) }) });
+      deps: deps({ runnerIdentity: () => identity, loadProofs }) });
     try {
       expect(armed.reused).toBe(1);
       const second = run(armed.env, armed.args);
@@ -507,9 +532,9 @@ describe('armTargetedTaskReuse', () => {
       expect(second.report.numFailedTests).toBe(1);
       expect(second.report.numPassedTests).toBe(1);
     } finally { armed.finish(); }
-    // Two sequential spawnSync children at 30s each: the parent must outlive BOTH child
+    // Three sequential spawnSync children at 30s each: the parent must outlive ALL child
     // budgets, or the child timeout is unreachable (lint:test-timing-budgets).
-  }, 90_000);
+  }, 120_000);
 
   it('reports what the recorder did after the task ran', async () => {
     fixture();

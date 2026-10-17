@@ -1,5 +1,7 @@
 /** Dedicated, frozen acceptance-grader launch for the plan completion gate. */
 import { createHash } from 'node:crypto';
+import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import { nativeTranscriptProofFromLaunchReceipt, type NativeTranscriptLaunchReceipt } from './native-session-handles';
 import { closeSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
 import launchAgentTool from './agent-tools/capability/launch-agent';
 import { resolveAgentIdentity } from './agent-tools/coordination/identity';
@@ -31,6 +33,7 @@ import { killTask } from './task-manager/control';
 type LaunchCtx = Parameters<typeof launchAgentTool.handler>[1];
 
 import { getBuildInfo } from './build-info';
+import { buildOrderingItems, openBuildItems } from './agent-tools/plans/acceptance-after-build';
 import { recordExpertiseRoutingInvocation } from './endpoint-route/telemetry';
 import { ACCEPTANCE_GRADING_POLICY } from './consult/selection-policies';
 
@@ -311,6 +314,8 @@ export type AcceptanceGraderLifecycle = {
   label: string;
   launch?: unknown;
   error?: string;
+  /** Recruitment waits for these build lanes before selecting or waking graders. */
+  openBuildItems?: string[];
   /**
    * EI-21923986145923904: passthrough of `capability:launch-agent`'s own
    * three-state fresh-launch verdict (see `FreshLaunchVerdict.agentStarted`) —
@@ -1668,12 +1673,24 @@ export interface AcceptanceShipperCarrier {
   /** WI-6554700010008529: set when the gate refused `independent_verification_missing`.
    * The rendered re-observation step every grader brief carries ahead of grading. */
   acceptanceIndependentVerificationBrief?: string | null;
+  /** Validated pre-grading selection, never a final-ship exemption. */
+  acceptancePendingDeliveryBarKeys?: readonly string[];
 }
 
 /** The carried re-observation section, or '' (WI-6554700010008529). */
 export function carriedIndependentVerificationBrief(ctx: unknown): string {
   const raw = ((ctx ?? {}) as AcceptanceShipperCarrier).acceptanceIndependentVerificationBrief;
   return typeof raw === 'string' ? raw.trim() : '';
+}
+
+export function carriedAcceptanceReviewBrief(ctx: unknown): string {
+  const keys = ((ctx ?? {}) as AcceptanceShipperCarrier).acceptancePendingDeliveryBarKeys;
+  const pending = Array.isArray(keys) && keys.length > 0
+    ? `PRE-PUBLICATION REVIEW ONLY: delivery BARs ${JSON.stringify(keys)} must rate unknown. `
+      + `Pass pendingDeliveryBarKeys:${JSON.stringify(keys)} to BOTH scorecards:evaluate and scorecards:emit. `
+      + 'Do not claim delivery, invent runtime proof, publish, or mark the plan shipped. All other BARs and independence rules remain in force.'
+    : '';
+  return [carriedIndependentVerificationBrief(ctx), pending].filter(Boolean).join('\n\n');
 }
 
 /** Author of the re-observation comment carried onto a deduped grading request. */
@@ -2028,6 +2045,7 @@ export async function readOpenGradingAnswererTerminalFailure(input: {
 }, deps: {
   resolveTarget?: typeof import('./agent-launch-core').resolveResumeTarget;
   findTranscript?: typeof import('./claude-sessions').findSessionTranscript;
+  findCodexTranscript?: typeof import('./session-transcript-resolvers').findCodexRolloutPathByUuid;
   listTasks?: typeof listTasks;
   killTask?: typeof killTask;
   readLogTail?: AcceptanceGraderLogTailReader;
@@ -2043,19 +2061,26 @@ export async function readOpenGradingAnswererTerminalFailure(input: {
     classes: ['agent-session'] as Array<'agent-session'>, includeEnded: true, limit: 1 };
   const target = await resolveTarget({ agentId: input.answeringOwnerId });
   if (!target.ok || target.ownerId !== input.answeringOwnerId ||
-      !['claude', 'claude-code'].includes(target.agent ?? '') || !target.sessionId) return null;
+      !['claude', 'claude-code', 'codex'].includes(target.agent ?? '') || !target.sessionId) return null;
+  const backend = target.agent === 'codex' ? 'codex' : 'claude';
+  const findCodexTranscript = deps.findCodexTranscript ??
+    (await import('./session-transcript-resolvers')).findCodexRolloutPathByUuid;
   const [path, tasks] = await Promise.all([
-    findTranscript(target.sessionId, { owner: input.answeringOwnerId }),
+    backend === 'codex'
+      ? Number.isSafeInteger(target.advSessionId) && target.advSessionId > 0
+        ? findCodexTranscript(target.sessionId, { homeOverride: codexHomeForSessionKey(target.advSessionId) })
+        : null
+      : findTranscript(target.sessionId, { owner: input.answeringOwnerId }),
     readTasks(taskFilter),
   ]);
   const task = tasks[0];
   // An unbound task, a newer incarnation, or an unreadable transcript is not failure evidence.
   if (!path || !task?.logPath || task.sessionId !== target.sessionId) return null;
   const nativeTail = await readTail(path);
-  if (!hasAcceptanceGraderNativeApiError(nativeTail, target.sessionId)) return null;
+  if (backend === 'claude' && !hasAcceptanceGraderNativeApiError(nativeTail, target.sessionId)) return null;
   const failure = await detectAcceptanceGraderTerminalFailure(task.logPath, {
     readLogTail: readTail, nativeTranscriptPath: path,
-    nativeSessionId: target.sessionId, maxRechecks: 0, detectStartupStall: false,
+    nativeSessionId: target.sessionId, nativeBackend: backend, maxRechecks: 0, detectStartupStall: false,
   });
   if (!failure) return null;
   return {
@@ -2067,6 +2092,7 @@ export async function readOpenGradingAnswererTerminalFailure(input: {
       const currentTask = currentTasks[0];
       if (!current.ok || current.ownerId !== input.answeringOwnerId ||
           current.sessionId !== target.sessionId || current.agent !== target.agent ||
+          (backend === 'codex' && current.advSessionId !== target.advSessionId) ||
           currentTask?.taskId !== task.taskId || currentTask.sessionId !== target.sessionId ||
           await readTail(path) !== nativeTail) return false;
       if (currentTask.endedAt) return true;
@@ -2446,7 +2472,7 @@ async function prodOpenGradingCascade(
   }
 
   const head = params.graders[0]!;
-  const verify = carriedIndependentVerificationBrief(ctx);
+  const verify = carriedAcceptanceReviewBrief(ctx);
   const brief = (verify ? `${verify}\n\n` : '') + (
     head.via === 'minimum'
       ? briefs.buildMinimumFillAcceptanceGraderBrief(
@@ -2783,6 +2809,12 @@ export async function resolveAcceptanceGrader(
       ...(ctx.harnessSlug && ctx.harnessSlug !== '*' ? { harnessSlug: ctx.harnessSlug } : {}),
       ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
     });
+    const openBuild = plan ? openBuildItems(buildOrderingItems(plan)) : [];
+    if (openBuild.length > 0) {
+      return { state: 'failed', idempotencyKey: '', label: '',
+        error: `build_items_open: finish ${openBuild.map(item => item.id).join(', ')} before acceptance grading`,
+        openBuildItems: openBuild.map(item => item.id) };
+    }
     const rubric = plan ? await (deps.getRubric ?? getAcceptanceRubricForPlan)(planSlug, {
       harnessSlug: plan.row.harnessSlug,
     }) : null;
@@ -2880,7 +2912,7 @@ export async function resolveAcceptanceGrader(
         // takes it grades the rubric and binds nothing — and the next retry refuses
         // again. A fresh launch carries the section in its brief; carry it onto the
         // request we deduped onto. Fail open: the dedupe itself still stands.
-        const verificationBrief = carriedIndependentVerificationBrief(ctx);
+        const verificationBrief = carriedAcceptanceReviewBrief(ctx);
         const verificationBriefOnRequest = verificationBrief
           ? await (deps.appendVerificationBrief ?? appendIndependentVerificationBriefToRequest)(
               existingGradingRequest.id,
@@ -3054,6 +3086,12 @@ export async function launchAcceptanceGrader(
     ...(ctx.workspaceId && ctx.workspaceId !== '*' ? { workspaceId: ctx.workspaceId } : {}),
   });
   if (!plan) return { state: 'failed', idempotencyKey: '', label: '', error: `plan '${planSlug}' not found` };
+  const openBuild = openBuildItems(buildOrderingItems(plan));
+  if (openBuild.length > 0) {
+    return { state: 'failed', idempotencyKey: '', label: '',
+      error: `build_items_open: finish ${openBuild.map(item => item.id).join(', ')} before acceptance grading`,
+      openBuildItems: openBuild.map(item => item.id) };
+  }
   const [rubric, audit, workItems] = await Promise.all([
     (deps.getRubric ?? getAcceptanceRubricForPlan)(planSlug, { harnessSlug: plan.row.harnessSlug }),
     (deps.getAudit ?? getLatestPlanAudit)(planSlug),
@@ -3127,7 +3165,7 @@ export async function launchAcceptanceGrader(
   const brief = [
     `You are the dedicated acceptance judge for plan ${planSlug}. Grade rubric ${rubricRef} as a fresh non-implementer.`,
     'Do not modify implementation files, run shell commands, recruit peers, or broaden scope. Inspect the frozen evidence below, spot-check cited source/tests with read-only tools, and emit exactly one complete scorecards:emit verdict with concrete evidence for every criterion. After a successful create or unchanged-evidence result, the scorecard writer terminates this task automatically.',
-    ...(carriedIndependentVerificationBrief(ctx) ? [carriedIndependentVerificationBrief(ctx)] : []),
+    ...(carriedAcceptanceReviewBrief(ctx) ? [carriedAcceptanceReviewBrief(ctx)] : []),
     'If FROZEN_ACCEPTANCE_CONTEXT has contextIntegrity.degraded, follow its recovery recipe with read-only Papercusp tools BEFORE returning NOT GRADED. Recovered evidence is admissible only when plans:get still matches frozenIdentity.planVersion/planContentHash and the completion audit still matches frozenIdentity.auditSeq; on a read or identity mismatch, mark only the affected criteria unknown and name the exact gap.',
     ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE,
     ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE,
@@ -3210,7 +3248,7 @@ export async function launchAcceptanceGrader(
         data?: { deduped?: boolean; launch?: unknown };
       };
       const launchData = result.data?.launch as
-        | {
+        | (NativeTranscriptLaunchReceipt & {
             tasks?: Array<{
               taskId?: unknown;
               logPath?: unknown;
@@ -3228,7 +3266,7 @@ export async function launchAcceptanceGrader(
             // path ran (see FreshLaunchVerdict.agentStarted); absent for a discovery
             // 'assigned' launch, which never spawns.
             agentStarted?: boolean | null;
-          }
+          })
         | undefined;
       const launchedTask = launchData?.tasks?.[0];
       const taskId = typeof launchedTask?.taskId === 'string' ? launchedTask.taskId : null;
@@ -3267,12 +3305,7 @@ export async function launchAcceptanceGrader(
         : logPath
         ? await detectAcceptanceGraderTerminalFailure(logPath, {
             readLogTail,
-            ...(launchedTask?.nativeSession?.backend === 'claude' &&
-                typeof launchedTask.nativeSession.sessionId === 'string' &&
-                typeof launchedTask.kickoffProof?.nativeRef === 'string'
-              ? { nativeTranscriptPath: launchedTask.kickoffProof.nativeRef,
-                  nativeSessionId: launchedTask.nativeSession.sessionId }
-              : {}),
+            ...nativeTranscriptProofFromLaunchReceipt(launchData, launchBackend),
             ...(sleep ? { sleep } : {}),
             ...(deps.terminalLogRecheckDelayMs !== undefined ? { delayMs: deps.terminalLogRecheckDelayMs } : {}),
             ...(deps.terminalLogMaxRechecks !== undefined ? { maxRechecks: deps.terminalLogMaxRechecks } : {}),

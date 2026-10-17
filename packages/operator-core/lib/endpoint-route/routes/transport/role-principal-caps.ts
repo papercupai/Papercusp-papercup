@@ -112,6 +112,10 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
     'work_items:write',
     'operator:read',
     'plans:read',
+    // Graders may read canonical evidence artifacts cited by vetting cards.
+    // artifacts:load independently allowlists judge; this capability only
+    // opens that existing read-only route, not artifact writes.
+    'artifacts:read',
     // Re-run the named release-readiness autoloop probe. The sole consumer of
     // this capability also pins judge reads to the dispatched harness.
     'autoloop:read',

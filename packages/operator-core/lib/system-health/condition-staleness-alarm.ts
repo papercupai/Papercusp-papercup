@@ -45,6 +45,7 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { coordScopeWorkspace } from '../agent-tools/coordination/log';
 import { SELF_RECONCILING_META_KEY } from '../attention/reconcile-escalations';
 import { broadcastSevereEventResolvedMany } from '../severe-event-broadcast';
+import { DEGRADATION_CONDITION_PREFIX } from '../coord/actionable-conditions';
 import {
   actionableConditionFor,
   reconcileConditions,
@@ -68,6 +69,11 @@ import {
   GIT_SYNC_MISSED_INTERVALS_SIGNATURE,
   type BeesLivenessContext,
 } from './liveness-alarm';
+import {
+  probeSevereEventEmitter,
+  type SevereEventEmitter,
+  type SevereEventEmitterLiveness,
+} from '../severe-event-emitter';
 
 export const CONDITION_STALENESS_IDENTITY: AgentIdentity = {
   ownerId: 'system:condition-staleness-alarm',
@@ -480,6 +486,33 @@ export function selectAbsentConditions(
 }
 
 /**
+ * Select one-shot conditions whose latest emitter is positively dead or replaced.
+ * Silence alone remains insufficient: only an explicit `dead` probe result can
+ * close a one-shot condition, while an alive or unknown emitter stays open.
+ */
+export function selectDeadOneShotConditions(
+  states: readonly ConditionState[],
+  livenessByKey: ReadonlyMap<string, SevereEventEmitterLiveness>,
+): string[] {
+  return states
+    .filter(
+      (s) =>
+        s.open &&
+        s.one_shot === true &&
+        livenessByKey.get(s.condition_key) === 'dead' &&
+        // Degradation conditions are owned by the degradation watchdog, which
+        // has the durable fallback-observation window needed to establish
+        // recovery.  Emitter death/replacement is not evidence that the
+        // degraded signal recovered: the 2026-10-17 retrieval incident closed
+        // `degraded:retrieval:mixed` at 65–69% recovery solely because its old
+        // emitter exited.  Leave this family open until its source emits the
+        // metric-backed resolution (or a replacement alarm changes the fold).
+        !s.condition_key.startsWith(DEGRADATION_CONDITION_PREFIX),
+    )
+    .map((s) => s.condition_key);
+}
+
+/**
  * PURE: of the currently-OPEN condition states, which ones have a VERIFIED-healthy
  * underlying signal right now, per `healthByKey` (already resolved by the caller).
  * A key absent from `healthByKey` (unknown / not a family this tick checked) is
@@ -707,6 +740,9 @@ export interface ConditionStalenessDeps {
    *  + never re-paged, regardless of which family sourced it. Default =
    *  DEFAULT_SIGNAL_ABSENCE_MS. */
   absenceMs?: number;
+  /** Probe the latest one-shot emitter. Unknown must remain unknown; only `dead`
+   *  is allowed to auto-resolve a one-shot condition. */
+  probeEmitter?: (emitter: SevereEventEmitter) => SevereEventEmitterLiveness;
   /** EI-14072 guard #2: resolve snapshot-backed `infra-liveness:*` keys. Missed-interval
    *  git-sync keys are excluded and read from routine metadata, because the shared snapshot
    *  can be healthy while the writer remains starved. */
@@ -819,6 +855,7 @@ export async function runConditionStalenessTick(
   const staleMs = deps.staleMs ?? DEFAULT_STALE_OPEN_MS;
   const debounceMs = deps.debounceMs ?? DEFAULT_DEBOUNCE_MS;
   const absenceMs = deps.absenceMs ?? DEFAULT_SIGNAL_ABSENCE_MS;
+  const probeEmitter = deps.probeEmitter ?? probeSevereEventEmitter;
   const readHealthByKey = deps.readHealthByKey ?? readInfraLivenessHealthFromSharedSnapshot;
   const readGitSyncHealthByKey = deps.readGitSyncHealthByKey ?? defaultReadGitSyncHealth;
   const broadcastResolvedMany = deps.broadcastResolvedMany ?? broadcastSevereEventResolvedMany;
@@ -880,6 +917,41 @@ export async function runConditionStalenessTick(
     if (reconciled.length > 0) {
       const reconciledSet = new Set(reconciled);
       states = states.map((s) => (reconciledSet.has(s.condition_key) ? { ...s, open: false } : s));
+    }
+  }
+
+  // ── WI-6554700010016120: one-shot emitter-death reconciliation ──
+  // A one-shot emitter deliberately stays silent while its condition remains
+  // true, so last_seen absence must never clear it. If that emitter process
+  // exits, however, it can no longer emit the required RECOVERED broadcast and
+  // the condition would remain open forever. Require a positively dead/replaced
+  // process identity; unknown or alive probes fail open.
+  const oneShotLiveness = new Map<string, SevereEventEmitterLiveness>();
+  for (const state of states) {
+    if (!state.open || state.one_shot !== true || !state.latest_emitter) continue;
+    try {
+      oneShotLiveness.set(state.condition_key, probeEmitter(state.latest_emitter));
+    } catch {
+      oneShotLiveness.set(state.condition_key, 'unknown');
+    }
+  }
+  const deadOneShotKeys = selectDeadOneShotConditions(states, oneShotLiveness);
+  if (deadOneShotKeys.length > 0) {
+    try {
+      const ok = await broadcastResolvedMany({
+        conditionKeys: deadOneShotKeys,
+        summary:
+          `[condition-reconciler] ${deadOneShotKeys.length} one-shot condition(s) auto-resolved — ` +
+          `their stamped emitter process exited or was replaced (WI-6554700010016120): ` +
+          `${deadOneShotKeys.join(', ')}.`,
+      });
+      if (ok) {
+        reconciled.push(...deadOneShotKeys);
+        const deadSet = new Set(deadOneShotKeys);
+        states = states.map((s) => (deadSet.has(s.condition_key) ? { ...s, open: false } : s));
+      }
+    } catch {
+      /* a broadcast failure must never crash the request worker */
     }
   }
 

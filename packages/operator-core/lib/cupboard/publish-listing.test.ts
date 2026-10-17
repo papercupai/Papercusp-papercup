@@ -3,6 +3,8 @@
  * gh-token + attestation + resolveCupboardBaseUrl are mocked; fetch is mocked.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+const sync = vi.hoisted(() => ({ invalidate: vi.fn(async () => {}) }));
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: sync.invalidate }));
 
 vi.mock('../identity/gh-token', () => ({
   getGhAuthToken: vi.fn(async () => ({ kind: 'ok', token: 'gh-test' })),
@@ -34,6 +36,7 @@ const originalFetch = global.fetch;
 const fetchMock = vi.fn();
 
 beforeEach(() => {
+  sync.invalidate.mockClear();
   vi.mocked(ghToken.getGhAuthToken).mockResolvedValue({ kind: 'ok', token: 'gh-test' } as any);
   vi.mocked(cupboardPublish.resolvePublisherAttestation).mockResolvedValue(null);
   fetchMock.mockReset();
@@ -64,6 +67,7 @@ describe('publishListingToCupboard', () => {
     const body = JSON.parse(opts.body as string);
     expect(body.listing_kind).toBe('plugin');
     expect(body.listing_ref).toBe('my-plugin');
+    expect(sync.invalidate).toHaveBeenCalledWith('cupboard.myListings');
   });
 
   it('attaches the publisher attestation when available', async () => {

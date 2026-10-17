@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "kind": "source-qualified-regression-evidence",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "workItem": "EI-26170492783972703",
+  "parentWorkItem": "WI-6554700010015561",
+  "status": "focused-tests-and-scoped-typecheck-passed-native-retry-pending",
+  "rootCause": "The shared native fixture retained only a startup head and rolling output tail; the P038 failure formatter reduced that again to the last 4000 characters. Noisy isolated PG cleanup displaced the primary assertion from the saved failure.",
+  "change": "Retain the first exception and up to 8000 characters of following context independently of startup and cleanup output. Include this primary failure in the P038 formatter. Reuse the maintained fixture helper and existing native CLI guard suite.",
+  "sourceHashes": {
+    "packages/operator-core/lib/code-intelligence/native-cli.fixture.ts": "20bf8d53a255d6a50fa9a984b20dc8f6ac8ee1c640e6ee22a4153e102efdd603",
+    "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts": "9f2ab2246edd79c8da8fcdf9034789413405166823fbcc9ee6b761bdc442812f",
+    "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts": "fed7c9b91a8264a1555792e5eb9bf9daaa7745f964637d394e0e9b852650e12c"
+  },
+  "nativeFailure": {
+    "log": "/tmp/native-p038-installed-v4-tests-20261016.log",
+    "exitCode": 1,
+    "selectedFailed": 1,
+    "filtered": 7,
+    "childSubstituted": 13,
+    "observation": "Private fixture exited 1 after the claim CLI finished, at 98202ms with 81798ms remaining. The saved assertion detail was replaced by cleanup logs. This was not a deadline failure; the underlying fixture cause is unknown.",
+    "cleanup": "Isolated runtime and PG removal were observed complete; native execution handle was drained."
+  },
+  "red": {
+    "log": "/tmp/native-p038-diagnostic-red-tests-20261016.log",
+    "exitCode": 1,
+    "regression": "native CLI fixture runtime and deadline guards > retains a primary assertion between noisy startup and cleanup output",
+    "observation": "The child exited 1, but its assertion between 16000 startup characters and over 30000 cleanup characters was absent from retained evidence."
+  },
+  "green": {
+    "log": "/tmp/native-p038-diagnostic-green-tests-20261016.log",
+    "exitCode": 0,
+    "passed": 13,
+    "failed": 0,
+    "filtered": 240,
+    "childSubstituted": 4,
+    "unhandledErrors": 0,
+    "sourceMap": "/tmp/native-p038-diagnostic-green-source-20261016.json",
+    "sourceMapSha256": "0049f6c4d47d10c0008a93e3ff2239f7953dc7b64e1a85a2828d60e7fbf10f88",
+    "qualification": "Captured original helper and test SHA256 values match the named current files. Existing loader substitutions are disclosed; this is focused source proof, not a closed execution-graph claim."
+  },
+  "typecheck": {
+    "log": "/tmp/native-p038-diagnostic-types-20261016.log",
+    "scope": "The three changed TypeScript files and resolved importers",
+    "status": "clean",
+    "exitCode": 0,
+    "terminal": "LINT_TSC_RESULT scope=files exit=0 status=clean at 2026-10-16T20:52:20.635Z"
+  },
+  "limits": [
+    "The new diagnostic source fix is verified by the maintained guard suite. The native installed journey has not yet been rerun with this fix.",
+    "The underlying private fixture assertion remains unknown; do not guess a transport, delivery or resource cause.",
+    "No successful installed delivery, historical native outcome coverage or shipment is claimed.",
+    "P041 detector bindings 53380 through 53385 are current, while its native outcomes and adequacy remain open."
+  ]
+}

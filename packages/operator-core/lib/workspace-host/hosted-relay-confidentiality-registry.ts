@@ -23,6 +23,23 @@
 export type HostedRelayPlane = 'envelope' | 'workspace-session' | 'operator-http' | 'app-http' | 'device-http' | 'desktop-viewer';
 export type HostedRelaySensitivity = 'content' | 'control';
 
+/** Activity signals for idle protection, never resource/billing quota counters.
+ * null means the guest could not measure commands; it must hold scale-in.
+ */
+export interface HostedWorkspaceWorkload {
+  activeCommands: number | null;
+  attachedViewers: number;
+}
+
+export function parseHostedWorkspaceWorkload(value: unknown): HostedWorkspaceWorkload | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const count = (n: unknown) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+  if (Object.keys(row).some(key => !['activeCommands', 'attachedViewers'].includes(key)) ||
+      !(row.activeCommands === null || count(row.activeCommands)) || !count(row.attachedViewers)) return null;
+  return { activeCommands: row.activeCommands as number | null, attachedViewers: row.attachedViewers as number };
+}
+
 export interface HostedRelayFrameClass {
   planes: readonly HostedRelayPlane[];
   sensitivity: HostedRelaySensitivity;
@@ -38,6 +55,7 @@ export const HOSTED_RELAY_FRAME_REGISTRY: Readonly<Record<string, HostedRelayFra
   'relay.close': { planes: ['envelope'], sensitivity: 'control', note: 'channel id + reason code' },
   'relay.role': { planes: ['envelope'], sensitivity: 'control', note: 'controller/observer flip' },
   bound: { planes: ['envelope'], sensitivity: 'control', note: 'connector binding (org/workspace/host/generation)' },
+  'activity.report': { planes: ['envelope'], sensitivity: 'control', note: 'hosted-only fixed command/viewer activity counters; unknown is explicit, no process names or content' },
   'session.bound': { planes: ['envelope'], sensitivity: 'control', note: 'browser channel binding' },
   'session.authorize': { planes: ['envelope'], sensitivity: 'control', note: 'host-only channel/session authority query; nonce, no customer content' },
   'session.authorized': { planes: ['envelope'], sensitivity: 'control', note: 'current channel-bound identity/version/permissions or denial; no cookie, key or prompt' },
@@ -216,8 +234,10 @@ export const HOSTED_CONTROL_PLANE_FIELD_REGISTRY: Readonly<Record<string, Readon
   'hosted-handler-warnings': {
     'warn.0.argument.0': { sensitivity: 'control', note: 'Fixed desktop audit warning prefix.' },
     'warn.0.argument.1': { sensitivity: 'control', note: 'Fixed desktop_audit_write_failed code.' },
-    'warn.1.argument.0': { sensitivity: 'control', note: 'Fixed connector liveness warning prefix.' },
-    'warn.1.argument.1': { sensitivity: 'control', note: 'Enumerated alive/gone write failure code; no customer or database text.' },
+    'warn.1.argument.0': { sensitivity: 'control', note: 'Fixed workload observation warning prefix.' },
+    'warn.1.argument.1': { sensitivity: 'control', note: 'Fixed workload_write_failed code; no customer or database text.' },
+    'warn.2.argument.0': { sensitivity: 'control', note: 'Fixed connector liveness warning prefix.' },
+    'warn.2.argument.1': { sensitivity: 'control', note: 'Enumerated alive/gone write failure code; no customer or database text.' },
   },
   'route-invocation-warnings': {
     'warn.0.argument.0': { sensitivity: 'control', note: 'Fixed once-only telemetry warning prefix; no route or database error text.' },
@@ -252,6 +272,7 @@ export const HOSTED_CONTROL_PLANE_FIELD_REGISTRY: Readonly<Record<string, Readon
     status_detail: { sensitivity: 'content', note: 'Customer-selected text or structured observation; secret redaction does not make it approved vendor metadata.' },
   },
   'workspace-hosts': {
+    pool_observation: { sensitivity: 'content', note: 'Structured controller evidence includes provider-authored attestation strings; its fixed workload counters carry no command/output content.' },
     bootstrap_version: { sensitivity: 'content', note: 'Host-reported release/version text; vendor eligibility requires an exact artifact metadata allowlist.' },
     connection_id: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
     controller_fence: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
@@ -288,6 +309,7 @@ export const HOSTED_CONTROL_PLANE_FIELD_REGISTRY: Readonly<Record<string, Readon
     size: { sensitivity: 'content', note: 'Customer-selected text or structured observation; secret redaction does not make it approved vendor metadata.' },
   },
   'workspace-host-operations': {
+    admission_receipt: { sensitivity: 'content', note: 'Immutable request/result includes customer request fields; hosted placement and resource counters do not sanitize the whole receipt.' },
     action: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
     approval_status: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
     approved_at: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
@@ -325,6 +347,7 @@ export const HOSTED_CONTROL_PLANE_FIELD_REGISTRY: Readonly<Record<string, Readon
     teardown_reason: { sensitivity: 'content', note: 'Customer-selected text or structured observation; secret redaction does not make it approved vendor metadata.' },
   },
   'workspace-host-resources': {
+    incarnation_id: { sensitivity: 'control', note: 'Fenced resource allocation identity, never process or file content.' },
     attempts: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
     host_id: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
     operation_id: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
@@ -385,6 +408,7 @@ export const HOSTED_CONTROL_PLANE_FIELD_REGISTRY: Readonly<Record<string, Readon
   },
   'vendor-runtime-config': {
     PAPERCUSP_HOSTED_FIRST_WORKSPACE_ORGANIZATIONS: { sensitivity: 'content', note: 'Structured customer/organization configuration; this is a vendor runtime input, not a persistence claim.' },
+    PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT: { sensitivity: 'content', note: 'Structured hosted trial entitlement policy; runtime configuration input, not approved telemetry metadata.' },
     PAPERCUSP_HOSTED_PUBLIC_ORIGIN: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
     PAPERCUSP_HOSTED_CONTROL_PLANE_WORKSPACE_ID: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
     PAPERCUSP_HOSTED_SESSION_COOKIE_SECRET_REF: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
@@ -394,6 +418,11 @@ export const HOSTED_CONTROL_PLANE_FIELD_REGISTRY: Readonly<Record<string, Readon
     WORKOS_WEBHOOK_SECRET_REF: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
     WORKOS_WEBHOOK_SECRET_KEY_REF: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
     PAPERCUSP_HOSTED_PROVISIONING_DBOS_APP_VERSION: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
+  },
+  'customer-workspaces': {
+    last_activity_at: { sensitivity: 'control', note: 'Server receive time for measured work or initial observation.' },
+    workspace_host_id: { sensitivity: 'control', note: 'Canonical tenant host binding.' },
+    updated_at: { sensitivity: 'control', note: 'Server directory update time.' },
   },
   'customer-host-config': {
     PAPERCUSP_HOSTED_CONTROL_PLANE_URL: { sensitivity: 'control', note: 'Bounded control identity, enum, timestamp or numeric observation; classification does not prove placement.' },
@@ -473,6 +502,11 @@ export const HOSTED_CONTROL_PLANE_WRITER_REGISTRY = {
       'packages/operator-core/lib/workspace-host/observability-store.ts',
       'packages/operator-core/lib/workspace-host/hosted-lifecycle-store.ts',
     ],
+    placement: 'controller-database',
+  },
+  'customer-workspaces': {
+    table: 'harness_shared.customer_workspaces',
+    sources: ['packages/operator-core/lib/workspace-host/hosted-lifecycle-store.ts'],
     placement: 'controller-database',
   },
   'workspace-host-operations': {

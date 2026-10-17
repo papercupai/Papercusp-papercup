@@ -572,6 +572,24 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     expect(textOf(res)).toContain('idem-deadline-1');
   });
 
+  it('carries the outer MCP trace through a nested timeout response and receipt', async () => {
+    const traceId = '4d00f8ca-ec62-44e8-ae33-97e0d9d8a3a1';
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'deadlinetest:slow', args: {} },
+      superuserExtra('&workspace=ws-test', { [MCP_REQUEST_TRACE_HEADER]: traceId }),
+    );
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('request_timeout');
+    expect(textOf(res)).toContain('nested tool "deadlinetest:slow"');
+    expect(textOf(res)).toContain(`request trace id: ${traceId}`);
+    expect(res._meta?.abortCompletionReceipt).toMatchObject({
+      status: 'recovery-incomplete',
+      mcpRequestTraceId: traceId,
+    });
+  });
+
   it('correlates the forwarded trace id across request start, deadline, and late handler settlement', async () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => {});
     const traceId = 'e57ef6b3-46ef-4cc5-8214-fec83f2a463e';

@@ -393,6 +393,13 @@ export interface WithPlanLockOpts<T = unknown> {
    */
   allowChildSeedTemplate?: boolean;
   /**
+   * INTERNAL — only the plan-drain reconciler may set this. Restoring an
+   * already-activated plan from `awaiting-acceptance` to `ready` is lifecycle
+   * repair, not a new activation, so it must not demand a fresh source-
+   * conversation audit. Ordinary callers never receive this bypass.
+   */
+  allowAwaitingAcceptanceRestore?: boolean;
+  /**
    * Hand the mutator the plan's latest `plan_revisions` snapshot as `meta.latestRevision`
    * (read inside the lock). Opt-in because it costs one indexed read per write; only
    * append-only writers that must refuse a stale base (plans:add-decision, WI-10004529) ask.
@@ -728,9 +735,14 @@ export async function withPlanLock<T>(
           scope: { workspaceId, harnessSlug },
         } satisfies RefusedResult;
       }
+      const isAwaitingAcceptanceRestore =
+        opts.allowAwaitingAcceptanceRestore === true &&
+        beforeIndex?.status === 'awaiting-acceptance' &&
+        afterIndex.status === 'ready';
       if (
         entersActivationPlanStatus(beforeIndex?.status, afterIndex.status) &&
-        !isActivationAuditExemptTemplate(afterIndex.template)
+        !isActivationAuditExemptTemplate(afterIndex.template) &&
+        !isAwaitingAcceptanceRestore
       ) {
         const gate = await evaluateConversationActivationGate(tx as never, {
           workspaceId,

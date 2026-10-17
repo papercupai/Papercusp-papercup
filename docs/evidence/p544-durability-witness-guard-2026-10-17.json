@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "kind": "source-functional-test-evidence",
+  "workItem": "WI-6554700010016277",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "planItem": "P-544",
+  "measuredAt": "2026-10-17T09:31:20.534790+00:00",
+  "scope": "Maintained local fake-psql regression and CLI verification only. No real PostgreSQL restart, GCP lifecycle, application-ready timing, retained-disk growth, cost acceptance or shipment claim.",
+  "change": [
+    "Extend the existing swap-tier driver with explicit witness-create and witness-verify commands.",
+    "Save pre-event retained-file SHA256/size and a unique SQL witness in an exclusive manifest; require its locally saved SHA256 for later verification.",
+    "Verification issues SELECT only, forces default_transaction_read_only=on, checks transaction_read_only, and refuses missing/changed data without rewriting it.",
+    "Keep PostgreSQL credentials in subprocess environment; suppress credential-bearing SQL error output."
+  ],
+  "verification": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp node scripts/test-files.mjs scripts/agent-capacity/vm/swap-tier.test.ts",
+    "exitCode": 0,
+    "passed": 90,
+    "failed": 0,
+    "skipped": 0,
+    "testSummary": [
+      " Test Files  1 passed (1)",
+      "      Tests  90 passed (90)",
+      "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=5957b7e0f9 uncommittedPaths=1/1 provenance=unknown startedAt=2026-10-17T09:30:24.643Z childSubstituted=0 skippedTests=0"
+    ],
+    "typecheckCommand": "npm run lint:tsc:scripts -- --files scripts/agent-capacity/vm/swap-tier.test.ts",
+    "typecheckExitCode": 0,
+    "typecheck": [
+      "TSC_SERVICE used=1 checked=1 named=1 typeReferencing=0 importers=0 errors=0 queuedMs=1393 checkMs=4607 snapshotAgeMs=4607",
+      "LINT_TSC_RESULT label=scripts scope=files exit=0 status=clean at=2026-10-17T09:30:20.406Z head=5957b7e0f9"
+    ],
+    "pythonAst": "passed",
+    "diffCheckExitCode": 0,
+    "coverage": [
+      "Read-only positive witness and CLI output",
+      "Missing SQL row remains missing",
+      "Changed SQL value",
+      "Unexpected writable transaction",
+      "SQL failure without printing credentials",
+      "Changed or missing retained file",
+      "Changed manifest against pre-event hash",
+      "Repeated initialization over existing manifest refused before another SQL write"
+    ]
+  },
+  "sourceHashes": {
+    "scripts/agent-capacity/vm/swap-tier.py": "5e9184b6ed25b604e1d4ceba063e542aa0c32bcff6adf2b6cc5eb4a16636136c",
+    "scripts/agent-capacity/vm/swap-tier.test.ts": "68f96d53ec025cdc32b2f3ed7bc7722291c1f3165e54cc2623c3b8ab8d3d3ce2"
+  },
+  "logHashes": {
+    "/tmp/p544-durability-witness-bound-tests-20261017.log": "b2eed705f67f7c2369f6e8394c01feeb8e92c44c9bbc7e6416f7ae7f732c3de6",
+    "/tmp/p544-durability-witness-final-typecheck-20261017.log": "01dfba8e5b6c8b9be550183beda9f0c242d5736cd8564460bdd3a95b0c1f6ee6"
+  },
+  "readbackHead": "a12caf54c681496bc653eab96ef8720ba8503c0d",
+  "provenance": "Final focused runner stamped HEAD5957b7e0f9, dirty1/1 tested path and provenance unknown. Exact current source/test hashes are bound here; no committed import-graph or deployed evidence claim.",
+  "remainingAcceptance": [
+    "Real application-ready cold wake <=120s with preserved data",
+    "D074 complete retained-data growth durability",
+    "Current model/effort D075 capacity and burst qualification",
+    "D076 actual all-category monthly cost strictly under20",
+    "P537 authenticated product journey, source-to-serving parity and shipment"
+  ]
+}

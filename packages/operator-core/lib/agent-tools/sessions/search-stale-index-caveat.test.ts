@@ -268,7 +268,7 @@ describe('sessions:search — degraded-refresh caveat (EI-21699129692862363)', (
     refreshLiveSessionsBeforeRead.mockResolvedValue({ attempted: 1, refreshed: 0 });
 
     const parsed = await run(
-      { session: 'self', mode: 'verbatim', query: 'lane fix' },
+      { session: 'self', mode: 'verbatim', query: 'lane fix', context: 0 },
       [
         [
           {
@@ -282,7 +282,20 @@ describe('sessions:search — degraded-refresh caveat (EI-21699129692862363)', (
             text: 'the lane fix landed',
           },
         ],
-        [],
+        // A matched hit is re-read for origin before it is emitted; keep the
+        // same coordinate so the liveness check does not classify it as stale.
+        [
+          {
+            source_kind: 'claude',
+            session_id: 'sess-current',
+            turn_idx: 0,
+            speaker: 'user',
+            head: 'the lane fix landed',
+            tail: '',
+            turn_origin: null,
+            turn_origin_verdict: null,
+          },
+        ],
       ],
     );
 

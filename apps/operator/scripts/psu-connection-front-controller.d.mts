@@ -12,6 +12,9 @@ export function parsePsuConnectionArgs(argv: any): {
         list: boolean;
         addName: null;
         addAwsName: null;
+        addSshName: null;
+        sshHost: null;
+        gui: boolean;
         removeName: null;
         projectId: null;
         zone: null;
@@ -85,6 +88,27 @@ export function normalizeAwsSsmProfile(input: any): {
  * look-alike host spelled inside the userinfo part.
  */
 export function normalizeHostedPortalOrigin(value: any): string;
+/** A customer-owned machine reached through their private network or OpenSSH config. */
+export function normalizeSshProfile(input: any): {
+    name: string;
+    kind: string;
+    host: string;
+    sshUser: string | null;
+    endpoint: string;
+    target: string;
+    remoteOperatorPort: number;
+    supportedClientPlatforms: string[];
+    features: {
+        command: boolean;
+        pty: boolean;
+        tcpForward: boolean;
+        fileTransfer: boolean;
+    };
+    prerequisites: string[];
+    constraints: string[];
+    reconnect: string;
+    audited: boolean;
+};
 export function hostedProfileName(origin: any): string;
 /**
  * A name for a new cloud sign-in that no saved profile uses. The first sign-in

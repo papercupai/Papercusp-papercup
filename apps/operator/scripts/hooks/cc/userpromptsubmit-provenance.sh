@@ -721,7 +721,9 @@ def capture_owner_prompt(prompt, native_session, native_turn=None):
     else:
         source = f"{native_session or sid}:{sha256_hex(prompt)}"
     args = {
-        'verbatim': prompt[:16000],
+        # Keep the same complete source whose hash keys this capture. Display
+        # budgets belong to the directive renderer, never to durable capture.
+        'verbatim': prompt,
         'sourceTurnRef': source,
         'sessionRef': native_session or sid,
         'ownerName': 'owner',

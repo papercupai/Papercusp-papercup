@@ -269,7 +269,6 @@ export function hunksFromToolCall(toolName: string, toolInput: unknown): FrozenR
   const isEdit = !isMulti && /(^|_)edit(?:_file)?$/.test(name);
   const isWrite = /(^|_)write(_file)?$/.test(name);
   const filePath = asString(input.file_path) ?? asString(input.path);
-  if (!filePath && !isMulti) return [];
 
   if (isMulti) {
     const edits = Array.isArray(input.edits) ? input.edits : [];
@@ -290,6 +289,8 @@ export function hunksFromToolCall(toolName: string, toolInput: unknown): FrozenR
     });
     return out;
   }
+  // Single-file shapes need their own path; a multi-edit may carry it per edit (above).
+  if (!filePath) return [];
   if (isEdit) {
     const oldStr = asString(input.old_string);
     const newStr = asString(input.new_string);

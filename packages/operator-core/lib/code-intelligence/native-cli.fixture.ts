@@ -29,7 +29,7 @@ export async function nativeFixtureProcess(command: string, argv: string[], opti
   const startedAt = performance.now();
   const child = spawn(command, argv, { cwd: options.cwd, env: options.env,
     detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
-  let head = '', tail = '', phaseCount = 0;
+  let head = '', tail = '', failureOutput = '', failureLines = 0, phaseCount = 0;
   const phases: { elapsedMs: number; line: string }[] = [];
   const pending = new Map<object, string>();
   const clock = () => ({ elapsedMs: Math.round(performance.now() - startedAt),
@@ -40,6 +40,15 @@ export async function nativeFixtureProcess(command: string, argv: string[], opti
     const lines = ((pending.get(stream) ?? '') + text).split('\n');
     pending.set(stream, lines.pop()!.slice(-2_000));
     for (const line of lines) {
+      // Cleanup can erase the assertion from both bounded stdout/stderr tails.
+      // Retain the first exception and its context independently of that noise.
+      if (failureLines === 0 && !failureOutput && /\b(?:[A-Z]\w*Error|Error)(?:\s*\[[^\]]+\])?(?::|\s*$)/.test(line)) {
+        failureLines = 24;
+      }
+      if (failureLines > 0 && failureOutput.length < 8_000) {
+        failureOutput = (failureOutput + line.slice(0, 2_000) + '\n').slice(0, 8_000);
+        failureLines--;
+      }
       if (!/^(?:NATIVE_[A-Z_]+(?:STAGE|PROGRESS)=|\[with-test-pg\] (?:pg |operator-api stage|starting))/.test(line)) continue;
       phaseCount++;
       // Keep both startup and the last transitions when a noisy child exceeds
@@ -54,7 +63,7 @@ export async function nativeFixtureProcess(command: string, argv: string[], opti
     capture(String(data), stream);
   });
   const evidence = () => `NATIVE_FIXTURE_TIMING=${JSON.stringify({ timeoutMs: options.timeoutMs,
-    ...clock(), phaseCount, phases })}\nstartup:\n${head}\ntail:\n${tail}`;
+    ...clock(), phaseCount, phases })}\nfailure:\n${failureOutput}\nstartup:\n${head}\ntail:\n${tail}`;
   let timedOut = false;
   let termination: Promise<void> | undefined;
   const timer = setTimeout(() => {
@@ -71,7 +80,7 @@ export async function nativeFixtureProcess(command: string, argv: string[], opti
     if (termination) await termination;
     else await lifetime.waitForExit({ timeoutMs: 10_000 });
     if (timedOut) throw new Error(`Private fixture deadline ${options.timeoutMs}ms exceeded\n${evidence()}`);
-    return { ...result, output: evidence() };
+    return { ...result, failureOutput, output: evidence() };
   } finally { clearTimeout(timer); }
 }
 

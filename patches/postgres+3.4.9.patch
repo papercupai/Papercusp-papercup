@@ -1,5 +1,5 @@
 diff --git a/node_modules/postgres/cf/src/connection.js b/node_modules/postgres/cf/src/connection.js
-index 8e79170..c6fc73f 100644
+index 8e79170..9afca0c 100644
 --- a/node_modules/postgres/cf/src/connection.js
 +++ b/node_modules/postgres/cf/src/connection.js
 @@ -88,6 +88,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
@@ -10,7 +10,25 @@ index 8e79170..c6fc73f 100644
      , closedTime = 0
      , remaining = 0
      , hostIndex = 0
-@@ -242,7 +243,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -97,6 +98,8 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+     , rows = 0
+     , serverSignature = null
+     , nextWriteTimer = null
++    , reconnectTimer = null
++    , connectGeneration = 0
+     , terminated = false
+     , incomings = null
+     , results = null
+@@ -113,6 +116,8 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+     queue: queues.closed,
+     idleTimer,
+     connect(query) {
++      terminated = false
++      connectGeneration++
+       initial = query
+       reconnect()
+     },
+@@ -242,7 +247,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
        ? statements[q.signature]
        : { string, types, name: q.prepare ? statementId + statementCount++ : '' }
  
@@ -34,7 +52,7 @@ index 8e79170..c6fc73f 100644
    }
  
    function write(x, fn) {
-@@ -254,6 +270,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -254,6 +274,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
    }
  
    function nextWrite(fn) {
@@ -57,7 +75,52 @@ index 8e79170..c6fc73f 100644
      const x = socket.write(chunk, fn)
      nextWriteTimer !== null && clearImmediate(nextWriteTimer)
      chunk = nextWriteTimer = null
-@@ -426,7 +458,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -335,9 +371,23 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+   }
+ 
+   async function connect() {
+-    terminated = false
++    // PAPERCUSP PATCH (WI-6554700010015128): a deferred connect must not
++    // resurrect a terminated pool or an obsolete asynchronous socket factory.
++    if (terminated)
++      return
++    const generation = connectGeneration
+     backendParameters = {}
+-    socket || (socket = await createSocket())
++    if (!socket) {
++      const created = await createSocket()
++      if (terminated || generation !== connectGeneration) {
++        if (created) {
++          created.removeAllListeners()
++          created.destroy()
++        }
++        return
++      }
++      socket = created
++    }
+ 
+     if (!socket)
+       return
+@@ -361,7 +411,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+   }
+ 
+   function reconnect() {
+-    setTimeout(connect, closedTime ? Math.max(0, closedTime + delay - performance.now()) : 0)
++    clearTimeout(reconnectTimer)
++    reconnectTimer = setTimeout(() => {
++      reconnectTimer = null
++      connect()
++    }, closedTime ? Math.max(0, closedTime + delay - performance.now()) : 0)
+   }
+ 
+   function connected() {
+@@ -423,15 +477,25 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+ 
+   function terminate() {
+     terminated = true
++    connectGeneration++
++    clearTimeout(reconnectTimer)
++    reconnectTimer = null
      if (stream || query || initial || sent.length)
        error(Errors.connection('CONNECTION_DESTROYED', options))
  
@@ -67,7 +130,18 @@ index 8e79170..c6fc73f 100644
      if (socket) {
        socket.removeListener('data', data)
        socket.removeListener('connect', connected)
-@@ -439,7 +473,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+-      socket.readyState === 'open' && socket.end(b().X().end())
++      // A socket still opening has no PostgreSQL session to terminate. Leaving
++      // it alive removes its startup listener but retains a referenced TCP handle.
++      if (socket.readyState === 'open')
++        socket.end(b().X().end())
++      else
++        socket.destroy()
+     }
+     ended && (ended(), ending = ended = null)
+   }
+ 
+@@ -439,7 +498,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      incoming = Buffer.alloc(0)
      remaining = 0
      incomings = null
@@ -82,7 +156,7 @@ index 8e79170..c6fc73f 100644
      socket.removeListener('data', data)
      socket.removeListener('connect', connected)
      idleTimer.cancel()
-@@ -497,6 +538,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -497,6 +563,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      let column
      let value
  
@@ -94,7 +168,7 @@ index 8e79170..c6fc73f 100644
      const row = query.isRaw ? new Array(query.statement.columns.length) : {}
      for (let i = 0; i < query.statement.columns.length; i++) {
        column = query.statement.columns[i]
-@@ -534,15 +580,46 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -534,15 +605,46 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      }
    }
  
@@ -147,7 +221,7 @@ diff --git a/node_modules/postgres/cf/src/index.js b/node_modules/postgres/cf/sr
 index ffbe7ae..929b6a8 100644
 --- a/node_modules/postgres/cf/src/index.js
 +++ b/node_modules/postgres/cf/src/index.js
-@@ -108,13 +108,23 @@
+@@ -108,13 +108,23 @@ function Postgres(a, b) {
        return new Parameter(value, type)
      }
  
@@ -172,7 +246,7 @@ index ffbe7ae..929b6a8 100644
      }
  
      function unsafe(string, args = [], options = {}) {
-@@ -124,7 +134,7 @@
+@@ -124,7 +134,7 @@ function Postgres(a, b) {
          ...options,
          simple: 'simple' in options ? options.simple : args.length === 0
        })
@@ -181,7 +255,7 @@ index ffbe7ae..929b6a8 100644
      }
  
      function file(path, args = [], options = {}) {
-@@ -141,7 +151,7 @@
+@@ -141,7 +151,7 @@ function Postgres(a, b) {
          ...options,
          simple: 'simple' in options ? options.simple : args.length === 0
        })
@@ -190,7 +264,7 @@ index ffbe7ae..929b6a8 100644
      }
    }
  
-@@ -203,6 +213,7 @@
+@@ -203,6 +213,7 @@ function Postgres(a, b) {
  
    async function reserve() {
      const queue = Queue()
@@ -198,7 +272,7 @@ index ffbe7ae..929b6a8 100644
      const c = open.length
        ? open.shift()
        : await new Promise((resolve, reject) => {
-@@ -215,10 +226,20 @@
+@@ -215,10 +226,20 @@ function Postgres(a, b) {
      c.reserved = () => queue.length
        ? c.execute(queue.shift())
        : move(c, reserved)
@@ -219,7 +293,7 @@ index ffbe7ae..929b6a8 100644
        c.reserved = null
        onopen(c)
      }
-@@ -226,6 +247,8 @@
+@@ -226,6 +247,8 @@ function Postgres(a, b) {
      return sql
  
      function handler(q) {
@@ -228,7 +302,7 @@ index ffbe7ae..929b6a8 100644
        c.queue === full
          ? queue.push(q)
          : c.execute(q) || move(c, full)
-@@ -237,6 +260,7 @@
+@@ -237,6 +260,7 @@ function Postgres(a, b) {
      const queries = Queue()
      let savepoints = 0
        , connection
@@ -236,7 +310,7 @@ index ffbe7ae..929b6a8 100644
        , prepare = null
  
      try {
-@@ -290,6 +314,10 @@
+@@ -290,6 +314,10 @@ function Postgres(a, b) {
        }
  
        function handler(q) {
@@ -247,7 +321,7 @@ index ffbe7ae..929b6a8 100644
          q.catch(e => uncaughtError || (uncaughtError = e))
          c.queue === full
            ? queries.push(q)
-@@ -303,6 +331,11 @@
+@@ -303,6 +331,11 @@ function Postgres(a, b) {
        c.reserved = () => queries.length
          ? c.execute(queries.shift())
          : move(c, reserved)
@@ -259,7 +333,7 @@ index ffbe7ae..929b6a8 100644
      }
    }
  
-@@ -421,6 +454,7 @@
+@@ -421,6 +454,7 @@ function Postgres(a, b) {
  
    function onclose(c, e) {
      move(c, closed)
@@ -267,7 +341,7 @@ index ffbe7ae..929b6a8 100644
      c.reserved = null
      c.onclose && (c.onclose(e), c.onclose = null)
      options.onclose && options.onclose(c.id)
-@@ -491,6 +525,8 @@
+@@ -491,6 +525,8 @@ function parseOptions(a, b) {
      target_session_attrs: tsa(o, url, env),
      onnotice        : o.onnotice,
      onnotify        : o.onnotify,
@@ -296,7 +370,7 @@ index 0d44a15..6929fbe 100644
  
    execute() {
 diff --git a/node_modules/postgres/cjs/src/connection.js b/node_modules/postgres/cjs/src/connection.js
-index 07f6716..f9b2d6f 100644
+index 07f6716..c6bf17d 100644
 --- a/node_modules/postgres/cjs/src/connection.js
 +++ b/node_modules/postgres/cjs/src/connection.js
 @@ -86,6 +86,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
@@ -307,7 +381,25 @@ index 07f6716..f9b2d6f 100644
      , closedTime = 0
      , remaining = 0
      , hostIndex = 0
-@@ -240,7 +241,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -95,6 +96,8 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+     , rows = 0
+     , serverSignature = null
+     , nextWriteTimer = null
++    , reconnectTimer = null
++    , connectGeneration = 0
+     , terminated = false
+     , incomings = null
+     , results = null
+@@ -111,6 +114,8 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+     queue: queues.closed,
+     idleTimer,
+     connect(query) {
++      terminated = false
++      connectGeneration++
+       initial = query
+       reconnect()
+     },
+@@ -240,7 +245,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
        ? statements[q.signature]
        : { string, types, name: q.prepare ? statementId + statementCount++ : '' }
  
@@ -331,7 +423,7 @@ index 07f6716..f9b2d6f 100644
    }
  
    function write(x, fn) {
-@@ -252,6 +268,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -252,6 +272,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
    }
  
    function nextWrite(fn) {
@@ -354,7 +446,52 @@ index 07f6716..f9b2d6f 100644
      const x = socket.write(chunk, fn)
      nextWriteTimer !== null && clearImmediate(nextWriteTimer)
      chunk = nextWriteTimer = null
-@@ -424,7 +456,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -333,9 +369,23 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+   }
+ 
+   async function connect() {
+-    terminated = false
++    // PAPERCUSP PATCH (WI-6554700010015128): a deferred connect must not
++    // resurrect a terminated pool or an obsolete asynchronous socket factory.
++    if (terminated)
++      return
++    const generation = connectGeneration
+     backendParameters = {}
+-    socket || (socket = await createSocket())
++    if (!socket) {
++      const created = await createSocket()
++      if (terminated || generation !== connectGeneration) {
++        if (created) {
++          created.removeAllListeners()
++          created.destroy()
++        }
++        return
++      }
++      socket = created
++    }
+ 
+     if (!socket)
+       return
+@@ -359,7 +409,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+   }
+ 
+   function reconnect() {
+-    setTimeout(connect, closedTime ? Math.max(0, closedTime + delay - performance.now()) : 0)
++    clearTimeout(reconnectTimer)
++    reconnectTimer = setTimeout(() => {
++      reconnectTimer = null
++      connect()
++    }, closedTime ? Math.max(0, closedTime + delay - performance.now()) : 0)
+   }
+ 
+   function connected() {
+@@ -421,15 +475,25 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+ 
+   function terminate() {
+     terminated = true
++    connectGeneration++
++    clearTimeout(reconnectTimer)
++    reconnectTimer = null
      if (stream || query || initial || sent.length)
        error(Errors.connection('CONNECTION_DESTROYED', options))
  
@@ -364,7 +501,18 @@ index 07f6716..f9b2d6f 100644
      if (socket) {
        socket.removeListener('data', data)
        socket.removeListener('connect', connected)
-@@ -437,7 +471,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+-      socket.readyState === 'open' && socket.end(b().X().end())
++      // A socket still opening has no PostgreSQL session to terminate. Leaving
++      // it alive removes its startup listener but retains a referenced TCP handle.
++      if (socket.readyState === 'open')
++        socket.end(b().X().end())
++      else
++        socket.destroy()
+     }
+     ended && (ended(), ending = ended = null)
+   }
+ 
+@@ -437,7 +496,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      incoming = Buffer.alloc(0)
      remaining = 0
      incomings = null
@@ -379,7 +527,7 @@ index 07f6716..f9b2d6f 100644
      socket.removeListener('data', data)
      socket.removeListener('connect', connected)
      idleTimer.cancel()
-@@ -495,6 +536,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -495,6 +561,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      let column
      let value
  
@@ -391,7 +539,7 @@ index 07f6716..f9b2d6f 100644
      const row = query.isRaw ? new Array(query.statement.columns.length) : {}
      for (let i = 0; i < query.statement.columns.length; i++) {
        column = query.statement.columns[i]
-@@ -532,15 +578,46 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -532,15 +603,46 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      }
    }
  
@@ -444,7 +592,7 @@ diff --git a/node_modules/postgres/cjs/src/index.js b/node_modules/postgres/cjs/
 index f09c61c..a874fff 100644
 --- a/node_modules/postgres/cjs/src/index.js
 +++ b/node_modules/postgres/cjs/src/index.js
-@@ -107,13 +107,23 @@
+@@ -107,13 +107,23 @@ function Postgres(a, b) {
        return new Parameter(value, type)
      }
  
@@ -469,7 +617,7 @@ index f09c61c..a874fff 100644
      }
  
      function unsafe(string, args = [], options = {}) {
-@@ -123,7 +133,7 @@
+@@ -123,7 +133,7 @@ function Postgres(a, b) {
          ...options,
          simple: 'simple' in options ? options.simple : args.length === 0
        })
@@ -478,7 +626,7 @@ index f09c61c..a874fff 100644
      }
  
      function file(path, args = [], options = {}) {
-@@ -140,7 +150,7 @@
+@@ -140,7 +150,7 @@ function Postgres(a, b) {
          ...options,
          simple: 'simple' in options ? options.simple : args.length === 0
        })
@@ -487,7 +635,7 @@ index f09c61c..a874fff 100644
      }
    }
  
-@@ -202,6 +212,7 @@
+@@ -202,6 +212,7 @@ function Postgres(a, b) {
  
    async function reserve() {
      const queue = Queue()
@@ -495,7 +643,7 @@ index f09c61c..a874fff 100644
      const c = open.length
        ? open.shift()
        : await new Promise((resolve, reject) => {
-@@ -214,10 +225,20 @@
+@@ -214,10 +225,20 @@ function Postgres(a, b) {
      c.reserved = () => queue.length
        ? c.execute(queue.shift())
        : move(c, reserved)
@@ -516,7 +664,7 @@ index f09c61c..a874fff 100644
        c.reserved = null
        onopen(c)
      }
-@@ -225,6 +246,8 @@
+@@ -225,6 +246,8 @@ function Postgres(a, b) {
      return sql
  
      function handler(q) {
@@ -525,7 +673,7 @@ index f09c61c..a874fff 100644
        c.queue === full
          ? queue.push(q)
          : c.execute(q) || move(c, full)
-@@ -236,6 +259,7 @@
+@@ -236,6 +259,7 @@ function Postgres(a, b) {
      const queries = Queue()
      let savepoints = 0
        , connection
@@ -533,7 +681,7 @@ index f09c61c..a874fff 100644
        , prepare = null
  
      try {
-@@ -289,6 +313,10 @@
+@@ -289,6 +313,10 @@ function Postgres(a, b) {
        }
  
        function handler(q) {
@@ -544,7 +692,7 @@ index f09c61c..a874fff 100644
          q.catch(e => uncaughtError || (uncaughtError = e))
          c.queue === full
            ? queries.push(q)
-@@ -302,6 +330,11 @@
+@@ -302,6 +330,11 @@ function Postgres(a, b) {
        c.reserved = () => queries.length
          ? c.execute(queries.shift())
          : move(c, reserved)
@@ -556,7 +704,7 @@ index f09c61c..a874fff 100644
      }
    }
  
-@@ -420,6 +453,7 @@
+@@ -420,6 +453,7 @@ function Postgres(a, b) {
  
    function onclose(c, e) {
      move(c, closed)
@@ -564,7 +712,7 @@ index f09c61c..a874fff 100644
      c.reserved = null
      c.onclose && (c.onclose(e), c.onclose = null)
      options.onclose && options.onclose(c.id)
-@@ -490,6 +524,8 @@
+@@ -490,6 +524,8 @@ function parseOptions(a, b) {
      target_session_attrs: tsa(o, url, env),
      onnotice        : o.onnotice,
      onnotify        : o.onnotify,
@@ -593,7 +741,7 @@ index 45327f2..246ebab 100644
  
    execute() {
 diff --git a/node_modules/postgres/src/connection.js b/node_modules/postgres/src/connection.js
-index 1b1cccd..6f7f4e3 100644
+index 1b1cccd..feb611e 100644
 --- a/node_modules/postgres/src/connection.js
 +++ b/node_modules/postgres/src/connection.js
 @@ -86,6 +86,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
@@ -604,7 +752,25 @@ index 1b1cccd..6f7f4e3 100644
      , closedTime = 0
      , remaining = 0
      , hostIndex = 0
-@@ -240,7 +241,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -95,6 +96,8 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+     , rows = 0
+     , serverSignature = null
+     , nextWriteTimer = null
++    , reconnectTimer = null
++    , connectGeneration = 0
+     , terminated = false
+     , incomings = null
+     , results = null
+@@ -111,6 +114,8 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+     queue: queues.closed,
+     idleTimer,
+     connect(query) {
++      terminated = false
++      connectGeneration++
+       initial = query
+       reconnect()
+     },
+@@ -240,7 +245,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
        ? statements[q.signature]
        : { string, types, name: q.prepare ? statementId + statementCount++ : '' }
  
@@ -628,7 +794,7 @@ index 1b1cccd..6f7f4e3 100644
    }
  
    function write(x, fn) {
-@@ -252,6 +268,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -252,6 +272,22 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
    }
  
    function nextWrite(fn) {
@@ -651,7 +817,52 @@ index 1b1cccd..6f7f4e3 100644
      const x = socket.write(chunk, fn)
      nextWriteTimer !== null && clearImmediate(nextWriteTimer)
      chunk = nextWriteTimer = null
-@@ -424,7 +456,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -333,9 +369,23 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+   }
+ 
+   async function connect() {
+-    terminated = false
++    // PAPERCUSP PATCH (WI-6554700010015128): a deferred connect must not
++    // resurrect a terminated pool or an obsolete asynchronous socket factory.
++    if (terminated)
++      return
++    const generation = connectGeneration
+     backendParameters = {}
+-    socket || (socket = await createSocket())
++    if (!socket) {
++      const created = await createSocket()
++      if (terminated || generation !== connectGeneration) {
++        if (created) {
++          created.removeAllListeners()
++          created.destroy()
++        }
++        return
++      }
++      socket = created
++    }
+ 
+     if (!socket)
+       return
+@@ -359,7 +409,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+   }
+ 
+   function reconnect() {
+-    setTimeout(connect, closedTime ? Math.max(0, closedTime + delay - performance.now()) : 0)
++    clearTimeout(reconnectTimer)
++    reconnectTimer = setTimeout(() => {
++      reconnectTimer = null
++      connect()
++    }, closedTime ? Math.max(0, closedTime + delay - performance.now()) : 0)
+   }
+ 
+   function connected() {
+@@ -421,15 +475,25 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+ 
+   function terminate() {
+     terminated = true
++    connectGeneration++
++    clearTimeout(reconnectTimer)
++    reconnectTimer = null
      if (stream || query || initial || sent.length)
        error(Errors.connection('CONNECTION_DESTROYED', options))
  
@@ -661,7 +872,18 @@ index 1b1cccd..6f7f4e3 100644
      if (socket) {
        socket.removeListener('data', data)
        socket.removeListener('connect', connected)
-@@ -437,7 +471,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+-      socket.readyState === 'open' && socket.end(b().X().end())
++      // A socket still opening has no PostgreSQL session to terminate. Leaving
++      // it alive removes its startup listener but retains a referenced TCP handle.
++      if (socket.readyState === 'open')
++        socket.end(b().X().end())
++      else
++        socket.destroy()
+     }
+     ended && (ended(), ending = ended = null)
+   }
+ 
+@@ -437,7 +496,14 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      incoming = Buffer.alloc(0)
      remaining = 0
      incomings = null
@@ -676,7 +898,7 @@ index 1b1cccd..6f7f4e3 100644
      socket.removeListener('data', data)
      socket.removeListener('connect', connected)
      idleTimer.cancel()
-@@ -495,6 +536,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -495,6 +561,11 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      let column
      let value
  
@@ -688,7 +910,7 @@ index 1b1cccd..6f7f4e3 100644
      const row = query.isRaw ? new Array(query.statement.columns.length) : {}
      for (let i = 0; i < query.statement.columns.length; i++) {
        column = query.statement.columns[i]
-@@ -532,15 +578,46 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -532,15 +603,46 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      }
    }
  
@@ -741,7 +963,7 @@ diff --git a/node_modules/postgres/src/index.js b/node_modules/postgres/src/inde
 index c7fba3d..32fae94 100644
 --- a/node_modules/postgres/src/index.js
 +++ b/node_modules/postgres/src/index.js
-@@ -107,13 +107,23 @@
+@@ -107,13 +107,23 @@ function Postgres(a, b) {
        return new Parameter(value, type)
      }
  
@@ -766,7 +988,7 @@ index c7fba3d..32fae94 100644
      }
  
      function unsafe(string, args = [], options = {}) {
-@@ -123,7 +133,7 @@
+@@ -123,7 +133,7 @@ function Postgres(a, b) {
          ...options,
          simple: 'simple' in options ? options.simple : args.length === 0
        })
@@ -775,7 +997,7 @@ index c7fba3d..32fae94 100644
      }
  
      function file(path, args = [], options = {}) {
-@@ -140,7 +150,7 @@
+@@ -140,7 +150,7 @@ function Postgres(a, b) {
          ...options,
          simple: 'simple' in options ? options.simple : args.length === 0
        })
@@ -784,7 +1006,7 @@ index c7fba3d..32fae94 100644
      }
    }
  
-@@ -202,6 +212,7 @@
+@@ -202,6 +212,7 @@ function Postgres(a, b) {
  
    async function reserve() {
      const queue = Queue()
@@ -792,7 +1014,7 @@ index c7fba3d..32fae94 100644
      const c = open.length
        ? open.shift()
        : await new Promise((resolve, reject) => {
-@@ -214,10 +225,20 @@
+@@ -214,10 +225,20 @@ function Postgres(a, b) {
      c.reserved = () => queue.length
        ? c.execute(queue.shift())
        : move(c, reserved)
@@ -813,7 +1035,7 @@ index c7fba3d..32fae94 100644
        c.reserved = null
        onopen(c)
      }
-@@ -225,6 +246,8 @@
+@@ -225,6 +246,8 @@ function Postgres(a, b) {
      return sql
  
      function handler(q) {
@@ -822,7 +1044,7 @@ index c7fba3d..32fae94 100644
        c.queue === full
          ? queue.push(q)
          : c.execute(q) || move(c, full)
-@@ -236,6 +259,7 @@
+@@ -236,6 +259,7 @@ function Postgres(a, b) {
      const queries = Queue()
      let savepoints = 0
        , connection
@@ -830,7 +1052,7 @@ index c7fba3d..32fae94 100644
        , prepare = null
  
      try {
-@@ -289,6 +313,10 @@
+@@ -289,6 +313,10 @@ function Postgres(a, b) {
        }
  
        function handler(q) {
@@ -841,7 +1063,7 @@ index c7fba3d..32fae94 100644
          q.catch(e => uncaughtError || (uncaughtError = e))
          c.queue === full
            ? queries.push(q)
-@@ -302,6 +330,11 @@
+@@ -302,6 +330,11 @@ function Postgres(a, b) {
        c.reserved = () => queries.length
          ? c.execute(queries.shift())
          : move(c, reserved)
@@ -853,7 +1075,7 @@ index c7fba3d..32fae94 100644
      }
    }
  
-@@ -420,6 +453,7 @@
+@@ -420,6 +453,7 @@ function Postgres(a, b) {
  
    function onclose(c, e) {
      move(c, closed)
@@ -861,7 +1083,7 @@ index c7fba3d..32fae94 100644
      c.reserved = null
      c.onclose && (c.onclose(e), c.onclose = null)
      options.onclose && options.onclose(c.id)
-@@ -490,6 +524,8 @@
+@@ -490,6 +524,8 @@ function parseOptions(a, b) {
      target_session_attrs: tsa(o, url, env),
      onnotice        : o.onnotice,
      onnotify        : o.onnotify,

@@ -29,6 +29,7 @@
  */
 import { spawn as nodeSpawn } from 'node:child_process';
 import { resolveAgentBinarySync } from '../agent-bin-detect';
+import { createTextCollector } from '../child-output.js';
 import { codexContextConfigArgs, resolveCodexModel, resolveCodexModelSelection } from '../model-context-budget.mjs';
 import * as os from 'node:os';
 import type { AccountEgress } from '../deployment/account-pool';
@@ -310,7 +311,7 @@ export function runCodexCliCompletion(opts: CodexCliRunOpts): Promise<CodexCliRu
       detached: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    let stdout = '';
+    const stdout = createTextCollector(child.stdout);
     let stderr = '';
     let settled = false;
     const killGroup = () => {
@@ -339,20 +340,20 @@ export function runCodexCliCompletion(opts: CodexCliRunOpts): Promise<CodexCliRu
     if (opts.signal?.aborted) onAbort();
     else opts.signal?.addEventListener('abort', onAbort, { once: true });
 
-    child.stdout?.on('data', (d: Buffer) => (stdout += d.toString()));
     child.stderr?.on('data', (d: Buffer) => (stderr += d.toString()));
     child.on('error', (e) => settle(() => reject(new Error(`codex-cli bridge: spawn failed: ${e.message}`))));
     child.on('close', (code) =>
       settle(() => {
+        const stdoutText = stdout.text();
         if (code !== 0) {
-          reject(new Error(`codex-cli bridge: codex exited ${code}: ${codexCliFailureDetail(stdout, stderr)}`));
+          reject(new Error(`codex-cli bridge: codex exited ${code}: ${codexCliFailureDetail(stdoutText, stderr)}`));
           return;
         }
-        const r = parseCodexCliEvents(stdout);
+        const r = parseCodexCliEvents(stdoutText);
         if (!r.text) {
           reject(
             new Error(
-              `codex-cli bridge: no agent_message in codex output (${codexCliFailureDetail(stdout, stderr, 200)})`,
+              `codex-cli bridge: no agent_message in codex output (${codexCliFailureDetail(stdoutText, stderr, 200)})`,
             ),
           );
           return;

@@ -461,7 +461,7 @@ async function resolveLaunchInput(target: LaunchTarget, input: FireLaunchInput):
       observeFallback('blueprint-launch', { eligible: 1, applied: 0, reason: 'capacity', scope: target.role }, { workspaceId: input.workspaceId });
       const { sendMessage } = await import('../agent-tools/coordination/messages');
       await sendMessage({ ownerId: 'system-blueprint-launch', ownerLabel: 'blueprint-launch', source: 'principal',
-        workspaceId: input.workspaceId, userId: null }, { to: ['human'], kind: 'message', harnessSlug: input.installSlug,
+        workspaceId: input.workspaceId, userId: null }, { to: [input.parent?.spawnId || 'human'], kind: 'message', harnessSlug: input.installSlug,
         summary: `${target.role}: capacity fallback ${primary.backend}/${primary.model} → ${candidate.backend}/${candidate.model}`,
         body: walls.join('; '), extra: { expects: 'none', reason: 'capacity' } });
     }

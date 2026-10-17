@@ -40,6 +40,7 @@
  */
 
 import type { Sql } from 'postgres';
+import type { ReleaseFixerDispatchSkip } from '../harness/routines/release-actions';
 import type { FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
 import type { PipelineEventWindowRead } from '../harness/git-sync/pipeline-events';
 
@@ -73,6 +74,8 @@ export interface IdleQueueEpisode {
   rungs: Partial<Record<IdleQueueRung, IdleRungRecord>>;
   /** Durable budget for the one retry after an acted dispatch leaves no live fixer assignment. */
   dispatchRetryCount?: number;
+  /** A deterministic refusal survives idle-clock resets, until its head or verdict changes. */
+  dispatchRefusal?: { repairHead: string; lastVerdictAtMs: number | null; detail: string };
 }
 
 export interface IdleQueueSnapshot {
@@ -82,6 +85,7 @@ export interface IdleQueueSnapshot {
   openedAtMs: number;
   lastAdmittedAtMs: number | null;
   lastResumeRunStartedAtMs: number | null;
+  lastVerdictAtMs?: number | null;
   /** null = the run-lock probe failed, so the actuator must preserve state without acting. */
   runInFlight: boolean | null;
   /** Failing legs still outstanding on the frozen candidate (the queue's `failingTests`). */
@@ -110,7 +114,10 @@ function hoursText(ms: number): string {
 }
 
 /** The single concrete step that moves a queue in this phase. Named in every rung's message. */
-export function namedNextAction(s: IdleQueueSnapshot): string {
+export function namedNextAction(s: IdleQueueSnapshot, episode?: IdleQueueEpisode): string {
+  if (episode?.dispatchRefusal) {
+    return `Fire release:checkpoint-run for a fresh measured verdict on repairHead ${short(s.repairHead)} before dispatching another fixer.`;
+  }
   switch (s.phase) {
     case 'awaiting-fixer':
       return (
@@ -143,6 +150,14 @@ function notApplicableReason(rung: IdleQueueRung, s: IdleQueueSnapshot): string 
   }
 }
 
+function sameDispatchRefusal(s: IdleQueueSnapshot | null, prior: IdleQueueEpisode | null): boolean {
+  return !!s && !!prior?.dispatchRefusal &&
+    prior.candidate === s.candidate &&
+    prior.dispatchRefusal.repairHead === s.repairHead &&
+    prior.dispatchRefusal.lastVerdictAtMs === (s.lastVerdictAtMs ?? null) &&
+    s.failingLegs > 0 && s.phase !== 'ready-to-promote';
+}
+
 /** PURE. One rung per call; records not-applicable rungs on the returned episode as it walks. */
 export function decideIdleQueueAction(
   s: IdleQueueSnapshot | null,
@@ -164,9 +179,11 @@ export function decideIdleQueueAction(
   }
 
   const episode: IdleQueueEpisode =
-    prior && prior.candidate === s.candidate && prior.idleSinceMs === idleSinceMs
+    prior && prior.candidate === s.candidate && prior.idleSinceMs === idleSinceMs &&
+      (!prior.dispatchRefusal || sameDispatchRefusal(s, prior))
       ? { ...prior, rungs: { ...prior.rungs } }
-      : { candidate: s.candidate, idleSinceMs, rungs: {} };
+      : { candidate: s.candidate, idleSinceMs, rungs: {},
+          ...(sameDispatchRefusal(s, prior) ? { dispatchRefusal: prior!.dispatchRefusal } : {}) };
 
   if (s.runInFlight === true) {
     return { kind: 'not-idle', reason: 'a checkpoint run is in flight' };
@@ -206,7 +223,7 @@ export function decideIdleQueueAction(
             kind: 'act',
             rung,
             reason: 'the prior fixer dispatch left no assigned live fixer; using the bounded retry',
-            nextAction: namedNextAction(s),
+            nextAction: namedNextAction(s, episode),
             episode,
           };
         }
@@ -226,7 +243,7 @@ export function decideIdleQueueAction(
           kind: 'act',
           rung,
           reason: `retrying the owner escalation that failed at ${new Date(rec.atMs).toISOString()}`,
-          nextAction: namedNextAction(s),
+          nextAction: namedNextAction(s, episode),
           episode,
         };
       }
@@ -247,7 +264,9 @@ export function decideIdleQueueAction(
         nextRungAtMs: nowMs + IDLE_RUNG_GRACE_MS,
       };
     }
-    const na = notApplicableReason(rung, s);
+    const na = rung === 'dispatch-fixer' && episode.dispatchRefusal
+      ? `unchanged nonretryable dispatcher refusal: ${episode.dispatchRefusal.detail}`
+      : notApplicableReason(rung, s);
     if (na) {
       episode.rungs[rung] = { atMs: nowMs, outcome: 'not-applicable', detail: na };
       continue;
@@ -256,7 +275,7 @@ export function decideIdleQueueAction(
       kind: 'act',
       rung,
       reason: `no repair round has started for ${hoursText(idleMs)} with ${s.failingLegs} failing leg(s)`,
-      nextAction: namedNextAction(s),
+      nextAction: namedNextAction(s, episode),
       episode,
     };
   }
@@ -289,7 +308,7 @@ export function idleQueueMessage(
   const ran = IDLE_QUEUE_RUNGS.filter((r) => episode.rungs[r])
     .map((r) => `${r}: ${episode.rungs[r]!.outcome} (${episode.rungs[r]!.detail})`)
     .join('; ');
-  const nextAction = namedNextAction(s);
+  const nextAction = namedNextAction(s, episode);
   return {
     summary: `Frozen repair queue on ${installSlug} idle ${idle} — ${nextAction}`,
     body:
@@ -303,6 +322,8 @@ export function idleQueueMessage(
 export interface IdleRungResult {
   ok: boolean;
   detail: string;
+  /** False means dispatch cannot help until a new head or verdict; absent retains legacy retry behavior. */
+  retryable?: boolean;
 }
 
 export interface IdleQueueFixerDispatchReceipt {
@@ -312,7 +333,7 @@ export interface IdleQueueFixerDispatchReceipt {
 
 export interface IdleQueueFixerHandoffDeps {
   reserve: (queue: FrozenCandidateRepairQueue) => Promise<FrozenCandidateRepairQueue | null>;
-  dispatch: (reserved: FrozenCandidateRepairQueue) => Promise<IdleQueueFixerDispatchReceipt | null>;
+  dispatch: (reserved: FrozenCandidateRepairQueue, onSkip: (skip: ReleaseFixerDispatchSkip) => void) => Promise<IdleQueueFixerDispatchReceipt | null>;
   finalize: (
     reserved: FrozenCandidateRepairQueue,
     fired: IdleQueueFixerDispatchReceipt | null,
@@ -332,8 +353,9 @@ export async function dispatchIdleQueueFixer(
   if (!reserved) return { ok: false, detail: 'queue reservation was unavailable or the queue changed' };
 
   let fired: IdleQueueFixerDispatchReceipt | null = null;
+  let skipped: ReleaseFixerDispatchSkip | undefined;
   try {
-    fired = await deps.dispatch(reserved);
+    fired = await deps.dispatch(reserved, skip => { skipped = skip; });
   } catch (error) {
     let released = false;
     try {
@@ -365,9 +387,10 @@ export async function dispatchIdleQueueFixer(
   if (!fired?.spawnId) {
     return {
       ok: false,
-      detail: finalized && !finalized.dispatchReservation
-        ? 'dispatcher returned no spawn; reservation released'
-        : 'dispatcher returned no spawn; reservation release could not be confirmed',
+      ...(skipped ? { retryable: skipped.retryable } : {}),
+      detail: `${skipped?.reason ?? 'dispatcher returned no spawn'}; reservation ${
+        finalized && !finalized.dispatchReservation ? 'released' : 'release could not be confirmed'}`,
+
     };
   }
   if (finalized?.fixerSpawnId !== fired.spawnId || finalized.dispatchReservation) {
@@ -407,7 +430,9 @@ export async function runIdleQueueActuatorPass(deps: IdleQueueActuatorDeps): Pro
     const now = deps.nowMs();
     const d = decideIdleQueueAction(s, episode, now);
     if (d.kind === 'not-idle') {
-      if (episode) await deps.saveEpisode(null);
+      // A run starting is not a new verdict. Retain deterministic refusal evidence while
+      // it runs and during the idle grace; clear it when the queue/head/verdict changes.
+      if (episode && !sameDispatchRefusal(s, episode)) await deps.saveEpisode(null);
       return { decision: d.kind, acted };
     }
     if (d.kind !== 'act') {
@@ -437,6 +462,11 @@ export async function runIdleQueueActuatorPass(deps: IdleQueueActuatorDeps): Pro
     }
     const outcome: IdleRungOutcome = result.ok ? 'acted' : 'failed';
     episode = recordIdleRungOutcome(d.episode, d.rung, outcome, result.detail, now);
+    if (d.rung === 'dispatch-fixer' && !result.ok && result.retryable === false) {
+      episode.dispatchRefusal = {
+        repairHead: s!.repairHead, lastVerdictAtMs: s!.lastVerdictAtMs ?? null, detail: result.detail,
+      };
+    }
     acted.push({ rung: d.rung, outcome, detail: result.detail, startedAtMs: now, completedAtMs: deps.nowMs() });
     await deps.saveEpisode(episode);
     if (result.ok) return { decision: 'act', acted };
@@ -476,7 +506,20 @@ export function parseEpisode(raw: unknown): IdleQueueEpisode | null {
       ? Math.min(persistedRetryCount, IDLE_DISPATCH_RETRY_LIMIT)
       : IDLE_DISPATCH_RETRY_LIMIT
     : 0;
-  return { candidate: r.candidate, idleSinceMs: r.idleSinceMs, rungs, dispatchRetryCount };
+  const refusal = r.dispatchRefusal;
+  let dispatchRefusal: IdleQueueEpisode['dispatchRefusal'];
+  if (refusal && typeof refusal === 'object') {
+    const saved = refusal as Record<string, unknown>;
+    if (typeof saved.repairHead === 'string' && saved.repairHead.length > 0 &&
+      (saved.lastVerdictAtMs === null ||
+        (typeof saved.lastVerdictAtMs === 'number' && Number.isFinite(saved.lastVerdictAtMs))) &&
+      typeof saved.detail === 'string') {
+      dispatchRefusal = { repairHead: saved.repairHead, lastVerdictAtMs: saved.lastVerdictAtMs, detail: saved.detail };
+    }
+  }
+  return { candidate: r.candidate, idleSinceMs: r.idleSinceMs, rungs, dispatchRetryCount,
+    ...(dispatchRefusal ? { dispatchRefusal } : {}) };
+
 }
 
 /**
@@ -781,6 +824,7 @@ export async function checkIdleRepairQueue(
           openedAtMs: queue.openedAtMs,
           lastAdmittedAtMs: queue.lastAdmittedAtMs ?? null,
           lastResumeRunStartedAtMs: queue.lastResumeRunStartedAtMs ?? null,
+          lastVerdictAtMs: queue.lastVerdictAtMs ?? null,
           runInFlight,
           failingLegs: queue.failingTests.length,
           fixerSpawnId: queue.fixerSpawnId,
@@ -802,8 +846,8 @@ export async function checkIdleRepairQueue(
         const target = { installSlug, workspaceId };
         return dispatchIdleQueueFixer(q, {
           reserve: (current) => reserveFrozenCandidateRepairFixer(target, current),
-          dispatch: (reserved) =>
-            dispatchReleaseFixer(target, reserved.candidate, reserved.failingTests, reserved),
+          dispatch: (reserved, onSkip) =>
+            dispatchReleaseFixer(target, reserved.candidate, reserved.failingTests, reserved, undefined, { onSkip }),
           finalize: (reserved, fired) => finalizeFrozenCandidateRepairFixer(target, reserved, fired),
         });
       },

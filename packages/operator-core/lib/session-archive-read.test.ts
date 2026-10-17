@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readArchivedSessionTurns } from './session-archive-read';
+import { readArchivedSessionTurns, readLiveSessionTurns } from './session-archive-read';
 import {
   archiveAndDeleteSession,
   archiveSession,
@@ -162,6 +162,38 @@ describe('readArchivedSessionTurns', () => {
     expect(full?.turns[0]?.text).not.toContain(FAKE_SECRET);
     expect(full?.turns[0]?.text).toContain(suffix);
     expect(full?.turns[0]?.text.length).toBeGreaterThan(8_000);
+  });
+
+  it('reads a live capped turn from the source file before archive-at-death', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'sar-live-read-'));
+    const sourceText = `token=${FAKE_SECRET} ${'x'.repeat(9_572 - FAKE_SECRET.length - 7)}tail-sentinel`;
+    const line = JSON.stringify({
+      timestamp: '2026-10-16T08:00:00.000Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: sourceText }],
+      },
+    });
+    const sourcePath = join(tmp, 'live-rollout.jsonl');
+    await writeFile(sourcePath, `${line}\n`);
+
+    const live = await readLiveSessionTurns(sourcePath, 'codex', 'owner-a', {
+      fullSource: true,
+      turnIndices: [0],
+    });
+    expect(live?.errors).toEqual([]);
+    expect(live?.turns).toHaveLength(1);
+    expect(live?.turns[0]).toMatchObject({
+      turn_idx: 0,
+      owner: 'owner-a',
+      speaker: 'assistant',
+    });
+    expect(live?.turns[0]?.text).toContain('tail-sentinel');
+    expect(live?.turns[0]?.text).toContain('[redacted]');
+    expect(live?.turns[0]?.text).not.toContain(FAKE_SECRET);
+    expect(live?.turns[0]?.text.length).toBeGreaterThan(8_000);
   });
 
   it('rejects an archive whose declared raw bytes exceed the decompression budget', async () => {

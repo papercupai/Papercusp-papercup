@@ -13,6 +13,9 @@ export function expandWorkspaceDirs(patterns: any, root: any): any[];
  * an orphaned workspace shim still points at its removed local copy. npm's normal
  * hoisted reify does not inventory orphan shims, so an up-to-date install can leave
  * them untouched. Share this detector with install:safe's verified repair boundary.
+ * Include physical nested dependency trees: the immutable dependency publisher
+ * validates those links too. Never follow package/scope/node_modules symlinks to
+ * discover more trees; workspace links and external stores are not ours to repair.
  *
  * @param {string} root
  * @param {{ workspaceDirs?: string[] }} [options]

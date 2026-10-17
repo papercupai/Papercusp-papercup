@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "kind": "source-qualified-regression-evidence",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "workItem": "EI-26168788434816650",
+  "parentWorkItem": "WI-6554700010016419",
+  "status": "focused-tests-and-scoped-typecheck-passed",
+  "rootCause": "Native file ingestion writes session_turns prompts to the default corpus partition; the historical push reader required the tenant partition for both preceding and intervening prompts. Tenant-only integration fixtures missed both a false unknown and an incorrectly closed window.",
+  "producerReference": "packages/operator-core/lib/search/session-ingest.ts ingestFileNow; existing sessions/read.ts already reads requested workspace OR default under owner/session/source-kind constraints.",
+  "change": "Use the existing tenant-or-default corpus convention only for prompt reads. Tenant-scoped pushes, journals and activity, exact owner/native session/source-kind identity, prior-completion and cross-session ambiguity guards remain required.",
+  "sourceHashes": {
+    "packages/operator-core/lib/code-intelligence/native-adoption.ts": "1508b2ca1ece23ee4e51a4c946d3093c81b24cb750c6901b5a1e5781d1f28ed2",
+    "packages/operator-core/lib/code-intelligence/native-adoption.test.ts": "7237b20310eec08a82256d3dc2eb0f18d0877bd9c191fb722611346df08f7d2f",
+    "packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts": "05e8851f904edcc970fcec9e024b95a5ac47d16451b484dd769982c9d95da9da"
+  },
+  "regressions": [
+    "P-041 native transcript corpus partition > correlates default-corpus prompts only through the scoped journal, owner and native session",
+    "P-041 native transcript corpus partition > rejects an intervening default-corpus prompt even when the preceding prompt is tenant-scoped"
+  ],
+  "red": {
+    "log": "/tmp/native-p041-corpus-red-tests-20261016.log",
+    "exitCode": 1,
+    "passed": 12,
+    "failed": 2,
+    "observations": [
+      "Valid default-corpus prompt returned windowComplete=false and null outcomes.",
+      "Tenant preceding prompt plus default-corpus intervening prompt incorrectly returned windowComplete=true."
+    ]
+  },
+  "green": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/native-p041-corpus-green-source-20261016.json npm run test:file -- packages/operator-core/lib/code-intelligence/native-adoption.test.ts packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts",
+    "log": "/tmp/native-p041-corpus-green-tests-20261016.log",
+    "exitCode": 0,
+    "unitPassed": 41,
+    "realPgPassed": 14,
+    "failed": 0,
+    "skipped": 0,
+    "childSubstituted": 0,
+    "nativeUnhandledErrors": 0,
+    "captures": [
+      { "path": "/tmp/native-p041-corpus-green-source-20261016.json", "sha256": "e1cc595c0f38bf756d2ff2c99bb74abf56aea4c9635d88babdc2214c503430f8" },
+      { "path": "/tmp/native-p041-corpus-green-source-20261016.1.json", "sha256": "f3b8a0fd82772e2f3b6b775d19097505418917346de2630f56d795038c7346aa" }
+    ],
+    "qualification": "Named original production and test Vite pre-transform SHA256 values match disk at readback. Focused current-source verification; not a full execution-graph or serving-runtime claim."
+  },
+  "typecheck": { "log": "/tmp/native-p041-corpus-types-20261016.log", "status": "clean", "exitCode": 0, "scope": "Two named files; three cross legs clean, full operator-core fallback; LINT_TSC_RESULT exit0/statusclean and native session6287 terminalexit0 observed." },
+  "historicalDistinguishingRead": {
+    "path": "/tmp/native-p041-corpus-scope-distinction-20261016.json",
+    "scope": "Exact original72h workspace window; three saved push rows; later journal native session; tenant and default prompt partitions.",
+    "observed": "No matching preceding prompt in either partition. Positive push control passed; three result rows, no truncation.",
+    "meaning": "This source defect does not explain or recover those three historical windows. They remain unknown."
+  },
+  "limits": [
+    "No production rows were inserted for this regression; fixtures use the project's disposable real-PG test framework.",
+    "No elapsed-time closure fallback, usefulness threshold, low-use inference or leg disablement.",
+    "D011 adoption ratings remain unchanged.",
+    "P041 actual native closure coverage, current-build requalification, proof bindings and whole-plan shipment remain open."
+  ]
+}

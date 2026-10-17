@@ -5,6 +5,7 @@ import { getSessionUserOrDefault } from '../../auth';
 import { authorizePersonalAccess } from '../../personal-vault/authorization';
 import { disclosureSubject } from '../_disclosure-subject';
 import { parseSocialPostRef } from '../../capability-verbs/social';
+import { readyProviderRegistry } from '../../integrations/provider-registry';
 import { readSocialPost } from '../../capability-verbs/social-read';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
@@ -29,7 +30,7 @@ export default defineTool({
     if (!workspaceId || workspaceId === '*') throw new Error('social_read_workspace_required');
     // Parse first so an unknown or unverified platform refuses with the
     // registry's reason before any grant or vault work happens.
-    const ref = parseSocialPostRef(args.postId);
+    const ref = parseSocialPostRef(args.postId, await readyProviderRegistry());
     const user = await getSessionUserOrDefault();
     const auth = await authorizePersonalAccess(ctx.tx!, ctx, workspaceId, user.id, [
       `personal:${ref.platform}`,

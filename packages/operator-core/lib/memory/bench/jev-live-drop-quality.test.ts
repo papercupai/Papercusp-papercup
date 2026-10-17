@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import { stateSha256 } from '@papercusp/decision-model';
 
 // The hook's real digest: the replay must rebuild what the client actually shipped.
-// @ts-expect-error -- plain .mjs hook module, no declaration file
 import { buildDigest } from '../../../../../apps/operator/scripts/hooks/inject/core.mjs';
 import { deriveBatchQuery, splitLegQueries, type BatchCall } from '../../endpoint-route/routes/agent-mcp/mid-turn-context';
 import { PROMPT_QUERY_CLAMP } from '../../endpoint-route/routes/agent-mcp/turn-start-memory';

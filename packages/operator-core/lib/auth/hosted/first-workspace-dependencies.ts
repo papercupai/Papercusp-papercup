@@ -20,7 +20,7 @@
  */
 import { withWorkspace } from '@papercusp/db-org';
 import { dbosStarted } from '../../dbos/bootstrap';
-import type { WorkspaceHostProvisioningEnqueuer } from '../../dbos/workspace-host-provision-client';
+import type { WorkspaceHostProvisioningEnqueuer, WorkspaceHostOperationEnqueuer } from '../../dbos/workspace-host-provision-client';
 import { HostedSessionStore } from '../hosted-session';
 import {
   HostedProviderDelegationManager,
@@ -66,7 +66,7 @@ export interface HostedFirstWorkspaceRuntimeOptions {
    * When present, provisioning is available by construction; when absent, provisioning runs
    * in-process and is available only once DBOS has started.
    */
-  readonly provisioning?: WorkspaceHostProvisioningEnqueuer;
+  readonly provisioning?: WorkspaceHostProvisioningEnqueuer & Partial<WorkspaceHostOperationEnqueuer>;
   readonly provisioningAvailable?: () => boolean;
   /**
    * Default: the organization's own GCP account in the identity project (D-397) AND its own
@@ -125,7 +125,12 @@ export function createHostedFirstWorkspaceDependencies(
       createHostedWorkspaceAdmission({
         ...createDefaultHostedWorkspaceAdmissionDependencies({
           resolveDesiredSpec,
+          pooled: admissionOptions?.pooled,
           ...(provisioning ? { startWorkflow: (input) => provisioning.enqueue(input) } : {}),
+          ...(provisioning ? { startLifecycleWorkflow: async (input) => {
+            if (!provisioning.enqueueLifecycle) throw new Error('hosted_pool_lifecycle_enqueuer_unavailable');
+            return provisioning.enqueueLifecycle(input);
+          } } : {}),
           ...(admissionOptions?.bringUp ? { bringUp: admissionOptions.bringUp } : {}),
         }),
         // The default reads the operator's active workspace; the hosted process is scoped by

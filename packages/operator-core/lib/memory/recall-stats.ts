@@ -403,6 +403,8 @@ export type CorpusAdmissionDropReason =
 /** Admission funnel for the independently ranked corpus excerpt leg. */
 export interface CorpusAdmissionStats {
   outcome: 'ok' | 'timed-out' | 'disabled' | 'no-query' | 'failed';
+  /** Safe timeout facts for a corpus-leg bound or its parent request budget. */
+  timeout?: MemoryTimeoutTelemetry;
   /** Search candidates before pure-core selection. */
   returned: number;
   /** Lines surviving pure-core selection, before gate and session dedup. */

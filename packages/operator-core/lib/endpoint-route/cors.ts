@@ -56,6 +56,7 @@ export function corsFor(origins?: readonly string[]): MiddlewareHandler {
       // Omitting it here makes those preflights strip the header and the
       // browser block the call outright (harness-settings e2e, 2026-06-10).
       'x-papercusp-workspace',
+      'x-papercusp-machine',
     ],
     credentials: true,
     maxAge: 600,

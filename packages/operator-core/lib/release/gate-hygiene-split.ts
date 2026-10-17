@@ -529,23 +529,156 @@ export function captureGateDecisionReplay(kind: string, args: unknown[], output:
   return JSON.parse(JSON.stringify({ kind, args, expected: gateDecisionSignature(output) })) as GateDecisionReplay;
 }
 
-/** Explicit, source-reviewed transition: exact old measurement and exact accepted result.
- * A maintainer records the governing plan decision alongside both canonical snapshots.
- * No wildcard, deletion of history, or runtime bypass is supported. */
-export interface GateReplayBaselineTransition {
-  decisionRef: string;
-  reason: string;
-  previous: string;
-  accepted: string;
+/** A narrowly scoped v1 replay-shape transition for one measured decision. */
+export interface GateReplayDecisionFieldAddition {
+  candidate: string;
+  runId: string;
+  measuredAtMs: number;
+  decisionIndex: number;
+  decisionKind: string;
+  fields: readonly { path: readonly (string | number)[] }[];
 }
 
-export const GATE_REPLAY_BASELINE_TRANSITIONS: readonly GateReplayBaselineTransition[] = Object.freeze([]);
+interface GateReplayBaselineTransitionBase {
+  decisionRef: string;
+  reason: string;
+}
+
+/** Explicit, source-reviewed transition. The usual form pins complete canonical snapshots.
+ * The field-addition form is event-bound and accepts only when the same suite, every decision
+ * input, every other decision, and every other output field reproduce exactly. It preserves the
+ * append-only measurement while permitting reviewed additive projections on that exact row. */
+export type GateReplayBaselineTransition =
+  | (GateReplayBaselineTransitionBase & { previous: string; accepted: string; fieldAddition?: never })
+  | (GateReplayBaselineTransitionBase & { fieldAddition: GateReplayDecisionFieldAddition; previous?: never; accepted?: never });
+
+export const GATE_REPLAY_BASELINE_TRANSITIONS: readonly GateReplayBaselineTransition[] = Object.freeze([
+  {
+    decisionRef: 'green-main-cycle-time-2026-10-08#D-005',
+    reason: 'P-014 added measured repair-leg output and round failure identities; preserve only pipeline_events row 695659 and its unchanged frozen-repair decision.',
+    fieldAddition: {
+      candidate: '0e2f2291d5778a59fd18c5f0ef29f76b2ed7ae0e',
+      runId: 'd30e00ab-fe0c-4999-9f5d-bdcd4a717027',
+      measuredAtMs: 1792076057300,
+      decisionIndex: 5,
+      decisionKind: 'frozen-repair-red',
+      fields: [
+        { path: ['legs'] },
+        { path: ['convergenceRounds', 1, 'failingTests'] },
+      ],
+    },
+  },
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOwnReplayPath(value: unknown, path: readonly (string | number)[]): boolean {
+  if (path.length === 0) return false;
+  let current: unknown = value;
+  for (const part of path) {
+    if (Array.isArray(current)) {
+      if (typeof part !== 'number' || !Number.isInteger(part) || part < 0 || !Object.hasOwn(current, part)) return false;
+      current = current[part];
+    } else if (isRecord(current)) {
+      if (typeof part !== 'string' || !Object.hasOwn(current, part)) return false;
+      current = current[part];
+    } else return false;
+  }
+  return current !== undefined;
+}
+
+function deleteReplayPath(value: unknown, path: readonly (string | number)[]): boolean {
+  if (path.length === 0 || typeof path[path.length - 1] !== 'string') return false;
+  let parent: unknown = value;
+  for (const part of path.slice(0, -1)) {
+    if (Array.isArray(parent)) {
+      if (typeof part !== 'number' || !Number.isInteger(part) || part < 0 || !Object.hasOwn(parent, part)) return false;
+      parent = parent[part];
+    } else if (isRecord(parent)) {
+      if (typeof part !== 'string' || !Object.hasOwn(parent, part)) return false;
+      parent = parent[part];
+    } else return false;
+  }
+  const field = path[path.length - 1] as string;
+  if (!isRecord(parent) || !Object.hasOwn(parent, field)) return false;
+  delete parent[field];
+  return true;
+}
+
+function acceptsEventBoundFieldAddition(previous: unknown, accepted: unknown,
+  addition: GateReplayDecisionFieldAddition): boolean {
+  if (!isRecord(previous) || !isRecord(accepted) || previous.version !== 1 || accepted.version !== 1 ||
+    previous.candidate !== addition.candidate || accepted.candidate !== addition.candidate ||
+    previous.runId !== addition.runId || accepted.runId !== addition.runId ||
+    previous.measuredAtMs !== addition.measuredAtMs || accepted.measuredAtMs !== addition.measuredAtMs ||
+    !Array.isArray(previous.decisions) || !Array.isArray(accepted.decisions) ||
+    previous.decisions.length !== accepted.decisions.length ||
+    !Number.isInteger(addition.decisionIndex) || addition.decisionIndex < 0 ||
+    addition.decisionIndex >= previous.decisions.length) return false;
+
+  const previousBase = { ...previous, expected: undefined, decisions: undefined };
+  const acceptedBase = { ...accepted, expected: undefined, decisions: undefined };
+  if (gateReplayCanonical(previousBase) !== gateReplayCanonical(acceptedBase) ||
+    gateReplayCanonical(previous.expected) !== gateReplayCanonical(accepted.expected)) return false;
+
+  if (addition.fields.length === 0) return false;
+  const paths = addition.fields.map(({ path }) => path);
+  const pathKeys = paths.map((path) => JSON.stringify(path));
+  if (paths.some((path, index) => path.length === 0 || pathKeys.indexOf(pathKeys[index] as string) !== index)) return false;
+  for (let left = 0; left < paths.length; left += 1) {
+    for (let right = left + 1; right < paths.length; right += 1) {
+      const a = paths[left] as readonly (string | number)[];
+      const b = paths[right] as readonly (string | number)[];
+      const shorter = a.length <= b.length ? a : b;
+      const longer = a.length <= b.length ? b : a;
+      if (shorter.every((part, index) => part === longer[index])) return false;
+    }
+  }
+
+  for (let index = 0; index < previous.decisions.length; index++) {
+    const before = previous.decisions[index];
+    const after = accepted.decisions[index];
+    if (!isRecord(before) || !isRecord(after)) return false;
+    if (index !== addition.decisionIndex) {
+      if (gateReplayCanonical(before) !== gateReplayCanonical(after)) return false;
+      continue;
+    }
+    if (before.kind !== addition.decisionKind || after.kind !== addition.decisionKind ||
+      !Array.isArray(before.args) || !Array.isArray(after.args) ||
+      gateReplayCanonical(before.args) !== gateReplayCanonical(after.args) ||
+      !isRecord(before.expected) || !isRecord(after.expected)) return false;
+    let acceptedWithoutFields: unknown;
+    try {
+      acceptedWithoutFields = JSON.parse(JSON.stringify(after.expected)) as unknown;
+    } catch {
+      return false;
+    }
+    for (const path of paths) {
+      if (hasOwnReplayPath(before.expected, path) || !hasOwnReplayPath(after.expected, path) ||
+        !deleteReplayPath(acceptedWithoutFields, path)) return false;
+    }
+    if (gateReplayCanonical(before.expected) !== gateReplayCanonical(acceptedWithoutFields)) return false;
+  }
+  return true;
+}
 
 export function acceptedGateReplayTransition(previous: unknown, accepted: unknown,
   transitions: readonly GateReplayBaselineTransition[] = GATE_REPLAY_BASELINE_TRANSITIONS): string | null {
   const from = gateReplayCanonical(previous), to = gateReplayCanonical(accepted);
-  return transitions.find(t => /^[-a-z0-9]+#D-\d+$/.test(t.decisionRef) && t.reason.trim() &&
-    t.previous !== t.accepted && t.previous === from && t.accepted === to)?.decisionRef ?? null;
+  for (const transition of transitions) {
+    if (!/^[-a-z0-9]+#D-\d+$/.test(transition.decisionRef) || !transition.reason.trim()) continue;
+    if ('fieldAddition' in transition && transition.fieldAddition !== undefined) {
+      if (acceptsEventBoundFieldAddition(previous, accepted, transition.fieldAddition)) return transition.decisionRef;
+      continue;
+    }
+    if (!('previous' in transition) || !('accepted' in transition)) continue;
+    if (transition.previous !== transition.accepted && transition.previous === from && transition.accepted === to) {
+      return transition.decisionRef;
+    }
+  }
+  return null;
 }
 
 /** Shared by the real gate and replay. Preserve the existing four fail-closed axes. */

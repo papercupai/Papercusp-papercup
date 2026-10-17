@@ -10,10 +10,16 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { evaluateHookContextSinkMock, readAppliedWornRulesMock, turnsExistMock } = vi.hoisted(() => ({
+const { evaluateHookContextSinkMock, readAppliedWornRulesMock, turnsExistMock, turnEndHeldWorkMock } = vi.hoisted(() => ({
   evaluateHookContextSinkMock: vi.fn(),
   readAppliedWornRulesMock: vi.fn(),
   turnsExistMock: vi.fn(),
+  turnEndHeldWorkMock: vi.fn(),
+}));
+
+// The stop port's second leg (WI-6554700010015550) reads modes/claims/awaits from PG; keep it a seam.
+vi.mock('../../../events/await/turn-end-held-work-guard', () => ({
+  evaluateTurnEndHeldWorkStop: turnEndHeldWorkMock,
 }));
 
 vi.mock('../../../agent-identities/sync-hook-rules', async (importOriginal) => ({
@@ -58,6 +64,7 @@ beforeEach(() => {
   evaluateHookContextSinkMock.mockReset().mockResolvedValue({ text: '', result: null });
   readAppliedWornRulesMock.mockReset().mockResolvedValue(null);
   turnsExistMock.mockReset().mockResolvedValue(false);
+  turnEndHeldWorkMock.mockReset().mockResolvedValue('');
 });
 
 describe('guardRefusalText', () => {
@@ -159,6 +166,24 @@ describe('POST /agent-mcp/stop-context and /agent-mcp/compaction-context', () =>
     expect(evaluateHookContextSinkMock.mock.calls[0]![0]).toMatchObject({ ownerId: 'o', workspaceId: 'w', sink: 'stop' });
     expect(evaluateHookContextSinkMock.mock.calls[0]![0].signal).toBeInstanceOf(AbortSignal);
     expect(out.text).toBe('STOP CONTEXT');
+  });
+
+  it('leads with the held-work refusal and keeps the identity text (WI-6554700010015550)', async () => {
+    evaluateHookContextSinkMock.mockResolvedValue({ text: 'STOP CONTEXT', result: null });
+    turnEndHeldWorkMock.mockResolvedValue('TURN-END REFUSED');
+    const out = await post('/agent-mcp/stop-context', { owner: 'o', workspace: 'w' });
+    expect(turnEndHeldWorkMock).toHaveBeenCalledWith({ ownerId: 'o', workspaceId: 'w' });
+    expect(out.text).toBe('TURN-END REFUSED\n\nSTOP CONTEXT');
+  });
+
+  it('answers inside the wall when the held-work read never settles', async () => {
+    turnEndHeldWorkMock.mockReturnValue(new Promise(() => undefined));
+    evaluateHookContextSinkMock.mockResolvedValue({ text: 'STOP CONTEXT', result: null });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const started = Date.now();
+    expect(await post('/agent-mcp/stop-context', { owner: 'o', workspace: 'w' })).toEqual({ ok: true, text: 'STOP CONTEXT' });
+    expect(Date.now() - started).toBeLessThan(2400);
+    warn.mockRestore();
   });
 
   it('answers inside the wall when the sink never settles', async () => {

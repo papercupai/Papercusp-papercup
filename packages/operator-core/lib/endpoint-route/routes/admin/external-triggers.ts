@@ -38,6 +38,7 @@ const attachExternalCommon = {
   // created through this route. Silence must stay distinguishable from a
   // stated policy.
   maxRuns: z.number().int().positive().max(1_000_000).nullable().optional(),
+  mode: z.enum(['skip', 'coalesce-with-cap']).optional(),
   windowSeconds: z.number().int().positive().max(31 * 24 * 60 * 60).optional(),
   // Dispatch validity window (WI-10004920): a run never dispatched within it is
   // closed as stale instead of firing late. Omitted = the engine's bounded default.
@@ -98,6 +99,7 @@ const mutationSchema = z.union([
     .object({
       op: z.literal('set-storm-policy'),
       id: z.string().uuid(),
+      mode: z.enum(['skip', 'coalesce-with-cap']).optional(),
       maxRuns: z.number().int().positive().max(1_000_000).nullable(),
       windowSeconds: z
         .number()
@@ -202,10 +204,12 @@ const mutate = defineTool({
           // applies. A stated policy still wins.
           stormPolicy:
             parsed.data.maxRuns == null &&
+            parsed.data.mode === undefined &&
             parsed.data.windowSeconds === undefined &&
             parsed.data.maxAgeSeconds === undefined
               ? undefined
               : {
+                  ...(parsed.data.mode === undefined ? {} : { mode: parsed.data.mode }),
                   ...(parsed.data.maxRuns == null ? {} : { maxRuns: parsed.data.maxRuns }),
                   ...(parsed.data.windowSeconds === undefined
                     ? {}
@@ -305,6 +309,7 @@ const mutate = defineTool({
     }
 
     const binding = await updateExternalTriggerBindingStormPolicy(sql, workspaceId, parsed.data.id, {
+      ...(parsed.data.mode === undefined ? {} : { mode: parsed.data.mode }),
       maxRuns: parsed.data.maxRuns,
       windowSeconds: parsed.data.windowSeconds,
       ...(parsed.data.maxAgeSeconds === undefined ? {} : { maxAgeSeconds: parsed.data.maxAgeSeconds }),

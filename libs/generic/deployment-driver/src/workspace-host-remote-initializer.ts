@@ -213,6 +213,8 @@ export interface WorkspaceHostVerifyInitializationInput {
  * of its inputs and can be tested exhaustively without a VM.
  */
 export interface WorkspaceHostRemoteInitializerHost {
+  /** Read-only retained-data admission; an older adapter must refuse, never create a workspace. */
+  verifyRetainedWorkspace?(input: WorkspaceHostCreateWorkspaceInput & { tenantIdentity: string }): Promise<WorkspaceHostRemoteStepEvidence>;
   /** Optional post-provision pack; never part of ordinary headless initialization. */
   installDesktopPack?(input: { hostId: string }): Promise<WorkspaceHostRemoteStepEvidence>;
   createWorkspace(
@@ -426,6 +428,19 @@ export async function executeWorkspaceHostRemoteInitializerStep(
         throw new UnsupportedWorkspaceHostInitializationStepKindError(step.kind);
       }
       publicEvidence = await deps.host.installDesktopPack({ hostId });
+      break;
+    }
+    case "verify-retained-workspace": {
+      const tenantIdentity = requireString(input.tenantIdentity, "step.input.tenantIdentity");
+      if (!/^[a-f0-9]{64}$/.test(tenantIdentity)) {
+        throw new WorkspaceHostRemoteInitializerProtocolError("invalid retained tenant identity");
+      }
+      if (!deps.host.verifyRetainedWorkspace) throw new UnsupportedWorkspaceHostInitializationStepKindError(step.kind);
+      publicEvidence = await deps.host.verifyRetainedWorkspace({
+        workspaceId: requireString(input.workspaceId, "step.input.workspaceId"),
+        hostId: requireString(input.hostId, "step.input.hostId"),
+        tenantIdentity,
+      });
       break;
     }
     case "create-workspace": {

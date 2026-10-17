@@ -1,5 +1,186 @@
-import { describe, expect, it, vi } from 'vitest';
-import { assessDiskHeadroomSoak, measureDiskHeadroomSoakWindow, readDiskHeadroomSoakEvidence, assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples } from './retention-interval-evidence';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { assessDurableHeadroomTargets, measureDurableHeadroomTargets, assessDiskHeadroomSoak, measureDiskHeadroomSoakWindow, readDiskHeadroomSoakEvidence, assessQualifiedDerivativeReceipts, assessRetainedStorageInterval, assessRetainedStorageSamples, assessPostgresRetentionEvidence, measurePostgresRetentionEvidence } from './retention-interval-evidence';
+
+describe('native R-8 Postgres retention binding', () => {
+  const measuredAt = '2026-10-17T00:01:00.000Z';
+  const base = () => ({
+    workspaceId: 'workspace', host: 'fixture-host', measuredAt,
+    routine: { schemaVersion: 1 as const, kind: 'telemetry-retention-completion' as const,
+      workspaceId: 'workspace', host: 'fixture-host', workflowId: 'routine-workflow', routineId: 'routine-id',
+      startedAt: '2026-10-16T23:59:00.000Z', finishedAt: '2026-10-17T00:00:00.000Z',
+      completedAt: '2026-10-17T00:00:01.000Z', dryRun: false, tableRetentionComplete: true,
+      targets: ['route-invocations', 'tool-invocations', 'harness-run-output', 'agent-activity', 'memory-recall-query-text']
+        .map(category => ({ category, complete: true, retentionDays: category === 'memory-recall-query-text' ? 3 : 30 })) },
+    ages: [
+      { category: 'route-invocations', oldestAgeDays: 29, measured: true },
+      { category: 'tool-invocations', oldestAgeDays: 29, measured: true },
+      { category: 'harness-run-output', oldestAgeDays: 29, measured: true },
+      { category: 'agent-activity', oldestAgeDays: 29, measured: true },
+      { category: 'memory-recall-query-text', oldestAgeDays: 2, measured: true },
+    ],
+    coldIntegrity: { verdict: 'pass' as const, detail: 'dual compressed cold archives verified' },
+    servingRuntimes: [{ runtime: 'release-operator', applicable: true, containsColdFallback: true }],
+  });
+  it('requires the production receipt, bounded ages, cold bytes and serving fallback together', () => {
+    expect(assessPostgresRetentionEvidence(base()).verdict).toBe('pass');
+    const stale = base(); stale.ages[1]!.oldestAgeDays = 31;
+    expect(assessPostgresRetentionEvidence(stale).verdict).toBe('fail');
+    expect(assessPostgresRetentionEvidence({ ...base(), routine: null }).verdict).toBe('unknown');
+    const unbound = base(); Object.assign(unbound.servingRuntimes[0]!, { containsColdFallback: null });
+    expect(assessPostgresRetentionEvidence(unbound).verdict).toBe('unknown');
+  });
+  it.each(['stale', 'future', 'reversed', 'ledger-before-finish', 'dry-run', 'foreign-host', 'foreign-workspace'])(
+    'rejects a %s routine receipt despite healthy current tables', kind => {
+      const input = base(), receipt = input.routine;
+      if (kind === 'stale') input.measuredAt = '2026-10-18T00:00:01.001Z';
+      if (kind === 'future') input.measuredAt = '2026-10-16T23:59:59.000Z';
+      if (kind === 'reversed') receipt.startedAt = '2026-10-17T00:00:02.000Z';
+      if (kind === 'ledger-before-finish') receipt.completedAt = '2026-10-16T23:59:59.000Z';
+      if (kind === 'dry-run') receipt.dryRun = true;
+      if (kind === 'foreign-host') receipt.host = 'other-host';
+      if (kind === 'foreign-workspace') receipt.workspaceId = 'other-workspace';
+      expect(assessPostgresRetentionEvidence(input).verdict).not.toBe('pass');
+    });
+  it('accepts the daily freshness boundary and measures freshness from native finish, not delayed ledger persistence', () => {
+    const input = base(); input.measuredAt = '2026-10-18T00:00:00.000Z';
+    expect(assessPostgresRetentionEvidence(input).verdict).toBe('pass');
+    input.measuredAt = '2026-10-18T00:00:00.001Z';
+    expect(assessPostgresRetentionEvidence(input).verdict).not.toBe('pass');
+  });
+  it.each(['subset', 'duplicate', 'extra', 'wrong-horizon', 'incomplete'])(
+    'rejects %s target coverage', kind => {
+      const input = base(), targets = input.routine.targets;
+      if (kind === 'subset') targets.pop();
+      if (kind === 'duplicate') targets[4] = { ...targets[0]! };
+      if (kind === 'extra') targets.push({ category: 'unrelated', retentionDays: 30, complete: true });
+      if (kind === 'wrong-horizon') targets[0]!.retentionDays = 90;
+      if (kind === 'incomplete') targets[0]!.complete = false;
+      expect(assessPostgresRetentionEvidence(input).verdict).toBe('fail');
+    });
+  it.each([NaN, Infinity, -Infinity, -1, undefined, ''])('rejects malformed measured age %s', age => {
+    const input = base(); Object.assign(input.ages[0]!, { oldestAgeDays: age });
+    expect(assessPostgresRetentionEvidence(input).verdict).not.toBe('pass');
+  });
+  it('rejects duplicated age observations and accepts explicit measured empty tables', () => {
+    const input = base(); input.ages.push({ ...input.ages[0]! });
+    expect(assessPostgresRetentionEvidence(input).verdict).not.toBe('pass');
+    expect(assessPostgresRetentionEvidence({ ...base(), ages: base().ages.map(a => ({ ...a, oldestAgeDays: null })) }).verdict).toBe('pass');
+  });
+  it.each([undefined, 'true', 1])('requires an explicit boolean serving binding, not %s', binding => {
+    const input = base(); Object.assign(input.servingRuntimes[0]!, { containsColdFallback: binding });
+    expect(assessPostgresRetentionEvidence(input).verdict).not.toBe('pass');
+  });
+  it.each(['completedAt', 'startedAt', 'finishedAt', 'dryRun', 'host', 'workspaceId', 'schemaVersion', 'kind'])(
+    'cannot certify missing or malformed receipt field %s', field => {
+      const input = base(); Object.assign(input.routine, { [field]: undefined });
+      expect(assessPostgresRetentionEvidence(input).verdict).not.toBe('pass');
+    });
+
+  afterEach(() => vi.useRealTimers());
+  const native = (options: { wrap?: boolean; receipt?: unknown; rows?: unknown[]; age?: unknown; ledger?: unknown; workflow?: string } = {}) => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date(measuredAt));
+    const receipt = options.receipt === undefined ? base().routine : options.receipt;
+    const output = options.wrap ? { json: { diagnostics: { retention: receipt } } } : { diagnostics: { retention: receipt } };
+    const unsafe = vi.fn(async (query: string) => query.includes('dbos.operation_outputs')
+      ? [{ output: typeof receipt === 'string' ? receipt : JSON.stringify(output),
+        workflow_uuid: options.workflow ?? 'routine-workflow',
+        completed_at_epoch_ms: options.ledger === undefined ? String(Date.parse(base().routine.completedAt)) : options.ledger }]
+      : options.rows ?? [{ oldest_age_days: options.age === undefined ? '2' : options.age, total_rows: '1', dated_rows: '1' }]);
+    return { unsafe, measure: () => measurePostgresRetentionEvidence({ unsafe } as never, {
+      workspaceId: 'workspace', host: 'fixture-host', coldIntegrity: base().coldIntegrity, servingRuntimes: base().servingRuntimes,
+    }) };
+  };
+  it.each([false, true])('binds native receipt provenance and PostgreSQL numeric ages (wrapped=%s)', async wrap => {
+    const { unsafe, measure } = native({ wrap });
+    expect((await measure()).verdict).toBe('pass');
+    const [query, params] = unsafe.mock.calls.find(call => call[0].includes('dbos.operation_outputs'))! as unknown as [string, string[]];
+    expect(query).toContain('workspaceId'); expect(query).toContain('host');
+    expect(params).toEqual(['workspace', 'fixture-host']);
+    const epochQuery = unsafe.mock.calls.find(call => call[0].includes('FROM harness_shared.harness_run_output'))![0];
+    expect(epochQuery).toContain('to_timestamp'); expect(epochQuery).toContain('1000.0');
+  });
+  it.each(['{bad json', null, [], { tableRetentionComplete: true, targets: [] }])(
+    'keeps malformed native output unknown without throwing (%j)', async receipt => {
+      expect((await native({ receipt }).measure()).verdict).toBe('unknown');
+    });
+  it.each(['', 'NaN', 'Infinity', '-1', true, {}, '0x10'])('does not coerce malformed SQL age %j into passing evidence', async age => {
+    expect((await native({ age }).measure()).verdict).not.toBe('pass');
+  });
+  it.each([{ rows: [] }, { rows: [{}] }, { rows: [{ oldest_age_days: null, total_rows: '2', dated_rows: '0' }] }])(
+    'distinguishes an empty table from missing aggregate or undated rows ($rows)', async ({ rows }) => {
+      expect((await native({ rows }).measure()).verdict).toBe('unknown');
+    });
+  it('accepts an explicitly empty native table', async () => {
+    expect((await native({ rows: [{ oldest_age_days: null, total_rows: '0', dated_rows: '0' }] }).measure()).verdict).toBe('pass');
+  });
+  it.each(['bad', null, 0])('rejects malformed DBOS completion time %j without throwing', async ledger => {
+    expect((await native({ ledger }).measure()).verdict).toBe('unknown');
+  });
+  it('does not detach receipt identity from the DBOS workflow', async () => {
+    expect((await native({ workflow: 'other-workflow' }).measure()).verdict).not.toBe('pass');
+  });
+});
+
+describe('durable R-10 exact headroom targets', () => {
+  const at = (h: number) => new Date(Date.UTC(2026, 9, 10) + h * 3_600_000).toISOString();
+  const window = { host: 'fixture-host', windowStart: at(0), windowEnd: at(72), measuredAt: at(73) };
+  const fixture = () => ({
+    censuses: Array.from({ length: 72 }, (_, h) => ['/', '/mnt/data'].map(path => ({
+      id: `${path}-${h}`, host: window.host, path, at: at(h + 0.5), complete: true,
+      availableBytes: path === '/' ? 400 * 1000 ** 3 : 2 * 1000 ** 4,
+    }))).flat(),
+    attempts: Array.from({ length: 72 }, (_, h) => ({ id: `run-${h}`, host: window.host, startedAt: at(h + 0.2) })),
+    receipts: Array.from({ length: 72 }, (_, h) => ({ id: `run-${h}`, host: window.host, startedAt: at(h + 0.2),
+      finishedAt: at(h + 0.3), dryRun: false as const, complete: true, policyExhausted: true,
+      errors: [] as string[], entries: [] as Array<{ status: string }>, delegates: [] as Array<{ ok: boolean }> })),
+    dispositions: { supersededPlan: 'disk-headroom-standing-reclaim-2026-10-12', successorPlan: 'disk-durable-headroom-2026-10-15',
+      planTerminal: true, linkedSuccessor: true, siblingId: 'WI-10007751', siblingTerminal: true },
+  });
+  it('accepts the exact decimal-byte floors for every hour and complete native run', () => {
+    expect(assessDurableHeadroomTargets(fixture(), window).verdict).toBe('pass');
+  });
+  it.each(['/', '/mnt/data'])('fails a one-byte middle dip on %s even with healthy endpoints', path => {
+    const input = fixture(); input.censuses.find(r => r.path === path && r.id.endsWith('-30'))!.availableBytes--;
+    expect(assessDurableHeadroomTargets(input, window).verdict).toBe('fail');
+  });
+  it('requires full hourly coverage, not the weaker native six-hour policy cadence', () => {
+    const input = fixture(); input.censuses = input.censuses.filter(r => r.id !== '/-35');
+    expect(assessDurableHeadroomTargets(input, window).verdict).toBe('unknown');
+    input.censuses = input.censuses.filter((_, i) => i % 6 === 0);
+    expect(assessDurableHeadroomTargets(input, window).verdict).toBe('unknown');
+  });
+  it('detects incomplete, errored, failed-delegate and non-exhausted receipts', () => {
+    for (const change of [{ complete: false }, { errors: ['blocked'] }, { delegates: [{ ok: false }] },
+      { entries: [{ status: 'failed' }] }, { policyExhausted: false }]) {
+      const input = fixture(); Object.assign(input.receipts[30]!, change);
+      expect(assessDurableHeadroomTargets(input, window).verdict).toBe('fail');
+    }
+  });
+  it('keeps vanished or silent runs, missing dispositions and hostless/foreign evidence unknown', () => {
+    const missing = fixture(); missing.receipts.splice(30, 1);
+    expect(assessDurableHeadroomTargets(missing, window).verdict).toBe('unknown');
+    const silent = fixture(); silent.attempts.splice(30, 1); silent.receipts.splice(30, 1);
+    expect(assessDurableHeadroomTargets(silent, window).verdict).toBe('unknown');
+    const stale = fixture(); stale.dispositions.linkedSuccessor = false;
+    expect(assessDurableHeadroomTargets(stale, window).verdict).toBe('unknown');
+    for (const host of ['', 'remote']) {
+      const foreign = fixture(); foreign.receipts[0]!.host = host;
+      expect(assessDurableHeadroomTargets(foreign, window).verdict).toBe('unknown');
+    }
+  });
+  it('does not count duplicate/unsorted samples or borrow future evidence for unfinished windows', () => {
+    const duplicate = fixture(); duplicate.censuses.push(duplicate.censuses[0]!);
+    expect(assessDurableHeadroomTargets(duplicate, window).verdict).toBe('fail');
+    expect(assessDurableHeadroomTargets(fixture(), { ...window, measuredAt: at(71) }).verdict).toBe('unknown');
+  });
+  it('reads exact native populations and scopes every shared ledger', async () => {
+    const unsafe = vi.fn().mockResolvedValue([fixture()]);
+    expect((await measureDurableHeadroomTargets({ unsafe } as never, { ...window, workspaceId: 'workspace', harnessSlug: 'harness' })).verdict).toBe('pass');
+    expect(unsafe.mock.calls[0]![0]).toContain("actor='system:disk-retention'");
+    expect(unsafe.mock.calls[0]![0]).toContain("action IN ('disk-retention:started','disk-retention:receipt')");
+    expect(unsafe.mock.calls[0]![1]).toEqual([window.host, at(0), at(72), 'workspace', Date.parse(at(0)), expect.any(Number), 'harness']);
+  });
+});
 
 const GIB = 1024 ** 3;
 describe('disk headroom post-shipment soak assessment', () => {

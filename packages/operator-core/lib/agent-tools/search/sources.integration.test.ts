@@ -895,6 +895,24 @@ describe('GAP 10 — per-source bm25 SQL: scope isolation + row mapping', () => 
     expect(out[0]?.row.source).toBe('coord_message');
   });
 
+  it('coord_message.lexical: cancels a blocked read at the shared lexical statement deadline', async () => {
+    const blockerDb = postgres(db.url, { max: 1 });
+    const blocker = await blockerDb.reserve();
+    await blocker.unsafe('BEGIN');
+    await blocker.unsafe('LOCK TABLE harness_shared.coord_event_log IN ACCESS EXCLUSIVE MODE');
+    const startedAt = Date.now();
+    try {
+      await expect(byName('coord_message').lexical(params())).rejects.toThrow(/statement timeout/i);
+      const elapsedMs = Date.now() - startedAt;
+      expect(elapsedMs).toBeGreaterThanOrEqual(7_000);
+      expect(elapsedMs).toBeLessThan(20_000);
+    } finally {
+      await blocker.unsafe('ROLLBACK');
+      blocker.release();
+      await blockerDb.end({ timeout: 5 });
+    }
+  }, 25_000);
+
   it('coord_message.lexical: explicit transcript session fails closed instead of scanning the coord corpus (EI-23130749427955806)', async () => {
     const out = await byName('coord_message').lexical(
       params({ query: 'kubernetes', filters: { sessionId: P17_SESSION } }),

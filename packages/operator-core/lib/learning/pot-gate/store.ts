@@ -57,11 +57,11 @@ async function failOpenOnMissingRelation<T>(
     const result = typeof transaction.savepoint === 'function'
       ? await transaction.savepoint(tx => run(tx as unknown as Sql)) as T
       : await run(sql);
-    observeFallback('scout-state-read', { eligible: 1, applied: 1, reason: 'applied', scope: `store:${what}` }, { workspaceId });
+    observeFallback('scout-state-read', { eligible: 1, applied: 1, reason: 'applied', scope: `store:${what}` }, { sql, workspaceId });
     return result;
   } catch (err) {
     observeFallback('scout-state-read', { eligible: 1, applied: 0,
-      reason: isMissingRelation(err) ? 'scope-relation-missing' : 'scope-read-failed', scope: `store:${what}` }, { workspaceId });
+      reason: isMissingRelation(err) ? 'scope-relation-missing' : 'scope-read-failed', scope: `store:${what}` }, { sql, workspaceId });
     if (!isMissingRelation(err)) throw err;
     if (!warnedMissingRelation) {
       warnedMissingRelation = true;

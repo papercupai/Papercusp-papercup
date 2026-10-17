@@ -13,7 +13,6 @@ import { classifyCallOrigin } from '../../telemetry-call-origin';
 import {
   countOpenOwnerDirectives,
   directiveNeedsSummary,
-  OWNER_DIRECTIVE_VERBATIM_MAX,
   recordOwnerDirective,
 } from '../../owner-directives';
 
@@ -31,7 +30,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    verbatim: z.string().min(1).max(OWNER_DIRECTIVE_VERBATIM_MAX),
+    verbatim: z.string().min(1),
     sourceTurnRef: z.string().min(1).max(300),
     sessionRef: z.string().max(300).optional(),
     ownerName: z.string().max(120).optional(),

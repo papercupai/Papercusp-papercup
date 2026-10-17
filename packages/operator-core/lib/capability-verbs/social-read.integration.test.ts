@@ -23,7 +23,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { setPersonalVaultEnabled, upsertPersonalDocuments } from '../personal-vault/store';
 import { parseSocialPostRef } from './social';
-import { readSocialPost, searchSocialPosts, selectGrantedSocialScopes, SocialSearchNotGranted } from './social-read';
+import { readSocialPost as readPost, searchSocialPosts as searchPosts, selectGrantedSocialScopes, SocialSearchNotGranted } from './social-read';
+import { installDefaultSocialPackages } from './social-provider.fixture';
+import { providerRegistry } from '../integrations/provider-registry';
+
+const readSocialPost = (...args: Parameters<typeof readPost>) => readPost(args[0], args[1], { registry: providerRegistry() });
+const searchSocialPosts = (...args: Parameters<typeof searchPosts>) => searchPosts(args[0], args[1], { registry: providerRegistry() });
 
 let org: OrgTestDb;
 let userId: string;
@@ -49,6 +54,7 @@ function naivePassThroughScopes(granted: readonly string[]): string[] {
 }
 
 beforeAll(async () => {
+  await installDefaultSocialPackages();
   org = await createOrgTestDb();
   const [user] = await org.adminSql<{ id: string }[]>`
     INSERT INTO harness_shared.users (username, display_name)

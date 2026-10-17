@@ -971,6 +971,12 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
       volumeId: volume.VolumeId,
       state,
       ...(attached?.InstanceId ? { attachedInstanceId: attached.InstanceId } : {}),
+      attachedInstanceIds: (volume.Attachments ?? []).filter((a) => a.State !== 'detached')
+        .flatMap((a) => a.InstanceId ? [a.InstanceId] : []),
+      ...(volume.AvailabilityZone ? { availabilityZone: volume.AvailabilityZone } : {}),
+      ...(volume.Encrypted !== undefined ? { encrypted: volume.Encrypted } : {}),
+      ...(volume.MultiAttachEnabled !== undefined ? { multiAttachEnabled: volume.MultiAttachEnabled } : {}),
+      tags: Object.fromEntries((volume.Tags ?? []).flatMap((tag) => tag.Key ? [[tag.Key, tag.Value ?? '']] : [])),
       observedAt: this.now(),
     };
   }
@@ -1257,6 +1263,7 @@ class AwsSdkWorkspaceHostClient implements AwsWorkspaceHostSdkClient {
       .sort();
     const observation: AwsInstanceObservation = {
       instanceId,
+      ...(instance.Placement?.AvailabilityZone ? { availabilityZone: instance.Placement.AvailabilityZone } : {}),
       state: stateName,
       ...(instance.ImageId ? { imageId: instance.ImageId } : {}),
       attachedVolumeIds,

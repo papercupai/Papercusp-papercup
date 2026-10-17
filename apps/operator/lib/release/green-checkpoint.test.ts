@@ -106,6 +106,7 @@ import {
   acquireCheckpointRunLock,
   checkpointRunLockSkipSummary,
   activateCheckpointQualificationRunner,
+  checkpointQualificationRunnerRefreshInput,
   scheduledAttemptPinnedCandidate,
   scheduledAttemptPrewarmTarget,
   startCheckpointQualificationProgress,
@@ -158,6 +159,8 @@ import {
   computeGateLineage,
   retireInFlightCandidateAfterResult,
   liveIncumbentAfterAttachConflict,
+  ownUnitReservationRunnerIdAfterAttachConflict,
+  adoptOwnUnitRunnerReservationAfterAttachConflict,
   ownCgroupUnits,
   runnerUnitIsOwn,
   checkpointQualificationAttachmentRefusalSummary,
@@ -3933,6 +3936,67 @@ describe("qualification attach race (WI-6554700010009570)", () => {
     await expect(
       liveIncumbentAfterAttachConflict(conflict(incumbentRunner), { ...self, units }, live),
     ).resolves.not.toBeNull();
+  });
+
+  it("adopts only its own legacy runner id after a runner-held attach conflict", async () => {
+    const ownManual = {
+      ...incumbentRunner,
+      id: "manual:attempt-1:123",
+      pid: null,
+      pidIdentity: null,
+      unit: "papercup-green-checkpoint-manual-1fxzuva.service",
+    };
+    const selfUnits = ["user@1000.service", ownManual.unit];
+    const activation = {
+      ...conflict(ownManual as never, null),
+      refusalReason: "runner-held",
+      transaction: { ...conflict(ownManual as never, null).transaction, attemptId: "attempt-1" },
+    } as never;
+    const input = {
+      target: { workspaceId: "workspace", installSlug: "papercusp" },
+      attemptId: "attempt-1",
+      gateFireId: "attached-fire",
+      runId: "run-1",
+      candidate: ownManual.candidate,
+      pid: 456,
+    } as never;
+
+    expect(ownUnitReservationRunnerIdAfterAttachConflict(activation, input.gateFireId, selfUnits)).toBe(ownManual.id);
+
+    const attached = { status: "updated" } as never;
+    const retry = vi.fn(async () => attached) as never;
+    const result = await adoptOwnUnitRunnerReservationAfterAttachConflict(activation, input, selfUnits, retry);
+    expect(retry).toHaveBeenCalledWith({ ...input, gateFireId: ownManual.id });
+    expect(result).toMatchObject({ activation: attached, runnerId: ownManual.id, adopted: true });
+
+    const foreign = { ...ownManual, unit: "another-checkpoint.service" };
+    const foreignActivation = {
+      ...conflict(foreign as never, null),
+      refusalReason: "runner-held",
+      transaction: { ...conflict(foreign as never, null).transaction, attemptId: "attempt-1" },
+    } as never;
+    expect(ownUnitReservationRunnerIdAfterAttachConflict(foreignActivation, input.gateFireId, selfUnits)).toBeNull();
+    await expect(
+      adoptOwnUnitRunnerReservationAfterAttachConflict(foreignActivation, input, selfUnits, retry),
+    ).resolves.toMatchObject({ activation: foreignActivation, runnerId: input.gateFireId, adopted: false });
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the adopted physical runner id for the post-preflight reservation refresh", () => {
+    const input = {
+      target: { workspaceId: "workspace", installSlug: "papercusp" },
+      attemptId: "attempt-1",
+      gateFireId: "fire-1",
+      runId: "run-1",
+      candidate: "candidate-sha",
+      pid: 456,
+    };
+
+    expect(checkpointQualificationRunnerRefreshInput(input, "manual:attempt-1:123")).toEqual({
+      ...input,
+      gateFireId: "manual:attempt-1:123",
+    });
+    expect(checkpointQualificationRunnerRefreshInput(input, undefined)).toEqual(input);
   });
 
   it("reads this process's systemd units from a cgroup v2 path and fails open to [] when unreadable", () => {

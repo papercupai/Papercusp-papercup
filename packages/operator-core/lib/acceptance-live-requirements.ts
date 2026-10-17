@@ -89,9 +89,9 @@ export type RequirementBarEdit = 'unchanged' | 'verification-only' | 'meaning';
  * edit confined to `method`, `replication` or a `tests` check's files/test name is
  * verification-only; anything else is a meaning change.
  */
-export function classifyRequirementBarEdit(
-  before: LiveVerificationFields | null | undefined,
-  after: LiveVerificationFields | null | undefined,
+export function classifyRequirementBarEdit<B extends LiveVerificationFields, A extends LiveVerificationFields>(
+  before: B | null | undefined,
+  after: A | null | undefined,
 ): RequirementBarEdit {
   if (!before || !after) return !before && !after ? 'unchanged' : 'meaning';
   if (stableJson(before) === stableJson(after)) return 'unchanged';

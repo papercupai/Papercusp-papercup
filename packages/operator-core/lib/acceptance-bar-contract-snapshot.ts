@@ -28,8 +28,9 @@ import {
   type SpecClauseRevision,
   type SpecLifecycleStatus,
 } from './agent-tools/plans/spec-clauses-store';
-import { listSpecEvidence, type EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
+import { listSpecEvidence, readSpecEvidencePlane, type EvidenceCurrentInput } from './agent-tools/plans/spec-evidence-store';
 import { activeSpecEvidence, evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './agent-tools/plans/spec-test-adequacy';
+import { evaluateMechanicalTestAdequacy } from './agent-tools/plans/mechanical-test-adequacy';
 import { listScorecardPage, type ScorecardRow } from './scorecards';
 import { activeWorkspaceId } from './workspace-registry';
 import { lineagePartyKeys } from './acceptance-author-identity';
@@ -37,6 +38,7 @@ import { gradingViaOf, pickAuthoritativeGrading, readGraderSelectionVia } from '
 import { parseWorkedByHistory } from './work-item-prior-work';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { requirementSections } from './requirement-contract';
+import { overlayLiveRequirementVerification } from './acceptance-live-requirements';
 import {
   evidenceRecordsAbsent,
   evidenceRuntimeOf,
@@ -48,9 +50,11 @@ import {
   MAX_BAR_PROJECTION_EDGES,
   MAX_REQUIREMENT_BARS,
   acceptanceBarBehaviorClass,
+  parseRequirementBars,
   type AcceptanceBarCohort,
 } from './acceptance-bar-seed';
 import type { AcceptanceEvidencePlane } from './agent-tools/plans/rubric-template';
+import { readCurrentAcceptanceRubricCritique, type AcceptanceRubricCritique } from './acceptance-rubric-critique';
 
 export const ACCEPTANCE_BAR_CONTRACT_SNAPSHOT_VERSION = 1 as const;
 export const ACCEPTANCE_BAR_SNAPSHOT_ACTIVE_RUBRIC_LIMIT = 2;
@@ -169,6 +173,8 @@ export interface AcceptanceBarSubjectPlanSource {
   status: string | null;
   revision: number;
   contentHash: string | null;
+  /** Read with the plan identity; omitted from the public snapshot. */
+  content?: string;
   adoptionEpoch: number | null;
   cohort: AcceptanceBarCohort | null;
   barSetHash: string | null;
@@ -217,6 +223,7 @@ export interface AcceptanceBarSnapshotProblem {
 }
 
 export interface AcceptanceBarContractSnapshotInput {
+  vettingCritique?: AcceptanceRubricCritique | null;
   planRows: BoundedAcceptanceBarRows<AcceptanceBarSubjectPlanSource>;
   rubrics: BoundedAcceptanceBarRows<Rubric>;
   planItems: BoundedAcceptanceBarRows<AcceptanceBarPlanItemSource>;
@@ -530,6 +537,7 @@ export interface AcceptanceBarContractSnapshot {
     rubricRevision: number | null;
     criteriaHash?: string | null;
     vetting: {
+      critique?: AcceptanceRubricCritique;
       state: 'current' | 'stale' | 'missing' | 'truncated';
       scorecardId: string | null;
       rubricRevision: number | null;
@@ -555,6 +563,7 @@ export interface AcceptanceBarContractSnapshot {
 }
 
 export interface AcceptanceBarSnapshotDeps {
+  readCurrentCritique?: typeof readCurrentAcceptanceRubricCritique;
   readPlans: (planSlug: string, scope?: { harnessSlug: string }) => Promise<BoundedAcceptanceBarRows<AcceptanceBarSubjectPlanSource>>;
   readRubrics: (planSlug: string, scope?: { harnessSlug: string }) => Promise<BoundedAcceptanceBarRows<Rubric>>;
   readPlanItems: (
@@ -817,11 +826,12 @@ export function nextRepair(
     bar_snapshot_grading_not_pass: 'Satisfy the BAR and record a pass-equivalent independent rating.',
     bar_snapshot_vetting_missing:
       'Vet the current acceptance-rubric criteria BEFORE binding proof or emitting adequacy cards '
-      + '(amend → vet → attest → bind → cards → grade): a vetting critique usually becomes an amendment, '
+      + '(amend → critique → bind → cards → grade): name the rubric and current criteriaHash in the critique request; '
+      + 'critique is read directly without an attestation card. A vetting critique usually becomes an amendment, '
       + 'and proof bound first must then be re-bound.',
     bar_snapshot_vetting_stale:
       'Re-vet the current acceptance-rubric criteria before binding more proof or commissioning grading '
-      + '(amend → vet → attest → bind → cards → grade).',
+      + '(amend → critique → bind → cards → grade); name the current rubric identity in the request.',
     bar_snapshot_author_verdict_missing: 'Record the author-side verdict after reading the independent grading.',
     bar_snapshot_author_verdict_stale: 'Record a new author verdict for the authoritative grading.',
     bar_snapshot_author_rejected: 'Address the rejected grading before recording a newer verdict.',
@@ -1078,8 +1088,16 @@ export function projectAcceptanceBarContractSnapshot(
   const grading = authoritativeGrading(input, rubric);
   const rubricRevision = rubric?.revision ?? null;
   const rubricCriteriaHash = rubric?.criteriaHash ?? null;
+  // Validate the STORED criterion/set hashes above before overlaying verification HOW.
+  // Those hashes remain the identity of vetting, grading and projected spec clauses;
+  // a test-path-only plan edit must change the proof we read, not that identity.
+  const liveRequirements = plan?.content !== undefined && rubric?.kind === 'acceptance' &&
+    rubric.subjectPlan === plan.planSlug ? parseRequirementBars(plan.content) : null;
+  const verificationCriteria = liveRequirements?.ok
+    ? overlayLiveRequirementVerification(boundedCriteria, liveRequirements.bars).criteria
+    : boundedCriteria;
   const bars: AcceptanceBarTrace[] = [];
-  for (const criterion of boundedCriteria
+  for (const criterion of verificationCriteria
     .slice()
     .sort((a, b) => (a.barKey ?? a.key).localeCompare(b.barKey ?? b.key))) {
     const barKey = criterion.barKey?.trim() || criterion.key.trim();
@@ -1171,7 +1189,21 @@ export function projectAcceptanceBarContractSnapshot(
     const classRef: PlanClassRubricRef = PLAN_CLASS_RUBRIC_REFS.includes(rubric?.classRef as PlanClassRubricRef)
       ? rubric!.classRef as PlanClassRubricRef : 'plan-class-feature-ship';
     const adequacyDeclared = requiredTestLayers.length > 0 || hasStructuredTestsCheck;
+    const mechanicalProofBindingIds = new Set<number>();
     const adequacyChecks = !adequacyDeclared ? [] : enforceableClauses.map((clause) => {
+      // Keep plan grading on the same measured proof path as work-item completion.
+      // Structured checks name their tests; passing runs plus a calibrated caught
+      // mutant replace the legacy evaluator's per-clause judgment obligations.
+      const mechanical = evaluateMechanicalTestAdequacy({ clause, evidence, sourceBarTestRequirements });
+      if (mechanical.applicable) {
+        const bindingIds = new Set([
+          ...Object.values(mechanical.passingTestBindingIds), ...mechanical.caughtMutantBindingIds,
+        ]);
+        if (mechanical.verdict === 'pass') for (const id of bindingIds) mechanicalProofBindingIds.add(id);
+        return { specId: clause.specId, revision: clause.revision, verdict: mechanical.verdict,
+          wouldBlock: mechanical.gaps,
+          evidenceRefs: evidence.filter(row => row.id !== undefined && bindingIds.has(row.id)).map(row => row.evidenceRef) };
+      }
       // A clause may add proof obligations above its BAR's minimum. Keep those
       // obligations when grading instead of replacing them with the BAR floor.
       const clauseTestLayers = normalized([...requiredTestLayers, ...clause.requiredTestLayers]);
@@ -1185,6 +1217,21 @@ export function projectAcceptanceBarContractSnapshot(
     const adequacyState = !adequacyDeclared ? 'undeclared' as const
       : adequacyChecks.some((check) => check.verdict === 'pass') ? 'pass' as const
         : adequacyChecks.some((check) => check.verdict === 'unknown') ? 'unknown' as const : 'fail' as const;
+    // A tree/unit tests check declares its named tests and calibrated mutant as
+    // proof. Supplementary observations must not add a runtime-currentness
+    // obligation after that exact proof has passed. Preserve those observations
+    // in history, without claiming they are current. Explicit wider planes or
+    // test layers retain the full uncertainty check.
+    const mechanicalTreeProof = hasStructuredTestsCheck && criterion.evidencePlane === 'tree'
+      && normalized(criterion.requiredScope).every(scope => scope === 'tree')
+      && requiredTestLayers.every(layer => layer === 'unit')
+      && enforceableClauses.every(clause =>
+        normalized(clause.requiredTestLayers).every(layer => layer === 'unit')
+        && !normalized(clause.requiredEvidence).some(kind => kind === 'live' || kind === 'deployed'))
+      && mechanicalProofBindingIds.size > 0;
+    const uncertaintyEvidence = mechanicalTreeProof
+      ? currentEvidence.filter(row => row.id !== undefined && mechanicalProofBindingIds.has(row.id))
+      : currentEvidence;
     const ratingEntry = grading.card?.ratings[criterion.key] as { rating?: string; evidence?: string } | undefined;
     const rating = ratingEntry?.rating?.trim() || null;
     const passRatings = normalized(criterion.passRatings).map((value) => value.toLowerCase());
@@ -1329,7 +1376,7 @@ export function projectAcceptanceBarContractSnapshot(
         const details = row.details && typeof row.details === 'object'
           ? row.details as Record<string, unknown>
           : {};
-        const plane = details.evidencePlane ?? details.evidence_plane ?? details.plane;
+        const plane = readSpecEvidencePlane(details);
         return typeof plane === 'string' ? [plane] : [];
       }),
     );
@@ -1456,7 +1503,7 @@ export function projectAcceptanceBarContractSnapshot(
         // Only evidence for the current exact spec cohort can make the current proof
         // uncertain. Historical rows remain in `history`, but a superseded revision
         // with an unmeasurable legacy dimension must not poison newer complete proof.
-        uncertainEvidence: currentEvidence.filter((row) => {
+        uncertainEvidence: uncertaintyEvidence.filter((row) => {
           const currentness = (
             row as {
               currentness?: { overall?: string; dimensions?: Record<string, string>; comparisonSupplied?: boolean };
@@ -1559,7 +1606,15 @@ export function projectAcceptanceBarContractSnapshot(
   const anyVetting = input.vettingScorecards.rows
     .filter((card) => completeScorecard(card) && Boolean(card.vetting?.consultId || card.vetting?.workItemId))
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
-  const vettingState: AcceptanceBarContractSnapshot['grading']['vetting']['state'] = input.vettingScorecards.truncated
+  const critiqueIsCurrent = input.vettingCritique && classifyRubricEvidenceCurrentness(
+    { revision: input.vettingCritique.rubricRevision, criteriaHash: input.vettingCritique.criteriaHash },
+    { revision: rubricRevision, criteriaHash: rubricCriteriaHash },
+  ).state === 'current';
+  const vettingState: AcceptanceBarContractSnapshot['grading']['vetting']['state'] = critiqueIsCurrent
+    ? 'current'
+    : input.vettingCritique
+      ? 'stale'
+    : input.vettingScorecards.truncated
     ? 'truncated'
     : currentVetting
       ? 'current'
@@ -1609,7 +1664,7 @@ export function projectAcceptanceBarContractSnapshot(
     schemaVersion: ACCEPTANCE_BAR_CONTRACT_SNAPSHOT_VERSION,
     planSlug: plan?.planSlug ?? '',
     applicable,
-    plan,
+    plan: plan ? (({ content: _content, ...identity }) => identity)(plan) : null,
     rubric: rubric
       ? {
           rubricId: rubric.rubricId,
@@ -1695,9 +1750,10 @@ export function projectAcceptanceBarContractSnapshot(
       criteriaHash: grading.card?.criteriaHash ?? null,
       vetting: {
         state: vettingState,
+        ...(input.vettingCritique ? { critique: input.vettingCritique } : {}),
         scorecardId: currentVetting?.issueId ?? anyVetting?.issueId ?? null,
-        rubricRevision: currentVetting?.vetting?.rubricRevision ?? anyVetting?.vetting?.rubricRevision ?? null,
-        criteriaHash: currentVetting?.vetting?.criteriaHash ?? anyVetting?.vetting?.criteriaHash ?? null,
+        rubricRevision: input.vettingCritique?.rubricRevision ?? currentVetting?.vetting?.rubricRevision ?? anyVetting?.vetting?.rubricRevision ?? null,
+        criteriaHash: input.vettingCritique?.criteriaHash ?? currentVetting?.vetting?.criteriaHash ?? anyVetting?.vetting?.criteriaHash ?? null,
       },
       authorVerdict: {
         state: authorVerdictState,
@@ -1747,6 +1803,7 @@ async function defaultReadPlans(planSlug: string, scope?: { harnessSlug: string 
       status: string | null;
       version: number | string;
       content_hash: string | null;
+      content: string;
       acceptance_bar_epoch: number | string | null;
       acceptance_bar_cohort: AcceptanceBarCohort | null;
       acceptance_bar_set_hash: string | null;
@@ -1757,7 +1814,7 @@ async function defaultReadPlans(planSlug: string, scope?: { harnessSlug: string 
       acceptance_bar_verified_revision: number | string | null;
     }>
   >`
-    SELECT workspace_id, harness_slug, plan_slug, status, version, content_hash,
+    SELECT workspace_id, harness_slug, plan_slug, status, version, content_hash, content,
            acceptance_bar_epoch, acceptance_bar_cohort, acceptance_bar_set_hash,
            acceptance_bar_rubric_slug, acceptance_bar_rubric_revision,
            acceptance_bar_seeded_at, acceptance_bar_seeded_by, acceptance_bar_verified_revision
@@ -1775,6 +1832,7 @@ async function defaultReadPlans(planSlug: string, scope?: { harnessSlug: string 
       status: row.status,
       revision: Number(row.version),
       contentHash: row.content_hash,
+      content: row.content,
       adoptionEpoch: row.acceptance_bar_epoch == null ? null : Number(row.acceptance_bar_epoch),
       cohort: row.acceptance_bar_cohort,
       barSetHash: row.acceptance_bar_set_hash,
@@ -1980,6 +2038,7 @@ const DEFAULT_DEPS: AcceptanceBarSnapshotDeps = {
   readLineage: defaultReadLineage,
   readScorecards: defaultReadScorecards,
   readVettingScorecards: defaultReadVettingScorecards,
+  readCurrentCritique: readCurrentAcceptanceRubricCritique,
   readParties: (identities, workspaceId) => lineagePartyKeys(identities, { workspaceId }),
   readGraderSelectionVia,
 };
@@ -2021,6 +2080,9 @@ export async function readAcceptanceBarContractSnapshot(
     rowLimit: ACCEPTANCE_BAR_SNAPSHOT_LINEAGE_ROW_LIMIT,
     truncated: false,
   };
+  const critique = await captured('vetting',
+    () => rubric && d.readCurrentCritique ? d.readCurrentCritique(rubric, rubric.revision ?? null) : Promise.resolve(null), null);
+  if (critique.failure) failures[critique.failure[0]] = critique.failure[1];
   const [planItems, clauses, workContracts, evidence, lineage, scorecards, vetting] = await Promise.all([
     captured('plan-items', () => (plan ? d.readPlanItems(plan) : Promise.resolve(emptyPlanItems)), emptyPlanItems),
     captured('clauses', () => (plan ? d.readClauses(plan) : Promise.resolve(emptyClauses)), emptyClauses),
@@ -2034,7 +2096,7 @@ export async function readAcceptanceBarContractSnapshot(
     captured('grading', () => (rubric ? d.readScorecards(rubric) : Promise.resolve(emptyScorecards)), emptyScorecards),
     captured(
       'vetting',
-      () => (rubric ? d.readVettingScorecards(rubric) : Promise.resolve(emptyScorecards)),
+      () => (rubric && !critique.value ? d.readVettingScorecards(rubric) : Promise.resolve(emptyScorecards)),
       emptyScorecards,
     ),
   ]);
@@ -2071,6 +2133,7 @@ export async function readAcceptanceBarContractSnapshot(
     evidence: evidence.value,
     scorecards: scorecards.value,
     vettingScorecards: vetting.value,
+    vettingCritique: critique.value,
     lineage: lineage.value,
     partyByIdentity: parties.value,
     graderSelectionVia: selectionVia.value,
@@ -2111,7 +2174,7 @@ function sameValue(a: unknown, b: unknown): boolean {
 export type AcceptanceBarContractDiffView = Pick<AcceptanceBarContractSnapshot, 'contentHash'> & {
   plan: Pick<AcceptanceBarSubjectPlanSource, 'cohort' | 'adoptionEpoch'> | null;
   bars: Array<Pick<AcceptanceBarTrace, 'barKey' | 'criterionKey' | 'barHash' | 'model' | 'check' | 'requirement' |
-    'method' | 'falsifier' | 'role' | 'mandatory' | 'requiredScope' | 'evidencePlane' | 'requiredTestLayers' |
+    'method' | 'replication' | 'falsifier' | 'role' | 'mandatory' | 'requiredScope' | 'evidencePlane' | 'requiredTestLayers' |
     'passRatings' | 'coversBarKeys' | 'provenance'> & {
       mappings: Array<{ planItemId: string; specId: string }>;
     }>;
@@ -2179,6 +2242,13 @@ export function diffAcceptanceBarContractSnapshots(
     if (a.method !== b.method) {
       kinds.push('method-only');
       fields.push('method');
+    }
+    // Replication is verification procedure, not BAR hash material. It still
+    // belongs in the shared diff: review excerpts use this list to decide which
+    // criteria must stay visible instead of being labelled unchanged.
+    if ((a.replication ?? null) !== (b.replication ?? null)) {
+      kinds.push('method-only');
+      fields.push('replication');
     }
     const mappingOf = (bar: AcceptanceBarContractDiffView['bars'][number]) =>
       bar.mappings.map((mapping) => `${mapping.planItemId}\0${mapping.specId}`).sort();

@@ -3,7 +3,8 @@
 //
 // PreToolUse file-writer BLOCKING guard: refuse a hand-edit to a file
 // that DECLARES ITSELF GENERATED in its own header, to the canonical tracked
-// internal-docs build mirror, or to an installed Claude/Codex hook runtime copy.
+// internal-docs build mirror, an installed Claude/Codex hook runtime copy, or
+// installed dependency bytes shared with frozen verification snapshots.
 // Plan claude-md-projection-from-pg-2026-08-10 P-006, extending the repo rule
 // that already governs prompts — "edit the source, never the rendered output".
 //
@@ -182,8 +183,15 @@ async function main() {
     const hook = JSON.parse(await readStdin(250));
     const tool = hook.tool_name || "";
     if (!isFileWritingTool(tool)) return done();
+    const targets = targetPathsForTool(tool, hook.tool_input);
+    // A generated-output bypass does not authorize mutating installed package
+    // inodes. Even a unique inode can gain a frozen hardlink after this check.
+    for (const filePath of targets) {
+      if (isInstalledDependencyFile(filePath))
+        return denyInstalledDependency(filePath, tool);
+    }
     if (bypassed()) return done();
-    for (const filePath of targetPathsForTool(tool, hook.tool_input)) {
+    for (const filePath of targets) {
       if (isPapercuspCcHookRuntimeMirror(filePath))
         return denyPapercuspCcHookRuntimeMirror(filePath, tool);
       if (isInternalDocsMirror(filePath))
@@ -331,6 +339,18 @@ export function isInternalDocsMirror(filePath) {
   }
 }
 
+/** Resolve aliases before classifying: workspace package symlinks lead back to
+ * editable source, while an alias outside node_modules may still name installed
+ * bytes. No link-count exception: taking a snapshot can race a direct edit.
+ * Generators/install writers are processes, outside this file-tool guard. */
+export function isInstalledDependencyFile(filePath) {
+  try {
+    return realpathSync(filePath).split(sep).includes("node_modules");
+  } catch {
+    return false;
+  }
+}
+
 export function isPapercuspCcHookRuntimeMirror(filePath) {
   try {
     const home = process.env.HOME || process.env.USERPROFILE;
@@ -388,6 +408,17 @@ function denyInternalDocsMirror(filePath, tool) {
     `${SCRATCH_REMEDY} Or relaunch with ${BYPASS_ENV}=1 to downgrade this guard to a warning ` +
     `for the session.`;
   deny(reason);
+}
+
+function denyInstalledDependency(filePath, tool) {
+  deny(
+    `Installed dependency edit refused (EI-26109646288806924): ${filePath}. ` +
+      `This ${tool} may change an inode shared with frozen dependency snapshots. ` +
+      `A file lock does not provide the donor install writer contract. ` +
+      `Prepare changes in an isolated package copy and regenerate the maintained patch; ` +
+      `publish installed bytes under the donor's install writer with atomic inode replacement. ` +
+      `Never hand-edit the live donor or its frozen snapshots.`,
+  );
 }
 
 function denyPapercuspCcHookRuntimeMirror(filePath, tool) {

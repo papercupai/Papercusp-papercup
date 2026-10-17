@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { encode } from '@papercusp/result-encoding';
 
 const catalog = vi.hoisted(() => [] as Array<Record<string, any>>);
 const cells = vi.hoisted(() => new Map<string, Record<string, any>>());
@@ -82,6 +83,25 @@ describe('criterion ALL probes', () => {
     const all = normalizeCriterionProbeChecks([{ key: 'set', check: check([readProbe({ schemaRevision: 'live' }), readProbe()]) }])[0];
     expect(all.check.all).toEqual([readProbe(), readProbe()]);
     expect(validateCriterionCheckPaths([{ key: 'set', check: check([readProbe({ schemaRevision: 'old' })]) }]).ok).toBe(false);
+  });
+
+  it('preserves grouped probe metadata while pinning every child', () => {
+    const grouped = normalizeCriterionProbeChecks([{
+      key: 'latency',
+      check: {
+        kind: 'probe' as const,
+        all: [readProbe({ schemaRevision: 'live' })],
+        unit: 'ms',
+        ratingBands: [{ rating: 'near', expect: { op: 'lte' as const, value: 250 } }],
+      },
+    }])[0];
+
+    expect(grouped.check).toMatchObject({
+      kind: 'probe',
+      unit: 'ms',
+      ratingBands: [{ rating: 'near', expect: { op: 'lte', value: 250 } }],
+      all: [readProbe()],
+    });
   });
 
   it('refuses an unjudgeable child without borrowing its sibling result', async () => {
@@ -420,6 +440,45 @@ describe('continuity probe wake replay', () => {
       { dispatchTool },
     );
     expect(stale.results[0]).toMatchObject({ status: 'stale', executed: true, observed: 'active' });
+  });
+
+  it('decodes lossless TOON payloads for both boolean outcomes with advisory items', async () => {
+    const dispatchTool = vi.fn(async (_name: string, args: Record<string, unknown>) => ({
+      content: [
+        {
+          type: 'text',
+          text: `format: toon\n${encode({ found: args.id === 'true' }, 'toon')}`,
+        },
+        { type: 'text', text: 'See also: status:read (inspect the source result)' },
+      ],
+    }));
+
+    const batch = await runContinuityProbeBatch([
+      source(readProbe({ args: { id: 'true' }, expect: { path: '$.found', op: 'eq', value: true } }), 0),
+      source(readProbe({ args: { id: 'false' }, expect: { path: '$.found', op: 'eq', value: false } }), 1),
+    ], { dispatchTool });
+
+    expect(batch.results).toMatchObject([
+      { status: 'fresh', executed: true, observed: true },
+      { status: 'fresh', executed: true, observed: false },
+    ]);
+  });
+
+  it('does not treat malformed TOON as a judgeable payload', async () => {
+    const dispatchTool = vi.fn(async () => ({
+      content: [
+        { type: 'text', text: 'format: toon\n{not valid' },
+        { type: 'text', text: 'See also: status:read (inspect the source result)' },
+      ],
+    }));
+
+    const batch = await runContinuityProbeBatch(
+      [source(readProbe({ expect: { path: '$.found', op: 'eq', value: true } }))],
+      { dispatchTool },
+    );
+
+    expect(batch.results[0]).toMatchObject({ status: 'stale', executed: true });
+    expect(batch.results[0].observed).toBeUndefined();
   });
 
   it('measures the result budget against the JSON payload, not payload + advisory prose', async () => {

@@ -1040,6 +1040,9 @@ export interface TestRunBindingDeps {
    * Surviving mutants of the same guard: mutation-probe rows that PASSED on a mutant leg
    * (execution_details.mutation.leg = 'mutant') for any of `filePaths`, whose descriptor
    * records `testFileSha256` and a probeInvocationId other than `excludeProbeInvocationId`.
+   * A completed passing load-check with the exact same invocation/test/selection proves
+   * the poisoned subject was not consumed, so that invocation is not a survivor.
+   * Missing, failed, unmeasured or mismatched controls do not waive the re-aim refusal.
    * Ordered by started_at, at most MUTATION_REAIM_MAX_SURVIVORS. Absent = re-aim detection off.
    */
   loadMutationSurvivors?(
@@ -1211,16 +1214,42 @@ export const defaultTestRunBindingDeps: TestRunBindingDeps = {
     if (!filePaths.length) return [];
     return withWorkspace(scope.workspaceId, async (tx) => {
       const rows = await tx<{ id: string | number; mutation: unknown }[]>`
-        SELECT id, execution_details->'mutation' AS mutation
-          FROM harness_shared.test_runs
-         WHERE source = 'mutation-probe'
-           AND status = 'pass'
-           AND execution_details->'mutation'->>'leg' = 'mutant'
-           AND execution_details->'mutation'->>'testFileSha256' = ${testFileSha256}
-           AND execution_details->'mutation'->>'probeInvocationId' <> ${excludeProbeInvocationId}
-           AND file_path = ANY(${[...filePaths]}::text[])
-           AND (workspace_id IS NULL OR workspace_id = ${scope.workspaceId})
-         ORDER BY started_at, id
+        SELECT survivor.id, survivor.execution_details->'mutation' AS mutation
+          FROM harness_shared.test_runs survivor
+         WHERE survivor.source = 'mutation-probe'
+           AND survivor.status = 'pass'
+           AND survivor.execution_details->'mutation'->>'leg' = 'mutant'
+           AND survivor.execution_details->'mutation'->>'testFileSha256' = ${testFileSha256}
+           AND survivor.execution_details->'mutation'->>'probeInvocationId' <> ${excludeProbeInvocationId}
+           AND survivor.file_path = ANY(${[...filePaths]}::text[])
+           AND (survivor.workspace_id IS NULL OR survivor.workspace_id = ${scope.workspaceId})
+           AND NOT EXISTS (
+             -- WI-6554700010015717: copy-out runs the same command with a top-level
+             -- poison after a mutant passes. If that also passes, the probe never
+             -- loaded the subject; its earlier PASS is not mutation survival.
+             SELECT 1 FROM harness_shared.test_runs control
+              WHERE control.source = 'mutation-probe' AND control.status = 'pass'
+                AND survivor.execution_details->'mutation'->>'mode' = 'copy-out'
+                AND control.execution_details->>'mutationPhase' = 'load-check'
+                AND control.execution_details->'mutation'->>'leg' = 'load-check'
+                AND (control.execution_details->'mutation')::jsonb - 'leg' = (survivor.execution_details->'mutation')::jsonb - 'leg'
+                AND control.file_path = survivor.file_path
+                AND control.workspace_id IS NOT DISTINCT FROM survivor.workspace_id
+                AND control.harness_slug IS NOT DISTINCT FROM survivor.harness_slug
+                AND control.framework IS NOT DISTINCT FROM survivor.framework
+                AND control.execution_details->>'root' = survivor.execution_details->>'root'
+                AND control.execution_details ? 'testNamePattern'
+                AND survivor.execution_details ? 'testNamePattern'
+                AND control.execution_details->>'testNamePattern' IS NOT DISTINCT FROM survivor.execution_details->>'testNamePattern'
+                AND control.execution_details->'collectionFailed' = 'false'::jsonb
+                AND jsonb_typeof(control.execution_details->'passed') = 'number'
+                AND control.execution_details->'passed' > '0'::jsonb
+                AND control.execution_details->'failed' = '0'::jsonb
+                AND control.execution_details->'skipped' = '0'::jsonb
+                AND control.started_at >= survivor.finished_at
+                AND control.finished_at >= control.started_at
+           )
+         ORDER BY survivor.started_at, survivor.id
          LIMIT ${MUTATION_REAIM_MAX_SURVIVORS}`;
       return rows.flatMap((r) => {
         const m = parseMutationDescriptor(r.mutation);
@@ -1373,6 +1402,27 @@ export async function expandTestRunBinding(
   let testPath = cargo && input.canonicalTestPath ? input.canonicalTestPath : await recordedTestPath(root, row, deps.git);
   // WI-10004898: a clean run in a disposable clone (lint:as-committed) maps by commit content.
   let asCommitted: AsCommittedMapping | null = null;
+  // A distinct worktree can share this repository's common Git directory, so
+  // recordedTestPath already resolves it. A clean receipt still exercised its
+  // recorded commit, not later edits in this checkout. Keep the existing
+  // commit-content verification instead of applying this checkout's mtime guard.
+  if (testPath && !cargo && !input.canonicalTestPath && row.worktree_dirty === false
+    && row.root && !(await sameDirectory(root, row.root))) {
+    const git = withRepoIdentityMemo(deps.git ?? defaultGitRunner);
+    try {
+      const [rootTop, recordedTop] = await Promise.all([
+        git(root, ['rev-parse', '--show-toplevel']),
+        git(row.root, ['rev-parse', '--show-toplevel']),
+      ]);
+      if (isAbsolute(rootTop.trim()) && isAbsolute(recordedTop.trim())
+        && !(await sameDirectory(rootTop.trim(), recordedTop.trim()))) {
+        const mapped = await asCommittedTestPath(root, row, git);
+        if (mapped?.testPath === testPath) asCommitted = mapped;
+      }
+    } catch {
+      // Unverified identity retains the existing mutable-checkout safeguards.
+    }
+  }
   if (cargo && input.canonicalTestPath && row.worktree_dirty === false && row.commit_sha && FULL_SHA_RE.test(row.commit_sha)) {
     asCommitted = cargoMapping
       ? { ...cargoMapping, testPath: input.canonicalTestPath }

@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   buildReleaseTrace: vi.fn(),
   inspectEventKey: vi.fn(),
   resolveAgentIdentity: vi.fn(),
+  resolveManualRunAuthority: vi.fn(async () => null),
+  getFlag: vi.fn(async () => true),
 }));
 
 vi.mock('../../git-pipeline-stats', () => ({ gitPipelineSnapshot: mocks.gitPipelineSnapshot }));
@@ -19,6 +21,10 @@ vi.mock('../../release-deploy-launch', () => ({
 vi.mock('../../release-trace', () => ({ buildReleaseTrace: mocks.buildReleaseTrace }));
 vi.mock('../../events/await/store', () => ({ inspectEventKey: mocks.inspectEventKey }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: mocks.resolveAgentIdentity }));
+vi.mock('../../release/manual-run-authority', () => ({
+  resolveManualRunAuthority: mocks.resolveManualRunAuthority,
+}));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: mocks.getFlag }));
 vi.mock('../../harness/operator-home-harness', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../harness/operator-home-harness')>()),
   operatorHomeHarnessSlug: () => 'test-home',
@@ -563,6 +569,61 @@ describe('release:trace tool contract', () => {
     expect(mocks.inspectEventKey).toHaveBeenCalledTimes(4);
     expect(mocks.buildReleaseTrace).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(`exceeded ${RELEASE_TRACE_AWAIT_TIMEOUT_MS}ms`));
+  });
+
+  it('keeps slow authority and flag reads inside the composite transport budget', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    const snapshot = {
+      generatedAtMs: 123,
+      deploy: { integrationRoot: '/workspace/papercusp' },
+      gate: { verdictStale: false, consecutiveReds: 0, failingTests: [], fireStale: false },
+    };
+    mocks.gitPipelineSnapshot.mockImplementationOnce(
+      () => new Promise((resolve) => setTimeout(() => resolve(snapshot), RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS - 1)),
+    );
+    mocks.gitPipelinePosition.mockImplementationOnce(
+      () => new Promise((resolve) => setTimeout(() => resolve({ targetSha: 'abcd1234' }), RELEASE_TRACE_POSITION_TIMEOUT_MS - 1)),
+    );
+    mocks.computeDeployStatus.mockReturnValueOnce({ state: 'green' });
+    mocks.inspectEventKey.mockImplementation(
+      () =>
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ waiters: [], deliveries: [] }), RELEASE_TRACE_AWAIT_TIMEOUT_MS - 1),
+        ),
+    );
+    mocks.resolveAgentIdentity.mockReturnValueOnce({ ownerId: 'test-owner' });
+    mocks.resolveManualRunAuthority.mockImplementationOnce(() => new Promise(() => {}));
+    mocks.getFlag.mockImplementationOnce(() => new Promise(() => {}));
+    mocks.buildReleaseTrace.mockReturnValueOnce({ ok: true });
+
+    const pending = tool.handler({ sha: 'abcd1234' } as never, {} as never);
+    let settled = false;
+    void pending.then(() => {
+      settled = true;
+    });
+
+    await vi.advanceTimersByTimeAsync(RELEASE_TRACE_AWAIT_TIMEOUT_MS);
+    expect(mocks.resolveManualRunAuthority).toHaveBeenCalledTimes(1);
+    expect(mocks.getFlag).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(
+      RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS - 1 +
+        RELEASE_TRACE_POSITION_TIMEOUT_MS - 1 +
+        RELEASE_TRACE_AWAIT_TIMEOUT_MS - 1 -
+        RELEASE_TRACE_AWAIT_TIMEOUT_MS,
+    );
+    expect(settled).toBe(true);
+    const result = (await pending) as { data: { ok: boolean } };
+    expect(result.data.ok).toBe(true);
+    expect(mocks.buildReleaseTrace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        progressCertificateEnabled: true,
+        gate: expect.objectContaining({ manualRunAuthority: null }),
+      }),
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('release:trace:manual-run-authority'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('release:trace:progress-certificate-flag'));
   });
 
   it('does not convert a real pipeline read error into a timeout or an all-clear', async () => {

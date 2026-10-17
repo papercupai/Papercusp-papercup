@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   AGENT_MAX_AGE_HOURS,
+  AGENT_ROOT_MAX_BYTES,
   BUILD_DIR_MAX_AGE_HOURS,
   CACHEDIR_TAG_SIGNATURE,
   RETENTION_POLICY,
@@ -27,6 +28,33 @@ const del = (p: string) => deletionClassFor(p, policy)?.id ?? null;
 describe('retention policy (disk-headroom P-003 / R-2)', () => {
   it('the shipped policy passes every structural check', () => {
     expect(validatePolicy(RETENTION_POLICY, HOME)).toEqual([]);
+  });
+
+  it('declares the same finite cap enforced by the private Cargo-slot owner', () => {
+    const cls = RETENTION_POLICY.find(cls => cls.id === 'cargo-target-slots')!;
+    const root = join(dirname(fileURLToPath(import.meta.url)), '../../../..');
+    const owner = readFileSync(join(root, 'papercusp-desktop/bin/lib/claim-target-dir.sh'), 'utf8');
+    const defaultBytes = /PAPERCUSP_DESKTOP_PRIVATE_SLOT_MAX_BYTES:-([0-9]+)/.exec(owner);
+    expect(cls.keep.kind).toBe('lease');
+    expect(cls.maxBytes).toBe(AGENT_ROOT_MAX_BYTES);
+    expect(Number(defaultBytes?.[1])).toBe(cls.maxBytes);
+  });
+
+  it('declares a finite cap for the existing release-cut owner', () => {
+    const cls = RETENTION_POLICY.find(cls => cls.id === 'release-cut-worktrees')!;
+    expect(cls.keep.kind).toBe('lease');
+    expect(cls.maxBytes).toBe(AGENT_ROOT_MAX_BYTES);
+  });
+
+  it('keeps historical and data-side release evidence under the same native retention owner', () => {
+    const cls = RETENTION_POLICY.find(cls => cls.id === 'vh-release-runs')!;
+    expect(cls.keep).toEqual({ kind: 'newest', keep: 30 });
+    expect(cls.enforcers).toEqual([expect.objectContaining({ kind: 'existing' })]);
+    for (const root of [`${HOME}/.local/state/verification-harness/release-local`,
+      '/mnt/data/offload/verification-harness/release-local']) {
+      expect(classifyPath(`${root}/20261016T000000Z-1/result.json`, policy)).toMatchObject({ classId: cls.id });
+      expect(del(`${root}/20261016T000000Z-1/result.json`)).toBe(cls.id);
+    }
   });
 
   it('derives every named shell enforcer from the registry and pins its reviewed executable source', () => {
@@ -325,6 +353,10 @@ describe('retention policy (disk-headroom P-003 / R-2)', () => {
       }
       expect(classifyPath('/mnt/cold-a/meta/kopia-seed.log', policy)).toMatchObject({ classId: 'cold-tier' });
       expect(del('/mnt/cold-b/anything-else')).toBeNull();
+      for (const root of ['/mnt/data/papercusp-backups', '/mnt/cold-a/papercusp-backups']) {
+        expect(classifyPath(`${root}/workspace/snapshot.dump`, policy)).toMatchObject({ classId: 'papercusp-backups' });
+        expect(del(`${root}/workspace/snapshot.dump`)).toBeNull();
+      }
     });
 
     it('build dirs go after 1 day without a write to their entry; only node_modules or a CACHEDIR.TAG dir counts', () => {

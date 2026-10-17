@@ -1150,6 +1150,7 @@ describe('censusUnregisteredFailedUnits (unregistered crash-loop reporting)', ()
     expect(deps.notify).toHaveBeenCalledTimes(1);
     expect(deps.notify.mock.calls[0]?.[0].summary).toContain('third-party.service');
     expect(deps.notify.mock.calls[0]?.[0].summary).toContain('systemd remains the restart authority');
+    expect(deps.execUser.mock.calls.some((call) => (call[0] as string[])[0] === 'restart')).toBe(false);
 
     nRestarts = 4;
     await censusUnregisteredFailedUnits(deps, [], () => {}, 240_000);

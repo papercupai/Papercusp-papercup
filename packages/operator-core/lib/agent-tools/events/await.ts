@@ -210,6 +210,10 @@ export default defineTool({
       // instead". This schema is snake_case while much of the catalog is camelCase, which
       // is a systematic near-miss rather than a one-off typo.
       afterGeneration: 'after_generation',
+      // `reason` is a common cancellation/transition field, but events:await
+      // records the caller's context as `note`. Keep this on the failure path so
+      // a guessed resource-release await gets the usable same-tool correction.
+      reason: 'note',
       timeoutSec: 'timeout_sec',
       onTimeout: 'on_timeout',
       payloadFilter: 'payload_filter',
@@ -667,6 +671,7 @@ export default defineTool({
         (async () => {
           const installed = await readInstalledUnitEvents({
             harnessSlug: typeof harnessRaw === 'string' && harnessRaw !== '*' ? harnessRaw : undefined,
+            workspaceId: identity.workspaceId ?? undefined,
           });
           return mergeInstalledEventCatalog(installed).entries as readonly EventCatalogEntry[];
         })(),
@@ -799,6 +804,7 @@ export default defineTool({
         (async () => {
           const installed = await readInstalledUnitEvents({
             harnessSlug: typeof harnessRaw === 'string' && harnessRaw !== '*' ? harnessRaw : undefined,
+            workspaceId: identity.workspaceId ?? undefined,
           });
           return mergeInstalledEventCatalog(installed).entries as readonly EventCatalogEntry[];
         })(),

@@ -43,6 +43,10 @@ vi.mock('../../operator-state-pg', () => ({
   updateOperatorState: h.update,
 }));
 vi.mock('../../setup-wizard-install-id', () => ({ ensureInstallId: vi.fn() }));
+vi.mock('../../managed-update-policy', async importOriginal => ({
+  ...(await importOriginal<object>()), readManagedUpdateChannel: vi.fn(() => null),
+}));
+import { ManagedUpdatePolicyError, readManagedUpdateChannel } from '../../managed-update-policy';
 vi.mock('../../credentials', () => ({
   readCredentials: vi.fn(async () => ({ ...h.creds.current })),
   writeCredentials: vi.fn(async (c: Record<string, string | undefined>) => {
@@ -92,6 +96,7 @@ const call = (
 const wizard = () => h.store.get('setup_wizard_state') as Record<string, unknown> | undefined;
 
 beforeEach(() => {
+  vi.mocked(readManagedUpdateChannel).mockReset().mockReturnValue(null);
   h.store.clear();
   h.creds.current = {};
   h.update.mockClear();
@@ -110,6 +115,16 @@ describe('setup:set_telemetry', () => {
 });
 
 describe('setup:set_update_channel', () => {
+  it('refuses a user-selected lane that conflicts with administrator policy without writing', async () => {
+    vi.mocked(readManagedUpdateChannel).mockReturnValue('stable');
+    expect(body(await call(setChannel, { channel: 'alpha' }))).toMatchObject({ ok: false, error: 'update_channel_managed' });
+    expect(h.update).not.toHaveBeenCalled();
+  });
+  it('reports unreadable policy without writing or claiming success', async () => {
+    vi.mocked(readManagedUpdateChannel).mockImplementation(() => { throw new ManagedUpdatePolicyError('managed_policy_invalid', 'Invalid administrator policy'); });
+    expect(body(await call(setChannel, { channel: 'stable' }))).toMatchObject({ ok: false, error: 'managed_policy_invalid' });
+    expect(h.update).not.toHaveBeenCalled();
+  });
   it('sets the channel and PRESERVES other wizard state (merge, not replace)', async () => {
     await call(setTelemetry, { enabled: true });
     const b = body(await call(setChannel, { channel: 'beta' }));

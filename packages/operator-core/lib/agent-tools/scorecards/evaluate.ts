@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { readRubricWithoutSeeding } from '../../rubrics';
+import { readRubricWithoutSeeding, type Rubric } from '../../rubrics';
 import {
   normalizeScorecardRatings,
   validateObservationRatings,
@@ -110,6 +110,8 @@ export const scorecardEvaluateArgs = z
         'Restrict to the hive that produced/filed the scorecard (normally the caller/grader hive), not the harness that owns the rubric subject plan. For cross-hive grading, use the grader/source hive here; scorecards:emit uses targetHive for the subject hive.',
       ),
     ratings: z.record(z.string().min(1), scorecardRatingEntrySchema).optional(),
+    pendingDeliveryBarKeys: z.array(z.string().trim().min(1).max(120)).min(1).max(50).optional()
+      .describe('Explicit pre-publication review: named manual instrument:none deployed/live BARs must rate unknown. Defers only their delivery proof at pre-grading; final ship still requires it. Omit for ordinary grading.'),
     subject: z.object({
       kind: z.enum(['agent-run', 'session', 'work-item', 'plan', 'pot', 'rubric', 'scorecard']).optional(),
       ref: z.string().min(1).max(500),
@@ -127,6 +129,33 @@ export const scorecardEvaluateArgs = z
       ),
   })
   .strict();
+
+/** Same narrow review contract for the read-only preflight and terminal write. */
+export function pendingDeliveryReviewRefusal(
+  rubric: Rubric, keys: readonly string[] | undefined,
+  ratings?: Record<string, { rating?: string }>,
+): string | null {
+  if (!keys?.length) return null;
+  if (rubric.kind !== 'acceptance' || rubric.barContract?.adoptionEpoch == null || !rubric.subjectPlan) {
+    return 'pendingDeliveryBarKeys requires an adopted acceptance BAR contract.';
+  }
+  if (new Set(keys).size !== keys.length) return 'pendingDeliveryBarKeys must name distinct BARs.';
+  for (const key of keys) {
+    const matches = rubric.criteria.filter((criterion) => criterion.barKey === key);
+    const criterion = matches.length === 1 ? matches[0] : undefined;
+    if (!criterion || !['deployed', 'live'].includes(criterion.evidencePlane ?? '')
+      || criterion.check?.kind !== 'instrument' || criterion.check.instrumentKey !== 'none') {
+      return `pending delivery BAR '${key}' must be one declared manual instrument:none deployed/live criterion.`;
+    }
+    if (!(criterion.ratingScale ?? rubric.ratingScale).includes('unknown')) {
+      return `pending delivery BAR '${key}' must permit the unknown rating.`;
+    }
+    if (ratings && ratings[criterion.key]?.rating?.trim().toLowerCase() !== 'unknown') {
+      return `pending delivery BAR '${key}' must rate unknown until its delivery proof exists.`;
+    }
+  }
+  return null;
+}
 
 /**
  * Who the caller is, for the acceptance-grader pre-flight. Optional: omitting it
@@ -254,6 +283,9 @@ export async function evaluateScorecard(
     return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
   }
   const rubric = rubricRead.rubric;
+  const pendingRefusal = pendingDeliveryReviewRefusal(rubric, args.pendingDeliveryBarKeys,
+    args.ratings && Object.keys(args.ratings).length > 0 ? args.ratings : undefined);
+  if (pendingRefusal) return { ok: false as const, code: 'pending_delivery_review_invalid', error: pendingRefusal };
 
   // Keep the documented read-only preflight aligned with scorecards:emit. An
   // adopted acceptance rubric can be individually resolvable while its BAR
@@ -267,6 +299,7 @@ export async function evaluateScorecard(
       expectedApplicable: true,
       harnessSlug: rubric.subjectHarnessSlug,
       ...(args.current ? { current: args.current } : {}),
+      ...(args.pendingDeliveryBarKeys ? { pendingDeliveryBarKeys: args.pendingDeliveryBarKeys } : {}),
     });
     if (!lifecycle.satisfied) {
       return {
@@ -292,6 +325,7 @@ export async function evaluateScorecard(
     rating: null,
     evidence: null,
     required: true,
+    ...(args.pendingDeliveryBarKeys?.includes(criterion.barKey ?? '') ? { pendingDelivery: true, requiredRating: 'unknown' } : {}),
   }));
   const latest = (
     await listScorecards({ rubricRef: args.rubricRef, sourceHive: args.sourceHive, limit: 1 })

@@ -25,6 +25,12 @@ describe.each([
   ['../fleet-logs-gc.ts', 'execFileAsync'],
   ['../goal-brief-live-probe.test-helper.ts', 'execute'],
   ['../../../../papercusp-desktop/bin/lib/server-container.mjs', 'execFileAsync'],
+  ['../../../../scripts/bench-work-items-get.ts', 'exec'],
+  ['../../../../scripts/bench-work-item-continuations.ts', 'exec'],
+  ['../code-intelligence/semgrep-taint-facade.ts', 'execute'],
+  ['../release/judged-sha-containment.ts', 'execFileAsync'],
+  ['../release/sibling-tree-root.ts', 'execFileAsync'],
+  ['../work-admission/pr-delivery-audit.ts', 'exec'],
 ])('%s subprocess wrapper', (module, binding) => {
   function loadWrapper(execFile: unknown,
     wrap: (fn: Parameters<typeof promisify>[0]) => ReturnType<typeof promisify> = promisify) {

@@ -6,6 +6,9 @@
  */
 import { z } from 'zod';
 import { criticalWriteHeadroomBytes, DEFAULT_DISK_POLICY } from './disk-space-alarm';
+import { observeColdArchiveIntegrity, type ColdEvidence } from './cold-tier-evidence';
+import { getStorageCategory, isPgCategory } from './categories';
+import { tableRetentionTargets } from './table-retention';
 
 const bytes = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const identity = z.string().regex(/^v1-[a-f0-9]{64}$/);
@@ -86,6 +89,234 @@ const soakRequirementsSchema = z.object({
 }).refine((x) => Date.parse(x.startAt) >= Date.parse(x.shippedAt), 'The soak must start after shipment.');
 
 export const DISK_HEADROOM_SOAK_INSTRUMENT_KEY = 'storage:disk-headroom-post-shipment-72h';
+/** The durable-headroom requirement has stronger targets and cadence than the native policy soak. */
+export const DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY = 'storage:durable-headroom-targets-72h';
+/** Native R-8 binding: routine completion, live age probes, cold archive integrity,
+ * and serving-reader containment are one evidence record. */
+export const POSTGRES_RETENTION_INSTRUMENT_KEY = 'storage:postgres-retention-30d';
+
+const retentionName = z.string().min(1).refine(value => value.trim().length > 0);
+const retentionTimestamp = z.string().datetime({ offset: true });
+const postgresRoutineSchema = z.object({
+  schemaVersion: z.literal(1), kind: z.literal('telemetry-retention-completion'),
+  workspaceId: retentionName, host: retentionName, workflowId: retentionName, routineId: retentionName,
+  startedAt: retentionTimestamp, finishedAt: retentionTimestamp, completedAt: retentionTimestamp,
+  dryRun: z.boolean(), tableRetentionComplete: z.boolean(),
+  targets: z.array(z.object({ category: retentionName, complete: z.boolean(), retentionDays: bytes.positive() })).max(256),
+}).passthrough();
+const postgresEvidenceSchema = z.object({
+  workspaceId: retentionName, host: retentionName, measuredAt: retentionTimestamp,
+  routine: postgresRoutineSchema.nullable(),
+  ages: z.array(z.object({ category: retentionName, oldestAgeDays: z.number().finite().nonnegative().nullable(), measured: z.boolean() })).max(256),
+  coldIntegrity: z.object({ verdict: z.enum(['pass', 'fail', 'unknown']), detail: z.string() }),
+  servingRuntimes: z.array(z.object({ runtime: retentionName, applicable: z.boolean(), containsColdFallback: z.boolean().nullable() })).max(256),
+});
+export type PostgresRetentionEvidence = z.infer<typeof postgresEvidenceSchema>;
+
+// The maintained telemetry-retention seed runs daily at 04:00. A receipt older
+// than one cadence cannot establish that the current production run completed.
+const POSTGRES_RETENTION_RECEIPT_MAX_AGE_MS = 24 * 3_600_000;
+
+/** Pure R-8 assessor. Missing native receipts/readers is UNKNOWN; a measured bad
+ * age, failed routine, failed cold verification, or explicit serving refusal FAILS. */
+export function assessPostgresRetentionEvidence(input: unknown) {
+  const checks: RetentionEvidenceCheck[] = [];
+  const add = (id: string, status: RetentionEvidenceCheck['status'], detail: string) => checks.push({ id, status, detail });
+  const finish = () => ({ verdict: checks.some(c => c.status === 'fail') ? 'fail' as const :
+    checks.some(c => c.status === 'unknown') ? 'unknown' as const : 'pass' as const,
+    detail: JSON.stringify({ checks, scope: 'R-8 native routine/age/cold-integrity/serving-reader evidence' }), checks });
+  const parsed = postgresEvidenceSchema.safeParse(input);
+  if (!parsed.success) {
+    add('evidence-shape', 'unknown', 'Native receipt, measurement scope, ages and explicit reader booleans are required.');
+    return finish();
+  }
+  const evidence = parsed.data;
+  const expected = tableRetentionTargets();
+  const routine = evidence.routine;
+  if (!routine) add('routine-receipt', 'unknown', 'No completed production telemetry-retention receipt was found.');
+  else {
+    const started = Date.parse(routine.startedAt), finished = Date.parse(routine.finishedAt);
+    const completed = Date.parse(routine.completedAt), measured = Date.parse(evidence.measuredAt);
+    add('routine-scope', routine.workspaceId === evidence.workspaceId && routine.host === evidence.host ? 'pass' : 'unknown',
+      'The native receipt must belong to the measured workspace and host.');
+    add('routine-freshness', started <= finished && finished <= completed && completed <= measured &&
+      measured - finished <= POSTGRES_RETENTION_RECEIPT_MAX_AGE_MS ? 'pass' : 'fail',
+    'Native start <= finish <= DBOS completion <= measurement; finish must be within the daily 24-hour cadence.');
+    add('routine-receipt', routine.dryRun === false && routine.tableRetentionComplete &&
+      routine.targets.length === expected.length && new Set(routine.targets.map(t => t.category)).size === expected.length &&
+      expected.every(target => routine.targets.some(t => t.category === target.category && t.complete && t.retentionDays === target.retention_days))
+      ? 'pass' : 'fail', 'A non-dry production receipt must complete the exact canonical categories and retention horizons.');
+  }
+  for (const target of expected) {
+    const rows = evidence.ages.filter(a => a.category === target.category), row = rows[0];
+    add(`age:${target.category}`, rows.length > 1 ? 'fail' : !row || !row.measured ? 'unknown' :
+      row.oldestAgeDays !== null && row.oldestAgeDays > target.retention_days ? 'fail' : 'pass',
+      `Measured oldest age must be <= ${target.retention_days} days.`);
+  }
+  add('cold-integrity', evidence.coldIntegrity.verdict, evidence.coldIntegrity.detail);
+  const applicable = evidence.servingRuntimes.filter(r => r.applicable);
+  add('serving-cold-fallback', applicable.length === 0 || applicable.some(r => r.containsColdFallback === false) ? 'fail' :
+    applicable.some(r => r.containsColdFallback === null) ? 'unknown' : 'pass',
+    'Every applicable serving reader must be positively bound to the maintained cold fallback.');
+  return finish();
+}
+
+/** postgres.js returns numeric aggregates as decimal strings. Never coerce
+ * booleans, blank strings or objects into measurements. */
+function retentionNumber(value: unknown): number | null {
+  if (typeof value !== 'number' && !(typeof value === 'string' && /^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value))) return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+}
+
+/** Production adapter for the R-8 instrument. It reads the existing DBOS routine
+ * output and category registry rather than inventing a second retention ledger. */
+export async function measurePostgresRetentionEvidence(sql: Pick<import('postgres').Sql, 'unsafe'>, input: {
+  workspaceId: string; host: string; servingRuntimes: PostgresRetentionEvidence['servingRuntimes'];
+  coldIntegrity?: ColdEvidence;
+}) {
+  const categories = tableRetentionTargets();
+  const ages = await Promise.all(categories.map(async target => {
+    const missing = { category: target.category, oldestAgeDays: null, measured: false };
+    const cat = getStorageCategory(target.category);
+    if (!cat || !isPgCategory(cat) || !cat.ageColumn || !cat.ageColumnType) return missing;
+    const ident = /^[a-z_][a-z0-9_]*$/;
+    if (!ident.test(cat.schema) || !ident.test(cat.table) || !ident.test(cat.ageColumn)) return missing;
+    try {
+      const oldest = cat.ageColumnType === 'epoch_ms' ? `to_timestamp(min(${cat.ageColumn})/1000.0)` : `min(${cat.ageColumn})`;
+      const rows = await sql.unsafe(`SELECT count(*)::text AS total_rows, count(${cat.ageColumn})::text AS dated_rows,
+        extract(epoch FROM now() - ${oldest})/86400.0 AS oldest_age_days FROM ${cat.schema}.${cat.table}`);
+      const row = rows.length === 1 ? rows[0] : undefined;
+      const total = retentionNumber(row?.total_rows), dated = retentionNumber(row?.dated_rows);
+      if (total === null || dated === null || !Number.isSafeInteger(total) || !Number.isSafeInteger(dated) || dated !== total) return missing;
+      if (total === 0) return row?.oldest_age_days === null ? { ...missing, measured: true } : missing;
+      const age = retentionNumber(row?.oldest_age_days);
+      return age === null ? missing : { category: target.category, oldestAgeDays: age, measured: true };
+    } catch { return missing; }
+  }));
+  let routine: unknown = null;
+  try {
+    const routineRows = await sql.unsafe(`SELECT o.workflow_uuid, o.completed_at_epoch_ms, o.output
+      FROM dbos.operation_outputs o JOIN dbos.workflow_status w ON w.workflow_uuid=o.workflow_uuid
+      WHERE o.function_name='system:telemetry-retention' AND w.name='routineFire' AND o.error IS NULL
+        AND COALESCE(o.output::jsonb #>> '{json,diagnostics,retention,workspaceId}', o.output::jsonb #>> '{diagnostics,retention,workspaceId}')=$1
+        AND COALESCE(o.output::jsonb #>> '{json,diagnostics,retention,host}', o.output::jsonb #>> '{diagnostics,retention,host}')=$2
+      ORDER BY o.completed_at_epoch_ms DESC LIMIT 1`, [input.workspaceId, input.host]);
+    const row = routineRows[0];
+    const output = row?.output ? JSON.parse(String(row.output)) : null;
+    const diagnostics = output?.json?.diagnostics?.retention ?? output?.diagnostics?.retention ?? null;
+    const completion = epoch.safeParse(row?.completed_at_epoch_ms);
+    if (diagnostics && completion.success && diagnostics.workflowId === row?.workflow_uuid) {
+      routine = { ...diagnostics, completedAt: new Date(completion.data).toISOString() };
+    }
+  } catch { /* Missing/unreadable native ledger remains UNKNOWN, never a completion. */ }
+  return assessPostgresRetentionEvidence({
+    workspaceId: input.workspaceId, host: input.host, measuredAt: new Date().toISOString(), routine, ages,
+    coldIntegrity: input.coldIntegrity ?? await observeColdArchiveIntegrity(sql, input.workspaceId),
+    servingRuntimes: input.servingRuntimes,
+  });
+}
+
+const targetRecordsSchema = z.object({
+  censuses: soakCensusRows(),
+  attempts: z.array(z.object({ id: z.string().min(1), host: z.string().min(1),
+    startedAt: z.string().datetime({ offset: true }) })).max(20_000),
+  receipts: z.array(z.object({ id: z.string().min(1), host: z.string().min(1), dryRun: z.literal(false),
+    startedAt: z.string().datetime({ offset: true }), finishedAt: z.string().datetime({ offset: true }),
+    complete: z.boolean(), policyExhausted: z.boolean().nullable(), errors: z.array(z.string()),
+    entries: z.array(z.object({ status: z.string() })), delegates: z.array(z.object({ ok: z.boolean() })),
+  })).max(20_000),
+  dispositions: z.object({ supersededPlan: z.string().min(1), successorPlan: z.literal('disk-durable-headroom-2026-10-15'),
+    planTerminal: z.boolean(), linkedSuccessor: z.boolean(), siblingId: z.literal('WI-10007751'), siblingTerminal: z.boolean() }),
+});
+function soakCensusRows() {
+  return z.array(z.object({ id: z.string().min(1), host: z.string().min(1), path: z.enum(['/', '/mnt/data']),
+    at: z.string().datetime({ offset: true }), availableBytes: bytes, complete: z.boolean() })).max(20_000);
+}
+
+/** Exact R-10 assessment: decimal GB/TB, 72 hourly buckets on each device, and
+ * the full native started/finished population. No alarm can excuse a target dip. */
+export function assessDurableHeadroomTargets(input: unknown,
+  window: { host: string; windowStart: string; windowEnd: string; measuredAt: string }) {
+  const checks: RetentionEvidenceCheck[] = [];
+  const add = (id: string, status: RetentionEvidenceCheck['status'], detail: string) => checks.push({ id, status, detail });
+  const finish = () => ({ verdict: checks.some(c => c.status === 'fail') ? 'fail' as const :
+    checks.some(c => c.status === 'unknown') ? 'unknown' as const : 'pass' as const,
+    detail: JSON.stringify({ checks, scope: 'Hourly native samples only; capacity between samples is unmeasured. GB/TB are decimal bytes.' }), checks });
+  const parsed = targetRecordsSchema.safeParse(input);
+  const start = Date.parse(window.windowStart), end = Date.parse(window.windowEnd), measured = Date.parse(window.measuredAt);
+  const hour = 3_600_000;
+  if (!parsed.success || !window.host.trim() || ![start, end, measured].every(Number.isFinite) || end - start !== 72 * hour || end > measured) {
+    add('evidence-shape', 'unknown', 'Require a completed exact 72h window and complete, host-attributed native census/run/disposition records.');
+    return finish();
+  }
+  const { censuses, attempts, receipts, dispositions } = parsed.data;
+  if ([...censuses, ...attempts, ...receipts].some(r => r.host !== window.host)) {
+    add('host-scope', 'unknown', 'Foreign-host records cannot certify this window.'); return finish();
+  }
+  for (const path of ['/', '/mnt/data'] as const) {
+    const rows = censuses.filter(r => r.path === path && Date.parse(r.at) >= start && Date.parse(r.at) <= end);
+    add(`unique-ordered:${path}`, rows.every((r, i) => i === 0 || Date.parse(r.at) > Date.parse(rows[i - 1]!.at)) &&
+      new Set(rows.map(r => r.id)).size === rows.length ? 'pass' : 'fail', 'Native sample order and identity must be unique.');
+    const missing = Array.from({ length: 72 }, (_, h) => h).filter(h => !rows.some(r =>
+      Date.parse(r.at) >= start + h * hour && Date.parse(r.at) < start + (h + 1) * hour && r.complete));
+    add(`hourly-coverage:${path}`, missing.length ? 'unknown' : 'pass', `Missing/incomplete hourly buckets: ${missing.join(',') || 'none'}.`);
+    const floor = path === '/' ? 400 * 1000 ** 3 : 2 * 1000 ** 4;
+    add(`exact-target:${path}`, rows.some(r => r.availableBytes < floor) ? 'fail' : rows.length ? 'pass' : 'unknown', `Every observed sample must have >=${floor} free bytes.`);
+  }
+  const runs = attempts.filter(r => Date.parse(r.startedAt) >= start && Date.parse(r.startedAt) <= end);
+  const results = receipts.filter(r => Date.parse(r.startedAt) >= start && Date.parse(r.startedAt) <= end);
+  add('run-population', runs.length && new Set(runs.map(r => r.id)).size === runs.length &&
+    new Set(results.map(r => r.id)).size === results.length && results.every(r => runs.some(a => a.id === r.id)) ? 'pass' : 'unknown',
+  'Every real start must have exactly one matching terminal receipt; empty or ambiguous populations cannot pass.');
+  for (const run of runs) {
+    const receipt = results.find(r => r.id === run.id && r.startedAt === run.startedAt);
+    add(`complete-run:${run.id}`, !receipt || Date.parse(receipt.finishedAt) > measured ? 'unknown' :
+      Date.parse(receipt.finishedAt) < Date.parse(run.startedAt) || !receipt.complete || receipt.policyExhausted !== true ||
+      receipt.errors.length || receipt.entries.some(e => e.status === 'failed') || receipt.delegates.some(d => !d.ok) ? 'fail' : 'pass',
+    'The native run must finish, exhaust its policy and have no errors or failed effects/delegates.');
+  }
+  // A silent/dead scheduler cannot pass merely because it emitted one good receipt.
+  const missingRuns = Array.from({ length: 72 }, (_, h) => h).filter(h => !runs.some(r =>
+    Date.parse(r.startedAt) >= start + h * hour && Date.parse(r.startedAt) < start + (h + 1) * hour));
+  add('hourly-reclaim-coverage', missingRuns.length ? 'unknown' : 'pass', `Hours without a real reclaim start: ${missingRuns.join(',') || 'none'}.`);
+  add('superseded-disposition', dispositions.planTerminal && dispositions.linkedSuccessor && dispositions.siblingTerminal ? 'pass' : 'unknown',
+    'The superseded plan must be terminal and linked into this successor; WI-10007751 must be terminal.');
+  return finish();
+}
+
+/** Extend the existing native ledger reader; never use supplied scores, receipt
+ * claims, policy floors, or data from another host as R-10 evidence. */
+export async function measureDurableHeadroomTargets(sql: Pick<import('postgres').Sql, 'unsafe'>,
+  input: { workspaceId: string; harnessSlug: string; host: string; windowStart: string; windowEnd: string }) {
+  const start = Date.parse(input.windowStart), end = Date.parse(input.windowEnd);
+  if (!input.workspaceId.trim() || !input.harnessSlug.trim() || !input.host.trim() || !Number.isFinite(start) || end - start !== 72 * 3_600_000) {
+    return { verdict: 'unknown' as const, detail: 'Canonical workspace/harness/host and exact 72h window required.' };
+  }
+  const rows = await sql.unsafe(`WITH census AS (
+    SELECT run_id::text AS id, host, device AS path, finished_at AS at, avail_bytes AS "availableBytes", complete
+    FROM harness_shared.disk_census_runs WHERE host=$1 AND device IN ('/','/mnt/data')
+      AND finished_at BETWEEN $2::timestamptz AND $3::timestamptz ORDER BY finished_at,device,run_id LIMIT 20001
+  ), activity AS (
+    SELECT action, details FROM harness_shared.audit_log
+    WHERE workspace_id=$4 AND actor='system:disk-retention' AND action IN ('disk-retention:started','disk-retention:receipt')
+      AND (details->>'host'=$1 OR details->>'host' IS NULL) AND details->>'dryRun'='false'
+      AND ts BETWEEN $5 AND $6 ORDER BY ts,id LIMIT 40001
+  ), predecessor AS (
+    SELECT plan_slug, status, superseded_by FROM harness_shared.harness_plans
+    WHERE workspace_id=$4 AND harness_slug=$7 AND plan_slug='disk-headroom-standing-reclaim-2026-10-12'
+  ) SELECT
+    COALESCE((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.at,c.path,c.id) FROM census c),'[]'::jsonb) AS censuses,
+    COALESCE((SELECT jsonb_agg(details ORDER BY details->>'startedAt') FROM activity WHERE action='disk-retention:started'),'[]'::jsonb) AS attempts,
+    COALESCE((SELECT jsonb_agg(details ORDER BY details->>'startedAt') FROM activity WHERE action='disk-retention:receipt'),'[]'::jsonb) AS receipts,
+    (SELECT jsonb_build_object('supersededPlan',plan_slug,'successorPlan','disk-durable-headroom-2026-10-15',
+      'planTerminal',status IN ('done','dropped','superseded','complete','completed'),
+      'linkedSuccessor',superseded_by='disk-durable-headroom-2026-10-15',
+      'siblingId','WI-10007751','siblingTerminal',COALESCE((SELECT status IN ('done','resolved','dropped','declined')
+        FROM harness_shared.work_items WHERE workspace_id=$4 AND harness_slug=$7 AND feature_id='WI-10007751'),false)) FROM predecessor) AS dispositions`,
+  [input.host, input.windowStart, input.windowEnd, input.workspaceId, start, Date.now(), input.harnessSlug]);
+  return assessDurableHeadroomTargets(rows[0], { ...input, measuredAt: new Date().toISOString() });
+}
 
 /** Resolve shipment identity from the existing deploy ledger, then assess the native records. */
 export async function measureDiskHeadroomSoakWindow(

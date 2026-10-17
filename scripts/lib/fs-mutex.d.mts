@@ -24,14 +24,21 @@ export function resolveFsMutexTimeoutMs(env?: NodeJS.ProcessEnv): number;
  * every platform.
  *
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{ platform?: NodeJS.Platform, homeDir?: string }} [options]
+ * @param {{ platform?: NodeJS.Platform, homeDir?: string, lockRootDir?: string }} [options]
  */
 export function resolveFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {
     platform?: NodeJS.Platform;
     homeDir?: string;
+    lockRootDir?: string;
 }): string;
-/** Inspect legacy leases without creating, removing, or migrating any marker. */
-export function censusLegacyFsMutexRoot(legacyRoot: any, staleMs?: number): Promise<{
+/**
+ * Inspect legacy leases without creating, removing, or migrating any marker.
+ *
+ * @param {string} legacyRoot
+ * @param {number} [staleMs]
+ * @param {FsMutexIo} [io]
+ */
+export function censusLegacyFsMutexRoot(legacyRoot: string, staleMs?: number, io?: FsMutexIo): Promise<{
     writer: {
         active: number;
         stale: number;
@@ -52,25 +59,22 @@ export function censusLegacyFsMutexRoot(legacyRoot: any, staleMs?: number): Prom
     complete: boolean;
 }>;
 /**
- * Prepare the resolved mutex root and preserve the old lock identity across the
- * migration. A legacy root is moved aside only after a complete read-only
- * census finds zero active and zero unknown leases; its stale markers remain in
- * a sibling quarantine directory, and the old path becomes a symlink to the
- * account-home root. An explicit override is authoritative and bypasses this
- * migration.
- *
- * The optional legacyRoot and homeDir values are deterministic test seams; the
- * production callers use the platform defaults.
+ * Resolve the mutex root, reusing a completed canonical migration and sharing
+ * one in-flight migration across concurrent callers. A call that remains on
+ * the legacy root is deliberately not retained: once that lease drains, the
+ * next caller must be allowed to complete the migration.
  *
  * @param {NodeJS.ProcessEnv} [env]
- * @param {{ platform?: NodeJS.Platform, homeDir?: string, legacyRoot?: string, phaseTimingsMs?: Record<string, number> }} [options]
+ * @param {{ platform?: NodeJS.Platform, homeDir?: string, lockRootDir?: string, legacyRoot?: string, phaseTimingsMs?: Record<string, number>, io?: FsMutexIo }} [options]
  */
 export function ensureFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {
     platform?: NodeJS.Platform;
     homeDir?: string;
+    lockRootDir?: string;
     legacyRoot?: string;
     phaseTimingsMs?: Record<string, number>;
-}): Promise<string>;
+    io?: FsMutexIo;
+}): Promise<any>;
 /**
  * Run `fn` while holding an exclusive, cross-process, filesystem-local mutex
  * named `name`. Blocks (retrying every `retryMs`) until acquired, a stale/dead
@@ -84,13 +88,14 @@ export function ensureFsMutexLockRoot(env?: NodeJS.ProcessEnv, options?: {
  * the lock itself. Reader-mode and explicitly disabled locks have no check.
  *
  * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean> }} [opts]
+ * @param {{ mode?: 'read' | 'reader' | 'write', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export function withFsMutex<T>(name: string, fn: (context?: {
     hasWaiters: () => Promise<boolean>;
 }) => Promise<T>, opts?: {
     mode?: "read" | "reader" | "write";
+    lockRootDir?: string;
     timeoutMs?: number;
     staleMs?: number;
     retryMs?: number;
@@ -104,6 +109,7 @@ export function withFsMutex<T>(name: string, fn: (context?: {
         admissionSubphaseTimingsMs?: Record<string, number>;
     }) => void;
     intent?: Record<string, string | number | boolean>;
+    io?: FsMutexIo;
 }): Promise<T>;
 /**
  * Run `fn` while holding a shared reader marker for `name`. Readers do not
@@ -115,11 +121,12 @@ export function withFsMutex<T>(name: string, fn: (context?: {
  * @template T
  * @param {string} name
  * @param {() => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader', timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void }} [opts]
+ * @param {{ mode?: 'read' | 'reader', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number }) => void, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export function withFsMutexRead<T>(name: string, fn: () => Promise<T>, opts?: {
     mode?: "read" | "reader";
+    lockRootDir?: string;
     timeoutMs?: number;
     staleMs?: number;
     retryMs?: number;
@@ -131,6 +138,7 @@ export function withFsMutexRead<T>(name: string, fn: () => Promise<T>, opts?: {
     onAcquired?: (info: {
         waitedMs: number;
     }) => void;
+    io?: FsMutexIo;
 }): Promise<T>;
 /**
  * EI-19304880034803985 — a NON-blocking, synchronous peek at whether `name`'s
@@ -145,9 +153,12 @@ export function withFsMutexRead<T>(name: string, fn: () => Promise<T>, opts?: {
  * fail-open error handling).
  *
  * @param {string} name
+ * @param {{ lockRootDir?: string }} [options]
  * @returns {{ held: boolean, owner?: { pid?: number, host?: string, startedAt?: string, acquiredAt?: string, runningAt?: string, phase?: 'draining-readers' | 'running', name?: string, intent?: Record<string, string | number | boolean> }, lockDir: string }}
  */
-export function peekFsMutexSync(name: string): {
+export function peekFsMutexSync(name: string, options?: {
+    lockRootDir?: string;
+}): {
     held: boolean;
     owner?: {
         pid?: number;
@@ -172,3 +183,12 @@ export function peekFsMutexSync(name: string): {
  * already share, so the two sides cannot silently drift onto different locks.
  */
 export const PACKAGE_CACHE_MUTEX_NAME: "package-manager-cache";
+export type FsMutexIo = {
+    opendir?: typeof opendir;
+    symlink?: typeof symlink;
+    readFile?: (path: string, encoding: "utf8") => Promise<string>;
+    writeFile?: typeof writeFile;
+};
+import { opendir } from "node:fs/promises";
+import { symlink } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";

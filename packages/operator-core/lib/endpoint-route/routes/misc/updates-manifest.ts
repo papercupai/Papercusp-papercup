@@ -37,6 +37,7 @@
  *     PAPERCUSP_RELEASE_HOST fallback.
  */
 import { readOperatorState } from '../../../operator-state-pg';
+import { ManagedUpdatePolicyError, readManagedUpdateChannel } from '../../../managed-update-policy';
 import { defineTool } from '@papercusp/agent-mcp';
 import { observeFallback } from '../../../degradation/fallback-observations';
 import {
@@ -304,6 +305,8 @@ export async function fetchReleases(token: string | null): Promise<GhRelease[] |
 export const DEFAULT_CHANNEL: Channel = 'alpha';
 
 export function resolveChannel(params: URLSearchParams, override?: string): Channel {
+  const managed = readManagedUpdateChannel();
+  if (managed) return managed;
   // UPDATE_LANES, not CHANNELS: a client may only ask for a lane of THIS app.
   // A `?channel=nightly` is a request to be updated into a different
   // application; it is ignored rather than honoured.
@@ -452,7 +455,15 @@ export default defineTool({
     const product: Product = params.get('product') === 'server' ? 'server' : 'gui';
 
     const stored = await readOperatorState<{ update_channel?: string }>('setup_wizard_state');
-    const channel = resolveChannel(params, stored?.update_channel);
+    let channel: Channel;
+    try {
+      channel = resolveChannel(params, stored?.update_channel);
+    } catch (error) {
+      if (error instanceof ManagedUpdatePolicyError) {
+        return Response.json({ error: error.code, message: error.message }, { status: error.status });
+      }
+      throw error;
+    }
 
     // ── LOCAL-only releases: the static release host is AUTHORITATIVE (WI-4389).
     //

@@ -48,6 +48,7 @@ import { fileURLToPath } from "node:url";
 import { join, dirname, delimiter, basename, relative, isAbsolute } from "node:path";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { consumeKickoffPromptFile, KICKOFF_PROMPT_FILE_ENV } from "@papercusp/operator-core/lib/agent-kickoff/prompt-transport.mjs";
+import { launchWithHostedAgentSlot } from "@papercusp/operator-core/lib/workspace-host/hosted-agent-admission-client";
 
 /** Keep the packaged adapter relocatable while preserving source-checkout development. */
 export function resolveNativeMcpAssets(moduleUrl = import.meta.url, available = existsSync) {
@@ -107,7 +108,7 @@ function reexecExitCodeAnnounced(env) {
   if (code == null) warnMissingReexecLoop({ diagnosis: missingReexecLoopDiagnosis(env) });
   return code;
 }
-import { runPsuConnectionFrontController } from "./psu-connection-front-controller.mjs";
+import { parsePsuConnectionArgs, runPsuConnectionFrontController } from "./psu-connection-front-controller.mjs";
 import { runTerminalCheck, terminalStartupNotice } from "./psu-terminal-diagnostics.mjs";
 // DERIVED tool-delivery map (deterministic-tool-definition-delivery-2026-09-21).
 // A plain generated .mjs of frozen literals, deliberately: this launcher is
@@ -340,6 +341,11 @@ Remote hosts (run psu on another machine; every other option is forwarded to it)
   --connect-login[=<portal>]         Sign in to Papercusp cloud (default https://app.papercusp.com)
   --connect-logout[=<name>]          Sign out of Papercusp cloud on this computer
   --connect-session=<key>            Reattach a specific cloud workspace shell
+  --connect-add-ssh=<name>           Save your desktop/laptop with --connect-host
+                                     (private/VPN address or SSH config alias)
+                                     and optional --connect-user
+  --connect-gui                      Open a saved SSH machine's browser GUI
+                                     through a private local tunnel
   --connect-add-gcp-iap=<name>       Save your own GCP VM, reached over IAP SSH, with
                                      --connect-project, --connect-zone,
                                      --connect-instance and --connect-user
@@ -3132,14 +3138,44 @@ export async function resolveDirectTrackedResumeSession(
       `/api/adv/sessions/resumable?agentId=${encodeURIComponent(wanted)}`,
     );
     const exact = result?.exact;
-    // Older operators predate the `exact` response marker but still return the
-    // resumable rows. Accept a row only when its globally-unique coord owner is
-    // an exact match; this preserves the identity guard while allowing a newer
-    // launcher to resume through a lagging :3070 build.
+    // Older operators predate agentId lookup and return the bounded picker
+    // window without `exact`. A matching historical row in that window is
+    // not proof of the latest registration, so resolve the owner independently.
     if (!("exact" in (result ?? {}))) {
-      return (result?.sessions ?? [])
-        .filter((session) => session?.coordOwnerId === wanted && session?.agent)
-        .sort((a, b) => Number(b.id) - Number(a.id))[0] ?? null;
+      // A legacy operator ignores agentId and returns its bounded picker
+      // window. The existing per-agent dossier resolves the latest native
+      // handle independently of that window. Its store path is only a row-id
+      // hint: the exact server read below must still prove owner and backend.
+      const detail = await apiImpl(`/api/adv/roster/agent?owner=${encodeURIComponent(wanted)}`);
+      const handle = detail?.nativeSession;
+      if (detail?.ownerId !== wanted || handle?.ownerId !== wanted ||
+          handle?.source !== "adv_sessions") return null;
+      let path = null;
+      let rowId = null;
+      if (handle.backend === "claude" && UUID_RE.test(handle.sessionId ?? "")) {
+        path = `/api/adv/sessions/resumable?sessionId=${encodeURIComponent(handle.sessionId)}`;
+      } else {
+        const storeKey = handle.backend === "codex" && typeof handle.codexHome === "string"
+          ? basename(handle.codexHome)
+          : handle.backend === "omp" && typeof handle.agentHome === "string"
+            ? basename(dirname(handle.agentHome)) : "";
+        const match = /^session-(\d+)$/.exec(storeKey);
+        rowId = match ? Number(match[1]) : null;
+        if (Number.isSafeInteger(rowId) && rowId > 0)
+          path = `/api/adv/sessions/resumable?id=${rowId}`;
+      }
+      if (!path) throw new Error(
+        `psu: the operator cannot resolve the tracked row for agent "${wanted}"; ` +
+        "upgrade the operator to support exact agent-ID resume, or use the numeric psu session ID.",
+      );
+      const read = await apiImpl(path);
+      return (read?.sessions ?? []).find((session) =>
+        session.coordOwnerId === wanted && session.agent === handle.backend &&
+        (rowId != null ? Number(session.id) === rowId :
+          read?.exact?.ownerId === wanted &&
+          read?.exact?.requestedSessionId === handle.sessionId &&
+          Number(session.id) === read.exact.id),
+      ) ?? null;
     }
     if (exact?.requestedAgentId !== wanted) return null;
     return (result.sessions ?? []).find((session) =>
@@ -9955,6 +9991,7 @@ async function pickFeature(workspace, harness, need) {
 // always-wins kill switch. A non-TTY launch (brain dock pane, --no-picker
 // scripts) still takes the plain inherit spawn — there's no terminal to bridge.
 export const PTY_DEFAULT_ON = true;
+/** @param {{ env?: NodeJS.ProcessEnv, stdin?: { isTTY?: boolean }, stdout?: { isTTY?: boolean } }} [options] */
 export function usePtyHost({
   env = process.env,
   stdin = process.stdin,
@@ -10647,7 +10684,9 @@ export async function reportSessionEnded(advSessionId, exitCode, opts = {}) {
     }
     if (typeof response.json === "function") {
       const body = await response.json().catch(() => null);
-      if (body && body.ok !== true) {
+      // HTTP success alone is not an acknowledgement. A truncated/malformed
+      // response or JSON null must preserve the witness for keyed replay.
+      if (body?.ok !== true) {
         return {
           reported: false,
           reason: "http",
@@ -11849,6 +11888,19 @@ export async function reportSessionPortLaunchFailure(
   );
 }
 
+// Old installed shims and host-adoption envelopes can still carry the
+// launcher's Node inspector publication option. It is not a native-backend
+// setting: Claude 2.1.293 exits 1 without output when it inherits it, while
+// --version misleadingly succeeds. Preserve other Node options and the parent
+// launcher's own environment (WI-6554700010016842).
+function stripLauncherInspectorOption(env) {
+  if (typeof env.NODE_OPTIONS !== "string") return;
+  const clean = env.NODE_OPTIONS.replace(/(?:^|\s)--inspect-publish-uid=\S+/g, "").trim();
+  if (clean === env.NODE_OPTIONS) return;
+  if (clean) env.NODE_OPTIONS = clean;
+  else delete env.NODE_OPTIONS;
+}
+
 /** EI-8868/EI-8877: strip inherited `npm run`-lifecycle env pollution before it
  *  reaches an agent child. This box's long-lived gnome-terminal-server (every
  *  terminal window is forked from ONE persistent daemon, inheriting whatever
@@ -11879,8 +11931,12 @@ export async function reportSessionPortLaunchFailure(
  * only the credential source selected for this child. */
 export function sanitizeInheritedEnv(env) {
   const out = stripRecoveryMarkers(env);
+  stripLauncherInspectorOption(out);
   delete out.PAPERCUSP_ORIGINAL_CODEX_ROUTING;
   delete out[SCOPED_INFERENCE_GATEWAY_ENV];
+  // Only this host's explicit code-adoption envelope may carry its slot. A
+  // newly launched session must not inherit its parent's native reservation.
+  delete out.PAPERCUSP_HOSTED_NATIVE_SLOT;
   for (const key of Object.keys(out)) {
     if (
       key === "INIT_CWD" ||
@@ -12748,6 +12804,10 @@ export function runWrapper(options) {
       `psu: session model ${launchModelFix.from ?? "(default)"} → ${launchModelFix.to} (1M default, WI-10006049)\n`,
     );
   }
+  const launchNative = () => {
+  // Reapply after the explicit envelope and any host handoff. A successor can
+  // adopt an environment captured by an older launcher/shim.
+  stripLauncherInspectorOption(env);
   const managedPtyEnabled = Boolean(ownerId && usePtyHost({ env }));
   args = prepareCodexGatewayLaunch(env, args);
   if (env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined && !managedPtyEnabled) {
@@ -13041,6 +13101,33 @@ export function runWrapper(options) {
     reportSessionEndedImpl,
     onSpawn,
     onSpawnFailure: reportPreSpawnFailure,
+  });
+  };
+  if (!env.PAPERCUSP_HOSTED_CONNECTOR_BEARER && !env.PAPERCUSP_HOSTED_CONTROL_PLANE_URL) {
+    return launchNative();
+  }
+  void launchWithHostedAgentSlot(env, (finish) => {
+    let nativeSpawned = false;
+    const reportSpawned = onSpawn;
+    onSpawn = () => { nativeSpawned = true; return reportSpawned(); };
+    const reportEnded = reportSessionEndedImpl;
+    reportSessionEndedImpl = async (...details) => {
+      try { return await reportEnded(...details); } finally {
+        // A bridge failure after spawn is not an exit witness. Keep its charge
+        // until the native host reports a real end or host retirement proves it.
+        if (!nativeSpawned || details[2]?.launchFailed !== true) await finish();
+      }
+    };
+    const reportFailed = onSpawnFailure;
+    if (reportFailed) onSpawnFailure = async () => {
+      try { return await reportFailed(); } finally { await finish(); }
+    };
+    launchNative();
+  }).catch((error) => {
+    if (supervisorBeat) clearInterval(supervisorBeat);
+    process.stderr.write(`psu: hosted native-agent admission failed: ${error?.message ?? error}\n`);
+    void Promise.resolve(reportPreSpawnFailure()).catch(() => undefined);
+    process.exitCode = 1;
   });
 }
 
@@ -15511,6 +15598,20 @@ export function sessionPortTargetAccount(account) {
   return "default";
 }
 
+function consumeConsultEvidenceSpan(args) {
+  let span = args.consultEvidenceSpan ?? null;
+  if (span == null && process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN) {
+    try {
+      span = JSON.parse(process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN);
+    } catch {
+      throw new Error("PAPERCUSP_CONSULT_EVIDENCE_SPAN is not valid JSON");
+    } finally {
+      delete process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN;
+    }
+  }
+  return span;
+}
+
 export function sessionPortRequestBody(source, target, account, args = {}) {
   if (!Number.isSafeInteger(Number(source?.id)) || Number(source.id) <= 0) {
     throw new Error(
@@ -15526,16 +15627,7 @@ export function sessionPortRequestBody(source, target, account, args = {}) {
   if (isolatedOwner && !/^su-[A-Za-z0-9][A-Za-z0-9._-]{5,118}$/.test(isolatedOwner)) {
     throw new Error("isolated target owner must be a valid distinct su coordination identity");
   }
-  let consultEvidenceSpan = args.consultEvidenceSpan ?? null;
-  if (consultEvidenceSpan == null && process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN) {
-    try {
-      consultEvidenceSpan = JSON.parse(process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN);
-    } catch {
-      throw new Error("PAPERCUSP_CONSULT_EVIDENCE_SPAN is not valid JSON");
-    } finally {
-      delete process.env.PAPERCUSP_CONSULT_EVIDENCE_SPAN;
-    }
-  }
+  const consultEvidenceSpan = consumeConsultEvidenceSpan(args);
   // Carry-respawn reuses the adv row for its newest native session. Preserve
   // the incarnation actually selected on disk (or by consult evidence).
   const sourceNativeSessionId = consultEvidenceSpan?.sessionId ??
@@ -15633,7 +15725,8 @@ export function resumeFirstStepChoices(session, last) {
  * @param {any} session
  * @param {any} args
  * @param {{prompts?: any, readLastActiveModel?: Function, fetchPortCapabilities?: Function,
- *   readCodexModels?: Function, readOmpModels?: Function}} [dependencies]
+ *   readCodexModels?: Function, readOmpModels?: Function,
+ *   readOperatorTarget?: Function}} [dependencies]
  */
 export async function chooseResumeTarget(session, args, {
   prompts = null,
@@ -15641,6 +15734,7 @@ export async function chooseResumeTarget(session, args, {
   fetchPortCapabilities = fetchSessionPortCapabilities,
   readCodexModels = listCodexInstalledModels,
   readOmpModels = fetchOmpModelCatalog,
+  readOperatorTarget = launcherOperatorTarget,
 } = {}) {
   let last = null;
   try {
@@ -15674,7 +15768,7 @@ export async function chooseResumeTarget(session, args, {
   const hiddenTargetsNotice = unsupportedSessionPortTargetsNotice(
     session,
     portCapabilities,
-    launcherOperatorTarget().url,
+    portCapabilities?.known ? readOperatorTarget().url : null,
   );
   if (hiddenTargetsNotice) console.error(hiddenTargetsNotice);
   const allowedBackends = resumePickerBackendsFor(session, portCapabilities);
@@ -16298,7 +16392,7 @@ export function codexForkMcpUrlForOwner(codexHome, ownerId) {
  * @param {string | null} owner
  * @param {string | null} codexHome
  * @param {string | number | null} advSessionId
- * @param {{requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, onFailure?: (failure: {stage: string, reason: string, status: number | null, errorName?: string}) => void, token?: string | null, timeoutMs?: number}} options
+ * @param {{requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, onFailure?: (failure: {stage: string, reason: string, status: number | null, errorName?: string, diagnostic: {attemptId: string, startedAtMs: number, elapsedMs: number, target: {kind: string, protocol: string, port: number} | null, phaseTimingsMs: Record<string, number>}}) => void, token?: string | null, timeoutMs?: number, now?: () => number}} options
  */
 export async function ensureCodexHomeViaOperator(
   owner,
@@ -16322,16 +16416,30 @@ export async function ensureCodexHomeViaOperator(
     onFailure,
     token = null,
     timeoutMs = 10_000,
+    now = Date.now,
   } = {},
 ) {
   let stage = 'scope';
   let status = null;
+  const attemptId = randomUUID();
+  const startedAtMs = now();
+  /** @type {{kind: string, protocol: string, port: number} | null} */
+  let requestTarget = null;
+  /** @type {Record<string, number>} */
+  const phaseTimingsMs = {};
+  const traceStep = createStartupStepRunner({ now, record: (row) => {
+    if (row.phase === 'finished' || row.phase === 'failed')
+      phaseTimingsMs[row.step] = row.elapsedMs;
+  } });
   // Preserve the null-return contract without losing the cause at the PTY
-  // boundary. Never include response bodies, URLs, credentials or error text.
+  // boundary. Extend the existing host-event evidence, not a second log.
+  // Never include response bodies, URLs, hostnames, credentials or error text.
   const failed = (reason, err = null) => {
     const errorName = ['AbortError', 'TimeoutError', 'TypeError', 'SyntaxError', 'Error'].includes(err?.name)
       ? err.name : undefined;
-    try { onFailure?.({ stage, reason, status, ...(errorName ? { errorName } : {}) }); } catch { /* diagnostics cannot block recovery */ }
+    try { onFailure?.({ stage, reason, status, ...(errorName ? { errorName } : {}),
+      diagnostic: { attemptId, startedAtMs, elapsedMs: Math.max(0, now() - startedAtMs),
+        target: requestTarget, phaseTimingsMs: { ...phaseTimingsMs } } }); } catch { /* diagnostics cannot block recovery */ }
     return null;
   };
   if (!owner || !codexHome || advSessionId == null) return failed('missing-scope');
@@ -16347,22 +16455,33 @@ export async function ensureCodexHomeViaOperator(
   if (codexHome !== suCodexHomeForAdvSession(advSessionId, env)) return failed('foreign-home');
   try {
     stage = 'operator-route';
-    const resolvedOperatorUrl =
+    const resolvedOperatorUrl = await traceStep('operator-route', () =>
       operatorUrl ??
-      (await resolveOmpOperatorUrl(undefined, {
+      resolveOmpOperatorUrl(undefined, {
         env: env ?? process.env,
         probe,
         onRecovery,
       }));
+    try {
+      const target = new URL(resolvedOperatorUrl);
+      if (target.protocol === 'http:' || target.protocol === 'https:')
+        requestTarget = {
+          kind: target.hostname === 'localhost' || /^127\./.test(target.hostname) || target.hostname === '[::1]'
+            ? 'loopback' : 'remote',
+          protocol: target.protocol.slice(0, -1),
+          port: Number(target.port || (target.protocol === 'https:' ? 443 : 80)),
+        };
+    } catch { /* invalid targets are classified by the actual request below */ }
     const tok = token ?? readToken();
     stage = 'request';
-    const res = await fetchImpl(
+    const res = await traceStep('request', () => fetchImpl(
       resolvedOperatorUrl + "/api/adv/sessions/ensure-codex-home",
       {
         method: "POST",
         signal: AbortSignal.timeout(timeoutMs),
         headers: {
           "content-type": "application/json",
+          "x-papercusp-repair-attempt": attemptId,
           ...(tok ? { authorization: `Bearer ${tok}` } : {}),
         },
         body: JSON.stringify({
@@ -16373,11 +16492,11 @@ export async function ensureCodexHomeViaOperator(
           ...(typeof headless === "boolean" ? { headless } : {}),
         }),
       },
-    );
+    ));
     status = Number.isInteger(res.status) ? res.status : null;
     stage = 'response';
     if (res.ok === false) return failed('http-error');
-    const r = await res.json().catch(() => null);
+    const r = await traceStep('response', () => res.json().catch(() => null));
     if (!r || typeof r !== 'object') return failed('invalid-response');
     if (r.ok !== true) return failed('operator-refused');
     // The canonical writer refreshes config.toml and may remove the launch's
@@ -16385,9 +16504,10 @@ export async function ensureCodexHomeViaOperator(
     // Default/unspecified launches keep their existing provider semantics.
     if (routeMode === "auto" || routeMode === "pin" || env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined) {
       stage = 'home-route';
-      if (routeMode === "pin" && !accountId)
-        throw new Error("Codex carry cannot restore a pin without an account id");
-      applyCodexGatewayRoute(codexHome, {
+      traceStep('home-route', () => {
+        if (routeMode === "pin" && !accountId)
+          throw new Error("Codex carry cannot restore a pin without an account id");
+        applyCodexGatewayRoute(codexHome, {
         mode: routeMode,
         id: accountId,
         ownerId: owner,
@@ -16395,6 +16515,7 @@ export async function ensureCodexHomeViaOperator(
         ...(env[SCOPED_INFERENCE_GATEWAY_ENV] !== undefined
           ? { gateway: snapshotScopedInferenceGateway(JSON.parse(env[SCOPED_INFERENCE_GATEWAY_ENV])) }
           : {}),
+        });
       });
     }
     if (r.repaired) {
@@ -16564,12 +16685,12 @@ export async function launchSessionPort(
  * path and are not judged here. `home` is injectable for tests.
  * @param {any} source
  * @param {any} target
- * @param {{ tracked?: boolean, home?: string }} [options]
+ * @param {{ tracked?: boolean, home?: string, sourceNativeSessionId?: string | null }} [options]
  * @returns {string | null} */
 export function unresumableSourceCause(
   source,
   target,
-  { tracked, home = homedir() } = {},
+  { tracked, home = homedir(), sourceNativeSessionId = null } = {},
 ) {
   if (target?.operation !== "port") return null;
   const label = `${source?.agent ?? "unknown"} session ${
@@ -16580,6 +16701,13 @@ export function unresumableSourceCause(
       `cross-backend resume requires a psu-tracked source session; ${label} is a raw native ` +
       "session (no psu row), so it can only resume/fork in place"
     );
+  const currentId = source?.agent === "omp"
+    ? source.ompThreadId ?? source.sessionId : source?.sessionId;
+  // A carry may have rotated this row to an empty/newer native session. Its
+  // transcript and hasArchive flag say nothing about the historical evidence
+  // selected by the consult. The operator inspector authenticates ownership
+  // and reads/restores that exact incarnation before preparing any port.
+  if (sourceNativeSessionId && sourceNativeSessionId !== currentId) return null;
   if (!sessionIsResumable(source, { home }))
     return (
       `${label} has no source transcript to carry onto ${target.targetAgent}: ` +
@@ -16593,7 +16721,15 @@ async function launchResolvedResume(source, args, { tracked }) {
   // prompting before the target is known is how cross-backend resumes get
   // silently pinned to the source provider.
   const target = await chooseResumeTarget(source, args);
-  const unresumable = unresumableSourceCause(source, target, { tracked });
+  if (target.operation === "port") {
+    // Consume the span once, before the local check, and retain the same value
+    // for sessionPortRequestBody. Checking the row first rejects valid older
+    // evidence whenever its newest transcript has already been retired.
+    args = { ...args, consultEvidenceSpan: consumeConsultEvidenceSpan(args) };
+  }
+  const unresumable = unresumableSourceCause(source, target, {
+    tracked, sourceNativeSessionId: args.consultEvidenceSpan?.sessionId,
+  });
   if (unresumable) throw new Error(`psu: refusing to resume — ${unresumable}`);
   if (!(await ensureBackendInstalled(target.targetAgent))) {
     process.exitCode = 1;
@@ -17632,7 +17768,14 @@ async function reconcileRecoveryAuditSoft() {
   }
 }
 
-async function main() {
+/** @param {{ readHandoff?: typeof readHostHandoffForParentPid,
+ * launchHandoff?: typeof launchHostHandoff,
+ * connectionFrontController?: typeof runPsuConnectionFrontController }} [dependencies] */
+export async function main({
+  readHandoff = readHostHandoffForParentPid,
+  launchHandoff = launchHostHandoff,
+  connectionFrontController = runPsuConnectionFrontController,
+} = {}) {
   // Recovery is the no-control-plane path. Detect its dedicated flags before
   // even the connection front controller: a remote-profile lookup or transport
   // bootstrap must not become an accidental prerequisite during an outage.
@@ -17672,6 +17815,64 @@ async function main() {
     const recoveryArgs = parseArgs(rawArgv);
     if (await recoveryFlow(recoveryArgs, { rawArgv })) return;
   }
+  // A re-exec already has a destination and a checkpointed continuation. Resolve
+  // its validated parent-bound handoff before the connection picker: a plain
+  // interactive shim replays argv=[], otherwise stopping here for human input
+  // until the handoff expires. Legacy shims may have no owner in their env.
+  // Only adoption needs a pre-controller launch-argument inspection. Reuse
+  // the connection parser to strip its namespace first: those flags are still
+  // handled below and must not be reported as unknown or ignored here.
+  const adoptionArgv = isHostAdoptionReexec
+    ? parsePsuConnectionArgs(rawArgv).forwardedArgv
+    : null;
+  const adoptionEventOwnerId = adoptionOwnerId ||
+    (adoptionArgv ? parseArgs(adoptionArgv).ownerId : null) || null;
+  const handoffReadStartedAt = Date.now();
+  const hostHandoff = isHostAdoptionReexec
+    ? readHandoff(process.ppid, {
+        ownerId: adoptionEventOwnerId,
+        onReject: (rejection) => {
+          const rejectedOwnerId = rejection?.ownerId || adoptionEventOwnerId;
+          if (!rejectedOwnerId) return;
+          const { path: _path, ownerId: _ownerId, ...detail } = rejection;
+          appendHostEvent(rejectedOwnerId, "host-code-adoption-handoff-rejected", {
+            site: "parent-pid",
+            reexecExitCode: hostReexecExitCode,
+            ...detail,
+          });
+        },
+      })
+    : null;
+  if (isHostAdoptionReexec) {
+    const ownerIdForHandoff = hostHandoff?.ownerId || adoptionEventOwnerId;
+    if (ownerIdForHandoff) {
+      const firstTurnText = hostHandoff?.firstTurnText;
+      appendHostEvent(ownerIdForHandoff, "host-code-adoption-handoff-acceptance", {
+        reexecExitCode: hostReexecExitCode,
+        parentPid: process.ppid,
+        accepted: Boolean(hostHandoff),
+        mode: hostHandoff?.mode ?? null,
+        firstTurnPresent:
+          typeof firstTurnText === "string" && firstTurnText.length > 0,
+        firstTurnBytes:
+          typeof firstTurnText === "string"
+            ? Buffer.byteLength(firstTurnText, "utf8")
+            : 0,
+        argsCount: Array.isArray(hostHandoff?.args)
+          ? hostHandoff.args.length
+          : null,
+        elapsedMs: Math.max(0, Date.now() - handoffReadStartedAt),
+      });
+    }
+  }
+  if (hostHandoff) {
+    // Old hosts omitted headless posture from childEnv. The shim still replays
+    // the original --headless flag; restore it before this fast path skips the
+    // ordinary launch setup, or the detached successor loses its injectable PTY.
+    if (parseArgs(adoptionArgv).headless) process.env.PAPERCUSP_PSU_HEADLESS = "1";
+    await launchHandoff(hostHandoff);
+    return;
+  }
   const frontControllerStartedAt = Date.now();
   if (isHostAdoptionReexec && adoptionOwnerId) {
     appendHostEvent(adoptionOwnerId, "host-code-adoption-front-controller-started", {
@@ -17683,7 +17884,7 @@ async function main() {
   try {
     connection = hostedCustomer
       ? { handled: false, argv: rawArgv }
-      : await runPsuConnectionFrontController(rawArgv);
+      : await connectionFrontController(rawArgv);
   } catch (error) {
     if (isHostAdoptionReexec && adoptionOwnerId) {
       appendHostEvent(adoptionOwnerId, "host-code-adoption-front-controller-failed", {
@@ -17744,55 +17945,6 @@ async function main() {
   // flow. Re-running bootstrap-su here would select or mint another adv row
   // while the handoff's already-minted child belongs to the predecessor row.
   if (args.headless) process.env.PAPERCUSP_PSU_HEADLESS = "1";
-  const handoffReadStartedAt = Date.now();
-  // WI-6554700010008431: a refused handoff is CONSUMED, and the event below is
-  // keyed by the handoff's own ownerId — so without this sink a refusal on a
-  // shim whose env carries no PAPERCUSP_SID left no event at all.
-  // WI-6554700010008431: headless fleet shims carry the owner as `--owner-id=`, not
-  // PAPERCUSP_SID, so the env-only fallback was null for exactly the population that
-  // lost its handoff — and an ambiguous or MISSING handoff then logged no event at all.
-  const adoptionEventOwnerId = adoptionOwnerId || args.ownerId || null;
-  const hostHandoff = startupStep("host-handoff-lookup", () => isHostAdoptionReexec
-    ? readHostHandoffForParentPid(process.ppid, {
-        ownerId: adoptionEventOwnerId,
-        onReject: (rejection) => {
-          const rejectedOwnerId = rejection?.ownerId || adoptionEventOwnerId;
-          if (!rejectedOwnerId) return;
-          const { path: _path, ownerId: _ownerId, ...detail } = rejection;
-          appendHostEvent(rejectedOwnerId, "host-code-adoption-handoff-rejected", {
-            site: "parent-pid",
-            reexecExitCode: hostReexecExitCode,
-            ...detail,
-          });
-        },
-      })
-    : null);
-  if (isHostAdoptionReexec) {
-    const ownerIdForHandoff = hostHandoff?.ownerId || adoptionEventOwnerId;
-    if (ownerIdForHandoff) {
-      const firstTurnText = hostHandoff?.firstTurnText;
-      appendHostEvent(ownerIdForHandoff, "host-code-adoption-handoff-acceptance", {
-        reexecExitCode: hostReexecExitCode,
-        parentPid: process.ppid,
-        accepted: Boolean(hostHandoff),
-        mode: hostHandoff?.mode ?? null,
-        firstTurnPresent:
-          typeof firstTurnText === "string" && firstTurnText.length > 0,
-        firstTurnBytes:
-          typeof firstTurnText === "string"
-            ? Buffer.byteLength(firstTurnText, "utf8")
-            : 0,
-        argsCount: Array.isArray(hostHandoff?.args)
-          ? hostHandoff.args.length
-          : null,
-        elapsedMs: Math.max(0, Date.now() - handoffReadStartedAt),
-      });
-    }
-  }
-  if (hostHandoff) {
-    await launchHostHandoff(hostHandoff);
-    return;
-  }
   // WI-37841 — FIRST, before any flow can fail. A launch carrying a PRE-PINNED
   // owner id was started programmatically (launch-su's "+ New session"), so
   // nobody is watching its window and every diagnostic it prints from here on is

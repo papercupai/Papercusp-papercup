@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "native-p042-role-guidance-v1",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "item": "P-042",
+  "workItem": "EI-26180015557625718",
+  "status": "focused-current-source-qualified; broader acceptance remains open",
+  "scope": "Installer ripgrep fallback and engineer/power/generic/debugger/scoper guidance. No installed native-client, final-release, full execution-closure, benefit or deployed-48h claim.",
+  "rootCause": "Maintained source guidance retained the earlier raw GitNexus topology default after graph:query acquired the first-party route. The routing guard rejected query and definition misrouting but permitted raw context/impact as default topology authorities.",
+  "consumers": [
+    "papercusp-files.ts playbookCandidates/renderSuPlaybook select engineer/power and generic engineer fallback",
+    "prompt-assembly.ts loadRoleToolsMd loads role tools guidance into the tools-playbook section",
+    "papercusp-files.ts writeRipgrepShim writes the installed executable and its diagnostic fallback"
+  ],
+  "change": "Compiler symbol fallback uses lsp:query. Default topology uses graph:query context/impact/trace with bounded paths and explicit JS/TS evidence limits. Optional internal comparisons retain D-005 authority; D-004 distribution exclusion is explicit. Existing query fail-closed warning remains.",
+  "guard": "Extended the maintained routing judge to reject unqualified raw context/impact topology recommendations in tables and prose. Fixtures reproduce the former table and debugger/scoper pitches, distinguish optional internal comparisons, prevent a later optional sentence excusing a default, and preserve the wrong-direction warning. Existing generated-shim test executes the missing-binary diagnostic. New real-profile render cases check engineer/power/generic output.",
+  "verification": {
+    "initialFullBatch": {
+      "log": "/tmp/native-p042-role-routing-tests-20261016.log",
+      "capture": "/tmp/native-p042-role-routing-source-20261016.json",
+      "result": "exit1; 126 passed, 5 failed. Two assertions exposed one new detector false positive, subsequently fixed with a fixture. Three existing blueprint-render assertions are retained as owned residue EI-26181077825916890."
+    },
+    "routingAndShim": {
+      "log": "/tmp/native-p042-role-routing-v2-tests-20261016.log",
+      "capture": "/tmp/native-p042-role-routing-v2-source-20261016.json",
+      "captureSha256": "aea2712aa9bb64e4952a9d5439231a804cc4b3f4a6f9b8dba7b431b99898efa6",
+      "result": "terminal exit0; routing46 and shim11 pass; zero skipped or child substitutions",
+      "sourceQualification": "Named changed TypeScript sources and tests match Vite pre-transform originals. At readback, 1076 of 1077 unique captured module originals matched; libs/papercusp/packages/locks/src/resource-lock-store.ts had changed independently. The historical passing run remains evidence for its captured image, not the complete current transitive graph."
+    },
+    "realProfileRender": {
+      "log": "/tmp/native-p042-role-render-tests-20261016.log",
+      "capture": "/tmp/native-p042-role-render-source-20261016.json",
+      "captureSha256": "5b09d258f80c203f6ddfb61f5470c50f07de8e238921af236e705eab54066914",
+      "selection": "renders native topology guidance",
+      "result": "terminal exit0; 3 selected cases pass; 72 intentionally deselected cases reported skipped; zero child substitutions",
+      "sourceQualification": "1074 captured repository-worker Vite original module hashes matched current at readback. Prompt Markdown is a runtime file input, not a Vite module; its current hashes are recorded below. This does not establish full-suite acceptance."
+    },
+    "types": {
+      "log": "/tmp/native-p042-role-routing-types-20261016.log",
+      "result": "Five named changed TypeScript files: LINT_TSC_RESULT scope=files exit=0 status=clean; command drained exit0. Compiler service declined scope-too-wide; maintained full-compile fallback completed. Unrelated diagnostic chatter is not a clean whole-package claim."
+    }
+  },
+  "sourceHashes": {
+    "packages/operator-core/lib/desktop-install/papercusp-files.ts": "678a16cbf74359a5847da5e44e92f0c99b3a5602305df8e89aec67974a061a67",
+    "apps/operator/prompts/papercusp-su-engineer.tools.md": "947cc05f31653cc2741a50f2831ebf4fa30af6dce73df49ccca03900eabb4253",
+    "apps/operator/prompts/papercusp-su-power.tools.md": "5df5c77f38e4053f59e88fc9e066bd6b61b04cb2e4e18ab7a2e7a816c5b9e5df",
+    "apps/operator/prompts/debugger.tools.md": "40493597cae79f0bcc241ae89f4121bc2292d5eebc330f8eb7adcd3400316d2e",
+    "apps/operator/prompts/scoper.tools.md": "55356257e67faa933357e4f74a9da830cbbc85b6bf7388e904967bf0075a11d5",
+    "packages/operator-core/lib/doc-claims/code-intel-routing-authority.ts": "2dc6b7d9984feb6eac2a62cbff4f0177722aef427fe5c617cb587e2ed04b8027",
+    "packages/operator-core/lib/doc-claims/code-intel-routing-authority.test.ts": "ce8841a52c1333e6390c1b2cd41f3b1dffd2595eba0960a6413e125c597b315c",
+    "packages/operator-core/lib/desktop-install/__tests__/ripgrep-shim.test.ts": "6d465067f9a81b7304ed6aaffe777bb86b99c3a8588c9aa76596cfddb635d06e",
+    "packages/operator-core/lib/desktop-install/__tests__/papercusp-files.test.ts": "fef0d281e22eca92e1709f8e37b944ac567bcebab69b4891119d8ae621c5ce93"
+  },
+  "ownedResidue": ["EI-26181077825916890", "EI-26179606670734857"],
+  "remaining": "P042 broader corpus coverage, original P012 outcomes, deployed P018 48h continuity and final distribution/shipment remain open. P040/P041 owner scope wall is unchanged and unanswered."
+}

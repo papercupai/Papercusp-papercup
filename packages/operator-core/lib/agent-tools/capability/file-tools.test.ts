@@ -387,10 +387,16 @@ describe('capability:read', () => {
     const original = Buffer.from(JSON.stringify({ payload: 'x'.repeat(6_100) }), 'utf8');
     process.env.PAPERCUSP_SCRATCH_ROOT = scratchRoot;
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, original);
+    writeScratchReference({
+      filePath: file,
+      payload: original,
+      workspaceId: 'test-workspace',
+      mediaType: 'text/plain',
+    });
     const trackedPhases = new Set<string>();
     const trackedCtx = {
       ...baseCtx,
+      workspaceId: 'test-workspace',
       phases: {
         track: async (phase: string, work: () => Promise<unknown>) => {
           trackedPhases.add(phase);
@@ -405,8 +411,12 @@ describe('capability:read', () => {
         content: Array<{ text: string }>;
         isError?: boolean;
       };
-      expect(lineRead.isError).not.toBe(true);
-      expect(lineRead.content[0].text).toContain('[line truncated]');
+      expect(lineRead.isError).toBe(true);
+      expect(parse(lineRead)).toMatchObject({
+        ok: false,
+        reason: 'scratch_line_window_too_large',
+      });
+      expect(parse(lineRead).message).toContain('byte_offset+byte_limit');
       expect([...trackedPhases]).toEqual(expect.arrayContaining([
         'capability:read:scratch:stat',
         'capability:read:scratch:file-read',
@@ -419,7 +429,7 @@ describe('capability:read', () => {
       while (!eof && recovered.length < 100) {
         const r = (await readTool.handler!(
           { uri, byte_offset: byteOffset, byte_limit: 997 },
-          ctx,
+          { ...baseCtx, workspaceId: 'test-workspace' } as never,
         )) as { content: Array<{ text: string }>; isError?: boolean };
         expect(r.isError).not.toBe(true);
         const page = parse(r) as {

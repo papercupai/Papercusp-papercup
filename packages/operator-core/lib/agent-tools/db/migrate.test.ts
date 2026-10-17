@@ -127,6 +127,7 @@ import migrateTool, {
   migrationBackupAdvisoryLockSql,
   migrationBackupLockGuardSql,
   PSQL_PROGRESS_INTERVAL_MS,
+  runPsql,
 } from './migrate';
 import {
   preDestructiveSnapshotAdmissionGuardSql,
@@ -727,6 +728,34 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
 describe('db:migrate — lease loss after SQL guards (WI-10008141)', () => {
   beforeEach(() => { process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1'; });
   afterEach(() => { vi.useRealTimers(); });
+
+  it('recognizes a fence marker split inside a multibyte stdout character', async () => {
+    const marker = 'PAPERCUSP_MIGRATION_FENCE_é';
+    const markerBytes = Buffer.from(`${marker}\n`, 'utf8');
+    const splitAt = markerBytes.indexOf(Buffer.from('é', 'utf8')) + 1;
+    const stdout = new EventEmitter();
+    const write = vi.fn();
+    let finish: ExecFileCallback | undefined;
+    const end = vi.fn((_input?: string) => queueMicrotask(() => finish?.(null, '', '')));
+    h.execFile.mockImplementationOnce((_cmd, _args, _opts, callback: ExecFileCallback) => {
+      finish = callback;
+      return { stdout, stdin: { write, end }, kill: vi.fn() };
+    });
+    const assertCurrent = vi.fn(async () => ({ current: true as const }));
+
+    const pending = runPsql('psql', [], {
+      encoding: 'utf8',
+      input: `SELECT 1;\n\\echo ${marker}\nSELECT 2;\n`,
+      fence: { marker, assertCurrent },
+    });
+    stdout.emit('data', markerBytes.subarray(0, splitAt));
+    stdout.emit('data', markerBytes.subarray(splitAt));
+
+    await expect(pending).resolves.toMatchObject({ status: 0 });
+    expect(assertCurrent).toHaveBeenCalledOnce();
+    expect(write).toHaveBeenCalledWith(`SELECT 1;\n\\echo ${marker}\n`);
+    expect(end).toHaveBeenCalledWith('SELECT 2;\n');
+  });
 
   it.each(['expired_or_released', 'superseded'] as const)(
     'withholds the DDL and action receipt when the post-wait fence is %s', async (reason) => {

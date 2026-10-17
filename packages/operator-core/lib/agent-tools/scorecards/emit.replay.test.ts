@@ -176,6 +176,81 @@ beforeEach(() => {
 });
 
 describe('scorecards:emit spec-test-adequacy replay guard', () => {
+  it.each([false, true])('retains the exact measurement failure when replay blocks a %s provenance recipe', async (recordedProvenance) => {
+    const measurementEvidence = {
+      status: 'measured' as const,
+      selectedBindings: 1,
+      measuredBindings: 1,
+      unavailableBindings: [],
+      withoutMeasurementBasis: [],
+      bindings: [{ bindingId: 45918, evidenceKind: 'test', evidenceRef: 'test/lock.test.ts', status: 'measured' as const }],
+    };
+    const unavailable = {
+      ...measurementEvidence,
+      status: 'degraded',
+      measuredBindings: 0,
+      unavailableBindings: [{ id: 45918, evidenceKind: 'test', evidenceRef: 'test/lock.test.ts', reason: 'git cat-file measurement deadline exceeded' }],
+      bindings: [{ ...measurementEvidence.bindings[0]!, status: 'unavailable' }],
+    };
+    const replay = {
+      ...blockedReplay,
+      rows: [{ ...blockedReplay.rows[0]!, measurementEvidence: unavailable }],
+    };
+    const result = await emitScorecard(
+      emitArgs({ rerunRecipe: { ...RERUN_RECIPE, ...(recordedProvenance ? { measurementEvidence } : {}) } }),
+      { createdBy: 'su-grader' },
+      { dispatchTool: vi.fn().mockResolvedValue(replay) },
+    );
+
+    expect(result).toMatchObject({ ok: false, code: 'invalid_spec_test_adequacy_binding' });
+    expect(result.error).toContain('replay measurement unavailable');
+    expect(result.error).toContain('45918');
+    expect(result.error).toContain('git cat-file measurement deadline exceeded');
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('bounds unavailable binding diagnostics and reports omitted bindings', async () => {
+    const unavailableBindings = Array.from({ length: 7 }, (_, index) => ({
+      id: 45918 + index,
+      evidenceKind: 'test',
+      evidenceRef: `test/${'long-path-'.repeat(100)}${index}.test.ts`,
+      reason: 'measurement deadline exceeded '.repeat(1000),
+    }));
+    const replay = {
+      ...blockedReplay,
+      rows: [{
+        ...blockedReplay.rows[0]!,
+        measurementEvidence: {
+          status: 'degraded',
+          selectedBindings: unavailableBindings.length,
+          measuredBindings: 0,
+          unavailableBindings,
+          withoutMeasurementBasis: [],
+          bindings: unavailableBindings.map(binding => ({
+            bindingId: binding.id,
+            evidenceKind: binding.evidenceKind,
+            evidenceRef: binding.evidenceRef,
+            status: 'unavailable',
+          })),
+        },
+      }],
+    };
+    const result = await emitScorecard(emitArgs(), { createdBy: 'su-grader' }, {
+      dispatchTool: vi.fn().mockResolvedValue(replay),
+    });
+
+    expect(result).toMatchObject({ ok: false, code: 'invalid_spec_test_adequacy_binding' });
+    expect(result.error).toContain('7 unavailable bindings');
+    for (const binding of unavailableBindings.slice(0, 4)) {
+      expect(result.error).toContain(String(binding.id));
+    }
+    expect(result.error).not.toContain(String(unavailableBindings[4]!.id));
+    expect(result.error).toContain('3 additional unavailable bindings');
+    expect(result.error).toContain('[truncated]');
+    expect(result.error!.length).toBeLessThan(3000);
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it.each(['fail', 'unknown'])('retains the %s replay explanation and repair guidance without filing a card', async (rating) => {
     const replay = {
       ...blockedReplay,

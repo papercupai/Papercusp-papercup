@@ -175,3 +175,23 @@ describe('failureFingerprint never fingerprints the capability:bash runner marke
     for (const m of markers) expect(m.startsWith(RUNNER_MARKER_PREFIX)).toBe(true);
   });
 });
+
+describe('failureFingerprint never fingerprints passing test lines', () => {
+  it.each([
+    '✔ the mac leg cannot finish without the provenance its receipt reads as an oracle (Nms)',
+    'ok 17 - the mac leg cannot finish without the provenance its receipt reads as an oracle (Nms)',
+  ])('falls through when a passing line contains failure-shaped text: %s', (line) => {
+    const result = failureFingerprint({ exitCode: 1, exitReason: 'exited', logTail: line });
+    expect(result.source).toBe('exit');
+    expect(result.label).not.toContain('cannot finish');
+  });
+
+  it('still prefers a real error line when a passing line follows it', () => {
+    const result = failureFingerprint({
+      exitCode: 1,
+      logTail: 'Error: upload refused\n✔ the mac leg cannot finish without the provenance its receipt reads as an oracle (Nms)',
+    });
+    expect(result.source).toBe('log');
+    expect(result.label).toContain('upload refused');
+  });
+});

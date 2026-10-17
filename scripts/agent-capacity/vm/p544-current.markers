@@ -1,0 +1,6 @@
+# P-544 Server candidate: check maintained hosted-pool protections before VM spend.
+# These are presence checks; exact source/package hashes and real-VM acceptance remain required.
+p544-entitlement-source packages/operator-core/lib/workspace-host/hosted-lifecycle-store.ts hosted_pool_quota_exceeded
+p544-idle-source packages/operator-core/lib/workspace-host/hosted-lifecycle-store.ts hosted_pool_idle_active_work
+p544-entitlement-bundle @sidecar hosted_pool_quota_exceeded
+p544-idle-bundle @sidecar hosted_pool_idle_active_work

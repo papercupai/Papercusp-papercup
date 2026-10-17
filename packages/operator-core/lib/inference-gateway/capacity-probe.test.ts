@@ -228,6 +228,29 @@ describe('probeAccountCapacity', () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+  it('preserves explicit Codex credits=true on a 429 response', async () => {
+    const result = await probeAccountCapacity(
+      acct('codex-credits'),
+      okDeps({
+        'x-codex-primary-used-percent': '100',
+        'x-codex-primary-window-minutes': '10080',
+        'x-codex-credits-has-credits': 'True',
+        'x-codex-credits-balance': '50000',
+      }, 429),
+      FULL,
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      status: 429,
+      windows: {
+        utilization7d: 1,
+        usageCreditsAvailable: true,
+        creditBalance: { amount: 50000, unit: 'credits', source: 'codex', unlimited: false },
+      },
+      unwalls: false,
+    });
+  });
+
   it('continues to sibling egress after a bounded refusal and discards it on success', async () => {
     const fetchImpl = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ error: { type: 'invalid_request_error', message: 'route refused' } }), { status: 400 }))

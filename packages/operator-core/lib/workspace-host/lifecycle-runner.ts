@@ -54,6 +54,7 @@ import {
   type WorkspaceHostCanaryAdmission,
 } from './provisioning-runner';
 import type { WorkspaceHostProvisionBootstrapReleaseOverride } from './provision-bootstrap';
+import { validateDurableStorageAllocationCore, workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
 import {
   WorkspaceHostInitializationReplayInFlightError,
   createWorkspaceHostInitializationReplayStore,
@@ -87,6 +88,8 @@ export interface RunWorkspaceHostLifecycleInput {
   canary?: WorkspaceHostCanaryAdmission;
   operationId?: string;
   actorId?: string;
+  /** Internal hosted reservation identity; public lifecycle parsers omit it. */
+  hostedCustomerWorkspaceId?: string;
   signal?: AbortSignal;
   store?: WorkspaceHostLifecycleStore;
   controllerAuthority?: WorkspaceHostControllerAuthority;
@@ -935,6 +938,9 @@ export async function runWorkspaceHostLifecycle(
   if (target.id !== hostId || target.desired.hostId !== hostId) {
     throw new WorkspaceHostProvisioningRequestError(['stored workspace-host identity does not match hostId']);
   }
+  if (input.hostedCustomerWorkspaceId && input.hostedCustomerWorkspaceId !== target.hostedCustomerWorkspaceId) {
+    throw new WorkspaceHostProvisioningRequestError(['hosted customer reservation does not match stored host binding']);
+  }
   if (input.connection.target !== target.target || input.provider.target !== target.target) {
     throw new WorkspaceHostProvisioningRequestError([
       'workspace-host provider and connection must match stored target',
@@ -985,10 +991,22 @@ export async function runWorkspaceHostLifecycle(
     }
   }
 
+  const storageAdmission = target.durableStorageAdmission;
+  if (storageAdmission) {
+    if (!target.hostedCustomerWorkspaceId || storageAdmission.customerWorkspaceId !== target.hostedCustomerWorkspaceId ||
+        !storageAdmission.allocation) {
+      throw new WorkspaceHostProvisioningRequestError(['pooled storage admission allocation or tenant is invalid']);
+    }
+    try { validateDurableStorageAllocationCore(storageAdmission.allocation); }
+    catch (error) { throw new WorkspaceHostProvisioningRequestError([message(error)]); }
+  }
   const context: WorkspaceHostProviderContext = {
     workspaceId,
     requestId: operationId,
     connection: { ...input.connection, scope: target.desired.scope },
+    ...(target.hostedCustomerWorkspaceId ? { durableTenantIdentity:
+      workspaceHostDurableTenantIdentity(workspaceId, target.hostedCustomerWorkspaceId) } : {}),
+    ...(storageAdmission?.allocation ? { durableStorageAllocation: { ...storageAdmission.allocation } } : {}),
     ...(hostBootstrapScript ? { hostBootstrapScript } : {}),
     ...(input.actorId ? { actorId: input.actorId } : {}),
     ...(input.signal ? { signal: input.signal } : {}),
@@ -1138,6 +1156,10 @@ export async function runWorkspaceHostLifecycle(
     action: input.action,
     status: 'running',
     message: `Workspace-host ${input.action} started`,
+    ...(input.hostedCustomerWorkspaceId ? { hostedAdmission: {
+      customerWorkspaceId: input.hostedCustomerWorkspaceId, actorId: input.actorId ?? '',
+      request: { hostId, action: input.action },
+    } } : {}),
     request: {
       sourceHostId: hostId,
       ...(input.action === 'restore' && input.canary ? { canary: input.canary } : {}),
@@ -1347,7 +1369,8 @@ export async function runWorkspaceHostLifecycle(
        * so gating would replace a premature success with a permanent hang.
        */
       const requiresInitialization = workspaceHostActionInvalidatesInitialization(input.action);
-      if (requiresInitialization && input.providerCompletionMode === 'defer-to-product-controller') {
+      if (input.providerCompletionMode === 'defer-to-product-controller' &&
+          (requiresInitialization || input.action === 'start' || input.action === 'restart')) {
         const providerMessage =
           `Workspace-host ${input.action} provider steps completed; ` +
           'the durable product controller is continuing to workspace-usable';

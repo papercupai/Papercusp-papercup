@@ -876,6 +876,37 @@ describe('buildReleaseTrace', () => {
     expect(out.nextVerb?.name).not.toBe('git-sync:await');
   });
 
+  it('pins a checkpoint-run recommendation to the exact frozen repair head', () => {
+    const repairHead = 'c'.repeat(40);
+    const frozenCandidate = 'd'.repeat(40);
+    const repairQueue = {
+      phase: 'ready-to-verify',
+      candidate: frozenCandidate,
+      frozenCandidate,
+      repairHead,
+      decision: 'verify-repair',
+    } as NonNullable<PipelinePosition['gate']['repairQueue']>;
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+          gate: { ...position().gate, repairQueue },
+          verdictProvenance: {
+            ...position().verdictProvenance,
+            targetIncludedInGreenPin: true,
+            deployOrigin: 'ahead-of-gate',
+          },
+        }),
+      }),
+    );
+
+    expect(out.nextVerb).toMatchObject({
+      name: 'release:checkpoint-run',
+      args: { requiredAncestorSha: repairHead },
+    });
+    expect(out.nextVerb?.reason).toContain(`repairHead ${repairHead}`);
+  });
+
   it('awaits origin egress when a local commit is not yet on origin/staging', () => {
     const out = buildReleaseTrace(
       input({

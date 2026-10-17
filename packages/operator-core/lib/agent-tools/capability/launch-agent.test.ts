@@ -86,9 +86,11 @@ vi.mock('../../../../../apps/operator/scripts/psu-launcher.mjs', async (orig) =>
 const shutdownViaPtyMock = vi.hoisted(() => vi.fn(async (_ownerId: string, _opts?: unknown) => 'sent'));
 const findLiveHostMock = vi.hoisted(() => vi.fn((_ownerId: string): unknown => null));
 const markAdvSessionEndedMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => true));
+const readAdvSessionLaunchRecordByOwnerMock = vi.hoisted(() => vi.fn());
 vi.mock('../../adv-sessions', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   markAdvSessionEnded: (...args: unknown[]) => markAdvSessionEndedMock(...args),
+  readAdvSessionLaunchRecordByOwner: (...args: unknown[]) => readAdvSessionLaunchRecordByOwnerMock(...args),
 }));
 const resolveSessionStatesMock = vi.hoisted(() => vi.fn());
 vi.mock('../coordination/liveness-oracle', async (orig) => ({
@@ -370,6 +372,7 @@ beforeEach(() => {
   releaseAgentLaunchClaimMock.mockResolvedValue(true);
   markAdvSessionEndedMock.mockReset();
   markAdvSessionEndedMock.mockResolvedValue(true);
+  readAdvSessionLaunchRecordByOwnerMock.mockReset().mockResolvedValue(null);
   resolveSessionStatesMock.mockReset();
   resolveSessionStatesMock.mockResolvedValue(new Map([['su-a1a71', { sessionState: 'ended' }]]));
   fetchPresenceFleetMock.mockResolvedValue(new Map());
@@ -1249,6 +1252,21 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     expect(task.nativeSession).not.toBe(ownerId);
   });
 
+  it('projects an owner-bound Codex rollout onto its task receipt', async () => {
+    const ownerId = 'su-codex-judge';
+    verifyFreshLaunchStartedMock.mockResolvedValueOnce({
+      agentStarted: true, waitedMs: 5,
+      sessions: [{ ownerId, advSessionId: 73, sessionId: 'codex-rollout', successfulCalls: 0 }],
+      note: 'native turn observed',
+    });
+    const res = await launchAgent.handler({ agent: 'codex', brief: 'grade evidence',
+      __respawnOwnerId: ownerId } as never, ctx);
+    const task = (dataOf(res)?.launch as { tasks: Array<Record<string, unknown>> }).tasks[0];
+    expect(task).toMatchObject({ ownerId, nativeSession: {
+      backend: 'codex', ownerId, rolloutId: 'codex-rollout', exactResumeSupported: true,
+    } });
+  });
+
   it('keeps an unresolved verifier handle explicitly null', async () => {
     const ownerId = 'su-judge-without-native-id';
     verifyFreshLaunchStartedMock.mockResolvedValueOnce({
@@ -1697,6 +1715,29 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
         failures: [{ reason, taskId: 'task777' }],
       },
       tasks: [{ taskId: 'task777', logPath: '/tmp/papercusp-ws/fleet-logs/judge.log' }],
+    });
+  });
+
+  it('records an internal grading-audit target on the launched headless task row', async () => {
+    const gradingAudit = {
+      issueId: 'EI-grade-task',
+      evidenceFingerprint: 'evidence-fingerprint-v1',
+      reservation: {
+        key: 'grading-audit:EI-grade-task',
+        reservedAt: '2026-10-15T18:00:00.000Z',
+      },
+    };
+    const internalCtx = {
+      ...(ctx as object),
+      [launchAgentModule.INTERNAL_GRADING_AUDIT_TASK_DETAIL]: gradingAudit,
+    } as never;
+
+    const res = await launchAgent.handler({ brief: 'grade this exact scorecard', headless: true }, internalCtx);
+
+    expect(isError(res)).toBe(false);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
+    expect(spawnHeadlessMock.mock.calls[0]?.[0]).toMatchObject({
+      ledgerDetail: { gradingAudit },
     });
   });
 });
@@ -2822,6 +2863,52 @@ describe('resume + fork (D-004/D-007)', () => {
         reusePath: 'capability:launch-agent resume/successor -> agent-launch-core.buildAgentLaunchCommand',
       },
     });
+  });
+
+  it('leader recovery uses the ended owner launch record and restores the leader role', async () => {
+    findLiveHostMock.mockReturnValue(null);
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
+    readAdvSessionLaunchRecordByOwnerMock.mockResolvedValue({
+      workspaceId: 'ws-test',
+      agent: 'claude',
+      launchSpec: {
+        v: 1,
+        agent: 'claude',
+        workspaceId: 'ws-test',
+        harnessSlug: 'papercusp',
+        fleet: { slug: 'target-fleet', role: 'leader' },
+        model: 'sonnet:high',
+      },
+      launchArgv: [
+        'psu', '--no-picker', '--fleet=target-fleet', '--agent=claude',
+        '--harness=papercusp', '--headless', '--carry=warm', '--account=default',
+        '--model=sonnet:high', '--role=su',
+      ],
+    });
+
+    const res = await launchAgent.handler({
+      resume: { agentId: 'su-a1a71' },
+      fork: false,
+      brief: 'resume the retained fleet leadership seat',
+      idempotencyKey: 'fleet-leader-resume:target-fleet:su-a1a71:1000',
+      __leaderRecoveryOwnerId: 'su-a1a71',
+    } as never, ctx);
+
+    expect(isError(res), textOf(res)).toBe(false);
+    const command = spawnedCommand(spawnHeadlessMock);
+    expect(command).toContain('--model=sonnet:high');
+    expect(command).toContain('--fleet=target-fleet');
+    expect(command).toContain('--fleet-role=leader');
+    expect(dataOf(res)?.launch).toMatchObject({
+      mode: 'resume',
+      fleet: 'target-fleet',
+      headcountProfile: {
+        provenance: { source: 'adv_sessions.launch_spec' },
+        reusePath: 'fleet leader recovery -> capability:launch-agent resume -> agent-launch-core.buildAgentLaunchCommand',
+      },
+    });
+    expect(readAdvSessionLaunchRecordByOwnerMock).toHaveBeenCalledWith('su-a1a71', 'ws-test');
   });
 
   it('treats mode-only extraArgs as launch posture while preserving the canonical profile on resume', async () => {

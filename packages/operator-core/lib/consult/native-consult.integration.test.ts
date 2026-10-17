@@ -52,7 +52,9 @@ describe('default native consult boundary composition', () => {
     const target: ResumeTarget = { sessionId, ompThreadId: null, resumeId: sessionId,
       ownerId, agent: 'codex', role: null, feature: null, cwd: '/repo', model: null,
       modelSource: null, account: null, endedAt, endedBy: live ? null : 'self',
-      live, advSessionId: row.id, binding: null };
+      live, advSessionId: row.id, binding: null,
+      // The seeded row records the workspace; its launch argv names no harness.
+      workspaceId: ws, harnessSlug: null };
     const home = codexHomeForSessionKey(row.id);
     const relpath = join('sessions', '2026', '10', '13', `rollout-date-${sessionId}.jsonl`);
     const path = join(home, relpath);

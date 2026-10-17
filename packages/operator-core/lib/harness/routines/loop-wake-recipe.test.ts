@@ -239,6 +239,34 @@ describe('findTopRecipeForWake', () => {
     });
   });
 
+  it('skips a recipe bound to a fixed goal id held in a const', async () => {
+    const goalBoundScript = `
+      const gid = 'work-on-everything-fresh-grading-and-improvement-60d3a8';
+      await tools.goals.get({ id: gid });
+      await tools.search.fulltext({ query: 'goal_budget_unmeasurable respawner launch refused safety cap' });
+    `;
+    const hit = await findTopRecipeForWake('inspect the dispatch refusal', {
+      sql: stubSql([
+        {
+          id: 'r-wrong-goal',
+          title: 'Verify pause timestamps + holder-refusal hypothesis',
+          script: goalBoundScript,
+          run_count: 1,
+          sim: 0.66,
+        },
+        {
+          id: 'r-safe',
+          title: 'Read current dispatch state',
+          script: 'return await tools.docs.search({ query: "dispatch state" });',
+          run_count: 2,
+          sim: 0.64,
+        },
+      ]),
+      queryEmbedder: queryEmbedder(okEmbedder),
+    });
+    expect(hit).toEqual({ id: 'r-safe', title: 'Read current dispatch state', runCount: 2, sim: 0.64 });
+  });
+
   it('returns null when every candidate clearing the floor is entity-bound', async () => {
     const boundScript =
       "return await tools.work_items.claim({ id: 'EI-OTHER', harness: 'papercusp' });";

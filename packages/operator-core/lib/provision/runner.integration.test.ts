@@ -12,9 +12,9 @@
  *   - the setup-started/-succeeded/-failed audit trail
  *
  * Mirrors operator-conversation-compaction.integration.test.ts's setup
- * (getOrgPg → drizzle over a per-test database). Sandbox is disabled
- * (PAPERCUSP_DISABLE_SANDBOX) — sandbox argv construction has its own
- * unit suite in sandbox.test.ts.
+ * (getOrgPg → drizzle over a per-test database). Ordinary lifecycle cases
+ * disable sandboxing; the egress regression explicitly enables the real
+ * SRT/filesystem boundary and uses only local controlled endpoints.
  */
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -128,7 +128,7 @@ describe('runPhase (PG-backed)', () => {
     }));
     const listen = (server: Server) => new Promise<number>((resolve, reject) => {
       server.once('error', reject);
-      server.listen(0, '127.0.0.1', () => resolve((server.address() as { port: number }).port));
+      server.listen(0, '0.0.0.0', () => resolve((server.address() as { port: number }).port));
     });
     const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
     const project = join(TMP_PLUGIN, 'project');
@@ -143,11 +143,20 @@ describe('runPhase (PG-backed)', () => {
         expect((await promisify(execFile)('/usr/bin/curl', ['--noproxy', '*', '--fail', '--max-time', '3', url(port)])).stdout)
           .toBe(port === allowed ? 'fixture-0' : 'fixture-1');
       }
+      // This local unspecified-address alias reaches the same fixture outside
+      // confinement. Explicit allowlisting must not override the nonpublic floor.
+      const privateUrl = `http://0.0.0.0:${allowed}`;
+      expect((await promisify(execFile)('/usr/bin/curl', ['--noproxy', '*', '--fail', '--max-time', '3', privateUrl])).stdout)
+        .toBe('fixture-0');
       await writeScript('setup.sh', `#!/bin/bash
 set -eu
 ${curl} ${quote(url(allowed))} > "$PAPERCUSP_SCRATCH_DIR/allowed.txt"
+${curl} --proxytunnel --proxy "$HTTP_PROXY" ${quote(url(allowed))} > "$PAPERCUSP_SCRATCH_DIR/connect.txt"
 if ${curl} ${quote(url(denied))}; then echo DENIED_ENDPOINT_REACHED; exit 42; fi
 if ${curl} --noproxy '*' ${quote(url(allowed))}; then echo RAW_SOCKET_REACHED; exit 43; fi
+if ${curl} ${quote(privateUrl)}; then echo PRIVATE_ADDRESS_REACHED; exit 46; fi
+if ${curl} --proxytunnel --proxy "$HTTP_PROXY" ${quote(privateUrl)}; then echo PRIVATE_CONNECT_REACHED; exit 48; fi
+if ${curl} --proxy socks5h://127.0.0.1:1080 ${quote(url(allowed))}; then echo SOCKS_BYPASS_REACHED; exit 47; fi
 if printf bad > "$PAPERCUSP_PLUGIN_DIR/forbidden-write"; then exit 44; fi
 if /bin/cat ${quote(hidden)}; then exit 45; fi
 printf project-writable > "$PAPERCUSP_PROJECT_DIR/output.txt"
@@ -157,11 +166,11 @@ printf project-writable > "$PAPERCUSP_PROJECT_DIR/output.txt"
       const result = await runPhase('setup', {
         harness: 'h', plugin: 'p', publisher: 'fixture', pluginVersion: '1.0.0',
         pluginDir: TMP_PLUGIN, projectDir: project, config: {}, consentConfirmed: true,
-        provision: { setup: { path: 'setup.sh', timeoutSec: 20 }, allowedHosts: [`127.0.0.1:${allowed}`] },
+        provision: { setup: { path: 'setup.sh', timeoutSec: 20 }, allowedHosts: [`127.0.0.1:${allowed}`, `0.0.0.0:${allowed}`] },
       });
       const audit = await readAudit('h', 'p');
       expect(result.ok, JSON.stringify({ result, audit })).toBe(true);
-      expect(calls).toEqual([2, 1]); // only controls + the allowed sandbox request
+      expect(calls).toEqual([4, 1]); // outside controls + allowed HTTP and CONNECT
       expect(await fs.readFile(join(project, 'output.txt'), 'utf8')).toBe('project-writable');
       expect(audit.some(e => e.kind === 'sandbox-bypass')).toBe(false);
     } finally {

@@ -760,6 +760,39 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     ).toBe(false);
   });
 
+  it('settles a credit-walled fresh reviewer as a failed receipt', async () => {
+    rubricsMocks.previewAcceptanceBarAmendment.mockResolvedValue(approvalRequired);
+    reviewMocks.openAcceptanceBarAmendmentReview.mockResolvedValue({
+      state: 'no-eligible-reviewer',
+      conversationId: null,
+      reason: 'no_available_responder',
+      screenedOut: [],
+      previewPostRef: 'thread-post:42',
+      next: 'retry after the provider account recovers',
+      freshReviewer: {
+        state: 'blocked',
+        reason: 'account-walled',
+        evidence: 'Credit balance is too low',
+        recovery: { state: 'stopped', evidence: 'stopped task task-1' },
+      },
+    });
+
+    const result = await body({ ...patchArgs, reviewPreviewPost: 'thread-post:42' });
+    expect(result).toMatchObject({
+      ok: true,
+      dryRun: true,
+      review: { state: 'no-eligible-reviewer', freshReviewer: { state: 'blocked', reason: 'account-walled' } },
+    });
+
+    const status = await amendStatusTool.handler(result.receipt.poll.args, {} as never) as { data: Record<string, unknown> };
+    expect(status.data).toMatchObject({
+      state: 'failed',
+      source: 'receipt',
+      error: 'account-walled',
+      result: { ok: true, dryRun: true },
+    });
+  });
+
   // P-004, AUTO-BAR-R-4 marker 2: a slow requestReview answers with a receipt, and a retry never re-posts.
   it('an amend still running at the response deadline returns a pending receipt pollable through rubrics:amend-status', async () => {
     process.env.PAPERCUSP_RUBRICS_AMEND_FOREGROUND_MS = '20';

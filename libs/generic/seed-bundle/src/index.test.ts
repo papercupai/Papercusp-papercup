@@ -7,6 +7,7 @@ import {
   decodeManifest,
   canonicalJson,
   SeedProviderRegistry,
+  SEED_RESTORE_DIAGNOSTIC_SLOT,
   restoreSeed,
   type SeedManifest,
   type SeedProvider,
@@ -186,11 +187,24 @@ describe('restoreSeed', () => {
     const git = okProvider('git');
     git.verify = vi.fn(async () => ({ ok: false, reason: 'hash mismatch' }));
     reg.register(git).register(okProvider('corestore'));
-    const res = await restoreSeed(validManifest(), reg, resolve, {});
+    const phases: Array<{ kind: string; phase: string; state: string; reason?: string }> = [];
+    const res = await restoreSeed(validManifest(), reg, resolve, { onPhase: (event) => phases.push(event) });
     expect(res.ok).toBe(false);
     expect(res.outcomes[0]).toMatchObject({ kind: 'git', ok: false });
     expect(res.outcomes[0].reason).toMatch(/verify failed: hash mismatch/);
     expect(git.restore).not.toHaveBeenCalled();
+    expect(phases).toEqual([
+      { kind: 'git', phase: 'resolve', state: 'started' },
+      { kind: 'git', phase: 'resolve', state: 'succeeded' },
+      { kind: 'git', phase: 'verify', state: 'started' },
+      { kind: 'git', phase: 'verify', state: 'failed', reason: 'hash mismatch' },
+      { kind: 'corestore', phase: 'resolve', state: 'started' },
+      { kind: 'corestore', phase: 'resolve', state: 'succeeded' },
+      { kind: 'corestore', phase: 'verify', state: 'started' },
+      { kind: 'corestore', phase: 'verify', state: 'succeeded' },
+      { kind: 'corestore', phase: 'restore', state: 'started' },
+      { kind: 'corestore', phase: 'restore', state: 'succeeded' },
+    ]);
   });
 
   it('isolates a restore that throws', async () => {
@@ -201,10 +215,93 @@ describe('restoreSeed', () => {
     });
     const core = okProvider('corestore');
     reg.register(git).register(core);
-    const res = await restoreSeed(validManifest(), reg, resolve, {});
+    const phases: Array<{ kind: string; phase: string; state: string; reason?: string }> = [];
+    const res = await restoreSeed(validManifest(), reg, resolve, { onPhase: (event) => phases.push(event) });
     expect(res.ok).toBe(false);
     expect(res.outcomes[0].reason).toMatch(/restore threw: disk full/);
     expect(core.restore).toHaveBeenCalledOnce(); // the other store still ran
+    expect(phases.slice(0, 6)).toEqual([
+      { kind: 'git', phase: 'resolve', state: 'started' },
+      { kind: 'git', phase: 'resolve', state: 'succeeded' },
+      { kind: 'git', phase: 'verify', state: 'started' },
+      { kind: 'git', phase: 'verify', state: 'succeeded' },
+      { kind: 'git', phase: 'restore', state: 'started' },
+      { kind: 'git', phase: 'restore', state: 'failed', reason: 'disk full' },
+    ]);
+  });
+
+  it('attributes payload resolver failures before provider verification begins', async () => {
+    const reg = new SeedProviderRegistry();
+    const core = okProvider('corestore');
+    reg.register(core);
+    const phases: Array<{ kind: string; phase: string; state: string; reason?: string }> = [];
+    const manifest = validManifest({ stores: [validManifest().stores[1]] });
+    const result = await restoreSeed(manifest, reg, async () => {
+      throw new Error('payload unavailable');
+    }, { onPhase: (event) => phases.push(event) });
+
+    expect(result.outcomes).toEqual([{ kind: 'corestore', ok: false, reason: 'resolve threw: payload unavailable' }]);
+    expect(core.verify).not.toHaveBeenCalled();
+    expect(phases).toEqual([
+      { kind: 'corestore', phase: 'resolve', state: 'started' },
+      { kind: 'corestore', phase: 'resolve', state: 'failed', reason: 'payload unavailable' },
+    ]);
+  });
+
+  it.each(['verify', 'restore'] as const)('leaves a visible %s boundary while that provider await is held', async (heldPhase) => {
+    const reg = new SeedProviderRegistry();
+    const core = okProvider('corestore');
+    let release!: () => void;
+    const held = new Promise<void>((resolveHeld) => { release = resolveHeld; });
+    if (heldPhase === 'verify') {
+      core.verify = vi.fn(async () => { await held; return { ok: true }; });
+    } else {
+      core.restore = vi.fn(async () => { await held; });
+    }
+    reg.register(core);
+    const phases: Array<{ kind: string; phase: string; state: string; reason?: string }> = [];
+    const manifest = validManifest({ stores: [validManifest().stores[1]] });
+    const ongoing = restoreSeed(manifest, reg, resolve, { onPhase: (event) => phases.push(event) });
+
+    await vi.waitFor(() => expect(phases).toContainEqual({ kind: 'corestore', phase: heldPhase, state: 'started' }));
+    expect(phases).not.toContainEqual({ kind: 'corestore', phase: heldPhase, state: 'succeeded' });
+    if (heldPhase === 'verify') {
+      expect(phases).not.toContainEqual({ kind: 'corestore', phase: 'restore', state: 'started' });
+    }
+    release();
+    expect((await ongoing).outcomes).toEqual([{ kind: 'corestore', ok: true }]);
+    expect(phases).toContainEqual({ kind: 'corestore', phase: heldPhase, state: 'succeeded' });
+  });
+
+  it('publishes a bounded identity-pinned diagnostic operation while a provider await is held', async () => {
+    const key = Symbol.for(SEED_RESTORE_DIAGNOSTIC_SLOT);
+    const root = globalThis as unknown as Record<symbol, unknown>;
+    delete root[key];
+    const reg = new SeedProviderRegistry();
+    const core = okProvider('corestore');
+    let release!: () => void;
+    const held = new Promise<void>((resolveHeld) => { release = resolveHeld; });
+    core.verify = vi.fn(async () => { await held; return { ok: true }; });
+    reg.register(core);
+    const ongoing = restoreSeed(validManifest({ stores: [validManifest().stores[1]] }), reg, resolve, {
+      diagnosticIdentity: { buildSha: 'a'.repeat(40), sourceSha256: 'b'.repeat(64), script: 'serve.mjs' },
+    });
+    try {
+      await vi.waitFor(() => {
+        const state = root[key] as { operations?: Array<{ status: string; identity: unknown; events: unknown[] }> };
+        const operation = state?.operations?.at(-1);
+        expect(operation?.status).toBe('running');
+        expect(operation?.identity).toMatchObject({ buildSha: 'a'.repeat(40), sourceSha256: 'b'.repeat(64), script: 'serve.mjs' });
+        expect(operation?.events).toContainEqual(expect.objectContaining({ phase: 'verify', state: 'started' }));
+      });
+      release();
+      await expect(ongoing).resolves.toMatchObject({ ok: true });
+      const state = root[key] as { operations?: Array<{ status: string; finishedAt: number | null }> };
+      expect(state.operations?.at(-1)).toMatchObject({ status: 'succeeded', finishedAt: expect.any(Number) });
+    } finally {
+      release();
+      delete root[key];
+    }
   });
 
   it('fails fast on an invalid manifest', async () => {

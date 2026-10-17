@@ -34,6 +34,31 @@ const ticket = (session = 'hosted-session-1'): HostedConnectorTicketBinding => (
 });
 
 describe('HostedWorkspaceSessionBroker', () => {
+  it('accepts fixed workload counters only from its current hosted connector and supplies the clock', () => {
+    const observed = vi.fn();
+    const broker = new HostedWorkspaceSessionBroker({ pingIntervalMs: 0, now: () => 12345,
+      onConnectorActivity: observed });
+    const binding = { ...connector, hosting: 'papercusp' as const };
+    const host = new FakeSocket();
+    broker.attachConnector(binding, host);
+    const report = { type: 'activity.report', activity: { activeCommands: 2, attachedViewers: 1 } };
+    host.message(report);
+    expect(observed).toHaveBeenLastCalledWith(binding, report.activity, new Date(12345));
+    for (const activity of [{ activeCommands: -1, attachedViewers: 0 },
+      { activeCommands: 0, attachedViewers: 0, secret: 'CONTENT' }, { activeCommands: 0 }]) {
+      host.message({ type: 'activity.report', activity });
+    }
+    host.message({ ...report, generation: 999 });
+    expect(observed).toHaveBeenCalledTimes(1);
+    const replacement = new FakeSocket(); broker.attachConnector(binding, replacement);
+    host.message(report); expect(observed).toHaveBeenCalledTimes(1);
+    replacement.message({ ...report, activity: { activeCommands: null, attachedViewers: 0 } });
+    expect(observed).toHaveBeenCalledTimes(2);
+    const byoc = new FakeSocket(); broker.attachConnector({ ...binding, hosting: 'byoc' }, byoc);
+    byoc.message(report); expect(observed).toHaveBeenCalledTimes(2);
+    byoc.close(); broker.dispose();
+  });
+
   it('returns fresh diagnostic consent only to an authenticated customer-host authority request', async () => {
     const principal = createHostedPrincipal({ workspaceId: 'control', activeOrganizationId: 'org-1',
       selectedWorkspaceId: 'workspace-1', userId: 'user-1', sessionId: 'hosted-session-1',

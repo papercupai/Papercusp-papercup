@@ -35,7 +35,7 @@ interface BannedRoute {
 export const BANNED_ROUTES: readonly BannedRoute[] = Object.freeze([
   Object.freeze({
     tool: 'gitnexus.query',
-    instead: 'gitnexus.context / gitnexus.impact',
+    instead: 'graph:query (bounded first-party topology)',
     reason:
       'is unavailable: historical builds returned empty or unranked noise and current probes SIGSEGV the shared MCP process (D-021/WI-35557/D-065)',
   }),
@@ -51,9 +51,8 @@ export const BANNED_ROUTES: readonly BannedRoute[] = Object.freeze([
  * A SANCTIONED tool routed for the WRONG question.
  *
  * Unlike a banned route, naming the tool is correct guidance for other questions
- * (`gitnexus.context` IS the topology authority for a known symbol), so a
- * presence rule would flag the su playbooks' correct "use gitnexus.context for a
- * known symbol". Only the PAIRING with this question class is a violation: a
+ * (GitNexus remains an optional internal comparison), so a presence rule would
+ * flag valid scoped comparisons. Only the PAIRING with this question class is a violation: a
  * routing row whose question cell asks it, or a prose sentence that names the
  * tool and pitches it for that question with no negation in the same sentence.
  */
@@ -62,6 +61,7 @@ interface MisroutedQuestion {
   readonly tool: string;
   readonly instead: string;
   readonly reason: string;
+  readonly unless?: RegExp;
 }
 
 export const MISROUTED_QUESTIONS: readonly MisroutedQuestion[] = Object.freeze([
@@ -72,6 +72,13 @@ export const MISROUTED_QUESTIONS: readonly MisroutedQuestion[] = Object.freeze([
     reason:
       'a definition lookup routes to lsp:query, which resolves shadowing and re-exports; gitnexus.context answers topology for a known symbol (gitnexus-deterministic-integration P-002, rubric R-2)',
   }),
+  ...['gitnexus.context', 'gitnexus.impact', 'gitnexus.api_impact'].map((tool) => Object.freeze({
+    question: /\btopology\b|\bcall (?:chains?|sites?)\b|\bcallers\b|\bcallees\b|\bimpact\b|\bcode.graph\b|\bAPI[ -]surface\b|\bblast[ -]radius\b/i,
+    tool,
+    instead: 'graph:query (bounded first-party topology)',
+    reason: 'native topology is the default; GitNexus is retained only for explicitly optional internal comparisons (P-042, D-004/D-005)',
+    unless: /\boptional internal\b|\bsilently answering\b/i,
+  })),
 ]);
 
 /**
@@ -87,7 +94,7 @@ function sentencesOf(text: string): string[] {
 export interface RoutingViolation {
   readonly line: number;
   readonly tool: string;
-  readonly position: 'authority-cell' | 'recommendation-bullet' | 'prose-recommendation';
+  readonly position: 'authority-cell' | 'recommendation-bullet' | 'prose-recommendation' | 'status-claim';
   readonly instead: string;
   readonly reason: string;
   readonly text: string;
@@ -160,6 +167,23 @@ export function judgeCodeIntelRouting(source: string): RoutingVerdict {
   const violations: RoutingViolation[] = [];
   let positionsChecked = 0;
 
+  // EI-26178649957036371: the "not" cell is allowed to name a refused tool,
+  // but must not turn D-021's historical result into its current contract.
+  // Judge this separately from recommendations so deleting the warning is not
+  // the fix. Historical measurements and the current fail-closed warning remain valid.
+  const checkQueryOutcome = (text: string, line: number): void => {
+    if (!text.includes('gitnexus.query') ||
+        !/(?:[—–:]\s*(?:\*\*)?|\breturns?\s+(?:only\s+)?(?:\*\*)?)unranked\s+noise/i.test(text)) return;
+    positionsChecked += 1;
+    if (/\bhistorical\b|\bprevious(?:ly)?\b|\bformerly\b|\bold(?:er)? builds?\b/i.test(text)) return;
+    violations.push({
+      line, tool: 'gitnexus.query', position: 'status-claim',
+      instead: 'the current fail-closed-before-dispatch contract; date the historical D-021 result',
+      reason: 'the bridge refuses query before dispatch (D-065); unranked noise describes a historical build, not the current result',
+      text: text.trim().slice(0, 500),
+    });
+  };
+
   const lines = source.split('\n');
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i]!;
@@ -167,6 +191,7 @@ export function judgeCodeIntelRouting(source: string): RoutingVerdict {
 
     const bullet = BOLD_TOOL_BULLET.exec(line);
     if (bullet) {
+      checkQueryOutcome(line, lineNo);
       positionsChecked += 1;
       const named = bullet[1]!;
       for (const banned of BANNED_ROUTES) {
@@ -196,6 +221,7 @@ export function judgeCodeIntelRouting(source: string): RoutingVerdict {
     const cells = splitRow(line);
     // A routing row needs at least a question and an authority.
     if (cells.length < 2) continue;
+    checkQueryOutcome(line, lineNo);
     const authority = cells[1]!;
     positionsChecked += 1;
 
@@ -215,7 +241,8 @@ export function judgeCodeIntelRouting(source: string): RoutingVerdict {
     // a violation as the authority for a question it does not answer.
     const question = cells[0]!;
     for (const misrouted of MISROUTED_QUESTIONS) {
-      if (misrouted.question.test(question) && authority.includes(misrouted.tool)) {
+      if (misrouted.question.test(question) && authority.includes(misrouted.tool) &&
+          !misrouted.unless?.test(authority)) {
         violations.push({
           line: lineNo,
           tool: misrouted.tool,
@@ -264,6 +291,7 @@ export function judgeCodeIntelRouting(source: string): RoutingVerdict {
   if (current) paragraphs.push({ start: current.start, text: current.parts.join(' ') });
 
   for (const para of paragraphs) {
+    checkQueryOutcome(para.text, para.start);
     for (const banned of BANNED_ROUTES) {
       if (!para.text.includes(banned.tool)) continue;
       positionsChecked += 1;
@@ -282,7 +310,8 @@ export function judgeCodeIntelRouting(source: string): RoutingVerdict {
       for (const sentence of sentencesOf(para.text)) {
         if (!sentence.includes(misrouted.tool)) continue;
         positionsChecked += 1;
-        if (!misrouted.question.test(sentence) || NEGATION_MARKER.test(sentence)) continue;
+        if (!misrouted.question.test(sentence) || NEGATION_MARKER.test(sentence) ||
+            misrouted.unless?.test(sentence)) continue;
         violations.push({
           line: para.start,
           tool: misrouted.tool,

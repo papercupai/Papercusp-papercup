@@ -623,6 +623,8 @@ export async function probeEndpoint(
    * fail-soft and Linux-only and returns null everywhere else.
    */
   sampleMemory: (pid: number) => Promise<ProcessMemoryPressure | null> = readProcessMemoryPressure,
+  /** Injectable ONLY so the indeterminate-preflight failure note is testable. */
+  runTcpPreflight: (url: string) => Promise<TcpPreflightResult> = tcpPreflight,
 ): Promise<ProbeResult> {
   const start = Date.now();
   // EI-2339: an onDemand endpoint (no systemd unit, spawned ad hoc) being down
@@ -636,7 +638,7 @@ export async function probeEndpoint(
     !r.up && spec.onDemand
       ? { ...r, present: false, note: r.note ? `${r.note} (on-demand dev layer, not currently running)` : 'on-demand dev layer, not currently running' }
       : r;
-  const preflight = await tcpPreflight(spec.url);
+  const preflight = await runTcpPreflight(spec.url);
   if (preflight === 'refused') {
     // Fails fast (≤ CONNECT_PREFLIGHT_MS) instead of waiting out the full
     // (possibly 10s) response budget for a port that isn't even accepting.
@@ -693,7 +695,7 @@ export async function probeEndpoint(
         : undefined;
     const memoryNote = describeMemoryPressure(memoryPressure ?? null) ?? undefined;
     const preflightNote = preflight === 'indeterminate'
-      ? `TCP preflight was indeterminate (timer expired under load, not a refused connection) and the follow-up HTTP fetch then also failed — likely a genuinely down/wedged listener, not event-loop lag`
+      ? 'TCP preflight timed out without a connect or refusal result; the follow-up HTTP fetch also failed. The probe could not determine why the endpoint did not answer.'
       : undefined;
     const wedgeNote = wedge?.wedged
       ? `WEDGED, not down: a process is still listening on this port but has ${wedge.pending} connection(s) queued unaccepted (backlog ${wedge.backlog}) — its event loop is blocked, so systemd/is-active, a live pid and a TCP connect all still look healthy. A restart clears the symptom only; find what is blocking the loop.`
@@ -707,11 +709,8 @@ export async function probeEndpoint(
       wedged: wedge?.wedged,
       acceptQueue: wedge ? { pending: wedge.pending, backlog: wedge.backlog } : undefined,
       memoryPressure,
-      // Surface WHY the preflight didn't fast-fail this result, for the
-      // diagnostic signature the bug report names: "TCP preflight timed out,
-      // then the real fetch also failed" is a genuinely down/wedged listener;
-      // an omitted note here (preflight === 'connected') is the plain fetch-
-      // failed case unchanged from before.
+      // Surface the ambiguous preflight result without inferring its cause.
+      // The separate wedge note is based on measured unaccepted connections.
       // WI-7329: the memory note goes LAST and is additive. It never replaces
       // the wedge note — the accept queue is still the evidence that this is a
       // wedge — it appends the alternative explanation for WHY the loop stalled,
@@ -1242,6 +1241,9 @@ export async function probeMcpProxyCodeDrift(now: number = Date.now()): Promise<
     {
       name: PORTLESS_PROBE_NAMES.mcpProxyCode,
       unit: process.env.PAPERCUSP_MCP_PROXY_UNIT || 'papercup-mcp-proxy',
+      // systemd tracks the npx wrapper as MainPID; the actual tsx listener
+      // reports its own PID, so match the self-report to the owner of :9071.
+      listenerPort: Number(process.env.PAPERCUSP_MCP_PROXY_PORT ?? 9071),
       hotPaths: MCP_PROXY_HOT_PATHS,
       evaluate: evaluateMcpProxyCodeDrift,
       platformNote: 'mcp-proxy code-drift probe is Linux/systemd-only — not applicable on this platform',
@@ -1289,6 +1291,8 @@ async function probeCodeDrift(
   spec: {
     name: string;
     unit: string;
+    /** Match runtime-vintage against an actual listener when systemd MainPID is a wrapper. */
+    listenerPort?: number;
     hotPaths: readonly string[];
     artifactPaths?: readonly string[];
     evaluate: (
@@ -1350,13 +1354,21 @@ async function probeCodeDrift(
     let loadedIdentity: LoadedCodeIdentity | null = null;
     try {
       const rows = await readRuntimeVintageForServiceHealth();
-      const processPid = svc.mainPid ?? null;
-      if (processPid !== null) {
+      let processPids: number[];
+      if (spec.listenerPort !== undefined) {
+        const { sockets } = await listListeningSockets({ port: spec.listenerPort });
+        processPids = sockets.filter((socket) => socket.ownerVisible).flatMap((socket) => socket.pids);
+      } else {
+        processPids = svc.mainPid === undefined || svc.mainPid === null ? [] : [svc.mainPid];
+      }
+      if (processPids.length > 0) {
+        const processPidSet = new Set(processPids);
         const row = rows.find((candidate) => {
           const reportedAtMs = Date.parse(candidate.reportedAt);
           return (
             candidate.host === hostname() &&
-            candidate.pid === processPid &&
+            candidate.pid !== null &&
+            processPidSet.has(candidate.pid) &&
             Number.isFinite(reportedAtMs) &&
             reportedAtMs >= bootMs
           );

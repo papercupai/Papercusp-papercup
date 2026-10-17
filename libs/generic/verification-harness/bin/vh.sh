@@ -66,7 +66,7 @@ VH_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # vh_converge: wait for a cross-host observation to converge instead of reading it once.
 # shellcheck source=converge.sh
 source "$VH_LIB_DIR/bin/converge.sh"
-declare -ga VH_PHASE_IDS=() VH_SCOPE_TAGS=()
+declare -ga VH_PHASE_IDS=() VH_SCOPE_TAGS=() VH_RETAIN_ARGS=()
 declare -gA VH_DEPS=() VH_REUSABLE=() VH_ACTION=() VH_REUSE_FROM=() VH_STATUS=()
 VH_PREFLIGHT_FAILED=0
 VH_PREFLIGHT_DONE=0
@@ -259,10 +259,24 @@ vh_phase() {
 }
 
 # vh_default_root <harness> — the evidence root when the harness names none (same rule as the TS
-# defaultEvidenceRoot): $VH_EVIDENCE_ROOT_BASE/<harness>, else $XDG_STATE_HOME (~/.local/state)
-# /verification-harness/<harness>.
+# defaultEvidenceRoot): honor explicit base/XDG state, otherwise prefer a writable
+# separate data volume on Linux. Historical evidence is never moved by resolution.
+_vh_evidence_device() { stat -L -c '%d' -- "$1" 2>/dev/null; }
+
 vh_default_root() {
   if [ -n "${VH_EVIDENCE_ROOT_BASE:-}" ]; then echo "$VH_EVIDENCE_ROOT_BASE/$1"; return; fi
+  if [ -z "${XDG_STATE_HOME:-}" ] && [ "$(uname -s)" = Linux ]; then
+    local data_base=/mnt/data/offload/verification-harness probe=/mnt/data/offload
+    local data_device root_device
+    if [ -e "$data_base" ] || [ -L "$data_base" ]; then probe="$data_base"; fi
+    if [ -d "$probe" ] && [ -w "$probe" ] && [ -x "$probe" ] \
+      && data_device="$(_vh_evidence_device "$probe")" \
+      && root_device="$(_vh_evidence_device /)" \
+      && [ -n "$data_device" ] && [ "$data_device" != "$root_device" ]; then
+      echo "$data_base/$1"
+      return
+    fi
+  fi
   echo "${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/verification-harness/$1"
 }
 
@@ -280,6 +294,9 @@ vh_init() {
     case "$1" in
       --only|--only-phase|--from|--from-phase|--reuse) sel+=("$1" "${2:-}"); shift 2 ;;
       --only=*|--only-phase=*|--from=*|--from-phase=*|--reuse=*) sel+=("$1"); shift ;;
+      --retain-artifact)
+        [ -n "${2:-}" ] && [[ "$2" != --* ]] || { echo 'vh_init: missing --retain-artifact path' >&2; return 2; }
+        VH_RETAIN_ARGS+=("$1" "$2"); shift 2 ;;
       *) VH_ARGS_TMP+=("$1"); shift ;;
     esac
   done
@@ -568,9 +585,9 @@ vh_finish() {
   VH_FINALIZED=1
   local rc=0
   if [ "${VH_LOG_FD:-1}" = 2 ]; then
-    _vh_cli finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" >&2 || rc=$?
+    _vh_cli finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" ${VH_RETAIN_ARGS[@]+"${VH_RETAIN_ARGS[@]}"} >&2 || rc=$?
   else
-    _vh_cli finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" || rc=$?
+    _vh_cli finalize --run-dir "$VH_RUN_DIR" --evidence-root "$VH_EVIDENCE_ROOT" ${VH_RETAIN_ARGS[@]+"${VH_RETAIN_ARGS[@]}"} || rc=$?
   fi
   VH_FINISH_RC="$rc"
   return "$rc"

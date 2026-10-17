@@ -27,6 +27,7 @@ import { dedupeInFlight } from '@papercusp/operator-core/lib/dedupe-in-flight';
 import { awaitBootMigrationGate } from '@papercusp/operator-core/lib/boot-migration-gate';
 
 const bootSrc = readFileSync(join(__dirname, 'host-bootstrap.ts'), 'utf8');
+const mcpProxySrc = readFileSync(join(__dirname, 'mcp-proxy.ts'), 'utf8');
 const dbosWorkItemsContractSrc = readFileSync(
   join(__dirname, '../../../packages/operator-core/lib/dbos/work-items-contract.ts'),
   'utf8',
@@ -59,6 +60,16 @@ describe('startup call-site detector', () => {
       .toHaveLength(1);
     expect(directCallPositions('// runBootstrap();\nconst example = "runBootstrap();";', 'runBootstrap'))
       .toEqual([]);
+  });
+});
+
+describe('mcp-proxy runtime-vintage boot report', () => {
+  it('reports the loaded mcp-proxy-code identity before starting the listener', () => {
+    const calls = directCallPositions(mcpProxySrc, 'reportRuntimeVintageOnBoot');
+    expect(mcpProxySrc).toContain("from '@papercusp/operator-core/lib/runtime-vintage'");
+    expect(calls).toHaveLength(1);
+    expect(mcpProxySrc.slice(calls[0])).toMatch(/^reportRuntimeVintageOnBoot\s*\(\s*['"]mcp-proxy-code['"]/);
+    expect(calls[0]).toBeLessThan(mcpProxySrc.indexOf('startMcpProxy({'));
   });
 });
 

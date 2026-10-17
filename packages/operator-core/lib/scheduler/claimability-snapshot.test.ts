@@ -212,23 +212,58 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     expect(fromFiltered).toBeGreaterThan(cteEnd);
   });
 
-  it('materializes only the columns consumed by claimability siblings, not the 80-column work-item row', async () => {
+  it('keeps the raw columns floors need in the source CTE, not the 80-column work-item row', async () => {
     const pg = makePool();
     await readIssueClaimability(undefined, { ...OPTS, client: pg.client }, { limit: 20 });
 
     const materialization = pg.queries[0] ?? '';
+    const cteEnd = materialization.indexOf(') SELECT');
     const projection = materialization.slice(0, materialization.indexOf('(TRUE) AS spec_match'));
+    expect(cteEnd).toBeGreaterThan(-1);
     expect(projection).not.toContain('wi.*');
     expect(projection).toContain('wi.feature_id');
     expect(projection).toContain('wi.payload');
-    // Narrowness is the POINT of this projection — the 80-column row is what it
-    // exists to avoid materializing. Completeness is asserted separately (and
-    // DERIVED, not enumerated) by the sibling test below.
-    // Intake floor #16 consumes summary to distinguish candidate work. Keep it
-    // projected while excluding the search and embedding data that no floor uses.
+    // This CTE is only the filtered source for evaluating floors. Intake floor #16
+    // consumes summary, and other floors consume payload, so both remain available here.
+    // The separate persisted temp-table projection is guarded below.
     expect(projection).toContain('wi.summary');
     expect(projection).not.toContain('wi._search');
     expect(projection).not.toContain('wi.embedding');
+  });
+
+  it('persists a bounded payload projection and omits raw summary while preserving floor counts', async () => {
+    const pg = makePool();
+    await readIssueClaimability(undefined, { ...OPTS, client: pg.client }, { limit: 20, sampleLimit: 5 });
+
+    const materialization = pg.queries[0] ?? '';
+    const cteEnd = materialization.indexOf(') SELECT');
+    const fromFiltered = materialization.indexOf('FROM filtered_claim_candidates wi', cteEnd);
+    const specMatch = materialization.indexOf('(TRUE) AS spec_match', cteEnd);
+    expect(cteEnd).toBeGreaterThan(-1);
+    expect(specMatch).toBeGreaterThan(cteEnd);
+    expect(fromFiltered).toBeGreaterThan(specMatch);
+    const snapshotColumns = materialization.slice(cteEnd + 2, specMatch);
+
+    // The CTE still exposes raw floor inputs, but the local temp table receives only the
+    // fields used by counts, rank, samples, and row listing. In particular it cannot copy
+    // the wide summary or arbitrary evidence/body keys from payload into every row.
+    expect(snapshotColumns).not.toContain('wi.summary');
+    expect(snapshotColumns).not.toMatch(/(?:^|,)\s*wi\.payload\s*(?:,|$)/);
+    expect(snapshotColumns).toContain('jsonb_strip_nulls(jsonb_build_object(');
+    for (const key of [
+      'paths', 'tags', 'severity', '_ei', 'clusterPriority', 'plan_item', 'planItem',
+      'source_plan_slug', 'source_plan_item_ids', 'held_open_by', 'held_open_at',
+      'held_open_reason', 'claim_hold_by', 'claim_hold_at', 'claim_hold_reason',
+      'claim_hold_release', 'agentReview', 'submittedBy', 'ledgerIdeaId', 'revisionKind',
+    ]) {
+      expect(snapshotColumns, `persisted payload must retain ${key}`).toContain(`'${key}'`);
+    }
+
+    // Floor booleans remain in the same snapshot; compaction cannot turn a measured bucket
+    // into a structural zero.
+    expect(materialization).toContain('AS ok_claim_hold');
+    expect(materialization).toContain('AS ok_live_gate_ops');
+    expect(materialization).toContain('AS ok_stop_line');
   });
 
   // Derivation under test, extracted so the control case below can feed it a

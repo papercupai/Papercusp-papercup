@@ -3116,6 +3116,24 @@ case "${PC_HEAVY_COALESCE:-1}" in
     ;;
 esac
 
+# A non-Git export has no cheap, authoritative source identity. The previous
+# fallback walked and hashed the entire cwd before acquiring a heavy slot so it
+# could manufacture one; on an ext4 directory that walk can block in
+# getdents64 before the wrapper prints any admission progress. Coalescing is an
+# optimization, so fail closed for this shape and run the command normally.
+# Git worktrees retain the status/diff token below, which is bounded by Git's
+# own index and preserves the existing replay-safety contract.
+_coalesce_git_worktree=0
+if [ "$_coalesce_enabled" = 1 ] && command -v git >/dev/null 2>&1 &&
+   _coalesce_git_probe="$(git rev-parse --is-inside-work-tree 2>/dev/null)" &&
+   [ "$_coalesce_git_probe" = true ]; then
+  _coalesce_git_worktree=1
+fi
+if [ "$_coalesce_enabled" = 1 ] && [ "$_coalesce_git_worktree" != 1 ]; then
+  echo "[pc-heavy] coalescing disabled for non-Git cwd — skipping pre-admission tree traversal" >&2
+  _coalesce_enabled=0
+fi
+
 if [ "$_coalesce_enabled" = 1 ]; then
   _coalesce_ttl="${PC_HEAVY_COALESCE_SEC:-90}"
 

@@ -36,9 +36,11 @@ import type { HostedBudgetRequest, PostgresHostedBudgetStore } from '../auth/hos
 import { PostgresHostedBillingStore, type HostedBillingStore } from '../auth/hosted/billing/billing-store';
 import type { HostedBillingFailureObserver } from '../auth/hosted/billing/billing-recovery';
 import { PostgresHostedUsageStore } from '../auth/hosted/billing/usage-store';
+import { defineHostedAllocation, readHostedAllocationReport, readHostedAllocationAccountingExport } from '../auth/hosted/billing/allocation-store';
 import { createOpenRouterHostedUsageCollector } from '../auth/hosted/billing/openrouter-usage';
 import { createHostedUsageSource, type HostedBillingUsageSource, type HostedUsageCollector } from '../auth/hosted/billing/usage-service';
-import type { HostedSubscriptionEntitlementProvider } from '../auth/hosted/billing/entitlement-seam';
+import { createConfiguredHostedSubscriptionEntitlementProvider, parseHostedPaidEntitlementBundle,
+  type HostedSubscriptionEntitlementProvider } from '../auth/hosted/billing/entitlement-seam';
 import { createStripeBillingClient, STRIPE_API_BASE } from '../auth/hosted/billing/stripe-billing-client';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
 import { customerPaymentReceipts } from '../cupboard/payment-receipt-store';
@@ -48,6 +50,8 @@ import {
   createHostedBillingRoutes,
   type HostedBillingPlan,
   type HostedBillingReceiptSource,
+  type HostedBillingAllocationSource,
+  type HostedBillingAllocationAdmin,
   type HostedBillingRoute,
   type HostedBillingStripe,
 } from './routes/hosted-billing';
@@ -130,17 +134,20 @@ export function parseHostedBillingPlans(raw: string | undefined): HostedBillingP
   }
   if (!Array.isArray(parsed)) throw new TypeError('hosted_billing_configuration_invalid:PAPERCUSP_HOSTED_BILLING_PLANS');
   const seen = new Set<string>();
+  const prices = new Set<string>();
   return parsed.map((entry, index) => {
     const e = (entry ?? {}) as Record<string, unknown>;
     const planKey = typeof e.planKey === 'string' ? e.planKey.trim() : '';
     const priceId = typeof e.priceId === 'string' ? e.priceId.trim() : '';
     const label = typeof e.label === 'string' ? e.label.trim() : '';
-    if (!PLAN_KEY.test(planKey) || !PRICE_ID.test(priceId) || !label || label.length > 80 || seen.has(planKey)) {
+    if (!PLAN_KEY.test(planKey) || !PRICE_ID.test(priceId) || !label || label.length > 80 || seen.has(planKey) || prices.has(priceId)) {
       throw new TypeError(`hosted_billing_configuration_invalid:PAPERCUSP_HOSTED_BILLING_PLANS[${index}]`);
     }
     seen.add(planKey);
+    prices.add(priceId);
     const description = typeof e.description === 'string' && e.description.trim() ? e.description.trim().slice(0, 280) : null;
-    return { planKey, priceId, label, description };
+    return { planKey, priceId, label, description,
+      ...(e.entitlementBundle === undefined ? {} : { entitlementBundle: parseHostedPaidEntitlementBundle(e.entitlementBundle) }) };
   });
 }
 
@@ -205,6 +212,8 @@ export interface HostedBillingRuntimeDependencies {
   readonly receipts?: HostedBillingReceiptSource;
   /** Trusted server source overrides and collectors; no request can install a collector. */
   readonly usage?: HostedBillingUsageSource;
+  readonly allocations?: HostedBillingAllocationSource;
+  readonly allocationAdmin?: HostedBillingAllocationAdmin;
   readonly usageStore?: Pick<PostgresHostedUsageStore, 'append' | 'readRecords' | 'readOpenRouterBindings'>
     & Partial<Pick<PostgresHostedUsageStore, 'createOpenRouterRequestCapture'>>;
   /** Optional authenticated native-host composition. No reader = no admission.
@@ -378,12 +387,35 @@ function denial(status: 401 | 403 | 503, message: string): Response {
   return Response.json({ ok: false, error: { code, message } }, { status });
 }
 
+/** Both projections share one service transaction and the allocation writers'
+ * organization fence. Completeness refers only to this recorded ledger. */
+export function hostedBillingAllocationSource(
+  run: HostedServiceContextRunner = withHostedServiceContext,
+): HostedBillingAllocationSource {
+  return input => run(async sql => {
+    const report = await readHostedAllocationReport(sql, { organization: input.organization, month: input.month,
+      forecast: { asOfMs: input.asOfMs, source: { complete: true, observedAtMs: input.asOfMs, maximumAgeMs: 0,
+        evidenceRef: `hosted-allocation-ledger:${input.month}` } } });
+    const accounting = await readHostedAllocationAccountingExport(sql, input);
+    return { organization: input.organization, asOfMs: input.asOfMs, report, accounting };
+  });
+}
+
+export function hostedBillingAllocationAdmin(
+  run: HostedServiceContextRunner = withHostedServiceContext,
+): HostedBillingAllocationAdmin {
+  return input => run(async sql => ({ organization: input.organization, result: await defineHostedAllocation(sql, input) }));
+}
+
 export async function createHostedBillingRuntime(
   configuration: HostedBillingRuntimeConfiguration,
   dependencies: HostedBillingRuntimeDependencies,
 ): Promise<HostedBillingRuntime> {
   const { stripe, reason } = await resolveHostedBillingStripe(configuration, dependencies);
-  const store = dependencies.store ?? new PostgresHostedBillingStore(dependencies.runService ?? withHostedServiceContext);
+  const entitlementProvider = dependencies.entitlementProvider ??
+    (configuration.plans.some(plan => plan.entitlementBundle)
+      ? createConfiguredHostedSubscriptionEntitlementProvider(configuration.plans) : undefined);
+  const store = dependencies.store ?? new PostgresHostedBillingStore(dependencies.runService ?? withHostedServiceContext, entitlementProvider);
   const usageStore = dependencies.usageStore ?? new PostgresHostedUsageStore(dependencies.runService ?? withHostedServiceContext);
   const routes = createHostedBillingRoutes({
     publicOrigin: configuration.publicOrigin,
@@ -392,7 +424,7 @@ export async function createHostedBillingRuntime(
     stripe,
     observeFailure: dependencies.observeFailure,
     unavailableReason: reason,
-    entitlementProvider: dependencies.entitlementProvider,
+    entitlementProvider,
     receipts: dependencies.receipts
       ?? (configuration.receiptsWorkspaceId
         ? workspaceReceiptSource(configuration.receiptsWorkspaceId, dependencies.runWorkspace)
@@ -405,6 +437,8 @@ export async function createHostedBillingRuntime(
       })],
       maximumAgeMs: 5 * 60_000,
     }),
+    allocations: dependencies.allocations ?? hostedBillingAllocationSource(dependencies.runService),
+    allocationAdmin: dependencies.allocationAdmin ?? hostedBillingAllocationAdmin(dependencies.runService),
     clock: dependencies.clock,
   });
   const mounted = routes.map((route) => `${route.method} ${route.path}`);

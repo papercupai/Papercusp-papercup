@@ -262,7 +262,21 @@ describe('approvalAcceptance — one verification stage, kind-specific checks (P
         .resolves.toMatchObject({ resubmitted: false, reason: 'validation-receipt-missing' });
       expect(bare.state.issue.assignee).toBe('su-validator');
 
-      const h = harness(validationRow({ intakeReproduction: { receipt } }));
+      const h = harness(validationRow({
+        intakeReproduction: { receipt },
+        agentReview: {
+          status: 'revision-requested',
+          revisionKind: 'reproduction',
+          submittedBy: 'su-author',
+          ledgerIdeaId: 'WI-7',
+          round: 1,
+          reviewedSourceRevision: acceptanceSourceRevision({
+            kind: 'bug',
+            title: 'Proposal needing peer review',
+            summary: 'body',
+          }),
+        },
+      }));
       await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-validator' }, h.deps)).resolves.toEqual({
         resubmitted: true,
         state: {
@@ -276,6 +290,8 @@ describe('approvalAcceptance — one verification stage, kind-specific checks (P
       expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
       expect(h.state.issue.assignee).toBeNull();
       expect((h.state.issue.payload as { agentReview: Record<string, unknown> }).agentReview).not.toHaveProperty('revisionKind');
+      expect((h.state.issue.payload as { agentReview: Record<string, unknown> }).agentReview)
+        .not.toHaveProperty('reviewedSourceRevision');
 
       // The next round approves with the verified receipt and carries no revision kind.
       h.state.issue = { ...h.state.issue, assignee: 'su-reviewer' };
@@ -861,19 +877,64 @@ describe('agent-review grading lifecycle', () => {
     });
   });
 
+  it('refuses unbound, stale, or non-holder grades before the ledger write seam', async () => {
+    const ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: null, feedback: null, gradedBy: null };
+    const unbound = harness(pending);
+    unbound.state.ledger = ledger;
+    await expect(preflightAgentReviewGrade(
+      { ideaId: 'WI-7', grade: 3, gradedBy: 'su-reviewer' },
+      unbound.deps,
+    )).resolves.toMatchObject({ applicable: true, refusal: 'agent-review-source-revision-unbound' });
+
+    const review = (pending.payload as { agentReview: Record<string, unknown> }).agentReview;
+    const boundPending = {
+      ...pending,
+      payload: {
+        agentReview: {
+          ...review,
+          reviewedSourceRevision: acceptanceSourceRevision(pending),
+        },
+      },
+    };
+    const stale = harness(boundPending);
+    stale.state.ledger = ledger;
+    stale.state.issue = { ...stale.state.issue, summary: 'Corrected after reviewer claim.' };
+    await expect(preflightAgentReviewGrade(
+      { ideaId: 'WI-7', grade: 3, gradedBy: 'su-reviewer' },
+      stale.deps,
+    )).resolves.toMatchObject({ applicable: true, refusal: 'agent-review-source-revision-stale' });
+
+    const wrongReviewer = harness(boundPending);
+    wrongReviewer.state.ledger = ledger;
+    await expect(preflightAgentReviewGrade(
+      { ideaId: 'WI-7', grade: 3, gradedBy: 'su-other-reviewer' },
+      wrongReviewer.deps,
+    )).resolves.toMatchObject({ applicable: true, refusal: 'agent-review-reviewer-mismatch' });
+  });
+
   it('refuses a 1–3 grade without actionable feedback before the ledger write seam', async () => {
-    const h = harness(pending);
+    const review = (pending.payload as { agentReview: Record<string, unknown> }).agentReview;
+    const boundPending = {
+      ...pending,
+      payload: {
+        agentReview: {
+          ...review,
+          reviewedSourceRevision: acceptanceSourceRevision(pending),
+        },
+      },
+    };
+    const h = harness(boundPending);
     h.state.ledger = { ideaId: 'WI-7', workItemId: 'WI-7', grade: null, feedback: null, gradedBy: null };
 
-    await expect(preflightAgentReviewGrade({ ideaId: 'WI-7', grade: 3 }, h.deps)).resolves.toMatchObject({
+    await expect(preflightAgentReviewGrade({ ideaId: 'WI-7', grade: 3, gradedBy: 'su-reviewer' }, h.deps)).resolves.toMatchObject({
       applicable: true,
       refusal: 'agent-review-feedback-required',
     });
-    await expect(preflightAgentReviewGrade({ ideaId: 'WI-7', grade: 3, feedback: '  ' }, h.deps)).resolves.toMatchObject({
+    await expect(preflightAgentReviewGrade({ ideaId: 'WI-7', grade: 3, gradedBy: 'su-reviewer', feedback: '  ' }, h.deps)).resolves.toMatchObject({
       refusal: 'agent-review-feedback-required',
     });
     const accepted = await preflightAgentReviewGrade(
-      { ideaId: 'WI-7', grade: 3, feedback: 'Make the retry idempotent.' },
+      { ideaId: 'WI-7', grade: 3, gradedBy: 'su-reviewer', feedback: 'Make the retry idempotent.' },
       h.deps,
     );
     expect(accepted).toMatchObject({ applicable: true });
@@ -927,7 +988,7 @@ describe('agent-review grading lifecycle', () => {
     expect(h.deliverRevision).toHaveBeenCalledTimes(1);
   });
 
-  it('WI-41687: a submitter that can no longer take the claim drops the reviewer claim instead of throwing and stranding the row', async () => {
+  it('keeps the reviewer claim when the submitter cannot take the revision', async () => {
     const h = harness(pending);
     h.state.ledger = {
       ideaId: 'WI-7',
@@ -936,12 +997,10 @@ describe('agent-review grading lifecycle', () => {
       feedback: 'Add deterministic retry coverage.',
       gradedBy: 'su-reviewer',
     };
-    // The submitter's session has been REAPED — the common case for any report reviewed
-    // more than one session-lifetime after it was filed. claimWorkItem returns null for a
-    // non-existent owner exactly as it does here.
+    // claimWorkItem can still reject a transfer after the ledger, payload, and history
+    // have committed. The reviewer keeps the claim so they can disposition the verdict.
     h.claimWorkItem.mockImplementation(async () => null);
 
-    // Before WI-41687 this REJECTED, after the grade/payload/comment had already committed.
     const outcome = await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps);
 
     expect(outcome).toMatchObject({
@@ -950,6 +1009,7 @@ describe('agent-review grading lifecycle', () => {
       round: 1,
       changed: true,
       returnedToSubmitter: false,
+      reviewerRetained: true,
     });
 
     // The review itself is still fully recorded — this is a weaker disposition, not a failure.
@@ -962,20 +1022,17 @@ describe('agent-review grading lifecycle', () => {
     });
     expect(h.commentWorkItem).toHaveBeenCalledTimes(1);
 
-    // The transfer was attempted, and its failure left the row unassigned rather than
-    // stranded under the reviewer.
+    // The transfer was attempted, but its failure does not discard the reviewer's claim.
     expect(h.claimWorkItem).toHaveBeenCalledWith('WI-7', 'su-filer', {
       harness: 'papercusp',
       fromHolder: 'su-reviewer',
     });
-    expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', {
-      harness: 'papercusp',
-      expectedAssignee: 'su-reviewer',
-    });
-    expect(h.state.issue.assignee).toBeNull();
+    expect(h.releaseWorkItem).not.toHaveBeenCalled();
+    expect(h.state.issue.assignee).toBe('su-reviewer');
+    expect(h.deliverRevision).not.toHaveBeenCalled();
   });
 
-  it('does not assign revision work to a submitter whose session is confirmed ended', async () => {
+  it('keeps the reviewer claim when the submitter session is confirmed ended', async () => {
     const h = harness(pending);
     h.state.ledger = {
       ideaId: 'WI-7',
@@ -992,20 +1049,79 @@ describe('agent-review grading lifecycle', () => {
       round: 1,
       changed: true,
       returnedToSubmitter: false,
+      reviewerRetained: true,
     });
 
     expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-filer', { claimsHeld: false });
     expect(h.claimWorkItem).not.toHaveBeenCalled();
-    expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', {
-      harness: 'papercusp',
-      expectedAssignee: 'su-reviewer',
-    });
-    expect(h.state.issue.assignee).toBeNull();
+    expect(h.releaseWorkItem).not.toHaveBeenCalled();
+    expect(h.state.issue.assignee).toBe('su-reviewer');
     expect(h.state.issue.payload).toMatchObject({
       agentReview: { status: 'revision-requested', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
       implementationReadiness: { status: 'not-ready', reason: 'agent-review-revision-requested' },
     });
     expect(h.deliverRevision).not.toHaveBeenCalled();
+  });
+
+  it('keeps the reviewer claim for a system submitter without a verified session alias', async () => {
+    const h = harness(issue({
+      assignee: 'su-reviewer',
+      payload: {
+        agentReview: { status: 'pending', submittedBy: 'system:judge/unknown-client', ledgerIdeaId: 'WI-7', round: 1 },
+      },
+    }));
+    h.state.ledger = {
+      ideaId: 'WI-7',
+      workItemId: 'WI-7',
+      grade: 2,
+      feedback: 'The reported defect is already fixed in WI-10005020.',
+      gradedBy: 'su-reviewer',
+    };
+
+    await expect(reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps)).resolves.toMatchObject({
+      status: 'revision-requested',
+      changed: true,
+      returnedToSubmitter: false,
+      reviewerRetained: true,
+    });
+
+    expect(h.deps.resolveVerifiedSubmitterAlias).toHaveBeenCalledWith('system:judge/unknown-client');
+    expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
+    expect(h.claimWorkItem).not.toHaveBeenCalled();
+    expect(h.releaseWorkItem).not.toHaveBeenCalled();
+    expect(h.deliverRevision).not.toHaveBeenCalled();
+    expect(h.state.issue.assignee).toBe('su-reviewer');
+  });
+
+  it('routes a signed system submitter through its verified live session alias', async () => {
+    const h = harness(issue({
+      assignee: 'su-reviewer',
+      payload: {
+        agentReview: { status: 'pending', submittedBy: 'system:judge/su-filer', ledgerIdeaId: 'WI-7', round: 1 },
+      },
+    }));
+    h.state.ledger = {
+      ideaId: 'WI-7',
+      workItemId: 'WI-7',
+      grade: 2,
+      feedback: 'Add deterministic retry coverage.',
+      gradedBy: 'su-reviewer',
+    };
+    h.deps.resolveVerifiedSubmitterAlias = vi.fn(async () => 'su-filer');
+
+    await expect(reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps)).resolves.toMatchObject({
+      status: 'revision-requested',
+      changed: true,
+      returnedToSubmitter: true,
+    });
+
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-filer', { claimsHeld: false });
+    expect(h.claimWorkItem).toHaveBeenCalledWith('WI-7', 'su-filer', {
+      harness: 'papercusp',
+      fromHolder: 'su-reviewer',
+    });
+    expect(h.deliverRevision).toHaveBeenCalledWith(expect.objectContaining({ to: 'su-filer' }));
+    expect(h.state.issue.assignee).toBe('su-filer');
   });
 
   it('releases legacy-sentinel revision work to normal implementation without assigning or waking the sentinel', async () => {

@@ -43,6 +43,13 @@ export function isRetriablePgReadError(e: unknown): boolean {
   if (!x) return false;
   const msg = x.message ?? '';
   return (
+    // A read-only SELECT that reaches PostgreSQL can still be canceled by the
+    // workspace lock timeout (SQLSTATE 55P03). Re-issuing this SELECT is safe:
+    // it has no mutation to apply twice, and the conflicting lock may have
+    // cleared by the next attempt.
+    x.code === '55P03' ||
+    /\b55P03\b/.test(msg) ||
+    /\block timeout\b/i.test(msg) ||
     /\bquery_wait_timeout\b/.test(msg) ||
     x.code === 'CONNECTION_CLOSED' ||
     /\bCONNECTION_CLOSED\b/.test(msg)

@@ -63,6 +63,9 @@ import type { Dirent } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
+import { createTextCollector } from '../../child-output';
+import { completedResultPayload } from '../abort-completion-payload';
 import {
   errorsOnly,
   filterToDirs,
@@ -121,6 +124,92 @@ const MAX_TIMEOUT_MS = 900_000;
  */
 const DEFAULT_MAX_ERRORS = 50;
 const MAX_BY_FILE = 30;
+
+/**
+ * These outcomes are returned before a compiler verdict exists. A late return for one of them
+ * proves that no typecheck effect needs replaying; every other malformed or partial payload stays
+ * recovery-incomplete so the caller re-reads instead of guessing.
+ */
+const PRE_EXECUTION_REFUSALS = new Set([
+  'project_not_found',
+  'scope_requires_files',
+  'scope_files_not_found',
+  'tsc_decoy_package_ran',
+  'tsc_failed_to_run',
+  'nothing_typechecked',
+]);
+
+/**
+ * Resolve a late `build:typecheck` return. A complete compiler verdict is the durable effect of
+ * this attempt, even when `ok:false` reports real diagnostics. A timeout is deliberately not
+ * authoritative: the child may still be winding down after the handler's timer, so retrying
+ * without a fresh check could overlap the original process. Refusals that happen before a usable
+ * verdict are explicit no-effect outcomes.
+ */
+export function buildTypecheckAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  if (context.toolName !== 'build:typecheck' || !context.callId.trim()) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'build:typecheck receipt is missing its dispatch attempt identity',
+      failures: ['missing-attempt-identity'],
+    };
+  }
+
+  const payload = completedResultPayload(result);
+  if (!payload) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'build:typecheck returned no parseable completion payload after abort',
+      failures: ['missing-result-payload'],
+    };
+  }
+
+  const error = typeof payload.error === 'string' ? payload.error.trim() : '';
+  if (error === 'timeout') {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'build:typecheck timed out before a complete compiler verdict was established',
+      failures: ['typecheck-timeout'],
+      diagnostics: {
+        ...(typeof payload.project === 'string' ? { project: payload.project } : {}),
+        ...(typeof payload.durationMs === 'number' ? { durationMs: payload.durationMs } : {}),
+      },
+    };
+  }
+
+  if (PRE_EXECUTION_REFUSALS.has(error)) {
+    return {
+      status: 'not-recorded',
+      reason: `build:typecheck completed with an explicit no-effect refusal (${error})`,
+      diagnostics: { error },
+    };
+  }
+
+  const project = typeof payload.project === 'string' ? payload.project.trim() : '';
+  if (!project || typeof payload.ok !== 'boolean') {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'build:typecheck result did not establish a complete compiler verdict',
+      failures: ['missing-typecheck-verdict'],
+    };
+  }
+
+  return {
+    status: 'recorded',
+    effectRef: `build-typecheck:${context.callId}:${project}`,
+    reason: 'build:typecheck returned a complete compiler verdict for this attempt',
+    diagnostics: {
+      project,
+      ok: payload.ok,
+      ...(typeof payload.errorCount === 'number' ? { errorCount: payload.errorCount } : {}),
+      ...(typeof payload.durationMs === 'number' ? { durationMs: payload.durationMs } : {}),
+    },
+  };
+}
 
 interface BoundedDiagnostics {
   errors: TscDiagnostic[];
@@ -279,6 +368,10 @@ function killProcessTree(child: ChildProcess, sig: NodeJS.Signals): void {
 export function runTsc(args: string[], cwd: string, timeoutMs: number): Promise<TscOutcome> {
   return new Promise((resolvePromise) => {
     let output = '';
+    const outputCollector = createTextCollector(undefined, {
+      retainText: false,
+      onDecodedText: (decoded) => { output = (output + decoded).slice(-8 * 1024 * 1024); },
+    });
     let settled = false;
     // EI-18793290418757939: the old version gated promise resolution on the
     // child's OWN 'close' event even after the timeout fired — it only killed
@@ -329,11 +422,13 @@ export function runTsc(args: string[], cwd: string, timeoutMs: number): Promise<
     // output is only an error-path fallback), so the buffer is generous: a
     // full-repo check can emit thousands of lines and truncating the HEAD would
     // silently drop errors rather than merely losing context.
-    const append = (b: Buffer) => { output = (output + b.toString('utf8')).slice(-8 * 1024 * 1024); };
-    child.stdout?.on('data', append);
-    child.stderr?.on('data', append);
+    outputCollector.attach(child.stdout);
+    outputCollector.attach(child.stderr);
     child.on('error', (e) => { settle({ code: null, timedOut: false, output: `${output}\n[spawn-error] ${e.message}` }); });
-    child.on('close', (code) => { settle({ code, timedOut: false, output }); });
+    child.on('close', (code) => {
+      outputCollector.text();
+      settle({ code, timedOut: false, output });
+    });
   });
 }
 
@@ -873,6 +968,7 @@ export async function askTypecheckService(opts: {
 
 export default defineTool({
   name: 'build:typecheck',
+  abortCompletionReceipt: buildTypecheckAbortCompletionReceipt,
   description:
     'Run `tsc --noEmit` for ONE project and return structured diagnostics — { ok, errorCount, errors:[{file,line,column,code,message}], byFile, syntaxBroken, semanticCheckIncomplete } — instead of a compiler log you pipe through grep/tail. In scopeToFiles mode, ok/errorCount/exitCode describe the requested files, while otherErrorCount/otherErrors preserve other-file diagnostics separately. Parser/global/partial-scope failures remain incomplete, never green. When syntaxBroken is non-empty, semanticCheckIncomplete is true and the diagnostic counts are LOWER BOUNDS, not complete totals. REFUSES a run that checked zero files. Such a run (TS5057/TS5058/TS18003) is refused rather than reported as a clean zero: this repo has no root tsconfig.json, so `-p .` silently checks zero files. `files` filters diagnostics server-side. Runs with --incremental false so a warm tsbuildinfo cannot under-report.',
   guidance: {

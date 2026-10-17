@@ -9,7 +9,7 @@
  * Two of these guards exist because of measured failures, not hypotheticals — see the
  * PATH TRAP note in the action's header. They are marked below.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import * as path from 'node:path';
 import {
   resolveProjectHistoryConfig,
@@ -19,6 +19,8 @@ import {
   decideProjectHistoryHealthUpdate,
   PROJECT_HISTORY_HEALTH_DEFAULT,
   PROJECT_HISTORY_FAILURE_ALERT_THRESHOLD,
+  runProjectHistoryRefreshAction,
+  type ProjectHistoryHealthOutcome,
   type ProjectHistoryConfig,
 } from './project-history-refresh-action';
 
@@ -170,6 +172,72 @@ describe('resolvePtool', () => {
   it('returns null when ptool is nowhere on PATH', () => {
     expect(resolvePtool({ PATH: '/a:/b' }, exists([]))).toBeNull();
     expect(resolvePtool({ PATH: '' }, exists(['/a/ptool']))).toBeNull();
+  });
+});
+
+describe('runProjectHistoryRefreshAction health bookkeeping', () => {
+  const validConfig = { repo_root: '/repo', output: 'history.ts', timeout_ms: 1000 };
+  const ctx = (triggerConfig: Record<string, unknown>) => ({
+    installSlug: 'sidestage',
+    workspaceId: 'ws',
+    triggerConfig,
+    payloadTemplate: null,
+  });
+
+  const preconditionCases: Array<[
+    string,
+    Record<string, unknown>,
+    (file: string) => boolean,
+    () => string,
+    () => string | null,
+    string,
+  ]> = [
+    ['misconfigured row', { output: 'history.ts' }, () => false, () => '/cli', () => '/ptool', 'repo_root is required'],
+    ['missing repository', validConfig, () => false, () => '/cli', () => '/ptool', 'repo_root does not exist'],
+    ['missing pinned CLI', validConfig, (file: string) => file === '/repo', () => '/cli', () => '/ptool', 'Papercusp CLI not found'],
+    ['missing ptool', validConfig, () => true, () => '/cli', () => null, '`ptool` does not resolve'],
+  ];
+
+  it.each(preconditionCases)(
+    'records a failed health outcome before returning for a %s precondition',
+    async (_label, triggerConfig, exists, resolveCliBin, resolvePtool, expectedReason) => {
+      const outcomes: ProjectHistoryHealthOutcome[] = [];
+      const generate = vi.fn(async () => ({ code: 0, stdout: '', stderr: '', timedOut: false }));
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      try {
+        await runProjectHistoryRefreshAction(ctx(triggerConfig), {
+          env: { PATH: '/empty' },
+          exists,
+          resolveCliBin,
+          resolvePtool,
+          runGenerate: generate,
+          recordHealth: async (_ctx, outcome) => { outcomes.push(outcome); },
+        });
+
+        expect(outcomes).toHaveLength(1);
+        expect(outcomes[0]).toMatchObject({ success: false, reason: expect.stringContaining(expectedReason) });
+        expect(generate).not.toHaveBeenCalled();
+      } finally {
+        error.mockRestore();
+      }
+    },
+  );
+
+  it('records the generator result through the same health seam', async () => {
+    const outcomes: ProjectHistoryHealthOutcome[] = [];
+    await runProjectHistoryRefreshAction(ctx(validConfig), {
+      env: { PATH: '/empty' },
+      exists: () => true,
+      resolveCliBin: () => '/cli',
+      resolvePtool: () => '/ptool',
+      runGenerate: async () => ({ code: 0, stdout: 'ok', stderr: '', timedOut: false }),
+      recordHealth: async (_ctx, outcome) => { outcomes.push(outcome); },
+      now: () => 1_000,
+    });
+
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({ success: true, code: 0, output: '/repo/history.ts' });
   });
 });
 

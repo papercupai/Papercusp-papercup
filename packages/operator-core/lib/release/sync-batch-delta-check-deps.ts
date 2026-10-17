@@ -33,6 +33,9 @@ import * as path from 'node:path';
 import { promisify } from 'node:util';
 import { getOrgPg } from '@papercusp/db-org';
 import { createOneWorkItem } from '../agent-tools/work_items/_create-core';
+import { getMessageById, sendMessage } from '../agent-tools/coordination/messages';
+import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
+import { getWorkItem } from '../work-items';
 import {
   idlePriorityArgv,
   parseAffectedProbe,
@@ -86,8 +89,14 @@ export interface SyncBatchDeltaDepsConfig {
   /** System identity filed work-items carry (owner + `payload.filedBy`). Defaults to
    *  `system:sync-batch-delta-check`; the P-028 guard routine passes its own. */
   filedBy?: string;
+  /** Stable prefix for the owner-notification message id. The lint guard passes
+   *  `sync-lint-red` to preserve its existing dedup key; the delta leg uses
+   *  `sync-delta-red` by default. */
+  notificationPrefix?: string;
+  /** Log label retained for the lint guard's existing retry diagnostics. */
+  notificationLogLabel?: string;
   /** Process seam — defaults to the real async argv spawn below. Tests inject a
-   *  recorder to assert WHICH legs run at idle priority without spawning anything. */
+   *  recorder to assert WHICH legs run at low CPU / best-effort I/O priority without spawning anything. */
   exec?: (cmd: string, args: string[], opts: { cwd: string; timeoutMs: number }) => Promise<RunResult | null>;
 }
 
@@ -205,14 +214,19 @@ export async function readSyncDeltaKnownGood(installSlug: string): Promise<strin
 export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatchDeltaDeps {
   const script = (rel: string): string => path.join(cfg.root, rel);
   const exec = cfg.exec ?? run;
-  /** A HEAVY leg (radius probe, affected suites, tsc, per-file confirm) runs at idle
-   *  CPU + IO priority (P-001): that, not skipping, is what keeps the check from
-   *  competing with the green-checkpoint suite. git and proc-guard stay normal —
+  /** A HEAVY leg (radius probe, affected suites, tsc, per-file confirm) runs at low
+   *  CPU + best-effort I/O priority (P-001): that, not skipping, is what keeps the
+   *  check from competing with the green-checkpoint suite without starving it in the
+   *  idle I/O class. git and proc-guard stay normal —
    *  they are millisecond reads and a starved cursor read would only add latency. */
   const heavy = (cmd: string, args: string[], opts: { cwd: string; timeoutMs: number }) => {
     const wrapped = idlePriorityArgv(cmd, args);
     return exec(wrapped.cmd, wrapped.args, opts);
   };
+
+  const filedBy = cfg.filedBy ?? 'system:sync-batch-delta-check';
+  const notificationPrefix = cfg.notificationPrefix ?? 'sync-delta-red';
+  const notificationLogLabel = cfg.notificationLogLabel ?? 'sync-batch-delta-check';
 
   return {
     async readCursor(): Promise<SyncDeltaCursor | null> {
@@ -405,7 +419,14 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
       return parseConfirmOutput(`${r.stdout}\n${r.stderr}`);
     },
 
-    async fileRed(finding: RedFinding): Promise<{ ok: boolean; id?: string; adopted?: boolean; error?: string }> {
+    async fileRed(finding: RedFinding): Promise<{
+      ok: boolean;
+      id?: string;
+      adopted?: boolean;
+      assignee?: string | null;
+      error?: string;
+      notificationError?: string;
+    }> {
       try {
         const res = await createOneWorkItem(
           {
@@ -417,7 +438,7 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
             conditionKey: finding.conditionKey,
             payload: {
               paths: finding.paths,
-              filedBy: cfg.filedBy ?? 'system:sync-batch-delta-check',
+              filedBy,
               authorSource: finding.authorSource,
             },
             // P-002 / D-002: route the fix-it to the agent whose edit broke it. Omitted
@@ -425,7 +446,7 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
             ...(finding.assignee ? { assign_to: finding.assignee } : {}),
           },
           {
-            ownerId: cfg.filedBy ?? 'system:sync-batch-delta-check',
+            ownerId: filedBy,
             workspaceId: cfg.workspaceId,
             harnessSlug: cfg.installSlug,
           },
@@ -434,11 +455,49 @@ export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatc
           const wi = res.workItem as { id?: unknown; feature_id?: unknown };
           const id =
             typeof wi.id === 'string' ? wi.id : typeof wi.feature_id === 'string' ? wi.feature_id : undefined;
-          return {
+          const result = {
             ok: true,
             ...(id ? { id } : {}),
             ...(res.conditionUpsert?.adopted ? { adopted: true } : {}),
           };
+          if (!result.id) return result;
+
+          // A filed/assigned red is incomplete until the actual current holder
+          // receives the stable message and required wake. This lookup is also
+          // required for an unattributed filing that adopted an incumbent item:
+          // the incumbent's actual holder, rather than the new finding's absent
+          // attribution, is the owner that must be notified.
+          let filedAssignee: string | null | undefined;
+          try {
+            const item = await getWorkItem(result.id, cfg.installSlug);
+            filedAssignee = item?.assignee ?? null;
+            if (!filedAssignee) return { ...result, assignee: null };
+            // Keep the red filed on any delivery miss so the next tick retries
+            // the same condition and stable message id.
+            const target = filedAssignee;
+            const msgId = `${notificationPrefix}:${cfg.workspaceId}:${result.id}`;
+            const summary = `${result.id}: ${finding.title}`;
+            if (!await getMessageById(msgId)) {
+              await sendMessage({ ownerId: filedBy, ownerLabel: filedBy,
+                source: 'principal', workspaceId: cfg.workspaceId, userId: null }, {
+                to: [target], msgId, summary, body: finding.body,
+                files: finding.paths, harnessSlug: cfg.installSlug,
+                extra: { expects: 'action', workItemId: result.id },
+              });
+            }
+            const wake = await wakeRecipients([target], {
+              summary, payload: { workItemId: result.id, conditionKey: finding.conditionKey, msg_id: msgId },
+              source: filedBy, workspaceId: cfg.workspaceId, requiredWake: true,
+            });
+            if ((wake.queued ?? wake.woken) < 1) {
+              throw new Error(`wake not queued for ${target} (staged=${wake.staged}, timedOut=${wake.timedOutTargets.length})`);
+            }
+            return { ...result, assignee: filedAssignee };
+          } catch (error) {
+            const notificationError = error instanceof Error ? error.message : String(error);
+            console.log(`[${notificationLogLabel}] ${result.id} remains filed; notification pending: ${notificationError}`);
+            return { ...result, ...(filedAssignee === undefined ? {} : { assignee: filedAssignee }), notificationError };
+          }
         }
         const refusal = res as { error?: string; message?: string };
         return { ok: false, error: refusal.message ?? refusal.error ?? 'create_failed' };

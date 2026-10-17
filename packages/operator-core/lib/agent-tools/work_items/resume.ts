@@ -55,7 +55,11 @@ export function buildWorkItemResume(input: {
       updatedAtMs: checkpoint.updatedAtMs,
       contentHash: checkpoint.readFailed || checkpoint.checkpoint === null ? null : shortCarryHash(checkpoint.checkpoint),
       freshness: input.freshness ?? { verdict: 'unknown', reason: 'no measured dependency verdict' },
-      readRef: { tool: 'work_items:get', args: { id: item.id, harness: item.harness ?? undefined, payloadTier: 'full' } },
+      // Preserve the continuation mode in the recovery reference. Omitting
+      // `resume:true` silently replays an ordinary full-row read, which drops
+      // this bounded packet's next action and checkpoint metadata instead of
+      // reproducing the continuation view the caller was given.
+      readRef: { tool: 'work_items:get', args: { id: item.id, harness: item.harness ?? undefined, resume: true } },
     },
     checks: { rows: [] as unknown[], omitted: fields.checks?.length ?? 0 },
     walls: { rows: [] as unknown[], omitted: fields.walls?.length ?? 0 },

@@ -55,6 +55,14 @@ export function normalizeEvent(pe: PostInvokeEvent): ToolInvocationEvent {
   };
 }
 
+type LocalActions = Array<MatchedAction<ToolInvocationEvent, string>>;
+let localMatcher: ((event: ToolInvocationEvent) => Promise<LocalActions>) | null = null;
+let localFire: ((event: ToolInvocationEvent, cause: NonNullable<ToolInvocationEvent['cause']>) => Promise<{ ok: boolean; error?: string }>) | null = null;
+/** Operator-host bootstrap installs durable local authorship, never a test/script import. */
+export function setLocalRuleMatcher(matcher: typeof localMatcher, fire: typeof localFire): void {
+  localMatcher = matcher; localFire = fire;
+}
+
 /** The host's `postInvoke` — match rules + schedule reactions. Never throws. */
 export function handleToolInvoked(pe: PostInvokeEvent): void {
   let event: ToolInvocationEvent;
@@ -236,15 +244,22 @@ function matchAndRun(event: ToolInvocationEvent): void {
     return;
   }
 
+  // Reload authored rows off the trigger's hot path; curated rules still match synchronously.
+  if (localMatcher) void localMatcher(event).then(actions => runMatchedActions(event, actions))
+    .catch(error => console.warn('[events] local rule reload failed:', error));
   let actions: Array<MatchedAction<ToolInvocationEvent, string>>;
   try {
-    actions = matchReactions(event);
+    actions = matchReactions(event).filter(action => !action.rule.id.startsWith('standalone:local:'));
   } catch (err) {
     // Matching must never break the trigger. (Pure code; defensive.)
      
     console.warn(`[events] match failed for ${event.tool}: ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
+  runMatchedActions(event, actions);
+}
+
+function runMatchedActions(event: ToolInvocationEvent, actions: LocalActions): void {
   if (actions.length === 0) return;
 
   // Hand off to the generic engine. It owns success-gate + loop-guard + the
@@ -257,7 +272,9 @@ function matchAndRun(event: ToolInvocationEvent): void {
     cause: event.cause,
     rootRunId: event.ctx.runId ?? null,
     fireInProcess: ({ fire, args, event: ev, cause, capability }) =>
-      fireReactionInProcess({ fire, args, parentCtx: ev.ctx, cause, capability }),
+      cause.ruleId.startsWith('standalone:local:')
+        ? localFire ? localFire(ev, cause) : Promise.resolve({ ok: false, error: 'local rule executor unavailable' })
+        : fireReactionInProcess({ fire, args, parentCtx: ev.ctx, cause, capability }),
     durable: { enabled: durableReactionsEnabled, run: (input) => runDurableReaction(input) },
     log: (msg) => console.warn(`[events] ${msg}`),
     // P-030 (b): a failed reaction used to be a console.warn and nothing else —

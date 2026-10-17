@@ -11,6 +11,7 @@
 import { Buffer } from 'node:buffer';
 import { z } from 'zod';
 import { listAllProjectedTools, projectedToolRegistryRevision, type ProjectedTool } from '@papercusp/agent-mcp';
+import { decode } from '@papercusp/result-encoding';
 import { checkAgainstJsonSchema } from './json-schema-validation';
 import { classifyProjectionBody, parseProjection } from './result-projection';
 import { redactSensitiveText, redactSensitiveValue } from './sensitive-text';
@@ -645,6 +646,22 @@ function toolErrorExcerpt(result: Record<string, unknown>): string {
   return `: ${text.length > TOOL_ERROR_EXCERPT_CHARS ? `${text.slice(0, TOOL_ERROR_EXCERPT_CHARS)}…` : text}`;
 }
 
+type LosslessResultFormat = 'json' | 'toon';
+
+const LOSSLESS_RESULT_MARKER = /^format:\s*(json|toon)\s*\r?\n/;
+
+function decodeLosslessTextItem(text: string): { ok: true; value: unknown } | { ok: false } {
+  const marker = LOSSLESS_RESULT_MARKER.exec(text);
+  if (!marker) return { ok: false };
+  try {
+    return { ok: true, value: decode(text.slice(marker[0].length), marker[1] as LosslessResultFormat) };
+  } catch {
+    // A malformed compact body must remain unjudgeable; never turn decoder
+    // failure into a fabricated predicate match.
+    return { ok: false };
+  }
+}
+
 function decodeToolResult(result: unknown): unknown {
   if (!result || typeof result !== 'object') return result;
   const row = result as Record<string, unknown>;
@@ -667,6 +684,10 @@ function decodeToolResult(result: unknown): unknown {
   // agree on which item is the payload.
   const { json } = classifyProjectionBody(textItems);
   if (json) return json.parsed;
+  for (const item of textItems) {
+    const decoded = decodeLosslessTextItem(item.text);
+    if (decoded.ok) return decoded.value;
+  }
   return textItems.length === 1 ? textItems[0].text : textItems.map((item) => item.text);
 }
 

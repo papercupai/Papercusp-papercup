@@ -141,8 +141,9 @@ describe('process-local writer-lock evidence (WI-10007670)', () => {
     const local = vi.fn(() =>
       '1: FLOCK ADVISORY WRITE 42 103:03:36177832 0 EOF\n');
     const lockPath = codexThreadWriterLockPath(dir, LIVE_THREAD);
+    expect(lockPath).not.toBeNull();
     mkdirSync(join(dir, 'thread-writer-locks'), { recursive: true });
-    writeFileSync(lockPath, '');
+    writeFileSync(lockPath!, '');
     const got = codexThreadWriterHolder(dir, LIVE_THREAD, {
       holderPid: 42,
       readProcessLocks: local,

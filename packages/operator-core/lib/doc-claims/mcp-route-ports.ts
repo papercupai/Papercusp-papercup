@@ -58,12 +58,17 @@ export function judgeMcpRoutePorts(input: {
 
   const listenMatch = code.match(
     /listenPort\s*:\s*Number\(\s*process\.env\.PAPERCUSP_MCP_PROXY_PORT\s*\?\?\s*(\d+)\s*\)/,
+  ) ?? (
+    /\bstart(?:Mcp)?Proxy\s*\(\s*\{\s*listenPort\s*[,}]/.test(code)
+      ? code.match(/\bconst\s+listenPort\s*=\s*Number\(\s*process\.env\.PAPERCUSP_MCP_PROXY_PORT\s*\?\?\s*(\d+)\s*\)/)
+      : null
   );
   const listenPort = listenMatch ? Number(listenMatch[1]) : null;
   if (listenPort === null) {
     problems.push(
       `${PROXY_ENTRYPOINT}: could not read a default listen port from a live ` +
-        `listenPort: Number(process.env.PAPERCUSP_MCP_PROXY_PORT ?? <n>) assignment.`,
+        `inline listenPort: Number(process.env.PAPERCUSP_MCP_PROXY_PORT ?? <n>) or ` +
+        `const listenPort assignment passed to startMcpProxy({ listenPort, … }).`,
     );
   }
 

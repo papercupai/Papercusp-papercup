@@ -109,18 +109,40 @@ describe('drain-fleet recovery guards', () => {
 
   it('alarms only after ten minutes with positive live-member/start evidence and no successful pull', () => {
     const member = {
-      agentId: 'su-member', agentRole: 'su', sessionState: 'live' as const,
+      agentId: 'su-member', agentRole: 'su', fleetRole: 'member', sessionState: 'live' as const,
       startedAt: new Date(NOW - GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS - 1).toISOString(),
     };
     expect(classifyGoalDrainFleetPullStall({ members: [member], successfulPullOwnerIds: new Set(), nowMs: NOW }))
       .toMatchObject({ liveMemberIds: ['su-member'] });
-    expect(classifyGoalDrainFleetPullStall({ members: [member], successfulPullOwnerIds: new Set(['su-old-member']), nowMs: NOW })).toBeNull();
+    expect(classifyGoalDrainFleetPullStall({ members: [member], successfulPullOwnerIds: new Set(['su-member']), nowMs: NOW })).toBeNull();
     expect(classifyGoalDrainFleetPullStall({
       members: [{ ...member, startedAt: null }], successfulPullOwnerIds: new Set(), nowMs: NOW,
     })).toBeNull();
     expect(classifyGoalDrainFleetPullStall({
       members: [{ ...member, sessionState: null }], successfulPullOwnerIds: new Set(), nowMs: NOW,
     })).toBeNull();
+  });
+
+  it('does not treat a live leader as a scheduler pull worker', () => {
+    const leader = {
+      agentId: 'su-leader', agentRole: 'su', fleetRole: 'leader', sessionState: 'live' as const,
+      startedAt: new Date(NOW - GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS - 1).toISOString(),
+    };
+    expect(classifyGoalDrainFleetPullStall({
+      members: [leader], successfulPullOwnerIds: new Set(), nowMs: NOW,
+    })).toBeNull();
+  });
+
+  it('does not let a leader pull mask a stalled worker', () => {
+    const startedAt = new Date(NOW - GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS - 1).toISOString();
+    expect(classifyGoalDrainFleetPullStall({
+      members: [
+        { agentId: 'su-leader', agentRole: 'su', fleetRole: 'leader', sessionState: 'live' as const, startedAt },
+        { agentId: 'su-worker', agentRole: 'su', fleetRole: 'member', sessionState: 'live' as const, startedAt },
+      ],
+      successfulPullOwnerIds: new Set(['su-leader']),
+      nowMs: NOW,
+    })).toMatchObject({ liveMemberIds: ['su-worker'] });
   });
 
   it('scans active registered fleets that have no goal declaration', async () => {

@@ -36,7 +36,7 @@ import {
 } from './social';
 import { AddresseeRefused } from './addressing';
 import type { OutboundDispatchDeps } from './provider-dispatch';
-import { installSocialPackages, invokedArgs } from './social-provider.fixture';
+import { installDefaultSocialPackages, installSocialPackages, invokedArgs } from './social-provider.fixture';
 
 /**
  * Minimal postgres stand-in that also COUNTS calls, because the ordering claims
@@ -83,7 +83,8 @@ const TIKTOK_SOURCE = {
 /** The platform's package, installed; `seen()` is every post request it received. */
 async function packageFor(platform: 'reddit' | 'bluesky' | 'mastodon' | 'tiktok' = 'reddit') {
   const installed = await installSocialPackages([
-    { platform, respond: () => ({ externalId: 't3_abc', url: 'https://example.test/t3_abc' }) },
+    { platform, ...(platform === 'tiktok' ? { verification: { verifiedAt: null, sources: [] } } : {}),
+      respond: () => ({ externalId: 't3_abc', url: 'https://example.test/t3_abc' }) },
   ]);
   return { installed, seen: () => invokedArgs<SocialPostRequest>(installed) };
 }
@@ -104,7 +105,8 @@ function post(sql: unknown, overrides: Record<string, unknown> = {}, deps: Outbo
   );
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await installDefaultSocialPackages();
   getFlagMock.mockReset();
   getFlagMock.mockResolvedValue(true);
 });
@@ -253,11 +255,10 @@ describe('provider package — absence and a missing capability are distinct ref
     const sql = fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]);
 
     await expect(post(sql, {}, installed.deps)).rejects.toThrow(
-      /^outbound_source_not_connected:social-post:reddit — no installed provider package serves reddit$/,
+      /social_platform_unusable:reddit:unknown-platform.*no installed/,
     );
-    // Only the standing classification ran: the owner's sources were never
-    // listed, no package was invoked, and no provider request was prepared.
-    expect(sql.calls()).toBe(1);
+    // An absent package refuses before standing, vault or credential work.
+    expect(sql.calls()).toBe(0);
     expect(installed.invokes).toHaveLength(0);
     expect(installed.hostFetchesBuilt).toBe(0);
   });
@@ -268,14 +269,14 @@ describe('provider package — absence and a missing capability are distinct ref
     const sql = fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]);
 
     await expect(post(sql, {}, installed.deps)).rejects.toThrow(
-      /^outbound_source_not_connected:social-post:reddit — no installed provider package serves reddit$/,
+      /social_platform_unusable:reddit:unknown-platform.*no installed/,
     );
   });
 
   it('distinguishes "no package" from "package cannot post"', async () => {
     const none = await installSocialPackages([]);
     await expect(post(fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]), {}, none.deps)).rejects.toThrow(
-      /no installed provider package serves reddit/,
+      /social_platform_unusable:reddit:unknown-platform.*no installed/,
     );
 
     const replyOnly = await installSocialPackages([
@@ -284,7 +285,7 @@ describe('provider package — absence and a missing capability are distinct ref
     // A DIFFERENT error on purpose: collapsing these would send someone to
     // install a package when the real gap is a capability the package lacks.
     await expect(post(fakeSql([STANDING_UNKNOWN, [REDDIT_SOURCE]]), {}, replyOnly.deps)).rejects.toThrow(
-      /^provider_capability_unsupported:reddit:social\.post$/,
+      /social_platform_unusable:reddit:write-verb-unsupported/,
     );
     expect(replyOnly.invokes).toHaveLength(0);
     expect(replyOnly.hostFetchesBuilt).toBe(0);

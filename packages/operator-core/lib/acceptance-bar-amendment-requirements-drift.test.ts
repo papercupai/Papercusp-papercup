@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseRequirementBars } from './acceptance-bar-seed';
+import { parseRequirementBars, validateAcceptanceBarSource } from './acceptance-bar-seed';
 import {
   amendedRequirementBarKeys,
   diffAmendedCriteriaAgainstRequirements,
@@ -258,6 +258,30 @@ describe('diffAmendedCriteriaAgainstRequirements', () => {
 // WI-10006835: the apply re-renders the changed BARs' explicit blocks. Each case round-trips through
 // the REAL parser and the drift diff, so "in sync after apply" is measured, not restated.
 describe('rerenderAmendedRequirementBlocks', () => {
+  it('keeps the explicit block and map plane consistent while preserving discharge edges', () => {
+    const content = planContent + [
+      '## Design', '### Bar-to-work map for this plan',
+      '| bar | implementing plan items | evidence plane |', '|---|---|---|',
+      '| R-1 | P-001, P-002 | tree |', '| R-2 | P-002 | tree |',
+      '## Build', '- **P-001** `done` export', '- **P-002** `done` persist',
+    ].join('\n');
+    const criteria = inSyncCriteria();
+    criteria[0]!.evidencePlane = 'live';
+    const rendered = rerenderAmendedRequirementBlocks(content, { nextCriteria: criteria, changedBars: ['R-1'] });
+    expect(rendered.content).toContain('| R-1 | P-001, P-002 | live |');
+    expect(rendered.content).toContain('| R-2 | P-002 | tree |');
+    expect(rendered.rerendered).toEqual(['R-1']);
+    const parsed = validateAcceptanceBarSource(rendered.content);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.mappings[0]).toMatchObject({ planItemIds: ['P-001', 'P-002'], evidencePlane: 'live' });
+    // Repair a historical map even when its requirement block is already current.
+    const stale = rendered.content.replace('| R-1 | P-001, P-002 | live |', '| R-1 | P-001, P-002 | tree |');
+    expect(validateAcceptanceBarSource(stale).ok).toBe(false);
+    expect(rerenderAmendedRequirementBlocks(stale, { nextCriteria: criteria, changedBars: ['R-1'] })).toEqual(rendered);
+    expect(rerenderAmendedRequirementBlocks(rendered.content, { nextCriteria: criteria, changedBars: ['R-1'] }))
+      .toEqual({ content: rendered.content, rerendered: [] });
+  });
+
   const amended = (): Array<Record<string, unknown>> => {
     const criteria = inSyncCriteria();
     // The pui-chat-first-ux rev 10 shape: the amendment moved check.files and reworded the method.

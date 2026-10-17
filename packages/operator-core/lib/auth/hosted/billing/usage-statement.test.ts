@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildHostedUsageStatement, type HostedUsageRecord } from './usage-statement';
+import { buildHostedUsageStatement, projectHostedMonthlyCost, type HostedUsageRecord } from './usage-statement';
 
 const JAN = Date.UTC(2026, 0, 1);
 const FEB = Date.UTC(2026, 1, 1);
@@ -17,6 +17,18 @@ function statement(records: readonly HostedUsageRecord[], patch: Partial<Paramet
 }
 
 describe('hosted usage statement projection (collector fixtures, not customer billing)', () => {
+  it('shares exact monthly projection with allocation reporting and requires valid census evidence', () => {
+    const cutoff = JAN + (FEB - JAN) / 2;
+    const input = { month: '2026-01', asOfMs: cutoff,
+      source: { complete: true, observedAtMs: cutoff, maximumAgeMs: 0, evidenceRef: 'collector:census' },
+      basisMicrosExact: '0.6' };
+    expect(projectHostedMonthlyCost(input)).toEqual(statement([receipt({ costMicros: 0, costMicrosExact: '0.6' })], input).forecast);
+    expect(projectHostedMonthlyCost({ ...input, basisMicrosExact: String(Number.MAX_SAFE_INTEGER) }))
+      .toMatchObject({ projectedConsumptionMicros: null, unavailableReason: 'amount-overflow' });
+    expect(() => projectHostedMonthlyCost({ ...input, source: { ...input.source, complete: 'true' as never } })).toThrow('source census');
+    expect(() => projectHostedMonthlyCost({ ...input, asOfMs: -1 })).toThrow('non-negative');
+    expect(() => projectHostedMonthlyCost({ ...input, source: { ...input.source, evidenceRef: '' } })).toThrow('identifier');
+  });
   it('aggregates submicro residue across providers before cent settlement, deduplicating and replacing revisions', () => {
     const a = receipt({ costMicros: 4999, costMicrosExact: '4999.6' });
     const b = receipt({ recordId: 'b', usageId: 'b', provider: 'other', costMicros: 5000, costMicrosExact: '5000.6' });

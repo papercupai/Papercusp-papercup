@@ -1,0 +1,563 @@
+{
+  "schemaVersion": 1,
+  "workItem": "EI-25946131547854574",
+  "parent": "WI-10004735",
+  "ownerId": "su-34e04dbe-24fc-4579-a522-1610ae9761f7",
+  "startedAt": "2026-10-15T21:42:11.353Z",
+  "scope": "Exact public device-route origin correction with retained maintained staging external ingress; HTTP verification only.",
+  "build": {
+    "sha": "740c3311b9",
+    "operatorPort": 3170,
+    "sourceFiles": [
+      {
+        "path": "apps/operator/bin/host-handler.ts",
+        "sha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0",
+        "matchesServingCommit": true
+      },
+      {
+        "path": "apps/operator/bin/external-ingress-paths.ts",
+        "sha256": "0b237c14137d3e41b9a55a404f65951a2ae45a441e1e644d0bbe389cf716cd4b",
+        "matchesServingCommit": true
+      },
+      {
+        "path": "packages/operator-core/lib/device-ingress-paths.ts",
+        "sha256": "b9bdde555f459d8ac9bc500bfd5705c0b401fec33c6a7e9769a4e1d9f0d7351e",
+        "matchesServingCommit": true
+      },
+      {
+        "path": "packages/operator-core/lib/own-tunnel/service.ts",
+        "sha256": "54fb64f94f8ef87f6513a42780768935e5db3e0c76736882caa41731061c98a5",
+        "matchesServingCommit": true
+      },
+      {
+        "path": "packages/operator-core/lib/own-tunnel/config.ts",
+        "sha256": "3b5cb8b632d95293e79eed783da144058d4010e143ab6fb9b2967cfd0fc8a5f7",
+        "matchesServingCommit": true
+      },
+      {
+        "path": "packages/operator-core/lib/own-tunnel/own-tunnel.test.ts",
+        "sha256": "00e9f9dc0e34de5ce939752b4e3f06d8b11d4ec4a083b57145c5d6b0449933e5",
+        "matchesServingCommit": true
+      }
+    ],
+    "provenanceLimit": "Compared named source files with serving commit and read live health; not an exhaustive executed-module or whole-candidate audit."
+  },
+  "listener": {
+    "mode": "manual",
+    "hostname": "api.papercuspai.com",
+    "ingressPort": 41179,
+    "target": "http://127.0.0.1:41179",
+    "listening": true,
+    "retained": true
+  },
+  "localContainment": {
+    "checkCount": 26,
+    "failed": 0,
+    "checks": [
+      {
+        "host": "api.papercuspai.com",
+        "method": "GET",
+        "path": "/api/health",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "api.papercuspai.com",
+        "method": "GET",
+        "path": "/api/workspaces",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "api.papercuspai.com",
+        "method": "GET",
+        "path": "/api/coord/presence",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "api.papercuspai.com",
+        "method": "GET",
+        "path": "/api/device/desktop/devices",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "api.papercuspai.com",
+        "method": "GET",
+        "path": "/api/device/qr.svg",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "api.papercuspai.com",
+        "method": "POST",
+        "path": "/api/device/desktop/mint-pair-token",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "api.papercuspai.com",
+        "method": "GET",
+        "path": "/api/remote-access/own-tunnel",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "api.papercuspai.com",
+        "method": "POST",
+        "path": "/api/remote-access/own-tunnel/manual",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "api.papercuspai.com",
+        "method": "POST",
+        "path": "/api/device/heartbeat",
+        "status": 401,
+        "code": "unauthorized"
+      },
+      {
+        "host": "api.papercuspai.com",
+        "method": "GET",
+        "path": "/api/device/runtime-config",
+        "status": 401,
+        "code": "unauthorized"
+      },
+      {
+        "host": "api.papercuspai.com",
+        "method": "GET",
+        "path": "/api/device/devices",
+        "status": 401,
+        "code": "unauthorized"
+      },
+      {
+        "host": "api.papercuspai.com",
+        "method": "GET",
+        "path": "/api/device/workspaces",
+        "status": 401,
+        "code": "unauthorized"
+      },
+      {
+        "host": "api.papercuspai.com",
+        "method": "POST",
+        "path": "/api/device/pair",
+        "status": 400,
+        "code": "invalid_input"
+      },
+      {
+        "host": "localhost",
+        "method": "GET",
+        "path": "/api/health",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "localhost",
+        "method": "GET",
+        "path": "/api/workspaces",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "localhost",
+        "method": "GET",
+        "path": "/api/coord/presence",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "localhost",
+        "method": "GET",
+        "path": "/api/device/desktop/devices",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "localhost",
+        "method": "GET",
+        "path": "/api/device/qr.svg",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "localhost",
+        "method": "POST",
+        "path": "/api/device/desktop/mint-pair-token",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "localhost",
+        "method": "GET",
+        "path": "/api/remote-access/own-tunnel",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "localhost",
+        "method": "POST",
+        "path": "/api/remote-access/own-tunnel/manual",
+        "status": 404,
+        "code": "not_served_on_external_ingress"
+      },
+      {
+        "host": "localhost",
+        "method": "POST",
+        "path": "/api/device/heartbeat",
+        "status": 401,
+        "code": "unauthorized"
+      },
+      {
+        "host": "localhost",
+        "method": "GET",
+        "path": "/api/device/runtime-config",
+        "status": 401,
+        "code": "unauthorized"
+      },
+      {
+        "host": "localhost",
+        "method": "GET",
+        "path": "/api/device/devices",
+        "status": 401,
+        "code": "unauthorized"
+      },
+      {
+        "host": "localhost",
+        "method": "GET",
+        "path": "/api/device/workspaces",
+        "status": 401,
+        "code": "unauthorized"
+      },
+      {
+        "host": "localhost",
+        "method": "POST",
+        "path": "/api/device/pair",
+        "status": 400,
+        "code": "invalid_input"
+      }
+    ]
+  },
+  "before": {
+    "tunnelId": "c53515b3-edfe-4e99-813b-e3916ae9d02c",
+    "version": 16,
+    "configSha256": "751b6ceb81b7bde25d2998e7fb37495eadcb873653e61da9b807b0288d6f246b",
+    "config": {
+      "ingress": [
+        {
+          "service": "http://localhost:3300",
+          "hostname": "chat.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "path": "^/api/public/papercup",
+          "service": "http://localhost:3001",
+          "hostname": "api.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "path": "^/api/mobile/voice$",
+          "service": "http://localhost:3061",
+          "hostname": "api.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "service": "http://localhost:3070",
+          "hostname": "api.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "path": "^/api/device",
+          "service": "http://localhost:3070",
+          "hostname": "api.papercuspai.com",
+          "originRequest": {}
+        },
+        {
+          "service": "http://localhost:3057",
+          "hostname": "api.papercuspai.com",
+          "originRequest": {}
+        },
+        {
+          "service": "http_status:404"
+        }
+      ],
+      "warp-routing": {
+        "enabled": false
+      }
+    },
+    "publicHeartbeat": {
+      "status": 403,
+      "code": "host_not_allowed",
+      "transport": "curl default; independently matched ordinary3070 with exact public Host"
+    }
+  },
+  "prepared": {
+    "configSha256": "d4d592dc5f8e1d5e1dc46981cf0219bf9b4d61438b8eef012e042ea8917dbadd",
+    "config": {
+      "ingress": [
+        {
+          "service": "http://localhost:3300",
+          "hostname": "chat.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "path": "^/api/public/papercup",
+          "service": "http://localhost:3001",
+          "hostname": "api.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "path": "^/api/mobile/voice$",
+          "service": "http://localhost:3061",
+          "hostname": "api.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "service": "http://localhost:3070",
+          "hostname": "api.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "path": "^/api/device",
+          "service": "http://127.0.0.1:41179",
+          "hostname": "api.papercuspai.com",
+          "originRequest": {}
+        },
+        {
+          "service": "http://localhost:3057",
+          "hostname": "api.papercuspai.com",
+          "originRequest": {}
+        },
+        {
+          "service": "http_status:404"
+        }
+      ],
+      "warp-routing": {
+        "enabled": false
+      }
+    },
+    "changedRuleIndexes": [
+      4
+    ]
+  },
+  "rollback": {
+    "method": "Read current config; restore before.config with maintained cloudflareApi.putTunnelConfig only if current equals prepared.config and no concurrent edits exist; re-read and verify exact config hash.",
+    "preserveOtherRules": true,
+    "execution": {
+      "startedAt": "2026-10-15T21:48:43.083Z",
+      "fromVersion": 17,
+      "exactPreparedConfigMatched": true,
+      "finishedAt": "2026-10-15T21:48:44.027Z",
+      "version": 18,
+      "exactBeforeConfigRestored": true,
+      "configSha256": "751b6ceb81b7bde25d2998e7fb37495eadcb873653e61da9b807b0288d6f246b"
+    }
+  },
+  "providerMutation": true,
+  "result": "rolled-back-listener-custody-defect-open",
+  "tests": {
+    "command": "npm run test:file -- packages/operator-core/lib/own-tunnel/own-tunnel.test.ts",
+    "passed": 26,
+    "failed": 0,
+    "head": "66500a0810"
+  },
+  "limits": [
+    "Initial Python Cloudflare1010 root cause remains unknown.",
+    "No iOS simulator/native acceptance is implied.",
+    "P-008 full acceptance and final production shipment remain open.",
+    "Earlier17publicHTTPchecks remain historical passing proof only; the public route correction was rolled back after restart changed listener custody. EI-26083644504454454 owns durable repair."
+  ],
+  "publicationAttemptedAt": "2026-10-15T21:42:12.666Z",
+  "publishedAt": "2026-10-15T21:42:13.228Z",
+  "after": {
+    "version": 17,
+    "configSha256": "d4d592dc5f8e1d5e1dc46981cf0219bf9b4d61438b8eef012e042ea8917dbadd",
+    "exactPreparedConfigVerified": true
+  },
+  "publicVerification": {
+    "result": "passed",
+    "verifiedAt": "2026-10-15T21:42:54.144Z",
+    "transport": "Bun standard fetch over real Cloudflare public HTTPS, without overriding User-Agent or Host",
+    "checkCount": 17,
+    "failed": 0,
+    "checks": [
+      {
+        "transport": "public HTTPS Bun standard fetch",
+        "method": "POST",
+        "path": "/api/device/heartbeat",
+        "status": 401,
+        "errorCode": "unauthorized",
+        "expected": 401,
+        "passed": true
+      },
+      {
+        "transport": "public HTTPS Bun standard fetch",
+        "method": "GET",
+        "path": "/api/device/runtime-config",
+        "status": 401,
+        "errorCode": "unauthorized",
+        "expected": 401,
+        "passed": true
+      },
+      {
+        "transport": "public HTTPS Bun standard fetch",
+        "method": "GET",
+        "path": "/api/device/devices",
+        "status": 401,
+        "errorCode": "unauthorized",
+        "expected": 401,
+        "passed": true
+      },
+      {
+        "transport": "public HTTPS Bun standard fetch",
+        "method": "GET",
+        "path": "/api/device/workspaces",
+        "status": 401,
+        "errorCode": "unauthorized",
+        "expected": 401,
+        "passed": true
+      },
+      {
+        "transport": "public HTTPS Bun standard fetch",
+        "method": "GET",
+        "path": "/api/device/desktop/devices",
+        "status": 404,
+        "errorCode": "not_served_on_external_ingress",
+        "expected": 404,
+        "passed": true
+      },
+      {
+        "transport": "public HTTPS Bun standard fetch",
+        "method": "GET",
+        "path": "/api/device/qr.svg",
+        "status": 404,
+        "errorCode": "not_served_on_external_ingress",
+        "expected": 404,
+        "passed": true
+      },
+      {
+        "transport": "public HTTPS Bun standard fetch",
+        "method": "POST",
+        "path": "/api/device/desktop/mint-pair-token",
+        "status": 404,
+        "errorCode": "not_served_on_external_ingress",
+        "expected": 404,
+        "passed": true
+      },
+      {
+        "transport": "public HTTPS Bun standard fetch",
+        "method": "POST",
+        "path": "/api/device/pair",
+        "status": 400,
+        "errorCode": "invalid_input",
+        "expected": 400,
+        "passed": true
+      },
+      {
+        "transport": "local desktop",
+        "method": "POST",
+        "path": "/api/device/desktop/mint-pair-token",
+        "status": 200,
+        "expected": 200,
+        "passed": true
+      },
+      {
+        "transport": "public HTTPS Bun standard fetch",
+        "method": "POST",
+        "path": "/api/device/pair",
+        "status": 200,
+        "expected": 200,
+        "passed": true
+      },
+      {
+        "transport": "public HTTPS Bun standard fetch",
+        "method": "POST",
+        "path": "/api/device/pair",
+        "status": 401,
+        "errorCode": "invalid_or_expired_token",
+        "expected": 401,
+        "passed": true
+      },
+      {
+        "transport": "public HTTPS Bun standard fetch",
+        "method": "POST",
+        "path": "/api/device/heartbeat",
+        "status": 200,
+        "expected": 200,
+        "passed": true
+      },
+      {
+        "transport": "public HTTPS Bun standard fetch",
+        "method": "GET",
+        "path": "/api/device/runtime-config",
+        "status": 200,
+        "expected": 200,
+        "passed": true
+      },
+      {
+        "transport": "public HTTPS Bun standard fetch",
+        "method": "GET",
+        "path": "/api/device/runtime-config",
+        "status": 400,
+        "errorCode": "unknown_workspace",
+        "expected": 400,
+        "passed": true
+      },
+      {
+        "transport": "public HTTPS Bun standard fetch",
+        "method": "POST",
+        "path": "/api/device/heartbeat",
+        "status": 401,
+        "errorCode": "unauthorized",
+        "expected": 401,
+        "passed": true
+      },
+      {
+        "transport": "local desktop",
+        "method": "DELETE",
+        "path": "/api/device/desktop/devices/0be170c8-c278-4982-8228-cddffe458e37",
+        "status": 200,
+        "expected": 200,
+        "passed": true
+      },
+      {
+        "transport": "public HTTPS Bun standard fetch",
+        "method": "POST",
+        "path": "/api/device/heartbeat",
+        "status": 401,
+        "errorCode": "unauthorized",
+        "expected": 401,
+        "passed": true
+      }
+    ],
+    "deviceId": "0be170c8-c278-4982-8228-cddffe458e37",
+    "advertisedPairingServer": "https://api.papercuspai.com"
+  },
+  "cleanup": {
+    "deviceId": "0be170c8-c278-4982-8228-cddffe458e37",
+    "revokeStatus": 200,
+    "revoked": true,
+    "revokedJwtHeartbeatStatus": 401,
+    "revokedJwtRefused": true
+  },
+  "finalProviderRead": {
+    "version": 17,
+    "exactPreparedConfigVerified": true,
+    "readAt": "2026-10-15T21:42:54.617Z"
+  },
+  "verifiedAt": "2026-10-15T21:42:54.617Z",
+  "postRestartObservation": {
+    "at": "2026-10-15T21:48:42.592Z",
+    "healthSha": "d5b292ed83",
+    "operatorPort": 3271,
+    "servedByThisOperator": false,
+    "listening": false,
+    "health": "down",
+    "lastError": "the external-ingress listener could not open on 127.0.0.1:41179: listen EADDRINUSE: address already in use 127.0.0.1:41179",
+    "lastErrorAt": "2026-10-15T21:46:08.069Z",
+    "publicHeartbeatObservedStatus": 401,
+    "scope": "Anonymous public response does not establish actual socket owner or prior runtime provenance.",
+    "followUp": "EI-26083644504454454"
+  },
+  "currentRouteCorrected": false
+}

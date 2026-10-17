@@ -64,6 +64,7 @@ function isFailedRun(run: RunRow | undefined): boolean {
 }
 
 export interface WorkflowInspectorProps {
+  enterprise?: boolean;
   item: AutomationItem | null;
   row: LedgerRow | null;
   inputs: PlanInputSchemaInfo | null;
@@ -88,6 +89,7 @@ export interface WorkflowInspectorProps {
 }
 
 export default function WorkflowInspector({
+  enterprise = false,
   item,
   row,
   inputs,
@@ -213,6 +215,7 @@ export default function WorkflowInspector({
       </div>
 
       {item.operation && <WorkflowSupportForm key={`${item.operation.harnessSlug}:${item.operation.operationId}`}
+        enterprise={enterprise}
         harnessSlug={item.operation.harnessSlug} operationId={item.operation.operationId}
         previousHandle={item.operation.handle} />}
 

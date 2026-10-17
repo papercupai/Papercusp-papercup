@@ -2356,6 +2356,7 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
             returned: number;
             selected: number;
             admitted: number;
+            timeout?: { scope: string; phase: string; elapsedMs: number };
             sessionDedup: number;
             embedderAvailable: boolean;
             retrievalDepth: number;
@@ -2393,6 +2394,13 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
       'self-session',
     ]);
     expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries corpus timeout diagnostics into the shared admission row', async () => {
+    const timeout = { scope: 'backend-operation' as const, phase: 'corpus-leg' as const, elapsedMs: 2000 };
+    corpusIoResult = oneLine({ lines: [], candidateCount: 0, outcome: 'timed-out', timeout });
+    const corpus = await run();
+    expect(corpus).toMatchObject({ outcome: 'timed-out', timeout });
   });
 
   it('attributes coverage-gate suppression instead of reporting an unexplained empty leg', async () => {

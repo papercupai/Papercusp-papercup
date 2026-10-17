@@ -15,9 +15,10 @@
  * isolation, not that a cloud VM boots.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
 import type { OrgTestDb } from '../../../test/_org-test-db';
+import type { DefaultHostedWorkspaceAdmissionOptions } from './workspace-admission-dependencies';
 
 const h = vi.hoisted(() => ({
   appSql: null as any,
@@ -39,6 +40,7 @@ vi.mock('../../workspace-registry', () => ({
 }));
 vi.mock('../../dbos/workspace-host-provision-workflow', () => ({
   startWorkspaceHostProvisioningWorkflow: (input: unknown) => h.startProvisioning(input),
+  startWorkspaceHostLifecycleWorkflow: vi.fn(),
 }));
 
 const { createHostedWorkspaceAdmission, admissionIdentity, HostedWorkspaceAdmissionError } =
@@ -46,12 +48,13 @@ const { createHostedWorkspaceAdmission, admissionIdentity, HostedWorkspaceAdmiss
 const { createDefaultHostedWorkspaceAdmissionDependencies } = await import(
   './workspace-admission-dependencies'
 );
-const { upsertWorkspaceHostConnection } = await import('../../workspace-host/observability-store');
+const { upsertWorkspaceHostConnection, upsertWorkspaceHost } = await import('../../workspace-host/observability-store');
 const {
   activateHostedCustomerWorkspace,
   retireHostedCustomerWorkspaceAfterDestroy,
 } = await import('../../workspace-host/hosted-bring-up');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
+const { writeHostedEntitlementAuthority } = await import('../hosted-entitlement-store');
 
 const CONNECTION_ID = 'conn-hosted-admission';
 
@@ -64,7 +67,7 @@ function desiredSpecFor(hostId: string): WorkspaceHostDesiredSpec {
     zone: 'us-central1-a',
     size: 'e2-small',
     image: { id: 'projects/images/global/images/papercusp-v1' },
-    data: { volumeGiB: 20, encrypted: true },
+    data: { volumeGiB: 20, allocation: { dbGiB: 20, workspaceGiB: 0 }, encrypted: true },
     credentials: { cloudCredentialRef: { kind: 'cloud', ref: 'adc://integration-test' } },
     provider: { network: { mode: 'managed', networkName: `${hostId}-network` } },
   };
@@ -101,7 +104,7 @@ describe('hosted workspace admission (real Postgres, real RLS)', () => {
 
   function admissionFor(
     specHostId?: (derivedHostId: string) => string,
-    options: { bringUp?: { requestedAgents: readonly ('claude' | 'codex' | 'omp')[] } } = {},
+    options: Omit<DefaultHostedWorkspaceAdmissionOptions, 'resolveDesiredSpec'> = {},
   ) {
     const started: unknown[] = [];
     h.startProvisioning = async (input: unknown) => {
@@ -118,6 +121,31 @@ describe('hosted workspace admission (real Postgres, real RLS)', () => {
     return { port, started };
   }
 
+  async function poolAuthority() {
+    const organizationId = randomUUID();
+    const userId = randomUUID();
+    await db.adminSql`INSERT INTO papercusp_auth.hosted_entitlements (organization_id, user_id, kind, source)
+      VALUES (${organizationId}::uuid, ${userId}::uuid, 'hosted-free', 'self_signup')`;
+    const record = { source: 'migration', actor: { kind: 'service', principalId: 'service:admission-fixture' },
+      auditReceiptId: 'audit:admission-fixture', effectiveFrom: '2026-01-01T00:00:00Z', effectiveUntil: '2099-01-01T00:00:00Z' };
+    await writeHostedEntitlementAuthority({ organizationId, userId, kind: 'hosted-free', expectedRevision: 0,
+      authority: { schemaVersion: 1,
+        bundles: [{ schemaVersion: 1, bundleId: 'admission-fixture', bundleVersion: 1, record,
+          entitlements: { allowedProviders: ['gcp'], limits: { workspaces: 1, members: 1 },
+            browserAccess: { pty: true, files: true }, supportTier: 'trial', rolloutFlags: {},
+            quotas: { 'pool.agents': 2, 'pool.hosts': 1, 'pool.cpu-millicores': 4000,
+              'pool.memory-mib': 8192, 'pool.db-gib': 256, 'pool.workspace-gib': 0 },
+            budgets: { 'pool.cost.usd.minor': 100000 } } }],
+        assignments: [{ schemaVersion: 1, assignmentId: `fixture:${organizationId}`, organizationId,
+          bundleId: 'admission-fixture', bundleVersion: 1,
+          record: { ...record, auditReceiptId: 'audit:admission-assignment' } }], overrides: [] } },
+      run => db.appSql.begin(async tx => {
+        await tx.unsafe('SET LOCAL ROLE hosted_service');
+        return run(tx as any);
+      }) as any);
+    return { organizationId, userId };
+  }
+
   /** Provisioning is fire-and-forget; wait for the enqueue it started to land. */
   async function enqueued(started: unknown[], expectedCount = 1): Promise<Record<string, unknown>> {
     for (let attempt = 0; attempt < 100 && started.length < expectedCount; attempt += 1) {
@@ -126,6 +154,73 @@ describe('hosted workspace admission (real Postgres, real RLS)', () => {
     expect(started).toHaveLength(expectedCount);
     return started[0] as Record<string, unknown>;
   }
+
+  it('repairs an enqueue lost after atomic pool admission without re-quoting or charging twice', async () => {
+    const workspaceId = await freshControlPlane();
+    const authority = await poolAuthority();
+    const resolvePoolAdmission = vi.fn<NonNullable<DefaultHostedWorkspaceAdmissionOptions['resolvePoolAdmission']>>(async input => ({
+      estimate: { cents: 100, currency: 'USD', source: 'fixture-catalog', evidenceRef: 'test://catalog', estimatedAt: '2026-10-16T00:00:00Z' },
+      pool: { scope: input.desiredSpec.scope, region: input.desiredSpec.region, zone: input.desiredSpec.zone!,
+        architecture: 'x86_64', runtimeBundleSha256: 'a'.repeat(64), minimum: { cpuCount: 2, memoryMiB: 4096 },
+        maxObservationAgeMs: 60_000, dataVolumeId: `unprovisioned:${input.customerWorkspaceId}` },
+    }));
+    const startWorkflow = vi.fn<NonNullable<DefaultHostedWorkspaceAdmissionOptions['startWorkflow']>>()
+      .mockRejectedValueOnce(new Error('executor unavailable')).mockResolvedValue({ workflowId: 'fixture' });
+    const { port } = admissionFor(undefined, { pooled: true, resolvePoolAdmission, startWorkflow });
+    const request = { ...authority, provider: 'gcp' as const,
+      connectionId: CONNECTION_ID, displayName: 'Pooled trial', operationKey: 'pool-attempt' };
+    await expect(port.ensureProvisioned(request)).rejects.toThrow('executor unavailable');
+    const result = await port.ensureProvisioned(request);
+    expect(resolvePoolAdmission).toHaveBeenCalledTimes(1);
+    expect(startWorkflow).toHaveBeenCalledTimes(2);
+    expect(startWorkflow.mock.calls[1]).toEqual(startWorkflow.mock.calls[0]);
+    expect(startWorkflow.mock.calls[0][0]).toMatchObject({ hostedCustomerWorkspaceId: result.workspaceId, actorId: authority.userId });
+    const rows = await db.adminSql`SELECT host_id, customer_workspace_id, estimated_cost_cents, admission_receipt FROM harness_shared.workspace_host_operations WHERE workspace_id = ${workspaceId}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ customer_workspace_id: result.workspaceId, estimated_cost_cents: 100,
+      admission_receipt: { result: { placement: { kind: 'provision' } } } });
+    await expect(port.ensureProvisioned({ ...request, userId: 'another-user' })).rejects.toThrow('operation_conflict');
+    expect(startWorkflow).toHaveBeenCalledTimes(2);
+  });
+
+  it('binds the last clean warm VM and dispatches lifecycle plus bring-up, never a second provision', async () => {
+    const workspaceId = await freshControlPlane();
+    const authority = await poolAuthority();
+    const desired = desiredSpecFor('warm-host');
+    await upsertWorkspaceHost({ workspaceId, id: desired.hostId, connectionId: CONNECTION_ID, name: 'Warm',
+      target: desired.target, scopeLabel: desired.scope.id, region: desired.region, size: desired.size,
+      image: desired.image.id, diskGiB: desired.data.volumeGiB, network: 'default', desiredSpec: desired,
+      desiredState: 'running', observedState: 'running' });
+    const observation = { generation: 1, desiredRevision: 1, controllerFence: 7, scope: desired.scope,
+      zone: desired.zone, architecture: 'x86_64', runtimeBundleSha256: 'a'.repeat(64),
+      size: { cpuCount: 4, memoryMiB: 8192 }, observedAtMs: Date.now() - 100,
+      cleanAttestationRef: 'test://verified-never-used' };
+    await db.adminSql`UPDATE harness_shared.workspace_hosts
+      SET host_generation = 1, desired_revision = 1, observed_revision = 1,
+          controller_id = 'controller-a', controller_fence = 7, health_status = 'healthy', health_attested_at = now(),
+          pool_observation = ${JSON.stringify(observation)}::jsonb,
+          runtime_release = ${JSON.stringify({ version: 'pool-v1', bundleSha256: 'a'.repeat(64),
+            signingKeySha256: 'b'.repeat(64), protocolVersion: 'workspace-host-bootstrap-v1', schemaVersion: '1522' })}::jsonb
+      WHERE workspace_id = ${workspaceId} AND id = 'warm-host'`;
+    const startWorkflow = vi.fn();
+    const startLifecycleWorkflow = vi.fn(async () => ({}));
+    const { port } = admissionFor(undefined, { pooled: true, startWorkflow, startLifecycleWorkflow,
+      bringUp: { requestedAgents: ['omp'] }, resolvePoolAdmission: async input => ({
+        estimate: { cents: 100, currency: 'USD', source: 'fixture-catalog', evidenceRef: 'test://catalog', estimatedAt: '2026-10-16T00:00:00Z' },
+        pool: { scope: desired.scope, region: desired.region, zone: desired.zone!, architecture: 'x86_64',
+          runtimeBundleSha256: 'a'.repeat(64), minimum: { cpuCount: 2, memoryMiB: 4096 }, maxObservationAgeMs: 60_000,
+          dataVolumeId: `unprovisioned:${input.customerWorkspaceId}` },
+      }) });
+    const result = await port.ensureProvisioned({ ...authority,
+      provider: 'gcp', connectionId: CONNECTION_ID, displayName: 'Warm trial', operationKey: 'warm-attempt' });
+    expect(startWorkflow).not.toHaveBeenCalled();
+    expect(startLifecycleWorkflow).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      action: 'start', hostId: 'warm-host', hostedCustomerWorkspaceId: result.workspaceId,
+      bringUp: { customerWorkspaceId: result.workspaceId, requestedAgents: ['omp'] },
+    }));
+    const [binding] = await db.adminSql`SELECT workspace_host_id FROM harness_shared.customer_workspaces WHERE workspace_id = ${workspaceId} AND id = ${result.workspaceId}`;
+    expect(binding.workspace_host_id).toBe('warm-host');
+  });
 
   it('hands a bring-up to provisioning, and the bring-up can mark the workspace active under RLS (D-401)', async () => {
     const workspaceId = await freshControlPlane();
@@ -203,14 +298,16 @@ describe('hosted workspace admission (real Postgres, real RLS)', () => {
     await enqueued(started);
     const hostId = admissionIdentity(organizationId, 'signup-offboard').hostId;
     const revokeConnectors = vi.fn(async () => {});
+    const retireAgentReservations = vi.fn(async () => 0);
     const retire = () =>
       retireHostedCustomerWorkspaceAfterDestroy(
         { controlPlaneWorkspaceId: workspaceId, hostId },
-        { revokeConnectors },
+        { revokeConnectors, retireAgentReservations },
       );
 
     await expect(retire()).rejects.toThrow(/before host .* is terminally absent/);
     expect(revokeConnectors).not.toHaveBeenCalled();
+    expect(retireAgentReservations).not.toHaveBeenCalled();
 
     await db.adminSql`
       UPDATE harness_shared.workspace_hosts
@@ -220,6 +317,8 @@ describe('hosted workspace admission (real Postgres, real RLS)', () => {
 
     await expect(retire()).resolves.toEqual({ customerWorkspaceId: admitted.workspaceId });
     expect(revokeConnectors).toHaveBeenCalledOnce();
+    expect(retireAgentReservations).toHaveBeenCalledWith({ controlPlaneWorkspaceId: workspaceId, hostId });
+    expect(revokeConnectors.mock.invocationCallOrder[0]).toBeLessThan(retireAgentReservations.mock.invocationCallOrder[0]!);
     await expect(retire()).resolves.toEqual({ customerWorkspaceId: admitted.workspaceId });
     expect(revokeConnectors).toHaveBeenCalledTimes(2);
     const rows = await db.adminSql`

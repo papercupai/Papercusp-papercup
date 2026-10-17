@@ -253,6 +253,26 @@ export function checkedSetFor({ root, named, programFiles, readText, configFile 
     namedNotInProgram: string[];
 };
 /**
+ * The exact named-file scope used by cross-leg consumers. Consumers only need diagnostics for the
+ * requested files; reverse importers are the owning scoped verdict's responsibility. Keeping this
+ * separate from checkedSetFor lets a large consumer graph reuse the loaded program without making
+ * the service decline because its dependency closure exceeds the owner-check limit.
+ *
+ * @param {{ root: string, named: Iterable<string>, programFiles: readonly string[] }} opts
+ * @returns {{ files: string[], named: number, typeReferencing: number, importers: number, namedNotInProgram: string[] }}
+ */
+export function namedSetFor({ root, named, programFiles }: {
+    root: string;
+    named: Iterable<string>;
+    programFiles: readonly string[];
+}): {
+    files: string[];
+    named: number;
+    typeReferencing: number;
+    importers: number;
+    namedNotInProgram: string[];
+};
+/**
  * Shared CLI/service attribution (EI-25720784739215773). Resolve actual import/export edges
  * with TypeScript, then walk reverse edges from the changed modules. Aliases, namespace
  * imports, inferred callbacks, barrels and cycles retain provenance; comments, strings and
@@ -334,16 +354,18 @@ export function requestTscService({ socketPath, request, timeoutMs }: {
  *   files: string[],
  *   label: string,
  *   log?: (line: string) => void,
+ *   scope?: 'dependencies' | 'named',
  *   env?: Record<string, string | undefined>,
  * }} opts
  * @returns {Promise<Extract<TscServiceResponse, { ok: true }> | null>}
  */
-export function typecheckViaService({ root, project, files, label, log, env }: {
+export function typecheckViaService({ root, project, files, label, log, scope, env }: {
     root: string;
     project: string;
     files: string[];
     label: string;
     log?: (line: string) => void;
+    scope?: "dependencies" | "named";
     env?: Record<string, string | undefined>;
 }): Promise<Extract<TscServiceResponse, {
     ok: true;

@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "source-qualification",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "workItem": "WI-6554700010016419",
+  "status": "preparatory-local-summary-passed",
+  "shipment": "unverified",
+  "source": {
+    "packages/operator-core/lib/code-intelligence/native-adoption.ts": "9d03c1ef3b012ae00dbc6b3880edebe6963cc3fe8ab25c14a6446e9f1f8865aa",
+    "packages/operator-core/lib/code-intelligence/native-adoption.test.ts": "cfe5c8783806fa2063ee14afb9936cbd8628d5877c550f5f1d9b813d8be55d86"
+  },
+  "change": "Extend the existing native-adoption module with evidence-row types and a pure per-leg push-outcome summary. Keep the frozen D011 adoption summary, target and rater unchanged.",
+  "verification": {
+    "tests": {
+      "command": "PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/native-p041-summary-source-20261016.json npm run test:file -- packages/operator-core/lib/code-intelligence/native-adoption.test.ts",
+      "log": "/tmp/native-p041-summary-tests-20261016.log",
+      "sourceMap": "/tmp/native-p041-summary-source-20261016.json",
+      "sourceMapSha256": "4753d1979ec120d8af98ac7f3bc0cf4e4380b8bdf2f4bd4f2b3cbb72d4704053",
+      "passed": 34,
+      "skipped": 0,
+      "childSubstituted": 0,
+      "exitCode": 0,
+      "recordedHead": "656bfdeda8",
+      "worktreeDirty": true,
+      "sourceQualification": "Captured Vite pre-transform hashes for both named files match current raw bytes.",
+      "ledgerScope": "PAPERCUSP_TEST_RUN_HARNESS was omitted. Check the authoritative ledger scope before binding this run as plan acceptance."
+    },
+    "typecheck": {
+      "command": "npm run lint:tsc -- --files=packages/operator-core/lib/code-intelligence/native-adoption.ts,packages/operator-core/lib/code-intelligence/native-adoption.test.ts",
+      "log": "/tmp/native-p041-summary-types-20261016.log",
+      "exitCode": 0,
+      "scope": "Two named files; three cross legs clean, followed by full operator-core fallback when the service declined a 10304-file dependency closure."
+    },
+    "newCases": [
+      "Independent per-leg and per-outcome denominators, with null rates for unmeasured outcomes.",
+      "Open turn windows contribute neither positive nor negative outcome evidence.",
+      "Exact workspace and half-open time-window isolation, invalid timestamps excluded, repeated ledger ids counted once.",
+      "Invalid windows, missing ledger identity and conflicting evidence are refused."
+    ]
+  },
+  "limits": [
+    "Only the pure summary is implemented and qualified here. No live ledger reader, outcome measurement, registered instrument or new rubric criterion is claimed.",
+    "The push ledger records server-issued hook responses; confirmed client receipt and attention are not measured.",
+    "identity_hook_turns stores only the current random turn UUID, so it cannot alone reconstruct historical turn windows.",
+    "The existing rows preserve cited paths and suggested tests. Only grep-leg subjects preserve symbol identity; other same-symbol grep outcomes must remain unknown until supported by persisted evidence.",
+    "This focused dirty-source verification is neither a full loaded-module census nor final release acceptance."
+  ],
+  "next": "Complete the reader using observed closed turn windows and exact workspace/owner/session/path/test matches, add real-PG regression coverage, then register and bind new criteria without changing D011."
+}

@@ -71,6 +71,45 @@ describe('runFleetLogsGc', () => {
     expect(existsSync(pinned)).toBe(true);
     expect(existsSync(unpinned)).toBe(false);
     expect(result.dirs[0]!.bytesRemaining).toBe(100);
+    expect(result.dirs[0]!.cap).toMatchObject({ root: dir, classId: 'fleet-logs', maxBytes: 0,
+      beforeBytes: 200, afterBytes: 100, pinnedBytes: 100, pinnedPaths: [pinned],
+      overByBytes: 100, pinnedOverageBytes: 100 });
+  });
+
+  it('reports pinned fresh and open logs even when no deletion is attempted', async () => {
+    const dir = join(sandbox, 'logs'); mkdirSync(dir);
+    const pinned = writeAged(dir, 'fresh.log', 100, 1000);
+    createRetentionPin({ path: pinned, owner: 'reviewer', reason: 'active evidence', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    const result = await runFleetLogsGc({ dirs: [dir], maxTotalBytes: 200,
+      scanOpenPaths: async () => ({ complete: false, byPath: new Map([[pinned, ['123']]]) }) });
+    expect(result.dirs[0]!.cap).toMatchObject({ beforeBytes: 100, afterBytes: 100,
+      pinnedBytes: 100, pinnedPaths: [pinned], overByBytes: 0, pinnedOverageBytes: 0 });
+    expect(existsSync(pinned)).toBe(true);
+  });
+
+  it('expired pins stop contributing to the cap receipt and dry-run predicts the actual retained bytes', async () => {
+    const dir = join(sandbox, 'logs'); mkdirSync(dir);
+    const path = writeAged(dir, 'expired.log', 100, FLEET_LOGS_GC_DEFAULT_RETENTION_MS + 1000);
+    const now = Date.now();
+    createRetentionPin({ path, owner: 'reviewer', reason: 'old evidence', expiresAt: new Date(now - 1000).toISOString() }, { nowMs: now - 2000 });
+    const preview = await runFleetLogsGc({ dirs: [dir], scanOpenPaths: scanIdlePaths, maxTotalBytes: 0, dryRun: true });
+    expect(existsSync(path)).toBe(true);
+    const actual = await runFleetLogsGc({ dirs: [dir], scanOpenPaths: scanIdlePaths, maxTotalBytes: 0 });
+    expect(actual.dirs[0]!.cap).toEqual(preview.dirs[0]!.cap);
+    expect(actual.dirs[0]!.cap).toMatchObject({ beforeBytes: 100, afterBytes: 0,
+      pinnedBytes: 0, pinnedPaths: [], overByBytes: 0, pinnedOverageBytes: 0 });
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('keeps logs and reports unknown pin accounting when the pin store is corrupt', async () => {
+    const dir = join(sandbox, 'logs'); mkdirSync(dir);
+    const path = writeAged(dir, 'stale.log', 100, FLEET_LOGS_GC_DEFAULT_RETENTION_MS + 1000);
+    mkdirSync(process.env.PAPERCUSP_RELEASE_RETENTION_ROOT!, { recursive: true });
+    writeFileSync(join(process.env.PAPERCUSP_RELEASE_RETENTION_ROOT!, 'lease-agent-pin-broken.tsv'), 'not a lease');
+    const result = await runFleetLogsGc({ dirs: [dir], scanOpenPaths: scanIdlePaths, maxTotalBytes: 0 });
+    expect(existsSync(path)).toBe(true);
+    expect(result.dirs[0]!.cap).toBeNull();
+    expect(result.dirs[0]!.errors).toContainEqual(expect.objectContaining({ error: expect.stringContaining('retention pins unreadable') }));
   });
 
   it('defaults are sane: 3-day age window, 10 GiB ceiling', () => {
@@ -839,6 +878,47 @@ describe('runWindowsBuildScratchGc', () => {
 // ── launch-context render GC (WI-10002015) ───────────────────────────────────
 
 describe('runLaunchContextGc', () => {
+  it('evicts fresh renders oldest first until the byte ceiling is met', async () => {
+    const dir = join(sandbox, 'renders'); mkdirSync(dir);
+    const newest = writeAged(dir, 'a-newest.md', 8, 1000);
+    const oldest = writeAged(dir, 'z-oldest.md', 8, 3000);
+    const middle = writeAged(dir, 'm-middle.md', 8, 2000);
+    const result = await runLaunchContextGc({ dir, liveRenderPaths: new Set(), maxTotalBytes: 8 });
+    expect(result.candidates.filter((c) => c.removed).map((c) => c.path)).toEqual([oldest, middle]);
+    expect(existsSync(newest)).toBe(true);
+    expect(result.cap).toMatchObject({ maxBytes: 8, beforeBytes: 24, afterBytes: 8, overByBytes: 0 });
+  });
+
+  it('reports pinned overage and holds live renders under byte pressure', async () => {
+    const dir = join(sandbox, 'renders'); mkdirSync(dir);
+    const pinned = writeAged(dir, 'pinned.md', 12, 3000);
+    const live = writeAged(dir, 'live.md', 8, 2000);
+    const idle = writeAged(dir, 'idle.md', 8, 1000);
+    createRetentionPin({ path: pinned, owner: 'reviewer', reason: 'prompt evidence', expiresAt: new Date(Date.now() + 3600_000).toISOString() });
+    const result = await runLaunchContextGc({ dir, liveRenderPaths: new Set([live]), maxTotalBytes: 8 });
+    expect(result.candidates.find((c) => c.path === pinned)?.skipped).toBe('pinned');
+    expect(result.candidates.find((c) => c.path === live)?.skipped).toBe('live-session');
+    expect(existsSync(idle)).toBe(false);
+    expect(result.cap).toMatchObject({ beforeBytes: 28, afterBytes: 20, pinnedBytes: 12, pinnedPaths: [pinned], overByBytes: 12, pinnedOverageBytes: 4 });
+  });
+
+  it('dry-run cap selection is identical and expiry releases a pinned render', async () => {
+    const dir = join(sandbox, 'renders'); mkdirSync(dir);
+    const older = writeAged(dir, 'older.md', 8, 2000);
+    const newer = writeAged(dir, 'newer.md', 8, 1000);
+    const now = Date.now();
+    createRetentionPin({ path: older, owner: 'reviewer', reason: 'short review', expiresAt: new Date(now + 1000).toISOString() });
+    const options = { dir, liveRenderPaths: new Set<string>(), maxTotalBytes: 8, now: now + 2000 };
+    const preview = await runLaunchContextGc({ ...options, dryRun: true });
+    expect(preview.candidates.filter((c) => c.removed).map((c) => c.path)).toEqual([older]);
+    expect(existsSync(older)).toBe(true);
+    expect(existsSync(newer)).toBe(true);
+    const actual = await runLaunchContextGc(options);
+    expect(actual.cap).toEqual(preview.cap);
+    expect(existsSync(older)).toBe(false);
+    expect(existsSync(newer)).toBe(true);
+  });
+
   it('reads a new pin after acquiring the mutation mutex rather than before waiting', async () => {
     const stale = writeAged(sandbox, 'stale.md', 100, 30 * DAY);
     let sweep!: ReturnType<typeof runLaunchContextGc>;

@@ -2,13 +2,16 @@
  * fuseByPosition — merging best-first lists from different corpora by position, never by
  * raw score (plan bm25-lexical-search-evoke-adoption-2026-10-10 D-006).
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { RRF_K_DEFAULT } from '@papercusp/rrf';
 import {
   EXACT_LIST_MAX_AND_ROWS,
   fuseByPosition,
   bm25LegIfAvailable,
+  lexicalLeg,
   mergeExactAndBm25,
+  measureWarmBm25QueryLatencies,
   resetBm25Availability,
   usesWebsearchOperators,
 } from './rank';
@@ -16,6 +19,43 @@ import type { AvailabilityEntry } from './rank';
 import type { Sql } from 'postgres';
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => true) }));
+
+const RANK_SOURCE = readFileSync(new URL('./rank.ts', import.meta.url), 'utf8');
+
+describe('BM25 latency canary path', () => {
+  it('uses the guarded top-k scan-score path instead of repeating standalone scores', () => {
+    const start = RANK_SOURCE.indexOf('export async function measureBm25Latency(');
+    const end = RANK_SOURCE.indexOf('export interface Bm25Health', start);
+    const source = RANK_SOURCE.slice(start, end);
+
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(source).toMatch(/runBm25TopK(?:<[^>]+>)?\(/);
+    expect(source).toContain('scanScore');
+    expect(source).not.toContain('leg.score');
+    expect(source).not.toContain('leg.match');
+    expect(source).not.toContain('leg.order');
+  });
+});
+
+describe('measureWarmBm25QueryLatencies', () => {
+  it('warms every canary before collecting the measured samples', async () => {
+    const queries = ['search ranking', 'test failure', 'plan item'];
+    const calls: string[] = [];
+    let clock = 0;
+
+    const samples = await measureWarmBm25QueryLatencies(
+      queries,
+      async (query) => {
+        calls.push(query);
+        clock += 10;
+      },
+      () => clock,
+    );
+
+    expect(calls).toEqual([...queries, ...queries]);
+    expect(samples).toEqual([10, 10, 10]);
+  });
+});
 
 function catalogSql(indexes: string[] = []) {
   const queries: string[] = [];
@@ -33,6 +73,20 @@ function catalogSql(indexes: string[] = []) {
 }
 
 describe('BM25 availability cache', () => {
+  it('attaches the scan-score fragment to the BM25 lexical leg', async () => {
+    resetBm25Availability();
+    const { sql, queries } = catalogSql(['work_items_bm25']);
+    const leg = await lexicalLeg(sql, {
+      table: 'work_items',
+      query: 'search ranking',
+      legacy: { score: sql`legacy score`, match: sql`legacy match` },
+    });
+
+    expect(leg.engine).toBe('bm25');
+    expect(leg.scanScore).toBeDefined();
+    expect(queries.some((query) => query.includes('to_regprocedure'))).toBe(true);
+  });
+
   it('uses a transaction client for cache-miss reads and retains the original client as cache key', async () => {
     resetBm25Availability();
     const owner = catalogSql();

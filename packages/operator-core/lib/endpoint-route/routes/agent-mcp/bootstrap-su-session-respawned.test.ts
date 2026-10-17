@@ -18,6 +18,23 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 vi.setConfig({ testTimeout: 15_000 });
 
+// bootstrap-su's import graph reaches release-checkpoint-config, whose module
+// initialization performs a best-effort operator-state read. Keep that import
+// read-only and immediate; the route tests install their readiness.sql spy after
+// the graph is loaded, so a real PG retry here would consume the whole hook
+// timeout before a single respawn assertion can run.
+const bootstrapImportSql = vi.hoisted(() => {
+  const sql = vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => []);
+  Object.assign(sql, {
+    begin: vi.fn(async (run: (tx: typeof sql) => unknown) => run(sql)),
+  });
+  return sql;
+});
+vi.mock('@papercusp/db-org', async (original) => ({
+  ...(await original<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: bootstrapImportSql }),
+}));
+
 let routes: { method: string; path: string; handler: (req: Request) => Promise<Response> }[];
 beforeAll(async () => {
   const mod = await import('./bootstrap-su');

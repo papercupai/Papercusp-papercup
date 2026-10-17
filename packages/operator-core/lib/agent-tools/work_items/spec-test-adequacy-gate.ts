@@ -33,6 +33,7 @@ import {
   resolveSourceBarTestRequirements,
   type SourceBarRubricCache,
 } from '../plans/source-bar-test-requirements';
+import { evaluateMechanicalTestAdequacy } from '../plans/mechanical-test-adequacy';
 
 export interface SpecAdequacyCompletionAttestation {
   classRef?: PlanClassRubricRef;
@@ -512,7 +513,9 @@ export const SPEC_ADEQUACY_ATTESTATION_GUIDANCE =
   'and exist only to NARROW the graded selection or REPLAY a persisted evaluator snapshot. ' +
   'If it still refuses WITH `classRef` supplied, the blocker is UPSTREAM of this payload and no ' +
   'attestation shape will fix it — check, in order: (1) the clause evaluates verdict=pass via ' +
-  'plans:evaluate-spec-test-adequacy, (2) an evaluator scorecard is filed for that clause, ' +
+  'plans:evaluate-spec-test-adequacy. Test-checked requirements use current passing named tests ' +
+  'and a caught calibrated mutation probe directly, without a judge card. For other checks, ' +
+  '(2) an evaluator scorecard is filed for that clause, ' +
   "(3) that scorecard's gradingAudit.state is 'passed' rather than 'pending'";
 
 export async function specTestAdequacyCompletionGate(
@@ -654,7 +657,7 @@ export async function specTestAdequacyCompletionGate(
           `task-kind completion for '${input.workItem.id}' claims executable changes or proof` +
           `${sourceChanges.length ? ` (${sourceChanges.slice(0, 5).join(', ')})` : ''}; ` +
           'task is the non-code kind. Use work_items:update to set the appropriate code kind ' +
-          '(change, bug, or feature), then retry with current spec evidence and independently ' +
+          '(change, bug, or feature), re-claim the current item, then retry with current spec evidence and independently ' +
           'settled grading audits. No proof exemption can be inferred from the task label.',
       });
     }
@@ -772,6 +775,13 @@ export async function specTestAdequacyCompletionGate(
       clause.sourceBar,
       sourceBarRubricCache,
     );
+    const label = `${clause.specId}@${clause.revision}`;
+    const mechanical = evaluateMechanicalTestAdequacy({ clause, evidence, sourceBarTestRequirements });
+    if (mechanical.applicable) {
+      if (mechanical.verdict === 'pass') checked.push(label);
+      else failures.push(`${label}: mechanical test adequacy failed — ${mechanical.gaps.join('; ')}`);
+      continue;
+    }
     const result = evaluateSpecTestAdequacy({
       clause,
       evidence,
@@ -780,7 +790,6 @@ export async function specTestAdequacyCompletionGate(
       workItemKind: input.workItem.kind,
       sourceBarTestRequirements,
     });
-    const label = `${clause.specId}@${clause.revision}`;
     const evaluatorUnknownFailure = evaluatorUnknownFailureReason(label, result);
     if (evaluatorUnknownFailure) {
       // Stop before inspecting any scorecards. A prior clause may have exposed a

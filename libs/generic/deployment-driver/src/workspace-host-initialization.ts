@@ -114,6 +114,7 @@ export interface WorkspaceHostPairingReference {
 
 export type WorkspaceHostInitializationSource =
   | { kind: "empty" }
+  | { kind: "retained"; tenantIdentity: string }
   | {
       kind: "git";
       repositoryUrl: string;
@@ -155,6 +156,7 @@ export interface WorkspaceHostInitializationRequest {
 
 export const WORKSPACE_HOST_INITIALIZATION_STEP_KINDS = [
   "create-workspace",
+  "verify-retained-workspace",
   "clone-repository",
   "pair-workspace",
   "import-workspace",
@@ -719,6 +721,10 @@ function validateSource(
   refs: WorkspaceHostCredentialRefs,
 ): void {
   if (source.kind === "empty") return;
+  if (source.kind === "retained") {
+    requireCondition(/^[a-f0-9]{64}$/.test(source.tenantIdentity), "source.tenantIdentity must be a SHA256 tenant identity");
+    return;
+  }
   if (source.kind === "git") {
     requireRepositoryUrl(source.repositoryUrl);
     requireRelativePath(source.destination, "source.destination");
@@ -791,9 +797,10 @@ export function planWorkspaceHostInitialization(
   );
 
   const steps: WorkspaceHostInitializationStep[] = [
-    initStep(request, "workspace", "create-workspace", [], {
+    initStep(request, "workspace", request.source.kind === "retained" ? "verify-retained-workspace" : "create-workspace", [], {
       workspaceId: request.workspaceId,
       hostId: request.hostId,
+      ...(request.source.kind === "retained" ? { tenantIdentity: request.source.tenantIdentity } : {}),
     }),
   ];
   const bindingStepIds = credentialBindings.map(
@@ -821,7 +828,7 @@ export function planWorkspaceHostInitialization(
   }
 
   let sourceStepId = "workspace";
-  if (request.source.kind !== "empty") {
+  if (request.source.kind !== "empty" && request.source.kind !== "retained") {
     const kind =
       request.source.kind === "git"
         ? "clone-repository"

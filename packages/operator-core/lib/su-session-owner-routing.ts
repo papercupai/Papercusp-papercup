@@ -76,7 +76,7 @@ const routing = pinModuleState('@papercusp/operator-core.su-session-owner-routin
   /** Minted once per process: a recycled pid never carries the recorded nonce. */
   nonce: randomUUID(),
   deps: { ...PRODUCTION_DEPS } as RoutingDeps,
-  nativeToolDispatch: null as ((request: unknown, address: SuNativeToolAddress) => Promise<unknown>) | null,
+  nativeToolDispatch: null as ((request: unknown, address: SuNativeToolAddress, source?: { progress?: (value: unknown) => void }) => Promise<unknown>) | null,
 }));
 
 /**
@@ -288,9 +288,12 @@ function parseForwarded(payload: unknown): ForwardedSuSessionRequest | null {
  * OWNER side. Answers only when the request was addressed to THIS process's
  * nonce, and never forwards again, so a request cannot bounce between workers.
  */
-export async function serveForwardedSuSessionOp(payload: unknown): Promise<ForwardedSuSessionReply> {
+export async function serveForwardedSuSessionOp(
+  payload: unknown,
+  source: { fromPid: number; progress?: (value: unknown) => void } = { fromPid: 0 },
+): Promise<ForwardedSuSessionReply> {
   if ((payload as { request?: { op?: string } } | null)?.request?.op === 'native-tool') {
-    return serveForwardedNativeTool(payload);
+    return serveForwardedNativeTool(payload, source);
   }
   const forwarded = parseForwarded(payload);
   if (!forwarded) throw new Error('malformed su-session owner request');
@@ -351,12 +354,15 @@ function hasLocalNativeToolHost(address: SuNativeToolAddress): boolean {
 /** The MCP host installs its existing dispatcher; no meter, transaction or
  * function capability crosses the cluster RPC. */
 export function registerSuNativeToolDispatcher(
-  dispatch: (request: unknown, address: SuNativeToolAddress) => Promise<unknown>,
+  dispatch: (request: unknown, address: SuNativeToolAddress, source?: { progress?: (value: unknown) => void }) => Promise<unknown>,
 ): void {
   routing.nativeToolDispatch = dispatch;
 }
 
-async function serveForwardedNativeTool(payload: unknown): Promise<ForwardedSuSessionReply> {
+async function serveForwardedNativeTool(
+  payload: unknown,
+  source: { fromPid: number; progress?: (value: unknown) => void },
+): Promise<ForwardedSuSessionReply> {
   const p = payload as Partial<ForwardedNativeToolRequest> | null;
   if (!p || !validNativeToolAddress(p.address) || typeof p.hostId !== 'string' || typeof p.nonce !== 'string' ||
       p.request?.op !== 'native-tool') throw new Error('malformed native tool owner request');
@@ -365,7 +371,7 @@ async function serveForwardedNativeTool(payload: unknown): Promise<ForwardedSuSe
   if (!routing.nativeToolDispatch) throw new SuNativeToolOwnerError('no_dispatcher', false);
   // Deliberately bypass the routing entry point here: an owner never forwards
   // again. Its dispatcher still runs all ordinary admission gates locally.
-  return { status: 'ok', result: await routing.nativeToolDispatch(p.request.body, p.address) };
+  return { status: 'ok', result: await routing.nativeToolDispatch(p.request.body, p.address, source) };
 }
 
 /** Run the whole native target where its trusted observation and meter live.
@@ -373,9 +379,10 @@ async function serveForwardedNativeTool(payload: unknown): Promise<ForwardedSuSe
  * attempt can become a second execution in the receiving worker. */
 export async function runOnSuNativeToolOwner<T>(
   address: SuNativeToolAddress,
-  request: unknown,
+  request: unknown | (() => unknown | Promise<unknown>),
   local: () => Promise<T>,
   timeoutMs?: number,
+  onProgress?: (value: unknown) => void,
 ): Promise<T> {
   if (!validNativeToolAddress(address)) throw new SuNativeToolOwnerError('invalid_address', false);
   const owner = await routing.deps.readOwner({ workspaceId: address.workspaceId, advSessionId: address.advSessionId });
@@ -388,11 +395,15 @@ export async function runOnSuNativeToolOwner<T>(
   if (!isForwardableOwner(owner)) throw new SuNativeToolOwnerError('unreachable', false);
   // Keep owner-local capabilities in this process. A request factory is only
   // materialized after routing proves the request must cross the worker RPC.
-  const body = typeof request === 'function' ? request() : request;
+  // Materialize request factories only after routing proves this call must
+  // cross the worker RPC. Owner-local calls keep their host-local context and
+  // avoid remote-only compatibility reads on the fast path.
+  const body = typeof request === 'function' ? await request() : request;
   const payload: ForwardedNativeToolRequest = {
     address, hostId: owner.hostId, nonce: owner.nonce, request: { op: 'native-tool', body },
   };
-  const outcome = await callOwnerProcess({ targetPid: owner.pid, kind: SU_SESSION_HOST_RPC_KIND, payload, timeoutMs });
+  const outcome = await callOwnerProcess({ targetPid: owner.pid, kind: SU_SESSION_HOST_RPC_KIND, payload, timeoutMs,
+    ...(onProgress ? { onProgress } : {}) });
   if (!outcome.ok) throw new SuNativeToolOwnerError(outcome.code,
     outcome.code === 'timeout' || outcome.code === 'handler_error' || outcome.code === 'send_failed');
   const reply = outcome.result as ForwardedSuSessionReply | null;

@@ -24,7 +24,7 @@
  * A request with no Host header at all is allowed: every browser sends one, so its
  * absence identifies a non-browser local client, which rebinding cannot produce.
  */
-import type { MiddlewareHandler } from 'hono';
+import type { Context, Next } from 'hono';
 import { currentExternalIngressListener } from '@papercusp/operator-core/lib/auth/forwarded-request-trust';
 import { isLoopbackHost } from '@papercusp/operator-core/lib/endpoint-route/loopback-guard';
 import { isHostedControlPlaneDistributionProfile } from '@papercusp/operator-core/lib/remote-auth-policy';
@@ -48,8 +48,8 @@ export function isHostHeaderAllowed(
   return isLoopbackHost(host) || isLocalhostSubdomain(host);
 }
 
-export const hostRebindingGuard: MiddlewareHandler = async (c, next) => {
-  if (currentExternalIngressListener() === null && !isHostHeaderAllowed(c.req.header('host'))) {
+export async function hostRebindingGuard(c: Context, next: Next, env: NodeJS.ProcessEnv = process.env) {
+  if (currentExternalIngressListener() === null && !isHostHeaderAllowed(c.req.header('host'), env)) {
     return c.json(
       {
         error: {
@@ -63,4 +63,4 @@ export const hostRebindingGuard: MiddlewareHandler = async (c, next) => {
     );
   }
   await next();
-};
+}

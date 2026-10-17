@@ -215,7 +215,9 @@ const blocks = units.map((u) => {
     if (fs.existsSync(dir)) confs.push(...fs.readdirSync(dir).filter((c) => c.endsWith('.conf')));
   }
   if (drop && u === process.env.FAKE_DROP_UNIT) confs = confs.filter((c) => c !== process.env.FAKE_DROP_CONF);
-  const values = { Id: u, LoadState: 'loaded', ActiveState: 'inactive', DropInPaths: confs.map((c) => '/fake/' + u + '.d/' + c).join(' ') };
+  const values = { Id: u, LoadState: 'loaded', ActiveState: 'inactive',
+    LimitNOFILESoft: mode === 'terminal-low-soft' ? '1024' : '1000000',
+    DropInPaths: confs.map((c) => '/fake/' + u + '.d/' + c).join(' ') };
   return props.map((p) => p + '=' + (values[p] ?? '')).join('\\n');
 });
 process.stdout.write(blocks.join('\\n\\n') + '\\n');
@@ -311,6 +313,15 @@ describe('systemd drop-in guard: a failed read is never a verdict (EI-2416157915
     const list = runWithFake('drop-always', ['--list']);
     expect(list.stdout).toMatch(/^\s*MISSING\s+at-spi-dbus-bus\.service\s+10-survive-bus-drop\.conf\s*$/m);
     expect(list.stdout).toMatch(/^installed=\d+ missing=1 unit-absent=0$/m);
+  });
+
+  it('catches the GNOME startup soft-limit defect even when every drop-in is loaded', () => {
+    if (!existsSync('/usr/libexec/gnome-terminal-server')) return;
+    const result = runWithFake('terminal-low-soft');
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('GNOME terminal startup LimitNOFILESoft=1024');
+    expect(result.stderr).toContain('saved child limit');
+    expect(result.stderr).not.toContain('NOT loaded by the unit');
   });
 
   // papercusp-performance-audit-2026-10-12 P-008: the serving-path PostgreSQL weights are

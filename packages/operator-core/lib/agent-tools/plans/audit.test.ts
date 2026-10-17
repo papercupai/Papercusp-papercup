@@ -859,6 +859,25 @@ describe('plans:audit phase:activation', () => {
     expect(description).toContain('section: prefix is required');
   });
 
+  it('accepts three-digit activation mapping ids such as M-070', () => {
+    const parsed = tool.args.safeParse({
+      slug: 'regex-probe',
+      phase: 'activation',
+      dryRun: true,
+      classRef: 'plan-class-bugfix',
+      sourceRanges: [{ sourceKind: 'codex', sessionId: 'regex-probe', fromTurn: 0, toTurn: 0 }],
+      mappings: [{
+        id: 'M-070',
+        sourceRefs: ['session_turn:codex:regex-probe:0'],
+        requirement: 'probe',
+        planTargets: ['P-001'],
+        disposition: 'covered',
+      }],
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
   it('publishes the activation blocker contract on the live schema and guidance', () => {
     const projected = lookupByMcpName('plans:audit');
     // EI-24379978800956217: compact tool discovery can omit late optional

@@ -39,10 +39,15 @@ export {
   type SeedCutContext,
   type SeedCutOutput,
   type SeedRestoreContext,
+  type SeedRestoreDiagnosticIdentity,
+  type SeedRestorePhase,
+  type SeedRestorePhaseState,
+  type SeedRestorePhaseEvent,
   type VerifyResult,
 } from './registry';
 
 export {
+  SEED_RESTORE_DIAGNOSTIC_SLOT,
   restoreSeed,
   type RestoreResult,
   type StoreRestoreOutcome,

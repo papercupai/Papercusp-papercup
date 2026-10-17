@@ -544,6 +544,47 @@ describe('automatic compaction recovery — carried probes run at recovery', () 
     expect(delivery.recovery.carriedProbes).not.toContain('COULD NOT RUN');
   });
 
+  it('renders a could-not-run carried probe with its reason at compaction recovery', async () => {
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const [{ buildAutomaticCompactionRecovery }, { carriedProbeBlockForDelivery }, { renderCarryNote }, { continuityProbeRevision }] =
+      await Promise.all([
+        import('./compaction-recovery'),
+        import('../../carry-probe-eval'),
+        import('../../carry-note'),
+        import('../../continuity-probes'),
+      ]);
+    const actual = await vi.importActual<typeof import('../../carry-probe-eval')>('../../carry-probe-eval');
+    const dispatchTool = vi.fn(async () => { throw new Error('carried state unavailable'); });
+    vi.mocked(carriedProbeBlockForDelivery).mockImplementationOnce((sources, deps) =>
+      actual.carriedProbeBlockForDelivery(sources, { ...deps, dispatchTool }),
+    );
+    const checkpoint = renderCarryNote({ checks: [{
+      id: 'unavailable-probe',
+      claim: 'the carried value is green',
+      recheck: 'state:read',
+      probe: {
+        kind: 'tool', tool: 'state:read', args: { cell: 'test.carriedValue' },
+        schemaRevision: continuityProbeRevision('state:read')!,
+        expect: { path: '$.value', op: 'eq', value: 'green' },
+      },
+    }] });
+    const delivery = await buildAutomaticCompactionRecovery('owner-x', 'ws-1', {
+      sessionHarness: 'h',
+      heldItems: [{ id: 'WI-1', harness: 'h', checkpoint } as never],
+      carriedRefChangesFn: async () => null,
+    });
+    expect(dispatchTool).toHaveBeenCalledExactlyOnceWith('state:read', { cell: 'test.carriedValue' });
+    expect(delivery.recovery.carriedProbes).toContain(
+      '? COULD NOT RUN — the carried value is green [WI-1 #unavailable-probe]:',
+    );
+    expect(delivery.recovery.carriedProbes).toContain('carried state unavailable');
+    expect(delivery.recovery.carriedProbes).not.toContain('✗ CHANGED');
+    expect(delivery.recovery.carriedProbes).not.toContain('✓ HOLDS');
+    expect(warning).toHaveBeenCalledExactlyOnceWith(
+      '[bounded-timeout] continuity-probe:state:read failed: carried state unavailable — degrading to fallback',
+    );
+  });
+
   it('attaches the probe block to the recovery and passes the already-read held items through', async () => {
     const { buildAutomaticCompactionRecovery } = await import('./compaction-recovery');
     const carriedProbesFn = vi.fn(async () => BLOCK);
@@ -594,7 +635,7 @@ describe('automatic compaction recovery — carried probes run at recovery', () 
     expect(sources[0]).toMatchObject({ source: { kind: 'work-item', id: 'WI-1', harness: 'h' }, checkIndex: 0 });
     expect(sources[0]!.check.claim).toBe('gate is green');
     expect(sources[0]!.check.probe).toMatchObject({ kind: 'state-cell', cell: 'gate.greenCheckpoint.verdict' });
-    expect(deps).toMatchObject({ harness: 'h', readAtIso: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) });
+    expect(deps).toMatchObject({ harness: 'h', workspaceId: 'ws-1', readAtIso: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) });
   });
 
   it('the carry document renders the probe block for a successor, but not for a judge', async () => {

@@ -18,6 +18,7 @@
  * git-toplevel fallback > cwd, with sibling-dir defaults for release/checkpoint.
  */
 import { execFileSync } from 'node:child_process';
+import { statSync } from 'node:fs';
 import * as path from 'node:path';
 import { resolveReleaseRoot } from '../release/release-root';
 
@@ -38,6 +39,20 @@ export interface WorkspaceMapConfig {
    * false claim is what silently strands edits (the 2026-06-30 incident class).
    */
   gitDetected?: boolean;
+  /** Whether the configured path is an existing directory in the rendering runtime. */
+  integrationRootAvailable?: boolean;
+  /** Whether the configured path is an existing directory in the rendering runtime. */
+  releaseRootAvailable?: boolean;
+  /** Whether the configured path is an existing directory in the rendering runtime. */
+  checkpointRootAvailable?: boolean;
+}
+
+function isDirectoryAvailable(directory: string): boolean {
+  try {
+    return statSync(directory).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /** Resolve the canonical edit tree plus the release-gate paths/branches. */
@@ -61,20 +76,23 @@ export function resolveWorkspaceMapConfig(): WorkspaceMapConfig {
     }
   }
   const parent = path.dirname(integrationRoot);
+  const releaseRoot = resolveReleaseRoot({ integrationRoot });
+  const checkpointRoot =
+    process.env.PAPERCUSP_CHECKPOINT_ROOT ?? path.join(parent, `${path.basename(integrationRoot)}-checkpoint`);
   return {
     integrationRoot,
     // WI-10005161: the one shared release-checkout resolver.
-    releaseRoot: resolveReleaseRoot({ integrationRoot }),
+    releaseRoot,
     // Per-root, matching release-config.ts (2026-07-02 cross-lineage race fix):
     // <basename(integrationRoot)>-checkpoint, never a fixed shared name.
-    checkpointRoot:
-      process.env.PAPERCUSP_CHECKPOINT_ROOT ??
-      path.join(parent, `${path.basename(integrationRoot)}-checkpoint`),
+    checkpointRoot,
     integrationBranch: process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging',
     releaseRef: process.env.PAPERCUSP_RELEASE_REF ?? 'main',
-    // Only set (to false) when detection genuinely failed, so existing
-    // exact-shape callers/tests that never mention gitDetected are unaffected
-    // (a `toEqual` treats an omitted key and an `undefined` value the same).
+    integrationRootAvailable: isDirectoryAvailable(integrationRoot),
+    releaseRootAvailable: isDirectoryAvailable(releaseRoot),
+    checkpointRootAvailable: isDirectoryAvailable(checkpointRoot),
+    // Only set (to false) when detection genuinely failed; path availability is
+    // reported independently so a stale explicit override is not called canonical.
     ...(gitDetected === false ? { gitDetected: false as const } : {}),
   };
 }
@@ -91,13 +109,23 @@ export function renderWorkspaceMapSection(cfg: WorkspaceMapConfig = resolveWorks
   const canonicalLine =
     gitDetected === false
       ? `- ⚠️ \`${integrationRoot}\` — NOT a git checkout (\`git rev-parse --show-toplevel\` failed here, so this could NOT be confirmed as the canonical shared tree). Do NOT treat this directory as canonical: an edit made here may never be committed or deployed. Locate the real canonical git checkout (or set \`PAPERCUSP_INTEGRATION_ROOT\`) before editing.`
+      : cfg.integrationRootAvailable === false
+        ? `- ⚠️ \`${integrationRoot}\` — the configured integration tree does not exist in this runtime. Do NOT use it as the canonical checkout or pass it as a command cwd; correct \`PAPERCUSP_CANONICAL_TREE\` / \`PAPERCUSP_INTEGRATION_ROOT\` first.`
       : `- ✅ \`${integrationRoot}\` — the canonical shared tree (branch \`${integrationBranch}\`). ALL repo work happens here — superproject and submodules alike, edited in place; git-sync sweeps this tree to \`origin/${integrationBranch}\` on a schedule.`;
+  const releaseLine =
+    cfg.releaseRootAvailable === false
+      ? `- ⚠️ \`${releaseRoot}\` — the configured release checkout does not exist in this runtime. Do NOT pass this path as a command cwd; correct \`PAPERCUSP_RELEASE_ROOT\` / release-gate configuration and render the map again.`
+      : `- 🚫 \`${releaseRoot}\` — the live operator's deploy artifact, pinned to green \`${releaseRef}\`. NEVER edit it: every deploy resets + cleans it and rebuilds its SPA dist, so a change there is clobbered and never reaches origin. If the live host lacks your fix, the fix isn't deployed yet — work in the canonical tree and let the pipeline carry it.`;
+  const checkpointLine =
+    cfg.checkpointRootAvailable === false
+      ? `- ⚠️ \`${checkpointRoot}\` — the configured isolated checkpoint tree does not exist in this runtime. Do NOT pass this path as a command cwd; re-check the checkpoint-root configuration before using it.`
+      : `- 🚫 \`${checkpointRoot}\` — the green-checkpoint's ISOLATED test tree. Never edit it and never leave stray files in it (it is reset + cleaned every run; untracked debris there can poison the green gate for the whole fleet).`;
   return [
-    `**Where to work — the workspace map** *(generated from the live release-gate config — these paths/branches are authoritative)*:`,
+    `**Where to work — the workspace map** *(generated from the live release-gate config; configured roots are checked against this runtime)*:`,
     ``,
     canonicalLine,
-    `- 🚫 \`${releaseRoot}\` — the live operator's deploy artifact, pinned to green \`${releaseRef}\`. NEVER edit it: every deploy resets + cleans it and rebuilds its SPA dist, so a change there is clobbered and never reaches origin. If the live host lacks your fix, the fix isn't deployed yet — work in the canonical tree and let the pipeline carry it.`,
-    `- 🚫 \`${checkpointRoot}\` — the green-checkpoint's ISOLATED test tree. Never edit it and never leave stray files in it (it is reset + cleaned every run; untracked debris there can poison the green gate for the whole fleet).`,
+    releaseLine,
+    checkpointLine,
     `- 🚫 other sibling \`papercup-*\` directories — preserved special-purpose worktrees on their own branches. Not for new work.`,
     ``,
     `\`${releaseRef}\` is automation-only — green-checkpoint fast-forwards it from green \`${integrationBranch}\`; a pre-push hook blocks manual pushes. Quick self-check before editing: \`pwd\` is under \`${integrationRoot}\` and \`git branch --show-current\` prints \`${integrationBranch}\`.`,

@@ -74,6 +74,34 @@ describe('resolveSessionStates is TOTAL — unknown is in band, never omitted', 
     expect(measured.signalMissing).toBeUndefined();
   });
 
+  it('reports request-scoped timings for each async liveness I/O leg', async () => {
+    const timings: Array<{ leg: string; durationMs: number; outcome: string }> = [];
+    const ownerId = 'su-timing-probe';
+    const out = await resolveSessionStates([{ ownerId }], {
+      nowMs: NOW,
+      hydrateBatch: true,
+      listPresenceFn: async () => [],
+      fetchRecordedSessionsFn: async () => new Map(),
+      fetchWakeabilityFn: async () => new Map([[ownerId, SIGNALLED]]),
+      fetchRecordedLiveFn: async () => new Set<string>(),
+      fetchRecordedEndedFn: async () => new Set<string>(),
+      probePidFn: () => null,
+      findHostFn: () => null,
+      onTiming: (leg, durationMs, outcome) => timings.push({ leg, durationMs, outcome }),
+    });
+
+    expect(out.get(ownerId)?.sessionState).toBe('parked');
+    expect(timings.map(({ leg }) => leg)).toEqual(expect.arrayContaining([
+      'presence_hydration',
+      'absent_presence_fallback',
+      'fetchWakeability',
+      'recordedLiveOwnerIds',
+      'endedRecordedOwnerIds',
+    ]));
+    expect(timings.every(({ durationMs, outcome }) => Number.isInteger(durationMs) && durationMs >= 0 && outcome === 'ok')).toBe(true);
+    expect(JSON.stringify(timings)).not.toContain(ownerId);
+  });
+
   it('marks an unmeasured subject UNKNOWN in band, on three independent channels', async () => {
     const out = await resolveSessionStates(
       subjects,

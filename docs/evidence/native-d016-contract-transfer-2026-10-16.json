@@ -1,0 +1,514 @@
+{
+  "schemaVersion": 1,
+  "kind": "requirement-transfer-comparison",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "decision": "D-016",
+  "sourceRubric": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "sourceRubricRevision": 11,
+  "sourceBarSetHash": "730e4b5fd8c4da6ba577f8ccc5414c8a23fe1348562f7d0972f7f995f768de5b",
+  "destinationPlan": "native-code-intelligence-optional-evaluations-2026-10-15",
+  "destinationPlanRevision": 7,
+  "destinationContentHash": "de824464ecd227f922e72a03ee70934612408008363ee4073976a5d5c88ebf9e",
+  "comparisons": [
+    {
+      "sourceBar": "R-25",
+      "destinationBar": "R-1",
+      "sourceItem": "P-028",
+      "destinationItem": "P-001",
+      "comparison": {
+        "intent": true,
+        "condition": true,
+        "falsifier": true,
+        "mandatory": true,
+        "evidencePlane": true,
+        "testLayers": true,
+        "scope": true,
+        "method": true,
+        "check": true
+      },
+      "sourceCriterion": {
+        "key": "r-25",
+        "title": "Graph visualization evaluation",
+        "intent": {
+          "request": "Optional graph visualization in the native code-intelligence roadmap",
+          "constraints": [
+            "Agent-derived implementation detail under Avi's approved AUTO/self execution recorded in D-003.",
+            "Reuse the existing platform surface and preserve explicit uncertainty."
+          ],
+          "sourceRefs": [
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:10",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:14",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:26"
+          ]
+        },
+        "model": "A graph UI inspection reveals the source provenance of the selected edge.",
+        "bar": "A graph UI inspection reveals the source provenance of the selected edge.",
+        "barKey": "R-25",
+        "barHash": "62d2576ea76c3094f6084ca50c32edf340f95832604cd74b2e09376596d66b71",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "P-028"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "e2e"
+        ],
+        "passRatings": [
+          "pass"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-10-09T17:46:11.714Z",
+          "declaredBy": "su-2245b010-6ebe-4f99-815a-7e84e66fdf8b"
+        },
+        "method": "Run the canonical tests and acceptance fixtures owned by P-028 against the exact changed source; bind recorded results and fingerprints at the selected evidence plane. Review the stated counterexample before grading.",
+        "driftMarkers": "An edge is shown without its source scope or uncertainty.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts"
+          ]
+        }
+      },
+      "destinationRequirement": {
+        "intent": {
+          "request": "Optional graph visualization in the native code-intelligence roadmap",
+          "sourceRefs": [
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:10",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:14",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:26"
+          ],
+          "constraints": [
+            "Agent-derived implementation detail under Avi's approved AUTO/self execution recorded in D-003.",
+            "Reuse the existing platform surface and preserve explicit uncertainty."
+          ]
+        },
+        "acceptance": {
+          "condition": "A graph UI inspection reveals the source provenance of the selected edge.",
+          "falsifier": "An edge is shown without its source scope or uncertainty.",
+          "evidencePlane": "tree",
+          "requiredScope": [
+            "P-001"
+          ],
+          "requiredTestLayers": [
+            "e2e"
+          ],
+          "mandatory": true
+        },
+        "verification": {
+          "method": "Run the canonical tests and acceptance fixtures owned by P-001 against the exact changed source; bind recorded results and fingerprints at the selected evidence plane. Review the stated counterexample before grading.",
+          "check": {
+            "kind": "tests",
+            "files": [
+              "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "sourceBar": "R-26",
+      "destinationBar": "R-2",
+      "sourceItem": "P-029",
+      "destinationItem": "P-002",
+      "comparison": {
+        "intent": true,
+        "condition": true,
+        "falsifier": true,
+        "mandatory": true,
+        "evidencePlane": true,
+        "testLayers": true,
+        "scope": true,
+        "method": true,
+        "check": true
+      },
+      "sourceCriterion": {
+        "key": "r-26",
+        "title": "Architecture document evaluation",
+        "intent": {
+          "request": "Optional architecture documents in the native code-intelligence roadmap",
+          "constraints": [
+            "Agent-derived implementation detail under Avi's approved AUTO/self execution recorded in D-003.",
+            "Reuse the existing platform surface and preserve explicit uncertainty."
+          ],
+          "sourceRefs": [
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:10",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:14",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:26"
+          ]
+        },
+        "model": "A generated architecture statement cites its supporting current source.",
+        "bar": "A generated architecture statement cites its supporting current source.",
+        "barKey": "R-26",
+        "barHash": "2cd6a47ced7474c632be7bce507777e9afb9b64f01badfa01147bd540a415835",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "P-029"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "integration"
+        ],
+        "passRatings": [
+          "pass"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-10-09T17:46:11.714Z",
+          "declaredBy": "su-2245b010-6ebe-4f99-815a-7e84e66fdf8b"
+        },
+        "method": "Run the canonical tests and acceptance fixtures owned by P-029 against the exact changed source; bind recorded results and fingerprints at the selected evidence plane. Review the stated counterexample before grading.",
+        "driftMarkers": "A generated wiki asserts an uncited code relationship.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        }
+      },
+      "destinationRequirement": {
+        "intent": {
+          "request": "Optional architecture documents in the native code-intelligence roadmap",
+          "sourceRefs": [
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:10",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:14",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:26"
+          ],
+          "constraints": [
+            "Agent-derived implementation detail under Avi's approved AUTO/self execution recorded in D-003.",
+            "Reuse the existing platform surface and preserve explicit uncertainty."
+          ]
+        },
+        "acceptance": {
+          "condition": "A generated architecture statement cites its supporting current source.",
+          "falsifier": "A generated wiki asserts an uncited code relationship.",
+          "evidencePlane": "tree",
+          "requiredScope": [
+            "P-002"
+          ],
+          "requiredTestLayers": [
+            "integration"
+          ],
+          "mandatory": true
+        },
+        "verification": {
+          "method": "Run the canonical tests and acceptance fixtures owned by P-002 against the exact changed source; bind recorded results and fingerprints at the selected evidence plane. Review the stated counterexample before grading.",
+          "check": {
+            "kind": "tests",
+            "files": [
+              "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "sourceBar": "R-27",
+      "destinationBar": "R-3",
+      "sourceItem": "P-030",
+      "destinationItem": "P-003",
+      "comparison": {
+        "intent": true,
+        "condition": true,
+        "falsifier": true,
+        "mandatory": true,
+        "evidencePlane": true,
+        "testLayers": true,
+        "scope": true,
+        "method": true,
+        "check": true
+      },
+      "sourceCriterion": {
+        "key": "r-27",
+        "title": "Bounded expert query evaluation",
+        "intent": {
+          "request": "Optional expert queries in the native code-intelligence roadmap",
+          "constraints": [
+            "Agent-derived implementation detail under Avi's approved AUTO/self execution recorded in D-003.",
+            "Reuse the existing platform surface and preserve explicit uncertainty."
+          ],
+          "sourceRefs": [
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:10",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:14",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:26"
+          ]
+        },
+        "model": "An expert graph query terminates at the configured traversal budget.",
+        "bar": "An expert graph query terminates at the configured traversal budget.",
+        "barKey": "R-27",
+        "barHash": "ef62768eb7655518f72d90b69e611cb7c367b94d86d4e9690950b142be63d786",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "P-030"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "integration",
+          "unit"
+        ],
+        "passRatings": [
+          "pass"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-10-09T17:46:11.714Z",
+          "declaredBy": "su-2245b010-6ebe-4f99-815a-7e84e66fdf8b"
+        },
+        "method": "Run the canonical tests and acceptance fixtures owned by P-030 against the exact changed source; bind recorded results and fingerprints at the selected evidence plane. Review the stated counterexample before grading.\n\nReuse graph:query trace/impact instead of creating an arbitrary graph language. Detector controls are first-party-traversal.test.ts \"terminates cyclic traversal at max_depth\", \"bounds multiple paths and explicitly reports the omitted path\", and \"bounds call sites without inventing a partial successful path\", plus first-party-traversal.integration.test.ts \"terminates a cycle at the requested depth and exposes a path only within that bound\" through the actual exposed worker.",
+        "driftMarkers": "A cyclic or wide query exceeds its registered scope or traversal bound.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+            "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts",
+            "packages/operator-core/lib/code-intelligence/first-party-traversal.integration.test.ts"
+          ]
+        }
+      },
+      "destinationRequirement": {
+        "intent": {
+          "request": "Optional expert queries in the native code-intelligence roadmap",
+          "sourceRefs": [
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:10",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:14",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:26"
+          ],
+          "constraints": [
+            "Agent-derived implementation detail under Avi's approved AUTO/self execution recorded in D-003.",
+            "Reuse the existing platform surface and preserve explicit uncertainty."
+          ]
+        },
+        "acceptance": {
+          "condition": "An expert graph query terminates at the configured traversal budget.",
+          "falsifier": "A cyclic or wide query exceeds its registered scope or traversal bound.",
+          "evidencePlane": "tree",
+          "requiredScope": [
+            "P-003"
+          ],
+          "requiredTestLayers": [
+            "integration",
+            "unit"
+          ],
+          "mandatory": true
+        },
+        "verification": {
+          "method": "Run the canonical tests and acceptance fixtures owned by P-003 against the exact changed source; bind recorded results and fingerprints at the selected evidence plane. Review the stated counterexample before grading.\n\nReuse graph:query trace/impact instead of creating an arbitrary graph language. Detector controls are first-party-traversal.test.ts \"terminates cyclic traversal at max_depth\", \"bounds multiple paths and explicitly reports the omitted path\", and \"bounds call sites without inventing a partial successful path\", plus first-party-traversal.integration.test.ts \"terminates a cycle at the requested depth and exposes a path only within that bound\" through the actual exposed worker.",
+          "check": {
+            "kind": "tests",
+            "files": [
+              "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+              "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+              "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts",
+              "packages/operator-core/lib/code-intelligence/first-party-traversal.integration.test.ts"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "sourceBar": "R-28",
+      "destinationBar": "R-4",
+      "sourceItem": "P-031",
+      "destinationItem": "P-004",
+      "comparison": {
+        "intent": true,
+        "condition": true,
+        "falsifier": true,
+        "mandatory": true,
+        "evidencePlane": true,
+        "testLayers": true,
+        "scope": true,
+        "method": true,
+        "check": true
+      },
+      "sourceCriterion": {
+        "key": "r-28",
+        "title": "Dependence/security evaluation",
+        "intent": {
+          "request": "Optional dependence/security in the native code-intelligence roadmap",
+          "constraints": [
+            "Agent-derived implementation detail under Avi's approved AUTO/self execution recorded in D-003.",
+            "Reuse the existing platform surface and preserve explicit uncertainty."
+          ],
+          "sourceRefs": [
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:10",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:14",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:26"
+          ]
+        },
+        "model": "A security-analysis claim passes the admitted positive/negative reference cases.",
+        "bar": "A security-analysis claim passes the admitted positive/negative reference cases.",
+        "barKey": "R-28",
+        "barHash": "b85e87d670f509baf11555286d890007c58ac19a6f6d9ef89e27d5d4fe65d8ec",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "P-031"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "integration"
+        ],
+        "passRatings": [
+          "pass"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-10-09T17:46:11.714Z",
+          "declaredBy": "su-2245b010-6ebe-4f99-815a-7e84e66fdf8b"
+        },
+        "method": "Run the canonical tests and acceptance fixtures owned by P-031 against the exact changed source; bind recorded results and fingerprints at the selected evidence plane. Review the stated counterexample before grading.",
+        "driftMarkers": "A taint finding is promoted as verified solely because a call graph contains a path.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        }
+      },
+      "destinationRequirement": {
+        "intent": {
+          "request": "Optional dependence/security in the native code-intelligence roadmap",
+          "sourceRefs": [
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:10",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:14",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:26"
+          ],
+          "constraints": [
+            "Agent-derived implementation detail under Avi's approved AUTO/self execution recorded in D-003.",
+            "Reuse the existing platform surface and preserve explicit uncertainty."
+          ]
+        },
+        "acceptance": {
+          "condition": "A security-analysis claim passes the admitted positive/negative reference cases.",
+          "falsifier": "A taint finding is promoted as verified solely because a call graph contains a path.",
+          "evidencePlane": "tree",
+          "requiredScope": [
+            "P-004"
+          ],
+          "requiredTestLayers": [
+            "integration"
+          ],
+          "mandatory": true
+        },
+        "verification": {
+          "method": "Run the canonical tests and acceptance fixtures owned by P-004 against the exact changed source; bind recorded results and fingerprints at the selected evidence plane. Review the stated counterexample before grading.",
+          "check": {
+            "kind": "tests",
+            "files": [
+              "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "sourceBar": "R-29",
+      "destinationBar": "R-5",
+      "sourceItem": "P-032",
+      "destinationItem": "P-005",
+      "comparison": {
+        "intent": true,
+        "condition": true,
+        "falsifier": true,
+        "mandatory": true,
+        "evidencePlane": true,
+        "testLayers": true,
+        "scope": true,
+        "method": true,
+        "check": true
+      },
+      "sourceCriterion": {
+        "key": "r-29",
+        "title": "Unreached-code evaluation",
+        "intent": {
+          "request": "Optional apparent dead code in the native code-intelligence roadmap",
+          "constraints": [
+            "Agent-derived implementation detail under Avi's approved AUTO/self execution recorded in D-003.",
+            "Reuse the existing platform surface and preserve explicit uncertainty."
+          ],
+          "sourceRefs": [
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:10",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:12",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:14",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:26"
+          ]
+        },
+        "model": "An apparently-unreached result discloses dynamic-entry uncertainty.",
+        "bar": "An apparently-unreached result discloses dynamic-entry uncertainty.",
+        "barKey": "R-29",
+        "barHash": "d0ab31e1726f391f9a2b95592363d095b071ab0c9d7fcc1df91606cd9e7bca93",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "P-032"
+        ],
+        "evidencePlane": "tree",
+        "requiredTestLayers": [
+          "integration"
+        ],
+        "passRatings": [
+          "pass"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-10-09T17:46:11.714Z",
+          "declaredBy": "su-2245b010-6ebe-4f99-815a-7e84e66fdf8b"
+        },
+        "method": "Run the canonical tests and acceptance fixtures owned by P-032 against the exact changed source; bind recorded results and fingerprints at the selected evidence plane. Review the stated counterexample before grading.",
+        "driftMarkers": "A fixture with a dynamic public entry point is labelled safely removable.",
+        "check": {
+          "kind": "tests",
+          "files": [
+            "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+          ]
+        }
+      },
+      "destinationRequirement": {
+        "intent": {
+          "request": "Optional apparent dead code in the native code-intelligence roadmap",
+          "sourceRefs": [
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:10",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:12",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:14",
+            "session_turn:codex:01a11e0e-d352-75f3-a157-2ed8aa1f62a2:26"
+          ],
+          "constraints": [
+            "Agent-derived implementation detail under Avi's approved AUTO/self execution recorded in D-003.",
+            "Reuse the existing platform surface and preserve explicit uncertainty."
+          ]
+        },
+        "acceptance": {
+          "condition": "An apparently-unreached result discloses dynamic-entry uncertainty.",
+          "falsifier": "A fixture with a dynamic public entry point is labelled safely removable.",
+          "evidencePlane": "tree",
+          "requiredScope": [
+            "P-005"
+          ],
+          "requiredTestLayers": [
+            "integration"
+          ],
+          "mandatory": true
+        },
+        "verification": {
+          "method": "Run the canonical tests and acceptance fixtures owned by P-005 against the exact changed source; bind recorded results and fingerprints at the selected evidence plane. Review the stated counterexample before grading.",
+          "check": {
+            "kind": "tests",
+            "files": [
+              "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts"
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "limits": [
+    "This comparison establishes equality after item renumbering, not independent amendment approval.",
+    "The parent rubric remains active until the canonical independent amendment workflow approves and applies a revised preview.",
+    "No criterion is graded passed by this comparison."
+  ]
+}

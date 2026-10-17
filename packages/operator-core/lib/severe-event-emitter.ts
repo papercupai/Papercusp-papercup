@@ -6,6 +6,9 @@
  * from what the writer appends.
  */
 
+import { hostname } from 'node:os';
+import { readProcessIdentity } from './process-identity';
+
 /**
  * WI-7309: identity of the PROCESS that emitted an alarm.
  *
@@ -31,6 +34,10 @@ export interface SevereEventEmitter {
   uptimeSec: number;
   /** cwd of the emitting process: WHICH CHECKOUT it executes from (staging vs release). */
   cwd: string;
+  /** Hostname lets a reader distinguish a local PID probe from a remote emitter. */
+  host?: string;
+  /** Kernel-backed PID identity, immune to PID reuse on the same host. */
+  processIdentity?: string;
 }
 
 /** Snapshot the current process's identity. Never throws — an alarm must still fire. */
@@ -38,6 +45,8 @@ export function severeEventEmitter(): SevereEventEmitter {
   let uptimeSec = 0;
   let cwd = '(unknown)';
   let pid = -1;
+  let host = '(unknown)';
+  let processIdentity: string | undefined;
   try {
     uptimeSec = Math.max(0, Math.round(process.uptime()));
   } catch {
@@ -53,7 +62,25 @@ export function severeEventEmitter(): SevereEventEmitter {
   } catch {
     /* best-effort */
   }
-  return { pid, startedAt: new Date(Date.now() - uptimeSec * 1000).toISOString(), uptimeSec, cwd };
+  try {
+    host = hostname() || '(unknown)';
+  } catch {
+    /* best-effort */
+  }
+  try {
+    const identity = readProcessIdentity(pid);
+    if (identity) processIdentity = identity;
+  } catch {
+    /* best-effort */
+  }
+  return {
+    pid,
+    startedAt: new Date(Date.now() - uptimeSec * 1000).toISOString(),
+    uptimeSec,
+    cwd,
+    host,
+    ...(processIdentity ? { processIdentity } : {}),
+  };
 }
 
 /**
@@ -91,5 +118,46 @@ export function asSevereEventEmitter(v: unknown): SevereEventEmitter | undefined
   ) {
     return undefined;
   }
-  return { pid: r['pid'], startedAt: r['startedAt'], uptimeSec: r['uptimeSec'], cwd: r['cwd'] };
+  return {
+    pid: r['pid'],
+    startedAt: r['startedAt'],
+    uptimeSec: r['uptimeSec'],
+    cwd: r['cwd'],
+    ...(typeof r['host'] === 'string' && r['host'] ? { host: r['host'] } : {}),
+    ...(typeof r['processIdentity'] === 'string' && r['processIdentity']
+      ? { processIdentity: r['processIdentity'] }
+      : {}),
+  };
+}
+
+export type SevereEventEmitterLiveness = 'alive' | 'dead' | 'unknown';
+
+/**
+ * Probe a stamped emitter without guessing across hosts or recycled PIDs.
+ * Legacy envelopes without `host`/`processIdentity` remain UNKNOWN, so adding
+ * this reconciler can never false-clear an old one-shot alarm from another host.
+ */
+export function probeSevereEventEmitter(e: SevereEventEmitter): SevereEventEmitterLiveness {
+  const localHost = (() => {
+    try { return hostname(); } catch { return null; }
+  })();
+  if (!e.host || !localHost || e.host !== localHost || !Number.isInteger(e.pid) || e.pid <= 0) {
+    return 'unknown';
+  }
+  let pidAlive: boolean;
+  try {
+    process.kill(e.pid, 0);
+    pidAlive = true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === 'ESRCH') return 'dead';
+    if (code === 'EPERM') pidAlive = true;
+    else return 'unknown';
+  }
+  if (!pidAlive) return 'dead';
+  if (!e.processIdentity) return 'unknown';
+  let current: string | null;
+  try { current = readProcessIdentity(e.pid); } catch { return 'unknown'; }
+  if (!current) return 'unknown';
+  return current === e.processIdentity ? 'alive' : 'dead';
 }

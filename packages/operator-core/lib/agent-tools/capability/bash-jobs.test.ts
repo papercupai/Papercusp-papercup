@@ -15,6 +15,7 @@ import {
   BASH_TEST_MEMORY_MAX_BYTES,
   BASH_TEST_TASKS_MAX,
   capturePreflightAttributionSnapshot,
+  classifyDeadlineReason,
   DEFAULT_BACKGROUND_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
   detectPreflightFailureMarker,
@@ -22,6 +23,8 @@ import {
   JOB_LOG_END_MARKER_PREFIX,
   MAX_BACKGROUND_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
+  PC_HEAVY_QUEUE_ABORT_MARKER,
+  PC_HEAVY_QUEUE_WAIT_MARKER,
   PC_HEAVY_SLOT_ACQUIRED_MARKER,
   PC_HEAVY_DURABLE_CALLER_ENV,
   PREFLIGHT_ATTRIBUTION_SNAPSHOT_PREFIX,
@@ -50,6 +53,7 @@ import {
   normalizeExpectedSigpipeResult,
   readJobOutput,
   runForeground,
+  snapshotJobResult,
   startBackground,
   BashTaskConfinementRequiredError,
 } from './bash-jobs';
@@ -1675,6 +1679,18 @@ describe('background job deadlines (WI-6677)', () => {
     killJob(job);
   });
 
+  it('classifies deadline phase only from an explicit pc-heavy marker', () => {
+    expect(classifyDeadlineReason(`${PC_HEAVY_QUEUE_WAIT_MARKER} a heavy slot`)).toBe('deadline_before_slot_acquired');
+    expect(classifyDeadlineReason(PC_HEAVY_QUEUE_ABORT_MARKER)).toBe('deadline_before_slot_acquired');
+    expect(classifyDeadlineReason(PC_HEAVY_SLOT_ACQUIRED_MARKER)).toBe('deadline_after_slot_acquired');
+    expect(
+      classifyDeadlineReason(`${PC_HEAVY_QUEUE_WAIT_MARKER}\n${PC_HEAVY_SLOT_ACQUIRED_MARKER}`),
+    ).toBe('deadline_after_slot_acquired');
+    // A command that never invokes pc-heavy has no phase evidence. Its missing
+    // acquired marker must not be misreported as queueing.
+    expect(classifyDeadlineReason('working\ndeadline reached')).toBeUndefined();
+  });
+
   it('makes the caller-selected deadline a systemd-enforced cgroup deadline', () => {
     const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment');
     try {
@@ -1860,22 +1876,33 @@ describe('background job deadlines (WI-6677)', () => {
    * EI-19315037905600226 — "deadline reached" alone conflates two very different
    * deaths: killed mid-execution vs. killed while still QUEUED behind pc-heavy's
    * semaphore (a job's own wall-clock deadline is not exempt from that wait). The
-   * deadline handler greps the job's own output for pc-heavy's slot-acquired
-   * landmark to tell them apart whenever the answer is knowable.
+   * deadline handler classifies the job's own output only when pc-heavy emitted
+   * a queue or slot-acquired landmark. A missing acquired marker by itself is
+   * deliberately inconclusive.
    */
-  it('⭐ says the job likely died QUEUED (never acquired a pc-heavy slot) when its output never showed the marker', async () => {
-    // No pc-heavy involved at all here — just proves the hint fires whenever the
-    // marker is absent, which is the honest, best-effort signal (the hint itself
-    // is worded conditionally: "if it runs through scripts/pc-heavy.sh").
+  it('⭐ leaves the deadline reason unknown when no pc-heavy marker exists', async () => {
     const job = startBackground({ command: 'echo working; sleep 30', cwd: STATE, stateDir: STATE }, 400);
     await waitForEnd(job.id);
     const out = readJobOutput(job);
     expect(out).toContain('deadline reached');
-    expect(out).toContain('never showed pc-heavy\'s "slot acquired" marker');
-    expect(out).toContain('most likely died QUEUED');
+    expect(job.deadlineReason).toBeUndefined();
+    expect(out).not.toContain('most likely died QUEUED');
+    expect(out).not.toContain('deadline fired before heavy-command admission');
   }, 30_000);
 
-  it("⭐ omits the queued hint once the job's output shows the pc-heavy slot-acquired marker — it really was mid-execution", async () => {
+  it('⭐ classifies a queued pc-heavy deadline and exposes the reason in the snapshot', async () => {
+    const job = startBackground(
+      { command: `echo '${PC_HEAVY_QUEUE_WAIT_MARKER} a heavy slot'; sleep 30`, cwd: STATE, stateDir: STATE },
+      400,
+    );
+    await waitForEnd(job.id);
+    const out = readJobOutput(job);
+    expect(job.deadlineReason).toBe('deadline_before_slot_acquired');
+    expect(snapshotJobResult(job, true).reason).toBe('deadline_before_slot_acquired');
+    expect(out).toContain('deadline fired before heavy-command admission');
+  }, 30_000);
+
+  it("⭐ classifies a deadline after the pc-heavy slot-acquired marker", async () => {
     const job = startBackground(
       { command: `echo '${PC_HEAVY_SLOT_ACQUIRED_MARKER}'; sleep 30`, cwd: STATE, stateDir: STATE },
       400,
@@ -1883,7 +1910,9 @@ describe('background job deadlines (WI-6677)', () => {
     await waitForEnd(job.id);
     const out = readJobOutput(job);
     expect(out).toContain('deadline reached');
-    expect(out).not.toContain('most likely died QUEUED');
+    expect(job.deadlineReason).toBe('deadline_after_slot_acquired');
+    expect(snapshotJobResult(job, true).reason).toBe('deadline_after_slot_acquired');
+    expect(out).not.toContain('deadline fired before heavy-command admission');
   }, 30_000);
 });
 
@@ -2020,6 +2049,26 @@ describe('detectSelfOutputRedirect (EI-21301075566136325)', () => {
 
   it('returns the LAST redirect when several are present', () => {
     expect(detectSelfOutputRedirect('a > /tmp/first.log; b >> /tmp/second.log')?.target).toBe('/tmp/second.log');
+  });
+
+  it('ignores arithmetic comparisons before a later heredoc command', () => {
+    const command = [
+      'if (( SECONDS >= recovery_deadline )); then',
+      '  echo timeout;',
+      'fi;',
+      "ptool tools:invoke --json - <<'JSON'",
+      '{}',
+      'JSON',
+    ].join('\n');
+    expect(detectSelfOutputRedirect(command)).toBeNull();
+  });
+
+  it('still detects redirects adjacent to assignment operators', () => {
+    expect(detectSelfOutputRedirect('main-command target=>/tmp/out.log')).toEqual({
+      target: '/tmp/out.log',
+      op: '>',
+      literalPath: true,
+    });
   });
 
   it('ignores a command-local curl redirect when the main command has no redirect', () => {

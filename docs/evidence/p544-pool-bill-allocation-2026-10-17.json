@@ -1,0 +1,63 @@
+{
+  "scope": "Preparatory local cost allocation model; no measured price, complete R-10 detector, acceptance or shipment claim",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "planItem": "P-544",
+  "workItem": "WI-6554700010016698",
+  "parentWorkItem": "WI-6554700010016277",
+  "reuse": "Extended existing scripts/agent-capacity/cost-model.ts and its maintained Vitest suite. No billing table, collector, scheduler or customer price was added.",
+  "behavior": [
+    "Allocate signed integer currency micros to tenants, shared overhead and explicitly unresolved exposure without losing rounding remainders.",
+    "Compute allocation uses achieved agent milliseconds and observed active tenant time rather than requested slots.",
+    "Preserve idle overhead, mixed providers, all resource classes, unknown prices and credits-excluded totals.",
+    "Reject incompatible periods/currencies, invalid references, unsafe integers, over-allocation and invoice/line mismatches."
+  ],
+  "verification": {
+    "command": "npm run test:file -- scripts/agent-capacity/cost-model.test.ts",
+    "log": "/tmp/p544-bill-allocation-tests-v2.log",
+    "logSha256": "116f06aaa8891f278f18b9316f3993c93dcd2152c178496c87845c166a3cb0ab",
+    "exitCode": 0,
+    "passed": 47,
+    "failed": 0,
+    "skipped": 0,
+    "signedWeightCombinations": 2240,
+    "censusCorrection": "The carried 2220 count was incorrect. The maintained loops cover 35 amounts (-17 through 17 inclusive) times 4 cubed weight choices, totaling 2240.",
+    "testRunId": 21300259,
+    "ledger": {
+      "source": "local",
+      "repositoryScope": "Verified canonical staging checkout; exact machine-local root retained in the test ledger receipt, not copied into bundled source",
+      "workspaceId": "papercusp-workspace",
+      "harnessSlug": null,
+      "commitSha": "bc29d605b0d73f8b0ab4ff0f90416b17706ad943",
+      "worktreeDirty": true,
+      "startedAt": "2026-10-17T03:43:03.229Z",
+      "finishedAt": "2026-10-17T03:43:03.480Z",
+      "collectionFailed": false,
+      "testNamePattern": null
+    },
+    "sourceSha256": {
+      "scripts/agent-capacity/cost-model.ts": "fd8eed295d319089af23b072d821acf2f37b61778d0ae5bdb201b37228ef66e8",
+      "scripts/agent-capacity/cost-model.test.ts": "affcd3d6d99e9744a7d07167b32419c03903a657937fd3bfd05d8e110c3b9758"
+    },
+    "sourceQualification": "Current source/test hashes equal the pre-compaction child checkpoint, and the log hash matches exactly. The runner stamped named test paths, not its complete import graph. No prospective source-map artifact was recorded in the checkpoint. The clean-checkout executed-source ledger query returned no row for this test; that result is not a universal absence proof. The reporter intentionally does not persist dirty-checkout reuse proof. Do not bind this as committed/import-graph/deployed evidence or rerun solely to reconstruct proof.",
+    "typecheck": {
+      "tool": "build:typecheck",
+      "project": "scripts/tsconfig.json",
+      "scopeToFiles": ["scripts/agent-capacity/cost-model.ts", "scripts/agent-capacity/cost-model.test.ts"],
+      "engine": "tsc-service",
+      "checkedFiles": 4,
+      "requestedErrors": 0,
+      "otherErrors": 0,
+      "incomplete": false,
+      "exitCode": 0,
+      "receipt": "/tmp/p544-bill-allocation-typecheck.json",
+      "scope": "Requested files and immediate importers; not a full-project or gate verdict"
+    },
+    "fixtureCorrection": "Run 21300258 failed one test because a fractional invoice total reached validation before the intended fractional line assertion. The fixture was corrected before the final run. This was a test-fixture error, not a product incident."
+  },
+  "remaining": [
+    "P-544 retains actual trial usage, observed rates and measured all-in strict under-$20 qualification under D-076.",
+    "R-10 still requires complete accounting integration and source-dated alternatives; the preparatory arithmetic is not its complete detector.",
+    "R-11 bounded autoscaling and the actual in-memory runtime configuration remain open.",
+    "P-538 and P-539 remain blocked; rubric revision 4 remains partial and unattested."
+  ]
+}

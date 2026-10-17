@@ -181,6 +181,50 @@ beforeEach(() => {
 
 /* ------------------------------------------------------------------ */
 
+
+describe('locally authored rule authority (D-006)', () => {
+  const address = { id: PIN, potSlug: 'pot-a', revision: 1, trigger: { tool: EVENT, args: {}, result: { ok: true } },
+    cause: { depth: 2, chain: ['parent', 'local'], ruleId: 'local', rootRunId: 'root' } };
+  const row = () => ({ workspaceId: WS, potSlug: 'pot-a', id: PIN, authorId: OWNER, definition: RULE,
+    revision: 1, testedRevision: 1, testReceipt: { passed: true, samples: 1 }, enabled: true });
+  const localPayload = () => ({ ...payloadFor(), localRule: address });
+  it('dispatches through the live wearer, preserves the cause chain and dedupes a replay', async () => {
+    const { all, dispatch } = deps(db, { readLocalRule: vi.fn(async () => row()), readWearer: vi.fn(async () => wearer({ revisionTag: 'new-live-identity' })) });
+    expect(await executeIdentityReaction(localPayload(), all)).toMatchObject({ status: 'fired' });
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ ownerId: OWNER, capabilities: ['tasks:create'], cause: address.cause }));
+    expect(await executeIdentityReaction(localPayload(), all)).toMatchObject({ status: 'replayed' });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+  it.each(['disabled', 'edited', 'untested', 'foreign-author', 'deleted'] as const)('refuses %s rows without dispatch', async (change) => {
+    const altered = row();
+    if (change === 'disabled') altered.enabled = false;
+    if (change === 'edited') altered.revision = 2;
+    if (change === 'untested') altered.testedRevision = 0;
+    if (change === 'foreign-author') altered.authorId = 'another';
+    const { all, dispatch } = deps(db, { readLocalRule: vi.fn(async () => change === 'deleted' ? null : altered) });
+    expect(await executeIdentityReaction(localPayload(), all)).toMatchObject({ status: 'refused', code: 'rule-changed' });
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+  it('refuses a detached author and a different pot without a synthetic fallback', async () => {
+    const detached = deps(db, { readWearer: vi.fn(async () => null), readLocalRule: vi.fn(async () => row()) });
+    expect(await executeIdentityReaction(localPayload(), detached.all)).toMatchObject({ status: 'refused', code: 'detached' });
+    expect(detached.dispatch).not.toHaveBeenCalled();
+    db = fakeDb(); h.sql = db.sql;
+    const other = deps(db, { readLocalRule: vi.fn(async () => row()), resolvePot: vi.fn(async () => 'elsewhere') });
+    expect(await executeIdentityReaction(localPayload(), other.all)).toMatchObject({ status: 'refused', code: 'unbound' });
+    expect(other.dispatch).not.toHaveBeenCalled();
+  });
+  it('rechecks current ceilings and the local condition before authorizing', async () => {
+    const denied = deps(db, { readLocalRule: vi.fn(async () => row()), readCeiling: vi.fn(async () => ({ potSlug: 'pot-a', ceilings: [{ denyCapabilities: ['tasks:*'] }], protectedAdditions: [] })) });
+    expect(await executeIdentityReaction(localPayload(), denied.all)).toMatchObject({ status: 'refused', code: 'capability-empty' });
+    expect(denied.dispatch).not.toHaveBeenCalled();
+    db = fakeDb(); h.sql = db.sql;
+    const missed = deps(db, { readLocalRule: vi.fn(async () => ({ ...row(), definition: { ...RULE, when: { 'args.kind': { equals: 'bug' } } } })) });
+    expect(await executeIdentityReaction(localPayload(), missed.all)).toMatchObject({ status: 'refused', code: 'when-false' });
+    expect(missed.dispatch).not.toHaveBeenCalled();
+  });
+});
+
 describe('planIdentityReactions', () => {
   it('keeps identity-rule rows only and gives two wearers two receipts', () => {
     const other = subscriberRow('su-wearer-2');

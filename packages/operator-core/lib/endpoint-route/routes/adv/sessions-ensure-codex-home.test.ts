@@ -203,6 +203,23 @@ describe('resumable archived backend identity', () => {
 });
 
 describe('ensure-codex-home pinned-source recovery', () => {
+  it.each([true, false])('reseeds the managed clone directory trust during home repair (ambient=%s)', async (ambient) => {
+    const cwd = '/fixture/managed-clone-outside-ambient-trust';
+    mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', cwd });
+    mocks.allowsAmbient.mockResolvedValue(ambient);
+    mocks.rebuild.mockResolvedValue({
+      spec: { mcpUrl: 'http://localhost:3170/api/mcp?superuser=1' },
+      promptText: 'PINNED V1 INSTRUCTIONS',
+      artifact: { stack: savedRecord.stack, specificationRevision: REVISION },
+    });
+
+    expect((await call()).status).toBe(200);
+    expect(mocks.ensureHome).toHaveBeenCalledWith(expect.objectContaining({
+      trustDir: cwd,
+      projectDir: cwd,
+    }));
+  });
+
   it('retains a later owner budget when repairing a home with an older launch flag', async () => {
     mocks.sessionRow.mockResolvedValue({ coordOwnerId: OWNER, agent: 'codex', launchArgv: ['psu', '--compaction-limit=250000'] });
     mocks.presence.mockResolvedValue({ compactionLimit: 200_000, fleetRole: 'member' });

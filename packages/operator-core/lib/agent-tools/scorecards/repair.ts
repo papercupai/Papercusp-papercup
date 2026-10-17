@@ -9,6 +9,9 @@ import {
   reconcilePendingGradingAudits,
   type DispatchPendingGradingAuditsInput,
 } from '../../grading-integrity';
+import { readIdentity } from '../locks/identity';
+import { resourceLockDomain } from '../locks/coordination-domain';
+import { guardResource } from '../locks/resource-lock-guard';
 
 /**
  * A repair sweep can dispatch up to fifty independent auditors. Its bounded
@@ -17,6 +20,14 @@ import {
  * like scorecards:emit instead of returning an unknown mutation outcome.
  */
 export const SCORECARD_REPAIR_TIMEOUT_SEC = 15 * 60;
+
+/**
+ * scorecards:repair reads and dispatches through the staging runtime for up to
+ * SCORECARD_REPAIR_TIMEOUT_SEC. Hold the host-global shared lease for the full
+ * bounded call so dev:restart must drain this work before replacing :3170.
+ */
+export const SCORECARD_REPAIR_RESOURCE = 'staging-server';
+export const SCORECARD_REPAIR_LOCK_TTL_SEC = SCORECARD_REPAIR_TIMEOUT_SEC + 60;
 
 /**
  * What an omitted `targetIds` actually selects (WI-10005150). The dispatcher
@@ -84,13 +95,44 @@ export default defineTool({
   timeoutSec: SCORECARD_REPAIR_TIMEOUT_SEC,
   args: scorecardRepairArgs,
   async handler(args, ctx) {
-    resolveAgentIdentity(ctx);
-    const input: DispatchPendingGradingAuditsInput = {
-      ctx: (args.gradingLaunch ? { ...ctx, gradingLaunch: args.gradingLaunch } : ctx) as DispatchPendingGradingAuditsInput['ctx'],
-      ...(args.targetIds ? { targetIds: args.targetIds } : {}),
-      ...(args.harness ? { harness: args.harness } : {}),
-    };
-    const result = await reconcilePendingGradingAudits(input);
-    return { data: { ok: true, ...result } };
+    const coordIdentity = resolveAgentIdentity(ctx);
+    const { ownerId, ownerLabel } = readIdentity(ctx);
+    const outcome = await guardResource(
+      {
+        coordinationDomain: resourceLockDomain(SCORECARD_REPAIR_RESOURCE),
+        ownerId,
+        ownerLabel,
+        coordIdentity,
+        resource: SCORECARD_REPAIR_RESOURCE,
+        mode: 'shared',
+        ttlSec: SCORECARD_REPAIR_LOCK_TTL_SEC,
+        reason: 'scorecards:repair reads and dispatches through the staging runtime',
+      },
+      async () => {
+        const input: DispatchPendingGradingAuditsInput = {
+          ctx: (args.gradingLaunch ? { ...ctx, gradingLaunch: args.gradingLaunch } : ctx) as DispatchPendingGradingAuditsInput['ctx'],
+          ...(args.targetIds ? { targetIds: args.targetIds } : {}),
+          ...(args.harness ? { harness: args.harness } : {}),
+        };
+        return reconcilePendingGradingAudits(input);
+      },
+    );
+    if (!outcome.acquired) {
+      return {
+        data: {
+          ok: false,
+          reason: `resource_${outcome.reason}`,
+          resource: SCORECARD_REPAIR_RESOURCE,
+          holders: outcome.holders.map((holder) => ({
+            owner: holder.owner,
+            owner_label: holder.owner_label,
+            mode: holder.mode,
+            status: holder.status,
+            ...(holder.coordination_domain ? { coordination_domain: holder.coordination_domain } : {}),
+          })),
+        },
+      };
+    }
+    return { data: { ok: true, ...outcome.result } };
   },
 });

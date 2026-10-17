@@ -630,6 +630,97 @@ command = tool_input.get('command') if isinstance(tool_input, dict) else None
 if not isinstance(command, str) or not command.strip():
     allow()
 
+# ── mcp-call inline JSON quote guard (EI-26073319721581332) ────────────────
+# `scripts/mcp-call.mjs` has safe stdin/file payload modes, but an inline
+# single-quoted JSON argument is parsed by Bash BEFORE mcp-call starts. An
+# apostrophe in checkpoint prose closes that quote, so the command dies with
+# `shell_syntax_error` and the MCP tool never receives a request. Refuse this
+# narrow shape before Bash runs it and point at the safe forms. The scanner is
+# deliberately local to each shell command segment so an unrelated quoted
+# command before/after mcp-call cannot affect the verdict.
+try:
+    def _mcp_call_segments(text):
+        segments, start, quote, escaped = [], 0, None, False
+        for index, char in enumerate(text):
+            if escaped:
+                escaped = False
+                continue
+            if quote == "'":
+                if char == "'":
+                    quote = None
+                continue
+            if quote == '"':
+                if char == '\\':
+                    escaped = True
+                elif char == '"':
+                    quote = None
+                continue
+            if char == '\\':
+                escaped = True
+            elif char in ("'", '"'):
+                quote = char
+            elif char in (';', '\n'):
+                segment = text[start:index]
+                if segment.strip():
+                    segments.append(segment)
+                start = index + 1
+        tail = text[start:]
+        if tail.strip():
+            segments.append(tail)
+        return segments
+
+    def _mcp_call_has_unterminated_single_quote(text):
+        quote, escaped = None, False
+        for char in text:
+            if escaped:
+                escaped = False
+                continue
+            if quote == "'":
+                if char == "'":
+                    quote = None
+                continue
+            if quote == '"':
+                if char == '\\':
+                    escaped = True
+                elif char == '"':
+                    quote = None
+                continue
+            if char == '\\':
+                escaped = True
+            elif char in ("'", '"'):
+                quote = char
+        # An apostrophe can close the positional single-quoted JSON and expose
+        # a later JSON double quote, leaving the shell with an unterminated
+        # double-quoted span instead. Any live quote at the end is therefore
+        # the same pre-dispatch syntax failure.
+        return quote is not None
+
+    _mcp_quote_error = None
+    for _mcp_segment in _mcp_call_segments(command):
+        _mcp_marker = re.search(r'(?:^|\s)(?:node\s+)?(?:\S+/)?scripts/mcp-call\.mjs\b', _mcp_segment)
+        if not _mcp_marker:
+            continue
+        _mcp_tail = _mcp_segment[_mcp_marker.end():]
+        # --json - and --json-file are the documented shell-safe payload routes.
+        if re.search(r'--json(?:-file)?(?:\s|=|$)', _mcp_tail):
+            continue
+        if _mcp_call_has_unterminated_single_quote(_mcp_tail):
+            _mcp_quote_error = (
+                'mcp-call inline JSON quoting guard (EI-26073319721581332): this '
+                'command leaves a single-quoted payload open, usually because '
+                'checkpoint prose contains an apostrophe. Bash will fail before '
+                'mcp-call dispatches the MCP request. Re-run with '
+                '`node scripts/mcp-call.mjs <tool> --json - <<\'JSON\'` and a '
+                'quoted heredoc, or write the payload to a file and use '
+                '`--json-file <path>`; do not put arbitrary prose in positional '
+                "single-quoted JSON."
+            )
+            break
+    if _mcp_quote_error:
+        deny(_mcp_quote_error)
+except Exception:
+    pass  # syntax diagnostics must never disable the shell gate
+
 # ── Long-foreground-exec advisory (coord-delivery-residual-gaps P-003) ──────
 # A foreground Bash run blocks the session's turn for its whole duration: coord
 # messages, wakes, and yields cannot reach the agent until it returns — the

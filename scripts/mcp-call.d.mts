@@ -63,6 +63,17 @@ export function fetchWithConnectionRecovery(url: string | URL | Request, init: R
         remainingMs: number;
     }) => void;
 }): Promise<Response>;
+/**
+ * The operator's admission gate emits these errors only before dispatch. Keep
+ * the matcher narrower than a generic -32000/429 check so provider failures or
+ * tool-level errors are never replayed by this mutation-capable helper.
+ */
+export function isRetryableAdmissionShed(error: any, status?: number): boolean;
+/** Read the server's Retry-After hint, with a bounded fallback for direct calls. */
+export function admissionRetryDelayMs(response: any, error: any, { fallbackMs, maxMs, }?: {
+    fallbackMs?: number | undefined;
+    maxMs?: number | undefined;
+}): number;
 /** `json-file` -> `jsonFile`. Leaves an already-camelCase key untouched. */
 export function toCamelCaseFlag(key: any): any;
 /**
@@ -300,6 +311,9 @@ export const MCP_CALL_PROJECTED_RESULT_EXIT: 6;
  */
 export const MCP_CALL_CONNECTION_RETRY_WINDOW_MS: 90000;
 export const MCP_CALL_CONNECTION_RETRY_DELAY_MS: 1000;
+export const MCP_CALL_ADMISSION_MAX_ATTEMPTS: 5;
+export const MCP_CALL_ADMISSION_RETRY_DELAY_MS: 1000;
+export const MCP_CALL_ADMISSION_RETRY_MAX_DELAY_MS: 10000;
 /**
  * Flags are declared ONCE here, in the camelCase spelling the readers use.
  *

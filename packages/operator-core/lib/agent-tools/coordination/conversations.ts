@@ -621,6 +621,8 @@ export interface ConsultDispatchSummary {
     at: string | null;
     dispatched: boolean;
     answering_owner_id: string | null;
+    /** Expert transcript identity, distinct from the launched answerer. */
+    source_owner_id?: string;
     attempts: Array<{
       rank: number | null;
       agent: string | null;
@@ -630,6 +632,8 @@ export interface ConsultDispatchSummary {
       reason?: string;
       /** The launcher's own words (e.g. psu's refusal), when its log had one. */
       launch_error?: string;
+      /** Durable diagnostic reference; never the log contents. */
+      launch_log_path?: string;
     }>;
   }>;
 }
@@ -651,8 +655,12 @@ export function summarizeConsultDispatch(raw: unknown): ConsultDispatchSummary |
       at: str(walk.at),
       dispatched: walk.dispatched === true,
       answering_owner_id: str(walk.answeringOwnerId),
+      ...(str(walk.sourceOwnerId) ? { source_owner_id: str(walk.sourceOwnerId)! } : {}),
       attempts: attempts.map((a) => {
         const at = (a && typeof a === 'object' ? a : {}) as Record<string, unknown>;
+        // Older walks retained the exact launch reference only in detail.
+        const launchLogPath = str(at.launchLogPath)
+          ?? str(at.detail)?.match(/(?:\(|; )log (\/[^)\r\n]+\.log)\)/)?.[1];
         return {
           rank: typeof at.rank === 'number' ? at.rank : null,
           agent: str(at.agent),
@@ -661,6 +669,7 @@ export function summarizeConsultDispatch(raw: unknown): ConsultDispatchSummary |
           outcome: str(at.outcome),
           ...(str(at.reason) ? { reason: str(at.reason)! } : {}),
           ...(str(at.launchError) ? { launch_error: str(at.launchError)! } : {}),
+          ...(launchLogPath ? { launch_log_path: launchLogPath } : {}),
         };
       }),
     };

@@ -1,0 +1,61 @@
+{
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "item": "P-544",
+  "verifiedAtUtc": "2026-10-16T18:48:00Z",
+  "classification": "TEST-ARTIFACT; isolated candidate qualification only, not a published release or deployed acceptance",
+  "package": {
+    "path": "/mnt/data/cargo-target/.papercusp-deb-archive/release/test-artifacts/20261016T183731Z-dd83ee5514-TEST-ARTIFACT-Papercusp Server_0.0.26_amd64.deb",
+    "bytes": 2214311846,
+    "sha256": "929e234978a7e92c44769f9e2fdc5e97e22077ca0c7053c2e3eeb477009e5b1f",
+    "sha256Evidence": "WI-6554700010016277 checkpoint 2026-10-16T18:40Z; locally measured after archive completion",
+    "signatureEvidence": "/tmp/p544-pinned-candidate-build.log: signature VALID; immutable archive pair verified; DEB_RC=0",
+    "buildTask": "0mvb9yodo1sktpxa1vg",
+    "buildExitCode": 0
+  },
+  "source": {
+    "gitHead": "dd83ee5514342f8433569539767e015f01429410",
+    "dirty": false,
+    "root": "/mnt/data/papercusp-bake/p544-source-dd83ee5514",
+    "releaseProvenance": "/mnt/data/cargo-target/release/build-provenance.json"
+  },
+  "embeddedPayloadVerification": {
+    "procedure": "Stream dpkg-deb --fsys-tarfile through Python tarfile; read both embedded provenance files and independently SHA-256 both embedded serve.mjs members.",
+    "task": "0mvbbjcgr14k3ywq126",
+    "exitCode": 0,
+    "rawEvidence": "/tmp/p544-package-binding.json",
+    "provenancePaths": [
+      "usr/lib/Papercusp Server/sidecar/build-provenance.json",
+      "usr/lib/Papercusp Server/sidecar/env-sidecars/staging/build-provenance.json"
+    ],
+    "provenanceSha256": "e7451029a409c946dba00e82e85df9a01f51be66c3ebe59b5aae8be5ae766cac",
+    "bothProvenanceFilesMatchSelectedCleanSource": true,
+    "servePaths": [
+      "usr/lib/Papercusp Server/sidecar/serve.mjs",
+      "usr/lib/Papercusp Server/sidecar/env-sidecars/staging/serve.mjs"
+    ],
+    "eachServeBytes": 92084951,
+    "eachServeSha256": "d9c2a1c611d8fa82cce71ccee670ccf58bc1676c936e815f737f83a37e1a5ce3",
+    "bothServeHashesMatchEmbeddedProvenance": true
+  },
+  "currentCloudPreflight": {
+    "task": "0mvbbl6jsv5pp5qe9h4",
+    "completedAtUtc": "2026-10-16T18:47:49Z",
+    "project": "pc-agent-capacity-0930",
+    "instances": [],
+    "orphanDisks": [],
+    "staticAddresses": [],
+    "snapshots": [],
+    "buckets": ["pc-agent-capacity-0930-artifacts"],
+    "committedWorstCaseCents": 0,
+    "evidence": [
+      "/tmp/p544-gcp-census-20261016-1850.json",
+      "/tmp/p544-gcp-snapshots-20261016-1850.json"
+    ]
+  },
+  "limits": [
+    "No candidate VM was launched for this verification.",
+    "Fresh server/database/repository footprint, native capacity and UX thresholds remain unmeasured.",
+    "Total actual billed programme spend is unknown; historical VM max-cost labels are only partial cost evidence.",
+    "P-537 deployed customer journey and exact shipped artifact acceptance remain open."
+  ]
+}

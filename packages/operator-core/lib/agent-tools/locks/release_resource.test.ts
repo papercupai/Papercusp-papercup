@@ -130,6 +130,35 @@ describe('locks:release_resource handler', () => {
     expect(backUpM).not.toHaveBeenCalled();
   });
 
+  it('reports an unmatched resource as resource_not_held and suggests the caller\'s held prefix matches', async () => {
+    releaseM.mockResolvedValue({
+      released: 0,
+      releasedModes: [],
+      exclusiveResources: [],
+      expired: [],
+      heldResourceSuggestions: ['mac-test-vm:aviweiss@127.0.0.1:2222'],
+      waiters: {},
+    } as never);
+
+    const b = body(await call({ resource: 'mac-test-vm' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      counts: { ok: 0, failed: 1 },
+      results: [
+        {
+          ok: false,
+          resource: 'mac-test-vm',
+          released: 0,
+          error: 'resource_not_held',
+          code: 'resource_not_held',
+          held_resource_suggestions: ['mac-test-vm:aviweiss@127.0.0.1:2222'],
+        },
+      ],
+    });
+    expect(backUpM).not.toHaveBeenCalled();
+  });
+
   it('wraps a single resource release through the keyed bulk envelope and broadcasts when exclusive', async () => {
     releaseM.mockResolvedValue({
       released: ['L2'], releasedModes: ['exclusive'], exclusiveResources: ['dev-server'], waiters: { 'dev-server': ['w1'] },
@@ -184,12 +213,13 @@ describe('locks:release_resource handler', () => {
   it('releases selected resource lock_ids as a keyed bulk envelope', async () => {
     // WI-5960: `released` is the real store's NUMBER-of-rows-deleted shape —
     // see the note in the single-lock_id test above.
-    releaseM.mockImplementation(async () => ({
+    mockImplementationTyped(releaseM, async () => ({
       released: 1,
       releasedModes: ['shared'],
       exclusiveResources: [],
+      expired: [],
       waiters: {},
-    }) as never);
+    }));
     const b = body(await call({
       lock_ids: [
         '11111111-1111-1111-1111-111111111111',

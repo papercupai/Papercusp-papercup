@@ -31,6 +31,7 @@ import { __markSessionConfinementsPrimedForTest, __setSessionConfinementCacheFor
 import type { SessionToolConfinement } from './session-confinement';
 import { BLIND_REVIEW_TOOL } from '../blind-review-gate';
 import { blindReviewerConfinement } from '../blind-reviewer-mint';
+import { runManagedPreCompact } from '../../../../apps/operator/scripts/hooks/cc/precompact-managed-carry.mjs';
 
 const WORKSPACE = 'private-benchmark-confinement';
 const OWNER = 'su-private-benchmark';
@@ -102,6 +103,44 @@ afterAll(async () => {
 });
 
 describe('durable launch confinement at the dispatch boundary', () => {
+  it.each([
+    ['coord:whoami'],
+    ['coord:whoami', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'],
+  ])('keeps automatic compaction unqueued under a persisted benchmark ceiling %j', async (...denyOutside) => {
+    await declare(OWNER, ceiling(denyOutside));
+    // Drop the process cache and reload the durable policy before dispatch.
+    // A superuser hook must encounter the same ceiling as its native session.
+    __setSessionConfinementCacheForTest({});
+    await refreshSessionConfinements(WORKSPACE);
+    expect((await readSessionConfinement(OWNER, WORKSPACE))?.denyOutside).toEqual(denyOutside);
+    expect(await dispatch('coord:whoami')).toMatchObject({ ok: true });
+    target.mockClear();
+    const nativeSessionId = randomUUID();
+    const transport = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+      const request = JSON.parse(String(init?.body));
+      expect(request.params._meta.threadId).toBe(nativeSessionId);
+      expect(request.params.name).toBe('session:request-compaction');
+      const result = await dispatch(request.params.name, request.params.arguments);
+      expect(result).toMatchObject({ ok: false, error: { code: 'capability_denied' } });
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id,
+        error: { code: -32603, message: result.error?.message } }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const outcome = await runManagedPreCompact({ hook_event_name: 'PreCompact', trigger: 'auto',
+      session_id: nativeSessionId }, {
+      env: { PAPERCUSP_MCP_URL: 'http://benchmark.invalid/mcp', PAPERCUSP_SID: OWNER },
+      isNested: () => false,
+      inspectTranscript: () => ({ readable: true, forkedFromId: null, sampled: true }),
+      fetchImpl: transport,
+    });
+    expect(transport).toHaveBeenCalledTimes(1);
+    expect(target).not.toHaveBeenCalled();
+    expect(outcome.continue).toBe(false);
+    expect(outcome.systemMessage).toContain('Managed carry could not be requested');
+    expect(outcome.systemMessage).toContain('outside the launch-declared ceiling');
+  });
+
   it('enforces assigned read/checkpoint/complete arguments at the real dispatch seat and nested invoke', async () => {
     const own = { id: 'F-own', harness: 'bench-assignment' };
     const checkout = mkdtempSync(join(tmpdir(), 'assignment-dispatch-'));

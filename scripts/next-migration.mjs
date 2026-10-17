@@ -348,8 +348,16 @@ export function buildAllocationResult({
   };
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
+/**
+ * Run the CLI. `armImpl` is an in-process test seam so the mode guard can be
+ * verified without spawning a child that may resolve the committed script
+ * instead of the working copy.
+ *
+ * @param {string[]} [argv]
+ * @param {typeof armMigration} [armImpl]
+ */
+export async function main(argv = process.argv.slice(2), armImpl = armMigration) {
+  const args = parseArgs(argv);
   if (args.help) {
     console.log(
       'Usage: node scripts/next-migration.mjs --name <slug> [--intent "..."] [--by <label>] [--dry-run] [--force]\n' +
@@ -358,9 +366,16 @@ async function main() {
     );
     process.exit(0);
   }
+  if (args.armRequested && args.dryRun) {
+    console.error(
+      'db:next-migration REFUSED — --dry-run cannot be combined with --arm; no migration file was changed.',
+    );
+    process.exitCode = 2;
+    return;
+  }
   if (args.armRequested) {
     try {
-      const result = await armMigration({ draftPath: args.armPath });
+      const result = await armImpl({ draftPath: args.armPath });
       console.log(JSON.stringify(result, null, 2));
     } catch (e) {
       console.error('db:next-migration ARM FAILED — ' + (e?.message ?? e));

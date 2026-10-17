@@ -188,6 +188,8 @@ interface SessionSurface {
   tools: Set<string>;
   /** Last touch (ms) — recency for the TTL sweep. */
   touched: number;
+  /** Coalesce concurrent lists; each later list refreshes newly used tools. */
+  restored?: Promise<void>;
 }
 
 const sessionSurfaces = new Map<string, SessionSurface>();
@@ -324,6 +326,44 @@ export function getSessionSurface(
     e.touched = nowMs;
   }
   return e.tools;
+}
+
+/** Restore the stable owner's used tools from the existing invocation ledger.
+ * CLI respawns and operator restarts lose discovery state, while this ledger
+ * already records direct and nested dispatch under their canonical tool names.
+ * This is listing state only: the host still applies its role/principal filters.
+ */
+export async function restoreSessionTools(input: {
+  sessionKey: string | null | undefined;
+  seed: Set<string> | null;
+  ownerId: string;
+  workspaceId: string;
+  readUsedTools?: (ownerId: string, workspaceId: string) => Promise<string[]>;
+}): Promise<void> {
+  if (!input.seed || !input.sessionKey) return;
+  getSessionSurface(input.sessionKey, input.seed);
+  const entry = sessionSurfaces.get(input.sessionKey)!;
+  if (!entry.restored) {
+    const read = input.readUsedTools ?? (async (ownerId: string, workspaceId: string) => {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const rows = await getOrgPg().sql<Array<{ tool_name: string }>>`
+        SELECT DISTINCT tool_name FROM harness_shared.tool_invocations
+         WHERE workspace_id = ${workspaceId} AND coord_owner_id = ${ownerId}
+           AND tool_name IS NOT NULL
+      `;
+      return rows.map((row) => row.tool_name);
+    });
+    entry.restored = read(input.ownerId, input.workspaceId).then((names) => {
+      for (const name of names) if (name) entry.tools.add(name);
+      // A successor may reuse this operator and stable session key after its
+      // predecessor used more nested tools. Never cache a settled ledger read.
+      entry.restored = undefined;
+    }).catch((error) => {
+      entry.restored = undefined;
+      throw error;
+    });
+  }
+  await entry.restored;
 }
 
 /**

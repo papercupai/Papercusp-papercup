@@ -372,7 +372,15 @@ const DERIVED_ARTIFACTS = [
       // Enrolled inputs are returned in the CONFIG's own spelling: `--files` is
       // matched against that list literally by gen:declarations.
       const selected = enrolledInputs(repoRoot).filter((path) => wanted.has(normalize(repoRoot, path)));
-      const candidates = relPaths.filter((path) => !enrolledSet.has(path) && isGraphCandidate(path));
+      const candidates = relPaths.filter(
+        (path) =>
+          !enrolledSet.has(path) &&
+          isGraphCandidate(path) &&
+          // A path that is already gone cannot be in the current program graph.
+          // Skipping it also keeps a missing optional TypeScript installation from
+          // masking an enrolled input that still needs regeneration.
+          existsSync(join(repoRoot, path)),
+      );
       // Most edits stop here: only a source-file edit outside the enrolled set
       // consults the graph, so the hot path never pays for a cache read.
       if (candidates.length === 0) return selected;

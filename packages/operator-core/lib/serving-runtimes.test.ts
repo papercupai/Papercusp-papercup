@@ -137,13 +137,13 @@ describe('evaluateServingRuntime — each runtime answers from ITS OWN build ide
     expect(e.unknownReason).toEqual({ code: 'resolver-failed', detail: 'x' });
   });
 
-  it('canonical-tree host: a matching blob at its boot HEAD is sufficient', () => {
-    expect(evaluateServingRuntime(probe({ runtime: 'bg-host', blobContains: true, startedAtMs: 1, fileMtimeMs: 9 })))
+  it('direct-source gateway: a matching blob at its boot HEAD is sufficient', () => {
+    expect(evaluateServingRuntime(probe({ runtime: 'gateway', buildShaSource: 'runtime-vintage', blobContains: true, startedAtMs: 1, fileMtimeMs: 9 })))
       .toMatchObject({ containsChange: true, method: 'blob' });
   });
 
-  it('canonical-tree host: started after the file changed ⇒ it bundled the edit (even one uncommitted at boot)', () => {
-    expect(evaluateServingRuntime(probe({ runtime: 'bg-host', blobContains: false, startedAtMs: 5, fileMtimeMs: 4 })))
+  it('direct-source gateway: started after the file changed ⇒ it loaded the edit (even one uncommitted at boot)', () => {
+    expect(evaluateServingRuntime(probe({ runtime: 'gateway', blobContains: false, startedAtMs: 5, fileMtimeMs: 4 })))
       .toMatchObject({ containsChange: true, method: 'start-after-mtime' });
   });
 
@@ -171,13 +171,6 @@ describe('evaluateServingRuntime — each runtime answers from ITS OWN build ide
         }),
       );
       expect(e).toMatchObject({ containsChange: false, method: 'bundle-mtime', unknownReason: null });
-    });
-
-    it('the pre-fix rules alone would have answered true for the same probe (control)', () => {
-      const e = evaluateServingRuntime(
-        probe({ runtime: 'bg-host', buildShaSource: 'health', blobContains: false, startedAtMs: START, fileMtimeMs: EDIT }),
-      );
-      expect(e).toMatchObject({ containsChange: true, method: 'start-after-mtime' });
     });
 
     it('a stale bundle built after the edit does carry it', () => {
@@ -216,11 +209,57 @@ describe('evaluateServingRuntime — each runtime answers from ITS OWN build ide
       expect(e.unknownReason?.code).toBe('insufficient-data');
     });
 
-    it('a healthy (non-stale) bundle keeps the start-after-mtime rule', () => {
+    it('a healthy bundle without an exact identity does not guess from start-after-mtime', () => {
       const e = evaluateServingRuntime(
         probe({ runtime: 'bg-host', blobContains: false, startedAtMs: START, fileMtimeMs: EDIT, bundle: { stale: false, servingBuiltAtMs: null } }),
       );
-      expect(e).toMatchObject({ containsChange: true, method: 'start-after-mtime' });
+      expect(e.containsChange).toBeNull();
+      expect(e.method).toBeNull();
+      expect(e.unknownReason).toEqual({
+        code: 'insufficient-data',
+        detail: 'bg-host (routines, sweeps, watchdogs; canonical tree) reported a healthy bundle but no health-reported baked source sha or bundle build time; a runtime-vintage boot sha and process start cannot prove which bytes it loaded.',
+      });
+    });
+
+    it('does not accept a matching runtime-vintage SHA as identity for a healthy bundle', () => {
+      const e = evaluateServingRuntime(
+        probe({
+          runtime: 'bg-host',
+          buildShaSource: 'runtime-vintage',
+          blobContains: true,
+          startedAtMs: START,
+          fileMtimeMs: EDIT,
+          bundle: { stale: false, servingBuiltAtMs: null },
+        }),
+      );
+      expect(e).toMatchObject({ containsChange: null, method: null, unknownReason: { code: 'insufficient-data' } });
+      expect(e.unknownReason?.detail).toMatch(/runtime-vintage boot sha and process start cannot prove/);
+    });
+
+    it.each([
+      ['contains the source change', true, true],
+      ['does not contain the source change even when the process started later', false, false],
+    ])('uses the healthy bundle health SHA when it %s', (_label, blobContains, expected) => {
+      const e = evaluateServingRuntime(
+        probe({
+          runtime: 'bg-host',
+          buildShaSource: 'health',
+          blobContains,
+          startedAtMs: START,
+          fileMtimeMs: EDIT,
+          bundle: { stale: false, servingBuiltAtMs: null },
+        }),
+      );
+      expect(e).toMatchObject({ containsChange: expected, method: 'blob', unknownReason: null });
+    });
+
+    it('a bundled canonical-tree host with no health bundle identity is unknown', () => {
+      const e = evaluateServingRuntime(
+        probe({ runtime: 'bg-host', blobContains: false, startedAtMs: START, fileMtimeMs: EDIT, bundle: null }),
+      );
+      expect(e.containsChange).toBeNull();
+      expect(e.method).toBeNull();
+      expect(e.unknownReason?.code).toBe('resolver-failed');
     });
 
     it('parses the bundleStale field of /api/health', () => {

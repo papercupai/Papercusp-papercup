@@ -24,13 +24,9 @@
 import type postgres from 'postgres';
 import { providerSocialWriteResultIssue } from '@papercusp/plugin-sdk';
 import {
-  assertSocialPlatformUsable,
-  assertSocialWriteAllowed,
-  SocialPlatformUnusableError,
-  type SocialPlatformId,
-  type SocialPlatformRow,
-  type SocialWriteVerb,
-} from '../external-triggers/social/platform-registry';
+  providerRegistry, readyProviderRegistry, verifiedProviderForCapability, ProviderVerificationError,
+  type ProviderRegistry,
+} from '../integrations/provider-registry';
 import { assertDisclosurePermits } from '../personal-vault/disclosure-ledger';
 import { assertTrustedAddressee, type AddresseeDecision, type AddresseeProvenance } from './addressing';
 import {
@@ -41,6 +37,40 @@ import {
   type OutboundTarget,
 } from './provider-dispatch';
 import { resolveCanonicalDocument, string, type CanonicalDocument, type OutboundContext } from './resolve';
+
+/** Installed package ids are open-ended; the registry validates their syntax. */
+export type SocialPlatformId = string;
+export type SocialWriteVerb = 'reply' | 'post' | 'delete';
+
+export class SocialPlatformUnusableError extends Error {
+  constructor(
+    readonly platformId: string,
+    readonly reason: 'unknown-platform' | 'unverified' | 'owner-blocked' | 'write-unverified' | 'write-verb-unsupported',
+    detail: string,
+  ) {
+    super(`social_platform_unusable:${platformId}:${reason}: ${detail}`);
+    this.name = 'SocialPlatformUnusableError';
+  }
+}
+
+/** Display and verification come from the currently installed social package. */
+export interface SocialProviderInfo { id: SocialPlatformId; label: string }
+
+export function socialProviderInfo(id: string, registry: ProviderRegistry = providerRegistry(), capability?: string): SocialProviderInfo {
+  const entry = registry.get(id);
+  if (!entry || !entry.descriptor.datatypes.includes('social-post')) {
+    throw new SocialPlatformUnusableError(id, 'unknown-platform', 'no installed social-post provider');
+  }
+  try { verifiedProviderForCapability(registry, id, capability); }
+  catch (error) {
+    if (!(error instanceof ProviderVerificationError)) throw error;
+    const reason = error.reason === 'capability-unsupported' ? 'write-verb-unsupported'
+      : error.reason === 'capability-unverified' ? 'write-unverified'
+      : error.reason === 'not-installed' ? 'unknown-platform' : error.reason;
+    throw new SocialPlatformUnusableError(id, reason, error.message);
+  }
+  return { id: entry.descriptor.id as SocialPlatformId, label: entry.descriptor.displayName || entry.descriptor.id };
+}
 
 /* -------------------------------------------------------------------------- */
 /* Post references                                                            */
@@ -96,7 +126,7 @@ function splitPlatformToken(
   return { platform, tail };
 }
 
-export function parseSocialPostRef(ref: string): SocialPostRef {
+export function parseSocialPostRef(ref: string, registry: ProviderRegistry = providerRegistry()): SocialPostRef {
   const { platform, tail } = splitPlatformToken(ref, {
     required: 'social_post_ref_required',
     malformed: 'social_post_ref_malformed',
@@ -105,7 +135,7 @@ export function parseSocialPostRef(ref: string): SocialPostRef {
   });
   // Validate through the registry so an unknown platform fails here, with the
   // registry's reason, rather than as a confusing vault miss further down.
-  assertSocialPlatformUsable(platform);
+  socialProviderInfo(platform, registry);
   return { platform: platform as SocialPlatformId, externalId: tail };
 }
 
@@ -141,14 +171,14 @@ export interface SocialDestinationRef {
  * Splits on the FIRST colon, via the shared splitter above, for the AT-URI
  * reason recorded in D-006.
  */
-export function parseSocialDestinationRef(ref: string): SocialDestinationRef {
+export function parseSocialDestinationRef(ref: string, registry: ProviderRegistry = providerRegistry()): SocialDestinationRef {
   const { platform, tail } = splitPlatformToken(ref, {
     required: 'social_destination_ref_required',
     malformed: 'social_destination_ref_malformed',
     shape: '<platform>:<destination>',
     tailName: 'destination',
   });
-  assertSocialPlatformUsable(platform);
+  socialProviderInfo(platform, registry);
   return { platform: platform as SocialPlatformId, destination: tail };
 }
 
@@ -255,157 +285,12 @@ export function resolveReplyVisibility(
 /* Rail 1 — reply coordinates derived from the stored document alone          */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Platform-native reply target, discriminated so each adapter receives exactly
- * the fields its API needs and cannot silently read a field meant for another.
- */
-export type SocialReplyTarget =
-  | {
-      platform: 'bluesky';
-      /** Thread root strong ref — atproto requires BOTH root and parent. */
-      rootUri: string;
-      rootCid: string;
-      parentUri: string;
-      parentCid: string;
-    }
-  | { platform: 'mastodon'; inReplyToId: string; instanceHost: string }
-  | { platform: 'reddit'; parentFullname: string; subreddit: string }
-  | { platform: 'x-twitter'; objectId: string }
-  | {
-      platform: 'youtube';
-      /**
-       * `comments.insert`'s REQUIRED `snippet.parentId` — the TOP-LEVEL comment
-       * of the thread, never the video and never the commentThread id.
-       */
-      parentCommentId: string;
-      /** Only for the permalink; a document stored without one still replies fine. */
-      videoId?: string;
-      /**
-       * `commentThread.snippet.canReply`. A definite `false` is refused locally,
-       * because the vendor page names this flag as the remedy for the
-       * `operationNotSupported` 400 the insert would otherwise return.
-       */
-      canReply?: boolean;
-    }
-  | {
-      platform: 'facebook-pages';
-      /**
-       * The object the reply attaches to. Facebook's `/comments` edge is
-       * "common to multiple Graph API nodes" and a Comment node carries its own
-       * `/comments` edge for replies, so this is a POST id when replying to a
-       * post and a COMMENT id when replying to a comment. One field rather than
-       * two on purpose: the API makes no distinction, and a `postId`/`commentId`
-       * pair would invite a caller to supply both and leave the adapter guessing
-       * which the reply was meant for.
-       */
-      objectId: string;
-      /** Only for the permalink; a reply works without it. */
-      pageId?: string;
-      /**
-       * `can_comment` — "indicates whether it is possible to reply to that
-       * comment". A definite `false` is refused locally. An ABSENT value still
-       * attempts, matching the YouTube `canReply` posture: treating a missing
-       * optional field as a refusal turns a gap in the response into a dropped
-       * reply.
-       */
-      canComment?: boolean;
-    }
-  | {
-      platform: 'instagram';
-      /**
-       * The TOP-LEVEL comment the reply attaches to — never a reply's own id.
-       *
-       * ⚠ THE PLATFORM SILENTLY RE-PARENTS RATHER THAN REFUSING, which is why
-       * this is derived here instead of being left to the adapter to pass
-       * through. Verbatim from the `/replies` edge reference: "You can only
-       * reply to top-level comments; replies to a reply will be added to the
-       * top-level comment." So addressing a reply does not fail — it SUCCEEDS,
-       * returns a real id, and lands the comment somewhere other than where it
-       * was aimed. A silent redirect is worse than an error precisely because
-       * nothing in the response says it happened, so the correction has to be
-       * made before the call rather than detected after it.
-       *
-       * This is YouTube's two-level shape reached independently (a reply's
-       * stored `replyToId` IS the top-level parent), and the same field name is
-       * used by the Instagram comments adapter for the same vendor concept.
-       */
-      topLevelCommentId: string;
-      /** Only for the label; a reply works without it. */
-      mediaId?: string;
-      /**
-       * `hidden`. A definite `true` is refused locally — "You cannot reply to
-       * hidden comments." An ABSENT value still attempts, matching the YouTube
-       * `canReply` / Pages `canComment` posture: a missing optional field is a
-       * gap in the response, not a denial.
-       */
-      hidden?: boolean;
-    }
-  | {
-      platform: 'threads';
-      /**
-       * The container's `reply_to_id` — THE EXACT THING BEING REPLIED TO, which
-       * on Threads may be a reply as readily as a root post.
-       *
-       * ⚠ THE OPPOSITE OF THE INSTAGRAM FIELD ABOVE, AND THE CONTRAST IS THE
-       * WHOLE REASON BOTH ARE DERIVED HERE RATHER THAN PASSED THROUGH.
-       * Instagram silently RE-PARENTS a reply-to-a-reply up to the top-level
-       * comment, so its target must be normalised UP or the reply lands
-       * somewhere it was not aimed. Threads honours the exact id: "Use the
-       * reply_to_id parameter to reply to a specific reply under the root
-       * post." So the correct Threads value is the stored document's OWN
-       * external id — normalising it up to a parent, by symmetry with
-       * Instagram, would post a visible public reply in the wrong place on
-       * every nested conversation (D-035).
-       */
-      replyToId: string;
-      /**
-       * The root post of the reply tree. Carried for the label, and — more
-       * importantly — as the subject of the ownership gate below.
-       */
-      rootPostId?: string;
-      /**
-       * The profile that owns the ROOT post.
-       *
-       * ⚠ NOT DECORATION: Threads gates replying on "You are the owner of the
-       * root thread post" OR holding threads_keyword_search /
-       * threads_manage_mentions, neither of which this integration requests
-       * (D-039). This carries the fact the adapter checks that gate against.
-       *
-       * OPTIONAL IN THE TYPE AND REFUSED WHEN ABSENT — the opposite posture to
-       * the `canReply` / `canComment` / `hidden` flags above, deliberately.
-       * Those are permissions the provider affirmatively DENIED, so a missing
-       * value means "not reported" and attempting is right. This is a
-       * precondition we must affirmatively ESTABLISH, so a missing value means
-       * "unknown", and attempting on an unknown would publish a public reply on
-       * the strength of a guess.
-       */
-      rootPostOwnerId?: string;
-    }
-  | {
-      /**
-       * ⚠ LINKEDIN CANNOT REPLY, so this variant exists ONLY to address an
-       * existing post for DELETE — `SocialDeleteRequest.target` reuses this
-       * union, so a delete-capable platform must appear here even when it has
-       * no reply path.
-       *
-       * A future reader adding LinkedIn reply support needs more than this
-       * field: LinkedIn's self-serve grant does not include the Comments API's
-       * `w_member_social_feed` scope at all. See linkedin-common.ts.
-       */
-      platform: 'linkedin';
-      /**
-       * The post's own URN, VERBATIM as LinkedIn issued it in the `x-restli-id`
-       * response header — `urn:li:share:{id}` or `urn:li:ugcPost:{id}`.
-       *
-       * Both spellings are live and the API returns either one for the same
-       * create call, so this is stored as issued rather than normalised to a
-       * preferred form. Rewriting `ugcPost` to `share` (or the reverse) to make
-       * ids look uniform would address a different entity — LinkedIn treats
-       * them as distinct URN types and answers INVALID_URN_TYPE.
-       */
-      postUrn: string;
-    };
-
+/** Stored document handle. Native reply and delete selectors belong to the package. */
+export interface SocialReplyTarget {
+  platform: SocialPlatformId;
+  externalId: string;
+  payload: Record<string, unknown>;
+}
 export interface SocialReplyCoordinates {
   ref: SocialPostRef;
   target: SocialReplyTarget;
@@ -416,125 +301,6 @@ export interface SocialReplyCoordinates {
 }
 
 /**
- * YouTube's reply target, split out as its own exported function.
- *
- * WHY THIS ONE IS SEPARATE WHEN THE OTHER THREE ARE INLINE. YouTube's registry
- * row carries `blockedOn` (the owner's Google incremental-consent wall), so
- * `assertSocialPlatformUsable` throws `owner-blocked` at the top of
- * `resolveSocialReplyCoordinates` and this branch is UNREACHABLE through the
- * public function today. Leaving the derivation inline would therefore ship it
- * untested until the day the wall lifts — which is the worst possible day to
- * discover it wrong, because it is also the first day anyone tries to reply.
- * Exported, it is directly testable now; the switch calls it, so there is still
- * exactly one implementation.
- *
- * ⚠ THE PARENT IS ALWAYS THE TOP-LEVEL COMMENT. `comments.insert` requires
- * `snippet.parentId`, and YouTube's comment model is two-level: a thread has one
- * top-level comment and a flat list of replies. So replying to a REPLY still
- * addresses that reply's parent, which is why `replyToId` (the stored
- * `snippet.parentId`, carried verbatim by the comments read adapter) is
- * preferred over the document's own id. A document with no `replyToId` IS a
- * top-level comment, so its own external id is the parent.
- */
-export function resolveYouTubeReplyTarget(
-  payload: Record<string, unknown>,
-  externalId: string,
-): Extract<SocialReplyTarget, { platform: 'youtube' }> {
-  const parentCommentId = string(payload.replyToId) || externalId;
-  if (!parentCommentId) {
-    throw new Error(
-      'social_reply_coordinates_missing:youtube — comments.insert REQUIRES snippet.parentId and the stored document carries neither a replyToId nor an external id',
-    );
-  }
-  const videoId = string(payload.videoId);
-  const target: Extract<SocialReplyTarget, { platform: 'youtube' }> = { platform: 'youtube', parentCommentId };
-  if (videoId) target.videoId = videoId;
-  // Only a definite boolean is carried. An ABSENT flag must stay absent rather
-  // than defaulting either way: defaulting to false would disable replies for
-  // every document stored before the field existed, and defaulting to true would
-  // manufacture a permission the provider never granted.
-  if (typeof payload.canReply === 'boolean') target.canReply = payload.canReply;
-  return target;
-}
-
-/**
- * Instagram's reply target, split out for the same reason YouTube's is: the
- * registry row carries `blockedOn` (Meta app review), so this branch is
- * unreachable through the public function today and would otherwise ship
- * untested until the wall lifts — which is the first day anyone replies, and so
- * the worst day to discover it wrong.
- *
- * ⚠ THE DERIVATION IS LOAD-BEARING, NOT A CONVENIENCE. Instagram does not refuse
- * a reply aimed at a reply; it re-parents it to the top-level comment and
- * returns a normal success. So the choice of id made here is the ONLY point at
- * which the intended target and the actual target can still be made to agree.
- * A stored reply carries `replyToId` (the vendor's `parent_id`), which IS the
- * top-level comment; a document without one already IS top-level, so its own
- * external id is the parent.
- */
-export function resolveInstagramReplyTarget(
-  payload: Record<string, unknown>,
-  externalId: string,
-): Extract<SocialReplyTarget, { platform: 'instagram' }> {
-  const topLevelCommentId = string(payload.replyToId) || externalId;
-  if (!topLevelCommentId) {
-    throw new Error(
-      'social_reply_coordinates_missing:instagram — POST /{ig-comment-id}/replies needs a comment id and the stored document carries neither a replyToId nor an external id',
-    );
-  }
-  const target: Extract<SocialReplyTarget, { platform: 'instagram' }> = { platform: 'instagram', topLevelCommentId };
-  const mediaId = string(payload.subjectId);
-  if (mediaId) target.mediaId = mediaId;
-  // Only a definite boolean is carried, for the reason given on the field: the
-  // comments adapter writes `hidden` ONLY when it is true, so an absent value
-  // means "not reported", and defaulting it either way would either drop every
-  // reply to a document stored before the field existed or manufacture a
-  // permission the provider never gave.
-  if (typeof payload.hidden === 'boolean') target.hidden = payload.hidden;
-  return target;
-}
-
-/**
- * Threads reply coordinates.
- *
- * ⚠ READ THIS BESIDE `resolveInstagramReplyTarget` — THEY LOOK ALIKE AND DO THE
- * OPPOSITE THING, which is exactly the trap two Meta platforms under one app
- * identity set for an author working from the previous adapter. Instagram
- * normalises the target UP to the top-level comment because the platform
- * silently re-parents anything else. Threads addresses the EXACT id, because it
- * honours nested targets: "Use the reply_to_id parameter to reply to a specific
- * reply under the root post." So here the stored document's OWN external id is
- * the answer, and reaching for its `replyToId` — the shape that is correct one
- * file away — would land every nested reply one level too high (D-035).
- *
- * The ownership fields are carried but NOT enforced here: this function is pure
- * and derives coordinates, while the refusal belongs at the call site where the
- * credential is in hand (`assertThreadsMayReply`). Deriving without enforcing is
- * deliberate — a resolver that threw on an unowned root would make the same
- * decision without the credential that actually determines it.
- */
-export function resolveThreadsReplyTarget(
-  payload: Record<string, unknown>,
-  externalId: string,
-): Extract<SocialReplyTarget, { platform: 'threads' }> {
-  const replyToId = externalId || string(payload.id);
-  if (!replyToId) {
-    throw new Error(
-      'social_reply_coordinates_missing:threads — the container needs a reply_to_id and the stored document carries no external id',
-    );
-  }
-  const target: Extract<SocialReplyTarget, { platform: 'threads' }> = { platform: 'threads', replyToId };
-  const rootPostId = string(payload.subjectId);
-  if (rootPostId) target.rootPostId = rootPostId;
-  // Written by the conversation adapter at ingestion, where root ownership is
-  // established by construction. Absent for a document stored by any other
-  // path, and absent is refused rather than assumed at the call site.
-  const rootPostOwnerId = string(payload.subjectOwnerId);
-  if (rootPostOwnerId) target.rootPostOwnerId = rootPostOwnerId;
-  return target;
-}
-
-/**
  * Derive every reply coordinate from the STORED document.
  *
  * Pure, and exported for the same reason `resolveMailReplyCoordinates` is: the
@@ -542,127 +308,15 @@ export function resolveThreadsReplyTarget(
  * caller argument", and a function whose only input is the document makes that
  * claim mechanically checkable instead of merely asserted.
  */
-export function resolveSocialReplyCoordinates(doc: CanonicalDocument): SocialReplyCoordinates {
+export function resolveSocialReplyCoordinates(doc: CanonicalDocument, registry: ProviderRegistry = providerRegistry()): SocialReplyCoordinates {
   const platform = doc.source as SocialPlatformId;
-  const row = assertSocialPlatformUsable(platform);
-  const payload = doc.payload;
-  const ref: SocialPostRef = { platform, externalId: doc.externalId };
-  const parentVisibility = normalizeSocialVisibility(payload.visibility);
-
-  switch (platform) {
-    case 'bluesky': {
-      const parentUri = string(payload.uri) || doc.externalId;
-      const parentCid = string(payload.cid);
-      // A reply to a root post IS the thread root, so root falls back to parent.
-      const rootUri = string(payload.rootUri) || parentUri;
-      const rootCid = string(payload.rootCid) || parentCid;
-      if (!parentUri || !parentCid) {
-        throw new Error(
-          'social_reply_coordinates_missing:bluesky — atproto needs a strong ref (uri AND cid) for both parent and root',
-        );
-      }
-      return {
-        ref,
-        target: { platform: 'bluesky', rootUri, rootCid, parentUri, parentCid },
-        parentVisibility,
-        label: `${row.label} · ${string(payload.authorHandle) || parentUri}`,
-      };
-    }
-
-    case 'mastodon': {
-      const inReplyToId = string(payload.statusId) || doc.externalId;
-      const instanceHost = string(payload.instanceHost);
-      if (!inReplyToId) throw new Error('social_reply_coordinates_missing:mastodon — no status id');
-      if (!instanceHost) {
-        // Mastodon has no single API host; the credential is per instance, so
-        // an absent host is unrecoverable rather than defaultable.
-        throw new Error(
-          'social_reply_coordinates_missing:mastodon — no instanceHost on the stored status; Mastodon is federated, so there is no default host to fall back to',
-        );
-      }
-      return {
-        ref,
-        target: { platform: 'mastodon', inReplyToId, instanceHost },
-        parentVisibility,
-        label: `${row.label} · ${instanceHost} · ${string(payload.authorHandle) || inReplyToId}`,
-      };
-    }
-
-    case 'reddit': {
-      const parentFullname = string(payload.fullname) || doc.externalId;
-      const subreddit = string(payload.subreddit);
-      if (!parentFullname || !/^t\d_/.test(parentFullname)) {
-        throw new Error(
-          `social_reply_coordinates_missing:reddit — expected a fullname like t3_abc123, got ${JSON.stringify(parentFullname.slice(0, 32))}`,
-        );
-      }
-      return {
-        ref,
-        target: { platform: 'reddit', parentFullname, subreddit },
-        parentVisibility,
-        label: `${row.label} · ${subreddit ? `r/${subreddit}` : parentFullname}`,
-      };
-    }
-
-    case 'facebook-pages': {
-      if (!/^\d+(?:_\d+)*$/.test(doc.externalId)) throw new Error('social_reply_coordinates_missing:facebook-pages');
-      if (payload.canComment === false) throw new Error('social_reply_refused:facebook-pages:cannot_comment');
-      return { ref, target: { platform, objectId: doc.externalId }, parentVisibility, label: `${row.label} · ${doc.externalId}` };
-    }
-
-    case 'x-twitter': {
-      if (!/^\d{1,19}$/.test(doc.externalId)) throw new Error('social_reply_coordinates_missing:x-twitter');
-      return { ref, target: { platform, objectId: doc.externalId }, parentVisibility, label: `${row.label} · ${doc.externalId}` };
-    }
-
-    case 'youtube':
-      return {
-        ref,
-        target: resolveYouTubeReplyTarget(payload, doc.externalId),
-        parentVisibility,
-        label: `${row.label} · ${string(payload.videoId) || string(payload.threadId) || doc.externalId}`,
-      };
-
-    case 'instagram':
-      return {
-        ref,
-        target: resolveInstagramReplyTarget(payload, doc.externalId),
-        parentVisibility,
-        label: `${row.label} · ${string(payload.subjectId) || doc.externalId}`,
-      };
-
-    case 'threads':
-      return {
-        ref,
-        target: resolveThreadsReplyTarget(payload, doc.externalId),
-        parentVisibility,
-        label: `${row.label} · ${string(payload.subjectId) || doc.externalId}`,
-      };
-
-    case 'linkedin':
-      // NOT a missing derivation, which is what the default branch below would
-      // wrongly imply. LinkedIn is verified and usable — it simply cannot reply
-      // at any grant tier we hold, because its self-serve permission covers
-      // posting while the Comments API requires `w_member_social_feed`.
-      //
-      // Cased explicitly because this seam runs BEFORE the write gate, so
-      // without it the accurate refusal is masked by a message reading "no
-      // coordinate derivation for it YET" — which would send a reader off to
-      // implement coordinates that no scope would ever let them use.
-      throw new SocialPlatformUnusableError(
-        'linkedin',
-        'write-verb-unsupported',
-        "LinkedIn's self-serve grant (w_member_social) posts but does not comment; the Comments API requires w_member_social_feed, which is not an open permission",
-      );
-
-    default:
-      // Wave B/C platforms are refused by assertSocialPlatformUsable above
-      // (unverified or owner-blocked), so reaching here means a row was
-      // verified without its reply coordinates being taught to this seam.
-      throw new Error(
-        `social_reply_platform_unsupported:${platform} — the registry row is usable but this seam has no coordinate derivation for it yet`,
-      );
-  }
+  const row = socialProviderInfo(platform, registry);
+  return {
+    ref: { platform, externalId: doc.externalId },
+    target: { platform, externalId: doc.externalId, payload: doc.payload },
+    parentVisibility: normalizeSocialVisibility(doc.payload.visibility),
+    label: `${row.label} · ${doc.externalId}`,
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -671,7 +325,7 @@ export function resolveSocialReplyCoordinates(doc: CanonicalDocument): SocialRep
 
 export interface ResolvedSocialPost {
   ref: SocialPostRef;
-  row: SocialPlatformRow;
+  row: SocialProviderInfo;
   doc: CanonicalDocument;
 }
 
@@ -684,9 +338,11 @@ export interface ResolvedSocialPost {
 export async function resolveSocialPost(
   sql: postgres.Sql | postgres.TransactionSql,
   params: { workspaceId: string; userId: string; ref: string | SocialPostRef },
+  deps: Pick<OutboundDispatchDeps, 'registry'> = {},
 ): Promise<ResolvedSocialPost> {
-  const ref = typeof params.ref === 'string' ? parseSocialPostRef(params.ref) : params.ref;
-  const row = assertSocialPlatformUsable(ref.platform);
+  const registry = deps.registry ?? await readyProviderRegistry();
+  const ref = typeof params.ref === 'string' ? parseSocialPostRef(params.ref, registry) : params.ref;
+  const row = socialProviderInfo(ref.platform, registry);
   const doc = await resolveCanonicalDocument(sql, {
     workspaceId: params.workspaceId,
     userId: params.userId,
@@ -716,9 +372,10 @@ export async function resolveSocialWriteTarget(
   sql: postgres.Sql,
   params: { workspaceId: string; userId: string; platform: SocialPlatformId; verb: SocialWriteVerb },
   deps: Pick<OutboundDispatchDeps, 'registry'> = {},
-): Promise<{ row: SocialPlatformRow; target: OutboundTarget; capability: string }> {
-  const row = assertSocialWriteAllowed(params.platform, params.verb);
+): Promise<{ row: SocialProviderInfo; target: OutboundTarget; capability: string }> {
+  const registry = deps.registry ?? await readyProviderRegistry();
   const capability = SOCIAL_CAPABILITY_BY_VERB[params.verb];
+  const row = socialProviderInfo(params.platform, registry, capability);
   const target = await resolveCapabilitySource(
     sql,
     {
@@ -728,7 +385,7 @@ export async function resolveSocialWriteTarget(
       capabilities: [capability],
       providerId: params.platform,
     },
-    deps,
+    { registry },
   );
   return { row, target, capability };
 }
@@ -984,11 +641,12 @@ export async function replyToCanonicalSocialPost(
   if (!text) throw new Error('social_reply_text_required');
   if (text.length > 10_000) throw new Error('social_reply_text_too_long');
 
+  const registry = deps.registry ?? await readyProviderRegistry();
   const { ref, doc } = await resolveSocialPost(sql, {
     workspaceId: params.workspaceId,
     userId: params.userId,
     ref: params.ref,
-  });
+  }, { registry });
   await assertDisclosurePermits(sql, {
     workspaceId: params.workspaceId,
     userId: params.userId,
@@ -996,7 +654,7 @@ export async function replyToCanonicalSocialPost(
     recipients: null,
     sink: `${ref.platform}:reply`,
   });
-  const coordinates = resolveSocialReplyCoordinates(doc);
+  const coordinates = resolveSocialReplyCoordinates(doc, registry);
   const visibility = resolveReplyVisibility(coordinates.parentVisibility, params.visibility);
 
   const { target, capability } = await resolveSocialWriteTarget(
@@ -1128,9 +786,10 @@ export async function postToCanonicalSocialDestination(
   if (!text) throw new Error('social_post_text_required');
   if (text.length > 10_000) throw new Error('social_post_text_too_long');
 
+  const registry = deps.registry ?? await readyProviderRegistry();
   const ref =
     typeof params.destination === 'string'
-      ? parseSocialDestinationRef(params.destination)
+      ? parseSocialDestinationRef(params.destination, registry)
       : params.destination;
 
   // A create has no parent to inherit from, so the widening rail (D-006 ruling

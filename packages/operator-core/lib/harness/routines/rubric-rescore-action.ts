@@ -24,7 +24,10 @@
  * targetKind: 'event', wake: false }` — an inbox notice on each crossing.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import { getRubric } from '../../rubrics';
+import { parseRequirementBars } from '../../acceptance-bar-seed';
+import { readLiveAcceptanceCriteria } from '../../acceptance-live-requirements';
 import {
   probeCheckResults,
   readLatestRubricCheckResults,
@@ -83,6 +86,8 @@ export interface RubricRescoreDeps {
     rubricId: string;
     workspaceId?: string | null;
     subjectHarnessSlug?: string | null;
+    kind?: string | null;
+    subjectPlan?: string | null;
     criteria: ReadonlyArray<RescoreCriterion>;
   } | null>;
   readLatest?: typeof readLatestRubricCheckResults;
@@ -118,14 +123,15 @@ export const RESCORE_CONFIRMED_PROBE_TOOLS: ReadonlySet<string> = new Set(['dev:
 export function rescoreProbeDispatcher(
   harness: string | undefined,
   dispatch: typeof dispatchPaletteTarget = dispatchPaletteTarget,
+  workspaceId?: string,
 ): (name: string, args: Record<string, unknown>) => ReturnType<typeof dispatchPaletteTarget> {
   return (name, args) =>
-    dispatch({
+    runWithWorkspaceIfConcrete(workspaceId, () => dispatch({
       name,
       args,
       ...(RESCORE_CONFIRMED_PROBE_TOOLS.has(name) ? { confirmed: true } : {}),
       ...(harness ? { harness } : {}),
-    });
+    }));
 }
 
 /** Re-run a rubric's executable checks and emit one event per pass → fail crossing. */
@@ -133,10 +139,29 @@ export async function rescoreRubric(
   input: { rubricRef: string; workspaceId: string; harnessSlug: string | null },
   deps: RubricRescoreDeps = {},
 ): Promise<RubricRescoreOutcome> {
-  const rubric = await (deps.getRubric ?? (getRubric as NonNullable<RubricRescoreDeps['getRubric']>))(input.rubricRef);
-  if (!rubric) throw new Error(`rubric_rescore_rubric_not_found: ${input.rubricRef}`);
+  const stored = await (deps.getRubric ?? (getRubric as NonNullable<RubricRescoreDeps['getRubric']>))(input.rubricRef);
+  if (!stored) throw new Error(`rubric_rescore_rubric_not_found: ${input.rubricRef}`);
+  const workspaceId = stored.workspaceId ?? input.workspaceId;
+  // Acceptance checks are a live view, just as in rubrics:get. The persisted seed
+  // can still say instrument:none after the subject plan names a runnable check.
+  const live = await readLiveAcceptanceCriteria(stored, {
+    readSubjectPlanContent: async ({ planSlug, harnessSlug }) => {
+      const { getPlanRow } = await import('../../agent-tools/plans/source');
+      const row = await getPlanRow(planSlug, { workspaceId, ...(harnessSlug ? { harnessSlug } : {}) });
+      return row ? { content: row.content, version: row.version } : null;
+    },
+    parseRequirementBars: content => {
+      const parsed = parseRequirementBars(content);
+      return parsed.ok
+        ? { ok: true, bars: parsed.bars.map(bar => ({ barKey: bar.barKey, ...(bar.criterion ? { criterion: bar.criterion } : {}) })) }
+        : { ok: false, problems: parsed.problems };
+    },
+  });
+  if (live.status.source === 'stored-rubric' && live.status.reason !== 'not-a-plan-acceptance-rubric') {
+    throw new Error(`rubric_rescore_live_requirements_unavailable: ${stored.rubricId}: ${live.status.reason}`);
+  }
+  const rubric = { ...stored, criteria: live.criteria };
   const rubricRef = rubric.rubricId;
-  const workspaceId = rubric.workspaceId ?? input.workspaceId;
   const readLatest = deps.readLatest ?? readLatestRubricCheckResults;
   const executable = rubric.criteria.filter((c) => ledgerCheckBindings(c) !== null);
 
@@ -144,13 +169,14 @@ export async function rescoreRubric(
   const before = new Map(executable.map((c) => [c.key, criterionLedgerVerdict(c, latestBefore)] as const));
 
   const results: RubricCheckResult[] = [
-    ...(await (deps.runInstruments ?? runInstrumentChecks)({ rubricRef, criteria: executable, workspaceId })),
+    ...(await (deps.runInstruments ?? runInstrumentChecks)({ rubricRef, criteria: executable, workspaceId,
+      ...(rubric.subjectHarnessSlug ? { harnessSlug: rubric.subjectHarnessSlug } : {}) })),
   ];
   const probeErrors: string[] = [];
   const probeCriteria = executable.filter((c) => (c.check as { kind?: string } | undefined)?.kind === 'probe');
   if (probeCriteria.length > 0) {
-    const harness = input.harnessSlug ?? rubric.subjectHarnessSlug ?? undefined;
-    const dispatchTool = deps.dispatchTool ?? rescoreProbeDispatcher(harness);
+    const harness = rubric.subjectHarnessSlug ?? input.harnessSlug ?? undefined;
+    const dispatchTool = deps.dispatchTool ?? rescoreProbeDispatcher(harness, undefined, workspaceId);
     const evaluateProbes = deps.evaluateProbes ?? evaluateCriterionProbeChecks;
     // One evaluation per criterion. The evaluator fails closed for a whole batch (right for a
     // scorecard, which must not grade around an unjudged check), but a re-score that dropped every
@@ -170,7 +196,7 @@ export async function rescoreRubric(
   const testRunIds = results.length > 0
     ? await (deps.record ?? ((r, s) => recordRubricCheckResults(r, s, getOrgPg().sql as never)))(results, {
         workspaceId,
-        harnessSlug: input.harnessSlug ?? rubric.subjectHarnessSlug ?? null,
+        harnessSlug: rubric.subjectHarnessSlug ?? input.harnessSlug ?? null,
       })
     : [];
 

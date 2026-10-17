@@ -254,6 +254,7 @@
     "pg": "^8.20.0",
     "phonemizer": "^1.2.1",
     "protomux": "^3.11.0",
+    "proxy-chain": "3.0.1",
     "rrule": "^2.8.1",
     "sodium-native": "^5.1.0",
     "stream-chain": "^3.6.1",

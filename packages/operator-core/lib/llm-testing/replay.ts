@@ -193,6 +193,8 @@ export async function reEvaluateRun(opts: ReEvaluateOpts): Promise<ReplayResult>
     judge_model: string;
     workspace_mode: string;
     transport_mode: string;
+    started_at: Date | string;
+    finished_at: Date | string | null;
     transcript_norm_json: {
       idx: number;
       assistantText: string;
@@ -210,7 +212,7 @@ export async function reEvaluateRun(opts: ReEvaluateOpts): Promise<ReplayResult>
     }[] | null;
   }>>`
     SELECT id, scenario_id, scenario_version, persona_id, persona_traits_json,
-           sut_model, judge_model, workspace_mode, transport_mode,
+           sut_model, judge_model, workspace_mode, transport_mode, started_at, finished_at,
            transcript_norm_json
     FROM harness_shared.llm_test_runs
     WHERE id = ${opts.runId}
@@ -254,9 +256,11 @@ export async function reEvaluateRun(opts: ReEvaluateOpts): Promise<ReplayResult>
   // preserves tool_called / continue_chain_within_cap accuracy on re-eval.
   try {
     const uiClientId = `llm-testing/${row.id}`;
+    const window = { startedAt: new Date(row.started_at), finishedAt: new Date(row.finished_at ?? NaN),
+      signal: AbortSignal.timeout(5000) };
     const [tools, chains] = await Promise.all([
-      pullToolInvocations(uiClientId),
-      pullContinueChainRows(uiClientId),
+      pullToolInvocations(uiClientId, window),
+      pullContinueChainRows(uiClientId, window),
     ]);
     summary.toolInvocations = tools;
     summary.continueChainRows = chains;

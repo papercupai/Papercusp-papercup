@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   dispatchProjectedTool,
   lookupByMcpName,
@@ -12,15 +13,18 @@ import {
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 import { DbCallDeadlineError } from '@papercusp/db-org';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { PgReadQueryTimeoutError } from '../../pg-read-query';
 import type { SpecTestAdequacyRerunRecipe } from '../../harness/improvements/observation-types';
 import { currentStageDiagnosticContext, STAGE_STALL_LOG_MS } from '../../sync/hyperbee/stage-stall-log';
 
-const { doorConstantsMock, gradingAuditRubricMock, recipeHeaderMock } = vi.hoisted(() => ({
+const { doorConstantsMock, gradingAuditRubricMock, recipeHeaderMock, buildInfoMock } = vi.hoisted(() => ({
   doorConstantsMock: vi.fn(),
   gradingAuditRubricMock: vi.fn(),
   recipeHeaderMock: vi.fn(),
+  buildInfoMock: vi.fn(() => ({ sha: 'live-evaluator-sha', version: '1.2.3' })),
 }));
 vi.mock('../../context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMock }));
+vi.mock('../../build-info', () => ({ getBuildInfo: buildInfoMock }));
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
@@ -128,11 +132,16 @@ describe('scorecards:get evidence-first projection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     doorConstantsMock.mockReturnValue(BAKED_DOOR_CONSTANTS);
+    buildInfoMock.mockReturnValue({ sha: 'live-evaluator-sha', version: '1.2.3' });
     gradingAuditRubricMock.mockResolvedValue(null);
     readScorecardRecipeHeaderM.mockResolvedValue({
       kind: 'found', scorecard: recipeHeaderOf(scorecard) as never,
     });
     resetResultDoorAggregatesForTests();
+  });
+
+  it('does not retain an ambient workspace transaction while awaiting the bounded read', () => {
+    expect((getTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
   it('distinguishes live adequacy freshness checks from creation-time grading audits', () => {
@@ -217,6 +226,23 @@ describe('scorecards:get evidence-first projection', () => {
     expect(resultContract.safeParse({ ok: true, scorecard: {} }).success).toBe(false);
   });
 
+  it('publishes the empty criteria field on the recipe-header result variant', () => {
+    const output = z.toJSONSchema(getTool.result as never) as {
+      properties?: {
+        scorecard?: {
+          anyOf?: Array<{ properties?: Record<string, unknown> }>;
+          oneOf?: Array<{ properties?: Record<string, unknown> }>;
+        };
+      };
+    };
+    const variants = output.properties?.scorecard?.anyOf ?? output.properties?.scorecard?.oneOf ?? [];
+    const criteriaSchemas = variants.map((variant) => variant.properties?.criteria);
+
+    expect(variants.length).toBeGreaterThan(1);
+    expect(criteriaSchemas.every((schema) => schema !== undefined)).toBe(true);
+    expect(criteriaSchemas).toContainEqual(expect.objectContaining({ type: 'array', minItems: 0, maxItems: 0 }));
+  });
+
   it('surfaces read-time grading-audit stamp currentness', async () => {
     const gradingAudit = {
       state: 'pending' as const,
@@ -272,6 +298,43 @@ describe('scorecards:get evidence-first projection', () => {
       expect.objectContaining({ stage: 'scorecards-get-rubric-read', outcome: 'fulfilled' }),
     ]);
     expect(metadata).toHaveBeenLastCalledWith({ scorecardsGetDiagnostics: diagnostics });
+  });
+
+  it('surfaces evaluator-build drift from an executable args-only recipe pin', async () => {
+    readScorecardEvidenceM.mockResolvedValue({
+      kind: 'found',
+      scorecard: {
+        ...scorecard,
+        rerunRecipe: {
+          ...rerunRecipe,
+          args: {
+            ...rerunRecipe.args,
+            evaluatorBuild: { sha: 'recorded-evaluator-sha', version: '1.2.2' },
+          },
+        },
+      },
+    });
+
+    const result = await getTool.handler(
+      { issueId: scorecard.issueId } as never,
+      makeDispatchContext(),
+    );
+
+    expect(result).toMatchObject({
+      data: {
+        ok: true,
+        scorecard: {
+          evaluatorBuildCurrentness: {
+            state: 'stale',
+            reason: 'sha-and-version-mismatch',
+            recordedSha: 'recorded-evaluator-sha',
+            recordedVersion: '1.2.2',
+            liveSha: 'live-evaluator-sha',
+            liveVersion: '1.2.3',
+          },
+        },
+      },
+    });
   });
 
   it('returns bounded phase timings correlated with the PG diagnostic context', async () => {
@@ -993,6 +1056,25 @@ describe('scorecards:get evidence-first projection', () => {
         ok: false,
         error: 'timeout',
         retryable: true,
+        diagnostics: {
+          handlerState: 'completed',
+          stages: [expect.objectContaining({ stage: 'scorecards-get-evidence-read', outcome: 'rejected' })],
+        },
+      },
+    });
+
+    readScorecardEvidenceM.mockRejectedValueOnce(
+      new PgReadQueryTimeoutError(
+        'Query call did not complete within 16000ms of the WHOLE call (connect + acquire + execute)',
+      ),
+    );
+    const wholeCallDeadline = await getTool.handler({ issueId: 'EI-card' } as never, makeDispatchContext());
+    expect(wholeCallDeadline).toMatchObject({
+      data: {
+        ok: false,
+        error: 'timeout',
+        retryable: true,
+        message: expect.stringContaining('No scorecard was returned; retry shortly.'),
         diagnostics: {
           handlerState: 'completed',
           stages: [expect.objectContaining({ stage: 'scorecards-get-evidence-read', outcome: 'rejected' })],

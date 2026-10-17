@@ -6,7 +6,11 @@
  * unconditionally, or settles on a self-audit, fails one of them in each direction.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 import { scorecardRatingEntrySchema } from './evaluate';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { PgReadQueryTimeoutError } from '../../pg-read-query';
 
 const getRubric = vi.fn();
 const getRubricEvidenceIdentity = vi.fn();
@@ -18,6 +22,13 @@ const markGradingAuditAwaitingReemit = vi.fn();
 const isCurrentSourceAuditResponder = vi.fn();
 const closeSourceAuditConsults = vi.hoisted(() => vi.fn());
 vi.mock('../../grading-audit-routing', () => ({ closeSourceAuditConsults }));
+// This suite supplies legacy vetting cards below. The newer direct-critique
+// reader is a separate PG boundary, covered by its own suite; leaving it live
+// makes the audit-stamp exclusion case reach the real org-admin database.
+vi.mock('../../acceptance-rubric-critique', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../acceptance-rubric-critique')>()),
+  readCurrentAcceptanceRubricCritique: vi.fn(async () => null),
+}));
 const gateEnabled = vi.fn();
 const dispatchPendingGradingAudits = vi.fn();
 const readRunningGeneration = vi.fn();
@@ -103,7 +114,7 @@ vi.mock('../../grading-integrity', async (importOriginal) => {
   };
 });
 
-import { emitScorecard } from './emit';
+import { emitScorecard, scorecardEmitArgs } from './emit';
 import { SPEC_TEST_ADEQUACY_EVALUATOR_REVISION } from '../plans/spec-test-adequacy';
 import { auditVerdictFromRatings } from '../../scorecards';
 import { needsGradingAudit } from '../../grading-integrity';
@@ -554,6 +565,112 @@ describe('CRM canonical producer independence (P-012)', () => {
 });
 
 describe('scorecards:emit audit-pending stamp (P-013)', () => {
+  it('returns a retryable no-write envelope for a bounded PG statement timeout', async () => {
+    captureImprovement.mockRejectedValueOnce(new OrgTxnTimeoutError('57014', new Error('statement timeout')));
+
+    const result = await emitScorecard(
+      { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'scorecard_emit_timeout',
+      pgCode: '57014',
+      retryable: true,
+    });
+    expect((result as { error?: string }).error).toContain('No scorecard was persisted by this attempt');
+  });
+
+  it('returns a retryable no-write envelope when the database pool acquisition misses its deadline', async () => {
+    captureImprovement.mockRejectedValueOnce(
+      new DbCallDeadlineError('boundedPgReadTxn:acquire(admin)', 8_000, 8_000, 'org-admin'),
+    );
+
+    const result = await emitScorecard(
+      { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'scorecard_emit_timeout',
+      retryable: true,
+    });
+    expect((result as { pgCode?: string }).pgCode).toBeUndefined();
+    expect((result as { error?: string }).error).toContain('No scorecard was persisted by this attempt');
+  });
+
+  it('returns a retryable no-write envelope when a bounded read misses its whole-call deadline', async () => {
+    captureImprovement.mockRejectedValueOnce(
+      new PgReadQueryTimeoutError(
+        'Query call did not complete within 16000ms of the WHOLE call (connect + acquire + execute)',
+      ),
+    );
+
+    const result = await emitScorecard(
+      { rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true },
+      { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'scorecard_emit_timeout',
+      retryable: true,
+    });
+    expect((result as { error?: string }).error).toContain('No scorecard was persisted by this attempt');
+  });
+
+  it('pins only the newly emitted card audit while preserving the caller identity and context', async () => {
+    const launchContext: UnifiedToolContext = {
+      log: vi.fn(),
+      signal: new AbortController().signal,
+      progress: vi.fn(),
+      emit: vi.fn(),
+      workspaceId: 'ws-test',
+      harnessSlug: 'papercusp',
+      runId: 'emit-pinned-audit-test',
+      isSuperuser: true,
+      uiClientId: 'su-grader',
+      role: 'su',
+      gateBypass: { role: true, capability: true, quota: true },
+      transport: 'mcp',
+      requestedFormat: 'json',
+      contextTier: 'full',
+      tx: {},
+    };
+    Object.freeze(launchContext);
+    const gradingLaunch = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' };
+    const args = scorecardEmitArgs.parse({
+      rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true, gradingLaunch,
+    });
+    const res = await emitScorecard(args,
+      { createdBy: 'su-grader', ctxHarness: 'papercusp', launchContext });
+
+    expect(res).toMatchObject({ ok: true, issueId: 'EI-AUDIT-1', gradingAuditPending: true });
+    await vi.waitFor(() => expect(dispatchPendingGradingAudits).toHaveBeenCalledOnce());
+    expect(dispatchPendingGradingAudits).toHaveBeenCalledWith({
+      targetIds: ['EI-AUDIT-1'], ctx: { ...launchContext, gradingLaunch }, harness: 'papercusp',
+    });
+    expect(captureImprovement.mock.calls[0]?.[0]).toMatchObject({ createdBy: 'su-grader' });
+    expect(launchContext).not.toHaveProperty('gradingLaunch');
+  });
+
+  it.each([
+    { agent: 'claude', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' },
+    { agent: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh', account: 'auto' },
+    { agent: 'codex', model: 'gpt-6.1-sol', effort: 'high', account: 'auto' },
+    { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'default' },
+    { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh' },
+    { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto', createdBy: 'other' },
+  ])('refuses an unsupported audit profile before any card or dispatch: %j', (gradingLaunch) => {
+    expect(scorecardEmitArgs.safeParse({
+      rubricRef: 'goal-mode-e2e', ratings: RATINGS, terminal: true, gradingLaunch,
+    }).success).toBe(false);
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(dispatchPendingGradingAudits).not.toHaveBeenCalled();
+  });
+
   it('triggers bounded pending-audit dispatch after a newly filed non-audit scorecard', async () => {
     const launchContext = { workspaceId: 'ws-test', harnessSlug: 'papercusp' };
     const res = await emitScorecard(

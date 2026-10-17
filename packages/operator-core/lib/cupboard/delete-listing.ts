@@ -37,6 +37,8 @@ export async function deleteCupboardListing(
     );
     if (!res.ok) return { ok: false, status: res.status, error: `cupboard_http_${res.status}` };
     const body = (await res.json().catch(() => ({}))) as { already_unlisted?: boolean };
+    const { notifySyncInvalidate } = await import('../sync-sse');
+    await notifySyncInvalidate('cupboard.myListings').catch(() => {});
     return { ok: true, status: res.status, ...(body.already_unlisted ? { alreadyUnlisted: true } : {}) };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

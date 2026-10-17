@@ -9,12 +9,13 @@
  * default from the local template when the ref resolves in the bundled store.
  */
 import { z } from 'zod';
+import { withSubmissionReceipt } from '../../cupboard/submission-receipt';
 import { defineTool } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 const text = (payload: Record<string, unknown>) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+  content: [{ type: 'text' as const, text: JSON.stringify(withSubmissionReceipt(payload)) }],
 });
 
 export default defineTool({

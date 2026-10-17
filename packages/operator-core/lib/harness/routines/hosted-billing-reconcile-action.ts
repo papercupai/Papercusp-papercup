@@ -2,6 +2,7 @@
 import { escalateAlarm } from '../../alarm-attention';
 import { getFlag } from '@papercusp/flags/server';
 import { PostgresHostedBillingStore } from '../../auth/hosted/billing/billing-store';
+import { createConfiguredHostedSubscriptionEntitlementProvider } from '../../auth/hosted/billing/entitlement-seam';
 import { reconcileHostedBilling, type HostedBillingFailureObservation, type HostedBillingRecoveryInput, type HostedBillingRecoveryDependencies } from '../../auth/hosted/billing/billing-recovery';
 import { resolveHostedBillingStripe, readHostedBillingRuntimeConfiguration } from '../../endpoint-route/hosted-billing-runtime';
 import { registerSystemAction, type SystemActionCtx, type SystemActionResult } from './system-actions';
@@ -62,7 +63,8 @@ async function productionDeps(input: HostedBillingRecoveryInput, workspaceId: st
   });
   if (!resolved.stripe) throw new Error(`hosted_billing_reconcile_unavailable:${resolved.reason ?? 'unknown'}`);
   if (!resolved.stripe.client.livemode) throw new Error('hosted_billing_reconcile_production_mode_required');
-  const store = new PostgresHostedBillingStore();
+  const store = new PostgresHostedBillingStore(undefined, configuration.plans.some(plan => plan.entitlementBundle)
+    ? createConfiguredHostedSubscriptionEntitlementProvider(configuration.plans) : undefined);
   const planKeyForPrice = (priceId: string | null): string | null =>
     configuration.plans.find(plan => plan.priceId === priceId)?.planKey ?? null;
   return { store, client: resolved.stripe.client, planKeyForPrice, observe: safeFailureAlert };

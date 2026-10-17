@@ -16,7 +16,9 @@ import {
 } from '../../scorecards';
 import { getRubricWithoutSeeding } from '../../rubrics';
 import { GRADING_INTEGRITY_RUBRIC_REF } from '../../grading-integrity';
+import { getBuildInfo, type BuildInfo } from '../../build-info';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { PgReadQueryTimeoutError } from '../../pg-read-query';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import {
   createStageAttempt,
@@ -185,6 +187,86 @@ const scorecardRubricCurrentnessSchema = z.object({
   currentCriteriaHash: z.string().nullable(),
 }).passthrough();
 
+const scorecardEvaluatorBuildCurrentnessSchema = z.object({
+  state: z.enum(['current', 'stale', 'unknown']),
+  reason: z.string(),
+  recordedSha: z.string().nullable(),
+  recordedVersion: z.string().nullable(),
+  liveSha: z.string().nullable(),
+  liveVersion: z.string().nullable(),
+}).passthrough();
+
+export type ScorecardEvaluatorBuildCurrentness = z.infer<typeof scorecardEvaluatorBuildCurrentnessSchema>;
+
+/**
+ * Read the evaluator identity from either recipe location. New cards pin it in
+ * both places; older cards may only retain the executable args pin. A missing
+ * pin is omitted (legacy cards remain auditable), while an invalid or
+ * unresolvable identity is explicit unknown so a judge cannot mistake it for a
+ * current replay (EI-26082605254422690).
+ */
+export function classifyEvaluatorBuildCurrentness(
+  recipe: unknown,
+  liveBuild: BuildInfo = getBuildInfo(),
+): ScorecardEvaluatorBuildCurrentness | undefined {
+  if (!recipe || typeof recipe !== 'object' || Array.isArray(recipe)) return undefined;
+  const source = recipe as { evaluatorBuild?: unknown; args?: unknown };
+  const candidate = source.evaluatorBuild ??
+    (source.args && typeof source.args === 'object' && !Array.isArray(source.args)
+      ? (source.args as { evaluatorBuild?: unknown }).evaluatorBuild
+      : undefined);
+  if (candidate === undefined) return undefined;
+  const recorded = candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+    ? candidate as { sha?: unknown; version?: unknown }
+    : null;
+  const recordedSha = typeof recorded?.sha === 'string' ? recorded.sha.trim() || null : recorded?.sha === null ? null : null;
+  const recordedVersion = typeof recorded?.version === 'string' ? recorded.version.trim() || null : null;
+  const liveSha = typeof liveBuild.sha === 'string' ? liveBuild.sha.trim() || null : null;
+  const liveVersion = typeof liveBuild.version === 'string' ? liveBuild.version.trim() || null : null;
+  if (!recorded || recordedVersion === null || (recorded?.sha !== null && typeof recorded?.sha !== 'string')) {
+    return {
+      state: 'unknown',
+      reason: 'recorded-identity-invalid',
+      recordedSha,
+      recordedVersion,
+      liveSha,
+      liveVersion,
+    };
+  }
+  if (liveSha === null || liveVersion === null) {
+    return {
+      state: 'unknown',
+      reason: 'live-identity-missing',
+      recordedSha,
+      recordedVersion,
+      liveSha,
+      liveVersion,
+    };
+  }
+  if (recordedSha === liveSha && recordedVersion === liveVersion) {
+    return {
+      state: 'current',
+      reason: 'current',
+      recordedSha,
+      recordedVersion,
+      liveSha,
+      liveVersion,
+    };
+  }
+  return {
+    state: 'stale',
+    reason: recordedSha !== liveSha && recordedVersion !== liveVersion
+      ? 'sha-and-version-mismatch'
+      : recordedSha !== liveSha
+        ? 'sha-mismatch'
+        : 'version-mismatch',
+    recordedSha,
+    recordedVersion,
+    liveSha,
+    liveVersion,
+  };
+}
+
 const scorecardEvidenceSchema = z.object({
   issueId: z.string(),
   createdAt: z.string(),
@@ -247,6 +329,7 @@ const scorecardEvidenceSchema = z.object({
     recordedCriteriaHash: z.string().nullable(),
     currentCriteriaHash: z.string().nullable(),
   }).passthrough().optional(),
+  evaluatorBuildCurrentness: scorecardEvaluatorBuildCurrentnessSchema.optional(),
   provisional: z.object({
     violatableKeys: z.array(z.string()),
     stampedAt: z.string(),
@@ -273,6 +356,11 @@ const scorecardRecipeHeaderSchema = scorecardEvidenceSchema.omit({
   missingKeys: true,
   extraKeys: true,
   rubricResolved: true,
+}).extend({
+  // Header responses may emit criteria: [] to distinguish omitted evidence
+  // from an absent field, while some header-only reads omit it. Keep the
+  // declared array empty-only; full criterion data uses the other union arm.
+  criteria: z.array(scorecardEvidenceCriterionSchema).length(0).optional(),
 });
 
 const scorecardEvidenceReadSchema = z.object({
@@ -497,19 +585,27 @@ export default defineTool({
   name: 'scorecards:get',
   profile: 'engineer',
   description:
-    'Read one rubric scorecard by issue id. Pass issueId (preferred) or id (compatibility alias); issueId wins. The evidence fingerprint scopes the read. Small cards return exact criterion evidence. Oversized cards expose an index through evidenceRead and recipes through rerunRecipeRead. Follow returned cursors, concatenate exact JSON chunks, and parse only when complete; audit metadata stays on every page. Never treat an incomplete page or index as missing evidence. Use criterionKey to select a criterion; use indexOffset, evidenceOffset, or rerunRecipeOffset to resume pages. History-only payload is omitted. For spec-test-adequacy cards, direct rerunRecipe.args measure current evidence freshness; scorecardId replay reconstructs the creation-time grading for an audit.',
+    'Read one rubric scorecard by issueId (id is a compatibility alias; issueId wins). Small cards return exact criterion evidence; oversized cards return an index via evidenceRead and recipes via rerunRecipeRead; follow their cursors, and never treat an incomplete page or index as missing evidence. Select with criterionKey; resume with indexOffset, evidenceOffset or rerunRecipeOffset. History-only payload is omitted.',
   guidance: {
-    when: 'Audit one existing scorecard and re-run every probe named in its criterion evidence. Use issueId from scorecards:list or a grading-audit reservation; id is a compatibility alias. For grade-the-grader comparison of a spec-test-adequacy card, call plans:evaluate-spec-test-adequacy with its harness, slug, and scorecardId: issueId to reproduce the emission-time ratings.',
+    when: 'Audit one existing scorecard and re-run the probes its criterion evidence names. Take issueId from scorecards:list or a grading-audit reservation.',
     notWhen:
-      'Use the stored rerunRecipe.args when checking current evidence freshness; that live remeasurement may differ from the emitted rating after evidence changes. Use scorecards:list for history, trends, or multiple rows; rubrics:get for rubric definitions; scorecards:emit to file a scorecard.',
+      'Use scorecards:list for history or multiple rows, rubrics:get for rubric definitions, scorecards:emit to file a scorecard.',
     chaining:
-      'Follow rerunRecipeRead.read/next sequentially. Concatenate complete pages as exact JSON chunks and parse only when complete. For a spec-test-adequacy grading audit, call plans:evaluate-spec-test-adequacy with { harness, slug, scorecardId: issueId } and no direct selectors; compare rows[].ratings to the card and confirm historicalAuditOnly.asOf matches the card creation time. The stored rerunRecipe.args are a separate current-state measurement, so freshness can change after evidence changes. For oversized cards, page evidenceRead.next through the criterion index, then fetch each criterion’s evidence pages in small Promise.all groups. Resolve papercusp.output-envelope/v1 via capability:read before reading scorecard.criteria. Read one criterion’s pages sequentially. Emit the grading-integrity audit last.',
+      'Spec-test-adequacy audit: call plans:evaluate-spec-test-adequacy { harness, slug, scorecardId: issueId } with no direct selectors, compare rows[].ratings to the card, and confirm historicalAuditOnly.asOf matches its creation time. The stored rerunRecipe.args are a separate current-state measurement, so freshness can change after evidence changes. Oversized cards: page evidenceRead.next through the index, fetch criteria in small Promise.all groups (one criterion’s pages sequentially), and resolve papercusp.output-envelope/v1 via capability:read before reading scorecard.criteria. Concatenate complete pages as exact JSON chunks and parse only when complete. Emit the grading-integrity audit last.',
     returns:
-      'Returns `{ ok, scorecard, evidenceRead, rerunRecipeRead? }`. The scorecard includes `evidenceFingerprint` when recorded and an inline `rerunRecipe` or a recoverable rerunRecipeRead cursor. Recipe pages retain card identity and gradingAudit; chunks encode exact JSON with UTF-16 offset/totalChars/next. Full evidence reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index. Index pages preserve metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Recover recipe, index and evidence pages before grading.',
+    'Returns `{ ok, scorecard, evidenceRead, rerunRecipeRead? }`. The scorecard includes `evidenceFingerprint` when recorded, `evaluatorBuildCurrentness` when the recipe pins an evaluator build, and an inline `rerunRecipe` or a recoverable rerunRecipeRead cursor. Recipe pages retain card identity and gradingAudit; chunks encode exact JSON with UTF-16 offset/totalChars/next. Full evidence reads contain every exact criterion; an oversized read contains criteria:[] plus a complete or paged criterion index. Index pages preserve metadata and report offset/totalCriteria/next; criterion pages retain full-card identity and nKeys/missingKeys and report offset/totalChars/next. Recover recipe, index and evidence pages before grading.',
     seeAlso: ['scorecards:list', 'scorecards:emit', 'rubrics:get'],
   },
   capability: 'coord:read',
   requirePrincipal: false,
+  // This handler performs its own bounded, read-only database transaction and
+  // can wait on pool/lock contention. Do not retain the projected ambient
+  // workspace transaction while that await is in flight: an idle outer
+  // transaction can consume the 55s MCP deadline (and the 60s Postgres
+  // idle-in-transaction timeout) even when the scorecard query itself is fast.
+  // This is especially important through tools:invoke, whose nested dispatch
+  // otherwise recreates the ambient transaction around this handler.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES, 'judge'],
   // This tool's projection is intentionally bounded at the source. It still
   // opts out of ambient tier shaping so a trimmed audit session cannot replace
@@ -595,15 +691,19 @@ export default defineTool({
                   () => getRubricWithoutSeeding(GRADING_INTEGRITY_RUBRIC_REF),
                 ).catch(() => null)
               : null;
-            const scorecard = result.scorecard.gradingAudit
-              ? {
-                  ...result.scorecard,
-                  gradingAuditCurrentness: classifyGradingAuditCurrentness(
-                    result.scorecard.gradingAudit,
-                    gradingAuditRubric,
-                  ),
-                }
-              : result.scorecard;
+            const evaluatorBuildCurrentness = classifyEvaluatorBuildCurrentness(result.scorecard.rerunRecipe);
+            const scorecard = {
+              ...result.scorecard,
+              ...(evaluatorBuildCurrentness ? { evaluatorBuildCurrentness } : {}),
+              ...(result.scorecard.gradingAudit
+                ? {
+                    gradingAuditCurrentness: classifyGradingAuditCurrentness(
+                      result.scorecard.gradingAudit,
+                      gradingAuditRubric,
+                    ),
+                  }
+                : {}),
+            };
             if (recipePage) {
               return respond(boundedRerunRecipeHeaderRead(
                 scorecard as ScorecardRecipeHeader & {
@@ -621,7 +721,11 @@ export default defineTool({
               inlineResultBudgetChars(identity.ownerId),
             ));
           } catch (error) {
-            if (error instanceof OrgTxnTimeoutError || error instanceof DbCallDeadlineError) {
+            if (
+              error instanceof OrgTxnTimeoutError ||
+              error instanceof DbCallDeadlineError ||
+              error instanceof PgReadQueryTimeoutError
+            ) {
               return respond({
                 ok: false,
                 error: 'timeout',

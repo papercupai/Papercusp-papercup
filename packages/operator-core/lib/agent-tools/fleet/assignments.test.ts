@@ -459,6 +459,28 @@ describe('deriveMemberVerdict (EI-8995)', () => {
     expect(deriveMemberVerdict(verdictInput({ sessionState: 'ended', alive: true }), NOW)).toBe('dead');
   });
 
+  it('a currently executing long call is direct speaking evidence without a settled row', () => {
+    expect(
+      deriveMemberVerdict(
+        verdictInput({
+          sessionState: 'suspect',
+          wakeable: false,
+          load: 1,
+          lastToolCallAtMs: null,
+          longCallInFlight: { tool: 'testing:run', ageSec: 1_200 },
+        }),
+        NOW,
+      ),
+    ).toBe('speaking');
+    // A confirmed terminal session still outranks the process-local snapshot.
+    expect(
+      deriveMemberVerdict(
+        verdictInput({ sessionState: 'ended', longCallInFlight: { tool: 'testing:run', ageSec: 1_200 } }),
+        NOW,
+      ),
+    ).toBe('dead');
+  });
+
   it('EI-21125380796386851: suspect + wakeable → recoverable suspect', () => {
     expect(deriveMemberVerdict(verdictInput({ sessionState: 'suspect', wakeable: true }), NOW)).toBe('suspect');
   });
@@ -906,6 +928,19 @@ describe('decorateMemberVerdicts (EI-8995)', () => {
     expect(manual.verdict).toBe('joined'); // no tool call ever
     expect(manual.lastToolCallAt).toBeNull();
     expect(manual.wakeMode).toBe('manual'); // per-agent override wins
+  });
+
+  it('uses an injected in-flight call when settled telemetry has no row yet', async () => {
+    const [out] = await decorateMemberVerdicts(
+      [memberAgent()],
+      async () => new Map(),
+      async () => new Map<string, WakeMode>(),
+      async () => 'auto',
+      NOW,
+      async () => new Map(),
+      () => new Map([['su-member-1', { tool: 'testing:run', ageSec: 1_200 }]]),
+    );
+    expect(out.verdict).toBe('speaking');
   });
 
   it('a manual GLOBAL default stamps manual on members with no override — the silently-staged-wakes read', async () => {

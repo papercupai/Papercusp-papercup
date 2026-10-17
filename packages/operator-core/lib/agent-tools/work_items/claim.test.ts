@@ -532,6 +532,8 @@ describe('work_items:claim handler (keyed-array)', () => {
     expect(b).toMatchObject({ ok: false, counts: { ok: 1, failed: 1 } });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'WI-HELD', error: 'claim_conflict', holder: 'peer' });
     expect(b.results[1].hint).toMatch(/Already claimed by peer/);
+    expect(b.results[1].hint).toMatch(/force:true/);
+    expect(b.results[1].hint).toMatch(/liveness-checked, audited/);
   });
 
   // EI-20731607691070897 — a HOLDER handing their own item to a named peer. Before this,

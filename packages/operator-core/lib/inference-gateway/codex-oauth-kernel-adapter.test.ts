@@ -279,7 +279,7 @@ it.each(['cancelled', 'ttfb-timeout'] as const)(
       expect(failed).not.toHaveBeenCalled();
     } else {
       expect(cooled).toEqual([{ key: 'chatgpt-a:default', ms: 30_000 }]);
-      expect(failed).toHaveBeenCalledExactlyOnceWith('chatgpt-a', expect.anything());
+      expect(failed).toHaveBeenCalledExactlyOnceWith('chatgpt-a', expect.anything(), undefined);
     }
   },
 );
@@ -604,7 +604,7 @@ describe('codex OAuth kernel adapter — sibling-egress re-attempt precedes rota
     await executeGatewayRequestKernel(options).catch(() => undefined);
 
     // The failure carries the fetch rejection itself (the gateway classifies it: DNS here).
-    expect(failed).toHaveBeenCalledWith('chatgpt-a', dnsFailure);
+    expect(failed).toHaveBeenCalledWith('chatgpt-a', dnsFailure, undefined);
     // A 429 is still an HTTP response: the network path works, whatever the account's capacity.
     expect(responded).toHaveBeenCalledWith('chatgpt-b', 429);
     expect(responded).not.toHaveBeenCalledWith('chatgpt-a', expect.anything());
@@ -1082,10 +1082,17 @@ describe('Codex OAuth quota errors inside successful HTTP streams', () => {
     await expect(executeGatewayRequestKernel(h.options)).rejects.toMatchObject({ code: 'upstream-error', status: 502 });
   });
 
-  it.each(['error', 'response.failed'])('fails over a %s overload inside HTTP 200 before exposing a failed response', async (type) => {
+  it.each([
+    { type: 'error', code: 'server_error' },
+    { type: 'response.failed', code: 'server_error' },
+    { type: 'error', code: 'server_overloaded' },
+    { type: 'response.failed', code: 'server_overloaded' },
+  ] as const)('fails over a $type $code overload inside HTTP 200 before exposing a failed response', async ({ type, code }) => {
     const accounts = [cli('chatgpt-a'), cli('chatgpt-b')];
     const pool = makePool([{ accountId: 'chatgpt-b' }]);
-    const error = { code: 'server_error', message: 'We are currently experiencing high demand' };
+    const error = { code, message: code === 'server_overloaded'
+      ? 'Selected model is at capacity. Please try a different model.'
+      : 'We are currently experiencing high demand' };
     const failure = frame(type === 'error' ? { type, error } : { type, response: { error } });
     const success = frame({ type: 'response.completed', response: { id: 'healthy', status: 'completed' } });
     const h = harness(async (_url, init) => upstream(200, { 'content-type': 'text/event-stream' },

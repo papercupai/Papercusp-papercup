@@ -31,6 +31,8 @@ export const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const FUTURE_SKEW_MS = 5 * 60 * 1000;
 /** Hard cap on files visited by one suggestion walk — a bound, never a verdict. */
 export const MAX_VISITED_FILES = 20000;
+/** Bound concurrent current-source reads while keeping independent edge checks parallel. */
+export const MAX_CONCURRENT_SOURCE_READS = 16;
 /** Evidence stays bounded independently of the add-only selection walk. */
 export const MAX_DEPENDENCY_PATH_DEPTH = 64;
 export const MAX_DEPENDENCY_PATHS = 100;
@@ -265,8 +267,7 @@ export function sourceCorroborates(source, importer, imported, packageNameAt = n
  * @param {{ importer: string, imported: string, importerSha256: string }} edge
  * @param {{ readSource: (rel: string) => string | null, packageNameAt?: (dir: string) => string | null }} deps
  */
-export function verifyEdge(edge, { readSource, packageNameAt = packageNameReader(readSource) }) {
-  const source = readSource(edge.importer);
+function verifyEdgeSource(edge, source, packageNameAt) {
   if (typeof source !== "string") return { ok: false, reason: "importer-missing" };
   if (sha256Hex(source) !== edge.importerSha256) return { ok: false, reason: "stale-importer" };
   if (!sourceCorroborates(source, edge.importer, edge.imported, packageNameAt)) {
@@ -275,11 +276,11 @@ export function verifyEdge(edge, { readSource, packageNameAt = packageNameReader
   return { ok: true };
 }
 
-/** Walk verified importers of `changed` files in `snapshot`. Never throws on bad data; the
- * only outputs are accepted importer files plus a full account of what was rejected.
- * @param {{ changed: string[], snapshot: any, now: number, maxAgeMs?: number, readSource: (rel: string) => string | null }} args
- */
-export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSource }) {
+export function verifyEdge(edge, { readSource, packageNameAt = packageNameReader(readSource) }) {
+  return verifyEdgeSource(edge, readSource(edge.importer), packageNameAt);
+}
+
+function prepareSuggestionWalk({ changed, snapshot, now, maxAgeMs }) {
   if (!snapshot) return { status: "unavailable", suggestedFiles: [], accepted: [], rejected: [] };
   const generated = Date.parse(snapshot.generatedAt);
   const age = now - generated;
@@ -304,7 +305,6 @@ export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSour
   const provenance = new Map();
   const dependencyPaths = [];
   let pathsTruncated = false;
-  const packageNameAt = packageNameReader(readSource);
   let truncated = false;
   for (const file of changed) {
     if (seen.has(file)) continue;
@@ -316,46 +316,192 @@ export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSour
     queue.push(file);
     provenance.set(file, { changed: file, files: [file], hops: [] });
   }
+  return {
+    state: {
+      index,
+      importedBy,
+      acceptedImporters,
+      accepted,
+      rejected,
+      seen,
+      queue,
+      provenance,
+      dependencyPaths,
+      pathsTruncated,
+      truncated,
+    },
+  };
+}
+
+function recordVerifiedEdge(state, file, edge) {
+  state.acceptedImporters.add(edge.importer);
+  state.accepted.push({ importer: edge.importer, imported: edge.imported });
+  const parent = state.provenance.get(file);
+  if (parent && !parent.files.includes(edge.importer) && parent.hops.length < MAX_DEPENDENCY_PATH_DEPTH) {
+    const path = { changed: parent.changed, consumer: edge.importer,
+      files: [...parent.files, edge.importer], hops: [...parent.hops, { ...edge }] };
+    state.provenance.set(edge.importer, path);
+    if (state.dependencyPaths.length < MAX_DEPENDENCY_PATHS) state.dependencyPaths.push(path);
+    else state.pathsTruncated = true;
+  } else if (!parent || parent.hops.length >= MAX_DEPENDENCY_PATH_DEPTH) state.pathsTruncated = true;
+  if (state.seen.size >= MAX_VISITED_FILES) {
+    state.truncated = true;
+    return;
+  }
+  if (!state.seen.has(edge.importer)) {
+    state.seen.add(edge.importer);
+    state.queue.push(edge.importer);
+  }
+}
+
+function processSuggestionFile(state, file, readSource, packageNameAt, sourceHashCache = null) {
+  for (const edge of state.importedBy.get(file) ?? []) {
+    if (state.acceptedImporters.has(edge.importer)) continue;
+    const source = readSource(edge.importer);
+    let verdict;
+    if (sourceHashCache && typeof source === "string") {
+      let sourceHash = sourceHashCache.get(edge.importer);
+      if (!sourceHash) {
+        sourceHash = sha256Hex(source);
+        sourceHashCache.set(edge.importer, sourceHash);
+      }
+      verdict = sourceHash !== edge.importerSha256
+        ? { ok: false, reason: "stale-importer" }
+        : sourceCorroborates(source, edge.importer, edge.imported, packageNameAt)
+          ? { ok: true }
+          : { ok: false, reason: "uncorroborated" };
+    } else {
+      verdict = verifyEdgeSource(edge, source, packageNameAt);
+    }
+    if (!verdict.ok) {
+      state.rejected.push({ importer: edge.importer, imported: edge.imported, reason: verdict.reason });
+      continue;
+    }
+    recordVerifiedEdge(state, file, edge);
+  }
+}
+
+function finishSuggestionWalk(state) {
+  return {
+    status: "applied",
+    suggestedFiles: [...state.acceptedImporters],
+    dependencyPaths: state.dependencyPaths,
+    pathsTruncated: state.pathsTruncated,
+    accepted: state.accepted,
+    rejected: state.rejected,
+    truncated: state.truncated,
+    index: state.index,
+  };
+}
+
+/** Walk verified importers of `changed` files in `snapshot`. Never throws on bad data; the
+ * only outputs are accepted importer files plus a full account of what was rejected.
+ * @param {{ changed: string[], snapshot: any, now: number, maxAgeMs?: number, readSource: (rel: string) => string | null }} args
+ */
+export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSource }) {
+  const prepared = prepareSuggestionWalk({ changed, snapshot, now, maxAgeMs });
+  if (!prepared.state) return prepared;
+  const state = prepared.state;
+  const packageNameAt = packageNameReader(readSource);
   let queueIndex = 0;
-  while (queueIndex < queue.length) {
-    const file = queue[queueIndex++];
-    for (const edge of importedBy.get(file) ?? []) {
-      if (acceptedImporters.has(edge.importer)) continue;
-      const verdict = verifyEdge(edge, { readSource, packageNameAt });
-      if (!verdict.ok) {
-        rejected.push({ importer: edge.importer, imported: edge.imported, reason: verdict.reason });
-        continue;
+  while (queueIndex < state.queue.length) {
+    processSuggestionFile(state, state.queue[queueIndex++], readSource, packageNameAt);
+  }
+  return finishSuggestionWalk(state);
+}
+
+/** Add package manifests enclosing an edge target to the same bounded source prefetch. */
+function addPackageManifestPaths(imported, paths) {
+  const segments = imported.split("/");
+  for (let i = segments.length - 1; i >= 1; i -= 1) {
+    paths.add(`${segments.slice(0, i).join("/")}/package.json`);
+  }
+}
+
+function hasPackageSpecifier(source) {
+  return extractSpecifiers(source).some((specifier) =>
+    !specifier.startsWith("./") &&
+    !specifier.startsWith("../") &&
+    !specifier.startsWith("@/") &&
+    !specifier.startsWith("~/"),
+  );
+}
+
+async function preloadSourceFiles(paths, readSource, cache) {
+  const pending = [...paths].filter((path) => !cache.has(path));
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < pending.length) {
+      const path = pending[nextIndex++];
+      let source = null;
+      try {
+        source = await readSource(path);
+      } catch {
+        // A missing/unreadable current source has always rejected the edge as importer-missing.
       }
-      acceptedImporters.add(edge.importer);
-      accepted.push({ importer: edge.importer, imported: edge.imported });
-      const parent = provenance.get(file);
-      if (parent && !parent.files.includes(edge.importer) && parent.hops.length < MAX_DEPENDENCY_PATH_DEPTH) {
-        const path = { changed: parent.changed, consumer: edge.importer,
-          files: [...parent.files, edge.importer], hops: [...parent.hops, { ...edge }] };
-        provenance.set(edge.importer, path);
-        if (dependencyPaths.length < MAX_DEPENDENCY_PATHS) dependencyPaths.push(path);
-        else pathsTruncated = true;
-      } else if (!parent || parent.hops.length >= MAX_DEPENDENCY_PATH_DEPTH) pathsTruncated = true;
-      if (seen.size >= MAX_VISITED_FILES) {
-        truncated = true;
-        continue;
-      }
-      if (!seen.has(edge.importer)) {
-        seen.add(edge.importer);
-        queue.push(edge.importer);
+      cache.set(path, typeof source === "string" ? source : null);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(MAX_CONCURRENT_SOURCE_READS, pending.length) }, () => worker()),
+  );
+}
+
+/**
+ * Async counterpart to `suggestFromSnapshot`. It preloads only importers structurally
+ * reachable from each BFS frontier, plus target package manifests, with bounded parallel reads.
+ * The same `verifyEdge` check still decides every accepted/rejected edge.
+ * @param {{ changed: string[], snapshot: any, now: number, maxAgeMs?: number, readSource: (rel: string) => Promise<string | null> }} args
+ */
+export async function suggestFromSnapshotAsync({ changed, snapshot, now, maxAgeMs, readSource }) {
+  const prepared = prepareSuggestionWalk({ changed, snapshot, now, maxAgeMs });
+  if (!prepared.state) return prepared;
+  const state = prepared.state;
+  const sourceCache = new Map();
+  const sourceHashCache = new Map();
+  const readCachedSource = (rel) => sourceCache.has(rel) ? sourceCache.get(rel) : null;
+  const packageNameAt = packageNameReader(readCachedSource);
+
+  // Discover the complete structural frontier first. This deliberately ignores source
+  // verification, so every importer that the exact walk could possibly reach is prefetched.
+  // The exact walk below still enforces MAX_VISITED_FILES and every verifyEdge decision.
+  const seedQueue = [...state.queue];
+  const structuralSeen = new Set(state.seen);
+  const structuralQueue = [...seedQueue];
+  const structuralEdgesByImporter = new Map();
+  for (let queueIndex = 0; queueIndex < structuralQueue.length; queueIndex += 1) {
+    const file = structuralQueue[queueIndex];
+    for (const edge of state.importedBy.get(file) ?? []) {
+      const importerEdges = structuralEdgesByImporter.get(edge.importer);
+      if (importerEdges) importerEdges.push(edge);
+      else structuralEdgesByImporter.set(edge.importer, [edge]);
+      if (!structuralSeen.has(edge.importer) && structuralSeen.size < MAX_VISITED_FILES) {
+        structuralSeen.add(edge.importer);
+        structuralQueue.push(edge.importer);
       }
     }
   }
-  return {
-    status: "applied",
-    suggestedFiles: [...acceptedImporters],
-    dependencyPaths,
-    pathsTruncated,
-    accepted,
-    rejected,
-    truncated,
-    index,
-  };
+
+  const sourcePaths = new Set(structuralEdgesByImporter.keys());
+  await preloadSourceFiles(sourcePaths, readSource, sourceCache);
+  const manifestPaths = new Set();
+  for (const [importer, importerEdges] of structuralEdgesByImporter) {
+    const source = readCachedSource(importer);
+    if (typeof source !== "string" || !hasPackageSpecifier(source)) continue;
+    for (const edge of importerEdges) {
+      addPackageManifestPaths(edge.imported, manifestPaths);
+    }
+  }
+  await preloadSourceFiles(manifestPaths, readSource, sourceCache);
+
+  // Restore the exact walk's initial frontier. Structural discovery above must never influence
+  // the selection cap, accepted/rejected ordering, provenance, or truncation result.
+  state.queue = seedQueue;
+  state.seen = new Set(seedQueue);
+  for (let queueIndex = 0; queueIndex < state.queue.length; queueIndex += 1) {
+    processSuggestionFile(state, state.queue[queueIndex], readCachedSource, packageNameAt, sourceHashCache);
+  }
+  return finishSuggestionWalk(state);
 }
 
 /** baseline ∪ suggested, asserting the one invariant this whole feature exists to keep:
@@ -439,6 +585,44 @@ export function computeGraphSuggestions({ changed, snapshotPath, readFile, readS
   }
   const ageMs = now - Date.parse(loaded.snapshot.generatedAt);
   const result = suggestFromSnapshot({ changed, snapshot: loaded.snapshot, now, maxAgeMs, readSource });
+  const workspaces = new Set();
+  for (const file of result.suggestedFiles) {
+    for (const name of ownerOfPath(file) ?? []) workspaces.add(name);
+  }
+  return {
+    status: result.status,
+    reason: result.reason ?? null,
+    workspaces: [...workspaces].sort(),
+    accepted: result.accepted.length,
+    rejected: result.rejected.length,
+    rejectedReasons: [...new Set(result.rejected.map((r) => r.reason))].sort(),
+    truncated: Boolean(result.truncated),
+    dependencyPaths: result.dependencyPaths ?? [],
+    pathsTruncated: Boolean(result.pathsTruncated),
+    index: result.index ?? null,
+    ageMs: Number.isFinite(ageMs) ? ageMs : null,
+  };
+}
+
+/** Async selector path used by affected-tests; snapshot loading stays sync, source verification does not. */
+export async function computeGraphSuggestionsAsync({ changed, snapshotPath, readFile, readSource, ownerOfPath, now, maxAgeMs }) {
+  if (!snapshotPath) {
+    return { status: "unavailable", reason: "no-snapshot-path", workspaces: [], accepted: 0, rejected: 0, index: null, ageMs: null };
+  }
+  const loaded = loadSnapshotFile(snapshotPath, { readFile });
+  if (loaded.status !== "ok") {
+    return {
+      status: loaded.status,
+      reason: loaded.reason ?? null,
+      workspaces: [],
+      accepted: 0,
+      rejected: 0,
+      index: null,
+      ageMs: null,
+    };
+  }
+  const ageMs = now - Date.parse(loaded.snapshot.generatedAt);
+  const result = await suggestFromSnapshotAsync({ changed, snapshot: loaded.snapshot, now, maxAgeMs, readSource });
   const workspaces = new Set();
   for (const file of result.suggestedFiles) {
     for (const name of ownerOfPath(file) ?? []) workspaces.add(name);

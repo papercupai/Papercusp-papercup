@@ -229,6 +229,7 @@ describe('workspace-host observability store', () => {
         target: 'gcp',
         kind: 'vm',
         provider_id: 'pc-host-vm',
+        incarnation_id: 'allocation-123',
         parent_provider_id: 'project-1',
         region: 'us-central1',
         zone: 'us-central1-a',
@@ -249,6 +250,7 @@ describe('workspace-host observability store', () => {
           target: 'gcp',
           kind: 'vm',
           providerId: 'pc-host-vm',
+          incarnationId: 'allocation-123',
           parentProviderId: 'project-1',
           region: 'us-central1',
           zone: 'us-central1-a',
@@ -267,6 +269,7 @@ describe('workspace-host observability store', () => {
         connection_id: 'connection-1',
         target: 'gcp',
         observed_state: 'running',
+        hosted_customer_workspace_ids: ['customer-1'],
         desired_spec: { hostId: 'host-1', target: 'gcp', region: 'us-central1' },
       },
     ]);
@@ -275,6 +278,7 @@ describe('workspace-host observability store', () => {
         target: 'gcp',
         kind: 'vm',
         provider_id: 'pc-host-vm',
+        incarnation_id: 'allocation-current',
         parent_provider_id: 'project-1',
         region: 'us-central1',
         zone: 'us-central1-a',
@@ -294,17 +298,36 @@ describe('workspace-host observability store', () => {
     await expect(readWorkspaceHostDestroyTarget('ws-1', 'host-1')).resolves.toMatchObject({
       id: 'host-1',
       connectionId: 'connection-1',
+      hostedCustomerWorkspaceId: 'customer-1',
       resources: [
         {
           resource: {
             target: 'gcp',
             kind: 'vm',
             providerId: 'pc-host-vm',
+            incarnationId: 'allocation-current',
             parentProviderId: 'project-1',
           },
           registeredAt: '2026-08-25T00:01:00.000Z',
         },
       ],
+    });
+  });
+
+  it('refuses multiple canonical customer bindings instead of choosing a tenant for the data disk', async () => {
+    H.rows.set('FROM harness_shared.workspace_hosts WHERE workspace_id', [{ id: 'host-1',
+      desired_spec: { hostId: 'host-1' }, hosted_customer_workspace_ids: ['customer-1', 'customer-2'] }]);
+    await expect(readWorkspaceHostDestroyTarget('ws-1', 'host-1')).rejects.toThrow('ambiguous hosted customer bindings');
+  });
+
+  it('retains an unknown original pool allocation for fail-closed launch while keeping teardown readable', async () => {
+    H.rows.set('FROM harness_shared.workspace_hosts WHERE workspace_id', [{ id: 'host-1',
+      desired_spec: { hostId: 'host-1', data: { allocation: { dbGiB: 999, workspaceGiB: 999 } } },
+      hosted_customer_workspace_ids: ['customer-1'] }]);
+    H.rows.set('FROM harness_shared.workspace_host_operations origin', [{ id: 'original-pool-operation',
+      customer_workspace_id: 'customer-1', allocation: null }]);
+    await expect(readWorkspaceHostDestroyTarget('ws-1', 'host-1')).resolves.toMatchObject({
+      durableStorageAdmission: { operationId: 'original-pool-operation', customerWorkspaceId: 'customer-1', allocation: null },
     });
   });
 

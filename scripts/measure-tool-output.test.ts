@@ -10,7 +10,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 const SCRIPT = process.env.PROBE_SCRIPT
   ? resolve(process.env.PROBE_SCRIPT)
   : join(dirname(fileURLToPath(import.meta.url)), 'measure-tool-output.mjs');
-const { capFor, contentBytes, measure } = await import(pathToFileURL(SCRIPT).href);
+// A runtime-path import is untyped (`any`); the swapped probe script must honour the same surface as
+// the canonical module, so type it as that module rather than losing every downstream type.
+type MeasureToolOutputModule = typeof import('./measure-tool-output.mjs');
+const { capFor, contentBytes, measure, compareMeasurementWindows, renderMeasurementComparison, verifyMeasurementReportReadback } =
+  await import(pathToFileURL(SCRIPT).href) as MeasureToolOutputModule;
 const NOW = Date.parse('2026-10-15T09:00:00Z');
 const START = NOW - 24 * 3600_000;
 const base = NOW - 600_000;
@@ -31,7 +35,7 @@ function fixture(claude: unknown[] = [], codex: unknown[] = []) {
   return { home, roots, claudeFile, codexFile };
 }
 const assistant = (id: string, seconds: number, blocks: unknown[] = []) => ({ timestamp: time(seconds), type: 'assistant', message: { id, content: blocks } });
-const use = (id: string, name = 'Bash', input = { command: 'cat file' }) => ({ type: 'tool_use', id, name, input });
+const use = (id: string, name = 'Bash', input: Record<string, unknown> = { command: 'cat file' }) => ({ type: 'tool_use', id, name, input });
 const result = (id: string, content: unknown, seconds: number) => ({
   timestamp: time(seconds), type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content }] },
 });
@@ -47,6 +51,152 @@ const usage = (n: number, seconds: number) => ({
     info: { last_token_usage: { input_tokens: 100, output_tokens: 10 }, total_token_usage: { input_tokens: n * 100, output_tokens: n * 10 } } },
 });
 const run = (f: ReturnType<typeof fixture>, extra = {}) => measure(f.roots, 24, { now: NOW, ...extra });
+
+describe('measurement acceptance comparison (R5/R7)', () => {
+  const refs = { beforeRef: 'raw-before.json', afterRef: 'raw-after.json',
+    patternFixes: [{ workItem: 'WI-123', regressionReceipt: 'test_runs:456', status: 'verified' }] };
+  async function pairedWindows() {
+    const raw = (calls: number) => [
+      { timestamp: time(0), type: 'session_meta', payload: { id: 'matched-native' } },
+      { timestamp: time(0), type: 'response_item', payload: { type: 'message', role: 'user',
+        content: [{ type: 'input_text', text: '⟦turn-origin:loop-fire nonce:abcdef12⟧ matched wake' }] } },
+      call('read', 'exec_command', { cmd: 'cat one' }, 0), output('read', 'é🙂', 1),
+      ...Array.from({ length: calls }, (_, i) => usage(i + 1, i + 2)),
+    ];
+    const previous = fixture([], raw(3));
+    const following = fixture([], raw(2).map((row) => ({ ...row, timestamp: new Date(Date.parse(row.timestamp) + 86400_000).toISOString() })));
+    const sessionMetadata = [{ nativeSessionId: 'matched-native', role: 'su', ownerId: 'owner', source: 'fixture-ledger' }];
+    return { before: await run(previous, { sessionMetadata }),
+      after: await run(following, { now: NOW + 86400_000, sessionMetadata }), home: following.home };
+  }
+
+  it('accepts measured per-session reduction from two real raw-parser windows and named regression receipts', async () => {
+    const { before, after } = await pairedWindows();
+    const compared = compareMeasurementWindows(before, after, refs);
+    expect(compared.errors).toEqual([]);
+    expect(compared.mismatches).toEqual([]);
+    expect(compared.reductionSatisfied).toBe(true);
+    expect(compared.clients.find((row: { client: string }) => row.client === 'codex')).toMatchObject({
+      before: { bytes: 6, modelCalls: 3, sessions: 1, callsPerSession: 3 },
+      after: { bytes: 6, modelCalls: 2, sessions: 1, callsPerSession: 2 },
+    });
+    const noDecrease = structuredClone(after);
+    noDecrease.clients.codex.modelCalls = 3;
+    noDecrease.drivers.sessions[0].modelCalls = 3;
+    expect(compareMeasurementWindows(before, noDecrease, refs).reductionSatisfied).toBe(false);
+    expect(compareMeasurementWindows(before, after, { ...refs, patternFixes: [] }).reductionSatisfied).toBe(false);
+    expect(compareMeasurementWindows(before, after, { ...refs, patternFixes: [{ ...refs.patternFixes[0], status: 'planned' }] }).reductionSatisfied).toBe(false);
+  });
+
+  it.each(['role', 'wakeSource', 'waitCalls', 'durationBand'])('rejects missing %s attribution instead of inferring a reduction', async (field) => {
+    const { before, after } = await pairedWindows();
+    delete after.drivers.sessions[0][field];
+    const compared = compareMeasurementWindows(before, after, refs);
+    expect(compared.errors).toContain('after: role/wake/polling/duration attribution missing');
+    expect(compared.reductionSatisfied).toBe(false);
+  });
+
+  it('rejects mismatched methods, windows, denominators and missing raw evidence', async () => {
+    const { before, after } = await pairedWindows();
+    for (const change of [
+      (r: typeof after) => { r.window.start = new Date(Date.parse(r.window.start) + 1000).toISOString(); },
+      (r: typeof after) => { r.drivers.sessions[0].role = 'worker'; },
+      (r: typeof after) => { r.method.requests = 'changed request definition'; },
+      (r: typeof after) => { r.clients.codex.modelCalls += 1; },
+      (r: typeof after) => { delete (r as { sourceCoverage?: unknown }).sourceCoverage; },
+    ]) {
+      const altered = structuredClone(after);
+      change(altered);
+      expect(compareMeasurementWindows(before, altered, refs).reductionSatisfied).toBe(false);
+    }
+    expect(compareMeasurementWindows(before, after, { ...refs, beforeRef: '' }).reportReady).toBe(false);
+  });
+
+  it('requires every requested measure and actual owner-visible reports:get content before R7 is satisfied', async () => {
+    const { before, after } = await pairedWindows();
+    const compared = compareMeasurementWindows(before, after, refs);
+    const body_md = renderMeasurementComparison(compared);
+    const readback = { results: [{ id: 'report-1', ok: true, report: { visibility: 'owner', body_md } }] };
+    expect(verifyMeasurementReportReadback(compared, readback, 'report-1')).toBe(true);
+    for (const metric of ['bytes', 'rereadBytes', 'modelCalls']) {
+      const altered = structuredClone(after);
+      delete (altered.clients.codex as Record<string, unknown>)[metric];
+      const missing = compareMeasurementWindows(before, altered, refs);
+      expect(missing.reportReady).toBe(false);
+      expect(() => renderMeasurementComparison(missing)).toThrow('Incomplete');
+    }
+    expect(verifyMeasurementReportReadback(compared, { report_id: 'report-1' }, 'report-1')).toBe(false);
+    expect(verifyMeasurementReportReadback(compared, readback, 'another-report')).toBe(false);
+    for (const report of [{ visibility: 'owner', body_md: body_md.replace('Re-read bytes', 'Omitted') },
+      { visibility: 'pot', body_md }, { visibility: 'owner', body_md: body_md.slice(0, -1) }]) {
+      expect(verifyMeasurementReportReadback(compared, { results: [{ id: 'report-1', ok: true, report }] }, 'report-1')).toBe(false);
+    }
+  });
+
+  it('allows disclosed noncomparability in a report but never in a reduction claim', async () => {
+    const { before, after } = await pairedWindows();
+    after.drivers.sessions[0].role = 'worker';
+    expect(compareMeasurementWindows(before, after, refs).reportReady).toBe(false);
+    const disclosed = compareMeasurementWindows(before, after, { ...refs, disclosure: 'Roles differ; no causal reduction claim.' });
+    expect(disclosed.reportReady).toBe(true);
+    expect(disclosed.reductionSatisfied).toBe(false);
+    expect(renderMeasurementComparison(disclosed)).toContain('Roles differ; no causal reduction claim.');
+  });
+
+  it('rejects unmarked wake attribution and retains both methods and every client in a readable disclosed report', async () => {
+    const { before, after } = await pairedWindows();
+    const unmarked = structuredClone(after);
+    unmarked.drivers.sessions[0].wakeSource = 'unmarked';
+    expect(compareMeasurementWindows(before, unmarked, refs).reductionSatisfied).toBe(false);
+    const mixed = structuredClone(after);
+    mixed.drivers.sessions[0].wakeSource = 'mixed';
+    mixed.drivers.sessions[0].callsByOrigin.unmarked = 1;
+    expect(compareMeasurementWindows(before, mixed, refs).reductionSatisfied).toBe(false);
+
+    // A new client is a disclosed population change, never zero measured traffic.
+    delete before.clients.claude;
+    after.method.requests = 'A different request definition';
+    const compared = compareMeasurementWindows(before, after, { ...refs, disclosure: 'Client population and definitions differ.' });
+    expect(compared.reportReady).toBe(true);
+    expect(compared.reductionSatisfied).toBe(false);
+    const markdown = renderMeasurementComparison(compared);
+    expect(markdown).toContain('A different request definition');
+    expect(markdown).toContain(before.method.requests);
+    expect(markdown).toMatch(/\| --- \| --- \| --- \| --- \| --- \| --- \|\n\| claude \| null → 0/);
+    expect(markdown).toMatch(/\| claude [^\n]+\n\| codex /);
+  });
+
+  it('runs comparison through the maintained CLI and refuses R7 before verified readback', async () => {
+    const { before, after, home } = await pairedWindows();
+    const beforeRef = join(home, 'before.json'), afterRef = join(home, 'after.json'), manifest = join(home, 'comparison.json');
+    writeFileSync(beforeRef, JSON.stringify(before)); writeFileSync(afterRef, JSON.stringify(after));
+    const options = { ...refs, beforeRef, afterRef, acceptance: 'r-5' };
+    writeFileSync(manifest, JSON.stringify(options));
+    const result = JSON.parse(execFileSync(process.execPath, [SCRIPT, '--comparison', manifest], { encoding: 'utf8' }));
+    expect(result.reductionSatisfied).toBe(true);
+    expect(result.reportReadbackSatisfied).toBe(false);
+    writeFileSync(manifest, JSON.stringify({ ...options, acceptance: 'r-7' }));
+    expect(() => execFileSync(process.execPath, [SCRIPT, '--comparison', manifest], { stdio: 'pipe' })).toThrow();
+    const readbackRef = join(home, 'readback.json');
+    writeFileSync(readbackRef, JSON.stringify({ results: [{ id: 'report-1', ok: true, report: { visibility: 'owner', body_md: result.body_md } }] }));
+    writeFileSync(manifest, JSON.stringify({ ...options, acceptance: 'r-7', readbackRef, reportId: 'report-1' }));
+    expect(JSON.parse(execFileSync(process.execPath, [SCRIPT, '--comparison', manifest], { encoding: 'utf8' })).reportReadbackSatisfied).toBe(true);
+  });
+
+  it('discloses parser and identity gaps while refusing to infer savings from incomplete counts', async () => {
+    const { before, after } = await pairedWindows();
+    for (const key of ['parseErrors', 'requestsWithoutTimestamp', 'requestsWithoutIdentity', 'resultsWithoutTimestamp', 'unmatchedResults']) {
+      const altered = structuredClone(after);
+      (altered.sourceCoverage as Record<string, unknown>)[key] = 1;
+      const compared = compareMeasurementWindows(before, altered, { ...refs, disclosure: 'Source coverage is incomplete.' });
+      expect(compared.reductionSatisfied).toBe(false);
+      expect(compared.reportReady).toBe(true);
+      expect(renderMeasurementComparison(compared)).toContain(`"${key}":1`);
+      delete (altered.sourceCoverage as Record<string, unknown>)[key];
+      expect(compareMeasurementWindows(before, altered, refs).reportReady).toBe(false);
+    }
+  });
+});
 
 describe('measure-tool-output raw transcript instrument', () => {
   it('TE-MEASURE-COUNTS / BYTES: exact UTF-8 result counts and byte percentiles per client and tool', async () => {
@@ -95,8 +245,9 @@ describe('measure-tool-output raw transcript instrument', () => {
     expect(r.clients.codex.rereadBytes).toBe(4 * 2);
     expect(r.clients.codex.modelCalls).toBe(4);
     expect(r.rereadBytes).toBe(18);
-    expect(r.sourceCoverage.duplicateRequests).toBe(2);
-    expect(r.sourceCoverage.nativeCompactions).toBe(2);
+    // Spread in from scan()'s coverage counters, which the inferred declaration cannot see.
+    expect((r.sourceCoverage as Record<string, unknown>).duplicateRequests).toBe(2);
+    expect((r.sourceCoverage as Record<string, unknown>).nativeCompactions).toBe(2);
   });
 
   it('TE-MEASURE-CAPS: distinguishes outer exec, nested shell, and door, including overlapping caps', async () => {
@@ -138,7 +289,7 @@ describe('measure-tool-output raw transcript instrument', () => {
     expect(r.rerunWindowSeconds).toBe(120);
     expect(r.clients.claude.reruns).toEqual({ callsAfterTruncation: 1, bytesAfterTruncation: 11 });
     expect(r.clients.codex.reruns).toEqual({ callsAfterTruncation: 1, bytesAfterTruncation: 4 });
-    expect(r.clients.claude.tools.find((x) => x.tool === 'Read').reruns.callsAfterTruncation).toBe(0);
+    expect(r.clients.claude.tools.find((x) => x.tool === 'Read')!.reruns.callsAfterTruncation).toBe(0);
     expect(r.truncation.byCap['papercusp-door'].reruns).toBe(1);
   });
 
@@ -148,7 +299,7 @@ describe('measure-tool-output raw transcript instrument', () => {
     const boundary = result('a', 'in', 0); boundary.timestamp = new Date(START).toISOString();
     const old = result('b', 'old', 0); old.timestamp = new Date(START - 1).toISOString();
     const future = result('c', 'future', 0); future.timestamp = new Date(NOW + 1).toISOString();
-    const unknown = result('d', 'unknown', 0); delete unknown.timestamp;
+    const { timestamp: _withoutTimestamp, ...unknown } = result('d', 'unknown', 0);
     const f = fixture([oldCall, boundary, boundary, old, future, unknown, '{bad json']);
     const r = await measure([...f.roots, f.roots[0]], 24, { now: NOW });
     expect(r.measuredAt).toBe(new Date(NOW).toISOString());
@@ -267,8 +418,8 @@ describe('measure-tool-output raw transcript instrument', () => {
     expect(frozen.window).toEqual(baseline.window);
     expect(frozen.clients.codex.modelCalls).toBe(1);
     expect((await run(f)).clients.codex.modelCalls).toBe(2);
-    expect(frozen.sourceCoverage.files.find((s) => s.client === 'codex').snapshotBytes)
-      .toBe(baseline.sourceCoverage.files.find((s) => s.client === 'codex').snapshotBytes);
+    expect(frozen.sourceCoverage.files.find((s) => s.client === 'codex')!.snapshotBytes)
+      .toBe(baseline.sourceCoverage.files.find((s) => s.client === 'codex')!.snapshotBytes);
     writeFileSync(f.codexFile, '');
     rmSync(f.claudeFile);
     const missing = await measure([], 24, { snapshot: baseline });
@@ -292,7 +443,8 @@ describe('measure-tool-output raw transcript instrument', () => {
     const replay = JSON.parse(execFileSync(process.execPath, [SCRIPT, '--snapshot', snapshot, '--metadata', metadata], { encoding: 'utf8' }));
     expect(replay.window).toEqual(persisted.window);
     expect(replay.metadataCoverage).toEqual({ capturedAt: time(), source: 'fixture', rows: 0 });
-    await expect(measure(f.roots, 24, { sessionMetadata: {} })).rejects.toThrow('sessionMetadata must be an array');
+    // Deliberately invalid input: exercises the runtime array guard, so the type is bypassed.
+    await expect(measure(f.roots, 24, { sessionMetadata: {} as unknown as unknown[] })).rejects.toThrow('sessionMetadata must be an array');
     expect(() => execFileSync(process.execPath, [SCRIPT, '--out'], { stdio: 'pipe' })).toThrow();
     expect(() => execFileSync(process.execPath, [SCRIPT, '--hours', '-1'], { stdio: 'pipe' })).toThrow();
   });

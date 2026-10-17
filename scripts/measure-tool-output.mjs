@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { stat, realpath, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { walkRawTranscripts, readRawTranscript } from './lib/raw-session-corpus.mjs';
 import { ENVELOPE_RE, unwrapWholePaste } from '../packages/operator-core/lib/turn-provenance/envelope-grammar.ts';
 
@@ -22,7 +22,7 @@ const USAGE_FIELDS = ['input_tokens', 'cached_input_tokens', 'cache_write_input_
 const DELIVERY_KEYS = new Set(['max_output_tokens', 'yield_time_ms', 'timeout_ms', 'timeout']);
 
 function parseArgs(argv) {
-  const options = { hours: 24, rerunSeconds: 120, roots: [], out: null, snapshot: null, metadata: null };
+  const options = { hours: 24, rerunSeconds: 120, roots: [], out: null, snapshot: null, metadata: null, comparison: null };
   const take = (i) => {
     if (!argv[i + 1] || argv[i + 1].startsWith('--')) throw new Error(argv[i] + ' requires a value');
     return argv[i + 1];
@@ -34,7 +34,8 @@ function parseArgs(argv) {
       const m = /^(\d+(?:\.\d+)?)(h|d)$/.exec(value);
       if (!m) throw new Error('--since requires a duration such as 24h or 7d');
       options.hours = Number(m[1]) * (m[2] === 'd' ? 24 : 1);
-    } else if (a === '--rerun-seconds') options.rerunSeconds = Number(value);
+    } else if (a === '--comparison') options.comparison = value;
+    else if (a === '--rerun-seconds') options.rerunSeconds = Number(value);
     else if (a === '--out') options.out = value;
     else if (a === '--snapshot') options.snapshot = value;
     else if (a === '--metadata') options.metadata = value;
@@ -367,6 +368,12 @@ export async function scan(file, client, { start, end, rerunSeconds = 120, snaps
     observedSeconds: firstRecordAt == null ? null : (lastRecordAt - firstRecordAt) / 1000 } };
 }
 
+/**
+ * @param {any} [roots]
+ * @param {number} [hours]
+ * @param {{ now?: number, rerunSeconds?: number, snapshot?: any, sessionMetadata?: any[] }} [options]
+ *   Typed explicitly: inferred from `= {}` the declaration dropped `snapshot`.
+ */
 export async function measure(roots = DEFAULT_ROOTS, hours = 24, { now = Date.now(), rerunSeconds = 120, snapshot, sessionMetadata = [] } = {}) {
   if (!Array.isArray(sessionMetadata)) throw new Error('sessionMetadata must be an array');
   if (snapshot) {
@@ -443,13 +450,147 @@ export async function measure(roots = DEFAULT_ROOTS, hours = 24, { now = Date.no
   };
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+/**
+ * R5/R7 acceptance uses the SAME raw measurement schema, never a code-change proxy.
+ * The manifest cites the two immutable artifacts and actual regression receipts.
+ * A report can disclose noncomparability; a reduction claim cannot use that escape.
+ * @param {any} before
+ * @param {any} after
+ * @param {{ beforeRef?: string, afterRef?: string, disclosure?: string,
+ *   patternFixes?: Array<{ workItem?: string, regressionReceipt?: string, status?: string }> }} [manifest]
+ *   Typed explicitly: inferred from `= {}` the declaration dropped the refs and
+ *   typed `patternFixes` as `never[]`, so every manifest a caller built was refused.
+ */
+export function compareMeasurementWindows(before, after, { beforeRef, afterRef, patternFixes = [], disclosure = '' } = {}) {
+  const errors = [], mismatches = [];
+  const nonnegative = (n) => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+  const text = (s) => typeof s === 'string' && s.trim().length > 0;
+  const sourceUncertainties = ['parseErrors', 'requestsWithoutTimestamp', 'requestsWithoutIdentity', 'resultsWithoutTimestamp', 'unmatchedResults'];
+  const durations = [];
+  for (const [label, report, ref] of [['before', before, beforeRef], ['after', after, afterRef]]) {
+    if (!text(ref)) errors.push(`${label}: raw evidence reference missing`);
+    if (report?.schemaVersion !== 'tool-output-measurement-v1') errors.push(`${label}: measurement schema missing`);
+    const start = Date.parse(report?.window?.start), end = Date.parse(report?.window?.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) errors.push(`${label}: invalid window`);
+    durations.push(end - start);
+    const sessions = report?.drivers?.sessions;
+    if (!Array.isArray(sessions) || !sessions.length || report?.drivers?.coverage?.includedSessions !== sessions.length) {
+      errors.push(`${label}: session denominator missing or inconsistent`);
+    }
+    for (const session of sessions || []) {
+      if (!text(session.nativeSessionId) || !text(session.role) || ['unknown', 'ambiguous'].includes(session.role)
+        || !text(session.wakeSource) || ['unknown', 'unmarked'].includes(session.wakeSource)
+        || session.callsByOrigin?.unmarked > 0
+        || !text(session.durationBand) || session.durationBand === 'unknown' || !nonnegative(session.waitCalls)
+        || !nonnegative(session.modelCalls)) errors.push(`${label}: role/wake/polling/duration attribution missing`);
+    }
+    const coverage = report?.sourceCoverage;
+    if (!Array.isArray(coverage?.files) || !coverage.files.length || !Array.isArray(coverage.unavailableFiles)
+      || !['unreadablePaths', 'shortenedSnapshots', 'unknownClientFiles'].every((key) => nonnegative(coverage?.diagnostics?.[key]))
+      || !sourceUncertainties.every((key) => nonnegative(coverage?.[key]))) errors.push(`${label}: raw source coverage missing`);
+    if (!['bytes', 'rereadBytes', 'requests', 'cohorts', 'drivers', 'waits'].every((key) => text(report?.method?.[key]))
+      || !nonnegative(report?.rerunWindowSeconds) || report.rerunWindowSeconds === 0) errors.push(`${label}: measurement method missing`);
+    if (coverage?.unavailableFiles?.length || coverage?.diagnostics?.unreadablePaths
+      || coverage?.diagnostics?.shortenedSnapshots || coverage?.diagnostics?.unknownClientFiles
+      || sourceUncertainties.some((key) => coverage?.[key] > 0)) mismatches.push(`${label}: source gaps`);
+    for (const [client, stats] of Object.entries(report?.clients || {})) {
+      if (!['bytes', 'rereadBytes', 'modelCalls'].every((key) => nonnegative(stats?.[key]))) errors.push(`${label}/${client}: requested measure missing`);
+      const selected = (sessions || []).filter((s) => s.client === client);
+      if (stats?.modelCalls !== selected.reduce((n, s) => n + s.modelCalls, 0)) errors.push(`${label}/${client}: model-call denominator does not reconcile`);
+    }
+    if (!Object.keys(report?.clients || {}).length) errors.push(`${label}: clients missing`);
+  }
+  if (durations[0] !== durations[1]) mismatches.push('unequal window durations');
+  if (!(Date.parse(after?.window?.start) >= Date.parse(before?.window?.end))) mismatches.push('windows overlap or are reversed');
+  if (JSON.stringify(before?.method) !== JSON.stringify(after?.method) || !before?.method
+    || before?.rerunWindowSeconds !== after?.rerunWindowSeconds) mismatches.push('measurement methods differ');
+  const strata = (report) => {
+    const counts = new Map();
+    for (const s of report?.drivers?.sessions || []) {
+      const key = JSON.stringify([s.client, s.role, s.wakeSource, s.durationBand]);
+      counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    return JSON.stringify([...counts].sort(([a], [b]) => a.localeCompare(b)));
+  };
+  if (strata(before) !== strata(after)) mismatches.push('role/wake/duration cohort denominators differ');
+  if (JSON.stringify(Object.keys(before?.clients || {}).sort()) !== JSON.stringify(Object.keys(after?.clients || {}).sort())) mismatches.push('client populations differ');
+  const clients = [...new Set([...Object.keys(before?.clients || {}), ...Object.keys(after?.clients || {})])].sort().map((client) => {
+    const values = (report) => {
+      const stats = report?.clients?.[client];
+      const sessions = (report?.drivers?.sessions || []).filter((s) => s.client === client).length;
+      return { present: Boolean(stats), bytes: stats?.bytes ?? null, rereadBytes: stats?.rereadBytes ?? null,
+        modelCalls: stats?.modelCalls ?? null, sessions,
+        callsPerSession: sessions ? stats?.modelCalls / sessions : null };
+    };
+    return { client, before: values(before), after: values(after) };
+  });
+  const comparable = errors.length === 0 && mismatches.length === 0;
+  const codex = clients.find((row) => row.client === 'codex');
+  const fixesVerified = Array.isArray(patternFixes) && patternFixes.length > 0 && patternFixes.every((fix) => text(fix?.workItem)
+    && text(fix.regressionReceipt) && fix.status === 'verified');
+  const coverageSummary = (report) => ({ files: report?.sourceCoverage?.files?.length,
+    unavailableFiles: report?.sourceCoverage?.unavailableFiles, diagnostics: report?.sourceCoverage?.diagnostics,
+    parserAndIdentity: Object.fromEntries(sourceUncertainties.map((key) => [key, report?.sourceCoverage?.[key]])),
+    sessionCoverage: report?.drivers?.coverage });
+  return { schemaVersion: 'tool-output-comparison-v1', beforeRef, afterRef, windows: { before: before?.window, after: after?.window },
+    coverage: { before: coverageSummary(before), after: coverageSummary(after) },
+    methods: { before: before?.method, after: after?.method },
+    rerunWindowSeconds: { before: before?.rerunWindowSeconds, after: after?.rerunWindowSeconds },
+    clients, errors, mismatches, disclosure, patternFixes, comparable,
+    reductionSatisfied: comparable && fixesVerified && Boolean(codex && codex.after.callsPerSession < codex.before.callsPerSession),
+    reportReady: errors.length === 0 && (comparable || text(disclosure)) };
+}
+
+export function renderMeasurementComparison(comparison) {
+  if (!comparison.reportReady) throw new Error('Incomplete or undisclosed noncomparable measurement windows');
+  return [
+    '# Tool-output before/after measurement',
+    `Raw evidence: ${comparison.beforeRef} → ${comparison.afterRef}`,
+    `Windows: ${JSON.stringify(comparison.windows)}`,
+    `Input and denominator coverage: ${JSON.stringify(comparison.coverage)}`,
+    `Measurement definitions: ${JSON.stringify(comparison.methods)}`,
+    `Rerun windows in seconds: ${JSON.stringify(comparison.rerunWindowSeconds)}`,
+    `Comparable: ${comparison.comparable}. ${comparison.disclosure || ''}`,
+    `Comparability findings: ${JSON.stringify(comparison.mismatches)}`,
+    [
+      '| Client | Bytes before → after | Re-read bytes before → after | Model calls before → after | Sessions before → after | Calls/session before → after |',
+      '| --- | --- | --- | --- | --- | --- |',
+      ...comparison.clients.map(({ client, before, after }) => `| ${client} | ${before.bytes} → ${after.bytes} | ${before.rereadBytes} → ${after.rereadBytes} | ${before.modelCalls} → ${after.modelCalls} | ${before.sessions} → ${after.sessions} | ${before.callsPerSession} → ${after.callsPerSession} |`),
+    ].join('\n'),
+    `Pattern fix and regression references: ${JSON.stringify(comparison.patternFixes)}`,
+    `R5 reduction satisfied: ${comparison.reductionSatisfied}.`,
+    'Re-read bytes are a replay estimate, not billed-token or cache savings.',
+  ].join('\n\n') + '\n';
+}
+
+/** Consume the actual reports:get envelope, never a publish receipt. */
+export function verifyMeasurementReportReadback(comparison, readback, reportId) {
+  const result = Array.isArray(readback?.results) ? readback.results.find((row) => row.id === reportId) : null;
+  if (!reportId || !result?.ok || result.report?.visibility !== 'owner') return false;
+  return comparison.reportReady && result.report.body_md === renderMeasurementComparison(comparison);
+}
+
+if (isCliEntry(import.meta.url)) {
   const options = parseArgs(process.argv.slice(2));
-  const snapshot = options.snapshot ? JSON.parse(await readFile(options.snapshot, 'utf8')) : undefined;
-  const metadata = options.metadata ? JSON.parse(await readFile(options.metadata, 'utf8')) : undefined;
-  const report = await measure(options.roots, options.hours, { rerunSeconds: options.rerunSeconds, snapshot,
-    sessionMetadata: metadata ? metadata.sessions : [] });
-  if (metadata) report.metadataCoverage = { capturedAt: metadata.capturedAt, source: metadata.source, rows: metadata.sessions?.length || 0 };
-  if (options.out) await writeFile(options.out, JSON.stringify(report, null, 2) + '\n');
-  process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+  if (options.comparison) {
+    const manifest = JSON.parse(await readFile(options.comparison, 'utf8'));
+    if (!['r-5', 'r-7'].includes(manifest.acceptance)) throw new Error('comparison acceptance must be r-5 or r-7');
+    const before = JSON.parse(await readFile(manifest.beforeRef, 'utf8'));
+    const after = JSON.parse(await readFile(manifest.afterRef, 'utf8'));
+    const comparison = compareMeasurementWindows(before, after, manifest);
+    const readback = manifest.readbackRef ? JSON.parse(await readFile(manifest.readbackRef, 'utf8')) : null;
+    const result = { ...comparison, body_md: comparison.reportReady ? renderMeasurementComparison(comparison) : null,
+      reportReadbackSatisfied: verifyMeasurementReportReadback(comparison, readback, manifest.reportId) };
+    if (options.out) await writeFile(options.out, JSON.stringify(result, null, 2) + '\n');
+    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    process.exitCode = manifest.acceptance === 'r-5' ? (result.reductionSatisfied ? 0 : 1) : (result.reportReadbackSatisfied ? 0 : 1);
+  } else {
+    const snapshot = options.snapshot ? JSON.parse(await readFile(options.snapshot, 'utf8')) : undefined;
+    const metadata = options.metadata ? JSON.parse(await readFile(options.metadata, 'utf8')) : undefined;
+    const report = await measure(options.roots, options.hours, { rerunSeconds: options.rerunSeconds, snapshot,
+      sessionMetadata: metadata ? metadata.sessions : [] });
+    if (metadata) report.metadataCoverage = { capturedAt: metadata.capturedAt, source: metadata.source, rows: metadata.sessions?.length || 0 };
+    if (options.out) await writeFile(options.out, JSON.stringify(report, null, 2) + '\n');
+    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+  }
 }

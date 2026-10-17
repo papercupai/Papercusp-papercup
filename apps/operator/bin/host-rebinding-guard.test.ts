@@ -4,7 +4,7 @@
  * no Origin header; these tests pin that it is refused on a loopback-bound
  * operator while every legitimate local caller still passes.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Hono } from 'hono';
@@ -89,6 +89,26 @@ describe('hostRebindingGuard middleware', () => {
       if (saved === undefined) delete process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN;
       else process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN = saved;
     }
+  });
+
+  it('keeps explicit desktop policy independent of inherited remote-admin exemptions', async () => {
+    vi.stubEnv('PAPERCUSP_ALLOW_REMOTE_ADMIN', '1');
+    vi.stubEnv('PAPERCUSP_DISTRIBUTION_PROFILE', 'hosted-control-plane');
+    try {
+      let reads = 0;
+      const desktop = new Hono();
+      desktop.use('/api/*', (c, next) => hostRebindingGuard(c, next, {}));
+      desktop.get('/api/coord/presence', c => { reads++; return c.json({ active: [] }); });
+      const url = 'http://127.0.0.1/api/coord/presence';
+      const denied = await desktop.request(url, { headers: { host: 'foreign-roster.invalid' } });
+      expect(denied.status).toBe(403);
+      expect((await denied.json()).error.code).toBe('host_not_allowed');
+      expect(reads).toBe(0);
+      expect((await desktop.request(url, { headers: { host: '127.0.0.1' } })).status).toBe(200);
+      expect(reads).toBe(1);
+      // The ordinary middleware still honors the real operator's opt-in.
+      expect((await app.request(url, { headers: { host: 'foreign-roster.invalid' } })).status).toBe(200);
+    } finally { vi.unstubAllEnvs(); }
   });
 });
 

@@ -24,6 +24,8 @@ const h = vi.hoisted(() => ({
   setRunPhase: vi.fn(),
   settleRunPhase: vi.fn(),
   callPlansRead: vi.fn(),
+  readInboxWindow: vi.fn(),
+  readAckedMsgIds: vi.fn(),
   inProcessCall: vi.fn(),
   innerCall: vi.fn(),
   dispatchAttentionTerminalAction: vi.fn(),
@@ -54,8 +56,13 @@ vi.mock('../../attention/automation-policy', async (importOriginal) => ({
   readStandingBulkAutomationPolicy: h.readStandingBulkAutomationPolicy,
 }));
 vi.mock('../plans/read-dispatch', () => ({ callPlansRead: h.callPlansRead }));
+vi.mock('../coordination/messages', () => ({
+  readInboxWindow: h.readInboxWindow,
+  readAckedMsgIds: h.readAckedMsgIds,
+}));
 vi.mock('../_compound-dispatch', () => ({ inProcessCall: h.inProcessCall }));
 vi.mock('../coordination/identity', () => ({
+  ADMIN_COORD_UI_OWNER: 'pc-admin-coord-ui',
   resolveAgentIdentity: () => ({ ownerId: 'su-resolver' }),
 }));
 vi.mock('../coordination/inbox-reply', () => ({ deliverInboxOwnerReply: vi.fn() }));
@@ -112,10 +119,12 @@ beforeEach(() => {
   h.getRunItems.mockResolvedValue([item]);
   h.recordRunHeartbeat.mockResolvedValue(run);
   h.failRunIfExecuting.mockResolvedValue({ ...run, phase: 'failed' });
-  h.reportOutcomes.mockResolvedValue({ unknown: [], preserved: [], refused: null });
+  h.reportOutcomes.mockResolvedValue({ updated: [], unknown: [], preserved: [], refused: null });
   h.callPlansRead.mockResolvedValue({
     groups: [{ items: [{ id: item.itemId, ref: item.ref, actions: [{ id: 'ack', label: 'Acknowledge' }] }] }],
   });
+  h.readInboxWindow.mockResolvedValue({ entries: [], exhausted: true, rowsScanned: 0, pages: 0 });
+  h.readAckedMsgIds.mockResolvedValue(new Set<string>());
   h.inProcessCall.mockReturnValue(h.innerCall);
   h.dispatchAttentionTerminalAction.mockResolvedValue({ resolved: true });
   h.readStandingBulkAutomationPolicy.mockResolvedValue({ level: 'L1', minConfidence: 'high' });
@@ -203,6 +212,53 @@ describe('inbox:bulk-run-report conditional error contract', () => {
     expect(schemaText).toContain('constraint:$');
     expect(schemaText).toContain('skipped or failed');
     expect(schemaText).toContain('non-empty reason');
+  });
+});
+
+describe('inbox:bulk-run-report late-return evidence', () => {
+  it('returns the exact rows updated when a bulk report partially matches the run snapshot', async () => {
+    const unknownItemId = 'attention-outside-run';
+    h.reportOutcomes.mockResolvedValue({
+      updated: [item.itemId],
+      unknown: [unknownItemId],
+      preserved: [],
+      refused: null,
+    });
+
+    const result = body(
+      await bulkRunReport.handler(
+        {
+          runId: run.runId,
+          items: [
+            { itemId: item.itemId, outcome: 'failed', error: 'The resolver could not handle this item.' },
+            { itemId: unknownItemId, outcome: 'failed', error: 'This id is not in the run snapshot.' },
+          ],
+        },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+
+    expect(result).toMatchObject({ runId: run.runId, wrote: 1, updatedItemIds: [item.itemId] });
+    expect(result.ignored).toMatchObject({ itemIds: [unknownItemId] });
+  });
+
+  it('returns explicit zero-write evidence when the active run is absent', async () => {
+    h.getActiveRun.mockResolvedValueOnce(null);
+
+    const result = body(
+      await bulkRunReport.handler(
+        { itemId: item.itemId, outcome: 'failed', error: 'No run is active.' },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'no_active_run',
+      runId: null,
+      wrote: 0,
+      updatedItemIds: [],
+    });
   });
 });
 
@@ -312,6 +368,50 @@ describe('inbox:bulk-run-manifest canonical action vocabulary', () => {
         }),
       ]),
     );
+  });
+
+  it('hydrates a selected coord-message from the exact inbox window when the latest attention page omits it', async () => {
+    const stale = {
+      ...item,
+      itemId: 'coord-message:older-message',
+      ref: { kind: 'coord-message', msgId: 'older-message' },
+    };
+    h.getRunItems.mockResolvedValue([stale]);
+    h.callPlansRead.mockResolvedValue({ groups: [] });
+    h.readInboxWindow.mockResolvedValue({
+      entries: [{
+        msg_id: 'older-message',
+        ts: '2026-10-16T12:00:00.000Z',
+        kind: 'message',
+        from: 'su-sender',
+        to: ['human'],
+        summary: 'An older selected message',
+        body: 'The message is still live.',
+      }],
+      exhausted: true,
+      rowsScanned: 1,
+      pages: 1,
+    });
+
+    const result = body(
+      await bulkRunManifest.handler({ runId: run.runId }, { workspaceId: run.workspaceId } as never),
+    );
+
+    expect(h.readInboxWindow).toHaveBeenCalledWith(
+      'human',
+      { kinds: ['message'] },
+      expect.any(Function),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      items: [expect.objectContaining({
+        itemId: stale.itemId,
+        actions: [
+          { id: 'ack', label: 'Acknowledge', terminal: true },
+          { id: 'discuss', label: 'Discuss', terminal: false },
+        ],
+      })],
+    });
   });
 });
 
@@ -903,6 +1003,52 @@ describe('inbox:bulk-run-act authority boundary', () => {
         { workspaceId: run.workspaceId } as never,
       ),
     );
+    expect(result).toMatchObject({ ok: true, outcome: 'auto_resolved', actionDispatched: true });
+    expect(h.dispatchAttentionTerminalAction).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-validates a selected coord-message through the exact inbox window after attention pagination moves', async () => {
+    const activeItem = {
+      ...item,
+      itemId: 'coord-message:older-message',
+      ref: { kind: 'coord-message', msgId: 'older-message' },
+    };
+    h.getRunItems.mockResolvedValue([activeItem]);
+    h.callPlansRead.mockResolvedValue({ groups: [] });
+    h.readInboxWindow.mockResolvedValue({
+      entries: [{
+        msg_id: 'older-message',
+        ts: '2026-10-16T12:00:00.000Z',
+        kind: 'message',
+        from: 'su-sender',
+        to: ['human'],
+        summary: 'An older selected message',
+        body: 'The message is still live.',
+      }],
+      exhausted: true,
+      rowsScanned: 1,
+      pages: 1,
+    });
+    h.executeBulkRunAction.mockImplementation(async (input: ExecuteInput) => ({
+      actionResult: await input.execute(),
+      item: { ...activeItem, outcome: 'auto_resolved', actionId: input.actionId, rationale: input.rationale },
+      run: { ...run, autoResolved: 1 },
+      refused: null,
+    }));
+
+    const result = body(
+      await bulkRunAct.handler(
+        {
+          runId: run.runId,
+          itemId: activeItem.itemId,
+          actionId: 'ack',
+          rationale: 'The selected message is still live and should be acknowledged.',
+          confidenceLevel: 'high',
+        },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+
     expect(result).toMatchObject({ ok: true, outcome: 'auto_resolved', actionDispatched: true });
     expect(h.dispatchAttentionTerminalAction).toHaveBeenCalledTimes(1);
   });

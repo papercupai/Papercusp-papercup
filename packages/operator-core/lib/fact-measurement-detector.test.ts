@@ -138,6 +138,16 @@ describe('fact absence detector — a worded absence gets its own advisory (EI-2
     expect(detectFactAbsenceClaims('The result was not emitted.')).not.toEqual([]);
   });
 
+  it('does not mistake an imperative do-not instruction for an observed absence', () => {
+    const rule =
+      'Do not draft or send from that listing alone, while the original recipient probe recorded a historical CATCH_ALL result.';
+    expect(detectFactAbsenceClaims(rule), rule).toEqual([]);
+    expect(detectFactAbsenceClaims('The original recipient probe did not record a CATCH_ALL result.')).not.toEqual(
+      [],
+    );
+    expect(detectFactAbsenceClaims('I do not record a CATCH_ALL result.')).not.toEqual([]);
+  });
+
   it('keeps a literal scheduler sentinel separate from an unrelated nearby match', () => {
     const body = 'Scheduler read-back: none [mq-deadline]; installed script matches the source SHA-256.';
     expect(detectFactAbsenceClaims(body)).toEqual([]);

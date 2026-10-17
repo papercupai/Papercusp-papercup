@@ -84,6 +84,7 @@ import {
 import {
   describeUnreadableFrozenCandidateRepairQueue,
   type FrozenCandidateRepairQueueRead,
+  type RepairSignatureEntry,
 } from './release/frozen-candidate-repair-queue';
 
 /** Hard cap on rendered failing files — the result is read in-prompt. */
@@ -354,6 +355,12 @@ export interface ReadGateCandidateFailuresOpts {
    */
   queueLegs?: readonly FrozenRepairLegState[] | null;
   /**
+   * WI-6554700010009052: the persisted candidate signature is the first record of a red
+   * lint leg. It exists before the first repair tick has populated either queueLegs or
+   * repairTickLegs, so retain lint-leg admissions as the unmeasured lifecycle fallback.
+   */
+  queueSignature?: readonly RepairSignatureEntry[] | null;
+  /**
    * WI-2143253: the repair queue's own already-parsed per-leg measurement
    * (`gate_health.repairTickLegs`, via `parseRepairTickLegs` in
    * `git-pipeline-stats.ts`) — pass it straight through; this module does not fetch it.
@@ -423,14 +430,15 @@ function unavailable(
  */
 export function unmeasuredNonTestLegs(
   queueLegs?: readonly FrozenRepairLegState[] | null,
+  queueSignature?: readonly RepairSignatureEntry[] | null,
 ): GateCandidateFailures['nonTestLegs'] {
-  const perLeg = buildPerLeg(null, queueLegs);
+  const perLeg = buildPerLeg(null, queueLegs, queueSignature);
   const outstanding = outstandingLegIds(perLeg, null);
   const admitted = perLeg.length;
   const reading =
     admitted === 0
       ? 'NOT MEASURED — no repair-tick leg snapshot exists for this queue (no hold tick has run yet, no repair queue is open, or a real verdict cleared it), and the cycle has admitted no leg. This is not "no legs failing".'
-      : `NOT MEASURED — no repair-tick leg snapshot exists for this queue; the ${admitted} leg(s) listed come from the cycle's own lifecycle alone` +
+      : `NOT MEASURED — no repair-tick leg snapshot exists for this queue; the ${admitted} leg(s) listed come from the persisted signature/lifecycle alone` +
         (outstanding.length > 0
           ? `, and ${outstanding.length} of them (${outstanding.join(', ')}) are still FAILING there. Not measuring a leg is not a pass.`
           : '. Not measuring a leg is not a pass.');
@@ -459,8 +467,9 @@ function buildNonTestLegs(
   snap: StoredRepairTickLegs | null | undefined,
   repairHeadSha: string | null,
   queueLegs?: readonly FrozenRepairLegState[] | null,
+  queueSignature?: readonly RepairSignatureEntry[] | null,
 ): GateCandidateFailures['nonTestLegs'] {
-  if (!snap) return unmeasuredNonTestLegs(queueLegs);
+  if (!snap) return unmeasuredNonTestLegs(queueLegs, queueSignature);
   const current = repairTickLegsCurrent(snap, repairHeadSha);
   const failing = snap.legs.filter((l) => l.status !== 'pass');
   const reading =
@@ -469,7 +478,7 @@ function buildNonTestLegs(
       : failing.length === 0
         ? 'All measured non-test legs (lint/perf/desktop/delta) passed at this repairHead.'
         : `${failing.length} non-test leg(s) failing at this repairHead: ${failing.map((l) => l.id).join(', ')}.`;
-  const perLeg = buildPerLeg(snap, queueLegs);
+  const perLeg = buildPerLeg(snap, queueLegs, queueSignature, current);
   return {
     current,
     head: snap.head,
@@ -535,23 +544,36 @@ export function staleUnadmittedRedLegIds(
 function buildPerLeg(
   snap: StoredRepairTickLegs | null,
   queueLegs?: readonly FrozenRepairLegState[] | null,
+  queueSignature?: readonly RepairSignatureEntry[] | null,
+  current: boolean | null = null,
 ): GateCandidateFailures['nonTestLegs']['perLeg'] {
   // No snapshot ⇒ nothing was measured this tick: every row is `not-measured`, and only
-  // the cycle's lifecycle speaks (a `failing` leg stays outstanding — D-005 rule 4).
+  // the cycle's lifecycle/signature speaks (a `failing` leg stays outstanding — D-005 rule 4).
   const measured = new Map((snap?.legs ?? []).map((leg) => [leg.id, leg.status]));
   const lifecycles = new Map((queueLegs ?? []).map((leg) => [leg.id, leg]));
-  const ids = [...new Set([...measured.keys(), ...lifecycles.keys()])].sort();
+  const signature = new Map(
+    (queueSignature ?? []).filter((entry) => entry.kind === 'lint-leg').map((entry) => [entry.id, entry]),
+  );
+  const ids = [...new Set([...measured.keys(), ...lifecycles.keys(), ...signature.keys()])].sort();
   return ids.map((id) => {
     const measuredNow: RepairLegStatus | 'not-measured' = measured.get(id) ?? 'not-measured';
     const state = lifecycles.get(id);
-    const lifecycle = state ? state.state : ('never-admitted' as const);
-    const fixedAtHead = state?.state === 'fixed' ? (state.resolvedHead ?? null) : null;
+    const signatureEntry = signature.get(id);
+    let lifecycle: 'failing' | 'fixed' | 'never-admitted' = state?.state ?? (signatureEntry ? 'failing' : 'never-admitted');
+    let fixedAtHead = state?.state === 'fixed' ? (state.resolvedHead ?? null) : null;
+    // A same-head pass is the leg's own re-run, so it resolves a signature-only admission
+    // even before the queue's next write persists a FrozenRepairLegState. A stale pass does
+    // not erase the candidate's red signature.
+    if (signatureEntry && current !== false && measuredNow === 'pass') {
+      lifecycle = 'fixed';
+      fixedAtHead = snap?.head ?? null;
+    }
     return {
       id,
       measuredNow,
       lifecycle,
       fixedAtHead,
-      admittedRound: state?.admittedRound ?? null,
+      admittedRound: state?.admittedRound ?? signatureEntry?.admittedRound ?? null,
       reading: perLegReading(id, measuredNow, lifecycle, fixedAtHead),
     };
   });
@@ -980,7 +1002,7 @@ export async function readGateCandidateFailures(
   const nonTestLegsMeasured: GateCandidateFailures['nonTestLegsMeasured'] = opts.repairTickLegs
     ? 'measured'
     : 'not-recorded';
-  const nonTestLegs = buildNonTestLegs(opts.repairTickLegs, repairHeadSha, opts.queueLegs);
+  const nonTestLegs = buildNonTestLegs(opts.repairTickLegs, repairHeadSha, opts.queueLegs, opts.queueSignature);
   if (opts.repairQueueRead?.status === 'unreadable') {
     return unavailable(
       `${describeUnreadableFrozenCandidateRepairQueue(opts.repairQueueRead)}; ` +

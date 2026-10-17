@@ -73,9 +73,12 @@ describe('scoped-superuser transport boundary', () => {
       applyScopedSuperuserTransportBoundary({ name: 'memory:remember', crossWorkspace: true }, scopedCaller),
     ).resolves.toMatchObject({ ok: true, scopedSuperuserClamp: true });
     await expect(
+      applyScopedSuperuserTransportBoundary({ name: 'pot_git:integration_requests', crossWorkspace: true }, scopedCaller),
+    ).resolves.toMatchObject({ ok: true, scopedSuperuserClamp: true });
+    await expect(
       applyScopedSuperuserTransportBoundary({ name: 'flags:set', crossWorkspace: true }, scopedCaller),
     ).resolves.toMatchObject({ ok: true, scopedSuperuserClamp: true });
-    expect(safeToolsRemoveSetMock).toHaveBeenCalledTimes(1);
+    expect(safeToolsRemoveSetMock).toHaveBeenCalledTimes(2);
   });
 
   it('still rejects engineer-only tools from a power profile', async () => {

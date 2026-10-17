@@ -47,12 +47,19 @@ export default defineTool({
     const { ownerId } = readIdentity(ctx);
     // The reclaim reads leases only after it holds this same mutex. A pin either
     // lands before that read, or verifies its target still exists after reclaim.
+    // Keep the shared fs-mutex wait policy when the host did not provide a
+    // deadline. The previous six-second fallback became a hard five-second
+    // cap, so a normal retention pass could make a valid pin fail transiently.
+    const deadlineAtMs = ctx.deadlineAtMs;
+    const mutexOptions = typeof deadlineAtMs === 'number' && Number.isFinite(deadlineAtMs)
+      ? { timeoutMs: Math.max(1, deadlineAtMs - Date.now() - 1_000) }
+      : {};
     return withFsMutex('papercusp-disk-retention', async () => {
       if (args.op === 'pin') {
         const pin = createRetentionPin({ path: args.path, reason: args.reason, expiresAt: args.expiresAt, owner: ownerId });
         return { data: { ok: true, op: args.op, pin } };
       }
       return { data: { ok: true, op: args.op, id: args.id, removed: removeRetentionPin(args.id, ownerId) } };
-    }, { timeoutMs: Math.max(1, Math.min(5000, (ctx.deadlineAtMs ?? Date.now() + 6000) - Date.now() - 500)) });
+    }, mutexOptions);
   },
 });

@@ -26,6 +26,10 @@ beforeEach(() => resetSidecarReadLatencyForTest());
 describe('qualifiesForLazyReceipt — the shared read-only git classifier', () => {
   it('accepts read-only subcommands, including behind global options', () => {
     expect(qualifiesForLazyReceipt(READ)).toBe(true);
+    expect(qualifiesForLazyReceipt({
+      command: 'git',
+      args: ['-C', '/repo', 'check-ignore', '-q', '--no-index', '--', '.papercusp/state'],
+    })).toBe(true);
     expect(qualifiesForLazyReceipt({ command: '/usr/bin/git', args: ['-C', '/repo', 'log', '-1'] })).toBe(true);
     expect(qualifiesForLazyReceipt({ command: 'git', args: ['--no-pager', '-c', 'a=b', 'cat-file', '-t', 'x'] })).toBe(
       true,

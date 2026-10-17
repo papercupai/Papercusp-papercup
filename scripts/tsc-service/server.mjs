@@ -18,6 +18,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   TSC_SERVICE_MAX_CHECKED_FILES,
   checkedSetFor,
+  namedSetFor,
   refreshProjectRootFiles,
   renderDiagnostics,
   tscServiceSocketPath,
@@ -131,13 +132,16 @@ async function serve({ request, arrivedAt }) {
     return { ok: false, reason: 'declaration-emit-project', detail: 'service parity unverified for declaration diagnostics' };
   }
   const program = project.program;
-  const scope = checkedSetFor({
-    root: ROOT,
-    named: request.files,
-    programFiles: await program.getSourceFileNames(),
-    configFile: request.project,
-    readText: cachedText,
-  });
+  const programFiles = await program.getSourceFileNames();
+  const scope = request.scope === 'named'
+    ? namedSetFor({ root: ROOT, named: request.files, programFiles })
+    : checkedSetFor({
+        root: ROOT,
+        named: request.files,
+        programFiles,
+        configFile: request.project,
+        readText: cachedText,
+      });
   if (scope.files.length > TSC_SERVICE_MAX_CHECKED_FILES) {
     return {
       ok: false,
@@ -201,6 +205,9 @@ function validate(request) {
     return `files must be 1..${MAX_REQUEST_FILES} paths`;
   }
   if (!request.files.every((f) => typeof f === 'string')) return 'files must be strings';
+  if (request.scope !== undefined && request.scope !== 'dependencies' && request.scope !== 'named') {
+    return 'scope must be dependencies or named';
+  }
   return null;
 }
 

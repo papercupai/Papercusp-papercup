@@ -228,4 +228,28 @@ describe('memory:list — bounded by default (oversized-tool-results-reduction-2
     expect(out.truncated).toBeUndefined();
     expect(out.next_offset).toBeUndefined();
   });
+
+  it('uses the backend listPage capability so skipped rows are never materialized by the handler', async () => {
+    const listPage = vi.fn(async () => ({
+      entries: many(2),
+      total: 202,
+    }));
+    const legacyList = vi.fn(async () => {
+      throw new Error('unbounded list fallback should not run');
+    });
+    useBackend({
+      name: 'paged',
+      available: vi.fn(async () => ({ ok: true })),
+      list: legacyList,
+      listPage,
+    });
+
+    const out = parse(await list.handler({ limit: 2, offset: 200 }, ctx)) as unknown as Page;
+
+    expect(listPage).toHaveBeenCalledWith(expect.objectContaining({ limit: 2, offset: 200 }));
+    expect(legacyList).not.toHaveBeenCalled();
+    expect(out.total).toBe(202);
+    expect(out.results).toHaveLength(2);
+    expect(out.truncated).toBeUndefined();
+  });
 });

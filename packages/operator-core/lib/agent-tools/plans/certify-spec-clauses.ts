@@ -31,6 +31,7 @@ import { getBuildInfo } from '../../build-info';
 import { GRADING_AUDIT_RESERVATION_TTL_MS } from '../../grading-integrity';
 import { getWorkItem } from '../../work-items';
 import { specTestAdequacyCompletionGate } from '../work_items/spec-test-adequacy-gate';
+import type { SpecTestAdequacyMeasurementEvidence } from '../../harness/improvements/observation-types';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -59,6 +60,7 @@ type EvaluatorRow = {
   verdict?: unknown;
   wouldBlock?: unknown;
   scorecardDraft?: unknown;
+  measurementEvidence?: SpecTestAdequacyMeasurementEvidence;
 };
 
 type StrandedCard = { issueId: string; evaluatorBuild: { sha: string; version: string } };
@@ -68,6 +70,7 @@ type ClauseOutcome = {
   specRevision: number | null;
   verdict: string;
   wouldBlock: string[];
+  measurementEvidence?: SpecTestAdequacyMeasurementEvidence;
   card:
     | { status: 'filed' | 'unchanged'; issueId: string | null }
     | { status: 'would-file' }
@@ -132,7 +135,7 @@ export default defineTool({
       "Reading one clause's ratings without filing — plans:evaluate-spec-test-adequacy. Filing any other rubric — scorecards:emit.",
     chaining: 'plans:bind-spec-evidence → plans:certify-spec-clauses → work_items:complete.',
     returns:
-      '{ ok, dryRun, counts, clauses } — ok is true only when the evaluation succeeded and no passing clause was refused. counts = { clauses, passing, filed, unchanged, refused, notPassing }. Each clause row carries specId, specRevision, verdict, wouldBlock and card.status (filed | unchanged | would-file | not-passing | refused, with code and error when refused). A row also carries strandedSuperseded { issueId, evaluatorBuild } when its card superseded a pending card whose audit no host can dispatch (recorded on a different evaluator build, no live reservation). When the evaluator itself refuses, ok is false and `evaluator` carries its reply (error, remedy) unchanged.',
+      '{ ok, dryRun, counts, clauses, evaluatorBuild } — ok is true only when the evaluation succeeded and no passing clause was refused. counts = { clauses, passing, filed, unchanged, refused, notPassing }. Each clause row carries specId, specRevision, verdict, wouldBlock, the evaluator measurementEvidence (including unavailable binding reasons), and card.status (filed | unchanged | would-file | not-passing | refused, with code and error when refused). A row also carries strandedSuperseded { issueId, evaluatorBuild } when its card superseded a pending card whose audit no host can dispatch (recorded on a different evaluator build, no live reservation). When the evaluator itself refuses, ok is false and `evaluator` carries its reply (error, remedy) unchanged.',
     seeAlso: ['plans:evaluate-spec-test-adequacy', 'scorecards:emit'],
   },
   capability: 'coord:write',
@@ -234,6 +237,7 @@ export default defineTool({
         specRevision: typeof row.specRevision === 'number' ? row.specRevision : null,
         verdict,
         wouldBlock,
+        ...(row.measurementEvidence ? { measurementEvidence: row.measurementEvidence } : {}),
       };
       if (verdict !== 'pass' || wouldBlock.length > 0) {
         clauses.push({ ...base, card: { status: 'not-passing' } });
@@ -335,6 +339,7 @@ export default defineTool({
         ok: counts.refused === 0,
         dryRun,
         slug: evaluation.slug,
+        evaluatorBuild: evaluation.evaluatorBuild,
         classRef: evaluation.classRef,
         governing: evaluation.governing,
         ...(typeof evaluation.governingNote === 'string' ? { governingNote: evaluation.governingNote } : {}),

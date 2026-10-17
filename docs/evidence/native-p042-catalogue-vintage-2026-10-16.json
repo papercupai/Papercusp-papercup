@@ -1,0 +1,60 @@
+{
+  "schemaVersion": "native-p042-catalogue-settlement-v1",
+  "workItem": "EI-26175452189978263",
+  "reason": "System superseded-before-commit notice for mutable shared census artifact. Extract the unchanged catalogue evidence without rewriting shared history or rerunning saved proofs.",
+  "historicalEvidence": {
+    "workItem": "EI-26175452189978263",
+    "scope": "Correct the false live-registry parity claim while preserving the frozen S37/W01 GitNexus-era measurement instrument. This is source qualification, not current native-route acceptance.",
+    "rootCause": "The catalogue header described fixture tool descriptions as live registry openings after graph:query moved to first-party producers. The runner fingerprints scenario source and version, so replacing this imported catalogue's model inputs would change the instrument without changing that scenario identity.",
+    "sourceWitnesses": [
+      "packages/operator-core/lib/llm-testing/targets/code-search-catalog.ts:13 explicitly identifies the frozen baseline, its original GitNexus attribution and the separate versioned native remeasurement requirement.",
+      "packages/operator-core/lib/agent-tools/gitnexus/query.ts:119 describes current first-party syntax/compiler producers.",
+      "libs/testing-shell/src/llm/runner.ts:997 hashes the scenario file through readScenarioHash; libs/testing-shell/src/llm/identity.ts composes that hash and the scenario version into run identity.",
+      "packages/operator-core/lib/llm-testing/__tests__/su-catalog.test.ts:60 guards the JSON identity of the entire catalogue, including descriptions, schemas and order."
+    ],
+    "preservedCatalogueJsonSha256": "2e093cbebe8a5d896fb658d2bea8af151809a31cb6601ea70f45d7fcc357f3dd",
+    "sourceHashes": {
+      "packages/operator-core/lib/llm-testing/targets/code-search-catalog.ts": "685187bf1caa156123dd03bdb11af555ef6c952ab18538bcacb4f1f9268e4b50",
+      "packages/operator-core/lib/llm-testing/__tests__/su-catalog.test.ts": "094dbbfb08cd7cd4750f4fcbdc7518fdc87643e3d3b390c13c78d6f907fc87e7",
+      "packages/operator-core/lib/llm-testing/scenarios/su/S37-code-search-discipline.ts": "f5a58377fc2c5f140a14be16a18640759ce669fe22c8b0bb860cf8165e869357",
+      "packages/operator-core/lib/llm-testing/scenarios/su/S37-code-search-discipline.test.ts": "f3341a5c213b9d482b22b8dc5e9ef24ebd5a9e903312bda3b89e601aa6d8fbe2"
+    },
+    "focusedVerification": [
+      {
+        "testFile": "packages/operator-core/lib/llm-testing/__tests__/su-catalog.test.ts",
+        "passed": 37,
+        "skipped": 0,
+        "childSubstituted": 0,
+        "unhandledErrors": 0,
+        "log": "/tmp/native-p042-catalogue-vintage-tests-v3-20261016.log",
+        "capture": "/tmp/native-p042-catalogue-vintage-source-v3-20261016.json",
+        "captureSha256": "2aabe0702e78af3dcec7e93c0658aeb8406c54da871feccc82d14abd4d023851",
+        "terminalExitCode": 0,
+        "nativeVerdict": "passed; modulePopulationMatched=true; terminalHook=onTestRunEnd",
+        "sourceQualification": "All 1093 captured repository-worker Vite pre-transform originals matched current files at readback; sourceEvidence.status=stable. This does not measure native dependencies, runner code, runtime reads or a complete execution closure."
+      },
+      {
+        "testFile": "packages/operator-core/lib/llm-testing/scenarios/su/S37-code-search-discipline.test.ts",
+        "passed": 10,
+        "skipped": 0,
+        "childSubstituted": 0,
+        "unhandledErrors": 0,
+        "log": "/tmp/native-p042-catalogue-vintage-tests-20261016.log",
+        "capture": "/tmp/native-p042-catalogue-vintage-source-20261016.json",
+        "captureSha256": "f71b4645fcac42abc0cea14f2fb83ed7558098a9e475ae68285ffdf4c5d0dc47",
+        "terminalExitCode": 0,
+        "sourceQualification": "All 67 captured repository-worker Vite pre-transform originals matched current files at readback; sourceEvidence.status=stable. The saved 37-case catalogue row in this older capture is superseded by the v3 row above because nine transitive memory-module files changed after the earlier run."
+      }
+    ],
+    "intermediateRun": "The v2 catalogue run also passed 37 cases but supplied only PC_EXECUTED_SOURCE_MAP_OUT, without PC_EXECUTED_SOURCE_MAP_WORKSPACE. It produced no original-source capture and is not used for current import qualification. Caller-side friction was captured; v3 sets both variables and PAPERCUSP_TEST_RUN_HARNESS=papercusp.",
+    "historicalCensusQualification": "sourceClassificationContinuation20261016.sourceHashes remains the historical source image from that audit. Its old catalogue hash and live-parity finding are superseded only for this repaired file by the source hashes and scope recorded here.",
+    "limits": [
+      "Local dirty-tree proof only; no committed, promoted, deployed or final-shipment claim.",
+      "No paid behavior battery, model run, live GitNexus operation, current native-route outcome or benefit measurement was performed.",
+      "P042 stored-documentation census, original P012 outcome measurement and deployed P018 48-hour freshness remain open.",
+      "D018 source-only maintenance, D005 internal optional authority, D004 distribution exclusion and the unanswered P040/P041 owner scope wall are unchanged."
+    ]
+  },
+  "currentNamedSourceMismatches": [],
+  "scope": "Current named catalogue/scenario source hashes match the historical qualified sources. Historical capture readback statements retain their original time and scope; no fresh full-execution-graph or runtime claim."
+}

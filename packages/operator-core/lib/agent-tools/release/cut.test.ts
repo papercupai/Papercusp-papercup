@@ -88,6 +88,13 @@ const launchM = vi.mocked(launchDetachedCut);
 const statusM = vi.mocked(readCutStatus);
 const handoffM = vi.mocked(collectHandoff);
 const preflightM = vi.mocked(preflightCut);
+
+describe('release:cut transport budget (EI-26107428212758754)', () => {
+  it('declares a handler budget above the flat MCP deadline for reclaim scans', async () => {
+    const { default: tool } = await import('./cut');
+    expect((tool as unknown as { timeoutSec?: number }).timeoutSec).toBe(120);
+  });
+});
 const abortLegM = vi.mocked(abortLeg);
 const gateM = vi.mocked(readOrCreateGate);
 const registryM = vi.mocked(loadHarnessRegistry);

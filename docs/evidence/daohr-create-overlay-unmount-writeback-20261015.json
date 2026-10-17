@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "DAO HR create-only serving Docker overlay unmount diagnosis",
+  "workItemId": "EI-25743726287946570",
+  "parentWorkItemId": "WI-6554700010008618",
+  "planSlug": "dao-hr-people-2026-10-11",
+  "candidateAccepted": false,
+  "evidencePlane": "create-only-daemon-diagnostic",
+  "taskId": "0mva3dwc4tpj40t1boq",
+  "exitCode": 0,
+  "startedAt": "2026-10-15T22:10:11.823Z",
+  "finishedAt": "2026-10-15T22:12:24.316Z",
+  "command": "node .papercusp/scratch/daohr-create-serving-20261015-2205/probe.mjs",
+  "probeSha256": "d363ed241173ea20101f5167d2e4a42313c9b9880853e6cd3c72b564f4cd7696",
+  "helperSha256": "9cf4afba9bdd8b518373eeed121084696e758d5de55bb11ac5c0664775ca787c",
+  "endpoint": "unix:///run/docker.sock",
+  "servingPid": 16084,
+  "servingCmdline": "/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock",
+  "image": "testcontainers/ryuk@sha256:7c1a8a9a47c780ed0f983770a662f80deb115d95cce3e2daa3d12115b8cd28f0",
+  "imageId": "sha256:9a5f93e8f9300530b91866bcf41c0b8a5d72f0e5a7b4365167a48df9816cd36e",
+  "network": "none",
+  "guestStarted": false,
+  "createDurationMs": 126242,
+  "removeDurationMs": 438,
+  "ownership": {
+    "containerName": "papercusp-native-5a98b89f-0c5f-4c4a-be42-73fb35e0e141",
+    "containerId": "ec4cb16007bb8ad31667f4f8ef80f6ad4d71c90a2d7f90a401060f1f4274aa95",
+    "ownerToken": "f51beec6-6b3f-4411-a5b6-45aa39d03bcb",
+    "removed": true,
+    "cleanupPending": false,
+    "ownedAbsent": true,
+    "intentionalStop": "DIAGNOSTIC_STOP_BEFORE_GUEST"
+  },
+  "receipt": {
+    "path": ".papercusp/scratch/daohr-create-serving-20261015-2205/receipt.json",
+    "sha256": "540e781c2dae02a6196a86b2d2312cb101fbb608ea683d679e9e8853d52b3bef"
+  },
+  "samples": [
+    {
+      "label": "baseline",
+      "at": "2026-10-15T22:10:17.239Z",
+      "activeCreateStacks": 0,
+      "path": ".papercusp/scratch/daohr-create-serving-20261015-2205/baseline.stacks.txt",
+      "sha256": "5b95f74bc6cd60332a8152ffbe101ca0ace693f204ae225529d22305b47b817b"
+    },
+    {
+      "label": "during-1000",
+      "at": "2026-10-15T22:10:18.974Z",
+      "activeCreateStacks": 1,
+      "goroutine": 87746415,
+      "wait": "fsync through atomicwriter.Close in overlay2.Driver.create",
+      "path": ".papercusp/scratch/daohr-create-serving-20261015-2205/during-1000.stacks.txt",
+      "sha256": "0e5d87aeefa257dd20e262582ec36e25ce7d2f883eb304fa566a4de91607be35"
+    },
+    {
+      "label": "during-10000",
+      "at": "2026-10-15T22:10:27.815Z",
+      "activeCreateStacks": 1,
+      "goroutine": 87746415,
+      "wait": "unmount through overlay2.Driver.Put in layerStore.initMount",
+      "path": ".papercusp/scratch/daohr-create-serving-20261015-2205/during-10000.stacks.txt",
+      "sha256": "2f14a6417fc5957d42802466919ece24b1ace2b8a4b26895e98a5f638c703392"
+    },
+    {
+      "label": "during-30000",
+      "at": "2026-10-15T22:10:48.002Z",
+      "activeCreateStacks": 1,
+      "goroutine": 87746415,
+      "wait": "unmount through overlay2.Driver.Put in layerStore.initMount",
+      "path": ".papercusp/scratch/daohr-create-serving-20261015-2205/during-30000.stacks.txt",
+      "sha256": "f0213b8c7256f78db1ac2a1b786460a888bed5811bccd0df1771d53bdd738fb1"
+    },
+    {
+      "label": "during-90000",
+      "at": "2026-10-15T22:11:47.832Z",
+      "activeCreateStacks": 1,
+      "goroutine": 87746415,
+      "wait": "unmount through overlay2.Driver.Put in layerStore.initMount",
+      "path": ".papercusp/scratch/daohr-create-serving-20261015-2205/during-90000.stacks.txt",
+      "sha256": "4b1de57e9504bb62f9e68dbcc681278f142748acf55a35929624ee168223a7cc"
+    }
+  ],
+  "kernelObservation": {
+    "at": "2026-10-15T22:12:09.412171+00:00",
+    "pid": 16084,
+    "tid": 860658,
+    "activeUnmountThreads": 1,
+    "mountPath": "/var/lib/docker/overlay2/e9d04c8366de815b34824731b6337a2d29d8869672a25b4123bed69e5344fc21-init/merged",
+    "wchan": "rq_qos_wait",
+    "frames": [
+      "rq_qos_wait", "wbt_wait", "__rq_qos_throttle", "blk_mq_submit_bio",
+      "filemap_write_and_wait_range", "sync_blockdev", "sync_filesystem",
+      "ovl_sync_fs", "generic_shutdown_super"
+    ],
+    "backingMount": { "target": "/", "source": "/dev/nvme0n1p2", "fstype": "ext4" },
+    "path": ".papercusp/scratch/daohr-create-serving-20261015-2205/kernel-unmount.json",
+    "sha256": "b60d6dcaaee7870a1c4b3c4f715af3b12a9df234d6c378b08ff53a461c5c280d"
+  },
+  "summary": "During this owned create, the sole observed create goroutine waited first in fsync and then in overlay unmount. The concurrent sole serving-daemon unmount thread was blocked on block writeback throttling while syncing the overlay backing filesystem. The create and exact cleanup completed; no guest was started.",
+  "limitations": [
+    "This is diagnostic evidence, not a real-provider or native hire acceptance pass.",
+    "Snapshots show observed waits, not a continuous time allocation or a measured fraction of the complete create duration.",
+    "The writer or device condition responsible for writeback throttling is not identified.",
+    "No causal equivalence is asserted for prior historical 170-second create or provider failures.",
+    "The sampled layer path was not independently mapped to the returned container ID before its removal.",
+    "The production Docker daemon was not restarted or reconfigured; provider testcase timeout remains unchanged."
+  ]
+}

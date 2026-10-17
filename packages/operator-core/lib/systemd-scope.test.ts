@@ -74,10 +74,14 @@ describe('harmless bounded scope preflight (EI-25807722383059921)', () => {
     expect(spawnFn).toHaveBeenCalledWith('/usr/bin/systemd-run', expect.arrayContaining([
       '--scope', '--property=RuntimeMaxSec=5', '--property=TimeoutStopSec=1', '--', '/usr/bin/true',
     ]), { env, stdio: ['ignore', 'ignore', 'pipe'] });
-    child.stderr.write('Failed to start transient scope unit: Transport endpoint is not connected');
+    const stderrBytes = Buffer.from('Failed to start transient scope unit: Transport endpoint is not connected: café');
+    const splitAt = stderrBytes.indexOf(Buffer.from('é')) + 1;
+    child.stderr.write(stderrBytes.subarray(0, splitAt));
+    child.stderr.end(stderrBytes.subarray(splitAt));
+    await once(child.stderr, 'end');
     child.emit('exit', 1);
     await expect(pending).resolves.toEqual({ ok: false,
-      reason: 'systemd-run probe exited 1: Failed to start transient scope unit: Transport endpoint is not connected' });
+      reason: 'systemd-run probe exited 1: Failed to start transient scope unit: Transport endpoint is not connected: café' });
     expect(child.kill).not.toHaveBeenCalled();
   });
 

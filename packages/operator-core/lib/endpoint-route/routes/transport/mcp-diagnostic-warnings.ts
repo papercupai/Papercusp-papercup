@@ -129,6 +129,15 @@ function isPopulatedCapabilityReadResult(body: Record<string, unknown>): boolean
   // read completed, even when the body itself has zero characters.
   if (typeof body.body === 'string') return true;
 
+  // Saved-result query mode returns matching lines and their total count instead
+  // of a body or selected content. A positive match is populated evidence too.
+  if (Array.isArray(body.matches) && body.matches.length > 0) return true;
+  if (
+    typeof body.matchCount === 'number' &&
+    Number.isSafeInteger(body.matchCount) &&
+    body.matchCount > 0
+  ) return true;
+
   // The remaining machine-readable modes have explicit receipts around their
   // selected bytes/content. Preserve empty byte pages and empty selections too;
   // their offsets/counts are authoritative, unlike an unshaped empty result.

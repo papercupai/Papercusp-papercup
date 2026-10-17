@@ -184,10 +184,20 @@ describe('ledger-derived mutation catches (R-7)', () => {
   it('preserves pre-descriptor proof with an explicit legacy linkage label', () => {
     const row = proof('mutation'); delete row.testRunProvenance!.mutation;
     delete row.testRunProvenance!.mutationBaseline;
+    row.testRunProvenance!.mutationPhase = null;
     expect(rating(row).rating).toBe('pass');
     expect(rating(row).evidence).toContain('mutationLinkage=unverified-legacy');
-    expect(rating(row).evidence).toContain('mutationLeg="mutant"');
+    expect(rating(row).evidence).toContain('mutationLeg=null');
     expect(rating(row).evidence).toContain(failedCase);
+  });
+
+  it('marks a current mutation-probe phase as unverified-current when its descriptor is absent', () => {
+    const row = proof('mutation'); delete row.testRunProvenance!.mutation;
+    delete row.testRunProvenance!.mutationBaseline;
+    expect(rating(row).rating).toBe('pass');
+    expect(rating(row).evidence).toContain('mutationLinkage=unverified-current');
+    expect(rating(row).evidence).not.toContain('mutationLinkage=unverified-legacy');
+    expect(rating(row).evidence).toContain('mutationLeg="mutant"');
   });
 });
 

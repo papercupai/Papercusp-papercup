@@ -1,0 +1,271 @@
+{
+  "schemaVersion": "native-p042-canonical-corpus-census-v1",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "workItem": "WI-6554700010015356",
+  "scope": "Case-insensitive literal GitNexus references in Papercusp tenant canonical docs, live doc parts, Papercusp prompt overrides and two named repository prompt roots. This closes the ranked-search population uncertainty for these exact stores only. It is not an inventory of every alias, harness, memory, runtime consumer or outcome.",
+  "canonicalReaderWriters": [
+    "packages/operator-core/lib/harness/docs/doc-record.ts:listAuthoredDocContents/upsertDocRecord",
+    "packages/operator-core/lib/agent-tools/docs/_engineering-adapter.ts:overlayCanonicalDocs",
+    "scripts/project-doc-parts.mjs:readAllParts/readProjectedParts",
+    "packages/operator-core/lib/hive-settings-store.ts:getHiveInstancePromptOverride/setHiveInstancePromptOverride"
+  ],
+  "queries": {
+    "scope": "workspace_id='papercusp-workspace' AND harness_slug='papercusp'",
+    "docs": "SELECT doc_id,content_mode,status,retired_at IS NOT NULL AS retired,length(content),md5(content) FROM harness_shared.harness_docs WHERE scoped AND content ILIKE %gitnexus% ORDER BY doc_id",
+    "parts": "harness_shared.harness_doc_parts WHERE scoped AND tombstone=false; exact matching bodies read",
+    "overrides": "harness_shared.pot_settings WHERE scoped AND setting_key LIKE 'promptOverride.%'; only prompt overrides read, no credentials"
+  },
+  "docs": {
+    "sourceRowsAtInitialRead": [
+      {
+        "doc_id": "agent-insights/code-intelligence-backends-runbook.mdx",
+        "content_mode": "authored",
+        "status": "review",
+        "retired": false,
+        "chars": 49398,
+        "content_md5": "1f3c042edff9e032618e9c269c0d3f7a"
+      },
+      {
+        "doc_id": "agent-insights/harness-tests-tab-domains.mdx",
+        "content_mode": "authored",
+        "status": "unknown",
+        "retired": false,
+        "chars": 8551,
+        "content_md5": "bfe9f47256b396b31a88a7bfc219fe7b"
+      },
+      {
+        "doc_id": "agent-insights/plugin-tools-empty-registry-window.mdx",
+        "content_mode": "authored",
+        "status": "review",
+        "retired": false,
+        "chars": 4151,
+        "content_md5": "798414e5d25f989de4e41e3be1e71ad7"
+      },
+      {
+        "doc_id": "claude-md",
+        "content_mode": "composed",
+        "status": "untracked",
+        "retired": false,
+        "chars": 90034,
+        "content_md5": "ac8de37351a1f80313da1b0c7bea588b"
+      },
+      {
+        "doc_id": "desktop/native-console.mdx",
+        "content_mode": "authored",
+        "status": "review",
+        "retired": false,
+        "chars": 17171,
+        "content_md5": "22c85d47ef493e3be5f784a9d94b1f4e"
+      },
+      {
+        "doc_id": "endpoint-system/function-as-truth.mdx",
+        "content_mode": "authored",
+        "status": "review",
+        "retired": false,
+        "chars": 11436,
+        "content_md5": "c5f23fc731d0e0fa41fe5fda9fe2bfc3"
+      },
+      {
+        "doc_id": "endpoint-system/superuser-mode.mdx",
+        "content_mode": "authored",
+        "status": "review",
+        "retired": false,
+        "chars": 14194,
+        "content_md5": "c13396cd9fc917c0b1c2c712959855d8"
+      },
+      {
+        "doc_id": "endpoint-system/telemetry.mdx",
+        "content_mode": "authored",
+        "status": "review",
+        "retired": false,
+        "chars": 15096,
+        "content_md5": "ef89a1bddfaf784dae28ee1103005569"
+      },
+      {
+        "doc_id": "endpoint-system/tool-catalog.mdx",
+        "content_mode": "authored",
+        "status": "review",
+        "retired": false,
+        "chars": 22003,
+        "content_md5": "0b38a538c77db910ce804b7c5ba6aaff"
+      },
+      {
+        "doc_id": "reference/agent-insights-index.md",
+        "content_mode": "authored",
+        "status": "review",
+        "retired": true,
+        "chars": 452914,
+        "content_md5": "1c14d575f2146c8294d172d005f8e891"
+      },
+      {
+        "doc_id": "reference/plans-index.md",
+        "content_mode": "authored",
+        "status": "review",
+        "retired": true,
+        "chars": 262188,
+        "content_md5": "8211d8ce5d476d09ce5c8d1cc1f367a9"
+      },
+      {
+        "doc_id": "system/tool-packs.mdx",
+        "content_mode": "authored",
+        "status": "review",
+        "retired": false,
+        "chars": 20714,
+        "content_md5": "f49d9775bafe5872c16e8855af9df415"
+      }
+    ],
+    "exhaustivePartition": [
+      {
+        "populated": true,
+        "live": true,
+        "content_mode": "authored",
+        "mentions_gitnexus": false,
+        "row_count": "1070"
+      },
+      {
+        "populated": true,
+        "live": true,
+        "content_mode": "authored",
+        "mentions_gitnexus": true,
+        "row_count": "9"
+      },
+      {
+        "populated": true,
+        "live": true,
+        "content_mode": "composed",
+        "mentions_gitnexus": true,
+        "row_count": "1"
+      },
+      {
+        "populated": true,
+        "live": false,
+        "content_mode": "authored",
+        "mentions_gitnexus": false,
+        "row_count": "3"
+      },
+      {
+        "populated": true,
+        "live": false,
+        "content_mode": "authored",
+        "mentions_gitnexus": true,
+        "row_count": "2"
+      },
+      {
+        "populated": false,
+        "live": true,
+        "content_mode": "authored",
+        "mentions_gitnexus": false,
+        "row_count": "17"
+      },
+      {
+        "populated": false,
+        "live": false,
+        "content_mode": "authored",
+        "mentions_gitnexus": false,
+        "row_count": "49"
+      }
+    ],
+    "partitionTotal": 1151,
+    "liveMatchingPopulation": [
+      "agent-insights/code-intelligence-backends-runbook.mdx",
+      "agent-insights/harness-tests-tab-domains.mdx",
+      "agent-insights/plugin-tools-empty-registry-window.mdx",
+      "claude-md",
+      "desktop/native-console.mdx",
+      "endpoint-system/function-as-truth.mdx",
+      "endpoint-system/superuser-mode.mdx",
+      "endpoint-system/telemetry.mdx",
+      "endpoint-system/tool-catalog.mdx",
+      "system/tool-packs.mdx"
+    ],
+    "retiredMatchingPopulation": [
+      "reference/agent-insights-index.md",
+      "reference/plans-index.md"
+    ],
+    "priorClassifications": "docs/evidence/native-p042-gitnexus-consumers-2026-10-15.json#canonicalDocumentationBatch20261016; nine authored documents plus composed claude-md recovered separately. Retired index aggregates are archival references, not current engine consumers.",
+    "fileProjectionMatches": [
+      "apps/operator-docs/src/content/docs/endpoint-system/tool-catalog.mdx",
+      "apps/operator-docs/src/content/docs/reference/agent-insights-index.md",
+      "apps/operator-docs/src/content/docs/reference/plans-index.md",
+      "apps/operator-docs/src/content/docs/endpoint-system/function-as-truth.mdx",
+      "apps/operator-docs/src/content/docs/system/tool-packs.mdx",
+      "apps/operator-docs/src/content/docs/endpoint-system/telemetry.mdx",
+      "apps/operator-docs/src/content/docs/endpoint-system/superuser-mode.mdx",
+      "apps/operator-docs/src/content/docs/desktop/native-console.mdx",
+      "apps/operator-docs/src/content/docs/agent-insights/code-intelligence-backends-runbook.mdx",
+      "apps/operator-docs/src/content/docs/agent-insights/harness-tests-tab-domains.mdx",
+      "apps/operator-docs/src/content/docs/agent-insights/plugin-tools-empty-registry-window.mdx"
+    ]
+  },
+  "parts": {
+    "population": 336,
+    "matching": [
+      {
+        "doc_id": "claude-md",
+        "part_key": "storage-policy-postgres-by-d-you-want-use-not",
+        "kind": "invariant",
+        "client_scope": [
+          "all"
+        ],
+        "target_section": "Storage policy: Postgres by default",
+        "chars": 3640,
+        "body_md5": "3b95b3c34927c92e01b58a5ac6f7fce3"
+      },
+      {
+        "doc_id": "claude-md",
+        "part_key": "long-jobs-background-them-at-pgrep-q-does-not-ex#evidence",
+        "kind": "prose",
+        "client_scope": [],
+        "target_section": "Long jobs: background them at the LAUNCH, don't poll for them afterwards",
+        "chars": 4608,
+        "body_md5": "0f64bb096eff9333072a52a212365377"
+      }
+    ],
+    "dispositions": {
+      "storage-policy-postgres-by-d-you-want-use-not": "Keep current first-party routing and optional internal/D004 bounds, as qualified by the prior repair.",
+      "long-jobs-background-them-at-pgrep-q-does-not-ex#evidence": "Narrow unqualified historical definition recommendation; repair and original-paragraph preservation in dedicated deferred-routing evidence."
+    },
+    "postRepairEvidence": "docs/evidence/native-p042-deferred-routing-2026-10-17.json"
+  },
+  "instanceOverrides": {
+    "matchingRows": [
+      {
+        "setting_key": "promptOverride.su",
+        "chars": 37516,
+        "stored_value_md5": "88ba7aab668ed07fef6f3b02543310a2",
+        "updated_at": "1792085514856",
+        "mentions_gitnexus": true
+      }
+    ],
+    "disposition": "Keep the workspace plugin-discovery example as capability metadata, not an assertion that all operations work or evidence of benefit. Canonical value was read separately from its file source."
+  },
+  "repositoryPromptMatches": {
+    "apps/operator/prompts/pot-instances/papercup-pot.su.md": "ae54c655b3ca5a08c091e3781c7db7a1c18cbb4c1fd6273c2e79fd3a23200948",
+    "apps/operator/prompts/architect.tools.md": "99d485d6cb53a98c6c0247918b3016d73dd1789631bec07da4d7d95f46faeee9",
+    "apps/operator/prompts/papercusp-su-engineer.tools.md": "947cc05f31653cc2741a50f2831ebf4fa30af6dce73df49ccca03900eabb4253",
+    "apps/operator/prompts/scoper.tools.md": "55356257e67faa933357e4f74a9da830cbbc85b6bf7388e904967bf0075a11d5",
+    "apps/operator/prompts/papercusp-su-power.tools.md": "5df5c77f38e4053f59e88fc9e066bd6b61b04cb2e4e18ab7a2e7a816c5b9e5df",
+    "apps/operator/prompts/debugger.tools.md": "40493597cae79f0bcc241ae89f4121bc2292d5eebc330f8eb7adcd3400316d2e",
+    "libs/papercusp/packages/harness/blueprints/papercusp-engineer/prompts/agent-base-overlay.md": "6b0f7cef3dea5fa26390eb9b4e1fb34584bc47ab63014312ad1f3ded6a4a41d9",
+    "libs/papercusp/packages/harness/blueprints/base/prompts/release-fixer.md": "a36fcfbffae896c2d003f26ac940728468fbdbfcc5c581358407d81585feb8a3",
+    "libs/papercusp/packages/harness/blueprints/base/prompts/su.md": "68e208cd48836ba8f8822f11ad66993ce5478416a05f9a5074db4a3f75934f2e"
+  },
+  "repositoryPromptDispositions": {
+    "base_and_engineer_overlay": "Keep reuse-first tool examples; these are not a concrete code-question authority.",
+    "release_fixer": "Keep explicitly dated repair-worktree warning; no live gate operation performed.",
+    "engineer_power_debugger_scoper": "Keep source-qualified native routing and optional internal comparison/D004 limits from prior role-guidance repair.",
+    "pot_instance": "Keep generic plugin-discovery example with runtime verification; do not infer every plugin operation works.",
+    "architect": "Narrow unqualified default API-impact workflow, separately filed and assigned self as EI-26184007961589078; api_impact IS a registered operation, so this is not a missing-tool claim."
+  },
+  "remaining": [
+    "Complete architect guidance repair and expand its maintained detector population.",
+    "Original P012 outcome ruling remains separately owned by WI-6554700010008509, due 2026-10-25 or 14 days after shipment if later.",
+    "Deployed P018 48-hour freshness and final distribution/ship evidence remain open.",
+    "P040/P041 owner scope question conv-mvbhj8rf-0000-7d6b7f1cf3fc4d6395989725d9eb63a9 remains unanswered."
+  ],
+  "excludedClaims": [
+    "No invocation-count-to-benefit inference",
+    "No complete overall P042 census",
+    "No live gate, runtime restart, analyzer run, index deletion or final distribution verdict"
+  ]
+}

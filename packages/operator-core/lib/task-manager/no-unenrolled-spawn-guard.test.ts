@@ -330,6 +330,7 @@ export function run() {
 
 describe('bounded awaited process-group runners', () => {
   it.each([
+    'scripts/source-preview.mjs',
     'packages/operator-core/lib/harness/git-sync/run-git-sync.ts',
     'packages/operator-core/lib/fleet/sidecar-exec-process.ts',
   ])('classifies %s as an explicit awaited-group exemption without blinding new sites', (path) => {

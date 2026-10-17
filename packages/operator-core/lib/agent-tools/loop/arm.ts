@@ -61,6 +61,7 @@ import {
   type ExternalConditionReachability,
 } from '../../external-condition-reachability';
 import { softText, clampText } from '../limits';
+import { OrgTxnTimeoutError, withOrgTxnTimeoutPhase } from '../../pg-bounded-txn';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 import { attestLoopControlConsumerView } from '../coordination/control-anchor-consumer-view';
 import { getSessionBrief } from '../../session-brief';
@@ -82,6 +83,28 @@ import {
 } from '../../harness/routines/monitor-policy';
 
 const MAX_LOOP_INTERVAL_SEC = 60 * 60 * 24 * 7; // 7 days — beyond this, use a schedule (a fixed clock), not a loop
+
+function loopArmTimeoutResponse(ownerId: string, error: OrgTxnTimeoutError) {
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({
+          ok: false,
+          error: 'timeout',
+          retryable: true,
+          pgCode: error.pgCode,
+          timeoutSource: error.timeoutSource,
+          ownerId,
+          state: 'unknown',
+          message:
+            `loop:arm routine materialization hit a transient database timeout: ${error.messageWithoutBlockerHint}. ` +
+            'The routine mutation was not confirmed; existing loop state is unknown. Read loop:status before retrying.',
+        }),
+      },
+    ],
+  };
+}
 
 /**
  * EI-19395290807657827 — the SELF-SEALING BACKOFF. An agent's only backoff lever is a
@@ -1621,36 +1644,44 @@ export default defineTool({
         }
       : null;
 
-    const loop = await measure('materialize_loop', () =>
-      materializeLoop({
-        workspaceId,
-        harnessSlug: harness,
-        ownerId,
-        intervalSec: intervalSec,
-        kickoff,
-        ...(blockedOnRecord ? { blockedOn: blockedOnRecord } : {}),
-        // EI-20072281215342526: persist the goal STRUCTURALLY, not only rendered into
-        // `kickoff`. A carry-respawn never renders a kickoff, so this is the copy that
-        // reaches a successor (via loop:status and the carry document).
-        goal,
-        costCapCents: args.costCapCents ?? null,
-        maxFires: args.maxFires ?? null,
-        maxDurationSec: args.maxDurationSec ?? null,
-        carry,
-        continuation: args.continuation ?? 'settle',
-        mode: resolvedMode,
-        ...(admittedMonitorConfig ? { monitor: admittedMonitorConfig } : {}),
-        // Preserve the omission-vs-clear distinction through the writer: materializeLoop
-        // intentionally preserves its stored anchor only for `undefined`, while `null`
-        // clears it.
-        ...(workItemBindingNeedsClear
-          ? { workItem: null }
-          : claimedWorkItem
-            ? { workItem: claimedWorkItem }
-            : {}),
-        customWakePrompt: hasCustomWakePrompt,
-      }),
-    );
+    let loop: Awaited<ReturnType<typeof materializeLoop>>;
+    try {
+      loop = await measure('materialize_loop', () =>
+        withOrgTxnTimeoutPhase('loop:arm:materialize', () =>
+          materializeLoop({
+            workspaceId,
+            harnessSlug: harness,
+            ownerId,
+            intervalSec: intervalSec,
+            kickoff,
+            ...(blockedOnRecord ? { blockedOn: blockedOnRecord } : {}),
+            // EI-20072281215342526: persist the goal STRUCTURALLY, not only rendered into
+            // `kickoff`. A carry-respawn never renders a kickoff, so this is the copy that
+            // reaches a successor (via loop:status and the carry document).
+            goal,
+            costCapCents: args.costCapCents ?? null,
+            maxFires: args.maxFires ?? null,
+            maxDurationSec: args.maxDurationSec ?? null,
+            carry,
+            continuation: args.continuation ?? 'settle',
+            mode: resolvedMode,
+            ...(admittedMonitorConfig ? { monitor: admittedMonitorConfig } : {}),
+            // Preserve the omission-vs-clear distinction through the writer: materializeLoop
+            // intentionally preserves its stored anchor only for `undefined`, while `null`
+            // clears it.
+            ...(workItemBindingNeedsClear
+              ? { workItem: null }
+              : claimedWorkItem
+                ? { workItem: claimedWorkItem }
+                : {}),
+            customWakePrompt: hasCustomWakePrompt,
+          }),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof OrgTxnTimeoutError) return loopArmTimeoutResponse(ownerId, error);
+      throw error;
+    }
     const control = await measure('refresh_loop_control_anchor', () =>
       refreshControlAnchorAfterMutation({
         ownerId,

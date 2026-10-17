@@ -1,22 +1,51 @@
 #!/usr/bin/env python3
-"""Read-only, FD-owned kernel iterators for the retention scanner.
+"""Read-only kernel iterators and regular-file leases for retention.
 
 One JSON request per line; a new pair of iterator FDs scans ALL file descriptors
 and working directories for each request. Programs/maps survive only in this
-worker's FDs. No bpffs pins, tracing subscriptions, event cache or kernel lease.
+worker's FDs. No bpffs pins, tracing subscriptions or event cache. Regular-file
+effects may additionally hold an explicit POSIX file lease until the caller
+releases it; unsupported or incomplete evidence fails closed.
 Unsupported hosts and any incomplete measurement return complete=false.
 """
 import ctypes as C
+import errno
+import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import re
+import secrets
+import signal
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import time
+
+
+_active_lease = None
+_lease_break_requested = False
+_lease_signal_installed = False
+
+
+def _lease_signal(_signum, _frame):
+    # F_SETLEASE notifies this process when another process attempts a
+    # conflicting open. Keep the worker alive so the caller can finish its
+    # bounded effect and release the lease explicitly.
+    global _lease_break_requested
+    _lease_break_requested = True
+
+
+try:
+    signal.signal(signal.SIGIO, _lease_signal)
+    _lease_signal_installed = True
+except (AttributeError, OSError):
+    # request_file_lease reports the unsupported signal path as an incomplete
+    # lease instead of silently treating the lease as proof.
+    pass
 
 
 class Config(C.Structure):
@@ -84,6 +113,99 @@ def request_config(request):
     return Config(kernel_device(target.st_dev), target.st_ino,
                   int(stat.S_ISDIR(target.st_mode)), caller,
                   kernel_device(cwd.st_dev), cwd.st_ino, caller_start, 1_000_000_000 // ticks)
+
+
+def _lease_request_config(request):
+    required = {"operation", "path", "caller", "control", "dev", "ino", "newestWriteMs", "uid", "gid"}
+    if not isinstance(request, dict) or set(request) != required or request["operation"] != "lease-acquire":
+        raise ValueError("require exact regular-file lease acquire request")
+    # Reuse the scan request's namespace, caller-cwd and literal-path checks.
+    config = request_config({key: request[key] for key in ("path", "caller", "control")})
+    if config.directory != 0:
+        raise ValueError("regular-file lease requires a plain file")
+    if (type(request["dev"]) is not int or request["dev"] <= 0 or
+            type(request["ino"]) is not int or request["ino"] <= 0 or
+            type(request["uid"]) is not int or request["uid"] < 0 or
+            type(request["gid"]) is not int or request["gid"] < 0 or
+            type(request["newestWriteMs"]) not in (int, float) or
+            not math.isfinite(float(request["newestWriteMs"]))):
+        raise ValueError("invalid regular-file lease identity")
+    return config
+
+
+def _same_lease_identity(st, request):
+    newest = max(st.st_mtime_ns, st.st_ctime_ns) / 1_000_000
+    return (stat.S_ISREG(st.st_mode) and st.st_dev == request["dev"] and
+            st.st_ino == request["ino"] and st.st_uid == request["uid"] and
+            st.st_gid == request["gid"] and
+            abs(newest - float(request["newestWriteMs"])) <= 0.001)
+
+
+def request_file_lease(request):
+    """Acquire a write lease and retain its FD until lease_release is called.
+
+    The descriptor is opened with O_NOFOLLOW and the path is revalidated after
+    F_SETLEASE. A write lease makes a conflicting open fail with EAGAIN while
+    this managed worker remains alive, so the caller can unlink or dry-run the
+    exact inode without another host-wide holder census.
+    """
+    global _active_lease, _lease_break_requested
+    if _active_lease is not None:
+        raise ValueError("regular-file lease already held")
+    _lease_request_config(request)
+    if (not _lease_signal_installed or not hasattr(fcntl, "F_SETLEASE") or
+            not hasattr(fcntl, "F_GETLEASE")):
+        raise OSError(errno.ENOTSUP, "file leases unavailable")
+    flags = os.O_RDWR | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(request["path"], flags)
+    locked = False
+    try:
+        before = os.fstat(fd)
+        if not _same_lease_identity(before, request):
+            raise ValueError("regular-file lease identity changed before acquire")
+        if hasattr(fcntl, "F_SETOWN"):
+            fcntl.fcntl(fd, fcntl.F_SETOWN, os.getpid())
+        fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_WRLCK)
+        locked = True
+        if fcntl.fcntl(fd, fcntl.F_GETLEASE) != fcntl.F_WRLCK:
+            raise OSError(errno.EIO, "write lease was not installed")
+        after = os.fstat(fd)
+        path_after = os.lstat(request["path"])
+        if not _same_lease_identity(after, request) or not _same_lease_identity(path_after, request):
+            raise ValueError("regular-file lease identity changed after acquire")
+        _lease_break_requested = False
+        token = secrets.token_hex(16)
+        _active_lease = {"fd": fd, "token": token}
+        return {"complete": True, "lease": {"token": token, "type": "write"},
+                "diagnostics": {"backend": "fcntl-file-lease", "identityStable": True}}
+    except BaseException:
+        if locked:
+            try:
+                fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_UNLCK)
+            except OSError:
+                pass
+        os.close(fd)
+        raise
+
+
+def release_file_lease(request):
+    """Release the currently held lease; repeated release is rejected."""
+    global _active_lease, _lease_break_requested
+    if (not isinstance(request, dict) or set(request) != {"operation", "token"} or
+            request["operation"] != "lease-release" or not isinstance(request["token"], str)):
+        raise ValueError("require exact regular-file lease release request")
+    lease = _active_lease
+    if lease is None or request["token"] != lease["token"]:
+        raise ValueError("regular-file lease token mismatch")
+    _active_lease = None
+    try:
+        fcntl.fcntl(lease["fd"], fcntl.F_SETLEASE, fcntl.F_UNLCK)
+    finally:
+        os.close(lease["fd"])
+    broken = _lease_break_requested
+    _lease_break_requested = False
+    return {"complete": not broken, "released": True,
+            "diagnostics": {"backend": "fcntl-file-lease", "breakRequested": broken}}
 
 
 def complete_stats(stats):
@@ -211,24 +333,39 @@ def main():
     scanner, initialization_error = None, None
     try:
         for line in sys.stdin:
+            operation = None
             try:
                 request = json.loads(line)
-                # Reject malformed callers before allocating privileged resources.
-                request_config(request)
-                if initialization_error:
-                    raise RuntimeError(initialization_error)
-                if scanner is None:
-                    try:
-                        scanner = KernelScan()
-                    except Exception as error:
-                        initialization_error = str(error)
-                        raise
-                result = scanner.scan(request)
+                operation = request.get("operation") if isinstance(request, dict) else None
+                if operation == "lease-acquire":
+                    result = request_file_lease(request)
+                elif operation == "lease-release":
+                    result = release_file_lease(request)
+                else:
+                    # Reject malformed callers before allocating kernel resources.
+                    request_config(request)
+                    if _active_lease is not None:
+                        raise RuntimeError("holder scan unavailable while regular-file lease is held")
+                    if initialization_error:
+                        raise RuntimeError(initialization_error)
+                    if scanner is None:
+                        try:
+                            scanner = KernelScan()
+                        except Exception as error:
+                            initialization_error = str(error)
+                            raise
+                    result = scanner.scan(request)
             except Exception as error:
                 result = {"complete": False, "byPath": [],
-                          "diagnostics": {"backend": "kernel-iterators", "reason": str(error)[:1000]}}
+                          "diagnostics": {"backend": "fcntl-file-lease" if operation in ("lease-acquire", "lease-release") else "kernel-iterators",
+                                           "reason": str(error)[:1000]}}
             print(json.dumps(result), flush=True)
     finally:
+        if _active_lease is not None:
+            try:
+                release_file_lease({"operation": "lease-release", "token": _active_lease["token"]})
+            except Exception:
+                pass
         if scanner:
             scanner.close()
 

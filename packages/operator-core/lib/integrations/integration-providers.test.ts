@@ -66,4 +66,24 @@ describe('summarizeIntegrationProvider', () => {
     expect(summary.connectHref).toMatch(/^\/api\/oauth\/start\?/);
     expect(summary.connectHref).toContain(encodeURIComponent('/settings/integrations'));
   });
+
+  it('keeps connection-owned required fields out of the editable schema and preserves the setup path for the origin input', () => {
+    const scoped = entry({ id: 'federated', egressHosts: [], oauth: { instance: true, authorizeUrl: '/oauth/authorize', tokenUrl: '/oauth/token', scopes: [] },
+      setup: { appRegistration: { createUrl: '/settings/applications/new' } },
+      configSchema: { type: 'object', required: ['connectionOrigin', 'connectionAccountId', 'channel'], properties: {
+        connectionOrigin: { type: 'string', readOnly: true }, connectionAccountId: { type: 'string', readOnly: true }, channel: { type: 'string' },
+      } } });
+    const unbound = summarizeIntegrationProvider(scoped, []);
+    expect(unbound.requiredConfig).toEqual(['channel']);
+    expect(unbound.sourceConfigSchema).toMatchObject({ required: ['channel', 'harnessSlug'], properties: { channel: { type: 'string' } } });
+    expect(unbound.sourceConfigSchema?.properties).not.toHaveProperty('connectionOrigin');
+    expect(unbound.sourceConfigSchema?.properties).not.toHaveProperty('connectionAccountId');
+    expect(unbound.appRegistration?.createUrl).toBe('/settings/applications/new');
+    for (const origin of ['https://mastodon.social', 'https://hachyderm.io']) {
+      const bound = summarizeIntegrationProvider(scoped, [], { ref: 'federated', configured: true, clientId: 'client', hasClientSecret: true,
+        savedAt: null, redirectUri: 'https://operator.example/callback', origin });
+      expect(bound.appRegistration?.createUrl).toBe('/settings/applications/new');
+      expect(bound.oauthClient?.origin).toBe(origin);
+    }
+  });
 });

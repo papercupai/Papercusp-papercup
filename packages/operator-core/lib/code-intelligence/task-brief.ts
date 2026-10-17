@@ -6,7 +6,7 @@ import * as ts from 'typescript';
 import { loadHarnessRegistry } from '../harness-registry';
 import { activeWorkspaceId } from '../workspace-registry';
 import type { ClaimTimeEnrichmentSubject } from '../claim-time-enrichment';
-import { DEFAULT_PACKER_EFFECTS, packerFacade, type PackerEffects, type PackerResult } from './packer-facade';
+import { DEFAULT_PACKER_EFFECTS, nativeChangeReport, packerFacade, type PackerEffects, type PackerResult } from './packer-facade';
 import { firstPartyCallersOffthread } from './first-party-callers-offthread';
 import { LSP_VENDOR_DIR } from './lsp-adapter';
 import type { CodeIntelAnswer } from './contracts';
@@ -16,7 +16,8 @@ export const TASK_BRIEF_BUDGET_MS = 6_000;
 export const TASK_BRIEF_MAX_CHARS = 3_000;
 const MAX_FILES = 12;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
-type Ref = { workItem?: ClaimTimeEnrichmentSubject | null; harness?: string | null; workspaceId?: string | null };
+type Ref = { workItem?: ClaimTimeEnrichmentSubject | null; harness?: string | null; workspaceId?: string | null;
+  intent?: string; paths?: readonly string[] };
 export interface TaskFailureSignal {
   testRunId: number;
   path: string;
@@ -39,6 +40,7 @@ export interface TaskIncidentBrief {
 }
 export interface TaskBrief {
   status: 'current' | 'unknown';
+  intent?: { text: string; fingerprint: string };
   scope: { harness: string | null; paths: string[] };
   repository?: { workspaceId: string; rootPath: string };
   decisions?: { status: 'measured' | 'unknown'; refs: { plan: string; id: string }[];
@@ -51,7 +53,8 @@ export interface TaskBrief {
   incident?: TaskIncidentBrief;
   exclusions: string[];
   recover: { tool: 'code:pack'; args: { op: 'pack'; include: string[]; rootPath: string } }
-    | { tool: 'work_items:get'; args: { id: string; harness?: string } };
+    | { tool: 'work_items:get'; args: { id: string; harness?: string } }
+    | { tool: 'coord:declare-intent'; args: { intent: string; current_files: string[]; harness?: string } };
 }
 export interface TaskBriefDeps {
   root: (workspaceId: string, harness: string) => Promise<string | null>;
@@ -60,8 +63,18 @@ export interface TaskBriefDeps {
   graph: (root: string, name: string, file: string, paths: string[], budgetMs: number) => Promise<CodeIntelAnswer>;
   decisions?: (ref: Ref) => Promise<ClaimTimePlanDecisionsBrief | null>;
   failures?: (scope: { workspaceId: string; harness: string; root: string; paths: string[] }) => Promise<TaskFailureSignal[]>;
+  hasClaim?: (workspaceId: string, owner: string) => Promise<boolean>;
 }
 const defaults: TaskBriefDeps = {
+  hasClaim: async (workspaceId, owner) => {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { ANY_FAMILY_TERMINAL_STATES } = await import('../work-item-dispatch-states');
+    const [row] = await getOrgPg().sql<{ held: boolean }[]>`SELECT EXISTS (
+      SELECT 1 FROM harness_shared.work_items WHERE workspace_id = ${workspaceId}
+        AND taken_by = ${owner} AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
+    ) AS held`;
+    return row?.held !== false;
+  },
   root: async (workspaceId, harness) =>
     (await loadHarnessRegistry(workspaceId)).projects.find(project => project.slug === harness)?.path ?? null,
   effects: DEFAULT_PACKER_EFFECTS,
@@ -151,11 +164,17 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
   const wi = ref.workItem;
   const harness = wi?.harness ?? ref.harness ?? null;
   const payload = wi?.payload as { paths?: unknown } | null;
-  const requested = Array.isArray(payload?.paths) ? payload.paths.filter((path): path is string => typeof path === 'string') : [];
+  const requested = Array.isArray(payload?.paths) ? payload.paths.filter((path): path is string => typeof path === 'string') : [...(ref.paths ?? [])];
+  const recover: TaskBrief['recover'] = wi?.id
+    ? { tool: 'work_items:get', args: { id: wi.id, ...(harness ? { harness } : {}) } }
+    : { tool: 'coord:declare-intent', args: { intent: ref.intent?.slice(0, 500) ?? '', current_files: requested.slice(0, 8),
+      ...(harness ? { harness } : {}) } };
   const brief: TaskBrief = {
     status: 'unknown', scope: { harness, paths: [] }, sourceFingerprint: null, commit: null,
+    ...(ref.intent ? { intent: { text: ref.intent.slice(0, 200),
+      fingerprint: hash(JSON.stringify([ref.intent, [...new Set(requested)].sort()])) } } : {}),
     files: [], excerpts: [], graph: { status: 'unknown', consumers: [], relationships: [] }, exclusions: [],
-    recover: { tool: 'work_items:get', args: { id: wi?.id ?? '', ...(harness ? { harness } : {}) } },
+    recover,
   };
   const finish = () => {
     const bounded = compactTaskBrief(brief);
@@ -167,11 +186,11 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
       bounded.graph = { status: 'unknown', consumers: [], relationships: [], reason: 'Task scope could not fit the inline budget.' };
       delete bounded.repository; delete bounded.decisions; delete bounded.incident;
       bounded.exclusions = ['Task scope exceeded the inline brief budget; use the recovery reader.'];
-      bounded.recover = { tool: 'work_items:get', args: { id: wi?.id ?? '', ...(harness ? { harness } : {}) } };
+      bounded.recover = recover;
     }
     return bounded;
   };
-  if (!wi?.id || !harness || requested.length === 0) {
+  if ((!wi?.id && !ref.intent) || !harness || requested.length === 0) {
     brief.exclusions.push('No identified work item, registered harness, or stored payload.paths; no repository scope was inferred.');
     return finish();
   }
@@ -191,8 +210,8 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
     if (!registered) throw new Error('harness is not registered in the task workspace');
     const root = await realpath(registered);
     brief.repository = { workspaceId, rootPath: root };
-    const planPayload = wi.payload as { plan_item?: { plan_slug?: string } } | null;
-    const planSlug = wi.sourcePlanSlug ?? planPayload?.plan_item?.plan_slug;
+    const planPayload = wi?.payload as { plan_item?: { plan_slug?: string } } | null;
+    const planSlug = wi?.sourcePlanSlug ?? planPayload?.plan_item?.plan_slug;
     if (planSlug) {
       const authority = await deps.decisions?.({ ...ref, workspaceId, harness }).catch(() => null);
       brief.decisions = { status: authority && !authority.authorityReadFailed ? 'measured' : 'unknown',
@@ -244,7 +263,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
     const compiler = implementation && name && compilerMs > 0
       ? deps.graph(root, name, implementation, brief.scope.paths, compilerMs).catch(() => null)
       : Promise.resolve(null);
-    const failures = deps.failures
+    const failures = wi?.id && deps.failures
       ? deps.failures({ workspaceId, harness, root, paths: brief.scope.paths.filter(path => kindOf(path) === 'test') }).catch(() => null)
       : null;
     const packed: PackerResult = await deps.pack('pack', {
@@ -294,7 +313,7 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
       } else brief.graph.reason = 'No named function or class in the bounded implementation scope.';
     } else brief.graph.reason = 'No supported implementation in the stored task scope.';
     remaining();
-    if (failures) {
+    if (failures && wi?.id) {
       let incidentTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         const signals = await Promise.race([failures, new Promise<null>(resolve => {
@@ -331,14 +350,143 @@ export async function buildTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): 
 
 export async function getClaimTimeTaskBrief(ref: Ref, deps: TaskBriefDeps = defaults): Promise<{ taskBrief: TaskBrief } | null> {
   const payload = ref.workItem?.payload as { paths?: unknown } | null;
-  if (!ref.workItem?.id || !Array.isArray(payload?.paths) || payload.paths.length === 0) return null;
+  if (ref.workItem?.id ? !Array.isArray(payload?.paths) || payload.paths.length === 0 : !ref.intent || !ref.paths?.length) return null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return { taskBrief: await Promise.race([buildTaskBrief(ref, deps), new Promise<TaskBrief>(resolve => {
       timer = setTimeout(() => resolve({ status: 'unknown', scope: { harness: ref.workItem?.harness ?? ref.harness ?? null, paths: [] },
         sourceFingerprint: null, commit: null, files: [], excerpts: [],
         graph: { status: 'unknown', consumers: [], relationships: [] }, exclusions: ['Task brief exceeded its bounded read deadline.'],
-        recover: { tool: 'work_items:get', args: { id: ref.workItem?.id ?? '' } } }), TASK_BRIEF_BUDGET_MS);
+        recover: ref.workItem?.id ? { tool: 'work_items:get', args: { id: ref.workItem.id } }
+          : { tool: 'coord:declare-intent', args: { intent: ref.intent!.slice(0, 500), current_files: [...ref.paths!].slice(0, 8),
+            ...(ref.harness ? { harness: ref.harness } : {}) } } }), TASK_BRIEF_BUDGET_MS);
     })]) };
+  } finally { clearTimeout(timer); }
+}
+
+/** P-039: explicit transient scope uses the same safe capture as claims. A failed
+ * ownership read cannot be interpreted as a measured absence of a claim. */
+export async function getIntentTimeTaskBrief(ref: { owner: string; workspaceId: string; harness: string;
+  intent: string; paths: readonly string[] }, deps: TaskBriefDeps = defaults): Promise<{ taskBrief: TaskBrief } | null> {
+  if (!ref.intent.trim() || !ref.paths.length || !deps.hasClaim) return null;
+  try {
+    if (await deps.hasClaim(ref.workspaceId, ref.owner)) return null;
+    return await getClaimTimeTaskBrief(ref, deps);
+  } catch { return null; }
+}
+
+export interface CompletionBriefDeps {
+  root: TaskBriefDeps['root'];
+  report: typeof nativeChangeReport;
+  /** Only server-bound run evidence, never paths parsed from completion prose. */
+  runs?: (paths: string[]) => Promise<{ path: string; status: string; runGroupId: string }[] | null>;
+}
+
+/** P-039: reuse the pre-review report at the completion receipt, without
+ * treating a declared test command or a static edge as execution evidence. */
+export async function getCompletionTimeBrief(ref: { workspaceId: string; harness: string; paths: readonly string[] },
+  deps: Partial<CompletionBriefDeps> = {}) {
+  const rootResolver = deps.root ?? defaults.root;
+  const reportSource: typeof nativeChangeReport = deps.report ?? ((args, subject) => nativeChangeReport(args, subject, {
+      graph: (request, root) => firstPartyCallersOffthread({ vendorDir: LSP_VENDOR_DIR, root,
+        op: 'impact', name: request.symbol, filePath: request.file, paths: request.paths ?? ['.'],
+        direction: 'downstream', limit: 20, maxDepth: 5, maxPaths: 10, includeInterfaces: true }, { budgetMs: 2_000 }),
+    }));
+  const deadline = Date.now() + TASK_BRIEF_BUDGET_MS;
+  const brief = { phase: 'pre-review' as const, status: 'unknown' as 'measured' | 'unknown',
+    scope: { paths: [...new Set(ref.paths)].filter(path => safePath(path) && path.length <= 240).slice(0, 8), processed: [] as string[] },
+    changes: [] as { file: string; symbol: string; sourceFingerprint: string; consumers: string[] }[],
+    tests: [] as { path: string; execution: 'recorded' | 'not-recorded-in-bound-run' | 'unknown';
+      runGroupId: string | null; status: string | null }[],
+    testsWithoutRunEvidence: null as string[] | null,
+    executionCoverage: 'unmeasured' as const,
+    limitations: ['Bounded static source reach, not complete change coverage. A recorded file run may be filtered or stale; current-source test execution is unmeasured.'],
+    recover: { tool: 'code:pack' as const, args: { op: 'diff' as const, include: [] as string[],
+      rootPath: '', explain: undefined as { symbol: string; file: string; phase: 'pre-review' } | undefined } },
+  };
+  const finish = (value: typeof brief) => {
+    const result = structuredClone(value);
+    // Keep both serialized copies in the size measurement, including early
+    // returns before the registry root resolves.
+    result.recover.args.include = result.scope.paths;
+    const oversized = () => JSON.stringify(result).length > TASK_BRIEF_MAX_CHARS;
+    if (oversized()) result.limitations.push('Additional inline records omitted by the response budget.');
+    while (oversized() && result.tests.length) result.tests.pop();
+    if (result.testsWithoutRunEvidence) result.testsWithoutRunEvidence = result.testsWithoutRunEvidence.filter(path => result.tests.some(test => test.path === path));
+    while (oversized() && result.changes.some(change => change.consumers.length)) result.changes.find(change => change.consumers.length)!.consumers.pop();
+    while (oversized() && result.changes.length > 1) result.changes.pop();
+    while (oversized() && result.scope.processed.length) result.scope.processed.pop();
+    while (oversized() && result.scope.paths.length > 1) result.scope.paths.pop();
+    result.recover.args.include = result.scope.paths;
+    if (oversized()) { result.recover.args.rootPath = ''; result.limitations.push('Use the registered harness root for recovery; its path exceeded the inline budget.'); }
+    return result;
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const work = async () => {
+    const rootValue = await rootResolver(ref.workspaceId, ref.harness);
+    if (!rootValue || Date.now() >= deadline) return brief;
+    const root = await realpath(rootValue);
+    if (Date.now() >= deadline) return brief;
+    brief.recover.args.rootPath = root; brief.recover.args.include = brief.scope.paths;
+    const captured = new Map<string, string>();
+    const tests = new Set<string>();
+    for (const file of brief.scope.paths) {
+      if (Date.now() >= deadline || brief.changes.length >= 2) break;
+      if (kindOf(file) !== 'implementation' || !/\.[cm]?[jt]sx?$/.test(file)) continue;
+      const abs = await realpath(join(root, file));
+      if (!inside(root, abs) || (await stat(abs)).size > 64_000) continue;
+      const text = await readFile(abs, 'utf8'); captured.set(file, hash(text));
+      const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+      const names = source.statements.flatMap(statement => {
+        if (!ts.canHaveModifiers(statement) || !ts.getModifiers(statement)?.some(mod => mod.kind === ts.SyntaxKind.ExportKeyword)) return [];
+        if (ts.isVariableStatement(statement)) return statement.declarationList.declarations
+          .flatMap(declaration => ts.isIdentifier(declaration.name) ? [declaration.name.text] : []);
+        return 'name' in statement && statement.name && ts.isIdentifier(statement.name as ts.Node)
+          ? [(statement.name as ts.Identifier).text] : [];
+      });
+      for (const symbol of names) {
+        if (Date.now() >= deadline || brief.changes.length >= 2) break;
+        const { answer, report } = await reportSource({ rootPath: root, include: brief.scope.paths },
+          { file, symbol, phase: 'pre-review', paths: ['.'], limit: 20 });
+        if (Date.now() >= deadline) return brief;
+        if (report.freshness === 'unmeasured') continue;
+        for (const input of answer.evidence?.sourceScope.supportingFiles ?? []) {
+          if (input.representation !== 'full-source' || !safePath(input.path)) continue;
+          if (captured.has(input.path) && captured.get(input.path) !== input.contentHash)
+            throw new Error('Completion source changed between compiler reports.');
+          captured.set(input.path, input.contentHash);
+        }
+        brief.changes.push({ file, symbol, sourceFingerprint: report.sourceFingerprint,
+          consumers: report.consumers.slice(0, 4).map(site => `${site.path}:${site.line1 ?? '?'}`) });
+        for (const site of report.relevantTests) if (safePath(site.path)) tests.add(site.path);
+        brief.recover.args.explain ??= { file, symbol, phase: 'pre-review' };
+      }
+      brief.scope.processed.push(file);
+    }
+    const paths = [...tests].slice(0, 12);
+    const runs = deps.runs && Date.now() < deadline ? await deps.runs(paths).catch(() => null) : null;
+    if (Date.now() >= deadline) return brief;
+    for (const [file, before] of captured) {
+      const abs = await realpath(join(root, file));
+      if (!inside(root, abs) || hash(await readFile(abs, 'utf8')) !== before)
+        throw new Error('Completion source changed during analysis.');
+    }
+    brief.tests = paths.map(path => {
+      const run = runs?.find(row => row.path === path && row.runGroupId && ['pass', 'fail', 'error'].includes(row.status));
+      return { path, execution: run ? 'recorded' : runs ? 'not-recorded-in-bound-run' : 'unknown',
+        runGroupId: run?.runGroupId ?? null, status: run?.status ?? null };
+    });
+    brief.testsWithoutRunEvidence = runs ? brief.tests.filter(test => test.execution !== 'recorded').map(test => test.path) : null;
+    brief.status = brief.changes.length ? 'measured' : 'unknown';
+    return brief;
+  };
+  try {
+    return finish(await Promise.race([work(), new Promise<typeof brief>(resolve => {
+      timer = setTimeout(() => resolve(finish({ ...brief, status: 'unknown', changes: [], tests: [], testsWithoutRunEvidence: null,
+        limitations: [...brief.limitations, 'Completion brief exceeded its read deadline.'] })), TASK_BRIEF_BUDGET_MS);
+    })]));
+  } catch {
+    return finish({ ...brief, status: 'unknown' as const, changes: [], tests: [], testsWithoutRunEvidence: null,
+      limitations: [...brief.limitations, 'Completion source or analysis was unavailable; re-read before review.'] });
   } finally { clearTimeout(timer); }
 }

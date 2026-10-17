@@ -614,6 +614,32 @@ describe('agent-review grade lifecycle (abolish-human-review D-003/P-004)', () =
     expect(deps.reconcileAgentReviewGrade).not.toHaveBeenCalled();
   });
 
+  it('passes the caller attribution into the agent-review grade preflight', async () => {
+    const preflight = vi.fn(async () => ({ applicable: true, workItemId: 'WI-42', state: pending }));
+    const deps = fakeDeps({
+      preflightAgentReviewGrade: preflight,
+      reconcileAgentReviewGrade: vi.fn(async () => ({
+        workItemId: 'WI-42',
+        status: 'approved' as const,
+        round: 1,
+        changed: true,
+      })),
+    });
+
+    await runGradeIdea(
+      { ideaId: 'idea-1', grade: 5, feedback: 'ready' },
+      { ownerId: 'su-reviewer' },
+      deps,
+    );
+
+    expect(preflight).toHaveBeenCalledWith({
+      ideaId: 'idea-1',
+      grade: 5,
+      gradedBy: 'su-reviewer',
+      feedback: 'ready',
+    });
+  });
+
   it('writes an accepted grade, reconciles the work item, and returns the lifecycle transition', async () => {
     const reconciled = {
       workItemId: 'WI-42',

@@ -420,8 +420,17 @@ export async function turnStartSyncRuleRequests(input: {
  * applied (the session wears no identity); throws when a revision is applied
  * but its artifact cannot be resolved from the gate-selected launch record.
  */
+let localSyncReader: ((ownerId: string, workspaceId: string) => Promise<WornSyncRules>) | null = null;
+export function setLocalSyncRulesReader(reader: typeof localSyncReader): void { localSyncReader = reader; }
+
 export async function readAppliedWornRules(ownerId: string, workspaceId: string): Promise<WornSyncRules | null> {
-  return (await readAppliedIdentityRules(ownerId, workspaceId))?.sync ?? null;
+  const applied = await readAppliedIdentityRules(ownerId, workspaceId);
+  if (!applied) return null;
+  if (!localSyncReader) return applied.sync;
+  const local = await localSyncReader(ownerId, workspaceId);
+  return local.rules.length || local.unreadable.length
+    ? { rules: [...applied.sync.rules, ...local.rules], unreadable: [...applied.sync.unreadable, ...local.unreadable] }
+    : applied.sync;
 }
 
 /** What the wearer's APPLIED artifact pins, read once per revision pair. */

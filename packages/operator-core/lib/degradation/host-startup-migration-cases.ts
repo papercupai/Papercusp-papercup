@@ -74,7 +74,12 @@ export const HOST_STARTUP_MIGRATION_CASES: RailMigrationCase[] = startupSites.ma
     const text = original(site.path, site.marker, site.kind);
     let fail = true;
     let enabled = true;
+    const spawnerCalls: unknown[][] = [];
     const work = async () => { if (fail) throw new Error('controlled dependency failure'); };
+    const spawnSpawnerSidecar = async (...args: unknown[]) => {
+      spawnerCalls.push(args);
+      return work();
+    };
     const bindings = () => ({
       observeFallback: (mechanism: string, row: typeof observations[number]) => {
         expect(mechanism).toBe('host-startup'); observations.push(row); return true;
@@ -83,7 +88,8 @@ export const HOST_STARTUP_MIGRATION_CASES: RailMigrationCase[] = startupSites.ma
       backgroundWorkers: enabled, utilityHost: false, process: { env: {} },
       require: () => ({ installControlAnchorKernelResolver: () => { if (fail) throw new Error('resolver unavailable'); },
         installGovernancePolicyEnforcement() {},
-        spawnSpawnerSidecar: work, registerSpawnerSidecarShutdownHooks() {},
+        spawnSpawnerSidecar, SPAWNER_WARMUP_READY_TIMEOUT_MS: 30_000,
+        registerSpawnerSidecarShutdownHooks() {},
         ensureGatewaySidecar: work, registerGatewaySidecarShutdownHooks() {} }),
     });
     await execute(text, bindings()); await tick();
@@ -94,6 +100,12 @@ export const HOST_STARTUP_MIGRATION_CASES: RailMigrationCase[] = startupSites.ma
       enabled = false;
       await execute(text, bindings()); await tick();
       expect(observations).toHaveLength(2);
+    }
+    if (site.id === 'spawner-warmup') {
+      expect(spawnerCalls).toEqual([
+        [undefined, { readyTimeoutMs: 30_000 }],
+        [undefined, { readyTimeoutMs: 30_000 }],
+      ]);
     }
     return { route: 'observation', mechanism: 'host-startup', observations };
   },

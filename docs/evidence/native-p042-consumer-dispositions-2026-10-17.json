@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 1,
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "item": "P-042",
+  "workItem": "WI-6554700010015356",
+  "recordedAt": "2026-10-17T01:57:00Z",
+  "scope": "Disposition of the named consumers recovered in the P042 source, serving-catalogue and canonical-corpus censuses. This is a current routing decision, not a complete runtime-benefit census or acceptance verdict.",
+  "authority": [
+    "native-code-intelligence-ecosystem-and-dream-2026-10-09#D-017",
+    "native-code-intelligence-ecosystem-and-dream-2026-10-09#D-018",
+    "gitnexus-deterministic-integration-2026-10-05#D-004",
+    "gitnexus-deterministic-integration-2026-10-05#D-005",
+    "gitnexus-deterministic-integration-2026-10-05#D-029"
+  ],
+  "reuse": "Reconciles the existing source/corpus inventories and SystemActionResult/DBOS receipts. No new measurement store, instrument, routine, selector or packaging policy.",
+  "consumers": [
+    {
+      "id": "hourly-maintenance",
+      "disposition": "narrow",
+      "ruling": "Keep the D018 first-party snapshot default. GitNexus analyze remains explicit opt-in; this decision does not enable it.",
+      "evidence": ["native-p042-gitnexus-consumers-2026-10-15.json#consumers", "native-p042-p018-receipts-2026-10-17.json", "deployedReceiptWindow"],
+      "measuredOutcome": "A real deployed routine receipt now records snapshot backend, freshness, age and selector ceiling. That single detailed reading passes its ceiling; older mode-only receipts do not measure age.",
+      "licenceRoute": "First-party default executes no GitNexus. Optional analyze retains the existing internal D005 route and D004 distribution exclusion."
+    },
+    {
+      "id": "test-selection-and-snapshot-health",
+      "disposition": "keep",
+      "ruling": "Keep hash-corroborated first-party snapshot selection, monotonic workspace additions and existing health readers. Preserve the optional index retention protection; no deletion or reclaim is authorized.",
+      "evidence": ["native-p042-gitnexus-consumers-2026-10-15.json#sourceClassificationContinuation20261016", "gitnexus-outcome-remeasure-2026-10-12.json"],
+      "measuredOutcome": "Historical replay distinguishes workspace admission from conditional test selection. It does not establish a deployed graph-added true catch. True-catch value and comparable gate latency remain unknown.",
+      "licenceRoute": "First-party selection/health readers need no engine execution. Retained optional index remains under D005/D004."
+    },
+    {
+      "id": "curated-native-tools-and-client-admission",
+      "disposition": "narrow",
+      "ruling": "Keep native graph operations on their current first-party/compiler routes and definition/reference questions on LSP. Retain the existing optional index-health route and native-client admission checks.",
+      "evidence": ["packages/operator-core/lib/agent-tools/gitnexus/query.ts:274", "native-p042-gitnexus-consumers-2026-10-15.json#sourceClassificationContinuation20261016"],
+      "measuredOutcome": "Source routing is established; P040 deployed judge access and latency acceptance remain subject to the existing owner question. Native invocation success is not answer-quality evidence.",
+      "licenceRoute": "First-party/compiler routes do not execute GitNexus. Optional health remains existing internal D005 scope, distribution-excluded."
+    },
+    {
+      "id": "raw-plugin-and-generic-discovery",
+      "disposition": "keep",
+      "ruling": "Retain the existing internal optional bridge and its generic bounded discovery/isolation. Registration is not a health assertion. Preserve the known fail-closed raw query handler; do not probe it to reconstruct already-known refusal.",
+      "evidence": ["native-p042-gitnexus-consumers-2026-10-15.json#loadedOperationCensus20261016", "packages/operator-core/lib/plugin-host-runtime.ts:397"],
+      "registeredOperationPopulationAtPriorServingRead": ["gitnexus.list_repos", "gitnexus.query", "gitnexus.cypher", "gitnexus.context", "gitnexus.detect_changes", "gitnexus.check", "gitnexus.impact", "gitnexus.explain", "gitnexus.pdg_query", "gitnexus.route_map", "gitnexus.tool_map", "gitnexus.shape_check", "gitnexus.api_impact", "gitnexus.group_list", "gitnexus.trace"],
+      "measuredOutcome": "The dated ledger establishes direct context/list-repository use. Neither that use nor the 15 registered names establishes incremental benefit or successful operation of every handler.",
+      "licenceRoute": "Existing Avi D005 internal route only. GitNexus 1.6.9 is PolyForm-Noncommercial-1.0.0; this ruling grants no new commercial licence or distribution clearance."
+    },
+    {
+      "id": "dream-neighbor-discovery",
+      "disposition": "keep",
+      "ruling": "Retain the existing bounded internal caller/callee discovery seam without expanding it or changing frozen Dream trials. The first-party packet graph field does not eliminate the separate optional neighbors dependency.",
+      "evidence": ["packages/operator-core/lib/dream/capability-packets.ts:95", "packages/operator-core/lib/dream/capability-packets.ts:392"],
+      "measuredOutcome": "Source proves that compiler-verified cited symbols can trigger both neighbor directions. A newly observed live invocation or incremental Dream benefit was not established; discovery locations remain unexamined, as the packet itself states.",
+      "licenceRoute": "Existing internal D005 scope and D004 distribution constraint. Any future replacement or expansion needs its own qualified outcome evidence."
+    },
+    {
+      "id": "selective-assist-and-controlled-comparison",
+      "disposition": "keep",
+      "ruling": "Keep the optional assist seam, existing evidence evaluator, controlled comparison harness and frozen historical results. Do not promote them into a default production consumer from import reachability alone.",
+      "evidence": ["native-p042-gitnexus-consumers-2026-10-15.json#sourceAudit20261016", "packages/operator-core/lib/code-intelligence/consumer-evidence.ts:1"],
+      "measuredOutcome": "Historical frozen-corpus comparisons remain evidence for their original cases. No additional production runSelectiveAssist caller was established by the prior literal source census; dynamic use remains unknown. Consumer corroboration and behavior checks are required beyond invocation counts.",
+      "licenceRoute": "Optional incumbent execution remains internal D005/D004 plus existing offline comparison admission. No benchmark was launched."
+    },
+    {
+      "id": "project-history",
+      "disposition": "keep",
+      "ruling": "Keep the independent Git/plan/work-item generation route. Exclude its output from GitNexus benefit accounting.",
+      "evidence": ["native-p042-gitnexus-consumers-2026-10-15.json#sourceClassificationContinuation20261016", "libs/papercusp/packages/cli/src/project-history-cli.ts:624"],
+      "measuredOutcome": "The inspected generation route consumes ledger exports and Git. GitNexus comments about scheduling and process bounds are not execution or benefit evidence.",
+      "licenceRoute": "No GitNexus execution or distribution established in this route."
+    },
+    {
+      "id": "instructions-documents-and-blueprint-references",
+      "disposition": "narrow",
+      "ruling": "Keep current instructions aligned to native graph/LSP operations, keep optional internal restrictions, and retain explicitly dated historical and architectural examples. Do not treat a generic plugin example or proposed UI as a live engine consumer.",
+      "evidence": ["native-p042-corpus-census-2026-10-17.json", "native-p042-role-guidance-2026-10-16.json", "native-p042-blueprint-references-2026-10-16.json", "native-p042-deferred-routing-2026-10-17.json", "native-p042-architect-routing-2026-10-17.json"],
+      "measuredOutcome": "Canonical source repairs and their maintained guards are recorded separately. The census is bounded to its named tenant stores, literal query and repository prompt roots; it is not an all-alias or all-harness absence proof.",
+      "licenceRoute": "Instruction references grant no permission beyond D005 and never waive D004."
+    },
+    {
+      "id": "s37-w01-and-historical-behavior-measures",
+      "disposition": "keep",
+      "ruling": "Preserve the original GitNexus-era fixture catalogue and historical attribution. A new native-route measurement must use an explicit scenario version and qualified world/assertions, rather than silently replacing the old instrument.",
+      "evidence": ["packages/operator-core/lib/llm-testing/targets/code-search-catalog.ts:12", "native-p042-catalogue-vintage-2026-10-16.json"],
+      "measuredOutcome": "The current catalogue labels the original baseline explicitly. Hermetic fixture calls are not live index use, and old baseline results are not a new native-route outcome. No paid behavior battery ran in this continuation.",
+      "licenceRoute": "Fixture responses do not execute or distribute GitNexus. Any separate incumbent run retains internal/admission constraints."
+    },
+    {
+      "id": "process-admission-vendor-support-and-distribution",
+      "disposition": "narrow",
+      "ruling": "Keep optional-engine process/admission safeguards and finite internal bridge support. Exclude the bridge, its installed package symlink and its vendor patch from the public source cut and installers using the existing shared selection policy.",
+      "evidence": ["native-p042-gitnexus-consumers-2026-10-15.json#sourceClassificationContinuation20261016", "papercusp-desktop/bin/lib/source-tree-selection.sh:122", "native-p042-distribution-2026-10-17.json"],
+      "measuredOutcome": "The existing selected four parity cases passed, with 165 other cases filtered. This is synthetic policy evidence and does not inspect a finished installer or full actual public export.",
+      "licenceRoute": "D004 excludes GitNexus from distribution. Internal safeguards and workspace registration do not constitute commercial-use clearance."
+    }
+  ],
+  "deployedReceiptWindow": {
+    "capture": "/tmp/native-p042-receipts-window-20261017-0156.json",
+    "captureSha256": "dc6c9149f68893f7ec8bfaa762d93ba760b77157b19b6794cd1eded11bec739c",
+    "route": "ptool dev:pg_query --url=http://127.0.0.1:3170, read-only shared DBOS ledger; explicit stage trace verified",
+    "writerBinding": "routine-last-fire.ts:149 joins operation_outputs to workflow_status; workflow routineFire first superjson input is rt_papercusp_gitnexus_reindex; function is system:gitnexus-reindex",
+    "lookback": "48 hours at query execution; completion-time selection",
+    "receiptCount": 45,
+    "truncated": false,
+    "withModeDiagnostics": 28,
+    "withSnapshotReading": 1,
+    "firstCompletedAt": "2026-10-15T03:13:50.041Z",
+    "lastCompletedAt": "2026-10-17T01:35:21.635Z",
+    "latestDetailedReceipt": {
+      "workflowId": "sched-.routinesTick-2026-10-17T01:35:00.000Z-33",
+      "error": null,
+      "maintenanceMode": "first-party-snapshot",
+      "snapshotBackend": "first-party-imports",
+      "analyzeEnabled": false,
+      "dependencySnapshot": {
+        "backend": "first-party-imports",
+        "status": "fresh",
+        "reason": null,
+        "checkedAt": 1792200919365,
+        "generatedAt": "2026-10-16T16:35:11.574Z",
+        "ageMs": 32407157,
+        "edges": 80524,
+        "selectorCeilingMs": 86400000,
+        "producerRan": false,
+        "producerExit": null
+      }
+    },
+    "qualification": "One actual detailed hourly reading is below its recorded selector ceiling. The 44 other receipts do not establish snapshot-age continuity. The source-qualified instrumentation has begun producing deployed receipts; no 48-hour pass or retrospective backfill is claimed. Runtime position read identified bg-host fadbd35203 as owner with start-after-mtime containment; the detailed DBOS receipt independently demonstrates the new field was emitted."
+  },
+  "deployedReceiptContinuation20261017": {
+    "measuredAt": "2026-10-17T09:01:13.262Z",
+    "capture": "/tmp/native-p042-receipts-window-20261017-0900.json",
+    "captureSha256": "89efea9a093c20816b5f319a448cb4555e62145f707120a2e44a654601466ffd",
+    "rawSummary": "papercusp://scratch/papercusp-workspace/code:run/6703a3b8-68a6-42f8-8bb6-06edf0678b21/raw-summary-1792227673287.json",
+    "rawSummarySha256": "fd6a76cbc37ad1fd49769a3801cd53dd06bcc90efc486c2713fc1e4c3733b863",
+    "route": "Original explicit :3170 authenticated ptool code:run completed with one settled read-only dev:pg_query; no cancellation or replacement query occurred.",
+    "basis": "Same routine-last-fire.ts DBOS join, exact routineFire rt_papercusp_gitnexus_reindex input and system:gitnexus-reindex function; completion-time last 48 hours.",
+    "positiveControl": "passed",
+    "receiptCount": 46,
+    "truncated": false,
+    "withModeDiagnostics": 35,
+    "withSnapshotReading": 8,
+    "freshReadingsBelowRecordedCeiling": 8,
+    "parseErrors": [],
+    "firstDetailedAt": "2026-10-17T01:35:21.635Z",
+    "lastDetailedAt": "2026-10-17T08:35:43.599Z",
+    "detailedSpanMs": 25221964,
+    "maximumObservedAgeMs": 57626093,
+    "recordedSelectorCeilingMs": 86400000,
+    "latestWorkflowId": "sched-.routinesTick-2026-10-17T08:35:00.000Z-51",
+    "latestGeneratedAt": "2026-10-16T16:35:11.574Z",
+    "fortyEightHourQualified": false,
+    "limits": [
+      "The eight detailed readings span roughly seven hours. The other 38 receipts do not establish snapshot-age continuity.",
+      "The code:run transport summary retained four readings and omitted four. Its complete 4394-byte raw summary was recovered and SHA256 verified before classifying all eight.",
+      "No retrospective backfill, passing acceptance grade, final-release or shipment claim. The earlier D023 one-reading receipt remains historical evidence."
+    ]
+  },
+  "sourceHashesAtReadback": {
+    "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts": "4ada214f4dfdf03f22ad1d703ea253a53e565773f3f0c2778ce1c7584d357d50",
+    "packages/operator-core/lib/agent-tools/gitnexus/query.ts": "b16de5fc88f128b7681d47a2b827424a941263da4039ee2603832ef7a95ea4de",
+    "packages/operator-core/lib/dream/capability-packets.ts": "29d59820a9244860fba8ad7bc775b41c107d3b125731d110983ae06512a4c34a",
+    "packages/operator-core/lib/code-intelligence/selective-assist.ts": "6c51409b9ad7c306b9efcb86f944c0444014e869964c1a1ce03cc41e4afa47c7",
+    "packages/operator-core/lib/code-intelligence/native-adoption.ts": "1508b2ca1ece23ee4e51a4c946d3093c81b24cb750c6901b5a1e5781d1f28ed2",
+    "packages/operator-core/lib/desktop-install/papercusp-files.ts": "4e4c3b506461035e39e052a83158057599e98c4b187d1b1dac62adb34e39dcc4",
+    "packages/operator-core/lib/llm-testing/targets/code-search-catalog.ts": "685187bf1caa156123dd03bdb11af555ef6c952ab18538bcacb4f1f9268e4b50",
+    "papercusp-desktop/bin/lib/source-tree-selection.sh": "0a22758e33c9cd019f5632da41cee8c885950187441ba2b7a3105c34247b3c95",
+    "libs/papercusp/plugins/gitnexus-bridge/index.ts": "2122086bf8f57c631c357982b73ccf7098a3f26af9bc27379e615f8e9ce49e62"
+  },
+  "historicalSourceReconciliation": "Ten of the eleven original source-family hashes still match. code-search-catalog.ts changed as already accounted for by the dedicated catalogue-vintage repair; its current header was read and its new hash is above. No historic test capture was relabelled as a new pass.",
+  "outcomeDecisionBoundary": {
+    "shipTimeDisposition": "Preserve D029 provisional KEEP of the existing snapshot integration, narrowed by D018 to first-party hourly maintenance. The decisions above settle the named current consumer routes without claiming incremental benefit.",
+    "finalFourteenDayWorkItem": "WI-6554700010008509",
+    "verifiedState": "open",
+    "verifiedAssignee": "su-72f78fbb-7e47-41ae-a842-35c83b8fcdd2",
+    "dueRule": "Provisional 2026-10-25T08:35:34.568Z anchor; move to actual shipment plus fourteen days if later. No due-date change or takeover performed.",
+    "unavailableMeasures": ["Complete comparable strand-caused reds per week", "Comparable gate time to first red", "Deployed graph-added workspace true-catch and never-mattered rates", "Complete retracted absence-claim population", "Qualified post-change native behavior and false-warning changes"],
+    "interpretation": "Unknown outcomes are neither zero nor evidence of no value. No invocation counts are credited as benefits; no index deletion, new engine rollout or commercial licence clearance is authorized."
+  },
+  "remainingAcceptance": [
+    "P018 deployed snapshot age below selector ceiling across a genuine 48-hour hourly sequence; the 09:01Z continuation recovers eight detailed readings spanning roughly seven hours, still short of the required window.",
+    "Real gate selector receipt showing graph status=fresh and its added-workspace field. Requested once from the live gate owner via coord-send-fa88c20e7b088862556038d39b5add0e557ff0cf78cb9a07c24806326267bea8; no rerun requested and no parallel LIVE_GATE_OPS.",
+    "Exclusion on the finished distribution artifact and final shipment verification.",
+    "P040/P041 scope remains blocked on the already-open Avi question conv-mvbhj8rf-0000-7d6b7f1cf3fc4d6395989725d9eb63a9. Its current read is open with no posts; no duplicate question or scope assumption.",
+    "Existing parent-plan acceptance and independent verification remain separate from this bounded routing decision."
+  ],
+  "verification": "JSON readback, named current source hashes, prior qualified evidence references and the new actual DBOS receipt. No production source changed, no passing matrix was repeated solely to reconstruct evidence, and no final acceptance or shipment is asserted."
+}

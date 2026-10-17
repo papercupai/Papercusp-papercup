@@ -325,6 +325,7 @@ describe('loadRoleCapabilities', () => {
         { default: docsGet },
         { default: getTemplateData },
         { default: reportsGet },
+        { default: artifactsLoad },
         { default: pgQuery },
         { default: pgMutate },
         { default: lspQuery },
@@ -333,6 +334,7 @@ describe('loadRoleCapabilities', () => {
         import('../../../agent-tools/docs/get'),
         import('../../../agent-tools/plans/get-template-data'),
         import('../../../agent-tools/reports/get'),
+        import('../../../../../agent-mcp/src/tools/artifacts/load'),
         import('../../../agent-tools/dev/pg_query'),
         import('../../../agent-tools/dev/pg_mutate'),
         import('../../../agent-tools/lsp/query'),
@@ -349,6 +351,9 @@ describe('loadRoleCapabilities', () => {
       expect(reportsGet.capability).toBe('reports:read');
       expect(caps.has('reports:read')).toBe(true);
       expect(caps.has('reports:write')).toBe(false);
+      expect(artifactsLoad.agentRoles).toContain('judge');
+      expect(artifactsLoad.capability).toBe('artifacts:read');
+      expect(caps.has(artifactsLoad.capability as string)).toBe(true);
       // Public evidence reads can be independently reproduced through the
       // read-only SQL/compiler surfaces when their projections omit fields.
       expect(pgQuery.agentRoles).toContain('judge');
@@ -376,6 +381,8 @@ describe('loadRoleCapabilities', () => {
       expect(caps.has('work_items:read')).toBe(true);
       expect(caps.has('operator:read')).toBe(true);
       expect(caps.has('plans:read')).toBe(true);
+      expect(caps.has('artifacts:read')).toBe(true);
+      expect(caps.has('artifacts:write')).toBe(false);
       expect(caps.has('testing:run')).toBe(true);
       expect(caps.has('operator:write')).toBe(false);
       expect(caps.has('work_items:write')).toBe(true);

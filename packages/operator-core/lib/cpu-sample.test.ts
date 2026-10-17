@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { expect, it, vi } from 'vitest';
+import { createTextCollector } from './child-output';
 import * as cdpInspector from '../../../scripts/cdp-inspector.mjs';
 import { captureCpuProfile, persistCpuProfile, readInspectorProcessIdentity } from '../../../scripts/cpu-sample.mjs';
 
@@ -138,12 +139,18 @@ async function withBusyTarget(run: (target: { pid: number; port: number; entry: 
   output: () => string }) => Promise<void>, waitForStartup = false) {
   const out = mkdtempSync(join(tmpdir(), 'cpu-sample-busy-'));
   const entry = join(out, 'startup.mjs');
-  writeFileSync(entry, 'console.log("CPU_SAMPLE_BUSY_READY");function busyStartup(){while(true)Math.sqrt(Math.random());}busyStartup();');
+  // The target immediately enters a synchronous loop, so an async console.log
+  // can remain buffered in Node's pipe writer. Flush the marker before the
+  // loop to make the startup/output assertion deterministic.
+  writeFileSync(entry, 'import { writeSync } from "node:fs";writeSync(1, "CPU_SAMPLE_BUSY_READY\\n");function busyStartup(){while(true)Math.sqrt(Math.random());}busyStartup();');
+  // The test runner loads the committed-source guard through NODE_OPTIONS. Do
+  // not inherit that loader into the paused fixture: its git-backed module
+  // checks can consume the short profile window before the target reaches the
+  // busy loop, leaving the profile attributed only to the loader itself.
   const child = spawn(process.execPath, [waitForStartup ? '--inspect-wait=127.0.0.1:0' : '--inspect=127.0.0.1:0', entry, '--probe-target'],
-    { stdio: ['ignore', 'pipe', 'pipe'] });
+    { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, NODE_OPTIONS: '' } });
   const exit = once(child, 'exit');
-  let output = '';
-  child.stdout!.on('data', chunk => { output += String(chunk); });
+  const output = createTextCollector(child.stdout);
   try {
     const port = await new Promise<number>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('busy inspector did not open')), 5000);
@@ -159,7 +166,7 @@ async function withBusyTarget(run: (target: { pid: number; port: number; entry: 
         if (String(chunk).includes('CPU_SAMPLE_BUSY_READY')) { ready = true; settle(); }
       });
     });
-    await run({ pid: child.pid!, port, entry, output: () => output });
+    await run({ pid: child.pid!, port, entry, output: () => output.peek() });
   } finally {
     child.kill('SIGTERM');
     await exit;
@@ -188,10 +195,16 @@ it.skipIf(process.platform !== 'linux')('starts profiling before releasing an ex
     const result = await captureCpuProfile({ pid, startPort: port, attachExisting: true, procIdentity: true,
       resumeStartup: true, expectedEntry: entry, expectedArg: '--probe-target', durationMs: 250, deadlineMs: 7000 });
     expect(result.startupResumed).toBe(true);
-    expect(output()).toContain('CPU_SAMPLE_BUSY_READY');
+    await vi.waitFor(() => expect(output()).toContain('CPU_SAMPLE_BUSY_READY'), { timeout: 3000 });
     const sampled = new Set(result.profile.samples);
-    expect(result.profile.nodes.some((node: { id: number; callFrame: { url: string } }) =>
-      sampled.has(node.id) && node.callFrame.url === pathToFileURL(entry).href)).toBe(true);
+    const sampledUrls = [...new Set<string>(result.profile.nodes
+      .filter((node: { id: number }) => sampled.has(node.id))
+      .map((node: { callFrame: { url: string } }) => node.callFrame.url))];
+    const sampledSourceUrls = sampledUrls.filter(url => url && !url.startsWith('node:'));
+    const targetUrl = pathToFileURL(entry).href;
+    if (!sampledSourceUrls.includes(targetUrl)) {
+      throw new Error('expected startup source URL ' + targetUrl + '; sampled source URLs: ' + JSON.stringify(sampledSourceUrls));
+    }
   }, true);
 }, 15000);
 

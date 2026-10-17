@@ -1878,10 +1878,20 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       throw new Error('transport closed when staging killed its own handler');
     });
 
-    await expect(call({ confirm: true, target: 'staging' })).rejects.toThrow('transport closed');
+    const b = body(await call({ confirm: true, target: 'staging' }));
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'staging',
+      drained: true,
+      restarted: false,
+      restartScheduled: true,
+      restartObserved: false,
+      requestAuditPersisted: true,
+    });
+    expect(typeof b.restartRequestId).toBe('string');
     expect(leaseHeld).toBe(false);
     expect(spawnM).toHaveBeenCalledTimes(1);
-    expect(stagingReadinessM).toHaveBeenCalledTimes(1);
+    expect(stagingReadinessM).not.toHaveBeenCalled();
   });
 
   it('claims the cooldown marker, drains+restarts, and does NOT release the cooldown on success', async () => {
@@ -1907,12 +1917,16 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     expect(b).toMatchObject({
       ok: true,
       target: 'staging',
-      restarted: true,
+      restarted: false,
       drained: true,
       restartedFromPid: 4242,
       enabledVia: 'env',
       audited: true,
+      restartScheduled: true,
+      restartObserved: false,
+      requestAuditPersisted: true,
     });
+    expect(typeof b.restartRequestId).toBe('string');
     expect(b.verifyWith).toMatch(/dev:listening_ports \{ port: 3170 \}/);
     expect(b.verifyWith).toMatch(/ownerVisible:true/);
     expect(b.verifyWith).toMatch(/MainPID=0.*ActiveState=activating|ActiveState=activating.*MainPID=0/);
@@ -1939,6 +1953,10 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     const details = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
     expect(details).toMatchObject({
       target: 'staging',
+      requestId: b.restartRequestId,
+      phase: 'request',
+      beforeMainPid: 4242,
+      restartCommand: 'systemctl --user restart papercusp-staging-api.service',
       viaEnv: true,
       viaAuthorizeArg: false,
       reason: null,
@@ -1971,7 +1989,16 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
 
     const b = body(await call({ confirm: true, target: 'staging' }));
 
-    expect(b).toMatchObject({ ok: true, target: 'staging', restarted: true, drained: true });
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'staging',
+      restarted: false,
+      drained: true,
+      restartScheduled: true,
+      restartObserved: false,
+      requestAuditPersisted: true,
+    });
+    expect(typeof b.restartRequestId).toBe('string');
     expect(workspaceTxnM).toHaveBeenCalledTimes(2);
     expect(acquireM).toHaveBeenCalledTimes(1);
     expect(guardM).toHaveBeenCalledTimes(1);
@@ -1993,7 +2020,16 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
 
     const b = body(await call({ confirm: true, target: 'staging' }));
 
-    expect(b).toMatchObject({ ok: true, target: 'staging', restarted: true, drained: true });
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'staging',
+      restarted: false,
+      drained: true,
+      restartScheduled: true,
+      restartObserved: false,
+      requestAuditPersisted: true,
+    });
+    expect(typeof b.restartRequestId).toBe('string');
     expect(gitSyncCollisionM).not.toHaveBeenCalled();
     expect(gitSyncBarrierM).not.toHaveBeenCalled();
   });
@@ -2016,7 +2052,10 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     expect(b).toMatchObject({
       ok: true,
       target: 'staging',
-      restarted: true,
+      restarted: false,
+      restartScheduled: true,
+      restartObserved: false,
+      requestAuditPersisted: true,
       resetFailedBeforeRestart: true,
     });
     const shell = spawnM.mock.calls[0]?.[1]?.[7] as string;
@@ -2024,7 +2063,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     const restart = `systemctl --user restart papercusp-staging-api.service`;
     expect(shell).toContain(`${reset} && ${restart}`);
     expect(shell.indexOf(reset)).toBeLessThan(shell.indexOf(restart));
-    expect(b.note).toMatch(/start-limit|reset-failed/i);
+    expect(b.note).toMatch(/scheduled|reconcile/i);
   });
 
   it('also clears a failed MainPID=0 unit when systemd retains Result=exit-code', async () => {
@@ -2050,16 +2089,18 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     expect(b).toMatchObject({
       ok: true,
       target: 'staging',
-      restarted: true,
+      restarted: false,
+      restartScheduled: true,
+      restartObserved: false,
+      requestAuditPersisted: true,
       resetFailedBeforeRestart: true,
-      stagingReadiness: { ready: true, observed: true, outcome: 'ready' },
     });
     expect(spawnM.mock.calls[0]?.[1]?.[7] as string).toContain(
       'systemctl --user reset-failed papercusp-staging-api.service && systemctl --user restart papercusp-staging-api.service',
     );
   });
 
-  it('does not report restarted when the detached staging command is not observed succeeding', async () => {
+  it('returns a pending receipt without claiming the detached staging outcome', async () => {
     mockResolvedTyped(acquireM, {
       ok: true,
       mode: 'exclusive',
@@ -2071,29 +2112,19 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     });
     mockImplementationTyped(guardM, runGuard(fenceOk(10)));
     mockResolvedTyped(probeM, { ok: true, mainPid: 0, activeState: 'failed', result: 'exit-code' });
-    stagingReadinessM.mockResolvedValueOnce({
-      ready: false,
-      observed: false,
-      outcome: 'failed',
-      pidChanged: false,
-      observedPid: null,
-      activeState: 'failed',
-      result: 'exit-code',
-      listener: null,
-      waitedMs: 10_000,
-    });
-
     const b = body(await call({ confirm: true, target: 'staging' }));
 
     expect(b).toMatchObject({
-      ok: false,
+      ok: true,
       target: 'staging',
       restarted: false,
       restartScheduled: true,
       restartObserved: false,
-      stagingReadiness: { outcome: 'failed' },
+      requestAuditPersisted: true,
     });
-    expect(b.note).toMatch(/do not claim it restarted/i);
+    expect(typeof b.restartRequestId).toBe('string');
+    expect(b.note).toMatch(/reconcile the request|scheduled/i);
+    expect(stagingReadinessM).not.toHaveBeenCalled();
   });
 
   it('observes the real staging transition through new-PID listener ownership', async () => {

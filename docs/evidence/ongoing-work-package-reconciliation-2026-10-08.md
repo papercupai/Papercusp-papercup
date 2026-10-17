@@ -1,6 +1,18 @@
 # Ongoing-work shipment: legacy package reconciliation proposal
 
-## Current revision — 2026-10-12
+## Current revision — 2026-10-15
+
+Avi directed this successor session to enter AUTO and continue the interrupted work. The existing stopped instance is now reconciled through the maintained `goals:update` schema-extension route. This supersedes the replacement proposal below: no replacement or saved-value transfer was necessary.
+
+The exact version-checked operation added `active-workspace-plans` collection metadata to the existing `worklist` declaration, with `defaultSelected:false`, and added the owner-only `worklist_policy` declaration with the empty default `{order:[],excluded:[]}`. Its complete expected schema and patch are saved on WI-10007422. The attributed request ran once against the staging operator at `:3170`, which shares the workspace database. The mutation receipt was followed by independent authoritative reads through both operator routes.
+
+Full before/after JSON comparisons verified equality of the goal id, title, body, standing flag, properties, budget, budget window, launch settings, tripwires, metadata, kill criterion, parent, install slug and outputs. The goal remains **killed**, with no live holder. All **71** saved worklist refs retain property version **5** and their existing provenance. The entire historical metadata document is unchanged. Only the property declaration and normal update/audit records changed. The custom package export remains untouched.
+
+Verification: the canonical `goals:update` unit suite passed **79 tests** (local receipt `21265060`, unscoped supplemental proof). The canonical real-Postgres typed-property suite passed **20 tests**, zero skipped (receipt `21265098`, harness `papercusp`, commit `05ef1d2954f4c0697b621a3cbefeb97040032e0d`, working-tree evidence). This includes additive schema CAS, preserved saved values, stale-schema refusal, owner-policy protection and selection defaults. The first integration attempt was refused before running tests by the shared test-PG storage guard; the successful attempt reused `startDedicatedNativePg` on `/tmp` with the documented admin-URL override. Its private cluster was stopped and its data directory removal verified.
+
+This closes the instance-configuration reconciliation. Released UI acceptance, independent certification, final author verdict and shipment remain in the separately owned parent WI-10007153. No activation, goal start, deployment or live-gate operation was performed, and none is inferred from this configuration proof.
+
+## Preparation — 2026-10-12
 
 This revision supersedes the dated preparation below where it differs. Plan D-006 now records the instruction to ship; the parent shipment lane is held by another agent. This session continues its owned WI-10007422 child under the original SELF route.
 

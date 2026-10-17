@@ -151,15 +151,33 @@ export function prepareVerifierSource({ repo, ref, dest, inputs, inputsFile, git
         sha256: string;
     };
 }>;
+/** Run a bounded dependency preflight without abandoning writers in its owned tree.
+ * The maintained helpers emit measured byte, lock and completed-tree counters;
+ * only increases extend the watchdog. Join its process group before cleanup.
+ * @param {string} command
+ * @param {string[]} args
+ * @param {{ cwd: string, env: NodeJS.ProcessEnv, timeoutMs?: number, maxMs?: number,
+ *   stallWindowMs?: number, extensionMs?: number, signal?: AbortSignal }} options
+ */
+export function runVerifierDependencyCommand(command: string, args: string[], { cwd, env, timeoutMs, maxMs, stallWindowMs, extensionMs, signal }: {
+    cwd: string;
+    env: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+    maxMs?: number;
+    stallWindowMs?: number;
+    extensionMs?: number;
+    signal?: AbortSignal;
+}): Promise<string>;
 /** Attach dependencies to the independently invoked tree before its first Node
  * command. Reuse the release helper's donor install mutex and private snapshot.
- * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner }} options
+ * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner, signal?: AbortSignal }} options
  */
-export function prepareVerifierDependencies({ donor, dest, receipt, runPhase }: {
+export function prepareVerifierDependencies({ donor, dest, receipt, runPhase, signal }: {
     donor: string;
     dest: string;
     receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
     runPhase?: VerifierPhaseRunner;
+    signal?: AbortSignal;
 }): Promise<{
     schemaVersion: string;
     scope: string;
@@ -199,6 +217,19 @@ export function captureVerifierDependencies({ dest, receipt }: {
         files: import("@papercusp/test-config/verifier-source").VerifierSourceFile[];
     }[];
 };
+/** Admit against the caller's disclosure ledger before leaving its checkout.
+ * Frozen source excludes local operator configuration. Preserve its database
+ * pins in the child environment so governed admission uses the same control
+ * plane, without copying the config file or unrelated secrets into the archive.
+ * Explicit database pins and isolated PG selection keep their precedence.
+ * @param {{ repo: string, env?: NodeJS.ProcessEnv, preflight?: typeof runTreeRestrictedHoldPreflight }} options
+ * @returns {NodeJS.ProcessEnv}
+ */
+export function verifierCommandAdmissionEnv({ repo, env, preflight }: {
+    repo: string;
+    env?: NodeJS.ProcessEnv;
+    preflight?: typeof runTreeRestrictedHoldPreflight;
+}): NodeJS.ProcessEnv;
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
  * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number }} options
@@ -735,4 +766,5 @@ export type Gate = (dir: string, opts: {
     env?: NodeJS.ProcessEnv;
 }) => Promise<GateVerdict>;
 export type Log = (message: string) => void;
+import { runTreeRestrictedHoldPreflight } from './lib/restricted-hold-preflight.mjs';
 declare function main(argv: any): Promise<number>;

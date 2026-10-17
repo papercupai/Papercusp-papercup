@@ -80,6 +80,20 @@ describe('evaluatePlanSpecQuality', () => {
     }
   });
 
+  it('reports zero active sourceBar projections in atomicity coverage', () => {
+    const result = evaluatePlanSpecQuality({
+      planSlug: 'quality-plan',
+      harnessSlug: 'papercusp',
+      planItemIds: ['P-001'],
+      clauses: [clause()],
+      classRef: 'plan-class-feature-ship',
+    });
+
+    expect(result.ratings['atomic-observable-behavior'].evidence).toContain(
+      'Coverage: 1 of 1 active behavioral clause(s) evaluated; 0 active sourceBar-pinned BAR projection(s) excluded',
+    );
+  });
+
   it('requires every plan item to carry behavior or an explicit exemption', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',
@@ -194,7 +208,7 @@ describe('evaluatePlanSpecQuality', () => {
       expect(result.ratings['item-contract-coverage'].evidence).toContain('AUTO-BAR-R-1-P-001 on P-001 -> P-002');
     });
 
-    it('does not classify a later exempt verification item as a dependent implementation prerequisite', () => {
+    it('blocks an active BAR projection on a later exempt verification item', () => {
       const verificationExemption = clause({
         specId: 'VERIFY-P-002',
         sourceValId: null,
@@ -227,7 +241,13 @@ describe('evaluatePlanSpecQuality', () => {
         classRef: 'plan-class-feature-ship',
       });
 
-      expect(result.ratings['item-contract-coverage'].rating).toBe('pass');
+      expect(result.ratings['item-contract-coverage'].rating).toBe('fail');
+      expect(result.wouldBlock).toContain('item-contract-coverage');
+      expect(result.details.exemptSourceBarProjectionMismatches).toEqual([{
+        exemptItemId: 'P-002',
+        barKey: 'R-1',
+        projectionSpecId: 'AUTO-BAR-R-1-P-002',
+      }]);
       expect(result.details.prerequisiteRuntimeBarMismatches).toEqual([]);
     });
 

@@ -5120,6 +5120,29 @@ describe('mid-turn coord delivery uses followUp, not steer (ornith-coord-inbox-f
     expect(await launchProseBudgetForResult({ type: 'tool_result', toolCallId: 'not-staged', content: 'ok' }, run)).toBe('');
   });
 
+  it.each([
+    ['missing', undefined, 'not installed'],
+    ['cannot load', 'throw new Error("hook load failed");', 'could not load'],
+    ['subprocess failure', 'export function shouldCheck(){return true;} if (process.argv[1]?.endsWith("posttooluse-launch-prose-budget-nudge.mjs")) process.exit(1);', 'hook failed'],
+  ])('reports an explicit NOT checked signal when the budget hook is %s', async (_name, source, expected) => {
+    const root = mkdtempSync(join(tmpdir(), 'omp-budget-hook-failure-'));
+    const hook = join(root, '.papercusp/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs');
+    const previousHome = process.env.HOME;
+    try {
+      mkdirSync(dirname(hook), { recursive: true });
+      if (source !== undefined) writeFileSync(hook, source);
+      process.env.HOME = root;
+      const call = { type: 'tool_call' as const, toolName: 'edit', toolCallId: 'budget-failure', input: { path: 'apps/operator/prompts/example.md' } };
+      stageActivityReport(call);
+      const verdict = await launchProseBudgetForResult({ type: 'tool_result', toolCallId: call.toolCallId, content: 'EDIT SUCCEEDED' });
+      expect(verdict).toContain('launch-prose budget NOT checked');
+      expect(verdict).toContain(expected);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('delivers shared hook output from the registered OMP result handler', async () => {
     const root = mkdtempSync(join(tmpdir(), 'omp-budget-hook-'));
     const hook = join(root, '.papercusp/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs');

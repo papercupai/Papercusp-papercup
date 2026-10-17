@@ -260,6 +260,8 @@ describe('facts:assert volatile-measurement contract', () => {
 
   it('accepts the timestamp through either the flat field or the measurement alias', () => {
     const measuredAt = '2026-08-31T11:00:00Z';
+    const { ttlSec: _ordinaryTtl, ...withoutLifetime } = volatileBase;
+    expect(assertTool.args.safeParse({ ...withoutLifetime, subjectVolatile: true, measuredAt }).success).toBe(true);
     expect(assertTool.args.safeParse({ ...volatileBase, subjectVolatile: true, measuredAt }).success).toBe(true);
     expect(
       assertTool.args.safeParse({

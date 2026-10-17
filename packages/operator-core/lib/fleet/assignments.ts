@@ -743,6 +743,7 @@ export async function lastToolCallAtByOwner(coordOwnerIds: string[]): Promise<Ma
       SELECT DISTINCT ON (coord_owner_id) coord_owner_id, invoked_at
         FROM harness_shared.tool_invocations
        WHERE coord_owner_id = ANY(${ids}::text[])
+         AND status = 'ok'
        ORDER BY coord_owner_id, invoked_at DESC
     `;
     const out = new Map<string, string>();
@@ -803,6 +804,7 @@ export async function lastProductiveToolCallAtByOwner(coordOwnerIds: string[]): 
       SELECT DISTINCT ON (coord_owner_id) coord_owner_id, invoked_at
         FROM harness_shared.tool_invocations
        WHERE coord_owner_id = ANY(${ids}::text[])
+         AND status = 'ok'
          AND tool_name != ALL(${[...HOUSEKEEPING_TOOL_NAMES]}::text[])
        ORDER BY coord_owner_id, invoked_at DESC
     `;
@@ -840,6 +842,7 @@ export async function agentOriginToolCallOwnersSince(
         FROM harness_shared.tool_invocations
        WHERE coord_owner_id = ANY(${ids}::text[])
          AND call_origin = 'agent'
+         AND status = 'ok'
          AND invoked_at > now() - (${windowMs} * interval '1 millisecond')
     `;
     return new Set(rows.map((row) => row.coord_owner_id).filter((id) => typeof id === 'string' && id.length > 0));

@@ -301,6 +301,29 @@ describe('external-trigger admin route pair', () => {
     expect(setStorm).toHaveBeenCalledWith(sql, 'ws-test', BINDING_ID, { maxRuns: 3, windowSeconds: 120 });
   });
 
+  it('forwards explicit coalescing mode on both binding mutation routes and refuses unknown modes', async () => {
+    const response = await request(mutate, 'PATCH', {
+      op: 'set-storm-policy', id: BINDING_ID, mode: 'coalesce-with-cap', maxRuns: 3, windowSeconds: 120,
+    });
+    expect(response.status).toBe(200);
+    expect(setStorm).toHaveBeenCalledWith(sql, 'ws-test', BINDING_ID,
+      { mode: 'coalesce-with-cap', maxRuns: 3, windowSeconds: 120 });
+    const attached = await request(mutate, 'PATCH', {
+      op: 'attach-external', sourceId: '20000000-0000-4000-8000-000000000001',
+      planHarnessSlug: 'papercusp', planSlug: 'triage-mail', eventPattern: 'ext:gmail:message.received',
+      mode: 'coalesce-with-cap',
+    });
+    expect(attached.status).toBe(200);
+    expect(createBinding).toHaveBeenCalledWith(sql, 'ws-test', expect.objectContaining({
+      stormPolicy: { mode: 'coalesce-with-cap' },
+    }));
+    setStorm.mockClear();
+    expect((await request(mutate, 'PATCH', {
+      op: 'set-storm-policy', id: BINDING_ID, mode: 'invented', maxRuns: 3, windowSeconds: 120,
+    })).status).toBe(400);
+    expect(setStorm).not.toHaveBeenCalled();
+  });
+
   // WI-10004920: the dispatch validity window is settable from the admin surface,
   // on both doors, and bounded at the boundary by the engine's 31-day ceiling.
   it('forwards a stated dispatch validity window on set-storm-policy', async () => {

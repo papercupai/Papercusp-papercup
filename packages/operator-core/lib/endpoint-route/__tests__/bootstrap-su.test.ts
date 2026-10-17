@@ -10,7 +10,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentFleetRecord } from '../../agent-fleets-store';
 import type { RouteContext } from '../define-route';
 import { renderSessionPortSeed } from '../../session-port/render';
@@ -20,6 +20,12 @@ import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from '.
 // route's best-effort persistence doesn't touch the real ~/.papercusp.
 const LC_DIR = mkdtempSync(join(tmpdir(), 'bootstrap-su-lc-'));
 process.env.PAPERCUSP_LAUNCH_CONTEXT_DIR = LC_DIR;
+const TEST_CODEX_AUTH_HOME = mkdtempSync(join(tmpdir(), 'bootstrap-su-home-'));
+mkdirSync(join(TEST_CODEX_AUTH_HOME, '.codex'), { recursive: true });
+writeFileSync(join(TEST_CODEX_AUTH_HOME, '.codex', 'auth.json'), JSON.stringify({
+  tokens: { access_token: 'test-access-token', refresh_token: 'test-refresh-token' },
+}));
+afterAll(() => rmSync(TEST_CODEX_AUTH_HOME, { recursive: true, force: true }));
 // A real coord-extension file so coordExtPath resolves deterministically.
 const COORD_EXT = join(LC_DIR, 'papercusp-coord.ts');
 writeFileSync(COORD_EXT, '// coord ext');
@@ -635,6 +641,8 @@ async function callBrainGet(): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv('HOME', TEST_CODEX_AUTH_HOME);
+  vi.stubEnv('OPENAI_API_KEY', '');
   sessionAllowsAmbientContextMock.mockReset().mockResolvedValue(true);
   consumePendingCarryRespawnMock.mockReset().mockResolvedValue(null);
   restorePendingCarryRespawnMock.mockReset().mockResolvedValue(true);
@@ -661,6 +669,7 @@ beforeEach(() => {
   // exercise the no-brief / no-hive branches override per-call.
   listStartedHivesMock.mockResolvedValue([{ workspaceId: 'default', installSlug: 'papercup' }]);
 });
+afterEach(() => vi.unstubAllEnvs());
 
 describe('bootstrap frozen native prompt binding', () => {
   it.each([false, true])('saved prompt isolation follows host ambient policy: allowed=%s', async (allowed) => {
@@ -1614,6 +1623,50 @@ describe('bootstrap-su', () => {
     expect(recordAdvSessionMock).toHaveBeenCalledWith(
       expect.objectContaining({ planSlug: null, agent: 'omp', mode: 'omp' }),
     );
+  });
+
+  it('refuses direct/default Codex before session creation when native auth is absent', async () => {
+    const homeWithoutAuth = mkdtempSync(join(tmpdir(), 'bootstrap-su-no-auth-'));
+    vi.stubEnv('HOME', homeWithoutAuth);
+    vi.stubEnv('OPENAI_API_KEY', '');
+    try {
+      const res = await callPost({ agent: 'codex', account: 'default', harness_slug: null, plan_slug: null });
+      expect(res.status).toBe(409);
+      expect(await res.json()).toMatchObject({
+        status: 'error',
+        code: 'codex_native_auth_missing',
+        error: expect.stringContaining('~/.codex/auth.json'),
+      });
+      expect(recordAdvSessionMock).not.toHaveBeenCalled();
+      expect(reserveSessionPortTargetMock).not.toHaveBeenCalled();
+      expect(armInboxWakeMock).not.toHaveBeenCalled();
+      expect(writeSuCodexHomeMock).not.toHaveBeenCalled();
+    } finally {
+      rmSync(homeWithoutAuth, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps Codex gateway auto working without a local native credential', async () => {
+    const homeWithoutAuth = mkdtempSync(join(tmpdir(), 'bootstrap-su-no-auth-'));
+    const originalFlag = getFlagMock.getMockImplementation()!;
+    const originalPool = loadAccountPoolMock.getMockImplementation()!;
+    vi.stubEnv('HOME', homeWithoutAuth);
+    vi.stubEnv('OPENAI_API_KEY', '');
+    getFlagMock.mockImplementation(async (key: string) => key === 'papercusp-inference-gateway');
+    loadAccountPoolMock.mockResolvedValueOnce({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
+    try {
+      const res = await callPost({ agent: 'codex', account: 'auto', harness_slug: null, plan_slug: null });
+      expect(res.status).toBe(200);
+      expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({ agent: 'codex' }));
+      expect(writeSuCodexHomeMock).toHaveBeenCalledWith(expect.objectContaining({
+        codexGatewayAuto: true,
+        codexGatewayAccountId: null,
+      }));
+    } finally {
+      getFlagMock.mockImplementation(originalFlag);
+      loadAccountPoolMock.mockImplementation(originalPool);
+      rmSync(homeWithoutAuth, { recursive: true, force: true });
+    }
   });
 
   it('codex → per-session CODEX_HOME (writeSuCodexHome) + CODEX_HOME env; workspace cwd', async () => {

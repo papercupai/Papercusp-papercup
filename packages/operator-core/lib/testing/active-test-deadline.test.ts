@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { readAdmissionFrozenMs, withActiveTestDeadline } from '../../test/_active-test-deadline';
+import { createTextCollector } from '../child-output';
 
 function fixture(initialFrozen: number | null = 0) {
   let now = 0;
@@ -119,10 +120,9 @@ describe('active test deadline under pc-heavy suspension', () => {
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
     });
     const exited = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
-    let stderr = '';
-    child.stderr?.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-4000); });
+    const stderr = createTextCollector(child.stderr, { maxChars: 4000 });
     try {
-      await childMessage(child, 'loaded').catch(error => { throw new Error(`${error.message}\n${stderr}`); });
+      await childMessage(child, 'loaded').catch(error => { throw new Error(error.message + '\n' + stderr.peek()); });
       const body = childMessage(child, 'result');
       const controlledPolicy = { timeoutMs: 2000, wallTimeoutMs: 15000 };
       const observed = (promise: Promise<unknown>) => promise.then(

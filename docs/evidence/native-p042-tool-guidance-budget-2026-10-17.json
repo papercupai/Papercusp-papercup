@@ -1,0 +1,67 @@
+{
+  "schemaVersion": "native-p042-tool-guidance-budget-evidence-v1",
+  "workItem": "EI-26185240050983311",
+  "foundDuring": "EI-26184007961589078",
+  "parentWorkItem": "WI-6554700010015356",
+  "scope": "Bounded guidance wording repair and existing catalog consistency/budget suite; no live-release gate or shipment claim.",
+  "rootCause": "The Git-evidence guidance chaining string grew the registered tool description+guidance weight to1620, breaching the unchanged1600 hard cap. Existing maintained P011 guard detected the breach during the architect quick-check.",
+  "change": "Shorten redundant chaining prose while preserving judge-only scope, registered evidence root selection, pinned submodule/HEAD identities, exact blob contentSha256 and whole-file/byte-page terminal contract. Runtime implementation, schema, role authority and budget thresholds unchanged.",
+  "recurrenceGuard": "Existing describeToolGuidanceBudget in tools-md-sync.test.ts imports the actual catalog and enforces1500 soft budget and1600 hard cap. No exception or new test added.",
+  "red": {
+    "log": "/tmp/native-p042-architect-green-20261017.log",
+    "exitCode": 1,
+    "combinedPassed": 111,
+    "combinedFailed": 1,
+    "assertion": "capability:git-evidence=1620 >1600; cut at least120 to clear1500"
+  },
+  "green": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/native-p042-architect-catalog-v2-source-20261017.json npm run test:file -- packages/operator-core/lib/__tests__/tools-md-sync.test.ts",
+    "log": "/tmp/native-p042-architect-catalog-v2-20261017.log",
+    "exitCode": 0,
+    "nativeReason": "passed",
+    "unhandledErrorCount": 0,
+    "files": [
+      {
+        "testFile": "packages/operator-core/lib/__tests__/tools-md-sync.test.ts",
+        "state": "passed",
+        "execution": {
+          "passed": 58,
+          "failed": 0,
+          "skipped": 0,
+          "collectionFailed": false
+        }
+      }
+    ],
+    "childSubstituted": 0,
+    "capture": "/tmp/native-p042-architect-catalog-v2-source-20261017.json",
+    "captureSha256": "e79b11b554ae32a7a9731f84ee8ae3c81bb41d91bd85bae212fb47d25119824f",
+    "uniqueWorkerOriginalCount": 4791,
+    "workerOriginalMismatchesAtReadback": [],
+    "namedCapturedOriginals": {
+      "packages/operator-core/lib/agent-tools/capability/git-evidence.ts": "fb28e50d12c93577f782313cd6c05f28f6329ec77129f330421b5db3776f93c5",
+      "packages/operator-core/lib/agent-tools/tool-guidance-budget.ts": "491163196f07aa5640884db14eb8266618e7da20ada387623ae65ef83628aff2",
+      "packages/operator-core/lib/__tests__/tools-md-sync.test.ts": "8e92bdea5258f65017e9ba38304508209819d8392fd345d8c678d1f6020e90b1",
+      "packages/operator-core/lib/__tests__/tool-guidance-budget.shared.ts": "6bbd6e76b4cea301eb8be282a577a2a2a6130504550c47c70bff07d98998d224"
+    },
+    "namedCurrentHashes": {
+      "packages/operator-core/lib/agent-tools/capability/git-evidence.ts": "fb28e50d12c93577f782313cd6c05f28f6329ec77129f330421b5db3776f93c5",
+      "packages/operator-core/lib/agent-tools/tool-guidance-budget.ts": "491163196f07aa5640884db14eb8266618e7da20ada387623ae65ef83628aff2",
+      "packages/operator-core/lib/__tests__/tools-md-sync.test.ts": "8e92bdea5258f65017e9ba38304508209819d8392fd345d8c678d1f6020e90b1",
+      "packages/operator-core/lib/__tests__/tool-guidance-budget.shared.ts": "6bbd6e76b4cea301eb8be282a577a2a2a6130504550c47c70bff07d98998d224"
+    },
+    "configStatuses": {
+      "configSources": "unknown",
+      "configLoadedSources": "unknown",
+      "mainProcessLoadedSources": "unknown"
+    },
+    "qualification": "Captured registry-image proof; current-source qualification only for named originals that match. Runtime Markdown reads and pre-worker loader/config inputs are not a full execution graph. Other-source drift is enumerated, not hidden."
+  },
+  "filesChanged": [
+    "packages/operator-core/lib/agent-tools/capability/git-evidence.ts",
+    "docs/evidence/native-p042-tool-guidance-budget-2026-10-17.json"
+  ],
+  "limits": [
+    "Architect routing proof is separately preserved in docs/evidence/native-p042-architect-routing-2026-10-17.json.",
+    "P042, P01848h and final distribution/shipment acceptance remain open."
+  ]
+}

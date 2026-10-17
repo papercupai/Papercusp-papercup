@@ -1511,7 +1511,7 @@ const coordMessage: SearchSource = {
     // computing headlines for unrelated messages. session:'self' deliberately
     // remains eligible because it resolves to owner filters, not sessionId.
     if (f.sessionId) return [];
-    const rows = (await p.sql`
+    const rows = (await boundedOrgTxn(async (tx) => tx`
       SELECT msg_id, ts, harness_slug,
              body->>'from' AS from_owner,
              body->>'kind' AS kind,
@@ -1533,7 +1533,13 @@ const coordMessage: SearchSource = {
          AND to_tsvector('english', left(coalesce(body->>'summary','') || ' ' || coalesce(body->>'body',''), 20000))
              @@ plainto_tsquery('english', ${p.query})
     ORDER BY rank DESC LIMIT ${p.limit}
-    `) as unknown as Array<{ msg_id: string; ts: string; harness_slug: string | null; from_owner: string | null; kind: string | null; msgtext: string; rank: number; highlight: string }>;
+    `, {
+      client: p.sql,
+      acquirePool: 'org-admin',
+      signal: p.signal,
+      readOnly: true,
+      statementTimeoutMs: LEXICAL_COVERAGE_STATEMENT_TIMEOUT_MS,
+    })) as unknown as Array<{ msg_id: string; ts: string; harness_slug: string | null; from_owner: string | null; kind: string | null; msgtext: string; rank: number; highlight: string }>;
     return rows.map((r) => ({
       key: `coord_message:${r.msg_id}`,
       score: r.rank,

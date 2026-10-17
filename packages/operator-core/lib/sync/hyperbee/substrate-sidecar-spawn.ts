@@ -18,6 +18,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
+import { createTextCollector } from '../../child-output';
 import { resolveSubstrateSocketPath, SUBSTRATE_SOCKET_ENV } from './substrate-socket-path';
 import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../../systemd-scope';
 import {
@@ -319,7 +320,6 @@ export async function spawnSubstrateSidecar(
           // above, or the WI-1504 guarantee would hold only when the task manager is enabled.
           buildIsolatedScopeArgv([cmd, ...args], substrateSidecarScopeMemoryMaxG(), 'deny')
         : [cmd, ...args];
-    let stderr = '';
     let settled = false;
 
     // 'ipc' as the 4th stdio slot opens the Node child_process IPC channel —
@@ -334,6 +334,9 @@ export async function spawnSubstrateSidecar(
       detached: true,
     });
     const child = sidecarProcess;
+    const stderr = createTextCollector(child.stderr, {
+      onDecodedText: (text) => console.warn('[substrate-sidecar-err]', text.trim()),
+    });
     // Fire-and-forget by contract — never awaited by the spawn path and never
     // allowed to reject into it. A lost enrolment degrades to an `unaccounted`
     // row on the next reconcile, which is the alarm that classification exists
@@ -355,7 +358,7 @@ export async function spawnSubstrateSidecar(
       !sidecarReady &&
       code !== 0 &&
       Date.now() - launchedAt < 5_000 &&
-      SCOPE_LAUNCH_FAILURE_RE.test(stderr);
+      SCOPE_LAUNCH_FAILURE_RE.test(stderr.peek());
 
     const timeout = setTimeout(() => {
       if (!sidecarReady && sidecarProcess === child) {
@@ -395,12 +398,6 @@ export async function spawnSubstrateSidecar(
           readyWaiters.length = 0;
         }
       }
-    });
-
-    child.stderr?.on('data', (chunk: Buffer) => {
-      const text = chunk.toString();
-      stderr += text;
-      console.warn('[substrate-sidecar-err]', text.trim());
     });
 
     child.on('error', (err) => {
@@ -444,7 +441,7 @@ export async function spawnSubstrateSidecar(
         // nearby stderr lines to learn WHY; a possibly-red-herring first line
         // (e.g. a headless-container dbus warning) could otherwise be mistaken
         // for the real exit reason with no tail to check it against.
-        const stderrTail = stderr.trim().slice(-500);
+        const stderrTail = stderr.peek().trim().slice(-500);
         console.warn(
           `[substrate-sidecar] died (${msg})${stderrTail ? ` — stderr tail: ${stderrTail}` : ' — no stderr captured'}`,
         );

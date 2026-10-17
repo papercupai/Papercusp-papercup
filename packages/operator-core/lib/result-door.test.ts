@@ -201,6 +201,69 @@ describe('plans:start write receipt recovery', () => {
   });
 });
 
+describe('plans:bind-spec-evidence target refusal recovery', () => {
+  const refusal = (index: number) => {
+    const target = 'PARITY-P003-' + index;
+    const runId = 21257392 + index;
+    return {
+      ok: false,
+      slug: 'cloud-portal-desktop-parity-closure-2026-10-09',
+      error: 'mutation_target_rejected',
+      clause: target + '@1',
+      targeted: null,
+      acceptedTargets: [target],
+      reason: target + '@1: this mutation binding carries no adequacy.targeted; accepted target: ' + target + '.',
+      correctedCall: {
+        tool: 'plans:bind-spec-evidence',
+        args: {
+          harness: 'papercusp',
+          slug: 'cloud-portal-desktop-parity-closure-2026-10-09',
+          items: [{
+            workItemId: 'WI-10007845',
+            specId: target,
+            specRevision: 1,
+            fromTestRun: runId,
+            details: { adequacy: { targeted: target } },
+          }],
+        },
+      },
+      derivedFromTestRun: { testRunId: runId, outputTail: 'D'.repeat(5_000) },
+    };
+  };
+
+  it.each([
+    { toolName: 'plans:bind-spec-evidence' },
+    { toolName: 'tools:invoke', nestedTargetToolName: 'plans:bind-spec-evidence' },
+  ])('keeps the target correction inline through $toolName', (route) => {
+    const source = {
+      ok: false,
+      counts: { ok: 0, failed: 4 },
+      results: [1, 2, 3, 4].map(refusal),
+    };
+    const out = applyResultDoor(
+      { content: [{ type: 'text', text: JSON.stringify(source) }] },
+      { ...route, workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const body = boundedBody(out) as any;
+
+    expect(body._projection.truncated).toBe(true);
+    expect(body.results).toHaveLength(4);
+    for (const row of body.results) {
+      expect(row).toMatchObject({
+        ok: false,
+        error: 'mutation_target_rejected',
+        targeted: null,
+        acceptedTargets: expect.any(Array),
+        reason: expect.stringContaining('accepted target'),
+        correctedCall: { tool: 'plans:bind-spec-evidence', args: { items: expect.any(Array) } },
+      });
+    }
+    expect(measureResultContextBytes(out)).toBeLessThanOrEqual(BUDGET_CHARS);
+    const payload = parseScratchReference(readFileSync(body._projection.cursor.args.file_path))!.payload;
+    expect(JSON.parse(payload.subarray(body._projection.cursor.bodyOffsetInPayload).toString())).toEqual(source);
+  });
+});
+
 /** The single spill file written under <scratchRoot>/<ws>/<tool>/<runId>/. */
 function readSpill(ws: string, tool: string, runId: string): string {
   const dir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, ws, tool, runId);
@@ -896,6 +959,61 @@ describe('applyResultDoor', () => {
     expect(readSpill('ws-1', 'code:run', RUN_ID)).toContain(sourceText);
   });
 
+  it('EI-25795936191004283: four nested bindings keep their count and marker through code:run and tools:invoke', () => {
+    const bindings = Array.from({ length: 4 }, (_, index) => ({
+      id: 39_369 + index,
+      specId: 'AUTO-BAR-R-7-P-022',
+      ...Object.fromEntries(
+        Array.from({ length: 5 }, (_, field) => [
+          `evidence${field}`,
+          `binding-${index}-${field}-` + 'x'.repeat(300),
+        ]),
+      ),
+    }));
+    const produced = shapeCodeRunSummary({
+      ok: true,
+      summary: {
+        evs: [{
+          slug: 'green-main-cycle-time-2026-10-08',
+          count: bindings.length,
+          bindings,
+        }],
+        gsTopKeys: ['ok', 'slug', 'harnessSlug', 'bounded', 'detail', 'evidence', 'count', 'currentness'],
+        padding: 'p'.repeat(1_000),
+      },
+    }) as any;
+
+    const shapedBindings = produced.summary.evs[0].bindings as unknown[];
+    expect(shapedBindings).toHaveLength(bindings.length);
+    expect(shapedBindings).toContain('[omitted]');
+    expect(produced.summary.gsTopKeys).toHaveLength(8);
+    expect(produced.summaryNotice.arrayOriginalLengths).toMatchObject({
+      'summary.evs[0].bindings': 4,
+      'summary.gsTopKeys': 8,
+    });
+
+    const sourceText = JSON.stringify(produced);
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: sourceText }] },
+      { toolName: 'tools:invoke', nestedTargetToolName: 'code:run', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const envelope = JSON.parse((doored.content[0] as { text: string }).text) as {
+      schemaVersion?: string;
+      state?: string;
+      content?: Array<{ uri?: string }>;
+    };
+    expect(envelope).toMatchObject({
+      schemaVersion: 'papercusp.output-envelope/v1',
+      state: 'incomplete',
+      content: [expect.objectContaining({ uri: expect.any(String) })],
+    });
+    expect((doored as any)._meta.resultDoor.innerTruncationMarkers).toContain('summaryNotice.truncated');
+    const spill = JSON.parse(readSpill('ws-1', 'tools:invoke', RUN_ID)) as {
+      content: Array<{ text: string }>;
+    };
+    expect(JSON.parse(spill.content[0].text)).toEqual(produced);
+  });
+
   it('EI-251528: evaluator rating-map payload-tier omissions remain explicitly incomplete at the result door', () => {
     const criteria = Array.from({ length: 9 }, (_, index) => `criterion-${index + 1}`);
     const ratings = Object.fromEntries(criteria.map((criterion, index) => [criterion, {
@@ -1027,6 +1145,67 @@ describe('applyResultDoor', () => {
     expect(item).toMatchObject({ id: 'P-001' });
     expect(item?.text).toBe(itemText);
     expect(projected._projection.truncated).toBe(true);
+  });
+
+  it('plans:get preserves selected item status and default item text through nested tools:invoke', () => {
+    const noise = (prefix: string) => Object.fromEntries(
+      Array.from({ length: 128 }, (_, i) => [`${prefix}-${i}`, `noise-${i}`]),
+    );
+    const itemText = 'Read this selected plan item before acting.';
+    const source = {
+      ok: true,
+      results: [{
+        ...noise('result-noise'),
+        ok: true,
+        slug: 'detail-plan',
+        items: [{
+          ...noise('item-noise'),
+          id: 'P-001',
+          text: itemText,
+          storedStatus: 'todo',
+          effectiveStatus: 'todo',
+        }],
+      }],
+      counts: { ok: 1, failed: 0 },
+    };
+    const original = JSON.stringify(source);
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'plans:get',
+        // Simulate the host forwarding the caller's explicit status pick. Item
+        // text is also a plans:get detail field and must survive by tool policy.
+        preservePaths: ['results[].items[].storedStatus'],
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      },
+    );
+    const projected = boundedBody(doored) as unknown as {
+      results: Array<{ items?: Array<Record<string, unknown>> }>;
+      _projection: { truncated: true };
+    };
+    const item = projected.results[0]?.items?.[0];
+
+    expect(item).toMatchObject({ id: 'P-001', text: itemText, storedStatus: 'todo' });
+    expect(projected._projection.truncated).toBe(true);
+
+    // Falsifiability control: the same bytes and caller-selected status through
+    // an unrelated nested target do not inherit plans:get's semantic text rule.
+    const control = boundedBody(applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }] },
+      {
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'plans:list',
+        preservePaths: ['results[].items[].storedStatus'],
+        workspaceId: 'ws-1',
+        runId: RUN_ID,
+      },
+    )) as unknown as { results: Array<{ items?: Array<Record<string, unknown>> }> };
+    expect(control.results[0]?.items?.[0]).toMatchObject({ id: 'P-001', storedStatus: 'todo' });
+    expect(control.results[0]?.items?.[0]).not.toHaveProperty('text');
   });
 
   it('EI-20435986111760474: oversized code:tools TypeScript stays valid JSON for direct and nested calls', () => {
@@ -2359,6 +2538,58 @@ describe('applyResultDoor', () => {
       expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
     });
 
+    it('preserves every canonical rating through the outer tools:invoke result door', () => {
+      const canonicalRatingKeys = [
+        'base-rate-check',
+        'instrument-split',
+        'terminal-re-rate',
+        'platform-telemetry-excluded',
+        're-runnable-evidence',
+        'degenerate-distribution',
+      ] as const;
+      const canonicalRatings = Object.fromEntries(
+        canonicalRatingKeys.map((key) => [key, {
+          rating: `${key}:pass`,
+          evidence: 'e'.repeat(1_100),
+        }]),
+      );
+      const source = {
+        ok: true,
+        committed: true,
+        completionReceipt: { status: 'recorded', effectRef: 'scorecard-all-ratings-1' },
+        canonicalRatings,
+        created: true,
+        issueId: 'scorecard-all-ratings-1',
+        detail: 'd'.repeat(BUDGET_CHARS * 2),
+      };
+      const original = JSON.stringify(source);
+      expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+      const doored = applyResultDoor(
+        {
+          content: [{ type: 'text' as const, text: original }],
+          structuredContent: source,
+        },
+        {
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'scorecards:emit',
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+        },
+      );
+      const output = JSON.parse((doored.content[0] as { text: string }).text) as {
+        canonicalRatings: Record<string, { rating?: string }>;
+        _projection?: { truncated?: boolean };
+      };
+
+      expect(output._projection?.truncated).toBe(true);
+      for (const key of canonicalRatingKeys) {
+        expect(output.canonicalRatings[key]).toMatchObject({ rating: `${key}:pass` });
+      }
+      expect((doored.content[0] as { text: string }).text.length).toBeLessThan(original.length);
+      expect(readSpill('ws-1', 'tools:invoke', RUN_ID)).toContain('scorecard-all-ratings-1');
+    });
+
     it.each([
       { label: 'direct', toolName: 'scorecards:emit' },
       { label: 'nested', toolName: 'tools:invoke', nestedTargetToolName: 'scorecards:emit' },
@@ -2840,6 +3071,49 @@ describe('applyResultDoor', () => {
       const nestedOrdinaryEnvelope = JSON.parse((nestedOrdinaryPage.content[0] as { text: string }).text);
       expect(nestedOrdinaryEnvelope.incomplete.reason).toBe('aggregate-output-budget-exceeded');
     });
+
+    it.each([
+      ['direct capability:read', 'capability:read', undefined, 'turn-content-index-direct'],
+      ['nested capability:read', 'tools:invoke', 'capability:read', 'turn-content-index-nested'],
+    ] as const)(
+      'keeps %s scratch-reference content-index reads readable after the aggregate cohort is exhausted',
+      (_shape, toolName, nestedTargetToolName, outputGroupId) => {
+        const scope = beginResultDoorAggregate({ sessionKey: 'owner-content-index-recovery', outputGroupId });
+        const normalOpts = { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID, aggregateScope: scope };
+        applyResultDoor(medium(), normalOpts);
+        applyResultDoor(medium(), normalOpts);
+        applyResultDoor(medium(), normalOpts);
+
+        const selectedContent: DoorableResult = {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              file_path: '/scratch/result-door.spill',
+              reference: { uri: 'papercusp://scratch/ws-1/plans:get/result-door.spill' },
+              selected_indexes: [0],
+              total_content_items: 1,
+              content: [{ type: 'text', text: 'selected recovery payload' }],
+            }),
+          }],
+          _meta: { capabilityRead: { source: 'scratch-reference' } },
+        };
+
+        const recovered = applyResultDoor(selectedContent, {
+          toolName,
+          ...(nestedTargetToolName ? { nestedTargetToolName } : {}),
+          workspaceId: 'ws-1',
+          runId: RUN_ID,
+          aggregateScope: scope,
+        });
+
+        expect(JSON.parse((recovered.content[0] as { text: string }).text)).toMatchObject({
+          selected_indexes: [0],
+          content: [{ type: 'text', text: 'selected recovery payload' }],
+        });
+        expect((recovered._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
+      },
+    );
 
     // EI-21954450841272611, and independently EI-21733745031882912 /
     // EI-21573289806322713 against two other tools: all three read
@@ -3871,6 +4145,25 @@ describe('applyResultDoor', () => {
       expect(pointer).toContain('byFileTruncated');
       expect(pointer).toContain('build:typecheck result already marked a field as truncated');
       expect(pointer).toContain("Re-read using that field's documented recovery handle or narrower arguments");
+    });
+
+    it('detects code:run middle-elision markers with lower-case text and a space after the ellipsis', () => {
+      const text = withMarker(
+        'result head … [truncated 1227 chars] … result tail\n',
+        BUDGET_CHARS * 3,
+      );
+      const doored = applyResultDoor(
+        { content: [{ type: 'text' as const, text }] },
+        { toolName: 'code:run', workspaceId: 'ws-1', runId: RUN_ID },
+      );
+      const pointer = boundedBody(doored)._projection.next;
+      const spill = readSpill('ws-1', 'code:run', RUN_ID);
+
+      expect(pointer).toContain('TOOL ITSELF already truncated');
+      expect(pointer).toContain('textTruncated');
+      expect(pointer).not.toContain('No upstream truncation marker was detected');
+      expect(spill).toContain('TOOL ITSELF already truncated');
+      expect(spill).toContain('truncated 1227 chars');
     });
 
     it('code:run summaryNotice.truncated points to the raw summary spill and marks the outer spill partial', () => {

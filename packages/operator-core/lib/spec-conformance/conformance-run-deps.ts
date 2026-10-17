@@ -151,7 +151,8 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
         return foldResults('probe', probeCheckResults(request.checkId, evaluation.checkRuns, [criterion]), nowIso());
       }
       if (check.kind === 'instrument') {
-        const results = await runInstrumentChecks({ rubricRef: request.checkId, criteria: [{ key: request.checkId, check }] });
+        const results = await runInstrumentChecks({ rubricRef: request.checkId, criteria: [{ key: request.checkId, check }],
+          workspaceId: input.workspaceId, harnessSlug: input.harnessSlug });
         return foldResults('instrument', results, nowIso());
       }
       return null;

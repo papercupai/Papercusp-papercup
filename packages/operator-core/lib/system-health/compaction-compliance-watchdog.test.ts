@@ -232,6 +232,8 @@ import { defaultCompactionLimitForWindow, MODEL_WINDOW_1M, MODEL_WINDOW_DEFAULT 
 /** Fake postgres tag: routes on the query text — the seed query selects
  *  `compaction_limit IS NULL`, the sweep `IS NOT NULL`, the honor leg reads
  *  `spawned_agents` keyed by the interpolated ownerId (first tag value). */
+const observedSqlQueries: Array<{ query: string; values: unknown[] }> = [];
+
 function fakeSql(opts: {
   unseeded?: Array<{ owner_id: string; fleet_slug?: string | null; fleet_role?: string | null }>;
   seeded?: Array<{
@@ -242,14 +244,16 @@ function fakeSql(opts: {
     compaction_limit_explicit?: boolean | null;
     fleet_slug?: string | null;
     fleet_role?: string | null;
-    /** EI-21595542328480968: the session's own last ACTIVITY (never bumped by the
-     *  keepalive beat), against which a codex rollout's mtime is judged. */
+    /** Latest eligible turn call returned by the bounded, session-scoped probe. */
+    last_turn_at?: string | Date | null;
+    last_turn_session_id?: string | null;
+    active_session_id?: string | null;
+    active_session_started_at?: string | Date | null;
+    /** Fresh hook-only presence activity used to guard against false turn evidence. */
     last_active_at?: string | null;
   }>;
-  /** Active adv-session owners used by ended-session signal recovery. */
-  activeSessionOwners?: string[];
-  /** Exercise the fail-open lifecycle-read path. */
-  activeSessionOwnersError?: boolean;
+  /** Legacy raw rows guard against bypassing the shared liveness oracle. */
+  legacyUnendedSessionOwners?: string[];
   /** Exercise the fail-open condition-family read path. */
   conditionEpisodesError?: boolean;
   /** Open compaction episodes returned by the family-scoped lifecycle read. */
@@ -277,6 +281,7 @@ function fakeSql(opts: {
 }) {
   return ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const q = strings.join(' ');
+    observedSqlQueries.push({ query: q, values });
     if (q.includes('harness_shared.routines') && q.includes('target_owner_id')) {
       return Promise.resolve(opts.presenceGaps ?? []);
     }
@@ -293,9 +298,11 @@ function fakeSql(opts: {
       const label = opts.fleetLabels?.[String(values[0])];
       return Promise.resolve(label ? [{ owner_label: label }] : []);
     }
+    if (q.includes('harness_shared.coord_presence cp') && q.includes('harness_shared.adv_sessions s')) {
+      return Promise.resolve(opts.seeded ?? []);
+    }
     if (q.includes('harness_shared.adv_sessions') && q.includes('ended_at IS NULL')) {
-      if (opts.activeSessionOwnersError) return Promise.reject(new Error('adv session read failed'));
-      const owners = opts.activeSessionOwners ?? (opts.seeded ?? []).map((row) => row.owner_id);
+      const owners = opts.legacyUnendedSessionOwners ?? [];
       return Promise.resolve(owners.map((owner_id) => ({ owner_id })));
     }
     if (q.includes('harness_shared.coord_event_log') && q.includes('jsonb_array_elements_text')) {
@@ -316,6 +323,7 @@ function fakeSql(opts: {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  observedSqlQueries.length = 0;
   estimateMock.mockResolvedValue(null);
   observedPromptFloorMock.mockReturnValue(null);
   contextWindowMock.mockResolvedValue(null);
@@ -405,7 +413,7 @@ describe('original compaction durable episodes', () => {
     const openedKeys: string[] = [], resolvedKeys: string[] = [];
     const open = new Map<string, number>();
     const row = { owner_id: 'su-episode', owner_label: 'episode', workspace_id: 'workspace',
-      compaction_limit: 100_000, compaction_limit_explicit: true, last_active_at: new Date().toISOString() };
+      compaction_limit: 100_000, compaction_limit_explicit: true, last_turn_at: new Date().toISOString() };
     const resolveForceSuccessorTarget = vi.fn(async (_ownerId: string): Promise<ResolveResumeResult> => ({
       ok: false as const, error: 'not_found' as const, detail: 'no fixture source',
     }));
@@ -419,12 +427,15 @@ describe('original compaction durable episodes', () => {
         open.set(event.conditionKey!, open.get(event.conditionKey!) ?? Date.now()); return true; },
       resolve: async event => { if (!open.delete(event.conditionKey)) return false;
         resolvedKeys.push(event.conditionKey); return true; },
-    }, resolveForceSuccessorTarget, dispatchForceSuccessor };
+    },
+      resolveSessionStatesFn: async (subjects) => new Map(subjects.map(({ ownerId }) =>
+        [ownerId, { sessionState: 'recorded' } as never] as const)),
+      resolveForceSuccessorTarget, dispatchForceSuccessor };
     const key = (kind: Parameters<typeof compactionConditionKey>[2], subject = '') =>
       compactionConditionKey('workspace', row.owner_id, kind, subject);
     return { deps, open, row, key, openedKeys, resolvedKeys, resolveForceSuccessorTarget, dispatchForceSuccessor,
       run: (rows = [row], sqlOpts: Parameters<typeof fakeSql>[0] = {}) =>
-        checkCompactionCompliance(fakeSql({ activeSessionOwners: ['su-episode'], ...sqlOpts, seeded: rows }), deps) };
+        checkCompactionCompliance(fakeSql({ ...sqlOpts, seeded: rows }), deps) };
   }
   it('dispatches a workspace/harness-bound capability successor and records applied only after positive launch evidence', async () => {
     const h = fixture();
@@ -458,6 +469,19 @@ describe('original compaction durable episodes', () => {
     expect(result.forceCompacted).toEqual([]);
     expect(h.dispatchForceSuccessor).toHaveBeenCalledTimes(1);
     expect(h.open.has(h.key('force-unavailable'))).toBe(true);
+  });
+
+  it('does not classify an excluded OMP session as force-unavailable when no PTY host exists', async () => {
+    const h = fixture();
+    estimateMock.mockResolvedValue(150_000);
+    resolveSessionRefReconciledMock.mockResolvedValue({ agent: 'omp', sessionId: 's-omp' });
+
+    const result = await h.run();
+
+    expect(result.forceCompacted).toEqual([]);
+    expect(h.resolveForceSuccessorTarget).not.toHaveBeenCalled();
+    expect(h.dispatchForceSuccessor).not.toHaveBeenCalled();
+    expect(h.open.has(h.key('force-unavailable'))).toBe(false);
   });
 
   it('refuses hostless actuation when the recorded source lacks its harness binding', async () => {
@@ -530,7 +554,7 @@ describe('original compaction durable episodes', () => {
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('condition resolution failed'));
     h.deps.rail!.resolve = resolve; await h.run(); expect(h.open.size).toBe(0);
   });
-  it('closes current-session signal episodes only after adv-session lifecycle proves the owner ended', async () => {
+  it('uses shared liveness and resolves current-signal episodes only for an explicit ended verdict', async () => {
     const h = fixture();
     const endedSessionSignals = [
       'dark-telemetry', 'over-limit', 'force-unavailable', 'implausible-reading',
@@ -543,25 +567,43 @@ describe('original compaction durable episodes', () => {
     for (const kind of endedSessionSignals) h.open.set(h.key(kind), Date.now() - 100);
     for (const kind of needsFollowUp) h.open.set(h.key(kind), Date.now() - 100);
 
-    // A live adv-session blocks cleanup, even when the alarm has not re-fired.
-    await h.run([], { activeSessionOwners: [h.row.owner_id] });
+    let sessionState: string | null = 'recorded';
+    const oracleCalls: Array<{ ownerIds: string[]; options: unknown }> = [];
+    h.deps.resolveSessionStatesFn = async (subjects, options) => {
+      oracleCalls.push({ ownerIds: subjects.map(({ ownerId }) => ownerId), options });
+      return new Map(subjects.map(({ ownerId }) => [ownerId, { sessionState } as never] as const));
+    };
+
+    // Inactivity alone leaves the owner's recorded session and its alarms intact.
+    await h.run([], { legacyUnendedSessionOwners: [h.row.owner_id] });
     expect(h.open.size).toBe(endedSessionSignals.length + needsFollowUp.length);
     expect(h.resolvedKeys).toEqual([]);
 
-    // Once lifecycle state proves the owner has no active session, only
-    // conditions describing current measurements/signals become obsolete.
-    await h.run([], { activeSessionOwners: [] });
+    // An explicit ended verdict resolves current-signal episodes even when
+    // an uncleanly ended raw adv_sessions row still has ended_at IS NULL.
+    sessionState = 'ended';
+    await h.run([], { legacyUnendedSessionOwners: [h.row.owner_id] });
     expect([...h.open.keys()].sort()).toEqual(needsFollowUp.map(kind => h.key(kind)).sort());
     expect(h.resolvedKeys.sort()).toEqual(endedSessionSignals.map(kind => h.key(kind)).sort());
+    expect(oracleCalls[0]).toEqual({
+      ownerIds: [h.row.owner_id],
+      options: { hydrateBatch: true, psuHostPositiveAuthority: true, selfWake: true, hostCondition: true },
+    });
+    expect(observedSqlQueries.some(({ query }) =>
+      query.includes('harness_shared.adv_sessions s') &&
+      query.includes('s.ended_at IS NULL') &&
+      query.includes('s.ended_by IS NULL'),
+    )).toBe(true);
   });
-  it('preserves one-shot episodes when the adv-session lifecycle read fails', async () => {
+  it('preserves one-shot episodes when the shared liveness read fails', async () => {
     const h = fixture();
     h.open.set(h.key('over-limit'), Date.now() - 100);
     h.open.set(h.key('dark-telemetry'), Date.now() - 100);
-    await h.run([], { activeSessionOwnersError: true });
+    h.deps.resolveSessionStatesFn = async () => { throw new Error('liveness oracle unavailable'); };
+    await h.run([]);
     expect(h.open.size).toBe(2);
     expect(h.resolvedKeys).toEqual([]);
-    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('ended-session lifecycle read failed'));
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining('ended-session liveness read failed'));
   });
   it('logs condition-family read failures and exact-key resolutions that return false', async () => {
     const h = fixture();
@@ -573,7 +615,9 @@ describe('original compaction durable episodes', () => {
 
     h.open.set(key, Date.now() - 100);
     h.deps.rail!.resolve = async () => false;
-    await h.run([], { activeSessionOwners: [] });
+    h.deps.resolveSessionStatesFn = async (subjects) => new Map(subjects.map(({ ownerId }) =>
+      [ownerId, { sessionState: 'ended' } as never] as const));
+    await h.run([]);
     expect(h.open.has(key)).toBe(true);
     expect(console.warn).toHaveBeenCalledWith(expect.stringContaining(`condition recovery returned false for exact key ${key}`));
   });
@@ -585,7 +629,9 @@ describe('original compaction durable episodes', () => {
       { conditionKey: key, openedAtMs: Date.now() - 100 },
       { conditionKey: key, openedAtMs: Date.now() - 100 },
     ];
-    await h.run([], { activeSessionOwners: [] });
+    h.deps.resolveSessionStatesFn = async (subjects) => new Map(subjects.map(({ ownerId }) =>
+      [ownerId, { sessionState: 'ended' } as never] as const));
+    await h.run([]);
     expect(h.open.has(key)).toBe(true);
     expect(h.resolvedKeys).toEqual([]);
   });
@@ -1065,6 +1111,7 @@ describe('checkCompactionCompliance sweep (agent-managed-compaction P-009)', () 
       advSessionId: 41,
     });
     expect(out.estimated).toEqual([]);
+    expect(out.bootConfigAlerts).toEqual([]); // the measured estimate was non-null; only its guarded cache write was rejected
     expect(out.overLimit).toEqual([]);
     expect(out.forceCompacted).toEqual([]);
     expect(injectMock).not.toHaveBeenCalled();
@@ -2192,18 +2239,18 @@ describe('gauge cache + flag mirror wiring (agent-managed-compaction P-013)', ()
 });
 
 describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', () => {
-  // WI-2140608: the streak only advances on ACTIVE null sweeps (last_active_at inside
+  // WI-2140608: the streak only advances on ACTIVE null sweeps (last eligible turn inside
   // DARK_TELEMETRY_ACTIVE_WINDOW_MS), so the blind session under test is one that keeps
   // taking turns. `idle()` is the parked / provider-stalled shape the old rule misread.
   const active = () => [
-    { owner_id: 'blind', owner_label: 'su · blind', compaction_limit: 300_000, last_active_at: new Date().toISOString() },
+    { owner_id: 'blind', owner_label: 'su · blind', compaction_limit: 300_000, last_turn_at: new Date().toISOString() },
   ];
   const idle = () => [
     {
       owner_id: 'blind',
       owner_label: 'su · blind',
       compaction_limit: 300_000,
-      last_active_at: new Date(Date.now() - 20 * 60_000).toISOString(),
+      last_turn_at: new Date(Date.now() - 20 * 60_000).toISOString(),
     },
   ];
   let seeded: ReturnType<typeof active> = [];
@@ -2251,6 +2298,95 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     const p4 = await checkCompactionCompliance(fakeSql({ seeded }));
     expect(p4.bootConfigAlerts).toEqual([{ owner: 'blind', kind: 'dark-telemetry', detail: '4 null sweeps' }]);
     expect(openEscalationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat a fresh hook-only presence dispatch as an active turn', async () => {
+    estimateMock.mockResolvedValue(null);
+    const hookOnly = [{
+      owner_id: 'blind',
+      owner_label: 'su · blind',
+      compaction_limit: 300_000,
+      last_active_at: new Date().toISOString(),
+      last_turn_at: null,
+    }];
+
+    for (let sweep = 0; sweep < 4; sweep++) {
+      const out = await checkCompactionCompliance(fakeSql({ seeded: hookOnly }));
+      expect(out.bootConfigAlerts).toEqual([]);
+    }
+    expect(openEscalationMock).not.toHaveBeenCalled();
+
+    const query = observedSqlQueries.find(({ query }) =>
+      query.includes('FROM harness_shared.coord_presence cp') && query.includes('harness_shared.tool_invocations'));
+    expect(query).toBeDefined();
+    expect(query!.query).toContain("ti.invoked_at > now() - interval '15 minutes'");
+    expect(query!.query).toContain('ti.coord_owner_id = cp.owner_id');
+    expect(query!.query).toContain("ti.call_origin = 'agent'");
+    expect(query!.query).toContain("ti.call_origin = 'hook' AND ti.tool_name = 'activity:report'");
+    expect(query!.query).toContain("ti.args_json->>'phase' = ANY(");
+    expect(query!.values).toContainEqual(['session:request-compaction']);
+    expect(query!.values).toContainEqual(['journal:record-turn', 'locks:acquire', 'locks:check_command', 'locks:release']);
+    expect(query!.values).toContainEqual(['pre', 'post']);
+  });
+
+  it('does not treat a predecessor-session activity hook as a current active turn', async () => {
+    estimateMock.mockResolvedValue(null);
+    const sessionStartedAtMs = Date.now() - 2 * 60_000;
+    const sessionStartedAt = new Date(sessionStartedAtMs);
+    const beforeSessionStart = new Date(sessionStartedAtMs - 13_122);
+    const afterSessionStart = new Date(Date.now() - 1_000);
+    const currentRef = {
+      agent: 'codex',
+      sessionId: 'codex-current',
+      sessionKey: 45210,
+      startedAtMs: sessionStartedAtMs,
+    };
+    resolveSessionRefMock.mockResolvedValue(currentRef);
+
+    const seeded = [
+      {
+        owner_id: 'blind-before-session',
+        owner_label: 'su · blind-before-session',
+        compaction_limit: 300_000,
+        last_turn_at: beforeSessionStart,
+        last_turn_session_id: 'codex-predecessor',
+        active_session_id: 'codex-current',
+        active_session_started_at: sessionStartedAt,
+      },
+      {
+        owner_id: 'blind-late-predecessor-hook',
+        owner_label: 'su · blind-late-predecessor-hook',
+        compaction_limit: 300_000,
+        last_turn_at: afterSessionStart,
+        last_turn_session_id: 'codex-predecessor',
+        active_session_id: 'codex-current',
+        active_session_started_at: sessionStartedAt,
+      },
+      {
+        owner_id: 'blind-current-session',
+        owner_label: 'su · blind-current-session',
+        compaction_limit: 300_000,
+        last_turn_at: afterSessionStart,
+        last_turn_session_id: 'codex-current',
+        active_session_id: 'codex-current',
+        active_session_started_at: sessionStartedAt,
+      },
+    ];
+
+    for (let sweep = 0; sweep < 3; sweep++) {
+      const out = await checkCompactionCompliance(fakeSql({ seeded }));
+      expect(out.bootConfigAlerts).toEqual(sweep < 2 ? [] : [
+        { owner: 'blind-current-session', kind: 'dark-telemetry', detail: '3 null sweeps' },
+      ]);
+    }
+
+    const query = observedSqlQueries.find(({ query }) =>
+      query.includes('FROM harness_shared.coord_presence cp') && query.includes('harness_shared.tool_invocations'));
+    expect(query).toBeDefined();
+    expect(query!.query).toContain('FROM harness_shared.adv_sessions s');
+    expect(query!.query).toContain('s.coord_owner_id = cp.owner_id');
+    expect(query!.query).toContain('ti.invoked_at >= active_session.started_at');
+    expect(query!.query).toContain("ti.args_json->>'session_id' = active_session.session_id");
   });
 
   it('a resolved estimate clears the streak — a brief null run never reaches the escalation threshold', async () => {
@@ -2301,7 +2437,7 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     }
     expect(openEscalationMock).not.toHaveBeenCalled();
     // A row with NO recorded activity (never took a turn since presence started) is idle too.
-    const never = [{ owner_id: 'blind', owner_label: 'su · blind', compaction_limit: 300_000, last_active_at: null }];
+    const never = [{ owner_id: 'blind', owner_label: 'su · blind', compaction_limit: 300_000, last_turn_at: null }];
     for (let i = 0; i < 5; i++) await checkCompactionCompliance(fakeSql({ seeded: never }));
     expect(openEscalationMock).not.toHaveBeenCalled();
   });
@@ -2360,11 +2496,13 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     expect(resolveEscalationMock).not.toHaveBeenCalled(); // no open row was listed ⇒ nothing to resolve, guard still cleared
   });
 
-  it('resolves a one-shot dark-telemetry episode after its adv session ends, but keeps active owners and unknown reads open', async () => {
+  it('resolves a one-shot dark-telemetry episode only for ended owners, preserving recorded and unknown states', async () => {
     const endedKey = compactionConditionKey('workspace', 'ended-dark', 'dark-telemetry');
     const endedResolved: string[] = [];
     const endedDeps: CompactionComplianceDeps = {
       readOpenConditions: async () => [{ conditionKey: endedKey, openedAtMs: Date.now() - 1_000 }],
+      resolveSessionStatesFn: async (subjects) => new Map(subjects.map(({ ownerId }) =>
+        [ownerId, { sessionState: 'ended' } as never] as const)),
       rail: {
         resolve: async (event) => {
           endedResolved.push(event.conditionKey);
@@ -2372,13 +2510,15 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
         },
       },
     };
-    await checkCompactionCompliance(fakeSql({ activeSessionOwners: [] }), endedDeps);
+    await checkCompactionCompliance(fakeSql({}), endedDeps);
     expect(endedResolved).toEqual([endedKey]);
 
     const activeKey = compactionConditionKey('workspace', 'active-dark', 'dark-telemetry');
     const activeResolved: string[] = [];
     const activeDeps: CompactionComplianceDeps = {
       readOpenConditions: async () => [{ conditionKey: activeKey, openedAtMs: Date.now() - 1_000 }],
+      resolveSessionStatesFn: async (subjects) => new Map(subjects.map(({ ownerId }) =>
+        [ownerId, { sessionState: 'recorded' } as never] as const)),
       rail: {
         resolve: async (event) => {
           activeResolved.push(event.conditionKey);
@@ -2387,15 +2527,16 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
       },
     };
     await checkCompactionCompliance(fakeSql({
-      activeSessionOwners: ['active-dark'],
       seeded: [{ owner_id: 'active-dark', owner_label: 'su · active-dark', compaction_limit: 300_000,
-        last_active_at: new Date().toISOString() }],
+        last_turn_at: new Date().toISOString() }],
     }), activeDeps);
     expect(activeResolved).toEqual([]);
 
     const unknownResolved: string[] = [];
     const unknownDeps: CompactionComplianceDeps = {
       readOpenConditions: async () => [{ conditionKey: endedKey, openedAtMs: Date.now() - 1_000 }],
+      resolveSessionStatesFn: async (subjects) => new Map(subjects.map(({ ownerId }) =>
+        [ownerId, { sessionState: null } as never] as const)),
       rail: {
         resolve: async (event) => {
           unknownResolved.push(event.conditionKey);
@@ -2403,7 +2544,7 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
         },
       },
     };
-    await checkCompactionCompliance(fakeSql({ activeSessionOwnersError: true }), unknownDeps);
+    await checkCompactionCompliance(fakeSql({}), unknownDeps);
     expect(unknownResolved).toEqual([]);
   });
 
@@ -2412,9 +2553,10 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     const resolved: string[] = [];
     const deps: CompactionComplianceDeps = {
       rail: { resolve: async (event) => { resolved.push(event.conditionKey); return true; } },
+      resolveSessionStatesFn: async (subjects) => new Map(subjects.map(({ ownerId }) =>
+        [ownerId, { sessionState: 'ended' } as never] as const)),
     };
     await checkCompactionCompliance(fakeSql({
-      activeSessionOwners: [],
       conditionEpisodes: [{ condition_key: endedKey, opened_at: new Date(Date.now() - 86_400_000) }],
     }), deps);
     expect(resolved).toEqual([endedKey]);
@@ -2449,7 +2591,7 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     estimateMock.mockResolvedValue(null);
     resolveSessionRefMock.mockResolvedValue({ agent: 'codex', sessionId: 's-codex', sessionKey: 42 });
     const codexSeeded = [
-      { owner_id: 'codex-sess', owner_label: 'su · codex-sess', compaction_limit: 207_000, last_active_at: new Date().toISOString() },
+      { owner_id: 'codex-sess', owner_label: 'su · codex-sess', compaction_limit: 207_000, last_turn_at: new Date().toISOString() },
     ];
     openEscalationMock.mockClear();
     let last;
@@ -2462,7 +2604,7 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
 
   it('does NOT exempt a raw NULL adv_sessions owner when reconciliation recovers a real Claude session', async () => {
     const recovered = [
-      { owner_id: 'recovered-no-row', owner_label: 'su · recovered', compaction_limit: 300_000, last_active_at: new Date().toISOString() },
+      { owner_id: 'recovered-no-row', owner_label: 'su · recovered', compaction_limit: 300_000, last_turn_at: new Date().toISOString() },
     ];
     estimateMock.mockResolvedValue(null);
     // The incident shape: the primary DB row is absent, but the owner-scoped
@@ -3105,7 +3247,7 @@ describe('EI-21595542328480968: frozen codex readings never drive a cut', () => 
     owner_id: 'cx',
     owner_label: 'su · cx',
     compaction_limit: limit,
-    last_active_at: new Date(NOW).toISOString(),
+    last_turn_at: new Date(NOW).toISOString(),
   });
 
   it("IGNORES an over-limit reading proven to come from another session's frozen rollout", async () => {
@@ -3122,6 +3264,22 @@ describe('EI-21595542328480968: frozen codex readings never drive a cut', () => 
     expect(setEstimateMock).not.toHaveBeenCalled();
     // A frozen cached number is worse than none — it pins a live gauge over-limit.
     expect(clearEstimateMock).toHaveBeenCalledWith('cx');
+  });
+
+  it('does not mark an idle session frozen from hook-only presence activity', async () => {
+    estimateMock.mockResolvedValue(227_005);
+    codexProvenanceMock.mockResolvedValue(provenance(90.7));
+    const hookOnly = {
+      ...sweepRow(),
+      last_active_at: new Date(NOW).toISOString(),
+      last_turn_at: null,
+    };
+    const out = await checkCompactionCompliance(fakeSql({ seeded: [hookOnly] }));
+
+    expect(out.frozenCodexReadings).toEqual([]);
+    expect(out.overLimit).toEqual(['cx']);
+    expect(clearEstimateMock).not.toHaveBeenCalled();
+    expect(codexProvenanceMock).not.toHaveBeenCalled();
   });
 
   it('leaves an UNDER-LIMIT session alone even when it satisfies both conjuncts', async () => {
@@ -3146,7 +3304,7 @@ describe('EI-21595542328480968: frozen codex readings never drive a cut', () => 
 
   it('TRUSTS an idle session whose rollout is merely old (the liveness conjunct)', async () => {
     // An IDLE session legitimately shows an identity mismatch: nobody has written its
-    // rollout, while its ref's native id churned past it. Its last_active_at is old
+    // rollout, while its ref's native id churned past it. Its last eligible turn is old
     // too, so the lag stays small — which is the only thing separating it from the
     // pathology. This is the class (15 of 16) the reverted gate wrongly nulled.
     estimateMock.mockResolvedValue(219_915);

@@ -313,7 +313,7 @@ function checkpointTextPage(checkpoint: string | null, requestedOffset: number, 
 }
 
 const RESUME_ARGUMENT_CONSTRAINT =
-  'resume requires one item (pass `id`, or a one-element `ids` array; multi-id batches are not supported) and cannot be combined with detail, checksOnly, checkpointOnly, offset, limit, threadLimit, priorAttemptRefs or operationalBrief; use a separate read for those enrichments (two calls: work_items:get { id, resume:true } for the continuation, then work_items:get { id, detail:true } for the full record)';
+  'resume requires one item (pass `id`, or a one-element `ids` array; multi-id batches are not supported) and cannot be combined with detail, checksOnly, checkpointOnly, offset, limit, threadLimit, priorAttemptRefs or operationalBrief; use a separate read for those enrichments (two calls: work_items:get { id, resume:true } for the continuation, then work_items:get { id, detail:true } for the detail record)';
 
 /**
  * P-002 (WI-2145856): every undeclared key a real caller reached for when they
@@ -369,7 +369,7 @@ const workItemsGetArgRedirects: Record<string, string> = {
   ...Object.fromEntries(
     DETAIL_SWITCH_ALIASES.map((key) => [
       key,
-      `detail — set it to true for the single full-record switch (topics, thread posts, links, \`lifecycle\`, \`priorAttempts\`). If you only want COMMENTS, prefer \`threadLimit\` (1–${THREAD_WINDOW_MAX}): it is bounded and much cheaper than the full render.`,
+      `detail — set it to true for the single detail-record switch (topics, recent thread posts, links, \`lifecycle\`, \`priorAttempts\`). The detail read caps recent posts at ${THREAD_WINDOW_MAX} and discloses the same-snapshot total; if you only want COMMENTS, prefer \`threadLimit\` (1–${THREAD_WINDOW_MAX}) for the smaller bounded window.`,
     ]),
   ),
   includeChecks:
@@ -398,7 +398,7 @@ const SOURCE_ROW_ROOTS = new Set([
   'deploymentPosition', 'citedFacts', 'assumptionFlags', 'planItemBlocked', 'planItemClaimCollision',
   'planItemTextDrift', 'threadWindow', 'threadWindowReadFailed', 'threadLimitClamped',
   'lifecycle', 'priorAttempts', 'priorAttemptRefResolution', 'mechanics', 'error', 'retryable', 'phase',
-  'budgetMs', 'message', '_stub', 'corroboration',
+  'budgetMs', 'pgCode', 'message', '_stub', 'corroboration',
 ]);
 
 /** A malformed or unknown pick fails open to the complete historical read. */
@@ -537,8 +537,9 @@ function resultRowPath(pick: string): string | null {
  * payload. Unknown or payload-derived fields fail open to the existing full
  * read; a partial source row must never change the meaning of a selected field.
  *
- * `detail:true` intentionally stays full: its coord-substrate render has
- * separate read semantics and is not the hot path reported by EI-219266.
+ * `detail:true` intentionally keeps the base source complete: its coord-substrate
+ * render is bounded by `getWorkItemDetail`'s detail-read option and is not the
+ * hot path reported by EI-219266.
  */
 export function workItemsGetSourceReadOptions(
   sourceProjection: unknown,
@@ -799,6 +800,16 @@ const workItemsGetReadSchema = z.object({
   outerStageAttribution: z.literal('tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time'),
   detailRows: z.number().int().nonnegative().optional(),
   stubbedRows: z.number().int().nonnegative().optional(),
+  /** True when the per-requested-ID manifest still accounts for the requested set. */
+  receiptComplete: z.boolean().optional(),
+  /** Requested IDs absent from the bounded manifest. */
+  receiptOmitted: z.number().int().nonnegative().optional(),
+});
+
+const workItemsGetReceiptEntrySchema = z.object({
+  id: z.string(),
+  delivered: z.boolean(),
+  reason: z.string().optional(),
 });
 
 export default defineTool({
@@ -810,13 +821,16 @@ export default defineTool({
   // to 1774 chars and breached the 1600 HARD CAP, reddening the fleet gate. It
   // is documentation of the RESPONSE, so `returns` is also where it belongs.
   description:
-    'Read work-items by ID (`id` for one; `ids` for a batch). Returns `{ ok, results:[…], counts }`; correlate rows by id, not position. Read `returns` for conditional warnings.',
+    'Read work-items by ID (`id` for one; `ids` for a batch). Returns `{ ok, results:[…], counts }`; correlate rows by id, not position. Batch reads also include a per-requested-ID receipt. Read `returns` for conditional warnings.',
   guidance: {
     when: 'For ordinary reads, fetch one or more work-item ids and pass every id at once via `ids` instead of calling per id. For `resume:true`, request exactly one item (prefer `id`; a one-element `ids` array is accepted) because multi-id continuation packets are not supported. For exact full checkpoint text, use the standalone `checkpointOnly:true` page mode. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (0–10; 0 suppresses thread work, 1–10 returns up to 10 posts) for a bounded recent window with a same-snapshot total; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.',
     returns:
+      "{ ok, results, counts, read, receipt? } — correlate rows by id, not position. " +
+      "For a batch, `receipt` has one `{ id, delivered, reason? }` entry per requested ID before shaping. `delivered:false` means that ID's result row is absent from `results`; `read.receiptComplete` says whether the manifest itself still covers every requested ID. An absent or unavailable item can still have `delivered:true` when its status row is present.\\n\\n" +
       "When `checkpointTruncated:true`, recover exact text with `work_items:get { id, checkpointOnly:true, offset:0, limit:512 }`; continue at `checkpointPage.nextOffset`, and restart at offset 0 if `checkpointContentHash` changes between pages. Offsets count Unicode code points. A null page means no checkpoint unless `checkpointReadFailed:true`. Each page is capped at 768 code points.\\n\\n" +
       "When present, read.baseReadDiagnostics reports per-ID base-read status and elapsed time for unavailable calls, pending/rejected reads, or reads taking at least 1000ms; baseReadDiagnosticsOmitted counts entries beyond the 32-row cap. These diagnostics carry no arguments or result bodies.\\n\\n" +
       "The result includes `completion`, a read-side alias for `workItem.terminalCompletionEvidence` (persisted under `payload._completionEvidence`), and `hasCompletionEvidence`, the scalar presence signal that remains authoritative when a payload tier drops the evidence body.\\n\\n" +
+      "When selecting a projected work-item row, use `results[].workItem.summary` for its prose; `results[].workItem.body` and `results[].workItem.description` are not response fields.\\n\\n" +
       "`read.enrichmentMaxMs` includes timed-out and cancelled per-item enrichment up to the shared deadline. When present, `read.enrichmentDiagnostics` identifies pending/rejected enrichment legs and completed legs taking at least 1000ms; `enrichmentDiagnosticsOmitted` counts entries beyond the 32-row cap. These are diagnostics only and carry no arguments or result bodies.\\n\\n" +
       "\`checkpointUpdatedAtMs\` is the CANONICAL checkpoint-change marker; do not infer checkpoint authorship from \`workItem.updatedAt\`, which also moves for state, assignment, dependency, payload, and other item writes.\\n\\n" +
       "{ ok, results:[{ ok, id, workItem?, holder?, checkpoint?, checkpointChecks?, checkpointBody?, checkpointAgeMs?, checkpointUpdatedAtMs?, checkpointContentHash?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `holder` — WHO holds this item and WHAT they are working toward, without attempting a claim ({ goalRef, goalText, assumptions:{count,keys}, declaredAt, stale, agreement, competing[] }). Read `agreement`/`competing` before trusting `goalRef`: 'divergent' plus a non-empty `competing` means the holder holds several claims and precedence picked one — measured, 3 of 19 holders hold two work-items at once. Absent means EITHER the holder declared no goal OR it is not readable by you; the two are deliberately indistinguishable.\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `planItemTextDrift` — the linked plan item has been REWRITTEN (or removed) since this work-item was minted from it ({ status, reason, planSlug, itemId, currentText?, itemMissing? }). This item's title/summary/brief are a mint-time snapshot that nothing refreshes, so read `currentText` before building. `status:'unknown'` means the record predates the text stamp and drift COULD NOT be checked — that is not a clean bill of health. Absent means no plan linkage, or checked-and-matching.\n• `priorWork`/`priorWorkWarning` — P-001: this item has ALREADY BEEN WORKED (prior release/attempt history), so it is NOT fresh work even when it reads open+unassigned. Loud when NO checkpoint exists — that row is indistinguishable from never-started, so read the source before building. LOUDEST at >=3 distinct prior sessions: judge the acceptance criterion itself, not just the checkpoint.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less) and `checkpointContentHash` the digest of the STORED note (absent when none is stored). Compare that hash against the `contentHash` the write returned to verify a handoff; do NOT hash the returned `checkpoint` string yourself — it is clipped per shape tier, so it will not match.\n• `checkpointChecks` / `checkpointBody` — remaining capacity in the checkpoint: check ROWS ({ count, cap, remaining }) and the stored BODY ({ chars, cap, remaining }). `null` on either means the checkpoint read FAILED (count 0 / chars 0 means the read succeeded and nothing is stored). Read `checkpointBody.remaining` BEFORE an `append:true` write: at the cap the write keeps succeeding and silently evicts the OLDEST content, and its only notice is a marker written into the body AFTER the loss — so this is the only signal that arrives in time to act on. `chars` measures the STORED note, not the `checkpoint` string returned here, which is clipped per shape tier.\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `citedFacts` — this item's PROSE cites `facts:assert` key(s) as its authority and some no longer resolve ({ cited:[{ key, condition, ref, excerpt?, scope }], dangling, decayed, note }). Measured: 22 of 25 such citations workspace-wide were already dead, while the item still read as fully specified. `decayed` (retracted/expired/superseded) is RECOVERABLE — the body is quoted in `excerpt` right here, so do not go hunting for it; `dangling` has no row under any scope and is unrecoverable, so do NOT treat that citation as specification and do NOT escalate its absence as a contested directive (it far more likely decayed than was withdrawn). Absent when every citation still resolves live, AND when the ledger could not be read at all — this never reports a read failure as a dangling reference.\n• `assumptionFlags` — a fact this item's completion `assumptions` cited was retracted or superseded AFTER it closed ([{ condition, factRef, key, reason, at, line }]). The item was NOT reopened: judge whether the close still holds without that premise.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.\n• `lifecycle` (with `detail:true`) — ANSWERS \"was this item ever blocked / held / reopened, by whom, when\". Unifies the three stores that each hold part of the answer (audit_log, payload.reopenHistory, payload flags) into one newest-first timeline: { events:[{ at, kind, by, source, action?, detail? }], flags:{ needsHuman, claimHold, heldOpenBy, heldOpenReason }, coverage }. READ `coverage` BEFORE concluding anything from an empty `events`: `notRecorded[]` names the transitions that are recorded NOWHERE for this item's family (non-terminal moves always; feature-family blocks before this field existed), and `degraded:true` means a source could not be READ — which is not the same fact as a source being empty. An empty timeline is never by itself evidence that nothing happened; conflating those two is the exact error this field was built to end.\n• `priorAttempts` (with `detail:true`) — the bounded prior-attempt brief: what was ALREADY TRIED on this item's plan lane, previously obtainable only by CLAIMING the item. `omission.omittedRefs` names what the budget could only count, and a clipped record carries `textTruncated` — pass either ref back via `priorAttemptRefs` for the full text. Fail-soft: absent means no plan pointer OR the read failed, never \"nothing was tried\".\n• `priorAttemptRefResolution` (with `priorAttemptRefs`) — those refs' full untruncated records, plus `unresolved[]` (the source moved on) and the `fingerprint` to compare against the brief's." +
@@ -968,7 +982,10 @@ export default defineTool({
   // single-item read carries its body out of the slack the checkpoint case leaves
   // behind, while a 100-id bulk read still spends nothing on it.
   result: bulkEnvelopeSchema(workItemsGetResultRowSchema)
-    .extend({ read: workItemsGetReadSchema })
+    .extend({
+      read: workItemsGetReadSchema,
+      receipt: z.array(workItemsGetReceiptEntrySchema).max(100).optional(),
+    })
     .passthrough(),
   shape: {
     contract: { rows: 'results', fields: ['id'], preserve: ['ok', 'counts', 'read'] },
@@ -1073,7 +1090,9 @@ export default defineTool({
     let projectedBatchStatus: WorkItemsGetBaseReadStatus | null = null;
     let projectedBatchStartedAtMs: number | null = null;
     const projectedAmbiguity = { ambiguous: [] as WorkItemIdAmbiguousError[] };
-    if (canBatchProjectedBaseRead) {
+    // Check before constructing the promise: the budget race cannot stop a
+    // storage read that was already launched for an expired caller.
+    if (canBatchProjectedBaseRead && !ctx.signal?.aborted) {
       const batchStartedAt = Date.now();
       projectedBatchStartedAtMs = batchStartedAt;
       projectedBatchStatus = 'pending';
@@ -1116,6 +1135,11 @@ export default defineTool({
           enrichmentStages: [],
         };
         stageSamples[index] = stage;
+        // Also covers queued IDs whose worker starts after cancellation and
+        // preserves cancellation instead of relabelling a batch as a timeout.
+        if (ctx.signal?.aborted) {
+          return workItemsGetUnavailableResult(id, remainingBudgetMs, 'cancelled');
+        }
         if (canBatchProjectedBaseRead) {
           stage.baseReadMs = projectedBatchElapsedMs;
           stage.baseReadStatus = projectedBatchStatus;
@@ -1202,7 +1226,9 @@ export default defineTool({
             try {
               const row = await (
                 readDetail
-                  ? getWorkItemDetail(id, args.harness)
+                  ? getWorkItemDetail(id, args.harness, {
+                      threadLimit: THREAD_WINDOW_MAX,
+                    })
                   : sourceReadOptions
                     ? getWorkItem(id, args.harness, sourceReadOptions)
                     : getWorkItem(id, args.harness)
@@ -1234,11 +1260,14 @@ export default defineTool({
         if (!workItem) {
           return { ok: false as const, id, availability: 'absent' as const, error: `work_item '${id}' not found` };
         }
+        const checkpointRef = { harness: workItem.harness, workItemId: workItem.id };
+        const readCheckpoint = () => ctx.signal
+          ? getWorkItemCheckpointWithMeta(checkpointRef, { signal: ctx.signal, timeoutMs: remainingBudgetMs })
+          : getWorkItemCheckpointWithMeta(checkpointRef);
         if (checkpointOnly) {
           stage.enrichmentStartedAtMs = Date.now();
-          const checkpointRead = await trackWorkItemsGetEnrichment(stage, 'checkpoint', () =>
-            getWorkItemCheckpointWithMeta({ harness: workItem.harness, workItemId: workItem.id }),
-          ).catch(() => ({ checkpoint: null, updatedAtMs: null, readFailed: true as const }));
+          const checkpointRead = await trackWorkItemsGetEnrichment(stage, 'checkpoint', readCheckpoint)
+            .catch(() => ({ checkpoint: null, updatedAtMs: null, readFailed: true as const }));
           stage.enrichmentMs = Math.max(0, Date.now() - stage.enrichmentStartedAtMs);
           if (checkpointRead.readFailed) {
             return {
@@ -1280,12 +1309,7 @@ export default defineTool({
         // are all unrelated to building `retireIds` and can be very expensive.
         if (checksOnly) {
           stage.enrichmentStartedAtMs = Date.now();
-          const checkpointRead = await trackWorkItemsGetEnrichment(stage, 'checkpoint', () =>
-            getWorkItemCheckpointWithMeta({
-              harness: workItem.harness,
-              workItemId: workItem.id,
-            }),
-          )
+          const checkpointRead = await trackWorkItemsGetEnrichment(stage, 'checkpoint', readCheckpoint)
             .then((r) => ({
               checkpoint: r.checkpoint,
               updatedAtMs: r.updatedAtMs,
@@ -1391,12 +1415,7 @@ export default defineTool({
           threadWindowReadResult,
           mechanics,
         ] = await Promise.all([
-          needsCheckpoint ? trackWorkItemsGetEnrichment(stage, 'checkpoint', () =>
-            getWorkItemCheckpointWithMeta({
-              harness: workItem.harness,
-              workItemId: workItem.id,
-            }),
-          )
+          needsCheckpoint ? trackWorkItemsGetEnrichment(stage, 'checkpoint', readCheckpoint)
             .then((r) => {
               // The canonical reader fails soft IN BAND. Preserve that state
               // through the same unknown projection as a rejected read.
@@ -1797,6 +1816,23 @@ export default defineTool({
       return measured.length ? Math.max(...measured) : null;
     };
     const availability = env.results.map((result) => (result as { availability?: string }).availability);
+    // Build the manifest from the original request before payload-tier, source
+    // projection, or the later result door can reduce the result rows. Match by
+    // ID instead of relying on the worker pool's output position.
+    const sourceResultCounts = new Map<string, number>();
+    for (const result of env.results as Array<Record<string, unknown>>) {
+      if (typeof result.id !== 'string') continue;
+      sourceResultCounts.set(result.id, (sourceResultCounts.get(result.id) ?? 0) + 1);
+    }
+    const receipt = ids.map((id) => {
+      const remaining = sourceResultCounts.get(id) ?? 0;
+      if (remaining === 0) return { id, delivered: false, reason: 'source-result-missing' };
+      sourceResultCounts.set(id, remaining - 1);
+      return { id, delivered: true };
+    });
+    if (process.env.NODE_ENV !== 'production' && receipt.length !== ids.length) {
+      throw new Error(`work_items:get receipt covered ${receipt.length} of ${ids.length} requested IDs`);
+    }
     const baseReadDiagnostics = stageSamples.flatMap((sample, index) => {
       const status = canBatchProjectedBaseRead ? projectedBatchStatus : sample?.baseReadStatus;
       if (!sample || !status) return [];
@@ -1833,6 +1869,7 @@ export default defineTool({
       available: availability.filter((value) => value === 'available').length,
       absent: availability.filter((value) => value === 'absent').length,
       unavailable: availability.filter((value) => value === 'unavailable').length,
+      receiptComplete: receipt.length === ids.length,
       ...(availability.includes('ambiguous')
         ? { ambiguous: availability.filter((value) => value === 'ambiguous').length }
         : {}),
@@ -1890,6 +1927,7 @@ export default defineTool({
     return bulkContent({
       ...env,
       read,
+      receipt,
       ...(args.resume ? { __resumeOnly: true } : {}),
       ...(args.checksOnly ? { __checksOnly: true } : {}),
       ...(args.checkpointOnly ? { __checkpointOnly: true } : {}),

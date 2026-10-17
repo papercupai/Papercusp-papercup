@@ -4,10 +4,17 @@
  * failed every cycle, and nothing said so when it was configured).
  */
 import { describe, expect, it } from 'vitest';
-import { codexWireModel, isCodexModel, unpricedCodexModel } from './codex-model-pricing';
+import { CODEX_LLM_DEFAULT_MODEL, codexWireModel, isCodexModel, unpricedCodexModel } from './codex-model-pricing';
+import { bareModelId, CODEX_SAFE_DEFAULT_MODEL } from '../model-context-budget.mjs';
 import { DEFAULT_OWNER_STEERING, steeringUnpricedModelSpecs, type OwnerSteering } from '../owner-steering';
 
 describe('unpricedCodexModel', () => {
+  it('uses the managed subscription default as a priced bare wire id', () => {
+    expect(CODEX_LLM_DEFAULT_MODEL).toBe(bareModelId(CODEX_SAFE_DEFAULT_MODEL));
+    expect(isCodexModel(CODEX_LLM_DEFAULT_MODEL)).toBe(true);
+    expect(unpricedCodexModel(CODEX_LLM_DEFAULT_MODEL)).toBeNull();
+  });
+
   it('returns the wire id llmCall would refuse for an unpriced Codex spec', () => {
     expect(unpricedCodexModel('gpt-99-unpriced:medium')).toBe('gpt-99-unpriced:medium');
     expect(unpricedCodexModel('openai-codex/gpt-99-unpriced')).toBe('gpt-99-unpriced');

@@ -1,0 +1,225 @@
+{
+  "schemaVersion": 1,
+  "pathNormalization": "Machine-specific checkout paths are represented by repository-root and harness:portal; currentTest.path is relative to harness:portal. Observations and hashes are unchanged.",
+  "rawReceipt": {
+    "path": "/tmp/machine-first-p002-hosted-signup-raw-20261017.json",
+    "sha256": "f506c0b1ad2f7ceb864f45b848a7371c12f46749db477ec4860158464c28e158"
+  },
+  "framework": "playwright",
+  "workItem": "WI-6554700010015411",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "measuredAt": "2026-10-17T04:25:11.489205+00:00",
+  "source": {
+    "operatorRoot": "repository-root",
+    "operatorHeadAtExport": "f6d5ab2202bc2ec8b953cbb474fa16bbe4d9b150",
+    "portalRoot": "harness:portal",
+    "portalHeadAtExport": "c435d65cbb78b2d79b7a34afc36db2228ea9ddd8",
+    "candidateBeforeTestEdit": {
+      "rootDigest": "c6481944b6c4ae13e59b1c3521368dfd03358be085401b22af30edaa7a63ff34",
+      "matchedImmutableRelease": true,
+      "method": "fingerprintReleaseSource(realpath(portalRoot)); observed native26187 exit0 before adding this test"
+    },
+    "currentTest": {
+      "path": "e2e/portal-utility-welcome.spec.ts",
+      "sha256": "646c8b04deeedcfc1af0daccbb109453e129e8c629ac8fa5dcb6cd602922e311"
+    },
+    "signupSourcesBeforeTestEdit": [
+      {
+        "path": "packages/ui/src/utility-welcome.tsx",
+        "sha256": "27d5023e30a4290b6e07ca2573a0660b7fd27c2ea699dde8a63e69cc38cae167"
+      },
+      {
+        "path": "packages/ui/src/utility-download.ts",
+        "sha256": "3b9d8c598bb52326d1ac8e791aa105035fe2472515a40b4d7cbee57a862b53d5"
+      },
+      {
+        "path": "packages/ui/src/shell.tsx",
+        "sha256": "c4a65a20dbeb3f2632f56f2130befbae0530025a1235542e94a895718941b618"
+      }
+    ]
+  },
+  "test": {
+    "title": "served hosted signup utility: published download, reload, fallback and keyboard Continue",
+    "status": "passed",
+    "durationMs": 25868,
+    "stats": {
+      "startTime": "2026-10-17T04:23:21.572Z",
+      "duration": 28413.831,
+      "expected": 1,
+      "skipped": 0,
+      "unexpected": 0,
+      "flaky": 0
+    },
+    "retries": 0,
+    "testFile": "e2e/portal-utility-welcome.spec.ts",
+    "command": "node --import tsx node_modules/@playwright/test/cli.js test e2e/portal-utility-welcome.spec.ts --grep \"served hosted signup utility\" --workers=1 --retries=0 --reporter=list,json,@papercusp/operator-core/lib/testing-playwright-reporter",
+    "environmentContract": [
+      "PORTAL_UTILITY_SERVED_E2E=1",
+      "PORTAL_UTILITY_SERVED_ORIGIN=<private HTTPS origin>",
+      "PORTAL_UTILITY_SERVED_RELEASES_DIR=<immutable releases>",
+      "PORTAL_UTILITY_SERVED_BUILD_ID=<exact build id>",
+      "PAPERCUSP_INTEGRATION_ROOT=<operator checkout>",
+      "private runtime environment inherited without logging secret values"
+    ],
+    "report": {
+      "path": "/tmp/machine-first-p002-served-v14-20261017.json",
+      "sha256": "bd07975a4b058e45a772abe7cb82c4b17c9e42db67948157c54d6bb99827b92c"
+    },
+    "log": {
+      "path": "/tmp/machine-first-p002-served-v14-20261017.log",
+      "sha256": "8be6c172b7686d4b703d992ba2bd271bdcb890d8484230633ddb12705a4fb37a"
+    },
+    "receiptSha256": "d2cb6d937415788c8c1c059944e263c160bb3ebb525d2ffae06d5c7f1dcc37bd"
+  },
+  "receipt": {
+    "scope": "Real new TEST-account admission and served signup destination; external AuthKit form and final shipment excluded",
+    "cases": [
+      {
+        "scenario": "published",
+        "tenantMatches": true,
+        "requestedUrls": [
+          "https://127.0.0.1:46645/api/downloads/utility?target=linux-x86_64&resolve=1",
+          "https://127.0.0.1:46645/api/downloads/utility?target=linux-x86_64&resolve=1"
+        ],
+        "download": {
+          "filename": "pui-0.1.0-linux-x86_64.tar.gz",
+          "bytes": 69542264,
+          "sha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6"
+        },
+        "callbackReloadDownloadCount": 1,
+        "utilityContinueUrl": "https://127.0.0.1:46645/?app=home&firstRun=deferred",
+        "productGuideChoice": "skipped through the existing guide control",
+        "guiRendered": true,
+        "returningSignInDownloadCount": 1,
+        "continueUrl": "https://127.0.0.1:46645/?app=home"
+      },
+      {
+        "scenario": "blocked-storage-denied",
+        "tenantMatches": true,
+        "requestedUrls": [
+          "https://127.0.0.1:46645/api/downloads/utility?target=linux-x86_64&resolve=1"
+        ],
+        "manualRetry": {
+          "filename": "pui-0.1.0-linux-x86_64.tar.gz",
+          "completed": true
+        },
+        "utilityContinueUrl": "https://127.0.0.1:46645/?app=home&firstRun=deferred",
+        "guiRendered": true,
+        "returningSignInDownloadCount": 1,
+        "continueUrl": "https://127.0.0.1:46645/?app=home"
+      },
+      {
+        "scenario": "unavailable",
+        "tenantMatches": true,
+        "requestedUrls": [
+          "https://127.0.0.1:46645/api/downloads/utility?target=linux-x86_64&resolve=1"
+        ],
+        "failureInjection": "same-origin publisher route 503",
+        "utilityContinueUrl": "https://127.0.0.1:46645/?app=home&firstRun=deferred",
+        "guiRendered": true,
+        "returningSignInDownloadCount": 0,
+        "continueUrl": "https://127.0.0.1:46645/?app=home"
+      },
+      {
+        "scenario": "windows",
+        "tenantMatches": true,
+        "requestedUrls": [],
+        "failureInjection": null,
+        "utilityContinueUrl": "https://127.0.0.1:46645/?app=home&firstRun=deferred",
+        "guiRendered": true,
+        "returningSignInDownloadCount": 0,
+        "continueUrl": "https://127.0.0.1:46645/?app=home"
+      }
+    ],
+    "release": {
+      "schemaVersion": 2,
+      "buildId": "E4mBuUpIb-IyxmFfI-RqG",
+      "release": "E4mBuUpIb-IyxmFfI-RqG-20261017032809332-2570532-9f35b171",
+      "sourceRoot": "harness:portal",
+      "publishedAt": "2026-10-17T03:28:09.332Z",
+      "sourceRootDigest": "c6481944b6c4ae13e59b1c3521368dfd03358be085401b22af30edaa7a63ff34"
+    },
+    "accountCleanup": true
+  },
+  "runtimeCleanup": {
+    "observedAt": "2026-10-17T04:24:23Z",
+    "runtime": "/tmp/machine-first-private-p002-v11-runtime-20261017.json",
+    "ownedWorkspace": "test-runtime-b4265ed9-819",
+    "processes": [
+      {
+        "role": "supervisorPid",
+        "pid": 625303,
+        "alive": false
+      },
+      {
+        "role": "hostedPid",
+        "pid": 625467,
+        "alive": false
+      },
+      {
+        "role": "portalPid",
+        "pid": 658252,
+        "alive": false
+      }
+    ],
+    "allStopped": true
+  },
+  "screenshots": [
+    {
+      "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/blocked-storage-denied-gui.png",
+      "sha256": "1ac9ed8dcfa93fea5b8618f853eb50ff9fc7141b5c63524c42496269920ecd2b"
+    },
+    {
+      "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/blocked-storage-denied.png",
+      "sha256": "363a148b182476ee956f5a26385c4fcfb68b65672c9816d30b1892a27add5c5a"
+    },
+    {
+      "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/published-gui.png",
+      "sha256": "f73f08d859d9fad02833546d205876f7d9876fafa357ea41a34f4ad35ebf360b"
+    },
+    {
+      "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/published.png",
+      "sha256": "0b2048f01f0ff0fafd55fc975edf2a0eea0bf019f0ec96a40fa14dc4fa66a2aa"
+    },
+    {
+      "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/unavailable-gui.png",
+      "sha256": "6cfc88033ad40898d431a760114c1a13960f957c1784d445af6cde51e9a361a5"
+    },
+    {
+      "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/unavailable.png",
+      "sha256": "1430a13447e6ec1873270ace102b4b71a92b90dcf7fc00bc4436e80a0984b825"
+    },
+    {
+      "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/windows-gui.png",
+      "sha256": "6cfc88033ad40898d431a760114c1a13960f957c1784d445af6cde51e9a361a5"
+    },
+    {
+      "path": "/tmp/machine-first-p002-served-v14-results-20261017/portal-utility-welcome-ser-f9eee-lback-and-keyboard-Continue/windows.png",
+      "sha256": "1430a13447e6ec1873270ace102b4b71a92b90dcf7fc00bc4436e80a0984b825"
+    }
+  ],
+  "publishedArchive": {
+    "version": "0.1.0",
+    "target": "linux-x86_64",
+    "archiveSha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+    "sourceSha": "8e14b49f815f057f7f64b82999d1d24049553fb5",
+    "sameBytesAsEarlierPublishedArchiveAcceptance": true,
+    "priorEvidence": {
+      "path": "/tmp/machine-first-published-utility-receipt-20261017.json",
+      "sha256": "934700230ad7055cfdc395ab19e739ed0d0c98efce5e75ffbea381ade3f53329"
+    }
+  },
+  "harnessAudit": {
+    "v11": "Incorrect page Request-count oracle failed despite observed successful Download; corrected to direct Download event/count/hash.",
+    "v12": "Passed four scenarios before adding rendered-GUI assertions.",
+    "v13": "Rendered GUI passed, then guessed setup-card heading failed. firstRunEntersShell source explicitly accepts app=home; corrected expected shell and added automatic preflight of that predicate.",
+    "editionsRetained": true
+  },
+  "limitations": [
+    "Real WorkOS TEST new-account admission and hosted signup destination were exercised; external AuthKit signup form and callback code redemption were not exercised in this browser case.",
+    "Same-origin publisher route 503 and automatic-anchor click blocking are deliberate browser fault injections; all positive auth and archive traffic is real.",
+    "The account product guide remains a separate preceding destination; the first scenario uses its existing Skip guide control before asserting rendered GUI.",
+    "The published archive is older source8e14b49 and this receipt does not establish inclusion of current personal-SSH/launcher changes. R2 archive freshness and P004 current artifact acceptance remain open.",
+    "Candidate is a production Portal package in a private current-build runtime, not final deployed release acceptance. Full R1 and final R7 remain parked for the existing unanswered access architecture choice."
+  ]
+}

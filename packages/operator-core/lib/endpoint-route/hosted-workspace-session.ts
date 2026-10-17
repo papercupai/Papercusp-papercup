@@ -6,7 +6,8 @@ import { cloudTelemetryConsentSchema } from '../telemetry-kinds';
 import type { HostedPrincipalResolution } from '../auth/hosted-principal-resolver';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { parseHostedPsuCustomerArgv } from '../workspace-host/hosted-psu-session';
-import { HOSTED_RELAY_FRAME_REGISTRY } from '../workspace-host/hosted-relay-confidentiality-registry';
+import { HOSTED_RELAY_FRAME_REGISTRY, parseHostedWorkspaceWorkload,
+  type HostedWorkspaceWorkload } from '../workspace-host/hosted-relay-confidentiality-registry';
 import { byocSealedContentType, isByocSealedPacket } from '../workspace-host/byoc-sealed-channel';
 import type {
   HostedConnectorBinding,
@@ -82,6 +83,7 @@ export interface HostedWorkspaceSessionBrokerOptions {
    * The host persists it as `heartbeat_at`, which is what `reachable` reads.
    */
   onConnectorLiveness?: (binding: HostedConnectorBinding, alive: boolean) => void;
+  onConnectorActivity?: (binding: HostedConnectorBinding, activity: HostedWorkspaceWorkload, at: Date) => void;
   /** Ping cadence; `0` arms no timer (callers then drive `sweepLiveness()` themselves). */
   pingIntervalMs?: number;
   /** Clock for connector last-seen stamps (the app relay's offline check). */
@@ -260,6 +262,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
   private readonly randomId: () => string;
   private readonly onAudit: (event: HostedWorkspaceSessionAuditEvent) => void;
   private readonly onConnectorLiveness: (binding: HostedConnectorBinding, alive: boolean) => void;
+  private readonly onConnectorActivity: NonNullable<HostedWorkspaceSessionBrokerOptions['onConnectorActivity']>;
   private readonly liveness = new Map<HostedWorkspaceRelaySocket, LivenessEntry>();
   private readonly pingTimer: ManagedHandle | null;
   private readonly membershipReport: ((binding: HostedConnectorBinding) => Promise<unknown | null>) | null;
@@ -277,6 +280,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
     this.randomId = options.randomId ?? randomUUID;
     this.onAudit = options.onAudit ?? (() => {});
     this.onConnectorLiveness = options.onConnectorLiveness ?? (() => {});
+    this.onConnectorActivity = options.onConnectorActivity ?? (() => {});
     this.now = options.now ?? Date.now;
     this.membershipReport = options.membershipReport ?? null;
     this.resolveChannelPrincipal = options.resolveChannelPrincipal;
@@ -419,7 +423,7 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
       }
       const raw = text(data);
       if (!raw) return;
-      let message: { type?: string; channelId?: string; requestId?: string; payload?: unknown; reason?: string; diagnostics?: unknown };
+      let message: { type?: string; channelId?: string; requestId?: string; payload?: unknown; reason?: string; diagnostics?: unknown; activity?: unknown };
       try { message = JSON.parse(raw) as typeof message; } catch { return; }
       if (message.type === 'session.authorize') {
         void this.authorizeHostSession(socket, key, message);
@@ -431,6 +435,16 @@ export class HostedWorkspaceSessionBroker implements AppRelayPort {
         const frame = typeof message.type === 'string' ? HOSTED_RELAY_FRAME_REGISTRY[message.type] : undefined;
         this.audit(binding, 'byoc_control_frame_dropped', undefined,
           frame?.sensitivity === 'control' ? message.type : 'unknown');
+        return;
+      }
+      if (message.type === 'activity.report') {
+        if (binding.hosting !== 'papercusp' || this.connectors.get(key) !== socket ||
+            Object.keys(message).some(field => !['type', 'activity'].includes(field))) return;
+        const activity = parseHostedWorkspaceWorkload(message.activity);
+        if (!activity) return;
+        const viewers = [...this.sessions.values()].filter(session =>
+          session.connectorKey === key && session.kind === 'desktop' && !session.closed).length;
+        this.onConnectorActivity(binding, { ...activity, attachedViewers: Math.max(viewers, activity.attachedViewers) }, new Date(this.now()));
         return;
       }
       if (message.type !== 'relay' && message.type !== 'relay.close') return;

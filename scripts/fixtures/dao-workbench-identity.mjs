@@ -34,7 +34,8 @@ export function prepareIdentityFixture(directory) {
     candidate: actor(90007529, 'native-workbench-candidate', 'candidate@daohr.test', 'dao-native-fixture-candidate'),
   };
   // Keep the original top-level identity for the existing Workbench journey.
-  const fixture = { kind: 'dao-workbench-synthetic-identity-v1', ...actors.admin, actors, hive: pair() };
+  const fixture = { kind: 'dao-workbench-synthetic-identity-v1', ...actors.admin, actors, hive: pair(),
+    hiveEpoch0: randomBytes(32).toString('base64') };
   const path = join(directory, 'identity.json');
   writeFileSync(path, JSON.stringify(fixture), { mode: 0o600 });
   writeAnnounce(directory, actors.admin);
@@ -97,6 +98,11 @@ export function installIdentityFixture(fixture, env = process.env) {
       return { stdout: actor.device.privateKeyDer, stderr: '' };
     if (/^hive:verify-tauri-isolated-\d+:workbench-native$/.test(account) && service === 'papercusp-hive-keypair')
       return { stdout: fixture.hive.privateKeyDer, stderr: '' };
+    // The owned hive's canonical scope is its home slug. Member admission
+    // distributes its existing epoch zero; the request-only sidecar cannot mint it.
+    if (account === 'workbench-native:0' && service === 'papercusp-hive-epoch-key'
+      && typeof fixture.hiveEpoch0 === 'string' && Buffer.from(fixture.hiveEpoch0, 'base64').length === 32)
+      return { stdout: fixture.hiveEpoch0, stderr: '' };
     throw new Error('Synthetic fixture refuses unknown keychain identity');
   };
   const replacement = function(file, args = [], ...rest) {

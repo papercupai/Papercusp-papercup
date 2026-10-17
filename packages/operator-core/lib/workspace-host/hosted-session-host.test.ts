@@ -139,6 +139,18 @@ function harness(root: string, files?: SafeRootFileService) {
 }
 
 describe('hosted customer PTY identity', () => {
+  it('keeps detached live PTYs in the workload signal until their actual exit', async () => {
+    const f = harness(await projectRoot());
+    expect(f.adapter.workloadActivity()).toEqual({ activeCommands: 0, attachedViewers: 0 });
+    await f.open('workload');
+    expect(f.adapter.workloadActivity().activeCommands).toBe(1);
+    await f.adapter.accept({ type: 'relay.close', channelId: 'workload' });
+    expect(f.adapter.workloadActivity().activeCommands).toBe(1);
+    f.ptys[0]!.emit('exit', 0, 0);
+    expect(f.adapter.workloadActivity().activeCommands).toBe(0);
+    f.adapter.close();
+  });
+
   const authority = { userId: 'user-1', sessionId: 'session-1', sessionVersion: 2,
     controlPlaneWorkspaceId: 'control-1', organizationId: 'org-1', customerWorkspaceId: 'workspace-1',
     permissions: ['workspace:operate'] };
@@ -998,7 +1010,7 @@ describe('HostedWorkspaceHostSessionAdapter — desktop channels (P-013)', () =>
     // Rejected, not defaulted into a terminal — and SAID so, so a client asking for a kind this
     // host lacks can fall back instead of waiting (D-002 P-009).
     expect(ptys).toHaveLength(1);
-    expect(sent.filter((message) => message.channelId === 'future-1')).toEqual([
+    expect(sent.filter((message) => 'channelId' in message && message.channelId === 'future-1')).toEqual([
       { type: 'relay.close', channelId: 'future-1', reason: 'channel_kind_unknown' },
     ]);
   });

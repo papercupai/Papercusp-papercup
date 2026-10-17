@@ -5,6 +5,7 @@ import { promisify } from 'node:util';
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { loaderIdentity, nativeProcessTraceEnv, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
 
 describe('focused runner startup tracing', () => {
@@ -15,6 +16,114 @@ describe('focused runner startup tracing', () => {
     expect(armed.NODE_OPTIONS).toContain(plain.NODE_OPTIONS);
     expect(armed.PAPERCUSP_TEST_STARTUP_TRACE).toBeUndefined();
     expect(nativeProcessTraceEnv(armed).NODE_OPTIONS).toBe(armed.NODE_OPTIONS);
+  });
+
+  it('records module-load returns and preserves a delegated loader error object', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-module-load-'));
+    const out = join(dir, 'sources.json');
+    const good = pathToFileURL(join(dir, 'good.mjs')).href;
+    const bad = pathToFileURL(join(dir, 'bad.mjs')).href;
+    const preload = new URL('../../../../scripts/lib/vitest-startup-trace.mjs?module-load-contract', import.meta.url).href;
+    writeFileSync(join(dir, 'good.mjs'), 'export const value = 42;');
+    writeFileSync(join(dir, 'bad.mjs'), 'export const unreachable = true;');
+    const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_TEST_STARTUP_TRACE: '0' };
+    delete env.PC_EXECUTED_SOURCE_MAP_OUT;
+    try {
+      const source = `import { registerHooks } from 'node:module';
+        const expected = Object.assign(new Error('fixture loader error'), {code:'FIXTURE_LOAD'});
+        registerHooks({load(url, context, nextLoad) {
+          if (url === ${JSON.stringify(bad)}) throw expected;
+          return nextLoad(url, context);
+        }});
+        process.env.PC_EXECUTED_SOURCE_MAP_OUT = ${JSON.stringify(out)};
+        await import(${JSON.stringify(preload)});
+        const { value } = await import(${JSON.stringify(good)});
+        let sameError = false;
+        try { await import(${JSON.stringify(bad)}); } catch (error) { sameError = error === expected; }
+        process.stdout.write(JSON.stringify({value,sameError}));`;
+      const { stdout, stderr } = await promisify(execFile)(process.execPath,
+        ['--input-type=module', '-e', source], { env, timeout: 10_000 });
+      expect(JSON.parse(stdout)).toEqual({ value: 42, sameError: true });
+      expect(stderr).toBe('');
+      const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name =>
+        JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
+      const start = rows.find(row => row.event === 'module-load-start' && row.url === good);
+      expect(start).toMatchObject({ scope: 'node-sync-load-hook' });
+      expect(rows.find(row => row.event === 'module-load-return' && row.url === good))
+        .toMatchObject({ loadId: start.loadId, processIdentity: start.processIdentity, format: 'module', elapsedMs: expect.any(Number) });
+      expect(rows.find(row => row.event === 'module-load-error' && row.url === bad))
+        .toMatchObject({ errorCode: 'FIXTURE_LOAD', errorName: 'Error' });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('retains the attempted file load when a child blocks before the loader returns', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-module-stall-'));
+    const out = join(dir, 'sources.json');
+    const target = pathToFileURL(join(dir, 'blocked.mjs')).href;
+    const preload = new URL('../../../../scripts/lib/vitest-startup-trace.mjs?module-load-stall', import.meta.url).href;
+    writeFileSync(join(dir, 'blocked.mjs'), 'export const unreachable = true;');
+    const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_TEST_STARTUP_TRACE: '0' };
+    delete env.PC_EXECUTED_SOURCE_MAP_OUT;
+    const source = `import { registerHooks } from 'node:module';
+      registerHooks({load(url, context, nextLoad) {
+        if (url === ${JSON.stringify(target)}) {
+          process.stdout.write('LOAD_BLOCKED');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+        }
+        return nextLoad(url, context);
+      }});
+      process.env.PC_EXECUTED_SOURCE_MAP_OUT = ${JSON.stringify(out)};
+      await import(${JSON.stringify(preload)});
+      await import(${JSON.stringify(target)});`;
+    try {
+      let entered = false;
+      await new Promise<void>((resolve, reject) => {
+        const child = execFile(process.execPath, ['--input-type=module', '-e', source],
+          { env, timeout: 10_000, killSignal: 'SIGKILL' }, error => {
+            if (entered && error?.signal === 'SIGKILL') resolve();
+            else reject(error ?? new Error('blocked loader unexpectedly returned'));
+          });
+        child.stdout?.on('data', chunk => {
+          if (String(chunk).includes('LOAD_BLOCKED')) { entered = true; child.kill('SIGKILL'); }
+        });
+      });
+      const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name =>
+        JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
+      expect(rows.filter(row => row.event === 'module-load-start' && row.url === target)).toHaveLength(1);
+      expect(rows.filter(row => ['module-load-return', 'module-load-error'].includes(row.event) && row.url === target))
+        .toHaveLength(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('bounds load evidence while allowing the complete module population to execute', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-module-bound-'));
+    const out = join(dir, 'sources.json');
+    const preload = new URL('../../../../scripts/lib/vitest-startup-trace.mjs?module-load-bound', import.meta.url).href;
+    const modules = Array.from({ length: 140 }, (_, index) => {
+      const path = join(dir, `module-${index}.mjs`);
+      writeFileSync(path, `export const value = ${index};`);
+      return pathToFileURL(path).href;
+    });
+    const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_TEST_STARTUP_TRACE: '0' };
+    delete env.PC_EXECUTED_SOURCE_MAP_OUT;
+    try {
+      const source = `process.env.PC_EXECUTED_SOURCE_MAP_OUT = ${JSON.stringify(out)};
+        await import(${JSON.stringify(preload)});
+        let sum = 0;
+        for (const url of ${JSON.stringify(modules)}) sum += (await import(url)).value;
+        process.stdout.write(String(sum));`;
+      const { stdout, stderr } = await promisify(execFile)(process.execPath,
+        ['--input-type=module', '-e', source], { env, timeout: 10_000 });
+      expect(stdout).toBe('9730');
+      expect(stderr).toBe('');
+      const rows = readdirSync(`${out}.native-processes`).filter(name => name.endsWith('.json')).map(name =>
+        JSON.parse(readFileSync(join(`${out}.native-processes`, name), 'utf8')));
+      const starts = rows.filter(row => row.event === 'module-load-start');
+      expect(starts.length).toBeGreaterThan(0);
+      expect(starts.length).toBeLessThanOrEqual(128);
+      expect(rows.filter(row => row.event === 'module-load-limit')).toHaveLength(1);
+      expect(rows.find(row => row.event === 'node-exit')).toMatchObject({ code: 0 });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it.each([false, true])('retains actual npm lifecycle and compound-script Node entries, failure=%s', async fail => {

@@ -23,7 +23,7 @@ import { flushTelemetry } from '../telemetry-flush';
 import { runScratchGc, SCRATCH_GC_CRONTAB } from '../scratch-gc';
 import { runLocksCacheGc } from '../locks-cache-gc';
 import { runEmbedBackfillOnce } from '../search/embed-backfill';
-import { formatBm25MaintenanceReport, runOrgBm25Maintenance } from '../search/lexical/bm25-maintenance';
+import { runBm25MaintenanceStep, type Bm25MaintenanceStepResult } from './bm25-maintenance-step';
 import { runEmbedSpaceSelfCheckTick } from '../search/embed-space-self-check';
 import { runDeadWorkflowMonitorOnce } from './dead-workflow-monitor';
 import { runBackupSchedulerTick } from '@papercusp/backup';
@@ -68,7 +68,7 @@ import { reconcileStalePendingHandoffsOnce, reconcileHandoffRepingsOnce } from '
 import { runReplyDeadlineSweepOnce } from '../agent-tools/coordination/reply-deadline-sweep';
 import { runAllPotBroadcastSweepOnce } from '../agent-tools/coordination/allpot-broadcast-sweep';
 import { runDeliveryLadderSweepOnce, DELIVERY_LADDER_OWNER } from '../agent-tools/coordination/delivery-ladder-sweep';
-import { runStorageGrowthAlarmOnce } from '../storage/storage-growth-alarm';
+import { runStorageGrowthAlarmOnce, runDiskHeadroomAlarmOnce } from '../storage/storage-growth-alarm';
 import { runReplicationSlotAlarmOnce } from '../storage/replication-slot-alarm';
 import { runTestDesktopReaperOnce } from '../test-desktop-reaper';
 import { runDiskSpaceAlarmOnce } from '../storage/disk-space-alarm';
@@ -216,25 +216,10 @@ DBOS.registerScheduled(embedBackfillWorkflow, { name: 'embedBackfill', crontab: 
 // their only compactor. runBm25Maintenance never throws; the catch below is the same
 // belt-and-braces as embedBackfill (a throw would exhaust maxRecoveryAttempts and stop
 // the schedule).
-async function bm25MaintenanceTick(): Promise<void> {
-  await DBOS.runStep(
-    async () => {
-      try {
-        const startedAt = Date.now();
-        const report = await runOrgBm25Maintenance();
-        const finishedAt = Date.now();
-        const line = formatBm25MaintenanceReport(report, {
-          startedAtMs: startedAt,
-          finishedAtMs: finishedAt,
-          durationMs: Math.max(0, finishedAt - startedAt),
-        });
-        if (line) console.log(line);
-      } catch (err) {
-        console.warn(`[bm25-maintenance] run skipped (non-fatal): ${(err as Error).message}`);
-      }
-    },
-    { name: 'bm25-maintenance' },
-  );
+async function bm25MaintenanceTick(): Promise<Bm25MaintenanceStepResult> {
+  // Return the report from the step so DBOS operation_outputs records what ran;
+  // previously the callback returned void and successful runs were opaque.
+  return DBOS.runStep(() => runBm25MaintenanceStep(), { name: 'bm25-maintenance' });
 }
 const bm25MaintenanceWorkflow = idempotentRegisterWorkflow('bm25Maintenance', () =>
   DBOS.registerWorkflow(bm25MaintenanceTick, {
@@ -429,6 +414,16 @@ function logLiveSkipInvariant(skippedLive: number, oldestAgeMs: number | null): 
 }
 
 async function sessionArchiveReconcileTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    try {
+      const { runScheduledColdArchiveMigration } = await import('../session-archive');
+      const result = await runScheduledColdArchiveMigration();
+      console.log(`[session-archive-cold] ${JSON.stringify(result)}`);
+    } catch (error) {
+      // Cold media absence never prevents archiving newly ended sessions to PG.
+      console.warn(`[session-archive-cold] ${String(error)}`);
+    }
+  }, { name: 'session-archive-cold-migration' });
   await DBOS.runStep(
     async () => {
       try {
@@ -1295,12 +1290,12 @@ const storageGrowthAlarmWorkflow = idempotentRegisterWorkflow('storageGrowthAlar
 );
 DBOS.registerScheduled(storageGrowthAlarmWorkflow, { name: 'storageGrowthAlarm', crontab: '0 50 */6 * * *' });
 
-// Every 6h (:35, off the :50 growth alarm): disk consumer census
+// Hourly (:35, off the :50 growth alarm): disk consumer census (durable-headroom P-011)
 // (disk-headroom-standing-reclaim-2026-10-12 P-001, R-1). Writes what is filling each
 // watched device (du as root via sudo -n at best-effort I/O level 7, falling back to an
 // unprivileged walk + Postgres/Docker sized through their APIs) to
 // harness_shared.disk_census_* so storage:census can show each consumer's size and
-// 24h growth; prunes rows older than 30 days. Four runs a day keep a run inside the
+// 24h growth; prunes rows older than 30 days. Hourly runs keep a run inside the
 // read's 18–30h baseline window. Per-device failures are recorded, never thrown.
 //
 // Restart-safe (WI-6554700010009855). A census takes ~75 min and bg-host restarts about
@@ -1316,10 +1311,14 @@ async function diskConsumerCensusTick(): Promise<void> {
   const pass = await DBOS.runStep(
     async () => {
       if (shouldShedHeavyTick('disk-consumer-census')) return null;
-      const { prepareCensusPass } = await import('../storage/disk-consumer-census');
+      const { prepareCensusPass, diskCensusPassInFlight } = await import('../storage/disk-consumer-census');
       const prepared = await prepareCensusPass();
       if ('skipped' in prepared) {
         console.log(`[disk-consumer-census] skipped: ${prepared.skipped}`);
+        return null;
+      }
+      if (await diskCensusPassInFlight(getOrgPg().sql as never, runKey, prepared.devices.length)) {
+        console.log('[disk-consumer-census] skipped: an older census pass is still active');
         return null;
       }
       return prepared;
@@ -1362,7 +1361,7 @@ const diskConsumerCensusWorkflow = idempotentRegisterWorkflow('diskConsumerCensu
     maxRecoveryAttempts: 24,
   }),
 );
-DBOS.registerScheduled(diskConsumerCensusWorkflow, { name: 'diskConsumerCensus', crontab: '0 35 */6 * * *' });
+DBOS.registerScheduled(diskConsumerCensusWorkflow, { name: 'diskConsumerCensus', crontab: '0 35 * * * *' });
 
 // Hourly retention, independent of free space (disk-headroom P-004 / D-005).
 // Each bounded pass has its own Postgres checkpoint and fresh safety evidence.
@@ -1375,7 +1374,9 @@ async function diskRetentionReclaimTick(): Promise<void> {
     const startedAt = new Date().toISOString();
     const { runScheduledDiskReclaim } = await import('../storage/disk-reclaim');
     try {
-      const receipt = await runScheduledDiskReclaim();
+      const { reclaimRunBudgetForDrain } = await import('../storage/disk-reclaim');
+      const runBudgetMs = reclaimRunBudgetForDrain(notAfterMs);
+      const receipt = await runScheduledDiskReclaim({ runBudgetMs });
       if (!receipt.complete) console.warn(`[disk-retention] partial run: ${receipt.errors.join('; ')}`);
       return receipt;
     } catch (err) {
@@ -1468,6 +1469,8 @@ async function diskSpaceAlarmTick(): Promise<void> {
       if (process.env.PAPERCUSP_DISK_SPACE_ALARM === '0') return;
       if (shouldShedHeavyTick('disk-space-alarm')) return;
       const r = await runDiskSpaceAlarmOnce();
+      // Cheap saved-census projection: no du walk, independent of the absolute statfs tier.
+      await runDiskHeadroomAlarmOnce();
       if (r.breaches.length > 0) {
         const crit = r.breaches.filter((b) => b.severity === 'critical').length;
         console.log(
@@ -1662,6 +1665,36 @@ const specTriadSweepWorkflow = idempotentRegisterWorkflow('specTriadSweep', () =
   }),
 );
 DBOS.registerScheduled(specTriadSweepWorkflow, { name: 'specTriadSweep', crontab: '0 20 5 * * *' });
+
+// Every 5 min: spec evidence binds itself from the test ledger (agent-paperwork-and-restart-tax-
+// reduction-2026-10-15 P-002 / R-2). For each requirement-projected clause on a live plan, the
+// newest terminal run of each named test file binds (pass, once its measured code is committed)
+// or retracts older proof (fail/error) through the same pipeline plans:bind-spec-evidence runs.
+// Bounded (≤50 writes/tick), idempotent, never throws, shed under loop pressure.
+// Kill-switch PAPERCUSP_SPEC_EVIDENCE_AUTOBIND=0.
+async function specEvidenceAutobindTick(): Promise<void> {
+  await DBOS.runStep(
+    async () => {
+      if (process.env.PAPERCUSP_SPEC_EVIDENCE_AUTOBIND === '0') return;
+      if (shouldShedHeavyTick('spec-evidence-autobind')) return;
+      try {
+        const { runSpecEvidenceAutobindOnce } = await import('../agent-tools/plans/spec-evidence-autobind');
+        const r = await runSpecEvidenceAutobindOnce();
+        console.log(`[spec-evidence-autobind] ${r.summary}`);
+      } catch (err) {
+        console.warn(`[spec-evidence-autobind] run skipped (non-fatal): ${(err as Error).message}`);
+      }
+    },
+    { name: 'spec-evidence-autobind' },
+  );
+}
+const specEvidenceAutobindWorkflow = idempotentRegisterWorkflow('specEvidenceAutobind', () =>
+  DBOS.registerWorkflow(specEvidenceAutobindTick, {
+    name: 'specEvidenceAutobind',
+    maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(specEvidenceAutobindWorkflow, { name: 'specEvidenceAutobind', crontab: '0 */5 * * * *' });
 
 // Weekly (Sun 05:30 UTC, off the daily 03:00–05:00 GC/prune cluster): code-recipes
 // hygiene (recipes-reuse-activation-2026-06-22 P-003). There was NO scheduled automation

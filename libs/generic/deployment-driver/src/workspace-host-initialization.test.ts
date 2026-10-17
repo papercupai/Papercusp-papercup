@@ -79,6 +79,13 @@ function request(
 }
 
 describe("planWorkspaceHostInitialization", () => {
+  it("verifies retained data before bindings without creating or importing a workspace", () => {
+    const plan = planWorkspaceHostInitialization(request({ source: { kind: "retained", tenantIdentity: "a".repeat(64) } }));
+    expect(plan.steps[0]).toMatchObject({ kind: "verify-retained-workspace", input: { tenantIdentity: "a".repeat(64), workspaceId: "workspace-1" } });
+    expect(plan.steps.some((step) => ["create-workspace", "import-workspace", "clone-repository"].includes(step.kind))).toBe(false);
+    expect(plan.steps.at(-1)?.input.sourceKind).toBe("retained");
+    expect(() => planWorkspaceHostInitialization(request({ source: { kind: "retained", tenantIdentity: "" } }))).toThrow(/tenantIdentity/);
+  });
   it("persists requested-agent coverage in the replay fingerprint and rejects empty coverage", () => {
     const scoped = planWorkspaceHostInitialization(request({ requestedAgents: ["omp", "claude"] }));
     const verify = scoped.steps.at(-1)!;

@@ -267,7 +267,7 @@ export function buildAmendmentReviewBrief(
     ? `work_items:comment { id:'${answerOn.workItemId}'${answerOn.harness ? `, harness:'${answerOn.harness}'` : ''} }`
     : '';
   return [
-    'Before judging, read the complete brief. If conversations:get shows `_projection.truncated`, use `capability:read` with its returned scratch cursor through `eof:true`; do not decide from the excerpt.',
+    'Before judging, read the complete brief. If conversations:get shows `_projection.truncated`, call `capability:read` with the returned cursor\'s `file_path` or `uri` plus its `byte_offset` and `byte_limit`; follow `next_cursor` and stop when the response has `eof:true` and `next_cursor:null`. Do not decide from the excerpt.',
     'If rubrics:get reports that the backing rubric row exists but this server could not project it, do not treat the rubric as absent. Read the raw structured record with plans:get-template-data { slug:\'<unprefixed rubric slug>\', harness:\'<current review harness>\' } and grade its complete templateData.criteria. This read preserves fields an older rubric projector may not understand; recover any truncated response before judging.',
     answerOn
       ? `Outside-lineage review of a started acceptance-BAR amendment to ${input.rubricRef}. The relevance router found no eligible reviewer, so ${ACCEPTANCE_BAR_AMENDMENT_REVIEW_ACTOR} launched you fresh: you are outside the implementer's lineage, and the apply guard re-checks that from your post.`
@@ -361,6 +361,28 @@ export const MAX_DEAD_REVIEWER_CHAIN = 4;
 async function readLedgerTaskState(taskId: string): Promise<TaskState | null> {
   const { getTask } = await import('../task-manager/store');
   return (await getTask(taskId))?.state ?? null;
+}
+
+type ResolveSessionStates = typeof import('../agent-tools/coordination/liveness-oracle').resolveSessionStates;
+
+/**
+ * A task row can stay `running` after its reviewer session has parked with no
+ * independent wake source. Treat that liveness shape as measured only when the
+ * shared oracle returns both axes; a failed or partial read must remain unknown.
+ */
+async function readReviewerLiveness(
+  ownerId: string,
+  resolveSessionStates?: ResolveSessionStates,
+): Promise<Pick<import('../agent-tools/coordination/liveness-oracle').LivenessVerdict, 'sessionState' | 'selfWake'> | null> {
+  try {
+    const resolve = resolveSessionStates ?? (await import('../agent-tools/coordination/liveness-oracle')).resolveSessionStates;
+    const verdict = (await resolve([{ ownerId }], { hydratePerId: true, selfWake: true })).get(ownerId);
+    return verdict ? { sessionState: verdict.sessionState, selfWake: verdict.selfWake } : null;
+  } catch {
+    // Liveness is an enrichment. An unreadable oracle cannot authorize killing
+    // or replacing a reviewer that may still be able to answer.
+    return null;
+  }
 }
 
 /** True when anyone (or `authorId`, when known) posted on the preview post's
@@ -537,6 +559,7 @@ export async function launchFreshAmendmentReviewer(
     nowMs?: () => number;
     sleepMs?: (ms: number) => Promise<void>;
     readTaskState?: (taskId: string) => Promise<TaskState | null>;
+    resolveSessionStates?: ResolveSessionStates;
     hasReviewerAnswer?: typeof previewThreadHasLaterPost;
     stopFailedLaunch?: typeof defaultStopFailedLaunch;
   } = {},
@@ -587,15 +610,35 @@ export async function launchFreshAmendmentReviewer(
     const deadTask = result.data?.launch?.tasks?.[0];
     const deadTaskId = typeof deadTask?.taskId === 'string' ? deadTask.taskId : null;
     if (!deadTaskId) break;
-    const state = await readTaskState(deadTaskId);
-    if (!state || !isTerminalState(state)) break;
     const authorId = typeof deadTask?.ownerId === 'string' ? deadTask.ownerId : undefined;
+    const state = await readTaskState(deadTaskId);
+    const liveness = state && !isTerminalState(state) && authorId
+      ? await readReviewerLiveness(authorId, deps.resolveSessionStates)
+      : null;
+    const stranded = liveness?.sessionState === 'parked' && liveness.selfWake === 'none';
+    if (!state || (!isTerminalState(state) && !stranded)) break;
     // A missing reviewer identity cannot establish custody of a re-review verdict.
     if (input.reviewEvidence && !authorId) break;
     if (await hasReviewerAnswer({ workspaceId: input.workspaceId, previewPostRef,
       ...(authorId ? { authorId } : {}),
       ...(input.reviewEvidence ? { afterPostRef: input.reviewEvidence.postRef } : {}),
     })) break;
+    if (stranded) {
+      let stopped: string;
+      try {
+        stopped = await (deps.stopFailedLaunch ?? defaultStopFailedLaunch)(deadTaskId,
+          authorId ? { answeringOwnerId: authorId } : undefined);
+      } catch (error) {
+        stopped = `stop threw: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      const stoppedState = await readTaskState(deadTaskId);
+      if (!stoppedState || !isTerminalState(stoppedState)) {
+        return {
+          state: 'not-launched',
+          reason: `deduped reviewer task ${deadTaskId} is parked without a self-wake source and could not be safely replaced: ${stopped}`,
+        };
+      }
+    }
     relaunchedAfter.push(deadTaskId);
     if (relaunchedAfter.length >= MAX_DEAD_REVIEWER_CHAIN) {
       return {
@@ -789,6 +832,7 @@ export async function openAcceptanceBarAmendmentReview(
     route?: typeof routeAcceptanceBarAmendmentReview;
     launchFresh?: typeof launchFreshAmendmentReviewer;
     resolveEvidence?: typeof resolveAmendmentReviewEvidence;
+    hasLaterPost?: typeof previewThreadHasLaterPost;
   } = {},
 ): Promise<AmendmentReviewRequestResult> {
   if (!input.preview.approvalRequired) {
@@ -829,6 +873,22 @@ export async function openAcceptanceBarAmendmentReview(
       `events:await { event:'consult:reply:${routed.conversationId}' }. When the routed reviewer answers \`approve ${previewPostRef}\`, ` +
       `apply with the same patch plus approvalRef:'thread-post:<that answer post id>' (conversations:get { id:'${routed.conversationId}' } lists post ids).`;
     return { ...routed, previewPostRef, next };
+  }
+  // A preview with an existing later reply already has review activity. A
+  // fresh reviewer must not be recruited for the same unchanged preview: an
+  // objection (or any other later reply worth preserving) requires explicit
+  // new requester evidence via reviewEvidencePost before re-review.
+  if (!reviewEvidence && await (deps.hasLaterPost ?? previewThreadHasLaterPost)({
+    workspaceId: input.workspaceId,
+    previewPostRef,
+  })) {
+    const reason = `preview ${previewPostRef} already has a later thread reply; post new verification evidence on that thread and pass reviewEvidencePost to request a re-review`;
+    return {
+      ...routed,
+      previewPostRef,
+      next: `No reviewer was recruited because ${reason}. Do not post a duplicate preview.`,
+      freshReviewer: { state: 'not-launched', reason },
+    };
   }
   // WI-10003299: nobody eligible is not a reason to stop. Launch one fresh
   // outside-lineage reviewer instead of telling the requester to wait for one.

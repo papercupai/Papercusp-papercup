@@ -4,8 +4,8 @@
  *
  * hono-host boots one of three process shapes and must arm the right set in each:
  *  - `single-process`: a host serving HTTP with no forked workers (one HTTP worker, so the
- *    cluster handle's role is `primary`). The desktop app's operator runs this way. It is the
- *    host singleton, so it owns both connectors.
+ *    cluster handle's role is `single`, or `primary` for a one-worker handle). The desktop
+ *    app's operator runs this way. It is the host singleton, so it owns both connectors.
  *  - `cluster-primary`: the forked cluster's primary. It serves no HTTP but is the host
  *    singleton, so it owns both connectors.
  *  - `cluster-worker`: a forked request worker. It opens its own own-tunnel listener but never
@@ -19,6 +19,7 @@
  * Both starters are idempotent per process, never throw, and converge on a later tick when the
  * first pass runs before boot migrations have applied.
  */
+import type { ClusterHandle } from '../cluster-fork';
 import { startOwnTunnelReconciler } from '../own-tunnel/service';
 import { startPortalRelayReconciler } from './relay-opt-in';
 
@@ -32,12 +33,12 @@ export function remoteAccessReconcilersFor(role: RemoteAccessProcessRole): Remot
 }
 
 /**
- * The role of a process that serves HTTP, from its cluster handle. A `primary` handle here means
- * one HTTP worker, so the primary serves HTTP itself: a single-process host. Only a forked
- * request worker reports `worker`.
+ * The role of a process that serves HTTP, from its cluster handle. A `single` handle, or a
+ * `primary` handle serving HTTP itself with one worker, is a single-process host. Only a
+ * forked request worker reports `worker`.
  */
 export function httpServingProcessRole(
-  clusterHandle: { readonly role: 'primary' | 'worker' } | null | undefined,
+  clusterHandle: Pick<ClusterHandle, 'role'> | null | undefined,
 ): RemoteAccessProcessRole {
   return clusterHandle?.role === 'worker' ? 'cluster-worker' : 'single-process';
 }

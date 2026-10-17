@@ -296,7 +296,7 @@ import { resolveRelayProvenance } from '../relay-provenance-resolve';
 import { resolveStaleQuoteStamps, STALE_QUOTE_FIELD } from '../stale-quote-stamp';
 import type { MessageSection } from '../message-fields';
 import { COORD_SEND_MAX_CHUNK_PARTS, DEFAULT_INBOX_BODY_CAP } from './inbox-content-bounds';
-import { reassembleChunkedBodies } from './send-chunking';
+import { chunkOverCapMessage, reassembleChunkedBodies } from './send-chunking';
 import { sendOwnerSessionMessage } from '../../../owner-sessions/actions';
 import { tagWakeText } from '../../../events/await/wake-executor';
 import { classify, readLedgerRows, tagTurnForInjection } from '../../../turn-provenance/turn-provenance';
@@ -842,6 +842,52 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b).toMatchObject({ ok: true, counts: { ok: persistedParts, failed: 0 } });
     expect(b.results).toHaveLength(persistedParts);
     expect(b.results.every((result: { ok: boolean }) => result.ok)).toBe(true);
+  });
+
+  it('keeps abort completion state separate for identical chunked items in one batch', async () => {
+    const controller = new AbortController();
+    const message = {
+      to: ['bee-1'],
+      summary: 'identical chunked message',
+      expects: 'none',
+      body: [{ text: 'x'.repeat(DEFAULT_INBOX_BODY_CAP * 2) }],
+    };
+    const plan = chunkOverCapMessage(message);
+    if (plan.kind !== 'chunked') throw new Error('expected chunked message');
+    const oneMessageParts = plan.parts.length;
+    const append = sendM.getMockImplementation()!;
+    let persistedParts = 0;
+    sendM.mockImplementation(async (...args) => {
+      const result = await append(...args);
+      persistedParts += 1;
+      if (persistedParts === 1) controller.abort();
+      return result;
+    });
+
+    const b = await bodyWithCtx({ items: [message, message] }, { signal: controller.signal });
+
+    expect(persistedParts).toBe(oneMessageParts);
+    expect(b.results).toHaveLength(oneMessageParts * 2);
+    expect(b.results.slice(0, oneMessageParts).every((result: { ok: boolean }) => result.ok)).toBe(true);
+    expect(b.results.slice(oneMessageParts).every((result: { error?: string }) =>
+      result.error === 'request_aborted',
+    )).toBe(true);
+  });
+
+  it('appends no chunk when the request is already aborted before the first write', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const b = await bodyWithCtx({
+      to: ['bee-1'],
+      summary: 'do not start this chunked message',
+      expects: 'none',
+      body: [{ text: 'x'.repeat(DEFAULT_INBOX_BODY_CAP * 2) }],
+    }, { signal: controller.signal });
+
+    expect(sendM).not.toHaveBeenCalled();
+    expect(b.results.length).toBeGreaterThan(1);
+    expect(b.results.every((result: { error?: string }) => result.error === 'request_aborted')).toBe(true);
   });
 
   it('RSR-P-008-B: chunked replies to a departed sender authenticate every part without threading continuations', async () => {

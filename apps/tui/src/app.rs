@@ -20727,6 +20727,12 @@ mod tests {
         a.on_key(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(a.session_setup.as_ref().unwrap().project, "new-project");
         assert_eq!(a.session_setup.as_ref().unwrap().step, 1);
+        // A selected project is the configuration step; the next review
+        // advance must remain available so a mutation of the `< 2` guard
+        // cannot silently skip the review screen.
+        assert_eq!(a.on_key(KeyCode::Enter, KeyModifiers::NONE), Action::Render);
+        assert_eq!(a.session_setup.as_ref().unwrap().step, 2);
+        assert!(a.su_pending_turn.is_none());
     }
 
     #[test]
@@ -26178,6 +26184,9 @@ mod tests {
         let mut app = composing("first");
         app.on_key(KeyCode::Enter, KeyModifiers::NONE);
         let id = app.su_pending_turn.as_ref().unwrap().command_id.clone();
+        // Chat-first clears the composer while the pending draft remains on
+        // the turn; startup failure must restore that draft in this state.
+        app.chat_input.clear();
         app.update(Event::SuSessionError("engine unavailable".into()));
         assert_eq!(app.chat_input, "first");
         assert!(!app.chat_streaming);

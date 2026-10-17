@@ -1192,6 +1192,7 @@ export default defineTool({
                   timings: detailMs,
                   acceptanceRubricRef: row.activeAcceptanceRubricRef,
                 },
+                enrichmentItemIds: requestedItemIds ?? undefined,
               }) : null;
             } catch {
               // Advisory overlay on an unrelated payload — it must never fail
@@ -1250,7 +1251,12 @@ export default defineTool({
                       // acceptance rubric retired on ship.
                       text: lifecycle.text,
                       counts: lifecycle.derived.counts,
-                      liveItems: markGrindingItems(lifecycle.derived.liveItems, lifecycle.grinding),
+                      liveItems: markGrindingItems(
+                        requestedItemIdSet
+                          ? lifecycle.derived.liveItems.filter((item) => requestedItemIdSet.has(item.id))
+                          : lifecycle.derived.liveItems,
+                        lifecycle.grinding,
+                      ),
                       ...(lifecycle.grinding !== undefined ? { grinding: lifecycle.grinding } : {}),
                       ...(lifecycle.iterations !== undefined ? { iterations: lifecycle.iterations } : {}),
                       liveItemsTruncated: lifecycle.derived.liveItemsTruncated,

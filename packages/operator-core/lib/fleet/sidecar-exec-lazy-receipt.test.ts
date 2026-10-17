@@ -234,6 +234,21 @@ describe('execProcess lazy receipt (real child processes)', () => {
     expect(cancel).not.toHaveBeenCalled();
   });
 
+  it('a fast git check-ignore exec also avoids eager admission', async () => {
+    const { execution, finish, cancel } = receiptSpies();
+    const begin = vi.fn(async () => execution);
+    const result = await execProcess(
+      run(['check-ignore', '-q', '--no-index', '--', '.papercusp/state']),
+      { beginExecution: begin, lazyReceiptMs: 5_000 },
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('args=check-ignore -q --no-index -- .papercusp/state');
+    expect(begin).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
   it.each(['stdout', 'stderr'] as const)('caps %s at maxBuffer and terminates the child', async (stream) => {
     const { execution } = receiptSpies();
     const begin = vi.fn(async () => execution);

@@ -166,14 +166,32 @@ describe('boundedAwaitTemplateFor', () => {
     expect(far?.args.timeout_sec).toBe(86_400);
   });
 
-  it("falls back to a blocked item's own unblocked key, never a done-await on a held item", () => {
-    const tpl = boundedAwaitTemplateFor([item({ id: 'WI-1' }), item({ id: 'WI-2', status: 'blocked' })], NOW);
-    expect(tpl?.args).toMatchObject({
-      event: 'work-item:unblocked:WI-2',
-      timeout_sec: BOUNDED_AWAIT_DEFAULT_TIMEOUT_SEC,
-      on_timeout: 'wake',
-    });
-    expect(tpl?.args.event.startsWith('work-item:done:')).toBe(false);
+  it('does not infer an unblocked emitter from lifecycle-blocked status alone', () => {
+    expect(boundedAwaitTemplateFor([item({ id: 'WI-1' }), item({ id: 'WI-2', status: 'blocked' })], NOW)).toBeNull();
+  });
+
+  it.each(['work-item:done', 'work-item:status', 'claim:released'])(
+    'skips a typed %s event on any held item and continues to an external blocker',
+    (prefix) => {
+      const tpl = boundedAwaitTemplateFor([
+        item({ eventBlockers: [
+          { ref: `${prefix}:WI-2`, summary: 'self-held lifecycle', recheckAt: null },
+          { ref: 'work-item:done:WI-3', summary: 'peer publication', recheckAt: null },
+        ] }),
+        item({ id: 'WI-2', status: 'blocked' }),
+      ], NOW);
+      expect(tpl?.args).toMatchObject({
+        event: 'work-item:done:WI-3',
+        timeout_sec: BOUNDED_AWAIT_DEFAULT_TIMEOUT_SEC,
+        on_timeout: 'wake',
+      });
+    },
+  );
+
+  it('returns no template when the only typed blocker waits on its own completion', () => {
+    expect(boundedAwaitTemplateFor([
+      item({ status: 'blocked', eventBlockers: [{ ref: 'work-item:done:WI-1', summary: '', recheckAt: null }] }),
+    ], NOW)).toBeNull();
   });
 
   it('returns null when no held item states a blocker', () => {

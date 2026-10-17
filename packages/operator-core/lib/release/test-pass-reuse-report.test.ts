@@ -460,7 +460,7 @@ describe('reuse outcome measurements over archived invocations (WI-10005218 / R-
     // Exercise the real orchestration and selector, with only external IO replaced.
     const sandbox = {
       ROOT: '/repo', RUN_LOG_ROOT: '/logs', LANE_SCRIPTS: [], join, relative,
-      process: { env: { GREEN_CHECKPOINT: '1', PAPERCUSP_TEST_RUN_GROUP: 'initial-group' } },
+      process: { env: { GREEN_CHECKPOINT: '1', PAPERCUSP_TEST_RUN_SOURCE: 'ci', PAPERCUSP_TEST_RUN_GROUP: 'initial-group' } },
       outSync: (line: string) => lines.push(line),
       // The real eligibility selector; the gate-decision PG write is an IO seam.
       scriptSupportsPassReuse, recordGateReuseDecision: async () => undefined,

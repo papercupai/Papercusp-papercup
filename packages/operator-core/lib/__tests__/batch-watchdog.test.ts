@@ -25,9 +25,9 @@ import {
   isWatchdogTimeout,
   killSpawnedProcessTree,
   parseBatchProgress,
+  parsePassingFilePaths,
   classifyBatchProgress,
   formatBatchProgress,
-// @ts-expect-error batch-watchdog.mjs is a standalone Node script without declarations.
 } from '../../../../scripts/lib/batch-watchdog.mjs';
 
 const AFFECTED_TESTS_SOURCE = readFileSync(
@@ -344,6 +344,21 @@ describe('createProgressAwareWatchdog', () => {
       // the policy — which would make the heartbeat lie about why a task was killed.
       expect(watchdog.msSinceProgress).toBeGreaterThan(5 * MINUTE);
     });
+  });
+});
+
+describe('parsePassingFilePaths — partial watchdog resume guard', () => {
+  it('keeps only PASS rows and never skips a completed failure row', () => {
+    expect(parsePassingFilePaths([
+      '  ✓ lib/pass.integration.test.ts (2 tests) 12ms',
+      '  ❯ lib/fail.integration.test.ts (1 test | 1 failed) 9ms',
+      '  ✓ lib/pass.integration.test.ts (2 tests) 12ms',
+    ].join('\n'))).toEqual(['lib/pass.integration.test.ts']);
+  });
+
+  it('returns no files for unavailable or malformed captured output', () => {
+    expect(parsePassingFilePaths(null)).toEqual([]);
+    expect(parsePassingFilePaths('lib/pass.integration.test.ts')).toEqual([]);
   });
 });
 

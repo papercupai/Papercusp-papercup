@@ -89,7 +89,9 @@ export function watchPosthogConfig(): void {
   const dir = path.dirname(discoveryPath);
   try {
     fs.mkdirSync(dir, { recursive: true });
-    fs.watch(dir, (_event, filename) => {
+    // Config invalidation follows the owning server's lifetime. A reader that
+    // imports flag-bus must still be able to exit after its work is complete.
+    fs.watch(dir, { persistent: false }, (_event, filename) => {
       if (filename !== 'posthog.json') return;
       for (const invalidate of __watcherState.invalidators) {
         try {

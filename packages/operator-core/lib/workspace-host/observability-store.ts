@@ -805,6 +805,15 @@ export interface StoredWorkspaceHostDestroyTarget extends Pick<
   connectionId: string;
   target: string;
   observedState: string;
+  /** Trusted customer binding used by the durable-volume tenant guard. */
+  hostedCustomerWorkspaceId?: string;
+  /** Original immutable pool receipt, including an explicit missing allocation for old receipts.
+   * Kept readable for teardown; launch controllers validate it before provider calls. */
+  durableStorageAdmission?: {
+    operationId: string;
+    customerWorkspaceId: string | null;
+    allocation: { dbGiB: number; workspaceGiB: number } | null;
+  };
   recoverability?: {
     kind: 'snapshot' | 'backup' | 'none';
     label: string;
@@ -849,7 +858,10 @@ export async function readWorkspaceHostDestroyTarget(
       SELECT id, name, connection_id, target, observed_state, desired_spec,
              recoverability_kind, recoverability_label, recoverability_updated_at,
              host_generation, desired_revision, observed_revision, runtime_release,
-             controller_id, controller_fence
+             controller_id, controller_fence,
+             ARRAY(SELECT customer.id FROM harness_shared.customer_workspaces customer
+               WHERE customer.workspace_id = ${workspaceId} AND customer.workspace_host_id = ${hostId}
+                 AND customer.kind = 'hosted' ORDER BY customer.id) AS hosted_customer_workspace_ids
       FROM harness_shared.workspace_hosts
       WHERE workspace_id = ${workspaceId} AND id = ${hostId}
       LIMIT 1
@@ -869,9 +881,13 @@ export async function readWorkspaceHostDestroyTarget(
       runtime_release: WorkspaceHostRuntimeRelease | null;
       controller_id: string | null;
       controller_fence: number;
+      hosted_customer_workspace_ids?: string[];
     }>;
     const host = hosts[0];
     if (!host) return null;
+    if ((host.hosted_customer_workspace_ids?.length ?? 0) > 1) {
+      throw new Error(`Workspace host '${hostId}' has ambiguous hosted customer bindings`);
+    }
     if (!host.desired_spec || typeof host.desired_spec !== 'object' || Array.isArray(host.desired_spec)) {
       throw new Error(`Workspace host '${hostId}' has no recorded desired spec`);
     }
@@ -882,7 +898,7 @@ export async function readWorkspaceHostDestroyTarget(
     // key than the provision row that recorded it (WI-10005971). GCP's same-name re-insert is the
     // newest row for its identity, so it stays registered.
     const rows = (await query`
-      SELECT target, kind, provider_id, parent_provider_id, region, zone, state, updated_at
+      SELECT target, kind, provider_id, parent_provider_id, region, zone, incarnation_id, state, updated_at
       FROM harness_shared.workspace_host_resources
       WHERE workspace_id = ${workspaceId}
         AND host_id = ${hostId}
@@ -897,6 +913,7 @@ export async function readWorkspaceHostDestroyTarget(
       kind: string;
       provider_id: string;
       parent_provider_id: string | null;
+      incarnation_id: string | null;
       region: string | null;
       zone: string | null;
       state: string;
@@ -914,6 +931,7 @@ export async function readWorkspaceHostDestroyTarget(
           target: row.target,
           kind: row.kind,
           providerId: row.provider_id,
+          ...(row.incarnation_id ? { incarnationId: row.incarnation_id } : {}),
           ...(row.parent_provider_id ? { parentProviderId: row.parent_provider_id } : {}),
           ...(row.region ? { region: row.region } : {}),
           ...(row.zone ? { zone: row.zone } : {}),
@@ -921,12 +939,45 @@ export async function readWorkspaceHostDestroyTarget(
         registeredAt: iso(row.updated_at) ?? new Date(0).toISOString(),
       });
     }
+    // Follow the registered disk back through earlier resource checkpoints, including
+    // a previous host after replacement. Later repair/start rows do not own its quota.
+    // The host's first pool admission also covers a never-assigned warm disk before
+    // its first tenant operation writes a resource checkpoint. Never read desired.data.
+    const admissions = host.hosted_customer_workspace_ids?.length ? await query<Array<{
+      id: string; customer_workspace_id: string | null;
+      allocation: { dbGiB: number; workspaceGiB: number } | null;
+    }>>`
+      SELECT origin.id, origin.admission_receipt->'result'->>'customerWorkspaceId' AS customer_workspace_id,
+             CASE WHEN origin.admission_receipt->'input'->'pool'->'scope' =
+                 ${JSON.stringify((host.desired_spec as WorkspaceHostDesiredSpec).scope ?? null)}::jsonb
+               THEN origin.admission_receipt->'result'->'resourceAdmission'->'storage'->'capacity'
+               ELSE NULL END AS allocation
+        FROM harness_shared.workspace_host_operations origin
+       WHERE origin.workspace_id = ${workspaceId}
+         AND origin.admission_receipt->'result'->'placement' IS NOT NULL
+         AND (origin.host_id = ${hostId} OR EXISTS (
+           SELECT 1 FROM harness_shared.workspace_host_resources disk
+           JOIN jsonb_to_recordset(${JSON.stringify(resources.filter(entry => entry.resource.kind === 'disk').map(({ resource }) => ({
+             target: resource.target, provider_id: resource.providerId, zone: resource.zone ?? null,
+             parent_provider_id: resource.parentProviderId ?? null,
+           })))}::jsonb) AS selected(target text, provider_id text, zone text, parent_provider_id text)
+             ON selected.target = disk.target AND selected.provider_id = disk.provider_id
+               AND selected.zone IS NOT DISTINCT FROM disk.zone
+               AND selected.parent_provider_id IS NOT DISTINCT FROM disk.parent_provider_id
+           WHERE disk.workspace_id = origin.workspace_id AND disk.operation_id = origin.id AND disk.kind = 'disk'))
+       ORDER BY origin.created_at, origin.id
+       LIMIT 1
+    ` : [];
+    const storageAdmission = admissions[0];
     return {
       id: host.id,
       name: host.name,
       connectionId: host.connection_id,
       target: host.target,
       observedState: host.observed_state,
+      ...(host.hosted_customer_workspace_ids?.[0] ? { hostedCustomerWorkspaceId: host.hosted_customer_workspace_ids[0] } : {}),
+      ...(storageAdmission ? { durableStorageAdmission: { operationId: storageAdmission.id,
+        customerWorkspaceId: storageAdmission.customer_workspace_id, allocation: storageAdmission.allocation } } : {}),
       recoverability: {
         kind: host.recoverability_kind,
         label: host.recoverability_label,
@@ -1110,6 +1161,8 @@ export interface WorkspaceHostOperationInput {
   percent?: number;
   message?: string;
   request?: unknown;
+  /** Internal handoff from hosted admission; never accepted by an HTTP request parser. */
+  hostedAdmission?: { customerWorkspaceId: string; actorId: string; request: unknown };
   /** First write of an operation may take over only with a strictly newer fencing token. */
   controllerAuthority?: WorkspaceHostControllerAuthority;
   /** Provision uses revision 1; later lifecycle operations default to the next revision. */
@@ -1121,6 +1174,13 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
   const invalidatesHealth = lifecycleActionInvalidatesHealth(input.action);
   await withWorkspace(input.workspaceId, async (tx) => {
     let desiredRevision = input.desiredRevision ?? null;
+    let admittedPending = false;
+    let reservedGeneration: number | null = null;
+    let reservedFence: number | null = null;
+    let reservedRevision: number | null = null;
+    if (input.hostedAdmission && !input.controllerAuthority) {
+      throw new WorkspaceHostControllerFenceError(input.hostId, 'hosted admission requires controller authority');
+    }
     if (input.controllerAuthority) {
       const existing = await tx<
         Array<{
@@ -1131,25 +1191,51 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
           controller_fence: number | null;
           request_matches: boolean;
           error_code: string | null;
+          pending_admission_matches: boolean;
+          reserved_generation: number | null;
+          reserved_fence: number | null;
+          reserved_revision: number | null;
         }>
       >`
         SELECT host_id, action, desired_revision, controller_id, controller_fence,
                error->>'code' AS error_code,
+               (${input.hostedAdmission !== undefined} AND status = 'queued'
+                 AND controller_id IS NULL AND desired_revision IS NULL
+                 AND admission_receipt->'input'->>'actorId' = ${input.hostedAdmission?.actorId ?? null}
+                 AND admission_receipt->'result'->>'customerWorkspaceId' = ${input.hostedAdmission?.customerWorkspaceId ?? null}
+                 AND admission_receipt->'result'->>'hostId' = ${input.hostId}
+                 AND coalesce(admission_receipt->'controllerRequest', admission_receipt->'input'->'request') IS NOT DISTINCT FROM ${input.hostedAdmission ? tx.json(json(input.hostedAdmission.request) as never) : null}::jsonb
+                 AND EXISTS (SELECT 1 FROM harness_shared.customer_workspaces customer
+                   WHERE customer.workspace_id = ${input.workspaceId}
+                     AND customer.id = ${input.hostedAdmission?.customerWorkspaceId ?? null}
+                     AND customer.workspace_host_id = ${input.hostId}
+                     AND customer.state NOT IN ('deleted', 'offboarding'))
+               ) AS pending_admission_matches,
+               (admission_receipt->'result'->'placement'->>'generation')::bigint AS reserved_generation,
+               (admission_receipt->'result'->'placement'->>'controllerFence')::bigint AS reserved_fence,
+               (admission_receipt->'result'->>'hostDesiredRevision')::bigint AS reserved_revision,
                request IS NOT DISTINCT FROM ${input.request === undefined ? null : tx.json(json(input.request) as never)}::jsonb AS request_matches
         FROM harness_shared.workspace_host_operations
         WHERE workspace_id = ${input.workspaceId} AND id = ${input.operationId}
-        LIMIT 1
+        LIMIT 1 FOR UPDATE
       `;
       if (existing[0]) {
+        admittedPending = existing[0].pending_admission_matches === true;
+        reservedGeneration = existing[0].reserved_generation;
+        reservedFence = existing[0].reserved_fence;
+        reservedRevision = existing[0].reserved_revision;
+        if (admittedPending && reservedGeneration != null && reservedRevision == null) {
+          throw new WorkspaceHostControllerFenceError(input.hostId, 'hosted reservation revision is missing');
+        }
         const differs = [
           existing[0].host_id !== input.hostId ? 'host' : null,
           existing[0].action !== input.action ? 'action' : null,
-          existing[0].controller_id !== input.controllerAuthority.controllerId ? 'controller' : null,
-          existing[0].controller_fence !== input.controllerAuthority.fence ? 'fence' : null,
-          input.desiredRevision !== undefined && existing[0].desired_revision !== input.desiredRevision
+          !admittedPending && existing[0].controller_id !== input.controllerAuthority.controllerId ? 'controller' : null,
+          !admittedPending && existing[0].controller_fence !== input.controllerAuthority.fence ? 'fence' : null,
+          !admittedPending && input.desiredRevision !== undefined && existing[0].desired_revision !== input.desiredRevision
             ? 'desired revision'
             : null,
-          !existing[0].request_matches ? 'request' : null,
+          !admittedPending && !existing[0].request_matches ? 'request' : null,
         ].filter((field): field is string => field !== null);
         if (differs.length > 0) {
           throw new WorkspaceHostControllerFenceError(
@@ -1160,7 +1246,7 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
         // A refused row records an earlier attempt of THIS request that never began. A retry
         // (DBOS re-runs a failed step with the same input) runs the fence again below, and an
         // admitted retry replaces the refusal in place via the INSERT's conflict clause.
-        if (existing[0].error_code !== WORKSPACE_HOST_FENCE_REFUSED_CODE) {
+        if (!admittedPending && existing[0].error_code !== WORKSPACE_HOST_FENCE_REFUSED_CODE) {
           await requireWorkspaceHostControllerAuthority(
             tx,
             input.workspaceId,
@@ -1170,6 +1256,8 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
           );
           return;
         }
+      } else if (input.hostedAdmission) {
+        throw new WorkspaceHostControllerFenceError(input.hostId, 'hosted admission receipt is missing');
       }
 
       const controlled = await tx<Array<{ desired_revision: number }>>`
@@ -1183,6 +1271,9 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
             updated_at = now()
         WHERE workspace_id = ${input.workspaceId}
           AND id = ${input.hostId}
+          AND (${reservedGeneration}::bigint IS NULL OR host_generation = ${reservedGeneration})
+          AND (${reservedFence}::bigint IS NULL OR controller_fence = ${reservedFence})
+          AND (${reservedRevision}::bigint IS NULL OR desired_revision = ${reservedRevision})
           AND (
             ${desiredRevision}::bigint IS NULL
             OR ${desiredRevision}::bigint > desired_revision
@@ -1244,6 +1335,8 @@ async function beginFencedWorkspaceHostOperation(input: WorkspaceHostOperationIn
         updated_at = now()
       -- Only an earlier refusal of this same request is replaced; a live row is never touched.
       WHERE workspace_host_operations.error->>'code' = ${WORKSPACE_HOST_FENCE_REFUSED_CODE}
+         OR (${admittedPending} AND workspace_host_operations.status = 'queued'
+             AND workspace_host_operations.controller_id IS NULL)
     `;
   });
 }
@@ -1435,7 +1528,7 @@ export async function upsertWorkspaceHostResourceCheckpoint(input: {
       INSERT INTO harness_shared.workspace_host_resources (
         workspace_id, host_id, logical_key, operation_id, state, attempts,
         retry_class, retry_after_ms, target, kind, provider_id,
-        parent_provider_id, region, zone, provider_request_id,
+        parent_provider_id, region, zone, incarnation_id, provider_request_id,
         deletion_confirmation, error, updated_at
       ) VALUES (
         ${input.workspaceId}, ${input.hostId}, ${checkpoint.logicalKey}, ${input.operationId},
@@ -1443,6 +1536,7 @@ export async function upsertWorkspaceHostResourceCheckpoint(input: {
         ${checkpoint.retryAfterMs ?? null}, ${resource?.target ?? null}, ${resource?.kind ?? null},
         ${resource?.providerId ?? null}, ${resource?.parentProviderId ?? null},
         ${resource?.region ?? null}, ${resource?.zone ?? null},
+        ${resource?.incarnationId ?? null},
         ${checkpoint.providerRequestId ?? null},
         ${checkpoint.deletionConfirmation === undefined ? null : tx.json(json(checkpoint.deletionConfirmation) as never)},
         ${checkpoint.error === undefined ? null : tx.json(json({ message: checkpoint.error }) as never)}, now()
@@ -1459,6 +1553,7 @@ export async function upsertWorkspaceHostResourceCheckpoint(input: {
         parent_provider_id = EXCLUDED.parent_provider_id,
         region = EXCLUDED.region,
         zone = EXCLUDED.zone,
+        incarnation_id = EXCLUDED.incarnation_id,
         provider_request_id = EXCLUDED.provider_request_id,
         deletion_confirmation = EXCLUDED.deletion_confirmation,
         error = EXCLUDED.error,
@@ -1477,6 +1572,7 @@ interface ResourceCheckpointDbRow {
   kind: string | null;
   provider_id: string | null;
   parent_provider_id: string | null;
+  incarnation_id: string | null;
   region: string | null;
   zone: string | null;
   provider_request_id: string | null;
@@ -1504,7 +1600,7 @@ export async function readWorkspaceHostResourceCheckpoints(
   return withWorkspace(workspaceId, async (tx) => {
     const rows = await tx<ResourceCheckpointDbRow[]>`
       SELECT logical_key, state, attempts, retry_class, retry_after_ms,
-             target, kind, provider_id, parent_provider_id, region, zone,
+             target, kind, provider_id, parent_provider_id, region, zone, incarnation_id,
              provider_request_id, deletion_confirmation, error
       FROM harness_shared.workspace_host_resources
       WHERE workspace_id = ${workspaceId}
@@ -1519,6 +1615,7 @@ export async function readWorkspaceHostResourceCheckpoints(
               target: row.target,
               kind: row.kind,
               providerId: row.provider_id,
+              ...(row.incarnation_id ? { incarnationId: row.incarnation_id } : {}),
               ...(row.parent_provider_id ? { parentProviderId: row.parent_provider_id } : {}),
               ...(row.region ? { region: row.region } : {}),
               ...(row.zone ? { zone: row.zone } : {}),

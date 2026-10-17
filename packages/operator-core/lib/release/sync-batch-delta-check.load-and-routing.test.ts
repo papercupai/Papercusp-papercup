@@ -3,7 +3,7 @@
  *
  * R-1: the per-sync delta check runs under load — the soft load band and a running
  *      green-checkpoint suite shrink its budget instead of skipping it, every heavy
- *      leg runs at idle CPU/IO priority, and only a hard ceiling still skips.
+ *      leg runs at low CPU / best-effort I/O priority, and only a hard ceiling still skips.
  * R-2: every tick records whether it judged its window; coverage below the
  *      threshold over the alarm window files ONE condition-keyed alarm, which
  *      clears when coverage recovers.
@@ -283,15 +283,15 @@ describe('runSyncBatchDeltaCheck under load (R-1)', () => {
   });
 });
 
-describe('idle-priority legs (R-1)', () => {
-  it('idlePriorityArgv wraps a command in nice 19 + ionice idle', () => {
+describe('deprioritized legs (R-1)', () => {
+  it('idlePriorityArgv wraps a command in nice 19 + best-effort ionice 7', () => {
     expect(idlePriorityArgv('node', ['x.mjs', '--a'])).toEqual({
       cmd: 'nice',
-      args: ['-n', '19', 'ionice', '-c', '3', 'node', 'x.mjs', '--a'],
+      args: ['-n', '19', 'ionice', '-c', '2', '-n', '7', 'node', 'x.mjs', '--a'],
     });
   });
 
-  it('every heavy leg spawns through idle priority; the millisecond git/proc-guard reads do not', async () => {
+  it('every heavy leg spawns through low CPU + best-effort I/O priority; the millisecond git/proc-guard reads do not', async () => {
     const calls: Array<{ cmd: string; args: string[] }> = [];
     const exec = async (cmd: string, args: string[]): Promise<RunResult | null> => {
       calls.push({ cmd, args });
@@ -306,7 +306,7 @@ describe('idle-priority legs (R-1)', () => {
     expect(heavy).toHaveLength(4);
     for (const c of heavy) {
       expect(c.cmd).toBe('nice');
-      expect(c.args.slice(0, 6)).toEqual(['-n', '19', 'ionice', '-c', '3', 'node']);
+      expect(c.args.slice(0, 8)).toEqual(['-n', '19', 'ionice', '-c', '2', '-n', '7', 'node']);
     }
     const affectedRun = heavy.find(
       (c) => c.args.includes('--changed-paths') && !c.args.includes('--print-affected'),
@@ -477,16 +477,22 @@ describe('author routing (R-3)', () => {
     expect('assign_to' in (captured.createArgs[1] ?? {})).toBe(false);
   });
 
-  it('notifies the actual filed owner and queues the existing required-wake path', async () => {
+  it.each([
+    ['typecheck delta', buildSyncBatchDeltaDeps],
+    ['lint guard', buildSyncLintGuardDeps],
+  ] as const)('%s notifies the actual filed owner and queues the existing required-wake path (P037)', async (_leg, buildDeps) => {
     captured.messages.length = captured.wakes.length = 0;
     captured.messagePersisted = captured.notificationFails = false;
     captured.notificationAssignee = 'su-current-holder';
     captured.wakeQueued = 1;
-    const deps = buildSyncLintGuardDeps({ installSlug: 'h', workspaceId: 'ws-1', root: '/r', branch: 'staging' });
+    const deps = buildDeps({ installSlug: 'h', workspaceId: 'ws-1', root: '/r', branch: 'staging' });
     const finding: RedFinding = { title: 'guard red', body: 'fix the measured red', conditionKey: 'guard:k',
       paths: ['src/timer.ts'], assignee: 'su-author-1', authorSource: 'edit-ledger:failing-file' };
     expect(await deps.fileRed(finding)).toMatchObject({ ok: true, id: 'WI-77', assignee: 'su-current-holder' });
     expect(captured.messages[0]).toMatchObject({ to: ['su-current-holder'], files: ['src/timer.ts'] });
+    expect(captured.messages[0]?.msgId).toBe(
+      `${_leg === 'lint guard' ? 'sync-lint-red' : 'sync-delta-red'}:ws-1:WI-77`,
+    );
     expect(captured.wakes[0]).toMatchObject({ targets: ['su-current-holder'],
       options: { requiredWake: true, workspaceId: 'ws-1', payload: { workItemId: 'WI-77' } } });
     captured.wakeQueued = 0;
@@ -496,13 +502,18 @@ describe('author routing (R-3)', () => {
     captured.notificationAssignee = 'su-author-1';
   });
 
-  it.each(['notification-store', 'wake-miss'] as const)('preserves the attributed red for a %s retry', async failure => {
+  it.each([
+    ['typecheck delta', buildSyncBatchDeltaDeps, 'notification-store'],
+    ['typecheck delta', buildSyncBatchDeltaDeps, 'wake-miss'],
+    ['lint guard', buildSyncLintGuardDeps, 'notification-store'],
+    ['lint guard', buildSyncLintGuardDeps, 'wake-miss'],
+  ] as const)('preserves the attributed red across each owner-notification retry', async (_leg, buildDeps, failure) => {
     captured.messages.length = captured.wakes.length = 0;
     captured.messagePersisted = false;
     captured.notificationFails = failure === 'notification-store';
     captured.notificationAssignee = 'su-author-1';
     captured.wakeQueued = failure === 'wake-miss' ? 0 : 1;
-    const deps = buildSyncLintGuardDeps({ installSlug: 'h', workspaceId: 'ws-1', root: '/r', branch: 'staging' });
+    const deps = buildDeps({ installSlug: 'h', workspaceId: 'ws-1', root: '/r', branch: 'staging' });
     const finding: RedFinding = { title: 'guard red', body: 'measured red', conditionKey: 'guard:k',
       paths: ['src/timer.ts'], assignee: 'su-author-1', authorSource: 'edit-ledger:failing-file' };
     const result = await deps.fileRed(finding);
@@ -514,12 +525,92 @@ describe('author routing (R-3)', () => {
     expect(captured.wakes.at(-1)?.targets).toEqual(['su-author-1']);
   });
 
+  it('notifies an adopted incumbent holder even when the new finding is unattributed', async () => {
+    captured.messages.length = captured.wakes.length = 0;
+    captured.messagePersisted = captured.notificationFails = false;
+    captured.notificationAssignee = 'su-current-holder';
+    captured.wakeQueued = 1;
+    const deps = buildSyncBatchDeltaDeps({ installSlug: 'h', workspaceId: 'ws-1', root: '/r', branch: 'staging' });
+    const result = await deps.fileRed({ title: 'unattributed red', body: 'measured red', conditionKey: 'guard:k',
+      paths: ['src/timer.ts'], assignee: null, authorSource: 'none' });
+    expect(result).toMatchObject({ ok: true, id: 'WI-77', assignee: 'su-current-holder' });
+    expect(captured.messages).toHaveLength(1);
+    expect(captured.messages[0]).toMatchObject({ to: ['su-current-holder'] });
+    expect(captured.wakes).toHaveLength(1);
+  });
+
+  it('production deps persist the discovered typecheck leg/owner and retry it at the same HEAD', async () => {
+    const file = 'packages/foo/src/type-error.ts';
+    const state = { cursor: { sha: SHA_A, updatedAtMs: 1 } as SyncDeltaCursor | null };
+    const tscCalls: string[][] = [];
+    captured.messages.length = captured.wakes.length = captured.createArgs.length = 0;
+    captured.messagePersisted = captured.notificationFails = false;
+    captured.notificationAssignee = 'su-current-holder';
+    captured.wakeQueued = 0; // first tick misses the required wake
+
+    const deps = buildSyncBatchDeltaDeps({ installSlug: 'h', workspaceId: 'ws-1', root: '/r', branch: 'staging',
+      exec: async () => ({ status: 0, stdout: '', stderr: '' }) });
+    deps.hostLoad = () => ({ load1: 2, cores: 128 });
+    deps.greenCheckpointRunning = async () => false;
+    deps.headSha = async () => SHA_B;
+    deps.readCursor = async () => JSON.parse(JSON.stringify(state.cursor)) as SyncDeltaCursor | null;
+    deps.writeCursor = async next => { state.cursor = JSON.parse(JSON.stringify(next)) as SyncDeltaCursor; };
+    deps.listBatches = async () => [batch({ sha: SHA_B, paths: [file] })];
+    deps.probeRadius = async () => ({
+      workspaces: ['foo'],
+      guards: [],
+      taskCommands: [{ workspace: 'foo', command: 'npm run test' }],
+      derivation: null,
+    });
+    deps.runTsc = async files => {
+      tscCalls.push([...files]);
+      return { ok: false, failing: [file], diagnostic: { outcome: 'nonzero-exit' as const, durationMs: 1, exitCode: 2 } };
+    };
+    deps.runAffected = async () => ({
+      ok: true,
+      failing: [],
+      diagnostic: { outcome: 'completed' as const, durationMs: 1, exitCode: 0 },
+    });
+    deps.lookupEditors = async () => [{ file, agent: 'su-author-1', tsMs: NOW }];
+    deps.confirmOne = async () => { throw new Error('typecheck-held retry must not use confirmOne'); };
+
+    const first = await runSyncBatchDeltaCheck(deps);
+    expect(first.status).toBe('red');
+    expect(first.filed).toMatchObject([{ id: 'WI-77', notificationError: expect.any(String) }]);
+    expect(state.cursor?.openReds).toMatchObject([{
+      path: file,
+      leg: 'lint-tsc',
+      assignee: 'su-current-holder',
+      authorSource: 'edit-ledger:failing-file',
+    }]);
+    const persisted = JSON.stringify(state.cursor);
+
+    captured.wakeQueued = 1;
+    state.cursor = JSON.parse(persisted) as SyncDeltaCursor;
+    const second = await runSyncBatchDeltaCheck(deps);
+    expect(second.status).toBe('up-to-date');
+    expect(second.filed).toMatchObject([{ id: 'WI-77' }]);
+    expect(second.filed[0]).not.toHaveProperty('notificationError');
+    expect(tscCalls).toEqual([[file], [file]]);
+    expect(captured.messages).toHaveLength(1);
+    expect(captured.messages[0]?.msgId).toBe('sync-delta-red:ws-1:WI-77');
+    expect(captured.wakes).toHaveLength(2);
+    expect(captured.wakes[1]?.targets).toEqual(['su-current-holder']);
+    expect(captured.createArgs).toHaveLength(2);
+    expect(captured.createArgs[0]?.conditionKey).toBe(`sync-delta-red:${file}`);
+    expect(captured.createArgs[1]?.conditionKey).toBe(captured.createArgs[0]?.conditionKey);
+    expect(captured.createArgs[1]?.assign_to).toBe('su-current-holder');
+    expect(state.cursor?.openReds?.[0]).toMatchObject({ leg: 'lint-tsc', assignee: 'su-current-holder' });
+  });
+
   it('leaves an unattributed red in the queue without waking a guessed agent', async () => {
     captured.messages.length = captured.wakes.length = 0;
+    captured.notificationAssignee = null;
     const deps = buildSyncLintGuardDeps({ installSlug: 'h', workspaceId: 'ws-1', root: '/r', branch: 'staging' });
     await deps.fileRed({ title: 'red', body: 'measured red', conditionKey: 'guard:k',
       paths: [], assignee: null, authorSource: 'none' });
     expect(captured.messages).toHaveLength(0);
     expect(captured.wakes).toHaveLength(0);
+    captured.notificationAssignee = 'su-author-1';
   });
 });

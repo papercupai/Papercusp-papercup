@@ -1,0 +1,23 @@
+# WI-6554700010016095: override the distro entry by XDG desktop ID, preserving
+# the standard terminal profile. The user PATH resolves the installed safe
+# gnome-terminal launcher. Do not let D-Bus bypass Exec and reuse the old server.
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Comment=Use the command line
+TryExec=gnome-terminal
+Exec=gnome-terminal
+Icon=org.gnome.Terminal
+Terminal=false
+StartupNotify=true
+DBusActivatable=false
+Categories=GNOME;GTK;System;TerminalEmulator;
+Actions=new-window;preferences;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=gnome-terminal --window
+
+[Desktop Action preferences]
+Name=Preferences
+Exec=gnome-terminal --preferences

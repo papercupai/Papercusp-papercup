@@ -1,9 +1,10 @@
 import { z } from 'zod';
+import { withSubmissionReceipt } from '../../cupboard/submission-receipt';
 import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { BUILTIN_THEME_IDS } from '../../theme-tokens';
 
-const ok = (payload: Record<string, unknown>) => ({ data: payload });
+const ok = (payload: Record<string, unknown>) => ({ data: withSubmissionReceipt(payload) });
 
 export default defineTool({
   name: 'cupboard:publish-theme',

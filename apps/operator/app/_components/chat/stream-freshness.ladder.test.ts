@@ -53,15 +53,14 @@ import { classifyStreamFreshness, STREAM_SILENCE_STALE_MS } from './stream-fresh
 import type { ResilientEventSourceStatus } from '@papercusp/sse';
 import { FakeEventSource, latestEventSource as latest } from './fake-event-source.testkit';
 
-// ── The server rung, read from the route that actually writes it ─────────────
+// ── The server rung, read from its canonical declaration ────────────────────
 //
-// Read from SOURCE rather than imported: the route module is a server-side
-// `defineTool` registration and importing it from a client-component test would
-// drag the endpoint layer in. Reading the literal keeps the two modules pinned
-// together — change the cadence and this test re-evaluates the inequality with
-// the NEW value instead of silently drifting.
-const STREAMS_ROUTE_URL = new URL(
-  '../../../../../packages/operator-core/lib/endpoint-route/routes/harness/streams.ts',
+// Read from SOURCE rather than imported: the heartbeat is declared in the
+// timeline module and re-exported by the server route. Importing the route from
+// a client-component test would drag the endpoint layer in. Reading the literal
+// keeps the UI threshold pinned to the server's actual cadence.
+const SERVER_TIMELINE_URL = new URL(
+  '../../../../../packages/operator-core/lib/owner-sessions/timeline.ts',
   import.meta.url,
 );
 
@@ -71,12 +70,12 @@ const ENDPOINT_IPC_URL = new URL(
 );
 
 function readServerHeartbeatMs(): number {
-  const src = readFileSync(STREAMS_ROUTE_URL, 'utf8');
+  const src = readFileSync(SERVER_TIMELINE_URL, 'utf8');
   const m = /export const SESSION_STREAM_HEARTBEAT_MS\s*=\s*([\d_]+)\s*;/.exec(src);
   if (!m) {
     throw new Error(
-      'SESSION_STREAM_HEARTBEAT_MS not found in routes/harness/streams.ts. ' +
-        'If it was renamed or moved, update this test — do NOT delete the ' +
+      'SESSION_STREAM_HEARTBEAT_MS not found in owner-sessions/timeline.ts. ' +
+        'If it was renamed or moved, update this source pin — do NOT delete the ' +
         'assertion: it is the only thing keeping the stale threshold above the ' +
         'server heartbeat.',
     );

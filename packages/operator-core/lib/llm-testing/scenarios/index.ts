@@ -159,6 +159,7 @@ import { SU_S37_CODE_SEARCH } from './su/S37-code-search-discipline';
 import { SU_S38_REPORTS_CAPTURE } from './su/S38-reports-capture';
 import { SU_S39_VERIFICATION_MAP_DOORS } from './su/S39-verification-map-doors';
 import { SU_S40_GRADE_CHECKER_RULES } from './su/S40-grade-checker-rules';
+import { SU_S41_SCHEDULER_RETAINED_OBLIGATIONS } from './su/S41-scheduler-retained-obligations';
 import { WORKER_W01_CODE_SEARCH } from './worker/W01-code-search-discipline';
 // SU-S31a/b/c: agent-protocol-authority-semantics-2026-07-26 P-011 — the information-asymmetry
 // experiment. THREE matched arms over one identical task, differing only in how a peer's handoff
@@ -335,6 +336,8 @@ export const SCENARIOS: ReadonlyArray<Scenario> = [
   SU_S39_VERIFICATION_MAP_DOORS,
   // S40: verification-system-improvements-2026-10-10 P-009 — GRADE-mode checker rules catch a test-only stub
   SU_S40_GRADE_CHECKER_RULES,
+  // P-008: actual scheduler miss advice preserves retained work before loop wind-down.
+  ...SU_S41_SCHEDULER_RETAINED_OBLIGATIONS,
   ...WORKER_W01_CODE_SEARCH,
   SU_S31A_ASYMMETRY_CONTROL,
   SU_S31B_ASYMMETRY_PROSE,

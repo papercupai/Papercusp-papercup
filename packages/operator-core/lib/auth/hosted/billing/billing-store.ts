@@ -17,10 +17,13 @@
  */
 import { withHostedServiceContext } from '@papercusp/db-org';
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type { Sql } from 'postgres';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { appendOrganizationAuditEvent } from '../governance';
-import { isHostedSubscriptionStatus, type HostedSubscriptionSnapshot } from './entitlement-seam';
+import { isHostedSubscriptionStatus, parseHostedPaidEntitlementBundle, type HostedSubscriptionEntitlementProvider, type HostedSubscriptionSnapshot } from './entitlement-seam';
+import { lockHostedEntitlementAuthority, writeHostedEntitlementAuthority, type HostedEntitlementAuthorityRecords } from '../../hosted-entitlement-store';
+import { parseHostedEntitlementAssignment, parseHostedEntitlementBundle, parseHostedEntitlementOverride } from '../../hosted-entitlement-schema';
 import { subscriptionOrderKey, type HostedBillingEvent, type HostedBillingFact } from './stripe-billing-events';
 import type { StripeBillingEventPageEvidence } from './stripe-billing-client';
 import type { HostedBillingRecoveryTarget, HostedBillingDeliveryIssue } from './billing-recovery';
@@ -144,7 +147,8 @@ interface SubscriptionRow {
 const toDate = (v: Date | string | null): Date | null => (v === null ? null : v instanceof Date ? v : new Date(v));
 
 export class PostgresHostedBillingStore implements HostedBillingRecoveryStore {
-  constructor(private readonly run: HostedServiceContextRunner = (fn) => withHostedServiceContext(fn)) {}
+  constructor(private readonly run: HostedServiceContextRunner = (fn) => withHostedServiceContext(fn),
+    private readonly entitlementProvider?: HostedSubscriptionEntitlementProvider) {}
 
   async reconciliationTargets(input: { expectedLivemode: boolean; limit: number }): Promise<HostedBillingRecoveryTarget[]> {
     if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) throw new Error('billing_recovery_invalid_limit');
@@ -214,6 +218,10 @@ export class PostgresHostedBillingStore implements HostedBillingRecoveryStore {
     const planKeyForPrice = input.planKeyForPrice;
     if (!recoveryPageValid(page, pin)) throw new Error('billing_recovery_invalid_page');
     return this.run(async sql => {
+      // All billing writers take organization before customer/event/subscription
+      // rows. Admission uses this same lock; webhook/recovery cannot deadlock by
+      // taking the shared event receipt in the opposite order.
+      await lockHostedEntitlementAuthority(sql, pin.organizationId);
       const rows = await sql<Array<{ stripe_customer_id: string; livemode: boolean; reconciliation_checkpoint: HostedBillingReconciliationCheckpoint | null }>>`
         SELECT stripe_customer_id, livemode, reconciliation_checkpoint FROM papercusp_auth.hosted_billing_customers
          WHERE organization_id = ${pin.organizationId}::uuid FOR UPDATE
@@ -264,6 +272,7 @@ export class PostgresHostedBillingStore implements HostedBillingRecoveryStore {
       const checkpoint: HostedBillingReconciliationCheckpoint = { ...current, startingAfter: page.nextCursor,
         revision: current.revision + 1, complete: !page.hasMore,
         cursors: page.nextCursor ? [...current.cursors, page.nextCursor] : current.cursors };
+      await this.projectEntitlementAuthority(sql, pin.organizationId, planKeyForPrice, page.evidenceRef);
       await sql`UPDATE papercusp_auth.hosted_billing_customers SET reconciliation_checkpoint = ${sql.json({ ...checkpoint, cursors: [...checkpoint.cursors] })}, updated_at = now()
         WHERE organization_id = ${page.organizationId}::uuid`;
       return { outcome: 'applied', checkpoint };
@@ -311,34 +320,70 @@ export class PostgresHostedBillingStore implements HostedBillingRecoveryStore {
     organizationId: string,
     planKeyForPrice: (priceId: string | null) => string | null,
   ): Promise<HostedSubscriptionSnapshot | null> {
-    return this.run(async (sql) => {
-      // The organization's CURRENT subscription: any live one beats every
-      // terminal one; among equals, the most recently changed.
-      const rows = await sql<SubscriptionRow[]>`
-        SELECT stripe_subscription_id, organization_id::text AS organization_id, status, price_id,
-               current_period_end, cancel_at_period_end, canceled_at, livemode, latest_invoice_status
-          FROM papercusp_auth.hosted_subscriptions
-         WHERE organization_id = ${organizationId}::uuid
-         ORDER BY sub_terminal ASC, sub_event_created DESC, stripe_subscription_id COLLATE "C" DESC
-         LIMIT 1
-      `;
-      const row = rows[0];
-      if (!row || !isHostedSubscriptionStatus(row.status)) return null;
-      return {
-        organizationId: row.organization_id,
-        stripeSubscriptionId: row.stripe_subscription_id,
-        status: row.status,
-        planKey: planKeyForPrice(row.price_id),
-        priceId: row.price_id,
-        currentPeriodEnd: toDate(row.current_period_end),
-        cancelAtPeriodEnd: row.cancel_at_period_end,
-        canceledAt: toDate(row.canceled_at),
-        livemode: row.livemode,
-        latestInvoiceStatus: row.latest_invoice_status === 'paid' || row.latest_invoice_status === 'payment_failed'
-          ? row.latest_invoice_status
-          : null,
-      };
+    return this.run(sql => currentSubscription(sql, organizationId, planKeyForPrice));
+  }
+
+  private async projectEntitlementAuthority(sql: Sql, organizationId: string,
+    planKeyForPrice: (priceId: string | null) => string | null, evidenceRef: string): Promise<void> {
+    if (!this.entitlementProvider?.resourceBundleFor) return;
+    await lockHostedEntitlementAuthority(sql, organizationId);
+    const now = new Date();
+    const snapshot = await currentSubscription(sql, organizationId, planKeyForPrice);
+    const selected = this.entitlementProvider.resourceBundleFor(snapshot, now);
+    const bundle = selected === null ? null : parseHostedPaidEntitlementBundle(selected);
+    const rows = await sql<Array<{ user_id: string; kind: string; authority: HostedEntitlementAuthorityRecords | null; authority_revision: string | number }>>`
+      SELECT user_id::text, kind, authority, authority_revision FROM papercusp_auth.hosted_entitlements
+       WHERE organization_id = ${organizationId}::uuid ORDER BY user_id, kind FOR UPDATE`;
+    const authorities = rows.filter(row => row.authority !== null);
+    const candidates = authorities.length ? authorities : rows.filter(row => row.kind === 'hosted-free');
+    if (candidates.length !== 1) {
+      if (!bundle && !authorities.length) return;
+      throw new Error('hosted_billing_entitlement_grant_ambiguous_or_missing');
+    }
+    const grant = candidates[0]!; const prior = grant.authority;
+    if (prior && (prior.schemaVersion !== 1 || !Array.isArray(prior.bundles) ||
+        !Array.isArray(prior.assignments) || !Array.isArray(prior.overrides))) throw new Error('hosted_billing_prior_authority_invalid');
+    const bundles = (prior?.bundles ?? []).map(value => {
+      const parsed = parseHostedEntitlementBundle(value); if (!parsed.ok) throw new Error('hosted_billing_prior_authority_invalid'); return parsed.value;
     });
+    const assignments = (prior?.assignments ?? []).map(value => {
+      const parsed = parseHostedEntitlementAssignment(value);
+      if (!parsed.ok || parsed.value.organizationId !== organizationId) throw new Error('hosted_billing_prior_authority_invalid'); return parsed.value;
+    });
+    const overrides = (prior?.overrides ?? []).map(value => {
+      const parsed = parseHostedEntitlementOverride(value);
+      if (!parsed.ok || parsed.value.organizationId !== organizationId) throw new Error('hosted_billing_prior_authority_invalid'); return parsed.value;
+    });
+    if (!bundle && !assignments.some(row => row.record.source === 'billing')) return;
+    const until = bundle && snapshot?.currentPeriodEnd
+      ? Math.min(snapshot.currentPeriodEnd.getTime(), bundle.record.effectiveUntil?.getTime() ?? Infinity) : null;
+    if (bundle && (!until || until <= now.getTime() || bundle.record.effectiveFrom > now)) throw new Error('hosted_billing_policy_inactive');
+    const fingerprint = bundle ? `billing:${commitment([snapshot!.stripeSubscriptionId, snapshot!.priceId, bundle.bundleId, bundle.bundleVersion, until])}:` : null;
+    const active = assignments.filter(row => row.record.effectiveFrom <= now && (!row.record.effectiveUntil || row.record.effectiveUntil > now));
+    if (bundle) {
+      const pinned = bundles.find(row => row.bundleId === bundle.bundleId && row.bundleVersion === bundle.bundleVersion);
+      if (pinned && !isDeepStrictEqual(pinned, bundle)) throw new Error('hosted_billing_bundle_version_reused');
+      if (active.length === 1 && active[0]!.assignmentId.startsWith(fingerprint!)) return;
+      if (!pinned) bundles.push(bundle);
+    } else if (!active.length) return;
+    // A not-yet-effective/same-tick assignment has no elapsed interval to retain;
+    // its previous bytes remain in the organization audit transition below.
+    const end = <T extends { record: { effectiveFrom: Date; effectiveUntil: Date | null } }>(rows: T[]): T[] => rows
+      .filter(row => row.record.effectiveFrom < now)
+      .map(row => row.record.effectiveUntil && row.record.effectiveUntil <= now ? row
+        : { ...row, record: { ...row.record, effectiveUntil: now } });
+    const nextAssignments = end(assignments);
+    if (bundle) nextAssignments.push({ schemaVersion: 1, assignmentId: `${fingerprint}${Number(grant.authority_revision) + 1}`,
+      organizationId, bundleId: bundle.bundleId, bundleVersion: bundle.bundleVersion,
+      record: { source: 'billing', actor: bundle.record.actor, auditReceiptId: evidenceRef,
+        effectiveFrom: now, effectiveUntil: new Date(until!) } });
+    const authority: HostedEntitlementAuthorityRecords = { schemaVersion: 1, bundles, assignments: nextAssignments, overrides: end(overrides) };
+    const revision = await writeHostedEntitlementAuthority({ organizationId, userId: grant.user_id, kind: grant.kind,
+      expectedRevision: Number(grant.authority_revision), authority }, async fn => fn(sql));
+    await appendOrganizationAuditEvent({ organizationId, actorKind: 'system', actorId: 'hosted-billing',
+      action: 'billing.entitlement.projected', purpose: 'hosted_subscription_billing', targetType: 'hosted_entitlement', targetId: grant.user_id,
+      metadata: { evidenceRef, revision, priorAuthorityJson: prior ? JSON.stringify(prior) : null, bundleId: bundle?.bundleId ?? null,
+        bundleVersion: bundle?.bundleVersion ?? null, subscriptionId: snapshot?.stripeSubscriptionId ?? null } }, sql);
   }
 
   async recordRejectedEvent(input: {
@@ -374,7 +419,13 @@ export class PostgresHostedBillingStore implements HostedBillingRecoveryStore {
     const { event, bodyDigest } = input;
     try {
       return await this.run(async (sql) => {
-        // Claim the event id first. A concurrent duplicate blocks on the primary
+        const organizationsToLock = new Set<string>();
+        for (const fact of event.facts) {
+          const mapped = await organizationForCustomer(sql, fact.stripeCustomerId);
+          if (mapped) organizationsToLock.add(mapped);
+        }
+        for (const id of [...organizationsToLock].sort()) await lockHostedEntitlementAuthority(sql, id);
+        // Claim the event id after organization serialization. A duplicate blocks on the primary
         // key until this transaction ends, then sees the committed row.
         const claimed = await sql`
           INSERT INTO papercusp_auth.hosted_billing_webhook_events
@@ -417,6 +468,7 @@ export class PostgresHostedBillingStore implements HostedBillingRecoveryStore {
            WHERE provider_event_id = ${event.eventId}
         `;
         for (const organization of organizations) {
+          await this.projectEntitlementAuthority(sql, organization, input.planKeyForPrice, `stripe-event:${event.eventId}`);
           await appendOrganizationAuditEvent({
             organizationId: organization, actorKind: 'system', actorId: 'stripe',
             action: 'billing.event.applied', purpose: 'hosted_subscription_billing',
@@ -441,6 +493,22 @@ export class PostgresHostedBillingStore implements HostedBillingRecoveryStore {
       return { outcome: 'rejected', code: error.code, organizationId: error.organizationId };
     }
   }
+}
+
+async function currentSubscription(sql: Sql, organizationId: string,
+  planKeyForPrice: (priceId: string | null) => string | null): Promise<HostedSubscriptionSnapshot | null> {
+  const rows = await sql<SubscriptionRow[]>`
+    SELECT stripe_subscription_id, organization_id::text AS organization_id, status, price_id,
+           current_period_end, cancel_at_period_end, canceled_at, livemode, latest_invoice_status
+      FROM papercusp_auth.hosted_subscriptions WHERE organization_id = ${organizationId}::uuid
+     ORDER BY sub_terminal ASC, sub_event_created DESC, stripe_subscription_id COLLATE "C" DESC LIMIT 1`;
+  const row = rows[0];
+  if (!row || !isHostedSubscriptionStatus(row.status)) return null;
+  return { organizationId: row.organization_id, stripeSubscriptionId: row.stripe_subscription_id,
+    status: row.status, planKey: planKeyForPrice(row.price_id), priceId: row.price_id,
+    currentPeriodEnd: toDate(row.current_period_end), cancelAtPeriodEnd: row.cancel_at_period_end,
+    canceledAt: toDate(row.canceled_at), livemode: row.livemode,
+    latestInvoiceStatus: row.latest_invoice_status === 'paid' || row.latest_invoice_status === 'payment_failed' ? row.latest_invoice_status : null };
 }
 
 async function priorDigest(sql: Sql, eventId: string): Promise<string | null> {

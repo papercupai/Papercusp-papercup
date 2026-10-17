@@ -37,6 +37,21 @@ describe('Hiring Workbench', () => {
     expect((screen.getByRole('button', { name: 'Approve offer' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/Another HR admin/)).toBeTruthy();
   });
+  it('calibrates the non-binding marker against refreshed issuing entity state', async () => {
+    fetcher.mockImplementation(async () => response({ ...view, nonBinding: false }));
+    show();
+    await screen.findByRole('article', { name: 'Offer detail' });
+    expect(screen.queryByText(/Test chain — non-binding/)).toBeNull();
+
+    fetcher.mockImplementation(async () => response(view));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh hiring' }));
+    await screen.findByText(/Test chain — non-binding/);
+
+    fetcher.mockImplementation(async () => response({ ...view, nonBinding: false }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh hiring' }));
+    await waitFor(() => expect(screen.queryByText(/Test chain — non-binding/)).toBeNull());
+    expect(screen.getByRole('article', { name: 'Offer detail' })).toBeTruthy();
+  });
   it('sends the selected existing person and pay/equity terms without an actor or workspace', async () => {
     show('?hiringRole=role');
     const form = await screen.findByRole('form', { name: 'Create offer' });

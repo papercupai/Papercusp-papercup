@@ -56,8 +56,9 @@ beforeEach(async () => {
   // A loopback target that answers "pong:<request>" and then closes, like a tiny HTTP/1.0 server.
   upstream = createServer((s) => {
     let buf = '';
-    s.on('data', (d) => {
-      buf += d.toString();
+    s.setEncoding('utf8');
+    s.on('data', (d: string) => {
+      buf += d;
       if (buf.includes('\n')) s.end(`pong:${buf.trim()}`);
     });
     s.on('error', () => undefined);
@@ -100,7 +101,8 @@ function request(socketPath: string, body: string, halfClose = false): Promise<s
   return new Promise((resolve, reject) => {
     const c = connect(socketPath);
     let out = '';
-    c.on('data', (d) => (out += d.toString()));
+    c.setEncoding('utf8');
+    c.on('data', (d: string) => (out += d));
     c.on('end', () => resolve(out));
     c.on('close', () => resolve(out));
     c.on('error', reject);

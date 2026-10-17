@@ -36,6 +36,46 @@ export interface ClaimForWorkOpts {
   intent?: string;
 }
 
+/**
+ * Release the execution record that implements a plan item when the same owner
+ * explicitly releases that plan item's live claim.
+ *
+ * Plan-item leases and work-item claims are separate stores. Releasing only the
+ * lease leaves a linked work item assigned to the former holder, so the next
+ * claimant can own the plan lane but still be refused by work_items:checkpoint
+ * as `not_holder`. The owner check below is deliberate: a linked record held by
+ * another agent is their independent work and must never be released as a side
+ * effect of this lane's release.
+ *
+ * This is best-effort by contract. The plan claim has already been released when
+ * callers invoke this helper; a failed linked release leaves the former holder
+ * with a recoverable work-item claim rather than exposing it to a peer.
+ */
+export async function releaseLinkedWorkItemForPlanItem(
+  planSlug: string,
+  itemId: string,
+  owner: string,
+): Promise<boolean> {
+  if (!owner) return false;
+  try {
+    const [{ findImplementingWorkItem, TERMINAL_WORK_ITEM_STATES }, { releaseWorkItem }] = await Promise.all([
+      import('./convert'),
+      import('../work-items'),
+    ]);
+    const workItem = await findImplementingWorkItem(planSlug, itemId);
+    if (!workItem || TERMINAL_WORK_ITEM_STATES.has(workItem.state) || workItem.assignee !== owner) return false;
+    return Boolean(
+      await releaseWorkItem(workItem.id, {
+        harness: workItem.harness ?? undefined,
+        expectedAssignee: owner,
+        releasingOwnerId: owner,
+      }),
+    );
+  } catch {
+    return false;
+  }
+}
+
 export type ClaimForWorkOutcome =
   | { ok: true; claimId: string; alreadyHeld: boolean }
   | {
@@ -103,7 +143,9 @@ export async function releaseOwnClaim(
 ): Promise<boolean> {
   const current = await getClaim(workspaceId, harnessSlug, planSlug, itemId);
   if (!current || current.owner !== owner) return false;
-  return releaseClaim(workspaceId, harnessSlug, planSlug, itemId, current.claimId, owner);
+  const released = await releaseClaim(workspaceId, harnessSlug, planSlug, itemId, current.claimId, owner);
+  if (released) await releaseLinkedWorkItemForPlanItem(planSlug, itemId, owner);
+  return released;
 }
 
 export interface ReconcileDeclaredClaimsOpts {
@@ -167,7 +209,10 @@ export async function reconcileDeclaredClaims(
       c.claimId,
       opts.owner,
     );
-    if (released) result.released.push(c.itemId);
+    if (released) {
+      result.released.push(c.itemId);
+      await releaseLinkedWorkItemForPlanItem(opts.planSlug, c.itemId, opts.owner);
+    }
   }
   return result;
 }

@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Committed warning-fixed utility: native pui and psu first-prompt acceptance",
+  "framework": "shell",
+  "command": [
+    "script -qefc 'env -i HOME=\"$HOME\" TERM=xterm-256color PATH=/tmp/machine-first-warning-fixed-pui-extracted-20261017/pui-0.1.0-linux-x86_64/bin:/usr/local/bin:/usr/bin:/bin /tmp/machine-first-warning-fixed-pui-extracted-20261017/pui-0.1.0-linux-x86_64/bin/pui --connect' /tmp/machine-first-warning-fixed-pui-first-prompt-20261017.log",
+    "script -qefc 'env -i HOME=\"$HOME\" TERM=xterm-256color PATH=/tmp/machine-first-warning-fixed-pui-extracted-20261017/pui-0.1.0-linux-x86_64/bin:/usr/local/bin:/usr/bin:/bin /tmp/machine-first-warning-fixed-pui-extracted-20261017/pui-0.1.0-linux-x86_64/bin/psu' /tmp/machine-first-warning-fixed-psu-first-prompt-20261017.log"
+  ],
+  "startedAt": "2026-10-17T01:02:41-04:00",
+  "finishedAt": "2026-10-17T01:04:13-04:00",
+  "exitCode": 0,
+  "summary": "Both exact committed-source archive entrypoints reached the machine picker without false ignored-flag warnings, then were cancelled before selection with expected exit130. Native psu displayed a cloud-inventory timeout; no hosted connectivity success is claimed. No agent was launched. This checks the new warning-fixed archive; it preserves the earlier archive's distinct packaged SSH proof. Full installed acceptance, publication and shipment remain open.",
+  "assertions": [
+    {
+      "id": "pui-machine-first-no-warning-cancel",
+      "passed": true,
+      "evidence": "Native bin/pui --connect displayed Where should pui run?, emitted no unrecognized/ignored flag warning, and was cancelled before selection. Native process and script transcript both recorded exit130."
+    },
+    {
+      "id": "psu-machine-first-no-warning-cancel",
+      "passed": true,
+      "evidence": "Native bin/psu displayed Where should psu run?, emitted no unrecognized/ignored flag warning, and was cancelled before selection. Native process and script transcript both recorded exit130. Cloud inventory timed out and remained visibly unavailable."
+    },
+    {
+      "id": "exact-archive-content-integrity",
+      "passed": true,
+      "evidence": "Archive independently rehashed before safe extraction; PROVENANCE source commit matched the package pin; sha256sum --check CONTENTS.sha256 completed exit0."
+    }
+  ],
+  "workItem": "WI-6554700010016724",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "candidate": {
+    "archive": "/tmp/machine-first-warning-fixed-pui-20261017/pui-0.1.0-linux-x86_64.tar.gz",
+    "sha256": "fbe13bffc8e388d6b986450bc8359e5713c02b3ed3478796eb90fc9f3a85dbd6",
+    "sourceSha": "c1c8f46a4800d03f80fb38fa7064d8e7d8772c65",
+    "published": false
+  },
+  "transcripts": [
+    {
+      "program": "pui",
+      "path": "/tmp/machine-first-warning-fixed-pui-first-prompt-20261017.log",
+      "sha256": "85a26f349577ede7fb72c08cb7e3aa3a66564268ab11d7f25fcff262a14142c7",
+      "expectedExitCode": 130,
+      "actualExitCode": 130
+    },
+    {
+      "program": "psu",
+      "path": "/tmp/machine-first-warning-fixed-psu-first-prompt-20261017.log",
+      "sha256": "00813605ed04ccb9256322125728c5790fa405e345bee0e3b1784b3eb526a549",
+      "expectedExitCode": 130,
+      "actualExitCode": 130,
+      "cloudInventoryTimedOut": true
+    }
+  ],
+  "prerequisites": {
+    "maintainedSourceTests": {
+      "passed": 77,
+      "skipped": 0,
+      "log": "/tmp/machine-first-connect-warning-green-20261017.log",
+      "sha256": "f755f7ec1f872a635c074d5dfa5f117d3676b2e101d58305b3a693b1923782ba",
+      "baselineRedLog": "/tmp/machine-first-connect-warning-red-20261017.log",
+      "baselineRedSha256": "d69794a9c14dbc1d19524cf53717181a7092b0928250b7915e48a2ec3ea3b090",
+      "sourceSha256": "ea493d322000ac358e517373e15f1ab1624605c62dca47bd914098f4178e6cff",
+      "startupTestSha256": "4929f2bf6605a206a22759a56538b62a07b0c7328463bffc4bac2987cf8669af"
+    },
+    "buildLog": "/tmp/machine-first-warning-fixed-pui-package-20261017.log",
+    "buildLogSha256": "a319c0cda3b4aa4f416f1d432e3028805961243f3c006e2da801daa495828543"
+  }
+}

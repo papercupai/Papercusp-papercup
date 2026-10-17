@@ -160,18 +160,22 @@ vi.mock('../../harness/routines/loop', async (importOriginal) => {
   };
 });
 const getLoopCarryNoteWithMeta = vi.fn();
+const setLoopCarryNote = vi.fn();
 const setLoopCarryNoteWithPrior = vi.fn();
 vi.mock('../../carry-note', async () => {
   const actual = await vi.importActual<typeof import('../../carry-note')>('../../carry-note');
   return {
     ...actual,
     getLoopCarryNoteWithMeta: (...a: unknown[]) => getLoopCarryNoteWithMeta(...a),
+    setLoopCarryNote: (...a: unknown[]) => setLoopCarryNote(...a),
     setLoopCarryNoteWithPrior: (...a: unknown[]) => setLoopCarryNoteWithPrior(...a),
   };
 });
 // EI-8987: buildCarryBrief drives both the default focus AND the stale-checkpoint
 // warning. Mocked with a default empty brief; individual tests override per-case.
 const buildCarryBrief = vi.fn();
+const autoCheckpointStaleHeldItems = vi.hoisted(() => vi.fn(async () => []));
+vi.mock('../../turn-end-tracking-io', () => ({ autoCheckpointStaleHeldItems }));
 vi.mock('../../carry-brief', async () => {
   const actual = await vi.importActual<typeof import('../../carry-brief')>('../../carry-brief');
   return { ...actual, buildCarryBrief: (...a: unknown[]) => buildCarryBrief(...a) };
@@ -318,6 +322,7 @@ beforeEach(async () => {
   detectRespawnStorm.mockResolvedValue(NO_STORM);
   escalateRespawnStorm.mockResolvedValue(undefined);
   buildCarryBrief.mockResolvedValue(emptyBrief);
+  autoCheckpointStaleHeldItems.mockReset().mockResolvedValue([]);
   getWorkItem.mockResolvedValue({ state: 'wip' });
   readFrozenRepairMarker.mockReturnValue(null);
   buildOwnerRespawnLaunchSpec.mockResolvedValue(closedSpec);
@@ -345,6 +350,7 @@ beforeEach(async () => {
     intervalSec: 60,
     changed: true,
   });
+  setLoopCarryNote.mockResolvedValue(undefined);
   setLoopCarryNoteWithPrior.mockImplementation(async (_ref: unknown, note: unknown) => ({
     stored: typeof note === 'string' ? note : null,
     priorLength: 0,
@@ -1026,7 +1032,8 @@ describe('session:request-compaction — carry-respawn marker (EI-18676518990229
     expect(await consumeRespawnExpected('su-caller')).toBe(false);
   });
 
-  it('a P-016 flush-gate refusal never marks the owner (nothing was queued)', async () => {
+  it('a failed host checkpoint never marks the owner (nothing was queued)', async () => {
+    autoCheckpointStaleHeldItems.mockRejectedValueOnce(new Error('snapshot unavailable'));
     findLiveHost.mockReturnValue(carryHost);
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
@@ -1034,6 +1041,58 @@ describe('session:request-compaction — carry-respawn marker (EI-18676518990229
     });
     const b = body(await call({ focus: 'x' }));
     expect(b.error).toBe('flush-required');
+    expect(await consumeRespawnExpected('su-caller')).toBe(false);
+  });
+
+  it.each([
+    ['08006', '08006'],
+    ['postgresql://fixture:never-emit@invalid/database', 'checkpoint-write-failed'],
+  ])('reports safe host persistence diagnostics for code %s without queueing a cut', async (code, expectedCode) => {
+    autoCheckpointStaleHeldItems.mockRejectedValueOnce(Object.assign(
+      new Error('postgresql://fixture:never-emit@invalid/database'), { code },
+    ));
+    findLiveHost.mockReturnValue(carryHost);
+
+    const b = body(await call({ focus: 'resume after a verified host save' }));
+
+    expect(b).toMatchObject({
+      ok: false, requested: false, error: 'flush-required',
+      snapshotFailure: { phase: 'checkpoint-write', code: expectedCode, elapsedMs: expect.any(Number) },
+    });
+    expect(JSON.stringify(b)).not.toContain('never-emit');
+    expect(injectIntoHost).not.toHaveBeenCalled();
+    expect(buildOwnerRespawnLaunchSpec).not.toHaveBeenCalled();
+    expect(savePendingCarryRespawn).not.toHaveBeenCalled();
+    expect(bumpSessionEpoch).not.toHaveBeenCalled();
+    expect(await consumeRespawnExpected('su-caller')).toBe(false);
+  });
+
+  it('carries a structured blocked checkpoint refusal through the tool response', async () => {
+    autoCheckpointStaleHeldItems.mockRejectedValueOnce(Object.assign(
+      new Error('internal checkpoint detail'), {
+        code: 'checkpoint-write-blocked',
+        workItemId: 'WI-500',
+        blockedReason: 'write_refused',
+      },
+    ));
+    findLiveHost.mockReturnValue(carryHost);
+
+    const b = body(await call({ focus: 'resume after a blocked host save' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      requested: false,
+      error: 'flush-required',
+      snapshotFailure: {
+        phase: 'checkpoint-write',
+        code: 'checkpoint-write-blocked',
+        workItemId: 'WI-500',
+        blockedReason: 'write_refused',
+        elapsedMs: expect.any(Number),
+      },
+    });
+    expect(JSON.stringify(b)).not.toContain('internal checkpoint detail');
+    expect(injectIntoHost).not.toHaveBeenCalled();
     expect(await consumeRespawnExpected('su-caller')).toBe(false);
   });
 });
@@ -1086,7 +1145,8 @@ describe('session:request-compaction — memory epoch boundary (WI-36074)', () =
     expect(bumpSessionEpoch).not.toHaveBeenCalled();
   });
 
-  it('a P-016 flush-gate refusal never bumps (the session is left intact)', async () => {
+  it('a failed host checkpoint never bumps (the session is left intact)', async () => {
+    autoCheckpointStaleHeldItems.mockRejectedValueOnce(new Error('snapshot unavailable'));
     findLiveHost.mockReturnValue(carryHost);
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
@@ -1147,7 +1207,7 @@ describe('session:request-compaction ack states a queued intent, not an outcome 
     expect(note).toMatch(/not performed yet/i);
     expect(note).toMatch(/quiet/i); // the precondition the cut waits on
     expect(note).toMatch(/still here/i); // the falsifier the agent can check itself
-    expect(note).toMatch(/flush/i); // do not rely on the cut to preserve state
+    expect(note).toContain('host saved the mechanical checkpoint');
     // The retired wording asserted the outcome outright; if it ever returns, the
     // field being honest would not save the agent from acting on the prose.
     expect(note).not.toContain('it resumes automatically');
@@ -1265,13 +1325,14 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
 
     const b = body(await call({ focus: 'x' }));
 
-    expect(getWorkItem).toHaveBeenCalledWith(id, 'papercusp');
+    // The snapshot writer re-reads live held items, excluding terminal rows.
+    expect(autoCheckpointStaleHeldItems).toHaveBeenCalledWith(expect.objectContaining({ mode: 'respawn' }));
     expect(b).toMatchObject({ ok: true, requested: true, staleCheckpoints: [] });
     expect(b.note).not.toContain('flush-integrity');
     expect(injectIntoHost).toHaveBeenCalledTimes(1);
   });
 
-  it('disabled gate preserves the advisory and still proceeds fail-open', async () => {
+  it('disabling the advisory ladder still saves the host checkpoint', async () => {
     const id = 'EI-21934531959724440';
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
@@ -1284,9 +1345,9 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(b).toMatchObject({
       ok: true,
       requested: true,
-      staleCheckpoints: [{ id, title: 'gate disabled', reason: 'missing' }],
+      staleCheckpoints: [],
     });
-    expect(b.note).toContain(id);
+    expect(b.note).not.toContain('flush-integrity');
     expect(injectIntoHost).toHaveBeenCalledTimes(1);
   });
 
@@ -1299,22 +1360,18 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(b.staleCheckpoints).toEqual([]);
   });
 
-  it('a held item with NO checkpoint (null) → the gate REFUSES the cut ONCE, naming the flush; nothing queued (P-016)', async () => {
+  it('a held item with NO checkpoint is saved by the host on the first request', async () => {
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
       heldItems: [{ id: 'WI-200', title: 'the risky one', body: null, harness: 'papercup', checkpoint: null }],
     });
     const b = body(await call({ focus: 'x' }));
-    expect(b.ok).toBe(false);
-    expect(b.error).toBe('flush-required');
-    expect(b.tripwires.map((t: { kind: string }) => t.kind)).toContain('missing-checkpoint');
-    expect(b.note).toContain('WI-200');
-    expect(b.note).toContain('work_items:checkpoint');
-    // The cut was NOT queued — the agent must flush (or retry) first.
-    expect(injectIntoHost).not.toHaveBeenCalled();
+    expect(b).toMatchObject({ ok: true, requested: true });
+    expect(autoCheckpointStaleHeldItems).toHaveBeenCalledWith(expect.objectContaining({ mode: 'respawn', ownerId: 'su-caller' }));
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
   });
 
-  it('requires the held work-item checkpoint even when the loop checkpoint is fresh', async () => {
+  it('saves held items even when the loop checkpoint is fresh', async () => {
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
       loop: {
@@ -1328,16 +1385,12 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
       heldItems: [{ id: 'EI-21557508946389368', title: 'held work', body: null, harness: 'papercup', checkpoint: null }],
     });
     const b = body(await call({ focus: 'x' }));
-    expect(b).toMatchObject({ ok: false, error: 'flush-required' });
-    expect(b.tripwires).toEqual([
-      expect.objectContaining({ kind: 'missing-checkpoint', subject: 'EI-21557508946389368' }),
-    ]);
-    expect(b.tripwires).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'armed-loop-no-carry-note' })]));
-    expect(b.note).toContain('work_items:checkpoint');
-    expect(injectIntoHost).not.toHaveBeenCalled();
+    expect(b).toMatchObject({ ok: true, requested: true });
+    expect(autoCheckpointStaleHeldItems).toHaveBeenCalledTimes(1);
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
   });
 
-  it('the refusal names ALL un-checkpointed held items', async () => {
+  it('the host snapshot includes fresh and missing held checkpoints on its first call', async () => {
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
       heldItems: [
@@ -1347,17 +1400,12 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
       ],
     });
     const b = body(await call({ focus: 'x' }));
-    expect(b.ok).toBe(false);
-    expect(b.error).toBe('flush-required');
-    const subjects = b.tripwires.map((t: { subject: string }) => t.subject);
-    expect(subjects).toContain('WI-2');
-    expect(subjects).toContain('WI-3');
-    expect(subjects).not.toContain('WI-1'); // the checkpointed one is not flagged
-    expect(b.note).toContain('WI-2');
-    expect(b.note).toContain('WI-3');
+    expect(b).toMatchObject({ ok: true, requested: true });
+    expect(autoCheckpointStaleHeldItems).toHaveBeenCalledWith(expect.objectContaining({ mode: 'respawn' }));
+    expect(b.staleCheckpoints).toEqual([]);
   });
 
-  it('P-003: a held item whose checkpoint is OLDER than the stale window → refuses with a stale tripwire naming the age', async () => {
+  it('an old checkpoint is saved without requiring another agent turn', async () => {
     const fortyMinAgo = Date.now() - 40 * 60_000;
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
@@ -1366,12 +1414,8 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
       ],
     });
     const b = body(await call({ focus: 'x' }));
-    expect(b.ok).toBe(false);
-    expect(b.error).toBe('flush-required');
-    expect(b.tripwires).toEqual([
-      expect.objectContaining({ kind: 'stale-checkpoint', subject: 'WI-300', ageMinutes: 40 }),
-    ]);
-    expect(b.note).toContain('WI-300 (40m of progress after checkpoint)');
+    expect(b).toMatchObject({ ok: true, requested: true });
+    expect(b.mechanicalFallback).toBeDefined();
   });
 
   it('P-016: a stale-checkpoint retry gets the bounded mechanical fallback instead of stranding compaction', async () => {
@@ -1392,22 +1436,15 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     });
 
     const first = body(await call({ focus: 'x' }));
-    expect(first).toMatchObject({ ok: false, error: 'flush-required' });
-    expect(first.tripwires).toEqual([
-      expect.objectContaining({ kind: 'stale-checkpoint', subject: 'WI-303' }),
-    ]);
-    expect(injectIntoHost).not.toHaveBeenCalled();
+    expect(first).toMatchObject({ ok: true, requested: true });
+    expect(first.mechanicalFallback).toBeDefined();
 
-    // The safety refusal is intentionally one-shot: if the caller cannot refresh
-    // the stale note before retrying, the gate writes a mechanical fallback and
-    // proceeds so context shedding can never become a permanent strand.
+    // A later request repeats the host save without demanding a model flush.
     const second = body(await call({ focus: 'x' }));
     expect(second).toMatchObject({ ok: true, requested: true });
     expect(second.mechanicalFallback).toBeDefined();
-    expect(second.staleCheckpoints).toEqual([
-      expect.objectContaining({ id: 'WI-303', reason: 'stale' }),
-    ]);
-    expect(injectIntoHost).toHaveBeenCalledTimes(1);
+    expect(second.staleCheckpoints).toEqual([]);
+    expect(injectIntoHost).toHaveBeenCalledTimes(2);
   });
 
   it('P-003: a FRESH checkpoint (within the stale window) is not flagged', async () => {
@@ -1430,7 +1467,7 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(b.staleCheckpoints).toEqual([]);
   });
 
-  it('P-003: missing + stale mix — both tripwire kinds appear in the refusal', async () => {
+  it('missing and stale checkpoints are saved without pre-save warnings', async () => {
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
       heldItems: [
@@ -1439,22 +1476,21 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
       ],
     });
     const b = body(await call({ focus: 'x' }));
-    expect(b.ok).toBe(false);
-    expect(b.tripwires.map((t: { kind: string }) => t.kind).sort()).toEqual(['missing-checkpoint', 'stale-checkpoint']);
-    expect(b.note).toContain('WI-310');
-    expect(b.note).toContain('WI-311 (20m of progress after checkpoint)');
+    expect(b).toMatchObject({ ok: true, requested: true, staleCheckpoints: [] });
+    expect(b.note).not.toContain('work_items:checkpoint');
   });
 
-  it('an armed loop with NO carry-note refuses, naming loop:checkpoint', async () => {
+  it('an armed loop with NO carry-note gets a host fallback without a model flush round trip', async () => {
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
       loop: { harness: 'papercusp', active: true, intervalSec: 60, carry: 'cold', carryNote: null, carryNoteUpdatedAtMs: null },
     });
     const b = body(await call({ focus: 'x' }));
-    expect(b.ok).toBe(false);
-    expect(b.tripwires[0].kind).toBe('armed-loop-no-carry-note');
-    expect(b.note).toContain('loop:checkpoint');
-    expect(injectIntoHost).not.toHaveBeenCalled();
+    expect(b).toMatchObject({ ok: true, requested: true });
+    expect(setLoopCarryNote).toHaveBeenCalledWith(
+      { harness: 'papercusp', ownerId: 'su-caller' }, expect.stringContaining('auto-checkpoint mechanical'),
+    );
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
   });
 
   it('judge role gets the permitted address check and threads role into carry assembly', async () => {
@@ -1465,8 +1501,9 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(b.ok).toBe(true);
     expect(msg.data).toContain('assigned evaluation');
     expect(msg.data).toContain('evaluate the candidate evidence');
-    expect(msg.data).toContain('coord:orient {}');
-    expect(msg.data).toContain('self.ownerId');
+    expect(msg.data).toContain('host checks this address');
+    expect(msg.data).not.toContain('coord:orient {}');
+    expect(msg.data).not.toContain('self.ownerId');
     for (const forbidden of [
       'coord:declare-intent',
       'scheduler:get_next',
@@ -1508,16 +1545,14 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(buildCarryBrief).toHaveBeenCalledTimes(1);
   });
 
-  it('the P-016 ladder: an un-flushed RETRY (already refused) gets a mechanical fallback and the cut PROCEEDS', async () => {
+  it('repeated requests save mechanically without the former refuse-once round trip', async () => {
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
       heldItems: [{ id: 'WI-9', title: null, body: null, harness: null, checkpoint: null }],
     });
-    // First call → refused, nothing queued.
     const first = body(await call({ focus: 'x' }));
-    expect(first.ok).toBe(false);
-    expect(first.error).toBe('flush-required');
-    expect(injectIntoHost).not.toHaveBeenCalled();
+    expect(first).toMatchObject({ ok: true, requested: true });
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
 
     // Retry with the SAME unflushed state → the system writes the fallback ITSELF and
     // the cut proceeds (never strands). The mechanicalFallback field is present
@@ -1526,8 +1561,8 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(second.ok).toBe(true);
     expect(second.requested).toBe(true);
     expect(second.mechanicalFallback).toBeDefined();
-    expect(second.staleCheckpoints).toEqual([{ id: 'WI-9', title: null, reason: 'missing' }]);
-    expect(injectIntoHost).toHaveBeenCalledTimes(1);
+    expect(second.staleCheckpoints).toEqual([]);
+    expect(injectIntoHost).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -32,7 +32,7 @@ import { currentBenchOpenAiInputContract } from '../external-bench/current-su';
 import { defineHostedAllocation, readHostedAllocationReport, settleHostedAllocation } from '../auth/hosted/billing/allocation-store';
 import { readSupportOperationBudgetBinding, recordSupportWorkflowOutcome, reserveSupportOperationAttempt,
   supportOperationReservationId } from './support-workflow-budget';
-import { createPersonalGrant } from '../personal-vault/store';
+import { createPersonalGrant, listPersonalGrants } from '../personal-vault/store';
 import { ORGANIZATION_CORPUS_SCOPE, mapProviderIdentity, replacePermissionListMembers,
   upsertOrganizationDocuments, upsertPermissionList } from '../data-sources/documents-corpus';
 
@@ -707,8 +707,15 @@ describe('support operation administrative lifecycle', () => {
     const denied = { ...admin, principalId: userId };
     const original = await readBlueprintFromPg(db.adminSql, workspaceId, harnessSlug);
     if (!original) throw new Error('Missing administration fixture');
-    await createPersonalGrant(db.adminSql, { workspaceId, userId, principalType: 'agent-role', principalId: role,
+    const sourceGrant = await createPersonalGrant(db.adminSql, { workspaceId, userId, principalType: 'agent-role', principalId: role,
       scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: admin.principalId });
+    expect(sourceGrant.scopes).toEqual(['personal:organization']);
+    const overlappingGrant = await createPersonalGrant(db.adminSql, { workspaceId, userId,
+      principalType: 'agent-role', principalId: role, scopes: [ORGANIZATION_CORPUS_SCOPE, 'slack'],
+      grantedBy: admin.principalId });
+    const unrelatedGrant = await createPersonalGrant(db.adminSql, { workspaceId, userId,
+      principalType: 'agent-role', principalId: 'unrelated-worker', scopes: [ORGANIZATION_CORPUS_SCOPE],
+      grantedBy: admin.principalId });
     await replacePermissionListMembers(db.adminSql, workspaceId, listId, [{ provider: 'slack', providerUserId: 'T1:EMPLOYEE' }]);
     // This case must work alone under -t as well as after the budget cases.
     await db.adminSql.begin(async tx => {
@@ -773,10 +780,16 @@ describe('support operation administrative lifecycle', () => {
           handle: { specificationRevision: compiled.specificationRevision }, cancellationRequested: true });
         const stoppedItem = await runWithWorkspace(workspaceId, () => getWorkItem(
           newer.target.kind === 'work-item' ? newer.target.id : '', harnessSlug));
-        expect(stoppedItem?.payload?.blueprintCancellation).toMatchObject({ requestedBy: admin.principalId });
+        expect(stoppedItem?.payload).toMatchObject({ blueprintCancellation: { requestedBy: admin.principalId } });
         const revoke = { ...stop, action: 'revoke' as const, requestKey: 'native-admin-revoke' };
         await administerWorkflow(restarted, admin, revoke);
         expect(await administerWorkflow(restarted, admin, revoke)).toMatchObject({ replayed: true });
+        const grants = await listPersonalGrants(restarted, workspaceId, userId);
+        expect(grants.find(grant => grant.id === sourceGrant.id)).toMatchObject({
+          scopes: ['personal:organization'], revoked_at: expect.anything(),
+        });
+        expect(grants.find(grant => grant.id === overlappingGrant.id)?.revoked_at).toBeTruthy();
+        expect(grants.find(grant => grant.id === unrelatedGrant.id)?.revoked_at).toBeNull();
         await expect(submit('native-admin-no-live-grant')).rejects.toThrow(/no_live_grant/);
         const after = await readWorkflowAdministration(restarted, admin);
         expect(after).toMatchObject({ approvedRevision: revision, version: '1' });

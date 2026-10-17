@@ -76,6 +76,13 @@ function localOrigin(value: string): { origin: string; port: number } {
   return { origin: url.origin, port: Number(url.port || 80) };
 }
 
+/** Bootstrap accepts equivalent loopback spellings; rewrite each to the same
+ * task egress endpoint before the container's fail-closed leftover check. */
+function loopbackOrigins(value: string): string[] {
+  const { port } = localOrigin(value);
+  return [`http://127.0.0.1:${port}`, `http://localhost:${port}`, `http://[::1]:${port}`];
+}
+
 /** Exported so fail-closed wrapper wiring is tested independently of model spend. */
 export function frontierSweDockerTarget(handle: FrontierSweEnvHandle, bridge: CodexHookBridge,
   egress: BenchEgress, gatewayOrigin: string, mcpOrigin: string, stockNative = false): DockerExecTarget {
@@ -86,8 +93,8 @@ export function frontierSweDockerTarget(handle: FrontierSweEnvHandle, bridge: Co
     sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: mounts.roots },
     ...(stockNative ? {} : { hookBridge: { url: egress.originFor('hooks'), recordDir: bridge.recordDir } }),
     originRewrites: [
-      { from: localOrigin(gatewayOrigin).origin, to: egress.originFor('gw') },
-      ...(stockNative ? [] : [{ from: localOrigin(mcpOrigin).origin, to: egress.originFor('mcp') }]),
+      ...loopbackOrigins(gatewayOrigin).map(from => ({ from, to: egress.originFor('gw') })),
+      ...(stockNative ? [] : loopbackOrigins(mcpOrigin).map(from => ({ from, to: egress.originFor('mcp') }))),
     ],
   };
   validateDockerExecTarget(target);

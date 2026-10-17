@@ -106,6 +106,21 @@ afterAll(async () => {
 });
 
 describe('readTriggerOperationPayload (real schema)', () => {
+  it('returns the complete frozen batch only through its genuine workspace and binding invocation', async () => {
+    const member = await triggerRun(bindingId, 'gmail:coalesced', 'pending');
+    await sql`UPDATE harness_shared.trigger_runs SET outcome = '{"coalescedBatch":true}'::jsonb
+      WHERE workspace_id = ${WS} AND id = ${runId}`;
+    await sql`UPDATE harness_shared.trigger_runs SET outcome = jsonb_build_object('coalescedInto', ${runId}::text)
+      WHERE workspace_id = ${WS} AND id = ${member}`;
+    const foreignBinding = await triggerRun(otherBindingId, 'gmail:foreign-batch', 'pending');
+    await sql`UPDATE harness_shared.trigger_runs SET outcome = jsonb_build_object('coalescedInto', ${runId}::text)
+      WHERE workspace_id = ${WS} AND id = ${foreignBinding}`;
+    const result = await readTriggerOperationPayload(sql, WS, 'WI-900001');
+    expect(result.events?.map((event) => event.triggerRunId)).toEqual([runId, member]);
+    expect(result.events?.[1].payload.text).toBe('PRIVATE BODY gmail:coalesced');
+    await expect(readTriggerOperationPayload(sql, OTHER_WS, 'WI-900001')).rejects.toThrow('trigger_payload_operation_not_found');
+  });
+
   it('resolves the private payload for the engine-minted invocation, even before the run is marked succeeded', async () => {
     const result = await readTriggerOperationPayload(sql, WS, 'WI-900001');
     expect(result.triggerRunId).toBe(runId);

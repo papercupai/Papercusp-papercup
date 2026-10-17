@@ -16,6 +16,7 @@ import {
   repairSignatureFingerprint,
   summarizeRepairManifest,
   withRepairManifest,
+  withMeasuredLegSubjects,
 } from './repair-manifest';
 
 const CANDIDATE = 'a'.repeat(40);
@@ -64,6 +65,39 @@ const TSC_OUTPUT = [
   '../escape/outside.ts:1:1 - error (must be ignored)',
   'LINT_TSC_RESULT label=operator-core scope=files exit=2 status=failed',
 ].join('\n');
+
+describe('repair manifest — measured lint subjects survive persistence', () => {
+  it('lifts workspace diagnostics once while preserving sibling repo-relative paths', () => {
+    expect(extractSubjectPathsFromLegOutput('lib/broken.ts(1,1): error\napps/b/sibling.ts:2: error', 'apps/a', ['apps/a', 'apps/b']))
+      .toEqual(['apps/a/lib/broken.ts', 'apps/b/sibling.ts']);
+  });
+  it('retains measured paths through rebuild and admission, and publishes newly actionable paths', () => {
+    const empty = withRepairManifest(queue(), 1);
+    const measured = withMeasuredLegSubjects(empty.queue, CANDIDATE, [
+      { id: 'lint:tsc', status: 'failed', subjectPaths: ['packages/web/src/broken.ts'] },
+    ], 2);
+    const changed = withRepairManifest(empty.queue, 3, { subjectPaths: { 'lint:tsc': ['packages/web/src/broken.ts'] } });
+    expect(changed.statusChanged).toBe(true);
+    const rebuilt = withRepairManifest(measured, 4);
+    expect(rebuilt.manifest.rows.find((row) => row.legId === 'lint:tsc')).toMatchObject({
+      subjectPaths: ['packages/web/src/broken.ts'], admitCommand: expect.stringContaining('packages/web/src/broken.ts'),
+    });
+    const admitted = withRepairManifest({ ...rebuilt.queue, repairHead: HEAD1, admissions: [admission({ paths: ['packages/web/src/broken.ts'] })] }, 5);
+    expect(admitted.manifest.rows.find((row) => row.legId === 'lint:tsc')?.status.kind).toBe('admitted');
+  });
+
+  it('rejects foreign-head evidence and paths from another candidate or leg kind', () => {
+    const measured = withMeasuredLegSubjects(queue(), CANDIDATE, [
+      { id: 'lint:tsc', status: 'fail', subjectPaths: ['packages/web/src/broken.ts', '../escape.ts', '/absolute/no.ts'] },
+    ], 2);
+    expect(measured.manifest?.rows.find((row) => row.legId === 'lint:tsc')?.subjectPaths).toEqual(['packages/web/src/broken.ts']);
+    expect(withMeasuredLegSubjects(queue(), HEAD1, [{ id: 'lint:tsc', status: 'fail', subjectPaths: ['wrong/file.ts'] }], 3).manifest).toBeUndefined();
+    const foreign = withRepairManifest({ ...measured, candidate: HEAD2, repairHead: HEAD2 }, 4);
+    expect(foreign.manifest.rows.find((row) => row.legId === 'lint:tsc')?.subjectPaths).toEqual([]);
+    const changedKind = withRepairManifest({ ...measured, signature: [{ ...queue().signature[1]!, kind: 'workspace-task' as const }] }, 5);
+    expect(changedKind.manifest.rows[0]?.subjectPaths).toEqual([]);
+  });
+});
 
 describe('repair manifest — subject paths are evidence, never a guess', () => {
   it('a test-file leg names its own path and gets the exact admit command', () => {

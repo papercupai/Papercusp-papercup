@@ -94,6 +94,7 @@ vi.mock('./scheduler/fleet-scope-admission', async (orig) => ({
 vi.mock('./work-items-events', async (orig) => ({
   ...await orig<typeof import('./work-items-events')>(),
   emitWorkItemCreatedEvent: vi.fn(), emitWorkItemClaimedEvent: vi.fn(),
+  emitWorkItemClaimableEvent: vi.fn(),
 }));
 vi.mock('./interest-auto-arm', async (orig) => ({
   ...await orig<typeof import('./interest-auto-arm')>(),
@@ -421,6 +422,32 @@ describe('canonical original-item recovery chain (fresh PG; controlled external 
     // The delivery record does not retroactively become proof of execution.
     expect((await row(original.id)).payload._admissionRecovery.pickupConfirmed).toBe(false);
     expect(await db.sql`SELECT feature_id FROM harness_shared.work_items`).toHaveLength(2);
+  });
+
+  it('keeps ordinary admission progressing while a delivered recovery awaits pickup', async () => {
+    const original = await create();
+    const unrelated = await create('Unrelated pending work');
+    await request(original.id);
+    await tick();
+    expect(await row(unrelated.id)).toMatchObject({ admission: 'pending', taken_by: null });
+    expect((await row(original.id)).payload._admissionRecovery).toMatchObject({
+      state: 'delivered', stage: 'await-pickup', pickupConfirmed: false,
+    });
+
+    const ordinary = await tick();
+    expect(ordinary).toMatchObject({ batchSize: 1, promoted: 1 });
+    expect(await row(unrelated.id)).toMatchObject({ admission: 'admitted', taken_by: null });
+    expect((await row(original.id)).payload._admissionRecovery).toMatchObject({
+      state: 'delivered', stage: 'await-pickup', pickupConfirmed: false,
+    });
+    // Observing delivery never repeats assignment/wake or asserts target pickup.
+    expect(h.claim).toHaveBeenCalledTimes(1);
+    expect(h.wake).toHaveBeenCalledTimes(1);
+    expect(h.model).not.toHaveBeenCalled();
+    const [runRow] = await db.sql`SELECT detail FROM harness_shared.admission_runs
+      WHERE id = ${ordinary.runId}`;
+    expect(runRow!.detail).toMatchObject({ mode: 'promoter', status: 'complete' });
+    expect(runRow!.detail).not.toHaveProperty('targetItemIds');
   });
 
   it('a delivered request cannot lend authority to a target whose current role is denied', async () => {

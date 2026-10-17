@@ -30,6 +30,7 @@ const {
   takePendingFailureLoopHintMock,
   buildFailureLoopHintTextMock,
   evaluateHookContextSinkMock,
+  codeIntelPushTextMock,
 } = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
   withMidTurnMemoryAdmissionMock: vi.fn(),
@@ -38,6 +39,7 @@ const {
   takePendingFailureLoopHintMock: vi.fn(),
   buildFailureLoopHintTextMock: vi.fn(),
   evaluateHookContextSinkMock: vi.fn(),
+  codeIntelPushTextMock: vi.fn(),
 }));
 
 // Same relative specifiers the source's dynamic imports use (colocated).
@@ -63,6 +65,7 @@ vi.mock('../../../failure-loop-hints', () => ({
 vi.mock('../../../agent-identities/sync-hook-rules', () => ({
   evaluateHookContextSink: evaluateHookContextSinkMock,
 }));
+vi.mock('../../../code-intelligence/push-channel', () => ({ codeIntelPushText: codeIntelPushTextMock }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'u-1' }) }));
 
@@ -101,6 +104,7 @@ it('suppresses live mid-turn memory, rule and failure-hint delivery for a frozen
     expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
     expect(evaluateHookContextSinkMock).not.toHaveBeenCalled();
     expect(takePendingFailureLoopHintMock).not.toHaveBeenCalled();
+    expect(codeIntelPushTextMock).not.toHaveBeenCalled();
   } finally { setSessionConfinementResolver(undefined); }
 });
 
@@ -121,6 +125,37 @@ beforeEach(() => {
   takePendingFailureLoopHintMock.mockReset().mockReturnValue(null);
   buildFailureLoopHintTextMock.mockReset().mockResolvedValue('FAILURE LOOP HINT');
   evaluateHookContextSinkMock.mockReset().mockResolvedValue({ text: '', result: null });
+  codeIntelPushTextMock.mockReset().mockResolvedValue('');
+});
+
+it('delivers code intelligence even when the memory query has no signal', async () => {
+  codeIntelPushTextMock.mockResolvedValue('SNAPSHOT BRIEF');
+  const who = owner();
+  const calls = [{ tool: 'unknown-tool', toolInput: {} }];
+  expect(await post({ owner: who, workspace: 'ws-test', harness: 'papercusp', toolCalls: calls }))
+    .toEqual({ ok: true, text: 'SNAPSHOT BRIEF' });
+  expect(buildMemoryContextBlockMock).not.toHaveBeenCalled();
+  expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ owner: who, calls }), 0);
+});
+
+it('forwards bounded measured incident attribution without deriving it in the endpoint', async () => {
+  codeIntelPushTextMock.mockResolvedValue('INCIDENT BRIEF');
+  const who = owner();
+  const incidentAttribution = { status: 'measured', changedSymbols: ['target:target.ts:4'],
+    workItems: [{ id: 'WI-42', state: 'open', title: 'target repair', paths: ['target.ts'] }] };
+  expect(await post({ owner: who, workspace: 'ws-test', harness: 'papercusp', incidentAttribution,
+    tool: 'testing:run', toolInput: { files: ['target.test.ts'] }, })).toEqual({ ok: true, text: 'INCIDENT BRIEF' });
+  expect(codeIntelPushTextMock).toHaveBeenCalledWith(expect.objectContaining({ incidentAttribution }), 0);
+});
+
+it('a code-intelligence failure preserves memory, identity rules and failure hints', async () => {
+  codeIntelPushTextMock.mockRejectedValue(new Error('snapshot store down'));
+  takePendingFailureLoopHintMock.mockReturnValue({ key: 'pending' });
+  evaluateHookContextSinkMock.mockResolvedValue({ text: 'RULE', result: null });
+  const result = await post({ owner: owner(), tool: 'Grep', toolInput: { pattern: 'target' } });
+  expect(result.text).toContain('MEM');
+  expect(result.text).toContain('RULE');
+  expect(result.text).toContain('FAILURE LOOP HINT');
 });
 
 it('charges identity preparation to the native response wall before starting the memory builder', async () => {

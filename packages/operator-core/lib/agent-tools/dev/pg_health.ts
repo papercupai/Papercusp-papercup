@@ -7,6 +7,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { SU_LOCK_TX_POOL_LABEL } from '@papercusp/locks';
 import {
   acquireSnapshot,
   acquireTicketSnapshot,
@@ -15,6 +16,13 @@ import {
   storeIdentityViolation,
 } from '@papercusp/db-org';
 import { pgHealth } from '../../dev-data';
+
+const ACQUISITION_POOLS = [
+  'org-app',
+  'org-admin',
+  'org-admin-lossless-bigint',
+  SU_LOCK_TX_POOL_LABEL,
+] as const;
 
 export default defineTool({
   name: 'dev:pg_health',
@@ -88,7 +96,7 @@ export default defineTool({
           PAPERCUSP_DB_POOL_MAX: process.env.PAPERCUSP_DB_POOL_MAX ?? null,
           note: 'Raw per-process environment override only; null means unset and does not report the profile-derived effective pool max.',
         },
-        pools: ['org-app', 'org-admin', 'org-admin-lossless-bigint'].map((pool) => ({
+        pools: ACQUISITION_POOLS.map((pool) => ({
           counters: acquireSnapshot(pool),
           tickets: acquireTicketSnapshot(pool),
         })),

@@ -1,7 +1,41 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
-import { aggregateCpuProfile, classifyCpuFrame, sampleDurations } from './lib/cpu-profile.mjs';
+import { aggregateCpuProfile, classifyCpuFrame, nodeCpuProfileArgs, sampleDurations } from './lib/cpu-profile.mjs';
+
+test('startup profiling preserves both main and worker captures', { timeout: 15_000 }, () => {
+  const directory = mkdtempSync(join(tmpdir(), 'cpu-profile-isolates-'));
+  try {
+    const result = spawnSync(process.execPath, [...nodeCpuProfileArgs(directory), '-e', `
+      const { Worker } = require('node:worker_threads');
+      const worker = new Worker(
+        'function cpuProfileWorkerMarker() { const end = Date.now() + 250; while (Date.now() < end) Math.sqrt(Math.random()); } cpuProfileWorkerMarker();',
+        { eval: true },
+      );
+      function cpuProfileMainMarker() {
+        const end = Date.now() + 250;
+        while (Date.now() < end) Math.sqrt(Math.random());
+      }
+      cpuProfileMainMarker();
+      worker.on('exit', () => {});
+    `], { encoding: 'utf8', timeout: 10_000 });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+    const profiles = readdirSync(directory).filter(name => name.endsWith('.cpuprofile'))
+      .map(name => ({ name, nodes: JSON.parse(readFileSync(join(directory, name), 'utf8')).nodes }));
+    const main = profiles.find(profile => profile.nodes.some(node => node.callFrame.functionName === 'cpuProfileMainMarker'));
+    const worker = profiles.find(profile => profile.nodes.some(node => node.callFrame.functionName === 'cpuProfileWorkerMarker'));
+    assert.ok(main, 'main-thread CPU profile must survive worker shutdown');
+    assert.ok(worker, 'worker CPU profile must survive main-thread shutdown');
+    assert.notEqual(main.name, worker.name);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test('observer and non-work frames are excluded while GC remains real workload', () => {
   assert.equal(classifyCpuFrame('(garbage collector)'), null);

@@ -154,6 +154,14 @@ export const ALLOW_COUNTS = new Map([
  */
 export const STANDALONE_ENTRY_EXEMPTIONS = new Map([
   [
+    'apps/operator/scripts/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs|file-url-to-path',
+    {
+      count: 1,
+      reason:
+        'Installed verbatim as a standalone PostToolUse hook and executed by bare Node outside the repository; it cannot import the TypeScript operator-core helper and is never inlined into the desktop sidecar.',
+    },
+  ],
+  [
     'scripts/reviewer-operator-assert.mjs|file-url-to-path',
     {
       count: 1,

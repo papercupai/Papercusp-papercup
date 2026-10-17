@@ -197,8 +197,12 @@ describe('mirror-tree.sh', () => {
     expect(sh(root, 'mkdir dest && cp src/a.js dest/ && mirror_matches src dest').status).toBe(0);
   });
 
-  it('keeps an in-progress atomic replacement outside Vite public input trees', async () => {
+  it('keeps an in-progress atomic replacement outside Vite inputs and the git-sync source census', async () => {
     const root = fixtureRoot('setup-monaco-runtime.sh');
+    copyFileSync(resolve(SCRIPTS, '../../..', '.gitignore'), join(root, '.gitignore'));
+    const initialized = spawnSync('git', ['init', '--quiet', root], { encoding: 'utf8' });
+    expect(initialized.status, initialized.stderr).toBe(0);
+    put(root, 'authored-control.ts', 'export const authored = true;\n');
     put(root, 'src/ort-wasm.wasm', 'new wasm bytes');
     mkdirSync(join(root, 'public/vad-runtime'), { recursive: true });
     const bin = join(root, 'bin');
@@ -224,6 +228,8 @@ describe('mirror-tree.sh', () => {
       },
       stdio: 'ignore',
     });
+    const exited = new Promise<number | null>((resolve) => child.once('close', resolve));
+    let exitCode: number | null = null;
 
     try {
       for (let attempt = 0; attempt < 200 && !existsSync(started); attempt += 1) {
@@ -232,11 +238,20 @@ describe('mirror-tree.sh', () => {
       }
       expect(existsSync(started), 'copy wrapper did not reach its pause point').toBe(true);
       expect(fileSet(join(root, 'public'))).toEqual([]);
+      const staged = readdirSync(root).filter((name) => name.startsWith('.mirror-tree.tmp.'));
+      expect(staged).toHaveLength(1);
+      const census = spawnSync('git', ['ls-files', '--others', '--exclude-standard'], {
+        cwd: root, encoding: 'utf8',
+      });
+      expect(census.status, census.stderr).toBe(0);
+      const paths = census.stdout.trim().split('\n');
+      expect(paths).toContain('authored-control.ts');
+      expect(paths.filter((path) => staged.includes(path))).toEqual([]);
     } finally {
       writeFileSync(release, 'continue');
+      exitCode = await exited;
     }
 
-    const exitCode = await new Promise<number | null>((resolve) => child.once('close', resolve));
     expect(exitCode).toBe(0);
     expect(readFileSync(join(root, 'public/vad-runtime/ort-wasm.wasm'), 'utf8')).toBe('new wasm bytes');
     expect(fileSet(join(root, 'public'))).toEqual(['vad-runtime/ort-wasm.wasm']);

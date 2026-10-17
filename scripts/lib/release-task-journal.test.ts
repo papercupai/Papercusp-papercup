@@ -238,6 +238,60 @@ describe('release task stage transitions', () => {
     });
   });
 
+  it('resumes after an injected interruption at every desktop release phase without replaying committed work', async () => {
+    const store = ledger();
+    const phases = [
+      'release.build.linux',
+      'release.build.windows',
+      'release.build.mac',
+      'release.manifest',
+    ];
+
+    for (const phase of phases) {
+      const input = { stage: phase, identity: { phase, artifact: `${phase}-bytes` } };
+      const started = await beginReleaseTaskStage(context(store), input);
+      expect(started, `${phase} did not start a fresh attempt`).toMatchObject({ action: 'run', state: 'intent' });
+
+      const interrupted = await settleReleaseTaskStage(context(store), {
+        ...input,
+        requestIdentity: started.requestIdentity!,
+        state: 'unknown',
+        evidenceRefs: [`fault:interrupted-after:${phase}`],
+      });
+      expect(interrupted).toMatchObject({ action: 'reconcile', state: 'unknown' });
+
+      const resumed = await beginReleaseTaskStage(context(store), input);
+      expect(resumed, `${phase} replayed instead of reconciling the interrupted request`).toMatchObject({
+        action: 'reconcile',
+        state: 'unknown',
+        requestIdentity: started.requestIdentity,
+      });
+
+      const committed = await settleReleaseTaskStage(context(store), {
+        ...input,
+        requestIdentity: started.requestIdentity!,
+        state: 'committed',
+        evidenceRefs: [`artifact-set:verified:${phase}`],
+      });
+      expect(committed).toMatchObject({ action: 'reuse', state: 'committed' });
+
+      const replay = await beginReleaseTaskStage(context(store), input);
+      expect(replay, `${phase} did not reuse its verified receipt`).toMatchObject({
+        action: 'reuse',
+        state: 'committed',
+        requestIdentity: started.requestIdentity,
+      });
+    }
+
+    expect(store.journal.receipts.map(({ stage, state }) => ({ stage, state }))).toEqual(
+      phases.flatMap((stage) => [
+        { stage, state: 'intent' },
+        { stage, state: 'unknown' },
+        { stage, state: 'committed' },
+      ]),
+    );
+  });
+
   it('seeds a prior committed hit only as a fresh reconcile intent, then records measured preparation', async () => {
     const priorReceipt: TaskReleaseReceipt = {
       sequence: 4,

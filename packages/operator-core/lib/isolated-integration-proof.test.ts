@@ -1,13 +1,98 @@
 import { expect, it, vi } from 'vitest';
 import { fork, spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
 import { assertIsolatedWorkerReaped, captureIsolatedWorker, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress } from '../test/isolated-integration-proof';
-import { privateClaudeModelConfig, privateCodexModelConfig, retainPrivateProviderResponse, stopPrivateOperatorHost } from '../test/private-http-workspace-preflight';
+import { assertPrivateUnrelatedCheckpointObservation, privateClaudeModelConfig, privateCodexModelConfig, retainPrivateProviderResponse, stopPrivateOperatorHost, type PrivateUnrelatedCheckpointObservation } from '../test/private-http-workspace-preflight';
 const NEVER_EMIT_MARKER = 'never-emit-me';
+
+function unrelatedCheckpointObservation(): PrivateUnrelatedCheckpointObservation {
+  const checkpoint = 'Private unrelated checkpoint control';
+  const health = { service: 'papercusp-operator', sha: '1234567890abcdef' };
+  const stall = { itemId: 'WI-stalled', pid: 1234, backendStart: '2026-10-16T00:00:00Z',
+    queryStart: '2026-10-16T00:01:00Z', state: 'active', waitEventType: 'Lock' };
+  return { workspace: 'test-runtime-p009', base: 'http://127.0.0.1:43123', expectedBuildSha: health.sha,
+    healthBefore: { ...health }, healthAfter: { ...health }, itemId: 'WI-unrelated', harness: 'test-runtime-p009',
+    checkpoint, startedAtMs: 100, completedAtMs: 20_100,
+    stallBefore: { ...stall, observedAtMs: 99 }, stallAfter: { ...stall, observedAtMs: 20_101 },
+    response: { status: 200, envelope: { ok: true, result: { structuredContent: {
+      ok: true, counts: { ok: 1, failed: 0 }, results: [{ ok: true, id: 'WI-unrelated', harness: 'test-runtime-p009',
+        cleared: false, verified: true, length: checkpoint.length,
+        contentHash: createHash('sha256').update(checkpoint).digest('hex').slice(0, 12) }],
+    } } } },
+    readback: { observedAtMs: 20_102, workspace: 'test-runtime-p009', harness: 'test-runtime-p009',
+      itemId: 'WI-unrelated', checkpoint } };
+}
+
+it('qualifies only a persisted unrelated HTTP checkpoint within the D-007 20-second boundary', () => {
+  expect(() => assertPrivateUnrelatedCheckpointObservation(unrelatedCheckpointObservation())).not.toThrow();
+  const textReceipt = unrelatedCheckpointObservation();
+  const envelope = textReceipt.response.envelope as any;
+  envelope.result.content = [{ type: 'text', text: JSON.stringify(envelope.result.structuredContent) }];
+  delete envelope.result.structuredContent;
+  expect(() => assertPrivateUnrelatedCheckpointObservation(textReceipt)).not.toThrow();
+});
+
+it.for([
+  ['late body', (o: PrivateUnrelatedCheckpointObservation) => { o.completedAtMs += 0.01; }],
+  ['backwards clock', o => { o.completedAtMs = o.startedAtMs - 1; }],
+  ['missing clock', o => { o.startedAtMs = Number.NaN; }],
+  ['same item', o => { o.stallBefore.itemId = o.stallAfter.itemId = o.itemId; }],
+  ['unobserved stall', o => { o.stallBefore = undefined as any; }],
+  ['stall ended', o => { o.stallAfter.state = 'idle'; }],
+  ['not a lock wait', o => { o.stallAfter.waitEventType = 'Client'; }],
+  ['different backend', o => { o.stallAfter.backendStart += '-new'; }],
+  ['different query', o => { o.stallAfter.queryStart += '-new'; }],
+  ['late stall', o => { o.stallBefore.observedAtMs = o.startedAtMs + 1; }],
+  ['early release', o => { o.stallAfter.observedAtMs = o.completedAtMs - 1; }],
+  ['live workspace', o => { o.workspace = 'papercusp-workspace'; }],
+  ['shared staging host', o => { o.base = 'http://127.0.0.1:3170'; }],
+  ['remote host', o => { o.base = 'http://example.com:43123'; }],
+  ['changed build', o => { o.healthAfter.sha = 'abcdef123456'; }],
+  ['stale bundle', o => { o.healthBefore.bundleStale = true; }],
+  ['HTTP failure', o => { o.response.status = 503; }],
+  ['wrong readback item', o => { o.readback.itemId = 'WI-other'; }],
+  ['wrong readback workspace', o => { o.readback.workspace = 'test-runtime-other'; }],
+  ['wrong readback bytes', o => { o.readback.checkpoint += ' changed'; }],
+  ['old readback', o => { o.readback.observedAtMs = o.startedAtMs - 1; }],
+] satisfies Array<[string, (o: PrivateUnrelatedCheckpointObservation) => void]>)('rejects missing or mismatched private checkpoint evidence: %s', ([, change]) => {
+  const observation = unrelatedCheckpointObservation();
+  change(observation);
+  expect(() => assertPrivateUnrelatedCheckpointObservation(observation)).toThrow();
+});
+
+it.for(['timeout', 'unavailable', 'not_forwarded', 'forwarded', 'outcome_unknown', 'checkpoint_verify_unavailable'])(
+  'rejects %s as an unrelated checkpoint success receipt', error => {
+    const observation = unrelatedCheckpointObservation();
+    const receipt = (observation.response.envelope as any).result.structuredContent;
+    receipt.ok = false;
+    receipt.counts = { ok: 0, failed: 1 };
+    receipt.results[0] = { ok: false, id: observation.itemId, errorCode: error, writeCommitted: true };
+    expect(() => assertPrivateUnrelatedCheckpointObservation(observation)).toThrow();
+  });
+
+it.for(['wrong item', 'wrong harness', 'not verified', 'wrong hash', 'partial batch', 'tool error', 'ambiguous JSON'])(
+  'rejects a superficially successful checkpoint receipt: %s', fault => {
+    const observation = unrelatedCheckpointObservation();
+    const envelope = observation.response.envelope as any;
+    const receipt = envelope.result.structuredContent;
+    const row = receipt.results[0];
+    if (fault === 'wrong item') row.id = 'WI-other';
+    if (fault === 'wrong harness') row.harness = 'test-runtime-other';
+    if (fault === 'not verified') row.verified = false;
+    if (fault === 'wrong hash') row.contentHash = 'a'.repeat(12);
+    if (fault === 'partial batch') receipt.counts.failed = 1;
+    if (fault === 'tool error') envelope.result.isError = true;
+    if (fault === 'ambiguous JSON') {
+      envelope.result.content = [1, 2].map(() => ({ type: 'text', text: JSON.stringify(receipt) }));
+      delete envelope.result.structuredContent;
+    }
+    expect(() => assertPrivateUnrelatedCheckpointObservation(observation)).toThrow();
+  });
 
 it('measures Claude native model, effort, owner, pin and private MCP without retaining credentials', () => {
   const argv = ['/native/claude', '--model=claude-sonnet-5', '--effort', 'high',

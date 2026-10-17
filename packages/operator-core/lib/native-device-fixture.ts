@@ -3,13 +3,18 @@
  * node scripts/with-test-pg.mjs --isolated-runtime=operator-api -- node --import tsx
  *   packages/operator-core/lib/native-device-fixture.ts <private evidence dir> <cert.pem> [seconds]
  * The receipt is public-safe; pair-payload.json is private input and is removed on exit.
+ * The advertised-hostname journey takes an empty cert argument and offlineSeconds=0.
+ * Its caller must lease and delegate only the existing /api/device provider rule
+ * to ROUTE_READY.ingressTarget, then verify exact restoration before stopping it.
+ * Readiness requires the private one-shot token to be redeemed through that route.
+ * Existing temporary-hostname native cases keep their original safety guards.
  */
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { Resolver, resolve4, resolveNs } from 'node:dns/promises';
-import { existsSync, mkdirSync, openSync, closeSync, fstatSync, readSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, openSync, closeSync, fsyncSync, fstatSync, readSync, readFileSync, renameSync, unlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { cloudflareApi, type CloudflareApi, type CloudflareZone } from './own-tunnel/cloudflare-api';
 import { assertPort, parseArgoTunnelCert, tunnelCnameTarget } from './own-tunnel/config';
@@ -19,6 +24,25 @@ import type { WorkspaceRegistry } from './workspace-registry';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const delay = (ms: number) => new Promise<void>(done => setTimeout(done, ms));
+
+export function saveFixtureReceipt(evidence: string, receipt: Record<string, unknown>): void {
+  const path = resolve(evidence, 'runtime.json');
+  const data = JSON.stringify(receipt, null, 2) + '\n';
+  // Follow writeRegistry's unique sibling + rename convention: readers see a
+  // complete old or new generation, including during readiness/cleanup updates.
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  const fd = openSync(temporary, 'wx', 0o600);
+  try {
+    try {
+      writeFileSync(fd, data);
+      fsyncSync(fd);
+    } finally { closeSync(fd); }
+    renameSync(temporary, path);
+  } finally {
+    try { unlinkSync(temporary); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+}
 
 export function fixtureFailure(error: unknown) {
   const detail = error instanceof Error ? error : new Error(String(error));
@@ -133,6 +157,8 @@ export function fixtureIdentity(env: NodeJS.ProcessEnv) {
   assert(env.HOME && env.PAPERCUSP_HOME && env.PAPERCUSP_SKIP_PG_DISCOVERY === '1', 'Private HOME and PG required');
   const base = new URL(env.PAPERCUSP_OPERATOR_URL ?? '');
   assert(base.protocol === 'http:' && base.hostname === '127.0.0.1' && base.pathname === '/', 'Private loopback operator required');
+  assert(base.port && ![3070, 3170, 3055].includes(Number(base.port)) &&
+    !base.username && !base.password && !base.search && !base.hash, 'Private child operator port required');
   assert.equal(env.PAPERCUSP_HONO_PORT, base.port, 'Private child operator port must match');
   const pgPort = assertPort(Number(env.PAPERCUSP_PG_PORT));
   assert(pgPort !== 5432, 'Owned isolated Postgres required');
@@ -164,6 +190,71 @@ export async function verifyProtectedIngress(base: string, doFetch: typeof fetch
   assert.equal(heartbeat.status, 401, 'Device heartbeat must require a JWT');
   await heartbeat.arrayBuffer();
   return statuses;
+}
+
+/** Prove an externally delegated advertised route reaches this private fixture.
+ * A shared operator must refuse the private one-shot token. No shared credentials,
+ * registry writes, attention reads or workspace switches are used by this probe.
+ * The caller owns delegation/restoration of the provider route; this helper only
+ * mints and revokes a probe device in the disposable database.
+ */
+export async function verifyAdvertisedFixtureRoute(env = process.env, doFetch: typeof fetch = fetch) {
+  const identity = fixtureIdentity(env);
+  const publicBase = 'https://api.papercuspai.com';
+  const call = (base: string, path: string, init: RequestInit = {}) => doFetch(base + path, {
+    ...init, redirect: 'error', signal: AbortSignal.timeout(15000),
+  });
+  const boundary: Record<string, number> = {};
+  for (const [path, method, expected] of [
+    ['/api/device/desktop/mint-pair-token', 'POST', 404],
+    ['/api/device/desktop/devices', 'GET', 404],
+    ['/api/device/heartbeat', 'POST', 401],
+  ] as const) {
+    const response = await call(publicBase, path, { method,
+      ...(method === 'POST' ? { headers: { 'content-type': 'application/json' }, body: '{}' } : {}) });
+    boundary[path] = response.status;
+    await response.arrayBuffer();
+    assert.equal(response.status, expected, 'Advertised device route boundary mismatch');
+  }
+  const minted = await call(identity.base, '/api/device/desktop/mint-pair-token', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ workspaceId: identity.workspaceId }),
+  });
+  assert.equal(minted.status, 200, 'Private route-probe mint failed');
+  const { qrPayload } = await minted.json();
+  assert(qrPayload?.server === publicBase && qrPayload.workspaceId === identity.workspaceId &&
+    typeof qrPayload.pairToken === 'string' && qrPayload.pairToken, 'Private route-probe payload mismatch');
+  let deviceId: string | undefined;
+  try {
+    const paired = await call(publicBase, '/api/device/pair', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pairToken: qrPayload.pairToken, deviceLabel: 'Advertised route isolation probe' }),
+    });
+    assert.equal(paired.status, 200, 'Advertised route does not reach the disposable fixture');
+    const result = await paired.json();
+    assert(typeof result.deviceId === 'string' && /^[0-9a-f-]{36}$/i.test(result.deviceId),
+      'Route-probe device identity missing');
+    deviceId = result.deviceId;
+    assert.equal(result.workspaceId, identity.workspaceId, 'Route-probe workspace mismatch');
+    assert(typeof result.deviceToken === 'string' && result.deviceToken, 'Route-probe device token missing');
+    const local = await call(identity.base, '/api/device/desktop/devices');
+    assert.equal(local.status, 200, 'Private route-probe device lookup failed');
+    const localDevices = await local.json();
+    assert(Array.isArray(localDevices.devices) && localDevices.devices.some((d: { device_id?: string; workspace_id?: string }) =>
+      d.device_id === deviceId && d.workspace_id === identity.workspaceId), 'Public pair was not created in the private fixture');
+    const runtime = await call(publicBase, '/api/device/runtime-config', {
+      headers: { authorization: 'Bearer ' + result.deviceToken },
+    });
+    assert.equal(runtime.status, 200, 'Advertised route-probe authorization failed');
+    assert.equal((await runtime.json()).workspaceId, identity.workspaceId, 'Advertised route-probe runtime mismatch');
+    return { publicBase, workspaceId: identity.workspaceId, boundary, privatePairVerified: true };
+  } finally {
+    if (deviceId) {
+      const revoked = await call(identity.base, '/api/device/desktop/devices/' + encodeURIComponent(deviceId), { method: 'DELETE' });
+      await revoked.arrayBuffer();
+      assert.equal(revoked.status, 200, 'Private route-probe cleanup failed');
+    }
+  }
 }
 
 /** Recover partially provisioned owned resources; never delete a tunnel/record by a loose prefix. */
@@ -257,7 +348,7 @@ export async function prepareFixtureWorkspaceSwitch() {
 
 export async function runNativeDeviceFixture(evidencePath: string, certPath: string, seconds = 1800,
   interruptionSeconds = Number(process.env.PAPERCUSP_NATIVE_OFFLINE_SECONDS ?? '0'), workspaceSwitch = false,
-  deviceExpiry = false) {
+  deviceExpiry = false, advertisedHostname = false) {
   const identity = fixtureIdentity(process.env); // All preconditions precede any external write.
   assert(Number.isInteger(seconds) && seconds >= 30 && seconds <= 3600, 'Bounded lifetime required');
   assert(interruptionSeconds === 0 || (Number.isInteger(interruptionSeconds) && interruptionSeconds >= 30 &&
@@ -265,12 +356,14 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
   assert(!workspaceSwitch || interruptionSeconds === 0, 'Workspace-switch and outage acceptance require separate fixtures');
   assert(!deviceExpiry || (!workspaceSwitch && interruptionSeconds === 0),
     'Device expiry requires a separate fixture');
+  assert(!advertisedHostname || (!deviceExpiry && !workspaceSwitch && interruptionSeconds === 0),
+    'Advertised-hostname acceptance requires a separate fixture');
   const evidence = resolve(evidencePath);
   assert(isAbsolute(evidencePath) && relative(ROOT, evidence).startsWith('..'), 'Evidence/private input must be outside the repository');
   // Device expiry uses the existing private desktop controls only. It creates
   // no tunnel, DNS record or public route and needs no provider credential.
-  const login = deviceExpiry ? undefined : parseArgoTunnelCert(readFileSync(certPath, 'utf8'));
-  assert(deviceExpiry || login, 'A maintained Cloudflare login certificate is required');
+  const login = deviceExpiry || advertisedHostname ? undefined : parseArgoTunnelCert(readFileSync(certPath, 'utf8'));
+  assert(deviceExpiry || advertisedHostname || login, 'A maintained Cloudflare login certificate is required');
   const api = login ? cloudflareApi({ apiToken: login.apiToken }) : undefined;
   const zone = api && login ? await api.getZone(login.zoneId) : undefined;
   if (zone && login) {
@@ -279,7 +372,8 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
   }
   const runId = randomUUID();
   const tunnelName = 'native-iphone-fixture-' + runId;
-  const hostname = zone ? 'native-iphone-' + runId + '.' + zone.name : '127.0.0.1';
+  const hostname = advertisedHostname ? 'api.papercuspai.com' :
+    zone ? 'native-iphone-' + runId + '.' + zone.name : '127.0.0.1';
   if (api && zone && login) {
     assert.equal((await api.listDnsRecords(zone.id, hostname)).length, 0, 'Fixture hostname already exists');
     assert.equal((await api.listTunnelsByName(login.accountId, tunnelName)).length, 0, 'Fixture tunnel already exists');
@@ -287,13 +381,25 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
   mkdirSync(evidence, { mode: 0o700 }); // Refuse an existing attempt; retain earlier evidence.
   const receipt: Record<string, unknown> = { schemaVersion: 1, runId, ...identity, hostname,
     publicBase: deviceExpiry ? identity.base : 'https://' + hostname, loopbackOnly: deviceExpiry,
+    ...(advertisedHostname ? { providerRouteOwnedByCaller: true,
+      providerRouteRestoration: 'Not performed or attested by this fixture; requires the caller\'s exact provider receipt',
+      cleanupScope: 'Owned fixture processes and private inputs; excludes the caller-owned provider route' } : {}),
     controlPid: process.pid, home: process.env.HOME,
     sourceSha256: createHash('sha256').update(readFileSync(fileURLToPath(import.meta.url))).digest('hex'),
     startedAt: new Date().toISOString(), ready: false, cleanupVerified: false,
     scope: deviceExpiry ? 'Disposable loopback device-expiry fixture; no public resources or release acceptance' :
       'Disposable public HTTPS fixture; no native UI, cloud relay or release acceptance claimed' };
-  const save = () => writeFileSync(resolve(evidence, 'runtime.json'), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600 });
+  const save = () => saveFixtureReceipt(evidence, receipt);
   let host: ChildProcess | undefined, connector: ChildProcess | undefined;
+  // Use the maintained host bundle producer instead of loading the CommonJS
+  // TypeScript entry through tsx. The committed-source guard correctly refuses
+  // a CommonJS transform of a checkout module; this fixture must exercise the
+  // same plain-node artifact that staging and release hosts run. Keep the
+  // generated directory under the ignored dist-host-* family so its bundle is
+  // allowed by the source guard, while its import.meta-derived repo root still
+  // resolves to this checkout.
+  const fixtureBundleDir = mkdtempSync(join(ROOT, 'apps/operator/dist-host-native-fixture-'));
+  const fixtureBundlePath = join(fixtureBundleDir, 'hono-host.mjs');
   let removal: (RemovalTarget & { tunnelName: string }) | undefined;
   let stopped = false;
   const stop = () => { stopped = true; };
@@ -314,10 +420,38 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
       ...process.env, MOBILE_JWT_SECRET: randomBytes(48).toString('base64url'),
       MOBILE_DESKTOP_PUBLIC_URL: String(receipt.publicBase), MOBILE_DESKTOP_HOST: hostname,
     };
-    const startHost = (log: string) => start(process.execPath,
-      ['--import', 'tsx', ...(deviceExpiry ? ['--import', resolve(ROOT,
-        'packages/operator-core/lib/native-device-fixture-clock.ts')] : []),
-      resolve(ROOT, 'apps/operator/bin/hono-host.ts')], hostEnv, log, deviceExpiry);
+    // The bundle is already plain ESM; an inherited tsx hook would still
+    // transform any runtime source import and make the committed-source guard
+    // refuse it. Retain that guard as the only preload for this child rather
+    // than disabling NODE_OPTIONS or running an unjudged transformed module.
+    const bundleHostEnv = {
+      ...hostEnv,
+      NODE_OPTIONS: `--import=${resolve(ROOT, 'scripts/lib/committed-source-loader.mjs')}`,
+    };
+    const startHost = (log: string) => {
+      const buildLog = resolve(evidence, 'host-bundle-build.log');
+      try {
+        const output = execFileSync('bash', [resolve(ROOT, 'apps/operator/bin/bundle-host.sh'),
+          'bin/hono-host.ts', fixtureBundlePath], {
+          cwd: ROOT, env: hostEnv, encoding: 'utf8', timeout: 180_000,
+          maxBuffer: 8 * 1024 * 1024,
+        });
+        writeFileSync(buildLog, output, { mode: 0o600 });
+      } catch (error) {
+        const detail = error && typeof error === 'object'
+          ? `${String((error as { stdout?: unknown }).stdout ?? '')}${String((error as { stderr?: unknown }).stderr ?? '')}`
+          : String(error);
+        writeFileSync(buildLog, detail.slice(-32_000), { mode: 0o600 });
+        // Preserve the build refusal in the conventional host log as well: the
+        // caller's bounded startup diagnostic already reads that path.
+        writeFileSync(resolve(evidence, log), detail.slice(-32_000), { mode: 0o600 });
+        throw error;
+      }
+      return start(process.execPath,
+        [...(deviceExpiry ? ['--import', resolve(ROOT,
+          'packages/operator-core/lib/native-device-fixture-clock.ts')] : []), fixtureBundlePath],
+        bundleHostEnv, log, deviceExpiry);
+    };
     host = startHost('host.log');
     receipt.hostPid = host.pid;
     await waitForFixtureHost(host, resolve(evidence, 'host.log'), async () => {
@@ -331,6 +465,22 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
         receipt.localBoundary = await verifyProtectedIngress('http://127.0.0.1:' + identity.ingressPort);
     }, { timeoutMs: 180_000, pollMs: 500, stopped: () => stopped,
       record: diagnostic => { receipt.localReadiness = diagnostic; save(); } });
+    if (advertisedHostname) {
+      receipt.awaitingPublicRoute = { publicBase: receipt.publicBase,
+        ingressTarget: 'http://127.0.0.1:' + identity.ingressPort };
+      save();
+      console.log('NATIVE_HTTPS_FIXTURE_ROUTE_READY=' + JSON.stringify(receipt.awaitingPublicRoute));
+      const routeReadyBy = Date.now() + 120_000;
+      for (;;) {
+        assert(!stopped && host.exitCode === null && host.signalCode === null, 'Advertised fixture stopped');
+        try { receipt.advertisedRoute = await verifyAdvertisedFixtureRoute(); break; }
+        catch (error) {
+          receipt.publicLastFailure = fixtureFailure(error); save();
+          if (Date.now() >= routeReadyBy) throw error;
+          await delay(1000);
+        }
+      }
+    }
     if (api && login && zone) {
     // Track creation immediately, including a later config/DNS/token failure.
     const trackedApi: CloudflareApi = { ...api, createTunnel: async (accountId, name) => {
@@ -464,6 +614,7 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
       const input = resolve(evidence, name); if (existsSync(input)) unlinkSync(input);
     }
     for (const fd of logs) closeSync(fd);
+    rmSync(fixtureBundleDir, { recursive: true, force: true });
     receipt.cleanupVerified = receipt.processCleanupVerified === true && receipt.cloudCleanupVerified === true;
     receipt.finishedAt = new Date().toISOString(); save();
     console.log('NATIVE_HTTPS_FIXTURE_TERMINAL=' + JSON.stringify({ ready: receipt.ready, cleanupVerified: receipt.cleanupVerified,
@@ -473,10 +624,10 @@ export async function runNativeDeviceFixture(evidencePath: string, certPath: str
 
 if (isCliEntry(import.meta.url)) {
   const [evidence, cert, lifetime, offlineSeconds, journey] = process.argv.slice(2);
-  assert(journey === undefined || ['workspace-switch', 'device-expiry'].includes(journey), 'Unknown native fixture journey');
+  assert(journey === undefined || ['workspace-switch', 'device-expiry', 'advertised-hostname'].includes(journey), 'Unknown native fixture journey');
   runNativeDeviceFixture(evidence ?? '', cert ?? '', lifetime ? Number(lifetime) : 1800,
     offlineSeconds === undefined ? undefined : Number(offlineSeconds), journey === 'workspace-switch',
-    journey === 'device-expiry').catch(error => {
+    journey === 'device-expiry', journey === 'advertised-hostname').catch(error => {
     console.error('NATIVE_HTTPS_FIXTURE_PREFLIGHT_FAILED=' + error.message); process.exitCode = 1;
   });
 }

@@ -63,6 +63,7 @@ let unreachableSince = 0;
 let lastRestart = 0;
 const restartTimes = []; // epoch ms of recent restarts (rolling 1h window for the circuit breaker)
 const deadProxyLastAlert = new Map(); // accountId -> epoch ms last DEAD-PROXY alert (per-account anti-spam debounce)
+const upstreamTransportLastAlert = new Map(); // accountId -> epoch ms last direct-route transport alert
 let egressPoolDownLastAlert = 0; // epoch ms of the last EGRESS-POOL-DOWN alert (same debounce window)
 let egressPoolWasDown = false; // edge-trigger latch, so a standing outage logs once rather than every poll
 let directEgressCollapseLastAlert = 0;
@@ -135,14 +136,39 @@ export function externalStallReason(s, selfHealAtFreezeStart) {
  *  deadest (the 2026-06-22 audit: aviynw had the most raw fails only because it carried the most traffic;
  *  definitelyahuman was the true dead proxy at ~95% rate). */
 export function deadProxyAlerts(stats, { minAttempts = DEADPROXY_MIN_ATTEMPTS, rateThreshold = DEADPROXY_RATE } = {}) {
-  const rate = (stats && stats.egressFailRateByAccount) || {};
-  const attempts = (stats && stats.egressAttemptsByAccount) || {};
-  const fails = (stats && stats.egressFailsByAccount) || {};
+  // New gateways publish proxy-only counters because the broad counters include direct routes. Keep the
+  // legacy fallback for deploy skew, but a confirmed proxy-empty pool must never produce a DEAD-PROXY alert.
+  const proxyRate = stats && stats.egressProxyFailRateByAccount;
+  if (stats?.egressProxyHealth?.configured === false && !proxyRate) return [];
+  const rate = proxyRate || (stats && stats.egressFailRateByAccount) || {};
+  const attempts = (proxyRate ? stats.egressProxyAttemptsByAccount : stats && stats.egressAttemptsByAccount) || {};
+  const fails = (proxyRate ? stats.egressProxyFailsByAccount : stats && stats.egressFailsByAccount) || {};
   const out = [];
   for (const [id, r] of Object.entries(rate)) {
     const a = Number(attempts[id]) || 0;
     if (a >= minAttempts && Number(r) >= rateThreshold) {
       out.push({ accountId: id, rate: Number(r), attempts: a, fails: Number(fails[id]) || 0 });
+    }
+  }
+  return out.sort((x, y) => y.rate - x.rate);
+}
+
+/** Rank direct-route transport failures separately from proxy failures. A direct route is an upstream/network
+ *  problem, not a dead proxy; keeping the signal visible prevents the fix from becoming a silent suppression.
+ *  The function requires proxy-specific counters, so older deploys remain unknown rather than misclassified. */
+export function upstreamTransportAlerts(stats, { minAttempts = DEADPROXY_MIN_ATTEMPTS, rateThreshold = DEADPROXY_RATE } = {}) {
+  const attempts = stats?.egressAttemptsByAccount;
+  const fails = stats?.egressFailsByAccount;
+  const proxyAttempts = stats?.egressProxyAttemptsByAccount;
+  const proxyFails = stats?.egressProxyFailsByAccount;
+  if (!attempts || !fails || !proxyAttempts || !proxyFails) return [];
+  const out = [];
+  for (const [id, rawAttempts] of Object.entries(attempts)) {
+    const directAttempts = Math.max(0, (Number(rawAttempts) || 0) - (Number(proxyAttempts[id]) || 0));
+    const directFails = Math.max(0, (Number(fails[id]) || 0) - (Number(proxyFails[id]) || 0));
+    const rate = directAttempts > 0 ? directFails / directAttempts : 0;
+    if (directAttempts >= minAttempts && rate >= rateThreshold) {
+      out.push({ accountId: id, rate, attempts: directAttempts, fails: directFails });
     }
   }
   return out.sort((x, y) => y.rate - x.rate);
@@ -251,6 +277,22 @@ async function poll() {
     }
   } catch (e) {
     log(`dead-proxy check error (non-fatal): ${e.message}`);
+  }
+
+  // Direct-route transport failures are a different diagnosis from a dead proxy. Keep this signal explicit so
+  // suppressing a false DEAD-PROXY alert does not hide an upstream TTFB/connectivity outage.
+  try {
+    for (const failure of upstreamTransportAlerts(s)) {
+      const last = upstreamTransportLastAlert.get(failure.accountId) || 0;
+      if (now - last >= DEADPROXY_REALERT_MS) {
+        upstreamTransportLastAlert.set(failure.accountId, now);
+        log(
+          `UPSTREAM-TRANSPORT: '${failure.accountId}' upstream transport failures (no proxy) ${Math.round(failure.rate * 100)}% (${failure.fails}/${failure.attempts} attempts) >= ${Math.round(DEADPROXY_RATE * 100)}% threshold — investigate the upstream/network path; no configured egress proxy was involved.`,
+        );
+      }
+    }
+  } catch (e) {
+    log(`upstream-transport check error (non-fatal): ${e.message}`);
   }
 
   // Pool-wide EGRESS-DOWN alert (EI-18664933641195210). Same always-on-observability contract as the

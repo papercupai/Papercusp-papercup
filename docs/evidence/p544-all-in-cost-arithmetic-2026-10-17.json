@@ -1,0 +1,49 @@
+{
+  "scope": "Local maintained cost arithmetic regression; not measured trial cost, capacity acceptance or shipment",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "planItem": "P-544",
+  "workItem": "WI-6554700010016277",
+  "decision": "D-076",
+  "reuse": "Extended scripts/agent-capacity/cost-model.ts onDemandMonthUsd; retained its backup, network and control-plane inputs and all existing size-guide arithmetic.",
+  "carryCorrection": "The prior carry claim that onDemandMonthUsd excludes backups, network and control plane was wrong. Those fields already existed. Inference was absent; omitted required keys also escaped Object.entries validation.",
+  "change": [
+    "Require explicit monthly inference exposure, including customer-direct usage, and include it in totalUsd.",
+    "Validate every named required cost input, including truly omitted keys, rather than only keys present in the object.",
+    "Reject a non-finite computed total caused by otherwise finite inputs.",
+    "Keep monthly retained and inference charges independent of compute running hours."
+  ],
+  "verification": {
+    "before": {
+      "command": "npm run test:file -- scripts/agent-capacity/cost-model.test.ts",
+      "log": "/tmp/p544-all-in-cost-before.log",
+      "exitCode": 1,
+      "passed": 26,
+      "failed": 7,
+      "scopeCaveat": "Baseline lacked explicit PAPERCUSP_TEST_RUN_HARNESS; use it as local regression reproduction, not attributed ledger proof."
+    },
+    "after": {
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- scripts/agent-capacity/cost-model.test.ts scripts/agent-capacity/size-guide.test.ts",
+      "log": "/tmp/p544-all-in-cost-after.log",
+      "exitCode": 0,
+      "filesPassed": 2,
+      "passed": 46,
+      "failed": 0,
+      "costModelTests": 33,
+      "sizeGuideTests": 13,
+      "provenanceStamp": "TEST_FILE_RESULT requested=2 executed=2 matched=2 status=passed head=86bc183d2b uncommittedPaths=1/2 provenance=stamped startedAt=2026-10-17T02:42:09.411Z childSubstituted=0 skippedTests=0",
+      "scopeCaveat": "Local working-tree verification; the runner stamps named test files, not the complete import graph. Source hashes below record the inspected local implementation. No committed, deployed or live-gate claim."
+    },
+    "sourceSha256": {
+      "scripts/agent-capacity/cost-model.ts": "fe99d9b7c5e638548d96caf64f39a257b9395b196bd6c26d8023e4afbcd07601",
+      "scripts/agent-capacity/cost-model.test.ts": "39047aed8c3ec63b985941bda44b00cd1980e0c51fbd99c06622692cd6dcf2b7",
+      "scripts/agent-capacity/size-guide.test.ts": "6db5a789f406cb4e27378bd2c220994d5e021d74f9ab48e7c6123dc85196e614"
+    },
+    "syntheticBoundary": "The regression's 120-hour fixture costs $16.80 before inference and $20.00 with $3.20 of inference. These are synthetic test inputs, not provider measurements and not an under-$20 result."
+  },
+  "remaining": [
+    "Define the actual trial task and inference duty profile in addition to active VM hours.",
+    "Bind each compute, disk, backup, network, control-plane and inference charge to observed usage and its actual applicable rate using existing billing evidence surfaces.",
+    "Complete D-075 UX/capacity, valid application readiness, durability and teardown evidence. The lost historical 4CPU raw native histories remain a gap.",
+    "P-544 remains open until a measured usable all-in monthly profile is strictly below $20."
+  ]
+}

@@ -14,6 +14,7 @@ import {
   scanForSecrets,
   hasSecrets,
   isFixtureFile,
+  isGeneratedNativeFixturePath,
   shannonEntropy,
   describeSecretFindings,
 } from './secrets-guard';
@@ -102,6 +103,30 @@ describe('secrets-guard rules', () => {
         path: 'packages/operator-core/lib/dao-hr/contracts-esign.test.ts',
         relative: '../../dao-hr/contracts-esign.test.ts',
       },
+      {
+        path: 'apps/operator/bin/hosted-check-refs.test.ts',
+        relative: '../../../../../apps/operator/bin/hosted-check-refs.test.ts',
+      },
+      {
+        path: 'packages/operator-core/lib/auth/hosted/secret-ref.test.ts',
+        relative: '../../auth/hosted/secret-ref.test.ts',
+      },
+      {
+        path: 'packages/operator-core/lib/isolated-integration-proof.test.ts',
+        relative: '../../isolated-integration-proof.test.ts',
+      },
+      {
+        path: 'packages/operator-core/lib/auth/hosted/database-access.integration.test.ts',
+        relative: '../../auth/hosted/database-access.integration.test.ts',
+      },
+      {
+        path: 'packages/operator-core/lib/endpoint-route/hosted-billing-runtime.test.ts',
+        relative: '../../endpoint-route/hosted-billing-runtime.test.ts',
+      },
+      {
+        path: 'packages/operator-core/lib/workspace-host/hosted-gcp-auth.test.ts',
+        relative: '../../workspace-host/hosted-gcp-auth.test.ts',
+      },
     ];
     for (const file of files) {
       const content = readFileSync(join(__dirname, file.relative), 'utf8');
@@ -180,6 +205,26 @@ describe('secrets-guard rules', () => {
     // Sanity: the SAME literal at a non-fixture path still flags — confirms the
     // exemption is path-scoped, not a rule change that weakened detection.
     expect(scanForSecrets([{ path: 'src/config.ts', content: historicalContent }]).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('skips generated native fixture bundles while scanning similarly named source', () => {
+    const text = `const key = '${AKIA}';\n${GH}\n`;
+    const generatedPaths = [
+      'apps/operator/dist-host-native-fixture-debug-2001983/hono-host.mjs',
+      'apps/operator/apps/operator/dist-host-native-fixture-debug-2047298/hono-host.mjs',
+    ];
+    for (const path of generatedPaths) {
+      expect(isGeneratedNativeFixturePath(path)).toBe(true);
+      expect(scanForSecrets([{ path, content: text }])).toEqual([]);
+      expect(hasSecrets([{ path, content: text }])).toBe(false);
+    }
+    const maintainedPath = 'packages/operator-core/lib/dist-host-native-fixture-debugger.ts';
+    expect(isGeneratedNativeFixturePath(maintainedPath)).toBe(false);
+    expect(scanForSecrets([{ path: maintainedPath, content: text }]).map((f) => f.rule)).toEqual([
+      'aws-access-key-id',
+      'github-token',
+    ]);
+    expect(hasSecrets([{ path: maintainedPath, content: text }])).toBe(true);
   });
 
   it('BLOCKING publish paths use the exemption-aware entrypoint, never the raw primitive', () => {

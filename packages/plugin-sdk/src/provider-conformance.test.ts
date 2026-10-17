@@ -176,6 +176,31 @@ function harness(flaws: Partial<Flaws> = {}): ProviderConformanceHarness {
 }
 
 describe('runProviderConformance', () => {
+  it('checks instance egress against the source connection, with foreign and missing-origin controls', async () => {
+    const make = async (connectionOrigin?: string) => {
+      const test = harness(); const original = test.adapter;
+      const d = await original.describe();
+      const translate = (host: Parameters<ProviderAdapter['syncPage']>[1]) => ({ fetch: (input: Parameters<typeof host.fetch>[0]) => host.fetch({
+        ...input, request: { ...input.request, url: input.request.url.replace(`https://${API}`, 'https://one.example.com') },
+      }) });
+      test.adapter = { describe: () => ({ ...d, egressHosts: [], oauth: { instance: true, authorizeUrl: '/authorize', tokenUrl: '/token', scopes: ['read'] } }),
+        syncPage: (request, host) => original.syncPage(request, translate(host)),
+        invoke: (request, host) => original.invoke(request, translate(host)),
+      };
+      test.config = connectionOrigin ? { connectionOrigin } : {};
+      test.createFetch = () => { const inner = demoWorld(); return (input) => inner({ ...input,
+        request: { ...input.request, url: input.request.url.replace('https://one.example.com', `https://${API}`) },
+      }); };
+      return runProviderConformance(test);
+    };
+    const good = await make('https://one.example.com');
+    expect(good.failures, formatProviderConformanceReport(good)).toEqual([]);
+    expect(good.checksSkipped).toEqual([]);
+    for (const origin of ['https://other.example.com', undefined]) {
+      const bad = await make(origin);
+      expect(bad.failures.map((f) => f.check)).toContain('egress-confined');
+    }
+  });
   it('passes a conforming package on every check, skipping none', async () => {
     const report = await runProviderConformance(harness());
     expect(report.failures, formatProviderConformanceReport(report)).toEqual([]);

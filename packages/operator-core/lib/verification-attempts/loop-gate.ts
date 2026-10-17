@@ -62,7 +62,8 @@ function key(a: WorkItemAttempt): string {
 }
 
 function isFailure(a: WorkItemAttempt): boolean {
-  return a.outcome === 'fail' || a.outcome === 'unknown';
+  // Missing exit evidence is unobserved, not a failure for the retry gate.
+  return a.outcome === 'fail';
 }
 
 function isAudit(note: AttemptAuditNote): boolean {

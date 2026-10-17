@@ -32,9 +32,9 @@ import { registerRoute, type RouteDefinition } from '../define-route';
 import { createHostedRouteStack } from '../hosted-route-stack';
 
 function execWith(
-  over: Partial<RouteDefinition> & { status?: RouteExecution['status']; url?: string; responseBytes?: number | null } = {},
+  over: Partial<RouteDefinition> & { status?: RouteExecution['status']; url?: string; responseBytes?: number | null; headers?: HeadersInit } = {},
 ): RouteExecution {
-  const { status, url, responseBytes, ...defOver } = over;
+  const { status, url, responseBytes, headers, ...defOver } = over;
   return {
     def: {
       method: 'GET',
@@ -44,7 +44,7 @@ function execWith(
       ...defOver,
     } as RouteDefinition,
     hono: {} as never,
-    req: new Request(url ?? 'http://x/x'),
+    req: new Request(url ?? 'http://x/x', { headers }),
     startedAt: Date.now() - 5,
     principal: null,
     input: undefined,
@@ -128,9 +128,70 @@ describe('recordRouteInvocation — resolved path + response bytes (EI-7069)', (
     recordRouteInvocation(execWith({ responseBytes: null }));
     await new Promise((r) => setTimeout(r, 0));
     const { params } = findInsertCall();
-    // response_bytes is the last bound param; assert it's specifically null,
+    // response_bytes is the $11 bound param; assert it's specifically null,
     // not just "params contains null somewhere" (principal fields are also null here).
-    expect(params[params.length - 1]).toBeNull();
+    expect(params[10]).toBeNull();
+  });
+});
+
+describe('recordRouteInvocation — Codex home repair correlation confidentiality', () => {
+  const attemptId = '78a48e81-3884-4af5-b864-e1ba22969740';
+  const path = '/adv/sessions/ensure-codex-home';
+
+  function metadata(): unknown {
+    const { params } = findInsertCall();
+    return typeof params[11] === 'string' ? JSON.parse(params[11]) : null;
+  }
+
+  it.each([attemptId, attemptId.toUpperCase()])('persists only the validated attempt UUID (%s)', async (header) => {
+    const exec = execWith({ method: 'POST', path,
+      url: 'http://x/api' + path + '?private=query-marker',
+      headers: { 'x-papercusp-repair-attempt': header, authorization: 'Bearer private-auth-marker',
+        'x-private-header': 'private-header-marker' },
+    });
+    recordRouteInvocation(exec);
+    // The finally recorder must snapshot before the caller can mutate exec.
+    exec.req.headers.set('x-papercusp-repair-attempt', 'private-late-header-marker');
+    await vi.waitFor(() => expect(metadata()).toEqual({ codexHomeRepairAttemptId: attemptId }));
+    expect(findInsertCall().sql).toContain('metadata_json');
+    const persisted = JSON.stringify(findInsertCall().params);
+    for (const marker of ['query-marker', 'private-auth-marker', 'private-header-marker', 'private-late-header-marker']) {
+      expect(persisted).not.toContain(marker);
+    }
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['arbitrary content', 'private-invalid-attempt-marker'],
+    ['duplicate header values', attemptId + ', ' + attemptId],
+    ['UUID with a suffix', attemptId + '-private-suffix-marker'],
+    ['nil UUID', '00000000-0000-0000-0000-000000000000'],
+    ['wrong variant', '78a48e81-3884-4af5-7864-e1ba22969740'],
+    ['oversized header', 'private-oversized-marker' + 'x'.repeat(1024)],
+  ])('omits %s without copying request headers', async (_label, header) => {
+    recordRouteInvocation(execWith({ method: 'POST', path,
+      headers: header === undefined ? {} : { 'x-papercusp-repair-attempt': header },
+    }));
+    await vi.waitFor(() => {
+      expect(findInsertCall()).toBeDefined();
+      expect(metadata()).toBeNull();
+    });
+    if (header !== undefined) expect(JSON.stringify(findInsertCall().params)).not.toContain(header);
+  });
+
+  it.each([
+    ['GET', path],
+    ['POST', '/adv/sessions/ensure-claude-home'],
+    ['POST', path + '/other'],
+  ])('omits the header on unrelated %s %s routes', async (method, routePath) => {
+    recordRouteInvocation(execWith({ method: method as 'GET' | 'POST', path: routePath,
+      headers: { 'x-papercusp-repair-attempt': attemptId },
+    }));
+    await vi.waitFor(() => {
+      expect(findInsertCall()).toBeDefined();
+      expect(metadata()).toBeNull();
+    });
+    expect(JSON.stringify(findInsertCall().params)).not.toContain(attemptId);
   });
 });
 

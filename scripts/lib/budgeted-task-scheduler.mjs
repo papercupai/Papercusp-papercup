@@ -11,6 +11,8 @@ import { withFsMutex } from "./fs-mutex.mjs";
 // red test suite at every caller.
 import { formatTaskBudgetRefusal } from "./task-exit-class.mjs";
 import { scriptCommandWords } from "./executed-source-map.mjs";
+import { readTaskCgroupLimit, readTaskCgroupMemoryMaxMb } from "./task-cgroup-limits.mjs";
+export { readTaskCgroupMemoryMaxMb } from "./task-cgroup-limits.mjs";
 
 export const DURATION_HISTORY_VERSION = 1;
 
@@ -312,6 +314,7 @@ function evaluateResolvedBudgetedTaskComparison(manifest, cohorts) {
   check("complete-original-abba-cohort-population", complete);
   let qualified = Boolean(complete);
   const executionWalls = [];
+  const observedMaxTasksBySide = { baseline: [], candidate: [] };
   for (const row of rows) {
     if (!pinned) { qualified = false; break; }
     const policy = row.side === "baseline" ? prepared.baseline : prepared.candidate;
@@ -366,8 +369,20 @@ function evaluateResolvedBudgetedTaskComparison(manifest, cohorts) {
       remaining.delete(child.task);
     }
     qualified &&= valid;
+    if (row.side in observedMaxTasksBySide)
+      observedMaxTasksBySide[row.side].push(row.stats?.observedMaxTasks);
     executionWalls.push(row.wallMs - queuedMs);
   }
+  // R12's measured concurrency clause is distinct from the configured ceiling: a receipt that
+  // merely repeats a larger candidate maxConcurrentTasks can still hide a serial scheduler. The
+  // candidate must demonstrate a higher observed task concurrency than the baseline population;
+  // otherwise the longest-first and ratio checks do not prove raised headroom was exercised.
+  const baselineObservedMaxTasks = Math.max(...observedMaxTasksBySide.baseline.map(Number));
+  const measuredHeadroom = Boolean(complete) &&
+    observedMaxTasksBySide.baseline.every(Number.isSafeInteger) &&
+    observedMaxTasksBySide.candidate.every(observed => Number.isSafeInteger(observed) &&
+      observed > baselineObservedMaxTasks && observed <= prepared.candidate.maxConcurrentTasks);
+  qualified &&= measuredHeadroom;
   check("unchanged-contained-no-skip-paired-headroom-longest-first-cohorts", qualified);
   const baselineWallMs = qualified ? executionWalls[0] + executionWalls[3] : null;
   const candidateWallMs = qualified ? executionWalls[1] + executionWalls[2] : null;
@@ -1075,43 +1090,6 @@ const nonNegativeInteger = (value, name) => {
   }
   return parsed;
 };
-
-function readTaskCgroupLimit(
-  fileName,
-  {
-    readFile = readFileSync,
-    procCgroupPath = "/proc/self/cgroup",
-    cgroupRoot = "/sys/fs/cgroup",
-  } = {},
-) {
-  try {
-    const unified = String(readFile(procCgroupPath, "utf8"))
-      .split(/\r?\n/)
-      .find((line) => line.startsWith("0::"));
-    if (!unified) return null;
-    const relative = unified.slice(3).trim().replace(/^\/+/, "");
-    const raw = String(
-      readFile(join(cgroupRoot, relative, fileName), "utf8"),
-    ).trim();
-    if (!raw || raw === "max") return null;
-    return raw;
-  } catch {
-    return null;
-  }
-}
-
-/** Read the hard memory.max of THIS task's cgroup. `max`/unreadable means unbounded. */
-export function readTaskCgroupMemoryMaxMb(options = {}) {
-  try {
-    const raw = readTaskCgroupLimit("memory.max", options);
-    if (raw == null) return null;
-    const bytes = BigInt(raw);
-    if (bytes < 0n) return null;
-    return Number(bytes / (1024n * 1024n));
-  } catch {
-    return null;
-  }
-}
 
 /** Read the hard pids.max of THIS task's cgroup. `max`/unreadable means unbounded. */
 export function readTaskCgroupPidsMax(options = {}) {

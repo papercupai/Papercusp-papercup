@@ -337,6 +337,9 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     writeFileSync(launched, readFileSync(SCRIPT));
     const env = { ...process.env };
     delete env.MUTATION_PROBE_FROZEN_SOURCE;
+    // This fixture launches a copied script outside the repository, so supply
+    // the supported explicit sink instead of requiring its source-tree resolver.
+    env.PAPERCUSP_TEST_RUNS_DB_URL = 'postgresql://ledger.example:5444/papercusp';
     const guard = `test -f "$MUTATION_PROBE_FROZEN_SOURCE" && bash -n "$MUTATION_PROBE_FROZEN_SOURCE" && if [ "$PAPERCUSP_MUTATION_PHASE" = baseline ]; then touch ${JSON.stringify(marker)}; sleep 1; fi; grep -q '^beta$' {}`;
     const child = spawn('bash', [launched, '--file', subject, '--mutate', 's/beta/BETA/', '--test', guard], {
       env,
@@ -382,6 +385,102 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(code).toBe(0);
     expect(out).toMatch(/MUTANT CAUGHT/);
     expect(read()).toBe(ORIGINAL);
+  });
+
+  it.each(['PAPERCUSP_WORKSPACE_ID', 'PAPERCUSP_WORKSPACE'] as const)(
+    'pins the ledger workspace before an isolated guard rebinds %s',
+    (workspaceKey) => {
+      const env = { ...process.env };
+      delete env.PAPERCUSP_TEST_RUN_WORKSPACE;
+      delete env.PAPERCUSP_WORKSPACE_ID;
+      delete env.PAPERCUSP_WORKSPACE;
+      env[workspaceKey] = 'probe-workspace';
+      const { code, out } = runProbeIO([
+        '--file', subject, '--mutate', 's/beta/BETA/',
+        '--test', [
+          'test "$PAPERCUSP_TEST_RUN_WORKSPACE" = probe-workspace || exit 3',
+          'PAPERCUSP_WORKSPACE_ID=private-guard-workspace',
+          'test "$PAPERCUSP_TEST_RUN_WORKSPACE" = probe-workspace || exit 3',
+          'test -f {} || exit 3',
+          'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then exit 1; fi',
+        ].join('; '),
+      ], env);
+      expect(code, out).toBe(0);
+      expect(out).toMatch(/MUTANT CAUGHT/);
+      expect(read()).toBe(ORIGINAL);
+    },
+  );
+
+  it('preserves an explicit ledger workspace independently of the product workspace', () => {
+    const { code, out } = runProbeIO([
+      '--file', subject, '--mutate', 's/beta/BETA/',
+      '--test', [
+        'test "$PAPERCUSP_WORKSPACE_ID" = product-workspace || exit 3',
+        'test "$PAPERCUSP_TEST_RUN_WORKSPACE" = ledger-workspace || exit 3',
+        'PAPERCUSP_WORKSPACE_ID=private-guard-workspace',
+        'test "$PAPERCUSP_TEST_RUN_WORKSPACE" = ledger-workspace || exit 3',
+        'test -f {} || exit 3',
+        'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then exit 1; fi',
+      ].join('; '),
+    ], {
+      ...process.env,
+      PAPERCUSP_WORKSPACE_ID: 'product-workspace',
+      PAPERCUSP_TEST_RUN_WORKSPACE: 'ledger-workspace',
+    });
+    expect(code, out).toBe(0);
+    expect(out).toMatch(/MUTANT CAUGHT/);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  describe('test-run ledger sink routing', () => {
+    const resolvedSink = 'postgresql://harness_admin:harness_admin_pwd@localhost:6543/papercusp';
+
+    it.each([
+      ['unset', undefined],
+      ['blank', ' \t '],
+    ] as const)('resolves the reporter sink from pg-url.mjs when the caller value is %s', (_label, supplied) => {
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        PAPERCUSP_PG_PORT: '6543',
+        PAPERCUSP_SKIP_PG_DISCOVERY: '1',
+        EXPECTED_TEST_RUNS_DB_URL: resolvedSink,
+      };
+      delete env.HARNESS_ADMIN_DATABASE_URL;
+      if (supplied === undefined) delete env.PAPERCUSP_TEST_RUNS_DB_URL;
+      else env.PAPERCUSP_TEST_RUNS_DB_URL = supplied;
+
+      const { code, out } = runProbeIO([
+        '--file', subject,
+        '--mutate', 's/beta/BETA/',
+        '--test', 'test "$PAPERCUSP_TEST_RUNS_DB_URL" = "$EXPECTED_TEST_RUNS_DB_URL" && grep -q "^beta$" {}',
+      ], env);
+
+      expect(code, out).toBe(0);
+      expect(out).toContain('verdict=caught');
+      expect(read()).toBe(ORIGINAL);
+    });
+
+    it('preserves a caller-supplied nonblank reporter sink', () => {
+      const explicitSink = 'postgresql://ledger.example:5444/papercusp';
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        PAPERCUSP_PG_PORT: '6543',
+        PAPERCUSP_SKIP_PG_DISCOVERY: '1',
+        PAPERCUSP_TEST_RUNS_DB_URL: explicitSink,
+        EXPECTED_TEST_RUNS_DB_URL: explicitSink,
+      };
+      delete env.HARNESS_ADMIN_DATABASE_URL;
+
+      const { code, out } = runProbeIO([
+        '--file', subject,
+        '--mutate', 's/beta/BETA/',
+        '--test', 'test "$PAPERCUSP_TEST_RUNS_DB_URL" = "$EXPECTED_TEST_RUNS_DB_URL" && grep -q "^beta$" {}',
+      ], env);
+
+      expect(code, out).toBe(0);
+      expect(out).toContain('verdict=caught');
+      expect(read()).toBe(ORIGINAL);
+    });
   });
 
   describe('mutant_ledger: whether the mutant test_runs row exists (WI-10006245)', () => {
@@ -508,6 +607,83 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
       expect(code, out).toBe(0);
       expect(resultOf(out).line).toMatch(/ mutant_ledger=none$/);
     });
+
+    describe('diagnostic retention (EI-26074153873782928)', () => {
+      const retainedPath = (out: string): string => {
+        const record = out.match(/^MUTATION_PROBE_DIAGNOSTICS_JSON=(.+)$/m)?.[1];
+        expect(record, out).toBeTruthy();
+        return JSON.parse(record!).path;
+      };
+      const diagnosticEnv = () => ({ ...process.env, PAPERCUSP_SCRATCH_ROOT: join(dir, 'diagnostics') });
+
+      it('retains the full failing phase after a harness error and removes its temporary mirror', () => {
+        const temporary = join(dir, 'private-pg-tmp');
+        mkdirSync(temporary);
+        const { code, out } = runProbeIO([
+          '--file', subject, '--mutate', 's/beta/BETA/',
+          '--test', 'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then echo assertion-before-receipt-failure; exit 2; fi; grep -q "^beta$" {}',
+        ], { ...diagnosticEnv(), TMPDIR: temporary });
+        expect(code, out).toBe(2);
+        const retained = retainedPath(out);
+        expect(readFileSync(join(retained, 'mutant.log'), 'utf8')).toContain('assertion-before-receipt-failure');
+        expect(JSON.parse(readFileSync(join(retained, 'diagnostics.json'), 'utf8'))).toMatchObject({
+          exitCode: 2, subject, sourceBlob: git(dir, ['hash-object', subject]),
+        });
+        expect(readdirSync(temporary).filter(name => name.startsWith('mutation-probe.'))).toEqual([]);
+        // The enclosing private-PG cleanup must not remove the diagnostic copy.
+        rmSync(temporary, { recursive: true, force: true });
+        expect(readFileSync(join(retained, 'mutant.log'), 'utf8')).toContain('assertion-before-receipt-failure');
+        expect(read()).toBe(ORIGINAL);
+      });
+
+      it.each(['baseline', 'copy-baseline', 'mutant'])('retains exact %s receipts despite a successful assertion verdict', (phase) => {
+        const receipt = {
+          receiptId: 'unresolved-insert', attempt: 0, filePath: 'a.test.ts', status: 'fail',
+          outcome: 'timeout', reason: 'pg_insert_timeout_25000ms', row: { runGroupId: 'original-run' },
+        };
+        const { code, out } = runProbeIO([
+          '--file', subject, '--mutate', 's/beta/BETA/',
+          '--test', guardWritingReceipts({ [phase]: [receipt] }),
+        ], diagnosticEnv());
+        expect(code, out).toBe(0);
+        const retained = retainedPath(out);
+        expect(JSON.parse(readFileSync(join(retained, `test-run-receipts.${phase}.jsonl`), 'utf8'))).toEqual(receipt);
+        expect(existsSync(join(retained, `${phase}.log`))).toBe(true);
+        expect(resultOf(out).line).toContain('verdict=caught');
+        expect(read()).toBe(ORIGINAL);
+      });
+
+      it('does not archive a successful probe with complete ledger receipts', () => {
+        const { code, out } = runProbeIO([
+          '--file', subject, '--mutate', 's/beta/BETA/',
+          '--test', guardWritingReceipts(Object.fromEntries(['baseline', 'copy-baseline', 'mutant'].map(phase => [phase, [
+            { filePath: 'a.test.ts', outcome: 'inserted', id: phase },
+          ]]))),
+        ], diagnosticEnv());
+        expect(code, out).toBe(0);
+        expect(out).not.toContain('MUTATION_PROBE_DIAGNOSTICS_JSON=');
+        expect(existsSync(join(dir, 'diagnostics'))).toBe(false);
+        expect(read()).toBe(ORIGINAL);
+      });
+
+      it('keeps the original logs and receipts when archival itself fails', () => {
+        const blockedRoot = join(dir, 'blocked-diagnostics');
+        writeFileSync(blockedRoot, 'a file cannot contain the archive directory');
+        const temporary = join(dir, 'probe-tmp');
+        mkdirSync(temporary);
+        const receipt = { filePath: 'a.test.ts', outcome: 'timeout', reason: 'unresolved-insert' };
+        const { code, out } = runProbeIO([
+          '--file', subject, '--mutate', 's/beta/BETA/',
+          '--test', guardWritingReceipts({ mutant: [receipt] }),
+        ], { ...process.env, TMPDIR: temporary, PAPERCUSP_SCRATCH_ROOT: blockedRoot });
+        expect(code, out).toBe(0);
+        expect(out).toContain('diagnostic archival failed; preserving original phase logs and receipts at ');
+        const scratch = join(temporary, readdirSync(temporary).find(name => name.startsWith('mutation-probe.'))!);
+        expect(existsSync(join(scratch, 'mutant.log'))).toBe(true);
+        expect(JSON.parse(readFileSync(join(scratch, 'test-run-receipts.mutant.jsonl'), 'utf8'))).toEqual(receipt);
+        expect(read()).toBe(ORIGINAL);
+      });
+    });
   });
 
   it('does not invent scope for an explicitly unscoped caller', () => {
@@ -516,6 +692,7 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
       'PAPERCUSP_TEST_RUN_HARNESS',
       'HARNESS_SLUG',
       'PAPERCUSP_HARNESS_SLUG',
+      'PAPERCUSP_TEST_RUN_WORKSPACE',
       'PAPERCUSP_WORKSPACE_ID',
       'PAPERCUSP_WORKSPACE',
     ] as const) {
@@ -528,7 +705,7 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
         '--mutate',
         's/beta/BETA/',
         '--test',
-        'test -z "${PAPERCUSP_TEST_RUN_HARNESS:-}" && test -z "${PAPERCUSP_WORKSPACE_ID:-}" && test -f {} && if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then exit 1; fi',
+        'test -z "${PAPERCUSP_TEST_RUN_HARNESS:-}" && test -z "${PAPERCUSP_TEST_RUN_WORKSPACE:-}" && test -z "${PAPERCUSP_WORKSPACE_ID:-}" && test -f {} && if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then exit 1; fi',
       ],
       env,
     );

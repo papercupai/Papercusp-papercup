@@ -8,7 +8,7 @@ import { COORD_ROLES } from '../roles';
 export default defineTool({
   name: 'coord:focus-window',
   description:
-    "Focus, raise, activate, or bring to the foreground an EXISTING live managed agent's desktop terminal window by coordination ownerId. Reuses the same observed-activation backend as the HUD's Focus window button and never resumes, forks, terminates, or duplicates the agent. Returns focused:false with a typed reason when the session is headless, unrecorded, missing its window, or the desktop refuses activation.",
+    "Focus, raise, activate, or bring to the foreground an EXISTING live managed agent's desktop terminal window by coordination ownerId. Workspace-aware on Linux/X11, Windows (including WSL desktop hosts), and macOS. Linux supports workspace current (bring here, default) or window (switch there); Windows brings here; macOS switches to the window's Space and needs Accessibility/Screen Recording permission. Reuses the same observed-activation backend as the HUD's Focus window button and never resumes, forks, terminates, or duplicates the agent. Returns focused:false when visibility or activation cannot be verified.",
   guidance: {
     when:
       "A human asks to focus, foreground, raise, show, or bring forward a known live agent window. Resolve the exact ownerId with coord:presence/fleet:assignments, then call this verb. This is the primary focus action.",
@@ -28,6 +28,7 @@ export default defineTool({
       .string()
       .min(1)
       .describe('Exact coordination ownerId from coord:presence or fleet:assignments.'),
+    workspace: z.enum(['current', 'window']).optional().describe('current brings the window here (Linux/Windows); window switches to its workspace (Linux/macOS). Omit for the platform default.'),
   }),
   result: z
     .object({
@@ -57,7 +58,7 @@ export default defineTool({
       };
     }
 
-    const result = await focusSessionWindow({ id: row.id }, row);
+    const result = await focusSessionWindow({ id: row.id, workspace: args.workspace }, row);
     return {
       data: result.focused
         ? {

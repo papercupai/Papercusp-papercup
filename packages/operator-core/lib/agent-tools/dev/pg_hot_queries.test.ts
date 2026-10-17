@@ -213,6 +213,10 @@ describe('dev:pg_hot_queries tool contract', () => {
     expect((tool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
+  it('declares enough handler time for the maximum sampling window and snapshots', () => {
+    expect((tool as unknown as { timeoutSec?: number }).timeoutSec).toBe(660);
+  });
+
   it('classifies extension absence, preload absence and permission denial distinctly', () => {
     expect(classifyPgStatStatementsError(Object.assign(new Error('missing'), { code: '42P01' }))).toMatchObject({
       reason: 'pg_stat_statements_not_installed',

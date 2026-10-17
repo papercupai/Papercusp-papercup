@@ -187,6 +187,29 @@ describe('conversation activation audit gate', () => {
     expect(rows[0]?.content).toContain('status: ready');
   });
 
+  it('allows the internal awaiting-acceptance→ready lifecycle repair without a fresh audit', async () => {
+    const awaiting = flipReady(DRAFT).replace('status: ready', 'status: awaiting-acceptance');
+    await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, awaiting);
+
+    const result = await withPlanLock<{ ok: true }>(
+      {} as never,
+      {
+        slug: SLUG,
+        harnessSlug: HARNESS,
+        workspaceId: fx.workspaceId,
+        intent: 'test awaiting-acceptance lifecycle repair',
+        allowAwaitingAcceptanceRestore: true,
+      },
+      async (current) => ({ newBody: current!.replace('status: awaiting-acceptance', 'status: ready'), value: { ok: true } }),
+    );
+
+    expect(result).toMatchObject({ kind: 'applied', value: { ok: true } });
+    const rows = await fx.admin<Array<{ content: string }>>`
+      SELECT content FROM harness_shared.harness_plans
+       WHERE workspace_id = ${fx.workspaceId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}`;
+    expect(rows[0]?.content).toContain('status: ready');
+  });
+
   it('blocks direct creation as ready but allows later cosmetic edits of an already-ready plan', async () => {
     const direct = await withPlanLock<{ ok: true }>(
       {} as never,

@@ -52,7 +52,7 @@ function unitEvents(m: UnitManifestLike | null | undefined): InstalledUnitEvents
  * the cost of missing bundled units. Matches derivePackCatalog's flag of the same name.
  */
 export async function readInstalledUnitEvents(
-  opts: { harnessSlug?: string; warmHost?: boolean } = {},
+  opts: { harnessSlug?: string; workspaceId?: string; warmHost?: boolean } = {},
 ): Promise<InstalledUnitEvents[]> {
   const out: InstalledUnitEvents[] = [];
   const seen = new Set<string>();
@@ -81,6 +81,16 @@ export async function readInstalledUnitEvents(
     for (const m of await listAllInstalledPlugins(opts.harnessSlug)) push(m as UnitManifestLike);
   } catch {
     /* unreadable plugins dir — degrade to whatever the host gave us */
+  }
+
+  // Saved local types share the same discovery tier and collision rules as packages.
+  try {
+    const [{ readSavedEventCatalog }, { activeWorkspaceId }] = await Promise.all([
+      import('../saved-event-type'), import('../../workspace-registry'),
+    ]);
+    out.push(...await readSavedEventCatalog(opts.workspaceId ?? activeWorkspaceId()));
+  } catch {
+    /* Registry unavailable: retain installed and builtin discovery. */
   }
 
   return out;

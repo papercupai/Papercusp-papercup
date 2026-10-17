@@ -86,7 +86,13 @@ export function normalizeCriterionProbeChecks<T extends CheckedCriterion>(criter
   return criteria.map(c => {
     if (c.check?.kind !== 'probe' || c.check.all === undefined) return c;
     rubricCriterionCheckSchema.parse(c.check);
-    return { ...c, check: { kind: 'probe' as const, all: c.check.all.map(probe => continuityProbeSchema.parse(probe)) } };
+    return {
+      ...c,
+      // Preserve the complete grouped-check contract. `unit` and `ratingBands`
+      // are authored alongside `all`; rebuilding only `kind` + `all` silently
+      // discarded both before the check reached the ledger/grading paths.
+      check: { ...c.check, all: c.check.all.map(probe => continuityProbeSchema.parse(probe)) },
+    };
   });
 }
 
@@ -573,6 +579,7 @@ export interface CriterionCheckRunnerFailure {
   error: NonNullable<TestFilesCoreResult['error']>;
   hint?: string;
   routerOutput?: string;
+  diagnostics?: Extract<TestFilesCoreResult, { ok: false }>['diagnostics'];
   detachedRunId?: string;
   detachedDurable?: boolean;
 }
@@ -1555,6 +1562,9 @@ export async function evaluateCriterionTestChecks(input: {
       ...('hint' in run && typeof run.hint === 'string' ? { hint: run.hint } : {}),
       ...('routerOutput' in run && typeof run.routerOutput === 'string'
         ? { routerOutput: run.routerOutput.slice(-2000) }
+        : {}),
+      ...('diagnostics' in run && run.diagnostics
+        ? { diagnostics: run.diagnostics }
         : {}),
       ...('detachedRunId' in run && typeof run.detachedRunId === 'string'
         ? { detachedRunId: run.detachedRunId }

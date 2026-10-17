@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const store = new Map<string, unknown>();
 const counters = { selects: 0 };
+const readFailures = { remaining: 0, error: null as Error | null };
 
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 vi.mock('./db-encryption', () => ({ ENCRYPTED_TABLES: new Set<string>(), getDbEncryptionKey: () => 'unused' }));
@@ -23,6 +24,10 @@ vi.mock('@papercusp/db-org', async (orig) => {
     const key = `${tableName}:${ws}`;
     if (/SELECT payload FROM/.test(sqlText)) {
       counters.selects += 1;
+      if (readFailures.remaining > 0) {
+        readFailures.remaining -= 1;
+        return Promise.reject(readFailures.error ?? new Error('unexpected test read failure'));
+      }
       const row = store.get(key);
       return Promise.resolve(row !== undefined ? [{ payload: row }] : []);
     }
@@ -86,6 +91,8 @@ import { joinerPotHomeSlug } from './hive-federation';
 beforeEach(() => {
   store.clear();
   counters.selects = 0;
+  readFailures.remaining = 0;
+  readFailures.error = null;
   delete process.env.PAPERCUSP_OPSTATE_CACHE_MS;
   // Start each test with a clean cache for the keys it uses.
   invalidateOperatorStateCache('harness_registry' as never, 'ws');
@@ -97,6 +104,18 @@ afterEach(() => {
 });
 
 describe('readOperatorState cache (P-004)', () => {
+  it('retries a read-only operator-state SELECT after SQLSTATE 55P03', async () => {
+    store.set('operator_account_pool:ws', { accounts: [{ id: 'a' }] });
+    readFailures.remaining = 1;
+    readFailures.error = Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+
+    await expect(readOperatorState<{ accounts: { id: string }[] }>('operator_account_pool')).resolves.toEqual({
+      accounts: [{ id: 'a' }],
+    });
+    expect(counters.selects).toBe(2);
+    expect(readFailures.remaining).toBe(0);
+  });
+
   it('caches an allowlisted table: a 2nd read within TTL hits the cache (no 2nd SELECT)', async () => {
     store.set('harness_registry:ws', { projects: [{ slug: 'a' }] });
     const first = await readOperatorState<{ projects: unknown[] }>('harness_registry');

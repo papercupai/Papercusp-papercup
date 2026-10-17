@@ -129,7 +129,7 @@ describe('plain Local startup trace', () => {
         .map((line) => JSON.parse(line.slice('# startup '.length)));
       const finished = rows.filter((row) => row.phase === 'finished');
       expect(finished.map((row) => row.step)).toEqual([
-        'terminal-notice', 'host-handoff-lookup', 'recovery-audit-reconciliation',
+        'terminal-notice', 'recovery-audit-reconciliation',
         'default-role', 'subagents-picker-import', 'menu-render:Subagents',
       ]);
       expect(new Set(rows.map((row) => row.pid)).size).toBe(1);

@@ -109,6 +109,18 @@ describe('recipe recommendation authority (P-008)', () => {
     });
   });
 
+  it('fails closed for a caller-owned goal reference held in a variable', async () => {
+    const script = `
+      const gid = 'work-on-everything-fresh-grading-and-improvement-60d3a8';
+      await tools.goals.get({ id: gid });
+      await tools.search.fulltext({ query: 'goal_budget_unmeasurable respawner launch refused safety cap' });
+    `;
+    await expect(deriveRecipeAuthority(script)).resolves.toMatchObject({
+      unresolved: true,
+      unresolvedCause: { kind: 'volatile-goal-reference', tool: 'goals.get' },
+    });
+  });
+
   it('fails closed for volatile coordination sender and cursor arguments', async () => {
     const coordinationScript = `return await tools.coord.inbox({
       from: 'su-stale-leader',

@@ -523,7 +523,8 @@ export interface ProtectedGatherResult {
  * Gather the set of session identities that must NEVER be collected — the four
  * dimensions session-dir-gc documents: live coord_presence owners, non-terminal
  * spawned bees (`session_owner`), open adv_sessions (coord_owner + the session
- * key for codex homes), and active event_awaits (registered wakes). FAIL-CLOSED:
+ * key for codex homes), and active event_awaits or in-flight
+ * event_wake_deliveries (registered and delivered wakes). FAIL-CLOSED:
  * if any query throws we return ok:false so the caller refuses session-dir
  * deletion rather than sweeping with an empty (unsafe) protected set.
  */
@@ -552,10 +553,32 @@ export async function gatherProtectedSessionIdentity(
       if (r.id != null) sessionKeys.add(String(r.id));
     }
 
-    const awaits = await sql`
-      SELECT subscriber_id FROM harness_shared.event_awaits
-       WHERE fired_at IS NULL AND cancelled_at IS NULL`;
-    for (const r of awaits) if (r.subscriber_id) ownerIds.add(String(r.subscriber_id));
+    // A wake can be in-flight after its adv_session has ended. Keep both the
+    // owner-keyed homes and the Codex home keyed by that owner's adv_session id
+    // until the delivery settles, matching session-dir-gc's resume safety.
+    const awaiters = await sql`
+      SELECT DISTINCT subscriber_id FROM harness_shared.event_awaits
+       WHERE fired_at IS NULL AND cancelled_at IS NULL
+      UNION
+      SELECT DISTINCT subscriber_id FROM harness_shared.event_wake_deliveries
+       WHERE status IN ('pending', 'parked', 'delivering')`;
+    const awaiterIds: string[] = [];
+    for (const r of awaiters) {
+      if (!r.subscriber_id) continue;
+      const id = String(r.subscriber_id);
+      ownerIds.add(id);
+      awaiterIds.push(id);
+    }
+
+    // Codex homes are keyed by adv_sessions.id rather than coord_owner_id. The
+    // row may already be ended while its wake is still pending, so deliberately
+    // resolve across all session rows instead of filtering on ended_at.
+    if (awaiterIds.length) {
+      const sessions = await sql`
+        SELECT id FROM harness_shared.adv_sessions
+         WHERE coord_owner_id = ANY(${awaiterIds})`;
+      for (const r of sessions) if (r.id != null) sessionKeys.add(String(r.id));
+    }
 
     // OWNERSHIP (WI-6554700010010238): every identity THIS database launched, in
     // any state. planSessionDirGc keeps a dir absent from it (`keptForeign`), so a

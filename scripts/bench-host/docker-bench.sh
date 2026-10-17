@@ -16,7 +16,8 @@
 #   * classic overlay2 store with the containerd snapshotter OFF — with it on, image layers would land in
 #     /var/lib/containerd on the root disk, defeating the point;
 #   * iptables=false: a second daemon managing the same DOCKER-* chains can disturb the fleet's
-#     networking. This script adds the only rules the bench needs (one MASQUERADE rule, one ufw route rule);
+#     networking. This script adds NAT/egress for the default bridge and same-bridge forwarding within
+#     the bench address pool; routed traffic between private networks remains filtered;
 #   * its own pre-created bridge and address pools that do not overlap any existing route.
 #
 # Usage:
@@ -118,6 +119,7 @@ set -euo pipefail
 BR=$BENCH_BRIDGE
 CIDR=$BENCH_BRIDGE_CIDR
 SUBNET=$subnet
+POOL=$BENCH_POOL_BASE
 case "\${1:-}" in
   up)
     ip link show "\$BR" >/dev/null 2>&1 || ip link add name "\$BR" type bridge
@@ -125,8 +127,19 @@ case "\${1:-}" in
     ip link set "\$BR" up
     iptables -t nat -C POSTROUTING -s "\$SUBNET" ! -o "\$BR" -j MASQUERADE 2>/dev/null \\
       || iptables -t nat -A POSTROUTING -s "\$SUBNET" ! -o "\$BR" -j MASQUERADE
+    # User-defined bridges are allocated from POOL. With iptables=false Docker
+    # adds no forwarding rules for them, and br_netfilter sends even same-L2
+    # packets through the host's FORWARD policy. Admit only bridged packets whose
+    # source AND destination belong to this pool; physdev excludes routed traffic
+    # between networks. Insert before the main daemon's filtering chains without
+    # modifying those chains or opening private-network egress.
+    iptables -C FORWARD -s "\$POOL" -d "\$POOL" -m physdev --physdev-is-bridged -j ACCEPT 2>/dev/null \\
+      || iptables -I FORWARD 1 -s "\$POOL" -d "\$POOL" -m physdev --physdev-is-bridged -j ACCEPT
     ;;
   down)
+    while iptables -C FORWARD -s "\$POOL" -d "\$POOL" -m physdev --physdev-is-bridged -j ACCEPT 2>/dev/null; do
+      iptables -D FORWARD -s "\$POOL" -d "\$POOL" -m physdev --physdev-is-bridged -j ACCEPT
+    done
     while iptables -t nat -C POSTROUTING -s "\$SUBNET" ! -o "\$BR" -j MASQUERADE 2>/dev/null; do
       iptables -t nat -D POSTROUTING -s "\$SUBNET" ! -o "\$BR" -j MASQUERADE
     done

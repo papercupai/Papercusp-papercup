@@ -146,6 +146,19 @@ export function projectedResultReason(result) {
 export const MCP_CALL_CONNECTION_RETRY_WINDOW_MS = 90_000;
 export const MCP_CALL_CONNECTION_RETRY_DELAY_MS = 1_000;
 
+// Direct mcp-call invocations can bypass the resilient MCP proxy and therefore
+// see the operator's pre-dispatch admission response themselves. The response
+// is safe to retry: the admission gate rejected the request before the tool
+// handler ran. Keep this retry bounded so a genuinely saturated host does not
+// turn the recovery helper into another pressure source.
+export const MCP_CALL_ADMISSION_MAX_ATTEMPTS = 5;
+export const MCP_CALL_ADMISSION_RETRY_DELAY_MS = 1_000;
+export const MCP_CALL_ADMISSION_RETRY_MAX_DELAY_MS = 10_000;
+const MCP_CALL_ADMISSION_REASONS = new Set([
+  'loop_pressure_critical',
+  'operator_admission_capacity',
+]);
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** ECONNREFUSED is raised before an HTTP request can reach the operator. */
@@ -258,6 +271,36 @@ export async function fetchWithConnectionRecovery(
       await sleepImpl(waitMs);
     }
   }
+}
+
+/**
+ * The operator's admission gate emits these errors only before dispatch. Keep
+ * the matcher narrower than a generic -32000/429 check so provider failures or
+ * tool-level errors are never replayed by this mutation-capable helper.
+ */
+export function isRetryableAdmissionShed(error, status = 0) {
+  const code = Number(error?.code);
+  const data = error?.data;
+  return (Number(status) === 429 || code === -32000) &&
+    data?.retryable === true &&
+    typeof data.reason === 'string' &&
+    MCP_CALL_ADMISSION_REASONS.has(data.reason);
+}
+
+/** Read the server's Retry-After hint, with a bounded fallback for direct calls. */
+export function admissionRetryDelayMs(
+  response,
+  error,
+  {
+    fallbackMs = MCP_CALL_ADMISSION_RETRY_DELAY_MS,
+    maxMs = MCP_CALL_ADMISSION_RETRY_MAX_DELAY_MS,
+  } = {},
+) {
+  const header = response?.headers?.get?.('retry-after');
+  const hintedSeconds = header ?? error?.data?.retryAfterSec;
+  const seconds = Number(hintedSeconds);
+  if (!Number.isFinite(seconds) || seconds < 0) return fallbackMs;
+  return Math.min(maxMs, Math.max(0, Math.ceil(seconds * 1_000)));
 }
 
 /**
@@ -844,6 +887,42 @@ async function main() {
     ...init,
     headers: { ...init.headers, authorization: 'Bearer ' + token },
   });
+  const fetchCandidate = async (port, token, query) => {
+    for (let admissionAttempt = 1; ; admissionAttempt += 1) {
+      stampRequestSent();
+      const candidateRes = await fetchWithConnectionRecovery(
+        'http://localhost:' + port + '/api/mcp?' + query,
+        initForToken(token),
+        {
+          // An explicit pin means the caller deliberately chose this operator
+          // and must not be silently routed to another port while it restarts.
+          retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0,
+          onRetry: ({ attempt, delayMs, remainingMs }) => {
+            // Keep a long retry loop quiet without hiding that retries are active.
+            if (attempt === 1 || attempt % 10 === 0) {
+              console.error(buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs }));
+            }
+          },
+        },
+      );
+      const candidateRaw = await candidateRes.text();
+      const candidateOut = parseSse(candidateRaw, REQUEST_ID);
+      if (
+        !isRetryableAdmissionShed(candidateOut.error, candidateRes.status) ||
+        admissionAttempt >= MCP_CALL_ADMISSION_MAX_ATTEMPTS
+      ) {
+        return { candidateRes, candidateRaw, candidateOut };
+      }
+
+      const delayMs = admissionRetryDelayMs(candidateRes, candidateOut.error);
+      const reason = candidateOut.error?.data?.reason ?? 'admission pressure';
+      console.error(
+        `mcp-call: operator rejected the request before dispatch (${reason}); ` +
+          `retry ${admissionAttempt + 1}/${MCP_CALL_ADMISSION_MAX_ATTEMPTS} in ${delayMs}ms.`,
+      );
+      await sleep(delayMs);
+    }
+  };
 
   let res;
   let raw;
@@ -863,24 +942,11 @@ async function main() {
       const tokenCandidate = tokenCandidates[tokenIndex];
       responseTokenPath = tokenCandidate.path;
       try {
-        stampRequestSent();
-        let candidateRes = await fetchWithConnectionRecovery(
-          'http://localhost:' + port + '/api/mcp?' + qs,
-          initForToken(tokenCandidate.token),
-          {
-            // An explicit pin means the caller deliberately chose this operator
-            // and must not be silently routed to another port while it restarts.
-            retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0,
-            onRetry: ({ attempt, delayMs, remainingMs }) => {
-              // Keep a long retry loop quiet without hiding that retries are active.
-              if (attempt === 1 || attempt % 10 === 0) {
-                console.error(buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs }));
-              }
-            },
-          },
+        let { candidateRes, candidateRaw, candidateOut } = await fetchCandidate(
+          port,
+          tokenCandidate.token,
+          qs,
         );
-        let candidateRaw = await candidateRes.text();
-        let candidateOut = parseSse(candidateRaw, REQUEST_ID);
         if (shouldRetryWithoutNativeSession(candidateOut.error, { client, query: qs })) {
           console.error(
             'mcp-call: operator rejected the inherited Codex native-session claim before dispatch; ' +
@@ -890,21 +956,11 @@ async function main() {
             ...queryArgs,
             nativeSessionOverride: null,
           });
-          stampRequestSent();
-          candidateRes = await fetchWithConnectionRecovery(
-            'http://localhost:' + port + '/api/mcp?' + queryWithoutNativeSession,
-            initForToken(tokenCandidate.token),
-            {
-              retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0,
-              onRetry: ({ attempt, delayMs, remainingMs }) => {
-                if (attempt === 1 || attempt % 10 === 0) {
-                  console.error(buildConnectionRetryDiagnostic({ port, attempt, delayMs, remainingMs }));
-                }
-              },
-            },
-          );
-          candidateRaw = await candidateRes.text();
-          candidateOut = parseSse(candidateRaw, REQUEST_ID);
+          ({ candidateRes, candidateRaw, candidateOut } = await fetchCandidate(
+            port,
+            tokenCandidate.token,
+            queryWithoutNativeSession,
+          ));
         }
         if (hasEndpointFallback && isRecoverableAuthorityDenial(candidateRaw)) {
           authorityFallback = true;

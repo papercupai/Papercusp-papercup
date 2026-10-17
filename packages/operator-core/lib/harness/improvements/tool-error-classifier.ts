@@ -75,10 +75,11 @@ export interface ToolErrorRule {
 
 /** A timeout, including one that surfaced as `handler_error`
  *  ("exceeded timeout … handler returned but signal had aborted") or the
- *  handler's explicit whole-call-deadline diagnostic. Word boundaries keep
+ *  handler's explicit whole-call-deadline diagnostic or bounded query embedding
+ *  deadline. Word boundaries keep
  *  argument names such as `timeoutSec` from looking like a timeout outcome. */
 export const TIMEOUT_MESSAGE_PATTERN =
-  'exceeded timeout([^a-zA-Z]|$)|(^|[^a-zA-Z])timed? *out([^a-zA-Z]|$)|did not complete within [0-9]+ms of its whole-call deadline';
+  'exceeded timeout([^a-zA-Z]|$)|(^|[^a-zA-Z])timed? *out([^a-zA-Z]|$)|did not complete within [0-9]+ms of its whole-call deadline|(^|[^a-zA-Z0-9_])query embed exceeded [0-9]+ms budget([^a-zA-Z0-9_]|$)';
 
 /** Caller-side auth/arg/scope error in the MESSAGE: a retained
  *  `missing_capability:` prefix from a nested `tools:invoke` refusal, or an `invalid_args:` prefix
@@ -91,6 +92,8 @@ export const TIMEOUT_MESSAGE_PATTERN =
  *  the checkpoint replacement/merge safety refusals that require explicit
  *  retirement of carried safety rows, and the stale loop-carry compare-and-swap
  *  conflict that requires a fresh read before retrying,
+ *  or compact MCP text tagged `format: toon|csv|tsv` incorrectly passed to
+ *  `JSON.parse`,
  *  a missing / unregistered browser UI client for a CLI caller,
  *  an explicit compaction flush-gate refusal that requires a checkpoint,
  *  an explicit claim-spec selector refusal for the literal `self` sentinel,
@@ -103,16 +106,18 @@ export const TIMEOUT_MESSAGE_PATTERN =
  *  workspace-scoping gap is treated as `structural` (a wiring gap worth catching
  *  at the low bar), and the fingerprint separates it from anything it used to mask. */
 export const CALLER_MESSAGE_PATTERN =
-  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^role_not_allowed:|^reviewer_model_not_allowed:|(^|[^a-zA-Z])(client_id_required|client_not_found):|scratch_line_window_too_large|"reason":"(evidence_class_not_found|tenant_scope_required|positive_control_tenant_scope_required|mixed_window_modes)"|await_id and event are mutually exclusive|checkpoint_(replace_would_drop_rows|merge_would_evict_rows)|"error":"(checkpoint_conflict|flush-required)"|(^|[^a-zA-Z0-9_])acceptance_bar_amendment_revision_conflict:|(^|[^a-zA-Z0-9_])acceptance_bar_approval_required:|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:|structured_result_shape.*typed root|^cupId must be a concrete session/owner ID, not the literal "self"';
+  '^missing_capability:|^invalid_input: *invalid_args:|^invalid_args:|^role_not_allowed:|^reviewer_model_not_allowed:|(^|[^a-zA-Z])(client_id_required|client_not_found):|scratch_line_window_too_large|"reason":"(evidence_class_not_found|tenant_scope_required|positive_control_tenant_scope_required|mixed_window_modes)"|await_id and event are mutually exclusive|checkpoint_(replace_would_drop_rows|merge_would_evict_rows)|"error":"(checkpoint_conflict|flush-required)"|(^|[^a-zA-Z0-9_])acceptance_bar_amendment_revision_conflict:|(^|[^a-zA-Z0-9_])acceptance_bar_approval_required:|No harness specified|not registered in (any workspace|harness_shared)|resolvePlanScope:.*is not a Hive home|no sandbox desktop is leased|acceptance BAR contract is not ready for vetting|predicate_shape_mismatch:|structured_result_shape.*typed root|format: *(toon|csv|tsv).*content.*text.*JSON[.]parse|content.*text.*JSON[.]parse.*format: *(toon|csv|tsv)|^cupId must be a concrete session/owner ID, not the literal "self"';
 
 /** `dev:pg_query` returns caller-authored SQL's undefined-column refusal with
  *  its PostgreSQL 42703 code and a known-column correction payload. When
  *  tools:invoke wraps that `isError` result, invocation-friction sees the
- *  wrapper's `handler_error`; retain the PG refusal as caller input instead of
- *  filing the wrapper as a structural tool bug. Bare application missing-column
- *  errors remain structural. */
+ *  wrapper's `handler_error`; and the canonical capture shorthand may paraphrase
+ *  the payload instead of retaining its JSON envelope. Retain either form as
+ *  caller input instead of filing the wrapper as a structural tool bug. Bare
+ *  application missing-column errors remain structural. */
 export const PG_QUERY_UNDEFINED_COLUMN_CALLER_PATTERN =
-  '^column "[^"]+" does not exist: .*"code":"42703".*"knownColumns"';
+  '^(?:column "[^"]+" does not exist: .*"code":"42703".*"knownColumns"|' +
+  'Read-only .* query used [^,]+, but the live relation exposes .*\\. Server returned knownColumns)';
 
 /** An EXTERNAL provider rate-limit / quota (OpenAI embedding TPM 429,
  *  "Rate limit reached", surfaced as `openai_embed_failed_429`). CAPACITY, not a
@@ -126,6 +131,10 @@ export const RATE_LIMIT_MESSAGE_PATTERN =
  *  defect. */
 export const OPERATOR_ADMISSION_TRANSIENT_MESSAGE_PATTERN =
   'operator MCP admission(?: is)? saturated|reason[=: ]+(loop_pressure_critical|operator_admission_capacity)';
+
+/** The release admission worker deliberately rejects overlapping same-process jobs. */
+export const ADMISSION_OFFTHREAD_BUSY_MESSAGE_PATTERN =
+  'an admission job is already running in this process; retry after it settles';
 
 /** Shared-infra exhaustion (PG `max_connections` / DB-unavailable), an operator
  *  shutdown-window response, and a stale-pooled-connection reset against
@@ -144,6 +153,17 @@ export const OPERATOR_ADMISSION_TRANSIENT_MESSAGE_PATTERN =
  *  mis-filed as a structural tool bug (EI-11010). */
 export const INFRA_TRANSIENT_MESSAGE_PATTERN =
   'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|server( is)? shutting down|terminating connection due to|ECONNREFUSED|ECONNRESET|CONNECTION_CLOSED|CONNECT_TIMEOUT|connection terminated|could not connect to server|current session authority could not be read|session authority reader unavailable|identity policy evaluation unavailable|could not access status of transaction [0-9]+';
+
+/** An explicit nsenter refusal to open a process namespace is the operating
+ * system enforcing the caller's namespace boundary, not a capability:bash
+ * implementation failure. Keep this narrow so unrelated child permission
+ * errors still use the structural fallback. */
+export const PROCESS_NAMESPACE_PERMISSION_DENIED_MESSAGE_PATTERN =
+  '(^|[^A-Za-z0-9_])nsenter: cannot open /proc/[0-9]+/ns/[A-Za-z_]+: (permission denied|operation not permitted)';
+
+/** The native exec pre-tool guard deliberately rejects rm -f cleanup syntax. */
+export const NATIVE_SHELL_CLEANUP_REFUSAL_PATTERN =
+  'rm -f style (commands are not permitted|cleanup[^.]*not permitted)';
 
 /**
  * The ordered classification table. ORDER IS SIGNIFICANT — earlier rules win.
@@ -165,10 +185,10 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'transient',
-    errorCodes: ['timeout'],
+    errorCodes: ['timeout', 'query_embed_deadline'],
     statuses: ['timeout'],
     messagePattern: TIMEOUT_MESSAGE_PATTERN,
-    why: 'a timeout (incl. one surfaced as handler_error) is load, not a tool bug',
+    why: 'a bounded timeout is transient, including query embedding deadlines and handler_error wrappers',
   },
   {
     class: 'transient',
@@ -183,6 +203,12 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
   },
   {
     class: 'caller',
+    errorCodes: ['stale_tool_contract'],
+    messagePattern: '(^|[^a-zA-Z0-9_])stale_tool_contract([^a-zA-Z0-9_]|$)',
+    why: 'tools:invoke and the MCP host intentionally reject a schema bound to an older serving generation before target dispatch; refresh tools:find/tools:list and retry against the current operator',
+  },
+  {
+    class: 'caller',
     messagePattern: 'events:status.*evidence-only judge may inspect its own awaits only.*exact-key inspection and fleet-meter access are unavailable',
     why: 'events:status deliberately refuses exact-key and fleet-wide meter reads for an evidence-only judge; dispatch surfaces this authorization refusal through handler_error, so it must not enter the structural auto-fix lane',
   },
@@ -190,6 +216,12 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     class: 'caller',
     messagePattern: '(^|[^A-Za-z0-9_])git_command_interrupted([^A-Za-z0-9_]|$)',
     why: 'capability:git-evidence returns this reason when its request AbortSignal cancels a Git command; this is expected request/session control flow, not a structural tool defect',
+  },
+  {
+    class: 'caller',
+    errorCodes: ['blocked_command', 'PreToolUseCommandRejected'],
+    messagePattern: NATIVE_SHELL_CLEANUP_REFUSAL_PATTERN,
+    why: 'the native exec pre-tool guard deliberately rejected rm -f cleanup syntax before command execution; this is an expected caller-side refusal, not a structural tool defect',
   },
   {
     class: 'caller',
@@ -206,12 +238,17 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     ],
     statuses: ['role-not-allowed', 'scratch_line_window_too_large', 'mixed_window_modes'],
     messagePattern: CALLER_MESSAGE_PATTERN,
-    why: 'the caller sent bad input or stale state (including code:run JavaScript that fails to parse before dispatch), chose a reviewer outside the expert allowlist, attempted an import in the import-free code:run sandbox, lacked a role, was rejected at the MCP auth gate, named no (or an unregistered) harness, selected a missing UI client, supplied an owner handle that matches no or multiple known owners, hit an explicit flush or scratch-reference window-size precondition, supplied stale loop:checkpoint or acceptance BAR revision-bound compare-and-swap state and was refused, combined mutually exclusive capability:read window modes or events:status selectors, or read code:run typed output as an MCP content envelope despite its structured_result_shape typed-root diagnostic — not a tool bug',
+    why: 'the caller sent bad input or stale state (including code:run JavaScript that fails to parse before dispatch), chose a reviewer outside the expert allowlist, attempted an import in the import-free code:run sandbox, lacked a role, was rejected at the MCP auth gate, named no (or an unregistered) harness, selected a missing UI client, supplied an owner handle that matches no or multiple known owners, hit an explicit flush or scratch-reference window-size precondition, supplied stale loop:checkpoint or acceptance BAR revision-bound compare-and-swap state and was refused, combined mutually exclusive capability:read window modes or events:status selectors, read code:run typed output as an MCP content envelope despite its structured_result_shape typed-root diagnostic, or passed tagged compact MCP text (format: toon/csv/tsv) to JSON.parse — not a tool bug',
   },
   {
     class: 'caller',
     messagePattern: "capability:bash cwd '[^']+' (does not exist|exists but is not a directory)",
     why: 'capability:bash preflights an explicit cwd before spawning; a missing path or file passed as cwd is caller input, not a structural tool failure',
+  },
+  {
+    class: 'caller',
+    messagePattern: PROCESS_NAMESPACE_PERMISSION_DENIED_MESSAGE_PATTERN,
+    why: 'nsenter was refused while opening a process namespace; this is an OS permission boundary on the requested command, not a capability:bash defect',
   },
   {
     class: 'caller',
@@ -269,6 +306,7 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     ],
     messagePattern:
       'Normalized direct wrapper mcp__papercusp_su__[A-Za-z0-9_]+ was not callable|' +
+      'The normalized direct wrapper [A-Za-z0-9_.]+ was not callable(?: \\([^)]*\\))? before dispatch|' +
       'The normalized direct wrapper [A-Za-z0-9_.]+ was undefined, so attempting it raised a local TypeError before MCP dispatch|' +
       'The catalog exposed [^,]+, but the normalized functions\\.exec method [A-Za-z0-9_.]+ was undefined and raised a TypeError before dispatch|' +
       'the normalized wrapper was undefined and calling it threw TypeError before MCP dispatch|' +
@@ -285,6 +323,12 @@ export const TOOL_ERROR_RULES: readonly ToolErrorRule[] = [
     class: 'transient',
     messagePattern: OPERATOR_ADMISSION_TRANSIENT_MESSAGE_PATTERN,
     why: 'the operator MCP admission gate returned retryable backpressure under critical loop pressure or full capacity — not a per-tool defect',
+  },
+  {
+    class: 'transient',
+    errorCodes: ['ADMISSION_OFFTHREAD_BUSY'],
+    messagePattern: ADMISSION_OFFTHREAD_BUSY_MESSAGE_PATTERN,
+    why: 'release:repair-queue deliberately refuses an overlapping same-process admission job and asks the caller to retry after it settles; this is expected transient backpressure, not a structural tool defect',
   },
   {
     class: 'transient',
@@ -573,6 +617,14 @@ function matchesPattern(pattern: string, value: string): boolean {
   }
 }
 
+function isExpectedNativeShellCleanupRefusal(
+  input: Pick<SuspectedToolFailure, 'toolName' | 'message'>,
+): boolean {
+  const toolName = input.toolName.trim().toLowerCase();
+  if (!['exec_command', 'functions.exec', 'functions.exec_command'].includes(toolName)) return false;
+  return matchesPattern(NATIVE_SHELL_CLEANUP_REFUSAL_PATTERN, input.message);
+}
+
 /**
  * Return the documented external class this report matches, or null. Null is
  * the safe default and is returned for anything uncertain.
@@ -773,8 +825,25 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
       input.status?.trim() === 'structured_result_shape' ||
       (klass === 'caller' && /structured_result_shape.*typed root/.test(input.message))
     ));
+  const processNamespacePermissionRefusal = new RegExp(
+    PROCESS_NAMESPACE_PERMISSION_DENIED_MESSAGE_PATTERN,
+    'i',
+  ).test(input.message);
+  const nativeShellCleanupRefusal = isExpectedNativeShellCleanupRefusal(input);
+  // A 42703 response carrying dev:pg_query's knownColumns correction is the
+  // expected refusal of caller-authored SQL with a nonexistent column. The
+  // capture shorthand report may paraphrase the JSON envelope, and reporter
+  // supplied directEvidence cannot turn that invalid query into a tool defect.
+  const pgQueryUndefinedColumnCallerRefusal =
+    input.toolName.trim() === 'dev:pg_query' &&
+    input.errorCode?.trim() === '42703' &&
+    new RegExp(PG_QUERY_UNDEFINED_COLUMN_CALLER_PATTERN, 'i').test(input.message);
   // Keep other caller-class overrides available for genuine contract defects.
-  const structuredAttested = input.directEvidence !== undefined && !structuredResultShapeCallerDiagnostic;
+  const structuredAttested = input.directEvidence !== undefined &&
+    !pgQueryUndefinedColumnCallerRefusal &&
+    !structuredResultShapeCallerDiagnostic &&
+    !processNamespacePermissionRefusal &&
+    !nativeShellCleanupRefusal;
   const attested = structuredAttested || (legacyAttested && klass !== 'caller');
   const deferredWrapperUnavailable = [input.errorCode, input.status]
     .some((value) => [
@@ -799,7 +868,9 @@ export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): Norm
     // A missing client wrapper is affirmative evidence that dispatch never
     // reached the named handler. Non-empty expected/actual prose cannot turn
     // that discovery report into a claimable server defect.
-    direct: attested && !knownExternal && !deferredWrapperUnavailable && !expectedSelfAwaitRefusal,
+    direct: attested && !knownExternal && !deferredWrapperUnavailable &&
+      !expectedSelfAwaitRefusal && !processNamespacePermissionRefusal &&
+      !nativeShellCleanupRefusal,
     knownExternal,
   };
 }

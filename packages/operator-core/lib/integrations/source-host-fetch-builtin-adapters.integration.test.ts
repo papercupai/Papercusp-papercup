@@ -16,6 +16,8 @@
  * provider was loaded from its client file only by OAuth routes and the
  * retired legacy Google poll routines.
  */
+const NEVER_EMIT_MARKER = 'never-emit-me';
+
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -27,7 +29,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { GOOGLE_WORKSPACE_OAUTH_PLUGIN } from '../external-triggers/google-workspace';
 import { __resetRegistryForTest, getProvider } from '../oauth/providers';
 import { connectionAdapterForPlugin } from './connection-lifecycle';
-import { providerSetupStoreKey } from './provider-credentials';
+import { clearProviderCredential, providerSetupStoreKey, saveProviderCredentials } from './provider-credentials';
 import { providerRegistry } from './provider-registry';
 import { createSourceHostFetch } from './source-host-fetch';
 
@@ -290,5 +292,83 @@ describe('production host.fetch for a provider offering OAuth and a pasted crede
 
   it('sends the pasted-credential source the pasted value', async () => {
     expect(await authorizationFor(pastedSourceId)).toEqual([`Bearer ${PASTED}`]);
+  });
+});
+
+describe('production host.fetch for host-held app-password sessions', () => {
+  const sessionDescriptor: ProviderDescriptor = {
+    id: 'session-example', contractVersion: 1, datatypes: ['social-post'], capabilities: ['social.post'],
+    egressHosts: ['session.example.com'], setup: {
+      credentials: [{ key: 'identifier', label: 'Account' }, { key: 'password', label: 'App password' }],
+      session: { url: 'https://session.example.com/login', refreshUrl: 'https://session.example.com/refresh',
+        parameters: { identifier: 'identifier', password: 'password' }, hosts: ['session.example.com'],
+        accessTokenField: 'access', refreshTokenField: 'refresh', maxAgeSeconds: 3600,
+        identity: { idField: 'id', credentialKey: 'identifier' } },
+    },
+  };
+  const pluginName = 'source-host-fetch-session-test';
+  const install = 'session-install';
+  let connected: string;
+  let wrongAccount: string;
+  let wrongRef: string;
+  let apiFetch: ReturnType<typeof createSourceHostFetch>;
+  const requests: Array<{ url: string; authorization: string | null }> = [];
+  beforeAll(async () => {
+    await saveProviderCredentials(sessionDescriptor, install, { identifier: 'alice.example', password: NEVER_EMIT_MARKER });
+    const owner = randomUUID();
+    await sql`INSERT INTO harness_shared.users (id, username, display_name)
+      VALUES (${owner}, ${`session-${owner}`}, 'Session fixture owner')`;
+    connected = randomUUID(); wrongAccount = randomUUID(); wrongRef = randomUUID();
+    for (const [id, account, credentialRef] of [
+      [connected, 'account-alice', providerSetupStoreKey(sessionDescriptor.id)],
+      [wrongAccount, 'account-bob', providerSetupStoreKey(sessionDescriptor.id)],
+      [wrongRef, 'account-unrelated', 'unrelated:account'],
+    ]) {
+      await sql`INSERT INTO harness_shared.data_sources
+        (workspace_id, id, kind, sync_mode, scope, status, credential_ref, owner_user_id, provider_account_id, config)
+        VALUES (${WS}, ${id}, ${sessionDescriptor.id}, 'poll', 'personal', 'connected', ${credentialRef}, ${owner}, ${account},
+          ${sql.json({ accountId: account, installSlug: install })})`;
+    }
+    await providerRegistry().register({ descriptor: sessionDescriptor, pluginName,
+      adapter: { ...adapter, describe: () => sessionDescriptor } });
+    apiFetch = createSourceHostFetch(sql, { providerId: sessionDescriptor.id, workspaceId: WS, harness: HARNESS,
+      sourceIds: [connected, wrongAccount, wrongRef],
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        requests.push({ url: String(url), authorization: new Headers(init?.headers).get('authorization') });
+        if (String(url).endsWith('/login')) {
+          expect(JSON.parse(String(init?.body))).toEqual({ identifier: 'alice.example', password: NEVER_EMIT_MARKER });
+          return Response.json({ access: NEVER_EMIT_MARKER, refresh: NEVER_EMIT_MARKER, id: 'account-alice' });
+        }
+        return Response.json({ id: 'post', echo: `${NEVER_EMIT_MARKER} ${NEVER_EMIT_MARKER} ${NEVER_EMIT_MARKER}` });
+      }) as typeof fetch });
+  });
+  afterAll(() => { providerRegistry().unregisterPlugin(pluginName); });
+
+  it('resolves the source install, creates one session, injects only its access token, and redacts all credentials', async () => {
+    const request = { source: connected, request: { url: 'https://session.example.com/posts' } };
+    const first = await apiFetch(request); await apiFetch(request);
+    expect(requests.map((r) => r.url)).toEqual([
+      'https://session.example.com/login', 'https://session.example.com/posts', 'https://session.example.com/posts',
+    ]);
+    expect(requests.map((r) => r.authorization)).toEqual([null, `Bearer ${NEVER_EMIT_MARKER}`, `Bearer ${NEVER_EMIT_MARKER}`]);
+    expect(first.body).toContain('post');
+    expect(JSON.stringify(first)).not.toMatch(/never-emit-me/);
+  });
+  it('refuses a foreign account, an unrelated credential ref and an unselected source before sending an API request', async () => {
+    const count = requests.length;
+    for (const source of [wrongAccount, wrongRef]) {
+      await expect(apiFetch({ source, request: { url: 'https://session.example.com/posts' } }))
+        .rejects.toMatchObject({ code: 'credential-unavailable' });
+    }
+    await expect(apiFetch({ source: randomUUID(), request: { url: 'https://session.example.com/posts' } }))
+      .rejects.toMatchObject({ code: 'unknown-source' });
+    expect(requests).toHaveLength(count);
+  });
+  it('refuses further API requests after the owner clears a session credential', async () => {
+    const count = requests.length;
+    await clearProviderCredential(sessionDescriptor, install, 'password');
+    await expect(apiFetch({ source: connected, request: { url: 'https://session.example.com/posts' } }))
+      .rejects.toThrow('credential_missing');
+    expect(requests).toHaveLength(count);
   });
 });

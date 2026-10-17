@@ -102,9 +102,20 @@ const argsSchema = z.object({
   evidenceKinds: z.array(z.enum(SPEC_EVIDENCE_KINDS)).min(1).max(SPEC_EVIDENCE_KINDS.length).optional(),
   evidenceRefs: z.array(z.string().trim().min(1).max(2000)).min(1).max(500).optional(),
   /** Exact immutable row ids for audit reads, including bindings later withdrawn. */
-  bindingIds: z.array(z.number().int().positive().max(Number.MAX_SAFE_INTEGER)).max(500).optional(),
+  bindingIds: z
+    .array(z.number().int().positive().max(Number.MAX_SAFE_INTEGER))
+    .max(500)
+    .optional()
+    .describe(
+      'Exact immutable binding row ids for audit reads, including withdrawn rows. Required as a non-empty selector when includeRetracted:true; workItemIds/specIds selectors are not sufficient for withdrawn-row audits.',
+    ),
   /** Audit-only: must be paired with exact binding ids; never use for gate evaluation. */
-  includeRetracted: z.boolean().optional(),
+  includeRetracted: z
+    .boolean()
+    .optional()
+    .describe(
+      'Audit-only: include withdrawn evidence. Requires bindingIds with at least one exact row id; never use for gate or evaluator reads.',
+    ),
   current: z
     .union([z.array(evidenceCurrentInputSchema).max(500), z.boolean()])
     .optional()
@@ -126,7 +137,7 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:get-spec-evidence',
   description:
-    'Read exact work-item/spec-revision evidence and compute per-dimension current|stale|unknown|not-applicable status. Spec currentness comes from the canonical revision pointer; source/test/fixture/rubric/environment values compare with explicit current fingerprints, and missing inputs remain unknown. The aggregate bounded field reports whether the requested row limit omitted evidence. Default detail:"summary" returns a per-binding currentness table, a byClause rollup and a fullBody ref; detail:"full" adds fingerprints, per-dimension status and binding details. For audit-only inspection of withdrawn evidence, pass exact bindingIds with includeRetracted:true; this selector is not for gate/evaluator reads.',
+    'Read exact work-item/spec-revision evidence and compute per-dimension current|stale|unknown|not-applicable status. Spec currentness comes from the canonical revision pointer; source/test/fixture/rubric/environment values compare with explicit current fingerprints, and missing inputs remain unknown. The aggregate bounded field reports whether the requested row limit omitted evidence. Default detail:"summary" returns a per-binding currentness table, a byClause rollup and a fullBody ref; detail:"full" adds fingerprints, per-dimension status and binding details. For audit-only inspection of withdrawn evidence, includeRetracted:true must be paired with a non-empty exact bindingIds selector; workItemIds/specIds selectors alone are insufficient, and this selector is never for gate/evaluator reads.',
   guidance: {
     when: 'Auditing whether each current plan spec has fresh evidence, including legacy VAL aliases and historical bindings.',
     notWhen: 'Writing evidence — plans:bind-spec-evidence. Reading behavior without proof — plans:get-specs.',
@@ -136,6 +147,13 @@ export default defineTool({
   capability: 'plans:read',
   requirePrincipal: false,
   skipWorkspaceTx: true,
+  // This is a correctness read when detail:'full' is requested: the binding
+  // details (including details.adequacy) are the evidence an auditor must
+  // inspect. Preserve that body through both the ambient trimmed tier and the
+  // model-facing result door, just as rubrics:get does for full rubric bodies.
+  // The explicit limit remains the caller's bound on the evidence population.
+  skipResultDoor: 'oversize-by-design',
+  ignoreSessionPayloadTier: true,
   // EI-21841626363210048: the judge role's grading-integrity audit is mandated to
   // "execute each evidence probe exactly as written" for a spec-test-adequacy card —
   // this read-only tool IS that probe (named by spec-test-adequacy's own method text

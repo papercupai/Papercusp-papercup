@@ -3471,8 +3471,8 @@ describe('template_data persistence boundary — the set-template-data door', ()
     );
   });
 
-  async function explicitAmendmentSubject(subject: string) {
-    const seeded = await seedBarContract(subject, { authorMethods: true });
+  async function explicitAmendmentSubject(subject: string, evidencePlane?: 'tree' | 'live') {
+    const seeded = await seedBarContract(subject, { authorMethods: true, evidencePlane });
     const rubric = (await rubrics.getRubric(seeded.rubricSlug))!;
     const [row] = await db.adminSql<{ content: string; version: number }[]>`SELECT content, version
       FROM harness_shared.harness_plans WHERE workspace_id=${seeded.workspaceId}
@@ -3495,6 +3495,90 @@ describe('template_data persistence boundary — the set-template-data door', ()
       WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${subject}`;
     return { ...seeded, rubric, content, subjectRevision: Number(row!.version) };
   }
+
+  it('EI-261580: persists a provenance-only amendment with its authenticated authority', async () => {
+    const seeded = await explicitAmendmentSubject('provenance-only-amendment-subject');
+    const before = (await rubrics.getRubric(seeded.rubricSlug))!;
+    if (before.revision === undefined) throw new Error('The persisted rubric must have a revision');
+    expect(before.criteria.map((criterion) => criterion.barProvenance?.lifecycle)).toEqual([
+      'pre-implementation', 'pre-implementation',
+    ]);
+    const criteria = before.criteria.map((criterion) => ({
+      ...criterion,
+      barProvenance: { ...criterion.barProvenance!, lifecycle: 'legacy-backfilled' as const },
+    }));
+    const amendment = {
+      rubricId: seeded.rubricSlug,
+      actorId: 'provenance-correction-author',
+      reason: 'Correct the post-implementation declaration without changing the acceptance promise.',
+      expectedRubricRevision: before.revision,
+      expectedSubjectPlanRevision: seeded.subjectRevision,
+      idempotencyKey: 'provenance-only-amendment',
+      criteria,
+    };
+    expect(await rubrics.previewAcceptanceBarAmendment(amendment)).toMatchObject({
+      changedBars: [], approvalRequired: false, nextBarSetHash: before.barSetHash,
+      revisionMovement: {
+        rubric: { from: before.revision, to: before.revision + 1 },
+        subject: { from: seeded.subjectRevision, to: seeded.subjectRevision + 1 },
+      },
+    });
+    await expect(rubrics.amendRubric({ ...amendment, faultInjection: 'after-rubric' })).rejects.toThrow();
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.criteria).toEqual(before.criteria);
+
+    const amended = (await rubrics.amendRubric(amendment))!;
+    const reread = (await rubrics.getRubric(seeded.rubricSlug))!;
+    expect(amended.criteria.map((criterion) => criterion.barProvenance)).toEqual(
+      before.criteria.map((criterion) => ({ ...criterion.barProvenance!, lifecycle: 'legacy-backfilled' })),
+    );
+    expect(reread.criteria).toEqual(amended.criteria);
+    expect(reread.barSetHash).toBe(before.barSetHash);
+    expect(reread.barContract!.meaningRevision).toBe(before.barContract!.meaningRevision);
+    expect((await rubrics.amendRubric(amendment))!.revision).toBe(reread.revision);
+  });
+
+  it('repairs a stale canonical map without amending the rubric or disturbing proof projections', async () => {
+    const seeded = await explicitAmendmentSubject('stale-map-repair-subject', 'live');
+    const { validateAcceptanceBarSource } = await import('./acceptance-bar-seed');
+    const staleContent = seeded.content.replace('| R-1 | P-001 | live |', '| R-1 | P-001 | tree |');
+    expect(staleContent).not.toBe(seeded.content);
+    expect(validateAcceptanceBarSource(staleContent).ok).toBe(false);
+    await db.adminSql`UPDATE harness_shared.harness_plans SET content=${staleContent}, content_hash=${hashPlanContent(staleContent)}
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    const projections = () => db.adminSql`SELECT * FROM harness_shared.plan_spec_clause_revisions
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}
+      ORDER BY spec_id, revision`;
+    const beforeProjections = await projections();
+    const repair = { rubricId: seeded.rubricSlug, actorId: 'projection-repair-author',
+      reason: 'Repair the stale map from the unchanged canonical contract.', criteria: seeded.rubric.criteria,
+      expectedRubricRevision: seeded.rubric.revision, expectedSubjectPlanRevision: seeded.subjectRevision };
+    expect(await rubrics.previewAcceptanceBarAmendment(repair)).toMatchObject({
+      changedBars: [], approvalRequired: false,
+      revisionMovement: { rubric: { from: seeded.rubric.revision, to: seeded.rubric.revision },
+        subject: { from: seeded.subjectRevision, to: seeded.subjectRevision + 1 } },
+      invalidatedScorecardIds: [],
+    });
+    await expect(rubrics.amendRubric({ ...repair, faultInjection: 'after-rubric' })).rejects.toThrow();
+    const [rollback] = await db.adminSql`SELECT content, version FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    expect(rollback!.content).toBe(staleContent);
+    expect(Number(rollback!.version)).toBe(seeded.subjectRevision);
+    const after = (await rubrics.amendRubric(repair))!;
+    expect(after).toMatchObject({ revision: seeded.rubric.revision, criteria: seeded.rubric.criteria,
+      barSetHash: seeded.rubric.barSetHash,
+      barContract: { ...seeded.rubric.barContract, subjectPlanRevision: seeded.subjectRevision + 1 } });
+    expect(await projections()).toEqual(beforeProjections);
+    const [row] = await db.adminSql`SELECT content, version FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    expect(row!.content).toBe(seeded.content);
+    expect(Number(row!.version)).toBe(seeded.subjectRevision + 1);
+    expect(validateAcceptanceBarSource(row!.content).ok).toBe(true);
+    await rubrics.amendRubric({ ...repair, expectedSubjectPlanRevision: seeded.subjectRevision + 1 });
+    const [again] = await db.adminSql`SELECT version FROM harness_shared.harness_plans
+      WHERE workspace_id=${seeded.workspaceId} AND harness_slug='papercusp' AND plan_slug=${seeded.subject}`;
+    expect(Number(again!.version)).toBe(seeded.subjectRevision + 1);
+    expect((await rubrics.getRubric(seeded.rubricSlug))!.revision).toBe(seeded.rubric.revision);
+  });
 
   it('repairs stale explicit Requirements on an unchanged amendment without changing BAR meaning', async () => {
     const seeded = await explicitAmendmentSubject('stale-requirement-repair-subject');

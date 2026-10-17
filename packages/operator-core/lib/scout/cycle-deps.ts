@@ -583,7 +583,7 @@ export function buildScoutCycleDeps(
         /* best-effort */
       }
       // Scout `rubric` rail (plan-templates-and-rubric-v2 P-009, SCOUT_RUBRIC_RAIL,
-      // default OFF): on a detected RUBRIC GAP (digest.rubricGaps, P-008) AUTHOR a
+      // runtime default ON — not in DARK_FLAGS): on a detected RUBRIC GAP (digest.rubricGaps, P-008) AUTHOR a
       // `template: rubric` DRAFT plan → the existing queen↔scout loop ratifies it into
       // an active rubric. Forked HERE (not the `route` port) because this is the seam
       // that holds the full StateOfHiveDigest (rubricGaps lives off the digest, not the

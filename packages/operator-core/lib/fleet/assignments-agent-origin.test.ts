@@ -10,8 +10,35 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 import {
   agentOriginToolCallOwnersSince,
   executingOwnersSince,
+  lastProductiveToolCallAtByOwner,
+  lastToolCallAtByOwner,
   nativeToolCallOwnersSince,
 } from './assignments';
+
+describe('settled invocation liveness reads require successful outcomes', () => {
+  beforeEach(() => {
+    sqlMock.mockReset();
+  });
+
+  it('lastToolCallAtByOwner ignores failed/refused attempts', async () => {
+    sqlMock.mockResolvedValue([{ coord_owner_id: 'su-a', invoked_at: '2026-10-16T10:00:00.000Z' }]);
+    await expect(lastToolCallAtByOwner(['su-a'])).resolves.toEqual(
+      new Map([['su-a', '2026-10-16T10:00:00.000Z']]),
+    );
+    const statement = String(sqlMock.mock.calls[0]?.[0]?.join?.('') ?? '');
+    expect(statement).toContain("status = 'ok'");
+  });
+
+  it('lastProductiveToolCallAtByOwner requires a successful non-housekeeping call', async () => {
+    sqlMock.mockResolvedValue([{ coord_owner_id: 'su-a', invoked_at: '2026-10-16T10:00:00.000Z' }]);
+    await expect(lastProductiveToolCallAtByOwner(['su-a'])).resolves.toEqual(
+      new Map([['su-a', '2026-10-16T10:00:00.000Z']]),
+    );
+    const statement = String(sqlMock.mock.calls[0]?.[0]?.join?.('') ?? '');
+    expect(statement).toContain("status = 'ok'");
+    expect(statement).toContain('tool_name != ALL');
+  });
+});
 
 describe('agentOriginToolCallOwnersSince (WI-583276)', () => {
   beforeEach(() => {
@@ -28,6 +55,7 @@ describe('agentOriginToolCallOwnersSince (WI-583276)', () => {
     expect(sqlMock).toHaveBeenCalledTimes(1);
     const statement = String(sqlMock.mock.calls[0]?.[0]?.join?.('') ?? '');
     expect(statement).toContain("call_origin = 'agent'");
+    expect(statement).toContain("status = 'ok'");
     expect(statement).toContain('invoked_at > now()');
     expect(statement).not.toContain('harness_slug');
   });

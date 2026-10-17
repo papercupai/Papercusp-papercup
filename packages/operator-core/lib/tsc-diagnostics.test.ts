@@ -59,8 +59,22 @@ describe('parseTscDiagnostics', () => {
   it('caps a pathologically nested message rather than returning it unbounded', () => {
     const nested = ['a.ts(1,1): error TS2322: head.', ...Array.from({ length: 200 }, (_, i) => `${'  '.repeat(i % 8 + 1)}nested detail line ${i} with filler text`)].join('\n');
     const [d] = parseTscDiagnostics(nested);
-    expect(d.message.length).toBeLessThanOrEqual(410);
+    expect(d.message.length).toBeLessThanOrEqual(2001);
     expect(d.message.endsWith('…')).toBe(true);
+  });
+
+  it('keeps a nested property mismatch beyond the old 400-character cutoff', () => {
+    const nested = [
+      `a.ts(1,1): error TS2322: ${'assignability context '.repeat(22)}`,
+      "  Types of property 'operationId' are incompatible.",
+      "    Type 'string | undefined' is not assignable to type 'string'.",
+      "      Type 'undefined' is not assignable to type 'string'.",
+    ].join('\n');
+    const [d] = parseTscDiagnostics(nested);
+
+    expect(d.message).toContain("Types of property 'operationId' are incompatible.");
+    expect(d.message).toContain("Type 'undefined' is not assignable to type 'string'.");
+    expect(d.message).not.toContain('…');
   });
 
   it('parses a global (unattributed) error with a null file', () => {

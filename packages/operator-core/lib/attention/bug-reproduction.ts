@@ -137,7 +137,14 @@ export interface ReproductionVerification {
   detail: string;
   checkedAt: string;
   /** What the ledger row actually said, when one was read. */
-  observed?: { status: string | null; buildSha: string | null } | null;
+  observed?: {
+    status: string | null;
+    buildSha: string | null;
+    /** Effect-level outcome recorded when a handler returned a soft failure. */
+    resultOutcome?: string | null;
+    /** Bounded reason paired with a `soft-failure` result outcome. */
+    softFailureReason?: string | null;
+  } | null;
 }
 
 /** Receipt statuses that satisfy D-023 without another review step. */
@@ -147,13 +154,34 @@ export function isAcceptedReproductionStatus(status: unknown): boolean {
 
 export interface ReproductionLedgerDeps {
   readTestRun(id: number): Promise<{ status: string | null; commitSha: string | null; worktreeDirty: boolean | null } | null>;
-  readToolInvocation(id: number): Promise<{ status: string | null; servingBuildSha: string | null } | null>;
+  readToolInvocation(id: number): Promise<{
+    status: string | null;
+    servingBuildSha: string | null;
+    /** `tool_invocations.status` is call/transport-level; this is the effect-level verdict. */
+    resultOutcome?: string | null;
+    softFailureReason?: string | null;
+  } | null>;
   now(): Date;
 }
 
 const FAILING_TEST_STATUSES = new Set(['fail', 'error']);
 /** tool_invocations statuses that are not a failure of the tool. */
 const NON_FAILING_INVOCATION_STATUSES = new Set(['ok', 'replayed']);
+const SOFT_FAILURE_OUTCOME = 'soft-failure';
+
+/**
+ * The dispatcher records a handler's `{ ok:false, ... }` result separately from
+ * the transport status. Only the canonical outcome plus a nonblank reason is
+ * admissible here; an unknown or incomplete marker stays unverified.
+ */
+function softFailureReason(row: {
+  resultOutcome?: string | null;
+  softFailureReason?: string | null;
+}): string | null {
+  if (row.resultOutcome !== SOFT_FAILURE_OUTCOME || typeof row.softFailureReason !== 'string') return null;
+  const reason = row.softFailureReason.trim();
+  return reason.length > 0 ? reason : null;
+}
 
 /**
  * Resolve a receipt's ledger citation (D-024 §5). Free-text refs are `attested`:
@@ -196,7 +224,29 @@ export async function verifyBugReproductionReceipt(
     }
     const row = await deps.readToolInvocation(ref.id);
     if (!row) return { status: 'unresolved', detail: `tool_invocations:${ref.id} does not exist`, checkedAt };
-    const observed = { status: row.status, buildSha: row.servingBuildSha };
+    const observed = {
+      status: row.status,
+      buildSha: row.servingBuildSha,
+      resultOutcome: row.resultOutcome ?? null,
+      softFailureReason: row.softFailureReason ?? null,
+    };
+    const semanticFailure = softFailureReason(row);
+    if (semanticFailure) {
+      if (!sameBuildSha(row.servingBuildSha, receipt.buildSha)) {
+        return {
+          status: 'refuted',
+          detail: `tool_invocations:${ref.id} returned soft failure (${semanticFailure}) on ${row.servingBuildSha ?? 'an unrecorded build'}, not the cited build ${receipt.buildSha}`,
+          checkedAt,
+          observed,
+        };
+      }
+      return {
+        status: 'verified',
+        detail: `tool_invocations:${ref.id} returned soft failure (${semanticFailure}) on ${receipt.buildSha}`,
+        checkedAt,
+        observed,
+      };
+    }
     if (row.status == null || NON_FAILING_INVOCATION_STATUSES.has(row.status)) {
       return { status: 'refuted', detail: `tool_invocations:${ref.id} is ${row.status ?? 'unknown'}, not a failure`, checkedAt, observed };
     }

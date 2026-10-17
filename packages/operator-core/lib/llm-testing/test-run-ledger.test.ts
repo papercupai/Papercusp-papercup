@@ -122,6 +122,19 @@ describe('recordLlmScenarioTestRun scope attribution', () => {
     expect(Date.parse(execution!.runtimeEnvironmentBefore!.observedAt)).toBeLessThanOrEqual(Date.parse(startedAt));
     expect(Date.parse(execution!.runtimeEnvironmentAfter!.observedAt)).toBeGreaterThanOrEqual(Date.parse(finishedAt));
   });
+  it('records the process-start provenance boundary before scenario source collection', async () => {
+    const before = await beginLlmScenarioLedger(file);
+    const startedAt = new Date().toISOString();
+    await recordLlmScenarioTestRun(report([run('passed', startedAt, startedAt)]), file, before);
+    const execution = parseTestRunExecutionDetails(ledger.sql.mock.calls[0]![14]);
+    const boundary = Date.parse(execution?.runStartedAt ?? '');
+    // The CLI imports its scenario registry before beginLlmScenarioLedger runs.
+    // A per-scenario timestamp would miss edits after those imports.
+    const processStart = Date.now() - process.uptime() * 1000;
+    expect(Number.isFinite(boundary)).toBe(true);
+    expect(Math.abs(boundary - processStart)).toBeLessThan(1000);
+    expect(boundary).toBeLessThanOrEqual(Date.parse(startedAt));
+  });
   it('preserves a runtime replacement as unstable instead of forging a matching witness', async () => {
     const read = vi.fn().mockResolvedValueOnce({ schemaVersion: 1, units: ['actual-sut'],
       fingerprint: 'a'.repeat(64), observedAt: new Date().toISOString() })

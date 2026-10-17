@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { mergeSetupWizardState } from '../../endpoint-route/routes/desktop/setup-wizard-state';
+import { ManagedUpdatePolicyError } from '../../managed-update-policy';
 
 /**
  * setup:set_update_channel — the conversational replacement for the wizard's
@@ -23,7 +24,14 @@ export default defineTool({
     channel: z.enum(['alpha', 'beta', 'stable']),
   }),
   async handler(args) {
-    const next = await mergeSetupWizardState({ update_channel: args.channel });
-    return { data: { update_channel: next.update_channel } };
+    try {
+      const next = await mergeSetupWizardState({ update_channel: args.channel });
+      return { data: { update_channel: next.update_channel } };
+    } catch (error) {
+      if (error instanceof ManagedUpdatePolicyError) {
+        return { data: { ok: false, error: error.code, message: error.message } };
+      }
+      throw error;
+    }
   },
 });

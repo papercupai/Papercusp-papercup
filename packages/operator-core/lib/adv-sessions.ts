@@ -1784,7 +1784,8 @@ export async function reanchorAdvSessionNativeId(
          SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, ended_by = NULL,
              ended_signal = NULL, started_at = now(), shutdown_accepted_at = NULL,
              resume_claim_key = NULL, resume_claimed_at = NULL
-       WHERE id = ${id} AND session_id IS DISTINCT FROM ${sessionId}
+       WHERE id = ${id} AND retired_at IS NULL
+         AND session_id IS DISTINCT FROM ${sessionId}
       RETURNING id, coord_owner_id AS owner, workspace_id
     `;
     // The owner rides back so the respawn route can clear the frozen context
@@ -1807,9 +1808,12 @@ export async function reanchorAdvSessionNativeId(
     // still the live transcript for this owner.
     // `reanchored` answers "did I change the row"; `owner` answers "whose row is
     // it". They are independent facts, and respawn hygiene keys off the second.
-    const existing = await sql<{ owner: string | null; workspace_id: string }[]>`
-      SELECT coord_owner_id AS owner, workspace_id FROM harness_shared.adv_sessions WHERE id = ${id}
+    const existing = await sql<{ owner: string | null; workspace_id: string; retired_at: Date | string | null }[]>`
+      SELECT coord_owner_id AS owner, workspace_id, retired_at
+        FROM harness_shared.adv_sessions
+       WHERE id = ${id}
     `;
+    if (existing[0]?.retired_at != null) return { reanchored: false, owner: null };
     await recordReanchorSpan(existing[0]?.workspace_id ?? null, existing[0]?.owner ?? null, sessionId);
     return { reanchored: false, owner: existing[0]?.owner ?? null };
   } catch (e) {
@@ -1842,7 +1846,8 @@ export async function reanchorAdvSessionNativeIdByOwner(
     // `started_at` is a mutable activation clock (resume/re-anchor bumps it),
     // not a stable row identity. The exact adv id is preferred everywhere, but
     // legacy owner-only reports still need a safe fallback. Select the sole
-    // active row; if there is no active row, accept only a single total row.
+    // active, non-retired row; if there is no active row, accept only a single
+    // non-retired row. A fleet-kill fence is terminal for re-anchor.
     // Two active rows (or two terminal rows) are ambiguous and must not let one
     // session's native id overwrite another session's home key.
     const target = await sql<{ id: number; workspace_id: string }[]>`
@@ -1855,6 +1860,7 @@ export async function reanchorAdvSessionNativeIdByOwner(
                count(*) OVER () AS total_count
           FROM harness_shared.adv_sessions
          WHERE coord_owner_id = ${coordOwnerId}
+           AND retired_at IS NULL
       ), target AS (
         SELECT id, workspace_id
           FROM owner_rows
@@ -1872,7 +1878,8 @@ export async function reanchorAdvSessionNativeIdByOwner(
              ended_by = NULL, ended_signal = NULL, started_at = now(),
              shutdown_accepted_at = NULL, resume_claim_key = NULL,
              resume_claimed_at = NULL
-       WHERE id = ${targetId} AND session_id IS DISTINCT FROM ${sessionId}
+       WHERE id = ${targetId} AND retired_at IS NULL
+         AND session_id IS DISTINCT FROM ${sessionId}
       RETURNING id
     `;
     // WI-41555 (see the sibling above for the full reasoning): a row that ALREADY

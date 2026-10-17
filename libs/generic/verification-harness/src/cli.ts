@@ -4,7 +4,7 @@
  *
  *   cli.ts plan --run-dir <dir> [--only a,b | --from x] [--reuse <prior run dir>]
  *     reads <dir>/contract.json, writes <dir>/plan.json, prints `phase<TAB>action<TAB>reuseFromRunId`
- *   cli.ts finalize --run-dir <dir> --evidence-root <root>
+ *   cli.ts finalize --run-dir <dir> --evidence-root <root> [--retain-artifact <relative-path>]...
  *     reads contract.json + plan.json + phases.jsonl, writes result.json, repoints <root>/latest,
  *     prints the HARNESS_RESULT line; exit 0 on pass, 1 otherwise
  *   cli.ts guard-rails --run-dir <dir>
@@ -78,6 +78,13 @@ export async function planCommand(argv: string[]): Promise<string> {
 export async function finalizeCommand(argv: string[]): Promise<{ line: string; result: HarnessRunResult }> {
   const runDir = flag(argv, '--run-dir');
   const evidenceRoot = flag(argv, '--evidence-root');
+  const retainedArtifacts: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== '--retain-artifact') continue;
+    const file = argv[++i];
+    if (!file || file.startsWith('--')) throw new Error('missing --retain-artifact path');
+    retainedArtifacts.push(file);
+  }
   const contract = await readContract(runDir);
   const plan = JSON.parse(await readFile(path.join(runDir, 'plan.json'), 'utf8')) as StoredPlan;
   const raw = await readFile(path.join(runDir, 'phases.jsonl'), 'utf8');
@@ -118,7 +125,7 @@ export async function finalizeCommand(argv: string[]): Promise<{ line: string; r
     endedAt: new Date().toISOString(),
   };
   Object.assign(result, deriveVerdict(result));
-  await writeRunResult(result);
+  await writeRunResult(result, retainedArtifacts);
   await linkLatest(evidenceRoot, runDir);
   const pruned = await pruneEvidenceRoot(evidenceRoot);
   const runRetentionLine = formatRunRetentionLine(pruned.runRetention);

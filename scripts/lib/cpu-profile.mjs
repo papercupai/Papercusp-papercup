@@ -5,6 +5,17 @@
  * intentionally retained as real workload: GC consumes process CPU and the saved
  * profile analyzer reports it in its own bucket.
  */
+/**
+ * Retain a separate startup profile for every Node isolate. A fixed
+ * --cpu-prof-name makes loader workers overwrite the main thread's capture;
+ * Node's default names include the process and thread identities.
+ */
+export function nodeCpuProfileArgs(directory) {
+  if (typeof directory !== 'string' || !directory.trim())
+    throw new TypeError('CPU profiling requires an output directory');
+  return ['--cpu-prof', `--cpu-prof-dir=${directory}`];
+}
+
 export function classifyCpuFrame(functionName, url = '') {
   if (url.includes('inspector')) return 'profiler';
   if (functionName === '(idle)' || functionName === '(program)') return 'non-work';

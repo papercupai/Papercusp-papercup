@@ -202,11 +202,12 @@ async function settle(pending: Array<Promise<void>>): Promise<void> {
   throw new Error('assembled relay did not settle');
 }
 
-async function runAssembledByoc(untrustedEndpoint = false) {
+async function runAssembledByoc(untrustedEndpoint = false, terminalKind: 'pty' | 'psu' = 'pty') {
   const root = await mkdtemp(join(tmpdir(), 'byoc-marker-'));
   const captures: Capture[] = [];
   const pending: Array<Promise<void>> = [];
   const ptys: MarkerPty[] = [];
+  const psuSpawns: string[][] = [];
   const desktopSockets: MarkerDesktopSocket[] = [];
   const fetched: Array<{ url: string; body: string }> = [];
   const brokerAudit: unknown[] = [];
@@ -244,7 +245,8 @@ async function runAssembledByoc(untrustedEndpoint = false) {
         send: (envelope) => {
           client.send(envelope);
         },
-        createPty: () => {
+        createPty: (input) => {
+          if (input.psu) psuSpawns.push([...input.psu.argv]);
           const pty = new MarkerPty();
           ptys.push(pty);
           return pty;
@@ -293,11 +295,12 @@ async function runAssembledByoc(untrustedEndpoint = false) {
     await settle(pending);
     if (!adapter) throw new Error('broker did not bind the workspace host');
 
-    function browser(kind: 'pty' | 'operator-http' | 'desktop', desktopSessionId?: string) {
+    function browser(kind: 'pty' | 'psu' | 'operator-http' | 'desktop', desktopSessionId?: string) {
       const wire = sockets(kind + '-browser-wire', captures);
       broker.attachBrowser(ticket, wire.control, {
         kind,
         sealed: true,
+        ...(kind === 'psu' ? { argv: ['--agent=codex', '--no-picker'] } : {}),
         ...(desktopSessionId ? { desktopSessionId, desktopMode: 'takeover' as const } : {}),
       });
       const frames: Record<string, unknown>[] = [];
@@ -321,7 +324,7 @@ async function runAssembledByoc(untrustedEndpoint = false) {
       });
       return { sealed, frames };
     }
-    const ptyBrowser = browser('pty');
+    const ptyBrowser = browser(terminalKind);
     if (untrustedEndpoint) {
       // Queue content before trust is established through the actual broker,
       // connector, and host. A valid connector binding cannot confer key trust.
@@ -333,7 +336,7 @@ async function runAssembledByoc(untrustedEndpoint = false) {
       const refusal = { opening: await opening, sending: await sending };
       await settle(pending);
       return {
-        root, captures, client, adapter, refusal,
+        root, captures, client, adapter, refusal, psuSpawns,
         receivedFrames: ptyBrowser.frames,
         hostWrites: ptys.flatMap((pty) => pty.writes),
         fetched, desktopSockets,
@@ -433,6 +436,7 @@ async function runAssembledByoc(untrustedEndpoint = false) {
       captures,
       client,
       adapter,
+      psuSpawns,
       delivered: {
         pty: ptys[0]?.writes.some((bytes) => bytes.toString().includes(marker('pty'))) ?? false,
         file: (await readFile(join(root, 'marker.txt'), 'utf8')) === marker('file'),
@@ -477,6 +481,37 @@ describe('hosted BYOC content marker negative control (P-003)', () => {
       recoverable(run.captures, marker(plane)).map((capture) => ({ plane, surface: capture.surface })),
     );
     expect(leaks).toEqual([]);
+  });
+
+  it('carries an authorized psu channel through the sealed broker, connector and host without exposing terminal content', async () => {
+    const psu = await runAssembledByoc(false, 'psu');
+    try {
+      expect(psu.psuSpawns).toEqual([['--agent=codex', '--no-picker']]);
+      expect(psu.delivered.pty).toBe(true);
+      expect(recoverable(psu.captures, marker('pty'))).toEqual([]);
+      expect(psu.captures.some((capture) => capture.bytes.includes('"kind":"psu"'))).toBe(true);
+    } finally {
+      psu.client.stop();
+      psu.adapter.close();
+      await rm(psu.root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses psu input from an endpoint that does not trust the customer host key', async () => {
+    const refused = await runAssembledByoc(true, 'psu');
+    try {
+      expect(refused.refusal).toEqual({
+        opening: 'BYOC sealed channel remote key mismatch',
+        sending: 'BYOC sealed channel remote key mismatch',
+      });
+      expect(refused.hostWrites).toEqual([]);
+      expect(refused.receivedFrames).toEqual([]);
+      expect(recoverable(refused.captures, marker('pty'))).toEqual([]);
+    } finally {
+      refused.client.stop();
+      refused.adapter.close();
+      await rm(refused.root, { recursive: true, force: true });
+    }
   });
 
   it('refuses queued customer content from an untrusted endpoint through the assembled relay and host', async () => {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AdvSessionRow } from './adv-sessions';
 import {
   nativeSessionHandleForAdvSession,
+  nativeTranscriptProofFromLaunchReceipt,
   nativeSessionHandleForSpawnedAgent,
   claudeHandleAfterRematerializeAttempt,
   type ClaudeNativeSessionHandle,
@@ -19,6 +20,33 @@ import type {
  * temp tree in session-config-dir.test.ts; duplicating it here would test the wrong seam.
  */
 const RESOLVED = '/home/x/.papercusp/session-claude/su-real';
+
+describe('native transcript launch receipt proof', () => {
+  const task = { ownerId: 'su-exact', kickoffProof: { nativeRef: 'exact.jsonl' }, nativeSession: null };
+  const binding = { ownerId: 'su-exact', sessionId: 'exact-rollout' };
+
+  it('reads a legacy Codex receipt only with one exact verifier owner binding', () => {
+    expect(nativeTranscriptProofFromLaunchReceipt({ tasks: [task], freshVerdict: { sessions: [binding] } }, 'codex'))
+      .toEqual({ nativeTranscriptPath: 'exact.jsonl', nativeSessionId: 'exact-rollout', nativeBackend: 'codex' });
+  });
+
+  it.each([[], [{ ...binding, ownerId: 'su-foreign' }], [binding, binding], [{ ...binding, sessionId: '' }]].map(sessions => ({ sessions })))(
+    'rejects missing, foreign, ambiguous or unresolved verifier bindings: %j', ({ sessions }) => {
+      expect(nativeTranscriptProofFromLaunchReceipt({ tasks: [task], freshVerdict: { sessions } }, 'codex')).toBeUndefined();
+    });
+
+  it('rejects a foreign handle and never downgrades it to legacy proof', () => {
+    expect(nativeTranscriptProofFromLaunchReceipt({ tasks: [{ ...task,
+      nativeSession: { backend: 'codex', ownerId: 'su-foreign', rolloutId: 'foreign' },
+    }], freshVerdict: { sessions: [binding] } }, 'codex')).toBeUndefined();
+  });
+
+  it('does not infer a backend from a legacy native filename or owner identity', () => {
+    expect(nativeTranscriptProofFromLaunchReceipt({ tasks: [task], freshVerdict: { sessions: [binding] } }, 'claude')).toBeUndefined();
+    expect(nativeTranscriptProofFromLaunchReceipt({ tasks: [{ ...task, ownerId: undefined }],
+      freshVerdict: { sessions: [binding] } }, 'codex')).toBeUndefined();
+  });
+});
 const resolvedTo = (dir: string): SessionConfigDirResolution => ({
   dir,
   source: 'live-process',

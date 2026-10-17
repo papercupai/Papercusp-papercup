@@ -27,6 +27,16 @@ function stubWindow(ws?: string) {
 }
 
 describe('installWorkspaceParamEventSource', () => {
+  it('carries the portal machine without inventing a customer workspace selection', () => {
+    const calls = stubWindow('control-plane');
+    window.location.href = 'http://127.0.0.1:3070/?desktopHost=machine-b';
+    installWorkspaceParamEventSource({ workspace: false });
+    new window.EventSource('/api/operator-sync/sse');
+    expect(calls[0].url).toBe('/api/operator-sync/sse?desktopHost=machine-b');
+    new window.EventSource('https://external.test/api/sse');
+    expect(calls[1].url).toBe('https://external.test/api/sse');
+  });
+
   it('appends ?ws= to an operator SSE URL', () => {
     const calls = stubWindow('ws-7');
     installWorkspaceParamEventSource();

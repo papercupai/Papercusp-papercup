@@ -46,6 +46,8 @@ export async function checkDraftItemStartGate(input: {
   evaluateGate: () => Promise<ConversationActivationGateVerdict>;
   /** True when a non-terminal work-item already covers this plan item. */
   hasCoveringWorkItem: () => Promise<boolean>;
+  /** True when a terminal work-item proves a stale todo→done reflection. */
+  hasTerminalCoveringWorkItem?: () => Promise<boolean>;
 }): Promise<DraftItemStartRefusal | null> {
   if (!START_TARGETS.has(input.toStatus)) return null;
 
@@ -59,6 +61,15 @@ export async function checkDraftItemStartGate(input: {
   // Unknown item: let the normal path return its own item_not_found.
   if (!item) return null;
   if (STARTED_OR_TERMINAL.has(item.status)) return null;
+
+  // A terminal linked work-item is completion evidence, not a new start. This
+  // is the repair path for a missed work-item→plan reflection: the plan item
+  // may still read `todo` on an unaudited legacy plan even though its sole
+  // linked work-item already reached a terminal state. Keep the activation
+  // gate for new `wip`/`done` starts with no completion evidence.
+  if (input.toStatus === 'done' && input.hasTerminalCoveringWorkItem) {
+    if (await input.hasTerminalCoveringWorkItem()) return null;
+  }
 
   const gate = await input.evaluateGate();
   if (gate.satisfied) return null;
@@ -109,6 +120,19 @@ export async function checkDraftItemStartGateLive(input: {
     return resolved;
   };
   const sql = async () => (await import('@papercusp/db-org')).getOrgPg().sql;
+  let coverage: Promise<{ hasOpen: boolean; hasTerminal: boolean }> | undefined;
+  const readCoverage = async (): Promise<{ hasOpen: boolean; hasTerminal: boolean }> => {
+    coverage ??= (async () => {
+      const { findCoverageWorkItems, TERMINAL_WORK_ITEM_STATES } = await import('../../plan-items/convert');
+      const { workspaceId } = await scope();
+      const linked = await findCoverageWorkItems(input.slug, input.itemId, [workspaceId]);
+      return {
+        hasOpen: linked.some((wi) => !TERMINAL_WORK_ITEM_STATES.has(wi.state)),
+        hasTerminal: linked.some((wi) => TERMINAL_WORK_ITEM_STATES.has(wi.state)),
+      };
+    })();
+    return coverage;
+  };
   return checkDraftItemStartGate({
     slug: input.slug,
     itemId: input.itemId,
@@ -134,11 +158,7 @@ export async function checkDraftItemStartGateLive(input: {
         planSlug: input.slug,
       });
     },
-    hasCoveringWorkItem: async () => {
-      const { findCoverageWorkItems, TERMINAL_WORK_ITEM_STATES } = await import('../../plan-items/convert');
-      const { workspaceId } = await scope();
-      const coverage = await findCoverageWorkItems(input.slug, input.itemId, [workspaceId]);
-      return coverage.some((wi) => !TERMINAL_WORK_ITEM_STATES.has(wi.state));
-    },
+    hasCoveringWorkItem: async () => (await readCoverage()).hasOpen,
+    hasTerminalCoveringWorkItem: async () => (await readCoverage()).hasTerminal,
   });
 }

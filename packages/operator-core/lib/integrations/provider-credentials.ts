@@ -20,9 +20,12 @@
 import {
   providerCredentialForHost,
   providerCredentialValueIssue,
+  validateProviderDescriptor,
   type ProviderCredentialField,
   type ProviderDescriptor,
 } from '@papercusp/plugin-sdk';
+import { createHash } from 'node:crypto';
+import { pinModuleState } from '@papercusp/module-singleton';
 import type postgres from 'postgres';
 import { fsTokenStorage } from '../oauth/storage-fs';
 import type { TokenStorage } from '../oauth/token';
@@ -39,6 +42,104 @@ const SAVED_AT_SUFFIX = '__saved_at';
 const PRINCIPAL_INFIX = ':person:';
 /** The store key becomes a file name, so a person id is held to filename-safe characters. */
 const PRINCIPAL_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+const SESSION_KEY = '__session';
+const sessions = pinModuleState('@papercusp/operator-core.integrations.credential-sessions', () => ({
+  inFlight: new WeakMap<TokenStorage, Map<string, Promise<ProviderCredentialSession>>>(),
+}));
+
+/** HOST-INTERNAL. Only identity metadata may be persisted on a source or returned to a caller. */
+export interface ProviderCredentialSession {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  identity: ProviderAccountIdentity;
+  secrets: string[];
+  fingerprint: string;
+}
+
+function sessionField(body: unknown, path: string): unknown {
+  return path.split('.').reduce<unknown>((value, key) => value && typeof value === 'object' && Object.hasOwn(value, key)
+    ? (value as Record<string, unknown>)[key] : undefined, body);
+}
+
+/** Persistent create/refresh lifecycle for descriptors using setup.credentials, not OAuth. */
+export async function providerCredentialSession(
+  descriptor: ProviderDescriptor,
+  harness: string,
+  opts: { storage?: TokenStorage; fetchImpl?: typeof fetch; now?: () => number } = {},
+): Promise<ProviderCredentialSession> {
+  const session = descriptor.setup?.session;
+  const fail = (message: string, kind = 'auth') => Object.assign(new Error(`provider_session_${message}`), { kind });
+  if (!session || validateProviderDescriptor(descriptor).length) throw fail('descriptor_invalid');
+  const storage = opts.storage ?? fsTokenStorage;
+  const storeKey = providerSetupStoreKey(descriptor.id);
+  const stored = await storage.read(storeKey, harness);
+  const values: Record<string, string> = {};
+  for (const [parameter, key] of Object.entries(session.parameters)) {
+    const value = stored[key];
+    const field = descriptor.setup!.credentials!.find((f) => f.key === key)!;
+    if (providerCredentialValueIssue(field, value)) throw fail('credential_missing');
+    values[parameter] = value as string;
+  }
+  const fingerprintOf = (data: Record<string, unknown>) => createHash('sha256')
+    .update(JSON.stringify([session, Object.values(session.parameters).map((key) => data[key])])).digest('hex');
+  const fingerprint = fingerprintOf(stored);
+  const now = opts.now ?? Date.now;
+  const cached = stored[SESSION_KEY] as ProviderCredentialSession | undefined;
+  const prior = cached?.fingerprint === fingerprint && typeof cached.accessToken === 'string' && typeof cached.refreshToken === 'string' ? cached : null;
+  if (prior && prior.expiresAt > now() + 30_000) return prior;
+  let inFlight = sessions.inFlight.get(storage);
+  if (!inFlight) { inFlight = new Map(); sessions.inFlight.set(storage, inFlight); }
+  const key = `${harness}\0${descriptor.id}\0${fingerprint}`;
+  const pending = inFlight.get(key);
+  if (pending) return pending;
+  const operation = (async (): Promise<ProviderCredentialSession> => {
+    let response: Response;
+    try {
+      response = await (opts.fetchImpl ?? fetch)(prior ? session.refreshUrl : session.url, {
+        method: 'POST', redirect: 'manual', headers: { accept: 'application/json',
+          ...(prior ? { authorization: `Bearer ${prior.refreshToken}` } : { 'content-type': 'application/json' }) },
+        ...(prior ? {} : { body: JSON.stringify(values) }),
+      });
+    } catch { throw fail('network_failed', 'transient'); }
+    if (!response.ok) {
+      throw Object.assign(fail(`http_${response.status}`, response.status === 429 ? 'rate-limited'
+        : response.status === 401 || response.status === 403 ? 'auth' : 'transient'),
+      response.status === 429 ? { retryAfterSeconds: Number(response.headers.get('retry-after')) || 30 } : {});
+    }
+    let body: unknown;
+    try { body = await response.json(); } catch { throw fail('invalid_json', 'transient'); }
+    const active = session.activeField ? sessionField(body, session.activeField) : undefined;
+    if (active === false) throw fail('account_inactive');
+    if (active !== undefined && typeof active !== 'boolean') throw fail('invalid_active_field', 'transient');
+    const accessToken = sessionField(body, session.accessTokenField);
+    const refreshToken = sessionField(body, session.refreshTokenField);
+    const validToken = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && !/[\s\u0000-\u001f\u007f]/.test(value);
+    if (!validToken(accessToken) || !validToken(refreshToken)) throw fail('token_missing', 'transient');
+    const id = sessionField(body, session.identity.idField);
+    const label = session.identity.displayNameField ? sessionField(body, session.identity.displayNameField) : undefined;
+    const secrets = [...Object.entries(session.parameters).filter(([, key]) => key !== session.identity.credentialKey)
+      .map(([parameter]) => values[parameter]), accessToken, refreshToken, ...(prior ? [prior.accessToken, prior.refreshToken] : [])];
+    if (typeof id !== 'string' || !id || (label !== undefined && typeof label !== 'string') ||
+      secrets.some((secret) => id.includes(secret) || (typeof label === 'string' && label.includes(secret)))) throw fail('identity_invalid');
+    if (prior && prior.identity.providerAccountId !== id) throw fail('identity_changed');
+    let expiresAt = now() + session.maxAgeSeconds * 1000;
+    // exp is only an expiry hint; authenticity is provided by the fixed HTTPS login endpoint.
+    try {
+      const exp = JSON.parse(Buffer.from(accessToken.split('.')[1], 'base64url').toString()).exp;
+      if (typeof exp === 'number' && Number.isFinite(exp)) expiresAt = Math.min(expiresAt, exp * 1000);
+    } catch { /* Opaque bearer tokens use the descriptor's conservative maximum. */ }
+    if (expiresAt <= now() + 30_000) throw fail('token_expired');
+    // A password changed/cleared while the exchange ran must never resurrect the old session.
+    if (fingerprintOf(await storage.read(storeKey, harness)) !== fingerprint) throw fail('credentials_changed');
+    const result: ProviderCredentialSession = { accessToken, refreshToken, expiresAt, fingerprint, secrets,
+      identity: { providerAccountId: id, ...(label ? { displayName: label as string } : {}) } };
+    await storage.update(storeKey, harness, { [SESSION_KEY]: result });
+    return result;
+  })().finally(() => { inFlight!.delete(key); });
+  inFlight.set(key, operation);
+  return operation;
+}
 
 /**
  * Whether the provider's pasted credentials connected this source (WI-6554700010008468).
@@ -190,7 +291,7 @@ export async function saveProviderCredentials(
     target[`${key}${SAVED_AT_SUFFIX}`] = savedAt;
   }
   const ownKey = opts.principalUserId ? providerPrincipalStoreKey(descriptor.id, opts.principalUserId) : null;
-  if (Object.keys(patch).length > 0) await storage.update(providerSetupStoreKey(descriptor.id), harness, patch);
+  if (Object.keys(patch).length > 0) await storage.update(providerSetupStoreKey(descriptor.id), harness, { ...patch, [SESSION_KEY]: null });
   if (ownKey && Object.keys(ownPatch).length > 0) await storage.update(ownKey, harness, ownPatch);
   return providerCredentialStatus(descriptor, harness, storage, opts.principalUserId ?? null);
 }
@@ -211,7 +312,7 @@ export async function clearProviderCredential(
     throw new ProviderCredentialError('principal-required', `${field.label} is stored per person; sign in to clear your own`, key);
   }
   const storeKey = field.perPrincipal ? providerPrincipalStoreKey(descriptor.id, principalUserId!) : providerSetupStoreKey(descriptor.id);
-  await storage.update(storeKey, harness, { [key]: null, [`${key}${SAVED_AT_SUFFIX}`]: null });
+  await storage.update(storeKey, harness, { [key]: null, [`${key}${SAVED_AT_SUFFIX}`]: null, [SESSION_KEY]: null });
   return providerCredentialStatus(descriptor, harness, storage, principalUserId);
 }
 
@@ -235,9 +336,13 @@ export interface CredentialIdentityOptions {
  * declare, so a package without such a field gets no request and no label.
  */
 async function credentialAccount(
-  descriptor: Pick<ProviderDescriptor, 'id' | 'setup' | 'oauth' | 'egressHosts'>,
+  descriptor: ProviderDescriptor,
   opts: CredentialIdentityOptions,
 ): Promise<{ account: ProviderAccountIdentity | null; error: string | null }> {
+  if (descriptor.setup?.session) {
+    const result = await providerCredentialSession(descriptor, opts.harness ?? DEFAULT_SOURCE_TOKEN_HARNESS, opts);
+    return { account: result.identity, error: null };
+  }
   const identityUrl = descriptor.oauth?.identity?.url;
   if (!identityUrl) return { account: null, error: null };
   const errorPrefix = `provider_${descriptor.id.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`;
@@ -276,7 +381,7 @@ async function credentialAccount(
 export async function syncProviderCredentialSource(
   sql: postgres.Sql,
   owner: ProviderCredentialSourceOwner,
-  descriptor: Pick<ProviderDescriptor, 'id' | 'setup' | 'oauth' | 'egressHosts'>,
+  descriptor: ProviderDescriptor,
   credentials: readonly ProviderCredentialStatus[],
   opts: CredentialIdentityOptions = {},
 ): Promise<'connected' | 'disconnected'> {
@@ -291,7 +396,8 @@ export async function syncProviderCredentialSource(
       ownerUserId: owner.ownerUserId,
       credentialRef,
       status: 'connected',
-      ...(identity.account?.displayName ? { config: { accountLabel: identity.account.displayName } } : {}),
+      ...(identity.account ? { config: { accountId: identity.account.providerAccountId,
+        ...(identity.account.displayName ? { accountLabel: identity.account.displayName } : {}) } } : {}),
       createdBy: owner.ownerUserId,
     });
     // A credential the provider's identity endpoint refuses still connects (its format passed), but

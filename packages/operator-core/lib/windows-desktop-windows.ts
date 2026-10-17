@@ -12,23 +12,16 @@
  * where the title is set, and desktop-window-liveness.ts (Lane 2) /
  * adv-sessions.ts focusWindowId (Lane 1/5) for the consumers.
  *
- * Implementation: shells out to `powershell.exe` from inside WSL (WSL→Windows
- * interop) to enumerate top-level windows via the classic EnumWindows/
- * GetWindowText/GetWindowThreadProcessId P/Invoke trio, and to focus one via
- * FindWindow + ShowWindow(SW_RESTORE) + SetForegroundWindow.
- *
- * ⚠ OPEN RISK (flagged for the fleet lead / VM verification): it is UNVERIFIED
- * whether a `powershell.exe` spawned from inside WSL sees the INTERACTIVE
- * session's `wt.exe` windows (a Session-0 / window-station boundary could hide
- * them). If VM verification shows an empty result despite windows being open,
- * pivot this module to a Tauri Rust command invoked over the existing
- * operator↔Tauri IPC bridge instead of shelling to powershell.exe — the
- * exported function SIGNATURES here are the contract every caller codes
- * against, so that pivot is a drop-in swap of the implementation only.
+ * Implementation: reuse the renderer-pushed window list when fresh; otherwise
+ * ask a fresh native UI client through the existing ui_intents transport.
+ * Focus always runs in that client's interactive Tauri process. WSL-side
+ * PowerShell is Session-0-blind and is not a focus fallback. The native command
+ * restores, moves to the current virtual desktop, and observes foreground,
+ * visibility, minimization and DWM cloaking before returning true.
  *
  * Fail-soft throughout, mirroring desktop-window-liveness.ts's wmctrl contract:
- * ANY failure (not a Windows-via-WSL host, no powershell, WSL interop
- * unavailable, spawn timeout, parse miss) yields `[]` / `false` — never
+ * ANY failure (not a Windows desktop host, no fresh native client, timeout,
+ * parse miss or desktop refusal) yields `[]` / `false` — never
  * throws.
  *
  * ⚠ PLATFORM-DETECTION GOTCHA (P-025 audit finding, WI-1646's sibling — do NOT
@@ -107,31 +100,6 @@ export interface WindowsDesktopWindow {
 /** The exact title prefix Lane 1 stamps on every session's terminal window. */
 export const WINDOW_TITLE_PREFIX = 'Papercup — ';
 
-/** A hung/absent powershell must never wedge the caller (presence read / reaper sweep). */
-const PS_TIMEOUT_MS = 2000;
-
-/**
- * Leader VM finding (2026-07-02): `powershell.exe` is deliberately NOT on the
- * `papercup-runtime` WSL PATH, so a bare `powershell.exe` fails with
- * "command not found" — it must be invoked by its absolute Windows-mount path.
- * Tried first; a bare-name fallback covers a WSL config where PATH forwarding
- * IS enabled (still fail-soft either way).
- */
-const POWERSHELL_ABS_PATH = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-
-async function execPowershell(bin: string, script: string): Promise<string> {
-  const { execFile } = await import('node:child_process');
-  const { promisify } = await import('node:util');
-  const execFileAsync = promisify(execFile);
-  const { stdout } = await execFileAsync(bin, ['-NoProfile', '-NonInteractive', '-Command', script], {
-    timeout: PS_TIMEOUT_MS,
-    encoding: 'utf8',
-    windowsHide: true,
-  });
-  return typeof stdout === 'string' ? stdout : '';
-}
-
-
 /**
  * D-002 / WI-1675 — the renderer-pushed on-desktop window cache.
  *
@@ -179,7 +147,15 @@ export function getOnDesktopWindowsCache(now = Date.now()): WindowsDesktopWindow
  */
 export async function listWindowsByTitle(prefix?: string): Promise<WindowsDesktopWindow[]> {
   if (!isWindowsDesktopHost()) return [];
-  const windows = getOnDesktopWindowsCache();
+  let windows = getOnDesktopWindowsCache();
+  if (!windows) {
+    try {
+      const { dispatchNativeWindowIntent } = await import('./ui/dispatch-intent');
+      const result = await dispatchNativeWindowIntent({ action: 'list' });
+      if (Array.isArray(result)) windows = result.filter((w): w is WindowsDesktopWindow =>
+        w !== null && typeof w === 'object' && typeof w.title === 'string' && typeof w.hwnd === 'string' && Number.isInteger(w.pid));
+    } catch { return []; }
+  }
   if (!windows) return [];
   return prefix ? windows.filter((w) => w.title.startsWith(prefix)) : windows;
 }
@@ -195,54 +171,19 @@ export function parseSessionIdFromWindowTitle(title: string): string | null {
   return sessionId.length > 0 ? sessionId : null;
 }
 
-function escapeForPowershellSingleQuoted(s: string): string {
-  return s.replace(/'/g, "''");
-}
-
 /**
- * Bring a Windows window to the foreground by exact title match (FindWindow +
- * ShowWindow(SW_RESTORE) + SetForegroundWindow, with the AttachThreadInput
- * focus-steal workaround Windows requires from a background process).
+ * Focus by exact title in the interactive native process, including on WSL.
+ * The existing UI-intent transport returns the native observed result; a
+ * Session-0 PowerShell process cannot enumerate or focus Session-1 windows.
  * USER-INITIATED ONLY — mirrors adv-sessions.ts focusWindowId's memory
  * (feedback_e2e_no_focus_steal): never call this from an automated driver.
- * Best-effort: returns false on any failure (no match / no powershell / timeout).
+ * Best-effort: false on no native client, missing window, denial or timeout.
  */
 export async function focusWindowByTitle(title: string): Promise<boolean> {
   if (!isWindowsDesktopHost()) return false;
-  const escaped = escapeForPowershellSingleQuoted(title);
-  const script = `
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class PapercuspFocus {
-  [DllImport("user32.dll")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
-  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-  [DllImport("user32.dll")] public static extern uint GetCurrentThreadId();
-  [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
-}
-"@
-$hwnd = [PapercuspFocus]::FindWindow($null, '${escaped}')
-if ($hwnd -eq [IntPtr]::Zero) { exit 1 }
-[PapercuspFocus]::ShowWindow($hwnd, 9) | Out-Null
-$targetTid = 0
-[PapercuspFocus]::GetWindowThreadProcessId($hwnd, [ref]$targetTid) | Out-Null
-$curTid = [PapercuspFocus]::GetCurrentThreadId()
-[PapercuspFocus]::AttachThreadInput($curTid, $targetTid, $true) | Out-Null
-$ok = [PapercuspFocus]::SetForegroundWindow($hwnd)
-[PapercuspFocus]::AttachThreadInput($curTid, $targetTid, $false) | Out-Null
-if ($ok) { exit 0 } else { exit 1 }
-`.trim();
   try {
-    await execPowershell(POWERSHELL_ABS_PATH, script);
-    return true;
-  } catch {
-    try {
-      await execPowershell('powershell.exe', script); // PATH-forwarding fallback
-      return true;
-    } catch {
-      return false; // no match (non-zero exit) / no powershell / timeout
-    }
-  }
+    const { dispatchNativeWindowIntent } = await import('./ui/dispatch-intent');
+    const result = await dispatchNativeWindowIntent({ action: 'focus', title });
+    return result !== null && typeof result === 'object' && 'protocol' in result && result.protocol === 'visible-window-v1' && 'focused' in result && result.focused === true;
+  } catch { return false; }
 }

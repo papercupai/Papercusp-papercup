@@ -75,6 +75,27 @@ describe('backup:snapshot_create handler — deadline race', () => {
     expect(body(out)).toEqual({ snapshotId: 11, kopiaSnapshotId: 'kopia-fast', bytesAdded: 5, durationMs: 20 });
   });
 
+  it('requires an exact receipt for producer resume', async () => {
+    await expect(call({ reason: 'pre_destructive', resumeProducer: true })).rejects.toThrow('requires resumeSnapshotId');
+    expect(h.snapshot).not.toHaveBeenCalled();
+  });
+
+  it('re-drives only the requested existing receipt when explicitly requested', async () => {
+    h.reconcileSnapshotReceipt.mockResolvedValue({ snapshotId: 99, stillRunning: true, status: 'running' });
+    h.snapshot.mockResolvedValue({ snapshotId: 99, kopiaSnapshotId: 'recovered', dbDumpOk: true });
+    const out = await call({ reason: 'pre_destructive', resumeSnapshotId: 99, resumeProducer: true });
+    expect(h.snapshot).toHaveBeenCalledWith('pre_destructive', undefined,
+      expect.objectContaining({ resumeSnapshotId: 99, onStarted: expect.any(Function) }));
+    expect(body(out)).toMatchObject({ snapshotId: 99, kopiaSnapshotId: 'recovered', dbDumpOk: true });
+  });
+
+  it('does not restart an already terminal receipt even with producer resume requested', async () => {
+    const receipt = { snapshotId: 99, stillRunning: false, status: 'ok', kopiaSnapshotId: 'existing', dbDumpOk: true };
+    h.reconcileSnapshotReceipt.mockResolvedValue(receipt);
+    expect(body(await call({ reason: 'pre_destructive', resumeSnapshotId: 99, resumeProducer: true }))).toEqual(receipt);
+    expect(h.snapshot).not.toHaveBeenCalled();
+  });
+
   it('returns stillRunning + the durable snapshotId (never a bare timeout) when the snapshot outlives the deadline', async () => {
     vi.useFakeTimers();
     let releaseSnapshot!: (v: unknown) => void;

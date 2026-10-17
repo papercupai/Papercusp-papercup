@@ -593,7 +593,13 @@ export function createHostedAuthRoutes(deps: HostedAuthRouteDependencies): Reado
       }
 
       try { void deps.onSessionEstablished?.(session).catch(() => {}); } catch { /* Optional metadata observer. */ }
-      return redirect(new URL(returnTo, origin).toString(), [
+      const destination = new URL(returnTo, origin);
+      // Only a newly admitted account gets the utility welcome. A returning
+      // member using Create account falls through to sign-in above, and must
+      // not receive another automatic download (nor replay a supplied marker).
+      destination.searchParams.delete('utilityWelcome');
+      if (admittedSession) destination.searchParams.set('utilityWelcome', '1');
+      return redirect(destination.toString(), [
         deps.sessionCookieCodec.serialize(session.id, session.expiresAt, now),
         deleteFlowCookie(),
       ]);

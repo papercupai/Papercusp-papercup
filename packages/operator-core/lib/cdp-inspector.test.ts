@@ -9,7 +9,8 @@ import { runInNewContext } from 'node:vm';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
 
-import { closeInspector, createCdpClient, readPinnedState, readPinnedHeapObjectIds, capturePinnedHeapSnapshot, readProcessMemory, redactDiagnosticUrl, withFunctionCallTrace } from '../../../scripts/cdp-inspector.mjs';
+import { closeInspector, createCdpClient, readPinnedState, readPinnedHeapObjectIds, capturePinnedHeapSnapshot, readProcessMemory, redactDiagnosticUrl, withFunctionCallTrace, readSeedRestoreDiagnostics, captureSeedRestorePhases, SEED_RESTORE_DIAGNOSTIC_SLOT } from '../../../scripts/cdp-inspector.mjs';
+import { restoreSeed, SeedProviderRegistry, type SeedManifest } from '../../../libs/generic/seed-bundle/src/index';
 import { types } from 'node:util';
 
 class FakeWebSocket extends EventEmitter {
@@ -64,6 +65,186 @@ function makeClient(responses: Map<string, unknown>, options: Record<string, unk
     ...options,
   });
 }
+
+describe('seed restore phase observer', () => {
+  const identity = { expectedPid: 7, expectedEntry: '/installed/serve.mjs',
+    expectedBuildSha: 'a'.repeat(40), expectedSourceSha256: 'b'.repeat(64) };
+  function fixture() {
+    const operation = { id: 'operation-1', pid: 7, identity: { buildSha: identity.expectedBuildSha,
+      sourceSha256: identity.expectedSourceSha256, script: identity.expectedEntry, processInstanceId: 'instance-1' },
+      status: 'running', startedAt: 1, finishedAt: null, outcomeOk: null, droppedEvents: 0,
+      events: [{ kind: 'corestore', phase: 'verify', state: 'started', seq: 0, at: 1 }] };
+    const state = { version: 1, operations: [operation] };
+    const context: Record<PropertyKey, unknown> = { Symbol, process: { pid: 7, argv: ['node', identity.expectedEntry] },
+      [Symbol.for(SEED_RESTORE_DIAGNOSTIC_SLOT)]: state };
+    const client = { evaluate: vi.fn(async (expression: string) => ({ result: { value: runInNewContext(expression, context) } })),
+      send: vi.fn(async (_method: string) => ({})), close: vi.fn() };
+    return { client, state, operation, context };
+  }
+
+  it.each(['verify', 'restore'] as const)('reads the actual source journal while provider.%s is awaiting', async phase => {
+    const key = Symbol.for(SEED_RESTORE_DIAGNOSTIC_SLOT);
+    const root = globalThis as unknown as Record<symbol, unknown>;
+    const previous = root[key];
+    delete root[key];
+    let release!: () => void;
+    let entered!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const registry = new SeedProviderRegistry().register({ kind: 'corestore',
+      cut: async () => { throw new Error('cut is outside this fixture'); },
+      verify: async () => { if (phase === 'verify') { entered(); await held; } return { ok: true }; },
+      restore: async () => { if (phase === 'restore') { entered(); await held; } },
+    });
+    const manifest: SeedManifest = { seedFormatVersion: 1, potId: 'observer-fixture', cutAtEpoch: 0, cutHlc: 'fixture', cutTs: 1,
+      stores: [{ kind: 'corestore', hash: 'hash', sizeBytes: 0, source: { type: 'resource', path: 'fixture' } }] };
+    const ongoing = restoreSeed(manifest, registry, async () => new Uint8Array(), {
+      diagnosticIdentity: { buildSha: identity.expectedBuildSha, sourceSha256: identity.expectedSourceSha256, script: process.argv[1] },
+    });
+    const client = { evaluate: async (expression: string) => ({ result: { value: runInNewContext(expression,
+      { Symbol, process, [key]: root[key] } as any) } }), send: vi.fn(async () => ({})), close: vi.fn() };
+    const expected = { ...identity, expectedPid: process.pid, expectedEntry: process.argv[1] };
+    try {
+      await started;
+      const snapshot = await readSeedRestoreDiagnostics(client, expected);
+      expect(snapshot.operations).toHaveLength(1);
+      expect(snapshot.operations[0].status).toBe('running');
+      expect(snapshot.operations[0].events.at(-1)).toMatchObject({ phase, state: 'started' });
+      expect(snapshot.operations[0].events).not.toContainEqual(expect.objectContaining({ phase, state: 'succeeded' }));
+      release();
+      await ongoing;
+      const result = await captureSeedRestorePhases(client, { ...expected, expectedOperationId: snapshot.operations[0].id });
+      expect(result.operation.status).toBe('succeeded');
+      expect(result.operation.events.at(-1)).toMatchObject({ phase: 'restore', state: 'succeeded' });
+    } finally {
+      release();
+      await ongoing;
+      if (previous === undefined) delete root[key]; else root[key] = previous;
+    }
+  });
+
+  it('reports an old script without a journal as unsupported, never completed', async () => {
+    const { client, context } = fixture();
+    delete context[Symbol.for(SEED_RESTORE_DIAGNOSTIC_SLOT)];
+    expect(await readSeedRestoreDiagnostics(client, identity)).toMatchObject({ available: false,
+      reason: 'seed restore phase journal unavailable' });
+  });
+
+  it.each([false, true])('rejects an unsupported capture without polling and cleans up startup=%s', async resumeStartup => {
+    const { client, context } = fixture();
+    delete context[Symbol.for(SEED_RESTORE_DIAGNOSTIC_SLOT)];
+    const sleepImpl = vi.fn(async () => { throw new Error('unsupported journal must not poll'); });
+    await expect(captureSeedRestorePhases(client, { ...identity, resumeStartup, sleepImpl }))
+      .rejects.toMatchObject({ code: 'SEED_RESTORE_DIAGNOSTICS_UNAVAILABLE',
+        message: 'seed restore phase journal unavailable' });
+    expect(client.evaluate).toHaveBeenCalledOnce();
+    expect(sleepImpl).not.toHaveBeenCalled();
+    expect(client.close).toHaveBeenCalledOnce();
+    if (resumeStartup) expect(client.send).toHaveBeenCalledExactlyOnceWith('Runtime.runIfWaitingForDebugger');
+    else expect(client.send).not.toHaveBeenCalled();
+  });
+
+  it('rejects a journal that disappears during a capture without another polling interval', async () => {
+    const { client, context } = fixture();
+    const sleepImpl = vi.fn(async () => { delete context[Symbol.for(SEED_RESTORE_DIAGNOSTIC_SLOT)]; });
+    await expect(captureSeedRestorePhases(client, { ...identity, sleepImpl }))
+      .rejects.toMatchObject({ code: 'SEED_RESTORE_DIAGNOSTICS_UNAVAILABLE' });
+    expect(client.evaluate).toHaveBeenCalledTimes(2);
+    expect(sleepImpl).toHaveBeenCalledOnce();
+    expect(client.close).toHaveBeenCalledOnce();
+  });
+
+  it.each(['expectedBuildSha', 'expectedSourceSha256'] as const)('requires %s before reading or capturing', async field => {
+    const { client } = fixture();
+    const unpinned = { ...identity, [field]: undefined };
+    await expect(readSeedRestoreDiagnostics(client, unpinned as any)).rejects.toThrow(field);
+    await expect(captureSeedRestorePhases(client, { ...unpinned,
+      sleepImpl: async () => { throw new Error('unpinned capture must not poll'); } } as any)).rejects.toThrow(field);
+    expect(client.evaluate).not.toHaveBeenCalled();
+    expect(client.send).not.toHaveBeenCalled();
+  });
+
+  it.each(['expectedPid', 'expectedEntry', 'expectedBuildSha', 'expectedSourceSha256'] as const)('refuses a mismatched %s', async field => {
+    const { client } = fixture();
+    const wrong = { ...identity, [field]: field === 'expectedPid' ? 8 : field === 'expectedEntry' ? '/other.mjs' : 'c'.repeat(field === 'expectedBuildSha' ? 40 : 64) };
+    await expect(readSeedRestoreDiagnostics(client, wrong)).rejects.toThrow(/mismatch/);
+  });
+
+  it.each(['pid', 'script'] as const)('refuses journal operation %s drift even when the process matches', async field => {
+    const { client, operation } = fixture();
+    if (field === 'pid') operation.pid = 8; else operation.identity.script = '/other.mjs';
+    await expect(readSeedRestoreDiagnostics(client, identity)).rejects.toThrow(/identity mismatch/);
+  });
+
+  it('rejects a missing exact operation instead of accepting a neighboring terminal result', async () => {
+    const { client } = fixture();
+    await expect(readSeedRestoreDiagnostics(client, { ...identity, expectedOperationId: 'missing' })).rejects.toThrow('not observed');
+  });
+
+  it('pins the first running operation across concurrent journal additions', async () => {
+    const { client, state, operation } = fixture();
+    let polls = 0;
+    const result = await captureSeedRestorePhases(client, { ...identity, durationMs: 1000,
+      sleepImpl: async () => {
+        polls++;
+        if (polls === 1) state.operations.push({ ...operation, id: 'neighbor', status: 'succeeded', events: [] });
+        else operation.status = 'failed';
+      } });
+    expect(result.operation.id).toBe(operation.id);
+    expect(result.operation.status).toBe('failed');
+    expect(polls).toBe(2);
+  });
+
+  it('bounds a nonresponsive evaluate and disconnects at the total capture deadline', async () => {
+    vi.useFakeTimers();
+    const { client } = fixture();
+    client.evaluate.mockImplementation(() => new Promise(() => {}));
+    let outcome: unknown;
+    const capture = captureSeedRestorePhases(client, { ...identity, durationMs: 1000 })
+      .then(value => { outcome = value; }, error => { outcome = error; });
+    try {
+      await vi.advanceTimersByTimeAsync(1001);
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toContain('exceeded 1000ms');
+      expect(client.close).toHaveBeenCalledOnce();
+      await capture;
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('disconnects on a polling timeout and validates the two-minute cap before transport use', async () => {
+    vi.useFakeTimers();
+    const { client } = fixture();
+    try {
+      const timedOut = expect(captureSeedRestorePhases(client, { ...identity, durationMs: 1000 }))
+        .rejects.toThrow('exceeded 1000ms');
+      await vi.advanceTimersByTimeAsync(1001);
+      await timedOut;
+      expect(client.close).toHaveBeenCalledOnce();
+      client.evaluate.mockClear();
+      await expect(captureSeedRestorePhases(client, { ...identity, durationMs: 120001 })).rejects.toThrow('120000');
+      expect(client.evaluate).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('checks process identity before resuming and retries a failed startup resume during cleanup', async () => {
+    const { client } = fixture();
+    client.send.mockRejectedValueOnce(new Error('resume failed'));
+    await expect(captureSeedRestorePhases(client, { ...identity, resumeStartup: true })).rejects.toThrow('resume failed');
+    expect(client.evaluate.mock.invocationCallOrder[0]).toBeLessThan(client.send.mock.invocationCallOrder[0]);
+    expect(client.send).toHaveBeenCalledTimes(2);
+    expect(client.send).toHaveBeenLastCalledWith('Runtime.runIfWaitingForDebugger');
+    expect(client.close).toHaveBeenCalledOnce();
+  });
+
+  it('preserves both the observation failure and disconnect failure', async () => {
+    const { client } = fixture();
+    client.evaluate.mockRejectedValue(new Error('read failed'));
+    client.close.mockImplementation(() => { throw new Error('close failed'); });
+    const error = await captureSeedRestorePhases(client, identity).catch(error => error);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error.errors.map((entry: Error) => entry.message)).toEqual(['read failed', 'close failed']);
+  });
+});
 
 describe('P011 exact request weak-target heap-ID reader', () => {
   const owner = '@papercusp/db-org.acquire-registry';

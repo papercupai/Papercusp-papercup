@@ -8,6 +8,7 @@ import {
   hasFreshSuccessfulGitSyncCompletion,
   verifiedGitSyncHealth,
   gitSyncMissedIntervalsAlarmActive,
+  selectDeadOneShotConditions,
   toBridgeConditionStates,
   _resetConditionStalenessDebounce,
 } from './condition-staleness-alarm';
@@ -449,6 +450,163 @@ describe('selectAbsentConditions (pure — EI-15182 guard #3, family-agnostic)',
       'git-sync-stall:quartermaster-hive',
       'infra-liveness:pg-restarted',
     ]);
+  });
+});
+
+describe('selectDeadOneShotConditions (WI-6554700010016120)', () => {
+  const emitter = {
+    pid: 4242,
+    startedAt: '2026-07-17T19:00:00.000Z',
+    uptimeSec: 60,
+    cwd: '/repo',
+    host: 'host-a',
+    processIdentity: 'linux:boot:4242',
+  };
+
+  it('selects only open one-shot conditions with a positive dead probe', () => {
+    const states = [
+      mkState({ condition_key: 'origin-freshness:papercusp', one_shot: true, latest_emitter: emitter }),
+      mkState({ condition_key: 'origin-freshness:other', one_shot: true, latest_emitter: emitter }),
+      mkState({ condition_key: 'git-sync-stall:papercusp', one_shot: false, latest_emitter: emitter }),
+      mkState({ condition_key: 'origin-freshness:closed', one_shot: true, latest_emitter: emitter, open: false }),
+    ];
+    expect(
+      selectDeadOneShotConditions(states, new Map([
+        ['origin-freshness:papercusp', 'dead'],
+        ['origin-freshness:other', 'alive'],
+        ['git-sync-stall:papercusp', 'dead'],
+        ['origin-freshness:closed', 'dead'],
+      ])),
+    ).toEqual(['origin-freshness:papercusp']);
+  });
+
+  it('leaves alive and unknown emitters open', () => {
+    const state = mkState({
+      condition_key: 'origin-freshness:papercusp',
+      one_shot: true,
+      latest_emitter: emitter,
+    });
+    expect(selectDeadOneShotConditions([state], new Map([['origin-freshness:papercusp', 'unknown']]))).toEqual([]);
+  });
+
+  it('does not resolve a degraded one-shot condition from emitter death alone', () => {
+    const state = mkState({
+      condition_key: 'degraded:retrieval:mixed',
+      one_shot: true,
+      latest_emitter: emitter,
+    });
+    expect(selectDeadOneShotConditions([state], new Map([['degraded:retrieval:mixed', 'dead']]))).toEqual([]);
+  });
+});
+
+describe('runConditionStalenessTick — one-shot emitter death reconciliation', () => {
+  it('broadcasts a durable resolution only after a positive dead-emitter probe', async () => {
+    const now = Date.parse('2026-10-16T19:00:00.000Z');
+    const key = 'origin-freshness:papercusp';
+    const broadcasts: string[][] = [];
+    const state = mkState({
+      condition_key: key,
+      one_shot: true,
+      latest_emitter: {
+        pid: 4242,
+        startedAt: '2026-10-16T17:00:00.000Z',
+        uptimeSec: 60,
+        cwd: '/repo',
+        host: 'host-a',
+        processIdentity: 'linux:boot:4242',
+      },
+      last_seen: '2026-10-16T17:30:00.000Z',
+    });
+    const result = await runConditionStalenessTick({
+      readStates: async () => [state],
+      probeEmitter: () => 'dead',
+      readHealthByKey: async () => new Map(),
+      readGitSyncHealthByKey: async () => new Map(),
+      broadcastResolvedMany: async ({ conditionKeys }) => {
+        broadcasts.push(conditionKeys);
+        return true;
+      },
+      listOpen: async () => [],
+      resolve: async () => undefined,
+      escalate: async () => { throw new Error('dead one-shot must not be escalated'); },
+      now: () => now,
+      staleMs: 45 * 60_000,
+      absenceMs: 2 * 60 * 60_000,
+    });
+    expect(result.reconciled).toEqual([key]);
+    expect(broadcasts).toEqual([[key]]);
+    expect(result.fired).toEqual([]);
+  });
+
+  it('does not resolve a one-shot condition when emitter liveness is unknown', async () => {
+    const key = 'origin-freshness:papercusp';
+    const state = mkState({
+      condition_key: key,
+      one_shot: true,
+      latest_emitter: {
+        pid: 4242,
+        startedAt: '2026-10-16T17:00:00.000Z',
+        uptimeSec: 60,
+        cwd: '/repo',
+        host: 'host-a',
+        processIdentity: 'linux:boot:4242',
+      },
+    });
+    const broadcasts: string[][] = [];
+    const result = await runConditionStalenessTick({
+      readStates: async () => [state],
+      probeEmitter: () => 'unknown',
+      readHealthByKey: async () => new Map(),
+      readGitSyncHealthByKey: async () => new Map(),
+      broadcastResolvedMany: async ({ conditionKeys }) => {
+        broadcasts.push(conditionKeys);
+        return true;
+      },
+      listOpen: async () => [],
+      resolve: async () => undefined,
+      escalate: async () => undefined,
+      now: () => Date.parse('2026-10-16T19:00:00.000Z'),
+      staleMs: 45 * 60_000,
+      absenceMs: 2 * 60 * 60_000,
+    });
+    expect(result.reconciled).toEqual([]);
+    expect(broadcasts).toEqual([]);
+  });
+
+  it('keeps a degraded one-shot condition open until metric recovery is emitted', async () => {
+    const key = 'degraded:retrieval:mixed';
+    const state = mkState({
+      condition_key: key,
+      one_shot: true,
+      latest_emitter: {
+        pid: 4242,
+        startedAt: '2026-10-16T17:00:00.000Z',
+        uptimeSec: 60,
+        cwd: '/repo',
+        host: 'host-a',
+        processIdentity: 'linux:boot:4242',
+      },
+      last_seen: '2026-10-16T17:30:00.000Z',
+    });
+    const broadcasts: string[][] = [];
+    const result = await runConditionStalenessTick({
+      readStates: async () => [state],
+      probeEmitter: () => 'dead',
+      readHealthByKey: async () => new Map(),
+      readGitSyncHealthByKey: async () => new Map(),
+      broadcastResolvedMany: async ({ conditionKeys }) => {
+        broadcasts.push(conditionKeys);
+        return true;
+      },
+      listOpen: async () => [],
+      resolve: async () => undefined,
+      escalate: async () => undefined,
+      now: () => Date.parse('2026-10-16T19:00:00.000Z'),
+      staleMs: 45 * 60_000,
+      absenceMs: 2 * 60 * 60_000,
+    });
+    expect(result.reconciled).toEqual([]);
+    expect(broadcasts).toEqual([]);
   });
 });
 
@@ -1169,7 +1327,11 @@ describe('runConditionStalenessTick — bridge wiring', () => {
   });
 
   it('WI-6554700010009404: keeps a stale one-shot provider condition open through the final bridge input', async () => {
-    const key = 'alarm:codex-rollout-provider:%5B%22papercusp-workspace%22%2C%2240302%22%2C%22su-d88420f0-c0b4-4dc7-92c7-f60ab3ddab44%22%5D';
+    // Use the current actionable degradation namespace. The historical Codex
+    // provider alarm was intentionally not in the bridge catalog, so that old
+    // key could never reach bridgeInputs and made this lifecycle assertion
+    // vacuous after the catalog was narrowed.
+    const key = 'degraded:release-state-read:papercusp-pr-drill-20261014-dependency-prebuild-state:prebuild-state-unavailable';
     const condition = mkState({
       condition_key: key,
       first_seen: '2026-10-12T20:55:48.319Z',

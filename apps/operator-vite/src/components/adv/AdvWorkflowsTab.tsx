@@ -26,6 +26,7 @@ import { useCallback, useEffect, useId, useMemo, useState, type FormEvent, type 
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import * as Tabs from '@radix-ui/react-tabs';
 import { useSyncQuery } from '@papercusp/sync';
+import { operatorUi } from '@papercusp/operator-ui/seam';
 import { toast } from 'sonner';
 import { CalendarClock, DatabaseZap, Plus, RefreshCw, Search, Sparkles, X } from 'lucide-react';
 import type { AutomationCatalog } from '@papercusp/operator-core/lib/automation/catalog';
@@ -324,12 +325,13 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export default function AdvWorkflowsTab() {
+export default function AdvWorkflowsTab({ enterprise = false }: { enterprise?: boolean } = {}) {
   const resolvedHarnessSlug = useResolvedHarnessSlug();
-  const [mode, setMode] = useQueryState(
+  const [storedMode, setMode] = useQueryState(
     'wfMode',
     parseAsStringEnum<Mode>(['workflows', 'activity']).withDefault('workflows'),
   );
+  const mode = enterprise ? 'workflows' : storedMode;
   const [stateFacet, setStateFacet] = useQueryState(
     'wfState',
     parseAsStringEnum<StateFacet>(['all', 'attention', 'running', 'paused']).withDefault('all'),
@@ -348,7 +350,9 @@ export default function AdvWorkflowsTab() {
   // The EXPANSION of the inspector (D-002): the full topology + agent chat. A distinct
   // param from `wfSelId` because it is a destination, not a row highlight.
   const [wfId, setWfId] = useQueryState('wfId', parseAsString);
-  const [, setAdvTab] = useQueryState('tab', parseAsString);
+  const navigation = operatorUi().advNavigation;
+  const [, setDestination] = useQueryState(navigation?.param ?? 'tab', parseAsString);
+  const setAdvTab = (tab: string) => setDestination(navigation?.targets[tab] ?? tab);
   const [, setCalendarPlan] = useQueryState('calPlan', parseAsString);
   const { confirm, element: confirmElement } = useConfirmDialog();
   const [busy, setBusy] = useState<string | null>(null);
@@ -417,7 +421,10 @@ export default function AdvWorkflowsTab() {
     external,
   }), [catalog, external, occurrencesQuery.data, occurrencesQuery.error, plansQuery.data, schedulesQuery.data]);
 
-  const items = useMemo(() => buildAutomationItems(modelInput), [modelInput]);
+  const items = useMemo(() => {
+    const inventory = buildAutomationItems(modelInput);
+    return enterprise ? inventory.filter(item => item.operation !== null) : inventory;
+  }, [enterprise, modelInput]);
   const rows = useMemo(() => {
     const ledger = buildLedgerRows(items);
     if (!occurrencesQuery.error) return ledger;
@@ -450,10 +457,12 @@ export default function AdvWorkflowsTab() {
 
   const visibleRows = useMemo(
     () => sortLedgerRows(
-      filterLedgerRows(rows, { state: stateFacet, kind: kindFacet, source: sourceFacet, query }),
+      // Generic Workflows facets must not hide the departmental journey when
+      // following an Enterprise link with older wf* URL state.
+      enterprise ? rows : filterLedgerRows(rows, { state: stateFacet, kind: kindFacet, source: sourceFacet, query }),
       sort,
     ),
-    [rows, stateFacet, kindFacet, sourceFacet, query, sort],
+    [enterprise, rows, stateFacet, kindFacet, sourceFacet, query, sort],
   );
 
   // The inspected workflow: the explicit selection when it still exists, else the first
@@ -768,10 +777,11 @@ export default function AdvWorkflowsTab() {
     setDraft('');
   }, [draft, openComposer]);
 
-  const loading = catalogQuery.loading || plansQuery.loading || schedulesQuery.loading;
+  const loading = catalogQuery.loading || plansQuery.loading || schedulesQuery.loading
+    || (enterprise && external === null && externalError === null);
   const planHarnesses = [...new Set((plansQuery.data ?? []).map((plan) => plan.harness).filter(Boolean))];
   const creationHarness = resolvedHarnessSlug ?? (planHarnesses.length === 1 ? planHarnesses[0] : null);
-  const filtered = stateFacet !== 'all' || kindFacet !== 'all' || sourceFacet != null || query.trim() !== '';
+  const filtered = !enterprise && (stateFacet !== 'all' || kindFacet !== 'all' || sourceFacet != null || query.trim() !== '');
   const populationEmpty = !loading && rows.length === 0;
   const scheduleReadAlert = occurrencesQuery.error ? (
     <div className="pc-wf__notice" role="alert">
@@ -799,7 +809,7 @@ export default function AdvWorkflowsTab() {
         ) ?? null)
       : null;
 
-  if (expandedWorkflow) {
+  if (expandedWorkflow && !enterprise) {
     const armBusyKey = expandedBinding ? `binding:${expandedBinding.id}` : null;
     return (
       <section className="pc-wf" aria-label="Workflow detail">
@@ -848,7 +858,7 @@ export default function AdvWorkflowsTab() {
   }
 
   return (
-    <section className="pc-wf" aria-label="Workflows">
+    <section className="pc-wf" aria-label={enterprise ? 'Enterprise workspace' : 'Workflows'}>
       {confirmElement}
       {dialog === 'compose' ? (
         <WorkflowComposerDialog
@@ -875,15 +885,17 @@ export default function AdvWorkflowsTab() {
 
       <header className="pc-wf__mast">
         <div className="pc-wf__mast-copy">
-          <span className="pc-wf__eyebrow">Automation control</span>
+          <span className="pc-wf__eyebrow">{enterprise ? 'Departmental workflow' : 'Automation control'}</span>
           <div className="pc-wf__mast-ident">
-            <h1 className="pc-wf__title">Workflows</h1>
+            <h1 className="pc-wf__title">{enterprise ? 'Enterprise' : 'Workflows'}</h1>
             <span className="pc-wf__summary" data-loading={loading || undefined}>
               {loading ? 'Loading workflow inventory…' : buildPopulationSummary(counts)}
             </span>
           </div>
-          <p className="pc-wf__lede">Create, monitor, and repair everything that runs without you.</p>
-          {sourceHealth.length > 0 ? (
+          <p className="pc-wf__lede">{enterprise
+            ? 'Prepare a case, review its outcome, and manage the approved workflow in one workspace.'
+            : 'Create, monitor, and repair everything that runs without you.'}</p>
+          {!enterprise && sourceHealth.length > 0 ? (
             <span className="pc-wf__sources" role="group" aria-label="Source health">
               {sourceHealth.map((entry) => {
                 const active = sourceFacet === entry.token;
@@ -915,15 +927,30 @@ export default function AdvWorkflowsTab() {
           <button type="button" className="pc-wf__btn" onClick={refreshAll} aria-label="Refresh workflows">
             <span className="pc-wf__btn-inner"><RefreshCw size={14} aria-hidden /> Refresh</span>
           </button>
-          <button type="button" className="pc-wf__btn pc-wf__btn--primary" onClick={() => openComposer('')}>
-            <span className="pc-wf__btn-inner"><Plus size={14} aria-hidden /> New workflow</span>
+          <button type="button" className="pc-wf__btn pc-wf__btn--primary"
+            onClick={() => enterprise ? void setAdvTab('workflows') : openComposer('')}>
+            <span className="pc-wf__btn-inner"><Plus size={14} aria-hidden /> {enterprise ? 'Manage workflows' : 'New workflow'}</span>
           </button>
         </div>
       </header>
 
       {scheduleReadAlert}
 
-      <section className="pc-wf__composer" aria-label="Describe a workflow">
+      {enterprise && <section className="pc-wf__panel pc-wf__insp-sec" aria-label="Enterprise journey">
+        <h2 className="pc-wf__insp-h">Employee → Reviewer → Administrator</h2>
+        <p>Choose an installed departmental workflow. Its case form, result, business decision, funding, and revision history stay together below.</p>
+        <label>Departmental workflow
+          <Select value={selectedRow?.id ?? ''} onChange={id => void setSelectedId(id)}
+            disabled={loading || visibleRows.length === 0} ariaLabel="Departmental workflow"
+            options={visibleRows.map(row => ({ value: row.id, label: `${row.label} · ${items.find(item => item.id === row.id)?.harness ?? 'Unknown department'}` }))} />
+        </label>
+        <nav className="pc-wf__insp-actions" aria-label="Supporting workspace evidence">
+          {([['plans', 'Plans'], ['calendar', 'Calendar'], ['evals', 'Evaluations'], ['hud', 'Live work'], ['health', 'Health'], ['learning', 'Learning']] as const)
+            .map(([tab, label]) => <button key={tab} type="button" className="pc-wf__btn" onClick={() => void setAdvTab(tab)}>{label}</button>)}
+        </nav>
+      </section>}
+
+      {!enterprise && <section className="pc-wf__composer" aria-label="Describe a workflow">
         <div className="pc-wf__composer-head">
           <span className="pc-wf__composer-icon" aria-hidden><Sparkles size={17} /></span>
           <div>
@@ -959,11 +986,11 @@ export default function AdvWorkflowsTab() {
             </div>
           ) : null}
         </div>
-      </section>
+      </section>}
 
       {/* D-018, preserved by D-004: rendered ONLY when non-empty. No empty-state branch.
           Bounded by collapseNeedsYou so it stays an interrupt rather than a wall. */}
-      {needsYou.rows.length > 0 ? (
+      {!enterprise && needsYou.rows.length > 0 ? (
         <section className="pc-wf__needs" aria-label="Needs you" data-testid="workflows-needs-you">
           <span className="pc-wf__needs-lead">Needs you</span>
           <ul className="pc-wf__needs-list">
@@ -991,11 +1018,12 @@ export default function AdvWorkflowsTab() {
 
       {externalError ? (
         <div className="pc-wf__notice" role="status">
-          External sources are temporarily unavailable: {externalError}. Routine and schedule data remain live.
+          {enterprise ? `Departmental workflow inventory is unavailable: ${externalError}. Refresh to retry; any retained selection may be stale.`
+            : `External sources are temporarily unavailable: ${externalError}. Routine and schedule data remain live.`}
         </div>
       ) : null}
 
-      <section className="pc-wf__controls" aria-label="Workflow controls" data-testid="workflows-control-deck">
+      {!enterprise && <section className="pc-wf__controls" aria-label="Workflow controls" data-testid="workflows-control-deck">
         <div className="pc-wf__control-row">
           <div className="pc-wf__control-cluster">
             <span className="pc-wf__control-label">View</span>
@@ -1088,7 +1116,7 @@ export default function AdvWorkflowsTab() {
             </div>
           </div>
         ) : null}
-      </section>
+      </section>}
 
       <div className="pc-wf__body" data-population-empty={populationEmpty || undefined}>
         {mode === 'activity' ? (
@@ -1103,8 +1131,10 @@ export default function AdvWorkflowsTab() {
             hiddenCount={Math.max(0, visibleRows.length - ROW_RENDER_CAP)}
             selectedId={selectedRow?.id ?? null}
             loading={loading}
-            emptyTitle={filtered ? 'No matching workflows' : 'Your workflow control center starts here'}
-            emptyLabel={filtered
+            emptyTitle={enterprise ? (externalError ? 'Inventory unavailable' : 'No departmental workflow installed')
+              : filtered ? 'No matching workflows' : 'Your workflow control center starts here'}
+            emptyLabel={enterprise ? (externalError ? 'Refresh to load the current departmental workflows.'
+              : 'Install an approved departmental operation from Workflows to begin the employee, reviewer, and admin journey.') : filtered
               ? 'No workflows match these filters.'
               : 'No workflows are installed yet. Describe one above and the agent will wire it.'}
             onSelect={(row) => void setSelectedId(row.id)}
@@ -1116,6 +1146,7 @@ export default function AdvWorkflowsTab() {
         )}
         {!populationEmpty ? (
           <WorkflowInspector
+            enterprise={enterprise}
             item={inspected}
             row={selectedRow}
             inputs={inputs}
@@ -1145,7 +1176,11 @@ export default function AdvWorkflowsTab() {
               void setCalendarPlan(inspected.planSlug);
               void setAdvTab('calendar');
             }}
-            onExpand={() => inspected && void setWfId(inspected.id)}
+            onExpand={() => void (async () => {
+              if (!inspected) return;
+              await setWfId(inspected.id);
+              if (enterprise) await setAdvTab('workflows');
+            })()}
             onAsk={() => {
               if (!inspected) return;
               openComposer(`About the workflow "${inspected.label}": `);

@@ -6,9 +6,9 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, _resetForTests } from '@papercusp/db-org';
 import { getAdvSessionInWorkspace, markAdvSessionEnded, recordAdvSession } from '../lib/adv-sessions';
-import { buildPrivateOperatorApiBundle, createPrivateHealthSnapshot, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, privateBundleRuntimeEnv, resolvePreparedPrivateApiBundle, stopPrivateOperatorHost } from './private-http-workspace-preflight';
+import { buildPrivateOperatorApiBundle, createPrivateHealthSnapshot, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, privateBundleRuntimeEnv, privatePgStartupIdentity, resolvePreparedPrivateApiBundle, stopPrivateOperatorHost } from './private-http-workspace-preflight';
 import { verifyPrivateCoordReceipt } from './private-coord-receipt';
 import { seedPrivateProjectHistory, preflightPrivateProjectHistory } from './portal-project-history-fixture';
 import { seedPrivateCalendar, preflightPrivateCalendar } from './portal-calendar-fixture';
@@ -20,6 +20,43 @@ import { startPrivateCupboardCatalog } from './portal-cupboard-fixture';
 
 const root = resolve(import.meta.dirname, '../../..');
 const evidence = process.env.ROSTER_STOP_HTTP_EVIDENCE_DIR!;
+const healthCleanupProof = process.argv.includes('--health-cleanup-proof');
+const healthPublicationProof = process.argv.includes('--health-publication-proof');
+const socketOrigins = new Map<number, { socket: net.Socket; stack: string; createdAt: number; connectedAt: number }>();
+const originalConnect = net.Socket.prototype.connect;
+const originalWrite = net.Socket.prototype.write;
+const originalEnd = net.Socket.prototype.end;
+const originalDestroy = net.Socket.prototype.destroy;
+const socketStartups = new WeakMap<net.Socket, NonNullable<ReturnType<typeof privatePgStartupIdentity>>>();
+const socketClosures = new WeakMap<net.Socket, { endAt?: number; endStack?: string; destroyAt?: number; destroyStack?: string }>();
+// Use the same creation-stack/census evidence as the native current-build
+// fixture. A completed cleanup await alone cannot prove the worker will exit.
+net.Socket.prototype.connect = function(this: net.Socket, ...args: unknown[]) {
+  const stack = new Error('Private roster PG connection creation').stack ?? '';
+  const createdAt = Date.now();
+  this.once('connect', () => {
+    if (this.remotePort === Number(process.env.PAPERCUSP_PG_PORT) && this.localPort)
+      socketOrigins.set(this.localPort, { socket: this, stack, createdAt, connectedAt: Date.now() });
+  });
+  return Reflect.apply(originalConnect, this, args);
+} as typeof originalConnect;
+net.Socket.prototype.write = function(this: net.Socket, ...args: unknown[]) {
+  if (this.remotePort === Number(process.env.PAPERCUSP_PG_PORT) && !socketStartups.has(this)) {
+    const identity = privatePgStartupIdentity(args[0]);
+    if (identity) socketStartups.set(this, identity);
+  }
+  return Reflect.apply(originalWrite, this, args);
+} as typeof originalWrite;
+net.Socket.prototype.end = function(this: net.Socket, ...args: unknown[]) {
+  if (this.remotePort === Number(process.env.PAPERCUSP_PG_PORT)) socketClosures.set(this, {
+    ...socketClosures.get(this), endAt: Date.now(), endStack: new Error('Private PG socket end').stack });
+  return Reflect.apply(originalEnd, this, args);
+} as typeof originalEnd;
+net.Socket.prototype.destroy = function(this: net.Socket, ...args: unknown[]) {
+  if (this.remotePort === Number(process.env.PAPERCUSP_PG_PORT)) socketClosures.set(this, {
+    ...socketClosures.get(this), destroyAt: Date.now(), destroyStack: new Error('Private PG socket destroy').stack });
+  return Reflect.apply(originalDestroy, this, args);
+} as typeof originalDestroy;
 const requestedBrowserProof = process.argv.find(value => value.startsWith('--browser-proof='))?.slice('--browser-proof='.length);
 if (requestedBrowserProof) {
   assert.ok(['ROSTER_CONVERSATIONS_BROWSER_PROOF', 'ROSTER_CREATE_DOCK_BROWSER_PROOF'].includes(requestedBrowserProof));
@@ -37,7 +74,7 @@ assert.ok(![3070, 3170, 3271].includes(Number(new URL(base).port)));
 assert.ok(evidence);
 const preparedApiBundle = resolvePreparedPrivateApiBundle(process.argv, evidence);
 const apiBundle = preparedApiBundle ?? join(evidence, 'hono-host.mjs');
-const portalSourceRoot = process.env.ROSTER_COORD_BROWSER_PROOF === '1' || process.env.ROSTER_STOP_BROWSER_PROOF === '1'
+const portalSourceRoot = !healthCleanupProof && !healthPublicationProof && (process.env.ROSTER_COORD_BROWSER_PROOF === '1' || process.env.ROSTER_STOP_BROWSER_PROOF === '1')
   ? preparePortalBrowserSource(process.argv) : undefined;
 // Evidence paths are intentionally long; AF_UNIX addresses are bounded by bytes.
 // Keep the mutable socket namespace short and retain its identity in the receipt.
@@ -47,15 +84,23 @@ assert.ok(Buffer.byteLength(join(discovery, 'su-rs-123456789-neighbor.sock')) < 
 writeFileSync(join(evidence, 'discovery.json'), JSON.stringify({ discovery }));
 process.env.PAPERCUSP_PSU_PTY_DIR = discovery;
 process.env.PAPERCUSP_TURN_PROVENANCE_DIR = join(evidence, 'turn-provenance');
-const { socketPathFor, metaPathFor, encodeControl } = await import('../../../apps/operator/scripts/psu-pty-host.mjs');
+const { socketPathFor, metaPathFor, eventLogPathForOwner, encodeControl } = await import('../../../apps/operator/scripts/psu-pty-host.mjs');
 const { shutdownViaPty } = await import('../lib/events/await/psu-pty-discovery');
 const { sql } = getOrgPg();
-const sessions: Array<{ owner: string; id: number; startedAt: string; done: Promise<number>; closed: boolean; output: () => string }> = [];
+const sessions: Array<{ owner: string; id: number; startedAt: string; done: Promise<number>; closed: boolean; output: () => string;
+  pid?: number; exitedAt?: string; closedAt?: string; exitCode?: number | null; exitSignal?: NodeJS.Signals | null }> = [];
 let api: ChildProcess | undefined;
 let cupboardCatalog: Awaited<ReturnType<typeof startPrivateCupboardCatalog>> | undefined;
 const endings: Promise<unknown>[] = [];
 const inboxInvalidations: Array<Record<string, unknown>> = [];
 let inboxInvalidationListener: { unlisten: () => Promise<void> } | undefined;
+
+function retainNativeState(stage: string) {
+  appendFileSync(join(evidence, 'roster-stop-native.jsonl'), JSON.stringify({ at: new Date().toISOString(), stage,
+    sessions: sessions.map(({ done: _done, output, ...session }) => ({ ...session, output: output(),
+      hostEvents: existsSync(eventLogPathForOwner(session.owner))
+        ? readFileSync(eventLogPathForOwner(session.owner), 'utf8') : null })) }) + '\n');
+}
 
 async function until(check: () => boolean | Promise<boolean>, label: string, timeout = 10_000) {
   const deadline = Date.now() + timeout;
@@ -73,19 +118,29 @@ async function child(label: string) {
   const row = await getAdvSessionInWorkspace(id, workspace);
   assert.ok(row);
   let output = '';
-  const session = { owner, id, startedAt: row.startedAt, closed: false, output: () => output, done: Promise.resolve(0) };
+  const session: typeof sessions[number] = { owner, id, startedAt: row.startedAt, closed: false,
+    output: () => output, done: Promise.resolve(0) };
   const host = spawn(process.execPath, [join(root, 'packages/operator-core/test/psu-pty-host-canary.mjs'), owner, String(id)], {
     cwd: evidence, stdio: ['ignore', 'pipe', 'pipe'],
     env: { PATH: process.env.PATH, TERM: 'xterm-256color', PAPERCUSP_PSU_PTY_DIR: discovery,
       PAPERCUSP_TURN_PROVENANCE_DIR: join(evidence, 'turn-provenance'),
       PAPERCUSP_SID: owner, PAPERCUSP_LAUNCHED_BY: 'su-private-roster-acceptance' },
   });
-  host.stdout!.on('data', chunk => { output += String(chunk); });
+  host.stdout!.setEncoding('utf8');
+  host.stdout!.on('data', (chunk: string) => { output += chunk; });
   host.stderr!.on('data', chunk => process.stderr.write(chunk));
+  session.pid = host.pid;
+  host.once('exit', (code, signal) => {
+    session.exitedAt = new Date().toISOString();
+    session.exitCode = code; session.exitSignal = signal;
+    retainNativeState('host-exit');
+  });
   session.done = new Promise((done, reject) => {
     host.once('error', reject);
     host.once('close', (code, osSignal) => {
       session.closed = true;
+      session.closedAt = new Date().toISOString();
+      retainNativeState('host-close');
       const line = output.split('\n').find(value => value.startsWith('ROSTER_CANARY_EXIT '));
       const signal = line ? JSON.parse(line.slice('ROSTER_CANARY_EXIT '.length)).signal : osSignal;
       endings.push(markAdvSessionEnded(id, code, signal ? 'signal' : 'self', { signal, throwOnError: true }));
@@ -215,6 +270,54 @@ async function coordCanary(health: unknown) {
         { ...current, panels: { ...panels, workItems: { ...panels.workItems, summary: 'private-health-transition' } } });
       writeFileSync(join(evidence, 'portal-health-seed.json'), JSON.stringify({ current, foreignWorkspace, conditionId: condition.id,
         scope: 'Initial supplied snapshot/history; real private needs-human row drives subsequent Work-items collector ticks' }, null, 2));
+    }
+    if (healthCleanupProof) {
+      // Exercise the original Health seed and browser import graph without
+      // building/starting an API or replaying the browser journey.
+      await import('./portal-roster-browser-fixture');
+      // Collector and shared-query subscriptions also use the process-wide hub.
+      // Keep one alive so this proof exercises its teardown independently of
+      // the auth listener, whose unsubscribe may leave other subscribers.
+      const { hubListen } = await import('../lib/pg-listen-hub');
+      await hubListen('private_health_cleanup_probe', () => {});
+      console.log('ROSTER_HEALTH_CLEANUP_SEEDED ' + JSON.stringify({ workspace }));
+      return;
+    }
+    if (healthPublicationProof) {
+      const { writeSharedSnapshot, readSharedSnapshot } = await import('../lib/derived-reads/shared-snapshot');
+      const { waitForPrivateHealthSnapshot } = await import('./portal-roster-browser-fixture');
+      const headers = { cookie: cookie(ownSession.token), origin: base, 'content-type': 'application/json' };
+      const query = base + '/api/zero-harness/rest-query?name=health.snapshot&args=%7B%7D';
+      const read = async () => {
+        const response = await fetch(query, { headers, signal: AbortSignal.timeout(15_000) });
+        assert.equal(response.status, 200);
+        return response.json() as Promise<{ rows: ReturnType<typeof createPrivateHealthSnapshot>[] }>;
+      };
+      // Reproduce the browser's real acknowledgement tick before replacing the
+      // shared reading. This primes the request process's own health cache.
+      await read();
+      const ack = await fetch(base + '/api/agent-tools/health/ack', { method: 'POST', headers,
+        body: JSON.stringify({ panel: 'workItems', reason: 'private publication cache probe' }),
+        signal: AbortSignal.timeout(90_000) });
+      assert.equal(ack.status, 200);
+      const baseline = await read();
+      const replacement = createPrivateHealthSnapshot(workspace, false, Date.now());
+      replacement.panels.infra.summary = 'private-health-publication-replacement';
+      await writeSharedSnapshot('system.health', workspace, replacement, 1);
+      const observations: unknown[] = [];
+      await waitForPrivateHealthSnapshot(async () => {
+        const shared = await readSharedSnapshot<typeof replacement>('system.health', workspace, 1, 300_000);
+        const body = await read();
+        observations.push({ at: Date.now(), shared, body });
+        writeFileSync(join(evidence, 'portal-health-publication.json'), JSON.stringify({
+          workspace, baseline, replacement, observations,
+          backgroundWorkers: process.env.PAPERCUSP_BACKGROUND_WORKERS,
+          scope: 'Real shared store and private HTTP reader after an acknowledgement tick; supplied replacement isolates publication, not collector or DOM acceptance',
+        }, null, 2));
+        return body;
+      }, workspace, row => row.panels.infra.summary === replacement.panels.infra.summary);
+      console.log('ROSTER_HEALTH_PUBLICATION_RECEIPT ' + JSON.stringify({ workspace, converged: true, reads: observations.length }));
+      return;
     }
     let harnesses: { hive: string; selected: string; neighbor: string; foreign: string } | undefined;
     if (process.env.ROSTER_WORK_BROWSER_PROOF === '1') {
@@ -648,6 +751,14 @@ async function coordCanary(health: unknown) {
 }
 
 async function main() {
+  if (healthCleanupProof) {
+    const prepared = preparePrivateHttpWorkspaces();
+    assert.equal(prepared.workspace, workspace);
+    assert.equal(process.env.ROSTER_HEALTH_BROWSER_PROOF, '1');
+    assert.equal(process.env.ROSTER_COORD_BROWSER_PROOF, '1');
+    await coordCanary({ cleanupProof: true });
+    return;
+  }
   if (process.env.ROSTER_CUPBOARD_BROWSER_PROOF === '1') {
     cupboardCatalog = await startPrivateCupboardCatalog(evidence);
     process.env.PAPERCUSP_CUPBOARD_URL = cupboardCatalog.base;
@@ -785,6 +896,7 @@ finally {
         ...(error ? { error: String(error) } : {}) };
       appendFileSync(join(evidence, 'roster-stop-cleanup.jsonl'), JSON.stringify(row) + '\n');
       console.log('ROSTER_STOP_HTTP_CLEANUP_PHASE ' + JSON.stringify(row));
+      if (stage === 'native-shutdown' || stage === 'native-exit') retainNativeState(`${stage}:${status}`);
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
     record('start');
@@ -809,7 +921,78 @@ finally {
     await inboxInvalidationListener?.unlisten();
     await cupboardCatalog?.close();
   });
+  // Auth capability reads lazily start a process-wide PG LISTEN subscription.
+  // Close that subscription before retiring the shared db-org pools; otherwise
+  // the browser proof's assertions pass but this worker remains pinned until the
+  // outer execute deadline and is SIGTERM'd instead of returning its verdict.
+  await cleanupPhase('auth-invalidation-listener-stop', async () => {
+    const { _stopInvalidationListenerForTests } = await import('@papercusp/agent-mcp/auth');
+    await _stopInvalidationListenerForTests();
+  });
+  let pgConnections: Array<{ client_port: number; application_name: string; datname: string; state: string }> = [];
+  await cleanupPhase('database-census', async () => {
+    // The broad import graph can also open a pool on another database in this
+    // disposable cluster. A current_database() filter hides that pool's owner.
+    pgConnections = await sql`SELECT client_port, application_name, datname, state
+      FROM pg_stat_activity WHERE client_port IS NOT NULL`;
+  });
+  // This disposable worker owns every hub subscription in its process. Retire
+  // them after the census has retained their labels, including subscriptions
+  // started by collector reads after the initial auth listener was installed.
+  await cleanupPhase('listen-hub-stop', async () => {
+    const { _stopHubForTests } = await import('../lib/pg-listen-hub');
+    await _stopHubForTests();
+  });
+  // Locks owns separate transaction/LISTEN pools on papercusp_su. Closing
+  // db-org cannot retire them; the acknowledgement path opens the tx pool.
+  // Stop subscription producers before retiring the pools they can reopen.
+  await cleanupPhase('lock-listeners-stop', async () => {
+    const { _resetListenersForTests } = await import('@papercusp/locks');
+    await _resetListenersForTests();
+  });
+  await cleanupPhase('lock-pools-reset', async () => {
+    const { _resetForTests: resetLockPools } = await import('@papercusp/locks');
+    await resetLockPools();
+  });
   await cleanupPhase('database-close', () => sql.end({ timeout: 5 }));
+  await cleanupPhase('db-org-pools-reset', () => _resetForTests());
+  await cleanupPhase('database-resources-closed', async () => {
+    await new Promise<void>(done => setImmediate(done));
+    const report = process.report!.getReport() as { libuv?: Array<Record<string, unknown>> };
+    const sockets = (report.libuv ?? []).filter(handle => handle.type === 'tcp').map(handle => {
+      const local = handle.localEndpoint as { port?: number } | undefined;
+      const origin = socketOrigins.get(local?.port ?? 0);
+      const socket = origin?.socket;
+      return { active: handle.is_active, referenced: handle.is_referenced, closing: handle.is_closing,
+        local, remote: handle.remoteEndpoint,
+        creationStack: origin?.stack ?? null,
+        // Byte counts distinguish a cancellation-only connection from an
+        // authenticated pool connection without retaining protocol contents.
+        socketState: socket ? { readyState: socket.readyState, connecting: socket.connecting,
+          pending: socket.pending, destroyed: socket.destroyed, writableEnded: socket.writableEnded,
+          bytesRead: socket.bytesRead, bytesWritten: socket.bytesWritten,
+          createdAt: origin!.createdAt, connectedAt: origin!.connectedAt } : null,
+        startupIdentity: socket ? socketStartups.get(socket) ?? null : null,
+        socketClass: socket?.constructor.name ?? null,
+        closureCalls: socket ? socketClosures.get(socket) ?? null : null,
+        pgConnection: pgConnections.find(row => row.client_port === local?.port) ?? null };
+    });
+    const retained = sockets.filter(socket => socket.referenced &&
+      (socket.remote as { port?: number } | undefined)?.port === Number(process.env.PAPERCUSP_PG_PORT));
+    const activeResources = process.getActiveResourcesInfo();
+    writeFileSync(join(evidence, 'roster-stop-resources.json'), JSON.stringify({
+      activeResources, pgConnections, sockets, retained }, null, 2));
+    assert.equal(retained.length, 0, 'private PG sockets remain after roster worker cleanup; see roster-stop-resources.json');
+    // Node reports a referenced fs.watch handle as FSEventWrap, rather than
+    // the public FSWatcher class name. Such a handle alone pins this worker.
+    assert.equal(activeResources.some(type => type === 'FSEventWrap' || type === 'FSWatcher'), false,
+      'file watchers remain referenced after roster worker cleanup; see roster-stop-resources.json');
+  });
+  net.Socket.prototype.connect = originalConnect;
+  net.Socket.prototype.write = originalWrite;
+  net.Socket.prototype.end = originalEnd;
+  net.Socket.prototype.destroy = originalDestroy;
+  retainNativeState('before-discovery-removal');
   if (sessions.every(session => session.closed)) rmSync(discovery, { recursive: true });
   console.log('ROSTER_STOP_HTTP_CLEANUP ' + JSON.stringify({ childrenStopped: sessions.every(session => session.closed), apiStopped: !api || api.exitCode !== null || api.signalCode !== null }));
   if (failures.length) throw new AggregateError(failures, 'Private roster cleanup failed');

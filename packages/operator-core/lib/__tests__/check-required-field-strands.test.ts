@@ -17,6 +17,21 @@ import { attributedTypeErrors, collectExportedRequiredProps, collectExportedSign
 
 const ROOT = resolve(__dirname, '../../../..');
 
+describe('measured exported symbol changes for incident pushes', () => {
+  it('distinguishes a body edit from unchanged exports, comments and formatting', async () => {
+    // @ts-expect-error — shared executable guard has no type declarations
+    const { diffExportedSymbolText } = await import('../../../../scripts/check-required-field-strands.mjs');
+    const before = 'export function changed() { return 1; }\nexport const same = 2;';
+    expect(diffExportedSymbolText(before, before.replace('return 1', 'return 3'), 'a.ts'))
+      .toEqual([{ name: 'changed', line: 1 }]);
+    expect(diffExportedSymbolText(before, '// comment\nexport function changed(){return 1;}\nexport const same=2;', 'a.ts'))
+      .toEqual([]);
+    expect(diffExportedSymbolText(before, 'export const same = 2;', 'a.ts'))
+      .toEqual([{ name: 'changed', line: 1 }]);
+    expect(diffExportedSymbolText(before, 'export function changed( {', 'a.ts')).toEqual([]);
+  });
+});
+
 const BEFORE = `
 export interface IssueClaimExclusionBreakdown {
   matchedByFilter: number;
@@ -271,6 +286,14 @@ describe('submoduleFor — ask the repository that actually tracks the file', ()
 describe('submoduleRevisionAt — follow the superproject gitlink before querying a submodule', () => {
   const submodulePrefix = 'libs/generic/memory';
   const submoduleFile = `${submodulePrefix}/src/backend.ts`;
+
+  it('preserves an owning submodule commit pin from the local edit collector', () => {
+    const ownerBase = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: resolve(ROOT, submodulePrefix), encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL',
+    }).trim();
+    expect(submoduleRevisionAt(ownerBase, submodulePrefix)).toBe(ownerBase);
+    expect(submoduleRevisionAt('f'.repeat(40), submodulePrefix)).toBeNull();
+  });
 
   it('resolves a superproject base to the submodule commit recorded at that base', () => {
     const base = execFileSync('git', ['rev-parse', 'HEAD^'], {
@@ -582,6 +605,10 @@ describe('inferred shared-tree findings — never claim a peer result for the ca
       // If the guard accidentally forwards the inferred peer finding into lint-tsc, this
       // sentinel makes the regression fail loudly instead of doing real work in the temp repo.
       writeFileSync(join(tmp, 'scripts/lint-tsc.mjs'), 'process.exit(99);\n');
+      // Child processes retain the committed-source boundary. The compiler
+      // stand-in is a fixture input; commit it while leaving the subject dirty.
+      git('add', 'scripts/lint-tsc.mjs');
+      git('commit', '-qm', 'pin compiler fixture');
       const result = spawnSync('node', ['scripts/check-required-field-strands.mjs', '--typecheck'], {
         cwd: tmp,
         encoding: 'utf8',
@@ -654,6 +681,8 @@ describe('check-required-field-strands --typecheck — diagnostic-only type attr
         join(tmp, 'scripts/lint-tsc.mjs'),
         `console.error(${JSON.stringify(diagnostic)}); process.exit(1);\n`,
       );
+      git('add', 'scripts/lint-tsc.mjs');
+      git('commit', '-qm', 'pin diagnostic compiler fixture');
 
       const result = spawnSync(
         'node',
@@ -670,7 +699,7 @@ describe('check-required-field-strands --typecheck — diagnostic-only type attr
 
       expect(dependentSource).not.toContain('DailyDigestRunResult');
       expect(result.error, `guard failed to spawn: ${result.error?.message}`).toBeUndefined();
-      expect(result.status).toBe(1);
+      expect(result.status, out).toBe(1);
       expect(out).toContain('REQUIRED-FIELD ADDITION detected');
       expect(out).toContain('DailyDigestRunResult');
       expect(out).toContain(dependent);
@@ -712,6 +741,8 @@ describe('check-required-field-strands --typecheck — a declared DELETION is ne
         join(tmp, 'scripts/lint-tsc.mjs'),
         "import { writeFileSync } from 'node:fs';\nwriteFileSync('lint-tsc-argv.json', JSON.stringify(process.argv.slice(2)));\n",
       );
+      git('add', 'scripts/lint-tsc.mjs');
+      git('commit', '-qm', 'pin argv compiler fixture');
 
       const result = spawnSync(
         'node',
@@ -719,6 +750,7 @@ describe('check-required-field-strands --typecheck — a declared DELETION is ne
         { cwd: tmp, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
       );
       expect(result.error, `guard failed to spawn: ${result.error?.message}`).toBeUndefined();
+      expect(result.status, `${result.stdout ?? ''}${result.stderr ?? ''}`).toBe(0);
       const argv = JSON.parse(readFileSync(join(tmp, 'lint-tsc-argv.json'), 'utf8')) as string[];
       const filesArg = argv.find((a) => a.startsWith('--files=')) ?? '';
       expect(filesArg.slice('--files='.length).split(',')).toEqual([changed]);

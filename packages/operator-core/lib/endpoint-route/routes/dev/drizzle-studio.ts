@@ -20,6 +20,7 @@ import { randomUUID } from 'node:crypto';
 import { getHarnessAdminUrl } from '../../../embedded-pg-discovery';
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { createTextCollector } from '../../../child-output';
 import {
   beginGovernedExecution,
   governedExecutionRuntime,
@@ -168,8 +169,11 @@ const post = defineTool({
 
     const proc: StudioProc = { child, execution, port, since: Date.now(), lastStderr: '' };
     STATE.proc = proc;
-    child.stderr.on('data', (b) => {
-      proc.lastStderr = (proc.lastStderr + b.toString()).slice(-4096);
+    createTextCollector(child.stderr, {
+      retainText: false,
+      onDecodedText(text) {
+        proc.lastStderr = (proc.lastStderr + text).slice(-4096);
+      },
     });
     child.once('error', (error) => {
       void execution.cancel(`drizzle studio child error: ${error.message}`);

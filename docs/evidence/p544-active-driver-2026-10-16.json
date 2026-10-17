@@ -1,0 +1,573 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010016277",
+  "regressionIssue": "EI-26151437522214763",
+  "decision": "agent-capacity-and-cost-gcp-2026-09-30#D-075",
+  "scope": "Maintained benchmark driver functional tests only; no new VM capacity measurement, cloud launch or inference spend",
+  "recordedSha": "b6aae68230471be3ca2513afb8629cff1bf6c5c1",
+  "worktreeDirty": true,
+  "changedInputsSha256": {
+    "scripts/agent-capacity/vm/swap-tier.py": "64040bab89398b0bcdc324df463b1346399eec860ce6e2e89fd9ba932c89af8f",
+    "scripts/agent-capacity/vm/swap-tier.test.ts": "5fe7d6062e7a5ae1bc5a332fafd13f73c485b8249d3a4e91a91ac6cb4ba43fc2"
+  },
+  "sourceEvidence": {
+    "schemaVersion": "vite-collected-source-evidence-v1",
+    "scope": "repository-worker-vite-original-sources",
+    "status": "stable",
+    "sources": [
+      {
+        "path": "libs/generic/module-singleton/src/index.ts",
+        "sha256": "4d8852efe38c7fddf07a77c821ba0bb704df0e52c7324182a2941db564712dbf",
+        "currentSha256": "4d8852efe38c7fddf07a77c821ba0bb704df0e52c7324182a2941db564712dbf"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/contract.ts",
+        "sha256": "7639eae8328508f476fb9c3370285a680bcacd6fc694938531e5316dfa42f219",
+        "currentSha256": "7639eae8328508f476fb9c3370285a680bcacd6fc694938531e5316dfa42f219"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/converge.ts",
+        "sha256": "a57388ea06071add01afb7b246900728c780cc268c5875bd3e702e09d909d979",
+        "currentSha256": "a57388ea06071add01afb7b246900728c780cc268c5875bd3e702e09d909d979"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/evidence-root.ts",
+        "sha256": "c7c6d95ccb33914f95e8a218b1c3203a3427d8c19f585a9451fb17cc4d8c2a6b",
+        "currentSha256": "c7c6d95ccb33914f95e8a218b1c3203a3427d8c19f585a9451fb17cc4d8c2a6b"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/guard-rails.ts",
+        "sha256": "33f70e97ef1c7f91898ceaf5ce8a988fc850911927c62a680c66fb10057edadc",
+        "currentSha256": "33f70e97ef1c7f91898ceaf5ce8a988fc850911927c62a680c66fb10057edadc"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/index.ts",
+        "sha256": "9c2207750409f92bb41fba70121835607ac1dd2a82b06faad352711d5cc2761e",
+        "currentSha256": "9c2207750409f92bb41fba70121835607ac1dd2a82b06faad352711d5cc2761e"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/runner.ts",
+        "sha256": "d312e0a83bb2050ef18341a2f31b8d43f9790fc3a67e245e8405de3bbe23cd6a",
+        "currentSha256": "d312e0a83bb2050ef18341a2f31b8d43f9790fc3a67e245e8405de3bbe23cd6a"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/select.ts",
+        "sha256": "a48b3c0dea416c814baea724140756bad3263391aa71f5df8868bf8cc00be57a",
+        "currentSha256": "a48b3c0dea416c814baea724140756bad3263391aa71f5df8868bf8cc00be57a"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/tier-gate.ts",
+        "sha256": "9979a508b73f5a66ed3dcb038cd1b5824c4b95deffc2298a89d207bc01908aa7",
+        "currentSha256": "9979a508b73f5a66ed3dcb038cd1b5824c4b95deffc2298a89d207bc01908aa7"
+      },
+      {
+        "path": "libs/test-config/src/admin-test-runs-reporter.ts",
+        "sha256": "ac85fa795e411b5fa84b179ebfcf97b4d6ccf3a8310c9d7d9fd480619a481eb3",
+        "currentSha256": "ac85fa795e411b5fa84b179ebfcf97b4d6ccf3a8310c9d7d9fd480619a481eb3"
+      },
+      {
+        "path": "libs/test-config/src/configuration-snapshot.ts",
+        "sha256": "8f55385b29a9cc6e5dcf2acdd73fdf2c0faeefc854216e66661052cfb22e73b1",
+        "currentSha256": "8f55385b29a9cc6e5dcf2acdd73fdf2c0faeefc854216e66661052cfb22e73b1"
+      },
+      {
+        "path": "libs/test-config/src/executed-inputs-capture-setup.ts",
+        "sha256": "f6ead51b45d50e4a586520f87b68be06a6f95bc3473963f869e71a9f7e345233",
+        "currentSha256": "f6ead51b45d50e4a586520f87b68be06a6f95bc3473963f869e71a9f7e345233"
+      },
+      {
+        "path": "libs/test-config/src/executed-inputs-capture.ts",
+        "sha256": "5bbbc6d86e8df3c8dc7d53f4a3b8aa14bad21115a1b85208508bc38072649a90",
+        "currentSha256": "5bbbc6d86e8df3c8dc7d53f4a3b8aa14bad21115a1b85208508bc38072649a90"
+      },
+      {
+        "path": "libs/test-config/src/execution-details.ts",
+        "sha256": "487bbb0454f0bcf1f64848e53aa3fad331dd1d476df50ab47f12feaa0c868428",
+        "currentSha256": "487bbb0454f0bcf1f64848e53aa3fad331dd1d476df50ab47f12feaa0c868428"
+      },
+      {
+        "path": "libs/test-config/src/mutation-descriptor.ts",
+        "sha256": "bbdf14344ef6ab8a61c66087624385dff4190330120381bfe04da4d16f994c40",
+        "currentSha256": "bbdf14344ef6ab8a61c66087624385dff4190330120381bfe04da4d16f994c40"
+      },
+      {
+        "path": "libs/test-config/src/verifier-source.ts",
+        "sha256": "06fa569ed34535fff798be9cb3953c64d5072f05d5407a4327a73e496ee99101",
+        "currentSha256": "06fa569ed34535fff798be9cb3953c64d5072f05d5407a4327a73e496ee99101"
+      },
+      {
+        "path": "scripts/agent-capacity/vm/swap-tier.test.ts",
+        "sha256": "5fe7d6062e7a5ae1bc5a332fafd13f73c485b8249d3a4e91a91ac6cb4ba43fc2",
+        "currentSha256": "5fe7d6062e7a5ae1bc5a332fafd13f73c485b8249d3a4e91a91ac6cb4ba43fc2"
+      },
+      {
+        "path": "scripts/lib/fs-mutex.mjs",
+        "sha256": "64ea4aa60e24a0d9b7fea0a1269c973f1920a4229953b0f41de2151d8cc07c2f",
+        "currentSha256": "64ea4aa60e24a0d9b7fea0a1269c973f1920a4229953b0f41de2151d8cc07c2f"
+      },
+      {
+        "path": "scripts/lib/retention-pins.mjs",
+        "sha256": "bd2430d48d4a07143c42545482b3e55dfe306e6bdfcc71edd9f61170aed93dd6",
+        "currentSha256": "bd2430d48d4a07143c42545482b3e55dfe306e6bdfcc71edd9f61170aed93dd6"
+      }
+    ],
+    "reasons": []
+  },
+  "nativeRun": {
+    "schemaVersion": "native-vitest-run-v1",
+    "scope": "vitest-reporter-callbacks",
+    "pid": 3691031,
+    "ppid": 3691019,
+    "startedAtMs": 1792166030978,
+    "finishedAtMs": 1792166043921,
+    "terminalHook": "onTestRunEnd",
+    "reason": "passed",
+    "unhandledErrorCount": 0,
+    "reportedModulePaths": [
+      "scripts/agent-capacity/vm/swap-tier.test.ts"
+    ],
+    "modulePopulationMatched": true,
+    "files": [
+      {
+        "testFile": "scripts/agent-capacity/vm/swap-tier.test.ts",
+        "state": "passed",
+        "observedAtMs": 1792166043779,
+        "firstAttemptVerdict": "pass",
+        "execution": {
+          "passed": 45,
+          "failed": 0,
+          "skipped": 0,
+          "collectionFailed": false,
+          "passedCaseTitles": [
+            "real Luna load and swap tuning > checks HTTP 200 with catalog=true",
+            "real Luna load and swap tuning > checks HTTP 429 with catalog=true",
+            "real Luna load and swap tuning > checks HTTP 503 with catalog=false",
+            "real Luna load and swap tuning > refuses another prompt batch after a previously healthy tunnel disappears",
+            "real Luna load and swap tuning > keeps each native runtime in its measured scope without requiring a daemon socket",
+            "real Luna load and swap tuning > lets submitted native tasks settle without an interrupting health request",
+            "real Luna load and swap tuning > requires native hash-verified history before resuming a saved session",
+            "real Luna load and swap tuning > bounds the native launch throttle and rejects unsafe values",
+            "real Luna load and swap tuning > records a dead terminal exit status and output before failing startup",
+            "real Luna load and swap tuning > captures every failed pane plus remaining cohort evidence before aborting startup",
+            "real Luna load and swap tuning > settles a terminal provider error without waiting for an absent final answer",
+            "real Luna load and swap tuning > holds a final answer until native task settlement before admitting the next prompt",
+            "real Luna load and swap tuning > rejects the observed DONE after bwrap failure and a final refusal without waiting five minutes",
+            "real Luna load and swap tuning > accepts actual hash output in both native tool formats, without carrying success into another warm turn",
+            "real Luna load and swap tuning > accepts the exact hash of piped input, which sha256sum labels with a dash",
+            "real Luna load and swap tuning > corrects only failed dummy tasks with a bounded retry budget and records the evidence",
+            "real Luna load and swap tuning > bounds warm-up concurrency while verifying every session in each round",
+            "real Luna load and swap tuning > provisions the documented distro sandbox without disabling global user-namespace restrictions",
+            "real Luna load and swap tuning > fails the native sandbox preflight on the observed namespace error before spending model calls",
+            "real Luna load and swap tuning > counts an actual assistant final answer instead of an echoed prompt or tool invocation",
+            "real Luna load and swap tuning > refuses another load attempt when an interrupted run leaves the owned slice active",
+            "real Luna load and swap tuning > recognizes the observed native input frame even when context-left is absent",
+            "real Luna load and swap tuning > pins model and low effort without copying cloud credentials or using stub responses",
+            "real Luna load and swap tuning > keeps independently measured compressor, readahead and batched disk arms distinguishable",
+            "minimum-resource active cohorts > runs bounded native tool cohorts while retaining fifty assigned agents and a separate fifty-agent burst",
+            "minimum-resource active cohorts > refuses invalid active-cohort options before launching: \"--active\"",
+            "minimum-resource active cohorts > enables the one swap arm before native startup and only disables it after stopping agents",
+            "stub reply plan > answers a WARM prompt with a Read of warm file k, then a DONE text once the tool ran",
+            "stub reply plan > still sees the tool result when the CLI appends a reminder-only user message after it",
+            "stub reply plan > answers a WAKE prompt with DONE-WAKE-<nonce>, and a markerless side request with a short text",
+            "stub reply plan > follows the newest marker, not an older WARM one still in the history",
+            "report reduction > reports how much each parked agent moved to swap, what stayed resident, and the zram ratio",
+            "report reduction > times single and storm wakes from the typed prompt, with paged-back memory and the probe inside each window",
+            "report reduction > measures memory regained from resident growth, not swap-used, so disk swap cache cannot hide it",
+            "report reduction > counts a wake that never rendered as failed instead of dropping it",
+            "report reduction > reduces repeated active windows together without counting repeated tasks as distinct agents",
+            "arm specs > accepts none, zram and <label>=<device>, and refuses anything else"
+          ]
+        },
+        "cases": [
+          {
+            "caseIndex": 0,
+            "caseKey": "real Luna load and swap tuning > checks HTTP 200 with catalog=true",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 213,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 1,
+            "caseKey": "real Luna load and swap tuning > checks HTTP 429 with catalog=true",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 204,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 2,
+            "caseKey": "real Luna load and swap tuning > checks HTTP 503 with catalog=false",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 200,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 3,
+            "caseKey": "real Luna load and swap tuning > refuses another prompt batch after a previously healthy tunnel disappears",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 214,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 4,
+            "caseKey": "real Luna load and swap tuning > keeps each native runtime in its measured scope without requiring a daemon socket",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 176,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 5,
+            "caseKey": "real Luna load and swap tuning > lets submitted native tasks settle without an interrupting health request",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 154,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 6,
+            "caseKey": "real Luna load and swap tuning > requires native hash-verified history before resuming a saved session",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 186,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 7,
+            "caseKey": "real Luna load and swap tuning > bounds the native launch throttle and rejects unsafe values",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 981,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 8,
+            "caseKey": "real Luna load and swap tuning > records a dead terminal exit status and output before failing startup",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 145,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 9,
+            "caseKey": "real Luna load and swap tuning > captures every failed pane plus remaining cohort evidence before aborting startup",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 175,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 10,
+            "caseKey": "real Luna load and swap tuning > settles a terminal provider error without waiting for an absent final answer",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 324,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 11,
+            "caseKey": "real Luna load and swap tuning > holds a final answer until native task settlement before admitting the next prompt",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 329,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 12,
+            "caseKey": "real Luna load and swap tuning > rejects the observed DONE after bwrap failure and a final refusal without waiting five minutes",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 317,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 13,
+            "caseKey": "real Luna load and swap tuning > accepts actual hash output in both native tool formats, without carrying success into another warm turn",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 856,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 14,
+            "caseKey": "real Luna load and swap tuning > accepts the exact hash of piped input, which sha256sum labels with a dash",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 298,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 15,
+            "caseKey": "real Luna load and swap tuning > corrects only failed dummy tasks with a bounded retry budget and records the evidence",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 371,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 16,
+            "caseKey": "real Luna load and swap tuning > bounds warm-up concurrency while verifying every session in each round",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 138,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 17,
+            "caseKey": "real Luna load and swap tuning > provisions the documented distro sandbox without disabling global user-namespace restrictions",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 1,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 18,
+            "caseKey": "real Luna load and swap tuning > fails the native sandbox preflight on the observed namespace error before spending model calls",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 188,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 19,
+            "caseKey": "real Luna load and swap tuning > counts an actual assistant final answer instead of an echoed prompt or tool invocation",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 619,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 20,
+            "caseKey": "real Luna load and swap tuning > refuses another load attempt when an interrupted run leaves the owned slice active",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 190,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 21,
+            "caseKey": "real Luna load and swap tuning > recognizes the observed native input frame even when context-left is absent",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 560,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 22,
+            "caseKey": "real Luna load and swap tuning > pins model and low effort without copying cloud credentials or using stub responses",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 318,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 23,
+            "caseKey": "real Luna load and swap tuning > keeps independently measured compressor, readahead and batched disk arms distinguishable",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 335,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 24,
+            "caseKey": "minimum-resource active cohorts > runs bounded native tool cohorts while retaining fifty assigned agents and a separate fifty-agent burst",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 169,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 25,
+            "caseKey": "minimum-resource active cohorts > refuses invalid active-cohort options before launching: \"--active\"",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 183,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 26,
+            "caseKey": "minimum-resource active cohorts > refuses invalid active-cohort options before launching: \"--active\"",
+            "occurrence": 2,
+            "status": "pass",
+            "durationMs": 182,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 27,
+            "caseKey": "minimum-resource active cohorts > refuses invalid active-cohort options before launching: \"--active\"",
+            "occurrence": 3,
+            "status": "pass",
+            "durationMs": 186,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 28,
+            "caseKey": "minimum-resource active cohorts > refuses invalid active-cohort options before launching: \"--active\"",
+            "occurrence": 4,
+            "status": "pass",
+            "durationMs": 182,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 29,
+            "caseKey": "minimum-resource active cohorts > refuses invalid active-cohort options before launching: \"--active\"",
+            "occurrence": 5,
+            "status": "pass",
+            "durationMs": 181,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 30,
+            "caseKey": "minimum-resource active cohorts > refuses invalid active-cohort options before launching: \"--active\"",
+            "occurrence": 6,
+            "status": "pass",
+            "durationMs": 199,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 31,
+            "caseKey": "minimum-resource active cohorts > refuses invalid active-cohort options before launching: \"--active\"",
+            "occurrence": 7,
+            "status": "pass",
+            "durationMs": 214,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 32,
+            "caseKey": "minimum-resource active cohorts > refuses invalid active-cohort options before launching: \"--active\"",
+            "occurrence": 8,
+            "status": "pass",
+            "durationMs": 171,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 33,
+            "caseKey": "minimum-resource active cohorts > refuses invalid active-cohort options before launching: \"--active\"",
+            "occurrence": 9,
+            "status": "pass",
+            "durationMs": 164,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 34,
+            "caseKey": "minimum-resource active cohorts > enables the one swap arm before native startup and only disables it after stopping agents",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 182,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 35,
+            "caseKey": "stub reply plan > answers a WARM prompt with a Read of warm file k, then a DONE text once the tool ran",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 256,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 36,
+            "caseKey": "stub reply plan > still sees the tool result when the CLI appends a reminder-only user message after it",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 128,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 37,
+            "caseKey": "stub reply plan > answers a WAKE prompt with DONE-WAKE-<nonce>, and a markerless side request with a short text",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 276,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 38,
+            "caseKey": "stub reply plan > follows the newest marker, not an older WARM one still in the history",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 134,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 39,
+            "caseKey": "report reduction > reports how much each parked agent moved to swap, what stayed resident, and the zram ratio",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 1,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 40,
+            "caseKey": "report reduction > times single and storm wakes from the typed prompt, with paged-back memory and the probe inside each window",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 1,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 41,
+            "caseKey": "report reduction > measures memory regained from resident growth, not swap-used, so disk swap cache cannot hide it",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 178,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 42,
+            "caseKey": "report reduction > counts a wake that never rendered as failed instead of dropping it",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 151,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 43,
+            "caseKey": "report reduction > reduces repeated active windows together without counting repeated tasks as distinct agents",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 160,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 44,
+            "caseKey": "arm specs > accepts none, zram and <label>=<device>, and refuses anything else",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 359,
+            "errorTail": null
+          }
+        ]
+      }
+    ],
+    "gaps": []
+  },
+  "baseline": {
+    "testsFailed": 11,
+    "testsSkippedByFilter": 33,
+    "log": "/tmp/p544-active-before-tests.log"
+  },
+  "verification": {
+    "testCommand": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercupai/papercusp-monorepo PC_EXECUTED_SOURCE_MAP_OUT=/tmp/p544-active-verified-sources.json npm run test:file -- scripts/agent-capacity/vm/swap-tier.test.ts",
+    "testsPassed": 45,
+    "testsFailed": 0,
+    "testsSkipped": 0,
+    "log": "/tmp/p544-active-verified-tests.log",
+    "typescript": "npm run lint:tsc -- --files=scripts/agent-capacity/vm/swap-tier.test.ts; scripts leg checked1 errors0",
+    "typescriptLog": "/tmp/p544-active-final-typecheck.log",
+    "python": "ast.parse succeeded"
+  },
+  "regression": {
+    "origin": "summarize stored one start/end pair per arm+phase, overwriting earlier repeated windows",
+    "distinguishingTest": "Two active-1 intervals [10,12] and [20,22] with probe samples at11,15,21. The sample at15 must be excluded; both others included. Two tasks by a1 must remain one distinct agent, with the incomplete task counted failed.",
+    "expected": "agents1/tasks2/failed1/probeSamples2/probeMax100/p95echo1",
+    "actual": "Maintained regression passed with expected values. Before extension reducer rejected active phases; previous static single phase logic overwrote earlier windows."
+  },
+  "limitations": [
+    "Vite source evidence covers 19 repository originals; Python source was measured separately under held edit lock and imported directly by the maintained tests.",
+    "Test-runner child substituted four committed helper/config entries; no claim that those helpers ran working-tree bytes.",
+    "No fresh-server footprint, provider 50-agent minimum-resource UX, resizing, storage growth, cost qualification or deployed-product acceptance is established."
+  ]
+}

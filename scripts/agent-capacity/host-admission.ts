@@ -15,7 +15,8 @@
  *
  * A run inside the Papercusp tree without that slot is refused before any session starts.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
+import { homedir, platform } from 'node:os';
 import path from 'node:path';
 
 export type CapacityHost = 'papercusp-tree' | 'dedicated';
@@ -23,6 +24,31 @@ export type CapacityHost = 'papercusp-tree' | 'dedicated';
 /** `papercusp-tree` when `scriptDir` sits in a checkout that also holds the operator. */
 export function capacityHost(scriptDir: string): CapacityHost {
   return existsSync(path.resolve(scriptDir, '../../packages/operator-core/package.json')) ? 'papercusp-tree' : 'dedicated';
+}
+
+/** Shared-host checkouts use the data tier; standalone ramp VMs keep their own cache. */
+export function capacityCacheRoot(scriptDir: string): string {
+  return platform() === 'linux' && capacityHost(scriptDir) === 'papercusp-tree'
+    ? '/mnt/data/agent-capacity' : path.join(homedir(), '.cache', 'agent-capacity');
+}
+
+/** Admit before mkdir, replacement cleanup, cp or overlay mount. stat follows
+ * symlinks; an absent/unmounted data volume must not fall back to root. */
+export function assertCapacityStorage(scriptDir: string, destination: string): void {
+  if (platform() !== 'linux' || capacityHost(scriptDir) !== 'papercusp-tree') return;
+  let ancestor = path.resolve(destination);
+  for (;;) {
+    try {
+      const storage = statSync(ancestor);
+      if (!storage.isDirectory() || storage.dev === statSync('/').dev) {
+        throw new Error('agent-capacity: repository copies and overlays refuse the root filesystem; choose mounted /mnt/data storage.');
+      }
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || ancestor === path.dirname(ancestor)) throw error;
+      ancestor = path.dirname(ancestor);
+    }
+  }
 }
 
 /** Throws unless the run is on a dedicated host or holds a pc-heavy slot. */

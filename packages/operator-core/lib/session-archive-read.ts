@@ -14,11 +14,14 @@
  * blobs is not a search index; the archive is for reads, resume, and rebuild.
  */
 
+import { stat } from 'node:fs/promises';
 import {
   cleanTurnText,
+  FILE_ADAPTERS,
   parseClaudeLine,
   parseCodexLine,
   parseOmpLine,
+  readNewLines,
   type TurnTextParseOptions,
 } from './search/session-ingest';
 import {
@@ -53,6 +56,97 @@ const PARSERS: Record<
   omp: parseOmpLine,
   codex: parseCodexLine,
 };
+
+/**
+ * Read selected turns directly from a still-live transcript. The index caps
+ * each row at 8,000 characters and the permanent archive is only available
+ * after session end; a live self read therefore needs this same parser path
+ * against the source file before it can claim a capped row is complete.
+ *
+ * The scan is bounded by the archive raw-byte admission limit and reuses the
+ * ingest adapter/parser, so source text gets the normal redaction and turn
+ * numbering. It is read-only and fail-soft: an unavailable or over-budget
+ * source returns an empty result with an explicit error for the caller to
+ * preserve as `source_completeness:'unknown'`.
+ */
+export async function readLiveSessionTurns(
+  filePath: string,
+  sourceKind: ArchiveSourceKind,
+  owner: string | null,
+  options: ReadArchivedSessionTurnsOptions = {},
+): Promise<{
+  sourceKind: ArchiveSourceKind;
+  owner: string | null;
+  turns: ArchivedTurn[];
+  errors: ArchivedFileError[];
+} | null> {
+  const adapter = FILE_ADAPTERS.find((candidate) => candidate.sourceKind === sourceKind);
+  if (!adapter) return null;
+  let size: number;
+  try {
+    size = (await stat(filePath)).size;
+  } catch {
+    return { sourceKind, owner, turns: [], errors: [{ path: '(live transcript)', error: 'transcript unavailable' }] };
+  }
+  if (!Number.isSafeInteger(size) || size < 0 || size > SESSION_ARCHIVE_MAX_TOTAL_RAW_BYTES) {
+    return {
+      sourceKind,
+      owner,
+      turns: [],
+      errors: [{ path: '(live transcript)', error: 'transcript exceeds the admitted raw-byte limit' }],
+    };
+  }
+
+  const wanted = options.turnIndices ? new Set(options.turnIndices) : null;
+  const maxWanted = wanted && wanted.size ? Math.max(...wanted) : null;
+  const turns: ArchivedTurn[] = [];
+  const errors: ArchivedFileError[] = [];
+  let offset = 0;
+  let turnIndex = 0;
+  try {
+    // readNewLines consumes complete lines in 5 MiB chunks. A live transcript
+    // can grow while this loop runs, so the guard is a safety ceiling rather
+    // than a correctness condition; the initial stat keeps the admitted work
+    // bounded to the same 256 MiB cap as archive recovery.
+    for (let guard = 0; guard < 64; guard += 1) {
+      const chunk = await readNewLines(
+        filePath,
+        offset,
+        adapter.parseLine,
+        adapter.classifyLine,
+        null,
+        undefined,
+        [],
+        undefined,
+        { ...options, fullSource: true },
+      );
+      if (chunk.newOffset === offset) break;
+      for (const parsed of chunk.turns) {
+        const currentTurnIndex = turnIndex++;
+        if (wanted && !wanted.has(currentTurnIndex)) continue;
+        const text = cleanTurnText(parsed.text, {
+          ...options,
+          fullSource: true,
+          retainShortUserTurns: parsed.speaker === 'user' && options.retainShortUserTurns,
+        });
+        if (!text) continue;
+        turns.push({
+          source_kind: sourceKind,
+          turn_idx: currentTurnIndex,
+          speaker: parsed.speaker,
+          owner,
+          ts: parsed.ts ? parsed.ts.toISOString() : null,
+          text,
+        });
+      }
+      offset = chunk.newOffset;
+      if (maxWanted !== null && turnIndex > maxWanted && turns.length === wanted!.size) break;
+    }
+  } catch {
+    errors.push({ path: '(live transcript)', error: 'transcript read failed' });
+  }
+  return { sourceKind, owner, turns, errors };
+}
 
 export interface ReadArchivedSessionTurnsOptions extends TurnTextParseOptions {
   /** Retain only these parsed turn indexes while scanning the archive. */

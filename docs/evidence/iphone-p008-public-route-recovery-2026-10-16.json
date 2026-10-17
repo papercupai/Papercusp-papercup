@@ -1,0 +1,546 @@
+{
+  "schemaVersion": 1,
+  "workItem": "EI-25946131547854574",
+  "parent": "WI-10004735",
+  "plan": "iphone-public-release-2026-08-11#P-008",
+  "startedAt": "2026-10-16T01:04:05.494Z",
+  "scope": "Fresh current-build public hostname configuration and HTTP lifecycle acceptance after committed listener custody repair; no native UI or final shipment claim.",
+  "authority": {
+    "ownerDirective": 1783,
+    "decision": "D-026",
+    "autoScope": "Existing owner-directed iPhone release implementation; repair the previously applied and rolled-back exact device route."
+  },
+  "checks": [
+    {
+      "name": "local-admin-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/health",
+      "method": "GET",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "local-admin-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/workspaces",
+      "method": "GET",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "local-admin-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/coord/presence",
+      "method": "GET",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "local-admin-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/device/desktop/devices",
+      "method": "GET",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "local-admin-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/device/qr.svg",
+      "method": "GET",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "local-admin-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/remote-access/own-tunnel",
+      "method": "GET",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "local-mint-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/device/desktop/mint-pair-token",
+      "method": "POST",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "local-anonymous-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/device/heartbeat",
+      "method": "POST",
+      "expected": 401,
+      "status": 401,
+      "errorCode": "unauthorized",
+      "passed": true
+    },
+    {
+      "name": "local-admin-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/health",
+      "method": "GET",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "local-admin-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/workspaces",
+      "method": "GET",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "local-admin-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/coord/presence",
+      "method": "GET",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "local-admin-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/device/desktop/devices",
+      "method": "GET",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "local-admin-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/device/qr.svg",
+      "method": "GET",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "local-admin-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/remote-access/own-tunnel",
+      "method": "GET",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "local-mint-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/device/desktop/mint-pair-token",
+      "method": "POST",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "local-anonymous-denied",
+      "base": "http://127.0.0.1:41179",
+      "path": "/api/device/heartbeat",
+      "method": "POST",
+      "expected": 401,
+      "status": 401,
+      "errorCode": "unauthorized",
+      "passed": true
+    },
+    {
+      "name": "public-anonymous-denied",
+      "base": "https://api.papercuspai.com",
+      "path": "/api/device/heartbeat",
+      "method": "POST",
+      "expected": 401,
+      "status": 401,
+      "errorCode": "unauthorized",
+      "passed": true
+    },
+    {
+      "name": "public-anonymous-denied",
+      "base": "https://api.papercuspai.com",
+      "path": "/api/device/runtime-config",
+      "method": "GET",
+      "expected": 401,
+      "status": 401,
+      "errorCode": "unauthorized",
+      "passed": true
+    },
+    {
+      "name": "public-anonymous-denied",
+      "base": "https://api.papercuspai.com",
+      "path": "/api/device/devices",
+      "method": "GET",
+      "expected": 401,
+      "status": 401,
+      "errorCode": "unauthorized",
+      "passed": true
+    },
+    {
+      "name": "public-anonymous-denied",
+      "base": "https://api.papercuspai.com",
+      "path": "/api/device/workspaces",
+      "method": "GET",
+      "expected": 401,
+      "status": 401,
+      "errorCode": "unauthorized",
+      "passed": true
+    },
+    {
+      "name": "public-admin-denied",
+      "base": "https://api.papercuspai.com",
+      "path": "/api/device/desktop/devices",
+      "method": "GET",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "public-admin-denied",
+      "base": "https://api.papercuspai.com",
+      "path": "/api/device/qr.svg",
+      "method": "GET",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "public-forged-mint-denied",
+      "base": "https://api.papercuspai.com",
+      "path": "/api/device/desktop/mint-pair-token",
+      "method": "POST",
+      "expected": 404,
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "passed": true
+    },
+    {
+      "name": "public-invalid-pair-denied",
+      "base": "https://api.papercuspai.com",
+      "path": "/api/device/pair",
+      "method": "POST",
+      "expected": 400,
+      "status": 400,
+      "errorCode": "invalid_input",
+      "passed": true
+    },
+    {
+      "name": "public-pair",
+      "base": "https://api.papercuspai.com",
+      "path": "/api/device/pair",
+      "method": "POST",
+      "expected": 200,
+      "status": 200,
+      "errorCode": null,
+      "passed": true
+    },
+    {
+      "name": "public-replay-denied",
+      "base": "https://api.papercuspai.com",
+      "path": "/api/device/pair",
+      "method": "POST",
+      "expected": 401,
+      "status": 401,
+      "errorCode": "invalid_or_expired_token",
+      "passed": true
+    },
+    {
+      "name": "public-authorized-heartbeat",
+      "base": "https://api.papercuspai.com",
+      "path": "/api/device/heartbeat",
+      "method": "POST",
+      "expected": 200,
+      "status": 200,
+      "errorCode": null,
+      "passed": true
+    },
+    {
+      "name": "public-authorized-runtime",
+      "base": "https://api.papercuspai.com",
+      "path": "/api/device/runtime-config",
+      "method": "GET",
+      "expected": 200,
+      "status": 200,
+      "errorCode": null,
+      "passed": true
+    },
+    {
+      "name": "public-unknown-workspace-denied",
+      "base": "https://api.papercuspai.com",
+      "path": "/api/device/runtime-config",
+      "method": "GET",
+      "expected": 400,
+      "status": 400,
+      "errorCode": "unknown_workspace",
+      "passed": true
+    },
+    {
+      "name": "public-invalid-jwt-denied",
+      "base": "https://api.papercuspai.com",
+      "path": "/api/device/runtime-config",
+      "method": "GET",
+      "expected": 401,
+      "status": 401,
+      "errorCode": "unauthorized",
+      "passed": true
+    },
+    {
+      "name": "owned-device-revoke",
+      "base": "http://127.0.0.1:3170",
+      "path": "/api/device/desktop/devices/5efa5f45-54fb-4e76-bbff-b01a0291e5a2",
+      "method": "DELETE",
+      "expected": 200,
+      "status": 200,
+      "errorCode": null,
+      "passed": true
+    },
+    {
+      "name": "public-revoked-jwt-denied",
+      "base": "https://api.papercuspai.com",
+      "path": "/api/device/runtime-config",
+      "method": "GET",
+      "expected": 401,
+      "status": 401,
+      "errorCode": "unauthorized",
+      "passed": true
+    }
+  ],
+  "providerMutation": true,
+  "listenerBefore": {
+    "configured": true,
+    "mode": "manual",
+    "enabled": true,
+    "hostname": "api.papercuspai.com",
+    "mcpUrl": "https://api.papercuspai.com/api/mcp",
+    "ingressPort": 41179,
+    "ingressPortSource": "row",
+    "ingressTarget": "http://127.0.0.1:41179",
+    "operatorPort": 3170,
+    "servedByThisOperator": true,
+    "listening": true,
+    "connector": null,
+    "cloudflaredInstalled": true,
+    "login": {
+      "state": "idle",
+      "loginUrl": null,
+      "error": null,
+      "accountId": null,
+      "zoneId": null
+    },
+    "health": "up",
+    "lastError": null,
+    "lastErrorAt": null,
+    "cloudflare": null
+  },
+  "buildSha": "4b708788bf",
+  "source": [
+    {
+      "path": "packages/operator-core/lib/own-tunnel/service.ts",
+      "sha256": "177b78ddb27da9f945ba7f99b58b90986b7d05912a4eb022eef89b144885f8b5",
+      "matchesServingCommit": true
+    },
+    {
+      "path": "packages/operator-core/lib/own-tunnel/config.ts",
+      "sha256": "3b5cb8b632d95293e79eed783da144058d4010e143ab6fb9b2967cfd0fc8a5f7",
+      "matchesServingCommit": true
+    },
+    {
+      "path": "apps/operator/bin/host-handler.ts",
+      "sha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0",
+      "matchesServingCommit": true
+    },
+    {
+      "path": "apps/operator/bin/external-ingress-paths.ts",
+      "sha256": "0b237c14137d3e41b9a55a404f65951a2ae45a441e1e644d0bbe389cf716cd4b",
+      "matchesServingCommit": true
+    },
+    {
+      "path": "packages/operator-core/lib/device-ingress-paths.ts",
+      "sha256": "b9bdde555f459d8ac9bc500bfd5705c0b401fec33c6a7e9769a4e1d9f0d7351e",
+      "matchesServingCommit": true
+    }
+  ],
+  "before": {
+    "version": 18,
+    "config": {
+      "ingress": [
+        {
+          "service": "http://localhost:3300",
+          "hostname": "chat.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "path": "^/api/public/papercup",
+          "service": "http://localhost:3001",
+          "hostname": "api.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "path": "^/api/mobile/voice$",
+          "service": "http://localhost:3061",
+          "hostname": "api.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "service": "http://localhost:3070",
+          "hostname": "api.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "path": "^/api/device",
+          "service": "http://localhost:3070",
+          "hostname": "api.papercuspai.com",
+          "originRequest": {}
+        },
+        {
+          "service": "http://localhost:3057",
+          "hostname": "api.papercuspai.com",
+          "originRequest": {}
+        },
+        {
+          "service": "http_status:404"
+        }
+      ],
+      "warp-routing": {
+        "enabled": false
+      }
+    },
+    "sha256": "751b6ceb81b7bde25d2998e7fb37495eadcb873653e61da9b807b0288d6f246b"
+  },
+  "prepared": {
+    "config": {
+      "ingress": [
+        {
+          "service": "http://localhost:3300",
+          "hostname": "chat.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "path": "^/api/public/papercup",
+          "service": "http://localhost:3001",
+          "hostname": "api.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "path": "^/api/mobile/voice$",
+          "service": "http://localhost:3061",
+          "hostname": "api.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "service": "http://localhost:3070",
+          "hostname": "api.papercupai.com",
+          "originRequest": {}
+        },
+        {
+          "path": "^/api/device",
+          "service": "http://127.0.0.1:41179",
+          "hostname": "api.papercuspai.com",
+          "originRequest": {}
+        },
+        {
+          "service": "http://localhost:3057",
+          "hostname": "api.papercuspai.com",
+          "originRequest": {}
+        },
+        {
+          "service": "http_status:404"
+        }
+      ],
+      "warp-routing": {
+        "enabled": false
+      }
+    },
+    "sha256": "d4d592dc5f8e1d5e1dc46981cf0219bf9b4d61438b8eef012e042ea8917dbadd",
+    "changedRuleIndexes": [
+      4
+    ]
+  },
+  "result": "current-public-https-http-lifecycle-passed",
+  "publicationStartedAt": "2026-10-16T01:04:06.826Z",
+  "after": {
+    "version": 19,
+    "sha256": "d4d592dc5f8e1d5e1dc46981cf0219bf9b4d61438b8eef012e042ea8917dbadd",
+    "exactPreparedConfigVerified": true
+  },
+  "ownedDeviceId": "5efa5f45-54fb-4e76-bbff-b01a0291e5a2",
+  "cleanupVerified": true,
+  "listenerAfter": {
+    "configured": true,
+    "mode": "manual",
+    "enabled": true,
+    "hostname": "api.papercuspai.com",
+    "mcpUrl": "https://api.papercuspai.com/api/mcp",
+    "ingressPort": 41179,
+    "ingressPortSource": "row",
+    "ingressTarget": "http://127.0.0.1:41179",
+    "operatorPort": 3170,
+    "servedByThisOperator": true,
+    "listening": true,
+    "connector": null,
+    "cloudflaredInstalled": true,
+    "login": {
+      "state": "idle",
+      "loginUrl": null,
+      "error": null,
+      "accountId": null,
+      "zoneId": null
+    },
+    "health": "up",
+    "lastError": null,
+    "lastErrorAt": null,
+    "cloudflare": null
+  },
+  "finalProvider": {
+    "version": 19,
+    "sha256": "d4d592dc5f8e1d5e1dc46981cf0219bf9b4d61438b8eef012e042ea8917dbadd"
+  },
+  "currentRouteCorrected": true,
+  "finishedAt": "2026-10-16T01:04:10.600Z",
+  "checkCount": 32,
+  "failed": 0,
+  "limits": [
+    "Current staging configuration and HTTP lifecycle proof only; no final release/main shipment claim.",
+    "No new native UI job was run. Retained temporary-hostname native proofs keep their exact historical source identities.",
+    "The original Python Cloudflare 1010 observation is a separate unexplained transport outcome; this result does not claim its root cause.",
+    "P-008 row 10 retains the accepted hosted/BYOC target and entitlement dependency on P-016.",
+    "Named source blobs match the serving commit; this is not an exhaustive executed-module or whole-candidate admission."
+  ],
+  "rollback": {
+    "method": "Read current raw provider configuration and restore before.config only if it still equals prepared.config; then read back exact restored configuration. Preserve every unrelated rule and option.",
+    "beforeSha256": "751b6ceb81b7bde25d2998e7fb37495eadcb873653e61da9b807b0288d6f246b",
+    "onlyChangedRuleIndex": 4
+  },
+  "retainedSourceGuard": {
+    "workItem": "EI-26083644504454454",
+    "receipt": "docs/evidence/iphone-p008-listener-custody-2026-10-15.json",
+    "scope": "Closed committed custody regression and actual restart evidence; not rerun for this unit."
+  }
+}

@@ -13,6 +13,8 @@
  * fresh-migrate.integration.test.ts. Gated on Docker like the other *-integration.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import type postgres from 'postgres';
 import { acquireSnapshot } from '@papercusp/db-org';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
@@ -99,6 +101,48 @@ async function rowCount(): Promise<number> {
 const LOOP = { harness: 'papercusp', ownerId: 'su-94b69' } as const;
 
 describe('su-loop carry-note read/write round-trip (P-002)', () => {
+  it('persists all four cited reference kinds from the session workspace through the loop checkpoint writer (R-13)', async () => {
+    await db.sql`CREATE TABLE IF NOT EXISTS harness_shared.work_items (
+      workspace_id text NOT NULL, feature_id text NOT NULL, status text, updated_ts bigint,
+      PRIMARY KEY (workspace_id, feature_id))`;
+    await db.sql`INSERT INTO harness_shared.work_items (workspace_id, feature_id, status, updated_ts)
+      VALUES ('reference-session', 'WI-1313', 'open', 10), ('default', 'WI-1313', 'done', 99)
+      ON CONFLICT (workspace_id, feature_id) DO UPDATE SET status = EXCLUDED.status, updated_ts = EXCLUDED.updated_ts`;
+    await db.sql`CREATE TABLE harness_shared.harness_plans (
+      workspace_id text, harness_slug text, plan_slug text, decisions jsonb)`;
+    await db.sql`INSERT INTO harness_shared.harness_plans VALUES
+      ('reference-session', 'papercusp', 'reference-plan', '[{"id":"D-001","title":"Keep baseline","body":"Read before replacing"}]'::jsonb)`;
+    await db.sql`CREATE TABLE harness_shared.agent_facts (
+      workspace_id text, key text, id bigint, updated_at timestamptz,
+      retracted_at timestamptz, superseded_at timestamptz, evicted_at timestamptz, expires_at timestamptz)`;
+    await db.sql`INSERT INTO harness_shared.agent_facts (workspace_id, key, id, updated_at)
+      VALUES ('reference-session', 'reference-fact', 1313, ${new Date(10)})`;
+    const ref = { ...LOOP, workspaceId: 'reference-session' };
+    const citations = 'WI-1313 reference-plan#D-001 fact:reference-fact packages/operator-core/lib/carry-ref-stamps.test.ts';
+    const hash = (value: string | Buffer) => `sha256:${createHash('sha256').update(value).digest('hex').slice(0, 16)}`;
+    const expected = [
+      { dep: 'work-item:WI-1313', token: 'open@10', at: expect.any(Number) },
+      { dep: 'decision:reference-plan#D-001', token: hash('Keep baseline\nRead before replacing'), at: expect.any(Number) },
+      { dep: 'fact:reference-fact', token: 'live:1313@10', at: expect.any(Number) },
+      { dep: 'file:packages/operator-core/lib/carry-ref-stamps.test.ts', token: hash(readFileSync(new URL('./carry-ref-stamps.test.ts', import.meta.url))), at: expect.any(Number) },
+    ];
+
+    await setLoopCarryNoteWithPrior(ref, `Waiting on ${citations}`);
+    const [saved] = await db.sql<{ deps: { refs: unknown[] } }[]>`
+      SELECT deps FROM harness_shared.carry_notes WHERE scope = ${loopScope(LOOP.harness, LOOP.ownerId)}`;
+    expect(saved?.deps.refs).toEqual(expected);
+
+    await db.sql`UPDATE harness_shared.work_items SET updated_ts = 20
+      WHERE workspace_id = 'reference-session' AND feature_id = 'WI-1313'`;
+    const [baseline] = await db.sql<{ deps: { refs: unknown[] } }[]>`
+      SELECT deps FROM harness_shared.carry_notes WHERE scope = ${loopScope(LOOP.harness, LOOP.ownerId)}`;
+    expect(baseline?.deps).toEqual(saved?.deps);
+    await setLoopCarryNoteWithPrior(ref, `Still waiting on ${citations}`);
+    const [refreshed] = await db.sql<{ deps: { refs: unknown[] } }[]>`
+      SELECT deps FROM harness_shared.carry_notes WHERE scope = ${loopScope(LOOP.harness, LOOP.ownerId)}`;
+    expect(refreshed?.deps.refs).toEqual([{ ...expected[0], token: 'open@20' }, ...expected.slice(1)]);
+  });
+
   it('records the production admin-pool acquisition for a bounded loop write', async () => {
     const before = acquireSnapshot('org-admin').totalAcquired;
     const result = await setLoopCarryNoteWithPrior(LOOP, 'diagnostic checkpoint');

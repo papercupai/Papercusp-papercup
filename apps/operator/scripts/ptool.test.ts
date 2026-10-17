@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,6 +40,8 @@ import {
   resolvePtoolOperatorCandidates,
   resolvePtoolInvocationCandidates,
   canDispatchOnFallbackOperator,
+  canBypassMissingServingGeneration,
+  canUseListedToolWithoutServingGeneration,
   shouldRediscoverOperatorUrl,
   resolveTokenPath,
   resolveTokenPaths,
@@ -47,6 +50,9 @@ import {
   formatToolCallFailure,
   formatToolCatalogBypass,
   formatToolCatalogFailure,
+  isSdkBootstrapInstallWait,
+  buildMcpCallRecoveryInvocation,
+  runMcpCallRecovery,
   isLoopPressureShed,
   isRecoverableAuthorityDenial,
   isInvalidSuperuserBearerFailure,
@@ -65,6 +71,9 @@ import {
   PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS,
   PTOOL_EVENTS_AWAIT_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+  PTOOL_GIT_EVIDENCE_TIMEOUT_MS,
+  PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS,
+  PTOOL_PG_HOT_QUERIES_TIMEOUT_MS,
   PTOOL_AGENT_LAUNCH_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
   PTOOL_PLANS_AUDIT_TIMEOUT_MS,
@@ -503,6 +512,45 @@ describe('ptool operator routing', () => {
     })).toBe('http://127.0.0.1:9071');
   });
 
+  it('uses the configured same-host proxy for a launcher-managed URL whose host-port hint was stripped', () => {
+    const managed = {
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9271',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3271',
+    };
+    expect(resolvePtoolOperatorBase(managed)).toBe('http://127.0.0.1:9271');
+    expect(resolvePtoolOperatorCandidates(managed)).toEqual(['http://127.0.0.1:9271']);
+  });
+
+  it('routes an explicit local :3271 pin through the same-vintage :9271 proxy', () => {
+    const env = {
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9271',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3271',
+    };
+    expect(resolvePtoolOperatorCandidates(env, 'http://127.0.0.1:3271')).toEqual(['http://127.0.0.1:9271']);
+    expect(ptoolConnectionRetryOptions({ url: 'http://127.0.0.1:3271' }, env)).toEqual({
+      maxAttempts: 1,
+    });
+  });
+
+  it.each(['0', '65536', 'not-a-port'])('ignores an undialable managed proxy target %s', target => {
+    expect(resolvePtoolOperatorBase({
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+      PAPERCUSP_OPERATOR_URL_PROVENANCE: 'psu-launcher',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9271',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: target,
+    })).toBe('http://127.0.0.1:9071');
+  });
+
+  it('keeps a bare operator URL pinned when another host proxy is configured', () => {
+    expect(resolvePtoolOperatorBase({
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:9071',
+      PAPERCUSP_MCP_PROXY_BASE: 'http://127.0.0.1:9271',
+      PAPERCUSP_MCP_PROXY_TARGET_PORT: '3271',
+    })).toBe('http://127.0.0.1:9071');
+  });
+
   it('falls back from a stale self port to the canonical operator', () => {
     expect(resolvePtoolOperatorCandidates({
       PAPERCUSP_HONO_PORT: '3271',
@@ -561,7 +609,7 @@ describe('ptool operator routing', () => {
     })).toBe(false);
   });
 
-  it('keeps explicit and bare local URL pins in place with a short retry budget', () => {
+  it('keeps explicit and bare local URL pins in place with a bounded recovery budget', () => {
     const localPinRetryOptions = {
       maxAttempts: PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS,
       totalTimeoutMs: PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS,
@@ -764,6 +812,16 @@ describe('ptool bearer-token resolution', () => {
 });
 
 describe('ptool call deadlines', () => {
+  it('keeps the pg_hot_queries client alive through the maximum sample on direct and deferred calls', () => {
+    const args = { windowSec: 600, limit: 10 };
+    const direct = timeoutForTool('dev:pg_hot_queries', args);
+    const deferred = timeoutForTool('tools:invoke', { name: 'dev:pg_hot_queries', args });
+
+    expect(PTOOL_PG_HOT_QUERIES_TIMEOUT_MS).toBe(670_000);
+    expect(direct).toBe(PTOOL_PG_HOT_QUERIES_TIMEOUT_MS);
+    expect(deferred).toBe(direct);
+  });
+
   it('waits for the declared graph compiler and runtime budget on direct and deferred calls', () => {
     const args = { op: 'symbol', name: 'target', runtime: 'staging-operator' };
     const direct = timeoutForTool('graph:query', args);
@@ -785,6 +843,21 @@ describe('ptool call deadlines', () => {
     expect(direct).toBe(100_000);
     expect(direct).toBeGreaterThan(95_000);
     expect(deferred).toBe(direct);
+  });
+
+  it('keeps plans:evaluate-spec-test-adequacy alive through server evaluation on direct and deferred calls', () => {
+    const args = { slug: 'adequacy-plan', classRef: 'plan-class-investigation' };
+    const direct = timeoutForTool('plans:evaluate-spec-test-adequacy', args);
+    const deferred = timeoutForTool('tools:invoke', {
+      name: 'plans:evaluate-spec-test-adequacy',
+      args,
+    });
+
+    // EI-25924578200401207: the server completed successfully at 30.906s,
+    // after the old 30s ptool client deadline had already elapsed.
+    expect(direct).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(deferred).toBe(direct);
+    expect(direct).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 
   it('lets logs:read return its structured journal timeout on both call routes', () => {
@@ -856,11 +929,11 @@ describe('ptool call deadlines', () => {
 
   it('keeps the client alive for unconfirmed release-cut reclaim previews only', () => {
     const preview = { op: 'reclaim', confirm: false };
-    expect(timeoutForTool('release:cut', preview)).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('release:cut', preview)).toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', { name: 'release:cut', args: preview }))
-      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+      .toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
     expect(timeoutForTool('release:cut', { op: 'reclaim' }))
-      .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+      .toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
 
     expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: true }))
       .toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
@@ -989,6 +1062,15 @@ describe('ptool call deadlines', () => {
       args: { agent: 'claude', headless: false },
     })).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
     expect(timeoutForTool('computer:provision_desktop')).toBe(60_000);
+    // EI-26161087677172506: git-evidence's 30s handler can be followed by
+    // the result-door's 30s scratch-spill wait. Keep both transport shapes
+    // beyond that combined path so a pending spill cursor is observable.
+    expect(timeoutForTool('capability:git-evidence')).toBe(PTOOL_GIT_EVIDENCE_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'capability:git-evidence',
+      args: { op: 'readFileAtCommit', commitSha: 'a'.repeat(40), path: 'packages/example.ts' },
+    })).toBe(PTOOL_GIT_EVIDENCE_TIMEOUT_MS);
+    expect(PTOOL_GIT_EVIDENCE_TIMEOUT_MS).toBeGreaterThan(65_000);
     // EI-22778035061732249: events:emit can complete its durable fire after
     // the old 30s client cutoff. Cover direct and deferred routes so a fired
     // event cannot be reported as outcome-unknown before its receipt returns.
@@ -1533,11 +1615,44 @@ describe('ptool catalog-independent scripted dispatch', () => {
     expect(canDispatchWithoutCatalog('', 'stdin')).toBe(false);
   });
 
-  it('dispatches supplied arguments without asking the client for tools/list', async () => {
+  it('bypasses a missing serving-generation marker only for scripted calls', () => {
+    const missingGeneration = Object.assign(new Error('legacy tools/list'), {
+      code: 'serving_generation_missing',
+    });
+
+    expect(canBypassMissingServingGeneration('rubrics:get', 'stdin', missingGeneration)).toBe(true);
+    expect(canBypassMissingServingGeneration('rubrics:get', 'file', missingGeneration)).toBe(true);
+    expect(canBypassMissingServingGeneration('rubrics:get', null, missingGeneration)).toBe(false);
+    expect(canBypassMissingServingGeneration('rubrics:get', 'stdin', new Error('other catalog error'))).toBe(false);
+  });
+
+  it('keeps an interactive listed tool usable when only serving generation is missing', () => {
+    const missingGeneration = Object.assign(new Error('legacy tools/list'), {
+      code: 'serving_generation_missing',
+    });
+    const listedTool = {
+      name: 'fleet:take-leadership',
+      inputSchema: {
+        type: 'object',
+        properties: { fleet: { type: 'string' } },
+        required: ['fleet'],
+      },
+    };
+
+    expect(canUseListedToolWithoutServingGeneration(listedTool, missingGeneration)).toBe(true);
+    expect(canUseListedToolWithoutServingGeneration(
+      { name: 'fleet:take-leadership' },
+      missingGeneration,
+    )).toBe(false);
+    expect(canUseListedToolWithoutServingGeneration(listedTool, new Error('other catalog error'))).toBe(false);
+  });
+
+  it('dispatches supplied arguments with protocol-only validation when the catalog is bypassed', async () => {
     const result = { content: [{ type: 'text', text: '{"ok":true}' }] };
     const client = {
       listTools: vi.fn(),
-      callTool: vi.fn().mockResolvedValue(result),
+      callTool: vi.fn(),
+      request: vi.fn().mockResolvedValue(result),
     };
 
     await expect(dispatchScriptedToolWithoutCatalog(
@@ -1548,15 +1663,40 @@ describe('ptool catalog-independent scripted dispatch', () => {
     )).resolves.toEqual({ client, result });
 
     expect(client.listTools).not.toHaveBeenCalled();
-    expect(client.callTool).toHaveBeenCalledWith(
-      {
+    expect(client.callTool).not.toHaveBeenCalled();
+    expect(client.request).toHaveBeenCalledTimes(1);
+    expect(client.request.mock.calls[0][0]).toEqual({
+      method: 'tools/call',
+      params: {
         name: 'rubrics:get',
         arguments: { rubricRef: 'pot-coordination-health' },
         _meta: { format: 'json', idempotencyKey: 'catalog-bypass-1' },
       },
-      undefined,
-      { timeout: 1, maxTotalTimeout: 1 },
-    );
+    });
+    expect(client.request.mock.calls[0][1]).toBeDefined();
+    expect(client.request.mock.calls[0][2]).toEqual({ timeout: 1, maxTotalTimeout: 1 });
+  });
+
+  it('keeps scheduler:get_next on its foreground budget when tools/list timed out', async () => {
+    const result = { content: [{ type: 'text', text: '{"ok":false,"error":"all_matches_gated"}' }] };
+    const client = {
+      listTools: vi.fn(),
+      callTool: vi.fn(),
+      request: vi.fn().mockResolvedValue(result),
+    };
+
+    await expect(dispatchScriptedToolWithoutCatalog(
+      client,
+      'scheduler:get_next',
+      { harness: 'papercusp' },
+      { idempotencyKey: 'scheduler-catalog-bypass-timeout-1' },
+    )).resolves.toEqual({ client, result });
+
+    expect(client.listTools).not.toHaveBeenCalled();
+    expect(client.request.mock.calls[0][2]).toEqual({
+      timeout: PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+      maxTotalTimeout: PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+    });
   });
 
   it('retries the exact pre-dispatch bearer refusal with the next implicit token and same key', async () => {
@@ -1565,8 +1705,8 @@ describe('ptool catalog-independent scripted dispatch', () => {
       content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }],
     };
     const success = { content: [{ type: 'text', text: '{"ok":true}' }] };
-    const firstClient = { callTool: vi.fn().mockResolvedValue(rejected), close: vi.fn() };
-    const secondClient = { callTool: vi.fn().mockResolvedValue(success), close: vi.fn() };
+    const firstClient = { callTool: vi.fn(), request: vi.fn().mockResolvedValue(rejected), close: vi.fn() };
+    const secondClient = { callTool: vi.fn(), request: vi.fn().mockResolvedValue(success), close: vi.fn() };
     const reconnectWithTokenPath = vi.fn().mockResolvedValue(secondClient);
     const tokenPaths = ['/workspace/superuser-token', '/home/tester/.papercusp/superuser-token'];
 
@@ -1586,8 +1726,8 @@ describe('ptool catalog-independent scripted dispatch', () => {
     expect(reconnectWithTokenPath).toHaveBeenCalledOnce();
     expect(reconnectWithTokenPath).toHaveBeenCalledWith(tokenPaths[1]);
     expect(firstClient.close).toHaveBeenCalledOnce();
-    expect(firstClient.callTool.mock.calls).toEqual(secondClient.callTool.mock.calls);
-    expect(secondClient.callTool.mock.calls[0][0]._meta.idempotencyKey)
+    expect(firstClient.request.mock.calls).toEqual(secondClient.request.mock.calls);
+    expect(secondClient.request.mock.calls[0][0].params._meta.idempotencyKey)
       .toBe('catalog-bypass-auth-retry-1');
   });
 
@@ -1597,7 +1737,7 @@ describe('ptool catalog-independent scripted dispatch', () => {
       content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }],
     };
     const reconnectWithTokenPath = vi.fn();
-    const pinnedClient = { callTool: vi.fn().mockResolvedValue(authRefusal), close: vi.fn() };
+    const pinnedClient = { callTool: vi.fn(), request: vi.fn().mockResolvedValue(authRefusal), close: vi.fn() };
 
     await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
       pinnedClient,
@@ -1617,7 +1757,7 @@ describe('ptool catalog-independent scripted dispatch', () => {
       isError: true,
       content: [{ type: 'text', text: 'request_rejected: tool_not_available' }],
     };
-    const genericClient = { callTool: vi.fn().mockResolvedValue(genericResult), close: vi.fn() };
+    const genericClient = { callTool: vi.fn(), request: vi.fn().mockResolvedValue(genericResult), close: vi.fn() };
     await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
       genericClient,
       'rubrics:get',
@@ -1636,7 +1776,7 @@ describe('ptool catalog-independent scripted dispatch', () => {
       isError: true,
       content: [{ type: 'text', text: 'mcp_auth_failed: superuser_invalid_bearer' }],
     };
-    const listStyleClient = { callTool: vi.fn().mockResolvedValue(listStyleBearerFailure), close: vi.fn() };
+    const listStyleClient = { callTool: vi.fn(), request: vi.fn().mockResolvedValue(listStyleBearerFailure), close: vi.fn() };
     await expect(dispatchScriptedToolWithoutCatalogWithTokenFallback(
       listStyleClient,
       'rubrics:get',
@@ -1658,8 +1798,8 @@ describe('ptool catalog-independent scripted dispatch', () => {
       content: [{ type: 'text', text: 'request_rejected: superuser_invalid_bearer' }],
     };
     const success = { content: [{ type: 'text', text: '{"ok":true}' }] };
-    const firstClient = { callTool: vi.fn().mockResolvedValue(authRefusal), close: vi.fn() };
-    const finalClient = { callTool: vi.fn().mockResolvedValue(success), close: vi.fn() };
+    const firstClient = { callTool: vi.fn(), request: vi.fn().mockResolvedValue(authRefusal), close: vi.fn() };
+    const finalClient = { callTool: vi.fn(), request: vi.fn().mockResolvedValue(success), close: vi.fn() };
     const tokenPaths = [
       '/workspace/superuser-token',
       '/home/tester/.papercusp/superuser-token',
@@ -1686,7 +1826,7 @@ describe('ptool catalog-independent scripted dispatch', () => {
 
     expect(reconnectWithTokenPath.mock.calls).toEqual([[tokenPaths[1]], [tokenPaths[2]]]);
     expect(firstClient.close).toHaveBeenCalledOnce();
-    expect(firstClient.callTool.mock.calls).toEqual(finalClient.callTool.mock.calls);
+    expect(firstClient.request.mock.calls).toEqual(finalClient.request.mock.calls);
   });
 
   it('labels the fallback as pre-dispatch while keeping scripted output on stdout', () => {
@@ -1769,10 +1909,28 @@ describe('ptool keyed result recovery without concurrent replay', () => {
   it('refuses legacy tool listings that cannot enforce serving-generation compatibility', () => {
     expect(() => requireServingGeneration({ name: 'plans:bind-spec-evidence' }))
       .toThrow(/serving_generation_missing: plans:bind-spec-evidence .*incompatible legacy release/);
+    try {
+      requireServingGeneration({ name: 'plans:bind-spec-evidence' });
+    } catch (error) {
+      expect((error as { code?: string }).code).toBe('serving_generation_missing');
+    }
     expect(requireServingGeneration({
       name: 'plans:bind-spec-evidence',
       _meta: { 'papercusp/servingGeneration': ' serving-generation-v1:listed ' },
     })).toBe('serving-generation-v1:listed');
+  });
+
+  it('keeps tools:find reachable when a legacy catalog omits serving generation', () => {
+    expect(requireServingGeneration({ name: 'tools:find' })).toBeUndefined();
+    expect(buildCallToolParams('tools:find', { query: 'locks:acquire' }, {
+      outputSchema: { type: 'object' },
+      idempotencyKey: 'ptool-discovery-legacy-1',
+      servingGeneration: requireServingGeneration({ name: 'tools:find' }),
+    })).toEqual({
+      name: 'tools:find',
+      arguments: { query: 'locks:acquire' },
+      _meta: { structured: true, idempotencyKey: 'ptool-discovery-legacy-1' },
+    });
   });
 
   it('refreshes two consecutive stale contracts and preserves the unchanged call', async () => {
@@ -2824,8 +2982,9 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
     })).toBe(false);
   });
 
-  it('EI-22697016277102033 caps direct local attempts but preserves the resilient proxy window', async () => {
+  it('EI-22697016277102033 gives direct local pins the full bounded recovery window', async () => {
     expect(PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS).toBe(15_000);
+    expect(PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS).toBe(PTOOL_CONNECT_TIMEOUT_MS);
     expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:3170', {})).toBe(15_000);
     expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:3070', {})).toBe(15_000);
     expect(ptoolConnectAttemptTimeoutMs('http://127.0.0.1:9071', {})).toBe(PTOOL_CONNECT_TIMEOUT_MS);
@@ -2933,7 +3092,7 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
     expect(sleeps).toEqual([1_000]);
   });
 
-  it('bounds retries for a dead direct local URL pin to its short recovery window', async () => {
+  it('bounds retries for a dead direct local URL pin to the full recovery window', async () => {
     const pinned = 'http://127.0.0.1:32951';
     const connectOnce = vi.fn().mockRejectedValue(
       Object.assign(new Error(`connect ECONNREFUSED ${pinned}`), { code: 'ECONNREFUSED' }),
@@ -2947,6 +3106,24 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
       }),
     ).rejects.toThrow(/ECONNREFUSED/);
     expect(connectOnce).toHaveBeenCalledTimes(PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS);
+  });
+
+  it('keeps a direct staging pin alive through a 20s coordinated restart gap', async () => {
+    const pinned = 'http://127.0.0.1:3170';
+    const client = { close: vi.fn() };
+    const refusal = () => Object.assign(new Error(`connect ECONNREFUSED ${pinned}`), { code: 'ECONNREFUSED' });
+    const connectOnce = vi.fn();
+    for (let i = 0; i < 20; i += 1) connectOnce.mockRejectedValueOnce(refusal());
+    connectOnce.mockResolvedValue(client);
+
+    await expect(connectWithLocalRetry(connectOnce, pinned, {}, {
+      ...ptoolConnectionRetryOptions({ url: pinned }, {}),
+      attemptTimeoutMs: PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS,
+      sleep: vi.fn(async () => {}),
+      retryJitterMs: 0,
+    })).resolves.toEqual(client);
+    expect(connectOnce).toHaveBeenCalledTimes(21);
+    expect(PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS).toBeGreaterThan(20_000);
   });
 
   it('does not spend the local retry budget when explicit UDS discovery has no endpoint', async () => {
@@ -3157,6 +3334,75 @@ describe('ptool module-resolution failures are terminal, not retried (WI-6554700
     expect(importSdkModule).toHaveBeenCalledTimes(2);
     expect(connectOnce).not.toHaveBeenCalled();
     expect(sleep).not.toHaveBeenCalled();
+  });
+});
+
+describe('ptool SDK bootstrap recovery during install:safe drains', () => {
+  it('recognizes the pre-dispatch install wait without classifying missing SDK as a wait', () => {
+    expect(isSdkBootstrapInstallWait(new Error(
+      'ptool: SDK bootstrap timed out waiting for install:safe before operator connection',
+    ))).toBe(true);
+    expect(isSdkBootstrapInstallWait(new Error(
+      "Cannot find package '@modelcontextprotocol/sdk'",
+    ))).toBe(false);
+  });
+
+  it('keeps the same local endpoint, scope, client identity, payload and replay key', () => {
+    expect(buildMcpCallRecoveryInvocation({
+      helperPath: '/repo/scripts/mcp-call.mjs',
+      toolName: 'work_items:get',
+      callArgs: { id: 'EI-26089122200719088' },
+      inputKind: 'file',
+      operatorUrl: 'http://127.0.0.1:3170',
+      workspace: 'papercusp-workspace',
+      harness: 'papercusp',
+      clientId: 'su-recovery',
+      idempotencyKey: 'ptool-recovery-1',
+    })).toEqual({
+      command: process.execPath,
+      args: [
+        '/repo/scripts/mcp-call.mjs', 'work_items:get', '--json', '-', '--port', '3170',
+        '--workspace', 'papercusp-workspace', '--harness', 'papercusp',
+        '--client', 'su-recovery', '--idempotency-key', 'ptool-recovery-1',
+      ],
+      payload: { id: 'EI-26089122200719088' },
+      port: '3170',
+    });
+    expect(buildMcpCallRecoveryInvocation({
+      helperPath: '/repo/scripts/mcp-call.mjs',
+      toolName: 'work_items:get',
+      callArgs: {}, inputKind: 'file', operatorUrl: 'https://operator.example',
+    })).toBeNull();
+    expect(buildMcpCallRecoveryInvocation({
+      helperPath: '/repo/scripts/mcp-call.mjs',
+      toolName: 'work_items:get',
+      callArgs: {}, inputKind: 'file', operatorUrl: 'http://127.0.0.1:3170',
+      projection: '{}',
+    })).toBeNull();
+  });
+
+  it('writes the JSON payload to the helper and propagates its exit code', async () => {
+    const child = Object.assign(new EventEmitter(), { stdin: { end: vi.fn<(payload: string) => void>() } });
+    const spawnImpl = vi.fn(() => {
+      queueMicrotask(() => child.emit('close', 5, null));
+      return child;
+    });
+    const result = await runMcpCallRecovery({
+      invocation: {
+        command: process.execPath,
+        args: ['/repo/scripts/mcp-call.mjs', 'coord:orient', '--json', '-'],
+        payload: { intent: 'recover' },
+        port: '3170',
+      },
+      spawnImpl,
+    });
+    expect(result).toMatchObject({ handled: true, started: true, exitCode: 5 });
+    expect(spawnImpl).toHaveBeenCalledWith(
+      process.execPath,
+      ['/repo/scripts/mcp-call.mjs', 'coord:orient', '--json', '-'],
+      expect.objectContaining({ stdio: ['pipe', 'inherit', 'inherit'] }),
+    );
+    expect(child.stdin.end).toHaveBeenCalledWith('{"intent":"recover"}');
   });
 });
 

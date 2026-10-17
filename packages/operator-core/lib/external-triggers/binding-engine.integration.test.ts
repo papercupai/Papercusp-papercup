@@ -13,6 +13,7 @@ import { upsertDatatype } from '../datatype-registry-store';
 import type { CreateWorkItemInput, WorkItem } from '../work-items';
 import {
   dispatchPendingTriggerRuns,
+  queueExternalTriggerBindings,
   directWorkItemTriggerRef,
   EMAIL_DRAFT_PROPOSAL_HARNESS,
   EMAIL_DRAFT_PROPOSAL_KIND,
@@ -179,6 +180,146 @@ function startedPlanRun(triggerRunId: string, runId: number): ScheduledPlanFireS
 }
 
 describe('external trigger durable dispatch', () => {
+  async function coalescingPolicy(maxRuns = 2): Promise<void> {
+    await sql`UPDATE harness_shared.trigger_bindings
+      SET storm_policy = ${JSON.stringify({ mode: 'coalesce-with-cap', maxRuns, windowSeconds: 300 })}::text::jsonb
+      WHERE workspace_id = ${WS} AND id = ${bindingId}`;
+  }
+
+  async function enqueue(key: string) {
+    await sql`INSERT INTO harness_shared.trigger_deliveries
+      (workspace_id, source_id, dedupe_key, datatype_id, event_key, payload, sink_kind, sink_ref, outcome)
+      VALUES (${WS}, ${sourceId}, ${key}, 'email-message', 'ext:gmail:message.received',
+              '{}'::jsonb, 'event-bus', 'workspace', 'delivered')
+      ON CONFLICT DO NOTHING`;
+    return queueExternalTriggerBindings(sql, {
+      workspaceId: WS, sourceId, source: 'gmail', event: 'message.received',
+      externalId: key, key: 'ext:gmail:message.received', datatypeId: 'email-message',
+      dedupeKey: key, payload: { text: `PRIVATE:${key}` },
+    });
+  }
+
+  function batchDispatcher() {
+    let seq = 7000;
+    const runPlan = vi.fn<NonNullable<TriggerDispatchDeps['runPlan']>>(async (_sql, opts) => ({
+      ...startedPlanRun('unused', ++seq), instanceSlug: `${PLAN}@run-${opts.runToken}`,
+    }));
+    return { runPlan, announceRunWork: vi.fn(async () => undefined) };
+  }
+
+  it('retains every dedupe receipt and private payload in bounded durable batches', async () => {
+    await coalescingPolicy();
+    const keys = Array.from({ length: 10 }, (_, n) => `gmail:batch-${n}`);
+    for (const key of keys) expect(await enqueue(key)).toMatchObject({ queued: 1, skippedForStorm: 0 });
+    expect(await enqueue(keys[9])).toMatchObject({ deduped: 1, queued: 0 });
+    const deps = batchDispatcher();
+    expect(await dispatchPendingTriggerRuns(sql, deps)).toMatchObject({ claimed: 2, succeeded: 2 });
+    expect(deps.runPlan).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(deps.runPlan.mock.calls)).not.toContain('PRIVATE:');
+    const receipts = await sql<Array<{ status: string; dedupe_key: string; plan_run_ref: string }>>`
+      SELECT status, dedupe_key, plan_run_ref FROM harness_shared.trigger_runs WHERE workspace_id = ${WS}`;
+    expect(receipts).toHaveLength(10);
+    expect(receipts.every((r) => r.status === 'succeeded')).toBe(true);
+    const handled: string[] = [];
+    for (const ref of new Set(receipts.map((r) => r.plan_run_ref))) {
+      const data = await readTriggerPlanRunPayload(sql, WS, Number(ref));
+      for (const event of data.events ?? [data]) {
+        expect(event.payload.text).toBe(`PRIVATE:${event.dedupeKey}`);
+        handled.push(event.dedupeKey);
+      }
+    }
+    expect(handled.sort()).toEqual(keys.sort());
+    expect(await dispatchPendingTriggerRuns(sql, deps)).toMatchObject({ claimed: 0 });
+  });
+
+  it('freezes batch membership at claim and defers arrivals after the consumer started', async () => {
+    await coalescingPolicy(1);
+    await enqueue('gmail:freeze-first');
+    await enqueue('gmail:freeze-member');
+    const deps = batchDispatcher();
+    deps.runPlan.mockImplementationOnce(async (_sql, opts) => {
+      await enqueue('gmail:freeze-late');
+      return { ...startedPlanRun('unused', 7100), instanceSlug: `${PLAN}@run-${opts.runToken}` };
+    });
+    expect(await dispatchPendingTriggerRuns(sql, deps)).toMatchObject({ claimed: 1, succeeded: 1 });
+    const frozen = await readTriggerPlanRunPayload(sql, WS, 7100);
+    expect(frozen.events?.map((e) => e.dedupeKey)).toEqual(['gmail:freeze-first', 'gmail:freeze-member']);
+    await enqueue('gmail:freeze-later');
+    expect(await dispatchPendingTriggerRuns(sql, deps)).toMatchObject({ claimed: 0 });
+    // Make the launch budget available without sleeping or changing wall time.
+    await sql`UPDATE harness_shared.trigger_runs SET
+      outcome = outcome || jsonb_build_object('firstAttemptAt', now() - interval '301 seconds'),
+      started_at = now() - interval '301 seconds' WHERE workspace_id = ${WS} AND attempts > 0`;
+    await sql`UPDATE harness_shared.trigger_runs SET next_attempt_at = now() WHERE workspace_id = ${WS} AND attempts = 0`;
+    expect(await dispatchPendingTriggerRuns(sql, deps)).toMatchObject({ claimed: 1, succeeded: 1 });
+    const next = await readTriggerPlanRunPayload(sql, WS, 7001);
+    expect(next.events?.map((e) => e.dedupeKey)).toEqual(['gmail:freeze-late', 'gmail:freeze-later']);
+    expect(await readTriggerPlanRunPayload(sql, WS, 7100)).toEqual(frozen);
+  });
+
+  it('enforces launch admission on delayed heads across concurrent dispatchers', async () => {
+    await coalescingPolicy(1);
+    await enqueue('gmail:delayed-1');
+    // Model heads queued in distinct historical windows while the drain was down.
+    await sql`UPDATE harness_shared.trigger_runs SET triggered_at = now() - interval '601 seconds' WHERE workspace_id = ${WS}`;
+    await enqueue('gmail:delayed-2');
+    await sql`UPDATE harness_shared.trigger_runs SET triggered_at = now() - interval '301 seconds'
+      WHERE workspace_id = ${WS} AND dedupe_key = 'gmail:delayed-2'`;
+    await enqueue('gmail:delayed-3');
+    const deps = batchDispatcher();
+    const results = await Promise.all([dispatchPendingTriggerRuns(sql, deps), dispatchPendingTriggerRuns(sql, deps)]);
+    expect(results.reduce((n, r) => n + r.claimed, 0)).toBe(1);
+    expect(deps.runPlan).toHaveBeenCalledTimes(1);
+    expect(await dispatchPendingTriggerRuns(sql, deps)).toMatchObject({ claimed: 0 });
+    expect(await sql`SELECT id FROM harness_shared.trigger_runs WHERE workspace_id = ${WS} AND status = 'pending'`).toHaveLength(2);
+  });
+
+  it('keeps a batch frozen across failed dispatch and replays its receipts once', async () => {
+    await coalescingPolicy(1);
+    await enqueue('gmail:retry-head');
+    await enqueue('gmail:retry-member');
+    const deps = batchDispatcher();
+    deps.runPlan.mockRejectedValueOnce(new Error('fixture retry'));
+    expect(await dispatchPendingTriggerRuns(sql, deps)).toMatchObject({ failed: 1 });
+    await enqueue('gmail:retry-late');
+    expect(await dispatchPendingTriggerRuns(sql, deps)).toMatchObject({ claimed: 1, succeeded: 1 });
+    const replayed = await readTriggerPlanRunPayload(sql, WS, 7001);
+    expect(replayed.events?.map((e) => e.dedupeKey)).toEqual(['gmail:retry-head', 'gmail:retry-member']);
+    expect(await dispatchPendingTriggerRuns(sql, deps)).toMatchObject({ claimed: 0 });
+  });
+
+  it('preserves batches during spend pause and mirrors cancellation without independent member claims', async () => {
+    await coalescingPolicy(1);
+    await enqueue('gmail:paused-head');
+    await enqueue('gmail:paused-member');
+    const deps = batchDispatcher();
+    expect(await dispatchPendingTriggerRuns(sql, { ...deps, spendPaused: true })).toMatchObject({ claimed: 0 });
+    await sql`UPDATE harness_shared.trigger_bindings SET armed = false WHERE workspace_id = ${WS} AND id = ${bindingId}`;
+    expect(await dispatchPendingTriggerRuns(sql, deps)).toMatchObject({ claimed: 0 });
+    const receipts = await sql`SELECT status FROM harness_shared.trigger_runs WHERE workspace_id = ${WS}`;
+    expect(receipts.map((r) => r.status)).toEqual(['cancelled', 'cancelled']);
+    expect(deps.runPlan).not.toHaveBeenCalled();
+  });
+
+  it('refuses coalescing for actions that do not read private batches', async () => {
+    await coalescingPolicy(1);
+    await sql`UPDATE harness_shared.trigger_bindings SET action = '{"type":"start-goal"}'::jsonb
+      WHERE workspace_id = ${WS} AND id = ${bindingId}`;
+    expect(await enqueue('gmail:unsupported-batch')).toMatchObject({ failed: 1, queued: 0 });
+    expect(await dispatchPendingTriggerRuns(sql, batchDispatcher())).toMatchObject({ claimed: 0 });
+  });
+
+  it('does not expire fresh member events using the older leader receipt timestamp', async () => {
+    await coalescingPolicy(1);
+    await enqueue('gmail:aged-head');
+    await enqueue('gmail:fresh-member');
+    await sql`UPDATE harness_shared.trigger_runs SET triggered_at = now() - interval '25 hours'
+      WHERE workspace_id = ${WS} AND dedupe_key = 'gmail:aged-head'`;
+    expect(await dispatchPendingTriggerRuns(sql, batchDispatcher())).toMatchObject({ claimed: 1, succeeded: 1 });
+    const batch = await readTriggerPlanRunPayload(sql, WS, 7001);
+    expect(batch.events?.map((e) => e.dedupeKey)).toEqual(['gmail:aged-head', 'gmail:fresh-member']);
+  });
+
   it('replays event and routine fires for two typed neutral consumers without plan runs', async () => {
     const consumers = [
       { harness: 'neutral-trigger-text', operationId: 'extract', field: 'value',
@@ -1162,6 +1303,50 @@ describe('create-work-item direct Email dispatch (P-018)', () => {
         kind: EMAIL_DRAFT_PROPOSAL_KIND,
       },
     });
+  });
+
+  it('holds model-spending bindings while deterministic bindings drain during a spend pause', async () => {
+    await installEmailDraftDatatype();
+    const directBindingId = await seedDirectBinding();
+    const direct = await seedDirectRun(directBindingId, {}, 'mixed-free');
+    const spendingRun = await seedTriggerRun({
+      args: {
+        trigger: {
+          key: 'ext:gmail:message.received',
+          source: 'gmail',
+          event: 'message.received',
+          sourceId,
+          externalId: 'message-mixed-spend',
+          occurredAt: '2026-08-28T14:00:00.000Z',
+          datatypeId: 'email-message',
+          dedupeKey: 'gmail:mixed-spend',
+          payload: { messageId: 'message-mixed-spend', subject: 'Plan work' },
+        },
+      },
+    });
+    const runPlan = vi.fn();
+    const createWorkItem = vi.fn(async (input: CreateWorkItemInput) =>
+      returnedWorkItem(input, 'WI-mixed-free'),
+    );
+
+    await expect(dispatchPendingTriggerRuns(sql, { spendPaused: true, runPlan, createWorkItem })).resolves.toMatchObject({
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+    });
+    expect(createWorkItem).toHaveBeenCalledTimes(1);
+    expect(runPlan).not.toHaveBeenCalled();
+
+    const receipts = await sql<Array<{ id: string; status: string; attempts: number }>>`
+      SELECT id, status, attempts
+        FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS}
+         AND id IN (${direct.triggerRunId}, ${spendingRun})
+       ORDER BY id`;
+    const byId = new Map(receipts.map((receipt) => [receipt.id, receipt]));
+    expect(byId.get(direct.triggerRunId)).toEqual({ id: direct.triggerRunId, status: 'succeeded', attempts: 1 });
+    expect(byId.get(spendingRun)).toEqual({ id: spendingRun, status: 'pending', attempts: 0 });
   });
 
   it('adopts the existing triggerRef on retry without minting a duplicate item', async () => {

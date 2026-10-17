@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { withBoundedTimeout } from './bounded-timeout';
 import * as recorder from './degradation/fallback-observations';
+import { runWithWorkspace } from './workspace-als';
 
 describe('withBoundedTimeout (WI-3818)', () => {
   beforeEach(() => {
@@ -23,6 +24,20 @@ describe('withBoundedTimeout (WI-3818)', () => {
       expect.objectContaining({ value: 'real-value', degraded: false }),
     );
     expect(result.reason).toBeUndefined();
+  });
+
+  it('records bounded-operation observations in the active workspace', async () => {
+    const result = await runWithWorkspace('workspace-from-context', () => withBoundedTimeout(Promise.resolve('real-value'), {
+      fallback: 'fallback-value',
+      timeoutMs: 5000,
+      label: 'workspace-scoped-read',
+    }));
+    expect(result.degraded).toBe(false);
+    expect(recorder.observeFallback).toHaveBeenCalledWith(
+      'bounded-operation',
+      { eligible: 1, applied: 1, reason: 'applied', scope: 'workspace-scoped-read' },
+      { workspaceId: 'workspace-from-context' },
+    );
   });
 
   it('degrades to the fallback with reason "timeout" when the work never settles in time', async () => {

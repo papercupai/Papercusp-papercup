@@ -422,6 +422,28 @@ function unionColumnCountHint(
 }
 
 /**
+ * EI-26158839216909077: PostgreSQL's 42803 diagnostic names the scalar
+ * expression that escaped an aggregate but does not show how to reshape a
+ * one-row provenance probe. Restrict this correction to the measured grouped
+ * query error so unrelated database failures retain their native diagnostics.
+ */
+function postgresGroupingHint(
+  _sql: string,
+  info: { code?: string; message: string; detail?: string; hint?: string },
+): string | undefined {
+  if (info.code !== '42803') return undefined;
+  const errorText = `${info.message} ${info.detail ?? ''} ${info.hint ?? ''}`;
+  if (!/must appear in the GROUP BY clause|must be used in an aggregate function/i.test(errorText)) {
+    return undefined;
+  }
+  return (
+    'PostgreSQL rejected this grouped aggregate because a selected scalar expression is neither grouped nor aggregated. ' +
+    'Add every non-aggregate SELECT expression to GROUP BY, or move the aggregate into a subquery/CTE and select its single-row result; ' +
+    'keep scalar payload fields outside the aggregate.'
+  );
+}
+
+/**
  * EI-22725188331129683: PostgreSQL reports only its generic "explicit type
  * casts" hint when a JSON operator is applied to a TEXT column. That hint does
  * not identify the expression to cast, so a fresh caller commonly retries the
@@ -1265,6 +1287,8 @@ export default defineTool({
       if (dbosWorkflowStatusHint && !payload.hint) payload.hint = dbosWorkflowStatusHint;
       const unionColumnCountCorrection = unionColumnCountHint(sql, info);
       if (unionColumnCountCorrection && !payload.hint) payload.hint = unionColumnCountCorrection;
+      const groupingCorrection = postgresGroupingHint(sql, info);
+      if (groupingCorrection && !payload.hint) payload.hint = groupingCorrection;
       const jsonOperatorCorrection = jsonOperatorTypeHint(sql, info);
       // PostgreSQL's 42883 hint is always the generic cast suggestion for this
       // shape; replace it with the operand-specific correction so the caller

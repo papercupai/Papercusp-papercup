@@ -1,17 +1,17 @@
 /**
- * plans:revisions — the conversation-linked revision chain for a plan.
+ * plans:revisions — the PG-canonical revision chain for a plan.
  *
  * plan-agent-launch-2026-05-21, Phase 1 (P-004 / D-003).
  *
- * One row per recorded `plans:*` write (the `plan_revisions` spine),
- * newest-first: seq, author, the rationale, the session that produced
- * it, a `+N/-N` diff-stat vs the prior revision, and a timestamp. The
- * conversation-linked counterpart to `plans:history` — which is git
- * commits over the file, coarse and rationale-free (D-003).
+ * One row per recorded plans:* write (the plan_revisions spine),
+ * newest-first: seq, author, rationale, the session that produced it,
+ * a +/- diff-stat vs the prior revision, and a timestamp. This is
+ * metadata only; use plans:revision-diff for a single revision's patch
+ * and plans:revision-transcript for its authoring conversation.
  *
  * A plan with no recorded revisions returns an empty chain, not an
- * error (matches `plans:history`). A genuine DB failure is reported
- * as `revisions_unavailable` rather than a misleading empty list.
+ * error. A genuine DB failure is reported as revisions_unavailable
+ * rather than a misleading empty list.
  */
 
 import { z } from 'zod';
@@ -32,11 +32,11 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:revisions',
   description:
-    'The revision chain for a plan, newest-first — one row per recorded plans:* write: seq, author (agent|human), the rationale, the session that produced it, a +/- diff-stat vs the prior revision, and timestamp. The conversation-linked counterpart to plans:history (git commits). Empty chain when the plan has no recorded revisions yet.',
+    'The PG-canonical revision chain for a plan, newest-first — one metadata row per recorded plans:* write: seq, author (agent|human), rationale, authoring session, diff-stat, and timestamp. Use plans:revision-diff for one revision patch and plans:revision-transcript for its authoring conversation. This list does not include full historical snapshots.',
   guidance: {
     when: "You need a plan's edit history with the *why* — what changed at each revision and the rationale behind it. The basis of the Revisions panel and of the context an agent launched from the plan is seeded with.",
     notWhen:
-      'You want raw git commit history of the file — that is plans:history. The current plan body — plans:get.',
+      'You want a single revision patch — plans:revision-diff. You want the authoring conversation — plans:revision-transcript. You want the current plan body — plans:get. This list is metadata only.',
     chaining:
       'plans:revisions → plans:revision-diff for one revision patch, or plans:revision-transcript for the conversation behind a revision.',
     seeAlso: [

@@ -1191,10 +1191,24 @@ export function defaultReproductionLedgerDeps(): ReproductionLedgerDeps {
       return row ? { status: row.status, commitSha: row.commit_sha, worktreeDirty: row.worktree_dirty } : null;
     },
     async readToolInvocation(id) {
-      const rows = await orgSql()<{ status: string | null; serving_build_sha: string | null }[]>`
-        SELECT status, serving_build_sha FROM harness_shared.tool_invocations WHERE id = ${id}`;
+      const rows = await orgSql()<{
+        status: string | null;
+        serving_build_sha: string | null;
+        result_outcome: string | null;
+        soft_failure_reason: string | null;
+      }[]>`
+        SELECT status, serving_build_sha,
+               metadata_json->>'resultOutcome' AS result_outcome,
+               metadata_json->>'softFailureReason' AS soft_failure_reason
+          FROM harness_shared.tool_invocations
+         WHERE id = ${id}`;
       const row = rows[0];
-      return row ? { status: row.status, servingBuildSha: row.serving_build_sha } : null;
+      return row ? {
+        status: row.status,
+        servingBuildSha: row.serving_build_sha,
+        resultOutcome: row.result_outcome,
+        softFailureReason: row.soft_failure_reason,
+      } : null;
     },
     now: () => new Date(),
   };

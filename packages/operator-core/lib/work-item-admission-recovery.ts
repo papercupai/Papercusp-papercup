@@ -521,22 +521,30 @@ export async function requestAdmissionRecovery(
   });
 }
 
-/** Called inside the existing durable promoter action; a crash retries the original item. */
+/** Called inside the existing durable promoter action; a crash retries the original item.
+ * Returns queued requests reserving this fire for exact-item recovery. Observing
+ * an already-delivered request does not reserve the ordinary admission lane.
+ */
 export async function runAdmissionRecoveries(
   scope: Omit<AdmissionRecoveryScope, 'workItemId'>,
   deps: AdmissionRecoveryDeps,
   sql: Sql = getOrgPg().sql,
 ): Promise<number> {
-  const rows = await sql<{ feature_id: string }[]>`
-    SELECT feature_id FROM harness_shared.work_items
+  const rows = await sql<{ feature_id: string; queued: boolean }[]>`
+    SELECT feature_id, payload->'_admissionRecovery'->>'state' = 'queued' AS queued
+      FROM harness_shared.work_items
      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
        AND (
          payload->'_admissionRecovery'->>'state' = 'queued'
          OR (payload->'_admissionRecovery'->>'state' = 'delivered'
            AND payload->'_admissionRecovery'->>'stage' = 'await-pickup')
        )
-     ORDER BY feature_id LIMIT 20`;
+     ORDER BY (payload->'_admissionRecovery'->>'state' = 'queued') DESC, feature_id LIMIT 20`;
   if (rows.length === 0) return 0;
+  // Keep the request-accelerated write boundary even when another consumer owns
+  // a queued request's lock. Pickup-only observations must not starve normal
+  // screening forever, nor occupy the bounded window ahead of new requests.
+  const queued = new Set(rows.filter((row) => row.queued).map((row) => row.feature_id));
 
   const ownsLockSql = deps.lockSql === undefined;
   const lockSql = deps.lockSql ?? createAdmissionRecoveryLockSql();
@@ -578,6 +586,8 @@ export async function runAdmissionRecoveries(
         });
         if (!setup) continue;
         const { request, rawRequest } = setup;
+        // A fresh request may replace a delivered one between selection and lock.
+        if (request.state === 'queued') queued.add(row.feature_id);
         if (request.state === 'delivered') {
           try {
             await observeAdmissionRecoveryPickup({
@@ -705,5 +715,5 @@ export async function runAdmissionRecoveries(
   } finally {
     if (ownsLockSql) await lockSql.end({ timeout: 5 }).catch(() => {});
   }
-  return rows.length;
+  return queued.size;
 }

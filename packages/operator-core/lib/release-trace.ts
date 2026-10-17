@@ -1212,6 +1212,22 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
     };
   }
 
+  // A terminal qualification can leave a null-origin frozen queue at ready-to-verify.
+  // The checkpoint runner can preserve that queue only when the caller pins its exact
+  // repairHead; without this, release:trace recommends a run that refuses as
+  // queue-origin-unknown. Pin every verify-repair recommendation, including known-origin
+  // queues: the exact head is the selected candidate, and a moved head must fail closed.
+  const repairQueue = input.position.gate.repairQueue;
+  if (repairQueue?.decision === 'verify-repair') {
+    return {
+      ...verb,
+      args: { ...(verb.args ?? {}), requiredAncestorSha: repairQueue.repairHead },
+      reason:
+        `${verb.reason} The frozen repair policy selected repairHead ${repairQueue.repairHead}; ` +
+        'pin that exact lineage with requiredAncestorSha so queue reconciliation stays fail-closed.',
+    };
+  }
+
   return verb;
 }
 

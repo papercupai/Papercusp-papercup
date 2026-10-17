@@ -258,6 +258,27 @@ describe('P-014 original Codex persistence and provider condition episodes', () 
     expect(lifecycleMocks.releaseWorkItems).not.toHaveBeenCalled();
   });
 
+  it('passes the active SQL client and measured time to the condition-reader substitute', async () => {
+    rows = [];
+    endedSessionIds = [42];
+    const providerKey = key('provider');
+    const readOpenConditions = vi.fn(async (client: unknown, measuredNow: number) => {
+      expect(client).toBe(sql);
+      expect(measuredNow).toBe(now);
+      return [{ conditionKey: providerKey, openedAtMs: measuredNow - 60_000 }];
+    });
+    opts = { ...opts, readOpenConditions };
+
+    const result = await pass();
+
+    expect(readOpenConditions).toHaveBeenCalledExactlyOnceWith(sql, now);
+    expect(result.providerRecovered).toEqual(['42']);
+    expect(resolve).toHaveBeenCalledWith({
+      conditionKey: providerKey,
+      summary: 'codex-rollout-watchdog recovered',
+    });
+  });
+
   it('finds an ended one-shot episode outside the generic 25k condition window', async () => {
     const providerKey = key('provider');
     rows = [];

@@ -41,6 +41,18 @@ export function nativeAdoptionCriterionForInstrument(key: string): NativeAdoptio
   return null;
 }
 
+/** P-041 measurement criteria, separate from the frozen D-011 adoption target. */
+export const NATIVE_PUSH_INSTRUMENT_KEYS = Object.freeze({
+  issued: 'code-intel:native-push-issued-measured',
+  actedOn: 'code-intel:native-push-acted-on-measured',
+  grepAfterPush: 'code-intel:native-push-grep-after-measured',
+} as const);
+export type NativePushCriterion = keyof typeof NATIVE_PUSH_INSTRUMENT_KEYS;
+export function nativePushCriterionForInstrument(key: string): NativePushCriterion | null {
+  return (Object.keys(NATIVE_PUSH_INSTRUMENT_KEYS) as NativePushCriterion[])
+    .find(criterion => NATIVE_PUSH_INSTRUMENT_KEYS[criterion] === key) ?? null;
+}
+
 /** The native code-intelligence MCP operations this plan ships. */
 export const NATIVE_CODE_INTEL_TOOLS: readonly string[] = Object.freeze(['graph:query', 'lsp:query', 'code:pack']);
 /** Direct GitNexus MCP calls — the substitute the native plane routes through. */
@@ -402,6 +414,248 @@ export function rateNativeAdoption(
 export interface NativeAdoptionRead {
   invocations: NativeAdoptionInvocation[];
   shellCommands: NativeAdoptionShellCommand[];
+}
+
+/** P-041: evidence supplied by the ledger reader, never inferred from delivery alone. */
+export interface NativePushOutcomeRow {
+  id: string;
+  workspaceId: string;
+  leg: string;
+  pushedAt: string;
+  /** True only when the reader has observed the end of this push's turn window. */
+  windowComplete: boolean;
+  actedOn: boolean | null;
+  grepAfterPush: boolean | null;
+}
+
+export interface NativePushOutcomeStats {
+  /** Rows issued into a server hook response; client receipt is not measured. */
+  issued: number;
+  closedWindows: number;
+  actedOn: { measured: number; positive: number; rate: number | null };
+  grepAfterPush: { measured: number; positive: number; rate: number | null };
+}
+
+export interface NativePushActivity {
+  tool: string;
+  status: string | null;
+  detail: Record<string, unknown> | null;
+}
+
+/** Interpret recorded post-tool evidence only. Unsupported/truncated inputs stay unknown. */
+export function nativePushFollowThrough(input: {
+  leg: string; subject: string; citedPaths: readonly string[]; suggestedCall: string | null;
+  activities: readonly NativePushActivity[]; executedTests: readonly string[];
+}): Pick<NativePushOutcomeRow, 'actedOn' | 'grepAfterPush'> {
+  const relativePath = (value: unknown): value is string => typeof value === 'string'
+    && value.length > 0 && !value.startsWith('/') && !value.includes('\\')
+    && !value.split('/').some(part => part === '..' || part === '.' || part === '');
+  const cited = new Set(input.citedPaths.filter(relativePath));
+  let fileObserved = false;
+  let fileUnknown = false;
+  let grepObserved = false;
+  let grepUnknown = false;
+  let telemetry = false;
+  for (const activity of input.activities) {
+    if (activity.status !== 'ok') continue;
+    telemetry = true;
+    const detail = activity.detail ?? {};
+    if (FILE_FOLLOW_TOOLS.includes(activity.tool)) {
+      if (relativePath(detail.file)) fileObserved ||= cited.has(detail.file);
+      else fileUnknown = true; // No persisted snapshot root: never match an absolute suffix/basename.
+    }
+    const command = detail.command ?? detail.cmd;
+    const nativeGrep = /(?:^|_|:)Grep$/.test(activity.tool);
+    if (nativeGrep) {
+      if (typeof detail.pattern !== 'string' || detail.pattern.length >= 500) grepUnknown = true;
+      else if (detail.pattern === input.subject) grepObserved = true;
+      else if (!/^[A-Za-z_$][\w$]*$/.test(detail.pattern)) grepUnknown = true;
+    } else if (SHELL_ACTIVITY_TOOLS.includes(activity.tool) || activity.tool === 'exec_command') {
+      if (typeof command !== 'string' || command.length >= 500) { grepUnknown = true; continue; }
+      for (const segment of command.split(/\n|;|&&|\|\||\|/).map(part => part.trim())) {
+        if (!SEARCH_COMMAND.test(segment)) continue;
+        // Deliberately narrow: a quoted path or an option argument must never masquerade
+        // as the search pattern. D-011's broader lookup classifier remains unchanged.
+        const literal = /^(?:rg|grep|git\s+grep)\s+(?:-[nrwHF]+\s+)*(?:--\s+)?(?:'([A-Za-z_$][\w$]*)'|"([A-Za-z_$][\w$]*)"|([A-Za-z_$][\w$]*))(?:\s+[\w./*-]+)*\s*$/.exec(segment);
+        if (!literal) grepUnknown = true;
+        else if ((literal[1] ?? literal[2] ?? literal[3]) === input.subject) grepObserved = true;
+      }
+    }
+  }
+  let suggested: string[] = [];
+  if (input.suggestedCall?.startsWith('testing:run ')) {
+    try {
+      const args = JSON.parse(input.suggestedCall.slice('testing:run '.length));
+      if (Array.isArray(args.files)) suggested = args.files.filter(relativePath);
+    } catch { /* Unsupported suggestions are not execution evidence. */ }
+  }
+  const testObserved = suggested.some(file => input.executedTests.includes(file));
+  return {
+    actedOn: fileObserved || testObserved ? true
+      : telemetry && cited.size > 0 && !fileUnknown && !input.suggestedCall ? false : null,
+    grepAfterPush: input.leg !== 'grep' || !telemetry || !/^[A-Za-z_$][\w$]*$/.test(input.subject) ? null
+      : grepObserved ? true : grepUnknown ? null : false,
+  };
+}
+
+/**
+ * P-041 historical reader. Reuses transcript prompt timestamps and the Stop-hook journal's
+ * native final-message timestamp. The random current identity_hook_turns UUID is not history.
+ * Native file prompts use the legacy default corpus partition (as in sessions:read); the
+ * tenant-scoped journal, exact owner and native session/source kind anchor those reads.
+ * A missing/overlapping native session, intervening prompt, or earlier completion fails closed.
+ * No elapsed-time fallback, launch-time membership, or journal prose enters the measurement.
+ */
+export async function readNativePushOutcomes(window: NativeAdoptionWindow, sql: Sql = getOrgPg().sql): Promise<NativePushOutcomeRow[]> {
+  // Share the pure summary's exact scope/window validation, without touching the frozen D-011 reader.
+  summarizeNativePushOutcomes({ window, rows: [] });
+  const end = new Date(window.windowEnd).toISOString();
+  const rows = await sql<Array<{
+    id: string; workspace_id: string; leg: string; subject: string; pushed_at: string | Date;
+    cited_paths: string[]; suggested_call: string | null; window_count: number;
+    activities: NativePushActivity[]; executed_tests: string[];
+  }>>`
+    WITH pushes AS MATERIALIZED (
+      SELECT * FROM harness_shared.code_intel_pushes
+      WHERE workspace_id = ${window.workspaceId}
+        AND pushed_at >= ${window.windowStart}::timestamptz AND pushed_at < ${end}::timestamptz
+    ), candidates AS MATERIALIZED (
+      SELECT p.id, j.session_id, j.source_kind, u.ts AS started_at, j.turn_ts AS ended_at
+      FROM pushes p CROSS JOIN LATERAL (
+        SELECT DISTINCT ON (session_id, source_kind) session_id, source_kind, turn_ts
+        FROM harness_shared.session_turn_journal
+        WHERE workspace_id = p.workspace_id AND owner_id = p.owner_id
+          AND turn_ts > p.pushed_at AND turn_ts <= ${end}::timestamptz
+        ORDER BY session_id, source_kind, turn_ts
+      ) j CROSS JOIN LATERAL (
+        SELECT ts FROM harness_shared.session_turns
+        WHERE (workspace_id = p.workspace_id OR workspace_id = 'default') AND owner = p.owner_id
+          AND session_id = j.session_id AND source_kind = j.source_kind
+          AND speaker = 'user' AND ts <= p.pushed_at
+        ORDER BY ts DESC, turn_idx DESC LIMIT 1
+      ) u
+      WHERE EXISTS (
+        SELECT 1 FROM harness_shared.agent_activity before_push
+        WHERE before_push.workspace_id = p.workspace_id AND before_push.owner_id = p.owner_id
+          AND before_push.session_id = j.session_id AND before_push.kind = 'tool'
+          AND before_push.phase = 'post' AND before_push.created_at >= u.ts AND before_push.created_at <= p.pushed_at
+      ) AND NOT EXISTS (
+        SELECT 1 FROM harness_shared.session_turns n
+        WHERE (n.workspace_id = p.workspace_id OR n.workspace_id = 'default') AND n.owner = p.owner_id
+          AND n.session_id = j.session_id AND n.source_kind = j.source_kind
+          AND n.speaker = 'user' AND n.ts > p.pushed_at AND n.ts <= j.turn_ts
+      ) AND NOT EXISTS (
+        SELECT 1 FROM harness_shared.session_turn_journal prior
+        WHERE prior.workspace_id = p.workspace_id AND prior.owner_id = p.owner_id
+          AND prior.session_id = j.session_id AND prior.source_kind = j.source_kind
+          AND prior.turn_ts >= u.ts AND prior.turn_ts <= p.pushed_at
+      ) AND NOT EXISTS (
+        SELECT 1 FROM harness_shared.agent_activity other
+        WHERE other.workspace_id = p.workspace_id AND other.owner_id = p.owner_id
+          AND other.created_at >= u.ts AND other.created_at <= j.turn_ts
+          AND other.session_id IS NOT NULL AND other.session_id <> j.session_id
+      )
+    )
+    SELECT p.id::text, p.workspace_id, p.leg, p.subject, p.pushed_at, p.cited_paths, p.suggested_call,
+      (SELECT count(*)::int FROM candidates c WHERE c.id = p.id) AS window_count,
+      COALESCE((SELECT jsonb_agg(jsonb_build_object('tool', a.tool_name, 'status', a.status, 'detail', a.detail))
+        FROM candidates c JOIN harness_shared.agent_activity a
+          ON a.workspace_id = p.workspace_id AND a.owner_id = p.owner_id AND a.session_id = c.session_id
+          AND a.created_at > p.pushed_at AND a.created_at <= c.ended_at AND a.kind = 'tool' AND a.phase = 'post'
+        WHERE c.id = p.id), '[]'::jsonb) AS activities,
+      COALESCE((SELECT array_agg(DISTINCT r.file_path)
+        FROM candidates c JOIN harness_shared.tool_invocations t
+          ON t.workspace_id = p.workspace_id AND t.coord_owner_id = p.owner_id AND t.tool_name = 'testing:run'
+          AND t.status = 'ok' AND t.invoked_at > p.pushed_at AND t.invoked_at <= c.ended_at
+        JOIN harness_shared.test_runs r ON r.workspace_id = p.workspace_id
+          AND r.run_group_id = t.metadata_json->'testingRun'->>'runId'
+          AND r.started_at >= t.invoked_at AND r.finished_at <= c.ended_at
+          AND r.status IN ('pass', 'fail')
+        WHERE c.id = p.id), '{}'::text[]) AS executed_tests
+    FROM pushes p ORDER BY p.pushed_at, p.id
+  `;
+  return rows.map(row => ({
+    id: row.id, workspaceId: row.workspace_id, leg: row.leg, pushedAt: iso(row.pushed_at),
+    windowComplete: row.window_count === 1,
+    ...(row.window_count === 1 ? nativePushFollowThrough({
+      leg: row.leg, subject: row.subject, citedPaths: row.cited_paths, suggestedCall: row.suggested_call,
+      activities: row.activities, executedTests: row.executed_tests,
+    }) : { actedOn: null, grepAfterPush: null }),
+  }));
+}
+
+/** Separate from D-011's frozen adoption summary and rater. Null is never a negative. */
+export function summarizeNativePushOutcomes(input: {
+  window: NativeAdoptionWindow;
+  rows: readonly NativePushOutcomeRow[];
+}): { version: 1; window: NativeAdoptionWindow; byLeg: Record<string, NativePushOutcomeStats>;
+  cannotObserve: readonly string[] } {
+  const start = Date.parse(input.window.windowStart);
+  const end = Date.parse(input.window.windowEnd);
+  if (!input.window.workspaceId.trim() || !Number.isFinite(start) || !Number.isFinite(end) || start >= end) {
+    throw new Error('An exact workspace and a valid [windowStart, windowEnd) are required.');
+  }
+  const unique = new Map<string, NativePushOutcomeRow>();
+  for (const row of input.rows) {
+    const at = Date.parse(row.pushedAt);
+    if (row.workspaceId !== input.window.workspaceId || !Number.isFinite(at) || at < start || at >= end) continue;
+    if (!row.id.trim() || !row.leg.trim()) throw new Error('A push ledger id and leg are required.');
+    const previous = unique.get(row.id);
+    if (previous && (previous.leg !== row.leg || previous.pushedAt !== row.pushedAt
+      || previous.windowComplete !== row.windowComplete || previous.actedOn !== row.actedOn
+      || previous.grepAfterPush !== row.grepAfterPush)) throw new Error('Conflicting evidence for one push ledger id.');
+    unique.set(row.id, row);
+  }
+  const legs = new Map<string, NativePushOutcomeStats>();
+  for (const row of unique.values()) {
+    const stats = legs.get(row.leg) ?? {
+      issued: 0, closedWindows: 0,
+      actedOn: { measured: 0, positive: 0, rate: null },
+      grepAfterPush: { measured: 0, positive: 0, rate: null },
+    };
+    stats.issued += 1;
+    if (row.windowComplete) {
+      stats.closedWindows += 1;
+      for (const key of ['actedOn', 'grepAfterPush'] as const) {
+        if (typeof row[key] !== 'boolean') continue;
+        stats[key].measured += 1;
+        if (row[key]) stats[key].positive += 1;
+        stats[key].rate = rate(stats[key].positive, stats[key].measured);
+      }
+    }
+    legs.set(row.leg, stats);
+  }
+  return { version: 1, window: { ...input.window }, byLeg: Object.fromEntries(legs), cannotObserve: [
+    'Issued counts server hook-response ledger rows, not confirmed client receipt or attention.',
+    'Open turn windows and unmeasured outcomes are excluded from each rate denominator.',
+    'A read, edit or suggested-test execution is follow-through evidence, not proof of causation or usefulness.',
+    'A leg without recorded symbol identity cannot measure same-symbol grep; that outcome stays unknown.',
+    'Historical closure requires one correlated native prompt and Stop-hook completion; missing or overlapping sessions stay unknown.',
+    'Only successful recorded post-tool events are observed; missing telemetry is not evidence of inactivity.',
+    'Absolute file paths lack a persisted snapshot root and are not matched by suffix; truncated/unsupported search commands stay unknown.',
+    'Suggested tests require matching completed test-run ledger rows linked through the testing invocation run group; requesting tests alone does not count.',
+  ] };
+}
+
+export type NativePushOutcomeMetrics = ReturnType<typeof summarizeNativePushOutcomes>;
+
+export async function measureNativePushOutcomesWindow(window: NativeAdoptionWindow, sql?: Sql): Promise<NativePushOutcomeMetrics> {
+  return summarizeNativePushOutcomes({ window, rows: await readNativePushOutcomes(window, sql) });
+}
+
+/** These grade observability, not usefulness. Rates remain explicit per leg; no new success target is invented. */
+export function rateNativePushOutcomes(metrics: NativePushOutcomeMetrics, criterion: NativePushCriterion): {
+  verdict: 'pass' | 'unknown'; reason: string;
+} {
+  const legs = Object.entries(metrics.byLeg).filter(([leg]) => criterion !== 'grepAfterPush' || leg === 'grep');
+  if (!legs.length) return { verdict: 'unknown', reason: 'No applicable push ledger rows in this window.' };
+  const counts = legs.map(([leg, stats]) => ({ leg,
+    measured: criterion === 'issued' ? stats.issued : stats[criterion].measured,
+    rate: criterion === 'issued' ? null : stats[criterion].rate,
+  }));
+  const missing = counts.filter(row => row.measured === 0).map(row => row.leg);
+  return { verdict: missing.length ? 'unknown' : 'pass',
+    reason: `${criterion}: ${JSON.stringify(counts)}. ${missing.length ? `Unmeasured legs: ${missing.join(', ')}.` : 'Measurement available; this is not a usefulness or client-receipt verdict.'}` };
 }
 
 function iso(value: unknown): string {

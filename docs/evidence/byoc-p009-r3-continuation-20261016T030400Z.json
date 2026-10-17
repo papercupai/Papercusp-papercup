@@ -1,0 +1,127 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "BYOC P009 R003 controlled stall with authoritative owned checkpoint writes",
+  "framework": "node",
+  "command": [
+    "npx",
+    "tsx",
+    "scripts/bench-work-item-continuations.ts",
+    "--held=WI-10000407",
+    "--unrelated=EI-26101770764433940",
+    "--output=/tmp/byoc-p009-r3-continuation-20261016T030400Z.json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-16T03:03:17.465Z",
+  "finishedAt": "2026-10-16T03:03:22.498Z",
+  "summary": "Isolated current-source proxy and controlled relay; real append-only writes/readbacks on staging3170.",
+  "assertions": [
+    {
+      "id": "unrelated-write-within-20s",
+      "passed": true,
+      "evidence": "wallMs=679.349878; authoritative hash=4373e0010f86"
+    },
+    {
+      "id": "same-item-order",
+      "passed": true,
+      "evidence": "reached=held,unrelated,ordered,unknown; queued=2; unknown=outcome_unknown"
+    },
+    {
+      "id": "cancelled-request-not-applied",
+      "passed": true,
+      "evidence": "reached=held,unrelated,ordered,unknown; queued=2; unknown=outcome_unknown"
+    },
+    {
+      "id": "queue-rejection-not-forwarded",
+      "passed": true,
+      "evidence": "reached=held,unrelated,ordered,unknown; queued=2; unknown=outcome_unknown"
+    },
+    {
+      "id": "lost-ack-outcome-unknown-readback",
+      "passed": true,
+      "evidence": "reached=held,unrelated,ordered,unknown; queued=2; unknown=outcome_unknown"
+    },
+    {
+      "id": "source-stable",
+      "passed": true,
+      "evidence": "reached=held,unrelated,ordered,unknown; queued=2; unknown=outcome_unknown"
+    }
+  ],
+  "sourceHashes": {
+    "apps/operator/lib/mcp-proxy/proxy.ts": "2655963bd134749f698436abc7306b0948affdacaa14a79ff919860b842798b7",
+    "apps/operator/lib/mcp-proxy/budgets.mjs": "00159976718185c38d56870d3b2b2b9a8e30a221b2c345baabe8848e6e39483a",
+    "packages/operator-core/lib/agent-tools/work_items/checkpoint.ts": "e736a46cf49edbce64195e6742a212feb11231c83f5ee3f98d51f9f5379df2ea",
+    "scripts/mcp-call.mjs": "937de488ec9599b55fb87fe5baa5d4e7f1956b5aeb4ddb65a6bc4d164e1ab007",
+    "scripts/bench-work-item-continuations.ts": "9cce1a8213931ce57bba9db13fd4ffcc1739f6fc73a751144be705078385de1f"
+  },
+  "wallMs": 679.349878,
+  "items": {
+    "held": "WI-10000407",
+    "unrelated": "EI-26101770764433940"
+  },
+  "nonce": "320e5124-9de2-47d6-b99c-351857001d49",
+  "sameItemOrder": {
+    "blockedBeforeRelease": true,
+    "heldSucceeded": true,
+    "orderedVerified": true,
+    "reachedInOrder": true
+  },
+  "checkpointProofs": {
+    "held": {
+      "id": "WI-10000407",
+      "responseOk": true,
+      "itemOk": true,
+      "verified": true,
+      "errorCode": null,
+      "writeCommitted": null,
+      "contentHash": "af552f79c6fe",
+      "readBackContentHash": null
+    },
+    "ordered": {
+      "id": "WI-10000407",
+      "responseOk": true,
+      "itemOk": true,
+      "verified": true,
+      "errorCode": null,
+      "writeCommitted": null,
+      "contentHash": "bb1fee802578",
+      "readBackContentHash": "bb1fee802578"
+    },
+    "unrelated": {
+      "id": "EI-26101770764433940",
+      "responseOk": true,
+      "itemOk": true,
+      "verified": true,
+      "errorCode": null,
+      "writeCommitted": null,
+      "contentHash": "4373e0010f86",
+      "readBackContentHash": "4373e0010f86"
+    },
+    "unknown": {
+      "id": "EI-26101770764433940",
+      "responseOk": true,
+      "itemOk": true,
+      "verified": true,
+      "errorCode": null,
+      "writeCommitted": null,
+      "contentHash": "b4e23b667404",
+      "readBackContentHash": "b4e23b667404"
+    }
+  },
+  "checkpointHashes": {
+    "unrelated": "4373e0010f86",
+    "ordered": "bb1fee802578",
+    "unknown": "b4e23b667404"
+  },
+  "receipts": {
+    "overflow": "not_forwarded",
+    "unknown": "outcome_unknown"
+  },
+  "scope": "Current-source isolated proxy on real staging writes; not the deployed shared proxy or R006 shipment.",
+  "notExercised": [
+    "shared deployed proxy",
+    "unrelated claim mutation",
+    "all unavailable evidence paths",
+    "deployed R006 acceptance"
+  ]
+}

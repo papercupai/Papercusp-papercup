@@ -111,6 +111,16 @@ export function isTrackedScratchPath(path) {
     return true;
   }
 
+  // Host bundles are generated beneath the operator app. A relative outfile
+  // can accidentally duplicate that app prefix (for example
+  // `apps/operator/apps/operator/dist-host-native-fixture-*`), so match the
+  // producer root at any depth rather than only at the repository root.
+  for (let index = 0; index + 2 < parts.length; index += 1) {
+    if (parts[index] !== 'apps' || parts[index + 1] !== 'operator') continue;
+    const generatedRoot = parts[index + 2];
+    if (generatedRoot === 'dist-host' || generatedRoot.startsWith('dist-host-')) return true;
+  }
+
   for (let index = 0; index + 1 < parts.length; index += 1) {
     if (parts[index] !== '.papercusp') continue;
     const child = parts[index + 1];

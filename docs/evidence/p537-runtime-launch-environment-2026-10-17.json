@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "workItem": "WI-6554700010015799",
+  "measuredAt": "2026-10-17T03:04:57.635887+00:00",
+  "status": "launch-environment-only",
+  "source": {
+    "path": "/tmp/p537-runtime-env-census-decoded.json",
+    "sha256": "46ed575f50c27cbaf839fc063c8ba0bb73145c52ec7887cfe552b3af50c414ef",
+    "method": "Content-free code:run census of local TCP listeners on 3070, 3170 and 3271. Only presence and nonempty flags were emitted for the named environment keys; no policy or secret values were emitted. Checkout paths below are normalized to runtime roles; the original local census is bound by sha256."
+  },
+  "commonObservationForEveryListedListener": {
+    "PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT": {"present": false, "nonempty": false},
+    "PAPERCUSP_HOSTED_PUBLIC_ORIGIN": {"present": false, "nonempty": false},
+    "PAPERCUSP_HOSTED_CONTROL_PLANE_WORKSPACE_ID": {"present": false, "nonempty": false},
+    "PAPERCUSP_HOSTED_SESSION_COOKIE_SECRET_REF": {"present": false, "nonempty": false},
+    "PAPERCUSP_HOSTED_FIRST_WORKSPACE_ORGANIZATIONS": {"present": false, "nonempty": false}
+  },
+  "listeners": [
+    {"port": 3070, "pid": 1226582, "cwd": "<release-checkout>/apps/operator", "runtimeEntrypoint": ["<release-checkout>/apps/operator/dist-host/hono-host.mjs"]},
+    {"port": 3070, "pid": 1227106, "cwd": "<release-checkout>/apps/operator", "runtimeEntrypoint": ["<release-checkout>/apps/operator/dist-host/hono-host.mjs"]},
+    {"port": 3070, "pid": 1227177, "cwd": "<release-checkout>/apps/operator", "runtimeEntrypoint": ["<release-checkout>/apps/operator/dist-host/hono-host.mjs"]},
+    {"port": 3070, "pid": 1226892, "cwd": "<release-checkout>/apps/operator", "runtimeEntrypoint": ["<release-checkout>/apps/operator/dist-host/hono-host.mjs"]},
+    {"port": 3070, "pid": 1226659, "cwd": "<release-checkout>/apps/operator", "runtimeEntrypoint": ["<release-checkout>/apps/operator/dist-host/hono-host.mjs"]},
+    {"port": 3070, "pid": 1226825, "cwd": "<release-checkout>/apps/operator", "runtimeEntrypoint": ["<release-checkout>/apps/operator/dist-host/hono-host.mjs"]},
+    {"port": 3271, "pid": 1127185, "cwd": "<canonical-staging>/apps/operator", "runtimeEntrypoint": ["dist-host/hono-host.mjs"]},
+    {"port": 3170, "pid": 773309, "cwd": "<staging-generation:86bc183d2bb4>/apps/operator", "runtimeEntrypoint": ["dist-host/hono-host.mjs"]}
+  ],
+  "portsNotObserved": [],
+  "limitations": [
+    "This is a historical process-launch-environment observation, not a current serving-configuration claim.",
+    "Absent launch variables do not establish absent in-memory configuration: application code, runtime loading or another configuration source can supply values.",
+    "No entitlement activation, deployment, end-to-end hosted admission, cost or capacity acceptance is established."
+  ]
+}

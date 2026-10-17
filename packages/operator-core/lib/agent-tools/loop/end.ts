@@ -174,7 +174,7 @@ const CLAIM_HOLDER_LISTED_CAP = 10;
 
 /**
  * The P-009 claim-holder refusal. Pure. Its recovery is a bounded `events:await` keyed to the
- * blocker a held item states; when no item states one, it is the release path. It never offers
+ * independently actionable event blocker a held item states; otherwise it is the release path. It never offers
  * `acknowledgeWakeLessAutonomy` for the held state: that flag is what 100 of 140 self-stopped
  * parkers passed, and it does not override this refusal.
  */
@@ -221,7 +221,7 @@ export function buildClaimHolderRefusal(opts: {
       'acknowledgeWakeLessAutonomy does NOT override this refusal. ' +
       (template
         ? `Preferred: register the bounded events:await in recovery.steps[0] (keyed to ${template.itemId}'s stated blocker), then retry loop:end. `
-        : 'No held item states a blocker to wait on: checkpoint and release the claims (recovery.steps), then retry. ') +
+        : 'No held item states an independently actionable event blocker: checkpoint and release the claims (recovery.steps), then retry. ') +
       'Other exits: finish the work (work_items:complete), exit the autonomy mode (mode:set { enabled:false }), keep the loop armed, ' +
       'or — if the owner told this session to stop — retry with ownerStopDirectiveId: <that directive id>.' +
       (ch.untimedSources.length > 0

@@ -1,0 +1,119 @@
+{
+  "scope": "Unsubmitted/success-not-yet-confirmed completion candidates; do not infer done",
+  "entries": [
+    {
+      "id": "EI-26190762598631458",
+      "completion": {
+        "summary": "Fixed the loopback fixture transport that changed the authenticated public hostname before native agent admission.",
+        "testsRun": [
+          "Maintained hosted-auth-runtime.integration.test.ts over private PostgreSQL: v4 nine cases",
+          "Single-file scoped typecheck",
+          "Same-owned-Hono-socket fetch versus node:http hostname/bearer probe"
+        ],
+        "testResult": "9 passed, 0 failed, 0 skipped; native child and private PostgreSQL drained with exit0. Scoped compiler exit0, zero requested diagnostics.",
+        "verifiedHow": "{\"sourceEvidence\":\"docs/evidence/p537-native-idle-2026-10-17.json\",\"commit\":\"8fdb7d20436896addb05b9055e306907eaa29d7e\",\"comparison\":\"Five focused current, tested and committed SHA256 values agree.\",\"limits\":\"Focused source acceptance only. Full import-graph equivalence, product configuration activation and deployed shipment remain unverified; owned parents P537/WI-6554700010015799 and P544/WI-6554700010016277 remain open.\"}",
+        "filesChanged": [
+          "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts",
+          "docs/evidence/p537-native-idle-2026-10-17.json"
+        ],
+        "rootCauseVerification": {
+          "hypothesis": "Native fetch in Node v25.9.0 rewrites the owned loopback request Host to the socket address, so public-hostname connector authentication rejects before the ledger.",
+          "alternativeHypothesis": "Canonical trial authority or reservation-ledger policy rejects an otherwise correctly authenticated native request.",
+          "distinguishingTest": "Send the same Host and bearer to the same owned Hono socket with native fetch and node:http, observe server-side Request hostname, and observe whether the reservation callback runs.",
+          "testResult": "Fetch produced loopback hostname while retaining bearer and HTTP401 with zero reservation calls; node:http preserved app.papercusp.com and the maintained native/idle journey passed.",
+          "testProcedure": "Use the saved same-socket transport probe and v3/v4 logs in docs/evidence/p537-native-idle-2026-10-17.json. The maintained fixture now asserts incoming hostname before routing and executes the real production reservation path with an actual native Node child.",
+          "predictedObservations": {
+            "hypothesis": "Only fetch changes hostname and fails before reservation; hostname-preserving transport passes.",
+            "alternativeHypothesis": "Both transports preserve hostname or both reach reservation policy and fail there."
+          },
+          "actualObservation": "Fetch URL hostname127.0.0.1 with bearer retained; node:http URL hostnameapp.papercusp.com with bearer retained; v3 8pass1fail/401 before ledger, v4 9pass0fail.",
+          "evidenceRefs": [
+            "docs/evidence/p537-native-idle-2026-10-17.json",
+            "/tmp/p537-native-idle-v3.log",
+            "/tmp/p537-native-idle-v4.log"
+          ]
+        },
+        "addedTests": "Maintained server-side fixture hostname assertion and actual native admission/receipt/quota/idle test."
+      }
+    },
+    {
+      "id": "EI-26183307448564200",
+      "completion": {
+        "summary": "Funded GCP/AWS first-workspace specs now include the canonical initial10GiB allocation split8GiB DB/2GiB workspace required by pooled admission.",
+        "testsRun": [
+          "Stable maintained first-workspace unit46 and HTTP/PG integration7",
+          "Expanded native/paid/idle HTTP/PG integration9",
+          "Scoped three-file typecheck"
+        ],
+        "testResult": "Stable53passed0failed0skipped, subsequent expanded9passed0failed0skipped; requested-file compiler diagnostics0. Unrelated import-graph diagnostics are not claimed green.",
+        "verifiedHow": "{\"sourceEvidence\":\"docs/evidence/p537-first-workspace-allocation-2026-10-17.json\",\"currentIntegrationEvidence\":\"docs/evidence/p537-native-idle-2026-10-17.json\",\"commit\":\"8fdb7d20436896addb05b9055e306907eaa29d7e\",\"comparison\":\"Fix and provider unit-test bytes match stable capture and committed source; expanded integration supersedes its historical file hash and matches committed v4 bytes.\",\"limits\":\"Focused source acceptance only. Full import-graph equivalence, product configuration activation and deployed shipment remain unverified; owned parents P537/WI-6554700010015799 and P544/WI-6554700010016277 remain open. The10GiB split is D077's initial candidate, not a measured price or durability qualification.\"}",
+        "filesChanged": [
+          "packages/operator-core/lib/auth/hosted/first-workspace.ts",
+          "packages/operator-core/lib/auth/hosted/first-workspace.test.ts",
+          "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts",
+          "docs/evidence/p537-first-workspace-allocation-2026-10-17.json"
+        ],
+        "rootCauseVerification": {
+          "hypothesis": "The funded first-workspace spec builder omitted data.allocation required by existing pooled storage admission.",
+          "alternativeHypothesis": "HTTP authentication or provisioning enqueue failure caused first-workspace refusal even with a valid allocation.",
+          "distinguishingTest": "Hold configured auth and enqueue dependencies constant, assert both funded provider desired specs, and compare first-workspace HTTP plus independent-connection resource-admission visibility before enqueue with and without the allocation fix.",
+          "testResult": "Before: both provider allocation unit guards fail and HTTP returns workspace_admission_failed before enqueue while six auth cases pass. After:46unit+7integration pass, HTTP201 and durable receipt visible before enqueue; expanded9case journey also passes.",
+          "testProcedure": "Recorded before unit/HTTP logs and stable after logs are in docs/evidence/p537-first-workspace-allocation-2026-10-17.json. Existing first-workspace tests assert the funded allocation for GCP and AWS and preserve BYOC defaults; HTTP regression observes the committed receipt on another connection before enqueue.",
+          "predictedObservations": {
+            "hypothesis": "Adding only the canonical allocation makes provider guards pass and HTTP create succeed with committed admission before enqueue.",
+            "alternativeHypothesis": "Allocation guards may pass but HTTP still fails in auth/enqueue or receipt is absent before enqueue."
+          },
+          "actualObservation": "Two funded provider guards changed from fail to pass; HTTP changed500 to201 and separate-connection admission read succeeded before enqueue.",
+          "evidenceRefs": [
+            "docs/evidence/p537-first-workspace-allocation-2026-10-17.json",
+            "docs/evidence/p537-native-idle-2026-10-17.json",
+            "/tmp/p537-first-workspace-unit-before.log",
+            "/tmp/p537-first-workspace-before-v2.log",
+            "/tmp/p537-first-workspace-stable.log"
+          ]
+        },
+        "addedTests": "Maintained two-provider spec assertions and production HTTP first-workspace admission ordering regression."
+      }
+    },
+    {
+      "id": "EI-26181361607817938",
+      "completion": {
+        "summary": "Full hosted control-plane composition now passes the existing configured trial authority producer and established-session backfill into production auth routes.",
+        "testsRun": [
+          "Before narrow-auth versus full-control-plane HTTP/PG callback comparison",
+          "After six maintained HTTP/PG auth cases and hosted runtime/control-plane unit recovery",
+          "Expanded nine-case maintained production HTTP/PG journey",
+          "Scoped four-file typecheck"
+        ],
+        "testResult": "Before full callback1fail/3pass versus working narrow auth; after6pass0fail0skip; expanded9pass0fail0skip. Unit recovery e3852b16-8ada-4dca-ae93-10f1477bf00e terminalpass/exit0. Requested-file diagnostics0.",
+        "verifiedHow": "{\"sourceEvidence\":\"docs/evidence/p537-production-auth-2026-10-16.json\",\"currentIntegrationEvidence\":\"docs/evidence/p537-native-idle-2026-10-17.json\",\"commit\":\"8fdb7d20436896addb05b9055e306907eaa29d7e\",\"comparison\":\"Runtime, control-plane and runtime unit bytes match historical captures and committed source; expanded integration supersedes its historical file hash and matches committed v4 bytes.\",\"limits\":\"Focused source acceptance only. Full import-graph equivalence, product configuration activation and deployed shipment remain unverified; owned parents P537/WI-6554700010015799 and P544/WI-6554700010016277 remain open.\"}",
+        "filesChanged": [
+          "packages/operator-core/lib/endpoint-route/hosted-runtime.ts",
+          "packages/operator-core/lib/endpoint-route/hosted-control-plane.ts",
+          "packages/operator-core/lib/endpoint-route/hosted-runtime.test.ts",
+          "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts",
+          "docs/evidence/p537-production-auth-2026-10-16.json"
+        ],
+        "rootCauseVerification": {
+          "hypothesis": "Full runtime composition omitted the existing trial policy, canonical signup producer and session backfill dependencies.",
+          "alternativeHypothesis": "The shared canonical entitlement store or callback handler failed independently of runtime composition.",
+          "distinguishingTest": "Invoke narrow-auth and full-control-plane production callbacks with the same configured policy and private PG; compare persisted authority revisions before and after wiring the existing dependencies through the full runtime.",
+          "testResult": "Before narrow auth granted revision1 while full runtime retained revision0; after wiring the existing seam full callback granted revision1 and absent-policy, replay, revocation and old-session cases passed.",
+          "testProcedure": "The maintained hosted-auth-runtime.integration.test.ts creates both production compositions over real loopback HTTP/private PG; saved before/after logs and unit recovery identify the behavior. The latest nine-case run retains these auth guards and adds signed paid/native/idle coverage.",
+          "predictedObservations": {
+            "hypothesis": "Only full composition lacks authority before wiring; passing existing dependencies resolves it without changing entitlement-store rules.",
+            "alternativeHypothesis": "Both compositions fail or wiring dependencies leaves full composition unable to grant."
+          },
+          "actualObservation": "Narrow revision1/full revision0 before; configured full callback and backfill pass after with expiry/replay/revocation protections retained.",
+          "evidenceRefs": [
+            "docs/evidence/p537-production-auth-2026-10-16.json",
+            "docs/evidence/p537-native-idle-2026-10-17.json",
+            "/tmp/p537-production-auth-before-tests.log",
+            "/tmp/p537-production-auth-after-tests.log"
+          ]
+        },
+        "addedTests": "Maintained full-composition environment parser unit test and paired production callback HTTP/PG regressions."
+      }
+    }
+  ]
+}

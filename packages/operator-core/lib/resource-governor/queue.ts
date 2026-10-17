@@ -963,11 +963,18 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
   async release(context: AdmissionContext, actualDemand?: ResourceDemand): Promise<AdmissionRelease> {
     if (!context.leaseId) return { requestId: context.requestId, released: false };
     const leaseId = context.leaseId;
-    const stored = await this.store.find(this.namespace, context.idempotencyKey);
-    if (!stored) return { requestId: context.requestId, released: false };
-    if (context.receiptId && context.receiptId !== stored.receiptId) {
-      return { requestId: context.requestId, released: false };
-    }
+    // A claim produced by this driver already carries the opaque receipt identity.
+    // Do not perform a second pool read before the terminal transition: that raw
+    // lookup used to sit outside boundedOrgTxn and could wait through a PgBouncer
+    // connection crash, keeping a completed child on the sidecar RPC critical path
+    // until the caller timed out. Older callers without receiptId retain the
+    // idempotency-key fallback for compatibility.
+    const contextReceiptId = context.receiptId?.trim();
+    const stored = contextReceiptId
+      ? null
+      : await this.store.find(this.namespace, context.idempotencyKey);
+    if (!contextReceiptId && !stored) return { requestId: context.requestId, released: false };
+    const receiptId = contextReceiptId ?? stored!.receiptId;
     const releasedAtMs = this.now();
     // Release is a terminal admission transition, but it still takes a row lock. A transient
     // pg 55P03/57014 here used to escape the enqueue retry and make an otherwise completed test
@@ -977,7 +984,7 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
     // retry policy as admission enqueue rather than dropping the release (which would leak the
     // durable reservation).
     const released = await acquireWithContentionRetry(
-      () => this.store.releaseClaim(stored.receiptId, leaseId, actualDemand, releasedAtMs),
+      () => this.store.releaseClaim(receiptId, leaseId, actualDemand, releasedAtMs),
       {
         ...(this.admissionRetryBackoffsMs ? { backoffsMs: this.admissionRetryBackoffsMs } : {}),
         ...(this.sleep ? { sleep: this.sleep } : {}),
@@ -985,9 +992,9 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
     );
     if (released?.changed && actualDemand && this.onActualDemand) {
       await this.onActualDemand({
-        receiptId: stored.receiptId,
+        receiptId,
         context,
-        plannedDemand: stored.record.demand,
+        plannedDemand: released.record.demand,
         actualDemand,
         releasedAtMs,
       });

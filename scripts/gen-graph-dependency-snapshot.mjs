@@ -57,6 +57,8 @@ import {
   sharedSnapshotPath,
 } from "./lib/graph-dependency-suggestions.mjs";
 import { matchTsconfigPath, tsconfigPathEntriesFor } from "./lib/related-tests.mjs";
+import { buildSymbolSnapshot } from "./lib/code-intel-symbol-snapshot.mjs";
+import { describeUnscanned, listTrackedFiles } from "./lib/tracked-files.mjs";
 
 /** DIRECT-mode page: no response budget applies, ~12 pages for 59k edges (each query ~5s to open). */
 export const DIRECT_PAGE_SIZE = 5000;
@@ -298,10 +300,11 @@ export function nearestTsconfigAliases({ root, hasTsconfig, entriesFor = tsconfi
  * each one. A specifier naming a TRACKED workspace package resolves into that package (these
  * undeclared cross-workspace edges are what the snapshot exists to add); every other bare
  * specifier is out of graph by design. An unresolved specifier is COUNTED, never guessed.
- * @param {{ files: string[], readSource: (rel: string) => string | null, aliasesForImporter?: (importer: string) => Array<[string, string, boolean]>, workspacePackages?: Array<[string, string[]]>, resolvePackageDir?: (name: string, importer: string) => string | null }} o
+ * @param {{ files: string[], readSource: (rel: string) => string | null, aliasesForImporter?: (importer: string) => Array<[string, string, boolean]>, workspacePackages?: Array<[string, string[]]>, resolvePackageDir?: (name: string, importer: string) => string | null, importerFiles?: string[], knownFiles?: Set<string> }} o
  */
-export function deriveFirstPartyEdges({ files, readSource, aliasesForImporter = () => [], workspacePackages = [], resolvePackageDir = () => null }) {
-  const fileSet = new Set(files);
+export function deriveFirstPartyEdges({ files, readSource, aliasesForImporter = () => [], workspacePackages = [], resolvePackageDir = () => null,
+  importerFiles = files, knownFiles = new Set(files) }) {
+  const fileSet = knownFiles;
   const edges = [];
   const stats = {
     importers: 0,
@@ -317,7 +320,7 @@ export function deriveFirstPartyEdges({ files, readSource, aliasesForImporter = 
   // Match boundary is `name` or `name/`, so `@scope/a` never captures `@scope/a-b`; longest
   // first anyway, so the order of `workspacePackages` can never change the answer.
   const packages = [...workspacePackages].sort((x, y) => y[0].length - x[0].length);
-  for (const importer of files) {
+  for (const importer of importerFiles) {
     if (!FIRST_PARTY_SOURCE_RE.test(importer) || importer.split("/").includes("node_modules")) continue;
     const source = readSource(importer);
     if (source === null) {
@@ -451,6 +454,14 @@ export function nodeModulesPackageResolver({ root, exists = existsSync, realpath
  * @param {{ files: string[], readSource: (rel: string) => string | null, aliasesForImporter?: (importer: string) => Array<[string, string, boolean]>, resolvePackageDir?: (name: string, importer: string) => string | null, headCommit: string, now: number }} o
  */
 export function produceSnapshotFromSource({ files, readSource, aliasesForImporter, resolvePackageDir, headCommit, now }) {
+  // A single source image for the import edges and symbol evidence. Files changed
+  // during production are therefore neither mixed nor falsely stamped current.
+  const sourceCache = new Map();
+  const originalRead = readSource;
+  readSource = file => {
+    if (!sourceCache.has(file)) sourceCache.set(file, originalRead(file));
+    return sourceCache.get(file);
+  };
   const workspacePackages = workspacePackagesFrom({ files, readSource });
   const { edges, stats } = deriveFirstPartyEdges({ files, readSource, aliasesForImporter, workspacePackages, resolvePackageDir });
   const result = produceSnapshotFromEdges({
@@ -459,6 +470,18 @@ export function produceSnapshotFromSource({ files, readSource, aliasesForImporte
     readSource,
     now,
   });
+  const moduleCache = new Map();
+  const knownFiles = new Set(files);
+  result.snapshot.symbols = buildSymbolSnapshot({ files, readSource, workspacePackages, resolveModule: (importer, specifier) => {
+    const key = importer + '\0' + specifier;
+    if (!moduleCache.has(key)) {
+      const derived = deriveFirstPartyEdges({ files, importerFiles: [importer], knownFiles,
+        readSource: path => path === importer ? `import ${JSON.stringify(specifier)};` : null,
+        aliasesForImporter, workspacePackages, resolvePackageDir });
+      moduleCache.set(key, derived.edges.find(edge => edge.importer === importer)?.imported ?? null);
+    }
+    return moduleCache.get(key);
+  } });
   return { ...result, derive: stats };
 }
 
@@ -710,13 +733,16 @@ export async function main(argv = process.argv.slice(2)) {
   };
   const now = Date.now();
   let result;
+  let coverageNote = "";
   try {
     if (opts.firstParty) {
       const git = (args) => execFileSync("git", args, { cwd: sourceRoot, maxBuffer: 1 << 28 }).toString("utf8");
       let files;
       let headCommit;
       try {
-        files = git(["ls-files", "--recurse-submodules", "-z"]).split("\0").filter(Boolean);
+        const scan = listTrackedFiles(sourceRoot);
+        files = scan.files;
+        coverageNote = describeUnscanned(scan, sourceRoot);
         headCommit = git(["rev-parse", "HEAD"]).trim();
       } catch (e) {
         throw new GraphReadError("backend-unavailable", `git could not list ${sourceRoot}: ${e instanceof Error ? e.message : String(e)}`);
@@ -787,7 +813,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
   const s = result.stats;
   process.stderr.write(
-    `GRAPH_SNAPSHOT status=written edges=${s.kept} input=${s.input} uncorroborated=${s.skippedUncorroborated} missing=${s.skippedMissing} duplicates=${s.duplicates} rows=${result.rows} pages=${result.pages} bytes=${bytes} index=${result.snapshot.index.lastCommit.slice(0, 10)} out=${out}\n`,
+    `GRAPH_SNAPSHOT status=written edges=${s.kept} input=${s.input} uncorroborated=${s.skippedUncorroborated} missing=${s.skippedMissing} duplicates=${s.duplicates} rows=${result.rows} pages=${result.pages} bytes=${bytes} index=${result.snapshot.index.lastCommit.slice(0, 10)} out=${out}${coverageNote}\n`,
   );
   return 0;
 }

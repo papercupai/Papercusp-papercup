@@ -29,6 +29,7 @@
 
 /** D-001 invariant 5 — CLAMP BEFORE SENDING. These bound the SERVER's query
  *  construction, so they are contract, not tuning. Do not "optimize" them. */
+import { editedPathsFor, incidentResultFor } from '../core.mjs';
 const TURN_START_PROMPT_CLAMP = 4000;
 const MID_TURN_MAX_CALLS = 12;
 const MID_TURN_FIELD_CLAMP = 400;
@@ -116,6 +117,10 @@ function buildToolCallDigest(event) {
       tool: typeof result.toolName === 'string' ? result.toolName : '',
       toolInput: clamp(inputsById.get(result.toolCallId), MID_TURN_FIELD_CLAMP),
       toolResponse: clamp(contentToText(result.content), MID_TURN_FIELD_CLAMP),
+      ...(incidentResultFor(result.toolName, { content: result.content })
+        ? { incidentResult: incidentResultFor(result.toolName, { content: result.content }) } : {}),
+      ...(editedPathsFor(result.toolName, inputsById.get(result.toolCallId)).length
+        ? { editedPaths: editedPathsFor(result.toolName, inputsById.get(result.toolCallId)) } : {}),
     });
   }
   return digest;

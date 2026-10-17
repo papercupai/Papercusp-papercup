@@ -12,7 +12,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const ensureBootstrap = vi.fn(async () => {});
 const getTxPool = vi.fn(() => ({}) as never);
-const readQueue = vi.fn(async (_sql: unknown, _params: unknown) => ({
+type PhaseEvent = { phase: string; state: 'start' | 'end'; durationMs?: number };
+type ReadQueueOptions = { onPhase?: (event: PhaseEvent) => void };
+const readQueue = vi.fn(async (_sql: unknown, _params: unknown, _options?: ReadQueueOptions) => ({
   active_locks: [] as Array<{ path: string; owner: string; intent: string; goal_ref?: string | null }>,
   waiting: [] as Array<{ path: string; owner: string }>,
 }));
@@ -20,7 +22,7 @@ const readQueue = vi.fn(async (_sql: unknown, _params: unknown) => ({
 vi.mock('./su-lock-store', () => ({
   ensureBootstrap: (...a: unknown[]) => ensureBootstrap(...(a as [])),
   getTxPool: (...a: unknown[]) => getTxPool(...(a as [])),
-  readQueue: (...a: unknown[]) => readQueue(...(a as [never, never])),
+  readQueue: (...a: unknown[]) => readQueue(...(a as [never, never, ReadQueueOptions?])),
 }));
 
 import { liveLockHoldings, liveLockHoldingsStrict, liveLockedPaths } from './live-lock-paths';
@@ -104,6 +106,33 @@ describe('liveLockHoldings', () => {
 });
 
 describe('liveLockedPaths', () => {
+  it('reports bootstrap, pool lookup, pool acquisition, and queue-read phases', async () => {
+    const phases: PhaseEvent[] = [];
+    readQueue.mockImplementation(async (_sql, _params, options) => {
+      options?.onPhase?.({ phase: 'pool-acquire-and-begin', state: 'start' });
+      options?.onPhase?.({ phase: 'pool-acquire-and-begin', state: 'end', durationMs: 2 });
+      options?.onPhase?.({ phase: 'readQueue', state: 'start' });
+      options?.onPhase?.({ phase: 'readQueue', state: 'end', durationMs: 3 });
+      options?.onPhase?.({ phase: 'transaction-settlement', state: 'start' });
+      options?.onPhase?.({ phase: 'transaction-settlement', state: 'end', durationMs: 1 });
+      return { active_locks: [holding('held.ts', 'su-1')], waiting: [] };
+    });
+
+    expect(await liveLockedPaths({ onPhase: (phase) => phases.push(phase) })).toEqual(['held.ts']);
+    expect(phases.map(({ phase, state }) => `${phase}:${state}`)).toEqual([
+      'ensureBootstrap:start',
+      'ensureBootstrap:end',
+      'pool-lookup:start',
+      'pool-lookup:end',
+      'pool-acquire-and-begin:start',
+      'pool-acquire-and-begin:end',
+      'readQueue:start',
+      'readQueue:end',
+      'transaction-settlement:start',
+      'transaction-settlement:end',
+    ]);
+  });
+
   it('de-duplicates a path held under several rows and trims blanks', async () => {
     readQueue.mockResolvedValue({
       active_locks: [holding('a.ts', 'su-1'), holding('  a.ts  ', 'su-2'), holding('   ', 'su-3')],

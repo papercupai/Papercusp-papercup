@@ -333,6 +333,51 @@ describe('restart-safe release receipt journal (BYOC P-005)', () => {
     ]);
   });
 
+  it('persists interruption and verified resume receipts across every desktop release phase', async () => {
+    const taskId = 'releasetask-phase-boundaries';
+    await releaseTask(taskId);
+    const phases = [
+      'release.build.linux',
+      'release.build.windows',
+      'release.build.mac',
+      'release.manifest',
+    ] as const;
+
+    for (const [index, stage] of phases.entries()) {
+      const requestIdentity = `phase-request-${index}`;
+      const cursor = index * 3;
+      await expect(store.appendTaskReleaseReceipt(taskId, cursor, receipt('intent', {
+        requestIdentity,
+        stage,
+        evidenceRefs: [`stage-input:${stage}`],
+      }))).resolves.toMatchObject({ ok: true });
+      await expect(store.appendTaskReleaseReceipt(taskId, cursor + 1, receipt('unknown', {
+        requestIdentity,
+        stage,
+        evidenceRefs: [`fault:interrupted-after:${stage}`],
+      }))).resolves.toMatchObject({ ok: true });
+      await expect(store.appendTaskReleaseReceipt(taskId, cursor + 2, receipt('committed', {
+        requestIdentity,
+        stage,
+        evidenceRefs: [`artifact-set:verified:${stage}`],
+      }))).resolves.toMatchObject({ ok: true });
+    }
+
+    const journal = store.taskReleaseJournalFromDetail((await store.getTask(taskId))?.detail);
+    expect(journal).toMatchObject({
+      cursor: phases.length * 3,
+      currentStage: 'release.manifest',
+      currentState: 'committed',
+    });
+    expect(journal?.receipts.map(({ stage, state }) => ({ stage, state }))).toEqual(
+      phases.flatMap((stage) => [
+        { stage, state: 'intent' },
+        { stage, state: 'unknown' },
+        { stage, state: 'committed' },
+      ]),
+    );
+  });
+
   it('fails closed on cursor races, operation reuse, and advance-without-intent', async () => {
     await releaseTask();
     expect((await store.appendTaskReleaseReceipt('releasetask01', 0, receipt('intent'))).ok).toBe(true);
@@ -500,6 +545,16 @@ describe('restart-safe release receipt journal (BYOC P-005)', () => {
     await db.sql`UPDATE harness_shared.task_ledger SET class = 'deploy' WHERE task_id = 'current-release'`;
 
     await db.sql`UPDATE harness_shared.task_ledger SET workspace_id = 'other-workspace' WHERE task_id = 'prior-release'`;
+    await expect(store.findPriorCommittedTaskReleaseReceipt(lookup)).resolves.toBeNull();
+
+    // A committed row without the artifact proof required by the manifest consumer
+    // is never a publishable cache hit, even when every identity field still matches.
+    await db.sql`UPDATE harness_shared.task_ledger SET workspace_id = ${WS} WHERE task_id = 'prior-release'`;
+    await db.sql`
+      UPDATE harness_shared.task_ledger
+         SET detail = jsonb_set(detail, '{release,receipts,1,evidenceRefs}', '[]'::jsonb)
+       WHERE task_id = 'prior-release'
+    `;
     await expect(store.findPriorCommittedTaskReleaseReceipt(lookup)).resolves.toBeNull();
   });
 });

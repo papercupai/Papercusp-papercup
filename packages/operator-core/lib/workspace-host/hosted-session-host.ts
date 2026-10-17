@@ -171,6 +171,7 @@ export interface HostedHostRelayClose {
 export type HostedHostRelayEnvelope = HostedHostRelayOpen | HostedHostRelayMessage | HostedHostRelayClose;
 
 export type HostedHostOutboundEnvelope =
+  | { type: 'activity.report'; activity: import('./hosted-relay-confidentiality-registry').HostedWorkspaceWorkload }
   | { type: 'session.authorize'; channelId: string; requestId: string; diagnostics?: true }
   | { type: 'relay'; channelId: string; payload: unknown }
   | { type: 'relay.close'; channelId: string; reason: string };
@@ -902,6 +903,17 @@ export class HostedWorkspaceHostSessionAdapter {
     this.warn = options.onWarning ?? ((message: string) => console.warn(`[hosted-session-host] ${message}`));
   }
 
+  /** Conservative live work signals. HTTP uploads/streams and detached PTYs
+   * remain work; a browser disconnect is not a process-exit witness.
+   */
+  workloadActivity(): import('./hosted-relay-confidentiality-registry').HostedWorkspaceWorkload {
+    let activeCommands = this.sessions.size;
+    for (const channel of this.channels.values()) {
+      if (channel.kind === 'operator-http') activeCommands += channel.http.inflightCount;
+    }
+    return { activeCommands, attachedViewers: this.desktopChannels.size };
+  }
+
   /** Private invocation lifetime, never a header or serialized credential.
    * A later channel reusing the id cannot revive an earlier invocation. */
   customerInvocationSignal(channelId: string, signal?: AbortSignal): AbortSignal {
@@ -1210,7 +1222,7 @@ export class HostedWorkspaceHostSessionAdapter {
       const principal = { userId, hostedSessionId };
       const lifetime = new AbortController();
       const handleRequest = this.options.operatorHttp?.handleRequest;
-      const http = new OperatorHttpChannel({
+      const http: OperatorHttpChannel = new OperatorHttpChannel({
         principal,
         send: (payload) => this.send(channelId, payload),
         audit: (action, detail) => this.audit(action, principal, channelId, detail),

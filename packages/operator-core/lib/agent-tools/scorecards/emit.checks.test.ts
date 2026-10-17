@@ -21,7 +21,7 @@ const listScorecards = vi.fn();
 const captureImprovement = vi.fn();
 const resolveHarnessPaths = vi.fn();
 const resolvePlanHarness = vi.fn();
-const dispatchPendingGradingAudits = vi.hoisted(() => vi.fn(async () => ({})));
+const dispatchPendingGradingAudits = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => ({})));
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../rubrics')>();
@@ -166,6 +166,32 @@ describe('scorecards:emit interrupted check-run recovery (EI-24189399333592974)'
   }));
 
   beforeEach(() => runFiles.mockClear());
+
+  it('keeps the event loop responsive while asynchronously resolving the source SHA', async () => {
+    let sourceShaFinished = false;
+    let timerRan = false;
+    const pending = runRecoverableScorecardChecks(opts, binding, {
+      sourceSha: async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+        sourceShaFinished = true;
+        return sha;
+      },
+      readRows: async () => [],
+      listTaskRows: async () => [],
+      runFiles,
+    });
+
+    await new Promise<void>((resolve) => setTimeout(() => {
+      timerRan = true;
+      resolve();
+    }, 0));
+
+    expect(timerRan).toBe(true);
+    expect(sourceShaFinished).toBe(false);
+    await pending;
+    expect(sourceShaFinished).toBe(true);
+    expect(runFiles).toHaveBeenCalledOnce();
+  });
 
   it('starts one request-bound group, then reuses all five durable rows after the API host dies', async () => {
     const first = await runRecoverableScorecardChecks(opts, binding, {

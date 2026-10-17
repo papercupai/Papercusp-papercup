@@ -68,9 +68,7 @@ import { getAcceptanceRubricsForPlan, getRetiredAcceptanceRubricsForPlan } from 
 
 const listClauses = vi.mocked(listSpecClauses);
 const listEvidence = vi.mocked(listSpecEvidence);
-/** One `listSpecEvidence` row. The selection-cohort tests build PARTIAL rows (only the
- *  fields the handler filters on) and assert the mock's result to the real row type —
- *  a checked assertion, never an `as never` escape. */
+/** One fully typed `listSpecEvidence` row shared by the selection-cohort tests. */
 type EvidenceRow = Awaited<ReturnType<typeof listSpecEvidence>>[number];
 const listAcceptanceRubrics = vi.mocked(getAcceptanceRubricsForPlan);
 const listRetiredAcceptanceRubrics = vi.mocked(getRetiredAcceptanceRubricsForPlan);
@@ -139,6 +137,10 @@ beforeEach(() => {
 });
 
 describe('plans:evaluate-spec-test-adequacy handler', () => {
+  it('declares a nested replay budget above the flat MCP transport deadline', () => {
+    expect((tool as { timeoutSec?: number }).timeoutSec).toBeGreaterThan(55);
+  });
+
   it('records timings for class, evidence, clause, disclosure, and evaluation stages', async () => {
     listClauses.mockResolvedValue([clause('active')]);
     const metadata = vi.fn();
@@ -169,6 +171,47 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
         }),
       }),
     }));
+  });
+
+  it('keeps selected and disclosed evidence diagnostics attributed to their own reads', async () => {
+    const metadata = vi.fn();
+    listClauses.mockResolvedValue([clause('active')]);
+    listEvidence.mockImplementation(async (options) => {
+      const diagnostics = options.diagnostics;
+      if (!diagnostics) throw new Error('evidence diagnostics should be wired');
+      const selected = options.bindingIds !== undefined;
+      diagnostics.phaseMs.query = selected ? 11 : 22;
+      diagnostics.bindings.selectedRows = selected ? 1 : 2;
+      diagnostics.bindings.rowsWithRecipe = selected ? 1 : 2;
+      return [{ id: 1, specId: 'SPEC-001' } as never];
+    });
+
+    const result = await call(
+      tool.args.parse({
+        harness: 'papercusp',
+        slug: 'plan-a',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-001'],
+        bindingIds: [1],
+      }),
+      { metadata },
+    );
+
+    expect(result.ok).toBe(true);
+    const timings = metadata.mock.calls.at(-1)?.[0]?.plansEvaluateSpecTestAdequacyStageTimings;
+    expect(timings).toMatchObject({
+      listSpecEvidenceDiagnostics: {
+        schemaVersion: 'list-spec-evidence-diagnostics-v1',
+        selectedEvidenceRead: {
+          phaseMs: { query: 11 },
+          bindings: { selectedRows: 1, rowsWithRecipe: 1 },
+        },
+        disclosedGapEvidenceRead: {
+          phaseMs: { query: 22 },
+          bindings: { selectedRows: 2, rowsWithRecipe: 2 },
+        },
+      },
+    });
   });
 
   it.each([[true, 'full'], [false, 'summary']] as const)('detail %s and %s preserve the exact clause verdict and tier', async (booleanDetail, stringDetail) => {
@@ -788,7 +831,6 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       testRunId: 20455199 + index,
       observedAt: '2026-10-01T23:00:00.000Z',
       createdAt: '2026-10-01T23:00:00.000Z',
-      withdrawal: null,
       currentness: {
         overall: 'current',
         provenance: 'server-measured',
@@ -1462,6 +1504,33 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(listEvidence).toHaveBeenCalledWith(expect.objectContaining({ specIds: [selected.specId], ...selector }));
   });
 
+  it('fails closed when requested bindingIds resolve to only a current subset', async () => {
+    // A retracted or superseded row is filtered from the current evidence read. The
+    // surviving row must not be mistaken for the complete pinned cohort.
+    listEvidence.mockResolvedValue([{ id: 38382, specId: 'SPEC-001' } as never]);
+
+    const result = await call({
+      harness: 'papercusp',
+      slug: 'plan-a',
+      classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-001'],
+      bindingIds: [38382, 38344],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'binding_selection_incomplete',
+      count: 1,
+      selectedEvidenceCount: 1,
+      requestedBindingIds: [38344, 38382],
+      matchedBindingIds: [38382],
+      missingBindingIds: [38344],
+      selection: { bindingIds: [38382, 38344] },
+    });
+    expect(result.rows).toBeUndefined();
+    expect(listClauses).not.toHaveBeenCalled();
+  });
+
   it.each([1, 29])('replays a %s-binding diagnostic cohort with a larger clause-wide disclosure population', async (selectedCount) => {
     const pool = Array.from({ length: 31 }, (_, index): EvidenceRow => ({
       id: 39000 + index,
@@ -1522,12 +1591,14 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
   });
 
   it('checks every active clause binding for disclosed gaps during a pinned diagnostic read', async () => {
-    const binding = (id: number, disclosedGap?: string) => ({
+    const binding = (id: number, disclosedGap?: string): EvidenceRow => ({
       id,
       workItemId: `WI-${id}`,
       planSlug: 'plan-a',
       specId: 'SPEC-001',
+      sourceValId: null,
       specRevision: 1,
+      currentRevision: 1,
       specFingerprint: 'sha256:spec-001',
       evidenceKind: 'test',
       evidenceRef: `test-run:${id}`,
@@ -1540,8 +1611,15 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       },
       coverageEvidenceRef: null,
       testRunId: id,
+      testRunProvenance: null,
+      fixtureAbsenceVerification: undefined,
+      observedAt: '2026-09-07T00:00:00.000Z',
+      bindingFingerprint: `sha256:binding-${id}`,
+      createdBy: 'su-test',
+      createdAt: '2026-09-07T00:00:00.000Z',
       testRunExecution: {
         status: 'pass', passed: 1, failed: 0, skipped: 0, collectionFailed: false,
+        filePath: 'packages/operator-core/lib/reconnect.test.ts',
         testLayer: 'integration', passedCaseTitles: ['SPEC-001 selected test'],
       },
       details: {
@@ -1553,14 +1631,20 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       },
       currentness: {
         overall: 'current', provenance: 'server-measured', comparisonSupplied: true,
-        dimensions: { spec: 'current', source: 'current', test: 'current' }, staleReasons: [], unknownReasons: [],
+        dimensions: {
+          spec: 'current', source: 'current', test: 'current', fixture: 'current',
+          rubric: 'current', environment: 'current', coverageEvidence: 'current', testRun: 'current',
+        },
+        staleReasons: [], unknownReasons: [],
       },
-    }) as never;
+    });
     const selected = binding(38382);
     const excluded = binding(38344, 'The unit-only row leaves cancellation coverage unproven.');
+    const otherActive = binding(38345);
+    const active = [selected, excluded, otherActive];
     listClauses.mockResolvedValue([clause('active')]);
     listEvidence.mockImplementation(async (options) =>
-      options.bindingIds ? [selected] as never : [selected, excluded] as never,
+      (options.bindingIds ? [selected] : active).slice(0, options.limit),
     );
 
     const result = await call({
@@ -1569,6 +1653,9 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
       classRef: 'plan-class-feature-ship',
       specIds: ['SPEC-001'],
       bindingIds: [38382],
+      // Exercise an older persisted replay whose limit equals its selected cohort;
+      // the universal disclosure read must still see the whole active population.
+      limit: 2,
       detail: 'full',
     });
 
@@ -1576,6 +1663,7 @@ describe('plans:evaluate-spec-test-adequacy handler', () => {
     expect(listEvidence).toHaveBeenCalledTimes(2);
     expect(listEvidence.mock.calls[1]?.[0]).toMatchObject({ specIds: ['SPEC-001'] });
     expect(listEvidence.mock.calls[1]?.[0]).not.toHaveProperty('bindingIds');
+    expect(listEvidence.mock.calls[1]?.[0].limit).toBeGreaterThan(2);
     expect(result.rows[0].ratings['disclosed-gap']).toMatchObject({ rating: 'fail' });
     expect(result.rows[0].ratings['disclosed-gap'].evidence).toContain('id=38344');
     expect(result.rows[0].ratings['disclosed-gap'].evidence).toContain(

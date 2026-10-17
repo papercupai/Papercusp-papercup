@@ -13,9 +13,11 @@
  */
 
 import { createHash } from 'node:crypto';
+import { nativeTranscriptProofFromLaunchReceipt, type NativeTranscriptLaunchReceipt } from './native-session-handles';
 import { getOrgPg } from '@papercusp/db-org';
+import { DEFAULT_SCRIPT_TIMEOUT_MS } from '@papercusp/tooldef';
 import { observeFallback } from './degradation/fallback-observations';
-import launchAgentTool from './agent-tools/capability/launch-agent';
+import launchAgentTool, { INTERNAL_GRADING_AUDIT_TASK_DETAIL } from './agent-tools/capability/launch-agent';
 import { advSessionsByTranscriptHandles, type AdvSessionRow } from './adv-sessions';
 import { getBuildInfo, type BuildInfo } from './build-info';
 import { findSessionTranscript } from './claude-sessions';
@@ -46,13 +48,17 @@ import {
   type ScorecardGradingAuditCurrentness,
   type ScorecardRow,
 } from './scorecards';
+import {
+  parseGradingAuditReservationSnapshot,
+  type ScorecardGradingAuditReservationSnapshot,
+} from './harness/improvements/observation-types';
 import { killTask } from './task-manager/control';
 import { resolveIssueWorkspace } from './issues-engineer';
 import { boundedOrgTxn } from './pg-bounded-txn';
 import type { OrgSql } from './work-items';
 import { listLoopStanddownOwners } from './harness/routines/release-pause-ttl';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
-import { realGitProbe } from './release/judged-sha-containment';
+import { isAncestorAsync } from './release/judged-sha-containment';
 import { readRunningGeneration } from './scout/generation-watermark';
 import {
   describeGradingAuditDispatchSuppression,
@@ -62,6 +68,8 @@ import { routeSourceGradingAudit } from './grading-audit-routing';
 import { bindAgentSessionTaskToLatestNativeSession, getTask, listTasks } from './task-manager/store';
 import { isTerminalState } from './task-manager/types';
 import type { TaskRow } from './task-manager/types';
+import { runWithWorkspaceIfConcrete } from './workspace-als';
+import { FOREGROUND_TIMEOUT_CEILING_MS } from './agent-tools/capability/foreground-transport-cap';
 import type { PgCoordLog } from '@papercusp/coordination/event-log';
 import type { sendMessage } from './agent-tools/coordination/messages';
 import type { wakeRecipients } from './agent-tools/coordination/inbox-wake';
@@ -107,6 +115,22 @@ export function assessGenerationAncestry(
     ok: false,
     reason: isAncestor === false ? 'auditor-build-older-than-graded-build' : 'generation-ancestry-unknown',
   };
+}
+
+/** Async operator-handler variant; avoids the synchronous Git probe on the host event loop. */
+export async function assessGenerationAncestryAsync(
+  gradedSha: unknown,
+  auditorSha: unknown,
+  root: string,
+  probe?: GenerationAncestryProbe,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const preliminary = assessGenerationAncestry(gradedSha, auditorSha, root, () => null);
+  if (preliminary.ok || preliminary.reason !== 'generation-ancestry-unknown') return preliminary;
+  if (typeof gradedSha !== 'string' || typeof auditorSha !== 'string') return preliminary;
+  const ancestry = probe
+    ? probe(root, gradedSha.trim(), auditorSha.trim())
+    : await isAncestorAsync(root, gradedSha.trim(), auditorSha.trim());
+  return assessGenerationAncestry(gradedSha, auditorSha, root, () => ancestry);
 }
 
 /**
@@ -168,6 +192,29 @@ export interface EvaluatorBuildStrandingCard {
   };
   supersededBy?: unknown;
   retracted?: unknown;
+}
+
+type RecordedEvaluatorBuild = { sha: string | null; version: string };
+
+/**
+ * Historical spec-test-adequacy recipes may carry their evaluator pin only in
+ * the executable args object. Emit accepts both layouts; dispatch and
+ * stranding must apply the same identity fence or an old card can lease a
+ * judge and fail only after its full replay (EI-26082605254422690).
+ */
+function recordedEvaluatorBuildForRecipe(
+  recipe: { evaluatorBuild?: unknown; args?: unknown } | undefined,
+): RecordedEvaluatorBuild | undefined {
+  if (!recipe) return undefined;
+  const candidate = recipe.evaluatorBuild ??
+    (recipe.args && typeof recipe.args === 'object' && !Array.isArray(recipe.args)
+      ? (recipe.args as { evaluatorBuild?: unknown }).evaluatorBuild
+      : undefined);
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return undefined;
+  const sha = (candidate as { sha?: unknown }).sha;
+  const version = (candidate as { version?: unknown }).version;
+  if ((sha !== null && typeof sha !== 'string') || typeof version !== 'string' || !version.trim()) return undefined;
+  return { sha: typeof sha === 'string' ? sha : null, version };
 }
 
 export type EvaluatorBuildStranding =
@@ -307,7 +354,7 @@ export function assessEvaluatorBuildStranding(
   if (audit?.state !== 'pending' || card.supersededBy || card.retracted) {
     return { stranded: false, reason: 'not-a-current-pending-card' };
   }
-  const recorded = card.rerunRecipe?.evaluatorBuild;
+  const recorded = recordedEvaluatorBuildForRecipe(card.rerunRecipe);
   if (!recorded) return { stranded: false, reason: 'no-recorded-evaluator-build' };
   if (recorded.sha === liveBuild.sha && recorded.version === liveBuild.version) {
     return { stranded: false, reason: 'exact-build-dispatcher' };
@@ -356,6 +403,43 @@ export function assessEvaluatorBuildStranding(
             'the new card supersedes this one and is audited on this build.'
           : 'Re-grade it on the current build; the new card supersedes this one and is audited on this build.'),
   };
+}
+
+/** Async operator-handler variant; only reaches Git after all pure stranding guards pass. */
+export async function assessEvaluatorBuildStrandingAsync(
+  card: EvaluatorBuildStrandingCard,
+  liveBuild: { sha: string | null; version: string },
+  opts: Omit<Parameters<typeof assessEvaluatorBuildStranding>[2], 'probe'> & {
+    probe?: GenerationAncestryProbe;
+  },
+): Promise<EvaluatorBuildStranding> {
+  const preliminary = assessEvaluatorBuildStranding(card, liveBuild, {
+    ...opts,
+    probe: () => null,
+  });
+  if (
+    preliminary.stranded ||
+    preliminary.reason !== 'live-build-not-proven-descendant:generation-ancestry-unknown'
+  ) {
+    return preliminary;
+  }
+  const recorded = recordedEvaluatorBuildForRecipe(card.rerunRecipe);
+  if (typeof recorded?.sha !== 'string' || typeof liveBuild.sha !== 'string') return preliminary;
+  const ancestry = await assessGenerationAncestryAsync(
+    recorded.sha,
+    liveBuild.sha,
+    opts.root,
+    opts.probe,
+  );
+  const probeResult = ancestry.ok
+    ? true
+    : ancestry.reason === 'auditor-build-older-than-graded-build'
+      ? false
+      : null;
+  return assessEvaluatorBuildStranding(card, liveBuild, {
+    ...opts,
+    probe: () => probeResult,
+  });
 }
 /**
  * EI-22978598482930667 — reset-aware re-dispatch suppression.
@@ -465,6 +549,31 @@ export function gradingAuditorLaunchCtx(ctx: GradingAuditLaunchContext): Grading
 
 export type PendingGradingAuditDispatchState = 'routed' | 'launched' | 'deduped' | 'skipped' | 'failed';
 
+/**
+ * The dispatcher performs several independent DB-backed and process-backed phases for one
+ * target. Keep the phase on a failed receipt so a transient error such as CONNECT_TIMEOUT is
+ * actionable instead of collapsing reserve, task inspection, and launch failures into one
+ * indistinguishable message (EI-26081368846958374).
+ */
+export type GradingAuditDispatchPhase =
+  | 'dispatch'
+  | 'rubric-read'
+  | 'generation-read'
+  | 'reservation'
+  | 'reservation-confirm'
+  | 'live-task-read'
+  | 'task-session-bind'
+  | 'native-session-read'
+  | 'task-terminal-detection'
+  | 'task-log-read'
+  | 'source-audit-responder-check'
+  | 'task-termination'
+  | 'retained-auditor-notification'
+  | 'source-audit-route'
+  | 'auditor-launch'
+  | 'auditor-task-read'
+  | 'auditor-terminal-detection';
+
 export interface PendingGradingAuditDispatchReceipt {
   issueId: string;
   rubricRef?: string;
@@ -472,12 +581,14 @@ export interface PendingGradingAuditDispatchReceipt {
   idempotencyKey?: string;
   /** Exact retained lease for the existing independent auditor; re-read the
    * target before handing a renewed lease to that same live session. */
-  dispatchReservation?: { key: string; reservedAt: string };
+  dispatchReservation?: GradingAuditReservationLease;
   renewalNotification?: GradingAuditRenewalNotification;
   launch?: unknown;
   conversationId?: string;
   routingFallback?: string;
   reason?: string;
+  /** The first dispatcher phase that failed; present on failed receipts. */
+  phase?: GradingAuditDispatchPhase;
   /** EI-25965998744903219: set on a drift skip once no exact-build host can still serve the card. */
   stranded?: Extract<EvaluatorBuildStranding, { stranded: true }>;
   terminalRecovery?: {
@@ -609,6 +720,13 @@ export type GradingAuditReservationStatus =
   | 'quota-backoff'
   | 'dispatch-backoff';
 
+/** The immutable lease identity carried from reservation through dispatch. */
+export interface GradingAuditReservationLease {
+  key: string;
+  reservedAt: string;
+  snapshot?: ScorecardGradingAuditReservationSnapshot;
+}
+
 /**
  * Why a card must not be re-dispatched yet, recorded on the card itself so the
  * suppression survives the dispatcher process that learned it.
@@ -630,10 +748,7 @@ export interface GradingAuditDispatchBackoff {
 
 export interface GradingAuditReservationResult {
   status: GradingAuditReservationStatus;
-  reservation?: {
-    key: string;
-    reservedAt: string;
-  };
+  reservation?: GradingAuditReservationLease;
   /** Present on a live quota or general dispatch backoff that refused the claim. */
   backoff?: GradingAuditDispatchBackoff;
   /**
@@ -642,17 +757,15 @@ export interface GradingAuditReservationResult {
    * still holding that lease must hand it back with `releasePendingGradingAudit({ restore })`;
    * otherwise the new epoch invalidates the auditor's brief before a renewal notice can arrive.
    */
-  prior?: {
-    key: string;
-    reservedAt: string;
-  };
+  prior?: GradingAuditReservationLease;
 }
 
 function parsePriorGradingAuditReservation(value: unknown): GradingAuditReservationResult['prior'] {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const { key, reservedAt } = value as { key?: unknown; reservedAt?: unknown };
+  const { key, reservedAt, snapshot } = value as { key?: unknown; reservedAt?: unknown; snapshot?: unknown };
+  const parsedSnapshot = parseGradingAuditReservationSnapshot(snapshot);
   return typeof key === 'string' && key && typeof reservedAt === 'string' && reservedAt
-    ? { key, reservedAt }
+    ? { key, reservedAt, ...(parsedSnapshot ? { snapshot: parsedSnapshot } : {}) }
     : undefined;
 }
 
@@ -668,6 +781,7 @@ export async function confirmPendingGradingAuditReservation(
   reservationKey: string,
   options: Pick<GradingAuditReservationOptions, 'workspaceId'> & {
     reservedAt?: string;
+    snapshot?: ScorecardGradingAuditReservationSnapshot;
     /** Commit-boundary confirmation on the notification's own transaction. */
     tx?: OrgSql;
     expectedCard?: Pick<ScorecardRow, 'evidenceFingerprint' | 'createdBy' | 'rubricRef'>;
@@ -675,8 +789,7 @@ export async function confirmPendingGradingAuditReservation(
 ): Promise<boolean> {
   const workspaceId = options.workspaceId?.trim() || (await resolveIssueWorkspace(issueId));
   const reservedAt = options.reservedAt ?? null;
-  const read = async (tx: OrgSql) =>
-      tx<{ feature_id: string }[]>`
+  const read = async (tx: OrgSql) => tx<{ feature_id: string }[]>`
       SELECT scorecard.feature_id
         FROM harness_shared.work_items AS scorecard
        WHERE scorecard.workspace_id = ${workspaceId}
@@ -688,12 +801,15 @@ export async function confirmPendingGradingAuditReservation(
            ${reservedAt}::text IS NULL
            OR scorecard.payload->'observation'->'gradingAudit'->'dispatchReservation'->>'reservedAt' = ${reservedAt}
          )
+         ${options.snapshot
+           ? tx`AND scorecard.payload->'observation'->'gradingAudit'->'dispatchReservation'->'snapshot' = ${JSON.stringify(options.snapshot)}::text::jsonb`
+           : tx``}
          AND (
            ${options.expectedCard != null}::boolean = false
-           OR (
-             scorecard.payload->'observation'->>'evidenceFingerprint' = ${options.expectedCard?.evidenceFingerprint ?? null}
-             AND scorecard.payload->'_ei'->>'created_by' = ${options.expectedCard?.createdBy ?? null}
-             AND scorecard.payload->'observation'->>'rubricRef' = ${options.expectedCard?.rubricRef ?? null}
+             OR (
+             scorecard.payload->'observation'->>'evidenceFingerprint' IS NOT DISTINCT FROM ${options.expectedCard?.evidenceFingerprint ?? null}
+             AND scorecard.payload->'_ei'->>'created_by' IS NOT DISTINCT FROM ${options.expectedCard?.createdBy ?? null}
+             AND scorecard.payload->'observation'->>'rubricRef' IS NOT DISTINCT FROM ${options.expectedCard?.rubricRef ?? null}
            )
          )
          AND scorecard.payload->'observation'->'retracted' IS NULL
@@ -728,7 +844,7 @@ export async function notifyRetainedGradingAuditor(
   input: {
     card: ScorecardRow;
     task: TaskRow;
-    reservation: { key: string; reservedAt: string };
+    reservation: GradingAuditReservationLease;
     workspaceId: string;
     harness?: string;
     /** Resume a positively parked retained task without replacing its lease. */
@@ -760,7 +876,7 @@ export async function notifyRetainedGradingAuditor(
     .digest('hex')}`;
   const body = [
     `${input.resumeParked ? 'Resume retained audit under existing lease' : 'Renewed lease'}: key '${key}', reservedAt '${reservation.reservedAt}'. Your existing independent audit task '${task.taskId}' is retained.`,
-    `Continue only for exact target '${card.issueId}' and evidence fingerprint '${card.evidenceFingerprint}'. Re-read scorecards:get and require pending state plus this exact key/reservedAt and fingerprint before auditing; otherwise stop without grading or emitting.`,
+    `Continue only for exact target '${card.issueId}' and evidence fingerprint '${card.evidenceFingerprint}'. Re-read scorecards:get and require pending state plus this exact key/reservedAt, fingerprint, and reservation snapshot ${JSON.stringify(reservation.snapshot ?? null)} before auditing; otherwise stop without grading or emitting.`,
     gradingAuditBrief(card, reservation.reservedAt),
   ].join('\n\n');
   const summary = input.resumeParked
@@ -796,13 +912,22 @@ export async function notifyRetainedGradingAuditor(
               if (!(await (deps.confirmReservation ?? confirmPendingGradingAuditReservation)(card.issueId, key, {
                 workspaceId, reservedAt: reservation.reservedAt, expectedCard: card, tx,
               }))) throw new Error('renewal target/fingerprint/lease changed before delivery');
+              const taskDetail = JSON.stringify({
+                gradingAudit: {
+                  issueId: card.issueId,
+                  evidenceFingerprint: card.evidenceFingerprint,
+                  reservation,
+                },
+              });
               const tasks = await tx<{ task_id: string }[]>`
-                SELECT task_id FROM harness_shared.task_ledger
+                UPDATE harness_shared.task_ledger
+                   SET detail = COALESCE(detail, '{}'::jsonb) || ${taskDetail}::text::jsonb,
+                       updated_at = now()
                  WHERE workspace_id = ${workspaceId} AND task_id = ${task.taskId}
                    AND class = 'agent-session' AND state IN ('pending', 'running')
                    AND detail->>'coordOwnerId' = ${ownerId} AND detail->>'label' = ${label}
                    AND (work_item_id IS NULL OR work_item_id = ${card.issueId})
-                 FOR SHARE`;
+                 RETURNING task_id`;
               if (!tasks[0]) throw new Error('retained auditor task changed or retired before delivery');
               const sources = [...new Set([card.createdBy, ...(card.vetting?.critics ?? [])]
                 .filter((id): id is string => typeof id === 'string' && Boolean(id.trim()))
@@ -837,9 +962,146 @@ export async function notifyRetainedGradingAuditor(
   }
 }
 
+export interface GradingAuditCancellationNotification {
+  issueId: string;
+  state: 'delivered' | 'skipped' | 'failed';
+  ownerId?: string;
+  taskIds?: string[];
+  msgId?: string;
+  queued?: number;
+  reason?: string;
+  /** The wake queue is not proof that the auditor picked up the notice. */
+  pickupConfirmed?: false;
+}
+
+/**
+ * Notify every exact live auditor task after its target was cancelled by a
+ * committed evidence withdrawal. The task ledger is the owner authority here:
+ * do not address the card author or the dispatch actor, and do not infer an
+ * owner from a stale scorecard snapshot. A stable message id makes retries a
+ * replay of the same owner/target directive.
+ */
+export async function notifyCancelledGradingAuditors(
+  input: {
+    workspaceId: string;
+    issueIds: readonly string[];
+    harness?: string | null;
+    reason?: string;
+  },
+  deps: {
+    listTasks?: typeof listTasks;
+    send?: typeof sendMessage;
+    wake?: typeof wakeRecipients;
+  } = {},
+): Promise<GradingAuditCancellationNotification[]> {
+  const workspaceId = input.workspaceId.trim();
+  const issueIds = [...new Set(input.issueIds.map((id) => id.trim()).filter(Boolean))].sort();
+  if (!workspaceId || workspaceId === '*' || issueIds.length === 0) return [];
+
+  const readTasks = deps.listTasks ?? listTasks;
+  let tasks: TaskRow[];
+  try {
+    tasks = await readTasks({
+      workspaceId,
+      states: ['pending', 'running'],
+      classes: ['agent-session'],
+      labelPrefix: GRADING_AUDIT_TASK_LABEL_PREFIX,
+      limit: 2_000,
+    });
+  } catch (error) {
+    const reason = `could not resolve live grading-audit tasks: ${error instanceof Error ? error.message : String(error)}`;
+    return issueIds.map((issueId) => ({ issueId, state: 'failed', reason }));
+  }
+
+  const taskGroups = new Map<string, Map<string, TaskRow[]>>();
+  for (const issueId of issueIds) {
+    const key = `${GRADING_AUDIT_TASK_LABEL_PREFIX}${issueId}`;
+    for (const task of tasks) {
+      const label = typeof task.detail?.label === 'string' ? task.detail.label : '';
+      const ownerId = typeof task.detail?.coordOwnerId === 'string' ? task.detail.coordOwnerId.trim() : '';
+      if (!ownerId || (label !== key && !label.startsWith(`${key}:`))) continue;
+      const byOwner = taskGroups.get(issueId) ?? new Map<string, TaskRow[]>();
+      const ownerTasks = byOwner.get(ownerId) ?? [];
+      ownerTasks.push(task);
+      byOwner.set(ownerId, ownerTasks);
+      taskGroups.set(issueId, byOwner);
+    }
+  }
+
+  const send = deps.send ?? (await import('./agent-tools/coordination/messages')).sendMessage;
+  const wake = deps.wake ?? (await import('./agent-tools/coordination/inbox-wake')).wakeRecipients;
+  const cancellationReason = input.reason?.trim() || 'the cited spec evidence was withdrawn';
+  const notifications: GradingAuditCancellationNotification[] = [];
+  for (const issueId of issueIds) {
+    const byOwner = taskGroups.get(issueId);
+    if (!byOwner) continue;
+    for (const [ownerId, ownerTasks] of [...byOwner.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      const taskIds = [...new Set(ownerTasks.map((task) => task.taskId))].sort();
+      const msgId = `grading-audit-cancelled:${createHash('sha256')
+        .update(JSON.stringify([workspaceId, issueId, ownerId]))
+        .digest('hex')}`;
+      const summary = `Cancelled grading audit for ${issueId}`;
+      const body = [
+        `The grading audit for target '${issueId}' was cancelled after the transaction committed because ${cancellationReason}.`,
+        `Your live grading-audit task${taskIds.length === 1 ? '' : 's'} '${taskIds.join("', '")}' must stop. Do not grade or emit a result for '${issueId}'; its reservation is no longer valid.`,
+      ].join('\n\n');
+      let persisted = false;
+      try {
+        await send({
+          ownerId: GRADING_AUDIT_DISPATCH_ACTOR,
+          ownerLabel: 'grading audit dispatch',
+          source: 'principal',
+          workspaceId,
+          userId: null,
+        }, {
+          to: [ownerId],
+          msgId,
+          harnessSlug: input.harness ?? undefined,
+          kind: 'message',
+          category: 'cancellation',
+          summary,
+          body,
+          extra: {
+            expects: 'action',
+            sections: [{
+              text: body,
+              forYouBecause: { relation: 'owns', ref: taskIds[0] ?? issueId },
+            }],
+          },
+        });
+        persisted = true;
+        const outcome = await wake([ownerId], {
+          workspaceId,
+          requiredWake: true,
+          source: GRADING_AUDIT_DISPATCH_ACTOR,
+          summary,
+          payload: { msg_id: msgId, issueId, taskIds },
+        });
+        notifications.push({ issueId, state: 'delivered', ownerId, taskIds, msgId,
+          queued: outcome.queued ?? outcome.woken, pickupConfirmed: false });
+      } catch (error) {
+        notifications.push({
+          issueId,
+          state: persisted ? 'delivered' : 'failed',
+          ownerId,
+          taskIds,
+          msgId,
+          ...(persisted
+            ? { reason: `notification persisted; wake request failed: ${error instanceof Error ? error.message : String(error)}` }
+            : { reason: error instanceof Error ? error.message : String(error) }),
+          ...(persisted ? { pickupConfirmed: false as const } : {}),
+        });
+      }
+    }
+  }
+  return notifications;
+}
+
 interface GradingAuditReservationOptions {
   workspaceId?: string | null;
   now?: Date;
+  /** Point-in-time evidence/evaluator identity to persist with the lease. */
+  snapshot?: ScorecardGradingAuditReservationSnapshot;
   /** Currentness from scorecards:list; stale or legacy identity-less settled cards are reopened atomically. */
   currentness?: ScorecardGradingAuditCurrentness;
   /**
@@ -1067,7 +1329,12 @@ export async function reservePendingGradingAudit(
   const now = options.now ?? new Date();
   const reservedAt = now.toISOString();
   const staleBefore = new Date(now.getTime() - GRADING_AUDIT_RESERVATION_TTL_MS).toISOString();
-  const reservation = JSON.stringify({ key: reservationKey, reservedAt });
+  const lease: GradingAuditReservationLease = {
+    key: reservationKey,
+    reservedAt,
+    ...(options.snapshot ? { snapshot: options.snapshot } : {}),
+  };
+  const reservation = JSON.stringify(lease);
   const reopenIdentity = reopenableSettledAuditIdentity(options.currentness)
     ? {
         recordedRevision: options.currentness.recordedRevision,
@@ -1083,8 +1350,8 @@ export async function reservePendingGradingAudit(
         rubricRevision: reopenIdentity.rubricRevision,
         criteriaHash: reopenIdentity.criteriaHash,
         stampedAt: now.toISOString(),
-        dispatchReservation: { key: reservationKey, reservedAt },
-        lastDispatchReservation: { key: reservationKey, reservedAt },
+        dispatchReservation: lease,
+        lastDispatchReservation: lease,
       })
     : null;
 
@@ -1204,7 +1471,7 @@ export async function reservePendingGradingAudit(
       }
       return {
         status: 'claimed' as const,
-        reservation: { key: reservationKey, reservedAt },
+        reservation: lease,
         ...(prior ? { prior } : {}),
       };
     }
@@ -1264,14 +1531,12 @@ export async function releasePendingGradingAudit(
   options: Pick<GradingAuditReservationOptions, 'workspaceId'> & {
     backoff?: GradingAuditDispatchBackoff;
     reservedAt?: string;
-    restore?: { key: string; reservedAt: string };
+    restore?: GradingAuditReservationLease;
   } = {},
 ): Promise<boolean> {
   const workspaceId = options.workspaceId?.trim() || (await resolveIssueWorkspace(issueId));
   const backoffJson = options.backoff ? JSON.stringify(options.backoff) : null;
-  const restoreJson = options.restore
-    ? JSON.stringify({ key: options.restore.key, reservedAt: options.restore.reservedAt })
-    : null;
+  const restoreJson = options.restore ? JSON.stringify(options.restore) : null;
   const reservedAt = options.reservedAt ?? null;
   const released = await withGradingAuditSubjectMutex(workspaceId, issueId, () => boundedOrgTxn(
     async (tx: OrgSql) =>
@@ -1348,6 +1613,45 @@ function currentPendingScorecard(card: ScorecardRow): boolean {
   );
 }
 
+function hasCitedSpecEvidenceBindings(card: ScorecardRow): boolean {
+  const recipe = card.rerunRecipe;
+  // Newer recipes pin immutable row ids. Legacy recipes pin the same rows by
+  // their exact args.current tuples; both need a read-time currentness check.
+  return Boolean(recipe?.selection.bindingIds?.length || recipe?.args.current?.length);
+}
+
+function gradingAuditReservationSnapshot(
+  card: ScorecardRow,
+  evidence?: ScorecardEvidenceRow,
+): ScorecardGradingAuditReservationSnapshot {
+  const bindingIds = [...(card.rerunRecipe?.selection.bindingIds ?? [])]
+    .filter((id): id is number => Number.isSafeInteger(id) && id > 0)
+    .sort((a, b) => a - b);
+  const currentness = evidence?.evidenceBindingCurrentness;
+  return {
+    evidenceFingerprint: (card.evidenceFingerprint ?? evidence?.evidenceFingerprint ?? '').trim() || null,
+    evaluatorBuild: recordedEvaluatorBuildForRecipe(card.rerunRecipe) ?? null,
+    bindingIds,
+    bindingCurrentness: bindingIds.length === 0
+      ? null
+      : currentness
+        ? {
+            state: currentness.state,
+            reason: currentness.reason,
+            citedBindingCount: currentness.citedBindingCount,
+            retractedBindingIds: [...currentness.retractedBindingIds].sort(),
+            unavailableBindingIds: [...currentness.unavailableBindingIds].sort(),
+          }
+        : {
+            state: 'unknown',
+            reason: 'evidence-currentness-not-read',
+            citedBindingCount: bindingIds.length,
+            retractedBindingIds: [],
+            unavailableBindingIds: bindingIds.map(String),
+          },
+  };
+}
+
 function scorecardAuditEvidenceMatchesListRow(card: ScorecardRow, evidence: ScorecardEvidenceRow): boolean {
   const cardAudit = card.gradingAudit;
   const evidenceAudit = evidence.gradingAudit;
@@ -1373,6 +1677,7 @@ function oldestFirst(a: ScorecardRow, b: ScorecardRow): number {
 
 function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): string {
   const scratchTemplate = `/tmp/grading-integrity-${card.issueId}.XXXXXX`;
+  const recordedEvaluatorBuild = recordedEvaluatorBuildForRecipe(card.rerunRecipe);
   // WI-6554700010009935: the rubric's terminal-re-rate drill says only
   // `scorecards:list { rubricRef, sourceHive }`, so judges paged 200-500 terminal cards
   // (1.6-4MB per read) to find one subject's interim cards. Name the exact narrow read.
@@ -1381,14 +1686,17 @@ function gradingAuditBrief(card: ScorecardRow, reservationReservedAt: string): s
     : `scorecards:list { rubricRef:'${card.rubricRef}'${card.sourceHive ? `, sourceHive:'${card.sourceHive}'` : ''}, provisional:true }`;
   return [
     `Currentness guard: at the start of the audit and immediately before emitting, call scorecards:get { issueId:'${card.issueId}' } and require its returned scorecard.gradingAuditCurrentness.state to be 'current'. This is a field of that scorecard response, not a state:read registry cell. If the field is absent, 'stale' or 'unknown', report the missing field or its reason and stop without grading or emitting; the pending-audit dispatcher must refresh the stamp or repair the auditor's serving route first.`,
+    ...(recordedEvaluatorBuild
+      ? [`Evaluator-build guard: this target records evaluator build ${JSON.stringify(recordedEvaluatorBuild)}. The scorecards:get response must include evaluatorBuildCurrentness.state='current' with the exact recorded and live identities before you read criterion evidence. If it is absent, 'stale' or 'unknown', stop without grading or emitting. For spec-test-adequacy, also replay the stored rerunRecipe with plans:evaluate-spec-test-adequacy before the evidence pass and require its returned evaluatorBuild to match the recorded identity exactly; a drift marker or missing live identity is a preflight refusal, not a reason to spend the audit.`]
+      : []),
     `You are the dedicated grading-integrity auditor for scorecard ${card.issueId}.`,
     `The target is a terminal standard-rubric scorecard for rubric '${card.rubricRef}'. Inspect that exact scorecard and grade whether its evidence and criterion explanations are complete and independently re-runnable.`,
     `Source subject: ${JSON.stringify(card.subject ?? null)}; evidence fingerprint: ${card.evidenceFingerprint ?? 'not recorded'}. Preserve the stored evidence scope; do not substitute a newer working tree.`,
     `Interim cards (terminal-re-rate): read them with ${interimCardRead}. It returns only the provisional cards for this subject, usually none. Do not page the rubric's whole card history to find them.`,
     `Historical source evidence: when a criterion cites a committed file, use capability:git-evidence { op:'readFileAtCommit', commitSha:'<full SHA from the stored evidence>', path:'<repository-relative path>' } to inspect that exact blob. Do not use capability:git or current-tree capability:read as proof of historical contents. If the stored evidence lacks the full commit SHA or path, state that exact gap and do not infer from HEAD.`,
-    `Historical source page budgeting: code:run has a 45-second foreground timeout ceiling. Do not fan out byte-page chains for multiple large blobs in one call; read one oversized blob's chain per code:run. If a single blob's full chain might approach the ceiling, read a bounded page segment and continue its exact next_cursor in a separate call, or issue the page reads directly. Preserve the complete bytes for the cited blob's integrity check.`,
+    `Historical source page budgeting: code:run uses a default script budget of ${DEFAULT_SCRIPT_TIMEOUT_MS.toLocaleString('en-US')} ms (${DEFAULT_SCRIPT_TIMEOUT_MS / 1000} seconds); explicit timeoutSec can raise it to the ${FOREGROUND_TIMEOUT_CEILING_MS.toLocaleString('en-US')} ms (${FOREGROUND_TIMEOUT_CEILING_MS / 1000} seconds) foreground ceiling. Do not fan out byte-page chains for multiple large blobs in one call; read one oversized blob's chain per code:run. If a single blob's full chain might approach the ceiling, read a bounded page segment and continue its exact next_cursor in a separate call, or issue the page reads directly. Preserve the complete bytes for the cited blob's integrity check.`,
     `External-checkout source evidence: when the cited binding's repository measurement names rootHarnessSlug, copy that exact registered slug into capability:git-evidence { op:'readFileAtCommit', commitSha, path, rootHarnessSlug }. Evidence attributed to the plan harness may have executed in another registered repository. A commit lookup failure in the plan repository does not establish absence in the recorded evidence repository; do not guess a directory or substitute HEAD. Follow byte-page next_cursor unchanged so the registered root remains pinned.`,
-    `Repository-pin recovery: before declaring a committed-file citation unresolvable, read the cited binding's full details with plans:get-spec-evidence and inspect measurementPin.files and measurementPin.repos. The recorded repo, head, gitlink, rootHarnessSlug and headBlob identify the source repository and exact blob; a test-run's shorter filePath does not replace the measurement pin's root-relative path. rootHarnessSlug selects a registered checkout, while repos[].repo may name a submodule inside it. Do not send a submodule's commit to the parent repository and treat that lookup failure as absent evidence. Use only a supported exact-blob route for the recorded repository; if that route cannot express the pin, report the exact unsupported locator instead of claiming the stored repository pin is missing.`,
+    `Repository-pin recovery: before declaring a committed-file citation unresolvable, read the cited binding's full details with plans:get-spec-evidence and inspect measurementPin.files and measurementPin.repos. The recorded repo, head, gitlink, rootHarnessSlug and headBlob identify the source repository and exact blob; a test-run's shorter filePath does not replace the measurement pin's root-relative path. rootHarnessSlug selects a registered checkout, while repos[].repo may name a submodule inside it. For a nested pin (measurementPin.files[].repositoryPath/repo !== '.'), strip that repository prefix from the file path and pass it as repositoryPath in capability:git-evidence { op:'readFileAtCommit', commitSha, path:'<child-relative path>', repositoryPath:'<repo>' }; when rootHarnessSlug is absent, keep the plan harness as the resolved root. Do not send a submodule's commit to the parent repository and treat that lookup failure as absent evidence. Use only a supported exact-blob route for the recorded repository; if that route cannot express the pin, report the exact unsupported locator instead of claiming the stored repository pin is missing.`,
     `Session-turn evidence: this judge may use sessions:read only with session:'self'; sessions:search and non-self transcript reads are outside its role. Do not try to open a referenced external session_turn. Use preserved evidence in the scorecard or linked plan/work-item records as those records; if the cited turn is not preserved there, state the exact unresolved ref and rate the criterion from the available evidence without inferring the missing turn from a summary.`,
     `Wake delivery: if an in-turn inbox nudge requires acknowledgment and identifies this judge's own delivery_id, acknowledge only that delivery with events:cancel { delivery_id }. Never cancel an await, tree, announcement, or another principal's delivery; do not guess an id.`,
     `Dispatch lease: key 'grading-audit:${card.issueId}', reservedAt '${reservationReservedAt}'. Before reading criterion evidence, re-read the exact target and continue only if gradingAudit.state is 'pending' and dispatchReservation.key and dispatchReservation.reservedAt exactly match this lease. A missing reservation at the START means this kickoff is stale: report the current state and stop. If a present reservation differs, treat it as a renewal only when your direct coord inbox contains a message from system:grading-audit-dispatch with summary "Renewed grading-audit lease for ${card.issueId}", and the message says your existing independent audit task is retained. Require the notice to identify this exact target '${card.issueId}', the current evidence fingerprint '${card.evidenceFingerprint ?? 'not recorded'}', the expected key 'grading-audit:${card.issueId}', and a renewed reservedAt that matches the target's current dispatchReservation exactly. Re-read scorecards:get and require the target is still current and pending with that exact target, fingerprint, key, and reservedAt; then use the renewed key and reservedAt as your effective lease for the audit and eventual gradingAuditReservation. Without that direct matching renewal, report the current state and stop without grading or emitting. This strict check applies only at the START of the audit; it does not authorize any unrelated reservation change. A lease that lapses after you began is handled by the pre-emit rule below.`,
@@ -1497,15 +1805,23 @@ export async function dispatchPendingGradingAudits(
     ((sessionIds: readonly string[]) => advSessionsByTranscriptHandles({ sessionIds }));
   const resolveSessionTranscript = deps.findSessionTranscript ?? findSessionTranscript;
   const workspaceId = input.ctx.workspaceId?.trim();
+  // Internal scorecard readers derive their workspace from AsyncLocalStorage.
+  // This dispatcher is also called from completion/repair code that may not be
+  // inside the MCP handler's workspace scope, even though its context carries a
+  // concrete workspace. Pin every reader that uses the ambient scope to the
+  // dispatch context so candidate selection, evidence re-checks, and rubric
+  // resolution cannot cross workspace boundaries.
+  const inDispatchWorkspace = <T>(fn: () => T): T =>
+    runWithWorkspaceIfConcrete(workspaceId, fn);
   const pausedOwners = workspaceId
     ? await readActiveLoopStanddownOwners(workspaceId, deps.listWorkspaceWideLoopStanddownOwners, Date.now())
     : new Set<string>();
-  const cards = await readCards({
+  const cards = await inDispatchWorkspace(() => readCards({
     includeSuperseded: true,
     includeRetracted: true,
     ...(explicitTargetIds.length > 0 ? { issueIds: explicitTargetIds } : {}),
     limit: explicitTargetIds.length > 0 ? GRADING_AUDIT_DISPATCH_LIMIT : GRADING_AUDIT_BACKLOG_SCAN_LIMIT,
-  });
+  }));
   const cancelSuperseded = deps.cancelSuperseded ?? cancelSupersededPendingGradingAuditAtomically;
   const cancelStaleEvidence = deps.cancelStaleEvidence ?? cancelStaleEvidencePendingGradingAuditAtomically;
   const readEvidenceForDispatch = deps.readEvidence ?? readScorecardEvidence;
@@ -1576,7 +1892,7 @@ export async function dispatchPendingGradingAudits(
   );
   const liveEvaluatorBuild = (deps.getEvaluatorBuild ?? getBuildInfo)();
   const evaluatorBuildDriftPendingCards = cards.filter((card) => {
-    const recorded = card.rerunRecipe?.evaluatorBuild;
+    const recorded = recordedEvaluatorBuildForRecipe(card.rerunRecipe);
     return (
       card.gradingAudit?.state === 'pending' &&
       !card.supersededBy &&
@@ -1590,13 +1906,14 @@ export async function dispatchPendingGradingAudits(
   // A shared sweep sees cards from multiple serving builds. This host's mismatch
   // proves only that it cannot replay the card; it does not invalidate evidence
   // minted by another still-serving evaluator or authorize killing its judge.
-  // Leave the card and lease untouched for an exact-build dispatcher. The emit
-  // gate still refuses a replay whose actual evaluator build differs.
+  // Current evidence and its lease belong to an exact-build dispatcher. An exact
+  // binding retraction is independent of evaluator build, so still inspect it
+  // below and let the atomic stale-evidence fence decide whether to cancel.
+  // The emit gate still refuses a replay whose actual evaluator build differs.
   const evidenceCandidates = cards
     .filter((card) =>
       card.gradingAudit?.state === 'pending' &&
-      Boolean(card.rerunRecipe?.selection.bindingIds?.length) &&
-      !evaluatorBuildDriftIds.has(card.issueId) &&
+      hasCitedSpecEvidenceBindings(card) &&
       !card.supersededBy &&
       !card.retracted,
     )
@@ -1608,7 +1925,7 @@ export async function dispatchPendingGradingAudits(
     GRADING_AUDIT_DISPATCH_CONCURRENCY,
     async (card) => {
       try {
-        const result = await readEvidenceForDispatch(card.issueId);
+        const result = await inDispatchWorkspace(() => readEvidenceForDispatch(card.issueId));
         if (result.kind !== 'found' || !scorecardAuditEvidenceMatchesListRow(card, result.scorecard)) return;
         evidenceById.set(card.issueId, result.scorecard);
       } catch (error) {
@@ -1652,7 +1969,11 @@ export async function dispatchPendingGradingAudits(
       }
       // The SQL fence can reject a stale read if the recipe or audit was renewed.
       // Only retire work after the cancellation itself committed.
-      if (!cancelled || !workspaceId) return;
+      if (!cancelled) return;
+      // A committed cancellation must not be offered as a stranded replay later.
+      evaluatorBuildDriftIds.delete(card.issueId);
+      evaluatorBuildDriftById.delete(card.issueId);
+      if (!workspaceId) return;
       let tasks: Awaited<ReturnType<typeof listTasks>>;
       try {
         tasks = await readTasksForCleanup({
@@ -1699,14 +2020,16 @@ export async function dispatchPendingGradingAudits(
   const pendingCards = cards.filter((card) => {
     if (evaluatorBuildDriftIds.has(card.issueId)) return false;
     if (!currentPendingScorecard(card)) return false;
-    if (!card.rerunRecipe?.selection.bindingIds?.length) return true;
+    if (!hasCitedSpecEvidenceBindings(card)) return true;
     return evidenceById.get(card.issueId)?.auditTarget.current === true;
   });
   const pendingById = new Map(pendingCards.map((card) => [card.issueId, card] as const));
   const requestedTargetIds =
     explicitTargetIds.length > 0
       ? explicitTargetIds
-      : [...pendingCards, ...evaluatorBuildDriftPendingCards.slice(0, GRADING_AUDIT_DISPATCH_LIMIT)]
+      : [...pendingCards, ...evaluatorBuildDriftPendingCards
+          .filter((card) => evaluatorBuildDriftIds.has(card.issueId))
+          .slice(0, GRADING_AUDIT_DISPATCH_LIMIT)]
           .slice()
           .sort(oldestFirst)
           .slice(0, GRADING_AUDIT_DISPATCH_LIMIT)
@@ -1727,16 +2050,19 @@ export async function dispatchPendingGradingAudits(
   };
 
   const dispatchTarget = async (issueId: string): Promise<PendingGradingAuditDispatchReceipt> => {
+    let phase: GradingAuditDispatchPhase = 'dispatch';
+    const markPhase = (next: GradingAuditDispatchPhase) => {
+      phase = next;
+    };
     const card = pendingById.get(issueId);
     if (!card) {
       if (evaluatorBuildDriftIds.has(issueId)) {
         const driftCard = evaluatorBuildDriftById.get(issueId);
         const stranding = driftCard
-          ? assessEvaluatorBuildStranding(driftCard, liveEvaluatorBuild, {
+          ? await assessEvaluatorBuildStrandingAsync(driftCard, liveEvaluatorBuild, {
               nowMs: deps.now?.() ?? Date.now(),
               root: resolveAgentWorkspaceRoot({}),
-              probe: deps.generationAncestry ??
-                ((root, ancestor, descendant) => realGitProbe.isAncestor(root, ancestor, descendant)),
+              probe: deps.generationAncestry,
             })
           : null;
         if (driftCard && stranding?.stranded) {
@@ -1761,7 +2087,8 @@ export async function dispatchPendingGradingAudits(
       };
     }
 
-    const rubric = await resolveRubric(card.rubricRef);
+    markPhase('rubric-read');
+    const rubric = await inDispatchWorkspace(() => resolveRubric(card.rubricRef));
     if (!rubric) {
       return { issueId, rubricRef: card.rubricRef, state: 'skipped', reason: 'target rubric not found' };
     }
@@ -1785,6 +2112,7 @@ export async function dispatchPendingGradingAudits(
     }
 
     const idempotencyKey = `grading-audit:${issueId}`;
+    const reservationSnapshot = gradingAuditReservationSnapshot(card, evidenceById.get(issueId));
     const harness = input.harness?.trim();
     // EI-23414612968722239: `role:'judge'` is a HARNESS-SCOPED persona — launch-agent
     // refuses it outright ("no harness resolved") when no harness accompanies it, so the
@@ -1807,7 +2135,7 @@ export async function dispatchPendingGradingAudits(
     let routingFallback: string | undefined;
     let receipt: PendingGradingAuditDispatchReceipt | null = null;
     const generationBound = card.gradedGeneration != null;
-    const evaluatorBuildBound = card.rerunRecipe?.evaluatorBuild != null;
+    const evaluatorBuildBound = recordedEvaluatorBuildForRecipe(card.rerunRecipe) != null;
     let generationCompatible = false;
     const releaseReservation = async (
       backoff?: GradingAuditDispatchBackoff,
@@ -1829,9 +2157,16 @@ export async function dispatchPendingGradingAudits(
       }
     };
     const confirmOwnedPendingReservation = async (): Promise<boolean> => {
+      markPhase('reservation-confirm');
       const current = await confirmReservation(issueId, idempotencyKey, {
         workspaceId: input.ctx.workspaceId,
         reservedAt: reservationReservedAt,
+        snapshot: reservationSnapshot,
+        expectedCard: {
+          evidenceFingerprint: card.evidenceFingerprint,
+          createdBy: card.createdBy,
+          rubricRef: card.rubricRef,
+        },
       });
       if (current) return true;
       await releaseReservation();
@@ -1958,13 +2293,13 @@ export async function dispatchPendingGradingAudits(
     try {
       if (generationBound) {
         const gradedGeneration = parseGradedGeneration(card.gradedGeneration);
+        markPhase('generation-read');
         const currentGeneration = await (deps.readCurrentGeneration ?? readRunningGeneration)();
-        const generationCheck = assessGenerationAncestry(
+        const generationCheck = await assessGenerationAncestryAsync(
           gradedGeneration?.deployedSha,
           currentGeneration.deployedSha,
           resolveAgentWorkspaceRoot({}),
-          deps.generationAncestry ??
-            ((root, ancestor, descendant) => realGitProbe.isAncestor(root, ancestor, descendant)),
+          deps.generationAncestry,
         );
         if (!generationCheck.ok) {
           const reason =
@@ -1972,14 +2307,16 @@ export async function dispatchPendingGradingAudits(
             (currentGeneration.deployedSha ?? 'unknown') + "' is not proven to be the same as or a descendant of " +
             "graded build '" + (gradedGeneration?.deployedSha ?? 'unknown') + "' (" + generationCheck.reason + "); " +
             'no auditor was routed or launched; no reservation or backoff was changed';
-          return { issueId, rubricRef: card.rubricRef, state: 'failed', idempotencyKey, reason };
+          return { issueId, rubricRef: card.rubricRef, state: 'failed', idempotencyKey, phase, reason };
         }
         generationCompatible = true;
       }
 
+      markPhase('reservation');
       const reservation = await reserve(issueId, idempotencyKey, {
         workspaceId: input.ctx.workspaceId,
         currentness: card.gradingAuditCurrentness,
+        snapshot: reservationSnapshot,
         ...(generationCompatible ? { allowGenerationIncompatibleBackoff: true } : {}),
       });
       if (reservation.status !== 'claimed') {
@@ -2013,6 +2350,7 @@ export async function dispatchPendingGradingAudits(
        * live, so query the durable task label directly before any fallback
        * side effect.
        */
+      markPhase('live-task-read');
       const liveTasks = await readTasks({
         workspaceId: input.ctx.workspaceId,
         states: ['pending', 'running'],
@@ -2026,6 +2364,7 @@ export async function dispatchPendingGradingAudits(
       for (const task of liveTasks) {
         if (task.sessionId?.trim() || !task.detail?.coordOwnerId) continue;
         try {
+          markPhase('task-session-bind');
           const sessionId = await (deps.bindTaskNativeSession ?? bindAgentSessionTaskToLatestNativeSession)(task.taskId);
           if (sessionId?.trim()) task.sessionId = sessionId.trim();
         } catch {
@@ -2039,6 +2378,7 @@ export async function dispatchPendingGradingAudits(
       let nativeSessionBindings: Array<Pick<AdvSessionRow, 'agent' | 'coordOwnerId' | 'sessionId'> & Partial<Pick<AdvSessionRow, 'id'>>> = [];
       if (nativeSessionIds.length) {
         try {
+          markPhase('native-session-read');
           nativeSessionBindings = await listNativeSessionsByTranscriptHandles(nativeSessionIds);
         } catch {
           // Missing binding evidence is unknown, never proof that a retained task failed.
@@ -2077,6 +2417,7 @@ export async function dispatchPendingGradingAudits(
         let terminalFailure: { code: GradingAuditRecoveryCode; evidence: string } | null = null;
         if (taskLogPath) {
           try {
+            markPhase('task-terminal-detection');
             // A delayed live-task check normally requires Claude's completed-turn
             // footer. If the task ledger's exact native session and owner bind to
             // a Claude adv-session, the shared detector can also prove a completed
@@ -2089,6 +2430,7 @@ export async function dispatchPendingGradingAudits(
           }
           if (!terminalFailure) {
             try {
+              markPhase('task-log-read');
               const [logTail, logMtimeMs] = await Promise.all([
                 readLogTail(taskLogPath),
                 Promise.resolve(readLogMtimeMs(taskLogPath)),
@@ -2135,6 +2477,7 @@ export async function dispatchPendingGradingAudits(
               reservedAt: reservationReservedAt,
             };
             try {
+              markPhase('source-audit-responder-check');
               const stillCurrentResponder = await (
                 deps.isCurrentSourceAuditResponder ?? isCurrentSourceAuditResponder
               )(issueId, taskReservation, taskOwnerId);
@@ -2155,6 +2498,7 @@ export async function dispatchPendingGradingAudits(
           viableLiveTasks.push(task);
           continue;
         }
+        markPhase('task-termination');
         const killed = await terminateTask(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
         if (
           !killed.ok &&
@@ -2168,6 +2512,7 @@ export async function dispatchPendingGradingAudits(
             rubricRef: card.rubricRef,
             state: 'failed',
             idempotencyKey: currentIdempotencyKey,
+            phase,
             reason:
               `live grading auditor '${task.taskId}' ended on ${terminalFailure.code}, but its failed mission ` +
               `could not be retired: ${killed.error}`,
@@ -2207,22 +2552,25 @@ export async function dispatchPendingGradingAudits(
           return { issueId, rubricRef: card.rubricRef, state: 'skipped', idempotencyKey,
             reason: 'reservation restore CAS lost; renewal handoff abandoned', ...recoveryFields() };
         }
-        // A prior epoch needs no renewal, but its retained task can be parked
-        // before finishing. Resume only one positively parked owner; unknown
-        // liveness and ambiguous task identity do not authorize a wake.
+        // A prior epoch needs no replacement lease, but its retained task still
+        // needs the exact lease brief when the dispatcher has reclaimed and
+        // restored the row. A parked owner gets the resume wording; every
+        // other identified single owner gets the normal renewal notice. An
+        // ambiguous or ownerless task remains untouched and fail-closed.
         let resumeParked = false;
-        if (priorReservation && viableLiveTasks.length === 1) {
-          const ownerId = typeof viableLiveTasks[0]!.detail?.coordOwnerId === 'string'
-            ? viableLiveTasks[0]!.detail.coordOwnerId.trim() : '';
-          if (ownerId) {
-            try {
-              resumeParked = (await (deps.resolveOwnerLiveness ?? resolveGradingAuditorOwnerLiveness)(ownerId))
-                ?.sessionState === 'parked';
-            } catch {
-              // An unavailable oracle preserves the retained task and lease.
-            }
+        const retainedTask = viableLiveTasks.length === 1 ? viableLiveTasks[0] : undefined;
+        const retainedOwnerId = typeof retainedTask?.detail?.coordOwnerId === 'string'
+          ? retainedTask.detail.coordOwnerId.trim() : '';
+        if (priorReservation && retainedOwnerId) {
+          try {
+            resumeParked = (await (deps.resolveOwnerLiveness ?? resolveGradingAuditorOwnerLiveness)(retainedOwnerId))
+              ?.sessionState === 'parked';
+          } catch {
+            // An unavailable oracle preserves the retained task and still
+            // permits the durable renewal notice below.
           }
         }
+        markPhase('retained-auditor-notification');
         const renewalNotification = !priorReservation
           ? viableLiveTasks.length !== 1
               ? { state: 'skipped' as const, reason: 'retained auditor task identity is ambiguous' }
@@ -2230,13 +2578,13 @@ export async function dispatchPendingGradingAudits(
                   card, task: viableLiveTasks[0]!, reservation: retainedReservation,
                   workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
                 })
-          : resumeParked
-            ? await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
-                card, task: viableLiveTasks[0]!, reservation: retainedReservation,
+          : !retainedTask || !retainedOwnerId
+            ? undefined
+            : await (deps.notifyRetainedAuditor ?? notifyRetainedGradingAuditor)({
+                card, task: retainedTask, reservation: retainedReservation,
                 workspaceId: input.ctx.workspaceId?.trim() ?? '', ...(harnessResolved ? { harness } : {}),
-                resumeParked: true,
-              })
-            : undefined;
+                ...(resumeParked ? { resumeParked: true } : {}),
+              });
         if (renewalNotification?.state === 'failed') {
           // A pre-append failure delivered nothing. Clear only this exact epoch
           // so the next scheduled repair can reissue and retry the handoff.
@@ -2269,6 +2617,7 @@ export async function dispatchPendingGradingAudits(
         };
         return receipt;
       }
+      markPhase('source-audit-route');
       const routed = profile || generationBound || evaluatorBuildBound
         ? {
             state: 'fallback' as const,
@@ -2292,6 +2641,12 @@ export async function dispatchPendingGradingAudits(
                 confirmReservation(issueId, idempotencyKey, {
                   workspaceId: input.ctx.workspaceId,
                   reservedAt: reservationReservedAt,
+                  snapshot: reservationSnapshot,
+                  expectedCard: {
+                    evidenceFingerprint: card.evidenceFingerprint,
+                    createdBy: card.createdBy,
+                    rubricRef: card.rubricRef,
+                  },
                 }),
             },
           );
@@ -2327,6 +2682,21 @@ export async function dispatchPendingGradingAudits(
         // candidate snapshot after settlement.
         if (!(await confirmOwnedPendingReservation())) break;
         const useFallback = launchBackend === GRADING_AUDIT_FALLBACK.agent;
+        const taskDetail = typeof card.evidenceFingerprint === 'string' && card.evidenceFingerprint.trim()
+          ? {
+              issueId,
+              evidenceFingerprint: card.evidenceFingerprint.trim(),
+              reservation: { key: idempotencyKey, reservedAt: reservationReservedAt, snapshot: reservationSnapshot },
+              reservationSnapshot,
+            }
+          : null;
+        const launchContext = taskDetail
+          ? {
+              ...gradingAuditorLaunchCtx(input.ctx),
+              [INTERNAL_GRADING_AUDIT_TASK_DETAIL]: taskDetail,
+            } as GradingAuditLaunchContext
+          : gradingAuditorLaunchCtx(input.ctx);
+        markPhase('auditor-launch');
         const result = (await launch(
           {
             brief: gradingAuditBrief(card, reservationReservedAt),
@@ -2367,14 +2737,14 @@ export async function dispatchPendingGradingAudits(
           // Never the caller's context: the caller is often the card author, and
           // a judge it launches is refused as a self-audit (see
           // GRADING_AUDIT_DISPATCH_ACTOR).
-          gradingAuditorLaunchCtx(input.ctx),
+          launchContext,
         )) as {
           isError?: boolean;
           content?: Array<{ text?: string }>;
           data?: { deduped?: boolean; launch?: unknown };
         };
         const launchData = result.data?.launch as
-          | {
+          | (NativeTranscriptLaunchReceipt & {
               tasks?: Array<{
                 taskId?: unknown;
                 logPath?: unknown;
@@ -2382,7 +2752,7 @@ export async function dispatchPendingGradingAudits(
                 nativeSession?: { backend?: unknown; sessionId?: unknown } | null;
               }>;
               agentStarted?: boolean | null;
-            }
+            })
           | undefined;
         const launchedTask = launchData?.tasks?.[0];
         const taskId = typeof launchedTask?.taskId === 'string' ? launchedTask.taskId : null;
@@ -2406,12 +2776,7 @@ export async function dispatchPendingGradingAudits(
           launchData?.agentStarted !== true &&
           (launchData?.agentStarted === false || kickoffNotSubmitted);
 
-        const nativeProof = launchedTask?.nativeSession?.backend === 'claude' &&
-          typeof launchedTask.nativeSession.sessionId === 'string' &&
-          typeof launchedTask.kickoffProof?.nativeRef === 'string'
-          ? { nativeTranscriptPath: launchedTask.kickoffProof.nativeRef,
-              nativeSessionId: launchedTask.nativeSession.sessionId }
-          : undefined;
+        const nativeProof = nativeTranscriptProofFromLaunchReceipt(launchData, launchBackend);
         let terminalFailure: { code: GradingAuditRecoveryCode; evidence: string } | null = kickoffFailureIsConclusive
           ? {
               code: 'launch_kickoff_not_persisted',
@@ -2421,7 +2786,7 @@ export async function dispatchPendingGradingAudits(
                 `agentStarted=${String(launchData?.agentStarted ?? 'unreported')}`,
             }
           : logPath
-            ? await detectTerminalFailure(logPath, undefined, true, nativeProof)
+            ? (markPhase('auditor-terminal-detection'), await detectTerminalFailure(logPath, undefined, true, nativeProof))
             : null;
 
         // A stable launch receipt can outlive the task it represented. Log
@@ -2431,6 +2796,7 @@ export async function dispatchPendingGradingAudits(
         // recoverable terminal mission; otherwise the card keeps a reservation
         // while every later sweep "succeeds" by deduping to the same dead task.
         if (!terminalFailure && result.data?.deduped && taskId) {
+          markPhase('auditor-task-read');
           const task = await readTask(taskId);
           if (!task || isTerminalState(task.state)) {
             terminalFailure = {
@@ -2447,6 +2813,7 @@ export async function dispatchPendingGradingAudits(
         // and leaves the reservation held until its TTL. A terminal failed task
         // is conclusive; a running task with agentStarted:null remains unknown.
         if (!terminalFailure && !result.data?.deduped && taskId && launchData?.agentStarted !== true) {
+          markPhase('auditor-task-read');
           const freshTask = await readTask(taskId);
           const freshTaskFailed = freshTask && (
             freshTask.state === 'killed' ||
@@ -2475,6 +2842,7 @@ export async function dispatchPendingGradingAudits(
               state: 'failed',
               idempotencyKey: currentIdempotencyKey,
               launch: result.data?.launch,
+              phase,
               reason:
                 `grading auditor ended on ${terminalFailure.code}, but its launch receipt carried no task id; ` +
                 'refusing an untracked fallback',
@@ -2482,6 +2850,7 @@ export async function dispatchPendingGradingAudits(
             };
             break;
           }
+          markPhase('task-termination');
           const killed = await terminateTask(taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
           if (
             !killed.ok &&
@@ -2496,6 +2865,7 @@ export async function dispatchPendingGradingAudits(
               state: 'failed',
               idempotencyKey: currentIdempotencyKey,
               launch: result.data?.launch,
+              phase,
               reason:
                 `grading auditor '${taskId}' ended on ${terminalFailure.code}, but its failed mission ` +
                 `could not be retired: ${killed.error}`,
@@ -2518,6 +2888,7 @@ export async function dispatchPendingGradingAudits(
               state: 'failed',
               idempotencyKey: currentIdempotencyKey,
               launch: result.data?.launch,
+              phase,
               reason:
                 `grading auditor fallback also ended on ${terminalFailure.code}; ` +
                 'the one-retry ceiling stopped another launch' +
@@ -2574,6 +2945,7 @@ export async function dispatchPendingGradingAudits(
             state: 'failed',
             idempotencyKey: currentIdempotencyKey,
             launch: result.data?.launch,
+            phase,
             reason,
             ...recoveryFields(),
           };
@@ -2596,6 +2968,7 @@ export async function dispatchPendingGradingAudits(
           rubricRef: card.rubricRef,
           state: 'failed',
           idempotencyKey: currentIdempotencyKey,
+          phase,
           reason: 'grading auditor terminal recovery exhausted without a receipt',
           ...recoveryFields(),
         }
@@ -2615,6 +2988,7 @@ export async function dispatchPendingGradingAudits(
         rubricRef: card.rubricRef,
         state: 'failed',
         idempotencyKey: currentIdempotencyKey,
+        phase,
         reason,
         ...recoveryFields(),
       };

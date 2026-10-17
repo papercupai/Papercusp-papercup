@@ -741,6 +741,8 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
         bytesRemaining: 100,
         skippedOpen: 0,
         skippedRaced: 0,
+        // Retention protection unread: green-checkpoint's headroom admission never consults it.
+        cap: null,
         errors: Array.from({ length: errors }, (_, i) => ({
           path: `/tmp/fleet-logs/error-${i}.log`,
           error: "unlink failed",
@@ -1144,6 +1146,8 @@ describe("WI-10007424: dependency-copy headroom joins disk admission", () => {
         bytesRemaining: 0,
         skippedOpen: 0,
         skippedRaced: 0,
+        // Retention protection unread: green-checkpoint's headroom admission never consults it.
+        cap: null,
         errors: [],
       },
     ],
@@ -1907,7 +1911,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
         status: "passed",
         exit: "completed",
         exitCode: 0,
-        output: "typecheck passed",
+        output: "typecheck passed\n",
       },
     });
     expect(

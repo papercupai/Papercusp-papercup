@@ -44,6 +44,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { readFile as readFileAsync } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadavg, availableParallelism, tmpdir, homedir } from "node:os";
@@ -106,6 +107,7 @@ import {
 } from "./lib/executed-source-map.mjs";
 import { gitSchemaDriftJudge } from "./lib/schema-symbol-drift.mjs";
 import {
+  PC_TEST_PARTIAL_SKIP_LIST_ENV,
   TEST_REUSE_SKIP_LIST_ENV,
   estimateReuseSavings,
   formatReuseAlarmLine,
@@ -142,7 +144,7 @@ import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
 // source-corroborated graph dependency SUGGESTIONS. Superset-only and file-read-only — see
 // the module header. Nothing here may remove a workspace the baseline selected.
 import {
-  computeGraphSuggestions,
+  computeGraphSuggestionsAsync,
   formatSuggestionLine,
   resolveSnapshotPath,
   unionSuperset,
@@ -184,7 +186,15 @@ import {
   parseBatchProgress,
   classifyBatchProgress,
   formatBatchProgress,
+  parsePassingFilePaths,
 } from "./lib/batch-watchdog.mjs";
+import {
+  normalizePartialFiles,
+  partialTaskCheckpointPath,
+  partialTaskSkipListPath,
+  readPartialTaskCheckpoint,
+  writePartialTaskCheckpointAtomic,
+} from "./lib/partial-task-resume.mjs";
 import { ensurePapercuspTmpdir } from "../libs/test-config/src/tmpdir-guard.ts";
 import { affectedTestRunLogPath, sweepStaleTestScratch } from "../libs/test-config/src/hermetic-tmpdir.ts";
 import { testConfigMainProcessFiles } from "../libs/test-config/src/main-process-closure.ts";
@@ -996,6 +1006,11 @@ const base = resolvedBase.base;
 // tasks. It IMPLIES --integration so the integration task is never dropped by omission.
 const integrationOnly = has("--integration-only");
 const runIntegration = has("--integration") || integrationOnly;
+// Partial integration resume is deliberately opt-in. A checkpoint may be written after an
+// interrupted integration task, but it is consumed only when the caller explicitly arms this
+// rail (the same `AFFECTED_PARTIAL_RESUME=1` marker the integration vitest config checks).
+const partialResumeRequested =
+  has("--partial-resume") || process.env.AFFECTED_PARTIAL_RESUME === "1";
 const runAll = has("--all");
 // EI-19463337855465369: `--dry-run` is the more common CLI convention (npm,
 // git, rsync, kubectl all use it) and this repo's own agent guidance points
@@ -1175,6 +1190,7 @@ const KNOWN_FLAGS = [
   "--base",
   "--integration",
   "--integration-only",
+  "--partial-resume",
   "--all",
   "--dry",
   "--dry-run",
@@ -4929,7 +4945,7 @@ function localDependencyWorkspaceClosure(startWorkspaces) {
 // selection below, so this probe reports the same guard tasks that a real run would
 // attach. It still exits before any test task runs.
 
-function affectedWorkspaces() {
+async function affectedWorkspaces() {
   if (runAll) return [...wsByDir.values()];
 
   // --changed-paths <a,b,c>: compute the affected set from an EXPLICIT path list
@@ -5032,20 +5048,20 @@ function affectedWorkspaces() {
  *   PAPERCUSP_AFFECTED_GRAPH_MAX_AGE_MS   snapshot age ceiling (default 24h)
  *   PAPERCUSP_AFFECTED_GRAPH_SOURCE_ROOT  where importer SOURCE is read for corroboration (hermetic-test seam; default repo root)
  */
-function graphSuggestionsFor(changed) {
+async function graphSuggestionsFor(changed) {
   if (process.env.PAPERCUSP_AFFECTED_GRAPH_SUGGESTIONS === "0") {
     return { status: "unavailable", reason: "disabled", workspaces: [], accepted: 0, rejected: 0, index: null, ageMs: null, source: null };
   }
   const resolved = resolveSnapshotPath({ env: process.env, root: ROOT });
   const sourceRoot = process.env.PAPERCUSP_AFFECTED_GRAPH_SOURCE_ROOT || ROOT;
   const maxAge = Number(process.env.PAPERCUSP_AFFECTED_GRAPH_MAX_AGE_MS);
-  const report = computeGraphSuggestions({
+  const report = await computeGraphSuggestionsAsync({
     changed,
     snapshotPath: resolved.path,
     readFile: (p) => readFileSync(p, "utf8"),
-    readSource: (rel) => {
+    readSource: async (rel) => {
       try {
-        return readFileSync(join(sourceRoot, rel), "utf8");
+        return await readFileAsync(join(sourceRoot, rel), "utf8");
       } catch {
         return null;
       }
@@ -5060,7 +5076,7 @@ function graphSuggestionsFor(changed) {
   return { ...report, source: resolved.source };
 }
 
-function resolveAffected(changed) {
+async function resolveAffected(changed) {
   const directlyChanged = new Set();
   for (const file of changed) {
     let matchedAWorkspace = false;
@@ -5092,7 +5108,7 @@ function resolveAffected(changed) {
   // (monotone), so the final set is a superset of the baseline by construction;
   // `unionSuperset` additionally asserts it. Stale/invalid/absent snapshot => nothing added.
   const baselineSeeds = new Set(directlyChanged);
-  const graphReport = graphSuggestionsFor(changed);
+  const graphReport = await graphSuggestionsFor(changed);
   const merged = unionSuperset(baselineSeeds, graphReport.workspaces);
   for (const name of merged.names) directlyChanged.add(name);
   // EVERY run, including absent/stale/disabled (gitnexus-deterministic-integration P-001): the
@@ -5151,7 +5167,7 @@ if (runIntegration && !runElSuite && elSuiteAutoTrigger()) {
   globalThis.__autoElSuite = true;
 }
 
-const affected = affectedWorkspaces();
+const affected = await affectedWorkspaces();
 
 // EI-19454727576364875 — there is DELIBERATELY no `if (!affected.length) exit` here, and it
 // must not be reintroduced. It used to sit at this line, 46 lines above the
@@ -5823,6 +5839,13 @@ outSync(
 
 // Before the dry-run exit on purpose: `--dry` then shows what WOULD be reused (it only reads).
 await armTestPassReuse(tasks);
+// Partial integration resume is opt-in and prepared before any child is spawned. The list
+// preflight establishes the exact manifest that the checkpoint is allowed to name; failures in
+// this optional rail fail open to the ordinary full integration task.
+const PARTIAL_TASK_CACHE_DIR =
+  process.env.AFFECTED_PARTIAL_RESUME_CACHE_DIR || join(homedir(), ".papercusp", "cache");
+const PARTIAL_TEST_PATH_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
+preparePartialResumes(tasks);
 
 if (dry) {
   outSync(
@@ -6365,6 +6388,170 @@ function spawnSpecFor(t, extraArgs) {
   return { cmd: bin, argv: [...rest, ...extraArgs], cwd: wsDir, env };
 }
 
+// Partial integration resume is a separate, explicitly armed channel from passing-task reuse.
+// Its checkpoint identity is the judged repository HEAD plus the complete porcelain view; a
+// checkpoint from another candidate (or a changed working tree) is never consumed.
+function partialSourceIdentity() {
+  try {
+    const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: ROOT,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 30_000,
+    }).trim();
+    const porcelain = execFileSync(
+      "git",
+      ["status", "--porcelain", "--ignore-submodules=none"],
+      {
+        cwd: ROOT,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 120_000,
+        maxBuffer: 64 * 1024 * 1024,
+      },
+    );
+    if (!sourceCommit) return null;
+    return {
+      sourceCommit,
+      sourceDigest: createHash("sha256").update(porcelain, "utf8").digest("hex"),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Build a direct `vitest list --filesOnly` invocation for plain vitest integration scripts. */
+function integrationListSpecFor(t) {
+  const script = String(t.ws.scripts?.[t.script] ?? "").trim();
+  const tokens = script.split(/\s+/).filter(Boolean);
+  const assignments = {};
+  while (tokens.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0])) {
+    const [key, ...rest] = tokens.shift().split("=");
+    assignments[key] = rest.join("=");
+  }
+  if (tokens.shift() !== "vitest" || tokens.shift() !== "run") return null;
+  const wsDir = join(ROOT, t.ws.dir);
+  const binDirs = [join(wsDir, "node_modules", ".bin"), join(ROOT, "node_modules", ".bin")];
+  const bin = binDirs.map((dir) => join(dir, "vitest")).find((candidate) => existsSync(candidate));
+  if (!bin) return null;
+  return {
+    cmd: bin,
+    argv: ["list", "--filesOnly", ...tokens],
+    cwd: wsDir,
+    env: {
+      ...process.env,
+      ...assignments,
+      PATH: [dirname(process.execPath), ...binDirs, process.env.PATH].filter(Boolean).join(":"),
+    },
+  };
+}
+
+function listIntegrationFiles(t) {
+  const spec = integrationListSpecFor(t);
+  if (!spec) return { files: [], reason: "non-vitest-integration-script" };
+  const listed = spawnSync(spec.cmd, spec.argv, {
+    cwd: spec.cwd,
+    env: spec.env,
+    encoding: "utf8",
+    timeout: 120_000,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (listed.error || listed.status !== 0) {
+    return {
+      files: [],
+      reason: `vitest-list-failed(${String(listed.error?.message ?? listed.status ?? "unknown")})`,
+    };
+  }
+  const output = `${listed.stdout ?? ""}\n${listed.stderr ?? ""}`
+    .replace(/\x1b\[[0-9;]*m/g, "");
+  const files = normalizePartialFiles(
+    output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => PARTIAL_TEST_PATH_RE.test(line)),
+    spec.cwd,
+  );
+  return files.length > 0
+    ? { files, reason: null }
+    : { files: [], reason: "vitest-list-empty" };
+}
+
+const samePartialManifest = (a, b) =>
+  Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((file, index) => file === b[index]);
+
+function preparePartialResumeTask(t) {
+  if (!partialResumeRequested || t.script !== "test:integration") return null;
+  const identity = partialSourceIdentity();
+  if (!identity) {
+    outSync(`PARTIAL_RESUME applied=false task=${JSON.stringify(taskKey(t))} reason=source-identity-unavailable`);
+    return null;
+  }
+  const listed = listIntegrationFiles(t);
+  if (listed.files.length === 0) {
+    outSync(`PARTIAL_RESUME applied=false task=${JSON.stringify(taskKey(t))} reason=${listed.reason}`);
+    return null;
+  }
+  const workspaceRoot = join(ROOT, t.ws.dir);
+  const key = taskKey(t);
+  const expected = { root: ROOT, taskKey: key, ...identity };
+  const checkpointPath = partialTaskCheckpointPath(PARTIAL_TASK_CACHE_DIR, ROOT, key);
+  const existing = readPartialTaskCheckpoint(checkpointPath, expected);
+  const checkpoint = existing && samePartialManifest(existing.selectedFiles, listed.files)
+    ? existing
+    : {
+        ...expected,
+        selectedFiles: listed.files,
+        passedFiles: [],
+        state: "partial",
+      };
+  if (!existing || !samePartialManifest(existing.selectedFiles, listed.files)) {
+    try {
+      writePartialTaskCheckpointAtomic(checkpointPath, checkpoint);
+    } catch (error) {
+      outSync(`PARTIAL_RESUME applied=false task=${JSON.stringify(key)} reason=checkpoint-write-failed(${String(error?.message ?? error)})`);
+      return null;
+    }
+  }
+  // A complete checkpoint is retained for audit but never turns a new invocation into a skip.
+  if (checkpoint.state === "complete") {
+    outSync(`PARTIAL_RESUME applied=false task=${JSON.stringify(key)} reason=checkpoint-complete`);
+    return null;
+  }
+  const passedFiles = normalizePartialFiles(checkpoint.passedFiles, workspaceRoot)
+    .filter((file) => listed.files.includes(file));
+  const skipList = passedFiles.length > 0
+    ? partialTaskSkipListPath(RUN_LOG_ROOT, { ...checkpoint, passedFiles })
+    : null;
+  const prepared = {
+    root: ROOT,
+    workspaceRoot,
+    taskKey: key,
+    sourceCommit: identity.sourceCommit,
+    sourceDigest: identity.sourceDigest,
+    checkpointPath,
+    selectedFiles: listed.files,
+    passedFiles,
+    skipList,
+    // `armed` means the child may write partial progress. `resumed` means it actually
+    // skipped prior PASS rows and therefore cannot produce a green verdict this turn.
+    armed: true,
+    resumed: passedFiles.length > 0,
+  };
+  outSync(
+    `PARTIAL_RESUME prepared task=${JSON.stringify(key)} selected=${listed.files.length} ` +
+      `skip=${passedFiles.length} sourceCommit=${identity.sourceCommit.slice(0, 12)} ` +
+      `checkpoint=${checkpointPath}`,
+  );
+  return prepared;
+}
+
+function preparePartialResumes(taskList) {
+  for (const task of taskList) {
+    const prepared = preparePartialResumeTask(task);
+    if (prepared) task.partialResume = prepared;
+  }
+}
+
 // ── P-003/D-003: conservative passing-task reuse across candidate refires ───
 // setupTree() rebuilds the checkpoint checkout for every newer candidate. The cache therefore
 // lives outside ROOT, but its filename is scoped to this checkout root so another pipeline/tree
@@ -6700,6 +6887,7 @@ const recordLeg = (task, ms) => {
 const taskContexts = tasks.map((t) => ({
   t,
   isQuarantined: quarantined.has(t.ws.name),
+  partialResume: t.partialResume ?? null,
   coverageArgs: coverageArgsFor(t),
   // EI-11132: when this script declares --passWithNoTests AND the workspace genuinely
   // has matching test files on disk, disable passWithNoTests for THIS task — unless the
@@ -6841,9 +7029,11 @@ function runCapturedTask(
     : null;
   const {
     [TEST_REUSE_SKIP_LIST_ENV]: _inheritedReuseSkipList,
+    [PC_TEST_PARTIAL_SKIP_LIST_ENV]: _inheritedPartialSkipList,
     [EXECUTED_MAP_RESULT_ENV]: _inheritedExecutedMapResult,
     [EXECUTED_MAP_WORKSPACE_ENV]: _inheritedExecutedMapWorkspace,
     [EXECUTED_MAP_OUT_ENV]: inheritedExecutedMapOut,
+    AFFECTED_PARTIAL_RESUME: _inheritedPartialResume,
     ...parentEnv
   } = process.env;
   const childEnv = {
@@ -6862,6 +7052,10 @@ function runCapturedTask(
       ? { [EXECUTED_MAP_OUT_ENV]: inheritedExecutedMapOut } : {}),
     ...(integrationSourceMapOut
       ? { [EXECUTED_MAP_OUT_ENV]: integrationSourceMapOut, [EXECUTED_MAP_NO_PERSIST_ENV]: "1" } : {}),
+    ...(context.partialResume?.armed ? { AFFECTED_PARTIAL_RESUME: "1" } : {}),
+    ...(context.partialResume?.skipList
+      ? { [PC_TEST_PARTIAL_SKIP_LIST_ENV]: context.partialResume.skipList.path }
+      : {}),
     // P-006 (design-to-code-coverage-seam-2026-09-02): arm coverage attribution for every task
     // this runner spawns, so a `test:affected` run contributes surface→test evidence the way
     // `testing:run` and the admin-UI runner already do. Inert unless a seam is exercised — the
@@ -6890,6 +7084,16 @@ function runCapturedTask(
   // outer barrier, so keep the same boundary testing:run already enforces.
   delete childEnv.PC_HEAVY_PREEMPT_READY_FILE;
   delete childEnv.PC_HEAVY_PSI_FINALIZATION_FILE;
+  // The caller's selector and partial-resume channel are task-local. Strip both from a direct
+  // invocation's inherited environment before re-adding the channel only for this integration
+  // task; otherwise a unit or guard child could accidentally consume the checkpoint.
+  delete childEnv.AFFECTED_PARTIAL_RESUME;
+  delete childEnv[PC_TEST_PARTIAL_SKIP_LIST_ENV];
+  if (context.partialResume?.armed) {
+    childEnv.AFFECTED_PARTIAL_RESUME = "1";
+    if (context.partialResume.skipList)
+      childEnv[PC_TEST_PARTIAL_SKIP_LIST_ENV] = context.partialResume.skipList.path;
+  }
   // Remove the selector from the REAL process, not merely from a hash clone. This makes the
   // ordinary-task contract structural: if a test starts reading AFFECTED_BASE later it observes
   // no task input, while base-dependent guards/integration suites keep the value unchanged.
@@ -6904,6 +7108,7 @@ function runCapturedTask(
   // task. That distinction prevents a one-file retry from being replayed as a full-suite pass.
   if (
     TASK_VERDICT_CACHE_ENABLED &&
+    !context.partialResume?.armed &&
     extraArgs.length === 0 &&
     scriptOverride == null
   ) {
@@ -7569,7 +7774,57 @@ function capturedTaskSummaryFailure(r) {
  * Persist one clean first-pass verdict at task settlement, before any long sibling can be
  * preempted. This is deliberately fail-open: losing reuse costs time, never changes the verdict.
  */
+function persistPartialResumeCheckpoint(context, value) {
+  const partial = context?.partialResume;
+  if (!partial?.armed) return;
+  const output = `${value?.stdout ?? ""}${value?.stderr ?? ""}`;
+  const newlyPassed = normalizePartialFiles(
+    parsePassingFilePaths(output),
+    partial.workspaceRoot,
+  );
+  const expected = {
+    root: partial.root,
+    taskKey: partial.taskKey,
+    sourceCommit: partial.sourceCommit,
+    sourceDigest: partial.sourceDigest,
+  };
+  const current = readPartialTaskCheckpoint(partial.checkpointPath, expected);
+  const selectedFiles = current?.selectedFiles ?? partial.selectedFiles;
+  const selected = new Set(selectedFiles);
+  const passedFiles = [...new Set([
+    ...(current?.passedFiles ?? partial.passedFiles ?? []),
+    ...newlyPassed,
+  ])]
+    .filter((file) => selected.has(file))
+    .sort();
+  const state = passedFiles.length === selectedFiles.length ? "complete" : "partial";
+  try {
+    writePartialTaskCheckpointAtomic(partial.checkpointPath, {
+      ...expected,
+      selectedFiles,
+      passedFiles,
+      state,
+    });
+    partial.passedFiles = passedFiles;
+    partial.state = state;
+    outSync(
+      `PARTIAL_RESUME checkpoint task=${JSON.stringify(partial.taskKey)} ` +
+        `state=${state} passed=${passedFiles.length}/${selectedFiles.length} ` +
+        `new=${newlyPassed.length} sourceCommit=${partial.sourceCommit.slice(0, 12)}`,
+    );
+  } catch (error) {
+    // The checkpoint is an optimization and a recovery aid. A write failure must leave the
+    // integration verdict untouched, but it must be visible so the next run does not assume
+    // that the interrupted progress was durable.
+    errSync(
+      `PARTIAL_RESUME checkpoint-write-failed task=${JSON.stringify(partial.taskKey)} ` +
+        `reason=${JSON.stringify(String(error?.message ?? error))}`,
+    );
+  }
+}
+
 function persistCleanFirstPassTaskVerdict({ task: context, value }) {
+  if (context.partialResume?.armed) return;
   const summaryFailure = capturedTaskSummaryFailure(value);
   if (
     !shouldStorePassingTaskVerdict({
@@ -7791,6 +8046,9 @@ try {
       ...readExecutedMapResults(initialResultFile),
       expectsReport: executedMapReportExpectations.get(initialKey)?.expectsReport ?? null,
     });
+    // Persist completed PASS rows immediately after the child closes, including a watchdog
+    // settlement. The parser is PASS-only, so a failed row can never be turned into a skip.
+    persistPartialResumeCheckpoint(scheduled.task, value);
     persistCleanFirstPassTaskVerdict(scheduled);
   },
   // WI-1490656: send the shared-admission queue notices through `errSync`, so they land in
@@ -8096,6 +8354,7 @@ if (retryPoolTasks.length > 0) {
           context.__retry.scriptOverride,
           "retry",
         );
+        persistPartialResumeCheckpoint(context, value);
         // WI-38300: sampled IMMEDIATELY after the re-run, deliberately. loadavg()[0] is a
         // TRAILING 1-minute average, so a post-sample describes the load the RE-RUN itself
         // experienced — the thing in question. A pre-sample describes the first pass, which is
@@ -8718,6 +8977,20 @@ if (refusedForks > 0) {
   terminalEmitted = true;
   errSync(`Full run log: ${RUN_LOG_PATH}`);
   process.exit(78);
+}
+const partialResumedTasks = tasks.filter((task) => task.partialResume?.resumed);
+if (partialResumedTasks.length > 0) {
+  errSync(
+    `AFFECTED_PARTIAL_RESUME_NON_GREEN tasks=${partialResumedTasks.length} ` +
+      `reason=prior-PASS-files-skipped; run without --partial-resume for a green verdict`,
+  );
+  // A resumed task has not independently re-executed every selected file. Keep that fact in the
+  // canonical non-green tally even when the remaining files exited cleanly (or a failure was
+  // quarantined), so partial coverage can never advance the watermark or read as passed.
+  if (!failed && !undeterminedTasks) {
+    undeterminedTasks++;
+    undeterminedTaskNames.push(...partialResumedTasks.map((task) => `${task.ws.name} :: ${task.script}`));
+  }
 }
 if (undeterminedTasks) {
   // A separate marker makes the attribution greppable without forcing triage to infer

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+vi.mock('./acceptance-rubric-critique', () => ({ readCurrentAcceptanceRubricCritique: vi.fn(async () => null) }));
 import {
   ACCEPTANCE_BAR_CONTRACT_SNAPSHOT_VERSION,
   ACCEPTANCE_BAR_SNAPSHOT_ACTIVE_RUBRIC_LIMIT,
@@ -38,6 +39,20 @@ import {
 import { buildAmendmentReviewBrief } from './consult/acceptance-bar-amendment-review';
 
 const iso = '2026-09-04T12:00:00.000Z';
+
+describe('direct rubric critique in the BAR snapshot', () => {
+  it.each([['criteria-hash', 'current'], ['old-hash', 'stale']] as const)(
+    'classifies critique %s against the live identity as %s without a meta-card', (criteriaHash, state) => {
+      const input = fixture();
+      input.vettingScorecards = rows([]);
+      input.vettingCritique = { consultId: 'consult-direct', workItemId: null, rubricRevision: 2,
+        criteriaHash, createdAt: iso, critics: ['independent-reviewer'] };
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+      expect(snapshot.grading.vetting).toMatchObject({ state, scorecardId: null, critique: input.vettingCritique });
+      expect(snapshot.readiness.codes.includes('bar_snapshot_vetting_missing')).toBe(false);
+    },
+  );
+});
 
 function rows<T>(values: T[], limit = Math.max(values.length, 1), truncated = false): BoundedAcceptanceBarRows<T> {
   return { rows: values, limit, truncated };
@@ -439,7 +454,157 @@ function provedFixture(n = 2): AcceptanceBarContractSnapshotInput {
   return input;
 }
 
+function mechanicallyProvedFixture(): AcceptanceBarContractSnapshotInput {
+  const input = fixture(1);
+  const rubric = input.rubrics.rows[0]!;
+  const criterion = rubric.criteria[0]!;
+  const file = 'src/guard.test.ts';
+  const subjectPath = 'src/guard.ts';
+  criterion.check = { kind: 'tests', files: [file] };
+  criterion.barHash = computeAcceptanceBarHash(criterion);
+  const barSetHash = computeAcceptanceBarSetHash(rubric.criteria);
+  rubric.barSetHash = barSetHash;
+  input.planRows.rows[0]!.barSetHash = barSetHash;
+  Object.assign(input.clauses.rows[0]!.sourceBar!, { barHash: criterion.barHash, barSetHash });
+  const positive = currentRegisteredTestEvidence(input.evidence.rows[0]!, file, 10);
+  positive.currentness.provenance = 'server-measured';
+  positive.details = { currentMeasurement: { schemaVersion: 1, kind: 'repo-files',
+    sourcePaths: [subjectPath], testPaths: [file] } };
+  const mutation = { schemaVersion: 1 as const, probeInvocationId: 'snapshot-probe', leg: 'mutant' as const,
+    mode: 'copy-out' as const, subjectPath, mutateExpression: 's/reject/accept/', againstCommit: null,
+    subjectBeforeSha256: 'a'.repeat(64), subjectAfterSha256: 'b'.repeat(64),
+    mutantDiff: '-reject\n+accept', mutantDiffTruncated: false,
+    testCommandSha256: 'c'.repeat(64), testFileSha256: 'd'.repeat(64) };
+  const mutant: AcceptanceBarEvidenceSource = { ...structuredClone(positive), id: 11,
+    evidenceKind: 'mutation', evidenceRef: 'test-run:11:mutant', testRunId: 11,
+    testRunExecution: { ...positive.testRunExecution!, status: 'fail', passed: 0, failed: 1 },
+    testRunProvenance: { ...positive.testRunProvenance!, source: 'mutation-probe', mutationPhase: 'mutant', mutation,
+      mutationBaseline: { testRunId: 12, status: 'pass', passed: 1, failed: 0, skipped: 0,
+        collectionFailed: false, mutation: { ...mutation, leg: 'baseline' } } } };
+  input.evidence.rows = [positive, mutant];
+  return input;
+}
+
+function liveVerificationPlan(check: RubricCriterion['check']): string {
+  return ['## Requirements', '', '**R-1 — Outcome 1.**', '', '```requirement', JSON.stringify({
+    intent: { request: 'Keep the same acceptance promise.' },
+    acceptance: { condition: 'Outcome 1 is true.', falsifier: 'Outcome 1 is absent.',
+      evidencePlane: 'tree', requiredScope: ['tree'] },
+    verification: { method: 'Run the current named check.', check, replication: 'Use the live test path.' },
+  }), '```'].join('\n');
+}
+
 describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
+  it('uses live requirement check paths while preserving stored hash and vetting identities', () => {
+    const input = mechanicallyProvedFixture();
+    const rubric = input.rubrics.rows[0]!;
+    const criterion = rubric.criteria[0]!;
+    // Proof exists only for the new file. The stored copy intentionally names the old file.
+    criterion.check = { kind: 'tests', files: ['src/old-guard.test.ts'] };
+    criterion.barHash = computeAcceptanceBarHash(criterion);
+    const barSetHash = computeAcceptanceBarSetHash(rubric.criteria);
+    rubric.barSetHash = barSetHash;
+    input.planRows.rows[0]!.barSetHash = barSetHash;
+    Object.assign(input.clauses.rows[0]!.sourceBar!, { barHash: criterion.barHash, barSetHash });
+    expect(projectAcceptanceBarContractSnapshot(input).bars[0]!.proof.adequacy?.state).toBe('fail');
+    input.planRows.rows[0]!.content = liveVerificationPlan({ kind: 'tests', files: ['src/guard.test.ts'] });
+    const stored = structuredClone(rubric);
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    expect(snapshot.bars[0]).toMatchObject({ barHash: criterion.barHash,
+      check: { kind: 'tests', files: ['src/guard.test.ts'] },
+      method: 'Run the current named check.', replication: 'Use the live test path.',
+      proof: { adequacy: { state: 'pass' } } });
+    expect(snapshot.rubric).toMatchObject({ criteriaHash: rubric.criteriaHash, barSetHash });
+    expect(snapshot.grading.vetting.state).toBe('current');
+    expect(snapshot.readiness.codes).not.toContain('bar_snapshot_bar_hash_mismatch');
+    expect(snapshot.readiness.codes).not.toContain('bar_snapshot_bar_set_hash_mismatch');
+    expect(snapshot.plan).not.toHaveProperty('content');
+    expect(rubric).toEqual(stored);
+  });
+
+  it('still detects corrupt stored hashes before applying live verification', () => {
+    const input = mechanicallyProvedFixture();
+    input.rubrics.rows[0]!.criteria[0]!.barHash = 'corrupt';
+    input.planRows.rows[0]!.content = liveVerificationPlan({ kind: 'tests', files: ['src/guard.test.ts'] });
+    expect(projectAcceptanceBarContractSnapshot(input).readiness.codes).toContain('bar_snapshot_bar_hash_mismatch');
+  });
+
+  it.each(['kind-change', 'malformed', 'legacy'] as const)(
+    'keeps stored verification for a %s live requirement', kind => {
+      const input = mechanicallyProvedFixture();
+      input.planRows.rows[0]!.content = kind === 'kind-change'
+        ? liveVerificationPlan({ kind: 'instrument', instrumentKey: 'none' })
+        : kind === 'malformed' ? '## Requirements\n\n**R-1 — Bad.**\n```requirement\n{broken}\n```'
+          : '## Requirements\n\n**R-1 — Legacy.**\nOutcome 1 is true.';
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+      expect(snapshot.bars[0]!.check).toEqual({ kind: 'tests', files: ['src/guard.test.ts'] });
+      expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('pass');
+    },
+  );
+
+  it('grades named passing tests and a calibrated caught mutant mechanically through the ship lifecycle', () => {
+    const snapshot = projectAcceptanceBarContractSnapshot(mechanicallyProvedFixture());
+    expect(snapshot.bars[0]!.proof.adequacy).toMatchObject({ state: 'pass', checks: [{ verdict: 'pass',
+      wouldBlock: [], evidenceRefs: ['test-run:10:src/guard.test.ts', 'test-run:11:mutant'] }] });
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'pre-grading').codes).not.toContain('bar_snapshot_proof_inadequate');
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).not.toContain('bar_snapshot_proof_inadequate');
+  });
+
+  it('keeps supplementary native evidence visible without adding uncertainty to complete tree unit proof', () => {
+    const input = mechanicallyProvedFixture();
+    const native = currentRegisteredTestEvidence(input.evidence.rows[0]!, 'e2e/native.spec.mts', 13);
+    native.currentness = { ...native.currentness, overall: 'unknown', comparisonSupplied: true,
+      provenance: 'server-measured', dimensions: { ...native.currentness.dimensions, environment: 'unknown' },
+      unknownReasons: ['environment-current-fingerprint-not-supplied'] };
+    input.evidence.rows.push(native);
+
+    const snapshot = projectAcceptanceBarContractSnapshot(input);
+    expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('pass');
+    expect(snapshot.bars[0]!.proof.history).toContainEqual(expect.objectContaining({
+      id: 13, currentness: expect.objectContaining({ overall: 'unknown' }),
+    }));
+    expect(snapshot.bars[0]!.proof.uncertainEvidence).toBe(0);
+    expect(evaluateAcceptanceBarLifecycle(snapshot, 'pre-grading').codes).not.toContain('bar_snapshot_proof_uncertain');
+  });
+
+  it.each(['required-test', 'required-mutant', 'live-plane', 'deployed-plane', 'clause-live', 'e2e-layer'] as const)(
+    'preserves uncertainty in mechanical snapshot proof for %s', requirement => {
+      const input = mechanicallyProvedFixture();
+      const optional = currentRegisteredTestEvidence(input.evidence.rows[0]!, 'e2e/native.spec.mts', 13);
+      const uncertain = requirement === 'required-test' ? input.evidence.rows[0]!
+        : requirement === 'required-mutant' ? input.evidence.rows[1]! : optional;
+      uncertain.currentness = { ...uncertain.currentness, overall: 'unknown', comparisonSupplied: true,
+        provenance: 'server-measured', dimensions: { ...uncertain.currentness.dimensions, environment: 'unknown' },
+        unknownReasons: ['environment-current-fingerprint-not-supplied'] };
+      input.evidence.rows.push(optional);
+      if (requirement === 'live-plane' || requirement === 'deployed-plane')
+        input.rubrics.rows[0]!.criteria[0]!.evidencePlane = requirement === 'live-plane' ? 'live' : 'deployed';
+      if (requirement === 'clause-live') input.clauses.rows[0]!.requiredEvidence.push('live');
+      if (requirement === 'e2e-layer') input.clauses.rows[0]!.requiredTestLayers.push('e2e');
+
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+      expect(snapshot.bars[0]!.proof.uncertainEvidence).toBe(1);
+      expect(evaluateAcceptanceBarLifecycle(snapshot, 'pre-grading').codes).toContain('bar_snapshot_proof_uncertain');
+      if (requirement.startsWith('required-')) expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('fail');
+    },
+  );
+
+  it.each(['missing-mutant', 'uncalibrated', 'stale-test', 'stale-mutant', 'unmeasured', 'other-test'] as const)(
+    'keeps mechanical snapshot proof blocked for %s', defect => {
+      const input = mechanicallyProvedFixture();
+      const [positive, mutant] = input.evidence.rows;
+      if (defect === 'missing-mutant') input.evidence.rows = [positive!];
+      if (defect === 'uncalibrated') mutant!.testRunProvenance!.mutationBaseline = null;
+      if (defect === 'stale-test') positive!.currentness.overall = 'stale';
+      if (defect === 'stale-mutant') mutant!.currentness.overall = 'stale';
+      if (defect === 'unmeasured') positive!.currentness.provenance = 'replayed-snapshot';
+      if (defect === 'other-test') positive!.testRunProvenance!.filePath = 'src/other.test.ts';
+      const snapshot = projectAcceptanceBarContractSnapshot(input);
+      expect(snapshot.bars[0]!.proof.adequacy?.state).toBe('fail');
+      expect(evaluateAcceptanceBarLifecycle(snapshot, 'ship').codes).toContain('bar_snapshot_proof_inadequate');
+    },
+  );
+
   it('evaluates every structured tests check file even when requiredTestLayers is empty', () => {
     const input = fixture(1);
     const rubric = input.rubrics.rows[0]!;
@@ -469,7 +634,10 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     const snapshot = projectAcceptanceBarContractSnapshot(input);
     const adequacy = snapshot.bars[0]!.proof.adequacy;
 
-    expect(adequacy).toMatchObject({ checks: [{ verdict: 'unknown' }] });
+    expect(adequacy).toMatchObject({ checks: [{ verdict: 'fail' }] });
+    expect(adequacy!.checks[0]!.wouldBlock).toEqual(expect.arrayContaining([
+      expect.stringContaining('no caught mutation probe'),
+    ]));
     expect(adequacy!.checks[0]!.wouldBlock).not.toContain('correct-layer');
   });
 
@@ -1156,7 +1324,7 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
     expect(snapshot.bars[0]!.readiness.codes).toContain('bar_snapshot_proof_depth_missing');
   });
 
-  it('uses current evidence across planes for mixed-layer adequacy on a live BAR', () => {
+  it.each([false, true])('uses current evidence across planes for mixed-layer adequacy on a live BAR (nested=%s)', (nested) => {
     const input = provedFixture(1);
     const criterion = input.rubrics.rows[0]!.criteria[0]!;
     const clause = input.clauses.rows[0]!;
@@ -1173,8 +1341,8 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
 
     const treeUnit = input.evidence.rows[0]!;
     treeUnit.details = {
-      evidencePlane: 'tree',
-      adequacy: { ...(treeUnit.details.adequacy as object), testLayer: 'unit' },
+      ...(!nested ? { evidencePlane: 'tree' } : {}),
+      adequacy: { ...(treeUnit.details.adequacy as object), testLayer: 'unit', ...(nested ? { evidencePlane: 'tree' } : {}) },
     };
     treeUnit.testRunExecution = { ...treeUnit.testRunExecution!, testLayer: 'unit' };
     const liveE2e = {
@@ -1184,8 +1352,8 @@ describe('AcceptanceBarContractSnapshot — pure bounded projection', () => {
       evidenceRef: 'test:e2e',
       bindingFingerprint: 'binding-e2e',
       details: {
-        evidencePlane: 'live',
-        adequacy: { ...(treeUnit.details.adequacy as object), testLayer: 'e2e' },
+        ...(!nested ? { evidencePlane: 'live' } : {}),
+        adequacy: { ...(treeUnit.details.adequacy as object), testLayer: 'e2e', ...(nested ? { evidencePlane: 'live' } : {}) },
       },
     };
     liveE2e.testRunExecution = { ...treeUnit.testRunExecution!, testLayer: 'e2e' };
@@ -1516,6 +1684,60 @@ describe('AcceptanceBarContractSnapshot — semantic dry-run diff', () => {
       expect.objectContaining({ barKey: 'R-1', kinds: ['method-only'], fields: ['method'] }),
     ]);
   });
+
+  it.each(['add', 'replace', 'remove'] as const)(
+    'keeps a replication-only %s visible in the shared diff and full-replacement review excerpt (EI-26146508253136257)',
+    (operation) => {
+      const input = fixture(3);
+      const rubric = input.rubrics.rows[0]!;
+      // Force the real excerpt path with an unchanged prefix, rather than a small
+      // patch that happens to show the omitted replication change in full.
+      rubric.criteria[0]!.method = 'An unchanged detailed procedure. '.repeat(120);
+      rubric.criteria[1]!.replication = operation === 'add' ? undefined : 'Original replication drill.';
+      const before = projectAcceptanceBarContractSnapshot(input);
+      const nextCriteria = rubric.criteria.map((criterion) => criterion.barKey === 'R-2'
+        ? { ...criterion, replication: operation === 'remove' ? undefined : 'Run the revised replication drill.' }
+        : criterion);
+      const candidate = buildAcceptanceBarAmendmentCandidate(
+        before,
+        nextCriteria,
+        new Map(before.bars.map((bar) => [bar.barKey, { planItemIds: bar.mappings.map((mapping) => mapping.planItemId) }])),
+        new Map(input.planItems.rows.map((item) => [item.itemId, item.status])),
+        {
+          rubricRevision: 3,
+          subjectPlanRevision: 8,
+          barSetHash: computeAcceptanceBarSetHash(nextCriteria),
+          barContract: { ...rubric.barContract!, subjectPlanRevision: 8 },
+        },
+      );
+      const diff = diffAcceptanceBarContractSnapshots(before, candidate, 'amend');
+      const approval = {
+        schemaVersion: 1,
+        kind: 'acceptance-bar-amendment-approval',
+        rubricRef: rubric.rubricId,
+        subjectPlan: rubric.subjectPlan!,
+        bars: [],
+      } as const;
+      const brief = buildAmendmentReviewBrief({
+        rubricRef: rubric.rubricId,
+        previewPostRef: 'thread-post:42',
+        preview: { approval: { ...approval, bars: [] }, changes: diff.changes },
+        patch: { criteria: nextCriteria },
+      });
+      const excerpt = JSON.parse(brief.split('```json\n')[1]!.split('\n```')[0]!);
+
+      expect(candidate.bars.map((bar) => bar.barHash)).toEqual(before.bars.map((bar) => bar.barHash));
+      expect(computeAcceptanceBarSetHash(nextCriteria)).toBe(rubric.barSetHash);
+      expect(diff).toMatchObject({ changed: true, requiresAmendment: false });
+      expect(diff.changes).toEqual([{ barKey: 'R-2', kinds: ['method-only'], fields: ['replication'] }]);
+      expect(brief).toContain('Changed BARs: R-2 (method-only: replication).');
+      expect(excerpt.changedCriteria).toEqual([JSON.parse(JSON.stringify(nextCriteria[1]))]);
+      expect(excerpt.omittedUnchangedBarKeys).toEqual(['R-1', 'R-3']);
+      expect(excerpt).not.toHaveProperty('criteria');
+      expect(brief).toContain('must not be submitted to rubrics:amend');
+      expect(brief).toContain(JSON.stringify(approval));
+    },
+  );
 
   it('reports changed requirement intent in the amendment candidate diff', () => {
     const input = fixture(1);

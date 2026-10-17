@@ -463,7 +463,6 @@ describe('volatile measurement validation (EI-20191740437408337)', () => {
           body: 'currently 4 open',
           createdBy: 'su-test',
           measuredAt: '2026-08-11T20:50:00.000Z',
-          ttlSec: 3600, // P-001: an explicit lifetime is required to reach SQL.
         },
         failSql,
       ),

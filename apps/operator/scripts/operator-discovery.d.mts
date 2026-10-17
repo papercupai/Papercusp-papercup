@@ -40,6 +40,13 @@ export function resolveOperatorBase(args?: {
     preferSelfPort?: boolean;
 }): string;
 /**
+ * Return a dialable TCP port from an operator-host environment. `0` means
+ * "bind any free port" and is not an address callers can connect to; malformed
+ * and out-of-range values are likewise ignored so the normal discovery chain
+ * remains authoritative.
+ */
+export function validLocalPort(raw: any): string | null;
+/**
  * Swap `url`'s origin for `freshBase`, keeping path/query/hash. Returns null
  * when either side is unparseable or the origin is already `freshBase` (no
  * move). Exported for tests.

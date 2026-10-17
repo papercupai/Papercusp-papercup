@@ -406,8 +406,8 @@ export function headlineTsQuery(sql: Sql, engine: LexicalEngine, query: string):
 
 /** The lexical leg for one query over one corpus. */
 export async function lexicalLeg(sql: Sql, req: LexicalLegRequest): Promise<LexicalLeg> {
-  if ((await lexicalEngine(sql, req.table)) === 'bm25') {
-    const leg = bm25Leg(sql, bm25Corpus(req.table), req.query, req.alias);
+  const leg = await bm25LegIfAvailable(sql, req.table, req.query, req.alias);
+  if (leg) {
     if (req.querySyntax === 'websearch' && usesWebsearchOperators(req.query)) {
       return { ...leg, match: sql`(${leg.match}) AND (${req.legacy.match})` };
     }
@@ -602,9 +602,27 @@ export function percentileMs(samples: readonly number[], p: number): number {
   return sorted[Math.min(sorted.length, Math.max(1, rank)) - 1]!;
 }
 
+/** Warm every query once before timing the set, so the p95 describes steady-state
+ * query latency instead of the first read of each canary's posting pages. */
+export async function measureWarmBm25QueryLatencies(
+  queries: readonly string[],
+  run: (query: string) => unknown,
+  now: () => number = () => performance.now(),
+): Promise<number[]> {
+  for (const query of queries) await run(query);
+
+  const samplesMs: number[] = [];
+  for (const query of queries) {
+    const started = now();
+    await run(query);
+    samplesMs.push(now() - started);
+  }
+  return samplesMs;
+}
+
 /**
- * Time the canary queries through the seam's own BM25 fragments (top-10, as callers run
- * them). `null` when the corpus has no usable BM25 index here, so there is nothing to time.
+ * Time the canary queries through the guarded BM25 top-k path used by search callers.
+ * `null` when the corpus has no usable BM25 index here, so there is nothing to time.
  */
 export async function measureBm25Latency(
   sql: Sql,
@@ -613,20 +631,31 @@ export async function measureBm25Latency(
 ): Promise<Bm25Latency | null> {
   const corpus = bm25Corpus(table);
   if (!(await readBm25Indexes(sql)).has(corpus.indexName)) return null;
-  const from = sql.unsafe(`${SCHEMA}.${corpus.table}`);
-  const run = (query: string) => {
+  const scanScore = (await readBm25ScanScore(sql)) ? sql`bm25_get_current_score()` : null;
+  const run = async (query: string) => {
     const leg = bm25Leg(sql, corpus, query);
-    return sql`SELECT ${leg.score} AS score FROM ${from} WHERE ${leg.match} ORDER BY ${leg.order} LIMIT 10`;
+    return runBm25TopK<{ bm25_d: number }>(
+      sql,
+      sql,
+      {
+        distance: leg.distance!,
+        scanScore,
+        columns: sql`1 AS one`,
+        from: sql.unsafe(`${SCHEMA}.${corpus.table}`),
+        where: sql`TRUE`,
+        limit: 10,
+      },
+      async (topK) => await sql<Array<{ bm25_d: number }>>`
+        SELECT bm25_d
+          FROM (${topK}) bm25
+      ORDER BY bm25_d`,
+      (row) => Number(row.bm25_d),
+      // Health canaries exercise the same query path without counting as user-search
+      // fallback telemetry.
+      () => false,
+    );
   };
-  // One untimed query first: with eight samples p95 is the slowest one, and a cold first
-  // query (planning, index metapage reads) would otherwise be judged as steady-state latency.
-  if (queries[0] !== undefined) await run(queries[0]);
-  const samplesMs: number[] = [];
-  for (const query of queries) {
-    const started = performance.now();
-    await run(query);
-    samplesMs.push(performance.now() - started);
-  }
+  const samplesMs = await measureWarmBm25QueryLatencies(queries, run);
   return {
     corpusIndex: corpus.indexName,
     samplesMs,

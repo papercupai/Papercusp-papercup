@@ -8,6 +8,16 @@ function positiveConfig(value: unknown, fallback: number): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+/**
+ * The dispatcher routine is also the spend pause surface for binding actions.
+ * Keep the whole-routine `active:false` pause untouched: it is an explicit
+ * owner disarm and cancels every queued receipt. This flag only holds the
+ * model-spending action classes while deterministic bindings drain.
+ */
+export function spendPauseEnabled(triggerConfig: Record<string, unknown>): boolean {
+  return triggerConfig.spend_paused === true || triggerConfig.spendPaused === true;
+}
+
 export async function runExternalTriggerDispatch(
   ctx: SystemActionCtx,
 ): Promise<TriggerDispatchResult> {
@@ -15,6 +25,7 @@ export async function runExternalTriggerDispatch(
   return dispatchPendingTriggerRuns(sql, {
     batchSize: positiveConfig(ctx.triggerConfig.batch_size, 25),
     staleAfterSeconds: positiveConfig(ctx.triggerConfig.stale_after_seconds, 60),
+    spendPaused: spendPauseEnabled(ctx.triggerConfig),
   });
 }
 

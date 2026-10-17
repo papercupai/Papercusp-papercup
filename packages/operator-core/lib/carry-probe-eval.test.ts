@@ -22,6 +22,7 @@ import {
   type ContinuityProbe,
 } from './continuity-probes';
 import type { CheckEntry } from './carry-note';
+import { currentRequestWorkspaceId, runWithWorkspace } from './workspace-als';
 
 function projected(name: string, effect: 'read' | 'write', properties: Record<string, unknown>) {
   return {
@@ -78,6 +79,29 @@ describe('carriedProbeSources', () => {
 });
 
 describe('R-1 / R-25: changed and could-not-run probes get a line; matching probes print nothing', () => {
+  it('the default delivery path selects the carried workspace instead of the ambient workspace', async () => {
+    const palette = await import('./capabilities/invoke');
+    const dispatch = vi.spyOn(palette, 'dispatchPaletteTarget').mockImplementation(async () =>
+      currentRequestWorkspaceId() === 'delivery-workspace'
+        ? { content: [{ type: 'text', text: '{"state":"red"}' }] }
+        : { isError: true, content: [{ type: 'text', text: 'harness_not_found' }] },
+    );
+    const sources = carriedProbeSources({ loop: { ownerId: 'su-me', checks: [check('control is green', probe('status:read', 'ok'))] } });
+    try {
+      await runWithWorkspace('another-workspace', async () => {
+        const changed = await carriedProbeBlockForDelivery(sources, { harness: 'papercusp', workspaceId: 'delivery-workspace' });
+        expect(changed).toContain('CHANGED — control is green [loop check 1]: observed "red"');
+        expect(changed).not.toContain('COULD NOT RUN');
+        const missingScope = await carriedProbeBlockForDelivery(sources, { harness: 'papercusp' });
+        expect(missingScope).toContain('COULD NOT RUN');
+        expect(missingScope).toContain('harness_not_found');
+        expect(currentRequestWorkspaceId()).toBe('another-workspace');
+      });
+    } finally {
+      dispatch.mockRestore();
+    }
+  });
+
   it('renders a changed probe with its observed value and a probe that could not run with its reason', async () => {
     const dispatchTool = statusDispatcher();
     const sources = carriedProbeSources({

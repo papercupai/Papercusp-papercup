@@ -355,7 +355,7 @@ async function organizationsByDomain(sql: Sql, workspaceId: string, domains: rea
   const rows = await sql<Array<{ feature_id: string; keys: unknown }>>`
     SELECT feature_id, payload->'identityKeys' AS keys FROM harness_shared.work_items
      WHERE workspace_id = ${workspaceId} AND item_kind = ${ORGANIZATION_DATATYPE} AND nature = 'record'
-       AND feature_id LIKE 'ORG-%' AND NOT (payload ? 'mergedInto')
+       AND feature_id LIKE 'ORG-%' AND NOT (payload ? 'mergedInto') AND NOT (payload ? 'retiredAt')
        AND payload->'identityKeys' ?| ${sql.array(keys)}::text[]
      ORDER BY created_ts, feature_id`;
   for (const row of rows) {
@@ -705,7 +705,8 @@ export async function relinkPersonsForOrganizations(
   if (input.organizationIds.length === 0) return null;
   const orgs = await sql<Array<{ keys: unknown; members: unknown }>>`
     SELECT payload->'identityKeys' AS keys, payload->'memberRecordIds' AS members FROM harness_shared.work_items
-     WHERE workspace_id = ${input.workspaceId} AND feature_id = ANY(${sql.array([...input.organizationIds])}::text[])`;
+     WHERE workspace_id = ${input.workspaceId} AND feature_id = ANY(${sql.array([...input.organizationIds])}::text[])
+       AND NOT (payload ? 'mergedInto') AND NOT (payload ? 'retiredAt')`;
   const domains = orgs.flatMap((o) => stringArray(o.keys)).filter((k) => k.startsWith('domain:')).map((k) => k.slice(7));
   const orgRecords = orgs.flatMap((o) => stringArray(o.members));
   if (domains.length === 0 && orgRecords.length === 0) return null;
@@ -740,9 +741,14 @@ export async function getCanonicalEntity(
       SELECT feature_id, title, payload FROM harness_shared.work_items
        WHERE workspace_id = ${workspaceId} AND item_kind = ${datatype} AND feature_id = ${current}`;
     if (!row) return null;
-    const next = str(row.payload?.mergedInto);
-    if (!next) return { id: row.feature_id, datatype, title: row.title, payload: row.payload ?? {} };
-    current = next;
+    const payload = row.payload ?? {};
+    const next = str(payload.mergedInto);
+    if (next) {
+      current = next;
+      continue;
+    }
+    if (str(payload.retiredAt)) return null;
+    return { id: row.feature_id, datatype, title: row.title, payload };
   }
   return null;
 }
@@ -757,7 +763,7 @@ export async function findEntityByIdentity(
   const [row] = await sql<Array<{ feature_id: string; title: string; payload: Record<string, unknown> | null }>>`
     SELECT feature_id, title, payload FROM harness_shared.work_items
      WHERE workspace_id = ${workspaceId} AND item_kind = ${datatype} AND nature = 'record'
-       AND feature_id LIKE ${`${SPECS[datatype].prefix}-%`} AND NOT (payload ? 'mergedInto')
+       AND feature_id LIKE ${`${SPECS[datatype].prefix}-%`} AND NOT (payload ? 'mergedInto') AND NOT (payload ? 'retiredAt')
        AND payload->'identityKeys' ? ${key}
      ORDER BY created_ts, feature_id LIMIT 1`;
   return row ? { id: row.feature_id, datatype, title: row.title, payload: row.payload ?? {} } : null;
@@ -779,7 +785,7 @@ export async function resolveInteractionParticipants(
   const rows = await sql<Array<{ feature_id: string; keys: unknown }>>`
     SELECT feature_id, payload->'identityKeys' AS keys FROM harness_shared.work_items
      WHERE workspace_id = ${workspaceId} AND item_kind = ${PERSON_DATATYPE} AND nature = 'record'
-       AND feature_id LIKE 'PER-%' AND NOT (payload ? 'mergedInto')
+       AND feature_id LIKE 'PER-%' AND NOT (payload ? 'mergedInto') AND NOT (payload ? 'retiredAt')
        AND payload->'identityKeys' ?| ${sql.array([...keys])}::text[]
      ORDER BY feature_id`;
   const held = new Set(rows.flatMap((r) => stringArray(r.keys)));

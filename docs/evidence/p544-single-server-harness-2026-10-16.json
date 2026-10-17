@@ -1,0 +1,32 @@
+{
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "item": "P-544",
+  "measuredAt": "2026-10-16T20:16:05Z",
+  "scope": "Maintained experiment harness verification; no VM capacity or deployed shipment verdict",
+  "corrections": [
+    {
+      "issue": "EI-26167994438145938",
+      "rootCause": "Package global user-unit enable also starts an SSH-account server outside the measured tenant cgroup",
+      "fix": "Exclude and verify SSH account before package activation; check exact live server population before benchmark mutation",
+      "vmProof": "/tmp/p544-single-server-correction.log",
+      "preservedOriginal": "/tmp/p544-native-evidence/p544-native50-4g.tgz",
+      "originalQualification": "Confounded two-server workload, not a single-workspace sizing result"
+    },
+    {
+      "issue": "EI-26168313571300589",
+      "rootCause": "Printing 512 lines before SHA256 lets a 10-token native poll truncate the digest despite exit0",
+      "fix": "Shared native task prompt hashes the full unchanged file without printing it and requests512 output tokens for execution and polls",
+      "originalQualification": "Unverified hash result; not evidence of a resource-induced task failure"
+    }
+  ],
+  "tests": [
+    {"path": "scripts/agent-capacity/vm/install-server.test.ts", "runId": "ca6771d7-96f3-466b-9aa6-a5f9a9f44345", "ledgerId": 21288643, "passed": 15, "failed": 0, "skipped": 0},
+    {"path": "scripts/agent-capacity/vm/swap-tier.test.ts", "taskId": "0mvbeqdujinhqfb1a6v", "log": "/tmp/p544-single-server-driver-tests.log", "passed": 51, "failed": 0, "skipped": 0, "scope": "Local working-tree bytes; stamped, no source drift"}
+  ],
+  "sha256": {
+    "scripts/agent-capacity/vm/install-server.sh": "b73322da9a04062238f702d132d1e6dee64710ee02987c91ed6ed617ddba8ebe",
+    "scripts/agent-capacity/vm/install-server.test.ts": "5fd45ea74fbfca00c5d053eb6133518d80f34c5cf60d055d8c720db6a978d628",
+    "scripts/agent-capacity/vm/swap-tier.py": "4be7e612714e9c313e504b201347417bfe8b19db6b27a3084093199a20bcef97",
+    "scripts/agent-capacity/vm/swap-tier.test.ts": "cb22dea3495b796662b92c77d01563b0a3f36c31998b1a0d4e635b3cb8a7acb5"
+  }
+}

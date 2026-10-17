@@ -21,9 +21,10 @@ import type { ProviderAdapter, ProviderDescriptor, ProviderOAuthDescriptor } fro
 vi.mock('../plugin-host-runtime', () => ({ whenProvidersRegistered: async () => undefined }));
 
 import { providerRegistry } from './provider-registry';
-import { resolveOAuthProvider } from './connection-lifecycle';
+import { connectionAdapterForPlugin, descriptorOAuthPlugin, resolveOAuthProvider } from './connection-lifecycle';
 import {
   clientRegistrationRefOf,
+  instanceClientRegistrationRef,
   OAuthClientRegistrationError,
   oauthClientRegistrationStatus,
   oauthClientRegistrationStatuses,
@@ -79,6 +80,7 @@ beforeEach(async () => {
 afterEach(async () => {
   providerRegistry().unregisterPlugin(PLUGIN_NAME);
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   await fs.rm(home, { recursive: true, force: true });
 });
 
@@ -96,6 +98,64 @@ describe('clientRegistrationRefOf', () => {
 });
 
 describe('saveOAuthClientRegistration', () => {
+  it('stores a supplied User-Agent, exposes its public status, preserves omission and refuses unsafe or missing required values', async () => {
+    const userAgent = 'desktop:unit-app:1.0 (by /u/fixture-contact)';
+    const options = { requireSecret: true, requireUserAgent: true };
+    await expect(saveOAuthClientRegistration('unit-agent', { clientId: 'client', clientSecret: SECRET }, options))
+      .rejects.toMatchObject({ code: 'user-agent-required' });
+    await expect(fs.stat(file())).rejects.toMatchObject({ code: 'ENOENT' });
+    const status = await saveOAuthClientRegistration('unit-agent', { clientId: 'client', clientSecret: SECRET, userAgent }, options);
+    expect(status.userAgent).toBe(userAgent);
+    expect(JSON.stringify(status)).not.toContain(SECRET);
+    await saveOAuthClientRegistration('unit-agent', { clientId: 'renamed' }, options);
+    const before = await fs.readFile(file(), 'utf8');
+    for (const invalid of ['bad\r\ninjected: value', 'bad\tvalue', 'non-ascii-é', 'a'.repeat(513), null, 42]) {
+      await expect(saveOAuthClientRegistration('unit-agent', { clientId: 'client', userAgent: invalid }, options))
+        .rejects.toMatchObject({ code: 'invalid-user-agent' });
+      expect(await fs.readFile(file(), 'utf8')).toBe(before);
+    }
+    await expect(saveOAuthClientRegistration('unit-agent', { clientId: 'client', userAgent: '' }, options))
+      .rejects.toMatchObject({ code: 'user-agent-required' });
+    expect((await readFile())['unit-agent'].userAgent).toBe(userAgent);
+    await saveOAuthClientRegistration('unit-agent', { clientId: 'client', userAgent: '' }, { requireSecret: true });
+    expect((await readFile())['unit-agent'].userAgent).toBeUndefined();
+  });
+  it('retains independent instance registrations when the card selects a different origin', async () => {
+    const first = { origin: 'https://first.example.com', clientId: 'first-client', clientSecret: SECRET };
+    const second = { origin: 'https://second.example.com', clientId: 'second-client', clientSecret: OTHER_SECRET };
+    const options = { requireSecret: true, requireOrigin: true };
+    await saveOAuthClientRegistration('instance-provider', first, options);
+    const status = await saveOAuthClientRegistration('instance-provider', second, options);
+    const saved = await readFile();
+    expect(saved[instanceClientRegistrationRef('instance-provider', first.origin)]).toMatchObject(first);
+    expect(saved[instanceClientRegistrationRef('instance-provider', second.origin)]).toMatchObject(second);
+    expect(saved['instance-provider']).toMatchObject(second);
+    expect(status).toMatchObject({ origin: second.origin, clientId: second.clientId });
+    expect(JSON.stringify(status)).not.toContain(OTHER_SECRET);
+    // Revisiting the first instance can reuse only that instance's saved secret.
+    await saveOAuthClientRegistration('instance-provider', { origin: first.origin, clientId: 'first-renamed' }, options);
+    expect((await readFile())['instance-provider']).toMatchObject({ origin: first.origin, clientSecret: SECRET });
+  });
+
+  it('cannot borrow the previous instance secret when the selected origin changes', async () => {
+    const options = { requireSecret: true, requireOrigin: true };
+    await saveOAuthClientRegistration('instance-provider', { origin: 'https://first.example.com', clientId: 'first', clientSecret: SECRET }, options);
+    const before = await fs.readFile(file(), 'utf8');
+    await expect(saveOAuthClientRegistration('instance-provider', { origin: 'https://second.example.com', clientId: 'second' }, options))
+      .rejects.toMatchObject({ code: 'client-secret-required' });
+    expect(await fs.readFile(file(), 'utf8')).toBe(before);
+  });
+
+  it('refuses missing or unsafe origins without writing or echoing submitted values', async () => {
+    for (const origin of [undefined, 'http://first.example.com', 'https://secret@first.example.com', 'https://127.0.0.1', 'https://first.example.com/path']) {
+      const error = await saveOAuthClientRegistration('instance-provider', { origin, clientId: 'client', clientSecret: SECRET }, { requireSecret: true, requireOrigin: true }).catch((e) => e);
+      expect(error).toMatchObject({ code: 'invalid-instance-origin' });
+      expect(error.message).not.toContain('secret@');
+    }
+    await expect(fs.stat(file())).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(saveOAuthClientRegistration('plain-provider', { origin: 'https://first.example.com', clientId: 'client' }, { requireSecret: false }))
+      .rejects.toMatchObject({ code: 'invalid-instance-origin' });
+  });
   it('reports an unsaved registration as not configured, with the operator callback as redirect URL', async () => {
     expect(await oauthClientRegistrationStatus('unit-solo')).toEqual({
       ref: 'unit-solo',
@@ -184,6 +244,51 @@ describe('saveOAuthClientRegistration', () => {
 });
 
 describe('the connect flow reads what the page saved (SPEC-R-2-P-009)', () => {
+  it('uses the saved User-Agent for exchange, refresh and account identity and refuses a legacy registration without it', async () => {
+    const d = descriptor('unit-agent', { userAgentRequired: true, identity: { url: 'https://auth.unit-oauth.test/me', idField: 'id' } });
+    await providerRegistry().register({ descriptor: d, adapter: adapter(d), pluginName: PLUGIN_NAME });
+    await saveOAuthClientRegistration(d.id, { clientId: 'client', clientSecret: SECRET }, { requireSecret: true });
+    expect(await resolveOAuthProvider(`provider:${d.id}`)).toBeNull();
+    const userAgent = 'desktop:unit-app:1.0 (by /u/fixture-contact)';
+    await saveOAuthClientRegistration(d.id, { clientId: 'client', userAgent }, { requireSecret: true, requireUserAgent: true });
+    const fetch = vi.fn(async (url: URL | string, _init?: RequestInit) => String(url).endsWith('/me') ? Response.json({ id: 'account' }) : Response.json({ access_token: 'fresh' }));
+    vi.stubGlobal('fetch', fetch);
+    const provider = (await resolveOAuthProvider(`provider:${d.id}`))!;
+    await provider.exchangeCode('code'); await provider.refresh('refresh');
+    await connectionAdapterForPlugin(`provider:${d.id}`)!.resolveAccount('access');
+    expect(fetch).toHaveBeenCalledTimes(3);
+    for (const [, init] of fetch.mock.calls) expect(new Headers(init?.headers).get('user-agent')).toBe(userAgent);
+  });
+  it('pins an old account’s authorize, identity and refresh to its own origin after selecting another instance', async () => {
+    const d = { ...descriptor('unit-instance', { instance: true, authorizeUrl: '/oauth/authorize', tokenUrl: '/oauth/token',
+      clientRegistrationRef: 'unit-instance', identity: { url: '/api/v1/me', idField: 'id' } }), egressHosts: [] };
+    await providerRegistry().register({ descriptor: d, adapter: adapter(d), pluginName: PLUGIN_NAME });
+    const options = { requireSecret: true, requireOrigin: true };
+    const firstOrigin = 'https://first.example.com'; const secondOrigin = 'https://second.example.com';
+    await saveOAuthClientRegistration('unit-instance', { origin: firstOrigin, clientId: 'first-client', clientSecret: SECRET, userAgent: 'first-app/1.0' }, options);
+    await saveOAuthClientRegistration('unit-instance', { origin: secondOrigin, clientId: 'second-client', clientSecret: OTHER_SECRET, userAgent: 'second-app/1.0' }, options);
+    expect(await resolveOAuthProvider('provider:unit-instance')).toBeNull();
+    expect(await resolveOAuthProvider('provider:unit-instance@foreign.example.com')).toBeNull();
+    const plugin = descriptorOAuthPlugin(d, firstOrigin);
+    const provider = (await resolveOAuthProvider(plugin))!;
+    expect(new URL(provider.buildAuthorizeUrl(['read'], 'state')).origin).toBe(firstOrigin);
+    expect(provider.config.clientId).toBe('first-client');
+    const fetch = vi.fn(async (url: URL | string) => String(url).endsWith('/me') ? Response.json({ id: 'same-local-id' }) : Response.json({ access_token: 'fresh' }));
+    vi.stubGlobal('fetch', fetch);
+    await provider.refresh('old-first-instance-refresh');
+    const refreshCall = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(refreshCall[0]).toBe(`${firstOrigin}/oauth/token`);
+    expect(new URLSearchParams(refreshCall[1].body as string).get('client_secret')).toBe(SECRET);
+    const firstAccount = await connectionAdapterForPlugin(plugin)!.resolveAccount('first-access');
+    const secondAccount = await connectionAdapterForPlugin(descriptorOAuthPlugin(d, secondOrigin))!.resolveAccount('second-access');
+    expect(firstAccount).toMatchObject({ providerAccountId: 'first.example.com:same-local-id', sourceConfig: { connectionOrigin: firstOrigin, connectionAccountId: 'same-local-id' } });
+    expect(secondAccount.providerAccountId).toBe('second.example.com:same-local-id');
+    expect((fetch.mock.calls[1] as unknown as [URL, RequestInit])[1].redirect).toBe('manual');
+    expect(new Headers((fetch.mock.calls[1] as unknown as [URL, RequestInit])[1].headers).get('user-agent')).toBe('first-app/1.0');
+    expect(new Headers((fetch.mock.calls[2] as unknown as [URL, RequestInit])[1].headers).get('user-agent')).toBe('second-app/1.0');
+    expect(connectionAdapterForPlugin('provider:unit-instance')).toBeNull();
+    expect(connectionAdapterForPlugin('provider:unit-instance@first.example.com:8443')).toBeNull();
+  });
   it('resolveOAuthProvider builds the provider from the saved registration under the derived key', async () => {
     const lead = descriptor('unit-a-chat', { credentialGroup: 'unit-a', clientRegistrationRef: 'byo-a' });
     const member = descriptor('unit-b-tickets', { credentialGroup: 'unit-a' });

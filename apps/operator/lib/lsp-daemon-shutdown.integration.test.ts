@@ -15,7 +15,7 @@ import { killScopeUnit } from '@papercusp/operator-core/lib/task-manager/control
 
 interface Resources { dbPid: number; taskId: string }
 
-it.runIf(process.platform === 'linux')('drains default resources before exiting, leaving no DB, socket or adapter descendants', async () => {
+it.runIf(process.platform === 'linux')('drains default resources when its declared parent dies, leaving no DB, socket or adapter descendants', async () => {
   const db = await createOrgTestDb();
   const catalogDsn = new URL(db.adminDsn);
   catalogDsn.pathname = '/postgres';
@@ -27,16 +27,25 @@ it.runIf(process.platform === 'linux')('drains default resources before exiting,
   writeFileSync(file, 'export const answer = 42;\nconsole.log(answer);\n');
   const serverPath = fileURLToPath(new URL('../../../packages/operator-core/lib/code-intelligence/lsp-daemon-server.ts', import.meta.url));
   const adapterPath = fileURLToPath(new URL('../../../packages/operator-core/lib/code-intelligence/lsp-adapter.ts', import.meta.url));
-  const shutdownPath = fileURLToPath(new URL('./lsp-daemon-shutdown.ts', import.meta.url));
+  const shutdownPath = fileURLToPath(new URL('./lsp-daemon-shutdown.mts', import.meta.url));
+  const watchPath = fileURLToPath(new URL('../../../packages/operator-core/lib/process-supervision/parent-death-watch.ts', import.meta.url));
+  // The test runner stays alive to verify cleanup. This owned process models
+  // the host primary declared by the real sidecar spawn plan.
+  const declaredParent = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], {
+    stdio: 'ignore', env: { ...process.env, NODE_OPTIONS: '' },
+  });
+  const parentTerminal = once(declaredParent, 'exit');
+  expect(declaredParent.pid).toBeGreaterThan(0);
   const script = `
     // tsx exposes the app's CommonJS package through default, whereas the
     // operator-core and DB packages export ESM names. Normalize at this seam.
     const load = async path => { const ns = await import(path); return ns.default ?? ns; };
     const { runLspDaemonServer } = await load(${JSON.stringify(serverPath)});
     const { createLspDaemonShutdown } = await load(${JSON.stringify(shutdownPath)});
+    const { startSidecarParentDeathWatch } = await load(${JSON.stringify(watchPath)});
     const { lspQuery, lspClientInventory } = await load(${JSON.stringify(adapterPath)});
     const { getOrgPg } = await load('@papercusp/db-org');
-    for (const fn of [runLspDaemonServer, createLspDaemonShutdown, lspQuery, lspClientInventory, getOrgPg]) {
+    for (const fn of [runLspDaemonServer, createLspDaemonShutdown, startSidecarParentDeathWatch, lspQuery, lspClientInventory, getOrgPg]) {
       if (typeof fn !== 'function') throw new Error('daemon fixture import preflight failed');
     }
     (async () => {
@@ -47,6 +56,7 @@ it.runIf(process.platform === 'linux')('drains default resources before exiting,
       sql.end = async (...args) => { await end(...args); process.stdout.write('DATABASE_DRAINED\\n'); };
       const server = runLspDaemonServer(undefined, undefined, createLspDaemonShutdown());
       await new Promise((resolve, reject) => { server.once('listening', resolve); server.once('error', reject); });
+      startSidecarParentDeathWatch();
       await lspQuery('definition', { file: ${JSON.stringify(file)}, rootPath: ${JSON.stringify(root)}, line1: 2, character: 13 });
       const [client] = lspClientInventory();
       if (!client) throw new Error('pinned adapter failed to register a client');
@@ -55,8 +65,10 @@ it.runIf(process.platform === 'linux')('drains default resources before exiting,
   `;
   const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, DATABASE_URL: db.adminDsn, HARNESS_ADMIN_DATABASE_URL: db.adminDsn,
-      HARNESS_DATABASE_URL: db.appDsn, PAPERCUSP_LSP_DAEMON_SOCKET: socketPath },
+    env: { ...process.env, NODE_OPTIONS: '', DATABASE_URL: db.adminDsn, HARNESS_ADMIN_DATABASE_URL: db.adminDsn,
+      HARNESS_DATABASE_URL: db.appDsn, PAPERCUSP_LSP_DAEMON_SOCKET: socketPath,
+      PAPERCUSP_HOME: root, PAPERCUSP_DESKTOP: '0', PAPERCUSP_PARENT_DEATH_WATCH: '1',
+      PAPERCUSP_DESKTOP_PARENT_PID: String(declaredParent.pid) },
   });
   const terminal = once(child, 'exit');
   const stdioClosed = once(child, 'close');
@@ -90,12 +102,15 @@ it.runIf(process.platform === 'linux')('drains default resources before exiting,
     await once(socket, 'connect');
     const socketClosed = once(socket, 'close');
     const started = Date.now();
-    child.kill('SIGTERM');
+    declaredParent.kill('SIGTERM');
+    await parentTerminal;
     const [code, signal] = await terminal;
     await stdioClosed;
     await socketClosed;
     expect({ code, signal }, errors.text()).toEqual({ code: 0, signal: null });
-    expect(Date.now() - started).toBeLessThan(8_000);
+    // Five-second parent sampling plus the existing eight-second drain bound.
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(readFileSync(join(root, 'parent-death.log'), 'utf8')).toContain(`declared parent pid ${declaredParent.pid} is gone`);
     expect(output.text()).toContain('DATABASE_DRAINED');
     expect(errors.peek()).not.toContain('shutdown deadline exceeded');
     expect(errors.peek()).not.toContain('resource shutdown failed');
@@ -107,6 +122,8 @@ it.runIf(process.platform === 'linux')('drains default resources before exiting,
     expect(await catalog`SELECT pid FROM pg_stat_activity WHERE pid = ${resources.dbPid}`).toHaveLength(0);
   } finally {
     socket?.destroy();
+    if (declaredParent.exitCode === null && declaredParent.signalCode === null) declaredParent.kill('SIGKILL');
+    await parentTerminal;
     // Even a boot/assertion failure cleans only scopes registered in our DB.
     const tasks = await db.adminSql`SELECT scope_unit FROM harness_shared.task_ledger WHERE scope_unit IS NOT NULL`;
     for (const task of tasks) await killScopeUnit(task.scope_unit, { signal: 'SIGKILL' });

@@ -9,6 +9,10 @@ let deadProxyAlerts: (
   s: unknown,
   opts?: { minAttempts?: number; rateThreshold?: number },
 ) => Array<{ accountId: string; rate: number; attempts: number; fails: number }>;
+let upstreamTransportAlerts: (
+  s: unknown,
+  opts?: { minAttempts?: number; rateThreshold?: number },
+) => Array<{ accountId: string; rate: number; attempts: number; fails: number }>;
 let egressPoolDownAlert: (
   s: unknown,
 ) => { totalProxyEntries: number; reachableProxyEntries: number } | null;
@@ -16,7 +20,7 @@ let sharedDirectEgressAlert: (
   s: unknown,
 ) => { accountCount: number; directRouteCount: number; sampledDirectRouteCount: number; distinctDirectExitIpCount: number } | null;
 beforeAll(async () => {
-  ({ externalStallReason, deadProxyAlerts, egressPoolDownAlert, sharedDirectEgressAlert } = await import('./watchdog.mjs'));
+  ({ externalStallReason, deadProxyAlerts, upstreamTransportAlerts, egressPoolDownAlert, sharedDirectEgressAlert } = await import('./watchdog.mjs'));
 });
 
 /**
@@ -120,6 +124,29 @@ describe('gateway watchdog — deadProxyAlerts (proactive dead-proxy detection)'
     const s = stats({ egressFailRateByAccount: { p: 0.3 }, egressAttemptsByAccount: { p: 10 }, egressFailsByAccount: { p: 3 } });
     expect(deadProxyAlerts(s)).toEqual([]); // default 0.5/20 → not flagged
     expect(deadProxyAlerts(s, { minAttempts: 5, rateThreshold: 0.25 })).toHaveLength(1); // relaxed → flagged
+  });
+
+  it('ignores direct-route failures when the gateway confirms that no proxy is configured', () => {
+    const s = stats({
+      egressFailRateByAccount: { direct: 0.95 },
+      egressAttemptsByAccount: { direct: 60 },
+      egressFailsByAccount: { direct: 57 },
+      egressProxyHealth: { configured: false, totalProxyEntries: 0, reachableProxyEntries: 0, allDown: false },
+    });
+    expect(deadProxyAlerts(s)).toEqual([]);
+  });
+
+  it('uses proxy-only counters and keeps direct failures visible as upstream transport alerts', () => {
+    const s = stats({
+      egressFailRateByAccount: { direct: 0.95, proxied: 0.9 },
+      egressAttemptsByAccount: { direct: 60, proxied: 60 },
+      egressFailsByAccount: { direct: 57, proxied: 54 },
+      egressProxyAttemptsByAccount: { proxied: 60 },
+      egressProxyFailsByAccount: { proxied: 54 },
+      egressProxyFailRateByAccount: { proxied: 0.9 },
+    });
+    expect(deadProxyAlerts(s)).toEqual([{ accountId: 'proxied', rate: 0.9, attempts: 60, fails: 54 }]);
+    expect(upstreamTransportAlerts(s)).toEqual([{ accountId: 'direct', rate: 0.95, attempts: 60, fails: 57 }]);
   });
 
   it('is robust to a missing / partial / undefined /stats payload', () => {

@@ -174,6 +174,72 @@ describe('idle repair-queue fixer handoff', () => {
   });
 });
 
+describe('typed dispatcher refusals (WI-6554700010015397)', () => {
+  it('surfaces the skip reason and retryability after releasing the reservation', async () => {
+    const queue = createFrozenCandidateRepairQueue({
+      candidate: 'a'.repeat(40), base: 'b'.repeat(40), failingTests: ['lib/red.test.ts'], nowMs: OPENED,
+    });
+    const reason = 'frozen repair queue has no measured failing tests; a fresh verdict is the unblock';
+    const result = await dispatchIdleQueueFixer(queue, {
+      reserve: async () => queue,
+      dispatch: async (_reserved, onSkip) => {
+        onSkip({ code: 'no-measured-failures', reason, retryable: false });
+        return null;
+      },
+      finalize: async (_reserved, fired) => {
+        expect(fired).toBeNull();
+        return queue;
+      },
+    });
+    expect(result).toEqual({ ok: false, retryable: false, detail: reason + '; reservation released' });
+  });
+
+  it('retains a deterministic refusal through an active run and a persisted new idle episode', async () => {
+    const reason = 'no measured failing tests; a fresh verdict is the unblock';
+    const f = fixture(snapshot({ lastVerdictAtMs: OPENED }), {
+      dispatch: [{ ok: false, retryable: false, detail: reason }],
+    });
+    await f.at(61);
+    expect(f.messages[0].body).toContain(reason);
+    expect(f.messages[0].body).toContain('release:checkpoint-run');
+    f.state.snap = snapshot({ lastVerdictAtMs: OPENED, lastResumeRunStartedAtMs: OPENED + 100 * MIN, runInFlight: true });
+    expect((await f.at(130)).decision).toBe('not-idle');
+    f.state.episode = parseEpisode(JSON.stringify(f.state.episode));
+    expect(f.state.episode?.dispatchRefusal).toBeDefined();
+    f.state.snap.runInFlight = false;
+    await f.at(161);
+    expect(f.calls.filter(c => c === 'dispatch-fixer')).toHaveLength(1);
+    expect(f.calls.at(-1)).toBe('wake-gate-owner:su-gate-holder');
+    expect(f.messages.at(-1)?.body).toContain(reason);
+  });
+
+  it.each([
+    { candidate: 'd'.repeat(40) },
+    { repairHead: 'e'.repeat(40) },
+    { lastVerdictAtMs: OPENED + 110 * MIN },
+  ])('re-enables dispatch after a new candidate, head or verdict: %j', async change => {
+    const f = fixture(snapshot({ lastVerdictAtMs: OPENED }), {
+      dispatch: [{ ok: false, retryable: false, detail: 'unmeasured verdict' }],
+    });
+    await f.at(61);
+    f.state.episode = parseEpisode(JSON.stringify(f.state.episode));
+    f.state.snap = snapshot({ lastVerdictAtMs: OPENED, ...change });
+    // No idle-clock change is required for new evidence to permit a retry.
+    await f.at(62);
+    expect(f.calls.filter(c => c === 'dispatch-fixer')).toHaveLength(2);
+  });
+
+  it('keeps transient refusals retryable after a round resets the episode', async () => {
+    const f = fixture(snapshot(), { dispatch: [{ ok: false, retryable: true, detail: 'snapshot changed' }] });
+    await f.at(61);
+    f.state.snap = snapshot({ lastResumeRunStartedAtMs: OPENED + 100 * MIN });
+    await f.at(130);
+    expect(f.state.episode).toBeNull();
+    await f.at(161);
+    expect(f.calls.filter(c => c === 'dispatch-fixer')).toHaveLength(2);
+  });
+});
+
 describe('idle repair-queue actuator (P-002, WI-10007476)', () => {
   it('records effect completion after the awaited action, not its invocation clock', async () => {
     const f = fixture(snapshot());

@@ -17,18 +17,20 @@ const usd = (value: number | null) => value == null ? 'Unknown' : `$${(value / 1
 const measurement = (value: { value: number } | { unknownReason: string }) =>
   'value' in value ? usd(value.value) : `Unknown (${value.unknownReason})`;
 
-export default function WorkflowAdministration({ harnessSlug, operationId, handle, host = administrationHost }: {
+export default function WorkflowAdministration({ harnessSlug, operationId, handle, defaultExpanded = false, host = administrationHost }: {
   harnessSlug: string; operationId: string; handle?: BlueprintOperationHandle | null;
+  defaultExpanded?: boolean;
   host?: typeof administrationHost;
 }) {
   return <AdministrationPanel key={`${harnessSlug}:${operationId}`} harnessSlug={harnessSlug}
-    operationId={operationId} handle={handle} host={host} />;
+    operationId={operationId} handle={handle} host={host} defaultExpanded={defaultExpanded} />;
 }
 
-function AdministrationPanel({ harnessSlug, operationId, handle, host }: {
+function AdministrationPanel({ harnessSlug, operationId, handle, host, defaultExpanded }: {
   harnessSlug: string; operationId: string; handle?: BlueprintOperationHandle | null; host: typeof administrationHost;
+  defaultExpanded: boolean;
 }) {
-  const [open, setOpen] = useQueryState('wfAdmin', parseAsBoolean.withDefault(false));
+  const [open, setOpen] = useQueryState('wfAdmin', parseAsBoolean.withDefault(defaultExpanded));
   const [value, setValue] = useState<Administration | null>(null);
   const [target, setTarget] = useState('');
   const [reason, setReason] = useState('');
@@ -73,6 +75,7 @@ function AdministrationPanel({ harnessSlug, operationId, handle, host }: {
     {open && <>
       <p>The authenticated accountable owner manages local revisions and access. Business acceptance requires a distinct reviewer.</p>
       <button type="button" className="pc-wf__btn" disabled={busy} onClick={() => void refresh()}>Refresh administration</button>
+      {!value && !busy && !error && <p role="status">Approved version, funding/cost evidence, promotion, rollback, and history have not been read. Refresh administration with an authorized owner account.</p>}
       {error && <p role="alert">{error}</p>}
       {notice && <p role="status">{notice}</p>}
       {value && <>

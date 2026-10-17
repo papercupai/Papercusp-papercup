@@ -389,6 +389,30 @@ describe('plans:certify-spec-clauses', () => {
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])('retains measurement diagnostics when certification cannot measure source (dryRun=%s)', async (dryRun) => {
+    await rm(join(root, 'src', 'reconnect.ts'));
+    const evaluated = await replayViaEvaluator({
+      harness: 'papercusp', slug: PLAN, classRef: 'plan-class-feature-ship',
+      specIds: ['SPEC-PASS'], detail: 'full',
+    }) as { evaluatorBuild: unknown; rows: Array<{ measurementEvidence: unknown }> };
+    expect(evaluated.rows[0]!.measurementEvidence).toMatchObject({
+      status: 'degraded', measuredBindings: 0,
+      unavailableBindings: expect.arrayContaining([expect.objectContaining({ reason: expect.any(String) })]),
+    });
+
+    const result = await certify({ specIds: ['SPEC-PASS'], dryRun });
+    expect(result).toMatchObject({
+      evaluatorBuild: evaluated.evaluatorBuild,
+      counts: { passing: 0, filed: 0 },
+      clauses: [{
+        measurementEvidence: evaluated.rows[0]!.measurementEvidence,
+        wouldBlock: expect.arrayContaining(['freshness']),
+        card: { status: 'not-passing' },
+      }],
+    });
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it('certifies an exact ad-hoc bug clause through the real evaluator and replay without a namespace acceptance class', async () => {
     h.planSlug = 'adhoc-work-item-specs';
     h.rows = h.rows.filter((row) => row.spec_id === 'SPEC-PASS').map((row) => ({ ...row, plan_slug: h.planSlug }));

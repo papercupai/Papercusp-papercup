@@ -5,6 +5,7 @@ import type { GoalLaunchResolution } from '../goal-launch-settings';
 import type { AdmissionContext, AdmissionMetadataValue, ResourceDemand } from './admission';
 import { beginGovernedExecution, governedExecutionRuntime, type GovernedExecution } from './execution';
 import { withAgentSpawnPacing } from './spawn-pacing';
+import { reserveHostedAgentSlot } from '../workspace-host/hosted-agent-admission-client';
 
 export interface GovernedProcessSpawnInput {
   readonly workspaceId: string;
@@ -129,6 +130,30 @@ function settleOnExit(execution: GovernedExecution, exit: Promise<SpawnChildExit
  * rather than disappearing into an unaccounted local wait.
  */
 export async function spawnGovernedAgentProcess(
+  input: GovernedProcessSpawnInput,
+  spawnProcess: (context: AdmissionContext) => Promise<SpawnConsoleResult>,
+): Promise<GovernedSpawnResult> {
+  const reservation = await reserveHostedAgentSlot(input.idempotencyKey);
+  if (!reservation) return spawnAdmittedAgentProcess(input, spawnProcess);
+  try {
+    const result = await spawnAdmittedAgentProcess(input, async (context) => {
+      await reservation.start();
+      return spawnProcess({ ...context, metadata: { ...context.metadata,
+        hostedAgentProcessKey: input.idempotencyKey,
+        targetOwnerId: input.metadata?.targetOwnerId ?? input.owner } });
+    });
+    if (result.status === 'error') await reservation.finish();
+    // A successful launch transfers settlement to psu's native host. A visible
+    // terminal client may exit immediately while its native child stays alive.
+    // Missing host acknowledgement retains the charge conservatively.
+    return result;
+  } catch (error) {
+    await reservation.finish().catch(() => console.warn('[hosted-agent-admission] settlement_failed_charge_retained'));
+    throw error;
+  }
+}
+
+async function spawnAdmittedAgentProcess(
   input: GovernedProcessSpawnInput,
   spawnProcess: (context: AdmissionContext) => Promise<SpawnConsoleResult>,
 ): Promise<GovernedSpawnResult> {

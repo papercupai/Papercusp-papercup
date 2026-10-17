@@ -44,7 +44,20 @@ export interface HostedWorkspaceBinding {
   state: string;
 }
 
+export interface HostedWorkspaceProvisioningRequest {
+  controlPlaneWorkspaceId: string;
+  customerWorkspaceId: string;
+  connectionId: string;
+  hostId: string;
+  name: string;
+  desiredSpec: WorkspaceHostDesiredSpec;
+  operationId: string;
+  actorId: string;
+}
+
 export interface HostedWorkspaceAdmissionDependencies {
+  /** Platform-funded path: server policy/placement, followed by durable enqueue; replay repairs a lost enqueue. */
+  admitAndStart?: (input: HostedWorkspaceProvisioningRequest) => Promise<void>;
   /** The control-plane tenant scope (harness_shared.*.workspace_id), NOT the customer workspace. */
   controlPlaneWorkspaceId(): string;
   readConnection(
@@ -110,6 +123,7 @@ export class HostedWorkspaceAdmissionError extends Error {
       | 'organization_mismatch'
       | 'identifier_unroutable'
       | 'spec_host_mismatch'
+      | 'lifecycle_admission_unavailable'
       /** One live workspace — and so one host — per organization (D-397, migration 1200). */
       | 'organization_has_live_workspace',
   ) {
@@ -185,7 +199,7 @@ export function createHostedWorkspaceAdmission(
             'organization_mismatch',
           );
         }
-        return { workspaceId, provisionOperationId: derived.provisionOperationId };
+        if (!deps.admitAndStart) return { workspaceId, provisionOperationId: derived.provisionOperationId };
       }
 
       const connection = await deps.readConnection(controlPlaneWorkspaceId, connectionId);
@@ -220,7 +234,9 @@ export function createHostedWorkspaceAdmission(
 
       // ORDER IS LOAD-BEARING: customer_workspaces.workspace_host_id is NOT NULL and FKs
       // workspace_hosts, so the host row must exist before the binding can reference it.
-      await deps.upsertHost({
+      let created = false;
+      if (!existing) {
+        await deps.upsertHost({
         controlPlaneWorkspaceId,
         hostId: derived.hostId,
         name: displayName,
@@ -228,19 +244,20 @@ export function createHostedWorkspaceAdmission(
         desiredSpec,
       });
 
-      const { created } = await deps.bindWorkspace({
+        ({ created } = await deps.bindWorkspace({
         controlPlaneWorkspaceId,
         workspaceId,
         organizationId,
         workspaceHostId: derived.hostId,
         displayName,
         userId,
-      });
+        }));
+      }
 
       // Only the call that actually created the binding enqueues provisioning. A concurrent
       // replay that lost the INSERT race must not enqueue a second provision for the host.
-      if (created) {
-        deps.startProvisioning({
+      if (created || deps.admitAndStart) {
+        const provision: HostedWorkspaceProvisioningRequest = {
           controlPlaneWorkspaceId,
           customerWorkspaceId: workspaceId,
           connectionId,
@@ -249,7 +266,9 @@ export function createHostedWorkspaceAdmission(
           desiredSpec,
           operationId: derived.provisionOperationId,
           actorId: userId,
-        });
+        };
+        if (deps.admitAndStart) await deps.admitAndStart(provision);
+        else deps.startProvisioning(provision);
       }
 
       return { workspaceId, provisionOperationId: derived.provisionOperationId };

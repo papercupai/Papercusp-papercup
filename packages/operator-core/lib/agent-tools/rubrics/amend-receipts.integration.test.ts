@@ -1,6 +1,7 @@
 /** Shared amend receipts must survive module/worker boundaries in real Postgres. */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { hostname } from 'node:os';
 
 const h = vi.hoisted(() => ({ sql: null as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async (orig) => ({
@@ -11,6 +12,8 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 const { activeWorkspaceId } = await import('../../workspace-registry');
 const { trackAmendRun, getAmendReceipt } = await import('./amend-receipts');
+const amendStatusTool = (await import('./amend-status')).default;
+const { readProcessIdentity } = await import('../../process-identity');
 let db: Awaited<ReturnType<typeof createOrgTestDb>>;
 
 beforeAll(async () => {
@@ -280,5 +283,44 @@ describe('rubric amend receipts in shared Postgres', () => {
     expect(await trackAmendRun('orphan-past-lease', rubric, run)).toEqual({ ok: true, rerun: true });
     expect(executions).toBe(1);
     expect(await getAmendReceipt(rubric, 'orphan-past-lease')).toMatchObject({ state: 'committed' });
+  });
+
+  it('reports a dead executor as orphaned and reclaims it before the lease', async () => {
+    const ws = activeWorkspaceId();
+    const rubric = 'acceptance-receipt-executor-identity';
+    const liveKey = 'executor-live';
+    const orphanKey = 'executor-orphan';
+    const executorHost = hostname();
+    const executorProcessId = readProcessIdentity(process.pid);
+    expect(executorProcessId).toBeTruthy();
+    await db.adminSql`
+      INSERT INTO harness_shared.rubric_amend_receipts
+        (workspace_id, rubric_ref, idempotency_key, state, executor_host, executor_pid, executor_process_id)
+      VALUES (${ws}, ${rubric}, ${liveKey}, 'running', ${executorHost}, ${process.pid}, ${executorProcessId})
+    `;
+    const liveStatus = await amendStatusTool.handler(
+      { rubricRef: rubric, idempotencyKey: liveKey }, {} as never,
+    ) as { data: Record<string, unknown> };
+    expect(liveStatus.data).toMatchObject({ state: 'running', source: 'receipt' });
+    expect(await trackAmendRun(liveKey, rubric, async () => ({ ok: true, duplicate: true }))).toMatchObject({ pending: true });
+
+    await db.adminSql`
+      INSERT INTO harness_shared.rubric_amend_receipts
+        (workspace_id, rubric_ref, idempotency_key, state, executor_host, executor_pid, executor_process_id)
+      VALUES (${ws}, ${rubric}, ${orphanKey}, 'running', ${executorHost}, 99999999, 'linux:dead-boot:1')
+    `;
+    const orphanStatus = await amendStatusTool.handler(
+      { rubricRef: rubric, idempotencyKey: orphanKey }, {} as never,
+    ) as { data: Record<string, unknown> };
+    expect(orphanStatus.data).toMatchObject({
+      state: 'orphaned', source: 'receipt', reclaimableAt: expect.any(Number),
+    });
+    let executions = 0;
+    expect(await trackAmendRun(orphanKey, rubric, async () => {
+      executions++;
+      return { ok: true, rerun: true };
+    })).toEqual({ ok: true, rerun: true });
+    expect(executions).toBe(1);
+    expect(await getAmendReceipt(rubric, orphanKey)).toMatchObject({ state: 'committed' });
   });
 });

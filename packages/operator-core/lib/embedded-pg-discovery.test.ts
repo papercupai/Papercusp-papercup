@@ -5,8 +5,14 @@
  * (one resolve until reset). The generic resolver is mocked.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const resolvePgUrl = vi.fn();
+const canonicalOperatorEnv = vi.fn();
+vi.mock('@papercusp/db-org/operator-db-env', () => ({
+  readOperatorDbEnvLocal: (...a: unknown[]) => canonicalOperatorEnv(...a),
+}));
 vi.mock('@papercusp/embedded-pg-discovery', () => ({
   resolvePgUrl: (...a: unknown[]) => resolvePgUrl(...a),
 }));
@@ -20,6 +26,10 @@ import {
 beforeEach(() => {
   _resetHarnessAdminUrlCacheForTests();
   resolvePgUrl.mockReset();
+  canonicalOperatorEnv.mockReset().mockReturnValue({});
+  for (const key of ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL', 'PAPERCUSP_HOME']) {
+    vi.stubEnv(key, undefined as unknown as string);
+  }
   vi.stubEnv('PAPERCUSP_PG_PORT', undefined as unknown as string);
   vi.stubEnv('PAPERCUSP_SKIP_PG_DISCOVERY', undefined as unknown as string);
 });
@@ -27,6 +37,35 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe('getHarnessAdminUrlWithSource', () => {
+  it('imports the real script URL resolver in native Node without loading ORM/schema modules', () => {
+    const moduleUrl = new URL('../../../scripts/lib/pg-url.mjs', import.meta.url).href;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e',
+      `await import(${JSON.stringify(moduleUrl)}); process.stdout.write('native-import-ok');`], {
+      cwd: fileURLToPath(new URL('../../../', import.meta.url)),
+      env: { ...process.env, NODE_OPTIONS: '' },
+      encoding: 'utf8', timeout: 15_000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('native-import-ok');
+  });
+
+  it('uses the same operator env-file pin as getOrgPg before a foreign desktop discovery target', () => {
+    canonicalOperatorEnv.mockReturnValue({ DATABASE_URL: 'postgres://operator-env/papercusp' });
+    resolvePgUrl.mockReturnValue({ url: 'postgres://foreign-desktop:18058/papercusp', source: 'discovery' });
+    expect(getHarnessAdminUrlWithSource()).toEqual({ url: 'postgres://operator-env/papercusp', source: 'operator-env-file' });
+    expect(resolvePgUrl).not.toHaveBeenCalled();
+  });
+
+  it.each(['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL', 'PAPERCUSP_PG_PORT', 'PAPERCUSP_SKIP_PG_DISCOVERY', 'PAPERCUSP_HOME'])(
+    'preserves the existing explicit/isolated resolver when %s is set', key => {
+      vi.stubEnv(key, key === 'PAPERCUSP_SKIP_PG_DISCOVERY' ? '1' : 'custom');
+      canonicalOperatorEnv.mockReturnValue({ DATABASE_URL: 'postgres://operator-env/papercusp' });
+      resolvePgUrl.mockReturnValue({ url: 'postgres://isolated/papercusp', source: 'env' });
+      expect(getHarnessAdminUrl()).toBe('postgres://isolated/papercusp');
+      expect(canonicalOperatorEnv).not.toHaveBeenCalled();
+    },
+  );
+
   it('passes through a non-fallback source', () => {
     resolvePgUrl.mockReturnValue({ url: 'postgres://env/db', source: 'env' });
     expect(getHarnessAdminUrlWithSource()).toEqual({ url: 'postgres://env/db', source: 'env' });

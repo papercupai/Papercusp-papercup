@@ -299,6 +299,35 @@ describe('platform relationship graph (P-002, R-1)', () => {
     expect(live(rows)[0]!.payload.memberRecordIds).toHaveLength(3);
   });
 
+  it('keeps orphaned retired canonical people out of every live read path', async () => {
+    feeds[CRM] = [{ datatype: 'person', nativeId: 'crm-ada', payload: { displayName: 'Ada', emails: ['ada@acme.com'] } }];
+    const crm = await connect(CRM);
+    await sync(crm);
+
+    const [canonical] = live(await graphRows('PER-', 'person'));
+    const [source] = (await graphRows('DSR-', 'person'));
+    expect(canonical).toBeDefined();
+    expect(source).toBeDefined();
+
+    // Removing the last source record is the resolver path that retires a canonical row with
+    // retiredAt but no mergedInto pointer. Keep its old identity key below to cover rows written
+    // by older versions that did not clear identityKeys when they retired an orphan.
+    await sql`DELETE FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${source!.feature_id}`;
+    await resolveIdentities(sql, { workspaceId: WS, datatype: 'person' });
+    await sql`UPDATE harness_shared.work_items
+                 SET payload = payload || ${sql.json({ identityKeys: ['email:ada@acme.com'] })}
+               WHERE workspace_id = ${WS} AND feature_id = ${canonical!.feature_id}`;
+
+    const retired = (await graphRows('PER-', 'person')).find((row) => row.feature_id === canonical!.feature_id)!;
+    expect(retired.payload).toMatchObject({ retiredAt: expect.any(String), memberRecordIds: [] });
+    expect(await searchPeople(sql, WS, { query: 'Ada' })).toEqual([]);
+    expect(await searchPeople(sql, WS, { emails: ['ada@acme.com'] })).toEqual([]);
+    expect(await getCanonicalEntity(sql, WS, 'person', canonical!.feature_id)).toBeNull();
+    expect(await findEntityByIdentity(sql, WS, 'person', 'email:ada@acme.com')).toBeNull();
+    expect(await resolveInteractionParticipants(sql, WS, 'email-message', { from: 'Ada <ada@acme.com>' }))
+      .toEqual({ personIds: [], unresolved: ['email:ada@acme.com'] });
+  });
+
   it('an accepted value carries acceptedBy and outranks a later observation', async () => {
     feeds[CRM] = [{ datatype: 'person', nativeId: 'crm-ada', payload: { displayName: 'Ada', emails: ['ada@acme.com'], updatedAt: '2026-09-01T00:00:00Z' } }];
     const crm = await connect(CRM);

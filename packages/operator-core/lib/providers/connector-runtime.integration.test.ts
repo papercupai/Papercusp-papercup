@@ -259,6 +259,32 @@ beforeEach(() => {
 });
 
 describe('connector sync driver over registered providers (R-3)', () => {
+  it('does not lease or poll a write-only package, and resumes after same-id replacement', async () => {
+    const src = await createSource();
+    const before = await state(src);
+    const hostFetchFor = vi.fn(() => noNetwork);
+    const servicesFor = vi.fn(async () => undefined);
+    registry.unregister(KIND);
+    const writeOnly = { ...descriptor, sync: false };
+    await registry.register({ descriptor: writeOnly, adapter: { ...adapter, describe: () => writeOnly }, pluginName: 'write-only-fixture' });
+    try {
+      const result = await sync(src, { hostFetchFor, servicesFor });
+      expect(result.sources).toEqual([]);
+      expect(calls).toEqual([]);
+      expect(hostFetchFor).not.toHaveBeenCalled();
+      expect(servicesFor).not.toHaveBeenCalled();
+      expect(await state(src)).toEqual(before);
+      expect(await ledgerKeys(src)).toEqual([]);
+    } finally {
+      registry.unregister(KIND);
+      await registry.register({ descriptor, adapter, pluginName: 'connector-fixture-plugin' });
+    }
+    expect((await syncOne(src, { hostFetchFor, servicesFor })).outcome).toBe('synced');
+    expect(calls).toHaveLength(1);
+    expect(hostFetchFor).toHaveBeenCalledOnce();
+    expect((await state(src)).progress?.lastSyncedAt).toBeTruthy();
+  });
+
   it('skips a due source until descriptor-required config is present without recording a sync failure', async () => {
     const src = await createSource();
     const configDescriptor: ProviderDescriptor = {

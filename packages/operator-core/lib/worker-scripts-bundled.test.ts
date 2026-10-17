@@ -293,6 +293,41 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
     }
   });
 
+  it('starts the admission worker without executing imported CLI entrypoints', async () => {
+    const worker = new Worker(join(output, 'admission-jobs.worker.mjs'), {
+      execArgv: [], stdout: true, stderr: true,
+    });
+    let stdout = '', stderr = '';
+    worker.stdout.on('data', (chunk) => { stdout += chunk; });
+    worker.stderr.on('data', (chunk) => { stderr += chunk; });
+    const message = () => new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timer = setTimeout(() => { cleanup(); reject(new Error(`admission worker did not respond: ${stdout}${stderr}`)); }, 5_000);
+      const cleanup = () => {
+        clearTimeout(timer);
+        worker.off('message', received);
+        worker.off('error', failed);
+        worker.off('exit', exited);
+      };
+      const received = (value: Record<string, unknown>) => { cleanup(); resolve(value); };
+      const failed = (error: Error) => { cleanup(); reject(error); };
+      const exited = (code: number) => { cleanup(); reject(new Error(`admission worker exited before its response: ${code}; ${stdout}${stderr}`)); };
+      worker.once('message', received);
+      worker.once('error', failed);
+      worker.once('exit', exited);
+    });
+    try {
+      expect(await message()).toEqual({ type: 'ready' });
+      const result = message();
+      worker.postMessage({ id: 1, job: { kind: 'git', argv: ['rev-parse', '--show-toplevel'], cwd: REPO_ROOT } });
+      expect(await result).toMatchObject({ type: 'result', id: 1, ok: true,
+        value: { status: 0, stdout: `${REPO_ROOT}\n` } });
+    } finally {
+      await worker.terminate();
+    }
+    expect(stdout).toBe('');
+    expect(stderr).toBe('');
+  }, 15_000);
+
   it('names a gate metadata directory that cannot be created before publishing workers', () => {
     const blocked = join(output, 'gate-meta-blocked-by-file');
     writeFileSync(blocked, 'not a directory');

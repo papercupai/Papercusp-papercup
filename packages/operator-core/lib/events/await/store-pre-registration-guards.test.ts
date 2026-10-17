@@ -12,7 +12,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: h.rawSql }),
 }));
 
-const { AWAIT_SUPERSEDED_BY_REGISTRATION, cancelAwaitsForSubscribersOnKeys, findAnnouncementsForKey, registerAwait } =
+const {
+  AWAIT_SUPERSEDED_BY_REGISTRATION,
+  cancelAwaitsForSubscribersOnKeys,
+  findAnnouncementsForKey,
+  findPendingAnnouncementsForTerminalClose,
+  registerAwait,
+} =
   await import('./store');
 
 const boundedOptions = {
@@ -129,6 +135,38 @@ describe('events:await pre-registration store guards', () => {
       registerAwait({ subscriberId: 'sub-test', eventKey: 'gate:test', once: false }),
     ).resolves.toMatchObject({ id: 1 });
 
+    expect(h.boundedOrgTxn).toHaveBeenCalledWith(expect.any(Function), boundedOptions);
+    expect(h.rawSql).not.toHaveBeenCalled();
+  });
+
+  it('finds active announced gates with live waiters for a terminal-close guard', async () => {
+    h.tx.mockImplementation(async (strings: TemplateStringsArray) => {
+      const query = strings.join('?');
+      if (query.includes('live_waiters')) {
+        return [{
+          id: 7,
+          workspace_id: 'ws-test',
+          subscriber_id: 'closer',
+          event_key: 'gate:WI-9',
+          policy: 'announce',
+          created_at: '2026-10-16T23:00:00.000Z',
+          live_waiters: 2,
+        }];
+      }
+      return [];
+    });
+
+    await expect(findPendingAnnouncementsForTerminalClose({ ownerId: 'closer', workItemId: 'WI-9' })).resolves.toMatchObject([
+      {
+        announcement: {
+          id: 7,
+          subscriberId: 'closer',
+          eventKey: 'gate:WI-9',
+          policy: 'announce',
+        },
+        liveWaiters: 2,
+      },
+    ]);
     expect(h.boundedOrgTxn).toHaveBeenCalledWith(expect.any(Function), boundedOptions);
     expect(h.rawSql).not.toHaveBeenCalled();
   });

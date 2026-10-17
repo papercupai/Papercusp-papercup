@@ -1,0 +1,189 @@
+{
+  "schemaVersion": 1,
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "planItem": "P-537",
+  "workItem": "WI-6554700010015799",
+  "scope": "Local source acceptance through the production environment-to-handler factory, real private PostgreSQL and owned HTTP sockets. Deployed configuration, final artifact parity, cost qualification and shipment remain open.",
+  "reuse": "Extended the existing hosted-auth-runtime.integration.test.ts fixture and maintained test:file suite. No runtime API, policy configuration, service or billing surface added.",
+  "change": {
+    "runtimeKinds": [
+      "auth-only",
+      "full-control-plane",
+      "environment-handler"
+    ],
+    "environmentFactory": "apps/operator/bin/hosted-handler.ts#createHostedHandlerFromEnvironment",
+    "requestTarget": "Returned handler.app",
+    "policyEnvironment": "PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT",
+    "organizationEnvironment": "HOSTED_FIRST_WORKSPACE_ORGANIZATIONS_ENV exported by first-workspace-dependencies.ts",
+    "cleanup": "Close owned HTTP servers, dispose each returned relay, drain service transactions, clean private test databases."
+  },
+  "verification": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/p537-environment-handler-sources.json node scripts/with-test-pg.mjs -- npm run test:file -- packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts",
+    "log": "/tmp/p537-environment-handler-tests.log",
+    "sourceMap": "/tmp/p537-environment-handler-sources.json",
+    "exitCode": 0,
+    "passed": 15,
+    "failed": 0,
+    "skipped": 0,
+    "environmentHandlerCases": 6,
+    "scopedTypecheck": {
+      "tool": "build:typecheck",
+      "project": "packages/operator-core/tsconfig.json",
+      "files": [
+        "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts"
+      ],
+      "scopeToFiles": true,
+      "engine": "tsc-service",
+      "checkedFiles": 1,
+      "errorsInRequestedFiles": 0,
+      "otherErrorCount": 0,
+      "semanticCheckIncomplete": false,
+      "exitCode": 0,
+      "scope": "Requested file inside the project program; not a full-project or release gate verdict."
+    },
+    "measuredAt": "2026-10-17T14:30:36.592015+00:00",
+    "recordedSha": "cd368d9fbcd7d708c91f915d418601bda181f4e0",
+    "worktreeDirty": true,
+    "sourceEvidenceStatus": "stable",
+    "capturedRepositoryWorkerSources": 5915,
+    "focusedSourceBindings": [
+      {
+        "path": "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts",
+        "capturedSha256": "7f5f4bd1188351259cd81a253ff6e034b44b074569ee7862d60a8dbe53863a58",
+        "currentSha256": "7f5f4bd1188351259cd81a253ff6e034b44b074569ee7862d60a8dbe53863a58",
+        "matchesCaptured": true
+      },
+      {
+        "path": "apps/operator/bin/hosted-handler.ts",
+        "capturedSha256": "4280a7899febdcfac54dc447527671bcbd17c3fbd1c25a4c731ef35a5c55496d",
+        "currentSha256": "4280a7899febdcfac54dc447527671bcbd17c3fbd1c25a4c731ef35a5c55496d",
+        "matchesCaptured": true
+      },
+      {
+        "path": "packages/operator-core/lib/endpoint-route/hosted-runtime.ts",
+        "capturedSha256": "cda2c9aab4fd3255b32d08c1fc6920cf1457fd429b47751929696ca5865c6119",
+        "currentSha256": "cda2c9aab4fd3255b32d08c1fc6920cf1457fd429b47751929696ca5865c6119",
+        "matchesCaptured": true
+      },
+      {
+        "path": "packages/operator-core/lib/endpoint-route/hosted-control-plane.ts",
+        "capturedSha256": "9d879eaccf9a11b04670982e60c668173742fc5a74609207c276e763ecb3d8fc",
+        "currentSha256": "9d879eaccf9a11b04670982e60c668173742fc5a74609207c276e763ecb3d8fc",
+        "matchesCaptured": true
+      },
+      {
+        "path": "packages/operator-core/lib/auth/hosted-entitlement-store.ts",
+        "capturedSha256": "7680815e11d96e2d7ca79bd22cdbf23ec83c8f44d851754e03aca39733a69315",
+        "currentSha256": "7680815e11d96e2d7ca79bd22cdbf23ec83c8f44d851754e03aca39733a69315",
+        "matchesCaptured": true
+      },
+      {
+        "path": "packages/operator-core/lib/auth/hosted/first-workspace-dependencies.ts",
+        "capturedSha256": "d423960ba50ff7d74661715ec215abe694735ae43fe91a514a94bbfecd4791da",
+        "currentSha256": "d423960ba50ff7d74661715ec215abe694735ae43fe91a514a94bbfecd4791da",
+        "matchesCaptured": true
+      },
+      {
+        "path": "packages/operator-core/lib/auth/hosted/first-workspace.ts",
+        "capturedSha256": "a660c23d3bd1956e936a432764f3e705c4f3f6e36306929cd9669f89e7fd99fb",
+        "currentSha256": "a660c23d3bd1956e936a432764f3e705c4f3f6e36306929cd9669f89e7fd99fb",
+        "matchesCaptured": true
+      },
+      {
+        "path": "packages/operator-core/lib/workspace-host/hosted-agent-admission.ts",
+        "capturedSha256": "408f0b91c95aa34fa36d521b35094a4b5cd51fd238bda243ea6067dff584e6ec",
+        "currentSha256": "408f0b91c95aa34fa36d521b35094a4b5cd51fd238bda243ea6067dff584e6ec",
+        "matchesCaptured": true
+      }
+    ],
+    "logSha256": "d47ccecbae8c29779da530b33f2fe47bf7c330634cce8718663c060525805a6a",
+    "sourceMapSha256": "179157d5af3f033ce91c1873f0dfa7eff6191def27c645f09962d6e4fd8b6f8e",
+    "nativeRun": {
+      "scope": "vitest-reporter-callbacks",
+      "startedAtMs": 1792247275979,
+      "finishedAtMs": 1792247383190,
+      "reason": "passed",
+      "unhandledErrorCount": 0,
+      "modulePopulationMatched": true
+    },
+    "testFileResult": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=cd368d9fbc uncommittedPaths=1/1 provenance=stamped startedAt=2026-10-17T14:27:49.474Z childSubstituted=0 skippedTests=0",
+    "databaseShutdown": true,
+    "provenanceLimitations": {
+      "configSources": {
+        "schemaVersion": "vitest-config-disk-snapshots-v1",
+        "scope": "repository-vite-config-dependencies",
+        "basis": "reporter-init-disk",
+        "status": "unknown",
+        "sources": [],
+        "reasons": [
+          "config-dependencies-unavailable",
+          "config-sources-unavailable"
+        ]
+      },
+      "configLoadedSources": {
+        "schemaVersion": "node-loaded-config-sources-v1",
+        "scope": "repository-vite-config-dependencies",
+        "basis": "node-load-hook",
+        "status": "unknown",
+        "sources": [],
+        "reasons": [
+          "config-dependencies-unavailable",
+          "config-loaded-sources-unavailable",
+          "config-node-load-capture-unavailable"
+        ],
+        "observedSources": [],
+        "loaderChain": {
+          "scope": "declared-node-preloads",
+          "status": "unknown",
+          "preloads": [],
+          "unresolved": [
+            "node-loader-chain-not-closed",
+            "node-preload-self-unmeasured"
+          ]
+        }
+      },
+      "mainProcessLoadedSources": {
+        "schemaVersion": "node-loaded-main-process-sources-v1",
+        "scope": "repository-node-main-process-sources",
+        "basis": "node-load-hook",
+        "status": "unknown",
+        "sources": [],
+        "reasons": [
+          "main-process-dependencies-unavailable",
+          "main-process-loaded-sources-unavailable",
+          "main-process-node-load-capture-unavailable",
+          "main-process-config-population-unavailable"
+        ],
+        "observedSources": [],
+        "loaderChain": {
+          "scope": "declared-node-preloads",
+          "status": "unknown",
+          "preloads": [],
+          "unresolved": [
+            "node-loader-chain-not-closed",
+            "node-preload-self-unmeasured"
+          ]
+        }
+      }
+    }
+  },
+  "exercised": [
+    "Factory parses serialized trial policy and organization allowlist before composing the final restricted handler.",
+    "Authenticated callback establishes canonical trial authority; first-workspace HTTP commits server-owned allocation before enqueue and ignores client authority fields.",
+    "Actual native child and canonical running receipt prevent idle stop; quota rejection occurs before another spawn; viewer and freshness holds persist; idle stop fences new starts.",
+    "Signed billing projection affects first-workspace admission, duplicates preserve authority and cancellation preserves retained host state.",
+    "Original-grant backfill does not renew on sign-in; absent policy and unauthenticated callback do not grant allowances; returning signup preserves its original grant."
+  ],
+  "externalSeams": [
+    "Fake upstream WorkOS identity provider and OAuth nonce store",
+    "Fake provider catalog, delegation adapter and release discovery",
+    "Provisioning completion seeded without creating cloud resources",
+    "Signed Stripe event fixture and dedicated billing runtime; no Stripe network calls"
+  ],
+  "remaining": [
+    "Actual isolated serving-artifact/private-identity acceptance and exact source-to-serving parity",
+    "No activation of hosted trial policy before P544 qualification",
+    "P544 D075 meaningful 40/40/20 workload and D076 measured all-in strict under-$20 monthly cost",
+    "No committed/import-graph/deployed attestation inferred from dirty-checkout source evidence"
+  ]
+}

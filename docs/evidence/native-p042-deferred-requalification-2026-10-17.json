@@ -1,0 +1,89 @@
+{
+  "schemaVersion": "native-p042-deferred-requalification-v1",
+  "workItem": "EI-26183946255581404",
+  "investigationWorkItem": "WI-6554700010016661",
+  "parentWorkItem": "WI-6554700010015356",
+  "trigger": "Explicit system superseded-before-commit notice for the earlier deferred-routing close.",
+  "priorEvidence": "docs/evidence/native-p042-deferred-routing-2026-10-17.json",
+  "result": "not-measured",
+  "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/native-p042-deferred-requal-source-20261017.json npm run test:file -- packages/operator-core/lib/doc-claims/code-intel-routing-authority.test.ts",
+  "log": "/tmp/native-p042-deferred-requal-20261017.log",
+  "exitCode": 2,
+  "phase": "Vitest discovery",
+  "timeoutMs": 120000,
+  "diagnostic": "Only startup node-loaded traces were emitted; no complete filesOnly collection listing. Diagnostic child chain npm exec vitest -> sh -> Node waited in ep_poll. freezeMs=0. Scope cleanup completed. No resource root cause is established.",
+  "followup": "Owned WI-6554700010016661; retrieval-only consult conv-request-c5dc3c8d6b4a5155e2438ffb4fd14bf01e1f5cecad170c2730844a075f7560e5 returned no answer, with candidate transcripts for further read. No answering agent was launched.",
+  "currentRequalification": {
+    "result": "passed-local-routing",
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/native-p042-deferred-requal-v2-source-20261017.json PAPERCUSP_COMMITTED_SOURCE_AUDIT=/tmp/native-p042-deferred-requal-v2-loader-20261017.jsonl DEBUG=vite-tsconfig-paths npm run test:file -- packages/operator-core/lib/doc-claims/code-intel-routing-authority.test.ts",
+    "log": "/tmp/native-p042-deferred-requal-v2-20261017.log",
+    "exitCode": 0,
+    "discoveryMs": 2478,
+    "passed": 54,
+    "failed": 0,
+    "skipped": 0,
+    "childSubstituted": 0,
+    "unhandledErrors": 0,
+    "capture": "/tmp/native-p042-deferred-requal-v2-source-20261017.json",
+    "captureSha256": "e13e811d24a857a5f77522833d24998fccfe917a31a0852f64e69447323b576a",
+    "capturedWorkerSources": {
+      "scope": "The 36 repository worker Vite original sources retained in sourceEvidence.sources; no complete execution-graph or config-loaded-source claim.",
+      "status": "stable",
+      "namedCount": 36,
+      "currentHashMismatches": [],
+      "principalSources": {
+        "packages/operator-core/lib/doc-claims/code-intel-routing-authority.test.ts": "f1d71b9e560c7f1c70d1e10a954e4922c7bbbff082feb3f451301b1874ff7189",
+        "packages/operator-core/lib/doc-claims/code-intel-routing-authority.ts": "2aaf770422b5730f2ab97c6619949497b171e9ba68655d68443d5d3d27fb683b"
+      }
+    },
+    "configLoadedSources": "unknown in this capture",
+    "mainProcessLoadedSources": "unknown in this capture",
+    "investigation": "WI-6554700010016661 remains owned and open. The earlier timeout did not recur; this successful attempt does not establish its cause or a durable fix.",
+    "interpretationCorrection": "Current Vitest --filesOnly bypasses test collection workers. No worker-forked event is expected and its absence cannot diagnose this timeout. The workspace crawl remains an unproven hypothesis; no phase timing from the failed attempt identifies it.",
+    "shipment": "not claimed"
+  },
+  "detectorRepair": {
+    "workItem": "WI-6554700010016661",
+    "purpose": "Expose bounded file-module load start/return/error milestones in the existing passive native-process trace. This repairs missing diagnostic evidence; the original discovery timeout's cause remains unresolved.",
+    "source": "scripts/lib/vitest-startup-trace.mjs",
+    "maintainedTest": "packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts",
+    "sourceSha256": "b777580f10d41893c75f987733b976b591cefa2345b13da9fb65e655abdbd4d4",
+    "testSha256": "c86d9dc44ef055d78904f02abef2c1845bf41c383733721052ea392fcba85cac",
+    "committedPin": "aabc7d9dee26a1468b41e9e3d2276935197c09ee",
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/native-p042-startup-milestones-v2-source-20261017.json npm run lint:as-committed -- test:file --any --ref=aabc7d9dee26a1468b41e9e3d2276935197c09ee -- packages/operator-core/lib/__tests__/vitest-startup-trace.test.ts",
+    "log": "/tmp/native-p042-startup-milestones-v2-tests-20261017.log",
+    "capture": "/tmp/native-p042-startup-milestones-v2-source-20261017.json",
+    "captureSha256": "03440ac7bbae68512a705d79451d40c9adbc3eee87e4f287eeda0223d226b7a8",
+    "exitCode": 0,
+    "passed": 18,
+    "failed": 0,
+    "skipped": 0,
+    "childSubstituted": 0,
+    "unhandledErrors": 0,
+    "discoveryMs": 3261,
+    "namedWorkerOriginals": 36,
+    "currentNamedWorkerMismatches": [],
+    "nativeRunTerminalHook": "onTestRunEnd",
+    "regressions": [
+      "Module return behavior and the exact delegated error object are preserved.",
+      "An attempted blocked file load remains recorded after the child is killed before the loader returns.",
+      "All 140 fixture modules execute while load evidence is capped at 128 attempts."
+    ],
+    "savedTypecheck": {
+      "log": "/tmp/native-p042-startup-milestones-types-20261017.log",
+      "scope": "One named maintained test file, unchanged at the recorded test SHA256; saved earlier check reused.",
+      "result": "clean"
+    },
+    "limits": [
+      "Focused committed-source test proof only; config-loaded and main-process-loaded source populations are unknown in this capture.",
+      "No complete child execution graph, serving-runtime, final-release or shipment claim.",
+      "The earlier dirty-child run is retained as invalid current proof; this is its separate committed-pin replacement.",
+      "The original 120-second discovery timeout did not recur and remains unexplained."
+    ]
+  },
+  "limits": [
+    "The initial attempt remains not measured; currentRequalification records a separate later local routing verdict. No reclose or shipment is claimed.",
+    "Keep the original evidence unchanged; later architect source changes and the guard extension require current requalification.",
+    "Do not widen a timeout or rerun before auditing the startup mechanism."
+  ]
+}

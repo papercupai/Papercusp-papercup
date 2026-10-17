@@ -912,6 +912,11 @@ export default defineTool({
   // is heavy + owner-walled, mirroring release:deploy{op:force}.
   agentRoles: [...SU_ROLES, 'cup', 'release-fixer', 'release-manager'],
   rolesQuota: { operator: { perRun: 10 } },
+  // Reclaim previews inspect every registered cut tree, retention lease, holder and authored
+  // diff. The measured planner is commonly 14–52s and can exceed the flat 55s MCP deadline
+  // under host pressure; declare a bounded handler budget so MCP and clients wait for the
+  // structured dry-run result instead of losing the response to transport teardown.
+  timeoutSec: 120,
   args: z.discriminatedUnion('op', [
     z.object({
       op: z.literal('preflight'),

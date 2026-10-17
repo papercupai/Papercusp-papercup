@@ -74,6 +74,7 @@ const lineSet = (text: string) =>
 
 async function splice(baseText: string): Promise<string> {
   const out = await renderSuPlaybook({
+    referenceMode: 'inline',
     agent: 'claude',
     profile: 'engineer',
     baseSource: INPUTS.base,
@@ -450,10 +451,11 @@ describe('P-036 R-6 — S01–S12 behaviour coverage in the live single-posture 
       // GUARD 2 (real output): attribution is only meaningful against a genuinely rendered
       // playbook carrying this posture's own document — a truncated or wrong-posture render
       // must not be able to satisfy the loop below.
-      expect(
-        bytes(rendered.text),
-        'rendered playbook is too small to be the full composed stack',
-      ).toBeGreaterThan(200_000);
+      // A minimum byte count conflicts with on-demand references. Verify the
+      // actual kernel/client/posture substrate, then every scenario marker below.
+      expect(rendered.text).toContain('<!-- PAPERCUSP-KERNEL:SEAL -->');
+      expect(rendered.text).toContain('File locking is ENFORCED');
+      expect(rendered.overlaySource).toBe(join(liveOverlayDir, 'papercusp-su.claude.md'));
       expect(
         writers.map((w) => w.id),
         `the ${posture} posture document is missing from the composed stack`,

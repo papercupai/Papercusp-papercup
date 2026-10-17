@@ -7,6 +7,7 @@ import { activeWorkspaceId } from '../workspace-registry.ts';
 import { queryLspDaemon } from './lsp-daemon-client.ts';
 import { DEFAULT_RESOURCE_BUDGET, unmeasuredSourceEvidence, type BackendHealth, type CodeIntelAnswer, type CodeIntelIntent } from './contracts.ts';
 import type { LspLanguage } from './lsp-adapter.ts';
+import { queryPushSnapshot } from './push-snapshot';
 
 export type LspFacadeOp = 'symbol' | 'references' | 'implementations' | 'diagnostics' | 'workspace_symbols' | 'refactor_preview' | 'health';
 export const LSP_FACADE_OPS: readonly LspFacadeOp[] = Object.freeze([
@@ -55,6 +56,11 @@ export async function lspFacade(
   if (!LSP_FACADE_OPS.includes(op)) return scoped(refusal('health', String(op), `unknown lsp op '${op}'. The op set is closed: ${LSP_FACADE_OPS.join(', ')}`, 'unknown', started));
   const enabled = await getFlag(FLAGS.CODE_INTEL_LSP, 'system').catch(() => false);
   if (!enabled) return scoped(refusal(op, args.file ?? args.name ?? '', `code-intelligence LSP facade is disabled (flag ${FLAGS.CODE_INTEL_LSP}). This is a DISABLED answer, not an empty one — do not read it as "no results".`, 'unknown', started));
+  if (op === 'symbol' && (!args.language || args.language === 'typescript')) {
+    const snapshot = await queryPushSnapshot({ op: 'definition', root: rootPath, workspaceId: caller.workspaceId,
+      file: args.file, line1: args.line1, character: args.character, limit: args.limit });
+    if (snapshot) return snapshot;
+  }
   return scoped(await queryLspDaemon({
     op, args: { ...args, rootPath },
     workspaceId: caller.workspaceId ?? activeWorkspaceId(), actorId: caller.actorId,

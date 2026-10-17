@@ -11,9 +11,10 @@
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, chmodSync } from 'node:fs';
+import { mkdtempSync, rmSync, chmodSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { createServer, createConnection } from 'node:net';
 import { getContainerRuntimeClient, Wait } from 'testcontainers';
@@ -163,7 +164,7 @@ export async function dockerAllocation(args, environment = {}, {
 } = {}) {
   const startedAt = Date.now();
   // Never log argv, output or environment: those can contain credentials.
-  const resource = args.find(arg => /^daohr-documenso-[a-f0-9-]{12}(?:-(?:pg|mail|app|reaper))?$/.test(arg));
+  const resource = args.find(arg => /^(?:daohr-documenso-[a-f0-9-]{12}(?:-(?:pg|mail|app|reaper))?|pc-personal-ssh-[a-f0-9-]{36})$/.test(arg));
   const progress = status => onProgress({ operation: args[0], ...(resource ? { resource } : {}),
     status, at: new Date().toISOString(), elapsedMs: Date.now() - startedAt });
   progress('started');
@@ -195,7 +196,7 @@ export async function dockerAllocation(args, environment = {}, {
     // Keep run atomic: a separate create/start would strand an unstarted reaper
     // if the wrapper died between requests. Read its exact daemon history after
     // the joined request, so late bridge setup can be distinguished from create.
-    if (args[0] === 'run' && resource) {
+    if (['run', 'create', 'start', 'stop', 'rm'].includes(args[0]) && resource) {
       try {
         const events = readEvents(['events', '--since', String(Math.floor(startedAt / 1000)),
           '--until', String(Math.ceil(Date.now() / 1000)), '--filter', 'container=' + resource,
@@ -210,18 +211,187 @@ export async function dockerAllocation(args, environment = {}, {
               !['create', 'start', 'die', 'kill', 'destroy'].includes(action)) continue;
           const timeMs = event.timeNano ? Math.floor(Number(event.timeNano) / 1_000_000) : Number(event.time) * 1000;
           if (!Number.isFinite(timeMs) || timeMs < startedAt - 1000) continue;
-          onProgress({ operation: 'run', resource, status: 'daemon-event', daemonAction: action,
+          onProgress({ operation: args[0], resource, status: 'daemon-event', daemonAction: action,
             at: new Date(timeMs).toISOString(), elapsedMs: Math.max(0, timeMs - startedAt) });
           matched++;
         }
         if (!matched) throw new Error('no matching event history');
       } catch {
         // A bounded diagnostic failure cannot replace the allocation outcome.
-        onProgress({ operation: 'run', resource, status: 'events-unavailable',
+        onProgress({ operation: args[0], resource, status: 'events-unavailable',
           at: new Date().toISOString(), elapsedMs: Date.now() - startedAt });
       }
     }
   }
+}
+
+/** A test-hook timeout does not cancel its async continuation. Close admission
+ * first, join requests already sent to the daemon, then inspect/remove resources.
+ * This prevents a late create from appearing after an empty cleanup inspection.
+ * An external process kill still requires the sandbox's independent reaper.
+ */
+export function dockerAllocationScope({ allocate = dockerAllocation } = {}) {
+  const pending = new Set();
+  let closing = false, cleanup;
+  return {
+    run(args, environment = {}, options = {}) {
+      if (closing) return Promise.reject(new Error('Docker allocation scope is closing'));
+      const outcome = Promise.resolve().then(() => allocate(args, environment, options));
+      pending.add(outcome);
+      outcome.then(() => pending.delete(outcome), () => pending.delete(outcome));
+      return outcome;
+    },
+    close(remove) {
+      closing = true;
+      // Keep a single teardown outcome even if both a hook and a failure path close.
+      cleanup ??= (async () => {
+        await Promise.allSettled([...pending]);
+        return remove();
+      })();
+      return cleanup;
+    },
+  };
+}
+
+function fixtureOwnerIdentity(name, root) {
+  if (!/^pc-personal-ssh-[a-f0-9-]{36}$/.test(name) ||
+      resolve(root) !== root || !/^pc-personal-ssh-/.test(root.split('/').at(-1))) {
+    throw new Error('Invalid Docker fixture ownership identity');
+  }
+  const socketPath = join(root, 'owner.sock');
+  if (Buffer.byteLength(socketPath) > 100) throw new Error('Docker fixture ownership socket path is too long');
+  return socketPath;
+}
+
+function fixtureMessages(socket, receive) {
+  let buffer = '';
+  socket.setEncoding('utf8');
+  socket.on('data', data => {
+    buffer += data;
+    if (buffer.length > 2_500_000) return socket.destroy(new Error('Fixture ownership message is too large'));
+    for (let end; (end = buffer.indexOf('\n')) >= 0;) {
+      const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+      try { receive(JSON.parse(line)); }
+      catch (error) { socket.destroy(error); return; }
+    }
+  });
+  return message => { if (!socket.destroyed) socket.write(JSON.stringify(message) + '\n'); };
+}
+
+/** Reuse the joined allocation scope, but place its owner outside the runner's
+ * kill cgroup. The lease is the socket, not a PID or a polling timer: EOF closes
+ * admission, joins pending daemon mutations, then removes only the labelled
+ * container. Fixture keys survive until removal is verified. This transient,
+ * named scope has a one-hour safety ceiling; there is no persistent service.
+ */
+export async function startDockerAllocationOwner({ name, root,
+  onProgress = receipt => console.error('[docker-fixture-owner] ' + JSON.stringify(receipt)),
+}) {
+  const socketPath = fixtureOwnerIdentity(name, root);
+  chmodSync(root, 0o700);
+  const unit = 'papercusp-fixture-' + name + '.scope';
+  let socket, send, closing = false, sequence = 0, resolveReady, rejectReady;
+  const waiting = new Map();
+  const ready = new Promise((done, fail) => { resolveReady = done; rejectReady = fail; });
+  const fail = error => {
+    rejectReady(error);
+    for (const request of waiting.values()) request.reject(error);
+    waiting.clear();
+  };
+  const server = createServer(connection => {
+    if (socket) { connection.destroy(); return; }
+    socket = connection;
+    server.close();
+    send = fixtureMessages(socket, message => {
+      if (message.kind === 'ready') { resolveReady(); return; }
+      if (message.kind === 'progress') { onProgress(message.receipt); return; }
+      const request = waiting.get(message.id);
+      if (!request) return;
+      waiting.delete(message.id);
+      if (message.error) request.reject(new Error(message.error));
+      else request.resolve(message.result);
+    });
+    socket.on('error', fail);
+    socket.on('close', () => fail(new Error('Docker fixture ownership lease closed')));
+  });
+  await new Promise((done, reject) => { server.once('error', reject); server.listen(socketPath, done); });
+  const child = spawn('systemd-run', ['--user', '--scope', '--quiet', '--collect',
+    '--property=CollectMode=inactive-or-failed', '--unit=' + unit,
+    '--property=RuntimeMaxSec=3600', '--property=TimeoutStopSec=10', '--',
+    process.execPath, '--import', 'tsx', fileURLToPath(import.meta.url), '--docker-allocation-owner', name, root],
+  { stdio: 'ignore', env: process.env });
+  child.once('error', fail);
+  child.once('exit', code => { if (code !== 0) fail(new Error('Docker fixture owner exited ' + code)); });
+  const timer = setTimeout(() => fail(new Error('Docker fixture owner did not establish its lease')), 15_000);
+  try { await ready; }
+  catch (error) { server.close(); socket?.destroy(); throw error; }
+  finally { clearTimeout(timer); }
+  onProgress({ status: 'owner-ready', resource: name, unit });
+  /** @returns {Promise<string>} */
+  const request = message => new Promise((resolve, reject) => {
+    if (socket.destroyed) { reject(new Error('Docker fixture ownership lease closed')); return; }
+    const id = ++sequence;
+    waiting.set(id, { resolve, reject });
+    send({ ...message, id });
+  });
+  let cleanup;
+  return {
+    unit,
+    run(args, environment = {}, options = {}) {
+      if (closing || socket.destroyed) return Promise.reject(new Error('Docker allocation scope is closing'));
+      return request({ kind: 'run', args, environment, pendingAfterMs: options.pendingAfterMs });
+    },
+    close() {
+      closing = true;
+      cleanup ??= request({ kind: 'close' }).finally(() => socket.end());
+      return cleanup;
+    },
+  };
+}
+
+/** Owner-side entrypoint. All accepted requests live in this scope, so killing
+ * the test worker cannot sever the Docker CLI before its daemon outcome joins.
+ */
+export async function runDockerAllocationOwner(name, root) {
+  const socketPath = fixtureOwnerIdentity(name, root);
+  const receipt = value => appendFileSync(join(root, 'owner.jsonl'), JSON.stringify(value) + '\n', { mode: 0o600 });
+  const socket = createConnection(socketPath);
+  let send, cleanup, exitCode = 0;
+  const scope = dockerAllocationScope();
+  const remove = async () => {
+    const list = () => dockerAllocation(['ps', '--all', '--filter', 'name=^/' + name + '$',
+      '--format', '{{.ID}} {{.Label "papercusp.test.owner"}}'], {}, { onProgress() {} });
+    for (const row of (await list()).split('\n').filter(Boolean)) {
+      const [id, owner] = row.trim().split(/\s+/);
+      if (!/^[a-f0-9]{12,64}$/.test(id) || owner !== name) throw new Error('Docker fixture cleanup ownership mismatch');
+      await dockerAllocation(['rm', '--force', id], {}, { onProgress() {} });
+    }
+    if ((await list()).trim()) throw new Error('Docker fixture cleanup left a container');
+    receipt({ status: 'cleanup-verified', resource: name });
+    rmSync(root, { recursive: true, force: true });
+  };
+  const close = () => cleanup ??= scope.close(remove).catch(error => {
+    exitCode = 1;
+    receipt({ status: 'cleanup-failed', resource: name, message: error.message });
+    throw error;
+  });
+  send = fixtureMessages(socket, message => {
+    if (message.kind === 'run') {
+      scope.run(message.args, message.environment, { pendingAfterMs: message.pendingAfterMs,
+        onPending() {}, onProgress: value => { receipt(value); send({ kind: 'progress', receipt: value }); },
+      }).then(result => send({ id: message.id, result }), error => send({ id: message.id, error: error.message }));
+    } else if (message.kind === 'close') {
+      close().then(() => { send({ id: message.id, result: 'cleanup-verified' }); socket.end(); },
+        error => { send({ id: message.id, error: error.message }); socket.end(); });
+    } else socket.destroy(new Error('Unknown Docker fixture ownership request'));
+  });
+  socket.once('connect', () => send({ kind: 'ready' }));
+  // Errors and EOF both revoke admission. Keep the event loop alive until the
+  // joined cleanup settles, even if no recipient remains for its reply.
+  socket.on('error', () => {});
+  await new Promise(done => socket.once('close', done));
+  await close().catch(() => {});
+  return exitCode;
 }
 
 /** Start is also a daemon mutation: wait for its outcome before cleanup, and
@@ -370,6 +540,75 @@ export async function waitForSandboxPostgres(name, { run, secrets = [],
   }
 }
 
+/** Classify private provider logs without returning any part of their text.
+ * These are diagnostic signals, not root-cause verdicts. Unknown failures stay
+ * unknown rather than exposing an error line that may contain signing tokens.
+ */
+export function sandboxProviderFailureSignals(logs) {
+  return [
+    ['node-thread-creation', /pthread_create|uv_thread_create|WorkerThreadsTaskRunner::DelayedTaskScheduler::Start/],
+    ['javascript-heap-exhaustion', /FATAL ERROR:.*(?:heap|allocation)|JavaScript heap out of memory/i],
+    ['database-unreachable', /\bP1001\b|Can't reach database server/i],
+    ['database-authentication', /\bP1000\b|password authentication failed/i],
+    ['database-pool-timeout', /\bP2024\b/],
+    ['database-schema-missing', /\bP2021\b/],
+    ['environment-invalid', /Invalid environment variables|Missing environment variable/i],
+    ['address-in-use', /\bEADDRINUSE\b/],
+    ['module-missing', /\bMODULE_NOT_FOUND\b|\bERR_MODULE_NOT_FOUND\b/],
+    ['prisma-engine-panic', /PrismaClientRustPanicError/],
+    ['unhandled-exception', /uncaught exception|uncaughtException|UnhandledPromiseRejection/i],
+  ].filter(([, pattern]) => pattern.test(logs)).map(([signal]) => signal);
+}
+
+/** Preserve bounded failure evidence before the caller removes its providers.
+ * Application logs may contain signup/signing tokens by this point: only fixed
+ * failure categories may leave the classifier, never log text or response bodies.
+ */
+export async function waitForSandboxChild(child, { runtime,
+  run = args => spawnSync('docker', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 }),
+  probe = fetch, report = value => console.error('[documenso-sandbox-child-failure] ' + JSON.stringify(value)),
+}) {
+  const exitCode = await new Promise((done, reject) => {
+    child.once('error', reject); child.once('exit', (code, signal) => done(code ?? (signal ? 130 : 1)));
+  });
+  if (exitCode !== 0) {
+    const containers = [runtime.container, runtime.network + '-pg', runtime.network + '-mail'].map(name => {
+      try {
+        const result = run(['inspect', '--format', '{{json .State}}', name]);
+        const state = JSON.parse(result.stdout || '{}');
+        return { name, inspectExit: result.status,
+          status: /^(created|running|paused|restarting|removing|exited|dead)$/.test(state.Status) ? state.Status : 'unknown',
+          exitCode: Number.isInteger(state.ExitCode) ? state.ExitCode : null, oomKilled: state.OOMKilled === true };
+      } catch { return { name, status: 'unknown', inspection: 'failed' }; }
+    });
+    let providerFailure;
+    if (['exited', 'dead'].includes(containers[0].status)) {
+      try {
+        const result = run(['logs', '--tail', '200', runtime.container]);
+        providerFailure = result.status === 0 && !result.error
+          ? { inspection: 'classified', signals: sandboxProviderFailureSignals((result.stdout || '') + (result.stderr || '')) }
+          : { inspection: 'unavailable' };
+      } catch { providerFailure = { inspection: 'unavailable' }; }
+    }
+    const endpoints = await Promise.all([
+      ['provider', runtime.appUrl + '/signup'], ['mail', runtime.mailUrl + '/email'],
+    ].map(async ([name, url]) => {
+      try {
+        const response = await probe(url, { signal: AbortSignal.timeout(5000), redirect: 'manual' });
+        await response.body?.cancel();
+        return { name, status: response.status };
+      } catch (error) {
+        const code = error?.cause?.code;
+        const failure = ['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH'].includes(code) ? code :
+          ['TimeoutError', 'AbortError'].includes(error?.name) ? 'timeout' : 'request-failed';
+        return { name, status: null, failure };
+      }
+    }));
+    await report({ exitCode, containers, endpoints, ...(providerFailure ? { providerFailure } : {}) });
+  }
+  return exitCode;
+}
+
 export async function runSandbox({ image, command, signal }, { prepareImages = prepareSandboxImages } = {}) {
   const suffix = randomUUID().slice(0, 12);
   const network = 'daohr-documenso-' + suffix;
@@ -507,9 +746,7 @@ export async function runSandbox({ image, command, signal }, { prepareImages = p
     child = spawn(command[0], command.slice(1), { stdio: 'inherit', detached: true,
       env: { ...process.env, DOCUMENSO_URL: appUrl, DOCUMENSO_TEST_MAIL_URL: mailUrl,
         DOCUMENSO_TEST_RUNTIME: JSON.stringify(runtime) } });
-    const exitCode = await new Promise((done, reject) => {
-      child.once('error', reject); child.once('exit', (code, signal) => done(code ?? (signal ? 130 : 1)));
-    });
+    const exitCode = await waitForSandboxChild(child, { runtime });
     if (reaperFailure) throw reaperFailure;
     return exitCode;
   } finally {
@@ -522,6 +759,8 @@ export async function runSandbox({ image, command, signal }, { prepareImages = p
 }
 
 if (isCliEntry(import.meta.url)) {
-  try { process.exitCode = await runSandbox(parseSandboxArgs(process.argv.slice(2))); }
+  try { process.exitCode = process.argv[2] === '--docker-allocation-owner'
+    ? await runDockerAllocationOwner(process.argv[3], process.argv[4])
+    : await runSandbox(parseSandboxArgs(process.argv.slice(2))); }
   catch (error) { console.error(error.message); process.exitCode = 1; }
 }

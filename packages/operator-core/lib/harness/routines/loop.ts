@@ -35,7 +35,7 @@
  * workflow.ts (the B-LOOP-2/3 lane), so it composes without collision.
  */
 import type { Sql, TransactionSql } from 'postgres';
-import { getOrgPg, normalizeNextFireAt, upsertRoutine } from '@papercusp/db-org';
+import { getOrgPg, isParkedNextFire, normalizeNextFireAt, upsertRoutine } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { computeNextFireAt } from './cron';
 import { stampLoopArmedAt } from './loop-dead-man';
@@ -566,13 +566,24 @@ export async function materializeLoop(input: MaterializeLoopInput): Promise<{
                                  ELSE ${nextFireAtStr}::timestamptz END,
              reschedule_interval_sec = ${input.intervalSec},
              target_owner_id = ${input.ownerId},
+             -- A deliberate new arm supersedes its old end. Otherwise a later
+             -- accidental inactive row would still look intentionally ended.
+             metadata = CASE
+               WHEN COALESCE(metadata->'pause'->>'reason', metadata->>'loop_paused_reason', '')
+                    LIKE ${LOOP_END_PAUSE_PREFIX + '%'}
+               THEN COALESCE(metadata, '{}'::jsonb) - 'pause' - 'loop_paused_reason' - 'loop_paused_at'
+               ELSE metadata END,
              updated_at = now()
        WHERE id = ${canonical.id}
-         AND (${input.onlyIfInactive !== true} OR active = FALSE)
+         AND (${input.onlyIfInactive !== true} OR (
+           active = FALSE
+           AND COALESCE(metadata->'pause'->>'reason', metadata->>'loop_paused_reason', '')
+               NOT LIKE ${LOOP_END_PAUSE_PREFIX + '%'}
+         ))
       RETURNING id, name, next_fire_at, target_role
     `;
     if (rows.length === 0 && input.onlyIfInactive) {
-      // The CAS lost to a concurrent explicit arm. Read back the winner so the
+      // The CAS lost to a concurrent explicit arm or end. Read back the winner so the
       // caller reports its live configuration and, importantly, does not stamp
       // or deactivate any shadow row as if the repair had changed the loop.
       const currentRows = await sql<
@@ -657,6 +668,20 @@ export async function materializeLoop(input: MaterializeLoopInput): Promise<{
       `[loop] stampLoopArmedAt failed for routine ${row.id} (loop still armed): ${e instanceof Error ? e.message : e}`,
     );
   }
+  const recordedNextFireAt = normalizeNextFireAt(row.nextFireAt);
+  void recordLoopTransition(sql, {
+    workspaceId,
+    installSlug: input.harnessSlug,
+    routineId: row.id,
+    routineName: row.name,
+    targetRole: row.targetRole,
+    targetOwnerId: input.ownerId,
+    event: 'rearmed',
+    actor: input.onlyIfInactive ? 'loop-recovery-materialize' : 'loop-explicit-materialize',
+    newNextFireAt: isParkedNextFire(recordedNextFireAt) ? 'infinity' : recordedNextFireAt?.toISOString() ?? null,
+    intervalSec: input.intervalSec,
+    detail: { previousActive: existing[0]?.active ?? null },
+  });
   return {
     id: row.id,
     name: row.name,
@@ -703,6 +728,12 @@ export async function materializeLoop(input: MaterializeLoopInput): Promise<{
  */
 export const LOOP_END_PAUSE_PREFIX = 'loop:end (WI-39786): owner-deliberate:';
 
+function hasExplicitLoopEnd(metadata: Record<string, unknown> | null | undefined): boolean {
+  const pause = readRoutinePause(metadata?.pause);
+  const reason = pause?.reason ?? metadata?.loop_paused_reason;
+  return typeof reason === 'string' && reason.startsWith(LOOP_END_PAUSE_PREFIX);
+}
+
 export async function deactivateLoop(
   ownerId: string,
   opts: { sql?: Sql; reason?: string; actor?: string } = {},
@@ -716,7 +747,7 @@ export async function deactivateLoop(
   // The already-inactive stamp runs FIRST: after the deactivation UPDATE below flips the row,
   // this predicate would also match the row just ended and overwrite the superseded-copy key
   // with the reason we just wrote. Ordered this way, each row is stamped exactly once.
-  await sql`
+  const alreadyInactive = await sql<Array<{ id: string }>>`
     UPDATE harness_shared.routines
        SET metadata = COALESCE(metadata, '{}'::jsonb)
                     || jsonb_build_object(
@@ -736,6 +767,7 @@ export async function deactivateLoop(
                        ),
            updated_at = now()
      WHERE name = ${loopRoutineName(ownerId)} AND active = FALSE
+    RETURNING id
   `;
   const ended = await sql<
     Array<{
@@ -795,6 +827,28 @@ export async function deactivateLoop(
       intervalSec: row.reschedule_interval_sec,
       detail: { reason },
     });
+  }
+
+  // A dead-man breach already deactivates its routine before the owner can respond. In that
+  // case loop:end finds the row in `alreadyInactive`, so there is no TRUE -> FALSE transition
+  // to record — but this explicit disposition still closes the one-shot dead-man condition.
+  // Signal absence cannot do that safely for one-shot alarms, and leaving it open after an
+  // intentional stop pages the owner indefinitely. Resolving an absent/already-resolved key is
+  // a cheap no-op; resolveAlarm is best-effort and never turns the successful stop into failure.
+  const routineIds = new Set([...alreadyInactive, ...ended].map((row) => row.id));
+  if (routineIds.size > 0) {
+    try {
+      const { resolveAlarm } = await import('../../alarm-attention');
+      const resolutions = await Promise.allSettled([...routineIds].map((routineId) =>
+        resolveAlarm(`alarm:loop-dead-man:${routineId}`, 'loop-dead-man')));
+      for (const result of resolutions) {
+        if (result.status === 'rejected') {
+          console.warn(`[loop] dead-man condition resolution failed after loop:end: ${String(result.reason)}`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[loop] dead-man condition resolution failed after loop:end: ${String(e)}`);
+    }
   }
 
   return ended.length > 0;
@@ -955,6 +1009,8 @@ export interface LoopStatus {
   ownerId: string;
   harnessSlug: string;
   active: boolean;
+  /** An inactive row deliberately ended by loop:end; recovery is not a new arm mandate. */
+  explicitlyEnded?: boolean;
   intervalSec: number | null;
   /** Loop lifecycle (su-cold-auto-mode-2026-07-03 P-003/P-008): 'warm' (default) re-wakes the
    *  same session in place; 'cold' resets/recycles to the carry-note each wake. Observability so
@@ -2060,6 +2116,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     // report a policy the reconciler would reject (or miss one it would enforce).
     monitor: readPersistedMonitorConfig(pt),
     monitorStanddown: readMonitorStanddownRecord(r.metadata),
+    explicitlyEnded: !r.active && hasExplicitLoopEnd(r.metadata),
     standdown,
     // Absent (a loop armed before this field, or with no goal) reads as null — an
     // honest "not recorded", never an empty string that would render as a blank goal.
@@ -2717,6 +2774,7 @@ export async function autoArmFleetMemberLoop(opts: {
   try {
     const existing = await getLoopStatus(opts.ownerId, { sql: opts.sql });
     if (existing?.active) return { armed: false, reason: 'already-armed', loopName: existing.name };
+    if (existing?.explicitlyEnded) return { armed: false, reason: 'explicit-loop-end', loopName: existing.name };
 
     let derivedGoal: string;
     if (opts.planSlug) {

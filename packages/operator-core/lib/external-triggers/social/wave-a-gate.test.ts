@@ -3,9 +3,9 @@
  *
  * WHAT THIS FILE IS FOR, and what it deliberately does NOT do.
  *
- * Each Wave A adapter already runs itself through the P-003 conformance kit in
- * its own test file, and `conformance.test.ts` already proves the kit is
- * falsifiable (eight permanent broken-adapter controls) and honest about what
+ * Each Wave A package runs itself through the shared SDK conformance kit in
+ * its own test file, and `provider-conformance.test.ts` proves the kit is
+ * falsifiable with permanent broken-adapter controls and honest about what
  * it skips. None of that is repeated here — re-proving it would be duplication,
  * not a gate.
  *
@@ -30,14 +30,12 @@
  *      passing a weaker suite while still reporting "conformance" — the failure
  *      mode clause 1 is written against, arrived at from the other direction.
  *
- * NOT asserted here, deliberately: that every kit check is exercised somewhere
- * in Wave A. That is already carried by bluesky-adapter.test.ts, which asserts
- * `checksSkipped` is empty — one adapter running the complete suite covers the
- * whole check universe on its own. Restating it here would be a second copy of
- * a truth that file already owns.
+ * Provider migration binds Wave A's actual package suites to the SDK kit.
+ * Broken-adapter controls remain in the shared conformance suites; transport
+ * behavior is exercised by each package's real API fixtures.
  */
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -46,7 +44,7 @@ import { stripComments } from './comment-stripper.fixture';
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 /**
- * The directory this gate reads its subjects from. Defaults to the real one.
+ * The SDK directory this gate reads its subjects from. Defaults to the real one.
  *
  * The override exists so falsifiability can be PROVEN without mutating the
  * shared tree: point it at a copy carrying a deliberate special-case and this
@@ -55,10 +53,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * probe legitimately holds its mutation for as long as the suite runs, so a
  * sweep landing in that window commits it even though nothing went wrong.
  */
-const SUBJECT_DIR = process.env.WAVE_A_GATE_SUBJECT_DIR ?? HERE;
+const SUBJECT_DIR = process.env.WAVE_A_GATE_SUBJECT_DIR ?? join(HERE, '../../../../plugin-sdk/src');
 
 /** The kit itself: the runner plus the contract every adapter implements. */
-const KIT_FILES = ['conformance.ts', 'adapter-contract.ts'] as const;
+const KIT_FILES = ['provider-conformance.ts', 'provider.ts'] as const;
 
 /** The three platforms that make up Wave A. */
 const WAVE_A_PLATFORMS = ['bluesky', 'mastodon', 'reddit'] as const;
@@ -120,20 +118,25 @@ describe('P-014 Wave A gate — there is one kit, and all three adapters use it'
     expect(sources.length).toBeGreaterThan(3);
 
     const exporters = sources.filter((f) =>
-      /export\s+(async\s+)?function\s+runSocialAdapterConformance/.test(read(f)),
+      /export\s+(async\s+)?function\s+runProviderConformance/.test(read(f)),
     );
 
     expect(
       exporters,
       'more than one module exports the conformance runner — a forked kit lets an adapter ' +
         'pass a weaker suite while still reporting "conformance"',
-    ).toEqual(['conformance.ts']);
+    ).toEqual(['provider-conformance.ts']);
   });
 
-  it.each(WAVE_A_PLATFORMS)('the %s adapter is run against the shared kit', (platform) => {
-    const source = read(`${platform}-adapter.test.ts`);
+  it('keeps the retired app-side runner and adapter contract absent', () => {
+    for (const file of ['conformance.ts', 'adapter-contract.ts']) {
+      expect(existsSync(join(HERE, file)), `retired app-side kit returned: ${file}`).toBe(false);
+    }
+  });
 
-    expect(source).toContain("from './conformance'");
-    expect(source).toContain('runSocialAdapterConformance(');
+  it.each(WAVE_A_PLATFORMS)('the %s package is run against the shared SDK kit', (platform) => {
+    const source = readFileSync(join(HERE, '../../providers', platform, `${platform}-provider.test.ts`), 'utf8');
+    expect(source).toMatch(/import\s*\{[^}]*\brunProviderConformance\b[^}]*\}\s*from\s*['"]@papercusp\/plugin-sdk(?:\/provider-conformance)?['"]/s);
+    expect(source).toContain('runProviderConformance(');
   });
 });

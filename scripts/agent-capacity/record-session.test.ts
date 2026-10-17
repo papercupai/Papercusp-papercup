@@ -1,9 +1,41 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, platform, tmpdir } from 'node:os';
 import path from 'node:path';
-import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, CORPUS_FILE, corpusFileFromArgv, loadCorpus, sessionDiff, summarizeToolCalls, summarizeToolOutcomes } from './record-session';
+import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, codexSelectionFromArgv, CORPUS_FILE, corpusFileFromArgv, loadCorpus, recordedWorkDir, recordingLimitFromArgv, sessionDiff, summarizeToolCalls, summarizeToolOutcomes } from './record-session';
+
+describe('batch recording request allowance', () => {
+  const selection = { model: 'gpt-6-luna', effort: 'low' as const };
+  it('requires explicit Codex binding and preserves legacy absence', () => {
+    expect(recordingLimitFromArgv([], 'codex')).toBeUndefined();
+    expect(recordingLimitFromArgv(['--max-model-requests', '20'], 'codex', selection)?.snapshot())
+      .toEqual({ ...selection, maxRequests: 20, admitted: 0, denied: 0 });
+    expect(() => recordingLimitFromArgv(['--max-model-requests', '20'], 'codex')).toThrow(/explicit Codex/);
+    expect(() => recordingLimitFromArgv(['--max-model-requests', '20'], 'claude', selection)).toThrow(/explicit Codex/);
+  });
+  it.each(['0', '-1', '1.5', 'NaN', 'Infinity', '9007199254740992', '--tasks', ''])('rejects an invalid allowance %j before sessions start', (value) => {
+    expect(() => recordingLimitFromArgv(['--max-model-requests', value], 'codex', selection)).toThrow();
+  });
+  it('requires a batch allowance for byte limits and retains both in the saved snapshot', () => {
+    expect(() => recordingLimitFromArgv(['--max-request-bytes', '65536'], 'codex', selection)).toThrow(/requires --max-model-requests/);
+    expect(recordingLimitFromArgv(['--max-model-requests', '20', '--max-request-bytes', '65536'], 'codex', selection)?.snapshot())
+      .toEqual({ ...selection, maxRequests: 20, maxRequestBytes: 65536, admitted: 0, denied: 0 });
+  });
+  it.each(['0', '-1', '1.5', 'NaN', 'Infinity', '9007199254740992', '--tasks', ''])('rejects an invalid byte allowance %j before sessions start', (value) => {
+    expect(() => recordingLimitFromArgv(['--max-model-requests', '20', '--max-request-bytes', value], 'codex', selection)).toThrow();
+  });
+});
+
+describe('default recording placement', () => {
+  it('places shared-host recording checkouts on data and preserves an explicit cache', () => {
+    const root = platform() === 'linux'
+      ? '/mnt/data/agent-capacity' : path.join(homedir(), '.cache', 'agent-capacity');
+    expect(recordedWorkDir('placement-control')).toBe(path.join(root, 'work', 'placement-control'));
+    expect(recordedWorkDir('placement-control', '/explicit/cache'))
+      .toBe('/explicit/cache/work/placement-control');
+  });
+});
 
 describe('corpusFileFromArgv', () => {
   it('defaults to the shipped corpus and resolves --tasks-file when given', () => {
@@ -67,6 +99,29 @@ describe('recorded CLI environment', () => {
   it('runs codex non-interactively in the work dir and claude with bypassed permissions', () => {
     expect(cliArgs('codex', 'do it', '/w', 'sonnet')).toEqual(['exec', '--json', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-C', '/w', 'do it']);
     expect(cliArgs('claude', 'do it', '/w', 'sonnet')).toContain('--dangerously-skip-permissions');
+  });
+  it('writes explicit requested model/effort as root TOML settings for a corpus run', () => {
+    const selection = codexSelectionFromArgv(['--cli', 'codex', '--codex-model', 'gpt-6-luna', '--codex-effort', 'low']);
+    const parsed = JSON.parse(execFileSync('python3', ['-c', 'import sys,json,tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())))'], {
+      input: codexConfigToml('http://127.0.0.1:5000', selection), encoding: 'utf8',
+    }));
+    expect(selection).toEqual({ model: 'gpt-6-luna', effort: 'low' });
+    expect(parsed).toMatchObject({ model: 'gpt-6-luna', model_reasoning_effort: 'low', model_provider: 'capture' });
+    expect(parsed.model_providers.capture).not.toHaveProperty('model');
+  });
+  it('keeps legacy selections unknown instead of inventing a model or effort', () => {
+    expect(codexSelectionFromArgv(['--cli', 'codex'])).toBeUndefined();
+    expect(codexConfigToml('http://127.0.0.1:5000')).not.toMatch(/^model(?:_reasoning_effort)? =/m);
+  });
+  it.each([
+    ['--codex-model', 'gpt-6-luna'],
+    ['--codex-effort', 'low'],
+    ['--codex-model', '--codex-effort', 'low'],
+    ['--codex-model', 'gpt-6-luna', '--codex-effort'],
+    ['--codex-model', 'gpt-6-luna', '--codex-effort', 'typo'],
+    ['--codex-model', 'gpt-6-luna\n[features]', '--codex-effort', 'low'],
+  ])('refuses incomplete or invalid explicit Codex settings: %j', (...argv) => {
+    expect(() => codexSelectionFromArgv(argv)).toThrow(/Codex|codex/);
   });
 });
 

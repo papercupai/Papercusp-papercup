@@ -27,7 +27,13 @@ export function createProviderDaemon(adapter: ProviderAdapter, send: (message: P
   };
   const replyError = (id: string | number, error: unknown) => {
     const e = error as { code?: unknown; data?: unknown; message?: unknown } | null;
-    const data = providerSyncErrorOf(error) ?? e?.data;
+    const classified = providerSyncErrorOf(error);
+    // Classification narrows the retry signal, while data also holds a
+    // provider's operation receipt (e.g. an unconfirmed publish container).
+    // Keep that receipt across the process boundary; normalized fields win.
+    const data = classified
+      ? { ...(e?.data && typeof e.data === 'object' && !Array.isArray(e.data) ? e.data : {}), ...classified }
+      : e?.data;
     if (!closed) send({ jsonrpc: '2.0', id, error: {
       code: typeof e?.code === 'number' ? e.code : -32000,
       message: String(e?.message ?? error),

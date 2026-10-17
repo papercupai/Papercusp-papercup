@@ -284,6 +284,7 @@ async function main() {
     const turnStart = await core.runInjection({ adapter, nativeEvent: 'UserPromptSubmit',
       event: { prompt: 'zephyrquartz diagnostic snapshot recovery evidence', cwd: e.HOME }, env, fetchImpl });
     writeFileSync(join(evidenceDir, 'turn-start.json'), JSON.stringify({ requests, payload: turnStart }));
+    assert.ok(turnStart, 'native turn-start returned no injection');
     assert.ok(turnStart?.includes(reports[0].reportId), 'native turn-start omitted the report reference');
     assert.ok(turnStart.includes(knowledge[0].planSlug), 'native turn-start omitted the plan reference');
     assert.ok(turnStart.includes(knowledge[0].docSlug), 'native turn-start omitted the maintained procedure reference');
@@ -295,6 +296,7 @@ async function main() {
       event: { tool_name: 'exec_command', tool_input: { cmd: 'rg cobaltquartz diagnostic snapshot recovery evidence' },
         tool_response: 'Investigating diagnostic snapshot recovery evidence', cwd: e.HOME }, env, fetchImpl });
     writeFileSync(join(evidenceDir, 'mid-turn.json'), JSON.stringify({ requests, payload: midTurn }));
+    assert.ok(midTurn, 'native mid-turn returned no injection');
     assert.ok(midTurn?.includes(reports[1].reportId), 'native mid-turn omitted novel report reference');
     assert.ok(midTurn.includes(knowledge[1].planSlug), 'native mid-turn omitted the novel plan reference');
     assert.ok(midTurn.includes(knowledge[1].docSlug), 'native mid-turn omitted the novel maintained procedure reference');

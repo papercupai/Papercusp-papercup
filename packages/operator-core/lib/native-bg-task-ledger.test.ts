@@ -390,6 +390,39 @@ describe.each([
     } finally { rmSync(proc, { recursive: true, force: true }); }
   });
 
+  it('release holder mode covers cwd, root, exe and deleted descriptors without sibling matches', async () => {
+    const proc = fakeProc({ '11': [], '12': [], '13': [], '14': ['/tmp/tree/file (deleted)'], '15': [] });
+    symlinkSync('/tmp/tree/sub', join(proc, '11', 'cwd'));
+    symlinkSync('/tmp/tree', join(proc, '12', 'root'));
+    symlinkSync('/tmp/tree/bin/node', join(proc, '13', 'exe'));
+    symlinkSync('/tmp/tree-other', join(proc, '15', 'root'));
+    try {
+      const scan = await openWriterPidsMany(['/tmp/tree'], {
+        procRoot: proc, descendants: true, includeProcessLinks: true, failClosed: true,
+      });
+      expect(scan.complete).toBe(true);
+      expect(scan.byPath.get('/tmp/tree')).toEqual(['11', '12', '13', '14']);
+      expect(scan.diagnostics).toMatchObject({ processesTotal: 5, processesScanned: 5, readFailures: 0 });
+    } finally { rmSync(proc, { recursive: true, force: true }); }
+  });
+
+  it('release holder mode refuses an unreadable executable instead of certifying absence', async () => {
+    const proc = fakeProc({ '11': [] });
+    const exe = join(proc, '11', 'exe');
+    try {
+      const scan = await scanOpenWriters(['/tmp/tree'], {
+        procRoot: proc, descendants: true, includeProcessLinks: true, failClosed: true,
+        procIo: { readdir: procIo?.readdir ?? readdir, readlink: (p) => {
+          if (p === exe) throw Object.assign(new Error('denied'), { code: 'EACCES' });
+          return (procIo?.readlink ?? readlink)(p);
+        } },
+      });
+      expect(scan.complete).toBe(false);
+      expect(scan.diagnostics).toMatchObject({ readFailures: 1,
+        failureSamples: [{ operation: 'exe', path: exe, code: 'EACCES' }] });
+    } finally { rmSync(proc, { recursive: true, force: true }); }
+  });
+
   it('retention mode refuses a missing proc root and expired scan budget', async () => {
     const missing = await openWriterPidsMany(['/tmp/tree'], {
       procRoot: '/nonexistent-proc-root', failClosed: true,

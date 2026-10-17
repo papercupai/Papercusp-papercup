@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "planSlug": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "workItemId": "WI-6554700010016028",
+  "specId": "AUTO-BAR-R-6-P-007",
+  "specRevision": 6,
+  "assessment": {
+    "assessedAt": "2026-10-17T00:39:38.480Z",
+    "passed": true,
+    "assertions": [
+      {
+        "id": "exact-recorded-build",
+        "passed": true
+      },
+      {
+        "id": "recorded-origins-and-times",
+        "passed": true
+      },
+      {
+        "id": "two-independent-selected-tenants",
+        "passed": true
+      },
+      {
+        "id": "hosted-null-workspace-denied",
+        "passed": true
+      },
+      {
+        "id": "cross-tenant-machine-denial",
+        "passed": true
+      },
+      {
+        "id": "cross-tenant-connection-denial",
+        "passed": true
+      },
+      {
+        "id": "selected-browser-navigation-and-help",
+        "passed": true
+      },
+      {
+        "id": "hosted-empty-browser-truthful",
+        "passed": true
+      },
+      {
+        "id": "local-empty-inventory-and-help",
+        "passed": true
+      },
+      {
+        "id": "test-tenant-cleanup",
+        "passed": true
+      },
+      {
+        "id": "complete-case-population",
+        "passed": true
+      }
+    ],
+    "checked": [
+      "exact-recorded-build",
+      "recorded-origins-and-times",
+      "two-independent-selected-tenants",
+      "hosted-null-workspace-denied",
+      "cross-tenant-machine-denial",
+      "cross-tenant-connection-denial",
+      "selected-browser-navigation-and-help",
+      "hosted-empty-browser-truthful",
+      "local-empty-inventory-and-help",
+      "test-tenant-cleanup",
+      "complete-case-population"
+    ],
+    "missing": [],
+    "identity": {
+      "portalRelease": "9Zhmwh4R94zC5kJ_DAGOR-20261016232610941-1458391-ad0b1061",
+      "portalSourceDigest": "606bb1dfbdbde20fc907febd964ef934e79f3c26d1e1d718bc0d78c8d8353fb5",
+      "fixedPageSha": "c5eaa10c90249b0e37739728225665131eff38a7a1da283fcbc48d103a56d592"
+    },
+    "limitation": "Assessment of retained R6 browser/API observations only; does not rerun browsers, verify screenshot pixels, establish current runtime liveness, R1 switching/agent continuity, unit prerequisites, or R7 shipment.",
+    "receipts": [
+      {
+        "path": "/tmp/machine-first-browser-r6-v7-20261016/receipt.json",
+        "sha256": "f5d0ba48ba291b27e656c070adba5cb9b5fc798d02f67ce8e0ff483ca56ef447"
+      },
+      {
+        "path": "/tmp/machine-first-local-empty-v10-20261016/receipt.json",
+        "sha256": "7f45964ba09e37a91b9fd43e170ea8b7a0dc92d1d6d65fd298b16072bb2aee75"
+      }
+    ],
+    "instrument": "apps/operator/lib/machine-first-authorization-evidence.ts",
+    "instrumentSha256": "aece5acd828ececdd084886bfdad49c30b7d2c23de1556d762871a3ced6bc0b1"
+  },
+  "originalReceipts": [
+    {
+      "originalPath": "/tmp/machine-first-browser-r6-v7-20261016/receipt.json",
+      "sha256": "f5d0ba48ba291b27e656c070adba5cb9b5fc798d02f67ce8e0ff483ca56ef447",
+      "utf8": "{\n  \"schemaVersion\": 1,\n  \"observedAt\": \"2026-10-16T23:35:59.361Z\",\n  \"build\": {\n    \"release\": \"9Zhmwh4R94zC5kJ_DAGOR-20261016232610941-1458391-ad0b1061\",\n    \"sourceDigest\": \"606bb1dfbdbde20fc907febd964ef934e79f3c26d1e1d718bc0d78c8d8353fb5\",\n    \"fixedPageSha\": \"c5eaa10c90249b0e37739728225665131eff38a7a1da283fcbc48d103a56d592\",\n    \"origin\": \"https://127.0.0.1:41357\"\n  },\n  \"cases\": [\n    {\n      \"label\": \"authorized-selected-workspace\",\n      \"account\": \"67ace7ee-0c34-4226-87db-127a70f64d28\",\n      \"tenant\": \"b997c5c9-b021-4b3b-9228-993a21d4b996\",\n      \"selectedWorkspace\": \"ws-87b5b2fdf29d4cf9ff144bce\",\n      \"target\": \"host-87b5b2fdf29d4cf9ff144bce\",\n      \"connection\": \"tutorial-test-host-87b5b2fdf29d4cf9ff144bce\",\n      \"route\": \"/api/hosted/browser/rest-query?name=workspaceHosts.control&args=%7B%7D\",\n      \"expected\": 200,\n      \"observedStatus\": 200,\n      \"error\": null,\n      \"rows\": [\n        {\n          \"kind\": \"connection\",\n          \"id\": \"tutorial-test-host-87b5b2fdf29d4cf9ff144bce\"\n        },\n        {\n          \"kind\": \"workspace\",\n          \"id\": \"host-87b5b2fdf29d4cf9ff144bce\",\n          \"name\": \"Preassigned tutorial TEST\",\n          \"observedState\": \"provisioning\"\n        }\n      ]\n    },\n    {\n      \"label\": \"authorized-selected-workspace\",\n      \"account\": \"a26b32bd-38ce-4ade-a3b7-1fbfc070f488\",\n      \"tenant\": \"4e92fe25-f65e-47aa-ad55-fb11659640bb\",\n      \"selectedWorkspace\": \"ws-0e7a817dbe4c5c204bccca1b\",\n      \"target\": \"host-0e7a817dbe4c5c204bccca1b\",\n      \"connection\": \"tutorial-test-host-0e7a817dbe4c5c204bccca1b\",\n      \"route\": \"/api/hosted/browser/rest-query?name=workspaceHosts.control&args=%7B%7D\",\n      \"expected\": 200,\n      \"observedStatus\": 200,\n      \"error\": null,\n      \"rows\": [\n        {\n          \"kind\": \"connection\",\n          \"id\": \"tutorial-test-host-0e7a817dbe4c5c204bccca1b\"\n        },\n        {\n          \"kind\": \"workspace\",\n          \"id\": \"host-0e7a817dbe4c5c204bccca1b\",\n          \"name\": \"Preassigned tutorial TEST\",\n          \"observedState\": \"provisioning\"\n        }\n      ]\n    },\n    {\n      \"label\": \"hosted-empty-workspace\",\n      \"account\": \"6912a21c-ed5b-4f1a-8172-ee7dee7ca17f\",\n      \"tenant\": \"eefed646-cd17-4aac-ae14-5627511da123\",\n      \"selectedWorkspace\": null,\n      \"target\": null,\n      \"connection\": null,\n      \"route\": \"/api/hosted/browser/rest-query?name=workspaceHosts.control&args=%7B%7D\",\n      \"expected\": 403,\n      \"observedStatus\": 403,\n      \"error\": \"workspace_not_selected\",\n      \"rows\": null\n    },\n    {\n      \"label\": \"cross-tenant-machine-denial\",\n      \"account\": \"67ace7ee-0c34-4226-87db-127a70f64d28\",\n      \"tenant\": \"b997c5c9-b021-4b3b-9228-993a21d4b996\",\n      \"selectedWorkspace\": \"ws-87b5b2fdf29d4cf9ff144bce\",\n      \"target\": null,\n      \"connection\": null,\n      \"route\": \"/api/hosted/browser/rest-query?name=workspaceHosts.control&args=%7B%7D\",\n      \"expected\": 403,\n      \"observedStatus\": 403,\n      \"error\": \"workspace_binding_mismatch\",\n      \"rows\": null\n    },\n    {\n      \"label\": \"cross-tenant-connection-denial\",\n      \"account\": \"67ace7ee-0c34-4226-87db-127a70f64d28\",\n      \"tenant\": \"b997c5c9-b021-4b3b-9228-993a21d4b996\",\n      \"selectedWorkspace\": \"ws-87b5b2fdf29d4cf9ff144bce\",\n      \"target\": null,\n      \"connection\": null,\n      \"route\": \"/api/hosted/workspaces/ws-0e7a817dbe4c5c204bccca1b/connectors/session-ticket\",\n      \"expected\": 403,\n      \"observedStatus\": 403,\n      \"error\": \"workspace_binding_mismatch\",\n      \"rows\": null\n    },\n    {\n      \"label\": \"cross-tenant-machine-denial\",\n      \"account\": \"a26b32bd-38ce-4ade-a3b7-1fbfc070f488\",\n      \"tenant\": \"4e92fe25-f65e-47aa-ad55-fb11659640bb\",\n      \"selectedWorkspace\": \"ws-0e7a817dbe4c5c204bccca1b\",\n      \"target\": null,\n      \"connection\": null,\n      \"route\": \"/api/hosted/browser/rest-query?name=workspaceHosts.control&args=%7B%7D\",\n      \"expected\": 403,\n      \"observedStatus\": 403,\n      \"error\": \"workspace_binding_mismatch\",\n      \"rows\": null\n    },\n    {\n      \"label\": \"cross-tenant-connection-denial\",\n      \"account\": \"a26b32bd-38ce-4ade-a3b7-1fbfc070f488\",\n      \"tenant\": \"4e92fe25-f65e-47aa-ad55-fb11659640bb\",\n      \"selectedWorkspace\": \"ws-0e7a817dbe4c5c204bccca1b\",\n      \"target\": null,\n      \"connection\": null,\n      \"route\": \"/api/hosted/workspaces/ws-87b5b2fdf29d4cf9ff144bce/connectors/session-ticket\",\n      \"expected\": 403,\n      \"observedStatus\": 403,\n      \"error\": \"workspace_binding_mismatch\",\n      \"rows\": null\n    },\n    {\n      \"label\": \"hosted-browser-selected\",\n      \"account\": \"67ace7ee-0c34-4226-87db-127a70f64d28\",\n      \"tenant\": \"b997c5c9-b021-4b3b-9228-993a21d4b996\",\n      \"selectedWorkspace\": \"ws-87b5b2fdf29d4cf9ff144bce\",\n      \"target\": null,\n      \"connection\": null,\n      \"route\": \"/?app=desktops\",\n      \"observedStatus\": 200,\n      \"sessionStatus\": 200,\n      \"url\": \"https://127.0.0.1:41357/?app=desktops&step=operate&tab=desktops\",\n      \"machineSelectorCount\": 1,\n      \"connectActionCount\": 1,\n      \"visibleText\": \"Resume product guideRestart tutorial\\nHelp with Welcome to Papercusp\\nHome\\nPapercup Chat\\nChat history\\nMail\\nCalendar\\nPhone\\nDesktops\\nPlans\\nInbox\\nWorkspaces\\nOverview\\nHUD\\nWork\\nLearning\\nWorkflow Editor\\nMore\\nDocs\\nCloud\\nCupboard\\nDEV\\nSupport\\nSettings\\nDesktops\\nWORKSPACE\\nWorkspace …4cf9ff144bce\\nPreassigned tutorial TEST — provisioning\\nConnect your computer\\nManage machines\\n⌘K\\n⌘J\\nDownload TUI\\niPhone\\nAndroid\\nDesktops\\nPreassigned tutorial TEST\\nRefresh\\nPreassigned tutorial TEST\\n\\nWatch your desktops and step in when you need to.\\n\\nMy desktop\\nWorkspace disconnected\\nYour desktop is not ready yet\\n\\nThe desktop will appear here after workspace setup completes.\\n\\nIn this workspace\\n\\n0 desktops · select to watch\\n\\nNo desktops reported.\\n\\nWhat's happening\\n\\nNo desktop activity has been reported yet.\\n\\nYou can step in at any time. Take control to use an app, then release control or press Escape to return to watching.\",\n      \"loadedScripts\": [\n        \"https://127.0.0.1:41357/_next/static/chunks/4bd1b696-8a4ab4fdf0ae305a.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/3794-4d73df1ee3dd1b8a.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/main-app-ff962bd386b4bb7b.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/app/layout-4e75916bb72672db.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/9084-0d4fcd4f2b77701e.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/8904-94f33dd5c1224f7a.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/app/page-c8f2ce88b764b54a.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/polyfills-42372ed130431b0a.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/webpack-add7fa84a5df209b.js\"\n      ],\n      \"errors\": [],\n      \"screenshot\": \"/tmp/machine-first-browser-r6-v7-20261016/tenant-0.png\",\n      \"guidance\": \"Connect your computer\\n\\nSSH machine access — this is the SSH profile path. The portal relay and phone pairing are managed separately under Remote access.\\n\\nUse the psu utility on this computer to reach a desktop or laptop over your private network or VPN.\\n\\nOn the remote computer, enable SSH and approve your SSH public key. Install Papercusp and tmux there; its operator should listen on loopback port 3070.\\nVerify its host key and configure an SSH alias such as my-computer with the address, user, port and identity you use to sign in.\\nSave it locally: psu --connect-add-ssh=my-computer --connect-host=my-computer\\n\\nRemote terminal: psu --connect=my-computer. Machine selection happens before the remote launch choices.\\n\\nBrowser GUI: psu --connect=my-computer --connect-gui. Keep that terminal open while using the private browser tunnel.\\n\\nAn offline computer or refused SSH key cannot connect. Forget a saved entry with psu --connect-remove=my-computer; revoke its SSH key on the remote computer to remove access. Forgetting an entry alone does not revoke that key or stop running agents.\\n\\nClose\",\n      \"navigationDestination\": \"https://127.0.0.1:41357/?app=workspaces\"\n    },\n    {\n      \"label\": \"hosted-browser-selected\",\n      \"account\": \"a26b32bd-38ce-4ade-a3b7-1fbfc070f488\",\n      \"tenant\": \"4e92fe25-f65e-47aa-ad55-fb11659640bb\",\n      \"selectedWorkspace\": \"ws-0e7a817dbe4c5c204bccca1b\",\n      \"target\": null,\n      \"connection\": null,\n      \"route\": \"/?app=desktops\",\n      \"observedStatus\": 200,\n      \"sessionStatus\": 200,\n      \"url\": \"https://127.0.0.1:41357/?app=desktops&step=operate&tab=desktops\",\n      \"machineSelectorCount\": 1,\n      \"connectActionCount\": 1,\n      \"visibleText\": \"Resume product guideRestart tutorial\\nHelp with Welcome to Papercusp\\nHome\\nPapercup Chat\\nChat history\\nMail\\nCalendar\\nPhone\\nDesktops\\nPlans\\nInbox\\nWorkspaces\\nOverview\\nHUD\\nWork\\nLearning\\nWorkflow Editor\\nMore\\nDocs\\nCloud\\nCupboard\\nDEV\\nSupport\\nSettings\\nDesktops\\nWORKSPACE\\nWorkspace …5c204bccca1b\\nPreassigned tutorial TEST — provisioning\\nConnect your computer\\nManage machines\\n⌘K\\n⌘J\\nDownload TUI\\niPhone\\nAndroid\\nDesktops\\nPreassigned tutorial TEST\\nRefresh\\nPreassigned tutorial TEST\\n\\nWatch your desktops and step in when you need to.\\n\\nMy desktop\\nWorkspace disconnected\\nYour desktop is not ready yet\\n\\nThe desktop will appear here after workspace setup completes.\\n\\nIn this workspace\\n\\n0 desktops · select to watch\\n\\nNo desktops reported.\\n\\nWhat's happening\\n\\nNo desktop activity has been reported yet.\\n\\nYou can step in at any time. Take control to use an app, then release control or press Escape to return to watching.\",\n      \"loadedScripts\": [\n        \"https://127.0.0.1:41357/_next/static/chunks/4bd1b696-8a4ab4fdf0ae305a.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/3794-4d73df1ee3dd1b8a.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/main-app-ff962bd386b4bb7b.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/app/layout-4e75916bb72672db.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/9084-0d4fcd4f2b77701e.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/8904-94f33dd5c1224f7a.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/app/page-c8f2ce88b764b54a.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/polyfills-42372ed130431b0a.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/webpack-add7fa84a5df209b.js\"\n      ],\n      \"errors\": [],\n      \"screenshot\": \"/tmp/machine-first-browser-r6-v7-20261016/tenant-1.png\",\n      \"guidance\": \"Connect your computer\\n\\nSSH machine access — this is the SSH profile path. The portal relay and phone pairing are managed separately under Remote access.\\n\\nUse the psu utility on this computer to reach a desktop or laptop over your private network or VPN.\\n\\nOn the remote computer, enable SSH and approve your SSH public key. Install Papercusp and tmux there; its operator should listen on loopback port 3070.\\nVerify its host key and configure an SSH alias such as my-computer with the address, user, port and identity you use to sign in.\\nSave it locally: psu --connect-add-ssh=my-computer --connect-host=my-computer\\n\\nRemote terminal: psu --connect=my-computer. Machine selection happens before the remote launch choices.\\n\\nBrowser GUI: psu --connect=my-computer --connect-gui. Keep that terminal open while using the private browser tunnel.\\n\\nAn offline computer or refused SSH key cannot connect. Forget a saved entry with psu --connect-remove=my-computer; revoke its SSH key on the remote computer to remove access. Forgetting an entry alone does not revoke that key or stop running agents.\\n\\nClose\",\n      \"navigationDestination\": \"https://127.0.0.1:41357/?app=workspaces\"\n    },\n    {\n      \"label\": \"hosted-browser-empty\",\n      \"account\": \"6912a21c-ed5b-4f1a-8172-ee7dee7ca17f\",\n      \"tenant\": \"eefed646-cd17-4aac-ae14-5627511da123\",\n      \"selectedWorkspace\": null,\n      \"target\": null,\n      \"connection\": null,\n      \"route\": \"/?app=desktops\",\n      \"observedStatus\": 200,\n      \"sessionStatus\": 200,\n      \"url\": \"https://127.0.0.1:41357/?app=desktops&step=operate&tab=desktops\",\n      \"machineSelectorCount\": 0,\n      \"connectActionCount\": 1,\n      \"visibleText\": \"Resume product guideRestart tutorial\\nHelp with Welcome to Papercusp\\nHome\\nPapercup Chat\\nChat history\\nMail\\nCalendar\\nPhone\\nDesktops\\nPlans\\nInbox\\nWorkspaces\\nOverview\\nHUD\\nWork\\nLearning\\nWorkflow Editor\\nMore\\nDocs\\nCloud\\nCupboard\\nDEV\\nSupport\\nSettings\\nDesktops\\nWORKSPACE\\nCreate a workspace\\nChoose a workspace to connect a machine Connect your computer\\n⌘K\\n⌘J\\nDownload TUI\\niPhone\\nAndroid\\nDesktops\\nChoose a workspace\\nRefresh\\nNo desktop workspaces yet\\n\\nYour desktops will appear here when a workspace is available.\",\n      \"loadedScripts\": [\n        \"https://127.0.0.1:41357/_next/static/chunks/4bd1b696-8a4ab4fdf0ae305a.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/3794-4d73df1ee3dd1b8a.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/main-app-ff962bd386b4bb7b.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/app/layout-4e75916bb72672db.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/9084-0d4fcd4f2b77701e.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/8904-94f33dd5c1224f7a.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/app/page-c8f2ce88b764b54a.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/polyfills-42372ed130431b0a.js\",\n        \"https://127.0.0.1:41357/_next/static/chunks/webpack-add7fa84a5df209b.js\"\n      ],\n      \"errors\": [],\n      \"screenshot\": \"/tmp/machine-first-browser-r6-v7-20261016/tenant-2.png\",\n      \"guidance\": \"Connect your computer\\n\\nSSH machine access — this is the SSH profile path. The portal relay and phone pairing are managed separately under Remote access.\\n\\nUse the psu utility on this computer to reach a desktop or laptop over your private network or VPN.\\n\\nOn the remote computer, enable SSH and approve your SSH public key. Install Papercusp and tmux there; its operator should listen on loopback port 3070.\\nVerify its host key and configure an SSH alias such as my-computer with the address, user, port and identity you use to sign in.\\nSave it locally: psu --connect-add-ssh=my-computer --connect-host=my-computer\\n\\nRemote terminal: psu --connect=my-computer. Machine selection happens before the remote launch choices.\\n\\nBrowser GUI: psu --connect=my-computer --connect-gui. Keep that terminal open while using the private browser tunnel.\\n\\nAn offline computer or refused SSH key cannot connect. Forget a saved entry with psu --connect-remove=my-computer; revoke its SSH key on the remote computer to remove access. Forgetting an entry alone does not revoke that key or stop running agents.\\n\\nClose\",\n      \"navigationDestination\": \"https://127.0.0.1:41357/?app=workspaces\"\n    }\n  ],\n  \"users\": [\n    {\n      \"case\": \"A\",\n      \"organizationId\": \"b997c5c9-b021-4b3b-9228-993a21d4b996\",\n      \"workspaceId\": \"ws-87b5b2fdf29d4cf9ff144bce\",\n      \"sessionId\": \"hs_2_n4zL_It25sIA49t2x4oGgTGTrxE8fIFP3ktML6IpU\"\n    },\n    {\n      \"case\": \"B\",\n      \"organizationId\": \"4e92fe25-f65e-47aa-ad55-fb11659640bb\",\n      \"workspaceId\": \"ws-0e7a817dbe4c5c204bccca1b\",\n      \"sessionId\": \"hs_ynYWVWNgJtKXGOgsQdgK2OPc4tr8j_PVpi0tA4J-U_M\"\n    },\n    {\n      \"case\": \"Empty\",\n      \"organizationId\": \"eefed646-cd17-4aac-ae14-5627511da123\",\n      \"workspaceId\": null,\n      \"sessionId\": \"hs_9ktsbXSJunepycY2EVmKS1ZjUD97ghhlBnrZdEzAOfo\"\n    }\n  ],\n  \"missing\": [\n    \"local-empty-workspace\",\n    \"R1-two-target-launch-context-and-real-agent-continuity\"\n  ],\n  \"cleanup\": [\n    {\n      \"organizationId\": \"eefed646-cd17-4aac-ae14-5627511da123\",\n      \"ok\": true\n    },\n    {\n      \"organizationId\": \"4e92fe25-f65e-47aa-ad55-fb11659640bb\",\n      \"ok\": true\n    },\n    {\n      \"organizationId\": \"b997c5c9-b021-4b3b-9228-993a21d4b996\",\n      \"ok\": true\n    }\n  ],\n  \"verdict\": \"recorded-partial\"\n}"
+    },
+    {
+      "originalPath": "/tmp/machine-first-local-empty-v10-20261016/receipt.json",
+      "sha256": "7f45964ba09e37a91b9fd43e170ea8b7a0dc92d1d6d65fd298b16072bb2aee75",
+      "utf8": "{\n  \"schemaVersion\": 1,\n  \"observedAt\": \"2026-10-16T23:55:12.979Z\",\n  \"case\": \"local-private-empty-inventory\",\n  \"build\": {\n    \"portalRelease\": \"9Zhmwh4R94zC5kJ_DAGOR-20261016232610941-1458391-ad0b1061\",\n    \"fixedPageSha\": \"c5eaa10c90249b0e37739728225665131eff38a7a1da283fcbc48d103a56d592\",\n    \"origin\": \"https://127.0.0.1:39063\",\n    \"operatorOrigin\": \"http://127.0.0.1:40295\"\n  },\n  \"account\": \"explicit-local-owner\",\n  \"selectedWorkspace\": null,\n  \"target\": \"local\",\n  \"verdict\": \"passed-local-empty-inventory\",\n  \"observations\": [],\n  \"screenshots\": [\n    \"/tmp/machine-first-local-empty-v10-20261016/local-empty.png\",\n    \"/tmp/machine-first-local-empty-v10-20261016/local-help.png\"\n  ],\n  \"errors\": [],\n  \"status\": 200,\n  \"url\": \"https://127.0.0.1:39063/?app=desktops&step=operate&tab=desktops\",\n  \"body\": \"Home\\nPapercup Chat\\nChat history\\nMail\\nCalendar\\nPhone\\nDesktops\\nPlans\\nInbox\\nWorkspaces\\nOverview\\nHUD\\nWork\\nLearning\\nWorkflow Editor\\nMore\\nDocs\\nCloud\\nCupboard\\nDEV\\nSupport\\nSettings\\nDesktops\\nWORKSPACE\\nLocal workspace\\nThis computer\\nConnect your computer\\nManage machines\\n⌘K\\n⌘J\\n⚡0 AGENTS RUNNING · 0 THINKING\\n— PROCESSES\\nDownload TUI\\niPhone\\nAndroid\\nDesktops\\nThis computer\\nRefresh\\nThis computer\\n\\nWatch the desktops your agents are using here and step in when you need to.\\n\\nNo agent desktops on this computer\\n\\nAn agent's desktop appears here as soon as it starts one with computer:provision_desktop.\",\n  \"machineText\": \"This computer\\nConnect your computer\\nManage machines\",\n  \"main\": [\n    \"Desktops\\nWORKSPACE\\nLocal workspace\\nThis computer\\nConnect your computer\\nManage machines\\n⌘K\\n⌘J\\n⚡0 AGENTS RUNNING · 0 THINKING\\n— PROCESSES\\nDownload TUI\\niPhone\\nAndroid\\nDesktops\\nThis computer\\nRefresh\\nThis computer\\n\\nWatch the desktops your agents are using here and step in when you need to.\\n\\nNo agent desktops on this computer\\n\\nAn agent's desktop appears here as soon as it starts one with computer:provision_desktop.\"\n  ],\n  \"combobox\": {\n    \"text\": \"This computer\",\n    \"disabled\": false,\n    \"tag\": \"BUTTON\",\n    \"value\": \"\"\n  },\n  \"inventory\": {\n    \"route\": \"/api/operator-sync/rest-query?name=workspaceHosts.control&args=%7B%7D\",\n    \"status\": 200,\n    \"body\": {\n      \"rows\": [],\n      \"version\": \"1792194957977\",\n      \"timing\": {\n        \"unit\": \"ms\",\n        \"resolverStartedAtMs\": 1792194957930,\n        \"resolverCompletedAtMs\": 1792194957977,\n        \"resolverMs\": 47\n      }\n    }\n  },\n  \"guidance\": \"Connect your computer\\n\\nSSH machine access — this is the SSH profile path. The portal relay and phone pairing are managed separately under Remote access.\\n\\nUse the psu utility on this computer to reach a desktop or laptop over your private network or VPN.\\n\\nOn the remote computer, enable SSH and approve your SSH public key. Install Papercusp and tmux there; its operator should listen on loopback port 3070.\\nVerify its host key and configure an SSH alias such as my-computer with the address, user, port and identity you use to sign in.\\nSave it locally: psu --connect-add-ssh=my-computer --connect-host=my-computer\\n\\nRemote terminal: psu --connect=my-computer. Machine selection happens before the remote launch choices.\\n\\nBrowser GUI: psu --connect=my-computer --connect-gui. Keep that terminal open while using the private browser tunnel.\\n\\nAn offline computer or refused SSH key cannot connect. Forget a saved entry with psu --connect-remove=my-computer; revoke its SSH key on the remote computer to remove access. Forgetting an entry alone does not revoke that key or stop running agents.\\n\\nClose\",\n  \"inventoryPreliminaryWrongRoute\": {\n    \"status\": 404,\n    \"body\": null\n  },\n  \"inventoryConfirmedEmpty\": true\n}"
+    }
+  ],
+  "prerequisites": {
+    "command": "npm run test -- tests/shell-ui.test.tsx tests/workspaces-ui.test.tsx tests/auth.test.ts",
+    "log": "/tmp/machine-first-portal-current-prerequisites-20261016.log",
+    "portalCommit": "c93f16f4f2ad132ca030a5f2c8b025684ea993da",
+    "files": [
+      {
+        "path": "tests/shell-ui.test.tsx",
+        "testRunId": 21296447,
+        "passed": 116
+      },
+      {
+        "path": "tests/auth.test.ts",
+        "testRunId": 21296448,
+        "passed": 10
+      },
+      {
+        "path": "tests/workspaces-ui.test.tsx",
+        "testRunId": 21296449,
+        "passed": 42
+      }
+    ],
+    "skipped": 0,
+    "limitation": "Recovered authoritative ledger rows report pass, source local, worktreeDirty true, root null, harnessSlug null and no runGroupId. The log records 168 executed tests and no skipped tests. This is not a clean as-committed source-map attestation; no rerun was made."
+  },
+  "instrumentTest": {
+    "path": "apps/operator/lib/machine-first-authorization-evidence.test.ts",
+    "sha256": "9e2ea292f3e0633b8023f92f0410dff009151ba6e82a42e549d85cf4e2556c09",
+    "log": "/tmp/machine-first-r6-inventory-green-20261017.log",
+    "passed": 7,
+    "skipped": 0,
+    "commitAtRun": "fadbd35203407cd855384e131e49dbc7e8b76316",
+    "limitation": "Instrument and test were untracked at test time. Exact bytes are recorded; the test run does not attest a clean committed instrument."
+  }
+}

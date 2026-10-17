@@ -3749,6 +3749,7 @@ describe('bootHarnessSubstrate — P-006 scoped-log wiring (P-108)', () => {
     { name: 'login allowlist', policy: { membership: 'allowlist', allowlist: ['scope-owner'] }, userIds: [9703], login: 'scope-owner', expected: [] },
     { name: 'per-user rate budget', policy: { rate: { opsPerMin: 1 } }, userIds: [9704, 9705], login: 'registered-member', expected: ['policy-op-0'] },
     { name: 'authorized offline member', policy: { membership: 'allowlist', allowlist: ['registered-member'] }, userIds: [9703], login: 'registered-member', expected: ['policy-op-0'] },
+    { name: 'receiver identity stays pinned across repeated claims', policy: { moderation: { bannedGithubIds: ['9703'] } }, userIds: [9704, 9705], login: 'registered-member', expected: [] },
   ])('receiver-bound policy authority: $name', async ({ policy, userIds, login, expected }) => {
     const member = makeAnnounceIdentityOverride('registered-member', 9703, 'kc-policy-member');
     const members = vi.spyOn(federatedPotScope, 'listHiveMembersForLocalPot').mockResolvedValue([{

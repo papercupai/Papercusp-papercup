@@ -132,8 +132,6 @@ export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   // watchdog only opens after a minimum eligible count and resolves with hysteresis, so it
   // cannot flap per tick. 'ambient' because the key carries a mechanism, never a harness.
   { prefix: DEGRADATION_CONDITION_PREFIX, harnessFrom: 'ambient', severity: 'major' },
-  // Existing attention alarms now have per-caller keys and measured recovery (P-007).
-  { prefix: 'alarm:', harnessFrom: 'ambient', severity: 'major' },
 ];
 
 /** The bare prefixes — derived, so the catalog stays the single source of truth. */

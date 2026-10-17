@@ -390,19 +390,28 @@ export function orchestratorNeedsStagingSyncLock(orchestratorRoot: string): bool
   return worktree === 'papercusp-staging' || worktree === 'papercup-staging';
 }
 
-/** Pure: wrap a shell command so it runs holding staging-sync's lock SHARED for its whole
- *  lifetime. staging-sync's exclusive try-lock then skips its ticks, while :3170's shared
- *  ExecStartPre lock stays compatible. `--close` keeps the lock fd OUT of the command's process
- *  tree, so a daemon the build spawns (sccache, a gradle daemon) cannot outlive the cut still
- *  holding staging frozen; the flock process itself holds the lock until the command exits.
- *  `lockPath` / `waitSec` are overridable for the behavioural test only. */
+/** Pure: wrap a shell command in staging-sync's existing lock. The default SHARED mode
+ *  skips synchronization ticks while allowing :3170's shared restart handoff. An exact-runtime
+ *  validation window uses EXCLUSIVE mode to block both, with a required deadline covering
+ *  acquisition and execution. `--close` keeps the lock fd OUT of the command's process tree,
+ *  so a spawned daemon cannot retain the lock after the command exits. The timeout sends TERM
+ *  to the command group and escalates after ten seconds; expiry is never a successful proof.
+ *  `lockPath` / `waitSec` are overridable for behavioural tests. */
 export function wrapWithStagingSyncLock(
   command: string,
   lockPath: string = STAGING_SYNC_LOCK,
   waitSec: number = STAGING_SYNC_LOCK_WAIT_SEC,
+  options: { mode: 'shared' } | { mode: 'exclusive'; timeoutSec: number } = { mode: 'shared' },
 ): string {
+  let deadline = '';
+  if (options.mode === 'exclusive') {
+    if (!Number.isSafeInteger(options.timeoutSec) || options.timeoutSec <= 0) {
+      throw new Error('An exclusive staging validation window requires a positive integer timeoutSec');
+    }
+    deadline = `timeout --signal=TERM --kill-after=10s ${options.timeoutSec}s `;
+  }
   return (
-    `flock --shared --close --verbose --timeout ${waitSec} ` +
+    `${deadline}flock --${options.mode} --close --verbose --timeout ${waitSec} ` +
     `--conflict-exit-code ${STAGING_SYNC_LOCK_TIMEOUT_EXIT} ${shellSingleQuote(lockPath)} ${command}`
   );
 }

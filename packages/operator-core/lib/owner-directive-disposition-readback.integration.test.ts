@@ -67,6 +67,37 @@ describe('owner-directive disposition + summary read-back', () => {
     expect(row!.dispositionStatus).toBeNull();
   });
 
+  it.each([15_999, 16_000, 16_001, 20_641])('preserves complete directive readback at %i characters', async (length) => {
+    const text = 'x'.repeat(length - 4) + '\nEND';
+    const turnRef = `turn-complete-${length}`;
+    const id = await capture(turnRef, text);
+    const row = await getOwnerDirective(id, db.adminSql);
+
+    expect(row!.verbatimText).toBe(text);
+    expect(row!.sourceTurnRef).toBe(turnRef);
+    expect(row!.capturedByHook).toBe(true);
+    expect(ownerDirectiveState(row!)).toBe('open');
+  });
+
+  it('keeps complete Unicode text and distinguishes directives sharing a long prefix across sessions', async () => {
+    const prefix = 'x'.repeat(15_999) + '🚀';
+    const firstText = prefix + '\nShip only after review.\n';
+    const secondText = prefix + '\nPause until approval.\n';
+    const first = await capture('turn-long-first', firstText);
+    const second = await recordOwnerDirective({
+      workspaceId,
+      sessionRef: 'session-readback-successor',
+      sourceTurnRef: 'turn-long-second',
+      verbatimText: secondText,
+      recordedBy: 'su-readback-test',
+      capturedByHook: true,
+    }, db.adminSql);
+
+    expect(second.id).not.toBe(first);
+    expect((await getOwnerDirective(first, db.adminSql))!.verbatimText).toBe(firstText);
+    expect((await getOwnerDirective(second.id, db.adminSql))!.verbatimText).toBe(secondText);
+  });
+
   it('done reads back done, carrying the note and who closed it', async () => {
     const id = await capture('turn-done', 'ship the thing');
     const result = await dispositionOwnerDirective(
@@ -202,7 +233,7 @@ describe('owner-directive disposition + summary read-back', () => {
     expect(row!.summaryText).toBe('Rework the delivery pipeline.');
     expect(row!.summaryBy).toBe('su-summarizer');
     expect(typeof row!.summaryAtMs).toBe('number');
-    expect(row!.verbatimText).toBe(LONG.slice(0, row!.verbatimText.length));
+    expect(row!.verbatimText).toBe(LONG);
     expect(ownerDirectiveState(row!)).toBe('open');
   });
 

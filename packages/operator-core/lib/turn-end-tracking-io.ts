@@ -8,7 +8,9 @@
  */
 import { withBoundedTimeout } from './bounded-timeout';
 import { createHash } from 'node:crypto';
+import { redactSensitiveText } from './sensitive-text';
 import { modeImpliesAutonomy } from './modes/registry';
+import type { CarryBriefHeldItem } from './carry-brief';
 import {
   isUnpublishedReportTurn,
   awaitGuaranteesRewake,
@@ -77,11 +79,59 @@ export interface AutoCheckpointResult {
 }
 
 /**
+ * Stable, safe diagnostic for a checkpoint write that was deliberately refused
+ * by the locked checkpoint store.  The store's `blockedReason` is a controlled
+ * guard outcome (for example, a concurrent authored update won the race), not
+ * a storage exception.  Keep it distinct from transport/database error codes
+ * so the host can tell an expected no-op from an unavailable writer without
+ * exposing the underlying error message.
+ */
+export const CHECKPOINT_WRITE_BLOCKED_CODE = 'checkpoint-write-blocked' as const;
+
+export class CheckpointWriteBlockedError extends Error {
+  readonly code = CHECKPOINT_WRITE_BLOCKED_CODE;
+  readonly workItemId: string;
+  readonly blockedReason: string;
+
+  constructor(workItemId: string, blockedReason: string) {
+    const safeWorkItemId = workItemId.trim() || 'unknown-work-item';
+    const safeBlockedReason = blockedReason.trim() || 'checkpoint-write-refused';
+    super(`Checkpoint write blocked for ${safeWorkItemId}: ${safeBlockedReason}`);
+    this.name = 'CheckpointWriteBlockedError';
+    this.workItemId = safeWorkItemId;
+    this.blockedReason = safeBlockedReason;
+  }
+}
+
+/** A mandatory save must identify the failing operation even for an untyped
+ * storage exception. Keep arbitrary messages out of the tool response; retain
+ * a redacted diagnostic in the host log under the same fingerprint. */
+export class CheckpointSnapshotFailureError extends Error {
+  readonly code: string;
+  readonly errorFingerprint: string;
+
+  constructor(error: unknown, readonly checkpointStage: 'load-writer' | 'read-held-items' | 'write-item',
+    readonly workItemId: string | undefined, readonly completedWorkItemIds: string[]) {
+    const message = error instanceof Error ? error.message : String(error);
+    const rawCode = error && typeof error === 'object' && 'code' in error ? error.code : null;
+    const code = typeof rawCode === 'string' && /^[A-Z0-9_]{1,64}$/.test(rawCode)
+      ? rawCode : 'checkpoint-write-failed';
+    super(`Host checkpoint failed at ${checkpointStage}${workItemId ? ` for ${workItemId}` : ''} (${code})`, { cause: error });
+    this.name = 'CheckpointSnapshotFailureError';
+    this.code = code;
+    this.errorFingerprint = createHash('sha256').update(message).digest('hex').slice(0, 16);
+    console.warn('[host-checkpoint] ' + JSON.stringify({ checkpointStage, workItemId,
+      completedWorkItemIds, code, errorFingerprint: this.errorFingerprint,
+      message: redactSensitiveText(message).slice(0, 1000) }));
+  }
+}
+
+/**
  * Auto-checkpoint the caller's held work-items whose checkpoints are missing
  * or stale: compose a mechanical block from the turn's journal note + the
  * P-013 tool-call log tail, merge it under the agent-authored prose (replacing
  * only a previous mechanical block), and write it back. Returns the item ids
- * written. Never throws.
+ * written. Advisory sweeps fail soft; mandatory respawn saves throw with context.
  */
 export async function autoCheckpointStaleHeldItems(input: {
   ownerId: string;
@@ -90,7 +140,18 @@ export async function autoCheckpointStaleHeldItems(input: {
   sinceIso: string;
   journalNote: string | null;
   nowMs?: number;
+  /** Respawn snapshots every held item, including fresh ones, without preview caps. */
+  mode?: 'respawn';
+  /**
+   * Carry snapshot already read by the flush gate. Advisory paths can reuse it
+   * instead of paying a second held-item/checkpoint read; host respawn snapshots
+   * intentionally omit it so they still read the complete population.
+   */
+  heldItems?: readonly CarryBriefHeldItem[];
 }): Promise<AutoCheckpointResult[]> {
+  let checkpointStage: 'load-writer' | 'read-held-items' | 'write-item' = 'load-writer';
+  let workItemId: string | undefined;
+  const written: AutoCheckpointResult[] = [];
   try {
     const [{ readHeldWorkItems }, { setWorkItemCheckpointWithPrior }, { toolCallRowsFor }, { renderToolCallLog }] =
       await Promise.all([
@@ -100,9 +161,13 @@ export async function autoCheckpointStaleHeldItems(input: {
         import('./tool-call-log'),
       ]);
     const nowMs = input.nowMs ?? Date.now();
-    const held = await readHeldWorkItems(input.ownerId, input.workspaceId);
-    const stale = held.filter((h) => isStaleHeldCheckpoint(h, nowMs)).slice(0, MAX_AUTO_CHECKPOINTS);
-    if (stale.length === 0) return [];
+    checkpointStage = 'read-held-items';
+    const held = input.mode === 'respawn'
+      ? await readHeldWorkItems(input.ownerId, input.workspaceId, { limit: null })
+      : input.heldItems ?? await readHeldWorkItems(input.ownerId, input.workspaceId);
+    const selected = input.mode === 'respawn' ? held
+      : held.filter((h) => isStaleHeldCheckpoint(h, nowMs)).slice(0, MAX_AUTO_CHECKPOINTS);
+    if (selected.length === 0) return [];
 
     // One tool-log render for the turn window — shared across the stale items
     // (the snapshot is holder-session-level by design; the block says so).
@@ -118,34 +183,64 @@ export async function autoCheckpointStaleHeldItems(input: {
     } catch {
       /* the block is still useful with the journal note alone */
     }
-    const block = composeMechanicalCheckpoint({
-      atIso: new Date(nowMs).toISOString(),
-      journalNote: input.journalNote,
-      toolLog,
-      sessionId: input.sessionId,
-    });
-
-    const written: AutoCheckpointResult[] = [];
-    for (const item of stale) {
+    const writeItem = async (item: (typeof selected)[number]): Promise<AutoCheckpointResult | null> => {
       try {
+        const block = composeMechanicalCheckpoint({
+          atIso: new Date(nowMs).toISOString(),
+          journalNote: input.journalNote,
+          toolLog,
+          sessionId: input.sessionId,
+          ...(input.mode === 'respawn' ? {
+            boundary: 'respawn' as const, ownerId: input.ownerId, workItemId: item.id,
+            harness: item.harness, sourcePlanSlug: item.sourcePlanSlug,
+            sourcePlanItemIds: item.sourcePlanItemIds,
+          } : {}),
+        });
         const result = await setWorkItemCheckpointWithPrior(
           { harness: item.harness, workItemId: item.id, workspaceId: input.workspaceId },
           undefined,
           {
             // The held-item read precedes tool-log IO. A newer authored update
             // must win; test this against the locked row, not another pre-read.
-            guard: (prior) => (prior ?? '').trim() === (item.checkpoint ?? '').trim()
+            // Respawn merges into the latest LOCKED row: it carries no stale
+            // per-item judgment, and must snapshot even a concurrent fresh note.
+            guard: input.mode === 'respawn' ? undefined : (prior) => (prior ?? '').trim() === (item.checkpoint ?? '').trim()
               ? null : 'checkpoint-changed-before-auto-snapshot',
             transform: (prior) => mergeMechanicalCheckpoint(prior, block),
           },
         );
-        if (!result.blockedReason) written.push({ id: item.id, mechanical: true });
-      } catch {
+        if (result.blockedReason && input.mode === 'respawn') {
+          throw new CheckpointWriteBlockedError(item.id, result.blockedReason);
+        }
+        return result.blockedReason ? null : { id: item.id, mechanical: true };
+      } catch (error) {
+        if (input.mode === 'respawn') throw error;
         /* per-item fail-soft */
+        return null;
       }
+    };
+
+    if (input.mode === 'respawn') {
+      // Mandatory host snapshots retain sequential attribution: if one write
+      // fails, the wrapper reports the exact item and completed prefix.
+      for (const item of selected) {
+        checkpointStage = 'write-item';
+        workItemId = item.id;
+        const result = await writeItem(item);
+        if (result) written.push(result);
+      }
+    } else {
+      // Advisory turn-end writes are independent and fail-soft. Launch them as
+      // one batch so N stale items do not serialize behind N checkpoint writes.
+      const results = await Promise.all(selected.map(writeItem));
+      written.push(...results.filter((result): result is AutoCheckpointResult => result !== null));
     }
     return written;
-  } catch {
+  } catch (error) {
+    if (input.mode === 'respawn') {
+      if (error instanceof CheckpointWriteBlockedError) throw error;
+      throw new CheckpointSnapshotFailureError(error, checkpointStage, workItemId, written.map((item) => item.id));
+    }
     return [];
   }
 }

@@ -182,7 +182,9 @@ function executeProductionAssertion(): Promise<{ code: number | null; output: st
       cwd: root, env: process.env, stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
-    for (const stream of [child.stdout, child.stderr]) stream.on('data', data => { output += data.toString(); });
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    for (const stream of [child.stdout, child.stderr]) stream?.on('data', (data: string) => { output += data; });
     const timer = setTimeout(() => child.kill('SIGTERM'), 240_000);
     child.once('error', error => { clearTimeout(timer); reject(error); });
     child.once('close', code => { clearTimeout(timer); resolveResult({ code, output }); });

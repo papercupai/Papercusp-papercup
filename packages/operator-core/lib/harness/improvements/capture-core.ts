@@ -471,7 +471,8 @@ export interface DedupCoverage {
   lexical: 'ok' | 'unavailable' | 'skipped';
   /** Embedding leg. 'partial' means the query ran over a below-floor index; 'unavailable' means no complete coverage verdict (embedder down / over budget / disabled, or coverage unknown). */
   semantic: 'ok' | 'partial' | 'unavailable' | 'skipped';
-  /** True when either leg is unavailable or partial — an empty result is NOT a clean bill of health. */
+  /** True when either leg is unavailable or partial, or when a check-only probe
+   * intentionally skipped a leg — an empty result is NOT a clean bill of health. */
   degraded: boolean;
 }
 
@@ -3101,6 +3102,10 @@ export async function captureImprovement(
       lexicalLeg === 'unavailable' ||
       semanticLeg === 'unavailable' ||
       semanticLeg === 'partial' ||
+      // A check-only probe asks for a dedup verdict. Observation captures are
+      // dedup-exempt by design, but reporting their skipped legs as healthy made
+      // `possibleDuplicates: []` indistinguishable from a checked-clean result.
+      (checkOnly && (lexicalLeg === 'skipped' || semanticLeg === 'skipped')) ||
       exactKeyLookupFailed ||
       classKeyLookupFailed,
   };

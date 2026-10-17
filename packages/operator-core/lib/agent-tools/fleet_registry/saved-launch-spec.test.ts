@@ -370,6 +370,37 @@ describe('legacy adv_sessions fleet launch-spec fallback', () => {
     });
   });
 
+  it('prefers the retained owner record over the homogeneous fleet recipe', async () => {
+    const leaderRecord: AdvSessionLaunchRecord = {
+      ...legacyRecord,
+      launchSpec: {
+        ...(legacyRecord.launchSpec as Record<string, unknown>),
+        model: 'gpt-6-astra:high',
+        fleet: { slug: 'byoc', role: 'leader' },
+      },
+      launchArgv: (legacyRecord.launchArgv as string[]).map((item) =>
+        item.startsWith('--model=') ? '--model=gpt-6-astra:high' : item,
+      ),
+    };
+    const readTarget = vi.fn().mockResolvedValue(target);
+    const resolved = await resolveSavedFleetLaunchSpec({
+      workspaceId: 'ws-test',
+      fleetSlug: 'byoc',
+      memberOwnerId: 'su-leader',
+      preferMemberRecord: true,
+      readTarget,
+      readLegacy: vi.fn().mockResolvedValue(leaderRecord),
+      requireSaved: true,
+      reusePath: 'fleet leader recovery -> capability:launch-agent resume',
+    });
+    expect(resolved).toMatchObject({
+      ok: true,
+      provenance: { source: LEGACY_FLEET_LAUNCH_SPEC_SOURCE },
+      effective: { member: { model: 'gpt-6-astra', effort: 'high' } },
+    });
+    expect(readTarget).not.toHaveBeenCalled();
+  });
+
   it('recovers a planless legacy record from the persisted backend plus a trusted harness fallback', () => {
     expect(savedFleetLaunchSpecFromLegacyRecord(incompleteLegacyRecord, 'ws-test', 'byoc')).toMatchObject({
       ok: false,

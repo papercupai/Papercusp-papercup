@@ -46,6 +46,20 @@ async function drain(fetch: HostFetch, cursor: string | null = null) {
 }
 
 describe('Instagram provider package (P-028)', () => {
+  it('derives the top-level reply edge from stored parent ids and refuses hidden comments', async () => {
+    for (const [externalId, payload] of [['c1', {}], ['c2', { replyToId: 'c1' }]] as const) {
+      const world = fake();
+      await adapter.invoke({ source: 's', config, capability: 'social.reply', args: {
+        text: 'reply', target: { platform: 'instagram', externalId, payload, topLevelCommentId: 'attacker' },
+      } }, world);
+      expect(new URL(world.calls[0].request.url).pathname).toBe('/v26.0/c1/replies');
+    }
+    const fetch = vi.fn(async () => jsonResponse(200, {}));
+    for (const payload of [{ hidden: true }, null]) await expect(adapter.invoke({ source: 's', config, capability: 'social.reply', args: {
+      text: 'reply', target: { platform: 'instagram', externalId: 'c1', payload, hidden: false },
+    } }, { fetch })).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it('validates the descriptor and declares the media-primary capabilities', async () => {
     const descriptor = await adapter.describe();
     expect(validateProviderDescriptor(descriptor)).toEqual([]);

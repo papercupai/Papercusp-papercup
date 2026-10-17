@@ -1,0 +1,173 @@
+{
+  "schemaVersion": 1,
+  "workItem": "EI-25946131547854574",
+  "parent": "WI-10004735",
+  "plan": "iphone-public-release-2026-08-11#P-008",
+  "ownerId": "su-34e04dbe-24fc-4579-a522-1610ae9761f7",
+  "startedAt": "2026-10-15T21:29:22.644316Z",
+  "verifiedAt": "2026-10-15T21:29:24.458512Z",
+  "result": "passed",
+  "scope": "Retained manual external-ingress listener preparation on the current staging operator; local HTTP sockets preserve the exact public Host.",
+  "build": {
+    "sha": "740c3311b9",
+    "runtime": "staging-operator",
+    "operatorPort": 3170,
+    "source": "origin/staging mirror",
+    "healthShaUnchangedDuringProbe": true,
+    "canonicalTreeHeadAtSourceComparison": "5ac0bd776d24e123f0419637365e03baa5d84b61",
+    "sourceFiles": [
+      {
+        "path": "apps/operator/bin/host-handler.ts",
+        "sha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0",
+        "matchesServingCommit": true
+      },
+      {
+        "path": "apps/operator/bin/external-ingress-paths.ts",
+        "sha256": "0b237c14137d3e41b9a55a404f65951a2ae45a441e1e644d0bbe389cf716cd4b",
+        "matchesServingCommit": true
+      },
+      {
+        "path": "packages/operator-core/lib/device-ingress-paths.ts",
+        "sha256": "b9bdde555f459d8ac9bc500bfd5705c0b401fec33c6a7e9769a4e1d9f0d7351e",
+        "matchesServingCommit": true
+      },
+      {
+        "path": "packages/operator-core/lib/own-tunnel/service.ts",
+        "sha256": "54fb64f94f8ef87f6513a42780768935e5db3e0c76736882caa41731061c98a5",
+        "matchesServingCommit": true
+      },
+      {
+        "path": "packages/operator-core/lib/own-tunnel/config.ts",
+        "sha256": "3b5cb8b632d95293e79eed783da144058d4010e143ab6fb9b2967cfd0fc8a5f7",
+        "matchesServingCommit": true
+      },
+      {
+        "path": "packages/operator-core/lib/own-tunnel/own-tunnel.test.ts",
+        "sha256": "00e9f9dc0e34de5ce939752b4e3f06d8b11d4ec4a083b57145c5d6b0449933e5",
+        "matchesServingCommit": true
+      }
+    ],
+    "provenanceLimit": "Compared these files to the serving build commit; this is not an exhaustive executed-module load audit."
+  },
+  "before": {
+    "configured": false
+  },
+  "setup": {
+    "method": "POST",
+    "path": "/api/remote-access/own-tunnel/manual",
+    "body": { "hostname": "api.papercuspai.com" },
+    "status": 200
+  },
+  "retainedListener": {
+    "mode": "manual",
+    "hostname": "api.papercuspai.com",
+    "port": 41179,
+    "target": "http://127.0.0.1:41179",
+    "operatorPort": 3170,
+    "listening": true,
+    "health": "up",
+    "lifetime": "Maintained own-tunnel row retained; re-read status and repeat containment checks before using it as a provider target."
+  },
+  "verification": {
+    "checkCount": 38,
+    "failed": 0,
+    "hostMatrix": ["api.papercuspai.com", "localhost"],
+    "adminChecks": {
+      "eachHost": true,
+      "forwardedHeaders": {
+        "x-forwarded-host": "localhost",
+        "x-forwarded-for": "127.0.0.1",
+        "x-real-ip": "127.0.0.1"
+      },
+      "status": 404,
+      "errorCode": "not_served_on_external_ingress",
+      "requests": [
+        { "method": "GET", "path": "/api/health" },
+        { "method": "GET", "path": "/api/workspaces" },
+        { "method": "GET", "path": "/api/coord/presence" },
+        { "method": "GET", "path": "/api/device/desktop/devices" },
+        { "method": "GET", "path": "/api/device/qr.svg" },
+        { "method": "POST", "path": "/api/device/desktop/mint-pair-token" },
+        { "method": "GET", "path": "/api/remote-access/own-tunnel" },
+        { "method": "POST", "path": "/api/remote-access/own-tunnel/manual" }
+      ]
+    },
+    "anonymousDeviceChecks": {
+      "eachHost": true,
+      "status": 401,
+      "errorCode": "unauthorized",
+      "requests": [
+        { "method": "POST", "path": "/api/device/heartbeat" },
+        { "method": "GET", "path": "/api/device/runtime-config" },
+        { "method": "GET", "path": "/api/device/devices" },
+        { "method": "GET", "path": "/api/device/workspaces" }
+      ]
+    },
+    "emptyPairChecks": {
+      "eachHost": true,
+      "method": "POST",
+      "path": "/api/device/pair",
+      "status": 400,
+      "errorCode": "invalid_input"
+    },
+    "pairing": {
+      "localDesktopMintStatus": 200,
+      "advertisedServer": "https://api.papercuspai.com",
+      "publicHostRedemptionStatus": 200,
+      "replayStatus": 401,
+      "replayErrorCode": "invalid_or_expired_token"
+    },
+    "authorizedDeviceChecks": {
+      "eachHost": true,
+      "heartbeatStatus": 200,
+      "runtimeConfigStatus": 200,
+      "workspaceId": "papercusp-workspace",
+      "unknownWorkspaceHeaderStatus": 400,
+      "unknownWorkspaceHeaderError": "unknown_workspace"
+    },
+    "invalidJwt": { "host": "api.papercuspai.com", "heartbeatStatus": 401 },
+    "cleanup": {
+      "deviceId": "543a72d3-cf28-4b54-94e1-3d0dcb4a874b",
+      "workspaceId": "papercusp-workspace",
+      "desktopRevokeStatus": 200,
+      "revokedJwtHeartbeatStatus": 401,
+      "finalCleanupRevokeStatus": 200,
+      "listenerRetained": true
+    }
+  },
+  "correctedProbeExpectation": {
+    "initialAttempt": "Expected a device runtime-config request with an unregistered workspace header to return 200; the full host returned 400 unknown_workspace.",
+    "source": "packages/operator-core/lib/workspace-context-middleware.ts",
+    "resolution": "Verify normal authenticated runtime-config without the unknown header, and separately expect the full host's documented 400 guard.",
+    "initialAttemptCleanup": { "temporaryDeviceRevoked": true, "listenerRemoved": true, "cloudflare": "skipped", "error": null },
+    "productDefectClaimed": false
+  },
+  "remoteRoutePreparation": {
+    "readOnly": true,
+    "tunnelId": "c53515b3-edfe-4e99-813b-e3916ae9d02c",
+    "remoteVersion": 16,
+    "ingressRuleCount": 7,
+    "configSha256": "751b6ceb81b7bde25d2998e7fb37495eadcb873653e61da9b807b0288d6f246b",
+    "hashEncoding": "SHA256 of JSON.stringify(config) returned by the maintained Cloudflare v4 getTunnelConfig client",
+    "helper": "packages/operator-core/lib/own-tunnel/config.ts#retargetCloudflaredIngress",
+    "selectedRule": {
+      "index": 4,
+      "hostname": "api.papercuspai.com",
+      "path": "^/api/device",
+      "beforeService": "http://localhost:3070",
+      "preparedService": "http://127.0.0.1:41179"
+    },
+    "changedRuleIndexes": [4],
+    "unrelatedRulesAndOptionsPreserved": true,
+    "hostHandling": "Raw provider rule has originRequest:{} and no global override. The connector metrics view expands blank default httpHostHeader fields; it is not the raw provider payload.",
+    "publicationPrerequisite": "Re-read listener status, loaded build, containment and provider configuration immediately before any write; this receipt does not authorize using a stale snapshot."
+  },
+  "providerMutation": false,
+  "nativeJobsRun": false,
+  "limits": [
+    "This local socket proof does not establish an applied public Cloudflare route correction or actual native acceptance on this listener.",
+    "The separate original Python Cloudflare 1010 outcome has no established root cause here.",
+    "Production shipment, hosted/BYOC account entitlement, whole-candidate acceptance and P-008 completion remain open.",
+    "Previously retained native receipts remain scoped to their exact historical sources."
+  ]
+}

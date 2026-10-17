@@ -161,7 +161,7 @@ export const ROUTINE_FALLBACK_MIGRATION_CASES: RailMigrationCase[] = [{
     try {
       for (const fail of [true, false]) await execute(text, { observeFallback, withBoundedTimeout,
         ownerId: 'fixture', CONTINUATION_READ_BUDGET_MS: 1000, routineProbeFailed: false,
-        getLoopStatus: async () => { if (fail) throw new Error('read failed'); return { active: false }; } });
+        readActiveLoopFacts: async () => { if (fail) throw new Error('read failed'); return { active: false }; } });
       expect(warn).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('armed-routine scope probe failed: read failed'));
     } finally { warn.mockRestore(); }

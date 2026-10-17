@@ -25,6 +25,8 @@ vi.mock('../../workspace-registry', () => ({
 import { registerRoute, type RouteDefinition } from '../define-route';
 import { createHostedRouteStack } from '../hosted-route-stack';
 
+const NEVER_EMIT_MARKER = 'never-emit-me';
+
 describe('mounted route telemetry PostgreSQL failure confidentiality', () => {
   let db: FreshPgDb;
   const rejected: unknown[] = [];
@@ -37,7 +39,7 @@ describe('mounted route telemetry PostgreSQL failure confidentiality', () => {
         workspace_id text, method text, path text, status text,
         duration_ms integer, principal_kind text, principal_auth_method text,
         principal_trust text, error_message text, resolved_path text,
-        response_bytes integer
+        response_bytes integer, metadata_json jsonb
       );
       CREATE FUNCTION harness_shared.reject_marked_route() RETURNS trigger
       LANGUAGE plpgsql AS $$
@@ -67,6 +69,46 @@ describe('mounted route telemetry PostgreSQL failure confidentiality', () => {
   afterAll(async () => {
     vi.restoreAllMocks();
     await db?.cleanup();
+  });
+
+  it('persists safe Codex repair correlation through the mounted route and real PostgreSQL writer', async () => {
+    const attemptId = '78a48e81-3884-4af5-b864-e1ba22969740';
+    const app = new Hono().basePath('/api');
+    const paths = ['/adv/sessions/ensure-codex-home', '/adv/sessions/unrelated'];
+    for (const path of paths) {
+      registerRoute(app, {
+        method: 'POST', path, auth: 'public', sampleRate: 1,
+        handler: () => Response.json({ content: 'private-correlation-response-marker' }),
+      }, createHostedRouteStack(async () => ({ ok: false, reason: 'session_cookie_missing' })));
+    }
+    const attempts = [
+      { path: paths[0], header: attemptId, metadata: { codexHomeRepairAttemptId: attemptId } },
+      { path: paths[0], header: 'private-invalid-correlation-marker', metadata: null },
+      { path: paths[1], header: attemptId, metadata: null },
+    ];
+    try {
+      for (const [index, attempt] of attempts.entries()) {
+        const response = await app.request('/api' + attempt.path + '?private=private-correlation-query-marker', {
+          method: 'POST', headers: { 'content-type': 'application/json',
+            'x-papercusp-repair-attempt': attempt.header, 'x-private': 'private-correlation-header-marker' },
+          body: JSON.stringify({ secret: NEVER_EMIT_MARKER }),
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual({ content: 'private-correlation-response-marker' });
+        await vi.waitFor(async () => {
+          const rows = await db.sql`SELECT metadata_json FROM harness_shared.route_invocations ORDER BY ctid`;
+          expect(rows).toHaveLength(index + 1);
+          expect(rows[index].metadata_json).toEqual(attempt.metadata);
+          const persisted = JSON.stringify(await db.sql`SELECT * FROM harness_shared.route_invocations`);
+          for (const marker of ['private-correlation-query-marker', NEVER_EMIT_MARKER,
+            'private-correlation-response-marker', 'private-correlation-header-marker', 'private-invalid-correlation-marker']) {
+            expect(persisted).not.toContain(marker);
+          }
+        }, { timeout: 10_000 });
+      }
+    } finally {
+      await db.sql`DELETE FROM harness_shared.route_invocations`;
+    }
   });
 
   it('keeps successful route attribution and suppresses server error content once without changing responses', async () => {

@@ -24,12 +24,50 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server, type IncomingMessage } from 'node:http';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, join } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { runHookProcess } from './spawn-hook';
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'posttoolbatch-midturn-context.sh');
 const SID = 'su-midturn-test';
+
+describe('P-038 shared hook attribution producer', () => {
+  it('keeps observed failing identities beyond the recall clamp while discarding passes and refusals', async () => {
+    const { buildDigest } = await import('../../inject/core.mjs');
+    const response = { content: [{ type: 'text', text: JSON.stringify({ padding: 'x'.repeat(900), byFile: {
+      'target.test.ts': { failed: 1, runId: 42 }, 'passing.test.ts': { failed: 0, status: 'pass' },
+    } }) }] };
+    const [call] = buildDigest([{ tool: 'mcp__papercusp_su__testing_run', toolResponse: response }]);
+    expect(call.toolResponse.length).toBeLessThanOrEqual(400);
+    expect(call.incidentResult).toEqual({ byFile: { 'target.test.ts': { status: 'fail', failed: 1, runId: 42 } } });
+    expect(buildDigest([{ tool: 'testing:run', toolResponse: { ok: false, files: ['requested.test.ts'] } }])[0].incidentResult)
+      .toBeUndefined();
+  });
+  it('retains source observations for a later test call and excludes a foreign harness', async () => {
+    const { collectInterfaceEdits } = await import('../../inject/core.mjs');
+    const env = { PAPERCUSP_HOME: mkdtempSync(join(tmpdir(), 'incident-observation-')) };
+    const scope = { owner: 'su-observer', workspace: 'ws', harness: 'h', cwd: '/repo' };
+    const sourceChange = { root: '/repo', path: 'a.ts', base: 'a'.repeat(40), at: Date.now(),
+      beforeSha256: 'b'.repeat(64), sha256: 'c'.repeat(64), symbols: [{ name: 'changed', line: 1 }] };
+    try {
+      await collectInterfaceEdits({ ...scope, toolCalls: [{ editedPaths: ['a.ts'] }] },
+        async () => ({ path: sourceChange.path, base: sourceChange.base, checks: [], changes: [], sourceChange }), env);
+      const failure: any = { ...scope, toolCalls: [{ tool: 'testing:run' }] };
+      await collectInterfaceEdits(failure, undefined, env);
+      expect(failure.incidentAttribution.recentEdits).toEqual([{ ...sourceChange,
+        workspace: 'ws', harness: 'h', agentId: 'su-observer' }]);
+      const foreign: any = { ...scope, harness: 'other', toolCalls: [] };
+      await collectInterfaceEdits(foreign, undefined, env);
+      expect(foreign.incidentAttribution).toBeUndefined();
+      const expired: any = { ...scope, toolCalls: [{ editedPaths: ['a.ts'] }] };
+      await collectInterfaceEdits(expired, async () => ({ path: sourceChange.path, base: sourceChange.base, checks: [], changes: [],
+        sourceChange: { ...sourceChange, at: Date.now() - 86_400_001 } }), env);
+      expect(expired.incidentAttribution.recentEdits[0].at).toBe(sourceChange.at);
+    } finally { rmSync(env.PAPERCUSP_HOME, { recursive: true, force: true }); }
+  });
+});
 
 const BATCH = {
   hook_event_name: 'PostToolBatch',
@@ -47,6 +85,7 @@ const BATCH = {
 let server: Server;
 let baseUrl = '';
 let lastBody: Record<string, unknown> | null = null;
+const receivedBody = (): Record<string, unknown> | null => lastBody;
 let nextResponse: { status?: number; body?: unknown } = { body: { ok: true, text: '' } };
 
 beforeAll(async () => {
@@ -137,7 +176,7 @@ describe('posttoolbatch-midturn-context.sh', () => {
     await runHook({
       tool_calls: [{ tool_name: 'Read', tool_input: { file_path: '/a.ts' }, tool_response: 'y'.repeat(100_000) }],
     });
-    const calls = (lastBody as { toolCalls: { toolResponse: string }[] }).toolCalls;
+    const calls = (receivedBody() as { toolCalls: { toolResponse: string }[] }).toolCalls;
     expect(calls[0]!.toolResponse.length).toBeLessThanOrEqual(400);
   });
 
@@ -151,7 +190,7 @@ describe('posttoolbatch-midturn-context.sh', () => {
         tool_response: 'ok',
       })),
     });
-    expect((lastBody as { toolCalls: unknown[] }).toolCalls.length).toBeLessThanOrEqual(12);
+    expect((receivedBody() as { toolCalls: unknown[] }).toolCalls.length).toBeLessThanOrEqual(12);
   });
 
   it('no PAPERCUSP_SID → silent no-op, exit 0 (psu sessions only)', async () => {
@@ -176,7 +215,7 @@ describe('posttoolbatch-midturn-context.sh', () => {
   });
 
   it('operator down → fail-open silent, exit 0 (never exit 2 — that stops the loop)', async () => {
-    const out = await runHook(BATCH, { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1' });
+    const out = await runHook(BATCH, { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', PAPERCUSP_MCP_PROXY_PORT: '1' });
     expect(out.status).toBe(0);
     expect(out.stdout.trim()).toBe('');
   });

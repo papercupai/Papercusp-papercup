@@ -1,3 +1,4 @@
+import { DatabaseSync } from 'node:sqlite';
 import type {
   WorkspaceHostDesiredSpec,
   WorkspaceHostProviderConnection,
@@ -67,7 +68,74 @@ function makeBillingReader(fetchImpl: typeof fetch): GoogleBigQueryBillingExport
   });
 }
 
+describe('GCP retained disk identity', () => {
+  it('preserves allocation and full writer references instead of collapsing foreign project/zone names', async () => {
+    const writer = `https://www.googleapis.com/compute/v1/projects/foreign-project/zones/us-central1-b/instances/pc-host-vm`;
+    const client = makeClient(vi.fn(async () => json({ name: 'pc-host-data', id: '934573450987654321',
+      status: 'READY', users: [writer], selfLink: `https://www.googleapis.com/compute/v1/projects/${PROJECT}/zones/${ZONE}/disks/pc-host-data` })) as typeof fetch);
+    await expect(client.getDisk(PROJECT, ZONE, 'pc-host-data')).resolves.toMatchObject({
+      diskId: '934573450987654321', attachedInstanceNames: ['pc-host-vm'], attachedInstanceRefs: [writer],
+    });
+  });
+});
+
 describe('GCP Cloud Billing export reader', () => {
+  it.each([
+    ['leading partial hour', '2026-10-16T21:00:00Z', '2026-10-16T22:00:00Z', true],
+    ['contained hour', '2026-10-16T22:00:00Z', '2026-10-16T23:00:00Z', true],
+    ['enclosing interval', '2026-10-16T21:00:00Z', '2026-10-17T00:00:00Z', true],
+    ['exact window', '2026-10-16T21:26:47.932Z', '2026-10-16T23:17:00Z', true],
+    ['ends at run start', '2026-10-16T20:00:00Z', '2026-10-16T21:26:47.932Z', false],
+    ['starts at run end', '2026-10-16T23:17:00Z', '2026-10-17T00:00:00Z', false],
+    ['earlier interval', '2026-10-16T20:00:00Z', '2026-10-16T21:00:00Z', false],
+    ['later interval', '2026-10-17T00:00:00Z', '2026-10-17T01:00:00Z', false],
+  ] as const)('accounts for the provider billing interval: %s', async (_name, start, end, included) => {
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        query: string;
+        queryParameters: Array<{ name: string; parameterValue: { value: string } }>;
+      };
+      // Execute the generated temporal predicate in a real SQL engine. Normalized ISO
+      // timestamps preserve time ordering; BigQuery's arrays/label predicate is separate.
+      const predicate = body.query.split('  WHERE ')[1]?.split('    AND EXISTS')[0];
+      expect(predicate).toBeTruthy();
+      const db = new DatabaseSync(':memory:');
+      let matches: number;
+      try {
+        db.exec('CREATE TABLE usage (usage_start_time TEXT NOT NULL, usage_end_time TEXT NOT NULL)');
+        db.prepare('INSERT INTO usage VALUES (?, ?)').run(new Date(start).toISOString(), new Date(end).toISOString());
+        const params = Object.fromEntries(body.queryParameters
+          .filter(({ name }) => name === 'usage_start_at' || name === 'usage_end_at')
+          .map(({ name, parameterValue }) => [name, new Date(parameterValue.value).toISOString()]));
+        matches = (db.prepare(`SELECT COUNT(*) AS matches FROM usage WHERE ${predicate}`).get(params) as {
+          matches: number;
+        }).matches;
+      } finally {
+        db.close();
+      }
+      return json({
+        jobComplete: true,
+        jobReference: { projectId: PROJECT, jobId: 'billing-interval' },
+        schema: { fields: [
+          { name: 'currency', type: 'STRING' },
+          { name: 'gross_micros', type: 'INTEGER' },
+          { name: 'credit_micros', type: 'INTEGER' },
+          { name: 'net_micros', type: 'INTEGER' },
+        ] },
+        rows: matches ? [{ f: [{ v: 'USD' }, { v: '163' }, { v: '-163' }, { v: '0' }] }] : [],
+      });
+    }) as typeof fetch;
+    const result = await makeBillingReader(fetchImpl).read({
+      descriptor: BILLING_EXPORT,
+      runId: 'r4',
+      usageStartAt: '2026-10-16T21:26:47.932Z',
+      usageEndAt: '2026-10-16T23:17:00Z',
+    });
+    expect(result).toMatchObject(included
+      ? { status: 'observed', observation: { grossMicros: '163', creditMicros: '-163', netMicros: '0' } }
+      : { status: 'retryable', reason: 'no-data' });
+  });
+
   it('uses bounded public BigQuery REST and preserves exact gross, credit, net, and conservative cents', async () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       expect(String(input)).toBe(`https://bigquery.googleapis.com/bigquery/v2/projects/${PROJECT}/queries`);

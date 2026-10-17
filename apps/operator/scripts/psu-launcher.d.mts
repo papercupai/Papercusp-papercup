@@ -2497,7 +2497,7 @@ export function preflightWindowGuard({ personaBytes, contextSize, model, agent, 
     agent?: string | undefined;
     budget?: null | undefined;
 }): {
-    level: "ok" | "warn" | "refuse";
+    level: "ok" | "refuse" | "warn";
     pct: number;
     estTokens: number;
     window: number;
@@ -2549,7 +2549,7 @@ export function runLaunchPreflight({ promptFile, contextSize, model, agent, budg
     budget?: null | undefined;
     force: any;
 }): {
-    level: "ok" | "warn" | "refuse";
+    level: "ok" | "refuse" | "warn";
     pct: number;
     estTokens: number;
     window: number;
@@ -2711,14 +2711,15 @@ export function pickIdentity(workspace: any, harness: any): Promise<{
     stack: string[];
     selectedIdentityRevision: any;
 }>;
+/** @param {{ env?: NodeJS.ProcessEnv, stdin?: { isTTY?: boolean }, stdout?: { isTTY?: boolean } }} [options] */
 export function usePtyHost({ env, stdin, stdout, }?: {
-    env?: NodeJS.ProcessEnv | undefined;
-    stdin?: (NodeJS.ReadStream & {
-        fd: 0;
-    }) | undefined;
-    stdout?: (NodeJS.WriteStream & {
-        fd: 1;
-    }) | undefined;
+    env?: NodeJS.ProcessEnv;
+    stdin?: {
+        isTTY?: boolean;
+    };
+    stdout?: {
+        isTTY?: boolean;
+    };
 }): boolean;
 /**
  * The terminal THIS psu launch owns, as a device path — or null when there isn't one
@@ -4139,14 +4140,16 @@ export function resumeFirstStepChoices(session: {
  * @param {any} session
  * @param {any} args
  * @param {{prompts?: any, readLastActiveModel?: Function, fetchPortCapabilities?: Function,
- *   readCodexModels?: Function, readOmpModels?: Function}} [dependencies]
+ *   readCodexModels?: Function, readOmpModels?: Function,
+ *   readOperatorTarget?: Function}} [dependencies]
  */
-export function chooseResumeTarget(session: any, args: any, { prompts, readLastActiveModel, fetchPortCapabilities, readCodexModels, readOmpModels, }?: {
+export function chooseResumeTarget(session: any, args: any, { prompts, readLastActiveModel, fetchPortCapabilities, readCodexModels, readOmpModels, readOperatorTarget, }?: {
     prompts?: any;
     readLastActiveModel?: Function;
     fetchPortCapabilities?: Function;
     readCodexModels?: Function;
     readOmpModels?: Function;
+    readOperatorTarget?: Function;
 }): Promise<{
     modelSource?: import("../../../packages/operator-core/lib/model-context-budget.mjs").CodexModelSource | undefined;
     operation: string;
@@ -4336,9 +4339,9 @@ export function codexForkMcpUrlForOwner(codexHome: any, ownerId: any): string | 
  * @param {string | null} owner
  * @param {string | null} codexHome
  * @param {string | number | null} advSessionId
- * @param {{requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, onFailure?: (failure: {stage: string, reason: string, status: number | null, errorName?: string}) => void, token?: string | null, timeoutMs?: number}} options
+ * @param {{requireGatewayProvider?: boolean, model?: string | null, headless?: boolean, routeMode?: string | null, accountId?: string | null, priority?: string | null, fetchImpl?: (...args: any[]) => Promise<any>, operatorUrl?: string, env?: NodeJS.ProcessEnv, probe?: typeof probeOmpOperatorMcp, onRecovery?: Function, onFailure?: (failure: {stage: string, reason: string, status: number | null, errorName?: string, diagnostic: {attemptId: string, startedAtMs: number, elapsedMs: number, target: {kind: string, protocol: string, port: number} | null, phaseTimingsMs: Record<string, number>}}) => void, token?: string | null, timeoutMs?: number, now?: () => number}} options
  */
-export function ensureCodexHomeViaOperator(owner: string | null, codexHome: string | null, advSessionId: string | number | null, { requireGatewayProvider, model, headless, routeMode, accountId, priority, fetchImpl, operatorUrl, env, probe, onRecovery, onFailure, token, timeoutMs, }?: {
+export function ensureCodexHomeViaOperator(owner: string | null, codexHome: string | null, advSessionId: string | number | null, { requireGatewayProvider, model, headless, routeMode, accountId, priority, fetchImpl, operatorUrl, env, probe, onRecovery, onFailure, token, timeoutMs, now, }?: {
     requireGatewayProvider?: boolean;
     model?: string | null;
     headless?: boolean;
@@ -4355,9 +4358,21 @@ export function ensureCodexHomeViaOperator(owner: string | null, codexHome: stri
         reason: string;
         status: number | null;
         errorName?: string;
+        diagnostic: {
+            attemptId: string;
+            startedAtMs: number;
+            elapsedMs: number;
+            target: {
+                kind: string;
+                protocol: string;
+                port: number;
+            } | null;
+            phaseTimingsMs: Record<string, number>;
+        };
     }) => void;
     token?: string | null;
     timeoutMs?: number;
+    now?: () => number;
 }): Promise<any>;
 /** Pure launch-argument half of a session port. Keeping the same owner id is the
  * authority-continuity invariant: the new native backend is another body of the
@@ -4380,11 +4395,12 @@ export function launchSessionPort(source: any, target: any, account: any, args: 
  * path and are not judged here. `home` is injectable for tests.
  * @param {any} source
  * @param {any} target
- * @param {{ tracked?: boolean, home?: string }} [options]
+ * @param {{ tracked?: boolean, home?: string, sourceNativeSessionId?: string | null }} [options]
  * @returns {string | null} */
-export function unresumableSourceCause(source: any, target: any, { tracked, home }?: {
+export function unresumableSourceCause(source: any, target: any, { tracked, home, sourceNativeSessionId }?: {
     tracked?: boolean;
     home?: string;
+    sourceNativeSessionId?: string | null;
 }): string | null;
 export function resumeFlow(args?: {}, { apiImpl, launchResolvedResumeImpl }?: {
     apiImpl?: typeof api | undefined;
@@ -4434,6 +4450,14 @@ export function ensureBackendInstalled(agent: any, { interactive, detect }?: {
     interactive?: boolean | undefined;
     detect?: typeof detectBackendBin | undefined;
 }): Promise<boolean>;
+/** @param {{ readHandoff?: typeof readHostHandoffForParentPid,
+ * launchHandoff?: typeof launchHostHandoff,
+ * connectionFrontController?: typeof runPsuConnectionFrontController }} [dependencies] */
+export function main({ readHandoff, launchHandoff, connectionFrontController, }?: {
+    readHandoff?: typeof readHostHandoffForParentPid;
+    launchHandoff?: typeof launchHostHandoff;
+    connectionFrontController?: typeof runPsuConnectionFrontController;
+}): Promise<void>;
 /**
  * The pre-TUI "your setup isn't finished" nudge (owner batch #5). PURE: given the
  * concierge setup STAGE name, return the reminder lines to print, or null when there
@@ -4469,7 +4493,7 @@ export const PUI_TUI_ORIGIN: "pui";
  * discoverable place to document it. The `--` escape hatch remains available
  * for backend-native flags that psu intentionally does not own.
  */
-export const PSU_HELP_TEXT: "Usage: psu [options]\n\nLaunch an interactive Papercusp superuser session, or use --no-picker for a\nscripted launch.\n\nSession selection:\n  -h, --help                         Show this help and exit\n  -V, --version                      Show the psu build version and exit\n  --resume[=<id>] [id]               Resume a tracked/native session or an su agent's latest session\n  --fork, --fork-session             Fork the selected session (with --resume)\n  --brain                            Show the retired brain-session message\n\nLaunch context:\n  --agent=<claude|omp|codex>         Backend to launch\n  --tui=<pui>                       Caller origin (PUI hides recursive PUI choice)\n  --role=<role>                      Launch a role-scoped session\n  --stack=<slot:id|composition:id>   Select an identity component or named composition\n  --identity-revision=<sha256>       Require the selected stack source revision\n  --workspace=<slug>                 Workspace context\n  --harness=<slug>                   Harness context\n  --feature=<id>                     Feature context\n  --plan=<slug>                      Plan context\n  --no-plan                          Launch without a plan\n  --model=<model[:effort]>           Model and optional effort\n  --model-source=<source>            Codex provenance: explicit|inherited|configured-default\n  --profile=<engineer|power>         SU prompt profile\n  --context-size=trimmed|steward     Initial tool seed (steward = core + steward verb families, WI-2140338; legacy full normalizes to trimmed)\n  --compaction-limit=<tokens>        Requested compaction limit\n  --launch-context=<path>            Additional launch brief\n  --kickoff=<text>                   Seed the first user turn\n  --no-kickoff                       Do not seed a scripted first turn\n  --label=<text>                     Label the tracked session\n\nFleet and execution:\n  --fleet=<slug>                     Join an existing fleet\n  --fleet-role=leader|member         Role in that fleet (default member)\n  --seat=<ref>                       Consume a delegated fleet seat\n  --headless                         Launch without a desktop window\n  --auto, --no-auto                  Set AUTO mode explicitly\n  --mode=drain|grade|test            Start in a named mode (launches autonomously)\n  --mode-subject=<text>              DRAIN subject\n  --mode-instructions=<text>         DRAIN instructions\n  --mode-owner-directed              Mark the DRAIN mode owner-directed\n  --goal-bootstrap-subject=<id>      Require exact GOAL subject and implied modes before turn one\n  --carry=<warm|cold>                Fleet carry mode\n  --account=<id|auto|default>        Account routing\n\nLauncher controls:\n  --no-picker                        Skip interactive prompts\n  --add-dir=<dir>                    Add a backend working directory (repeatable)\n  --allow-subagents, --no-subagents Allow or deny Claude subagent tools\n  --yes, -y                          Skip untracked-resume confirmation\n  --force                            Override launch preflight guards\n  --terminal-check                   Check local terminal setup and freeze guidance (offline)\n  --set-claude-token[=<token>]       Store the default Claude OAuth token\n  --clear-claude-token               Clear the stored Claude OAuth token\n  --recovery-authorize               Locally authorize one exact diagnostic argv\n  --recovery-reason=<text>           Required authorization reason\n  --recovery-ttl=<seconds>           Grant lifetime (default 300, max 900)\n  --recovery-max-runtime=<seconds>   Command deadline (default 60, max 300)\n  --recovery-grant=<uuid>            Consume a signed one-use recovery grant\n  --                                 Forward remaining arguments to the backend\n\nRemote hosts (run psu on another machine; every other option is forwarded to it):\n  --connect[=<name>[/<workspace>]]   Run on a saved remote host (picker when omitted)\n  --connect-list                     List saved remote hosts and cloud workspaces\n  --connect-login[=<portal>]         Sign in to Papercusp cloud (default https://app.papercusp.com)\n  --connect-logout[=<name>]          Sign out of Papercusp cloud on this computer\n  --connect-session=<key>            Reattach a specific cloud workspace shell\n  --connect-add-gcp-iap=<name>       Save your own GCP VM, reached over IAP SSH, with\n                                     --connect-project, --connect-zone,\n                                     --connect-instance and --connect-user\n  --connect-add-aws-ssm=<name>       Save your own EC2 instance, reached over SSM\n                                     Session Manager SSH, with --connect-region,\n                                     --connect-instance (i-\u2026), --connect-user and\n                                     optionally --connect-aws-profile\n  --connect-remove=<name>            Forget a saved remote host\n\nValues may use either --name=value or (where supported) --name value form.\n";
+export const PSU_HELP_TEXT: "Usage: psu [options]\n\nLaunch an interactive Papercusp superuser session, or use --no-picker for a\nscripted launch.\n\nSession selection:\n  -h, --help                         Show this help and exit\n  -V, --version                      Show the psu build version and exit\n  --resume[=<id>] [id]               Resume a tracked/native session or an su agent's latest session\n  --fork, --fork-session             Fork the selected session (with --resume)\n  --brain                            Show the retired brain-session message\n\nLaunch context:\n  --agent=<claude|omp|codex>         Backend to launch\n  --tui=<pui>                       Caller origin (PUI hides recursive PUI choice)\n  --role=<role>                      Launch a role-scoped session\n  --stack=<slot:id|composition:id>   Select an identity component or named composition\n  --identity-revision=<sha256>       Require the selected stack source revision\n  --workspace=<slug>                 Workspace context\n  --harness=<slug>                   Harness context\n  --feature=<id>                     Feature context\n  --plan=<slug>                      Plan context\n  --no-plan                          Launch without a plan\n  --model=<model[:effort]>           Model and optional effort\n  --model-source=<source>            Codex provenance: explicit|inherited|configured-default\n  --profile=<engineer|power>         SU prompt profile\n  --context-size=trimmed|steward     Initial tool seed (steward = core + steward verb families, WI-2140338; legacy full normalizes to trimmed)\n  --compaction-limit=<tokens>        Requested compaction limit\n  --launch-context=<path>            Additional launch brief\n  --kickoff=<text>                   Seed the first user turn\n  --no-kickoff                       Do not seed a scripted first turn\n  --label=<text>                     Label the tracked session\n\nFleet and execution:\n  --fleet=<slug>                     Join an existing fleet\n  --fleet-role=leader|member         Role in that fleet (default member)\n  --seat=<ref>                       Consume a delegated fleet seat\n  --headless                         Launch without a desktop window\n  --auto, --no-auto                  Set AUTO mode explicitly\n  --mode=drain|grade|test            Start in a named mode (launches autonomously)\n  --mode-subject=<text>              DRAIN subject\n  --mode-instructions=<text>         DRAIN instructions\n  --mode-owner-directed              Mark the DRAIN mode owner-directed\n  --goal-bootstrap-subject=<id>      Require exact GOAL subject and implied modes before turn one\n  --carry=<warm|cold>                Fleet carry mode\n  --account=<id|auto|default>        Account routing\n\nLauncher controls:\n  --no-picker                        Skip interactive prompts\n  --add-dir=<dir>                    Add a backend working directory (repeatable)\n  --allow-subagents, --no-subagents Allow or deny Claude subagent tools\n  --yes, -y                          Skip untracked-resume confirmation\n  --force                            Override launch preflight guards\n  --terminal-check                   Check local terminal setup and freeze guidance (offline)\n  --set-claude-token[=<token>]       Store the default Claude OAuth token\n  --clear-claude-token               Clear the stored Claude OAuth token\n  --recovery-authorize               Locally authorize one exact diagnostic argv\n  --recovery-reason=<text>           Required authorization reason\n  --recovery-ttl=<seconds>           Grant lifetime (default 300, max 900)\n  --recovery-max-runtime=<seconds>   Command deadline (default 60, max 300)\n  --recovery-grant=<uuid>            Consume a signed one-use recovery grant\n  --                                 Forward remaining arguments to the backend\n\nRemote hosts (run psu on another machine; every other option is forwarded to it):\n  --connect[=<name>[/<workspace>]]   Run on a saved remote host (picker when omitted)\n  --connect-list                     List saved remote hosts and cloud workspaces\n  --connect-login[=<portal>]         Sign in to Papercusp cloud (default https://app.papercusp.com)\n  --connect-logout[=<name>]          Sign out of Papercusp cloud on this computer\n  --connect-session=<key>            Reattach a specific cloud workspace shell\n  --connect-add-ssh=<name>           Save your desktop/laptop with --connect-host\n                                     (private/VPN address or SSH config alias)\n                                     and optional --connect-user\n  --connect-gui                      Open a saved SSH machine's browser GUI\n                                     through a private local tunnel\n  --connect-add-gcp-iap=<name>       Save your own GCP VM, reached over IAP SSH, with\n                                     --connect-project, --connect-zone,\n                                     --connect-instance and --connect-user\n  --connect-add-aws-ssm=<name>       Save your own EC2 instance, reached over SSM\n                                     Session Manager SSH, with --connect-region,\n                                     --connect-instance (i-\u2026), --connect-user and\n                                     optionally --connect-aws-profile\n  --connect-remove=<name>            Forget a saved remote host\n\nValues may use either --name=value or (where supported) --name value form.\n";
 /** Sentinel value for the "NO PLAN" picker row. Uses non-slug chars
  *  (`<`/`>`) so it can never collide with a real plan slug. */
 export const NO_PLAN: "<no-plan>";
@@ -5215,6 +5239,16 @@ declare function sessionPortApi(path: any, opts: any): Promise<any>;
 declare function launchResolvedResume(source: any, args: any, { tracked }: {
     tracked: any;
 }): Promise<void>;
+import { readHostHandoffForParentPid } from "./psu-pty-host.mjs";
+/**
+ * Continue a host-code handoff without running bootstrap-su a second time.
+ * The shim re-executes this launcher with its original argv, but the original
+ * bootstrap result (adv row, Codex home, and route identity) was only held in
+ * the predecessor process. Consuming the handoff before the normal launch
+ * flow keeps the successor on that exact row/home instead of minting a sibling.
+ */
+declare function launchHostHandoff(handoff: any): Promise<void>;
+import { runPsuConnectionFrontController } from "./psu-connection-front-controller.mjs";
 import { readClaudeLaunchSettings } from "../../../packages/operator-core/lib/model-context-budget.mjs";
 import { nativeSessionIdFromLaunchArgs } from "./psu-pty-host.mjs";
 export { readClaudeLaunchSettings, nativeSessionIdFromLaunchArgs };

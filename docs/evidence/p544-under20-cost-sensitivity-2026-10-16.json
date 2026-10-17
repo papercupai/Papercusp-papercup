@@ -1,0 +1,78 @@
+{
+  "item": "P-544",
+  "workItem": "WI-6554700010016586",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "measuredAtUtc": "2026-10-16T21:13:00Z",
+  "classification": "List-price sensitivity arithmetic; not a customer-price, invoice, capacity-pass, or shipment verdict.",
+  "sources": [
+    "docs/evidence/p544-budget-admission-2026-10-16.json",
+    "docs/evidence/p544-active-driver-2026-10-16.json",
+    "docs/evidence/p533-2026-10-15-final.md",
+    "scripts/agent-capacity/gcp-rails.ts"
+  ],
+  "candidate": {
+    "machineType": "e2-custom-2",
+    "bootRamProfilesGiB": [4, 8],
+    "bootDiskGiB": 32,
+    "dataDiskGiB": 10,
+    "overflowDiskGiB": 10,
+    "diskType": "pd-balanced",
+    "storageUsdPerMonth": 5.2,
+    "ipv4AssumptionUsdPerActiveHour": 0.01,
+    "priceSource": "gcp-rails PRICES_2026_09_30; us-central1 on-demand and measured e2 spot rates",
+    "awsOnDemandReference": {
+      "instanceType": "t3a.medium",
+      "vcpu": 2,
+      "ramGiB": 4,
+      "computeUsdPerHour": 0.0376,
+      "gp3UsdPerGiBMonth": 0.08,
+      "publicIpv4UsdPerHour": 0.005,
+      "diskTotalGiB": 52,
+      "priceSources": [
+        "https://aws.amazon.com/ec2/instance-types/t3/",
+        "https://aws.amazon.com/ebs/pricing/",
+        "https://aws.amazon.com/vpc/pricing/"
+      ]
+    }
+  },
+  "monthlyTotalsUsd": {
+    "formula": "activeHours * (computeHourlyUsd + ipv4HourlyUsd) + retainedDiskUsd; excludes network, backup, control-plane, taxes and inference",
+    "profiles": [
+      {
+        "shape": "e2-custom-2-4096",
+        "computeHourlyUsd": {"onDemand": 0.0553173, "spot": 0.033196},
+        "activeHours": {"60": {"onDemand": 9.119, "spot": 7.7918}, "120": {"onDemand": 13.0381, "spot": 10.3835}, "240": {"onDemand": 20.8762, "spot": 15.567}, "730": {"onDemand": 52.8816, "spot": 36.7331}}
+      },
+      {
+        "shape": "e2-custom-2-8192",
+        "computeHourlyUsd": {"onDemand": 0.06701142, "spot": 0.040212},
+        "activeHours": {"60": {"onDemand": 9.8207, "spot": 8.2127}, "120": {"onDemand": 14.4414, "spot": 11.2254}, "240": {"onDemand": 23.6827, "spot": 17.2509}, "730": {"onDemand": 61.4183, "spot": 41.8548}}
+      }
+    ],
+    "awsOnDemandT3aMedium": {
+      "computePlusIpv4HourlyUsd": 0.0426,
+      "retainedGp3UsdPerMonth": 4.16,
+      "activeHours": {"60": 6.716, "120": 9.272, "240": 14.384, "730": 35.258},
+      "limitations": ["This is a list-price scenario, not a measured AWS capacity or UX result.", "It excludes data transfer, snapshots, control-plane, backup, taxes and inference."]
+    }
+  },
+  "observedQualification": {
+    "fourGiBRun": "failed D075 latency thresholds despite OOM=0 and zero task failures; 50-agent burst p95 echo 31.977s and allDone 187.271s",
+    "eightGiBRun": "unmeasured; the peer owner deferred it because the original provider delete deadline did not leave enough time for a bounded run, archive and teardown",
+    "freshTrialStorage": "The earlier P-533 fresh-trial allocation of 256 GiB DB capacity alone is about 20.48 USD/month on Google Hyperdisk Balanced before compute or other charges.",
+    "actualBilledSpendUsd": null
+  },
+  "finding": "Both on-demand and spot profiles have preliminary arithmetic totals below 20 USD/month at 60 and 120 active hours (before excluded charges). On-demand is just over 20 at 240 active hours for both shapes; spot remains below 20 at 240 hours. Always-on 730-hour operation exceeds 20 even before excluded charges. No profile is both latency-qualified and fully cost-qualified yet: the 4 GiB profile fails D075 and the 8 GiB profile is unmeasured.",
+  "correction": "Earlier wording over-restricted the preliminary sub-20 result to spot; the stored on-demand 60/120-hour rows also fall below 20 before unknown charges.",
+  "remainingAcceptance": [
+    "Complete and verify P-544 teardown census and preserve the clean 4 GiB archive.",
+    "Run a fresh bounded 8 GiB profile under a new admission/deadline if the owner still wants that candidate evaluated.",
+    "Measure or bound network, backup, control-plane and inference costs and record actual provider billing where available.",
+    "Finish P-537 entitlement/quota shipment and the downstream P-538 through P-542 acceptance chain before calling the trial configuration shipped."
+  ],
+  "limitations": [
+    "Spot availability and reclaim behavior are not priced into the arithmetic.",
+    "The IPv4 and disk assumptions are conservative placeholders; no customer invoice or credit balance is asserted.",
+    "No under-20 customer price is activated or promised by this artifact."
+  ]
+}

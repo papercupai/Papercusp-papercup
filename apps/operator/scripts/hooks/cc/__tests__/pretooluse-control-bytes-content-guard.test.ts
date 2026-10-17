@@ -113,6 +113,14 @@ describe('the policy it depends on', () => {
     expect(isScannedPath('apps/operator/public/internal/docs/pagefind/pagefind-highlight.js')).toBe(false);
     expect(isScannedPath('apps/operator/public/docs/pagefind/pagefind-highlight.js')).toBe(false);
   });
+
+  it('allows generated native fixture debug bundles in either producer layout (WI-6554700010015700)', async () => {
+    const { isScannedPath } = await import(`file://${POLICY}`);
+    expect(isScannedPath('apps/operator/dist-host-native-fixture-debug-2001983/hono-host.mjs')).toBe(false);
+    expect(isScannedPath('apps/operator/apps/operator/dist-host-native-fixture-debug-2047298/spawner-sidecar.mjs')).toBe(false);
+    // The exclusion is path-shaped, so similarly named hand-authored source remains scanned.
+    expect(isScannedPath('apps/operator/lib/dist-host-native-fixture-debugger.ts')).toBe(true);
+  });
 });
 
 describe('it is worktree-portable (WI-10811)', () => {

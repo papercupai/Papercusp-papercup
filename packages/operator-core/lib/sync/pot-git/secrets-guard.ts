@@ -257,6 +257,17 @@ const FIXTURE_FILES: ReadonlySet<string> = new Set([
   'packages/operator-core/lib/voice-credentials.integration.test.ts',
 ]);
 
+/**
+ * Native host parity fixtures are generated bundles, not maintained source.
+ * Their producer emits a run-specific `dist-host-native-fixture-debug-<id>/`
+ * directory and can nest it under a duplicated `apps/operator` prefix when
+ * given a relative outfile. Keep the exclusion path-shaped so every future
+ * fixture id and either producer layout gets the same policy while a similarly
+ * named maintained source file remains scanned.
+ */
+export const isGeneratedNativeFixturePath = (path: string): boolean =>
+  /(?:^|\/)dist-host-native-fixture-debug-[^/]+(?:\/|$)/.test(path);
+
 /** True if `path` is a designated credential-fixture file exempt from the scan. */
 export function isFixtureFile(path: string): boolean {
   return FIXTURE_FILES.has(path);
@@ -264,11 +275,12 @@ export function isFixtureFile(path: string): boolean {
 
 /** Scan a set of changed files. `path` is used only for reporting + the .env
  *  heuristic; pass the NEW content of each changed/added file. Designated
- *  fixture files (isFixtureFile) are skipped — see FIXTURE_FILES. */
+ *  fixture files (isFixtureFile) and generated native fixture bundles are
+ *  skipped — see FIXTURE_FILES and isGeneratedNativeFixturePath. */
 export function scanForSecrets(files: { path: string; content: string }[]): SecretFinding[] {
   const out: SecretFinding[] = [];
   for (const f of files) {
-    if (isFixtureFile(f.path)) continue;
+    if (isFixtureFile(f.path) || isGeneratedNativeFixturePath(f.path)) continue;
     out.push(...scanTextForSecrets(f.path, f.content));
   }
   return out;
@@ -276,7 +288,9 @@ export function scanForSecrets(files: { path: string; content: string }[]): Secr
 
 /** True iff any changed file carries a secret — the publish path's fast gate. */
 export function hasSecrets(files: { path: string; content: string }[]): boolean {
-  return files.some((f) => !isFixtureFile(f.path) && scanTextForSecrets(f.path, f.content).length > 0);
+  return files.some(
+    (f) => !isFixtureFile(f.path) && !isGeneratedNativeFixturePath(f.path) && scanTextForSecrets(f.path, f.content).length > 0,
+  );
 }
 
 /** A one-line operator message for a set of findings (secrets already masked). */

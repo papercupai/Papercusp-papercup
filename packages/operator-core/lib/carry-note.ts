@@ -143,6 +143,14 @@ export interface CheckEntry {
   sinceMs?: number;
 }
 
+/** A compact identity receipt for a carried row that did not survive a merge.
+ * Claims remain human-readable, while `id` lets a caller retry with `replaces`
+ * or `retireIds` without reconstructing the full capped row set. */
+export interface CarryRowReference {
+  id?: string;
+  claim: string;
+}
+
 /** FACTS, not a self-grade (D-004). All fields optional; a plain string is equally
  *  valid (the store is free TEXT). {@link renderCarryNote} produces the canonical
  *  template a cold successor knows how to read. */
@@ -1941,15 +1949,21 @@ export function normalizeCheckEntries(
           ? ''
           : (existing?.observed ?? '')
     ).trim();
+    // A row has one authority slot. Explicit contested evidence wins first;
+    // otherwise canonical verified evidence wins over an accidentally supplied
+    // observed context, and observed context wins only when no verification was
+    // supplied. The previous independent clears made `{ verified, observed }`
+    // erase BOTH fields, so the persisted row lost its evidence silently.
     if (e.contested !== undefined) {
       verified = '';
       observed = '';
-    }
-    if (e.observed !== undefined) {
+    } else if (e.verified !== undefined) {
+      observed = '';
+      contested = '';
+    } else if (e.observed !== undefined) {
       verified = '';
       contested = '';
     }
-    if (e.verified !== undefined) observed = '';
     // EI-23771449112267271: a probe whose SAMPLE could not discriminate the claim from its
     // negation is not verification — the evidence stays visible as CONTEXT on a `?` row
     // (never ✓), tagged so the successor sees the state at the badge. Same downgrade shape as
@@ -2185,9 +2199,13 @@ export function mergeCarryRows(opts: {
    *  note above). Empty when nothing was lost — including the carry-forward path,
    *  where `undefined` preserves every prior row by construction. */
   droppedWalls: string[];
+  /** The same dropped WALL claims with stable IDs when the carried row had one. */
+  droppedWallRows: CarryRowReference[];
   /** Prior CHECK claims this write did not carry forward. Same contract as
    *  {@link droppedWalls}. */
   droppedChecks: string[];
+  /** The same dropped CHECK claims with stable IDs when the carried row had one. */
+  droppedCheckRows: CarryRowReference[];
   /**
    * P-013 — SUPPLIED rows that did not make it into the stored set, i.e. the row cap
    * cut them. The mirror image of `droppedChecks`/`droppedWalls`, which report rows
@@ -2200,8 +2218,12 @@ export function mergeCarryRows(opts: {
    * rows (or any other path where a supplied row itself cannot fit).
    */
   overflowWalls: string[];
+  /** Supplied WALL rows that overflowed, with stable IDs where present. */
+  overflowWallRows: CarryRowReference[];
   /** Supplied CHECK claims the row cap cut. Same contract as {@link overflowWalls}. */
   overflowChecks: string[];
+  /** Supplied CHECK rows that overflowed, with stable IDs where present. */
+  overflowCheckRows: CarryRowReference[];
 } {
   const storedWallParts = splitCarryNoteWalls(opts.priorNote ?? null);
   const storedCheckParts = splitCarryNoteChecks(storedWallParts.body);
@@ -2276,9 +2298,13 @@ export function mergeCarryRows(opts: {
     walls,
     checks,
     droppedWalls: droppedClaims(priorParts.walls, walls),
+    droppedWallRows: droppedRows(priorParts.walls, walls),
     droppedChecks: droppedClaims(priorCheckParts.checks, checks),
+    droppedCheckRows: droppedRows(priorCheckParts.checks, checks),
     overflowWalls: suppliedWalls ? droppedClaims(suppliedWalls, walls) : [],
+    overflowWallRows: suppliedWalls ? droppedRows(suppliedWalls, walls) : [],
     overflowChecks: suppliedChecks ? droppedClaims(suppliedChecks, checks) : [],
+    overflowCheckRows: suppliedChecks ? droppedRows(suppliedChecks, checks) : [],
     retiredWalls: refs.retiredWalls,
     retiredChecks: refs.retiredChecks,
     unmatchedRowRefs: refs.unmatched,
@@ -2439,10 +2465,10 @@ export function evidenceFirst<
  *  string is still the human-readable claim, since that is what a caller needs to
  *  re-send. Blank prior claims are ignored: they can never be re-passed (the normalizers
  *  skip them), so counting them would report a permanent phantom loss on every write. */
-function droppedClaims(
+function droppedRows(
   prior: ReadonlyArray<{ id?: string; claim: string }>,
   kept: ReadonlyArray<{ id?: string; claim: string }>,
-): string[] {
+): CarryRowReference[] {
   const keptKeys = new Set(kept.map((r) => carryRowKey(r)));
   const promotedLegacyClaims = new Set(kept.filter((r) => sanitizeCarryRowId(r.id)).map((r) => (r.claim ?? '').trim()));
   return prior
@@ -2452,7 +2478,17 @@ function droppedClaims(
         !keptKeys.has(carryRowKey(r)) &&
         (Boolean(sanitizeCarryRowId(r.id)) || !promotedLegacyClaims.has((r.claim ?? '').trim())),
     )
-    .map((r) => (r.claim ?? '').trim());
+    .map((r) => ({
+      ...((sanitizeCarryRowId(r.id) ? { id: sanitizeCarryRowId(r.id)! } : {}) as CarryRowReference),
+      claim: (r.claim ?? '').trim(),
+    }));
+}
+
+function droppedClaims(
+  prior: ReadonlyArray<{ id?: string; claim: string }>,
+  kept: ReadonlyArray<{ id?: string; claim: string }>,
+): string[] {
+  return droppedRows(prior, kept).map((row) => row.claim);
 }
 
 // ── External-state-claim lint (P-009) ────────────────────────────────────────

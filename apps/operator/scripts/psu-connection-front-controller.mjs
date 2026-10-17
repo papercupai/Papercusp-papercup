@@ -61,6 +61,8 @@ const VALUE_FLAGS = new Map([
   ["--connect-program", "program"],
   ["--connect-add-gcp-iap", "addName"],
   ["--connect-add-aws-ssm", "addAwsName"],
+  ["--connect-add-ssh", "addSshName"],
+  ["--connect-host", "sshHost"],
   ["--connect-remove", "removeName"],
   ["--connect-project", "projectId"],
   ["--connect-zone", "zone"],
@@ -105,6 +107,9 @@ export function parsePsuConnectionArgs(argv) {
     list: false,
     addName: null,
     addAwsName: null,
+    addSshName: null,
+    sshHost: null,
+    gui: false,
     removeName: null,
     projectId: null,
     zone: null,
@@ -134,6 +139,10 @@ export function parsePsuConnectionArgs(argv) {
     }
     if (cell === "--connect-list") {
       transport.list = true;
+      continue;
+    }
+    if (cell === "--connect-gui") {
+      transport.gui = true;
       continue;
     }
 
@@ -167,13 +176,14 @@ export function parsePsuConnectionArgs(argv) {
     transport.list,
     Boolean(transport.addName),
     Boolean(transport.addAwsName),
+    Boolean(transport.addSshName),
     Boolean(transport.removeName),
     transport.login,
     transport.logout,
   ].filter(Boolean).length;
   if (actions > 1)
     throw new Error(
-      "Choose only one of --connect-list, --connect-add-gcp-iap, --connect-add-aws-ssm, --connect-remove, --connect-login, or --connect-logout",
+      "Choose only one of --connect-list, --connect-add-gcp-iap, --connect-add-aws-ssm, --connect-add-ssh, --connect-remove, --connect-login, or --connect-logout",
     );
   // `--connect-login --connect` (bare) is the one maintenance+connect pairing:
   // sign in, then open the program on the new sign-in's workspace. PUI's
@@ -195,6 +205,10 @@ export function parsePsuConnectionArgs(argv) {
       `--connect-program must be one of ${[...CONNECT_PROGRAMS].join(", ")}`,
     );
   }
+  if (transport.sshHost != null && !transport.addSshName)
+    throw new Error("--connect-host requires --connect-add-ssh");
+  if (transport.gui && (actions || forwardedArgv.length > 0 || transport.program !== "psu"))
+    throw new Error("--connect-gui opens only the browser GUI; use it with --connect=<saved SSH profile> and no launch options");
   // Each provider's fields belong to its own add command, so a GCP zone can
   // never silently ride into an AWS profile or the other way round.
   if (!transport.addName && [transport.projectId, transport.zone].some(Boolean)) {
@@ -209,12 +223,14 @@ export function parsePsuConnectionArgs(argv) {
   if (
     !transport.addName &&
     !transport.addAwsName &&
-    [transport.instanceName, transport.sshUser].some(Boolean)
+    transport.instanceName
   ) {
     throw new Error(
       "--connect-instance/user require --connect-add-gcp-iap or --connect-add-aws-ssm",
     );
   }
+  if (!transport.addName && !transport.addAwsName && !transport.addSshName && transport.sshUser)
+    throw new Error("--connect-user requires a profile add command");
 
   return { transport, forwardedArgv };
 }
@@ -366,6 +382,24 @@ export function normalizeHostedPortalOrigin(value) {
   return url.origin;
 }
 
+/** A customer-owned machine reached through their private network or OpenSSH config. */
+export function normalizeSshProfile(input) {
+  const name = requiredValue(input.name, "Connection profile name", PROFILE_NAME_RE);
+  const host = requiredValue(input.host, "SSH host or config alias", /^[A-Za-z0-9][A-Za-z0-9._:-]{0,252}$/);
+  const sshUser = input.sshUser == null ? null : requiredValue(input.sshUser, "SSH user", SSH_USER_RE);
+  return {
+    name, kind: "ssh", host, sshUser,
+    endpoint: `ssh://${sshUser ? `${sshUser}@` : ""}${host}`,
+    target: sshUser ? `${sshUser}@${host}` : host,
+    remoteOperatorPort: DEFAULT_REMOTE_OPERATOR_PORT,
+    supportedClientPlatforms: ["linux", "macos", "windows"],
+    features: { command: true, pty: true, tcpForward: true, fileTransfer: true },
+    prerequisites: ["OpenSSH client", "A reachable private/VPN address or SSH config alias", "Your SSH key authorized on the remote machine", "Papercusp and tmux installed on the remote machine"],
+    constraints: ["SSH host keys and identity follow your OpenSSH configuration", "The GUI is forwarded only to 127.0.0.1; keep this command open while using it", "Removing a saved profile forgets it locally; revoke the SSH key on the remote machine to remove access"],
+    reconnect: "recreate", audited: true,
+  };
+}
+
 export function hostedProfileName(origin) {
   return requiredValue(
     new URL(origin).host.replace(/[^A-Za-z0-9._-]/g, "-"),
@@ -478,6 +512,7 @@ export function normalizeHostedProfile(input) {
 function validateStoredProfile(value) {
   if (value?.kind === "gcp-iap-ssh") return normalizeGcpIapProfile(value);
   if (value?.kind === "aws-ssm-ssh") return normalizeAwsSsmProfile(value);
+  if (value?.kind === "ssh") return normalizeSshProfile(value);
   if (value?.kind === "papercusp-hosted") return normalizeHostedProfile(value);
   throw new Error(
     `Unsupported saved psu connection kind '${value?.kind ?? "missing"}'`,
@@ -564,6 +599,12 @@ function platformName(platform) {
  * needs, and the provider words for a failure the user has to fix.
  */
 const MACHINE_TRANSPORTS = {
+  ssh: {
+    extraArgs: () => [],
+    commands: ["ssh"],
+    tunnel: "private-network SSH",
+    verify: "known_hosts, the private/VPN address or SSH alias, and the SSH key authorized on that computer",
+  },
   "gcp-iap-ssh": {
     extraArgs: (profile) => [
       "-o",
@@ -597,6 +638,7 @@ function machineTransport(profile) {
 }
 
 export function describePsuConnectionProfile(profile) {
+  if (profile.kind === "ssh") return `${profile.name} — your computer over SSH (${profile.target})`;
   if (profile.kind === "papercusp-hosted")
     return `${profile.name} — Papercusp cloud workspaces at ${profile.origin}${profile.organizationName ? ` for ${profile.organizationName}` : ""}`;
   if (profile.kind === "aws-ssm-ssh")
@@ -643,7 +685,8 @@ function hostedUnreachableState(workspace, now) {
 }
 
 function defaultCommandAvailable(command) {
-  const probe = nodeSpawnSync(command, ["--version"], {
+  // OpenSSH uses -V; --version exits 255 even when ssh is installed.
+  const probe = nodeSpawnSync(command, [command === "ssh" ? "-V" : "--version"], {
     stdio: "ignore",
     shell: false,
   });
@@ -711,6 +754,24 @@ function defaultOpenBrowser(url) {
   } catch {
     // No opener on this machine; the printed URL is the fallback.
   }
+}
+
+/** Keep a GUI tunnel alive until Enter, terminal hangup, or interrupt, then release it. */
+function defaultWaitForGuiClose() {
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    const finish = () => {
+      stdin.off("data", finish);
+      stdin.off("end", finish);
+      for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.off(signal, finish);
+      stdin.pause();
+      resolve();
+    };
+    stdin.once("data", finish);
+    stdin.once("end", finish);
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.once(signal, finish);
+    stdin.resume();
+  });
 }
 
 /**
@@ -1502,6 +1563,7 @@ function connectionDeps(overrides) {
       overrides.cloudOrigin ?? (process.env.PAPERCUSP_CLOUD_ORIGIN || undefined),
     openBrowser: overrides.openBrowser ?? defaultOpenBrowser,
     openHostedTerminal: overrides.openHostedTerminal ?? defaultOpenHostedTerminal,
+    waitForGuiClose: overrides.waitForGuiClose ?? defaultWaitForGuiClose,
     output: overrides.output ?? ((line) => console.log(line)),
     notice: overrides.notice ?? ((line) => console.error(line)),
     transportForwarded:
@@ -1593,8 +1655,10 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
     deps.output(`Signed out of ${describePsuConnectionProfile(profile)}`);
     return { handled: true, argv: forwardedArgv, exitCode: 0 };
   }
-  if (transport.addName || transport.addAwsName) {
-    const profile = transport.addAwsName
+  if (transport.addName || transport.addAwsName || transport.addSshName) {
+    const profile = transport.addSshName
+      ? normalizeSshProfile({ name: transport.addSshName, host: transport.sshHost, sshUser: transport.sshUser })
+      : transport.addAwsName
       ? normalizeAwsSsmProfile({
           name: transport.addAwsName,
           region: transport.region,
@@ -1664,6 +1728,8 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
     const profile = await hostedLogin(undefined, store, deps);
     selection = profile.name;
   }
+  if (transport.gui && (selection == null || selection === "local"))
+    throw new Error("--connect-gui needs a saved SSH machine: use --connect=<name> --connect-gui");
   // Only psu itself continues on this computer. Returning unhandled for any
   // other program would make the launcher start a local psu in its place.
   if (transport.program !== "psu" && (selection == null || selection === "local"))
@@ -1676,6 +1742,8 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
   const { name, workspaceId } = parseSelection(selection);
   const profile = savedProfile(name, deps);
   assertProfileUsable(profile, deps);
+  if (transport.gui && (!deps.interactive || profile.kind === "papercusp-hosted"))
+    throw new Error("--connect-gui needs an interactive terminal and a saved SSH machine; open cloud workspaces in the portal");
   if (profile.kind === "papercusp-hosted")
     return runHostedConnection(
       profile,
@@ -1698,6 +1766,13 @@ export async function runPsuConnectionFrontController(argv, overrides = {}) {
   const forward = await establishForward(profile, deps);
   try {
     await deps.probeOperator(`http://127.0.0.1:${forward.localPort}`);
+    if (transport.gui) {
+      const origin = `http://127.0.0.1:${forward.localPort}`;
+      deps.notice(`psu: open ${origin} for this computer's GUI. Press Enter or Ctrl+C here to close the private tunnel.`);
+      deps.openBrowser(origin);
+      await deps.waitForGuiClose();
+      return { handled: true, argv: forwardedArgv, exitCode: 0 };
+    }
     const remoteArgv = [
       "tmux",
       "new-session",

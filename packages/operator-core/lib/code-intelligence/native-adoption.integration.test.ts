@@ -13,6 +13,9 @@ import {
   measureNativeAdoptionWindow,
   rateNativeAdoption,
   readNativeAdoptionWindow,
+  readNativePushOutcomes,
+  summarizeNativePushOutcomes,
+  measureNativePushOutcomesWindow, NATIVE_PUSH_INSTRUMENT_KEYS,
 } from './native-adoption';
 import { resolveScorecardInstrumentSnapshots } from '../scorecards';
 import type { Rubric } from '../rubrics';
@@ -77,6 +80,7 @@ async function seed(sql: OrgTestDb['adminSql']): Promise<void> {
 beforeAll(async () => {
   db = await createOrgTestDb();
   await seed(db.adminSql);
+  await seedPushOutcomes(db.adminSql);
 }, 120_000);
 
 afterAll(async () => {
@@ -104,6 +108,215 @@ describe('readNativeAdoptionWindow (real ledgers)', () => {
   it('refuses an invalid window instead of reading an unbounded range', async () => {
     await expect(readNativeAdoptionWindow({ workspaceId: WS, windowStart: END, windowEnd: START }, db!.adminSql))
       .rejects.toThrow(/valid/);
+  });
+});
+
+async function seedPushOutcomes(sql: OrgTestDb['adminSql']): Promise<void> {
+  const userAt = '2026-10-02T11:00:00Z';
+  const pushAt = '2026-10-02T12:00:00Z';
+  const endAt = '2026-10-02T13:00:00Z';
+  const activityAt = '2026-10-02T12:10:00Z';
+  const prompt = async (owner: string, session = owner, at = userAt, idx = 0) => {
+    await sql`INSERT INTO harness_shared.session_turns
+      (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text)
+      VALUES (${WS}, 'codex', ${session}, ${idx}, ${at}::timestamptz, ${owner}, 'user', 'fixture request')`;
+    await sql`INSERT INTO harness_shared.agent_activity
+      (workspace_id, owner_id, session_id, kind, tool_name, phase, status, detail, created_at)
+      VALUES (${WS}, ${owner}, ${session}, 'tool', 'Read', 'post', 'ok', '{"file":"src/trigger.ts"}'::jsonb, ${at}::timestamptz)`;
+  };
+  const journal = async (owner: string, session = owner, at = endAt) => {
+    await sql`INSERT INTO harness_shared.session_turn_journal
+      (workspace_id, owner_id, source_kind, session_id, turn_ts, note, source)
+      VALUES (${WS}, ${owner}, 'codex', ${session}, ${at}::timestamptz, 'fixture completion, not outcome evidence', 'mechanical')`;
+  };
+  const push = async (owner: string, suggested: string | null = null, workspace = WS, at = pushAt) => {
+    await sql`INSERT INTO harness_shared.code_intel_pushes
+      (workspace_id, owner_id, turn_id, leg, subject, cited_paths, suggested_call, chars, pushed_at)
+      VALUES (${workspace}, ${owner}, ${owner}, 'grep', ${owner.replace(/-/g, '_')}, ${['src/foo.ts']}::text[], ${suggested}, 10, ${at}::timestamptz)`;
+  };
+  const activity = async (owner: string, detail: Record<string, unknown>, over: {
+    session?: string; workspace?: string; phase?: string; status?: string; tool?: string; at?: string;
+  } = {}) => {
+    await sql`INSERT INTO harness_shared.agent_activity
+      (workspace_id, owner_id, session_id, kind, tool_name, phase, status, detail, created_at)
+      VALUES (${over.workspace ?? WS}, ${owner}, ${over.session ?? owner}, 'tool', ${over.tool ?? 'Read'},
+        ${over.phase ?? 'post'}, ${over.status ?? 'ok'}, ${sql.json(detail as never)}, ${over.at ?? activityAt}::timestamptz)`;
+  };
+  const closed = async (owner: string) => { await prompt(owner); await push(owner); await journal(owner); };
+  await closed('push-hit');
+  await activity('push-hit', { file: 'src/foo.ts' });
+  await activity('push-hit', { command: 'rg -n "push_hit" src' }, { tool: 'Bash' });
+  await closed('push-miss');
+  await activity('push-miss', { file: 'src/other.ts' });
+  await prompt('push-open'); await push('push-open');
+  await push('push-foreign', null, OTHER_WS);
+  await push('push-at-end', null, WS, END);
+  await prompt('push-at-start', 'push-at-start', '2026-09-30T23:00:00Z');
+  await push('push-at-start', null, WS, START);
+  await journal('push-at-start', 'push-at-start', '2026-10-01T00:30:00Z');
+  await activity('push-at-start', { file: 'src/foo.ts' }, { at: '2026-10-01T00:10:00Z' });
+  await closed('push-ambiguous');
+  await prompt('push-ambiguous', 'another-native'); await journal('push-ambiguous', 'another-native');
+  await closed('push-intervening');
+  await prompt('push-intervening', 'push-intervening', '2026-10-02T12:20:00Z', 1);
+  await closed('push-prior-end');
+  await journal('push-prior-end', 'push-prior-end', '2026-10-02T11:30:00Z');
+  await closed('push-other-session');
+  await activity('push-other-session', { file: 'src/foo.ts' }, { session: 'unmatched-native' });
+  await closed('push-scope');
+  await activity('push-scope', { file: 'src/foo.ts' }, { workspace: OTHER_WS });
+  await activity('unrelated-owner', { file: 'src/foo.ts' }, { session: 'push-scope' });
+  await activity('push-scope', { file: 'src/foo.ts' }, { phase: 'pre' });
+  await activity('push-scope', { file: 'src/foo.ts' }, { status: 'error' });
+  await activity('push-scope', { file: 'src/foo.ts' }, { at: '2026-10-02T13:01:00Z' });
+  for (const owner of ['push-test-pass', 'push-test-fail', 'push-test-request', 'push-test-foreign']) {
+    await prompt(owner); await journal(owner);
+    await push(owner, 'testing:run {"files":["src/foo.test.ts"]}');
+    const runGroup = `group-${owner}`;
+    await sql`INSERT INTO harness_shared.tool_invocations
+      (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key, status,
+       coord_owner_id, invoked_at, metadata_json)
+      VALUES (${WS}, 'papercusp', 'papercusp', 'testing:run', 'operator', ${owner}, 'w', 'ok',
+        ${owner}, '2026-10-02T12:05:00Z', ${sql.json({ testingRun: { runId: runGroup } })})`;
+    if (owner === 'push-test-request') continue;
+    await sql`INSERT INTO harness_shared.test_runs
+      (workspace_id, file_path, framework, status, started_at, finished_at, run_group_id)
+      VALUES (${owner === 'push-test-foreign' ? OTHER_WS : WS}, 'src/foo.test.ts', 'vitest',
+        ${owner === 'push-test-fail' ? 'fail' : 'pass'}, '2026-10-02T12:06:00Z', '2026-10-02T12:09:00Z', ${runGroup})`;
+  }
+}
+
+describe('P-041 historical push outcomes (real ledgers)', () => {
+  const read = () => readNativePushOutcomes({ workspaceId: WS, windowStart: START, windowEnd: END }, db!.adminSql);
+  it('counts only exact workspace/[start,end) pushes and correlated completed native turns', async () => {
+    const rows = await read();
+    const bySubject = await db!.adminSql<{ id: string; subject: string }[]>`
+      SELECT id::text, owner_id AS subject FROM harness_shared.code_intel_pushes WHERE workspace_id = ${WS}`;
+    const byOwner = Object.fromEntries(bySubject.map(p => [p.subject, rows.find(r => r.id === p.id)]));
+    expect(byOwner['push-hit']).toMatchObject({ windowComplete: true, actedOn: true, grepAfterPush: true });
+    expect(byOwner['push-miss']).toMatchObject({ windowComplete: true, actedOn: false, grepAfterPush: false });
+    expect(byOwner['push-at-start']).toMatchObject({ windowComplete: true, actedOn: true });
+    expect(byOwner['push-at-end']).toBeUndefined();
+    expect(rows).toHaveLength(13);
+    for (const owner of ['push-open', 'push-ambiguous', 'push-intervening', 'push-prior-end', 'push-other-session']) {
+      expect(byOwner[owner]).toMatchObject({ windowComplete: false, actedOn: null, grepAfterPush: null });
+    }
+    expect(byOwner['push-scope']).toMatchObject({ windowComplete: true, actedOn: null, grepAfterPush: null });
+  });
+
+  it('requires completed execution rows linked to the correct workspace and invocation group', async () => {
+    const rows = await read();
+    const subjects = await db!.adminSql<{ id: string; subject: string }[]>`
+      SELECT id::text, owner_id AS subject FROM harness_shared.code_intel_pushes WHERE workspace_id = ${WS}`;
+    const outcome = (owner: string) => rows.find(r => r.id === subjects.find(p => p.subject === owner)?.id);
+    expect(outcome('push-test-pass')?.actedOn).toBe(true);
+    expect(outcome('push-test-fail')?.actedOn).toBe(true);
+    expect(outcome('push-test-request')?.actedOn).toBeNull();
+    expect(outcome('push-test-foreign')?.actedOn).toBeNull();
+    const summary = summarizeNativePushOutcomes({ window: { workspaceId: WS, windowStart: START, windowEnd: END }, rows });
+    expect(summary.byLeg.grep?.actedOn).toEqual({ measured: 5, positive: 4, rate: 0.8 });
+  });
+
+  it('refuses unbounded windows and does not treat absent history as a successful measurement', async () => {
+    await expect(readNativePushOutcomes({ workspaceId: WS, windowStart: END, windowEnd: START }, db!.adminSql)).rejects.toThrow(/valid/);
+    expect(await readNativePushOutcomes({ workspaceId: `${WS}-empty`, windowStart: START, windowEnd: END }, db!.adminSql)).toEqual([]);
+  });
+
+  it('resolves the three platform snapshots from one real ledger read without changing D-011', async () => {
+    const rubric = { ref: 'push-outcome-test', workspaceId: WS, criteria: Object.values(NATIVE_PUSH_INSTRUMENT_KEYS)
+      .map(key => ({ key, check: { kind: 'instrument', instrumentKey: key } })) } as unknown as Rubric;
+    let reads = 0;
+    const snapshots = await resolveScorecardInstrumentSnapshots({ rubric,
+      subject: { kind: 'plan', ref: 'native-plan', windowStart: START, windowEnd: END } as never }, {
+      now: () => Date.parse('2026-10-10T00:00:00Z'),
+      nativePushOutcomes: async window => { reads += 1; return measureNativePushOutcomesWindow(window, db!.adminSql); },
+    });
+    expect(reads).toBe(1);
+    expect(snapshots?.[NATIVE_PUSH_INSTRUMENT_KEYS.issued]).toMatchObject({ verdict: 'pass', provenance: 'platform-computed' });
+    expect((snapshots?.[NATIVE_PUSH_INSTRUMENT_KEYS.actedOn]?.value as { byLeg: unknown }).byLeg).toMatchObject({ grep: { issued: 13, actedOn: { measured: 5, positive: 4, rate: 0.8 } } });
+  });
+
+  it('keeps open windows, absent evidence and read errors unknown through the resolver seam', async () => {
+    const rubric = { ref: 'push-outcome-test', workspaceId: WS, criteria: Object.values(NATIVE_PUSH_INSTRUMENT_KEYS)
+      .map(key => ({ key, check: { kind: 'instrument', instrumentKey: key } })) } as unknown as Rubric;
+    const subject = { kind: 'plan', ref: 'native-plan', windowStart: START, windowEnd: END } as never;
+    let reads = 0;
+    const snapshots = await resolveScorecardInstrumentSnapshots({ rubric, subject }, {
+      now: () => Date.parse('2026-10-10T00:00:00Z'), nativePushOutcomes: async () => { reads += 1; throw new Error('unavailable'); },
+    });
+    expect(reads).toBe(1);
+    for (const key of Object.values(NATIVE_PUSH_INSTRUMENT_KEYS)) expect(snapshots?.[key]?.verdict).toBe('unknown');
+    const open = await resolveScorecardInstrumentSnapshots({ rubric, subject }, {
+      now: () => Date.parse(START), nativePushOutcomes: async () => { throw new Error('must not read'); },
+    });
+    for (const key of Object.values(NATIVE_PUSH_INSTRUMENT_KEYS)) expect(open?.[key]?.verdict).toBe('unknown');
+  });
+});
+
+describe('P-041 native transcript corpus partition', () => {
+  const workspace = `${WS}-native-corpus`;
+  const at = (hour: string) => `2026-10-02T${hour}:00:00Z`;
+
+  it('correlates default-corpus prompts only through the scoped journal, owner and native session', async () => {
+    const sql = db!.adminSql;
+    const owners = ['native-hit', 'foreign-workspace', 'foreign-owner', 'foreign-native', 'foreign-source'];
+    for (const owner of owners) {
+      await sql`INSERT INTO harness_shared.code_intel_pushes
+        (workspace_id, owner_id, turn_id, leg, subject, cited_paths, chars, pushed_at)
+        VALUES (${workspace}, ${owner}, ${owner}, 'grep', 'native_symbol', ${['src/foo.ts']}::text[], 10, ${at('12')}::timestamptz)`;
+      await sql`INSERT INTO harness_shared.session_turn_journal
+        (workspace_id, owner_id, source_kind, session_id, turn_ts, note, source)
+        VALUES (${workspace}, ${owner}, 'codex', ${owner}, ${at('13')}::timestamptz, 'completion', 'mechanical')`;
+      // Native file ingestion writes this corpus partition, independently of the tenant ledgers.
+      await sql`INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text)
+        VALUES (${owner === 'foreign-workspace' ? OTHER_WS : 'default'},
+          ${owner === 'foreign-source' ? 'claude' : 'codex'},
+          ${owner === 'foreign-native' ? `${owner}-other` : owner}, 0, ${at('11')}::timestamptz,
+          ${owner === 'foreign-owner' ? `${owner}-other` : owner}, 'user', 'native request')`;
+      for (const [time, tool, detail] of [
+        [at('11'), 'Read', { file: 'src/trigger.ts' }],
+        ['2026-10-02T12:10:00Z', 'Read', { file: 'src/foo.ts' }],
+        ['2026-10-02T12:11:00Z', 'Bash', { command: 'rg -n "native_symbol" src' }],
+      ] as const) {
+        await sql`INSERT INTO harness_shared.agent_activity
+          (workspace_id, owner_id, session_id, kind, tool_name, phase, status, detail, created_at)
+          VALUES (${workspace}, ${owner}, ${owner}, 'tool', ${tool}, 'post', 'ok',
+            ${sql.json(detail as never)}, ${time}::timestamptz)`;
+      }
+    }
+    const rows = await readNativePushOutcomes({ workspaceId: workspace, windowStart: START, windowEnd: END }, sql);
+    const pushes = await sql<{ id: string; owner_id: string }[]>`
+      SELECT id::text, owner_id FROM harness_shared.code_intel_pushes WHERE workspace_id = ${workspace}`;
+    const outcome = (owner: string) => rows.find(row => row.id === pushes.find(push => push.owner_id === owner)?.id);
+    expect(outcome('native-hit')).toMatchObject({ windowComplete: true, actedOn: true, grepAfterPush: true });
+    for (const owner of owners.slice(1)) {
+      expect(outcome(owner)).toMatchObject({ windowComplete: false, actedOn: null, grepAfterPush: null });
+    }
+  });
+
+  it('rejects an intervening default-corpus prompt even when the preceding prompt is tenant-scoped', async () => {
+    const sql = db!.adminSql;
+    const owner = 'native-intervening';
+    await sql`INSERT INTO harness_shared.code_intel_pushes
+      (workspace_id, owner_id, turn_id, leg, subject, cited_paths, chars, pushed_at)
+      VALUES (${workspace}, ${owner}, ${owner}, 'grep', 'native_symbol', ${['src/foo.ts']}::text[], 10, ${at('12')}::timestamptz)`;
+    await sql`INSERT INTO harness_shared.session_turn_journal
+      (workspace_id, owner_id, source_kind, session_id, turn_ts, note, source)
+      VALUES (${workspace}, ${owner}, 'codex', ${owner}, ${at('13')}::timestamptz, 'completion', 'mechanical')`;
+    for (const [corpus, time, idx] of [[workspace, at('11'), 0], ['default', '2026-10-02T12:20:00Z', 1]] as const) {
+      await sql`INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text)
+        VALUES (${corpus}, 'codex', ${owner}, ${idx}, ${time}::timestamptz, ${owner}, 'user', 'native request')`;
+    }
+    await sql`INSERT INTO harness_shared.agent_activity
+      (workspace_id, owner_id, session_id, kind, tool_name, phase, status, detail, created_at)
+      VALUES (${workspace}, ${owner}, ${owner}, 'tool', 'Read', 'post', 'ok',
+        '{"file":"src/trigger.ts"}'::jsonb, ${at('11')}::timestamptz)`;
+    const rows = await readNativePushOutcomes({ workspaceId: workspace, windowStart: START, windowEnd: END }, sql);
+    const [push] = await sql<{ id: string }[]>`
+      SELECT id::text FROM harness_shared.code_intel_pushes WHERE workspace_id = ${workspace} AND owner_id = ${owner}`;
+    expect(rows.find(row => row.id === push?.id)).toMatchObject({ windowComplete: false, actedOn: null, grepAfterPush: null });
   });
 });
 

@@ -318,6 +318,7 @@ bundle_host_workers() {
     [ -n "${BUNDLE_HOST_GATE_META_DIR:-}" ] && meta_args=(--metafile="$BUNDLE_HOST_GATE_META_DIR/$output.meta.json")
     if ! bundle_host_run_step "worker-$output" bundle_host_esbuild "$repo_root" "$source" \
       --bundle --platform=node --format=esm --target=node22 \
+      --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
       "${worker_externals[@]}" \
       --external:sodium-native --external:esbuild --banner:js="$HOST_BANNER" "${HOST_BANNER_DEFINES[@]}" --outfile="$tmp" --log-limit=5 \
       "${meta_args[@]}"; then

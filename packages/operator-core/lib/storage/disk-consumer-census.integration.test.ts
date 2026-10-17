@@ -7,7 +7,7 @@
  * census rows in 24h is reported (stale / missing), and a consumer at or above the
  * floor that the census does not list fails the du comparison below.
  */
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,9 +15,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
+import { drizzle } from 'drizzle-orm/postgres-js';
 import { getTestPg, markManagedTestDatabase } from '@papercusp/test-config/pg';
 import {
   apiStoreConsumers,
+  diskCensusPassInFlight,
   pruneDiskCensus,
   readDiskConsumerCensus,
   runDiskConsumerCensusOnce,
@@ -27,6 +29,8 @@ import {
   type CensusSql,
 } from './disk-consumer-census';
 import { devToMajorMinor, type CensusConsumer } from './usage';
+import { detectDiskGrowthWarnings, runDiskHeadroomAlarmOnce, emitStorageGrowthToast,
+  DISK_HEADROOM_OBSERVATION_ACTION, measureNativeDiskHeadroomAlarm, type DiskHeadroomObservation } from './storage-growth-alarm';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const MIGRATION_PATH = resolve(HERE, '../../../../libs/papercusp/libs/db/sql/1472-disk-consumer-census.sql');
@@ -37,6 +41,7 @@ const G = 1024 ** 3;
 const HOUR = 3600_000;
 
 let rootSql: postgres.Sql;
+let notificationSql: postgres.Sql;
 let sql: CensusSql;
 let fixture: string;
 
@@ -68,8 +73,16 @@ beforeAll(async () => {
   const u = new URL(adminUri);
   u.pathname = `/${dbName}`;
   rootSql = postgres(u.toString(), { max: 2, onnotice: () => {} });
+  // Drizzle replaces its client's timestamp/JSON codecs. Never give it the
+  // native census client, whose Date parameters need postgres.js serialization.
+  notificationSql = postgres(u.toString(), { max: 1, onnotice: () => {} });
   await rootSql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
   await rootSql.unsafe(MIGRATION);
+  await rootSql.unsafe(`CREATE TABLE harness_shared.toast_log (
+    id bigserial PRIMARY KEY, level text NOT NULL, message text NOT NULL CHECK (message <> 'refuse-notification'),
+    description text, harness_slug text, created_at bigint NOT NULL, action_label text, action_href text);
+    CREATE TABLE harness_shared.audit_log (id text PRIMARY KEY, ts bigint NOT NULL, actor text NOT NULL,
+    action text NOT NULL, subject text NOT NULL, details jsonb, workspace_id text NOT NULL)`);
   sql = rootSql as unknown as CensusSql;
 
   // A small tree with known shape: two listed directories, one nested, one big root file,
@@ -88,6 +101,7 @@ beforeAll(async () => {
 afterAll(async () => {
   if (fixture) rmSync(fixture, { recursive: true, force: true });
   await rootSql?.end({ timeout: 5 });
+  await notificationSql?.end({ timeout: 5 });
 });
 
 describe('disk consumer census (real du, real PG)', () => {
@@ -131,6 +145,7 @@ describe('disk consumer census (real du, real PG)', () => {
     expect(listed.get(unattributedKey(fixture))).toMatchObject({ kind: 'unattributed', bytes: 5 * MIB });
     // No baseline 24h earlier yet: growth is unknown, never a made-up zero.
     expect(view.baselineAt).toBeNull();
+    expect(view.baselineAvailBytes).toBeNull();
     expect(view.consumers!.every((c) => c.growth24hBytes === null)).toBe(true);
   }, 120_000);
 
@@ -138,17 +153,22 @@ describe('disk consumer census (real du, real PG)', () => {
     const host = 'growth-host';
     const dev = device({ device: '/g' });
     const latestAt = new Date('2026-10-12T12:00:00Z');
-    const write = (runId: string, at: Date, consumers: CensusConsumer[], complete = true) =>
-      writeCensusRun(sql, { runId, host, device: dev, startedAt: at, finishedAt: at, attributedBytes: 40 * G, complete, note: null, consumers });
+    const write = (runId: string, at: Date, consumers: CensusConsumer[], complete = true, availBytes = 50 * G) =>
+      writeCensusRun(sql, { runId, host, device: { ...dev, availBytes, usedBytes: dev.sizeBytes - availBytes }, startedAt: at, finishedAt: at, attributedBytes: 40 * G, complete, note: null, consumers });
     await write('00000000-0000-4000-8000-000000000001', new Date(latestAt.getTime() - 40 * HOUR), [dir('/g/a', 1 * G)]);
-    await write('00000000-0000-4000-8000-000000000002', new Date(latestAt.getTime() - 23 * HOUR), [dir('/g/a', 10 * G), dir('/g/b', 8 * G)]);
+    await write('00000000-0000-4000-8000-000000000002', new Date(latestAt.getTime() - 23 * HOUR), [dir('/g/a', 10 * G), dir('/g/b', 8 * G)], true, 80 * G);
     // Closer to 24h but incomplete: never a baseline.
-    await write('00000000-0000-4000-8000-000000000003', new Date(latestAt.getTime() - 24 * HOUR), [dir('/g/a', 2 * G)], false);
+    await write('00000000-0000-4000-8000-000000000003', new Date(latestAt.getTime() - 24 * HOUR), [dir('/g/a', 2 * G)], false, 90 * G);
     await write('00000000-0000-4000-8000-000000000004', latestAt, [dir('/g/a', 25 * G), dir('/g/b', 6 * G), dir('/g/new', 3 * G)]);
 
     const { devices } = await readDiskConsumerCensus(sql, { host, orderBy: 'growth', now: latestAt });
     const view = devices[0]!;
+    expect(view).toMatchObject({ host, runId: '00000000-0000-4000-8000-000000000004',
+      baselineRunId: '00000000-0000-4000-8000-000000000002' });
     expect(view.baselineAt).toBe(new Date(latestAt.getTime() - 23 * HOUR).toISOString());
+    expect(view.availBytes).toBe(50 * G);
+    expect(view.baselineAvailBytes).toBe(80 * G);
+    expect(view.baselineSizeBytes).toBe(100 * G);
     expect(view.consumers!.map((c) => [c.consumer, c.bytes, c.growth24hBytes])).toEqual([
       ['/g/a', 25 * G, 15 * G],
       ['/g/b', 6 * G, -2 * G],
@@ -156,10 +176,123 @@ describe('disk consumer census (real du, real PG)', () => {
     ]);
     expect(view.stale).toBe(false);
     expect(view.coverageGap).toBe(true); // used 50 GiB − attributed 40 GiB = 10 GiB unattributed
+    // The forecast uses the selected clean baseline's filesystem delta and actual
+    // 23h interval, not the latest free space or the overlapping consumer totals.
+    const warnings = detectDiskGrowthWarnings(devices);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.growthBytesPerDay).toBeCloseTo(30 * G * 24 / 23);
+    expect(warnings[0]!.daysToFull).toBeCloseTo(50 / (30 * 24 / 23));
+    expect(warnings[0]!.topGrowers).toEqual([{ consumer: '/g/a', growthBytes: 15 * G }]);
+    const notifications: string[] = [];
+    const alarm = await runDiskHeadroomAlarmOnce({
+      readDiskCensus: async () => (await readDiskConsumerCensus(sql, { host, orderBy: 'growth', now: latestAt })).devices,
+      emitToast: async toast => { notifications.push(toast.description); },
+    });
+    expect(alarm.diskGrowth).toEqual(warnings);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toContain('full in 1.6d');
+    expect(notifications[0]).toContain('/g/a');
+
+    const options = { db: drizzle(notificationSql) as never, workspaceId: 'headroom-native-fixture' };
+    await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => devices,
+      emitToast: (toast, observation) => emitStorageGrowthToast(toast, observation, options) });
+    const saved = await rootSql`SELECT a.subject, a.details, t.id, t.message, t.description
+      FROM harness_shared.audit_log a JOIN harness_shared.toast_log t ON t.id::text=a.subject
+      WHERE a.action=${DISK_HEADROOM_OBSERVATION_ACTION} AND a.workspace_id=${options.workspaceId}`;
+    expect(saved).toHaveLength(1);
+    const receipt = saved[0]!.details as DiskHeadroomObservation & { notification: { id: string; message: string; description: string } };
+    expect(receipt.devices[0]).toMatchObject({ host, runId: view.runId, baselineRunId: view.baselineRunId });
+    expect(receipt.growth).toEqual(warnings);
+    expect(receipt.notification).toMatchObject({ id: String(saved[0]!.id), message: saved[0]!.message,
+      description: saved[0]!.description });
+    const toast = { level: 'warning', message: 'refuse-notification', description: 'must not leave evidence' };
+    await expect(emitStorageGrowthToast(toast, receipt, options)).rejects.toThrow();
+    expect((await rootSql`SELECT count(*)::int n FROM harness_shared.audit_log`)[0]!.n).toBe(1);
+    // Evidence failure must roll back the notification too, keeping their linkage atomic.
+    await rootSql.unsafe('ALTER TABLE harness_shared.audit_log ADD CONSTRAINT refuse_evidence CHECK (false) NOT VALID');
+    try {
+      await expect(emitStorageGrowthToast({ ...toast, message: 'evidence-refused' }, receipt, options)).rejects.toThrow();
+      expect((await rootSql`SELECT count(*)::int n FROM harness_shared.toast_log`)[0]!.n).toBe(1);
+    } finally { await rootSql.unsafe('ALTER TABLE harness_shared.audit_log DROP CONSTRAINT refuse_evidence'); }
 
     // Only a 40h-old run besides the latest: outside the window, so no baseline.
     const only = await readDiskConsumerCensus(sql, { host, now: latestAt, device: '/g' });
     expect(only.devices).toHaveLength(1);
+    expect(only.devices[0]!.baselineRunId).toBe(view.baselineRunId);
+  });
+
+  it('verifies native alarm decisions against all four hourly census histories and their actual notification', async () => {
+    const host = 'native-headroom-verifier', workspaceId = 'native-headroom-verifier';
+    const devices = ['/', '/mnt/data', '/mnt/cold-a', '/mnt/cold-b'];
+    const epoch = Date.now();
+    for (const path of devices) {
+      for (let h = 0; h <= 24; h++) {
+        const at = new Date(h === 24 ? epoch - 60_000 : epoch - 24 * HOUR + (h + 0.5) * HOUR);
+        const availBytes = h === 24 ? 200e9 : 300e9;
+        await writeCensusRun(sql, { runId: randomUUID(), host,
+          device: device({ device: path, sizeBytes: 2e12, availBytes, usedBytes: 2e12 - availBytes }),
+          startedAt: at, finishedAt: at, attributedBytes: 2e12 - availBytes, complete: true, note: null,
+          producerBuildSha: 'native-verifier-fixture',
+          consumers: [dir(`${path}/grower`, h === 24 ? 200e9 : 100e9)] });
+      }
+    }
+    const native = await readDiskConsumerCensus(sql, { host, orderBy: 'growth', limit: 20, expectedDevices: devices });
+    await runDiskHeadroomAlarmOnce({ readDiskCensus: async () => native.devices,
+      emitToast: (toast, observation) => emitStorageGrowthToast(toast, { ...observation!,
+        runtime: { ...observation!.runtime, host, buildSha: 'native-verifier-fixture' } },
+      { db: drizzle(notificationSql) as never, workspaceId }) });
+    const scope = { workspaceId, host, buildSha: 'native-verifier-fixture' };
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, scope)).verdict).toBe('pass');
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, { ...scope, buildSha: 'other' })).verdict).toBe('unknown');
+    const snapshotEnd = new Date(Date.now() + 1_000).toISOString();
+    const snapshot = { ...scope, windowStart: new Date(epoch - 90 * 60_000).toISOString(), windowEnd: snapshotEnd };
+    // New ordinary census runs and a fifth device cannot rewrite the alarm's inputs.
+    for (const path of [...devices, '/mnt/unrelated']) {
+      const at = new Date(epoch + 30 * 60_000);
+      await writeCensusRun(sql, { runId: randomUUID(), host,
+        device: device({ device: path }), startedAt: at, finishedAt: at,
+        attributedBytes: 0, complete: false, note: null, consumers: [] });
+    }
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, { ...scope, now: epoch + 31 * 60_000 })).verdict).toBe('pass');
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, { ...snapshot, now: epoch + 7 * 86400_000 })).verdict).toBe('pass');
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, { ...scope, now: epoch + 91 * 60_000 })).verdict).toBe('unknown');
+    // The alarm's current build must not relabel historical census producers.
+    await rootSql`UPDATE harness_shared.disk_census_runs SET note='census-producer:older; '
+      WHERE host=${host} AND device='/' AND started_at BETWEEN ${new Date(epoch - 12 * HOUR)} AND ${new Date(epoch - 11 * HOUR)}`;
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, snapshot)).verdict).toBe('unknown');
+    await rootSql`UPDATE harness_shared.disk_census_runs SET note='census-producer:native-verifier-fixture; ' WHERE host=${host}`;
+    // A missing middle hour must fail even with valid latest+baseline endpoints.
+    await rootSql`UPDATE harness_shared.disk_census_runs SET complete=false WHERE host=${host}
+      AND device='/' AND started_at BETWEEN ${new Date(epoch - 12 * HOUR)} AND ${new Date(epoch - 11 * HOUR)}`;
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, scope)).verdict).toBe('unknown');
+    await rootSql`UPDATE harness_shared.disk_census_runs SET complete=true WHERE host=${host} AND finished_at<=${new Date(epoch)}`;
+    // A tampered decision is distinguished from a missing/detached notification.
+    await rootSql`UPDATE harness_shared.audit_log SET details=jsonb_set(details,'{horizonDays}','8') WHERE workspace_id=${workspaceId}`;
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, scope)).verdict).toBe('fail');
+    await rootSql`UPDATE harness_shared.audit_log SET details=jsonb_set(details,'{horizonDays}','7') WHERE workspace_id=${workspaceId}`;
+    await rootSql`DELETE FROM harness_shared.toast_log WHERE id::text IN
+      (SELECT subject FROM harness_shared.audit_log WHERE workspace_id=${workspaceId})`;
+    expect((await measureNativeDiskHeadroomAlarm(rootSql, scope)).verdict).toBe('unknown');
+  });
+
+  it('admits the oldest census pass and sheds overlapping hourly starts without wedging on stale or terminal rows', async () => {
+    await rootSql.unsafe('CREATE SCHEMA IF NOT EXISTS dbos');
+    // Only the SDK-owned columns read by the guard are needed in this private database.
+    await rootSql.unsafe('CREATE TABLE dbos.workflow_status (workflow_uuid text PRIMARY KEY, name text, status text, created_at bigint, started_at_epoch_ms bigint)');
+    const now = Date.now();
+    const add = (id: string, name: string, status: string, createdAt: number) => rootSql`
+      INSERT INTO dbos.workflow_status VALUES (${id}, ${name}, ${status}, ${createdAt}, ${status === 'ENQUEUED' ? null : createdAt})`;
+    await add('old', 'diskConsumerCensus', 'PENDING', now - 75 * HOUR / 60);
+    await add('self', 'diskConsumerCensus', 'PENDING', now);
+    expect(await diskCensusPassInFlight(sql, 'self', 2, now)).toBe(true);
+    expect(await diskCensusPassInFlight(sql, 'old', 2, now)).toBe(false);
+    await rootSql`UPDATE dbos.workflow_status SET status = 'ENQUEUED', started_at_epoch_ms = NULL WHERE workflow_uuid = 'old'`;
+    expect(await diskCensusPassInFlight(sql, 'self', 2, now)).toBe(true);
+    await rootSql`UPDATE dbos.workflow_status SET status = 'SUCCESS' WHERE workflow_uuid = 'old'`;
+    await add('unrelated', 'anotherWorkflow', 'PENDING', now - HOUR);
+    await add('stale', 'diskConsumerCensus', 'PENDING', now - 4 * HOUR);
+    expect(await diskCensusPassInFlight(sql, 'self', 2, now)).toBe(false);
+    await rootSql.unsafe('DROP TABLE dbos.workflow_status');
   });
 
   it('never reports newly visible bytes as growth across a denied or differently privileged baseline', async () => {
@@ -173,10 +306,13 @@ describe('disk consumer census (real du, real PG)', () => {
     await write('00000000-0000-4000-8000-000000000082', 23, 'du walked unprivileged (sudo -n unavailable)', 3 * G);
     await write('00000000-0000-4000-8000-000000000083', 0, 'du walked as root (sudo -n)', 40 * G);
     const unknown = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
+    expect(unknown.baselineRunId).toBeNull();
     expect(unknown.baselineAt).toBeNull(); expect(unknown.consumers![0]!.growth24hBytes).toBeNull();
+    expect(unknown.baselineAvailBytes).toBeNull();
     await write('00000000-0000-4000-8000-000000000084', 22, 'du walked as root (sudo -n)', 38 * G);
     const calibrated = (await readDiskConsumerCensus(sql, { host, now: at })).devices[0]!;
     expect(calibrated.baselineAt).toBe(new Date(at.getTime() - 22 * HOUR).toISOString());
+    expect(calibrated.baselineRunId).toBe('00000000-0000-4000-8000-000000000084');
     expect(calibrated.consumers![0]!.growth24hBytes).toBe(2 * G);
   });
 

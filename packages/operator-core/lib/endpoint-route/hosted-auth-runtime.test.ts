@@ -124,5 +124,30 @@ describe('narrow hosted auth runtime', () => {
     expect(() => readHostedAuthRuntimeConfiguration({ ...env, WORKOS_CLIENT_ID: '' })).toThrow(
       'hosted_auth_runtime_configuration_missing:WORKOS_CLIENT_ID',
     );
+    const trial = { assignmentDurationMs: 86_400_000, bundle: {
+      schemaVersion: 1, bundleId: 'trial-configured', bundleVersion: 1,
+      record: { source: 'trial', actor: { kind: 'service', principalId: 'service:trial-policy' },
+        auditReceiptId: 'trial-policy:config-v1', effectiveFrom: '2020-01-01', effectiveUntil: null },
+      entitlements: { allowedProviders: ['gcp'], limits: { workspaces: 1, members: 1 },
+        browserAccess: { pty: true, files: true }, supportTier: 'trial',
+        quotas: { 'pool.agents': 50, 'pool.hosts': 1, 'pool.cpu-millicores': 4000,
+          'pool.memory-mib': 16384, 'pool.db-gib': 256, 'pool.workspace-gib': 100 },
+        budgets: { 'pool.cost.usd.minor': 10000 }, rolloutFlags: {} },
+    } };
+    const configured = (policy: unknown) => readHostedAuthRuntimeConfiguration({ ...env,
+      PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT: JSON.stringify(policy) });
+    expect(configured(trial).trialEntitlementPolicy).toMatchObject({ assignmentDurationMs: 86_400_000,
+      bundle: { record: { source: 'trial', effectiveFrom: new Date('2020-01-01') } } });
+    for (const mutate of [
+      (p: typeof trial) => { p.assignmentDurationMs = 0; },
+      (p: typeof trial) => { p.bundle.entitlements.quotas['pool.db-gib'] = 512; },
+      (p: typeof trial) => { delete (p.bundle.entitlements.quotas as Record<string, number>)['pool.agents']; },
+      (p: typeof trial) => { p.bundle.entitlements.budgets = {} as typeof p.bundle.entitlements.budgets; },
+      (p: typeof trial) => { p.bundle.record.actor.kind = 'staff'; },
+    ]) {
+      const invalid = structuredClone(trial); mutate(invalid);
+      expect(() => configured(invalid)).toThrow(/hosted_trial_/);
+    }
+    expect(() => configured({ ...trial, tier: 'paid' })).toThrow('hosted_trial_policy_invalid');
   });
 });

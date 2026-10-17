@@ -124,8 +124,6 @@ export interface OwnerDirectiveRow {
 export const OWNER_DIRECTIVES_BLOCK_CHAR_CAP = 6000;
 /** Most rows any render fetches — beyond this, the "+N more" line covers the rest. */
 export const OWNER_DIRECTIVES_RENDER_MAX_ROWS = 12;
-/** Store-side sanity cap on verbatim_text (the store keeps it verbatim; render budgets). */
-export const OWNER_DIRECTIVE_VERBATIM_MAX = 16000;
 
 /** Single-owner system default for owner_id when the caller has no richer identity. */
 export const OWNER_DIRECTIVE_DEFAULT_OWNER = 'owner';
@@ -286,7 +284,9 @@ export async function recordOwnerDirective(
 ): Promise<OwnerDirectiveRow> {
   const s = db(sql);
   const ws = resolveConcreteWorkspaceId(input.workspaceId);
-  const text = input.verbatimText.slice(0, OWNER_DIRECTIVE_VERBATIM_MAX);
+  // Preserve the complete source for readback and exact-text carry deduplication.
+  // Render budgets must never discard the suffix of a durable directive.
+  const text = input.verbatimText;
   const ownerId = input.ownerId ?? OWNER_DIRECTIVE_DEFAULT_OWNER;
 
   // Insertion and supersession share a transaction: once a verified owner

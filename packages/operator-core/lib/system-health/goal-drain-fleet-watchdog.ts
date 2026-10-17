@@ -991,19 +991,26 @@ export interface GoalDrainFleetPullStallAlert {
  * scheduler disposition is `claimed` or `no-claim`.
  */
 export function classifyGoalDrainFleetPullStall(input: {
-  members: readonly Pick<FleetRosterEntry, 'agentId' | 'agentRole' | 'sessionState' | 'startedAt'>[];
+  members: readonly Pick<FleetRosterEntry, 'agentId' | 'agentRole' | 'fleetRole' | 'sessionState' | 'startedAt'>[];
   successfulPullOwnerIds: ReadonlySet<string>;
   nowMs: number;
   windowMs?: number;
 }): { liveMemberIds: string[]; stalledForMs: number } | null {
   const windowMs = input.windowMs ?? GOAL_DRAIN_FLEET_PULL_STALL_WINDOW_MS;
-  const liveMembers = input.members.filter((member) => member.agentRole === 'su' && member.sessionState === 'live');
+  // A fleet leader supervises the lane; only worker members are expected to
+  // call scheduler:get_next. Counting the leader here creates a false pull
+  // stall whenever a fleet is intentionally leader-only (or its workers have
+  // not joined yet).
+  const liveMembers = input.members.filter((member) =>
+    member.agentRole === 'su' && member.fleetRole === 'member' && member.sessionState === 'live');
   if (liveMembers.length === 0 || liveMembers.some((member) => !member.startedAt)) return null;
   const startedAtMs = liveMembers.map((member) => Date.parse(member.startedAt!));
   if (startedAtMs.some((value) => !Number.isFinite(value))) return null;
   const oldestLiveStartMs = Math.min(...startedAtMs);
   const stalledForMs = input.nowMs - oldestLiveStartMs;
-  if (stalledForMs < windowMs || input.successfulPullOwnerIds.size > 0) return null;
+  const liveMemberIds = new Set(liveMembers.map((member) => member.agentId));
+  const hasSuccessfulMemberPull = [...input.successfulPullOwnerIds].some((ownerId) => liveMemberIds.has(ownerId));
+  if (stalledForMs < windowMs || hasSuccessfulMemberPull) return null;
   return { liveMemberIds: liveMembers.map((member) => member.agentId), stalledForMs };
 }
 
@@ -1523,11 +1530,7 @@ export async function readActiveFleetPullStallAlerts(
       // roster legs that determine presence/session truth completed cleanly.
       if (roster.degradedLegs.length > 0) continue;
       const suMembers = roster.entries
-        .filter((member) => member.agentRole === 'su')
-        .map((member) => member.agentId === roster.leaderLiveness?.ownerId &&
-          roster.leaderLiveness.recordedLive === true
-          ? { ...member, sessionState: 'live' as const }
-          : member);
+        .filter((member) => member.agentRole === 'su' && member.fleetRole === 'member');
       const ownerIds = [...new Set([
         ...await listEverMembers(fleet.fleet_slug, { workspaceId: fleet.workspace_id }),
         ...suMembers.map((member) => member.agentId),

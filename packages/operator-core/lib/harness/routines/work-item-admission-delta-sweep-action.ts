@@ -3,7 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { DBOS } from '@dbos-inc/dbos-sdk';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { captureImprovement } from '../improvements/capture-core';
+import {
+  captureImprovement,
+  recordCaptureReviewFailure,
+  setCaptureReviewState,
+} from '../improvements/capture-core';
+import { enterAgentReview } from '../improvements/agent-review';
 import { gatewayLlmEnv } from '../../inference-gateway/spawn-env';
 import { optionalModelSpec } from '../../learning/model-policy';
 import { notifySyncInvalidate } from '../../sync-sse';
@@ -30,11 +35,12 @@ function runId(): string {
   return DBOS.workflowID?.trim() || `${WORK_ITEM_ADMISSION_DELTA_SWEEP}:${randomUUID()}`;
 }
 
-const productionFileUmbrella: DeltaSweepUmbrellaFiler = async (input) => {
+export const productionFileUmbrella: DeltaSweepUmbrellaFiler = async (input) => {
   const result = await captureImprovement({
     title: `Possible shared cause: ${input.proposal.title}`,
-    kind: 'bug',
-    severity: 'major',
+    kind: 'change',
+    reviewRequired: true,
+    reviewHarness: input.harnessSlug,
     body:
       `${input.proposal.body}\n\nModel-proposed shared-root-cause hypothesis (not independently verified): ${input.proposal.reason}\n\n` +
       `Contributing admitted work-items: ${input.proposal.memberIds.join(', ')}.`,
@@ -52,6 +58,52 @@ const productionFileUmbrella: DeltaSweepUmbrellaFiler = async (input) => {
       },
     },
   });
+  const reviewId = result.issue?.id;
+  if (
+    result.created &&
+    result.reviewRequired &&
+    result.reviewState === 'blocked' &&
+    !result.agentReviewFailure &&
+    reviewId
+  ) {
+    let enrollmentSucceeded = false;
+    try {
+      const enrollment = await enterAgentReview({
+        id: reviewId,
+        submittedBy: DELTA_SWEEP_ACTOR,
+        harnessSlug: input.harnessSlug,
+      });
+      if (!enrollment.entered) {
+        throw new Error(`agent-review enrollment was not entered${enrollment.reason ? `: ${enrollment.reason}` : ''}`);
+      }
+      enrollmentSucceeded = true;
+      const reopened = await setCaptureReviewState(reviewId, 'open', {
+        harness: input.harnessSlug,
+        by: DELTA_SWEEP_ACTOR,
+        reason: 'agent-review enrollment succeeded',
+      });
+      if ((reopened.appliedState ?? reopened.workItem?.state) !== 'open') {
+        throw new Error(`review reopen did not apply open state (appliedState=${reopened.appliedState ?? 'null'})`);
+      }
+    } catch (error) {
+      const phase = enrollmentSucceeded ? 'reopen' : 'enrollment';
+      const failure = {
+        phase,
+        message: error instanceof Error ? error.message : String(error),
+        at: new Date().toISOString(),
+      } as const;
+      await setCaptureReviewState(reviewId, 'blocked', {
+        harness: input.harnessSlug,
+        by: DELTA_SWEEP_ACTOR,
+        reason: `agent-review-${phase}-failed`,
+      }).catch(() => undefined);
+      await recordCaptureReviewFailure(
+        reviewId,
+        failure,
+        { submittedBy: DELTA_SWEEP_ACTOR, harness: input.harnessSlug },
+      );
+    }
+  }
   const canonical =
     result.issue?.id ??
     result.possibleDuplicates?.find((candidate) => candidate.state === 'open')?.id ??

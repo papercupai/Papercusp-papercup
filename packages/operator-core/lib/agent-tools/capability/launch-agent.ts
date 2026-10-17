@@ -126,6 +126,16 @@ import {
  * public launch-agent schema or ordinary caller arguments. */
 export const INTERNAL_LOOP_FIRE_ORIGIN: unique symbol = Symbol('internal-loop-fire-origin');
 
+/** Exact scorecard binding stored on a fresh headless grading-auditor task row. */
+export interface GradingAuditTaskDetail {
+  issueId: string;
+  evidenceFingerprint: string;
+  reservation: { key: string; reservedAt: string };
+}
+
+/** Server-only direct-handler seam; it is intentionally absent from the MCP schema. */
+export const INTERNAL_GRADING_AUDIT_TASK_DETAIL: unique symbol = Symbol('internal-grading-audit-task-detail');
+
 /** Private controller seam, absent from the public tool schema. */
 export const INTERNAL_SCOPED_INFERENCE_GATEWAY: unique symbol = Symbol('internal-scoped-inference-gateway');
 export const INTERNAL_SCOPED_SESSION_CONFINEMENT: unique symbol = Symbol('internal-scoped-session-confinement');
@@ -148,6 +158,20 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
     : null;
+}
+
+function isGradingAuditTaskDetail(value: unknown): value is GradingAuditTaskDetail {
+  const detail = asRecord(value);
+  const reservation = asRecord(detail?.reservation);
+  if (!detail || !reservation) return false;
+  const issueId = typeof detail.issueId === 'string' ? detail.issueId.trim() : '';
+  const evidenceFingerprint = typeof detail.evidenceFingerprint === 'string' ? detail.evidenceFingerprint.trim() : '';
+  const key = typeof reservation.key === 'string' ? reservation.key.trim() : '';
+  const reservedAt = typeof reservation.reservedAt === 'string' ? reservation.reservedAt.trim() : '';
+  return Boolean(
+    issueId && evidenceFingerprint && key === `grading-audit:${issueId}` &&
+    reservedAt && Number.isFinite(Date.parse(reservedAt)),
+  );
 }
 
 function agentLaunchCompletionReceipt(
@@ -270,9 +294,8 @@ function err(text: string) {
  * task. `ownerId` is only the coordination identity; it is not a resumable
  * transcript target once a role session has ended.
  *
- * The current fresh-launch probe exposes Claude's native id directly. It does
- * not yet expose Codex rollout or OMP thread metadata, so those sessions stay
- * explicitly unresolved instead of manufacturing a second id vocabulary. The
+ * The fresh-launch probe exposes Claude and Codex native ids directly. OMP
+ * thread metadata stays unresolved when absent. The
  * structural `nativeSession` seam also lets a richer verifier result pass its
  * canonical handle through unchanged.
  */
@@ -284,7 +307,7 @@ function nativeSessionHandleFromFreshProbe(
     nativeSession?: NativeSessionHandle | null;
   }).nativeSession;
   if (projected !== undefined) return projected;
-  if (agent !== 'claude' || !session.ownerId || !session.sessionId) return null;
+  if ((agent !== 'claude' && agent !== 'codex') || !session.ownerId || !session.sessionId) return null;
 
   // Reuse the canonical adv_sessions resolver so the public shape remains the
   // same backend-neutral NativeSessionHandle used by roster/session consumers.
@@ -293,11 +316,12 @@ function nativeSessionHandleFromFreshProbe(
   return nativeSessionHandleForAdvSession(
     {
       id: session.advSessionId,
-      agent: 'claude',
+      agent,
       coordOwnerId: session.ownerId,
       sessionId: session.sessionId,
     } as Parameters<typeof nativeSessionHandleForAdvSession>[0],
     {
+      findCodexRolloutId: () => session.sessionId,
       resolveConfigDir: () => ({
         dir: null,
         source: null,
@@ -771,6 +795,11 @@ export default defineTool({
     let modelResolution: ReturnType<typeof resolveLaunchModelAlias> | null = null;
     const memberAliasResolutions: Array<ReturnType<typeof resolveLaunchModelAlias> | undefined> = [];
     const requestedDefaultEffort = args.effort;
+    // Internal recovery callers set this only when the durable leader identity
+    // must resume from its own launch record. It is intentionally outside the
+    // public schema so ordinary resumes continue using the fleet recipe.
+    const leaderRecoveryOwnerId = (args as typeof args & { __leaderRecoveryOwnerId?: string })
+      .__leaderRecoveryOwnerId?.trim() || null;
     try {
       if (args.model) {
         modelResolution = resolveLaunchModelAlias(args.model, { effort: args.effort, agent: args.agent });
@@ -842,6 +871,9 @@ export default defineTool({
       (ctx as typeof ctx & { [INTERNAL_LOOP_FIRE_ORIGIN]?: 'loop-fire' })[INTERNAL_LOOP_FIRE_ORIGIN] === 'loop-fire'
         ? 'loop-fire'
         : null;
+    const gradingAuditTaskDetail = (ctx as typeof ctx & {
+      [INTERNAL_GRADING_AUDIT_TASK_DETAIL]?: GradingAuditTaskDetail;
+    })[INTERNAL_GRADING_AUDIT_TASK_DETAIL];
     // Internal seam used by fleet:respawn-member: a replacement must be
     // identity-correlated before it is spawned, because concurrent respawns
     // cannot safely identify one another by roster ordering after launch.
@@ -1702,7 +1734,13 @@ export default defineTool({
             headless: args.headless,
             extraArgs: requestedProfileExtraArgs,
           },
-          reusePath: 'capability:launch-agent resume/successor -> agent-launch-core.buildAgentLaunchCommand',
+          ...(leaderRecoveryOwnerId ? {
+            memberOwnerId: leaderRecoveryOwnerId,
+            preferMemberRecord: true,
+          } : {}),
+          reusePath: leaderRecoveryOwnerId
+            ? 'fleet leader recovery -> capability:launch-agent resume -> agent-launch-core.buildAgentLaunchCommand'
+            : 'capability:launch-agent resume/successor -> agent-launch-core.buildAgentLaunchCommand',
         });
         if (!savedLaunchSpec.ok) return err(savedLaunchSpec.message);
         if (savedLaunchSpec.found) {
@@ -1945,6 +1983,14 @@ export default defineTool({
       });
       return { ...folded, model: selection.model, modelSource: selection.source };
     });
+    if (gradingAuditTaskDetail !== undefined) {
+      if (!isGradingAuditTaskDetail(gradingAuditTaskDetail)) {
+        return err('Internal grading-audit task metadata is malformed; no process was spawned.');
+      }
+      if (sourceAction || count !== 1 || foldedConfigs[0]?.headless !== true) {
+        return err('Grading-audit task metadata requires one fresh headless launch; no process was spawned.');
+      }
+    }
     if (scopedGateway && (foldedConfigs.length !== 1 || foldedConfigs.some(config => config.agent !== 'codex'))) {
       return err('Scoped inference gateway requires the supported Codex transport.');
     }
@@ -2128,6 +2174,7 @@ export default defineTool({
               // unless the caller deliberately requests another one. Without
               // this, `--account=auto` sessions silently restart on `default`.
               account: args.account ?? resumeAccount,
+              fleetRole: leaderRecoveryOwnerId ? 'leader' : undefined,
               // Resume/fork does not pass --agent, but the command builder
               // still needs the recorded backend to apply Codex's model
               // policy. A Codex source may have changed model OR reasoning
@@ -2174,7 +2221,7 @@ export default defineTool({
               // Fresh fleet members receive mode participation, not the launching
               // leader's personal mission or sticky owner-directed authority.
               launchMode: fleetSlug && !isSuccessor
-                ? normalizeLaunchMode(launchMode, { fleetRole: 'member' })
+                ? normalizeLaunchMode(launchMode, { fleetRole: leaderRecoveryOwnerId ? 'leader' : 'member' })
                 : launchMode,
               extraArgs: folded.extraArgs ?? null,
             });
@@ -2402,6 +2449,9 @@ export default defineTool({
                 logDir: headlessLogDir,
                 launchedBy: callerOwnerId ?? undefined,
                 fleetSlug,
+                ...(gradingAuditTaskDetail
+                  ? { ledgerDetail: { gradingAudit: gradingAuditTaskDetail } }
+                  : {}),
                 kickoffProof: requireKickoffProof,
                 // Fresh members and successors are explicitly pre-pinned. An
                 // in-place resume re-attaches its source owner. Each fork's

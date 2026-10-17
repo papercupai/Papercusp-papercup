@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "item": "P-544",
+  "recordedAt": "2026-10-16T22:37:00Z",
+  "parentAdmission": "docs/evidence/p544-8g-budget-admission-2026-10-16.json",
+  "scope": "Same existing candidate VM only; no new VM and no deadline extension",
+  "runId": "p544-8g-1016",
+  "instance": "cap-p544-8g-1016",
+  "project": "pc-agent-capacity-0930",
+  "zone": "us-central1-a",
+  "absoluteDeleteDeadline": "2026-10-16T23:26:47.932Z",
+  "current": "e2-custom-2-8192",
+  "fallback": "e2-custom-4-8192",
+  "dataDiskGrowthGb": { "from": 10, "to": 12 },
+  "additionalReservationUsd": 1,
+  "previousConservativeProgrammeHeadroomUsd": 36.5,
+  "remainingConservativeProgrammeHeadroomUsd": 35.5,
+  "actualBilledSpendUsd": null,
+  "reason": "Completed 2vCPU/8GiB run meets all moderate-cohort thresholds but fails frozen burst input-echo p95 (6.775s > 3s). Measure next CPU profile under unchanged D-075; do not infer the cause from the comparison alone.",
+  "bounds": [
+    "Copy and hash native results AND histories locally before stop, disk growth or resize",
+    "Measure cold start on existing 2vCPU8GiB first, then grow data disk and stop/set-machine-type/start via existing GCE resize procedure",
+    "After every start verify original absolute provider deletion timestamp; restore that same timestamp while stopped if required, never increase it",
+    "Maintain configured swap and exact candidate package; verify SQL witness, corpus, native history and native data hashes across transitions",
+    "Fallback native run uses same maintained driver, 50 assigned agents, 1/5/10 active cohorts and separate unbatched burst; no threshold relaxation",
+    "Hard stop fallback work by 23:15 UTC for archive and verified full teardown before fixed deletion deadline",
+    "New one-dollar reservation conservatively covers under one hour incremental two vCPUs plus 2GiB disk growth; no further resource profile is admitted",
+    "No customer pricing or minimum viable profile claim until complete acceptance and cost qualification"
+  ]
+}

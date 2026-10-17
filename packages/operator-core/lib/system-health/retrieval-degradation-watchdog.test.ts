@@ -19,6 +19,8 @@ function health(over: Partial<LegHealthWindow> = {}): LegHealthWindow {
     degradedRate: 0.1,
     semanticBlocked: 0,
     lexicalBlocked: 0,
+    semanticSourceFailed: 0,
+    lexicalSourceFailed: 0,
     semanticEmpty: 0,
     lexicalEmpty: 0,
     oldestSampleMs: 1,
@@ -49,6 +51,15 @@ describe('judgeRetrievalHealth', () => {
     );
     expect((v as Extract<RetrievalVerdict, { kind: 'degraded' }>).dominant).toBe(
       'lexical leg returned nothing',
+    );
+  });
+
+  it('names a dominant partial source failure when leg calls otherwise ran', () => {
+    const v = judgeRetrievalHealth(
+      health({ degraded: 60, degradedRate: 0.6, semanticSourceFailed: 50, lexicalEmpty: 10 }),
+    );
+    expect((v as Extract<RetrievalVerdict, { kind: 'degraded' }>).dominant).toBe(
+      'semantic source call failed',
     );
   });
 
@@ -92,8 +103,14 @@ describe('retrieval samples on the durable degradation primitive (P-005)', () =>
     const observe = vi.fn((_mechanism: string, _decision: unknown, _opts?: unknown) => true);
     startRetrievalDegradationWatchdog({ observe });
     startRetrievalDegradationWatchdog({ observe });
-    const leg = { status: 'ran', candidates: 5, blocked: null };
-    const legs = { lexical: leg, semantic: { ...leg, status: 'errored', candidates: 0, blocked: 'timeout' }, degraded: true } as SearchLegs;
+    const leg = {
+      status: 'ran', candidates: 5, floored: 0, stage2Added: 0, callsRun: 0, callsFailed: 0,
+      blocked: null, failures: [],
+    };
+    const legs = {
+      lexical: leg, semantic: { ...leg, status: 'errored', candidates: 0, blocked: 'timeout' },
+      degraded: true, warning: 'semantic leg blocked',
+    } as SearchLegs;
     const correlationId = '64eab084-4e87-4e2b-99bd-3be2eb7c191f';
     observeLegs(legs, 1000, correlationId);
     observeLegs({ ...legs, semantic: leg, degraded: false } as SearchLegs, 1001);
@@ -107,7 +124,14 @@ describe('retrieval samples on the durable degradation primitive (P-005)', () =>
 
   it('does not double count a search when several legs degraded', () => {
     expect(retrievalSampleDecision({ atMs: 1, degraded: true, semanticBlocked: true, lexicalBlocked: true,
-      semanticEmpty: false, lexicalEmpty: false })).toEqual({ eligible: 1, applied: 0, reason: 'mixed' });
+      semanticSourceFailed: false, lexicalSourceFailed: false, semanticEmpty: false, lexicalEmpty: false })).toEqual({ eligible: 1, applied: 0, reason: 'mixed' });
+  });
+
+  it('classifies partial source failures instead of collapsing them into mixed', () => {
+    expect(retrievalSampleDecision({ atMs: 1, degraded: true, semanticBlocked: false, lexicalBlocked: false,
+      semanticSourceFailed: true, lexicalSourceFailed: false, semanticEmpty: false, lexicalEmpty: false })).toEqual({
+      eligible: 1, applied: 0, reason: 'semantic-source-failed',
+    });
   });
 
   it('routes the retained one-shot sweep through the same observation primitive', async () => {

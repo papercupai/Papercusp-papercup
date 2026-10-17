@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
+import { cleanupScopedNativeFixtureDatabase } from '../vitest-shims/scoped-native-fixture-cleanup';
 import { createOrgTestDb, type OrgTestDb } from '../../../packages/operator-core/test/_org-test-db';
 
 const privateDatabase = vi.hoisted(() => ({ sql: undefined as unknown as OrgTestDb['adminSql'] }));
@@ -496,7 +497,7 @@ it.each(['direct', 'metered'] as const)('delivers frozen context and a scoped wo
       clearConfinement?.();
       if (priorWorkspace === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
       else process.env.PAPERCUSP_WORKSPACE_ID = priorWorkspace;
-      await db?.cleanup();
+      await cleanupScopedNativeFixtureDatabase(db);
       rmSync(fixtureRoot, { recursive: true, force: true }); homeAllocation.key = ''; homeAllocation.path = '';
     }
   }

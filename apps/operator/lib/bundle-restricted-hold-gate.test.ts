@@ -9,7 +9,7 @@
  * it is injected so every gate verdict path is exercised without a database.
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -145,12 +145,22 @@ describe('runGate', () => {
     const journal = join(work, 'steps.jsonl');
     vi.stubEnv('BUNDLE_HOST_STEP_LOG', journal);
     const main = writeMetafile('hono-host.mjs.meta.json', ['bin/hono-host.ts']);
-    const { code } = gate(opts => runBundleRestrictedHoldPreflight({ ...opts,
-      spawn: (() => ({ status: null, signal: 'SIGKILL', error: new Error('ETIMEDOUT'),
-        pid: 0, output: [], stdout: '', stderr: '' })) as unknown as typeof spawnSync,
-    }), [main]);
+    let inputsFile: string | undefined;
+    const { code } = gate(opts => {
+      inputsFile = opts.inputsFile;
+      return runBundleRestrictedHoldPreflight({ ...opts,
+        spawn: (() => ({ status: null, signal: 'SIGKILL', error: new Error('ETIMEDOUT'),
+          pid: 0, output: [], stdout: '', stderr: '' })) as unknown as typeof spawnSync,
+      });
+    }, [main]);
     expect(code).toBe(GATE_EXIT.refuse);
     expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('old host');
+    expect(existsSync(snapshotDir)).toBe(false);
+    expect(inputsFile).toBe(join(outdir, 'bundle-restricted-hold-inputs.json'));
+    expect(JSON.parse(readFileSync(inputsFile!, 'utf8'))).toEqual({
+      files: [join(baseDir, 'bin/hono-host.ts')], dirs: [],
+    });
+    expect(statSync(inputsFile!).mode & 0o777).toBe(0o600);
     const records = readFileSync(journal, 'utf8').trim().split('\n').map(row => JSON.parse(row));
     expect(records.map(({ step, event, status }) => ({ step, event, status }))).toEqual([
       { step: 'restricted-hold-inputs', event: 'start', status: undefined },
@@ -219,6 +229,18 @@ describe('runGate', () => {
     expect(consulted).toBe(false);
     expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('old host');
     expect(lines[0]).toMatch(/error=restricted_hold_state_unknown/);
+  });
+
+  it('removes a previous input receipt when the next build cannot establish its own inputs', () => {
+    const inputsFile = join(outdir, 'bundle-restricted-hold-inputs.json');
+    put(inputsFile, JSON.stringify({ files: ['stale-source.ts'], dirs: [] }));
+    snapshotArtifacts({ outdir, snapshotDir, artifacts: ['hono-host.mjs'] });
+    publish('hono-host.mjs', 'new host');
+    const preflight = vi.fn(() => ({ verdict: 'admit' as const }));
+    expect(gate(preflight, [join(work, 'missing.meta.json')]).code).toBe(GATE_EXIT.refuse);
+    expect(preflight).not.toHaveBeenCalled();
+    expect(existsSync(inputsFile)).toBe(false);
+    expect(readFileSync(join(outdir, 'hono-host.mjs'), 'utf8')).toBe('old host');
   });
 });
 

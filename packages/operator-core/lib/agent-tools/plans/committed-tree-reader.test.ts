@@ -22,6 +22,7 @@ import {
   parseCatFileBatch,
   readCommittedFiles,
   readHeadCommitFromFiles,
+  readHeadCommitFromFilesSync,
   REPO_FIXTURE_READ_LIMITS,
   resolveMeasurementCommit,
   type BlobBatchReader,
@@ -105,6 +106,16 @@ describe('resolveMeasurementCommit', () => {
 // WI-6554700010008489: HEAD read from the repository files instead of a git child. The
 // oracle in every case is `git rev-parse HEAD` on the same checkout.
 describe('readHeadCommitFromFiles', () => {
+  it('resolves fresh HEAD metadata on the synchronous non-threadpool path', () => {
+    const before = readHeadCommitFromFilesSync(root);
+    expect(before).toBe(git(root, 'rev-parse', 'HEAD'));
+    writeFileSync(join(root, 'src/a.ts'), 'export const a = 2;\n');
+    git(root, 'commit', '-q', '-am', 'sync path next');
+    const after = readHeadCommitFromFilesSync(root);
+    expect(after).toBe(git(root, 'rev-parse', 'HEAD'));
+    expect(after).not.toBe(before);
+  });
+
   it('matches git for a branch ref while it is loose and after it is packed', async () => {
     expect(await readHeadCommitFromFiles(root)).toBe(git(root, 'rev-parse', 'HEAD'));
     git(root, 'pack-refs', '--all');

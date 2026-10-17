@@ -517,7 +517,8 @@ export async function readControlAnchorKernelState(
   const authorityReadFailures: AuthorityReadFailure[] = [];
   const anchorReadStartedAt = performance.now();
   const anchorAcquisitionStartedAt = performance.now();
-  let anchorConnection: Awaited<ReturnType<typeof sql.reserve>> | null = null;
+  type ReservedAnchorConnection = Awaited<ReturnType<typeof sql.reserve>>;
+  let anchorConnection: ReservedAnchorConnection | null = null;
   let anchorQueryStartedAt: number | null = null;
   const anchorTrace: KernelAuthorityQueryTrace = {
     queryFingerprint: 'controlAnchorSql/v1',
@@ -530,7 +531,7 @@ export async function readControlAnchorKernelState(
     outcome: 'rejected',
   };
   try {
-    anchorConnection = await withAcquisitionDeadline(
+    const reserved = await withAcquisitionDeadline<ReservedAnchorConnection>(
       ({ disarm, expired }) =>
         sql.reserve().then((reserved) => {
           if (expired()) {
@@ -543,8 +544,11 @@ export async function readControlAnchorKernelState(
         }),
       { label: 'control-anchor-sql-acquire', pool: 'org-admin' },
     );
+    // The finally below releases through the outer handle; the query runs on the
+    // non-null const so the compiler sees the reserved connection's call signature.
+    anchorConnection = reserved;
     anchorQueryStartedAt = performance.now();
-    const rows = await anchorConnection<Array<{
+    const rows = await reserved<Array<{
       backend_pid?: number | string | null;
       query_start?: Date | string | null;
       control_state: unknown;
@@ -593,10 +597,13 @@ export async function readControlAnchorKernelState(
         ) a ON true
        LIMIT 1
     `;
-    stateRow = rows[0];
-    const backendPid = Number(stateRow?.backend_pid);
+    // Read the trace columns off the query's own row type: `stateRow`'s declared type
+    // deliberately omits them, and assignment narrowing keeps that declared shape.
+    const anchorRow = rows[0];
+    stateRow = anchorRow;
+    const backendPid = Number(anchorRow?.backend_pid);
     anchorTrace.backendPid = Number.isSafeInteger(backendPid) && backendPid > 0 ? backendPid : null;
-    const queryStart = stateRow?.query_start;
+    const queryStart = anchorRow?.query_start;
     anchorTrace.queryStart = queryStart instanceof Date
       ? queryStart.toISOString()
       : typeof queryStart === 'string' ? queryStart : null;

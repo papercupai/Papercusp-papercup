@@ -123,6 +123,7 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
       },
     },
     currentness: {
+      provenance: 'server-measured',
       // WI-2146375: every dimension here reads 'current', which is only reachable when a
       // comparison input WAS supplied — `unknown` is what you get when nobody asked.
       comparisonSupplied: true,
@@ -154,6 +155,9 @@ function listedEvidence(over: Partial<ListedEvidence> = {}): ListedEvidence {
     createdBy: 'su-test',
     createdAt: '2026-08-20T00:01:31.000Z',
     ...evidence(),
+    // This suite stubs the store reader, whose current contract certifies fixture absence
+    // with independent verification citations. Binder-authored fixtureFree alone is not proof.
+    fixtureAbsenceVerification: { verifierBindingIds: [5001] },
     testRunExecution: passingExecution(),
     // Evaluator revision 4 (WI-10006856): a mutation/counterexample target only establishes
     // falsifiability when its run's canonical test FILE also has a successful current test
@@ -276,7 +280,74 @@ function passingDeps() {
   };
 }
 
+function mechanicalDeps() {
+  const deps = passingDeps();
+  const rows = passingEvidence();
+  const mutant = rows[1]!;
+  const mutation = {
+    schemaVersion: 1 as const, probeInvocationId: 'mechanical-probe', leg: 'mutant' as const,
+    mode: 'copy-out' as const, subjectPath: 'src/reconnect.ts', mutateExpression: 's/false/true/',
+    againstCommit: null, subjectBeforeSha256: 'a'.repeat(64), subjectAfterSha256: 'b'.repeat(64),
+    mutantDiff: '-false\n+true', mutantDiffTruncated: false,
+    testCommandSha256: 'c'.repeat(64), testFileSha256: 'd'.repeat(64),
+  };
+  mutant.testRunProvenance!.mutation = mutation;
+  mutant.testRunProvenance!.mutationBaseline = {
+    testRunId: 99, status: 'pass', passed: 1, failed: 0, skipped: 0,
+    collectionFailed: false, mutation: { ...mutation, leg: 'baseline' },
+  };
+  mutant.details.currentMeasurement = {
+    schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/reconnect.ts'], testPaths: [RECONNECT_TEST_PATH],
+  };
+  for (const row of rows) row.currentness.provenance = 'server-measured';
+  deps.listEvidence.mockResolvedValue(rows);
+  deps.listCards.mockResolvedValue([]);
+  return { ...deps, rows,
+    resolveSourceBarTestRequirements: vi.fn<NonNullable<GateDeps['resolveSourceBarTestRequirements']>>(
+      async () => ({ status: 'required', files: [RECONNECT_TEST_PATH] }),
+    ),
+  };
+}
+
+describe('test-checked completion uses mechanical adequacy', () => {
+  it('completes with passing named tests and a caught mutant without reading judge cards', async () => {
+    const deps = mechanicalDeps();
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+    expect(result).toMatchObject({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
+    expect(deps.listCards).not.toHaveBeenCalled();
+  });
+
+  it('reports the missing caught mutant without recruiting a grading audit', async () => {
+    const deps = mechanicalDeps();
+    deps.listEvidence.mockResolvedValue([deps.rows[0]!]);
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('no caught mutation probe') });
+    expect(result).not.toHaveProperty('pendingGradingAuditTargetIds');
+    expect(deps.listCards).not.toHaveBeenCalled();
+  });
+
+  it('re-evaluates after a measured source or named test becomes stale', async () => {
+    const deps = mechanicalDeps();
+    expect(await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps))
+      .toMatchObject({ ok: true });
+    deps.rows[0]!.currentness.overall = 'stale';
+    expect(await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps))
+      .toMatchObject({ ok: false, reason: expect.stringContaining('no longer current') });
+    expect(deps.listCards).not.toHaveBeenCalled();
+  });
+});
+
 describe('specTestAdequacyCompletionGate', () => {
+  it('does not mistake binder-only fixtureFree metadata for store-verified fixture absence', async () => {
+    const deps = passingDeps();
+    deps.listEvidence.mockResolvedValue(passingEvidence().map(row => ({
+      ...row, fixtureAbsenceVerification: undefined,
+    })));
+    const result = await specTestAdequacyCompletionGate({ workItem: WORK_ITEM, attestation: ATTESTATION }, deps);
+    expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('fixture-calibration') });
+    expect(deps.listCards).not.toHaveBeenCalled();
+  });
+
   it('refuses a work-item close when the globally passing clause needs proof bound to a sibling work item', async () => {
     const deps = passingDeps();
     const combined = passingEvidence().map((row, index) => ({
@@ -1064,6 +1135,7 @@ describe('specTestAdequacyCompletionGate', () => {
 
       expect(result).toMatchObject({ ok: false, applicable: true, retryable: true });
       expect(!result.ok && result.reason).toContain('work_items:update');
+      expect(!result.ok && result.reason).toContain('re-claim the current item');
       expect(deps.listEvidence).not.toHaveBeenCalled();
       expect(deps.listCards).not.toHaveBeenCalled();
     },

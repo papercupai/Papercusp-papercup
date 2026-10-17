@@ -2280,7 +2280,7 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     code: "resource-start-outside-admission",
     disposition: "bypass",
     reason:
-      "P-016 reviewed bypass disposition for scripts/with-documenso-sandbox.mjs (WI-6554700010009231; readiness extension WI-6554700010009544): a one-shot isolated e2e wrapper, never a serving or scheduled runtime. Its reviewed finite Docker/openssl clients and wrapped-command child retain process-group stop and finally cleanup. The legacy shape has no reaper. The reaper shape retains its sole Testcontainers import for the socket path, --rm, 30s no-client and 1s reconnection timeouts, owner-label filter acknowledgement before allocation, awaited remover, and fail-closed residue check. A readiness-enabled reaper shape adds only one Docker spawnSync client with a5s deadline and100000-byte output bound. Its caller passes the owned database, password redactions and stop predicate to the existing finite31-attempt loop; that loop reads TCP pg_isready and terminal container state, preserving bounded failure evidence. matchesSource pins this exact extension as well as the original lifecycle. Any other start, missing timeout, unlimited readiness loop, widened label filter or dropped cleanup falls out of this disposition.",
+      "P-016 reviewed bypass disposition for scripts/with-documenso-sandbox.mjs (WI-6554700010009231; readiness extension WI-6554700010009544; child-failure diagnostics WI-6554700010015560): a one-shot isolated e2e wrapper, never a serving or scheduled runtime. Its reviewed finite Docker/openssl clients and wrapped-command child retain process-group stop and finally cleanup. The legacy shape has no reaper. The reaper shape retains its sole Testcontainers import for the socket path, --rm, 30s no-client and 1s reconnection timeouts, owner-label filter acknowledgement before allocation, awaited remover, and fail-closed residue check. Readiness clients use a5s deadline and100000-byte output bound. The database caller passes password redactions and stop predicate to a finite31-attempt progress loop. The child-failure client inspects the exact three owned containers and at most200 provider log lines, emitting fixed diagnostic signals only, before finally cleanup. matchesSource pins these extensions and the original lifecycle. Any other start, missing timeout, unlimited readiness loop, widened label filter or dropped cleanup falls out of this disposition.",
     matchesSource: (source) => {
       const code = stripCommentsAndStrings(source);
       // Without the reaper: the shape committed at 8cc9307dd5, where cleanup is
@@ -2300,8 +2300,17 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
         source.includes("stalledAttempts = observedStage > startupStage ? 1 : stalledAttempts + 1;") &&
         source.includes("if (terminal || stalledAttempts >= attempts)")
       );
+      const hasChildDiagnostic = /\bwaitForSandboxChild\b/.test(code);
+      const childDiagnosticPinned = !hasChildDiagnostic || (
+        source.includes("  run = args => spawnSync('docker', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 }),") &&
+        source.includes("const exitCode = await waitForSandboxChild(child, { runtime });") &&
+        source.includes("[runtime.container, runtime.network + '-pg', runtime.network + '-mail']") &&
+        source.includes("if (['exited', 'dead'].includes(containers[0].status))") &&
+        source.includes("run(['logs', '--tail', '200', runtime.container])") &&
+        source.includes("signals: sandboxProviderFailureSignals((result.stdout || '') + (result.stderr || ''))")
+      );
       const shapePinned = source.includes("REAPER_IMAGE")
-        ? resourceStartCallCount(source) === 8 && readinessPinned &&
+        ? resourceStartCallCount(source) === (hasChildDiagnostic ? 9 : 8) && readinessPinned && childDiagnosticPinned &&
           testcontainersImports === 1 &&
           source.includes("import { getContainerRuntimeClient, Wait } from 'testcontainers';") &&
           source.includes("getClient = getContainerRuntimeClient, allocate = dockerAllocation,") &&

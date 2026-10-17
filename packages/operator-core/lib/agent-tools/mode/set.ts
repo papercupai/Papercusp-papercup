@@ -5,8 +5,9 @@
  * Modes are first-class data (harness_shared.agent_modes), not prompt prose:
  * peers see your modes in coord:presence / coord:orient, and every transition
  * is audited (agent_mode_changes). Semantics enforced by the store:
- *   - AXES: same-axis modes auto-switch (setting drain clears ideate — both
- *     recorded); cross-axis modes stack (auto + ideate is the canonical pair).
+ *   - AXES: same-axis modes auto-switch (setting cold-auto replaces auto — both
+ *     recorded); cross-axis modes stack (auto + ideate is the canonical pair;
+ *     drain and ideate are separate overlay keys, so they stack too).
  *   - OWNER-STICKY (D-003): a mode armed with ownerDirected (the human owner
  *     explicitly instructed it) cannot be overridden by a PEER — the attempt
  *     is refused and DOWNGRADED to a request message the target/owner sees.

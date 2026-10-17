@@ -1,11 +1,13 @@
 import { createServer, request } from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { describe, expect, it, vi } from 'vitest';
-import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, fixtureSwitchRegistry, interruptFixtureHost, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns, waitForFixtureHost } from './native-device-fixture';
+import { createTextCollector } from './child-output';
+import { cleanupFixtureTunnel, expireFixturePair, fixtureFailure, fixtureIdentity, fixtureSwitchRegistry, interruptFixtureHost, saveFixtureReceipt, verifyAdvertisedFixtureRoute, verifyFixtureZone, verifyProtectedIngress, waitForFixtureDns, waitForFixtureHost } from './native-device-fixture';
 import type { CloudflareApi } from './own-tunnel/cloudflare-api';
 import { advanceFixtureDeviceClock, DEVICE_EXPIRY_OFFSET_MS } from './native-device-fixture-clock';
 
@@ -20,6 +22,73 @@ const privateEnv = {
 };
 
 describe('disposable native HTTPS fixture admission', () => {
+  it('publishes complete private runtime receipts while an independent reader is active', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'fixture-receipt-'));
+    const path = join(directory, 'runtime.json');
+    const state = new Int32Array(new SharedArrayBuffer(2 * Int32Array.BYTES_PER_ELEMENT));
+    const receipt = (generation: number) => ({ generation, payload: String(generation).repeat(8192) });
+    saveFixtureReceipt(directory, receipt(0));
+    const reader = new Worker(`
+      const { parentPort, workerData } = require('node:worker_threads');
+      const { readFileSync } = require('node:fs');
+      const state = new Int32Array(workerData.state);
+      let reads = 0, failures = 0, firstFailure;
+      parentPort.postMessage('ready');
+      while (!Atomics.load(state, 0)) {
+        try {
+          const value = JSON.parse(readFileSync(workerData.path, 'utf8'));
+          if (!Number.isInteger(value.generation) || value.payload !== String(value.generation).repeat(8192)) {
+            throw new Error('Incomplete receipt generation');
+          }
+          reads++;
+        } catch (error) {
+          failures++;
+          firstFailure ??= error.message;
+        }
+        Atomics.add(state, 1, 1);
+      }
+      parentPort.postMessage({ reads, failures, firstFailure });
+    `, { eval: true, workerData: { path, state: state.buffer } });
+    const ready = new Promise<void>((done, reject) => {
+      reader.on('message', value => { if (value === 'ready') done(); });
+      reader.once('error', reject);
+    });
+    const finished = new Promise<{ reads: number; failures: number; firstFailure?: string }>((done, reject) => {
+      reader.on('message', value => { if (value !== 'ready') done(value); });
+      reader.once('error', reject);
+    });
+    try {
+      await ready;
+      const before = Atomics.load(state, 1);
+      for (let generation = 1; generation <= 200; generation++) saveFixtureReceipt(directory, receipt(generation));
+      const duringWrites = Atomics.load(state, 1) - before;
+      Atomics.store(state, 0, 1);
+      const result = await finished;
+      expect(duringWrites).toBeGreaterThan(0);
+      expect(result.reads).toBeGreaterThan(0);
+      expect(result, 'Concurrent readers must never observe partial JSON').toMatchObject({ failures: 0 });
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(receipt(200));
+      chmodSync(path, 0o644);
+      saveFixtureReceipt(directory, receipt(201));
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(readdirSync(directory)).toEqual(['runtime.json']);
+    } finally {
+      Atomics.store(state, 0, 1);
+      await reader.terminate();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('removes its unpublished receipt after a failed rename', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'fixture-receipt-failure-'));
+    mkdirSync(join(directory, 'runtime.json'));
+    try {
+      expect(() => saveFixtureReceipt(directory, { ready: true })).toThrow();
+      expect(readdirSync(directory)).toEqual(['runtime.json']);
+      expect(statSync(join(directory, 'runtime.json')).isDirectory()).toBe(true);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it('expires an actually signed device JWT only in the owned child and accepts a newly signed token', async () => {
     const parentBefore = Date.now();
     const root = fileURLToPath(new URL('../../../', import.meta.url));
@@ -37,12 +106,11 @@ describe('disposable native HTTPS fixture admission', () => {
         });
       `], { cwd: root, env: { ...process.env, ...privateEnv, MOBILE_JWT_SECRET: 'fixture-only-stable-secret' },
       stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
-    let childFailure = '';
-    child.stderr!.on('data', chunk => { childFailure += String(chunk); });
+    const childFailure = createTextCollector(child.stderr);
     const message = (type: string) => new Promise<any>((done, reject) => {
       const cleanup = () => { clearTimeout(timer); child.off('message', receive); child.off('exit', exited); };
       const timer = setTimeout(() => { cleanup(); reject(new Error('Missing child proof: ' + type)); }, 10000);
-      const exited = () => { cleanup(); reject(new Error('Fixture child exited: ' + childFailure)); };
+      const exited = () => { cleanup(); reject(new Error('Fixture child exited: ' + childFailure.text())); };
       const receive = (m: any) => { if (m.type === type) { cleanup(); done(m); } };
       child.on('message', receive);
       child.once('exit', exited);
@@ -221,7 +289,64 @@ describe('disposable native HTTPS fixture admission', () => {
       { PAPERCUSP_TEST_PG_ADMIN_URL: undefined },
       { PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private@127.0.0.1:5432/private' },
       { PAPERCUSP_TEST_PG_ADMIN_URL: 'postgres://private@remote.example:40003/private' },
+      { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170', PAPERCUSP_HONO_PORT: '3170' },
+      { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070', PAPERCUSP_HONO_PORT: '3070' },
+      { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3055', PAPERCUSP_HONO_PORT: '3055' },
+      { PAPERCUSP_OPERATOR_URL: 'http://user:secret@127.0.0.1:40001' },
+      { PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:40001?query=1' },
     ]) expect(() => fixtureIdentity({ ...privateEnv, ...change })).toThrow();
+  });
+
+  it.each(['pass', 'misrouted', 'foreign-workspace', 'missing-private-device', 'runtime-mismatch', 'cleanup-failed'])(
+    'requires private origin identity before advertised-hostname readiness (%s)', async outcome => {
+      const deviceId = '12345678-1234-1234-1234-123456789abc';
+      const publicBase = 'https://api.papercuspai.com';
+      const workspaceId = privateEnv.PAPERCUSP_WORKSPACE_ID;
+      const seen: Array<{ base: string; path: string; method: string }> = [];
+      const probe = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
+        const url = new URL(String(input));
+        seen.push({ base: url.origin, path: url.pathname, method: init.method ?? 'GET' });
+        expect(init.redirect).toBe('error');
+        expect(init.signal).toBeInstanceOf(AbortSignal);
+        const privateCall = url.origin === privateEnv.PAPERCUSP_OPERATOR_URL;
+        if (privateCall && url.pathname.endsWith('mint-pair-token')) {
+          expect(JSON.parse(String(init.body))).toEqual({ workspaceId });
+          return Response.json({ qrPayload: { server: publicBase, workspaceId, pairToken: 'private-one-shot' } });
+        }
+        if (privateCall && init.method === 'DELETE')
+          return Response.json({}, { status: outcome === 'cleanup-failed' ? 500 : 200 });
+        if (privateCall && url.pathname.endsWith('/devices'))
+          return Response.json({ devices: outcome === 'missing-private-device' ? [] : [{ device_id: deviceId, workspace_id: workspaceId }] });
+        if (url.pathname === '/api/device/pair') {
+          expect(JSON.parse(String(init.body)).pairToken).toBe('private-one-shot');
+          return Response.json({ deviceId, deviceToken: 'private-jwt',
+            workspaceId: outcome === 'foreign-workspace' ? 'shared-workspace' : workspaceId },
+          { status: outcome === 'misrouted' ? 401 : 200 });
+        }
+        if (url.pathname.endsWith('runtime-config')) {
+          expect(new Headers(init.headers).get('authorization')).toBe('Bearer private-jwt');
+          return Response.json({ workspaceId: outcome === 'runtime-mismatch' ? 'shared-workspace' : workspaceId });
+        }
+        return Response.json({}, { status: url.pathname.endsWith('heartbeat') ? 401 : 404 });
+      }) as unknown as typeof fetch;
+      if (outcome === 'pass') {
+        const receipt = await verifyAdvertisedFixtureRoute(privateEnv, probe);
+        expect(receipt).toMatchObject({ publicBase, workspaceId, privatePairVerified: true });
+        expect(JSON.stringify(receipt)).not.toMatch(/private-one-shot|private-jwt/);
+      } else await expect(verifyAdvertisedFixtureRoute(privateEnv, probe)).rejects.toThrow();
+      expect(seen.some(r => r.path.includes('attention') || r.path.includes('switch') || r.path === '/api/workspaces')).toBe(false);
+      expect(seen.filter(r => r.method === 'DELETE')).toEqual(outcome === 'misrouted' ? [] : [
+        { base: privateEnv.PAPERCUSP_OPERATOR_URL, path: '/api/device/desktop/devices/' + deviceId, method: 'DELETE' },
+      ]);
+      if (['misrouted', 'foreign-workspace', 'missing-private-device'].includes(outcome))
+        expect(seen.some(r => r.path.endsWith('runtime-config'))).toBe(false);
+    });
+
+  it('rejects shared-runtime input before sending any advertised-route request', async () => {
+    const probe = vi.fn();
+    await expect(verifyAdvertisedFixtureRoute({ ...privateEnv, PAPERCUSP_WORKSPACE_ID: 'papercusp-workspace' }, probe))
+      .rejects.toThrow('Disposable workspace');
+    expect(probe).not.toHaveBeenCalled();
   });
 
   it('measures real HTTP denial even when the connector rewrites Host to localhost', async () => {

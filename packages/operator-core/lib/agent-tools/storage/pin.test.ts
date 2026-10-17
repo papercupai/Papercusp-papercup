@@ -20,9 +20,25 @@ describe('storage:pin', () => {
     expect(await tool.handler({ op: 'pin', path: '/tmp/output', reason: 'review', expiresAt: '2026-12-01T00:00:00Z' }, {} as never))
       .toEqual({ data: { ok: true, op: 'pin', pin } });
     expect(h.createRetentionPin).toHaveBeenCalledWith({ path: '/tmp/output', reason: 'review', expiresAt: '2026-12-01T00:00:00Z', owner: 'authenticated-agent' });
-    expect(h.withFsMutex).toHaveBeenCalledWith('papercusp-disk-retention', expect.any(Function), { timeoutMs: expect.any(Number) });
+    expect(h.withFsMutex).toHaveBeenCalledWith('papercusp-disk-retention', expect.any(Function), {});
     await tool.handler({ op: 'unpin', id: '58e49cc6-dd34-4438-b182-c13892d39a2e' }, {} as never);
     expect(h.removeRetentionPin).toHaveBeenCalledWith('58e49cc6-dd34-4438-b182-c13892d39a2e', 'authenticated-agent');
+  });
+
+  it('bounds retention-mutex admission to the remaining host deadline when one exists', async () => {
+    const nowMs = 1_000_000;
+    const now = vi.spyOn(Date, 'now').mockReturnValue(nowMs);
+    h.createRetentionPin.mockReturnValue({ id: 'pin-id' });
+
+    try {
+      await tool.handler(
+        { op: 'pin', path: '/tmp/output', reason: 'review', expiresAt: '2026-12-01T00:00:00Z' },
+        { deadlineAtMs: nowMs + 10_000 } as never,
+      );
+      expect(h.withFsMutex).toHaveBeenCalledWith('papercusp-disk-retention', expect.any(Function), { timeoutMs: 9_000 });
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('reports an unreadable lease store as an error on listing', async () => {

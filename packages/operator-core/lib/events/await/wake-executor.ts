@@ -52,7 +52,10 @@ import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { resolveResumedSessionOperatorBaseUrl } from '../../mcp-base-url';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
+import { concreteWorkspaceIdOrNull } from '../../workspace-registry';
 import { redactSensitiveText } from '../../sensitive-text';
+import { observeFallback as defaultObserveFallback } from '../../degradation/fallback-observations';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { packWakeText, recordWakePack, renderSectionIndex } from './wake-text-budget';
 import { getDoorConstantsSync } from '../../context-doors-config';
@@ -64,9 +67,15 @@ import {
 import { capabilityPolicyFlags } from '@papercusp/orchestrator/managed-capability-policy';
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
 import {
+  codexFreshDefaultAuthPreflight,
+  codexThreadWriterHolder,
+  rehealResumeCodexAuth,
+} from '../../../../../apps/operator/scripts/psu-launcher.mjs';
+import {
   fallbackCodexLaunchSpecFromAdvSession,
   getAdvSession,
   latestAdvSessionByCoordOwner,
+  workspaceForCoordOwner,
   claimAdvSessionResume,
   setAdvSessionPid,
 } from '../../adv-sessions';
@@ -105,7 +114,7 @@ import { sendMessage } from '../../agent-tools/coordination/messages';
 import { getSessionBriefLifecycle, type SessionBriefLifecycle } from '../../session-brief';
 import { getWorkItem, isClaimHoldParked, isSettledWorkItemState } from '../../work-items';
 import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
-import { lastProductiveToolCallAtByOwner } from '../../fleet/assignments';
+import { lastProductiveToolCallAtByOwner, listFleetAssignments } from '../../fleet/assignments';
 // EI-21901188813309549: the SAME shared liveness oracle fleet-transition-events.ts's
 // emit-time revalidation reads (there via the gatherCurrentFleetMemberObservation ⇒
 // reconcileWakeability path). Imported directly here rather than importing that
@@ -122,6 +131,7 @@ import { resolveSessionStates } from '../../agent-tools/coordination/liveness-or
 // mocks './wake-executor' wholesale, which silently undefined-ed it and deleted the
 // park nudge inside a best-effort catch.
 import { payloadIsTimeout, wakeSummaryHeadline } from './timeout-fallback';
+import { AWAIT_CANCEL_REASONS } from './cancel-reasons';
 import { prepareCellWakeFold } from './cell-wake-fold';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
@@ -213,7 +223,7 @@ import {
 import { findCodexRolloutPath } from './codex-rollout-overflow';
 import type { ToolReferenceDeathRecovery } from '../../system-health/compaction-compliance-watchdog';
 import { classifyResumeTurnExit, type ResumeTurnContext, type ResumeTurnExitRaw } from './resume-turn-outcome';
-import type { DeliveryWork, WakeChannel, WakeOutcome, WakeHandle } from './types';
+import { isAcceptedPsuHostDelivery, type DeliveryWork, type WakeChannel, type WakeOutcome, type WakeHandle } from './types';
 
 /** Bounded output-tail capture for an observed resume turn (P0a). The CLIs print
  *  API errors (incl. the 429 / usage-limit lines) to STDOUT; the dying turn's error
@@ -672,6 +682,16 @@ export function codexWakeGatewayEnv(route: WakeAccountRoute | null): Record<stri
   return {};
 }
 
+function prepareDirectCodexWakeAuth(codexHome: string) {
+  rehealResumeCodexAuth(codexHome);
+  return codexFreshDefaultAuthPreflight({
+    agent: 'codex',
+    headless: true,
+    account: 'default',
+    codexHome,
+  });
+}
+
 export type EnsureCodexHomeForWakeResult = {
   ok: boolean;
   repaired?: boolean;
@@ -1036,21 +1056,70 @@ type FleetContextCriticalFreshness = {
   stale: boolean;
   currentPressure: ContextPressureBucket | null;
   currentEpoch: number | null;
+  memberStaleReason: string | null;
 };
+
+/**
+ * A queued fleet context-critical delivery can outlive the member that caused
+ * it. Confirm the target still has a current presence or active claim in that
+ * fleet, and suppress a known ended or recorded/non-wakeable claimless session.
+ * Failed or timed-out reads remain unknown and preserve the wake.
+ */
+async function currentFleetContextCriticalMemberStaleReason(
+  d: DeliveryWork,
+  getCurrentAssignments: typeof listFleetAssignments,
+  resolveStates: typeof resolveSessionStates,
+  timeoutMs: number,
+): Promise<string | null> {
+  const parsed = parseFleetContextCriticalPayload(d.payload);
+  if (!parsed || d.eventKey.slice(FLEET_CONTEXT_CRITICAL_PREFIX.length) !== parsed.fleetSlug) return null;
+
+  const [rows, verdicts] = await Promise.all([
+    withWakeTimeout(
+      Promise.resolve().then(() =>
+        getCurrentAssignments({ workspaceId: d.workspaceId, fleet: parsed.fleetSlug, agent: parsed.agentId }),
+      ),
+      `fleet context-critical roster/${parsed.agentId}`,
+      Math.max(1, timeoutMs),
+    ),
+    withWakeTimeout(
+      Promise.resolve().then(() => resolveStates([{ ownerId: parsed.agentId }], { hydratePerId: true })),
+      `fleet context-critical liveness/${parsed.agentId}`,
+      Math.max(1, timeoutMs),
+    ),
+  ]);
+
+  const activeClaimCount = rows?.filter(
+    (row) => row.source === 'plan_item_claim' || row.source === 'work_item_claim',
+  ).length;
+  const hasPresence = rows?.some((row) => row.source === 'presence') ?? false;
+  if (rows !== null && !hasPresence && activeClaimCount === 0) {
+    return 'the target has no current fleet presence or active claim';
+  }
+
+  const current = verdicts?.get(parsed.agentId);
+  if (current?.sessionState === 'ended') return "the target session is currently 'ended'";
+  if (current?.sessionState === 'recorded' && current.wakeable === false && activeClaimCount === 0) {
+    return 'the target is recorded, non-wakeable, and claimless';
+  }
+  return null;
+}
 
 async function currentFleetContextCriticalIsStale(
   d: DeliveryWork,
   getCurrentPressure: (agentId: string) => Promise<ContextPressureBucket | null>,
   getCurrentEpoch: (agentId: string) => Promise<number | null>,
+  getCurrentAssignments: typeof listFleetAssignments,
+  resolveStates: typeof resolveSessionStates,
   timeoutMs: number,
 ): Promise<FleetContextCriticalFreshness> {
   if (!d.eventKey.startsWith(FLEET_CONTEXT_CRITICAL_PREFIX) || d.eventKey.length <= FLEET_CONTEXT_CRITICAL_PREFIX.length) {
-    return { stale: false, currentPressure: null, currentEpoch: null };
+    return { stale: false, currentPressure: null, currentEpoch: null, memberStaleReason: null };
   }
   const parsed = parseFleetContextCriticalPayload(d.payload);
-  if (!parsed) return { stale: false, currentPressure: null, currentEpoch: null };
+  if (!parsed) return { stale: false, currentPressure: null, currentEpoch: null, memberStaleReason: null };
 
-  const [pressureRead, epochRead] = await Promise.all([
+  const [pressureRead, epochRead, memberStaleReason] = await Promise.all([
     withWakeTimeout(
       Promise.resolve().then(() => getCurrentPressure(parsed.agentId)),
       `fleet context-critical pressure/${parsed.agentId}`,
@@ -1063,6 +1132,7 @@ async function currentFleetContextCriticalIsStale(
           `fleet context-critical generation/${parsed.agentId}`,
           Math.max(1, timeoutMs),
         ),
+    currentFleetContextCriticalMemberStaleReason(d, getCurrentAssignments, resolveStates, timeoutMs),
   ]);
   const currentPressure =
     pressureRead === 'ok' || pressureRead === 'high' || pressureRead === 'critical' ? pressureRead : null;
@@ -1071,7 +1141,12 @@ async function currentFleetContextCriticalIsStale(
   const pressureStale = currentPressure !== null && currentPressure !== 'critical';
   const generationStale =
     parsed.contextEpoch !== null && currentEpoch !== null && currentEpoch > parsed.contextEpoch;
-  return { stale: pressureStale || generationStale, currentPressure, currentEpoch };
+  return {
+    stale: pressureStale || generationStale || memberStaleReason !== null,
+    currentPressure,
+    currentEpoch,
+    memberStaleReason,
+  };
 }
 
 type CoalescedDeliveryEvent = {
@@ -1103,6 +1178,188 @@ type BlockedBoundDeliveryFreshness = {
   staleOnly: boolean;
   staleIds: string[];
 };
+
+export interface GradingAuditResumeTaskLookup {
+  workspaceId: string;
+  subscriberId: string;
+  sessionId: string;
+}
+
+export interface GradingAuditResumeTaskRow {
+  workspaceId?: unknown;
+  taskId?: unknown;
+  class?: unknown;
+  sessionId?: unknown;
+  detail?: unknown;
+}
+
+export interface GradingAuditResumeTarget {
+  issueId?: unknown;
+  evidenceFingerprint?: unknown;
+  gradingAudit?: unknown;
+}
+
+export interface GradingAuditResumeGuardDeps {
+  readTasks?: (input: GradingAuditResumeTaskLookup) => Promise<GradingAuditResumeTaskRow[]>;
+  readTarget?: (input: { workspaceId: string; issueId: string }) => Promise<GradingAuditResumeTarget | null>;
+  cancelAwait?: (input: {
+    awaitId: number;
+    subscriberId: string;
+    reason: typeof AWAIT_CANCEL_REASONS.gradingAuditNoLongerCurrent;
+  }) => Promise<unknown>;
+  timeoutMs?: number;
+}
+
+const GRADING_AUDIT_RESUME_LOOKUP_TIMEOUT_MS = 1_000;
+
+type GradingAuditTaskBinding = {
+  issueId: string;
+  evidenceFingerprint: string;
+  reservation: { key: string; reservedAt: string };
+};
+
+function gradingAuditBindingFromTask(task: GradingAuditResumeTaskRow): GradingAuditTaskBinding | null {
+  if (!isRecord(task.detail) || !isRecord(task.detail.gradingAudit)) return null;
+  const raw = task.detail.gradingAudit;
+  const reservation = isRecord(raw.reservation) ? raw.reservation : null;
+  const issueId = typeof raw.issueId === 'string' ? raw.issueId.trim() : '';
+  const evidenceFingerprint = typeof raw.evidenceFingerprint === 'string' ? raw.evidenceFingerprint.trim() : '';
+  const key = typeof reservation?.key === 'string' ? reservation.key.trim() : '';
+  const reservedAt = typeof reservation?.reservedAt === 'string' ? reservation.reservedAt.trim() : '';
+  if (
+    !issueId || !evidenceFingerprint || key !== `grading-audit:${issueId}` ||
+    !reservedAt || !Number.isFinite(Date.parse(reservedAt))
+  ) return null;
+  return { issueId, evidenceFingerprint, reservation: { key, reservedAt } };
+}
+
+/**
+ * Channel 2 is the process-gone resume path. A grading-auditor task is tied to
+ * one scorecard and lease; before claimResume clears the adv-session's terminal
+ * markers, confirm that its exact task still targets that pending audit. Reads
+ * are bounded and fail-open. A lapsed (absent) dispatch lease is deliberately
+ * unknown: an auditor may continue under its historical receipt. Only an
+ * explicitly settled target, changed evidence, or a present changed lease
+ * drops this delivery and cancels its exact await registration.
+ */
+export async function revalidateGradingAuditChannel2Delivery(
+  delivery: DeliveryWork,
+  sessionId: string | null | undefined,
+  deps: GradingAuditResumeGuardDeps = {},
+): Promise<{ action: 'proceed' } | { action: 'drop'; reason: string }> {
+  const nativeSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+  if (!nativeSessionId || !delivery.workspaceId || !delivery.subscriberId) return { action: 'proceed' };
+  const timeoutMs = Math.max(1, deps.timeoutMs ?? GRADING_AUDIT_RESUME_LOOKUP_TIMEOUT_MS);
+  const readTasks = deps.readTasks ?? (async (input: GradingAuditResumeTaskLookup) => {
+    const { listTasks } = await import('../../task-manager/store');
+    return listTasks({
+      workspaceId: input.workspaceId,
+      coordOwnerId: input.subscriberId,
+      sessionId: input.sessionId,
+      classes: ['agent-session'],
+      includeEnded: true,
+      limit: 2,
+    });
+  });
+  let tasks: GradingAuditResumeTaskRow[] | null;
+  try {
+    tasks = await withWakeTimeout(
+      Promise.resolve().then(() => readTasks({
+        workspaceId: delivery.workspaceId,
+        subscriberId: delivery.subscriberId,
+        sessionId: nativeSessionId,
+      })),
+      `grading-audit task binding/${delivery.subscriberId}`,
+      timeoutMs,
+    );
+  } catch {
+    return { action: 'proceed' };
+  }
+  if (!Array.isArray(tasks) || tasks.length !== 1) return { action: 'proceed' };
+  const task = tasks[0]!;
+  if (
+    task.workspaceId !== delivery.workspaceId || task.class !== 'agent-session' ||
+    task.sessionId !== nativeSessionId || !isRecord(task.detail) ||
+    task.detail.coordOwnerId !== delivery.subscriberId
+  ) return { action: 'proceed' };
+  const binding = gradingAuditBindingFromTask(task);
+  if (!binding) return { action: 'proceed' };
+
+  const readTarget = deps.readTarget ?? (async (input: { workspaceId: string; issueId: string }) => {
+    const { getIssueInWorkspace } = await import('../../issues-engineer');
+    const issue = await getIssueInWorkspace(input.workspaceId, input.issueId, { includeBody: false });
+    if (!issue) return null;
+    const payload = isRecord(issue.payload) ? issue.payload : null;
+    const observation = payload && isRecord(payload.observation) ? payload.observation : null;
+    return {
+      issueId: issue.id,
+      evidenceFingerprint: observation?.evidenceFingerprint,
+      gradingAudit: observation?.gradingAudit,
+    };
+  });
+  let target: GradingAuditResumeTarget | null;
+  try {
+    target = await withWakeTimeout(
+      Promise.resolve().then(() => readTarget({ workspaceId: delivery.workspaceId, issueId: binding.issueId })),
+      `grading-audit target/${binding.issueId}`,
+      timeoutMs,
+    );
+  } catch {
+    return { action: 'proceed' };
+  }
+  if (!target || target.issueId !== binding.issueId || !isRecord(target.gradingAudit)) {
+    return { action: 'proceed' };
+  }
+
+  const audit = target.gradingAudit;
+  let staleReason: string | null = null;
+  if (audit.state === 'passed' || audit.state === 'failed' || audit.state === 'cancelled' || audit.state === 'awaiting-reemit') {
+    staleReason = `grading-audit target ${binding.issueId} is settled (${audit.state})`;
+  } else if (audit.state === 'pending') {
+    if (
+      typeof target.evidenceFingerprint === 'string' && target.evidenceFingerprint.trim() &&
+      target.evidenceFingerprint.trim() !== binding.evidenceFingerprint
+    ) {
+      staleReason = `grading-audit target ${binding.issueId} has a changed evidence fingerprint`;
+    } else if (typeof target.evidenceFingerprint !== 'string' || !target.evidenceFingerprint.trim()) {
+      return { action: 'proceed' };
+    } else {
+      const reservation = isRecord(audit.dispatchReservation) ? audit.dispatchReservation : null;
+      const currentKey = typeof reservation?.key === 'string' ? reservation.key.trim() : '';
+      const currentReservedAt = typeof reservation?.reservedAt === 'string' ? reservation.reservedAt.trim() : '';
+      // A missing or malformed current reservation is a lapsed/unknown lease,
+      // not proof that the retained auditor was superseded.
+      if (!currentKey || !currentReservedAt || !Number.isFinite(Date.parse(currentReservedAt))) {
+        return { action: 'proceed' };
+      }
+      if (currentKey !== binding.reservation.key || currentReservedAt !== binding.reservation.reservedAt) {
+        staleReason = `grading-audit target ${binding.issueId} has a newer dispatch reservation`;
+      }
+    }
+  } else {
+    return { action: 'proceed' };
+  }
+  if (!staleReason) return { action: 'proceed' };
+
+  const cancelAwait = deps.cancelAwait ?? (async (input) => {
+    const { cancelAwait: cancel } = await import('./store');
+    return cancel(input);
+  });
+  try {
+    await withWakeTimeout(
+      Promise.resolve().then(() => cancelAwait({
+        awaitId: delivery.awaitId,
+        subscriberId: delivery.subscriberId,
+        reason: AWAIT_CANCEL_REASONS.gradingAuditNoLongerCurrent,
+      })),
+      `grading-audit await cancellation/${delivery.awaitId}`,
+      timeoutMs,
+    );
+  } catch {
+    // The current stale delivery is still dropped even if await cancellation fails.
+  }
+  return { action: 'drop', reason: `${staleReason}; cancelled only await ${delivery.awaitId} for ${delivery.subscriberId}` };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -1806,7 +2063,10 @@ async function readLoopDeliverySupersession(
   }
 }
 
-type DeliveryCarryNoteMeta = Awaited<ReturnType<typeof defaultGetLoopCarryNoteWithMeta>>;
+type DeliveryCarryNoteMeta = Awaited<ReturnType<typeof defaultGetLoopCarryNoteWithMeta>> & {
+  /** Delivery-local results from this snapshot; cold transports must retain them. */
+  carriedChangesBlock?: string;
+};
 
 type CarryNoteSnapshotIdentity = {
   bodyHash: string | null;
@@ -1860,13 +2120,14 @@ export async function defaultCarriedProbeBlock(input: {
   ownerId: string;
   checks: ReadonlyArray<CheckEntry>;
   harness: string;
+  workspaceId: string;
   readAtIso: string;
 }): Promise<string | null> {
   try {
     const { carriedProbeBlockForDelivery, carriedProbeSources } = await import('../../carry-probe-eval');
     return await carriedProbeBlockForDelivery(
       carriedProbeSources({ loop: { ownerId: input.ownerId, checks: input.checks } }),
-      { harness: input.harness, readAtIso: input.readAtIso },
+      { harness: input.harness, workspaceId: input.workspaceId, readAtIso: input.readAtIso },
     );
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
@@ -1928,6 +2189,8 @@ export async function rehydrateLoopWakeText(
      * (nothing when none moved). Injectable for tests; the default is carry-ref-delivery.ts.
      */
     carryRefBlockFn?: typeof defaultCarryRefBlock;
+    /** The subscriber's tenant; delivery rows themselves live in the coordination namespace. */
+    workspaceForCoordOwnerFn?: typeof workspaceForCoordOwner;
   } = {},
 ): Promise<string> {
   try {
@@ -2005,26 +2268,54 @@ export async function rehydrateLoopWakeText(
     // carried check's claim and probe; RUN the probes too, so a stale claim is reported as changed
     // at delivery instead of being trusted. Only the note already read here is probed — no extra
     // store read on the wake path — and the runner refuses any non-read-only probe undispatched.
-    const probesNow = checks.some((check) => check.probe !== undefined)
-      ? await (deps.carriedProbeBlockFn ?? defaultCarriedProbeBlock)({
+    const hasProbes = checks.some((check) => check.probe !== undefined);
+    const hasRefs = readableNote
+      ? (await import('../../carry-ref-stamps')).extractCarryRefDeps(readableNote, { max: 1 }).length > 0
+      : false;
+    // The loop note and delivery row are pinned to DEFAULT_COORD_WORKSPACE.
+    // Their probes/references read tenant data, just as the checkpoint writer
+    // stamps references in the caller's workspace. Never substitute the host's
+    // ambient workspace when the subscriber's persisted scope is unavailable.
+    let recheckWorkspaceId = concreteWorkspaceIdOrNull(d.workspaceId);
+    if (d.workspaceId === DEFAULT_COORD_WORKSPACE && (hasProbes || hasRefs)) {
+      const scope = await withBoundedTimeout(
+        () => (deps.workspaceForCoordOwnerFn ?? workspaceForCoordOwner)(d.subscriberId),
+        { fallback: null, timeoutMs: 1_000, label: 'wake-carry-subscriber-workspace' },
+      );
+      recheckWorkspaceId = concreteWorkspaceIdOrNull(scope.value);
+    }
+    const probesNow = hasProbes
+      ? recheckWorkspaceId
+        ? await (deps.carriedProbeBlockFn ?? defaultCarriedProbeBlock)({
           ownerId: d.subscriberId,
           checks,
           harness: marker.harness,
+          workspaceId: recheckWorkspaceId,
           readAtIso: deliveryReadAtIso,
         })
+        : '🧪 CARRIED PROBES — COULD NOT RUN: subscriber workspace is unavailable; do not infer the checks hold.'
       : null;
     // P-002 (carry-recheck-and-governed-memory-2026-10-14): one line per reference the delivered
     // note cites whose stamped version moved or no longer resolves; null (prints nothing) when none
     // did. A note citing no reference never reads the stamp row.
-    const refsNow = readableNote
-      ? await (deps.carryRefBlockFn ?? defaultCarryRefBlock)({
+    const refsNow = readableNote && (recheckWorkspaceId || hasRefs)
+      ? recheckWorkspaceId
+        ? await (deps.carryRefBlockFn ?? defaultCarryRefBlock)({
           ownerId: d.subscriberId,
           harness: marker.harness,
-          workspaceId: d.workspaceId,
+          workspaceId: recheckWorkspaceId,
           deliveredNote: readableNote,
           readAtIso: deliveryReadAtIso,
         })
+        : '🔗 CARRIED REFERENCES — COULD NOT RE-CHECK: subscriber workspace is unavailable; do not infer references are unchanged.'
       : null;
+    const carriedChangesBlock =
+      (probesNow ? `## Carried probe changes\n${probesNow}\n\n` : '') +
+      (refsNow ? `## Carried reference changes\n${refsNow}\n\n` : '');
+    // The cold branch rebuilds its narrative rather than injecting warmText.
+    // Carry these already-evaluated results across that boundary, without a
+    // second probe run or another copy of the warm checkpoint narrative.
+    deps.captureLoopCarryNoteMeta?.({ ...meta, carriedChangesBlock });
     const ageMs = readableNote && meta.updatedAtMs != null ? Date.now() - meta.updatedAtMs : null;
     const ageStr = ageMs != null ? `${Math.max(0, Math.round(ageMs / 1000))}s` : 'unknown';
 
@@ -2136,8 +2427,7 @@ export async function rehydrateLoopWakeText(
       // Delivery deltas need their own sections ahead of the narrative. Otherwise the
       // packer inherits the note's final heading and can spill a changed/failed check
       // together with historical prose while keeping the stale claim visible.
-      (probesNow ? `## Carried probe changes\n${probesNow}\n\n` : '') +
-      (refsNow ? `## Carried reference changes\n${refsNow}\n\n` : '') +
+      carriedChangesBlock +
       checkpointState +
       `\n\nCurrent open walls:\n${wallsNow}\n` +
       (checksNow ? `${checksNow}\n` : '') +
@@ -2379,6 +2669,11 @@ export async function degradeToInboxOrDrop(
   try {
     await send(inboxNotifierIdentity(d.workspaceId), {
       to: [inboxDelivery.subscriberId],
+      // The delivery pump may retry after an outcome-unknown failure between
+      // this durable inbox append and markDeliveryDelivered. Reuse the delivery
+      // row as the message replay key so that retry returns the first durable
+      // notice instead of appending another inbox entry.
+      msgId: `event-wake-inbox-${inboxDelivery.id}`,
       summary: `${wakeSummaryHeadline(inboxDelivery.eventKey, inboxDelivery.payload)} — delivered to your coord inbox (${reason})`,
       body: wakeTurnText(inboxDelivery),
       category: 'event',
@@ -2754,6 +3049,8 @@ export async function injectOmpWakeTurnWhenReady(input: {
 }
 
 export interface ExecuteWakeDeps {
+  carriedProbeBlockFn?: typeof defaultCarriedProbeBlock;
+  carryRefBlockFn?: typeof defaultCarryRefBlock;
   /** Injected for tests; default real implementations below. */
   getSession?: typeof getAdvSession;
   /** Delivery-time owner-session election used when a captured session is no longer live. */
@@ -2832,6 +3129,8 @@ export interface ExecuteWakeDeps {
   fleetMemberDeadLookupTimeoutMs?: number;
   /** EI-220670: delivery-time context-pressure read for fleet context-critical wakes. */
   getCurrentContextPressure?: (agentId: string) => Promise<ContextPressureBucket | null>;
+  /** EI-26207385902174159: current fleet presence/claim rows for context-critical targets. */
+  getCurrentFleetContextAssignments?: typeof listFleetAssignments;
   /** Upper bound for the delivery-time fleet context-critical lookup. */
   fleetContextCriticalLookupTimeoutMs?: number;
   /** EI-220670: current compaction/context generation for the event's member. */
@@ -2844,6 +3143,17 @@ export interface ExecuteWakeDeps {
   forceResume?: (pid: number) => Promise<boolean>;
   /** EI-212246: atomic single-winner claim immediately before Channel 2 resume. */
   claimResume?: (advSessionId: number, key?: string | null, windowSec?: number, ownerId?: string | null) => Promise<boolean | 'retired'>;
+  /** Codex's native single-writer flock probe; a confirmed holder parks the wake before claiming/spawning. */
+  codexThreadWriterHolder?: typeof codexThreadWriterHolder;
+  observeFallback?: typeof defaultObserveFallback;
+  /** Delivery-time grading-auditor task lookup before a Channel 2 resume claim. */
+  readGradingAuditTasks?: GradingAuditResumeGuardDeps['readTasks'];
+  /** Delivery-time exact scorecard read for a grading-auditor task. */
+  readGradingAuditTarget?: GradingAuditResumeGuardDeps['readTarget'];
+  /** Exact await cancellation when that grading-audit target or lease is no longer current. */
+  cancelGradingAuditAwait?: GradingAuditResumeGuardDeps['cancelAwait'];
+  /** Per-read bound for Channel 2 grading-audit freshness checks. */
+  gradingAuditResumeLookupTimeoutMs?: number;
   /** P-001 (wake-delivery-degradation-fix-2026-07-09): the coord-message send
    *  used to degrade a would-be DROP into a durable inbox notification.
    *  Injected for tests; defaults to the real sendMessage. */
@@ -2893,6 +3203,8 @@ export interface ExecuteWakeDeps {
    *  Injected so the archive/repair ordering is testable without PG or a live
    *  launch-spec store; the default reuses the /adv route's repair inputs. */
   ensureCodexHomeForWake?: (input: EnsureCodexHomeForWakeInput) => Promise<EnsureCodexHomeForWakeResult>;
+  /** Restore and verify the system Codex login before a direct/default headless resume. */
+  prepareDirectCodexWakeAuth?: typeof prepareDirectCodexWakeAuth;
   /** WI-3940: upper bound (ms) on each rematerialize-on-miss PG call in the
    *  resume leg. The seams above are fail-soft on REJECTION, but a WEDGED PG
    *  connection HANGS past every try/catch and stalls the whole wake pipeline
@@ -2973,6 +3285,8 @@ export interface ExecuteWakeDeps {
    * additional read and retain whichever valid version is newer.
    */
   refreshLoopCarryNoteWithMetaFn?: typeof defaultGetLoopCarryNoteWithMeta;
+  /** Resolve tenant data for coordination-namespace carry checks; never use the host's workspace. */
+  workspaceForCoordOwnerFn?: typeof workspaceForCoordOwner;
   /** WI-6860: read the subscriber's loop status (for `lastTurnAt`) — used ONLY by
    *  the EI-19294445744419497 un-checkpointed-work staleness hint to compare a
    *  cold carry-note's write instant against the subscriber's actual last turn.
@@ -3029,11 +3343,6 @@ type PsuInjectHostView = {
   caps?: string[] | null;
   launchedBy?: string | null;
 };
-
-function isAcceptedPsuHostDelivery(delivery: Pick<DeliveryWork, 'lastError'>): boolean {
-  return delivery.lastError?.startsWith('psu-host accepted:') === true ||
-    delivery.lastError?.startsWith('psu-host pending-delivery-id:') === true;
-}
 
 function hasCurrentHostEndingDrop(
   events: readonly PtyHostEvent[],
@@ -3185,21 +3494,21 @@ async function injectPsuHostWake(
       if (cancellation.ok && cancellation.reason === 'cancel-requested') {
         return {
           kind: 'park',
-          reason: 'psu-host accepted the cancellation request; waiting for its exact pre-write receipt',
+          reason: 'psu-host accepted: cancellation request accepted; waiting for its exact pre-write receipt',
           hostCommitPending: true,
         };
       }
       if (cancellation.ok && cancellation.reason === 'pending-delivery-id') {
         return {
           kind: 'park',
-          reason: 'psu-host still owns the accepted delivery; cancellation is unsupported and the retry remains durable',
+          reason: 'psu-host accepted: cancellation is unsupported; the accepted delivery remains host-owned and retryable',
           hostCommitPending: true,
         };
       }
       if (cancellation.ok && cancellation.reason === 'accepted') {
         return {
           kind: 'park',
-          reason: 'psu-host accepted the fail-open wake retry; waiting for its delivery outcome',
+          reason: 'psu-host accepted: fail-open wake retry; waiting for its delivery outcome',
           hostCommitPending: true,
         };
       }
@@ -3562,7 +3871,8 @@ async function injectPsuHostWake(
     );
     const coldText = await tagWakeText(
       d,
-      mixedSnapshotWarning ? `${mixedSnapshotWarning}\n\n${renderedColdWake}` : renderedColdWake,
+      (capturedCarryNoteMeta?.carriedChangesBlock ?? '') +
+        (mixedSnapshotWarning ? `${mixedSnapshotWarning}\n\n${renderedColdWake}` : renderedColdWake),
       deps.tagTurn ?? tagTurnForInjection,
     );
     // Codex's cold reset is host-mapped to a hard recycle, and the fresh Codex
@@ -3747,6 +4057,7 @@ function newestDeliveryCarryNoteMeta(
 
 /** Execute one wake delivery attempt. Never throws — every failure is an outcome. */
 export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): Promise<WakeOutcome> {
+  const observeFallback = deps.observeFallback ?? defaultObserveFallback;
   const getSession = deps.getSession ?? getAdvSession;
   const getLatestSessionForOwner = deps.getLatestSessionForOwner ?? latestAdvSessionByCoordOwner;
   const findPty = deps.findPty ?? findPtyByPid;
@@ -3768,6 +4079,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const getCurrentContextPressure =
     deps.getCurrentContextPressure ??
     (async (agentId: string) => (await fetchContextPressure([agentId])).get(agentId) ?? null);
+  const getCurrentFleetContextAssignments = deps.getCurrentFleetContextAssignments ?? listFleetAssignments;
   const fleetContextCriticalLookupTimeoutMs =
     deps.fleetContextCriticalLookupTimeoutMs ?? FLEET_CONTEXT_CRITICAL_LOOKUP_TIMEOUT_MS;
   const getCurrentContextEpoch =
@@ -4175,12 +4487,15 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       d,
       getCurrentContextPressure,
       getCurrentContextEpoch,
+      getCurrentFleetContextAssignments,
+      resolveMemberLiveness,
       fleetContextCriticalLookupTimeoutMs,
     );
     if (contextCriticalCheck.stale) {
       const parsedContextCritical = parseFleetContextCriticalPayload(d.payload);
       const staleAgentId = parsedContextCritical?.agentId ?? 'unknown';
       const staleReasons = [
+        contextCriticalCheck.memberStaleReason,
         contextCriticalCheck.currentPressure !== null && contextCriticalCheck.currentPressure !== 'critical'
           ? `currently '${contextCriticalCheck.currentPressure}', not 'critical'`
           : null,
@@ -4980,6 +5295,17 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
               `(${repair.reason ?? 'unknown'}); parked before native resume`,
           };
         }
+        if (!codexAccountRoute || codexAccountRoute.mode === 'default') {
+          const auth = (deps.prepareDirectCodexWakeAuth ?? prepareDirectCodexWakeAuth)(home);
+          if (!auth.ready) {
+            return {
+              kind: 'park',
+              reason:
+                'Codex default-account auth unavailable (' + auth.reason +
+                '); parked before provider request',
+            };
+          }
+        }
         // The adv-session/handle id is only an archive lookup hint. It may be
         // stale, and using it here would let a missing/failed rematerialize
         // launch `codex exec resume` against a home with no matching rollout.
@@ -5077,6 +5403,54 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // a datastore fault as a lost race sends the operator hunting a competing
     // resumer that never existed. Park either way (never risk a second writer),
     // but say which happened.
+    const nativeResumeSessionId = resumeAgent === 'codex'
+      ? codexSessionId
+      : fresh?.sessionId ?? handle.sessionId;
+    // Codex serializes writers for a native thread with its own flock. The DB
+    // resume claim below arbitrates competing Papercusp resumers, but cannot see
+    // a still-running native process whose managed host/pid is no longer visible.
+    // Check Codex's lock authority before claiming the row so a known-live writer
+    // parks this wake without launching a doomed `exec resume` or mutating the
+    // adv-session's terminal markers. The probe is fail-open on unsupported or
+    // unreadable lock state; Codex remains the final arbiter for a racing writer.
+    if (resumeAgent === 'codex' && codexHome && nativeResumeSessionId) {
+      try {
+        const writer = (deps.codexThreadWriterHolder ?? codexThreadWriterHolder)(codexHome, nativeResumeSessionId);
+        observeFallback('routine-capability-read', {
+          eligible: 1, applied: 1, reason: 'applied', scope: 'wake-codex-writer-lock',
+        }, { workspaceId: d.workspaceId });
+        if (writer.held) {
+          return {
+            kind: 'park',
+            reason:
+              `Codex thread ${nativeResumeSessionId} already has an active writer ` +
+              `(pid ${writer.pid ?? 'unknown'}); parked before resume claim/spawn`,
+          };
+        }
+      } catch (error) {
+        observeFallback('routine-capability-read', {
+          eligible: 1, applied: 0, reason: 'writer-lock-probe-failed', scope: 'wake-codex-writer-lock',
+        }, { workspaceId: d.workspaceId });
+        console.warn(
+          `[wake-executor] Codex writer-lock probe failed open for ${nativeResumeSessionId}: ` +
+            `${redactSensitiveText(error instanceof Error ? error.message : String(error))}`,
+        );
+      }
+    }
+    const gradingAuditFreshness = await revalidateGradingAuditChannel2Delivery(
+      d,
+      nativeResumeSessionId,
+      {
+        readTasks: deps.readGradingAuditTasks,
+        readTarget: deps.readGradingAuditTarget,
+        cancelAwait: deps.cancelGradingAuditAwait,
+        timeoutMs: deps.gradingAuditResumeLookupTimeoutMs,
+      },
+    );
+    if (gradingAuditFreshness.action === 'drop') {
+      return { kind: 'drop', reason: gradingAuditFreshness.reason };
+    }
+
     let claimed: boolean | 'retired';
     try {
       claimed = await claimResume(handle.advSessionId, null, undefined, d.subscriberId);

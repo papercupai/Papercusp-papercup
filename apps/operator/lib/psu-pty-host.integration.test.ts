@@ -15,7 +15,7 @@ import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { execPath } from 'node:process';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { promises as fsPromises } from 'node:fs';
 import { hermeticEnv } from '../vitest-shims/psu-pty-temp-dir';
 import {
@@ -245,7 +245,7 @@ function exactStatusOnlyCodexReady(output: string): boolean {
 }
 
 describe('managed-pty integration evidence isolation', () => {
-  it('waits for fresh Codex native readiness before writing the first kickoff (WI-10007270)', async () => {
+  it('waits for resumed Codex native readiness before writing the first continuation (WI-10007270)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'psu-initial-native-ready-'));
     const inputFile = join(root, 'input.txt');
     const ownerId = `su-initial-native-${process.pid}-${Math.floor(performance.now())}`;
@@ -260,7 +260,7 @@ describe('managed-pty integration evidence isolation', () => {
     const { captured, io } = fakeIo();
     const done = hostThroughPty({
       command: execPath,
-      args: ['-e', "const fs=require('fs');let input='';process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdout.write('model: GPT-6.1-Sol medium\\nReady · GPT-6.1-Sol medium · Context 100% left\\n');process.stdin.on('data',d=>{input+=d;fs.appendFileSync(process.env.INPUT_FILE,d);if(input.includes('BEGIN_ACCEPTED_OPERATION'))process.exit(0);});"],
+      args: ['-e', "const fs=require('fs');let input='';process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdout.write('model: GPT-6.1-Sol medium\\nReady · GPT-6.1-Sol medium · Context 100% left\\n');process.stdin.on('data',d=>{input+=d;fs.appendFileSync(process.env.INPUT_FILE,d);if(input.includes('BEGIN_ACCEPTED_OPERATION'))process.exit(0);});", 'resume'],
       cwd: root,
       env: {
         ...hermeticEnv(), PAPERCUSP_AGENT: 'codex', INPUT_FILE: inputFile,
@@ -321,7 +321,9 @@ describe('managed-pty integration evidence isolation', () => {
       : '\x1b[6n│ >_ OpenAI Codex (v0.156.1) │\n│ model: loading /model to change │\n› Ask Codex to do anything\n';
     const done = hostThroughPty({
       command: execPath,
-      args: ['-e', "const fs=require('fs');process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdin.on('data',d=>fs.appendFileSync(process.env.INPUT_FILE,d));setTimeout(()=>process.stdout.write(process.env.INITIAL_OUTPUT),Number(process.env.INITIAL_OUTPUT_DELAY_MS));"],
+      // Only the binding phase resumes an existing thread. Fresh marked
+      // kickoffs keep their stricter frame gate and bind after submission.
+      args: ['-e', "const fs=require('fs');process.stdin.setRawMode?.(true);process.stdin.setEncoding('utf8');process.stdin.on('data',d=>fs.appendFileSync(process.env.INPUT_FILE,d));setTimeout(()=>process.stdout.write(process.env.INITIAL_OUTPUT),Number(process.env.INITIAL_OUTPUT_DELAY_MS));", ...(phase === 'native binding' ? ['resume'] : [])],
       cwd: root,
       env: {
         ...hermeticEnv(), PAPERCUSP_AGENT: 'codex', CODEX_HOME: codexHome,
@@ -356,8 +358,7 @@ describe('managed-pty integration evidence isolation', () => {
         }
       }, { timeout: 3000 });
       expect(existsSync(inputFile) ? readFileSync(inputFile, 'utf8') : '').toBe('');
-      if (gatedKickoff) expect(onRespawn).toHaveBeenCalledOnce();
-      else expect(onRespawn).not.toHaveBeenCalled();
+      expect(onRespawn).not.toHaveBeenCalled();
     } finally {
       signalSource.emit('SIGTERM');
       await done.catch(() => undefined);
@@ -406,6 +407,7 @@ describe('managed-pty integration evidence isolation', () => {
   it('excludes caller launch state and native homes while preserving explicit fixture inputs', () => {
     const source = {
       PATH: '/fixture/bin', TERM: 'xterm-256color',
+      NODE_OPTIONS: '--import=/fixture/must-not-run.mjs', NODE_PATH: '/fixture/modules',
       PAPERCUSP_PSU_PTY_DIR: PSU_PTY_DIR,
       PAPERCUSP_AGENT: 'codex', PAPERCUSP_SID: 'live-owner',
       PAPERCUSP_ADV_SESSION_ID: '123', PAPERCUSP_PSU_HEADLESS: '1',
@@ -418,6 +420,11 @@ describe('managed-pty integration evidence isolation', () => {
     const env = hermeticEnv({ PAPERCUSP_SID: 'fixture-owner' }, source);
     expect(env.PATH).toBe(source.PATH);
     expect(env.TERM).toBe(source.TERM);
+    expect(env).not.toHaveProperty('NODE_OPTIONS');
+    expect(env).not.toHaveProperty('NODE_PATH');
+    // Prove that the child can boot, rather than only checking a copied map.
+    expect(execFileSync(execPath, ['-e', "process.stdout.write('FIXTURE_READY')"], { env, encoding: 'utf8' }))
+      .toBe('FIXTURE_READY');
     expect(env.PAPERCUSP_PSU_PTY_DIR).toBe(PSU_PTY_DIR);
     expect(env.PAPERCUSP_SID).toBe('fixture-owner');
     expect(env.CODEX_HOME).toBe(join(PSU_PTY_DIR, 'codex-home'));
@@ -428,6 +435,7 @@ describe('managed-pty integration evidence isolation', () => {
     expect(hermeticEnv({ CODEX_HOME: '/fixture/native', [KICKOFF_PROOF_PATH_ENV]: '/fixture/receipt' }, source))
       .toMatchObject({ CODEX_HOME: '/fixture/native', [KICKOFF_PROOF_PATH_ENV]: '/fixture/receipt' });
     expect(source.CODEX_HOME).toBe('/live/codex');
+    expect(source.NODE_OPTIONS).toBe('--import=/fixture/must-not-run.mjs');
   });
 
   it('redirects host lifecycle evidence away from the live operator corpus', () => {
@@ -447,18 +455,27 @@ describe('Codex startup process evidence (EI-24353430528930250)', () => {
     const ownerId = `su-startup-trace-${process.pid}-${Math.floor(performance.now())}`;
     const logPath = eventLogPathForOwner(ownerId);
     const { io } = fakeIo();
+    const signalSource = new EventEmitter();
+    let done: Promise<number> | undefined;
     try {
-      await hostThroughPty({
+      done = hostThroughPty({
         command: '/bin/bash',
-        args: ['-c', `"${codexRuntime}" 1.5 & wait`],
+        // Keep the process alive until its sample is observed. A fixed 1.5s
+        // lifetime races the sampler and tests scheduling rather than evidence.
+        args: ['-c', `"${codexRuntime}" 60 & wait`],
         cwd: root,
         env: { ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', TERM: 'xterm-256color' },
         ownerId,
         io,
         bridgeTty: false,
-        signalSource: new EventEmitter(),
+        signalSource,
         onExit: () => undefined,
       });
+      await vi.waitFor(() => {
+        expect(readFileSync(logPath, 'utf8')).toContain('"kind":"codex-startup-process-sample"');
+      }, { timeout: 3000 });
+      signalSource.emit('SIGTERM');
+      await done;
       const rows = readFileSync(logPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
       const sample = rows.find((row) => row.kind === 'codex-startup-process-sample');
       const selected = rows.find((row) => row.kind === 'codex-startup-process-target-selected');
@@ -472,6 +489,8 @@ describe('Codex startup process evidence (EI-24353430528930250)', () => {
         rootPid: selected.rootPid, pid: selected.pid, reason: 'host-cleanup', samples: expect.any(Number),
       });
     } finally {
+      signalSource.emit('SIGTERM');
+      await done?.catch(() => undefined);
       rmSync(root, { recursive: true, force: true });
       rmSync(logPath, { force: true });
     }
@@ -479,15 +498,97 @@ describe('Codex startup process evidence (EI-24353430528930250)', () => {
 });
 
 describe('plain launch kickoff turn-start proof', () => {
+  it.each(['immediate', 'delayed', 'healthy', 'old-banner', 'repeated-banner', 'no-receipt'] as const)(
+    'returns the provider admission verdict for a headless Codex kickoff: %s', async scenario => {
+      const root = mkdtempSync(join(tmpdir(), 'psu-kickoff-capacity-'));
+      const codexHome = join(root, 'codex-home');
+      const nativeFile = join(codexHome, 'sessions', 'rollout-2026-10-16T00-00-00-01234567-89ab-4cde-8fab-0123456789ab.jsonl');
+      const proofPath = join(root, 'proof.json');
+      const proofToken = 'c'.repeat(48);
+      writeFileSync(proofPath, '', { mode: 0o600 });
+      const ownerId = `su-capacity-launch-${scenario}-${process.pid}-${Math.floor(performance.now())}`;
+      const kickoff = '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧\nBegin the assigned work';
+      const failed = !['healthy', 'old-banner'].includes(scenario);
+      const childCode = [
+        "const fs=require('node:fs'),path=require('node:path');let text='',submitted=false;",
+        "process.stdin.setRawMode(true);process.stdin.setEncoding('utf8');",
+        "const capacity=()=>process.stdout.write('Selected model is at capacity. Please try again in 90 seconds.\\n');",
+        "if(['old-banner','repeated-banner'].includes(process.env.SCENARIO))capacity();",
+        "process.stdout.write('\\x1b[6nmodel: GPT-6.1-Sol xhigh\\nReady · GPT-6.1-Sol xhigh · Context 100% left\\n');",
+        "process.stdin.on('data',data=>{for(const ch of data){if(ch!=='\\r'){text+=ch;continue;}if(submitted)continue;submitted=true;",
+        "fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});const timestamp=new Date().toISOString();",
+        "const rows=[{type:'response_item',timestamp,payload:{type:'message',role:'user',content:[{type:'input_text',text}]}},",
+        "{type:'event_msg',timestamp,payload:{type:'task_started',turn_id:'capacity-fixture'}}];",
+        "fs.writeFileSync(process.env.NATIVE_FILE,rows.map(r=>JSON.stringify(r)+'\\n').join(''));",
+        "process.stdout.write('SUBMITTED\\n');if(['immediate','repeated-banner','no-receipt'].includes(process.env.SCENARIO))capacity();",
+        "else if(process.env.SCENARIO==='delayed')setTimeout(capacity,600);",
+        "}process.stdout.write('COMPOSER_ECHO:'+text+'\\n');});",
+      ].join('');
+      const signalSource = new EventEmitter();
+      const { captured, io } = fakeIo();
+      const done = hostThroughPty({
+        command: execPath, args: ['-e', childCode], cwd: root, ownerId,
+        env: hermeticEnv({
+          PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex', PAPERCUSP_PSU_HEADLESS: '1',
+          CODEX_HOME: codexHome, NATIVE_FILE: nativeFile, SCENARIO: scenario,
+          ...(scenario === 'no-receipt' ? {} : {
+            [KICKOFF_PROOF_PATH_ENV]: proofPath, [KICKOFF_PROOF_TOKEN_ENV]: proofToken,
+          }),
+          PAPERCUSP_PSU_PTY_KICKOFF_QUOTA_GRACE_MS: '1200',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '4000',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '20',
+          PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '30',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '3',
+          PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_KICKOFF_TURN_POLLS: '1',
+        }),
+        io, bridgeTty: false, signalSource, kickoff, nativePersistenceTimeoutMs: 1000,
+        onRespawn: async () => true,
+      });
+      try {
+        const receipt = await vi.waitFor(() => {
+          if (scenario === 'no-receipt') {
+            expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8')).toContain('launch-kickoff-model-capacity-rejected');
+            expect(existsSync(metaPathFor(ownerId))).toBe(false);
+            return null;
+          }
+          const text = readFileSync(proofPath, 'utf8');
+          expect(text.length, captured()).toBeGreaterThan(0);
+          return JSON.parse(text);
+        }, { timeout: 8000 });
+        if (scenario === 'no-receipt') expect(await done).toBe(1);
+        else expect(receipt).toEqual({ token: proofToken, persisted: !failed, nativeRef: nativeFile,
+          reason: failed ? 'kickoff-not-submitted:model-capacity' : null });
+        const rows = readFileSync(nativeFile, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        expect(rows.filter(row => row.payload?.role === 'user').map(row => row.payload.content[0].text)).toEqual([kickoff]);
+        const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        const rejected = events.filter(row => row.kind === 'launch-kickoff-model-capacity-rejected');
+        expect(rejected).toHaveLength(failed ? 1 : 0);
+        if (failed) expect(rejected[0]).toMatchObject({ retryAfterMs: 90_000, nativeRef: nativeFile });
+        expect(events.some(row => row.kind === 'launch-kickoff-model-turn-absent')).toBe(false);
+        expect(captured().match(/SUBMITTED/g)).toHaveLength(1);
+      } finally {
+        signalSource.emit('SIGTERM');
+        await done;
+        rmSync(root, { recursive: true, force: true });
+      }
+    }, 15_000,
+  );
+
   it.each([
-    { receiptState: 'empty', receiptAllowed: true, nativePublication: 'immediate' },
-    { receiptState: 'nonempty', receiptAllowed: false, nativePublication: 'immediate' },
-    { receiptState: 'empty', receiptAllowed: true, nativePublication: 'gated' },
-    { receiptState: 'nonempty', receiptAllowed: false, nativePublication: 'gated' },
-  ])('preserves and submits a long Codex kickoff when the composer only renders its tail ($receiptState receipt, $nativePublication native publication)', async ({ receiptAllowed, nativePublication }) => {
+    { receiptState: 'empty', receiptAllowed: true, nativePublication: 'immediate', isResume: false },
+    { receiptState: 'nonempty', receiptAllowed: false, nativePublication: 'immediate', isResume: false },
+    { receiptState: 'empty', receiptAllowed: true, nativePublication: 'gated', isResume: false },
+    { receiptState: 'nonempty', receiptAllowed: false, nativePublication: 'gated', isResume: false },
+    { receiptState: 'empty', receiptAllowed: true, nativePublication: 'immediate', isResume: true },
+    { receiptState: 'empty', receiptAllowed: true, nativePublication: 'gated', isResume: true },
+  ])('preserves and submits a long Codex kickoff when the composer only renders its tail ($receiptState receipt, $nativePublication native publication, resume=$isResume)', async ({ receiptAllowed, nativePublication, isResume }) => {
     const root = mkdtempSync(join(tmpdir(), 'psu-codex-viewport-'));
     const codexHome = join(root, 'codex-home');
-    const nativeFile = join(codexHome, 'sessions', '2026', '09', '26', 'rollout.jsonl');
+    const nativeId = '01234567-89ab-4cde-8fab-0123456789ab';
+    const nativeFile = join(codexHome, 'sessions', '2026', '09', '26', `rollout-2026-09-26T00-00-00-${nativeId}.jsonl`);
     const submitFile = join(root, 'submitted.txt');
     const nativeReleaseFile = join(root, 'publish-native');
     const proofPath = join(root, 'kickoff-proof.json');
@@ -512,10 +613,11 @@ describe('plain launch kickoff turn-start proof', () => {
       "process.stdin.on('data',d=>{if(d.includes('\x04'))process.exit(0);wire+=d;while(wire){if(wire.startsWith(start)){const at=wire.indexOf(end,start.length);if(at<0)break;composer+=wire.slice(start.length,at);wire=wire.slice(at+end.length);repaint();continue;}if(start.startsWith(wire))break;const next=wire.indexOf(start);const take=next<0?wire.length:next;const text=wire.slice(0,take);wire=wire.slice(take);for(const c of text){if(c==='\\r')submit();else composer+=c;}repaint();}});",
     ].join('');
     const signalSource = new EventEmitter();
+    const onRespawn = vi.fn(async () => true);
     let done: Promise<number> | undefined;
     try {
       done = hostThroughPty({
-        command: execPath, args: ['-e', childCode], cwd: root,
+        command: execPath, args: ['-e', childCode, ...(isResume ? ['resume'] : [])], cwd: root,
         env: {
           ...hermeticEnv(), PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'codex',
           CODEX_HOME: codexHome, NATIVE_FILE: nativeFile, SUBMIT_FILE: submitFile,
@@ -536,11 +638,14 @@ describe('plain launch kickoff turn-start proof', () => {
         },
         ownerId, io, bridgeTty: false, kickoff,
         nativePersistenceTimeoutMs: 500,
-        signalSource, onExit: () => undefined,
+        signalSource, onRespawn, onExit: () => undefined,
       });
       await vi.waitFor(() => expect(existsSync(submitFile), captured()).toBe(true), { timeout: 2500 });
       expect(readFileSync(submitFile, 'utf8')).toBe(kickoff);
-      expect(captured()).toContain('COMPOSER_ECHO:' + marker);
+      // Fresh launches stage the marker head for echo verification. Resumes
+      // paste the existing thread's full turn, whose viewport shows only its
+      // tail; submitted bytes and native proof remain the shared contract.
+      if (!isResume) expect(captured()).toContain('COMPOSER_ECHO:' + marker);
       if (nativePublication === 'gated') {
         // Submission precedes transcript publication. The old immediate read
         // fails here while the host is live and the fixture home is intact.
@@ -571,6 +676,15 @@ describe('plain launch kickoff turn-start proof', () => {
         }, { timeout: 1500 });
         expect(readFileSync(proofPath, 'utf8')).toBe('reserved');
       }
+      // The kickoff's native proof must keep using its submitted child after
+      // injectLaunchKickoff returns. A block-scoped reference here killed the
+      // real resumed worker after its prompt was already durably delivered.
+      expect(onRespawn).toHaveBeenCalledWith(nativeId, expect.objectContaining({ onConfirmed: expect.any(Function) }));
+      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8')
+        .trim().split('\n').map(line => JSON.parse(line));
+      expect(events.find(row => row.kind === 'launch-native-binding-confirmed')).toMatchObject({ nativeId });
+      expect(events.some(row => row.kind === 'managed-kickoff-failed')).toBe(false);
+      expect(existsSync(sock)).toBe(true);
     } finally {
       // Keep the fixture alive until the parent finishes proof assertions;
       // fixed child lifetimes race the gated transcript publication and cleanup.
@@ -3885,6 +3999,12 @@ describe('P-020 carry-respawn drill correlation', () => {
       const sock = socketPathFor(ownerId);
       const eventLog = eventLogPathForOwner(ownerId);
       const { captured, io } = fakeIo();
+      const root = mkdtempSync(join(tmpdir(), 'psu-carry-drill-itest-'));
+      const claudeConfig = join(root, 'claude');
+      const nativeId = 'ddddabcd-1234-5678-9abc-def012345678';
+      const marker = '⟦turn-origin:carry-drill nonce:0123456789abcdef⟧';
+      const nativePath = join(claudeConfig, 'projects', '-tmp', 'session-' + nativeId + '.jsonl');
+      mkdirSync(join(claudeConfig, 'projects', '-tmp'), { recursive: true });
       // This fixture models a ready Claude editor. A boot banner alone cannot
       // establish prompt readiness after a fresh-child respawn.
       const childCode =
@@ -3893,7 +4013,6 @@ describe('P-020 carry-respawn drill correlation', () => {
         "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
         "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
         'setTimeout(()=>process.exit(0),15000);';
-      const nativeId = 'ddddabcd-1234-5678-9abc-def012345678';
       const carryPath = '/safe/carry-drill-d-1.md';
       // The fresh claude-su path checks /mcp readiness before writing the carry.
       // Give that precondition a deterministic healthy response in this fake CLI.
@@ -3907,15 +4026,25 @@ describe('P-020 carry-respawn drill correlation', () => {
         "process.stdin.setEncoding('utf8');",
         "process.stdin.setEncoding('utf8');let carryBuffer='',carryEchoed=false;process.stdin.on('data',d=>{carryBuffer+=d;if(!carryEchoed&&carryBuffer.includes('⟦carry-drill:d-1⟧')){carryEchoed=true;process.stdout.write('ECHO:⟦carry-drill:d-1⟧\\n');}});",
       );
+      // session:carry-drill tags the prompt before it reaches the PTY. Persist
+      // that exact marker in the isolated Claude transcript so the host's
+      // native proof can distinguish a submitted prompt from a PTY repaint.
+      const nativeAwareChildCode = carryAwareChildCode.replace(
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.setEncoding('utf8');const fs=require('node:fs'),path=require('node:path');let nativeInput='',nativeWritten=false;process.stdin.on('data',d=>{nativeInput+=d;if(!nativeWritten&&nativeInput.includes(process.env.TURN_MARKER)&&(nativeInput.includes('\\r')||nativeInput.includes('\\n'))){nativeWritten=true;fs.mkdirSync(path.dirname(process.env.NATIVE_FILE),{recursive:true});fs.appendFileSync(process.env.NATIVE_FILE,JSON.stringify({type:'user',timestamp:new Date().toISOString(),message:{role:'user',content:process.env.TURN_MARKER}})+'\\n');}});",
+      );
       let exitCode: number | null = null;
       const done = hostThroughPty({
         command: execPath,
-        args: ['-e', carryAwareChildCode],
+        args: ['-e', nativeAwareChildCode],
         cwd: '/tmp',
         env: {
           ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
+          CLAUDE_CONFIG_DIR: claudeConfig,
+          NATIVE_FILE: nativePath,
+          TURN_MARKER: marker,
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
           PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
@@ -3934,7 +4063,7 @@ describe('P-020 carry-respawn drill correlation', () => {
         await sleep(600);
         await envelopeInject(sock, {
           mode: 'carry-respawn',
-          data: '⟦carry-drill:d-1⟧',
+          data: marker + '\n⟦carry-drill:d-1⟧',
           systemPromptAddendum: 'deterministic carry',
           drillId: 'd-1',
           sessionClass: 'claude-su',
@@ -3970,6 +4099,8 @@ describe('P-020 carry-respawn drill correlation', () => {
           drillId: 'd-1',
           sessionClass: 'claude-su',
           nativeId,
+          turnStartVerified: true,
+          nativeRef: nativePath,
         }));
         await rawInject(sock, 'QUIT\n');
         expect(await done).toBe(0);
@@ -3977,6 +4108,7 @@ describe('P-020 carry-respawn drill correlation', () => {
       } finally {
         if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
         if (existsSync(eventLog)) unlinkSync(eventLog);
+        rmSync(root, { recursive: true, force: true });
       }
     },
     25_000,

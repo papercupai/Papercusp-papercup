@@ -126,6 +126,21 @@ const ALLOWLIST: Record<string, Classification> = {
   'agent_facts.scope_ref': { status: 'covered', surface: 'owner-facts' },
 
   // --- EXEMPT: deliberately not re-keyed ---
+  'code_intel_pushes.owner_id': {
+    status: 'exempt',
+    reason:
+      'Migration 1519 records delivered code-intelligence facts by recipient, compaction epoch and hook turn. ' +
+      'push-channel.ts commitPushFacts uses that history for delivery deduplication and per-turn character spend, ' +
+      'not a current-holder claim or presence-tied reaper. Rebinding would rewrite who received a fact and ' +
+      'mix the historical delivery/budget ledger of distinct session contexts.',
+  },
+  'gateway_request_outcomes.owner_id': {
+    status: 'exempt',
+    reason:
+      'Migration 1510 per-request gateway outcome evidence: gateway-request-outcome-store.ts writes the ' +
+      'requesting owner at finalization and prunes by retention_expires_at_ms. This is historical route/error ' +
+      'attribution, not a live claim; rebinding would misattribute earlier requests to a successor.',
+  },
   'desktop_sessions.scope_ref': {
     status: 'exempt',
     reason:

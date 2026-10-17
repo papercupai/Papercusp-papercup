@@ -242,6 +242,7 @@ describe('conversations:get handler (bulk keyed-array)', () => {
       const dispatch = summarizeConsultDispatch([
         {
           at: '2026-09-26T03:33:07.713Z',
+          sourceOwnerId: 'su-source-expert',
           dispatched: false,
           answeringOwnerId: null,
           detail: 'every allowed expert model was exhausted …',
@@ -254,6 +255,7 @@ describe('conversations:get handler (bulk keyed-array)', () => {
               outcome: 'failed',
               reason: 'launch-exited',
               detail: 'long detail',
+              launchLogPath: '/tmp/consult-failed-conversion.log',
               launchError: 'psu: refusing unmanaged fork su-x: could not recover adv row #29351.',
             },
           ],
@@ -262,6 +264,7 @@ describe('conversations:get handler (bulk keyed-array)', () => {
       getM.mockResolvedValue(detail('c-consult', { kind: 'consult', state: 'open' }));
       consultM.mockResolvedValue(new Map([['c-consult', { ...consultRow('c-consult'), dispatch }]]));
       const r = (await body({ id: 'c-consult' })).results[0];
+      expect(r.consult.dispatch.recent[0].source_owner_id).toBe('su-source-expert');
       expect(r.consult.dispatch.recent[0].attempts[0]).toEqual({
         rank: 1,
         agent: 'claude',
@@ -269,8 +272,31 @@ describe('conversations:get handler (bulk keyed-array)', () => {
         operation: 'fork',
         outcome: 'failed',
         reason: 'launch-exited',
+        launch_log_path: '/tmp/consult-failed-conversion.log',
         launch_error: 'psu: refusing unmanaged fork su-x: could not recover adv row #29351.',
       });
+    });
+
+    it('preserves historical failed-launch references stored only in dispatch detail', () => {
+      const dispatch = summarizeConsultDispatch([{
+        sourceOwnerId: 'su-historical-source',
+        attempts: [
+          {
+            reason: 'kickoff-not-persisted',
+            detail: 'spawn did not persist its kickoff in the native transcript (kickoff-proof-timeout; log /logs/consult-convert-source-123.log); launcher said: exited with status 1',
+          },
+          { detail: 'live host registered after 0ms (log /logs/consult-convert-source-456.log).' },
+          { launchLogPath: '/logs/structured.log', detail: '(log /logs/older.log)' },
+          { detail: 'spawn failed: no retained log path' },
+        ],
+      }]);
+      expect(dispatch?.recent[0]?.source_owner_id).toBe('su-historical-source');
+      expect(dispatch?.recent[0]?.attempts.map(attempt => attempt.launch_log_path)).toEqual([
+        '/logs/consult-convert-source-123.log',
+        '/logs/consult-convert-source-456.log',
+        '/logs/structured.log',
+        undefined,
+      ]);
     });
 
     it('surfaces `consult` for a consult conversation whose CONVERSATION row still reads open', async () => {

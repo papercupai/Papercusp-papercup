@@ -8,6 +8,7 @@ import postgres, { type Sql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { OrgTestDb } from '../../../../test/_org-test-db';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
+import { hostedBillingAllocationAdmin, hostedBillingAllocationSource } from '../../../endpoint-route/hosted-billing-runtime';
 import { HOSTED_COST_CLASSES, PostgresHostedAllocationStore, type HostedAllocationHoldRequest,
   type HostedAllocationLevel, type HostedAllocationOrganization, type HostedAllocationRequest,
   type HostedAllocationSettlement, type HostedCostClass, type HostedOutcomeRecordRequest } from './allocation-store';
@@ -262,6 +263,68 @@ describe('PostgresHostedAllocationStore (real hosted service transactions)', () 
     expect(await count('hosted_outcome_cost_records', o)).toBe(4);
   });
 
+  it('forecasts recorded costs separately by class without treating commitments as costs or changing admission', async () => {
+    const o = org();
+    const start = Date.UTC(2026, 9, 1); const end = Date.UTC(2026, 10, 1);
+    const mid = start + (end - start) / 2;
+    for (const [index, costClass] of HOSTED_COST_CLASSES.entries()) {
+      await smallTree(o, { costClass, prefix: `${costClass}-` });
+      const h = hold(o, `${costClass}-proj-a`, 10_000, { costClass, reservationId: `${costClass}-cost` });
+      expect((await store.reserve(h)).outcome).toBe('admitted');
+      expect((await store.settle({ organization: o, reservationId: h.reservationId,
+        costSource: 'provider-reported', costMicros: 101 * (index + 1), providerFinal: false,
+        observedAtMs: T + 1, evidenceRef: 'fixture:reported' })).outcome).toBe('settled');
+    }
+    const before = await report(o);
+    const result = await store.report({ organization: o, month: MONTH, forecast: { asOfMs: mid,
+      source: { complete: true, observedAtMs: mid, maximumAgeMs: 0, evidenceRef: 'fixture:allocation-census' } } });
+    for (const [index, c] of HOSTED_COST_CLASSES.entries()) {
+      expect(before.byCostClass[c].forecast).toBeUndefined();
+      const { forecast, ...position } = result.byCostClass[c];
+      expect(position).toEqual(before.byCostClass[c]);
+      expect(forecast).toEqual({ method: 'linear-elapsed-utc-month', scope: 'recorded-allocation-costs',
+        evidenceRef: 'fixture:allocation-census', basisMicros: 101 * (index + 1),
+        elapsedMs: (end - start) / 2, periodMs: end - start, projectedConsumptionMicros: 202 * (index + 1),
+        provisional: true, unavailableReason: null });
+      expect(position.committedMicros).toBe(10_000);
+      expect(position.providerFinalMicros).toBe(0);
+    }
+    expect(result.outcomes).toEqual(before.outcomes);
+    // A display forecast cannot supply extra funding or relax the existing cap.
+    expect(await store.reserve(hold(o, 'model-proj-a', 500_001)))
+      .toMatchObject({ outcome: 'refused', reason: 'allocation-exhausted' });
+    expect(await report(o)).toEqual(before);
+  });
+
+  it('keeps allocation forecasts unknown for missing costs, incomplete/stale census and newer receipts', async () => {
+    const o = org(); await smallTree(o);
+    const mid = Date.UTC(2026, 9, 16, 12);
+    const source = { complete: true, observedAtMs: mid, maximumAgeMs: 1000, evidenceRef: 'fixture:allocation-census' };
+    const h = hold(o, 'proj-a', 100_000);
+    expect((await store.reserve(h)).outcome).toBe('admitted');
+    const first = await store.report({ organization: o, month: MONTH, forecast: { asOfMs: mid, source } });
+    expect(first.byCostClass.model.forecast).toMatchObject({ basisMicros: null,
+      projectedConsumptionMicros: null, unavailableReason: 'unpriced-usage' });
+    // Empty is only a known zero when the matching population was completely observed.
+    expect(first.byCostClass.hosting.forecast).toMatchObject({ basisMicros: 0, projectedConsumptionMicros: 0 });
+    for (const patch of [{ complete: false }, { observedAtMs: mid - 1001 }, { observedAtMs: mid + 1 }]) {
+      const r = await store.report({ organization: o, month: MONTH, forecast: { asOfMs: mid, source: { ...source, ...patch } } });
+      expect(r.byCostClass.hosting.forecast).toMatchObject({ basisMicros: null, projectedConsumptionMicros: null,
+        unavailableReason: patch.complete === false ? 'incomplete-source' : 'source-not-current' });
+    }
+    expect((await store.settle({ organization: o, reservationId: h.reservationId, costSource: 'provider-billed',
+      costMicros: 1, providerFinal: true, observedAtMs: mid + 1, evidenceRef: 'fixture:late-bill' })).outcome).toBe('settled');
+    const newer = await store.report({ organization: o, month: MONTH, forecast: { asOfMs: mid + 2, source } });
+    expect(newer.byCostClass.model.forecast).toMatchObject({ basisMicros: null, projectedConsumptionMicros: null,
+      unavailableReason: 'receipt-newer-than-census' });
+    expect(newer.byCostClass.model.providerFinalMicros).toBe(1);
+    const closed = await store.report({ organization: o, month: MONTH, forecast: { asOfMs: endOfMonth(),
+      source: { ...source, observedAtMs: endOfMonth() } } });
+    expect(closed.byCostClass.model.forecast).toMatchObject({ basisMicros: 1, projectedConsumptionMicros: 1,
+      provisional: false, unavailableReason: null });
+    function endOfMonth() { return Date.UTC(2026, 10, 1); }
+  });
+
   it('exports each reservation once across ancestor rollups and preserves incomplete bills and human measurements', async () => {
     const o = org();
     for (const costClass of HOSTED_COST_CLASSES) {
@@ -349,6 +412,69 @@ describe('PostgresHostedAllocationStore (real hosted service transactions)', () 
       resultState: 'unknown', resultCostMicros: { unknownReason: 'no-linked-reservations' } });
     expect(revised.gaps).toContainEqual({ kind: 'unknown-result', ref: 'a', reason: 'review-pending' });
     expect(revised.gaps.some(g => g.kind === 'shared-outcome-reservation')).toBe(false);
+  });
+
+  it('composes finance projections in one service transaction and isolates both tenant keys and month', async () => {
+    const o = org();
+    const others = [{ ...o, organizationId: randomUUID() }, { ...o, controlWorkspaceId: randomUUID() }];
+    for (const [index, scope] of [o, ...others].entries()) {
+      await smallTree(scope);
+      const h = hold(scope, 'proj-a', 100_000, { reservationId: 'same-reservation' });
+      expect((await store.reserve(h)).outcome).toBe('admitted');
+      expect((await store.settle({ organization: scope, reservationId: h.reservationId,
+        costSource: 'provider-billed', costMicros: 20_003 + index, providerFinal: true,
+        observedAtMs: T, evidenceRef: 'fixture:finance-final' })).outcome).toBe('settled');
+    }
+    let transactions = 0;
+    const source = hostedBillingAllocationSource(fn => { transactions++; return service(fn); });
+    const snapshot = await source({ organization: o, month: MONTH, asOfMs: T });
+    expect(transactions).toBe(1);
+    expect(snapshot).toMatchObject({ organization: o, asOfMs: T, report: { month: MONTH },
+      accounting: { organization: o, month: MONTH, rows: [{ reservationId: 'same-reservation',
+        observedCostMicros: { value: 20_003 }, providerFinalCostMicros: { value: 20_003 } }] } });
+    for (const c of HOSTED_COST_CLASSES) {
+      expect(snapshot.report.byCostClass[c]).toMatchObject({
+        committedMicros: snapshot.accounting.byCostClass[c].committedMicros,
+        unreconciledMicros: snapshot.accounting.byCostClass[c].unreconciledMicros,
+        providerFinalMicros: snapshot.accounting.byCostClass[c].providerFinalMicros,
+        forecast: { scope: 'recorded-allocation-costs', evidenceRef: `hosted-allocation-ledger:${MONTH}` },
+      });
+    }
+    expect(snapshot.report.byCostClass.model.forecast).toMatchObject({ basisMicros: 20_003,
+      projectedConsumptionMicros: 620_093, provisional: true });
+    expect((await source({ organization: o, month: '2026-11', asOfMs: T })).accounting.rows).toEqual([]);
+    // Read-only finance views never revise the accounting facts.
+    expect(await store.accountingExport({ organization: o, month: MONTH })).toEqual(snapshot.accounting);
+  });
+
+  it('composes billing allocation administration with durable hierarchy rules and tenant isolation', async () => {
+    const o = org(); const other = { ...o, organizationId: randomUUID() };
+    let transactions = 0;
+    const admin = hostedBillingAllocationAdmin(fn => { transactions++; return service(fn); });
+    for (const scope of [o, other]) {
+      for (const input of [node(scope, 'org', null, 'organization', 1_000_000),
+        node(scope, 'dept', 'org', 'department', 500_000), node(scope, 'project', 'dept', 'project', 100_000)]) {
+        expect(await admin(input)).toMatchObject({ organization: scope, result: { outcome: 'created',
+          allocation: { allocationId: input.allocationId, revision: 1 } } });
+      }
+    }
+    expect(transactions).toBe(6);
+    const project = node(o, 'project', 'dept', 'project', 100_000);
+    expect((await admin(project)).result.outcome).toBe('duplicate');
+    expect((await admin({ ...project, capMicros: 200_000, maxUnreconciledMicros: 200_000 })).result)
+      .toMatchObject({ outcome: 'revised', allocation: { revision: 2 } });
+    expect((await position(o, 'project'))?.capMicros).toBe(200_000);
+    expect((await position(other, 'project'))?.capMicros).toBe(100_000);
+    const before = await count('hosted_budget_allocations', o);
+    for (const [input, reason] of [
+      [{ ...project, capMicros: 500_001 }, 'children-exceed-parent'],
+      [{ ...project, parentAllocationId: 'org' }, 'immutable-allocation-fields'],
+      [node(o, 'dept', 'org', 'department', 199_999), 'cap-below-children'],
+    ] as const) expect((await admin(input)).result).toMatchObject({ outcome: expect.stringMatching(/refused|conflict/), reason });
+    expect(await count('hosted_budget_allocations', o)).toBe(before);
+    expect((await store.reserve(hold(o, 'project', 150_000))).outcome).toBe('admitted');
+    expect((await admin(project)).result).toMatchObject({ outcome: 'refused', reason: 'cap-below-committed' });
+    expect(await count('hosted_budget_allocations', o)).toBe(before);
   });
 
   it('enforces dense immutable revisions and service-only access in the database itself', async () => {

@@ -21,6 +21,7 @@ import {
   MIN_PLAUSIBLE_ARTIFACT_BYTES,
   releaseBundleRoots,
   releaseTag,
+  resolveMobileRoot,
   resolveChangelogWindowStart,
   scanArtifacts,
   scanMobileArtifactSources,
@@ -1132,9 +1133,30 @@ describe('validateRecordChangelog — fail closed on accidental changelog omissi
 describe('Android release producer/consumer source contract (D-004)', () => {
   const desktopDir = path.resolve(__dirname, '../../../../papercusp-desktop');
   const mobileDir = process.env.PAPERCUSP_MOBILE_ROOT
-    ?? path.resolve(__dirname, '../../../../../papercup-rust-mobile');
+    ?? resolveMobileRoot(__dirname);
+
+  it('resolves the sibling mobile repo from a staging candidate checkout', () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'android-mobile-root-'));
+    try {
+      const mobileRoot = path.join(workspace, 'papercup-rust-mobile');
+      fs.mkdirSync(path.join(mobileRoot, 'crates'), { recursive: true });
+      const candidateTestDir = path.join(
+        workspace,
+        'papercusp-staging.generations',
+        '.candidate-test',
+        'checkout',
+        'apps/operator/lib/release',
+      );
+      fs.mkdirSync(candidateTestDir, { recursive: true });
+
+      expect(resolveMobileRoot(candidateTestDir)).toBe(mobileRoot);
+    } finally {
+      fs.rmSync(workspace, { recursive: true, force: true });
+    }
+  });
 
   it('build-android deletes the old pair/manifest and writes provenance only after verification', () => {
+    if (!mobileDir) throw new Error('papercup-rust-mobile sibling repo was not found');
     const script = fs.readFileSync(
       path.join(mobileDir, 'tools/build-scripts/build-android.sh'),
       'utf8',

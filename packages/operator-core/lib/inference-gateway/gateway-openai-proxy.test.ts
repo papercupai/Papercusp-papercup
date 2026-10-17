@@ -14,7 +14,7 @@
  *   - route isolation: /v1/responses → the OpenAI upstream + codex creds, while
  *     /v1/messages → the Claude upstream + claude creds, on the same gateway.
  */
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
@@ -32,6 +32,11 @@ import {
 } from './gateway';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
+import {
+  configureGatewayRequestOutcomeStore,
+  InMemoryGatewayRequestOutcomeStore,
+  resetGatewayRequestOutcomeStore,
+} from './gateway-request-outcome-store';
 import { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
 import { CODEX_SAFE_DEFAULT_MODEL } from '../model-context-budget.mjs';
 /** Managed Codex default id (the model-less fallback), derived so a deliberate default bump cannot strand these assertions. */
@@ -86,6 +91,9 @@ let claudeUpstream: Upstream | undefined;
 let port = 0;
 const tempCodexHomes: string[] = [];
 
+// Owner reports include durable outcomes; unit fixtures must not query PostgreSQL.
+beforeEach(() => configureGatewayRequestOutcomeStore(new InMemoryGatewayRequestOutcomeStore()));
+
 afterEach(async () => {
   vi.useRealTimers();
   await gw?.close();
@@ -95,6 +103,7 @@ afterEach(async () => {
   openaiUpstream = undefined;
   claudeUpstream = undefined;
   await Promise.all(tempCodexHomes.splice(0).map((home) => fs.rm(home, { recursive: true, force: true })));
+  resetGatewayRequestOutcomeStore();
 });
 
 const freshJwt = () => {
@@ -1344,6 +1353,8 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     expect(res.status).toBe(200);
     await res.text();
     expect(gw.stats().egressFailsByAccount).not.toEqual({});
+    expect(gw.stats().egressProxyAttemptsByAccount).toEqual({});
+    expect(gw.stats().egressProxyFailsByAccount).toEqual({});
     if (contracts) expect(gw.stats().codexAdmission.maxConcurrent).toBeLessThan(initial);
     else expect(gw.stats().codexAdmission.maxConcurrent).toBe(initial);
   });
@@ -2866,6 +2877,24 @@ describe('proxyOpenAi — owner-outcome taxonomy (pinned directly, not via respo
     expect(res.status).toBe(200);
     return ((await res.json()) as { ledger: OwnerLedger }).ledger;
   };
+
+  it('keeps a durable report failure distinct from a successful upstream turn', async () => {
+    const report = vi.fn().mockRejectedValue(new Error('outcome storage unavailable'));
+    await bootCodex(ok, undefined, {
+      requestOutcomeStore: { record: async () => {}, report },
+    });
+
+    const response = await postResponses({ model: 'gpt-5', input: 'hi' }, { [OWNER_HEADER]: 'bee-store-down' });
+    expect(response.status).toBe(200);
+    await response.text();
+
+    const ownerReport = await ask('/admin/owner-report?owner=bee-store-down');
+    expect(ownerReport.status).toBe(503);
+    expect(await ownerReport.json()).toEqual({
+      ok: false, error: 'durable request outcome report unavailable', owner: 'bee-store-down',
+    });
+    expect(report).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'bee-store-down' }));
+  });
 
   it('a clean turn records one request + one ok, with the routed account and status', async () => {
     await bootCodex(ok);

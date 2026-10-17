@@ -15,6 +15,7 @@ import type {
   HostedTenantContextRunner,
 } from '../auth/hosted/service-adapters';
 import type { HostedServiceContextRunner } from '../auth/hosted/workos-lifecycle-postgres';
+import type { HostedTrialEntitlementPolicy } from '../auth/hosted-entitlement-schema';
 import type { TutorialAssistanceDependencies } from './routes/hosted-tutorial-progress';
 
 export {
@@ -33,6 +34,7 @@ export interface HostedAuthRuntimeConfiguration {
   readonly workosClientId: string;
   readonly workosApiKeyRef: string;
   readonly workosCookiePasswordRef: string;
+  readonly trialEntitlementPolicy?: HostedTrialEntitlementPolicy;
 }
 
 export type HostedAuthRuntimeSecretResolver = (reference: string) => Promise<string>;

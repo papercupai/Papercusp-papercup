@@ -217,6 +217,15 @@ dependency_generation_input_fingerprint() {
 # Optional 4th argument: a directory to ALSO materialise each input blob into, at its
 # repo-relative path. The exact-ref builder uses it so the files it stages are, by
 # construction, exactly the set this function fingerprints (WI-10004151).
+# Filter the NUL-delimited ls-tree stream in grep before entering the Bash read loop.
+# A full Bash loop over every tree record made each historical candidate scan expensive
+# even though only lockfiles and patch-package patches are dependency inputs.
+dependency_generation_ref_input_records() {
+  local root="$1" ref="$2"
+  git -C "$root" ls-tree -r -z "$ref" \
+    | LC_ALL=C grep -zE $'\t([^/]+/)*(package-lock\\.json|npm-shrinkwrap\\.json)$|\t([^/]+/)*patches/[^/]+\\.patch$'
+}
+
 dependency_generation_input_manifest_ref() {
   local root="$1" ref="$2" prefix="${3:-}" extract_root="${4:-}"
   local record metadata mode type object rel digest submodule_path submodule_object
@@ -241,7 +250,7 @@ dependency_generation_input_manifest_ref() {
       digest="$(git -C "$root" cat-file blob "$object" | dependency_generation_sha256)" || return 1
     fi
     printf '%s\t%s\n' "${prefix}${rel}" "$digest"
-  done < <(git -C "$root" ls-tree -r -z "$ref")
+  done < <(dependency_generation_ref_input_records "$root" "$ref")
 
   while IFS= read -r submodule_path; do
     [ -n "$submodule_path" ] || continue
@@ -2045,10 +2054,26 @@ dependency_generation_sweep_legacy_store() {
 #   77 = DEPENDENCY_GENERATION_HEADROOM_INSUFFICIENT (not enough free space)
 DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=0
 DEPENDENCY_GENERATION_COPY_LOCK_FD=''
+DEPENDENCY_GENERATION_COPY_LOCK_HOLDER=''
 
 dependency_generation_copy_lock_file() {
   printf '%s\n' \
     "${DEPENDENCY_GENERATION_COPY_LOCK_FILE:-${TMPDIR:-/tmp}/papercusp-dependency-generation-copy.lock}"
+}
+
+# EI-26175315759122898: user namespaces may share the host lock while being
+# forbidden to read the holder's /proc I/O. Relay actual copy counters through
+# the existing holder record, never a timer/heartbeat or arbitrary log output.
+dependency_generation_publish_copy_progress() {
+  local lock holder tmp
+  [ "$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH" -gt 0 ] &&
+    [ -n "$DEPENDENCY_GENERATION_COPY_LOCK_HOLDER" ] || return 0
+  lock="$(dependency_generation_copy_lock_file)"
+  IFS= read -r holder < "$lock.holder" 2>/dev/null || return 0
+  [ "$holder" = "$DEPENDENCY_GENERATION_COPY_LOCK_HOLDER" ] || return 0
+  tmp="$lock.holder.progress.${BASHPID:-$$}"
+  { printf '%s\nprogress=%s\n' "$holder" "$1" > "$tmp" && mv -f -- "$tmp" "$lock.holder"; } \
+    2>/dev/null || rm -f -- "$tmp"
 }
 
 # WI-10004928 part 6: total I/O (rchar+wchar) of a pid and all its live
@@ -2105,11 +2130,12 @@ dependency_generation_subtree_io() {
 # The waiter keeps waiting while the holder's subtree I/O keeps changing, fails
 # after DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC (default 600) without
 # progress, and never waits past DEPENDENCY_GENERATION_COPY_LOCK_MAX_SEC
-# (default 5400). An unmeasurable holder gets no credit for progress, which
-# keeps the old wall-clock behaviour for that case.
+# (default 5400). A holder also publishes measured copy counters for waiters
+# without /proc access. Missing or unchanged evidence never extends the budget.
 dependency_generation_acquire_copy_lock() {
   local op="$1" lock fd timeout_sec max_sec started now waited next_notice holder
   local holder_pid io last_io last_progress next_sample idle reason
+  local holder_record holder_identity last_holder='' lock_progress last_lock_progress='' advances=0
   if [ "$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH" -gt 0 ]; then
     DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=$((DEPENDENCY_GENERATION_COPY_LOCK_DEPTH + 1))
     return 0
@@ -2137,14 +2163,27 @@ dependency_generation_acquire_copy_lock() {
   while ! flock -n "$fd"; do
     now="$(date +%s)"
     waited=$((now - started))
-    holder="$(tr '\n' ' ' < "$lock.holder" 2>/dev/null || true)"
+    holder_record="$(cat "$lock.holder" 2>/dev/null || true)"
+    holder="$(printf '%s' "$holder_record" | tr '\n' ' ')"
     if [ "$now" -ge "$next_sample" ]; then
-      holder_pid="$( { sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p' "$lock.holder" 2>/dev/null || true; } | head -n 1)"
+      holder_identity="${holder_record%%$'\n'*}"
+      if [ "$holder_identity" != "$last_holder" ]; then
+        last_io=''
+        last_lock_progress=''
+        last_holder="$holder_identity"
+      fi
+      holder_pid="$(printf '%s\n' "$holder_identity" | sed -n 's/^pid=\([0-9][0-9]*\).*/\1/p')"
+      lock_progress="$(printf '%s\n' "$holder_record" | sed -n 's/^progress=//p')"
+      [[ "$lock_progress" =~ ^copy:[0-9]+:[0-9]+:[0-9]+:[0-9]+$ ]] || lock_progress=''
       io="$(dependency_generation_subtree_io "$holder_pid" || true)"
-      if [ -n "$io" ] && [ -n "$last_io" ] && [ "$io" != "$last_io" ]; then
+      if { [ -n "$io" ] && [ -n "$last_io" ] && [ "$io" != "$last_io" ]; } ||
+         { [ -n "$lock_progress" ] && [ "$lock_progress" != "$last_lock_progress" ]; }; then
         last_progress="$now"
+        advances=$((advances + 1))
+        dependency_generation_log "copy lock progress: $lock advances=$advances"
       fi
       last_io="$io"
+      last_lock_progress="$lock_progress"
       next_sample=$((now + ${DEPENDENCY_GENERATION_COPY_LOCK_SAMPLE_SEC:-5}))
     fi
     idle=$((now - last_progress))
@@ -2152,7 +2191,7 @@ dependency_generation_acquire_copy_lock() {
     if [ "$waited" -ge "$max_sec" ]; then
       reason=cap
     elif [ "$idle" -ge "$timeout_sec" ]; then
-      if [ -n "$last_io" ]; then reason=stalled; else reason=unmeasurable; fi
+      if [ -n "$last_io$last_lock_progress" ]; then reason=stalled; else reason=unmeasurable; fi
     fi
     if [ -n "$reason" ]; then
       # Sampling can span the holder's exit. Recheck the lock before rejecting
@@ -2171,7 +2210,8 @@ dependency_generation_acquire_copy_lock() {
     fi
     sleep 0.2
   done
-  printf 'pid=%s op=%s since=%s\n' "${BASHPID:-$$}" "$op" "$(date +%s)" > "$lock.holder" 2>/dev/null || true
+  DEPENDENCY_GENERATION_COPY_LOCK_HOLDER="pid=${BASHPID:-$$} op=$op since=$(date +%s)"
+  printf '%s\n' "$DEPENDENCY_GENERATION_COPY_LOCK_HOLDER" > "$lock.holder" 2>/dev/null || true
   DEPENDENCY_GENERATION_COPY_LOCK_FD="$fd"
   DEPENDENCY_GENERATION_COPY_LOCK_DEPTH=1
 }
@@ -2183,6 +2223,7 @@ dependency_generation_release_copy_lock() {
   [ "$DEPENDENCY_GENERATION_COPY_LOCK_DEPTH" -eq 0 ] || return 0
   fd="$DEPENDENCY_GENERATION_COPY_LOCK_FD"
   DEPENDENCY_GENERATION_COPY_LOCK_FD=''
+  DEPENDENCY_GENERATION_COPY_LOCK_HOLDER=''
   [ -n "$fd" ] || return 0
   flock -u "$fd" 2>/dev/null || true
   exec {fd}>&-
@@ -2518,6 +2559,7 @@ dependency_generation_copy_with_progress() (
     if [ "$written" -gt "${reported:-0}" ] || [ "$read_bytes" -gt "$read_reported" ]; then
       reported="$written"
       read_reported="$read_bytes"
+      dependency_generation_publish_copy_progress "copy:$pid:$copy_epoch:$written:$read_bytes"
       dependency_generation_log \
         "copy progress: ${dest##*/tree/} written=$((written / 1048576))MiB elapsed=$((now - started))s"
       if [ "$reflink" = --rsync-checksum ]; then
@@ -3146,6 +3188,25 @@ dependency_generation_ensure_once() {
     incumbent_token=''
   fi
 
+  # Reject an incomplete donor before copying it. The immutable destination is
+  # still audited after copy, but discovering a missing locked package only then
+  # wastes the entire copy (WI-6554700010016798: over seven minutes for P030).
+  # Cache hits above retain their audit against the selected immutable tree.
+  if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
+    phase_started_ms="$(dependency_generation_now_ms)"
+    if ! dependency_generation_audit_lock_tree "$integration_root" "$build/.lock-inputs"; then
+      dependency_generation_emit_phase source-lock-tree-audit "$phase_started_ms" failed
+      dependency_generation_emit_summary \
+        lock-tree-incomplete "$total_started_ms" "$source_before" "$identity" \
+        "$predecessor_identity" "$tree_total" 0 0 0
+      dependency_generation_log \
+        'FATAL: source dependency trees do not realise their lockfiles; refusing to publish before copy (repair the source install, e.g. npm run install:safe)'
+      dependency_generation_remove_build "$build"
+      return 75
+    fi
+    dependency_generation_emit_phase source-lock-tree-audit "$phase_started_ms" ok
+  fi
+
   # WI-10004094: build this identity at most once at a time. A live peer's build
   # is joined, not duplicated; a peer that published between our validation and
   # our acquisition is re-validated rather than rebuilt.
@@ -3552,6 +3613,10 @@ dependency_generation_stage_exact_ref_inputs() {
   dependency_generation_sweep_exact_scratch "$parent"
   scratch="$(mktemp -d "$parent/${exact_input:0:16}.XXXXXX")" || return 1
   DEPENDENCY_GENERATION_EXACT_SCRATCH="$scratch"
+  # Exact-ref inputs are runtime state just like published generations. Protect
+  # each live scratch tree before its first writer/input, including in new pots
+  # whose enclosing repository has no Papercusp ignore rules yet.
+  dependency_generation_ensure_store_root "$scratch" || return 1
   dependency_generation_write_owner "$scratch/.papercusp-exact-ref-writer" || return 1
 
   # 1. The ref's dependency inputs, materialised by the same walk that keys them.
@@ -3852,6 +3917,9 @@ dependency_generation_main() {
     )" || return $?
     live_input="$(dependency_generation_input_fingerprint "$integration_root")" || return 1
     if [ -f "$generation_root/.inputs/$exact_input" ]; then
+      # Match --ensure-ref's existing-selector path exactly: a filename hit alone
+      # is not a valid prewarm when the selector or immutable publication is corrupt.
+      dependency_generation_select_input_fingerprint "$exact_input" "$generation_root" || return $?
       predict_verdict='prewarmed'
     elif [ "$live_input" = "$exact_input" ]; then
       predict_verdict='live-match'

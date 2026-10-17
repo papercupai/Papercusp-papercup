@@ -16,6 +16,8 @@ import { activeWorkspaceId, readRegistry } from '../../../workspace-registry';
 import { workspaceBackupFor } from '../../../backup';
 import { anyAgentSignedIn } from '../../../agent-auth-detect';
 import { detectClaude, detectCodex, detectOmp } from '../../../preflight-binaries';
+import { ManagedUpdatePolicyError, readManagedUpdateChannel } from '../../../managed-update-policy';
+import type { UpdateChannel } from './setup-wizard-state';
 import { defineTool } from '@papercusp/agent-mcp';
 
 type StepStatus = 'ok' | 'needs-attention' | 'unknown';
@@ -96,6 +98,42 @@ async function safe<T>(p: Promise<T>, fallback: T): Promise<T> {
 
 function boolToStatus(ok: boolean): StepStatus {
   return ok ? 'ok' : 'needs-attention';
+}
+
+export interface AutoUpdateStatus {
+  status: StepStatus;
+  effectiveChannel: UpdateChannel | null;
+  /** null means the policy probe failed before management could be determined. */
+  managed: boolean | null;
+  source: 'administrator' | 'user' | null;
+  /** Safe classifications only; never include policy contents or exception text. */
+  error: 'managed_policy_invalid' | 'probe_failed' | null;
+}
+
+function autoUpdateStatus(savedChannel: string | undefined): AutoUpdateStatus {
+  try {
+    // The administrator's current policy takes precedence over saved setup
+    // choices. Reuse the update reader so invalid policy cannot appear ready.
+    const managedChannel = readManagedUpdateChannel();
+    const channel = managedChannel ?? savedChannel;
+    const effectiveChannel = channel === 'alpha' || channel === 'beta' || channel === 'stable' ? channel : null;
+    return {
+      status: boolToStatus(effectiveChannel !== null),
+      effectiveChannel,
+      managed: managedChannel !== null,
+      source: managedChannel !== null ? 'administrator' : effectiveChannel !== null ? 'user' : null,
+      error: null,
+    };
+  } catch (error) {
+    const invalidPolicy = error instanceof ManagedUpdatePolicyError;
+    return {
+      status: invalidPolicy ? 'needs-attention' : 'unknown',
+      effectiveChannel: null,
+      managed: invalidPolicy ? true : null,
+      source: invalidPolicy ? 'administrator' : null,
+      error: invalidPolicy ? 'managed_policy_invalid' : 'probe_failed',
+    };
+  }
 }
 
 export interface ModelEgressStatus {
@@ -202,6 +240,7 @@ export async function collectSetupStatus() {
   // step's status tracks the required key specifically.
   const keysOk = Boolean(creds.openai_api_key);
 
+  const autoUpdate = autoUpdateStatus(wizardState?.update_channel);
   const statuses: Record<StepId, StepStatus> = {
     'os-permissions': osPermissionsStatus,
     'embedded-pg': boolToStatus(pgOk),
@@ -212,11 +251,7 @@ export async function collectSetupStatus() {
     git: boolToStatus(gitOk),
     'mobile-pairing': boolToStatus(devices.length > 0),
     backups: boolToStatus(Boolean(backupSettings?.enabled)),
-    'auto-update': boolToStatus(
-      wizardState?.update_channel === 'alpha' ||
-        wizardState?.update_channel === 'beta' ||
-        wizardState?.update_channel === 'stable',
-    ),
+    'auto-update': autoUpdate.status,
     telemetry: boolToStatus(
       wizardState?.telemetry_enabled === true ||
         wizardState?.telemetry_enabled === false,
@@ -226,7 +261,7 @@ export async function collectSetupStatus() {
   // Per-component breakdown for the Agent Runtime step.
   const agentRuntime = { claude: claudeOk, codex: codexOk, omp: ompOk };
 
-  return { statuses, agentRuntime, modelEgress };
+  return { statuses, agentRuntime, modelEgress, autoUpdate };
 }
 
 export default defineTool({

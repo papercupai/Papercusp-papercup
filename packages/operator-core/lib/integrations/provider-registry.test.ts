@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ProviderAdapter, ProviderDescriptor } from '@papercusp/plugin-sdk';
 import { validateProviderDeclaration } from '@papercusp/plugin-sdk';
-import { createProviderRegistry, ProviderRegistrationError } from './provider-registry';
+import { createProviderRegistry, ProviderRegistrationError, verifiedProviderForCapability } from './provider-registry';
 import { createHostFetch, HostFetchError } from './host-fetch';
 
 function descriptor(overrides: Partial<ProviderDescriptor> = {}): ProviderDescriptor {
@@ -59,6 +59,31 @@ describe('provider descriptor validation', () => {
 });
 
 describe('provider registry', () => {
+  it('uses the installed manifest evidence, refuses unloads, and re-evaluates a replacement capability set', async () => {
+    const registry = createProviderRegistry();
+    const d = descriptor({ id: 'example-social', datatypes: ['social-post'], capabilities: ['social.reply'],
+      verification: { verifiedAt: '2026-10-16', sources: ['https://example.com/api'], capabilities: { 'social.reply': '2026-10-16' } } });
+    expect(() => verifiedProviderForCapability(registry, d.id, 'social.reply')).toThrow(/not-installed/);
+    // The adapter's stale metadata cannot replace the installed manifest's evidence.
+    await registry.register({ descriptor: d, adapter: adapter({ ...d, verification: undefined }), pluginName: 'example' });
+    expect(verifiedProviderForCapability(registry, d.id, 'social.reply').descriptor).toBe(d);
+    registry.unregisterPlugin('example');
+    expect(() => verifiedProviderForCapability(registry, d.id, 'social.reply')).toThrow(/not-installed/);
+    const replacement = { ...d, capabilities: ['social.post'], verification: undefined };
+    await registry.register({ descriptor: replacement, adapter: adapter(replacement), pluginName: 'replacement' });
+    expect(() => verifiedProviderForCapability(registry, d.id, 'social.reply')).toThrow(/capability-unsupported/);
+    expect(() => verifiedProviderForCapability(registry, d.id, 'social.post')).toThrow(/unverified/);
+  });
+
+  it('refuses invalid evidence at registration before the package is described', async () => {
+    const registry = createProviderRegistry();
+    const d = descriptor({ verification: { verifiedAt: '2026-10-16', sources: [], capabilities: { 'social.post': '2026-10-16' } } });
+    const describe = vi.fn(() => d);
+    await expectCode(registry.register({ descriptor: d, adapter: { ...adapter(d), describe }, pluginName: 'invalid' }), 'invalid-descriptor');
+    expect(describe).not.toHaveBeenCalled();
+    expect(registry.list()).toEqual([]);
+  });
+
   it('registers a provider and finds it by datatype and capability', async () => {
     const registry = createProviderRegistry();
     const d = descriptor();
@@ -111,6 +136,43 @@ describe('provider registry', () => {
 });
 
 describe('host.fetch', () => {
+  it('uses host-held source identification over caller headers and refuses missing required identification before credentials or network', async () => {
+    const registry = createProviderRegistry();
+    const d = descriptor(); d.oauth!.userAgentRequired = true;
+    await registry.register({ descriptor: d, adapter: adapter(d), pluginName: 'test' });
+    const accessToken = vi.fn(async () => 'host-token');
+    const fetchImpl = vi.fn(async (_url: URL | RequestInfo, _init?: RequestInit) => Response.json({}));
+    const host = createHostFetch(d.id, { registry, accessToken, fetchImpl,
+      resolveSource: async (sourceId) => ({ sourceId, providerId: d.id }),
+      userAgent: async (source) => source.sourceId === 'missing' ? null : `desktop:${source.sourceId}:1.0`,
+    });
+    await expect(host({ source: 'missing', request: { url: 'https://graph.microsoft.com/me', headers: { 'user-agent': 'forged' } } }))
+      .rejects.toMatchObject({ code: 'user-agent-required' });
+    expect(accessToken).not.toHaveBeenCalled(); expect(fetchImpl).not.toHaveBeenCalled();
+    for (const source of ['first-app', 'second-app']) {
+      await host({ source, request: { url: 'https://graph.microsoft.com/me', headers: { 'User-Agent': 'forged' } } });
+      expect(new Headers(fetchImpl.mock.calls.at(-1)![1]?.headers).get('user-agent')).toBe(`desktop:${source}:1.0`);
+    }
+  });
+  it('binds instance requests to persisted source config before reading credentials or fetching', async () => {
+    const registry = createProviderRegistry();
+    const d = descriptor({ egressHosts: [], oauth: { instance: true, authorizeUrl: '/oauth/authorize', tokenUrl: '/oauth/token', scopes: ['read'] } });
+    await registry.register({ descriptor: d, adapter: adapter(d), pluginName: 'instance-provider' });
+    const accessToken = vi.fn(async (source: { sourceId: string }) => `${source.sourceId}-secret`);
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 }));
+    const hostFetch = createHostFetch(d.id, { registry, accessToken, fetchImpl,
+      resolveSource: async (sourceId) => ({ sourceId, providerId: d.id, config: sourceId === 'unbound' ? {} : { connectionOrigin: `https://${sourceId}.example.com` } }),
+    });
+    for (const [source, url] of [['first', 'https://second.example.com/api'], ['first', 'https://first.example.com:8443/api'], ['unbound', 'https://first.example.com/api']]) {
+      await expect(hostFetch({ source, request: { url } })).rejects.toMatchObject({ code: 'egress-denied' });
+    }
+    expect(accessToken).not.toHaveBeenCalled(); expect(fetchImpl).not.toHaveBeenCalled();
+    await hostFetch({ source: 'second', request: { url: 'https://second.example.com/api' } });
+    expect(accessToken).toHaveBeenCalledTimes(1); expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const init = (fetchImpl.mock.calls as unknown as [URL, RequestInit][])[0]![1];
+    expect(new Headers(init.headers).get('authorization')).toBe('Bearer second-secret');
+    expect(init.redirect).toBe('manual');
+  });
   async function setup() {
     const registry = createProviderRegistry();
     const d = descriptor();

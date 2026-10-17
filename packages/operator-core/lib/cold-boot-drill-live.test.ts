@@ -750,6 +750,30 @@ describe('scanCarryDrillDrops (EI-12755 — the drop watchdog scanner)', () => {
     ]);
   });
 
+  it('does not alert on a superseded carry retirement and advances the watermark', () => {
+    const superseded = row('carry-drill-carry-dropped', 'd-superseded', 1_000, {
+      reason: 'superseded',
+      rearmed: true,
+    });
+    expect(scanCarryDrillDrops([superseded], T0)).toEqual({
+      alerts: [],
+      watermarkMs: T0 + 1_000,
+    });
+  });
+
+  it('does not let a superseded retirement dedupe a later real drop for the same drill', () => {
+    const { alerts } = scanCarryDrillDrops([
+      row('carry-drill-carry-dropped', 'd-retried', 1_000, { reason: 'superseded', rearmed: true }),
+      row('carry-drill-carry-dropped', 'd-retried', 2_000, { reason: 'busy-gate-expired' }),
+    ], T0);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({
+      drillId: 'd-retried',
+      kind: 'carry-drill-carry-dropped',
+      reason: 'busy-gate-expired',
+    });
+  });
+
   it('returns the unchanged watermark when nothing qualifies', () => {
     const events = [row('carry-drill-carry-delivered', 'd-6', 1_000)];
     expect(scanCarryDrillDrops(events, T0)).toEqual({ alerts: [], watermarkMs: T0 });

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +13,7 @@ import {
   isOfflineSafeInstall,
   providerFilePaths,
   resolveTargetPlatform,
+  resolveOrtPackageRoot,
   withNetworkAttemptTimeout,
   NETWORK_ATTEMPT_TIMEOUT_MS,
 } from './install-onnxruntime-node.mjs';
@@ -120,8 +122,44 @@ test('installCudaProvider runs ORT cuda12 install and verifies all provider file
   assert.equal(result.skipped, false);
   assert.equal(call[0], process.execPath);
   assert.equal(call[1][0], join(packageRoot, 'script', 'install.js'));
-  assert.equal(call[2].env.ONNXRUNTIME_NODE_INSTALL, 'cuda12');
+  assert.equal(call[2].env.ONNXRUNTIME_NODE_INSTALL, '1');
   assert.deepEqual(inspectCudaProvider({ env, resolvePackageRoot: () => packageRoot }).missing, []);
+});
+
+test('the installed upstream parser recognizes the force flag during an npm local lifecycle', () => {
+  const packageRoot = fakeOrtPackage();
+  const installedRoot = resolveOrtPackageRoot();
+  try {
+    const result = installCudaProvider({
+      env: { npm_config_local_prefix: packageRoot, npm_package_json: join(packageRoot, 'package.json') },
+      host: { platform: 'linux', arch: 'x64' },
+      resolvePackageRoot: () => packageRoot,
+      run: (_command, _args, options) => {
+        // Use the real installed parser and requirements without downloading a
+        // CUDA payload. The old cuda12 value returns undefined here, enabling
+        // upstream install.js's local-install early exit.
+        const probe = spawnSync(process.execPath, ['-e', `
+          const path = require('node:path');
+          const root = process.argv[1];
+          const flag = require(path.join(root, 'script/install-utils.js')).parseInstallFlag();
+          const metadata = require(path.join(root, 'script/install-metadata.js'));
+          console.log(JSON.stringify({ flag, requirements: metadata.requirements['linux/x64'] }));
+        `, installedRoot], { env: options.env, encoding: 'utf8' });
+        assert.equal(probe.status, 0, probe.stderr);
+        const parsed = JSON.parse(probe.stdout);
+        assert.equal(parsed.flag, true, 'must force installation rather than taking the local-install no-op');
+        assert.deepEqual(parsed.requirements, ['cuda12']);
+        for (const file of providerFilePaths({ packageRoot, target: { os: 'linux', cpu: 'x64' } })) {
+          mkdirSync(join(file, '..'), { recursive: true });
+          writeFileSync(file, 'provider');
+        }
+        return { status: 0 };
+      },
+    });
+    assert.equal(result.skipped, false);
+  } finally {
+    rmSync(packageRoot, { recursive: true, force: true });
+  }
 });
 
 test('installCudaProvider skips non-linux/x64 cross-targets without running a native installer', () => {

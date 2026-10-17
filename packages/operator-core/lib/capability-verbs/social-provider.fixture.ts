@@ -23,7 +23,8 @@ import {
   type ProviderDescriptor,
   type ProviderInvokeRequest,
 } from '@papercusp/plugin-sdk';
-import { createProviderRegistry, type ProviderRegistry } from '../integrations/provider-registry';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { createProviderRegistry, providerRegistry, type ProviderRegistry } from '../integrations/provider-registry';
 import type { OutboundDispatchDeps } from './provider-dispatch';
 
 /** Every social write capability a package can declare. */
@@ -38,6 +39,8 @@ export interface SocialPackageSpec {
   platform: string;
   /** Declared capabilities. Defaults to all three social write capabilities. */
   capabilities?: readonly string[];
+  verification?: ProviderDescriptor['verification'];
+  rateBudget?: ProviderDescriptor['rateBudget'];
   /** The package's answer. Defaults to a well-formed result for the capability. */
   respond?: (request: ProviderInvokeRequest) => Record<string, unknown>;
 }
@@ -59,8 +62,8 @@ function defaultResult(request: ProviderInvokeRequest): Record<string, unknown> 
 /** Install one provider package per spec into a fresh registry. */
 export async function installSocialPackages(
   specs: readonly SocialPackageSpec[],
+  registry: ProviderRegistry = createProviderRegistry(),
 ): Promise<InstalledSocialPackages> {
-  const registry = createProviderRegistry();
   const installed: InstalledSocialPackages = {
     deps: {
       registry,
@@ -83,6 +86,11 @@ export async function installSocialPackages(
       datatypes: ['social-post'],
       capabilities: [...(spec.capabilities ?? ALL_SOCIAL_CAPABILITIES)],
       egressHosts: [`${spec.platform}.example.test`],
+      ...(spec.rateBudget ? { rateBudget: spec.rateBudget } : {}),
+      verification: spec.verification ?? {
+        verifiedAt: '2026-10-16', sources: ['https://example.test/contract'],
+        capabilities: Object.fromEntries((spec.capabilities ?? ALL_SOCIAL_CAPABILITIES).map((capability) => [capability, '2026-10-16'])),
+      },
     };
     const adapter: ProviderAdapter = {
       describe: () => descriptor,
@@ -97,7 +105,38 @@ export async function installSocialPackages(
   return installed;
 }
 
+/** Pure verb tests use installed descriptors too; unverified is a synthetic package,
+ * so verifying another vendor never silently changes the refusal under test. */
+export async function installDefaultSocialPackages(): Promise<void> {
+  const registry = providerRegistry();
+  registry.clear();
+  for (const descriptor of bundledSocialProviderDescriptors()) {
+    const name = descriptor.id;
+    await registry.register({ descriptor, adapter: {
+      describe: () => descriptor,
+      syncPage: async () => ({ records: [], nextCursor: null, hasMore: false }),
+      invoke: async () => { throw new Error('pure fixture must not invoke a provider'); },
+    }, pluginName: name });
+  }
+  await installSocialPackages([{ platform: 'unverified-social', verification: { verifiedAt: null, sources: [] } }], registry);
+}
+
 /** The request arguments each invoke carried, typed as the verb's request shape. */
 export function invokedArgs<T>(installed: InstalledSocialPackages): T[] {
   return installed.invokes.map(({ request }) => request.args as unknown as T);
+}
+
+/** Current package descriptors are the acceptance inputs, including unload/additions. */
+export function bundledSocialProviderDescriptors(): ProviderDescriptor[] {
+  const directory = new URL('../../../../libs/papercusp/plugins/', import.meta.url);
+  return readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .flatMap((entry) => {
+      const path = new URL(entry.name + '/papercusp.json', directory);
+      if (!existsSync(path)) return [];
+      const manifest = JSON.parse(readFileSync(path, 'utf8'));
+      const descriptor = manifest.provider as ProviderDescriptor | undefined;
+      return descriptor?.datatypes.includes('social-post') ? [descriptor] : [];
+    });
 }

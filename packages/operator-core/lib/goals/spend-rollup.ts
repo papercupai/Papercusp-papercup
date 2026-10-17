@@ -284,46 +284,79 @@ export async function sessionSpendForGoal(
          AND cs.requester_id IN (SELECT owner_id FROM goal_owners)
          AND NULLIF(selected->>'answeringOwnerId', '') IS NOT NULL
        GROUP BY answer_session.session_id
+    ),
+    -- Keep the owner and consult session populations in one relation before
+    -- probing the usage ledger. A session can be both an owner's native
+    -- session and a selected consult answer, so deduplicate it and retain the
+    -- earliest consult start. NULL means the owner-session path has no start
+    -- bound, matching the legacy session_id IN (...) predicate.
+    goal_session_ids AS MATERIALIZED (
+      SELECT a.session_id, NULL::bigint AS started_ms
+        FROM harness_shared.adv_sessions a
+       WHERE a.session_id IS NOT NULL
+         AND a.coord_owner_id IN (SELECT owner_id FROM goal_owners)
+      UNION ALL
+      SELECT cas.session_id, cas.started_ms
+        FROM consult_answer_sessions cas
+    ),
+    session_scope AS MATERIALIZED (
+      SELECT session_id,
+             CASE WHEN BOOL_OR(started_ms IS NULL) THEN NULL::bigint
+                  ELSE MIN(started_ms)
+             END AS started_ms
+        FROM goal_session_ids
+       GROUP BY session_id
+    ),
+    goal_window AS MATERIALIZED (
+      SELECT (EXTRACT(EPOCH FROM g.created_at) * 1000)::bigint AS created_ms
+        FROM harness_shared.goals g
+       WHERE g.id = ${opts.goalId}
+         AND g.workspace_id = ${opts.workspaceId}
+    ),
+    goal_bounds AS MATERIALIZED (
+      SELECT GREATEST(${since}::bigint, created_ms) AS since_ms
+        FROM goal_window
+    ),
+    -- Split the two disjoint ledger populations so PostgreSQL can use the
+    -- covering goal and session indexes independently. The former OR predicate
+    -- forced a workspace+timestamp scan across every usage sample whenever a
+    -- goal had any legacy (goal_id IS NULL) session rows.
+    spend_rows AS (
+      SELECT s.cost_usd, s.session_id
+        FROM harness_shared.agent_usage_samples s
+        CROSS JOIN goal_bounds b
+       WHERE s.workspace_id = ${opts.workspaceId}
+         AND s.goal_id = ${opts.goalId}
+         AND (s.harness_slug IS NULL OR s.harness_slug NOT IN (
+           SELECT gp.harness_slug FROM harness_shared.goal_pots gp
+            WHERE gp.workspace_id = ${opts.workspaceId}
+              AND gp.goal_id = ${opts.goalId}
+              AND gp.removed_at IS NULL
+         ))
+         AND s.ts >= b.since_ms
+      UNION ALL
+      SELECT s.cost_usd, s.session_id
+        FROM harness_shared.agent_usage_samples s
+        JOIN session_scope ss
+          ON ss.session_id = s.session_id
+         AND (ss.started_ms IS NULL OR s.ts >= ss.started_ms)
+        CROSS JOIN goal_bounds b
+       WHERE s.workspace_id = ${opts.workspaceId}
+         AND s.goal_id IS NULL
+         AND (s.harness_slug IS NULL OR s.harness_slug NOT IN (
+           SELECT gp.harness_slug FROM harness_shared.goal_pots gp
+            WHERE gp.workspace_id = ${opts.workspaceId}
+              AND gp.goal_id = ${opts.goalId}
+              AND gp.removed_at IS NULL
+         ))
+         AND s.ts >= b.since_ms
     )
-    SELECT COALESCE(SUM(s.cost_usd), 0) AS cost,
-           COUNT(*)                     AS samples,
-           COUNT(*) FILTER (WHERE s.cost_usd IS NOT NULL) AS priced_samples,
-           COUNT(*) FILTER (WHERE s.cost_usd IS NULL) AS unpriced_samples,
-           COUNT(DISTINCT s.session_id) AS sessions
-      FROM harness_shared.agent_usage_samples s
-      JOIN harness_shared.goals g
-        ON g.id = ${opts.goalId}
-       AND g.workspace_id = ${opts.workspaceId}
-     WHERE s.workspace_id = ${opts.workspaceId}
-       AND (
-         s.goal_id = ${opts.goalId}
-         OR (
-           s.goal_id IS NULL
-           AND (
-             s.session_id IN (
-               SELECT a.session_id
-                 FROM harness_shared.adv_sessions a
-                WHERE a.session_id IS NOT NULL
-                  AND a.coord_owner_id IN (SELECT owner_id FROM goal_owners)
-             )
-             OR EXISTS (
-               SELECT 1
-                 FROM consult_answer_sessions cas
-                WHERE cas.session_id = s.session_id
-                  AND s.ts >= cas.started_ms
-             )
-           )
-         )
-       )
-       AND (s.harness_slug IS NULL OR s.harness_slug NOT IN (
-         SELECT gp.harness_slug FROM harness_shared.goal_pots gp
-          WHERE gp.workspace_id = ${opts.workspaceId}
-            AND gp.goal_id = ${opts.goalId}
-            AND gp.removed_at IS NULL))
-       AND s.ts >= GREATEST(
-         ${since}::bigint,
-         (EXTRACT(EPOCH FROM g.created_at) * 1000)::bigint
-       )
+    SELECT COALESCE(SUM(cost_usd), 0) AS cost,
+           COUNT(*)                   AS samples,
+           COUNT(*) FILTER (WHERE cost_usd IS NOT NULL) AS priced_samples,
+           COUNT(*) FILTER (WHERE cost_usd IS NULL) AS unpriced_samples,
+           COUNT(DISTINCT session_id) AS sessions
+      FROM spend_rows
   `;
   const r = rows[0];
   return {

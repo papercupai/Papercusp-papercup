@@ -102,6 +102,8 @@ import {
 } from '../../code-intelligence/contracts';
 import { SELECTIVE_ACCEPTANCE_CORPUS, SELECTIVE_SOURCE_BLOBS } from '../../code-intelligence/selective-corpus';
 import { classifyAnalyzeFailure, describeAnalyzeFailure } from '../../code-intelligence/gitnexus-analyze-failure';
+import { dependencySnapshotPath } from '../../code-intelligence/dependency-snapshot-path';
+export { dependencySnapshotPath } from '../../code-intelligence/dependency-snapshot-path';
 
 /** Registry alias this repo is indexed under (`analyze --name papercusp`). The alias
  *  disambiguates it from other checkouts on the box whose basename would collide. */
@@ -2803,11 +2805,6 @@ export interface DependencySnapshotHealth extends DependencySnapshotJudgement {
   alerted: boolean;
 }
 
-/** Mirrors `sharedSnapshotPath()` in scripts/lib/graph-dependency-suggestions.mjs (the reader). */
-export function dependencySnapshotPath(repoName: string, home: string = os.homedir()): string {
-  return path.join(home, '.papercusp', 'graph-snapshot', repoName, 'dependency-snapshot.json');
-}
-
 export function judgeDependencySnapshot(
   text: string | null,
   nowMs: number,
@@ -3024,7 +3021,23 @@ export function logDependencySnapshotCheck(
   else logger.warn(line);
 }
 
-async function trackDependencySnapshot(ctx: SystemActionCtx, root: string, repoName: string): Promise<void> {
+/** Compact per-fire evidence for the existing DBOS action receipt, independent of mutable health metadata. */
+type DependencySnapshotFireReading = {
+  backend: DependencySnapshotBackend;
+  status: DependencySnapshotStatus;
+  reason: string | null;
+  checkedAt: number;
+  generatedAt: string | null;
+  ageMs: number | null;
+  edges: number | null;
+  selectorCeilingMs: number;
+  producerRan: boolean;
+  producerExit: number | null;
+  trackingError?: string;
+} | { unavailable: string };
+
+async function trackDependencySnapshot(ctx: SystemActionCtx, root: string, repoName: string): Promise<DependencySnapshotFireReading> {
+  let measured: Exclude<DependencySnapshotFireReading, { unavailable: string }> | undefined;
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
@@ -3033,10 +3046,16 @@ async function trackDependencySnapshot(ctx: SystemActionCtx, root: string, repoN
         WHERE install_slug = $1 AND target_role = 'system:gitnexus-reindex'`,
       [ctx.installSlug],
     )) as Array<{ ds: Partial<DependencySnapshotHealth> | null }>;
-    const currentIndexCommit = pickIndexFreshness(readRegistryEntry(registryPath(), repoName), readIndexMetaFreshness(root)).lastCommit ?? null;
     const backend = dependencySnapshotBackend(ctx.triggerConfig?.snapshot_backend);
+    // Source snapshots pin the checkout. They need no optional graph registry/index read.
+    const currentIndexCommit = backend === 'first-party-imports' ? null
+      : pickIndexFreshness(readRegistryEntry(registryPath(), repoName), readIndexMetaFreshness(root)).lastCommit ?? null;
     const update = await refreshDependencySnapshot({ root, repoName, currentIndexCommit, prev: rows[0]?.ds ?? null, backend });
     const s = update.next;
+    measured = { backend, status: s.status, reason: s.reason?.slice(0, 300) ?? null,
+      checkedAt: s.checkedAt, generatedAt: s.generatedAt, ageMs: s.ageMs, edges: s.edges,
+      selectorCeilingMs: DEPENDENCY_SNAPSHOT_MAX_AGE_MS, producerRan: update.ran,
+      producerExit: update.ran ? s.lastProducerExit : null };
     logDependencySnapshotCheck(update);
     await sql.unsafe(
       `UPDATE harness_shared.routines
@@ -3073,8 +3092,12 @@ async function trackDependencySnapshot(ctx: SystemActionCtx, root: string, repoN
     } else if (update.shouldResolve) {
       console.log('[gitnexus-reindex] dependency snapshot usable again');
     }
+    return measured;
   } catch (e) {
-    console.warn(`[gitnexus-reindex] dependency snapshot tracking failed: ${e instanceof Error ? e.message : e}`);
+    const reason = String(e instanceof Error ? e.message : e).slice(0, 300);
+    console.warn(`[gitnexus-reindex] dependency snapshot tracking failed: ${reason}`);
+    // Preserve a completed observation when only bookkeeping failed; never invent a reading after an early failure.
+    return measured ? { ...measured, trackingError: reason } : { unavailable: reason };
   }
 }
 
@@ -3105,14 +3128,28 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
   const root = integrationRoot();
   const repoName = typeof cfg.repo_name === 'string' ? cfg.repo_name : GITNEXUS_REPO_NAME;
-  const dbAlertRatio = num(cfg, 'db_alert_ratio', GITNEXUS_LBUG_DB_ALERT_RATIO);
-
   // Source-only refresh must also run while the optional graph analyzer is busy or skipped.
   const snapshotBackend = dependencySnapshotBackend(cfg.snapshot_backend);
-  if (snapshotBackend === 'first-party-imports') await trackDependencySnapshot(ctx, root, repoName);
+  let dependencySnapshot: DependencySnapshotFireReading | undefined;
+  if (snapshotBackend === 'first-party-imports') dependencySnapshot = await trackDependencySnapshot(ctx, root, repoName);
+
+  // Native plan D-018/P-042: the maintained first-party snapshot is the default job.
+  // Legacy internal index maintenance is explicit opt-in on this SAME routine;
+  // missing, false, or non-boolean settings must not inspect/repair the old index.
+  if (cfg.analyze_enabled !== true) {
+    if (snapshotBackend !== 'first-party-imports') {
+      throw new Error('snapshot_backend=gitnexus requires analyze_enabled:true; use first-party-imports for source-only maintenance.');
+    }
+    console.log('[gitnexus-reindex] source-only maintenance; optional GitNexus analyzer disabled (analyze_enabled is not true)');
+    const snapshotError = dependencySnapshot && ('unavailable' in dependencySnapshot
+      ? dependencySnapshot.unavailable : dependencySnapshot.trackingError);
+    return { diagnostics: { maintenanceMode: 'first-party-snapshot', snapshotBackend, analyzeEnabled: false, dependencySnapshot },
+      ...(snapshotError ? { softError: `dependency snapshot: ${snapshotError}` } : {}) };
+  }
 
   // Capacity telemetry is cheap and independent of whether this tick elects to run
   // the expensive analyzer, so record it before the cadence gates (including skips).
+  const dbAlertRatio = num(cfg, 'db_alert_ratio', GITNEXUS_LBUG_DB_ALERT_RATIO);
   await trackGitnexusDbCapacity(ctx, root, dbAlertRatio);
 
   const timeoutMs = num(cfg, 'timeout_ms', GITNEXUS_ANALYZE_TIMEOUT_MS);

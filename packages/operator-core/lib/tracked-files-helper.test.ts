@@ -126,6 +126,30 @@ describe('tracked-files helper (WI-6730)', () => {
     expect(absent).not.toContain('present on disk');
   });
 
+  it('distinguishes a checked-out but unregistered submodule from archive extraction', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tracked-files-unregistered-'));
+    const path = 'apps/slack-asana-bug-drill';
+    try {
+      writeFileSync(
+        join(root, '.gitmodules'),
+        `[submodule "${path}"]\n\tpath = ${path}\n\turl = https://example.test/${path}.git\n`,
+      );
+      mkdirSync(join(root, path), { recursive: true });
+      writeFileSync(join(root, path, '.git'), 'gitdir: /tmp/linked-submodule-git\n');
+      writeFileSync(join(root, path, 'tracked.ts'), 'export const tracked = true;\n');
+
+      const note = describeUnscanned(
+        { declared: [path], scanned: [], unscanned: [path], unscannedPresent: [path] },
+        root,
+      );
+      expect(note).toContain('NOT registered with the superproject');
+      expect(note).toContain(path);
+      expect(note).not.toContain('BY DESIGN');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('coverageOf partitions an already-computed file list, so a guard can keep its own enumerator', () => {
     // The seam that made WI-6776 fixable without forcing every guard onto one `git`
     // invocation: check-no-nul-in-source and check-no-control-bytes need `-z` output
@@ -449,6 +473,18 @@ describe('enumerate-then-read guards tolerate index-lagged deletions (WI-1000417
     [
       'libs/papercusp/packages/orchestrator/src/worker-chunk-loop.edge.test.ts',
       'lists the index of a temp repo it just built and reads two files it wrote — never the shared tree.',
+    ],
+    [
+      'apps/operator/scripts/__tests__/systemd-script-snapshot.test.ts',
+      'unit census catches each asynchronous read and skips a tracked unit deleted before read; inherited-unit reads also catch absence.',
+    ],
+    [
+      'packages/operator-core/lib/agent-tools/capability/git.test.ts',
+      'ls-files asserts a synthetic clone index contains its pinned submodule file; file reads use separately named fixture paths, never entries from that listing.',
+    ],
+    [
+      'packages/operator-core/lib/source-preview-export.test.ts',
+      'ls-files asserts synthetic verifier checkout index membership; file reads use independently named fixture paths, never entries from those listings.',
     ],
     [
       'apps/operator/lib/release/runtime-workspace-build-coverage.ts',

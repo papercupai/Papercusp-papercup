@@ -1,0 +1,177 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Rules/events R8–R10 canonical live authoring audit",
+  "framework": "operational",
+  "command": [
+    "plans:get agent-authored-rules-events-and-authoring-gap-audit-2026-10-15 heading=Authoring inventory (P-008, measured 2026-10-16)",
+    "plans:get agent-authored-rules-events-and-authoring-gap-audit-2026-10-15 decisionId=D-008",
+    "work_items:get WI-6554700010015604,WI-6554700010015603,WI-6554700010015602,WI-6554700010015605 harness=papercusp",
+    "docs:get agent-insights/creating-rules-and-events-without-code source=true harness=papercusp",
+    "plans:get papercusp-com-cupboard-page-2026-10-15 decisionId=D-005"
+  ],
+  "startedAt": "2026-10-16T05:53:07.811Z",
+  "finishedAt": "2026-10-16T05:56:01.454Z",
+  "exitCode": 0,
+  "summary": "Manual content inspection of canonical live tool reads. All 35 inventory data rows have a classification and production source evidence; four confirmed gaps have positive assigned disposition chains; all five guide sections and the complete public brief cover actual tools, test-before-enable, reversibility, sharing and authority. No implementation acceptance or deployed-shipment claim.",
+  "assertions": [
+    {
+      "id": "r8-complete-inventory",
+      "passed": true,
+      "evidence": "Read the complete inventory section, not a nonempty-section probe alone. All 35 named data rows inspected for classification and source evidence; scope excludes dormant third-party apps."
+    },
+    {
+      "id": "r9-positive-gap-chain",
+      "passed": true,
+      "evidence": "Read all four full work-item IDs, each open and assigned to the session; D-008 positively maps state cells, themes, template drafts and lexicon packs to proposed tools, safety class, reused surface and sharing boundary."
+    },
+    {
+      "id": "r10-complete-guidance",
+      "passed": true,
+      "evidence": "Read all five guide sections and full D-005 public content brief. Require actual rule/event tools, same-revision test-before-enable, disable/delete recovery, schema validation, exportOnly sharing, ask-your-agent wording and wearer authority. Preserve coming-soon until shipment."
+    }
+  ],
+  "evidencePlane": "live",
+  "observationKind": "manual canonical-store inspection",
+  "instrument": {
+    "none": true,
+    "reason": "Human-style content judgment over authenticated tool readbacks; no programmatic pass/fail instrument was used. Structured probes only guard presence/count and do not replace this inspection."
+  },
+  "inventory": {
+    "planVersion": 34,
+    "planContentHash": "2c4e439691b724745a014a6fe27eff134bf06311c997f097e4cb821832d30164",
+    "sectionBody": "Scope and method: inspected production operator registries, their agent-tool entrypoints, imported generic registry contracts, package manifests and database registry migrations. Searches covered registerX functions, REGISTRY/CATALOG constants and registry/catalog filenames; runtime records such as sessions, process callbacks and RPC handlers were separated from authorable behavior. A file-level name match alone is not evidence of a missing authoring tool. This is an inventory of operator behavior extension surfaces, not an assertion about dormant third-party apps.\n\nClassification: A = an existing creation surface; B = code by design, because it implements execution/authorization or derives a read model; C = a confirmed agent-authoring gap. “No MCP tool” and “requires source edits” are distinguished below.\n\n| Surface / runtime registry | Class | Creation path or reason; source evidence |\n|---|---|---|\n| Tools / tool definitions, resources, emitted-key metadata | A | meta:define-tool, tools:scaffold; agent-tools/tools/define.ts; libs/generic/tooldef/src/{registry,resource-registry,emits-registry,prompt-registry}.ts. Tool implementation still requires executable code; declaring a tool does not grant it. |\n| Datatype registry | A | meta:define-datatype, datatypes:install; agent-tools/datatypes/declare.ts; libs/db/sql/421-datatype-registry.sql. |\n| Capability-class registry | A | classes:define; agent-tools/classes/define.ts; libs/db/sql/1140-capability-class-registry.sql. |\n| Identities, blueprint inheritance, roles | A | identities:create, blueprint:extend/create; agent-tools/identities/create.ts, blueprint/extend.ts; role-registry.ts scans built-ins and plugin roles. Authoring does not widen ceilings. |\n| Local async/sync rules and installed rules | A | rules:create/validate/test/enable/disable/delete; events/local-rule-store.ts; events/registry.ts; cupboard/rule-store.ts. Installed packages stay inert until worn. |\n| Event vocabulary and declarations | A | events:emit save:true; event-key-registry-store.ts, events/saved-event-type.ts. EVENT_CATALOG is the code-derived first-party tier, not the only authoring path. |\n| Watches, predicate interests, composed awaits | A | watch:create, events:await; events/await/{interest-watch,predicate-watch,compose,store}.ts. |\n| External triggers, webhooks and tool bindings | A | triggers:create/create-webhook/bind; agent-tools/triggers/. Transport adapters remain executable plugin/source code. |\n| Plans, schedules, goals, fleets, pots, harnesses | A | plans:new/set-schedule/arm-schedule, goals:create, fleet:create, pot:create, harness:create; agent-tools/{plans,goals,fleet_registry,pot,harness}/. Recurrence uses plans, not new system routines. |\n| Rubrics and repeatable measurements | A | rubrics:propose/amend with structured tests/sql/probe checks, scorecards:emit fromLedger:true. rubric-instrument-registry.ts explicitly recommends structured checks for unregistered instrument keys. |\n| Facts, conventions, plan rulings | A | facts:assert and plans:add-decision; conventions/registry.ts joins those sources rather than introducing another store. |\n| Lock resources and fleet invariants | A | locks:register_resource; fleet:invariant register operation; agent-tools/locks/register_resource.ts, fleet/invariant.ts. |\n| Topics, knowledge packs, recipes, saved outputs | A | topics:create, knowledge_packs:publish/install, recipes:revise, reports:publish; corresponding agent-tools families and Cupboard package stores. |\n| Provider integrations and plugin contributions | A | cupboard:install-plugin plus validated papercusp.json descriptors; plugin-host-runtime.ts; integrations/provider-registry.ts. New provider handlers are code, not inert data. |\n| Accounts, local inference backends, service bindings | A | accounts:register/link, gateway:local_backend_register, setup:save_integration_key; deployment/account-pool.ts, inference-gateway/local-backend-store.ts. Credentials remain outside source trees. |\n| Voice channels | A | voice:channels operation surface; voice-node/registry.ts createVoiceChannel/removeVoiceChannel; not a missing notification transport registry. |\n| Artifact, deployment-driver, seed-bundle, release-kit and memory backend registries | B | libs/generic/{artifact-registry,deployment-driver,seed-bundle,tauri-release-kit,memory}/src. These dispatch executable host implementations; user artifacts/configuration use existing product tools. |\n| State cells / assessed resolver registry | C | cell-registry.ts registerCell and cell-registrations.ts supply executable resolvers; state:read/subscribe only consume registered cells. Add declarative cells over existing authorized tool/projection/check surfaces, not arbitrary resolver code or a second state store. |\n| Custom theme authoring | C (agent API parity) | custom-themes.ts saveCustomTheme and endpoint-route/routes/themes/index.ts PUT already support no-code UI/API creation. cupboard:publish-theme only exports an existing theme. Add a thin tool over that validator/store; this is NOT a code-only storage gap. |\n| App/aspect template authoring | C | cupboard/template-store.ts reads self-describing template.yaml + GUIDE.md; templates:list/get-guide/new-app and cupboard install/publish consume existing templates. Creation currently requires writing that maintained package by hand. Extend template-kit/package validation for draft/validate/save; do not add another materializer. |\n| Lexicon pack authoring | C | libs/generic/lexicon/src/packs.ts defines the packs; lexicon/configure.ts chooses the active pack; lexicon:active_pack only reads it. Add validated custom packs via the existing resolver rather than changing kernel terminology ad hoc. |\n| Health signals, alarms and conditions | A/B split | User monitoring can already compose structured rubric checks, schedules and watch:create. signal-actor-registry.ts defineSignal and service-health-events.ts implement built-in detectors/acting-consumer invariants; these executable implementations remain B. A condition occurrence is evidence, not a user-defined detector. |\n| Registered command/probe instrument implementations | B | rubric-instrument-registry.ts holds trusted argv/parsers and rejects unknown instrumentKey values. Existing structured checks cover agent-authored measurements; exposing arbitrary parser/command registration would change execution authority. |\n| Pre-prompt / result wire-format registry | B | agent-tools/pre-prompt-registry-config.ts and libs/generic/result-encoding/src/registry.ts govern schema/encoding compatibility. Caller formatting/projection options are existing customization; editing fleet-wide positional schemas is a protocol change. |\n| Flags, modes, hook sinks, role ceilings and kernel | B | flags registry, modes/registry.ts, orchestrator blueprint HOOK_SINKS; mode:set/flags:set change registered state, not the set of authority-bearing definitions. |\n| Notification delivery transports | B | attention-notify-store.ts claimAttentionNotifyChannel restricts mobile/desktop; notifyAttention uses paired transports. Slack notifier is an existing plugin. Agent routing uses watch/coord/notifications tools; adding authenticated transports is provider/plugin implementation, not a free-form channel row. |\n| System actions, autonomous admission and reverter handlers | B | harness/routines/system-actions.ts registerSystemAction; work-admission/admission-sources.ts; autonomy/tripwire/revert-executor.ts; pot-eval/bet-flag-reverter.ts. Agent recurrence uses plans:set-schedule with existing authorized actions. |\n| Authority ops, coord ops, RPC/endpoint and credential boundaries | B | authority/authority-op-registry.ts; coord-ops/registry.ts; cluster-owner-rpc.ts; endpoint-route/define-route.ts; data-governance/organization-key-registry.ts; workspace-host/hosted-relay-confidentiality-registry.ts. These implement trust boundaries. |\n| Derived read/cache, projection, TTL and stream registries | B | derived-reads/registry.ts, expirable-registry.ts, sync/hyperbee/{projection,rate-limiter-registry}.ts, generic/sync query-registry and generic/sse stream-registry. They derive/transport existing facts; new producer functions are source changes. |\n| Search surfaces, embeddings, chunkers, census and reliability registries | B | search/{surface-registry,embedder-mode-registry,chunks/registry}.ts; coverage-census/provider-registry.ts; field-reliability-registry.ts; content-lint/registry.ts. Schema/units, source readers and detector logic require reviewed implementation. |\n| Shell equivalence substitutions | B | bash-substitution/registry.ts reads bash_tool_substitutions; bash-substitution/pairs/index.ts and registry-drift.ts define audited command/tool pairs and earned tiers. Ordinary rules cannot assert command equivalence or bypass native-tool policy. |\n| UI components, panels, intents, shortcuts and design adapters | B | design-adapter/registry.ts, design-adapter-react-tailwind/registry.ts, design-compare/host-registry.ts, ui/intent-registry.ts, shortcut-registry.ts, generic/dock-workbench panel-registry. Implementations are executable UI code; design-phase tools discover/spec/validate them. |\n| Bench, experiment, provisioner and creative-lens catalogs | B | provisioner/catalog.ts; external-bench/competitor-registry.ts; llm-testing/targets/*; experiment/descriptors.ts; scout/lenses.ts; gym/primitives.ts and report-set-firewall.ts. Running/binding a measurement exists; adding a new executable methodology or certified binary is implementation work. |\n| Admission, hold/change kinds, orientation and lifecycle taxonomies | B | hold-registry.ts, change-kind-catalog.ts, turn-start-orientation.ts, orientation-class-registry.ts, agent-obligations.ts. These are platform lifecycle contracts, not user workflow rules. |\n| Session, host, peer, workspace and desktop registration records | A/B split | Public lifecycle tools create the entities; commands/session-registry.ts, desktop/desktop-session-registry.ts, harness/workspace registries and sync peer registries record authenticated runtime presence. registerSession/registerTask/sidecar shutdown callbacks do not constitute a missing behavior-authoring DSL. |\n\nDisposition: extend existing stores for the four C rows; proposed tool names are recommendations pending follow-up design, not newly added verbs. Existing structured checks and subscriptions cover ad-hoc monitoring; built-in detector implementation and authority/protocol changes remain source-reviewed. P-009 records accountable owners and safety/shareability decisions. Paths without a prefix above are under packages/operator-core/lib; libs/db paths refer to libs/papercusp/libs/db.",
+    "sectionSha256": "55cd8b244bd8967ac9d204d686070d7c47c6ff6b823070196e524b0d6d35b1eb",
+    "coveredRows": [
+      "Tools / tool definitions, resources, emitted-key metadata",
+      "Datatype registry",
+      "Capability-class registry",
+      "Identities, blueprint inheritance, roles",
+      "Local async/sync rules and installed rules",
+      "Event vocabulary and declarations",
+      "Watches, predicate interests, composed awaits",
+      "External triggers, webhooks and tool bindings",
+      "Plans, schedules, goals, fleets, pots, harnesses",
+      "Rubrics and repeatable measurements",
+      "Facts, conventions, plan rulings",
+      "Lock resources and fleet invariants",
+      "Topics, knowledge packs, recipes, saved outputs",
+      "Provider integrations and plugin contributions",
+      "Accounts, local inference backends, service bindings",
+      "Voice channels",
+      "Artifact, deployment-driver, seed-bundle, release-kit and memory backend registries",
+      "State cells / assessed resolver registry",
+      "Custom theme authoring",
+      "App/aspect template authoring",
+      "Lexicon pack authoring",
+      "Health signals, alarms and conditions",
+      "Registered command/probe instrument implementations",
+      "Pre-prompt / result wire-format registry",
+      "Flags, modes, hook sinks, role ceilings and kernel",
+      "Notification delivery transports",
+      "System actions, autonomous admission and reverter handlers",
+      "Authority ops, coord ops, RPC/endpoint and credential boundaries",
+      "Derived read/cache, projection, TTL and stream registries",
+      "Search surfaces, embeddings, chunkers, census and reliability registries",
+      "Shell equivalence substitutions",
+      "UI components, panels, intents, shortcuts and design adapters",
+      "Bench, experiment, provisioner and creative-lens catalogs",
+      "Admission, hold/change kinds, orientation and lifecycle taxonomies",
+      "Session, host, peer, workspace and desktop registration records"
+    ]
+  },
+  "guide": {
+    "path": "apps/operator-docs/src/content/docs/agent-insights/creating-rules-and-events-without-code.mdx",
+    "content": "---\n# ⚠ GENERATED PROJECTION — DO NOT EDIT THIS FILE BY HAND.\n# Projected from Postgres: harness_shared.harness_docs.content (doc_id=agent-insights/creating-rules-and-events-without-code.mdx).\n# Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by\n# the next projection (it cannot tell your edit from corruption), so it blocks the\n# whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.\ntitle: \"Creating rules and events without code\"\ndescription: \"Use agent tools to author, test, enable, execute, and share local rules and event types without editing source code.\"\ntype: Insight\ndiscovered: 2026-10-16\nstatus: active\ndocuments:\n  - \"packages/operator-core/lib/agent-tools/rules/lifecycle.ts\"\n  - \"packages/operator-core/lib/events/saved-event-type.ts\"\n  - \"packages/operator-core/lib/agent-tools/events/emit.ts\"\n  - \"packages/operator-core/lib/agent-tools/cupboard/publish-rule.ts\"\n  - \"packages/operator-core/lib/agent-tools/cupboard/publish-event.ts\"\n  - \"packages/operator-core/lib/events/local-rule-runtime.ts\"\nplans:\n  - \"agent-authored-rules-events-and-authoring-gap-audit-2026-10-15\"\n---\n\n## What this enables\n\nAgents can create local rules and event types through the existing agent tools. Rule authoring stores a disabled revision in Postgres; event authoring uses `events:emit { save: true }` to persist a typed event declaration. These tools extend the existing rule registry and event-key registry rather than creating parallel stores.\n\n## Safe lifecycle\n\nFor a rule, use `rules:validate`, `rules:create`, `rules:test`, then `rules:enable`. Creation and edits start disabled. Enabling requires a passing replay for the same revision, and any edit invalidates that proof. `rules:disable` and `rules:delete` remain available as recovery controls. Local rules execute within the author’s live wearer identity, workspace or pot scope, capability ceilings, fire budgets, and existing receipt paths. Authoring a definition does not grant capabilities.\n\nFor events, call `events:emit` with `announce: true, save: true`, a description, and an optional synchronous JSON payload schema. Saving declares and catalogs the event type without firing it. A later normal emit validates the payload and wakes matching awaits. Invalid payloads are rejected before dispatch. Event keys are scoped to the workspace and preserve contributor ownership.\n\n## Test before relying on it\n\nUse `rules:test` to replay bounded matching tool or event history. It is a dry run with no executor dispatch and reports unknown when the ledger lacks the required result or condition inputs. Test the matching, nonmatching, disabled, edited, and reloaded cases before enabling. The maintained suites are `packages/operator-core/lib/agent-tools/rules/lifecycle.test.ts`, `packages/operator-core/lib/events/authored-rule-test.test.ts`, `packages/operator-core/lib/events/local-rule-runtime.integration.test.ts`, and `packages/operator-core/lib/events/saved-event-type.integration.test.ts`.\n\n## Sharing\n\nUse `cupboard:publish-rule { exportOnly: true }` or `cupboard:publish-event { exportOnly: true }` to export a portable package. Export-only writes a local directory and does not contact GitHub or submit a listing. Push the returned directory to the intended mirror, then publish the listing through the normal reviewed Cupboard flow. A fresh workspace installs the package and claims the event or rule through its existing registry seam; installed packages remain inert until explicitly worn or enabled. Sharing carries curated definitions and payload contracts, never local receipts, grants, lifecycle state, or derived measurements.\n\n## Boundaries\n\nThe tools do not create executable capability classes, providers, transport adapters, hook implementations, parser instruments, or kernel authority. Those remain reviewed source or plugin contributions. Structured rubric checks, watches, schedules, topics, and voice channels already provide authorable measurement, alerting, recurrence, and communication paths. Disable a rule immediately if its behavior is wrong; deletion is available for cleanup.\n",
+    "sha256": "e933bdd666b231c16c1a204914f46fd8323138129d014ed99fe80cdcd8e2d1e0",
+    "bytes": 4145,
+    "toolReportedLength": 4137
+  },
+  "dispositionDecision": {
+    "id": "D-008",
+    "title": "Complete positive disposition chain for the four confirmed authoring gaps",
+    "body": "Date: 2026-10-16\nSupplements D-007: the lexicon receipt is WI-6554700010015605 (not pending). Each confirmed C gap has a verified assigned follow-up, with assignee su-bbfd627f-1859-4ffe-aa04-8c96b24955ea on 2026-10-16. State cells → WI-6554700010015604: propose state:define and state:validate over cell-registry and authorized resolver/check references; high safety; no arbitrary executable resolver or Cupboard authority grants. Themes → WI-6554700010015603: propose themes:create/save parity over saveCustomTheme and its existing validator/store; medium safety; existing reviewed Cupboard package sharing. Templates → WI-6554700010015602: propose templates:create-draft and templates:validate over template-store/template-kit; high safety; reviewed package sharing, no implicit materialization or activation. Lexicon packs → WI-6554700010015605: propose lexicon:create/validate over the generic lexicon-pack resolver; medium safety; reviewed brand-pack sharing with explicit activation. Proposed names are design candidates for those follow-ups, not claims that these new verbs already exist. This plan files and assigns the four gaps; implementing them belongs to their own items.\nRelated: P-008, P-009",
+    "date": "2026-10-16",
+    "itemRefs": [
+      "P-008",
+      "P-009"
+    ],
+    "affects": [],
+    "lineNumber": 218
+  },
+  "publicBrief": {
+    "plan": "papercusp-com-cupboard-page-2026-10-15",
+    "version": 28,
+    "contentHash": "1dfc06d3b17fd0ac3f2103853ace8c9905bf13f6e6379b86e9263d6295e04a48",
+    "decision": {
+      "id": "D-005",
+      "title": "Rules and events authoring content brief from the implementation lane",
+      "body": "Date: 2026-10-16\nAffects: agent-authored-rules-events-and-authoring-gap-audit-2026-10-15\nP-001 content-brief supplement from agent-authored-rules-events-and-authoring-gap-audit-2026-10-15 (P-010). Copy to use after verified shipment: Ask your agent to create a rule or event. Rules: rules:validate → rules:create → rules:test → rules:enable; rules:disable and rules:delete reverse activation. An edit invalidates the passing replay. Events: events:emit with announce:true, save:true, description and optional payloadSchema saves a declaration without firing; a later ordinary emit validates the payload and wakes matching awaits. Share through cupboard:publish-rule or cupboard:publish-event; exportOnly:true produces a local portable package without publishing. Authoring grants no capabilities; local execution retains the author’s live identity and scope, and installed packages remain inert until worn. Guide: docs:get {slugs:[\"agent-insights/creating-rules-and-events-without-code\"],harness:\"papercusp\"}; projected path apps/operator-docs/src/content/docs/agent-insights/creating-rules-and-events-without-code.mdx. Shipment is NOT yet verified; retain the existing coming-soon labels until the rules/events plan has a verified shipped verdict. This supplement provides working-tool wording and does not claim ownership of this page implementation.\nRelated: P-001",
+      "date": "2026-10-16",
+      "itemRefs": [
+        "P-001",
+        "P-010"
+      ],
+      "affects": [
+        "agent-authored-rules-events-and-authoring-gap-audit-2026-10-15"
+      ],
+      "lineNumber": 138
+    }
+  },
+  "gaps": [
+    {
+      "id": "WI-6554700010015604",
+      "title": "State cells",
+      "state": "open",
+      "assignee": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea"
+    },
+    {
+      "id": "WI-6554700010015603",
+      "title": "Themes",
+      "state": "open",
+      "assignee": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea"
+    },
+    {
+      "id": "WI-6554700010015602",
+      "title": "Template drafts",
+      "state": "open",
+      "assignee": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea"
+    },
+    {
+      "id": "WI-6554700010015605",
+      "title": "Lexicon packs",
+      "state": "open",
+      "assignee": "su-bbfd627f-1859-4ffe-aa04-8c96b24955ea"
+    }
+  ],
+  "runtimeObservation": {
+    "source": "deploys:vintage",
+    "recordedAt": "2026-10-16T05:58:28.795Z",
+    "runtimes": [
+      {
+        "unit": "hono-host:3070",
+        "treeSha": "d740fc3802",
+        "reportedAt": "2026-10-16 01:55:22.953132-04",
+        "pid": 2322294,
+        "extra": {
+          "arch": "x64",
+          "port": "3070",
+          "desktop": false,
+          "platform": "linux",
+          "envOperatorId": null
+        }
+      }
+    ],
+    "note": "Snapshot of runtime self-report, not a final release receipt. These acceptance observations concern canonical live data, not execution of newly shipped rule code."
+  },
+  "evidenceRefs": [
+    "thread-post:1184297",
+    "thread-post:1184298",
+    "thread-post:1184299"
+  ],
+  "disclosures": [
+    "The live methods require manual content inspection; the structured presence probes alone do not prove content completeness.",
+    "The four follow-ups are filed and assigned; their implementation is outside this plan.",
+    "Coming-soon labels remain until final shipment is verified."
+  ]
+}

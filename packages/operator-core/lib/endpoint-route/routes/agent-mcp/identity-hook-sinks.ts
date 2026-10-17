@@ -160,10 +160,33 @@ const stopContext = defineTool({
     const body = await readBody(req);
     const ownerId = (body?.owner ?? '').trim();
     if (!body || !ownerId) return empty();
-    const text = await boundedContextSinkText({ ownerId, workspaceId: await resolveWorkspace(body), sink: 'stop' });
+    const workspaceId = await resolveWorkspace(body);
+    // Both share the hook's wall. The held-work refusal leads: it is the one the agent must act on.
+    const [heldWorkText, identityText] = await Promise.all([
+      boundedTurnEndHeldWorkText({ ownerId, workspaceId }),
+      boundedContextSinkText({ ownerId, workspaceId, sink: 'stop' }),
+    ]);
+    const text = [heldWorkText, identityText].filter((t) => t.length > 0).join('\n\n');
     return Response.json({ ok: true, text });
   },
 });
+
+/**
+ * The turn-end held-work refusal (WI-6554700010015550) under the same wall as the identity
+ * sink: a slow read degrades to no text, never to a late or blocked stop.
+ */
+async function boundedTurnEndHeldWorkText(input: { ownerId: string; workspaceId: string }): Promise<string> {
+  const [{ withBoundedTimeout }, { evaluateTurnEndHeldWorkStop }] = await Promise.all([
+    import('../../../bounded-timeout'),
+    import('../../../events/await/turn-end-held-work-guard'),
+  ]);
+  const bounded = await withBoundedTimeout(() => evaluateTurnEndHeldWorkStop(input), {
+    fallback: '',
+    timeoutMs: CONTEXT_SINK_BUDGET_MS,
+    label: 'identity-hook:stop:held-work',
+  });
+  return bounded.value;
+}
 
 const compactionContext = defineTool({
   method: 'POST',

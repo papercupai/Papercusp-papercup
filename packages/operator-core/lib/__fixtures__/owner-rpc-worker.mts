@@ -20,7 +20,7 @@ import {
 const held = new Map<string, { child: ChildProcess; output: TextCollector }>();
 let seq = 0;
 
-registerOwnerRpcHandler('fixture-echo', async (payload) => {
+registerOwnerRpcHandler('fixture-echo', async (payload, source) => {
   const p = payload as { op: string; id?: string; data?: string; delayMs?: number; kind?: string; scope?: string };
   if (p.op === 'resource-bind') {
     await bindOwnerRpcResource(p.kind!, p.id!, p.scope!);
@@ -49,6 +49,13 @@ registerOwnerRpcHandler('fixture-echo', async (payload) => {
     await new Promise((r) => setTimeout(r, p.delayMs ?? 1_000));
     return { servedBy: process.pid };
   }
+  if (p.op === 'progress') {
+    const progress = Array.isArray((payload as { progress?: unknown[] }).progress)
+      ? (payload as { progress: unknown[] }).progress
+      : [];
+    for (const item of progress) source.progress?.(item);
+    return { servedBy: process.pid, progress };
+  }
   if (p.op === 'throw') throw new Error('fixture handler failure');
   return { unknownOp: p.op };
 });
@@ -62,6 +69,7 @@ process.on('message', async (message: any) => {
     kind: message.kind,
     payload: message.payload,
     timeoutMs: message.timeoutMs,
+    onProgress: (progress) => process.send!({ type: 'fixture:progress', seq: message.seq, progress }),
   });
   process.send!({ type: 'fixture:result', seq: message.seq, out });
 });

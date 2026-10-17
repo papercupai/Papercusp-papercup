@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P-003 converge integration clean committed-source receipt",
+  "framework": "node",
+  "command": [
+    "npm run test:file -- packages/operator-core/lib/agent-tools/plans/plan-converge.integration.test.ts",
+    "isolated PostgreSQL via scripts/with-test-pg.mjs"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-16T01:47:55.223Z",
+  "finishedAt": "2026-10-16T01:49:05.692Z",
+  "summary": "Clean committed-source receipt 98d8a291-379f-4673-8842-9efb0b642013 passed all 14 P-003 converge integration cases with zero failures, zero skips, and worktreeDirty=false at commit c6f75c726c9a3a7ec3fb9bab2fc429390cbf07ac.",
+  "assertions": [
+    {
+      "id": "p003-14-of-14",
+      "passed": true,
+      "evidence": "Receipt 98d8a291-379f-4673-8842-9efb0b642013 records passed=14, failed=0, skipped=0, collectionFailed=false."
+    },
+    {
+      "id": "p003-clean-source",
+      "passed": true,
+      "evidence": "Receipt records worktreeDirty=false and commitSha=c6f75c726c9a3a7ec3fb9bab2fc429390cbf07ac."
+    }
+  ]
+}

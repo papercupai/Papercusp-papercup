@@ -57,7 +57,7 @@ export function buildTelemetryRetentionTriggerConfig(): {
     // Cold migration is bounded per tick; the mount path remains a runtime
     // default so installations can provision the tier independently.
     cold_archive_enabled: true,
-    cold_archive_max_archives: 12,
+    cold_archive_max_archives: 10_000,
   };
 }
 

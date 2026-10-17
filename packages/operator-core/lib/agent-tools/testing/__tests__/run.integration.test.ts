@@ -322,6 +322,25 @@ describe('bounded router-output diagnostics (EI-23084691057182393)', () => {
     expect(output.length).toBeLessThanOrEqual(8_192);
   });
 
+  it.each(['Error', 'Caused by'])('keeps an ANSI-colored %s setup failure after progress displaces it', (prefix) => {
+    const capture = createBoundedRouterOutputCapture();
+    capture.append('stderr', '\u001b[');
+    capture.append('stderr', `31m${prefix}\u001b[39m: TEST SUBSTRATE STORAGE LOW\n`);
+    capture.append('stdout', 'TEST_FILE_PROGRESS state=running\n'.repeat(500));
+
+    const output = capture.finish();
+    expect(output.slice(-2_000)).toContain(`${prefix}: TEST SUBSTRATE STORAGE LOW`);
+    expect(output).toContain('TESTING_RUN_PRIORITY_DIAGNOSTICS retained-before-tail-truncation');
+    expect(output.length).toBeLessThanOrEqual(8_192);
+  });
+
+  it('leaves a short ANSI-colored diagnostic unchanged without duplicating its normalized form', () => {
+    const capture = createBoundedRouterOutputCapture();
+    const output = '\u001b[31mError\u001b[39m: setup refused\n';
+    capture.append('stderr', output);
+    expect(capture.finish()).toBe(output);
+  });
+
   it('reassembles a diagnostic split across stderr chunks and leaves a short tail unduplicated', () => {
     const capture = createBoundedRouterOutputCapture();
     capture.append('stderr', 'TEST_FILE_ROUTE_');

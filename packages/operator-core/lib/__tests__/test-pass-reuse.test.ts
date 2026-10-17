@@ -33,6 +33,7 @@ const {
   packageLockInstallView,
   REUSE_PROOF_FORMAT,
   REUSE_SKIP_LIST_SCHEMA,
+  PC_TEST_PARTIAL_SKIP_LIST_ENV,
   reuseCandidates,
   reuseRunnerIdentity,
   reuseSoundnessAlarms,
@@ -53,6 +54,7 @@ import {
   decideReuseSkip,
   executedSourceRunnerIdentity,
   parseReuseSkipList,
+  PC_TEST_PARTIAL_SKIP_LIST_ENV as READER_PARTIAL_SKIP_LIST_ENV,
   REUSE_PROOF_FORMAT as RECORDER_PROOF_FORMAT,
   REUSE_SKIP_LIST_SCHEMA as READER_SCHEMA,
 } from '@papercusp/test-config/test-pass-reuse-skip';
@@ -287,26 +289,37 @@ describe('selectReusablePasses', () => {
 describe('gateReuseObservations', () => {
   it('does not invent an eligible file for an off-path decision with unknown population', () => {
     expect(gateReuseObservations('@ws::test', { offReason: 'dirty-checkout' })).toEqual([
-      { eligible: 0, applied: 0, reason: 'dirty-checkout', scope: '@ws::test' },
+      { eligible: 0, applied: 0, populationKnown: false, reason: 'dirty-checkout', scope: '@ws::test' },
     ]);
   });
 
   it('keeps a measured off-path population when one is available', () => {
     expect(gateReuseObservations('@ws::test', { offReason: 'dirty-checkout', eligible: 7 })).toEqual([
-      { eligible: 7, applied: 0, reason: 'dirty-checkout', scope: '@ws::test' },
+      { eligible: 7, applied: 0, populationKnown: true, reason: 'dirty-checkout', scope: '@ws::test' },
     ]);
   });
 
   it('records an empty candidate population as zero units', () => {
     expect(gateReuseObservations('@ws::test', { summary: { candidates: 0, reused: 0 } })).toEqual([
-      { eligible: 0, applied: 0, reason: 'no-candidates', scope: '@ws::test' },
+      { eligible: 0, applied: 0, populationKnown: true, reason: 'no-candidates', scope: '@ws::test' },
     ]);
   });
 
   it('keeps known file units measurable', () => {
     expect(gateReuseObservations('@ws::test', { summary: { candidates: 20, reused: 20 } })).toEqual([
-      { eligible: 20, applied: 20, reason: 'applied', scope: '@ws::test' },
+      { eligible: 20, applied: 20, populationKnown: true, reason: 'applied', scope: '@ws::test' },
     ]);
+  });
+
+  it('distinguishes measured zero off-path files from missing or invalid cardinality', () => {
+    expect(gateReuseObservations('@ws::test', { offReason: 'dirty-checkout', eligible: 0 })[0])
+      .toMatchObject({ eligible: 0, populationKnown: true });
+    for (const eligible of [undefined, -1, NaN, 0.5]) {
+      expect(gateReuseObservations('@ws::test', { offReason: 'dirty-checkout', eligible })[0])
+        .toMatchObject({ eligible: 0, populationKnown: false });
+    }
+    expect(gateReuseObservations('@ws::test', {})[0])
+      .toMatchObject({ eligible: 0, populationKnown: false });
   });
 });
 
@@ -1484,6 +1497,7 @@ describe('skip-list channel: affected-tests writer -> vitest-config reader', () 
     expect(parsed.files).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
     expect(parsed).toMatchObject(META);
     expect(REUSE_SKIP_LIST_SCHEMA).toBe(READER_SCHEMA);
+    expect(PC_TEST_PARTIAL_SKIP_LIST_ENV).toBe(READER_PARTIAL_SKIP_LIST_ENV);
   });
 
   it('applies only in the same run context and runner identity', () => {

@@ -1133,6 +1133,37 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
     });
   });
 
+  it.each([false, true, null])('preserves the distinct worktree commit only when its run was clean (%s)', async (dirty) => {
+    const sibling = `${harness}-sibling-${String(dirty)}`;
+    const source = path.join(harness, 'pkg/lib/x.ts');
+    const test = path.join(harness, 'pkg/lib/x.test.ts');
+    const startedAt = new Date(Date.now() - 60_000).toISOString();
+    g(harness, 'worktree', 'add', '--detach', sibling, superCommit);
+    try {
+      // The run exercised the sibling's old committed bytes. Later edits exist
+      // only in the canonical checkout, despite the shared Git common directory.
+      await writeFile(source, 'export const x = 2;\n');
+      await writeFile(test, "import { x } from './x';\nvoid (x + 1);\n");
+      const result = await expandTestRunBinding(
+        input({ sourcePaths: ['pkg/lib/x.ts'] }), SCOPE,
+        binder(cleanRow({ root: sibling, worktree_dirty: dirty,
+          started_at: startedAt, execution_details: { runStartedAt: startedAt } })),
+      );
+      if (dirty === false) {
+        expect(result).toMatchObject({ ok: true, binding: { details: { testRun: {
+          recordedRoot: sibling,
+          asCommitted: { commitSha: superCommit, repoPrefix: '', measuredAtCommit: true },
+        } } } });
+      } else {
+        expect(result).toMatchObject({ ok: false, error: 'test_run_source_modified_after_run' });
+      }
+    } finally {
+      await writeFile(source, 'export const x = 1;\n');
+      await writeFile(test, "import { x } from './x';\nvoid x;\n");
+      g(harness, 'worktree', 'remove', '--force', sibling);
+    }
+  });
+
   it('WI-10006842: maps a SUPERPROJECT clone run of a file inside a pinned submodule by descending the gitlink', async () => {
     // The node:test ledger runs papercusp-desktop/test/*.test.js from the superproject clone
     // root, so the row carries the SUPERPROJECT commit and a path below a 160000 entry.

@@ -71,12 +71,22 @@ export interface AcceptanceBarLifecycleVerdict {
    */
   contractGaps?: Array<{ barKey: string; gap: AcceptanceBarContractGap; detail: string }>;
   contractGapsBlocking?: boolean;
+  /** Named manual delivery BARs reviewed as unknown; never a ship waiver. */
+  pendingDeliveryBarKeys?: string[];
 }
 
 export interface AcceptanceBarLifecycleOptions {
   /** The `plans:start` door's shift-left check; see {@link AcceptanceBarLifecycleVerdict.contractGaps}. */
   requireCompleteContractBeforeProof?: boolean;
+  /** Pre-grading only. Scorecard doors require an unknown rating for every selected BAR. */
+  pendingDeliveryBarKeys?: readonly string[];
 }
+
+const DELIVERY_PROOF_CODES = new Set<AcceptanceBarSnapshotCode>([
+  'bar_snapshot_proof_missing', 'bar_snapshot_proof_stale', 'bar_snapshot_proof_uncertain',
+  'bar_snapshot_proof_depth_missing', 'bar_snapshot_proof_inadequate',
+  'bar_snapshot_evidence_plane_unmet', 'bar_snapshot_evidence_runtime_unmet',
+]);
 
 const CONTRACT_GAP_CODE: Record<AcceptanceBarContractGap, AcceptanceBarSnapshotCode> = {
   method_missing: 'bar_snapshot_method_missing',
@@ -349,7 +359,9 @@ function baseBarCodes(snapshot: AcceptanceBarContractSnapshot, bar: AcceptanceBa
   return codes;
 }
 
-function executionBarCodes(bar: AcceptanceBarTrace, phase: AcceptanceBarLifecyclePhase): AcceptanceBarSnapshotCode[] {
+function executionBarCodes(
+  bar: AcceptanceBarTrace, phase: AcceptanceBarLifecyclePhase, pendingDelivery = false,
+): AcceptanceBarSnapshotCode[] {
   const codes: AcceptanceBarSnapshotCode[] = [];
   if (phase === 'pre-start') return codes;
   if (!bar.method.trim()) addCode(codes, 'bar_snapshot_method_missing');
@@ -367,6 +379,10 @@ function executionBarCodes(bar: AcceptanceBarTrace, phase: AcceptanceBarLifecycl
     // Seeded clauses begin as drafts; accepting them is a ship obligation, not
     // a pre-grading gate (phaseSnapshotCodes applies the same phase contract).
     if (clausesNotAccepted && phase === 'ship') addCode(codes, 'bar_snapshot_clause_not_accepted');
+    // A manual public-path drill can only happen AFTER publication, which may itself
+    // require independent review. The explicit pre-grading path records unknown;
+    // ship always evaluates the original proof and grading, including this BAR.
+    if (pendingDelivery && phase === 'pre-grading') return codes;
     if (!clausesNotAccepted && bar.role === 'outcome' && automatedProofRequired(bar)) {
       if (!bar.requiredTestLayers?.length) addCode(codes, 'bar_snapshot_proof_depth_missing');
       else if (bar.proof.adequacy?.state !== 'pass') addCode(codes, 'bar_snapshot_proof_inadequate');
@@ -421,19 +437,30 @@ export function evaluateAcceptanceBarLifecycle(
   }
 
   const codes: AcceptanceBarSnapshotCode[] = [];
+  const requested = phase === 'pre-grading' ? new Set(options.pendingDeliveryBarKeys ?? []) : new Set<string>();
+  const pending = new Set(snapshot.bars.filter((bar) => requested.has(bar.barKey)
+    && (bar.evidencePlane === 'deployed' || bar.evidencePlane === 'live')
+    && bar.check?.kind === 'instrument' && bar.check.instrumentKey === 'none').map((bar) => bar.barKey));
+  if ([...requested].some((key) => !pending.has(key))) addCode(codes, 'bar_snapshot_scope_invalid');
+  // Filter per BAR BEFORE folding snapshot codes. Removing the flat union would
+  // also hide identical failures on unrelated tree/automated outcomes.
+  const phaseSnapshot = pending.size === 0 ? snapshot : { ...snapshot, bars: snapshot.bars.map((bar) =>
+    pending.has(bar.barKey) ? { ...bar, readiness: { ...bar.readiness,
+      codes: bar.readiness.codes.filter((code) => !DELIVERY_PROOF_CODES.has(code)),
+    } } : bar) };
   // A post-epoch plan must never turn an unavailable/truncated source into an
   // empty successful contract. Every source/completeness error blocks every
   // applicable phase, including the early BAR-only phase.
-  for (const code of phaseSnapshotCodes(snapshot, phase)) addCode(codes, code);
+  for (const code of phaseSnapshotCodes(phaseSnapshot, phase)) addCode(codes, code);
   const contractGaps = options.requireCompleteContractBeforeProof ? snapshotContractGaps(snapshot) : undefined;
   const contractGapsBlocking = contractGaps !== undefined && contractGaps.length > 0 && !anyProofBound(snapshot);
   const blockingBars: AcceptanceBarLifecycleVerdict['blockingBars'] = [];
-  for (const bar of snapshot.bars) {
+  for (const bar of phaseSnapshot.bars) {
     const gapCodes = contractGapsBlocking
       ? contractGaps!.filter((gap) => gap.barKey === bar.barKey).map((gap) => CONTRACT_GAP_CODE[gap.gap])
       : [];
     const barCodes = [
-      ...new Set([...baseBarCodes(snapshot, bar), ...executionBarCodes(bar, phase), ...gapCodes]),
+      ...new Set([...baseBarCodes(snapshot, bar), ...executionBarCodes(bar, phase, pending.has(bar.barKey)), ...gapCodes]),
     ];
     if (barCodes.length > 0) {
       blockingBars.push({
@@ -534,6 +561,7 @@ export function evaluateAcceptanceBarLifecycle(
         ? null
         : attributedMessage(snapshot, phaseLabel, blockingBars, contractCodes, nextRepair),
     ...(contractGaps !== undefined ? { contractGaps, contractGapsBlocking } : {}),
+    ...(pending.size > 0 ? { pendingDeliveryBarKeys: [...pending] } : {}),
   };
 }
 
@@ -586,7 +614,8 @@ export async function readAndEvaluateAcceptanceBarLifecycle(
     ...evaluateAcceptanceBarLifecycle(
       snapshot.applicable ? snapshot : { ...snapshot, applicable: true },
       phase,
-      { requireCompleteContractBeforeProof: options.requireCompleteContractBeforeProof },
+      { requireCompleteContractBeforeProof: options.requireCompleteContractBeforeProof,
+        pendingDeliveryBarKeys: options.pendingDeliveryBarKeys },
     ),
     nonCodeItemProofs: deriveNonCodeItemProofs(snapshot),
   };

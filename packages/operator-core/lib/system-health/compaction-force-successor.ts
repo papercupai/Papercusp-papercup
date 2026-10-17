@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
+import { hostname } from 'node:os';
 import { withWorkspace } from '@papercusp/db-org';
 import { lookupByMcpName, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
+import { markAdvSessionEnded } from '../adv-sessions';
+import { probeProcessLiveness } from '../agent-tools/coordination/presence';
 import {
   INTERNAL_EXPECTED_SUCCESSOR_BINDING,
   type InternalExpectedSuccessorBinding,
@@ -24,6 +27,69 @@ export interface CompactionForceSuccessorInput {
 export interface CompactionForceSuccessorResult {
   verified: boolean;
   detail: string;
+}
+
+export type HostlessSourceProcessVerdict = 'dead' | 'live' | 'unknown';
+
+/**
+ * Hostless recovery may only close an open source row after a positive local
+ * process-death observation. `display:'terminal'` is the adv-session contract
+ * that the recorded pid belongs to this operator host. Headless launches are
+ * also local psu processes, but intentionally have no display marker; their
+ * explicit `headless` placement is the local provenance for probing the pid.
+ * A missing/other display without that headless provenance, missing pid,
+ * remote/ambiguous probe, or live pid stays unknown/live and keeps the identity
+ * fence closed.
+ */
+export function hostlessSourceProcessVerdict(
+  target: Pick<CompactionForceSuccessorTarget, 'live' | 'endedAt' | 'endedBy' | 'display' | 'headless' | 'pid'>,
+  probe: (record: { host?: string | null; pid?: number | null }) => boolean | null = probeProcessLiveness,
+  localHost = hostname(),
+): HostlessSourceProcessVerdict {
+  if (target.endedAt != null || target.endedBy != null) return 'dead';
+  if (target.live) return 'live';
+  const localProcessProvenance = target.display === 'terminal' ||
+    (target.headless === true && (target.display == null || target.display === ''));
+  if (!localProcessProvenance || !Number.isSafeInteger(target.pid) || (target.pid ?? 0) <= 0) {
+    return 'unknown';
+  }
+  const observed = probe({ host: localHost, pid: target.pid });
+  return observed === false ? 'dead' : observed === true ? 'live' : 'unknown';
+}
+
+/** Reconcile one exact hostless source incarnation before retaining its owner id. */
+async function reconcileHostlessSource(
+  target: CompactionForceSuccessorTarget,
+): Promise<{ ok: true } | { ok: false; detail: string }> {
+  const verdict = hostlessSourceProcessVerdict(target);
+  if (verdict === 'live') {
+    return { ok: false, detail: 'the source process is still live; identity-preserving replacement is refused' };
+  }
+  if (verdict !== 'dead') {
+    return {
+      ok: false,
+      detail: 'the source has no live PTY host but its local terminal process death is unproven; identity-preserving replacement is refused',
+    };
+  }
+  // A reconciler/reaper may have already recorded this exact source as ended.
+  // Repeating the terminal UPDATE would lose its `ended_at IS NULL` CAS and
+  // incorrectly block recovery; launch-agent rechecks the immutable binding,
+  // live host, and Codex writer before opening the successor.
+  if (target.endedAt != null) return { ok: true };
+  try {
+    const ended = await markAdvSessionEnded(target.advSessionId, null, 'reconciler', {
+      expectedBinding: target.binding,
+      throwOnError: true,
+    });
+    return ended
+      ? { ok: true }
+      : { ok: false, detail: 'the exact hostless source binding lost its compare-and-swap' };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: `hostless source terminal reconciliation failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
 }
 
 function forceSuccessorIdempotencyKey(target: CompactionForceSuccessorTarget): string {
@@ -106,6 +172,8 @@ export async function dispatchCompactionForceSuccessor(
   };
 
   const result = await withWorkspace(target.workspaceId, async (tx) => {
+    const source = await reconcileHostlessSource(target);
+    if (!source.ok) return { isError: true, content: [{ type: 'text', text: source.detail }] };
     const ctx = {
       workspaceId: target.workspaceId,
       harnessSlug: target.harnessSlug,

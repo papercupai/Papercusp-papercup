@@ -5,7 +5,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Agent } from 'undici';
-import { afterEach, expect, it, vi } from 'vitest';
+import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import { createFailoverPool } from './account-failover';
 import { createInferenceGateway, type GatewayStats, type GatewayCarryTrialAttempt, type GatewayCarryTrialAttemptResult,
@@ -13,11 +13,19 @@ import { createInferenceGateway, type GatewayStats, type GatewayCarryTrialAttemp
 import { processMonotonicClock } from '../process-monotonic-clock';
 import { readProcessIdentity } from '../process-identity';
 import { CACHE_POLICY_VERSION } from './cache-policy';
+import {
+  configureGatewayRequestOutcomeStore,
+  InMemoryGatewayRequestOutcomeStore,
+  resetGatewayRequestOutcomeStore,
+} from './gateway-request-outcome-store';
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
 let gateway: ReturnType<typeof createInferenceGateway> | undefined;
 let upstream: http.Server | undefined;
+
+// Owner reports include durable outcomes; unit fixtures must not query PostgreSQL.
+beforeEach(() => configureGatewayRequestOutcomeStore(new InMemoryGatewayRequestOutcomeStore()));
 
 afterEach(async () => {
   await gateway?.close();
@@ -25,6 +33,7 @@ afterEach(async () => {
   if (upstream) await new Promise<void>((resolve) => upstream!.close(() => resolve()));
   upstream = undefined;
   resetGovernorRegistry();
+  resetGatewayRequestOutcomeStore();
 });
 
 async function listen(server: http.Server): Promise<number> {

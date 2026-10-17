@@ -18,14 +18,16 @@ import { pgResultDiagnosticSnapshot, type PgResultDiagnostic } from '@papercusp/
 import {
   resolvePresenceScope,
   assemblePresenceSnapshot,
+  PRESENCE_OPTIONAL_LEG_TIMEOUT_MS,
   type PresenceSnapshotDiagnostic,
 } from '../presence-snapshot';
+import { withBoundedTimeout } from '../../../bounded-timeout';
 import { readIdentity } from '../../locks/identity';
 import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { shapeCoordPresence } from './presence-shape';
 import { normalizeFullPresenceRows } from '../presence-payload';
 import { COORD_ROLES } from '../roles';
-import { getModesForOwners } from '../../../modes/store';
+import { getModesForOwners, type ModeRow } from '../../../modes/store';
 import { modeRegistrationLive } from '../../../modes/liveness';
 import { classifyCoordDeafness, coordDeafBudgetMs, lastInboxReadAtBatch } from '../inbox-read-freshness';
 import { listParkedAwaitsForSubscribers } from '../../../events/await/store';
@@ -555,7 +557,6 @@ export default defineTool({
     let coupling: Record<string, unknown> = {};
     if (args.include_coupling !== false && self) {
       try {
-        const edges = await measure('coupling', () => listCouplingsFor(self.ownerId, c.workspaceId ?? undefined));
         // P-013 (scoping ruling D-078): the derived half, plugged in exactly where
         // this module always said it would go. The roster signals (same fleet,
         // shared awaited event) are computed from the SAME pre-overlay snapshot
@@ -590,20 +591,37 @@ export default defineTool({
         // is no longer the only one wired — `coord:send` and `topics:feed` carry the
         // same sink, which is what makes the census observable at volume.
         const observeCensus = censusObserverFor(c);
-        const derived = await deriveCouplings(self.ownerId, snapshot.active, {
-          ...couplingSourcesFor({
-            selfOwnerId: self.ownerId,
-            rosterOwnerIds: snapshot.active
-              .map((r) => (r as { ownerId?: unknown }).ownerId)
-              .filter((v): v is string => typeof v === 'string' && v.length > 0),
-            // NOT `detail?.coordinationDomain` — that is the bug this replaced.
-            ...(coordinationDomain ? { coordinationDomain } : {}),
-            ...(c.harnessSlug ? { harnessSlug: c.harnessSlug } : {}),
-            ...(c.workspaceId ? { workspaceId: c.workspaceId } : {}),
-          }),
-          ...(observeCensus ? { observe: observeCensus } : {}),
-        });
-        const peers = resolveCoupledPeers(self.ownerId, derived, edges);
+        // Coupling is optional attribution. Bound the whole read, including the
+        // declared-edge query and every derived source, so one wedged PG leg cannot
+        // hold the base roster hostage. The underlying best-effort sources still
+        // keep their own fail-soft behavior; this outer deadline is the caller's
+        // final wall-time guard.
+        const bounded = await measure('coupling', () => withBoundedTimeout(
+          async () => {
+            const edges = await listCouplingsFor(self.ownerId, c.workspaceId ?? undefined);
+            const derived = await deriveCouplings(self.ownerId, snapshot.active, {
+              ...couplingSourcesFor({
+                selfOwnerId: self.ownerId,
+                rosterOwnerIds: snapshot.active
+                  .map((r) => (r as { ownerId?: unknown }).ownerId)
+                  .filter((v): v is string => typeof v === 'string' && v.length > 0),
+                // NOT `detail?.coordinationDomain` — that is the bug this replaced.
+                ...(coordinationDomain ? { coordinationDomain } : {}),
+                ...(c.harnessSlug ? { harnessSlug: c.harnessSlug } : {}),
+                ...(c.workspaceId ? { workspaceId: c.workspaceId } : {}),
+              }),
+              ...(observeCensus ? { observe: observeCensus } : {}),
+            });
+            return { edges, derived };
+          },
+          {
+            fallback: null,
+            timeoutMs: PRESENCE_OPTIONAL_LEG_TIMEOUT_MS,
+            label: 'coord:presence:coupling',
+          },
+        ));
+        if (!bounded.value) throw new Error('coord:presence coupling leg exceeded its deadline');
+        const peers = resolveCoupledPeers(self.ownerId, bounded.value.derived, bounded.value.edges);
         const expansion = buildCoupledExpansion(peers, snapshot.active);
         coupling = {
           expanded: expansion.expanded,
@@ -646,7 +664,15 @@ export default defineTool({
     try {
       const ids = active.map((r) => String((r as { ownerId?: unknown }).ownerId ?? '')).filter(Boolean);
       if (ids.length) {
-        const modeMap = await measure('modes', () => getModesForOwners(c.workspaceId ?? 'default', ids));
+        const bounded = await measure('modes', () => withBoundedTimeout(
+          () => getModesForOwners(c.workspaceId ?? 'default', ids),
+          {
+            fallback: new Map<string, ModeRow[]>(),
+            timeoutMs: PRESENCE_OPTIONAL_LEG_TIMEOUT_MS,
+            label: 'coord:presence:getModesForOwners',
+          },
+        ));
+        const modeMap = bounded.value;
         if (modeMap.size) {
           active = active.map((r) => {
             const m = modeMap.get(String((r as { ownerId?: unknown }).ownerId ?? ''));

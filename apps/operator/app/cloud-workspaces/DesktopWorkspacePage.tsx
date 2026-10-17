@@ -2,14 +2,16 @@
 
 import { useMemo } from "react";
 import { Monitor, RefreshCw } from "lucide-react";
-import { parseAsString, useQueryState } from "nuqs";
+import { parseAsString, useQueryStates } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
+import { getBrowserMachineId, setBrowserMachineId } from "@papercusp/operator-core/lib/browser-workspace";
+import { useOperatorWorkspaceLocation } from "@papercusp/operator-ui/seam";
 import { Button } from "@/app/harness/Button";
 import { Select } from "@/app/harness/Select";
 import { HostedDesktopConnection } from "./HostedDesktopConnection";
 import { LocalDesktopWorkspace } from "./LocalDesktopWorkspace";
 import { LOCAL_DESKTOP_HOST } from "./local-desktop-protocol";
-import { readHostedWorkspaceConnector } from "./hosted-workspace-session-protocol";
+import { desktopMachineSelection, preferredDesktopWorkspace } from "./workspace-view-model";
 import type {
   CloudWorkspacesControlRow,
   WorkspaceHostControlRow,
@@ -18,15 +20,15 @@ import styles from "./hosted-workspace-session.module.css";
 
 /** D-062 option B: Desktops is a workspace, not a selected cloud-management tab. */
 export default function DesktopWorkspacePage() {
+  const localMode = useOperatorWorkspaceLocation() === "local";
   const control = useSyncQuery<CloudWorkspacesControlRow>({
     queryName: "workspaceHosts.control",
   });
-  const [desktopHost, setDesktopHost] = useQueryState(
-    "desktopHost",
-    parseAsString.withOptions({ history: "push" }),
-  );
-  const [legacyHost] = useQueryState("host", parseAsString);
-  const requestedHost = desktopHost ?? legacyHost;
+  const [target, setTarget] = useQueryStates({
+    desktopHost: parseAsString, host: parseAsString, desktop: parseAsString,
+    desktopPins: parseAsString, desktopFilter: parseAsString,
+  }, { history: "push" });
+  const requestedHost = target.desktopHost ?? target.host ?? getBrowserMachineId();
   const workspaces = useMemo(
     () =>
       (control.data ?? []).filter(
@@ -37,19 +39,18 @@ export default function DesktopWorkspacePage() {
       ),
     [control.data],
   );
-  // P-007: "This computer" sits beside the cloud workspaces. It is the default only
-  // when there is no cloud workspace to open, so an existing cloud default is kept.
+  // "This computer" is available only on a local host. An empty hosted inventory
+  // (including a session with no selected workspace) grants no local machine.
   const showLocal =
-    requestedHost === LOCAL_DESKTOP_HOST ||
-    (!requestedHost && !control.loading && !control.error && workspaces.length === 0);
+    localMode &&
+    (requestedHost === LOCAL_DESKTOP_HOST ||
+      (!requestedHost && !control.loading && !control.error && workspaces.length === 0));
   // Preserve explicit deep links; a missing subject must not silently select another machine.
   const selected = showLocal
     ? undefined
     : requestedHost
       ? workspaces.find((row) => row.id === requestedHost)
-      : (workspaces.find((row) => readHostedWorkspaceConnector(row.tunnel)) ??
-        workspaces.find((row) => row.observedState === "running") ??
-        workspaces[0]);
+      : preferredDesktopWorkspace(workspaces);
 
   return (
     <section
@@ -66,14 +67,17 @@ export default function DesktopWorkspacePage() {
             value={showLocal ? LOCAL_DESKTOP_HOST : (selected?.id ?? "")}
             placeholder="Choose a workspace"
             options={[
-              { value: LOCAL_DESKTOP_HOST, label: "This computer" },
+              ...(localMode
+                ? [{ value: LOCAL_DESKTOP_HOST, label: "This computer" }]
+                : []),
               ...workspaces.map((row) => ({
                 value: row.id,
                 label: row.name,
               })),
             ]}
             onChange={(value) => {
-              void setDesktopHost(value);
+              setBrowserMachineId(value);
+              void setTarget(desktopMachineSelection(value));
             }}
           />
           <Button

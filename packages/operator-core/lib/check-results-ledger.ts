@@ -210,6 +210,7 @@ export async function runInstrumentChecks(input: {
   run?: (key: string) => Promise<InstrumentReading>;
   now?: () => number;
   workspaceId?: string | null;
+  harnessSlug?: string | null;
   resolvePlatform?: NonNullable<PlatformInstrument['rescore']>['resolve'];
 }): Promise<RubricCheckResult[]> {
   const run = input.run ?? ((key: string) => runInstrument(key));
@@ -226,13 +227,14 @@ export async function runInstrumentChecks(input: {
       const measuredAt = new Date(windowEndMs).toISOString();
       const window = {
         workspaceId: input.workspaceId ?? '',
+        ...(input.harnessSlug?.trim() ? { harnessSlug: input.harnessSlug.trim() } : {}),
         windowStart: new Date(windowEndMs - instrument.rescore.windowMs).toISOString(),
         windowEnd: measuredAt,
       };
       let verdict: RubricCheckVerdict = 'error';
-      let detail = 'A canonical workspace is required for a scheduled platform instrument.';
+      let detail = 'A canonical workspace and any required rubric harness are required for a scheduled platform instrument.';
       let value: number | null = null;
-      if (window.workspaceId.trim()) {
+      if (window.workspaceId.trim() && (instrument.rescore.scope !== 'harness' || window.harnessSlug)) {
         try {
           const result = await (input.resolvePlatform ?? instrument.rescore.resolve)(window);
           verdict = result.verdict === 'unknown' ? 'error' : result.verdict;

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "source": "apps/operator/lib/release/green-checkpoint.ts",
-  "sourceSha256": "d0866063802cd4401a8f41f4b9beb555456ac8c51e37e1b7c5a9f1f42b32ba21",
+  "sourceSha256": "00a6549bbcbc59e33c1aa272e29bb5b5bbf9cd64f6c28710f55dc5f05cb03252",
   "typecheckInvocations": [
     "lint:tsc",
     "lint:tsc:operator",
@@ -24,7 +24,6 @@
     "apps/**",
     "libs/generic/**",
     "packages/**",
-    "packages/operator-core/**",
     "scripts/**"
   ],
   "coverageMap": {
@@ -57,6 +56,11 @@
       "typechecked": true,
       "diff_visible": true,
       "is_submodule": false
+    },
+    "apps/slack-asana-bug-drill": {
+      "typechecked": true,
+      "diff_visible": true,
+      "is_submodule": true
     },
     "apps/the-swarm-site": {
       "typechecked": false,
@@ -123,6 +127,11 @@
       "diff_visible": true,
       "is_submodule": true
     },
+    "libs/generic/decision-model": {
+      "typechecked": true,
+      "diff_visible": true,
+      "is_submodule": false
+    },
     "libs/generic/dependency-order": {
       "typechecked": true,
       "diff_visible": true,
@@ -183,6 +192,11 @@
       "diff_visible": true,
       "is_submodule": false
     },
+    "libs/generic/hash-chain": {
+      "typechecked": true,
+      "diff_visible": true,
+      "is_submodule": false
+    },
     "libs/generic/image-blankness": {
       "typechecked": true,
       "diff_visible": true,
@@ -222,6 +236,11 @@
       "typechecked": true,
       "diff_visible": true,
       "is_submodule": true
+    },
+    "libs/generic/merkle-log": {
+      "typechecked": true,
+      "diff_visible": true,
+      "is_submodule": false
     },
     "libs/generic/model-pricing": {
       "typechecked": true,
@@ -284,7 +303,7 @@
       "is_submodule": false
     },
     "libs/generic/pot-app-seam": {
-      "typechecked": false,
+      "typechecked": true,
       "diff_visible": true,
       "is_submodule": false
     },
@@ -428,6 +447,11 @@
       "diff_visible": true,
       "is_submodule": true
     },
+    "libs/generic/verification-harness": {
+      "typechecked": true,
+      "diff_visible": true,
+      "is_submodule": false
+    },
     "libs/host-platform": {
       "typechecked": true,
       "diff_visible": false,
@@ -524,7 +548,7 @@
       "is_submodule": false
     },
     "packages/docs-engine": {
-      "typechecked": false,
+      "typechecked": true,
       "diff_visible": true,
       "is_submodule": false
     },
@@ -544,12 +568,12 @@
       "is_submodule": false
     },
     "packages/plugin-loader": {
-      "typechecked": false,
+      "typechecked": true,
       "diff_visible": true,
       "is_submodule": false
     },
     "packages/plugin-sdk": {
-      "typechecked": false,
+      "typechecked": true,
       "diff_visible": true,
       "is_submodule": false
     },
@@ -627,6 +651,16 @@
       "hasTypecheckScript": true,
       "hasTsconfig": true,
       "is_submodule": false,
+      "typechecked": true,
+      "diff_visible": true
+    },
+    {
+      "path": "apps/slack-asana-bug-drill",
+      "name": "@bug-drill/fixture",
+      "manifestReadable": true,
+      "hasTypecheckScript": true,
+      "hasTsconfig": true,
+      "is_submodule": true,
       "typechecked": true,
       "diff_visible": true
     },
@@ -761,6 +795,16 @@
       "diff_visible": true
     },
     {
+      "path": "libs/generic/decision-model",
+      "name": "@papercusp/decision-model",
+      "manifestReadable": true,
+      "hasTypecheckScript": false,
+      "hasTsconfig": true,
+      "is_submodule": false,
+      "typechecked": true,
+      "diff_visible": true
+    },
+    {
       "path": "libs/generic/dependency-order",
       "name": "@papercusp/dependency-order",
       "manifestReadable": true,
@@ -881,6 +925,16 @@
       "diff_visible": true
     },
     {
+      "path": "libs/generic/hash-chain",
+      "name": "@papercusp/hash-chain",
+      "manifestReadable": true,
+      "hasTypecheckScript": false,
+      "hasTsconfig": true,
+      "is_submodule": false,
+      "typechecked": true,
+      "diff_visible": true
+    },
+    {
       "path": "libs/generic/image-blankness",
       "name": "@papercusp/image-blankness",
       "manifestReadable": true,
@@ -957,6 +1011,16 @@
       "hasTypecheckScript": false,
       "hasTsconfig": true,
       "is_submodule": true,
+      "typechecked": true,
+      "diff_visible": true
+    },
+    {
+      "path": "libs/generic/merkle-log",
+      "name": "@papercusp/merkle-log",
+      "manifestReadable": true,
+      "hasTypecheckScript": false,
+      "hasTsconfig": true,
+      "is_submodule": false,
       "typechecked": true,
       "diff_visible": true
     },
@@ -1084,10 +1148,10 @@
       "path": "libs/generic/pot-app-seam",
       "name": "@papercusp/pot-app-seam",
       "manifestReadable": true,
-      "hasTypecheckScript": false,
-      "hasTsconfig": false,
+      "hasTypecheckScript": true,
+      "hasTsconfig": true,
       "is_submodule": false,
-      "typechecked": false,
+      "typechecked": true,
       "diff_visible": true
     },
     {
@@ -1371,6 +1435,16 @@
       "diff_visible": true
     },
     {
+      "path": "libs/generic/verification-harness",
+      "name": "@papercusp/verification-harness",
+      "manifestReadable": true,
+      "hasTypecheckScript": false,
+      "hasTsconfig": true,
+      "is_submodule": false,
+      "typechecked": true,
+      "diff_visible": true
+    },
+    {
       "path": "libs/host-platform",
       "name": "@papercusp/host-platform",
       "manifestReadable": true,
@@ -1564,10 +1638,10 @@
       "path": "packages/docs-engine",
       "name": "@papercusp/docs-engine",
       "manifestReadable": true,
-      "hasTypecheckScript": false,
+      "hasTypecheckScript": true,
       "hasTsconfig": true,
       "is_submodule": false,
-      "typechecked": false,
+      "typechecked": true,
       "diff_visible": true
     },
     {
@@ -1604,20 +1678,20 @@
       "path": "packages/plugin-loader",
       "name": "@papercusp/plugin-loader",
       "manifestReadable": true,
-      "hasTypecheckScript": false,
-      "hasTsconfig": false,
+      "hasTypecheckScript": true,
+      "hasTsconfig": true,
       "is_submodule": false,
-      "typechecked": false,
+      "typechecked": true,
       "diff_visible": true
     },
     {
       "path": "packages/plugin-sdk",
       "name": "@papercusp/plugin-sdk",
       "manifestReadable": true,
-      "hasTypecheckScript": false,
-      "hasTsconfig": false,
+      "hasTypecheckScript": true,
+      "hasTsconfig": true,
       "is_submodule": false,
-      "typechecked": false,
+      "typechecked": true,
       "diff_visible": true
     },
     {
@@ -1652,12 +1726,12 @@
     }
   ],
   "summary": {
-    "workspaces": 105,
-    "submodules": 38,
-    "entries": 108,
-    "typechecked": 88,
-    "diffVisible": 89,
-    "uncovered": 35,
+    "workspaces": 110,
+    "submodules": 39,
+    "entries": 113,
+    "typechecked": 97,
+    "diffVisible": 94,
+    "uncovered": 31,
     "zeroCoverage": 4
   },
   "uncovered": [
@@ -1711,12 +1785,6 @@
     },
     {
       "path": "libs/generic/papergrid",
-      "missing": [
-        "typecheck"
-      ]
-    },
-    {
-      "path": "libs/generic/pot-app-seam",
       "missing": [
         "typecheck"
       ]
@@ -1834,24 +1902,6 @@
     },
     {
       "path": "packages/coordination",
-      "missing": [
-        "typecheck"
-      ]
-    },
-    {
-      "path": "packages/docs-engine",
-      "missing": [
-        "typecheck"
-      ]
-    },
-    {
-      "path": "packages/plugin-loader",
-      "missing": [
-        "typecheck"
-      ]
-    },
-    {
-      "path": "packages/plugin-sdk",
       "missing": [
         "typecheck"
       ]

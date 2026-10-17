@@ -49,6 +49,13 @@ import type { SessionState } from '../../agent-tools/coordination/presence-wakea
 import { fetchContextPressure, type ContextPressureBucket } from '../../agent-tools/coordination/context-pressure';
 import { listParkedAwaitsForSubscribers } from '../../events/await/store';
 import { readFleetAdmissionBlocks } from '../../agent-tools/coordination/fleet-scope-admission-blocks';
+import {
+  reconcileFleetScopeLeaderSuccession,
+  resolveFleetScopeContext,
+  resumeFleetLeaderWithLaunchAgent,
+  type FleetLeaderResume,
+} from '../../scheduler/fleet-scope-admission';
+import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { readFleetRepeatedRecoveryStates } from '../../fleet-repeated-recovery';
 import {
   detectFleetAdmissionTransitions,
@@ -319,6 +326,40 @@ export async function gatherFleetAdmissionObservations(): Promise<FleetAdmission
 export interface FleetTransitionSweepDeps extends FleetTransitionEventsDeps {
   gather?: () => Promise<FleetMemberObservation[]>;
   gatherAdmissions?: () => Promise<FleetAdmissionObservation[]>;
+  workspaceId?: string;
+  recoverLeader?: FleetLeaderResume;
+  recoverObservedLeaders?: (observations: FleetMemberObservation[]) => Promise<number>;
+}
+
+async function recoverFleetLeadersFromObservations(
+  observations: FleetMemberObservation[],
+  deps: Pick<FleetTransitionSweepDeps, 'workspaceId' | 'recoverLeader'>,
+): Promise<number> {
+  if (!deps.workspaceId || !deps.recoverLeader) return 0;
+  const candidates = new Map<string, string>();
+  for (const observation of observations) {
+    if (observation.isRegisteredLeader) continue;
+    if (!candidates.has(observation.fleetSlug)) candidates.set(observation.fleetSlug, observation.agentId);
+  }
+  const identity: AgentIdentity = {
+    ownerId: 'system:fleet-transition-sweep',
+    ownerLabel: 'fleet-transition-sweep',
+    source: 'principal',
+    workspaceId: deps.workspaceId,
+    userId: null,
+  };
+  let recovered = 0;
+  for (const ownerId of candidates.values()) {
+    const scope = await resolveFleetScopeContext(ownerId, deps.workspaceId).catch(() => null);
+    if (!scope) continue;
+    const result = await reconcileFleetScopeLeaderSuccession({
+      scope,
+      identity,
+      resumeLeader: deps.recoverLeader,
+    }).catch(() => null);
+    if (result === 'live') recovered += 1;
+  }
+  return recovered;
 }
 
 /**
@@ -337,6 +378,11 @@ export async function runFleetTransitionSweep(deps: FleetTransitionSweepDeps = {
   const gatherAdmissions = deps.gatherAdmissions ?? (deps.gather ? async () => [] : gatherFleetAdmissionObservations);
   const [rawObservations, admissionObservations] = await Promise.all([gather(), gatherAdmissions()]);
   const observations = rawObservations.filter(isActionableFleetObservation);
+  const leaderRecoveryCount = deps.recoverObservedLeaders
+    ? await deps.recoverObservedLeaders(observations)
+    : deps.gather
+      ? 0
+      : await recoverFleetLeadersFromObservations(observations, deps);
   const edges = detectFleetTransitions(previousObservations, observations, {
     deadLatch: memberDeadLatch,
     leftLatch: memberLeftLatch,
@@ -389,7 +435,7 @@ export async function runFleetTransitionSweep(deps: FleetTransitionSweepDeps = {
   }
   for (const edge of edges) emitFleetTransitionEdge(edge, emitDeps);
   for (const edge of admissionEdges) emitFleetAdmissionTransitionEdge(edge, deps);
-  return edges.length + admissionEdges.length;
+  return edges.length + admissionEdges.length + leaderRecoveryCount;
 }
 
 /**
@@ -408,7 +454,30 @@ export function __resetFleetControlReconcileThrottleForTests(): void {
 }
 
 registerSystemAction('fleet-transition-sweep', async (ctx: SystemActionCtx) => {
-  const fired = await runFleetTransitionSweep();
+  const fired = await runFleetTransitionSweep({
+    workspaceId: ctx.workspaceId,
+    recoverLeader: (resume) => resumeFleetLeaderWithLaunchAgent({
+      ...resume,
+      ctx: {
+        workspaceId: ctx.workspaceId,
+        harnessSlug: ctx.installSlug,
+        isSuperuser: true,
+        uiClientId: `system:fleet-transition-sweep:${ctx.routineId ?? 'default'}`,
+      },
+    }),
+    recoverObservedLeaders: (observations) => recoverFleetLeadersFromObservations(observations, {
+      workspaceId: ctx.workspaceId,
+      recoverLeader: (resume) => resumeFleetLeaderWithLaunchAgent({
+        ...resume,
+        ctx: {
+          workspaceId: ctx.workspaceId,
+          harnessSlug: ctx.installSlug,
+          isSuperuser: true,
+          uiClientId: `system:fleet-transition-sweep:${ctx.routineId ?? 'default'}`,
+        },
+      }),
+    }),
+  });
   // Only speak when something actually crossed — this runs every minute, and a
   // per-tick "swept, nothing to report" line is the log noise that trains readers
   // to filter the channel out.

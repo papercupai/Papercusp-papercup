@@ -14,6 +14,8 @@ import { Hono } from 'hono';
 import type { RefusalContract } from '../capability-envelope/refusal-contract-types';
 import { createHostedIdentityBinder } from '../auth/hosted-identity-binding';
 import { PostgresHostedSelfSignupAdmission } from '../auth/hosted/self-signup';
+import { backfillHostedTrialEntitlementAuthority, parseHostedTrialEntitlementPolicy,
+  type HostedTrialEntitlementPolicy } from '../auth/hosted-entitlement-store';
 import {
   createHostedPrincipalResolver,
   type HostedPrincipalDenialReason,
@@ -63,6 +65,8 @@ export interface HostedAuthRuntimeConfiguration {
   readonly workosClientId: string;
   readonly workosApiKeyRef: string;
   readonly workosCookiePasswordRef: string;
+  /** Explicit server-authored bundle and trial lifetime; absent grants no pool allowances. */
+  readonly trialEntitlementPolicy?: HostedTrialEntitlementPolicy;
 }
 
 export type HostedAuthRuntimeSecretResolver = (reference: string) => Promise<string>;
@@ -112,6 +116,9 @@ export function readHostedAuthRuntimeConfiguration(
     workosClientId: requiredConfiguration(env.WORKOS_CLIENT_ID, 'WORKOS_CLIENT_ID'),
     workosApiKeyRef: requiredConfiguration(env.WORKOS_API_KEY_REF, 'WORKOS_API_KEY_REF'),
     workosCookiePasswordRef: requiredConfiguration(env.WORKOS_COOKIE_PASSWORD_REF, 'WORKOS_COOKIE_PASSWORD_REF'),
+    ...(env.PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT?.trim() ? {
+      trialEntitlementPolicy: parseHostedTrialEntitlementPolicy(JSON.parse(env.PAPERCUSP_HOSTED_TRIAL_ENTITLEMENT)),
+    } : {}),
   };
 }
 
@@ -217,7 +224,7 @@ export async function createHostedAuthRuntime(
     sessionVault: serviceWorkOSSessionVault(runService),
   });
   const bindIdentity = createHostedIdentityBinder({ directory: identityDirectory, membershipAuthority });
-  const selfSignup = new PostgresHostedSelfSignupAdmission(runService);
+  const selfSignup = new PostgresHostedSelfSignupAdmission(runService, { trialPolicy: configuration.trialEntitlementPolicy });
   const resolvePrincipal = createHostedPrincipalResolver({
     sessionCookieCodec,
     sessionStore,
@@ -232,6 +239,10 @@ export async function createHostedAuthRuntime(
     sessionCookieCodec,
     publicOrigin: configuration.publicOrigin,
     onSessionEstablished: async session => {
+      if (configuration.trialEntitlementPolicy) await runService(tx =>
+        backfillHostedTrialEntitlementAuthority(tx, {
+          organizationId: session.organizationId, policy: configuration.trialEntitlementPolicy!,
+        }));
       const principal = createHostedPrincipal({ workspaceId: configuration.controlPlaneWorkspaceId,
         activeOrganizationId: session.organizationId, userId: session.userId, sessionId: session.id,
         sessionVersion: session.permissionVersion, selectedWorkspaceId: session.workspaceId ?? undefined, permissions: [] });

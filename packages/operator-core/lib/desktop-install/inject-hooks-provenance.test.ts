@@ -22,9 +22,11 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 
 import {
   CC_HOOK_FILES,
+  installClaudeHooks,
   installInjectionHooks,
   installOmpHookBundle,
   installPapercuspFiles,
@@ -140,6 +142,65 @@ afterEach(() => {
 });
 
 describe('installInjectionHooks — install provenance', () => {
+  it('delivers one merged consequence from installed modules across fresh hook processes', async () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+    const hookSources = path.join(repoRoot, 'apps/operator/scripts/hooks');
+    const ccSource = path.join(srcRoot, 'cc');
+    const ccDest = path.join(home, '.papercusp/hooks/cc');
+    const detectorNames = ['posttooluse-required-field-strand-nudge.mjs', 'posttooluse-behavioural-strand-nudge.mjs'];
+    const installedNames = [...detectorNames, 'posttoolbatch-midturn-context.sh', 'pretooluse-locks-acquire.sh'];
+    await fs.mkdir(ccSource, { recursive: true });
+    for (const name of installedNames) await fs.copyFile(path.join(hookSources, 'cc', name), path.join(ccSource, name));
+    await fs.mkdir(path.join(home, '.claude'), { recursive: true });
+    const foreign = { matcher: 'Edit', hooks: [{ type: 'command', command: '/foreign/check' }] };
+    await fs.writeFile(path.join(home, '.claude/settings.json'), JSON.stringify({ hooks: { PostToolUse: [foreign,
+      ...detectorNames.map(name => ({ matcher: 'Edit', hooks: [{ type: 'command', command: path.join(ccDest, name) }] })),
+    ] } }));
+
+    const cc = await installClaudeHooks(home, ccSource);
+    expect(cc.settingsMerged).toBe(true);
+    expect(cc.installed).toEqual(expect.arrayContaining(installedNames));
+    const injection = await installInjectionHooks(home, path.join(hookSources, 'inject'));
+    expect(injection).toEqual(expect.arrayContaining(['inject/core.mjs', 'inject/delivery-ledger.mjs']));
+    for (const name of detectorNames) expect(await fs.readFile(path.join(ccDest, name)))
+      .toEqual(await fs.readFile(path.join(ccSource, name)));
+    for (const name of ['core.mjs', 'delivery-ledger.mjs']) expect(await fs.readFile(path.join(injectDest(), name)))
+      .toEqual(await fs.readFile(path.join(hookSources, 'inject', name)));
+    const settings = JSON.parse(await fs.readFile(path.join(home, '.claude/settings.json'), 'utf8'));
+    expect(settings.hooks.PostToolUse).toEqual([foreign]);
+    expect(JSON.stringify(settings.hooks.PostToolBatch)).toContain('posttoolbatch-midturn-context.sh');
+
+    const base = 'a'.repeat(40);
+    const checks = [
+      `node scripts/check-required-field-strands.mjs --typecheck --base ${base} --files=src/api.ts`,
+      `node scripts/check-behavioural-strands.mjs --base ${base} --files=src/api.ts`,
+    ];
+    const request = { owner: 'installed-consequence-test', cwd: root, toolCalls: [{ tool: 'Edit',
+      interfaceEdits: [{ path: 'src/api.ts', base, changes: ['signature api', 'behavioural strand risk'], checks }],
+    }] };
+    // Clear the parent loader: the child must execute the installed byte copies.
+    // Empty remote context exercises the production local fallback without network writes.
+    const child = `import { pathToFileURL } from 'node:url';
+      const { postInjection } = await import(pathToFileURL(process.argv[1]).href);
+      const result = await postInjection('mid-turn', JSON.parse(process.argv[2]), {
+        env: process.env, fetchImpl: async () => new Response(JSON.stringify({ ok: true, text: '' })) });
+      console.log(JSON.stringify(result));`;
+    const fire = () => run(process.execPath, ['--input-type=module', '-e', child,
+      path.join(injectDest(), 'core.mjs'), JSON.stringify(request)], {
+      env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_HOME: path.join(home, '.papercusp'), PAPERCUSP_MID_TURN_CONTEXT: 'on' },
+    });
+    const first = await fire();
+    expect(first.stderr).toBe('');
+    const result = JSON.parse(first.stdout);
+    expect(result.text.match(/## Code intelligence/g)).toHaveLength(1);
+    for (const check of checks) expect(result.text).toContain(check);
+    expect(result.text).toContain('consumer and test reach unknown');
+    expect(result.text.length).toBeLessThanOrEqual(1500);
+    const duplicate = await fire();
+    expect(duplicate.stderr).toBe('');
+    expect(JSON.parse(duplicate.stdout)).toBeNull();
+  }, 30_000);
+
   it('CALIBRATION (must pass or every negative below is vacuous): a good install stamps BOTH dest dirs', async () => {
     await makeSources();
     const installed = await installInjectionHooks(home, injectSrc);

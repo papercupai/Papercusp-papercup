@@ -25,16 +25,19 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import postgres from 'postgres';
 import { trackPhase, type PhaseTracker } from '@papercusp/tooldef';
-import { getOrgPg } from '@papercusp/db-org';
+import { DbCallDeadlineError, getOrgPg, withAcquisitionDeadline } from '@papercusp/db-org';
 import { getLongLivedAdminPool, _endLongLivedAdminPoolForTests } from './long-lived-admin-pool';
+import { isRetriablePgConnectError } from './pg-transient-retry';
 import { GATE_REUSE_AUDIT_INSTRUMENT_KEY, measureGateReuseAuditWindow } from './release/gate-fire-ledger';
 import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry';
 import {
   BM25_LATENCY_ARTIFACT_IDENTITY, BM25_LATENCY_ARTIFACT_PATH, BM25_LATENCY_INSTRUMENT_KEY,
-  parseBm25LatencyArtifact, platformComputedInstrumentKeys,
+  parseBm25LatencyArtifact, platformComputedInstrumentKeys, getRegisteredInstrument,
 } from './rubric-instrument-registry';
 import { moduleRepoRoot } from './module-repo-root';
-import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, measureDiskHeadroomSoakWindow } from './storage/retention-interval-evidence';
+import { measureProviderPackageAcceptance, PROVIDER_PACKAGE_INSTRUMENT_KEYS, PROVIDER_PACKAGE_PLAN } from './integrations/provider-package-acceptance';
+import { DISK_HEADROOM_SOAK_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY, measureDiskHeadroomSoakWindow } from './storage/retention-interval-evidence';
+import { COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY } from './storage/cold-tier-evidence';
 import { PG_TABLE_GROWTH_INSTRUMENT_KEY, measurePgTableGrowthWindow } from './storage/pg-table-growth';
 import {
   NATIVE_ADOPTION_VERSION,
@@ -42,7 +45,13 @@ import {
   nativeAdoptionCriterionForInstrument,
   rateNativeAdoption,
   type NativeAdoptionMetrics,
+  measureNativePushOutcomesWindow, nativePushCriterionForInstrument, rateNativePushOutcomes,
+  type NativePushOutcomeMetrics,
 } from './code-intelligence/native-adoption';
+import {
+  measureWorkOverheadWindow, rateWorkOverhead, workOverheadCriterionForInstrument,
+  WORK_OVERHEAD_VERSION, type WorkOverheadMetrics, type WorkOverheadWindow,
+} from './agent-work-overhead-metrics';
 import {
   collectGoalHolderBehaviorMetrics,
   holderBehaviorCriterionForInstrument,
@@ -411,11 +420,15 @@ export async function resolveScorecardInstrumentSnapshots(
     now?: () => number;
     /** Read retained artifact bytes from the serving checkout, never cwd or a sibling tree. */
     readArtifact?: (path: string) => Promise<string>;
+    providerPackages?: typeof measureProviderPackageAcceptance;
     gateReuseAudit?: typeof measureGateReuseAuditWindow;
     diskHeadroomSoak?: (input: Parameters<typeof measureDiskHeadroomSoakWindow>[1]) => ReturnType<typeof measureDiskHeadroomSoakWindow>;
+    coldEvidence?: (key: string, window: { workspaceId: string; harnessSlug: string; windowStart: string; windowEnd: string }) => Promise<{ verdict: 'pass' | 'fail' | 'unknown'; detail: string }>;
     pgTableGrowth?: (input: Parameters<typeof measurePgTableGrowthWindow>[1]) => ReturnType<typeof measurePgTableGrowthWindow>;
     /** Native code-intelligence adoption for one workspace window (P-033). */
     nativeAdoption?: (window: { workspaceId: string; windowStart: string; windowEnd: string }) => Promise<NativeAdoptionMetrics>;
+    nativePushOutcomes?: (window: { workspaceId: string; windowStart: string; windowEnd: string }) => Promise<NativePushOutcomeMetrics>;
+    workOverhead?: (window: WorkOverheadWindow) => Promise<WorkOverheadMetrics>;
     /** Holder-behavior metrics for the subject window; null when no goal was stewarded. */
     holderMetrics?: (input: {
       holderOwnerId: string;
@@ -497,9 +510,15 @@ export async function resolveScorecardInstrumentSnapshots(
     })();
     return nativeAdoptionMeasured;
   };
+  // All three P-041 criteria consume the same snapshot (including a shared read failure).
+  let nativePushesMeasured: Promise<NativePushOutcomeMetrics> | null = null;
+  const measureNativePushes = (window: { workspaceId: string; windowStart: string; windowEnd: string }) =>
+    nativePushesMeasured ??= (deps.nativePushOutcomes ?? measureNativePushOutcomesWindow)(window);
   const keys = new Set(input.rubric.criteria.map((criterion) =>
     criterion.check?.kind === 'instrument' ? criterion.check.instrumentKey : criterion.instrumentKey,
   ));
+  let workOverheadMeasured: Promise<WorkOverheadMetrics> | null = null;
+  let providerPackagesMeasured: ReturnType<typeof measureProviderPackageAcceptance> | null = null;
   for (const key of keys) {
     if (key === BM25_LATENCY_INSTRUMENT_KEY) {
       const base = { measuredAt: BM25_LATENCY_ARTIFACT_IDENTITY.generatedAt,
@@ -538,6 +557,29 @@ export async function resolveScorecardInstrumentSnapshots(
       value: { resolver: key, resolverVersion: 2, reason },
       evidenceRef: 'scorecards:list:goal-mode-e2e',
     });
+    if (Object.values(PROVIDER_PACKAGE_INSTRUMENT_KEYS).some(instrumentKey => instrumentKey === key)) {
+      const evidenceRef = 'libs/papercusp/plugins/*/{papercusp.json,README.md}';
+      if (subject?.kind !== 'plan' || subject.ref !== PROVIDER_PACKAGE_PLAN || input.rubric.subjectPlan !== subject.ref ||
+          input.rubric.subjectHarnessSlug !== 'papercusp') {
+        snapshots[key] = { ...unknown('Require the exact provider-package plan and harness; this is a current-tree measurement.'), evidenceRef };
+        continue;
+      }
+      try {
+        providerPackagesMeasured ??= (deps.providerPackages ?? measureProviderPackageAcceptance)();
+        const measurement = await providerPackagesMeasured;
+        const result = key === PROVIDER_PACKAGE_INSTRUMENT_KEYS.additions ? measurement.additions : measurement.claims;
+        // R-7 also covers completion/report claims. A tree pass cannot force a
+        // healthy grade while those independently reviewed records are absent.
+        const reportReviewPending = key === PROVIDER_PACKAGE_INSTRUMENT_KEYS.claims && result.verdict === 'pass';
+        snapshots[key] = { verdict: reportReviewPending ? 'unknown' : result.verdict, measuredAt, provenance: 'platform-computed', evidenceRef,
+          value: { resolver: key, resolverVersion: 1, root: measurement.root, ...result,
+            ...(reportReviewPending ? { treeVerdict: result.verdict, verdict: 'unknown',
+              unresolved: ['Independent completion/report claims and live-run/approval evidence review.'] } : {}) } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Provider package read unavailable: ${error instanceof Error ? error.message : String(error)}`), evidenceRef };
+      }
+      continue;
+    }
     if (!subject?.ref || !subject.windowStart || !subject.windowEnd) {
       snapshots[key] = unknown('An exact subject observation window is required.');
       continue;
@@ -546,6 +588,53 @@ export async function resolveScorecardInstrumentSnapshots(
     const end = Date.parse(subject.windowEnd);
     if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) {
       snapshots[key] = unknown('The subject window is invalid.');
+      continue;
+    }
+    const overheadCriterion = workOverheadCriterionForInstrument(key);
+    if ([COLD_MOUNTS_INSTRUMENT_KEY, COLD_MOVES_INSTRUMENT_KEY, DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY].includes(key)) {
+      const evidenceRef = 'native:cold-mounts+move-logs+kopia+disk-census+reclaim-audit';
+      const workspaceId = input.rubric.workspaceId, harnessSlug = input.rubric.subjectHarnessSlug;
+      const historicalHostRead = key !== DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY && Date.parse(measuredAt) - end > 60_000;
+      if (subject.kind !== 'plan' || subject.ref !== input.rubric.subjectPlan || !workspaceId || !harnessSlug ||
+          end > Date.parse(measuredAt) || historicalHostRead || (key === DURABLE_HEADROOM_TARGETS_INSTRUMENT_KEY && end - start !== 72 * 3_600_000)) {
+        snapshots[key] = { ...unknown('Require a canonical completed plan window; current host reads cannot certify a historical window.'), evidenceRef };
+        continue;
+      }
+      try {
+        const request = { workspaceId, harnessSlug, windowStart: subject.windowStart, windowEnd: subject.windowEnd };
+        const instrument = getRegisteredInstrument(key);
+        let result: { verdict: 'pass' | 'fail' | 'unknown'; detail: string };
+        if (deps.coldEvidence) result = await deps.coldEvidence(key, request);
+        else if (instrument?.evaluator === 'platform' && instrument.rescore) result = await instrument.rescore.resolve(request);
+        else throw new Error('Native resolver is not registered.');
+        snapshots[key] = { verdict: result.verdict, measuredAt, provenance: 'platform-computed', evidenceRef,
+          window: { ...window, workspaceId, harnessSlug }, value: { resolver: key, resolverVersion: 1, detail: result.detail } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Cold-tier measurement unavailable: ${error instanceof Error ? error.message : String(error)}`), evidenceRef };
+      }
+      continue;
+    }
+    if (overheadCriterion) {
+      const evidenceRef = 'harness_shared.session_turn_parts+adv_sessions:agent-work-overhead';
+      const workspaceId = input.rubric.workspaceId;
+      const harnessSlug = input.rubric.subjectHarnessSlug;
+      if (subject.kind !== 'plan' || input.rubric.subjectPlan !== subject.ref || !workspaceId ||
+          !harnessSlug || start >= end || end > Date.parse(measuredAt)) {
+        snapshots[key] = { ...unknown('A concrete workspace/harness and a completed subject-plan window are required.'), evidenceRef };
+        continue;
+      }
+      try {
+        workOverheadMeasured ??= (deps.workOverhead ?? measureWorkOverheadWindow)({
+          workspaceId, harnessSlug, windowStart: subject.windowStart, windowEnd: subject.windowEnd,
+        });
+        const metrics = await workOverheadMeasured;
+        const rating = rateWorkOverhead(metrics)[overheadCriterion];
+        snapshots[key] = { verdict: rating.verdict, measuredAt, provenance: 'platform-computed',
+          evidenceRef, window: { ...window, workspaceId, harnessSlug },
+          value: { resolver: key, resolverVersion: WORK_OVERHEAD_VERSION, reason: rating.reason, metrics } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Work-overhead measurement unavailable: ${error instanceof Error ? error.message : String(error)}`), evidenceRef };
+      }
       continue;
     }
     if (key === PG_TABLE_GROWTH_INSTRUMENT_KEY) {
@@ -659,6 +748,26 @@ export async function resolveScorecardInstrumentSnapshots(
           cannotObserve: measured.metrics.cannotObserve,
         },
       };
+      continue;
+    }
+    const pushCriterion = nativePushCriterionForInstrument(key);
+    if (pushCriterion) {
+      const workspaceId = input.rubric.workspaceId;
+      const scopedWindow = { ...window, workspaceId };
+      const evidenceRef = 'harness_shared.code_intel_pushes+session_turns+session_turn_journal+agent_activity+tool_invocations+test_runs:native-push-outcomes';
+      if (!workspaceId || start >= end || end > Date.parse(measuredAt)) {
+        snapshots[key] = { ...unknown('A canonical workspace and a completed, non-empty subject window are required.'), evidenceRef, window: scopedWindow };
+        continue;
+      }
+      try {
+        const metrics = await measureNativePushes({ workspaceId, windowStart: subject.windowStart, windowEnd: subject.windowEnd });
+        const rating = rateNativePushOutcomes(metrics, pushCriterion);
+        snapshots[key] = { verdict: rating.verdict, measuredAt, provenance: 'platform-computed', evidenceRef, window: scopedWindow,
+          value: { resolver: key, resolverVersion: 1, criterion: pushCriterion, reason: rating.reason,
+            byLeg: metrics.byLeg, cannotObserve: metrics.cannotObserve } };
+      } catch (error) {
+        snapshots[key] = { ...unknown(`Native push outcome instrument unavailable: ${error instanceof Error ? error.message : String(error)}`), evidenceRef, window: scopedWindow };
+      }
       continue;
     }
     const holderCriterion = holderBehaviorCriterionForInstrument(key);
@@ -2446,6 +2555,46 @@ export async function cancelStaleEvidencePendingGradingAuditAtomically(
   return true;
 }
 
+/**
+ * Cancel every pending grading audit that cites one binding while the binding
+ * retraction transaction is still open.  Retraction updates the binding first,
+ * then calls this helper on the same transaction, so a dispatcher cannot commit
+ * a lease between the withdrawal and its cancellation.
+ */
+export async function cancelPendingGradingAuditsForBindingInTransaction(
+  tx: OrgSql,
+  workspaceId: string,
+  bindingId: number,
+): Promise<string[]> {
+  if (!workspaceId.trim() || !Number.isSafeInteger(bindingId) || bindingId <= 0) return [];
+  const updated = await tx<{ feature_id: string }[]>`
+    UPDATE harness_shared.work_items AS target
+       SET payload = jsonb_set(
+             COALESCE(target.payload, '{}'::jsonb),
+             '{observation,gradingAudit}',
+             (
+               target.payload->'observation'->'gradingAudit'
+               || jsonb_build_object('state', 'cancelled')
+             ) #- '{dispatchReservation}' #- '{dispatchBackoff}',
+           true
+         ),
+         origin = 'local',
+         updated_ts = ${Date.now()}
+     WHERE target.workspace_id = ${workspaceId}
+       AND target.item_kind = ANY (ARRAY['bug', 'change', 'task'])
+       AND target.payload->'observation'->'gradingAudit'->>'state' = 'pending'
+       AND jsonb_typeof(target.payload->'observation'->'rerunRecipe'->'selection'->'bindingIds') = 'array'
+       AND EXISTS (
+         SELECT 1
+           FROM jsonb_array_elements_text(
+             target.payload->'observation'->'rerunRecipe'->'selection'->'bindingIds'
+           ) AS cited(binding_id)
+          WHERE cited.binding_id = ${String(bindingId)}
+       )
+    RETURNING target.feature_id`;
+  return updated.map((row) => row.feature_id);
+}
+
 /** Return the subject observation with a withdrawn audit's settlement cleared. */
 export function resetGradingAuditStampForRetraction(
   rawSubjectObservation: unknown,
@@ -2997,17 +3146,66 @@ const GRADING_AUDIT_SUBJECT_MUTEX_POOL = 'grading-audit-subject';
 
 /** Keep scorecard mutex waits below the MCP caller's 300s deadline. */
 export const SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS = 240_000;
+/** Bound the pool reservation that precedes every scorecard mutex lock. */
+export const SCORECARD_MUTEX_POOL_ACQUIRE_TIMEOUT_MS = 30_000;
 
 export class ScorecardEmitMutexWaitTimeoutError extends Error {
   readonly code = 'scorecard_emit_mutex_timeout';
+  readonly phase: 'pool-reservation' | 'advisory-lock';
 
-  constructor(mutex: 'dedup' | 'grading-audit-subject', timeoutMs: number) {
+  constructor(
+    mutex: 'dedup' | 'grading-audit-subject',
+    timeoutMs: number,
+    phase: 'pool-reservation' | 'advisory-lock' = 'advisory-lock',
+  ) {
+    const waitingFor = phase === 'pool-reservation' ? 'pool connection' : 'mutex';
     super(
-      `Timed out after ${timeoutMs}ms waiting for the scorecard ${mutex} mutex. ` +
+      `Timed out after ${timeoutMs}ms waiting for the scorecard ${mutex} ${waitingFor}. ` +
         'No scorecard was persisted by this attempt; retry after the current emitter settles.',
     );
     this.name = 'ScorecardEmitMutexWaitTimeoutError';
+    this.phase = phase;
   }
+}
+
+export function scorecardMutexPoolAcquireTimeoutMs(timeoutMs: number): number {
+  return Math.max(1, Math.min(SCORECARD_MUTEX_POOL_ACQUIRE_TIMEOUT_MS, Math.trunc(timeoutMs)));
+}
+
+/**
+ * Reserve a session-pinned mutex connection with a deadline. `reserve()` is a
+ * pool operation, so PG statement/lock timeouts do not apply until after this
+ * promise resolves. If the deadline wins, a late reservation is released as
+ * soon as it arrives so the timed-out call cannot leak a pool slot.
+ */
+export async function reserveScorecardMutexConnection<T extends { release: () => void }>(
+  reserve: () => Promise<T>,
+  phases: PhaseTracker | undefined,
+  phase: string,
+  timeoutMs: number,
+): Promise<T> {
+  return trackPhase(phases, phase, () =>
+    withAcquisitionDeadline<T>(
+      ({ disarm, expired }) =>
+        reserve().then((connection) => {
+          if (expired()) {
+            connection.release();
+            throw new Error(`${phase} acquisition expired before use`);
+          }
+          disarm();
+          return connection;
+        }),
+      { label: phase, ms: scorecardMutexPoolAcquireTimeoutMs(timeoutMs) },
+    ),
+  );
+}
+
+/** Reserve failures happen before a scorecard query can reach PostgreSQL. */
+export function isScorecardMutexPoolAcquisitionError(error: unknown): boolean {
+  if (error instanceof DbCallDeadlineError || isRetriablePgConnectError(error)) return true;
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' &&
+    ['ECONNREFUSED', 'ECONNRESET', 'CONNECTION_CLOSED', 'CONNECTION_DESTROYED', 'CONNECTION_ENDED'].includes(code);
 }
 
 function gradingAuditSubjectMutexSql(): postgres.Sql {
@@ -3040,32 +3238,40 @@ export async function acquireGradingAuditSubjectMutex(input: {
   subjectIssueId: string;
 }, phases?: PhaseTracker, waitTimeoutMs = SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS): Promise<() => Promise<void>> {
   const key = gradingAuditSubjectMutexKey(input);
-  const reserved = await trackPhase(
-    phases,
-    'scorecards:emit:mutex:grading-audit-subject:pool-reservation',
-    () => gradingAuditSubjectMutexSql().reserve(),
-  );
+  const poolPhase = 'scorecards:emit:mutex:grading-audit-subject:pool-reservation';
+  const reservationTimeoutMs = scorecardMutexPoolAcquireTimeoutMs(waitTimeoutMs);
+  let reserved: Awaited<ReturnType<ReturnType<typeof gradingAuditSubjectMutexSql>['reserve']>> | undefined;
   let acquired = false;
   try {
-    await reserved.unsafe('SELECT set_config($1, $2, false)', ['lock_timeout', `${waitTimeoutMs}ms`]);
-    await reserved.unsafe('SET statement_timeout = 0');
+    const connection = await reserveScorecardMutexConnection(
+      () => gradingAuditSubjectMutexSql().reserve(),
+      phases,
+      poolPhase,
+      waitTimeoutMs,
+    );
+    reserved = connection;
+    await connection.unsafe('SELECT set_config($1, $2, false)', ['lock_timeout', `${waitTimeoutMs}ms`]);
+    await connection.unsafe('SET statement_timeout = 0');
     await trackPhase(phases, 'scorecards:emit:mutex:grading-audit-subject:advisory-lock', () =>
-      reserved.unsafe('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]),
+      connection.unsafe('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]),
     );
     acquired = true;
     return async () => {
       if (!acquired) return;
       acquired = false;
       try {
-        await reserved
+        await connection
           .unsafe('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key])
           .catch(() => {});
       } finally {
-        reserved.release();
+        connection.release();
       }
     };
   } catch (error) {
-    reserved.release();
+    reserved?.release();
+    if (isScorecardMutexPoolAcquisitionError(error)) {
+      throw new ScorecardEmitMutexWaitTimeoutError('grading-audit-subject', reservationTimeoutMs, 'pool-reservation');
+    }
     if ((error as { code?: string } | null)?.code === '55P03') {
       throw new ScorecardEmitMutexWaitTimeoutError('grading-audit-subject', waitTimeoutMs);
     }

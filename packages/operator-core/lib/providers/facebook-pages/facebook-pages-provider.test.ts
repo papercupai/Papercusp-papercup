@@ -38,6 +38,18 @@ async function drain(fetch: HostFetch, cursor: string | null = null) {
 }
 
 describe('Facebook Pages provider package (P-027)', () => {
+  it('uses the stored object id and enforces a definite cannot-comment marker inside the package', async () => {
+    const w = fake();
+    const target = { platform: 'facebook-pages', externalId: '111', payload: { objectId: '999', replyToId: '999' } };
+    expect(await adapter.invoke({ source: 's', config, capability: 'social.reply', args: { target, text: 'reply' } }, w)).toMatchObject({ externalId: '114' });
+    let calls = 0;
+    const host = { fetch: async () => { calls++; return jsonResponse(200, {}); } };
+    for (const invalid of [{ ...target, externalId: '../other' }, { ...target, platform: 'x-twitter' },
+      { ...target, payload: { canComment: false } }]) {
+      await expect(adapter.invoke({ source: 's', config, capability: 'social.reply', args: { target: invalid, text: 'reply' } }, host)).rejects.toThrow();
+    }
+    expect(calls).toBe(0);
+  });
   it('validates the descriptor and declares host-held Page selection', async () => {
     const descriptor = await adapter.describe();
     expect(validateProviderDescriptor(descriptor)).toEqual([]);

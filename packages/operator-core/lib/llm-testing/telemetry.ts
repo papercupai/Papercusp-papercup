@@ -11,8 +11,9 @@
 
 import { sharedUtilityPoolMax } from '../resource-profile';
 import { getLongLivedAdminPool } from '../long-lived-admin-pool';
+import { boundedOrgTxn } from '../pg-bounded-txn';
 
-import type { ContinueChainRow, ToolInvocationRow } from '@papercusp/testing-shell/llm';
+import type { ContinueChainRow, TelemetryReadWindow, ToolInvocationRow } from '@papercusp/testing-shell/llm';
 
 // Transactional pool — re-resolves the admin URL on every use and rebinds if the endpoint
 // moved (EI-19306394439939264). Shared connection options + idle policy come with it.
@@ -21,14 +22,25 @@ const db = () => getLongLivedAdminPool('llm-testing-telemetry', {
   prepare: false,
 });
 
+function readOptions(window?: TelemetryReadWindow) {
+  if (!window || !(window.startedAt instanceof Date) || !(window.finishedAt instanceof Date)
+    || !Number.isFinite(window.startedAt.getTime()) || !Number.isFinite(window.finishedAt.getTime())
+    || window.startedAt > window.finishedAt) {
+    throw new Error('LLM telemetry requires a valid measured run interval');
+  }
+  return { client: db(), readOnly: true, acquirePool: 'llm-testing-telemetry',
+    acquireTimeoutMs: 1000, acquireRetries: 0, connectionSetupRetries: 0,
+    statementTimeoutMs: 3000, lockTimeoutMs: 250, signal: window.signal };
+}
+
 /**
  * Pull every tool_invocations row tagged with this run's uiClientId.
  * Caller threads in the same `llm-testing/<runId>` string the operator
  * target uses when POSTing to converse.
  */
-export async function pullToolInvocations(uiClientId: string): Promise<ToolInvocationRow[]> {
-  const sql = db();
-  const rows = await sql<Array<{
+export async function pullToolInvocations(uiClientId: string, window?: TelemetryReadWindow): Promise<ToolInvocationRow[]> {
+  const options = readOptions(window);
+  const rows = await boundedOrgTxn(async sql => sql<Array<{
     tool_name: string;
     plugin_name: string;
     role: string;
@@ -41,9 +53,10 @@ export async function pullToolInvocations(uiClientId: string): Promise<ToolInvoc
     SELECT tool_name, plugin_name, role, duration_ms, status,
            output_size, error_message, metadata_json
     FROM harness_shared.tool_invocations
-    WHERE metadata_json @> ${sql.json({ uiClientId })}
+    WHERE invoked_at >= ${window!.startedAt} AND invoked_at <= ${window!.finishedAt}
+      AND metadata_json @> ${sql.json({ uiClientId })}
     ORDER BY invoked_at ASC
-  `;
+  `, options);
   // The runner's RunSummary.ToolInvocationRow shape is a thin projection.
   // The raw row carries more context than the asserts need; collapse for now.
   return rows.map((r) => ({
@@ -65,9 +78,9 @@ export async function pullToolInvocations(uiClientId: string): Promise<ToolInvoc
  * write continue-chain rows yet — asserts treat this as "no chains",
  * which is correct when nothing in the run triggered <continue/>.
  */
-export async function pullContinueChainRows(uiClientId: string): Promise<ContinueChainRow[]> {
-  const sql = db();
-  const rows = await sql<Array<{
+export async function pullContinueChainRows(uiClientId: string, window?: TelemetryReadWindow): Promise<ContinueChainRow[]> {
+  const options = readOptions(window);
+  const rows = await boundedOrgTxn(async sql => sql<Array<{
     chain_id: string;
     turn_idx: number;
     trigger: string;
@@ -79,9 +92,10 @@ export async function pullContinueChainRows(uiClientId: string): Promise<Continu
     SELECT chain_id, turn_idx, trigger, started_at,
            elapsed_secs_in_chain, was_capped, cap_reason
     FROM harness_shared.operator_continue_chains
-    WHERE ui_client_id = ${uiClientId}
+    WHERE started_at >= ${window!.startedAt} AND started_at <= ${window!.finishedAt}
+      AND ui_client_id = ${uiClientId}
     ORDER BY started_at ASC, turn_idx ASC
-  `;
+  `, options);
   return rows.map((r) => ({
     chainId: r.chain_id,
     turnIdx: r.turn_idx,

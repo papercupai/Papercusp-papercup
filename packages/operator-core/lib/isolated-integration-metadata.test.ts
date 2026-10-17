@@ -12,7 +12,7 @@ import { captureIsolatedWorker, isolatedIntegrationCases, isolatedIntegrationDia
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
 import { createPrivateHealthSnapshot, portalBrowserPackagesPlugin, preparePortalBrowserSource, preparePrivateDocsBrowserDocuments, preparePrivateHttpWorkspaces, preparePrivateRosterSocketRoot, preparePrivateOperatorApiBundle, resolvePreparedPrivateApiBundle } from '../test/private-http-workspace-preflight';
 import { PANEL_ORDER } from './system-health/types';
-import { verifyPrivateCoordReceipt, verifyPrivateHistoryStreams, verifyPrivateStopReceipt, verifyPrivateInsightsDenialCoverage } from '../test/private-coord-receipt';
+import { verifyPrivateCoordReceipt, verifyPrivateHistoryStreams, verifyPrivateStopReceipt, verifyPrivateStopCleanup, verifyPrivateInsightsDenialCoverage } from '../test/private-coord-receipt';
 import { buildSessionStreamUrl, sessionTargetFromRoster } from '../../../apps/operator/app/_components/chat/use-owner-session-chat';
 import { Hono } from 'hono';
 import { chromium } from 'playwright-core';
@@ -66,7 +66,11 @@ it('retains exact original private worker browser and selected persistence recei
     ['phases/prepare/source.json', '{"source":"original"}\n'],
     ['phases/prepare/operator-api-preflight.json', '{"api":"original input"}\n'],
     ['phases/execute/lifecycle.json', '{"ended":true}\n'],
+    ['phases/execute/worker.log', 'worker output before timeout\n'],
     ['phases/execute/worker-result.json', '{"code":0,"output":"original worker"}\n'],
+    ['phases/execute/roster-stop-cleanup.jsonl', '{"stage":"native-exit","status":"failed","elapsedMs":29571}\n'],
+    ['phases/execute/roster-stop-resources.json', '{"activeResources":[]}\n'],
+    ['phases/execute/roster-stop-native.jsonl', '{"stage":"host-exit","sessions":[{"pid":123,"exitedAt":"original","closed":false}]}\n'],
     ['phases/execute/portal-browser-source.json', '{"bundle":"original browser"}\n'],
     ['phases/execute/portal-browser-receipt.json', '{"keyboardSave":true}\n'],
     ['phases/execute/portal-settings-persistence.json', '{"marker":"preserved"}\n'],
@@ -333,7 +337,11 @@ it('delivers the intended denial Host on the wire before trusting a private brow
 });
 
 it('preflights native HUD read policy and the exact host denial before private PG', async () => {
-  expect(await verifyPrivateHudReadPolicy()).toEqual({ denialStatus: 403, denialCode: 'host_not_allowed', allowedReads: 2 });
+  vi.stubEnv('PAPERCUSP_ALLOW_REMOTE_ADMIN', '1');
+  vi.stubEnv('PAPERCUSP_DISTRIBUTION_PROFILE', 'hosted-control-plane');
+  try {
+    expect(await verifyPrivateHudReadPolicy()).toEqual({ denialStatus: 403, denialCode: 'host_not_allowed', allowedReads: 2 });
+  } finally { vi.unstubAllEnvs(); }
   expect(() => verifyPrivateHudHostDenial(200, JSON.stringify({ rows: [] }))).toThrow();
   expect(() => verifyPrivateHudHostDenial(403, JSON.stringify({ error: 'loopback_only' }))).toThrow();
   expect(() => verifyPrivateHudHostDenial(403, JSON.stringify({ error: { code: 'unrelated_denial' } }))).toThrow();
@@ -659,6 +667,42 @@ it.runIf(Boolean(process.env.PAPERCUSP_TEST_PORTAL_SOURCE_ROOT))(
     // Chromium builds may differ; the fixed precondition must work either way.
     expect([receipt.base, 'https://unapproved.invalid']).toContain(receipt.oldControl.origin);
   });
+
+const stopCleanupStages = ['native-shutdown', 'native-exit', 'session-end-records', 'api-stop', 'listeners-stop',
+  'auth-invalidation-listener-stop', 'database-census', 'database-close', 'db-org-pools-reset', 'database-resources-closed'];
+function stopCleanupOutput(change: (row: { stage: string; status: string; elapsedMs: number }) => unknown = row => row) {
+  return stopCleanupStages.flatMap(stage => ['start', 'complete'].map(status =>
+    'ROSTER_STOP_HTTP_CLEANUP_PHASE ' + JSON.stringify(change({ stage, status, elapsedMs: status === 'start' ? 0 : 297 }))))
+    .join('\n') + '\nROSTER_STOP_HTTP_CLEANUP {"childrenStopped":true,"apiStopped":true}';
+}
+
+it('requires complete original cleanup even when a wrong-target mutation exits as expected', () => {
+  const mutation = 'ROSTER_STOP_HTTP_FAILURE {"message":"selected-session receipt correlation"}\n';
+  expect(() => verifyPrivateStopCleanup(mutation + stopCleanupOutput())).not.toThrow();
+  const failed = stopCleanupOutput(row => row.stage === 'native-exit' && row.status === 'complete'
+    ? { ...row, status: 'failed', elapsedMs: 29_571, error: 'Private roster cleanup stalled: native-exit' } : row);
+  // This is the observed false positive: correlation + exit 1 + eventual childrenStopped.
+  expect(() => verifyPrivateStopCleanup(mutation + failed)).toThrow('every private stop cleanup phase');
+});
+
+it('rejects missing and duplicate private stop cleanup phases', () => {
+  const output = stopCleanupOutput();
+  expect(() => verifyPrivateStopCleanup(output.split('\n').filter(line => !line.includes('native-exit')).join('\n')))
+    .toThrow('every private stop cleanup phase');
+  expect(() => verifyPrivateStopCleanup(output + '\nROSTER_STOP_HTTP_CLEANUP_PHASE {"stage":"native-exit","status":"complete","elapsedMs":1}'))
+    .toThrow('every private stop cleanup phase');
+});
+
+it('rejects a late cleanup completion even if an overdue timer did not run first', () => {
+  expect(() => verifyPrivateStopCleanup(stopCleanupOutput(row => row.stage === 'native-exit' && row.status === 'complete'
+    ? { ...row, elapsedMs: 15_001 } : row))).toThrow('15s deadline');
+});
+
+it('requires the original cleanup summary to confirm both native children and API stopped', () => {
+  const output = stopCleanupOutput();
+  expect(() => verifyPrivateStopCleanup(output.replace('"childrenStopped":true', '"childrenStopped":false'))).toThrow();
+  expect(() => verifyPrivateStopCleanup(output.replace('ROSTER_STOP_HTTP_CLEANUP {', 'unrelated {'))).toThrow('one original');
+});
 
 it('correlates a private browser stop to the exact owner, managed row, launch and disposition', () => {
   const expected = { ownerId: 'selected', managedSessionId: 17, startedAt: '2026-10-10T03:00:00Z' };

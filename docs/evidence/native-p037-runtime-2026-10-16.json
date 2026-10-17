@@ -1,0 +1,271 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P037 current-build interface-consequence delivery and installed-copy qualification",
+  "framework": "node",
+  "command": ["env", "-u", "NODE_OPTIONS", "node", "--input-type=module"],
+  "exitCode": 0,
+  "startedAt": "2026-10-16T01:35:54.101Z",
+  "finishedAt": "2026-10-16T01:35:54.358Z",
+  "summary": "Production baseline replay returned the merged interface note on current-build 3160fe426d, with affected consumers, exact testing:run call, both pinned checks and explicit snapshot limits. The timestamp interval derives from the recorded end timestamp and measured request duration. Separate maintained suites qualify installed-copy delivery and retirement.",
+  "assertions": [
+    {"id": "current-build-merged-note", "passed": true, "evidence": "HTTP200 response contains one interface heading, both known consumer tests, both pinned checks, exact testing:run files and historical snapshot qualifier; requests.warm.payload.text preserves the complete response."},
+    {"id": "durable-server-push", "passed": true, "evidence": "Native database readback confirms the interface subject, 1180 chars, cited paths and suggested_call at 2026-10-16T01:35:54.319486Z; ledgerReadback preserves the fields."},
+    {"id": "installed-copy-delivery", "passed": true, "evidence": "Maintained inject-hooks-provenance suite passed23/23 with zero filtered tests and zero child substitutions. The new case copies actual CC and shared injector modules, verifies byte equality/settings retirement/foreign preservation, then runs two fresh installed core processes: one local merged note, then null."}
+  ],
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "workItem": "WI-6554700010015384",
+  "scope": "P-037 current-build acceptance and installed-copy qualification. Final release shipment, other push legs, adoption and global latency remain open.",
+  "runtime": {
+    "routeClass": "operator-api",
+    "endpoint": "http://127.0.0.1:3170/api/agent-mcp/mid-turn-context",
+    "buildSha": "3160fe426d",
+    "identitySource": "dev:pipeline_position checks of push-channel.ts and push-snapshot.ts at 2026-10-16T01:30-01:35Z",
+    "containsEndpointChange": true,
+    "containsSnapshotLoader": true,
+    "owner": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "client": "codex",
+    "identityBoundary": "Existing verified self identity, loopback route, isolated local PAPERCUSP_HOME; no synthetic server identity, turn or epoch mutation",
+    "replayScope": "Actual production collector and injector; replay of an earlier real edit, not a newly observed event; self identity and isolated local delivery state",
+    "base": "6c1933ae3688b41dfeb212010828bafc0aa42688",
+    "edit": {
+      "path": "packages/operator-core/lib/code-intelligence/push-channel.ts",
+      "base": "6c1933ae3688b41dfeb212010828bafc0aa42688",
+      "changes": [
+        "signature snapshotInterfaceLeg",
+        "behavioural strand risk"
+      ],
+      "checks": [
+        "node scripts/check-required-field-strands.mjs --typecheck --base 6c1933ae3688b41dfeb212010828bafc0aa42688 --files=packages/operator-core/lib/code-intelligence/push-channel.ts",
+        "node scripts/check-behavioural-strands.mjs --base 6c1933ae3688b41dfeb212010828bafc0aa42688 --files=packages/operator-core/lib/code-intelligence/push-channel.ts"
+      ]
+    }
+  },
+  "requests": {
+    "initial": [
+      {
+        "url": "http://127.0.0.1:3170/api/agent-mcp/mid-turn-context",
+        "status": 200,
+        "ms": 821.8009129999999,
+        "payload": {
+          "ok": true,
+          "text": ""
+        }
+      },
+      {
+        "url": "http://127.0.0.1:3170/api/agent-mcp/mid-turn-context",
+        "status": 200,
+        "ms": 488.7494300000001,
+        "payload": {
+          "ok": true,
+          "text": ""
+        }
+      }
+    ],
+    "warm": {
+      "at": "2026-10-16T01:35:54.358Z",
+      "scope": "Same baseline replay after async snapshot load had time to settle; native server only",
+      "status": 200,
+      "ms": 256.207285,
+      "payload": {
+        "ok": true,
+        "text": "## Code intelligence (interface)\nSnapshot ec311ee1563a · 2026-10-15T19:43:57.923Z\npackages/operator-core/lib/code-intelligence/push-channel.ts: signature snapshotInterfaceLeg; behavioural strand risk.\nStatic consumers: packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts, packages/operator-core/lib/code-intelligence/push-channel.test.ts.\nTests with static import reach (bounded): testing:run {\"files\":[\"packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts\",\"packages/operator-core/lib/code-intelligence/push-channel.test.ts\"],\"harness\":\"papercusp\"}.\nPinned strand checks (advisory; run typecheck in background):\nnode scripts/check-required-field-strands.mjs --typecheck --base 6c1933ae3688b41dfeb212010828bafc0aa42688 --files=packages/operator-core/lib/code-intelligence/push-channel.ts\nnode scripts/check-behavioural-strands.mjs --base 6c1933ae3688b41dfeb212010828bafc0aa42688 --files=packages/operator-core/lib/code-intelligence/push-channel.ts\nSnapshot reach predates this edit; affected consumers are candidates, not proven failures. Dynamic dispatch, new imports, source completeness and runtime execution remain unknown."
+      }
+    },
+    "localFirst": {
+      "text": "## Code intelligence (interface)\nLocal comparison base 6c1933ae3688b41dfeb212010828bafc0aa42688\npackages/operator-core/lib/code-intelligence/push-channel.ts: signature snapshotInterfaceLeg; behavioural strand risk.\nnode scripts/check-required-field-strands.mjs --typecheck --base 6c1933ae3688b41dfeb212010828bafc0aa42688 --files=packages/operator-core/lib/code-intelligence/push-channel.ts\nnode scripts/check-behavioural-strands.mjs --base 6c1933ae3688b41dfeb212010828bafc0aa42688 --files=packages/operator-core/lib/code-intelligence/push-channel.ts\nSnapshot consequences unavailable; consumer and test reach unknown.",
+      "deliveryToken": null
+    },
+    "localDuplicate": null
+  },
+  "ledgerReadback": {
+    "leg": "interface",
+    "subject": "packages/operator-core/lib/code-intelligence/push-channel.ts:signature snapshotInterfaceLeg|behavioural strand risk",
+    "chars": 1180,
+    "citedPaths": [
+      "packages/operator-core/lib/code-intelligence/push-channel.ts",
+      "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+      "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+      "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+      "packages/operator-core/lib/code-intelligence/push-channel.test.ts"
+    ],
+    "suggestedCall": "testing:run {\"files\":[\"packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts\",\"packages/operator-core/lib/code-intelligence/push-channel.test.ts\"],\"harness\":\"papercusp\"}",
+    "pushedAt": "2026-10-16T01:35:54.319486Z",
+    "priorTurnSpend": 0,
+    "epoch": 32
+  },
+  "qualification": {
+    "status": "passed-current-source-and-current-build",
+    "scope": "Focused source and behavior qualification; no closed execution graph, full suite or final release claim",
+    "runs": [
+      {
+        "label": "P037 web v3",
+        "tests": 151,
+        "passed": 151,
+        "skipped": 0,
+        "childSubstituted": 30,
+        "limit": "Direct Vite collector/classifier tests qualified against original hashes. Thirty CLI children substituted committed source; these child assertions are not proof of current raw core bytes."
+      },
+      {
+        "label": "P037 core v2 with-test-pg",
+        "tests": 147,
+        "passed": 147,
+        "skipped": 0,
+        "childSubstituted": 0,
+        "limit": "Source-qualified current focused core tests; runner/config provenance is not fully closed."
+      },
+      {
+        "label": "delivery ledger v4",
+        "tests": 35,
+        "passed": 35,
+        "skipped": 0,
+        "childSubstituted": 0,
+        "limit": "Two suites cover boundary rename race, malformed state, lock contention, process concurrency and fallback. Subsequent test-only annotations qualified separately."
+      },
+      {
+        "label": "delivery ledger v5",
+        "tests": 12,
+        "passed": 12,
+        "skipped": 0,
+        "childSubstituted": 0,
+        "sourceRows": 1,
+        "sourceMatches": true
+      },
+      {
+        "label": "installer v2",
+        "tests": 17,
+        "passed": 17,
+        "skipped": 0,
+        "childSubstituted": 0,
+        "sourceRows": 2,
+        "sourceMatches": true
+      },
+      {
+        "label": "installed copy v2 focused",
+        "tests": 1,
+        "passed": 1,
+        "skipped": 22,
+        "childSubstituted": 0,
+        "scope": "Only the new installed-copy case ran; no claim about the 22 filtered cases."
+      }
+    ],
+    "installedSuite": {"tests": 23, "passed": 23, "skipped": 0, "childSubstituted": 0, "sourceRows": 1, "sourceMatches": true, "recordedSha": "c6f75c726c9a3a7ec3fb9bab2fc429390cbf07ac", "limit": "HEAD moved during this run, so the router labels provenance unknown. Captured original installer and test hashes match current bytes; no full loaded-module-graph claim."},
+    "typechecks": [
+      {
+        "scope": "installer source and both installer tests",
+        "files": 3,
+        "exit": 0,
+        "status": "clean"
+      },
+      {
+        "scope": "hook TypeScript modules and tests",
+        "files": 6,
+        "exit": 0,
+        "status": "clean"
+      },
+      {
+        "scope": "new installed-copy test",
+        "files": 1,
+        "exit": 0,
+        "status": "clean"
+      }
+    ]
+  },
+  "sourceHashes": {
+    "packages/operator-core/lib/code-intelligence/push-channel.ts": "e324963a756025d469545a40e176989e96dac860da40c55ac3b2b01d0b886c26",
+    "packages/operator-core/lib/code-intelligence/push-channel.test.ts": "a3a692f3d41d945bf01323ef5ad947b7153d6656f94bbf166f72d0d278628466",
+    "packages/operator-core/lib/desktop-install/papercusp-files.ts": "37f6d022b88bc6762889a135b8f4115b72aaa30b7685903a6e80c160585f1210",
+    "packages/operator-core/lib/desktop-install/claude-hooks.test.ts": "f4ed1af963c5763ef1f2c5887bcb4783def67e126c75bc18cc6d2a6e4bf67457",
+    "packages/operator-core/lib/desktop-install/orphaned-cc-hooks.test.ts": "188836edb474c903ad865ec91dc2ffa150783d024f128d46accfc0c8aa9cf79f",
+    "packages/operator-core/lib/desktop-install/inject-hooks-provenance.test.ts": "35f1dfe6293ea0ad3fc5d8f4b9e5a0b258cb939f3501bd9d711d47150eaefd74",
+    "apps/operator/scripts/hooks/inject/core.mjs": "55e029daf58023142806bef526a9b83df9188c5568055183c1e538d309882535",
+    "apps/operator/scripts/hooks/inject/delivery-ledger.mjs": "fdbcb9014304152e90474a18528c1a3eeea8ab9ae485cb15e51e9a30e15bbffe",
+    "apps/operator/scripts/hooks/inject/__tests__/delivery-ledger.test.ts": "d58d96a09d3c2eb50cd9cbd5bc8fcecc7789c3f48f58c5c14633b2132acfad5c",
+    "apps/operator/scripts/hooks/inject/__tests__/operator-fallback.test.ts": "645719ad5f6bbf846bd1c4e7d70c4b45b4489754f89508dbe40e3af0265cdd24",
+    "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs": "5b1eac09c46e6d8e80ad498b177002f2b70cdf5f3289b4757639875e8ed64b03"
+  },
+  "rootCauseVerification": [
+    {
+      "item": "EI-26094595695316606",
+      "hypothesis": "Local fallback lacked shared session dedupe and an aggregate turn budget; a per-response bound permitted repeated delivery across fresh processes.",
+      "alternative": "The server alone duplicated a fact while local fallback already enforced session limits.",
+      "distinguishingTest": "Maintained operator-fallback and delivery-ledger tests invoke current production core in fresh Node processes with an empty remote response, reuse the local session ledger, and cross turn/compaction boundaries.",
+      "observation": "One local note, duplicate suppressed, bounded aggregate spend, compaction re-enables subjects. Deterministic fs.renameSync interception reproduced generation rollback before the selector/state fix and passes afterward.",
+      "guard": "apps/operator/scripts/hooks/inject/__tests__/delivery-ledger.test.ts"
+    },
+    {
+      "item": "EI-26096957433667177",
+      "hypothesis": "Installer retirement assertions required the hook to exist, and retirement created an empty PostToolUse array when the setting was absent.",
+      "alternative": "The removed standalone hooks were still registered by the new merge path.",
+      "distinguishingTest": "Maintained claude-hooks tests inspect absent command entries, empty settings, upgrade from both old registrations, a preserved foreign hook and repeat merge.",
+      "observation": "Installer v2 passed17 cases on matching current installer/test source hashes.",
+      "guard": "packages/operator-core/lib/desktop-install/claude-hooks.test.ts"
+    }
+  ],
+  "sourceRequalification": {
+    "checkedAt": "2026-10-16T18:32:37Z",
+    "scope": "Saved focused runs checked against current original source bytes. Historical runtime and installed-copy observations above retain their original source/build scope; these checks do not establish a new installed runtime or final-release verdict.",
+    "rerunForRecall": false,
+    "runs": [
+      {
+        "capture": "/tmp/native-p037-p038-hooks-v4-source-20261016.json",
+        "captureSha256": "8b3040c7ac84dfd55f77d081faf53d6291a6aec06f8f45d275f7ae0e2a93b1ea",
+        "log": "/tmp/native-p037-p038-hooks-v4-tests-20261016.log",
+        "passed": 125,
+        "failed": 0,
+        "skipped": 0,
+        "childSubstituted": 4,
+        "suites": { "delivery-ledger": 13, "operator-fallback": 23, "omp-inject": 61, "cc-required-field": 28 },
+        "matchingOriginalSources": {
+          "apps/operator/scripts/hooks/inject/core.mjs": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+          "apps/operator/scripts/hooks/inject/delivery-ledger.mjs": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+          "apps/operator/scripts/hooks/inject/__tests__/delivery-ledger.test.ts": "3c32de5ea25ce46a256c758c7bea31adbe29cd01dad7661e992466e8d4870807",
+          "apps/operator/scripts/hooks/inject/__tests__/operator-fallback.test.ts": "645719ad5f6bbf846bd1c4e7d70c4b45b4489754f89508dbe40e3af0265cdd24",
+          "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec"
+        },
+        "limit": "Four config-support child substitutions remain disclosed. Matching original production sources qualify the named focused behavior, without a closed execution-graph claim."
+      },
+      {
+        "capture": "/tmp/native-p038-attribution-green-source-20261016.json",
+        "captureSha256": "8cd1939b938e45108820d8b3f73e797b1db37cee356a15b6da3138470776357e",
+        "passed": 5,
+        "failed": 0,
+        "skipped": 0,
+        "suite": "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+        "matchingOriginalSources": { "packages/operator-core/lib/code-intelligence/push-channel.ts": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4" },
+        "limit": "Focused real-PG attribution qualification retained from P038; not a new installed hook observation."
+      },
+      {
+        "capture": "/tmp/native-p037-unit-current-source-20261016.json",
+        "captureSha256": "a3dcb07f5752cea5e761c8b278e3b3f6add0e4c66230d5a5b892a647c99cf0f6",
+        "log": "/tmp/native-p037-unit-current-tests-20261016.log",
+        "passed": 22,
+        "failed": 0,
+        "skipped": 0,
+        "childSubstituted": 0,
+        "matchingOriginalSources": {
+          "packages/operator-core/lib/code-intelligence/push-channel.ts": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4",
+          "packages/operator-core/lib/code-intelligence/push-channel.test.ts": "9ed074e920cc1a71a46f0600f6c37a2ee985570c3e691dda817210abe4876ad5"
+        },
+        "reasonForRun": "The previous unit capture predated the SQL grouping change; only this affected suite was requalified. This continuation read the completed result without rerunning it."
+      }
+    ],
+    "unchangedInstallerAndTestSources": [
+      "packages/operator-core/lib/desktop-install/papercusp-files.ts",
+      "packages/operator-core/lib/desktop-install/claude-hooks.test.ts",
+      "packages/operator-core/lib/desktop-install/orphaned-cc-hooks.test.ts",
+      "packages/operator-core/lib/desktop-install/inject-hooks-provenance.test.ts",
+      "apps/operator/scripts/hooks/inject/__tests__/operator-fallback.test.ts"
+    ]
+  },
+  "limits": [
+    "The requests replay an earlier real source change against an explicit pinned baseline; no newly observed Edit is claimed.",
+    "Initial server-empty replies and the later warm positive response are consistent with asynchronous cold loading; this sequence alone does not isolate that cause.",
+    "Historical snapshot reach is a lower bound. Consumers are candidates; dynamic dispatch, new imports, completeness and runtime execution are unknown.",
+    "The local fallback explicitly reports consumer and test reach unknown when snapshot enrichment is unavailable.",
+    "Current-build evidence does not establish final-release shipment."
+  ]
+}
+

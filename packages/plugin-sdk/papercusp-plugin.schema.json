@@ -112,21 +112,95 @@
       "additionalProperties": false,
       "description": "Integration provider descriptor (generalized-integrations D-006). The plugin's adapter implements describe/syncPage/invoke; the host owns connections, credentials, cursors and grants, and providers reach the network only through host.fetch within egressHosts.",
       "required": ["id", "contractVersion", "datatypes", "capabilities", "egressHosts"],
+      "allOf": [{
+        "if": { "required": ["oauth"], "properties": { "oauth": { "required": ["instance"], "properties": { "instance": { "const": true } } } } },
+        "then": { "properties": { "egressHosts": { "maxItems": 0 } } },
+        "else": { "properties": { "egressHosts": { "minItems": 1 } } }
+      }],
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" },
         "contractVersion": { "type": "integer", "minimum": 1 },
         "displayName": { "type": "string" },
         "datatypes": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "sync": { "type": "boolean", "description": "Whether inbound sync is supported. Omitted means true; false declares a write-only provider that the host does not poll." },
         "capabilities": { "type": "array", "items": { "type": "string" } },
+        "rateBudget": {
+          "type": "object", "additionalProperties": false,
+          "description": "Vendor budget declarations with independent dated evidence. Admission and retry policy remain host-owned.",
+          "required": ["verifiedAt", "sources"],
+          "properties": {
+            "verifiedAt": {
+              "type": ["string", "null"],
+              "description": "Actual ISO calendar date, including Gregorian leap-year validation; independent of the provider API-contract date.",
+              "pattern": "^(?:[0-9]{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)$"
+            },
+            "sources": { "type": "array", "items": { "type": "string", "pattern": "^https://" } },
+            "requestsPerMinute": { "type": "number", "exclusiveMinimum": 0 },
+            "quotaUnitsPerDay": { "type": "number", "exclusiveMinimum": 0 },
+            "budgetHeaders": { "type": "array", "items": { "type": "string", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$" } },
+            "notes": { "type": "string", "minLength": 1 },
+            "buckets": {
+              "type": "object", "minProperties": 1,
+              "propertyNames": { "minLength": 1 },
+              "additionalProperties": {
+                "type": "object", "additionalProperties": false,
+                "required": ["appliesTo", "perDay", "unit"],
+                "properties": {
+                  "appliesTo": { "type": "string", "minLength": 1 },
+                  "perDay": { "type": "number", "exclusiveMinimum": 0 },
+                  "unit": { "enum": ["calls", "units"] },
+                  "verbs": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+                  "notes": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
+            "dynamicQuota": {
+              "type": "object", "additionalProperties": false,
+              "required": ["formula", "driver", "assumedDailyFloor"],
+              "properties": {
+                "formula": { "type": "string", "minLength": 1 },
+                "driver": { "type": "string", "minLength": 1 },
+                "usageHeader": { "type": "string", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$" },
+                "assumedDailyFloor": { "type": "number", "exclusiveMinimum": 0 },
+                "throttleCodes": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+                "retryExtendsBlock": { "type": "boolean" }
+              }
+            }
+          },
+          "allOf": [{ "if": { "properties": { "verifiedAt": { "type": "string" } } }, "then": { "properties": { "sources": { "minItems": 1 } } } }]
+        },
+        "verification": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verifiedAt", "sources"],
+          "description": "Dated API-contract evidence, not account consent or live acceptance. Capability attestations must name capabilities declared by this descriptor (checked by SDK validation).",
+          "properties": {
+            "verifiedAt": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+            "sources": { "type": "array", "items": { "type": "string", "pattern": "^https://" } },
+            "capabilities": {
+              "type": "object",
+              "additionalProperties": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+            },
+            "blockedOn": { "type": "string", "minLength": 1 }
+          },
+          "allOf": [{
+            "if": { "properties": { "verifiedAt": { "type": "string" } } },
+            "then": { "properties": { "sources": { "minItems": 1 } } }
+          }]
+        },
         "oauth": {
           "type": "object",
           "additionalProperties": false,
           "required": ["authorizeUrl", "tokenUrl", "scopes"],
           "properties": {
+            "instance": { "const": true },
             "authorizeUrl": { "type": "string" },
             "tokenUrl": { "type": "string" },
             "scopes": { "type": "array", "items": { "type": "string" } },
             "scopeSeparator": { "type": "string", "enum": [" ", ","] },
+            "clientIdParameter": { "type": "string", "enum": ["client_id", "client_key"] },
+            "tokenEndpointAuthMethod": { "type": "string", "enum": ["client_secret_post", "client_secret_basic"] },
+            "userAgentRequired": { "const": true },
             "refreshPolicy": { "type": "string", "enum": ["refresh-token", "reauthorize"] },
             "pkce": { "type": "boolean" },
             "clientRegistrationRef": { "type": "string" },
@@ -167,7 +241,7 @@
             }
           }
         },
-        "egressHosts": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "egressHosts": { "type": "array", "items": { "type": "string" } },
         "serviceCredentials": {
           "type": "array",
           "description": "Host-held service credentials the provider needs by reference (D-018), e.g. a Pub/Sub service account. Each ref is resolved by the host and injected by host.fetch only for its listed hosts, which must also be in egressHosts.",
@@ -187,6 +261,24 @@
           "additionalProperties": false,
           "description": "Setup the owner performs by hand on the provider's Integrations card (cupboard-distributable-integrations-2026-10-10). Pure data: the host renders it, checks values, stores them host-side and never returns them.",
           "properties": {
+            "session": {
+              "type": "object", "additionalProperties": false,
+              "required": ["url", "refreshUrl", "parameters", "hosts", "accessTokenField", "refreshTokenField", "maxAgeSeconds", "identity"],
+              "properties": {
+                "url": { "type": "string", "pattern": "^https://" },
+                "refreshUrl": { "type": "string", "pattern": "^https://" },
+                "parameters": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string" } },
+                "hosts": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+                "accessTokenField": { "type": "string", "minLength": 1 },
+                "refreshTokenField": { "type": "string", "minLength": 1 },
+                "activeField": { "type": "string", "minLength": 1 },
+                "maxAgeSeconds": { "type": "integer", "minimum": 60, "maximum": 86400 },
+                "identity": { "type": "object", "additionalProperties": false, "required": ["idField"], "properties": {
+                  "idField": { "type": "string", "minLength": 1 }, "displayNameField": { "type": "string", "minLength": 1 },
+                  "credentialKey": { "type": "string", "minLength": 1 }
+                } }
+              }
+            },
             "credentials": {
               "type": "array",
               "minItems": 1,
@@ -203,6 +295,13 @@
                   "helpUrl": { "type": "string" },
                   "placeholder": { "type": "string" },
                   "hosts": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+                  "auth": {
+                    "type": "object", "additionalProperties": false, "required": ["header", "scheme"],
+                    "properties": {
+                      "header": { "enum": ["authorization", "api-key", "x-api-key"] },
+                      "scheme": { "enum": ["bearer", "raw"] }
+                    }
+                  },
                   "perPrincipal": {
                     "type": "boolean",
                     "description": "Each person pastes their own value; the host uses it only for that person's calls (e.g. a user token for live search)."
@@ -216,7 +315,7 @@
               "required": ["createUrl"],
               "description": "The vendor app the owner creates before connecting (P-002). The card offers a Create app link to `createUrl`, with `{definition}` replaced by the URL-encoded JSON of `definition`, and a Copy definition fallback. Never carries a credential.",
               "properties": {
-                "createUrl": { "type": "string", "pattern": "^https://" },
+                "createUrl": { "type": "string", "anyOf": [{ "pattern": "^https://" }, { "pattern": "^/(?!/)[^\\s\\\\#]*$" }] },
                 "definition": { "type": "object" },
                 "docsUrl": { "type": "string", "pattern": "^https://" },
                 "copyHint": { "type": "string" }

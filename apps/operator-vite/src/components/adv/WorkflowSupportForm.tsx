@@ -47,9 +47,10 @@ async function searchCase(query: string, sources: readonly string[]): Promise<Ca
   });
 }
 
-export default function WorkflowSupportForm({ harnessSlug, operationId, previousHandle, seam = workflowOperationSeam,
+export default function WorkflowSupportForm({ harnessSlug, operationId, previousHandle, enterprise = false, seam = workflowOperationSeam,
   search = searchCase }: {
   harnessSlug: string; operationId: string; previousHandle?: BlueprintOperationHandle | null;
+  enterprise?: boolean;
   seam?: Pick<PotAppSeam, 'submitOperations'>; search?: typeof searchCase;
 }) {
   const [receipt, setReceipt] = useQueryState('wfRun', parseAsJson(receiptFromUrl));
@@ -62,9 +63,14 @@ export default function WorkflowSupportForm({ harnessSlug, operationId, previous
     {declaration.error ? <p role="alert">Unable to load the current support workflow.</p> :
       workflow ? <SupportSelection key={JSON.stringify(workflow)} workflow={workflow}
         onAccepted={async accepted => { await setReceipt(accepted); }} seam={seam} search={search} /> :
-        workflow === undefined ? <p role="status">Loading workflow declaration…</p> : null}
+        workflow === undefined ? <p role="status">Loading workflow declaration…</p> :
+          <p role="status">Employee action unavailable: no approved support workflow declaration is installed for this operation.</p>}
+    {enterprise && !handle && <section className="pc-wf__insp-sec" aria-label="Operation result">
+      <h3 className="pc-wf__insp-h">Reviewer decision</h3>
+      <p role="status">Business outcome pending. Prepare a case first; a distinct authorized reviewer then decides on its result.</p>
+    </section>}
     {handle && <WorkflowOperationResult handle={handle} />}
-    <WorkflowAdministration harnessSlug={harnessSlug} operationId={operationId} handle={handle} />
+    <WorkflowAdministration harnessSlug={harnessSlug} operationId={operationId} handle={handle} defaultExpanded={enterprise} />
   </>;
 }
 

@@ -53,6 +53,11 @@ export interface PlanSpecQualityResult {
     atomicityDetectorControls: Array<{ behavior: string; expected: 'atomic' | 'compound'; actual: 'atomic' | 'compound'; passed: boolean }>;
     implementationIndependenceClauseDiagnostics: SpecQualityClauseDiagnostic[];
     implementationIndependenceDetectorControls: Array<{ behavior: string; expected: 'coupled' | 'independent'; actual: 'coupled' | 'independent'; passed: boolean }>;
+    exemptSourceBarProjectionMismatches: Array<{
+      exemptItemId: string;
+      barKey: string;
+      projectionSpecId: string;
+    }>;
     prerequisiteRuntimeBarMismatches: Array<{
       prerequisiteItemId: string;
       barKey: string;
@@ -276,6 +281,31 @@ function prerequisiteRuntimeBarMismatches(input: {
     a.barKey.localeCompare(b.barKey) ||
     a.projectionSpecId.localeCompare(b.projectionSpecId),
   );
+}
+
+/**
+ * A non-behavioral exemption covers the item's complete current clause scope.
+ * An active sourceBar projection is itself an enforceable behavior clause, so it
+ * cannot share that item with an exemption even when no dependency edge happens
+ * to expose the contradiction as a prerequisite mismatch.
+ */
+function exemptSourceBarProjectionMismatches(input: {
+  behavioralClauses: readonly SpecClauseRevision[];
+  validExemptions: readonly SpecClauseRevision[];
+}): PlanSpecQualityResult['details']['exemptSourceBarProjectionMismatches'] {
+  const exemptItemIds = new Set(input.validExemptions.map((clause) => clause.planItemId));
+  return input.behavioralClauses
+    .filter((clause) => clause.sourceBar && exemptItemIds.has(clause.planItemId))
+    .map((clause) => ({
+      exemptItemId: clause.planItemId,
+      barKey: clause.sourceBar!.barKey,
+      projectionSpecId: clause.specId,
+    }))
+    .sort((a, b) =>
+      a.exemptItemId.localeCompare(b.exemptItemId) ||
+      a.barKey.localeCompare(b.barKey) ||
+      a.projectionSpecId.localeCompare(b.projectionSpecId),
+    );
 }
 
 function implementationCouplingReason(behavior: string): string | null {
@@ -554,6 +584,10 @@ export function evaluatePlanSpecQuality(input: {
     behavioralClauses: behavioral,
     validExemptions,
   });
+  const exemptProjectionMismatches = exemptSourceBarProjectionMismatches({
+    behavioralClauses: behavioral,
+    validExemptions,
+  });
   const projectionEvidence = behavioral.some((clause) => clause.sourceBar)
     ? ` ${behavioral.filter((clause) => clause.sourceBar).length} sourceBar-pinned projection(s) are excluded as copies of canonical acceptance BARs; added or meaning-changed BAR projections are checked on rubric writes, while unchanged legacy BARs are not re-certified here.`
     : '';
@@ -571,6 +605,13 @@ export function evaluatePlanSpecQuality(input: {
             '.',
           'Move runtime BAR mappings off non-code prerequisites and onto the dependent implementation item(s), then regenerate the exact spec-quality card. Keep the canonical shipment BAR contract unchanged.',
         )
+      : exemptProjectionMismatches.length
+        ? fail(
+            'Active sourceBar-pinned projection(s) are assigned to explicitly non-behavioral exempt item(s): ' +
+              exemptProjectionMismatches.map((entry) => `${entry.projectionSpecId} on ${entry.exemptItemId}`).join('; ') +
+              '.',
+            'Remove the sourceBar projection from the exempt item or replace its exemption with an active behavioral contract, then regenerate the exact spec-quality card.',
+          )
       : barPinMismatches.length || duplicateBehaviorReuse.length || unpinnedAutoBarIds.length
       ? unknown(
         'Potential contract coverage issue: ' +
@@ -643,9 +684,7 @@ export function evaluatePlanSpecQuality(input: {
   const draftSourceBarExcludedCount = draftSourceBarProjections.length;
   const atomicityCoverage =
     ` Coverage: ${atomicityEvaluatedCount} of ${behavioral.length} active behavioral clause(s) evaluated` +
-    (activeSourceBarExcludedCount
-      ? `; ${activeSourceBarExcludedCount} active sourceBar-pinned BAR projection(s) excluded (new or meaning-changed canonical BAR projections are checked on rubric writes; unchanged legacy BARs are not re-certified here)`
-      : '') +
+    `; ${activeSourceBarExcludedCount} active sourceBar-pinned BAR projection(s) excluded (new or meaning-changed canonical BAR projections are checked on rubric writes; unchanged legacy BARs are not re-certified here)` +
     (draftSourceBarExcludedCount
       ? `; ${draftSourceBarExcludedCount} draft sourceBar-pinned projection(s) excluded from the active population`
       : '') +
@@ -829,6 +868,7 @@ export function evaluatePlanSpecQuality(input: {
       atomicityDetectorControls,
       implementationIndependenceClauseDiagnostics,
       implementationIndependenceDetectorControls,
+      exemptSourceBarProjectionMismatches: exemptProjectionMismatches,
       prerequisiteRuntimeBarMismatches: runtimeBarMismatches,
     },
     scorecardDraft: {

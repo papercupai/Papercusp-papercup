@@ -86,6 +86,10 @@ describe('broadcastSevereEvent', () => {
       expect(emitter).toBeDefined();
       expect(emitter.pid).toBe(process.pid);
       expect(typeof emitter.cwd).toBe('string');
+      expect(typeof emitter.host).toBe('string');
+      // The process identity is best-effort on non-Linux hosts, but when present it
+      // is the PID-reuse guard used by one-shot condition reconciliation.
+      if (emitter.processIdentity != null) expect(typeof emitter.processIdentity).toBe('string');
       expect(typeof emitter.uptimeSec).toBe('number');
       expect(emitter.uptimeSec as number).toBeGreaterThanOrEqual(0);
       // startedAt must be a real ISO instant, not in the future — it is THE discriminator

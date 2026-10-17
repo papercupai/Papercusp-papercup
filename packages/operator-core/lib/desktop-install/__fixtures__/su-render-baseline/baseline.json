@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "plan": "identities-v1-2026-08-30",
   "item": "P-018",
-  "generatedAt": "2026-10-02T14:41:36.758Z",
+  "generatedAt": "2026-10-17T16:22:18.164Z",
   "inputs": {
     "base": {
       "path": "su.base.md",
@@ -37,8 +37,8 @@
   },
   "tiers": {
     "full": {
-      "totalBytes": 118360,
-      "sha256": "e8bc486b18f0553fbafdb3011a03dfa0dac3f836174230392f3254194f8fdb08",
+      "totalBytes": 118900,
+      "sha256": "da61552891809cc4b127a8ae17f13c01655657caa6f4b6934423da97de8b7b7a",
       "sections": [
         {
           "heading": "(preamble)",
@@ -67,8 +67,8 @@
         {
           "heading": "## Git — a background routine owns commit + push",
           "origin": "base",
-          "bytes": 4250,
-          "sha256": "23c383ee9071cc60e197b055e61e1496ee71ffe5b5d247c99375fce57f0328bb"
+          "bytes": 4258,
+          "sha256": "a4ac180562f473a39aa69668e6accca0aa91c68e683a18ffd5354ba9169e02ac"
         },
         {
           "heading": "## Engineering discipline",
@@ -107,10 +107,10 @@
           "sha256": "3b02ee50d94fb99d160acb0eb16c51c697015209076acb86eb2c472a6ff38093"
         },
         {
-          "heading": "## Tool results are capped — reduce BEFORE you call, not after",
+          "heading": "## Papercusp tool results are capped — reduce BEFORE you call, not after",
           "origin": "generated",
-          "bytes": 3290,
-          "sha256": "526727eba45764e256e45724ab7f235c9d8e8dff2be10dc057a8b103be9ba895"
+          "bytes": 3765,
+          "sha256": "e572c59f217e248aed2f464250f4e5c1ec12e883d7560803ae23de1e0164d416"
         },
         {
           "heading": "## Tools, docs, memory",
@@ -169,8 +169,8 @@
         {
           "heading": "## Read the value; say what you want back",
           "origin": "generated",
-          "bytes": 3951,
-          "sha256": "1e0aae3ce91cc84d742b26aea9168ef4156ae01657e4af9f20d1f2ea065a0bb6"
+          "bytes": 4008,
+          "sha256": "ce67442f7bf6114966b87fc8efad61c56b55ce2f683fd8655c2af156a816f6b8"
         },
         {
           "heading": "## Project guide — repo conventions",
@@ -181,8 +181,8 @@
       ]
     },
     "fleet": {
-      "totalBytes": 118360,
-      "sha256": "e8bc486b18f0553fbafdb3011a03dfa0dac3f836174230392f3254194f8fdb08",
+      "totalBytes": 118900,
+      "sha256": "da61552891809cc4b127a8ae17f13c01655657caa6f4b6934423da97de8b7b7a",
       "sections": [
         {
           "heading": "(preamble)",
@@ -211,8 +211,8 @@
         {
           "heading": "## Git — a background routine owns commit + push",
           "origin": "base",
-          "bytes": 4250,
-          "sha256": "23c383ee9071cc60e197b055e61e1496ee71ffe5b5d247c99375fce57f0328bb"
+          "bytes": 4258,
+          "sha256": "a4ac180562f473a39aa69668e6accca0aa91c68e683a18ffd5354ba9169e02ac"
         },
         {
           "heading": "## Engineering discipline",
@@ -251,10 +251,10 @@
           "sha256": "3b02ee50d94fb99d160acb0eb16c51c697015209076acb86eb2c472a6ff38093"
         },
         {
-          "heading": "## Tool results are capped — reduce BEFORE you call, not after",
+          "heading": "## Papercusp tool results are capped — reduce BEFORE you call, not after",
           "origin": "generated",
-          "bytes": 3290,
-          "sha256": "526727eba45764e256e45724ab7f235c9d8e8dff2be10dc057a8b103be9ba895"
+          "bytes": 3765,
+          "sha256": "e572c59f217e248aed2f464250f4e5c1ec12e883d7560803ae23de1e0164d416"
         },
         {
           "heading": "## Tools, docs, memory",
@@ -313,8 +313,8 @@
         {
           "heading": "## Read the value; say what you want back",
           "origin": "generated",
-          "bytes": 3951,
-          "sha256": "1e0aae3ce91cc84d742b26aea9168ef4156ae01657e4af9f20d1f2ea065a0bb6"
+          "bytes": 4008,
+          "sha256": "ce67442f7bf6114966b87fc8efad61c56b55ce2f683fd8655c2af156a816f6b8"
         },
         {
           "heading": "## Project guide — repo conventions",

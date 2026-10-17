@@ -144,10 +144,15 @@ interface RunState {
   cwd: string;
   worktreeBefore: WorktreeGitSnapshot;
   finalization: Promise<void> | null;
+  snapshotSql?: SqlLike;
+  progressTimer: ReturnType<typeof setTimeout> | null;
+  progressWrite: Promise<boolean> | null;
 }
 
 const _runs = new Map<string, RunState>();
+const snapshotWrites = new Map<string, Promise<boolean>>();
 const OUTPUT_CAP_BYTES = 16 * 1024;
+const SNAPSHOT_PROGRESS_INTERVAL_MS = 1_000;
 const EVICTION_MS = 60 * 60 * 1000;
 const SNAPSHOT_PERSIST_TIMEOUT_MS = 1_000;
 const TEST_RUN_PERSIST_TIMEOUT_MS = 1_000;
@@ -301,6 +306,11 @@ function snapshotFromRow(row: DurableRunSnapshotRow): RunSnapshot | null {
  */
 export async function persistRunSnapshot(snapshot: RunSnapshot, sqlOverride?: SqlLike): Promise<boolean> {
   if (!snapshotPersistenceEnabled(sqlOverride)) return false;
+  return (await boundedSnapshotQuery<boolean>(enqueueRunSnapshot(snapshot, sqlOverride))) ?? false;
+}
+
+function enqueueRunSnapshot(snapshot: RunSnapshot, sqlOverride?: SqlLike): Promise<boolean> {
+  if (!snapshotPersistenceEnabled(sqlOverride)) return Promise.resolve(false);
   // Snapshot values are mutable while the child runs. Freeze the values for
   // this write before the async pool lookup, otherwise an initial "running"
   // write can observe the later close-handler mutation and race a sibling
@@ -309,6 +319,19 @@ export async function persistRunSnapshot(snapshot: RunSnapshot, sqlOverride?: Sq
     ...snapshot,
     command: [...snapshot.command],
   };
+  // Serialize the actual SQL settlement, not just the caller's bounded wait:
+  // a query that loses its timeout race can still complete later. In particular,
+  // it must not overwrite newer progress or finish after the terminal write.
+  const previous = snapshotWrites.get(snapshot.runId) ?? Promise.resolve(false);
+  const write = previous.then(() => writeRunSnapshot(persistedSnapshot, sqlOverride)).catch(() => false);
+  snapshotWrites.set(snapshot.runId, write);
+  void write.then(() => {
+    if (snapshotWrites.get(snapshot.runId) === write) snapshotWrites.delete(snapshot.runId);
+  });
+  return write;
+}
+
+async function writeRunSnapshot(persistedSnapshot: RunSnapshot, sqlOverride?: SqlLike): Promise<boolean> {
   const sql = await snapshotSql(sqlOverride);
   if (!sql) return false;
   const startedAt = new Date(persistedSnapshot.startedAt).toISOString();
@@ -382,8 +405,8 @@ export async function persistRunSnapshot(snapshot: RunSnapshot, sqlOverride?: Sq
     // reason to reject the detached process start.
     return false;
   }
-  const rows = await boundedSnapshotQuery<unknown[]>(query);
-  return rows !== null;
+  await query;
+  return true;
 }
 
 function waitForSnapshotRetry(delayMs: number): Promise<void> {
@@ -954,6 +977,31 @@ function evictOldRuns(): void {
 
 function appendOutput(state: RunState, chunk: string): void {
   appendSnapshotOutput(state.snapshot, chunk);
+  scheduleProgressSnapshot(state);
+}
+
+function stopProgressSnapshot(state: RunState): void {
+  if (state.progressTimer) clearTimeout(state.progressTimer);
+  state.progressTimer = null;
+}
+
+function scheduleProgressSnapshot(state: RunState): void {
+  if (state.snapshot.status !== 'running' || state.progressTimer || state.progressWrite
+    || !snapshotPersistenceEnabled(state.snapshotSql)) return;
+  state.progressTimer = setTimeout(() => {
+    state.progressTimer = null;
+    if (state.snapshot.status !== 'running') return;
+    const output = state.snapshot.output;
+    const write = enqueueRunSnapshot(state.snapshot, state.snapshotSql);
+    state.progressWrite = write;
+    void write.then(() => {
+      state.progressWrite = null;
+      // Output arriving while SQL is pending is coalesced into one later save,
+      // rather than adding an unbounded queue during a database outage.
+      if (state.snapshot.output !== output) scheduleProgressSnapshot(state);
+    });
+  }, SNAPSHOT_PROGRESS_INTERVAL_MS);
+  state.progressTimer.unref?.();
 }
 
 function appendSnapshotOutput(snapshot: RunSnapshot, chunk: string): void {
@@ -1441,7 +1489,7 @@ async function persistDetachedReportArtifacts(
   );
 }
 
-function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot: boolean }): RunSnapshot {
+function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot: boolean; snapshotSql?: SqlLike }): RunSnapshot {
   const {
     snapshot,
     cwd,
@@ -1454,10 +1502,14 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
     wrapped,
     detachedReportArtifacts,
   } = prepared;
-  const state: RunState = { snapshot, proc: null, cwd, worktreeBefore, finalization: null };
+  const state: RunState = {
+    snapshot, proc: null, cwd, worktreeBefore, finalization: null,
+    snapshotSql: opts.snapshotSql, progressTimer: null, progressWrite: null,
+  };
   _runs.set(snapshot.runId, state);
   let terminalFinalization: Promise<void> | null = null;
   const finalizeTerminalRun = (): Promise<void> => {
+    stopProgressSnapshot(state);
     if (terminalFinalization) return terminalFinalization;
     terminalFinalization = (async () => {
       try {
@@ -1466,7 +1518,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
         // observe a terminal run while its Vitest evidence is still in flight.
         await persistDetachedReportArtifacts(snapshot, detachedReportArtifacts, configurationSnapshot);
         await persistFallbackRow(snapshot, worktreeBefore, cwd, configurationSnapshot);
-        await persistRunSnapshot(snapshot);
+        await persistRunSnapshot(snapshot, state.snapshotSql);
       } catch {
         /* swallow — terminal observability remains fail-soft (D-007) */
       }
@@ -1509,7 +1561,7 @@ function launchPreparedRun(prepared: PreparedRun, opts: { persistInitialSnapshot
   }
 
   state.proc = proc;
-  if (opts.persistInitialSnapshot) void persistRunSnapshot(snapshot);
+  if (opts.persistInitialSnapshot) void persistRunSnapshot(snapshot, state.snapshotSql);
 
   proc.stdout?.on('data', (b: Buffer) => appendOutput(state, b.toString('utf8')));
   proc.stderr?.on('data', (b: Buffer) => appendOutput(state, b.toString('utf8')));
@@ -1581,7 +1633,7 @@ export async function startRunDurable(
   sqlOverride?: SqlLike,
 ): Promise<{ snapshot: RunSnapshot; durable: boolean }> {
   const prepared = await prepareRunAsync(req);
-  const snapshot = launchPreparedRun(prepared, { persistInitialSnapshot: false });
+  const snapshot = launchPreparedRun(prepared, { persistInitialSnapshot: false, snapshotSql: sqlOverride });
   const persistence = persistRunSnapshotWithRetry(snapshot, sqlOverride);
   let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<boolean>((resolve) => {
@@ -1785,7 +1837,8 @@ export function cancelRun(runId: string): boolean {
   if (s.snapshot.status !== 'running') return false;
   s.snapshot.status = 'cancelled';
   s.snapshot.finishedAt = Date.now();
-  void persistRunSnapshot(s.snapshot);
+  stopProgressSnapshot(s);
+  void persistRunSnapshot(s.snapshot, s.snapshotSql);
   signalRunProcess(s.proc, 'SIGTERM');
   setTimeout(() => {
     if (s.proc && s.proc.exitCode == null && !s.proc.killed) signalRunProcess(s.proc, 'SIGKILL');
@@ -2894,6 +2947,7 @@ async function persistHarnessTestRunsInternal(
 /** INTERNAL — test-only. Wipe the store. */
 export function _resetTestingRunStore(): void {
   for (const s of _runs.values()) {
+    stopProgressSnapshot(s);
     if (s.proc && !s.proc.killed) {
       try {
         s.proc.kill('SIGKILL');

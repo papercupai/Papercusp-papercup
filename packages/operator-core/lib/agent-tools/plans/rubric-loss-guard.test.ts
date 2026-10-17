@@ -413,6 +413,60 @@ describe('guardAcceptanceBarTemplateDataWrite — P-004 started-BAR chokepoint',
     expect(result.data.barContract).toMatchObject({ subjectPlanRevision: 8, seededBy: 'seed-author' });
   });
 
+  it('corrects a pre-implementation label through an authenticated amendment without rewriting its declaration', () => {
+    const stored = started();
+    const corrected = guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: stored,
+      nextTemplateData: started({
+        barProvenance: {
+          lifecycle: 'legacy-backfilled',
+          declaredAt: '2030-01-01T00:00:00.000Z',
+          declaredBy: 'spoofed-caller',
+        },
+      }),
+      actorId: 'amend-author',
+      amendment: { actorId: 'amend-author', reason: 'These outcomes were declared after implementation.' },
+    });
+    expect(corrected.data.criteria).toMatchObject([{
+      barHash: stored.criteria[0].barHash,
+      barProvenance: { ...stored.criteria[0].barProvenance, lifecycle: 'legacy-backfilled' },
+    }]);
+    expect(corrected.changes).toEqual([{ barKey: 'R-1', kind: 'provenance', fields: ['barProvenance'] }]);
+    expect(corrected.data.barContract).toEqual(contract);
+  });
+
+  it.each([
+    { storedLifecycle: 'pre-implementation', offeredLifecycle: 'legacy-backfilled', authenticated: false },
+    { storedLifecycle: 'legacy-backfilled', offeredLifecycle: 'pre-implementation', authenticated: true },
+    { storedLifecycle: 'legacy-backfilled', offeredLifecycle: 'legacy-backfilled', authenticated: true },
+  ])('preserves declaration provenance for unsupported corrections: %j', ({ storedLifecycle, offeredLifecycle, authenticated }) => {
+    const prior = { ...criterion().barProvenance, lifecycle: storedLifecycle };
+    const result = guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: started({ barProvenance: prior }),
+      nextTemplateData: started({
+        barProvenance: { lifecycle: offeredLifecycle, declaredAt: '2030-01-01T00:00:00.000Z', declaredBy: 'spoofed-caller' },
+      }),
+      ...(authenticated ? { actorId: 'amend-author' } : {}),
+      amendment: { actorId: 'amend-author', reason: 'Request a provenance correction.' },
+    });
+    expect(result.data.criteria).toMatchObject([{ barProvenance: prior }]);
+  });
+
+  it.each([
+    { actorId: 'other-author', reason: 'Correct the provenance.', error: /does not match/ },
+    { actorId: 'amend-author', reason: ' ', error: /requires authenticated actorId and a reason/ },
+  ])('refuses an invalid correction capability: %j', ({ actorId, reason, error }) => {
+    expect(() => guardAcceptanceBarTemplateDataWrite({
+      slug: 'acceptance-subject-plan',
+      storedTemplateData: started(),
+      nextTemplateData: started({ barProvenance: { ...criterion().barProvenance, lifecycle: 'legacy-backfilled' } }),
+      actorId,
+      amendment: { actorId: 'amend-author', reason },
+    })).toThrow(error);
+  });
+
   it('stamps a newly added BAR at amendment time and attributes it to the authenticated amender', () => {
     const now = '2026-10-15T09:20:00.000Z';
     const stored = started();

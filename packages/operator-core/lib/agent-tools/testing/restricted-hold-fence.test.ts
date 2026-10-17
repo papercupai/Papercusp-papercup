@@ -129,11 +129,14 @@ describe('restrictedHoldBundleRefusal — independent verifier archive', () => {
     if (owned) rmSync(owned, { recursive: true, force: true });
     owned = undefined;
   });
-  function archive(withSubmodule = false) {
+  function archive(withSubmodule = false, extraFiles = 0) {
     owned = mkdtempSync(join(tmpdir(), 'bundle-archive-'));
     const selectedRoot = join(owned, 'source');
     mkdirSync(join(selectedRoot, 'src'), { recursive: true });
     writeFileSync(join(selectedRoot, 'src/clean.ts'), 'export const clean = true;\n');
+    for (let i = 0; i < extraFiles; i++) {
+      writeFileSync(join(selectedRoot, 'src', `${String(i).padStart(4, '0')}.ts`), 'export {};\n');
+    }
     const git = (args: string[]) => execFileSync('git', ['-C', selectedRoot, ...args], { encoding: 'utf8' }).trim();
     git(['init', '--quiet']);
     git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '--allow-empty', '-m', 'parent']);
@@ -150,7 +153,7 @@ describe('restrictedHoldBundleRefusal — independent verifier archive', () => {
       submodules.push({ path, sha: run(['rev-parse', 'HEAD']) });
       git(['add', path]);
     }
-    git(['add', 'src/clean.ts']);
+    git(['add', 'src']);
     git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '--quiet', '-m', 'source']);
     const sourceCommit = git(['rev-parse', 'HEAD']);
     const files = verifierSourceFiles(selectedRoot, { gitMetadataPaths: ['.git', ...submodules.map(row => row.path + '/.git')] });
@@ -209,7 +212,7 @@ describe('restrictedHoldBundleRefusal — independent verifier archive', () => {
     const progress = (record: typeof records[number]) => { records.push(record); };
     const inputs = { files: [a.file], dirs: [] };
     expect(await restrictedHoldBundleRefusal(a.selectedRoot, inputs, { progress })).toBeNull();
-    expect(records).toEqual([
+    expect(records.filter(record => record.event !== 'progress')).toEqual([
       { step: 'restricted-hold-source-receipt', event: 'start' },
       ...['source-receipt-git-checkout', 'source-receipt-source-census'].flatMap(name => [
         { step: `restricted-hold-${name}`, event: 'start' },
@@ -238,7 +241,7 @@ describe('restrictedHoldBundleRefusal — independent verifier archive', () => {
     const progress = vi.fn();
     expect(await restrictedHoldBundleRefusal(a.selectedRoot, { files: [a.file], dirs: [] }, { progress }))
       .toMatchObject({ error: 'restricted_hold_state_unknown' });
-    expect(progress.mock.calls.map(([record]) => record)).toEqual([
+    expect(progress.mock.calls.map(([record]) => record).filter(record => record.event !== 'progress')).toEqual([
       { step: 'restricted-hold-source-receipt', event: 'start' },
       { step: 'restricted-hold-source-receipt-git-checkout', event: 'start' },
       { step: 'restricted-hold-source-receipt-git-checkout', event: 'end', status: 0 },
@@ -248,6 +251,33 @@ describe('restrictedHoldBundleRefusal — independent verifier archive', () => {
       { step: 'restricted-hold-source-receipt', event: 'end', status: 3,
         error: expect.stringContaining('tampered verification source archive') },
     ]);
+  });
+
+  it('retains bounded file and byte progress before an archive census fails closed', async () => {
+    const a = archive(false, 512);
+    const records: Array<{ step: string; event: string; status?: number; completedFiles?: number;
+      totalFiles?: number; bytesRead?: number; nextPath?: string }> = [];
+    const progress = (record: typeof records[number]) => { records.push(record); };
+    const inputs = { files: [a.file], dirs: [] };
+    expect(await restrictedHoldBundleRefusal(a.selectedRoot, inputs, { progress })).toBeNull();
+    const census = records.filter(record => record.step === 'restricted-hold-source-receipt-source-census'
+      && record.event === 'progress');
+    expect(census.length).toBeGreaterThanOrEqual(4);
+    expect(census.length).toBeLessThan(10);
+    expect(census[0]).toMatchObject({ completedFiles: 0, totalFiles: 513, bytesRead: 0, nextPath: 'src/0000.ts' });
+    expect(census.at(-1)).toMatchObject({ completedFiles: 513, totalFiles: 513,
+      bytesRead: 512 * Buffer.byteLength('export {};\n') + Buffer.byteLength('export const clean = true;\n') });
+    for (let i = 1; i < census.length; i++) {
+      expect(census[i].completedFiles!).toBeGreaterThanOrEqual(census[i - 1].completedFiles!);
+      expect(census[i].bytesRead!).toBeGreaterThanOrEqual(census[i - 1].bytesRead!);
+    }
+    records.length = 0;
+    symlinkSync('../../outside.ts', join(a.selectedRoot, 'src/zz-escape.ts'));
+    expect(await restrictedHoldBundleRefusal(a.selectedRoot, inputs, { progress }))
+      .toMatchObject({ error: 'restricted_hold_state_unknown', hint: expect.stringContaining('symlink escapes') });
+    expect(records.some(record => record.event === 'progress' && record.completedFiles === 512)).toBe(true);
+    expect(records.at(-1)).toMatchObject({ step: 'restricted-hold-source-receipt', event: 'end', status: 3 });
+    expect(records.some(record => record.step === 'restricted-hold-input-containment')).toBe(false);
   });
 
   it('refuses a marker without an independent source receipt', async () => {

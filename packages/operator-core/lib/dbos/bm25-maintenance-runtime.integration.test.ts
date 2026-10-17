@@ -13,6 +13,7 @@ import type { DBOS as DBOSType, DBOSClient as DBOSClientType } from '@dbos-inc/d
 import { seedBm25Corpus, startBm25TestDb, type Bm25TestDb } from '../search/lexical/test-pg/bm25-test-db';
 import { captureIsolatedWorker, isolatedTestFileWorkerOptions, recordIsolatedIntegrationProof }
   from '../../test/isolated-integration-proof';
+import type { Bm25MaintenanceStepResult } from './bm25-maintenance-step';
 
 const root = resolve(import.meta.dirname, '../../../..');
 const filePath = 'packages/operator-core/lib/dbos/bm25-maintenance-runtime.integration.test.ts';
@@ -112,13 +113,26 @@ async function needsCompaction(): Promise<boolean> {
   return row!.needs;
 }
 
-async function enqueue(workflowID: string): Promise<void> {
+async function enqueue(workflowID: string): Promise<Bm25MaintenanceStepResult> {
   const handle = await client.enqueue({ queueName: QUEUE, workflowName: 'bm25Maintenance', workflowID });
-  expect(await DBOS.getResult<void>(workflowID, { timeoutSeconds: 120 })).toBeUndefined();
+  const result = await DBOS.getResult<Bm25MaintenanceStepResult>(workflowID, { timeoutSeconds: 120 });
+  expect(result).toBeDefined();
+  expect(result).toMatchObject({
+    outcome: expect.stringMatching(/^(no-op|completed|completed-with-errors)$/),
+    noOp: expect.any(Boolean),
+    startedAtMs: expect.any(Number),
+    finishedAtMs: expect.any(Number),
+    durationMs: expect.any(Number),
+    report: expect.objectContaining({ ensure: expect.any(Array), errors: expect.any(Array) }),
+    error: null,
+  });
+  expect(result).toHaveProperty('loadedSourceSha');
+  expect(result!.durationMs).toBe(Math.max(0, result!.finishedAtMs - result!.startedAtMs));
   expect(await handle.getStatus()).toMatchObject({
     workflowID, workflowName: 'bm25Maintenance', status: 'SUCCESS', queueName: QUEUE,
     applicationVersion: db.runTag,
   });
+  return result!;
 }
 
 describe('BM25 maintenance through the real registered DBOS runtime (P-006)', () => {
@@ -131,10 +145,13 @@ describe('BM25 maintenance through the real registered DBOS runtime (P-006)', ()
     vi.stubEnv('PAPERCUSP_PGBOUNCER', '1');
     vi.stubEnv('PAPERCUSP_PGBOUNCER_PORT', '1');
     const workflowID = `bm25-runtime-${db.runTag}`;
-    await enqueue(workflowID);
+    const result = await enqueue(workflowID);
     const steps = await DBOS.listWorkflowSteps(workflowID);
     expect(steps).toHaveLength(1);
     expect(steps![0]).toMatchObject({ name: 'bm25-maintenance', error: null });
+    expect(steps![0]!.output).toEqual(result);
+    expect(result.noOp).toBe(false);
+    expect(result.report).not.toBeNull();
     expect(await needsCompaction()).toBe(false);
 
     // The oracle reads every valid BM25 index in this private database, not
@@ -169,6 +186,7 @@ describe('BM25 maintenance through the real registered DBOS runtime (P-006)', ()
       root, filePath,
       sourcePaths: [
         'packages/operator-core/lib/dbos/periodic-workflows.ts',
+        'packages/operator-core/lib/dbos/bm25-maintenance-step.ts',
         'packages/operator-core/lib/search/lexical/bm25-maintenance.ts',
         'packages/operator-core/lib/search/lexical/rank.ts',
         'packages/operator-core/lib/search/lexical/test-pg/bm25-test-db.ts',

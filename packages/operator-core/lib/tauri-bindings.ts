@@ -137,10 +137,11 @@ export const commands = {
 	 *  Bring the window whose title EXACTLY equals `title` to the foreground
 	 *  (restoring it first if minimized). USER-INITIATED ONLY — mirrors the
 	 *  `feedback_e2e_no_focus_steal` memory; never call from an automated driver.
-	 *  Returns true iff a matching window was found and the foreground call issued.
+	 *  Returns true only after observing foreground, restoration and current-desktop
+	 *  visibility. Uses the public Windows 10+ virtual desktop API; no key simulation.
 	 *  No-op returning false on non-Windows (Linux focus stays the wmctrl path).
 	 */
-	focusWindowByTitle: (title: string) => __TAURI_INVOKE<boolean>("focus_window_by_title", { title }),
+	focusWindowByTitle: (title: string, verification: boolean | null) => __TAURI_INVOKE<"Null" | ({ Bool: boolean }) & { Array?: never; Number?: never; Object?: never; String?: never } | ({ Number: ({ f64: number }) & { i64?: never; u64?: never } | ({ i64: number }) & { f64?: never; u64?: never } | ({ u64: number }) & { f64?: never; i64?: never } }) & { Array?: never; Bool?: never; Object?: never; String?: never } | ({ String: string }) & { Array?: never; Bool?: never; Number?: never; Object?: never } | ({ Array: Value[] }) & { Bool?: never; Number?: never; Object?: never; String?: never } | ({ Object: { [key in string]: Value } }) & { Array?: never; Bool?: never; Number?: never; String?: never }>("focus_window_by_title", { title, verification }),
 	/**
 	 *  Run `spec` in a new external NATIVE terminal window.
 	 * 

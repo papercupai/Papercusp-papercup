@@ -1,0 +1,2 @@
+const r = await tools.capability.list({path:"/home/builduser/.papercusp",all:true,limit:1000,sort:"name",contains:"mcp-proxy-failures"});
+return {total:r?.total,truncated:r?.truncated,entries:(r?.entries ?? []).map(e=>({name:e.name,mtimeUtc:e.mtimeUtc,type:e.type,bytes:e.bytes,symlinkTarget:e.symlinkTarget,symlinkResolvesTo:e.symlinkResolvesTo,statUnreadable:e.statUnreadable}))};

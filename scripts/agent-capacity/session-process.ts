@@ -19,6 +19,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
+import { assertCapacityStorage } from './host-admission';
 
 export const STATS_MARKER = 'CAPDRV_CGROUP';
 
@@ -40,6 +41,7 @@ export function runAsync(cmd: string, args: string[]): Promise<void> {
  * level too deep, and the replayed tool calls failed on paths that were no longer there.
  */
 export async function copyTree(src: string, dst: string): Promise<void> {
+  assertCapacityStorage(__dirname, dst);
   mkdirSync(path.dirname(dst), { recursive: true });
   await removeTree(dst);
   await runAsync('cp', ['-a', '--reflink=auto', '-T', src, dst]);
@@ -96,6 +98,7 @@ export async function prepareWorkdir(mode: WorkdirMode, src: string, dst: string
     if (path.resolve(src) !== path.resolve(dst)) throw new Error(`shared workdir must be the prepared checkout: ${dst} != ${src}`);
     return { teardown: async () => undefined };
   }
+  assertCapacityStorage(__dirname, dst);
   mkdirSync(path.dirname(dst), { recursive: true });
   if (mode === 'copy') {
     await copyTree(src, dst);

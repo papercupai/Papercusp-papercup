@@ -579,9 +579,10 @@ async function writeToPg(
     },
   );
   if (!admission.admitted) {
+    const reason =
+      admission.rejection?.message ?? admission.verdict.diagnostics.map((diagnostic) => diagnostic.message).join('; ');
     console.warn(
-      `[plan-dependency-admission] rejected federated whole-plan write for '${row.plan_slug}': ` +
-        admission.verdict.diagnostics.map((diagnostic) => diagnostic.message).join('; '),
+      `[plan-write-admission] rejected federated whole-plan write for '${row.plan_slug}': ${reason}`,
     );
     return;
   }

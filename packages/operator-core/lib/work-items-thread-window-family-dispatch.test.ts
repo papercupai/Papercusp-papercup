@@ -23,7 +23,7 @@
  * pinned, so that is what this asserts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { getWorkItemThreadWindow } from './work-items';
+import { getWorkItemDetail, getWorkItemThreadWindow } from './work-items';
 import { getIssueThreadWindow, type EngineerIssue } from './issues-engineer';
 
 const boundedReadMocks = vi.hoisted(() => ({
@@ -153,5 +153,35 @@ describe('getWorkItemThreadWindow family dispatch', () => {
     });
     expect(win).toBeNull();
     expect(issueWindow).not.toHaveBeenCalled();
+  });
+
+  it('uses the bounded thread seam for detail reads instead of loading the full thread', async () => {
+    const readItem = vi.fn(async () => ({
+      id: 'WI-detail',
+      family: 'feature',
+      kind: 'feature',
+      harness: 'papercup',
+      title: 'detail target',
+      state: 'open',
+      createdAt: '2026-08-02T04:23:32.237Z',
+    }));
+    const boundedDetailThread = vi.fn(async () => ({
+      posts: [{ id: 1, thread_id: 'thread-detail', author_id: 'su-a', body: 'latest', created_ts: '2026-08-03T00:00:00.000Z' }],
+      total: 137,
+      topics: ['gate'],
+      createdAt: '2026-08-02T04:23:32.237Z',
+    }));
+    const listOut = vi.fn(async () => []);
+
+    const detail = await getWorkItemDetail(
+      'WI-detail',
+      'papercup',
+      { threadLimit: 10 },
+      { getWorkItem: readItem as never, getWorkItemThreadWindow: boundedDetailThread as never, listOut },
+    );
+
+    expect(boundedDetailThread).toHaveBeenCalledWith('WI-detail', 10, 'papercup', { getWorkItem: expect.any(Function) });
+    expect(listOut).toHaveBeenCalledWith({ kind: 'feature', ref: 'papercup#WI-detail' });
+    expect(detail).toMatchObject({ posts: [{ body: 'latest' }], postsTotal: 137, topics: ['gate'], links: [] });
   });
 });

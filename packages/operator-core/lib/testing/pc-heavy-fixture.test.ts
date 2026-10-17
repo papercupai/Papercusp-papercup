@@ -10,6 +10,7 @@ const PC_HEAVY_LAUNCH = /\b(?:spawn|spawnSync|execFileSync|execSync)\s*\(\s*['"]
 const KNOWN_LAUNCHERS = [
   'pc-heavy-clock-read-guard.test.ts',
   'pc-heavy-freeze-duration-accounting.test.ts',
+  'pc-heavy-non-git-coalesce.test.ts',
   'pc-heavy-peak-ledger.test.ts',
   'pc-heavy-psi-scarcity-gate.test.ts',
   'pc-heavy-retry-stdout-isolation.test.ts',

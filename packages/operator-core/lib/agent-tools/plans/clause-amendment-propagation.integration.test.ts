@@ -146,6 +146,9 @@ describe('clause amendment propagation', () => {
     // scans disabled, each provenance path must still have an indexable route;
     // the former whole-row JSON predicates cannot use the first two indexes.
     const query = propagationQuery, parameters = propagationParameters;
+    // Regression guard: concurrent clause amendments must acquire overlapping work-item
+    // rows in a stable order before the transaction updates their amendment stamps.
+    expect(query).toMatch(/ORDER BY w\.feature_id\s+FOR UPDATE OF w/);
     const indexes = await h.sql.begin(async (tx) => {
       await tx.unsafe('SET LOCAL enable_seqscan = off');
       const explained = await tx.unsafe('EXPLAIN (FORMAT JSON) '+query, parameters as never);

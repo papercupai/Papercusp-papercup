@@ -45,19 +45,21 @@ import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { SERVING_RUNTIME_IDS } from '../../serving-runtimes';
 import { sourceRuntimeProvenance } from '../../code-intelligence/source-runtime-provenance';
 import { scopedContractQuery } from '../../code-intelligence/scoped-contracts';
+import { queryPushSnapshot } from '../../code-intelligence/push-snapshot';
 
 /**
  * WI-10006543 (plan gitnexus-deterministic-integration-2026-10-05, D-026, D-018):
- * `callers` is answered by the first-party backend, the vendored TypeScript's call
- * hierarchy over the agent's workspace root, built from disk per question in a
- * forked worker. It never refuses a shared name (it unions every declaration, as
- * grep does), every site has a line, and there is no index to go stale. The
+ * `callers` first admits positive syntax matches from the maintained snapshot,
+ * after corroborating its source hashes against the registered workspace root.
+ * Misses and ambiguities use the vendored TypeScript call hierarchy in a forked
+ * worker. Snapshot coverage explicitly remains a lower bound. The compiler unions
+ * same-name declarations, and every reported site has a line. The
  * GitNexus selectors (kind, file_path, uid, repo) do not apply to it.
  */
 async function firstPartyCallersAnswer(
   args: { op?: string; name?: string; kind?: string; file_path?: string; line1?: number; uid?: string; repo?: string; limit?: number; paths?: string[];
     target?: string; target_file_path?: string; target_line1?: number; direction?: 'upstream' | 'downstream' | 'both'; max_depth?: number; max_paths?: number },
-  ctx: { projectDir?: string },
+  ctx: { projectDir?: string; workspaceId?: string; principal?: { workspaceId?: string } | null },
 ): Promise<CodeIntelAnswer> {
   const limit = Math.min(Math.max(1, args.limit ?? MAX_SITES_PER_ANSWER), FIRST_PARTY_CALLERS_DEFAULT_LIMIT);
   const nativeOp = ['communities', 'flows', 'concept-search'].includes(args.op ?? '') ? args.op as 'communities' | 'flows' | 'concept-search'
@@ -68,9 +70,12 @@ async function firstPartyCallersAnswer(
     freshness: { health: 'unknown', indexedAt: null, indexedCommit: null, staleVsDisk: null }, latencyMs: 0,
     error: 'Native symbol queries use the current workspace and file_path/line1/kind; GitNexus uid/repo selectors are unsupported.',
   };
-  const answer = await firstPartyCallersOffthread({
+  const root = resolveAgentWorkspaceRoot(ctx);
+  const snapshot = nativeOp === 'callers' ? await queryPushSnapshot({ op: 'callers', root,
+    workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId, name: args.name, paths: args.paths, limit }) : null;
+  const answer = snapshot ?? await firstPartyCallersOffthread({
     vendorDir: LSP_VENDOR_DIR,
-    root: resolveAgentWorkspaceRoot(ctx),
+    root,
     name: args.name ?? '',
     ...(nativeOp !== 'callers' ? { op: nativeOp, filePath: args.file_path, line1: args.line1, kind: args.kind } : {}),
     ...(['impact', 'trace', 'flows'].includes(nativeOp) ? { target: args.target, targetFilePath: args.target_file_path,
@@ -113,9 +118,9 @@ const OP_VALUES = [
 export default defineTool({
   name: 'graph:query',
   description:
-    'Code topology: symbol | context | callers | callees | impact | trace | contracts | communities | flows | concept-search | health. Native operations use current JS/TS snapshots. Discovery requires explicit bounded paths; communities are weak call components, flows are possible zero-incoming call paths, and concept-search fuses symbol/path and source-text rankings. Discovery is inferred retrieval evidence; semantic similarity and runtime execution are unmeasured. contracts joins scoped static HTTP/RPC/event evidence. Other languages receive explicit unsupported results.',
+    'Code topology: symbol | context | callers | callees | impact | trace | contracts | communities | flows | concept-search | health. Callers prefer hash-checked positive syntax snapshots; misses use the compiler. Read coverage for lower bounds. Other native operations use JS/TS compiler snapshots. Discovery requires bounded paths; communities are weak call components, flows are possible call paths, and concept-search fuses symbol/path and source-text rankings. Retrieval and static paths do not prove runtime execution. contracts joins scoped static HTTP/RPC/event evidence. Other languages receive explicit unsupported results.',
   guidance: {
-    when: 'For "who calls X?", use op:"callers", name and bounded paths; for "what does X call?", use op:"callees". Call-site rg also matches comments and strings; use compiler topology to establish calls or change impact.',
+    when: 'For "who calls X?", use op:"callers", name and bounded paths; for "what does X call?", use op:"callees". Read syntax/compiler coverage before treating sites as binding or change-impact evidence.',
     notWhen:
       'Use lsp:query for references, implementations, diagnostics and rename previews; scoped rg for literals. Native symbol/context/callees currently admit JS/TS compiler inputs. Runtime diagnosis needs state/log tools.',
     chaining:

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 
 const reconcilePendingGradingAudits = vi.hoisted(() => vi.fn());
+const guardResource = vi.hoisted(() => vi.fn());
 
 // Deliberately NOT the real 500/50: distinctive values prove the description is
 // DERIVED from the dispatcher's constants rather than hardcoded beside them.
@@ -11,8 +12,23 @@ vi.mock('../../grading-integrity', () => ({
   GRADING_AUDIT_BACKLOG_SCAN_LIMIT: 777,
   GRADING_AUDIT_DISPATCH_LIMIT: 33,
 }));
+vi.mock('../locks/resource-lock-guard', () => ({ guardResource }));
+vi.mock('../locks/identity', () => ({
+  readIdentity: vi.fn(() => ({ ownerId: 'repair-owner', ownerLabel: 'repair owner', coordinationDomain: 'caller-domain' })),
+}));
+vi.mock('../locks/coordination-domain', () => ({
+  resourceLockDomain: vi.fn((resource: string) => `host-global:${resource}`),
+}));
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: vi.fn(() => ({ ownerId: 'repair-owner', ownerLabel: 'repair owner' })),
+}));
 
-import repairTool, { SCORECARD_REPAIR_TIMEOUT_SEC, scorecardRepairArgs } from './repair';
+import repairTool, {
+  SCORECARD_REPAIR_LOCK_TTL_SEC,
+  SCORECARD_REPAIR_RESOURCE,
+  SCORECARD_REPAIR_TIMEOUT_SEC,
+  scorecardRepairArgs,
+} from './repair';
 
 const makeContext = (): UnifiedToolContext => ({
   log: vi.fn(),
@@ -38,6 +54,11 @@ describe('scorecards:repair', () => {
       requestedTargetIds: ['EI-target'],
       receipts: [{ issueId: 'EI-target', state: 'launched' }],
     });
+    guardResource.mockReset().mockImplementation(async (_spec: unknown, run: (fence: unknown) => Promise<unknown>) => ({
+      acquired: true,
+      result: await run({}),
+      lock_id: 'repair-lock',
+    }));
   });
 
   it('forwards explicit target ids, harness, and the complete caller context', async () => {
@@ -60,6 +81,37 @@ describe('scorecards:repair', () => {
         receipts: [{ issueId: 'EI-target', state: 'launched' }],
       },
     });
+    expect(guardResource).toHaveBeenCalledWith(
+      expect.objectContaining({
+        coordinationDomain: 'host-global:staging-server',
+        ownerId: 'repair-owner',
+        ownerLabel: 'repair owner',
+        resource: SCORECARD_REPAIR_RESOURCE,
+        mode: 'shared',
+        ttlSec: SCORECARD_REPAIR_LOCK_TTL_SEC,
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it('refuses before dispatch when staging-server is draining for a restart', async () => {
+    guardResource.mockResolvedValueOnce({
+      acquired: false,
+      reason: 'held_exclusive',
+      holders: [{ owner: 'restart-owner', owner_label: 'restart owner', mode: 'exclusive', status: 'held' }],
+    });
+
+    const result = await repairTool.handler({ targetIds: ['EI-target'] } as never, makeContext());
+
+    expect(result).toEqual({
+      data: {
+        ok: false,
+        reason: 'resource_held_exclusive',
+        resource: SCORECARD_REPAIR_RESOURCE,
+        holders: [{ owner: 'restart-owner', owner_label: 'restart owner', mode: 'exclusive', status: 'held' }],
+      },
+    });
+    expect(reconcilePendingGradingAudits).not.toHaveBeenCalled();
   });
 
   it('omits target selection so the dispatcher owns bounded oldest-first backlog selection', async () => {

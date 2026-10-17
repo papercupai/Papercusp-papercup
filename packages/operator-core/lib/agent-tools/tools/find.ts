@@ -1,6 +1,6 @@
 /**
  * tools:find — find tools by INTENT. The agent-facing front door to the
- * ~550-tool catalog (tool-discovery-for-weak-models-2026-06-30 WS3).
+ * full tool catalog (tool-discovery-for-weak-models-2026-06-30 WS3).
  *
  * Hybrid lexical + semantic search (the committed `cupboard/tool-find.ts`
  * floored-union core): the lexical leg is exact-name-authoritative, the semantic
@@ -74,6 +74,9 @@ export const DISCOVERY_RESULT_MAX_BYTES = 5_000;
 export const PLUGIN_HOST_READINESS_TIMEOUT_MS = 5_000;
 /** The optional harness-registry read must not let catalog discovery hang on a DB pool wait. */
 export const DISCOVERY_HIVE_SCOPE_TIMEOUT_MS = 5_000;
+/** Keep the caller-facing result count aligned with the validation contract. */
+export const TOOLS_FIND_DEFAULT_LIMIT = 8;
+export const TOOLS_FIND_LIMIT_MAX = 25;
 const DISCOVERY_DESCRIPTION_MAX_CHARS = 320;
 const DISCOVERY_SCHEMA_MAX_CHARS = 2_200;
 const COMPACT_NESTED_DESCRIPTION_MAX_CHARS = 180;
@@ -468,9 +471,15 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
     ['testFingerprint', 'fixtureFingerprint', 'rubricFingerprint', 'environmentFingerprint'].some((name) =>
       Object.prototype.hasOwnProperty.call(tupleProperties, name),
     );
+  const isPlansSetSpecsClause =
+    properties.some(([field]) => field === 'behaviorClass') &&
+    properties.some(([field]) => field === 'planItemId') &&
+    properties.some(([field]) => field === 'lifecycleStatus');
   const segmentMaxChars = isSpecEvidenceCurrentItem
     ? SPEC_EVIDENCE_CURRENT_SEGMENT_MAX_CHARS
-    : NESTED_FIELDS_SEGMENT_MAX_CHARS;
+    : isPlansSetSpecsClause
+      ? 480
+      : NESTED_FIELDS_SEGMENT_MAX_CHARS;
   // Keep conditional lifecycle contracts ahead of descriptive/legacy fields in
   // a bounded nested object. `work_items:complete` places
   // `rootCauseVerification` after the wide `verification` record and several
@@ -488,12 +497,27 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
       properties.some(([field]) => field === 'sourceHive') &&
       properties.some(([field]) => field === 'subject') &&
       properties.some(([field]) => field === 'confidence');
+    const isPlansSetSpecsFalsifier =
+      properties.some(([field]) => field === 'observation') &&
+      properties.some(([field]) => field === 'probeMethod');
+    const isScorecardEmitArgs = ['rubricRef', 'ratings', 'rerunRecipe'].every((field) =>
+      properties.some(([name]) => name === field),
+    );
     if (isObservationCapture && name === 'subject') return 110;
     // `work_items:complete.specAdequacy.current` selects the exact evidence
     // fingerprints being attested. Keep it ahead of optional clause metadata
     // so the bounded object retains the callable evidence shape.
     if (isSpecAdequacyCompletion && name === 'current') return 105;
     if (name === 'rootCauseVerification') return 100;
+    // plans:set-specs' optional falsifier carries the scenario identifier
+    // contract used by runtime validation. Keep it beside the clause's
+    // discriminator, and prioritize requiredScenarios within the falsifier.
+    if (isPlansSetSpecsClause && name === 'falsifier') return 96;
+    if (isPlansSetSpecsFalsifier && name === 'requiredScenarios') return 96;
+    // `scorecards:emit.rerunRecipe.current.supplied` is a required grader
+    // decision input. Keep the optional recipe itself in the root projection
+    // before the schema budget is spent on other scorecard fields.
+    if (isScorecardEmitArgs && name === 'rerunRecipe') return 115;
     // plans:set-specs has a wide clause shape; its required discriminator was
     // elided behind optional fields in both `spec` and `items` discovery.
     if (name === 'behaviorClass') return 95;
@@ -824,11 +848,24 @@ type TopLevelSchemaProjection = {
   conditionalHint: string;
 };
 
+/** Keep the scorecard identity and rerun selector ahead of its wide rating fields. */
+function prioritizeScorecardEmitRootFields(entries: Array<[string, unknown]>): Array<[string, unknown]> {
+  const names = new Set(entries.map(([name]) => name));
+  if (!['rubricRef', 'ratings', 'rerunRecipe'].every((name) => names.has(name))) return entries;
+
+  const preferredNames = new Set(['rubricRef', 'rerunRecipe']);
+  const preferred = ['rubricRef', 'rerunRecipe'].flatMap((name) => {
+    const entry = entries.find(([candidate]) => candidate === name);
+    return entry ? [entry] : [];
+  });
+  return [...preferred, ...entries.filter(([name]) => !preferredNames.has(name))];
+}
+
 function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjection | null {
   const directProps = root.properties;
   if (directProps && typeof directProps === 'object' && !Array.isArray(directProps)) {
     return {
-      entries: Object.entries(directProps as Record<string, unknown>),
+      entries: prioritizeScorecardEmitRootFields(Object.entries(directProps as Record<string, unknown>)),
       required: new Set<string>(
         Array.isArray(root.required) ? root.required.filter((v): v is string => typeof v === 'string') : [],
       ),
@@ -874,7 +911,9 @@ function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjectio
   for (const [name, entry] of merged) {
     if (entry.presentIn === branches.length && entry.requiredInAll) required.add(name);
   }
-  const entries = [...merged].map(([name, entry]) => [name, entry.raw] as [string, unknown]);
+  const entries = prioritizeScorecardEmitRootFields(
+    [...merged].map(([name, entry]) => [name, entry.raw] as [string, unknown]),
+  );
   // Prefer the canonical completion envelope to its many legacy shorthand
   // aliases. Validator-owned constraints consume part of the root budget, so
   // merely moving controls just before completion still lets preceding legacy
@@ -966,10 +1005,11 @@ export function compactSchemaForResult(
 
   let text = render(withDescriptions);
   if (text.length > maxChars && withDescriptions.size > 0) {
-    // Remove low-value prose first, preserving explicit contract restrictions
-    // such as "Completion phase only" for as long as the size budget allows.
+    // Remove lower-value prose first. Keep the strongest explicit contract
+    // restriction (currently plans:audit.auditedSha's phase rule) even when
+    // clipping the final tail is necessary to fit the compact result budget.
     const removable = [...parts]
-      .filter((part) => part.description)
+      .filter((part) => part.description && part.description.priority < 200)
       .sort((a, b) => (a.description!.priority - b.description!.priority) || (a.index - b.index));
     for (const part of removable) {
       withDescriptions.delete(part.index);
@@ -1391,7 +1431,8 @@ export default defineTool({
   description:
     // P-011 prompt-weight: the result-shape prose below moved into the free `returns`
     // field, which already described this exact payload (EI-22083648545226771).
-    'Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). ACTIVATION IS ' +
+    'Find tools by INTENT across the full tool catalog (hybrid lexical + semantic). ACTIVATION IS ' +
+    'The optional `limit` defaults to 8, accepts 1-25, and values above 25 are rejected. ' +
     'CONDITIONAL: on a seeded (small-surface) session the matches are added to the server tool surface ' +
     '(activated:true); the client may need a tool-list refresh before direct-call wrappers appear, so ' +
     'follow `howToCall` and use tools:invoke when a wrapper is absent. On a full-catalog session there ' +
@@ -1435,8 +1476,16 @@ export default defineTool({
         .max(400)
         .optional()
         .describe('Compatibility alias for `query`; explicit `query` wins when both are supplied.'),
-      /** Max results (default 8). */
-      limit: z.number().int().positive().max(25).optional(),
+      /** Max results (default 8, hard maximum 25). */
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .max(TOOLS_FIND_LIMIT_MAX)
+        .optional()
+        .describe(
+          `Maximum number of matches; defaults to ${TOOLS_FIND_DEFAULT_LIMIT}; values above ${TOOLS_FIND_LIMIT_MAX} are rejected.`,
+        ),
       // EI-21854434860586936: every other harness/workspace-scoped tool in the
       // catalog accepts a `harness` (and often `workspace`) arg, so callers
       // naturally reach for the same shape here — but this tool is catalog-global
@@ -1534,8 +1583,9 @@ export default defineTool({
     const activeEmbeddings = indexedRevision === revision ? embIndex : null;
 
     const exactNames = exactToolNamesInQuery(args.query);
+    const resultLimit = args.limit ?? TOOLS_FIND_DEFAULT_LIMIT;
     const rankedHits = await findTools(corpus, args.query, {
-      limit: args.limit ?? 8,
+      limit: resultLimit,
       embedder,
       embeddings: activeEmbeddings,
       // WI-20202755675039636: a resolved provider can still stall (notably an
@@ -1543,7 +1593,7 @@ export default defineTool({
       // by degrading this query to lexical-only at the interactive budget.
       embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
     });
-    const hits = prioritizeExactToolHits(rankedHits, corpus, exactNames, args.limit ?? 8);
+    const hits = prioritizeExactToolHits(rankedHits, corpus, exactNames, resultLimit);
 
     // `tools:find` returns a hand-serialized ToolResult, so the generic
     // payload-tier shaper cannot expand its compact discovery projection for

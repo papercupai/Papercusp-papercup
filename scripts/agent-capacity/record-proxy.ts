@@ -32,6 +32,8 @@ export interface RequestFingerprint {
   bytes: number;
   sha256: string;
   model: string | null;
+  /** Present only when supplied by the caller; never inferred from a model default. */
+  reasoningEffort?: string;
   stream: boolean;
   /** `messages.length` (Anthropic) or `input.length` (OpenAI Responses); null if neither. */
   messages: number | null;
@@ -198,6 +200,10 @@ export function fingerprintRequest(body: Buffer): RequestFingerprint {
   try {
     const j = JSON.parse(body.toString('utf8')) as Record<string, unknown>;
     if (typeof j.model === 'string') fp.model = j.model;
+    if (j.reasoning && typeof j.reasoning === 'object' && !Array.isArray(j.reasoning)) {
+      const effort = (j.reasoning as Record<string, unknown>).effort;
+      if (typeof effort === 'string') fp.reasoningEffort = effort;
+    }
     fp.stream = j.stream === true;
     if (Array.isArray(j.messages)) fp.messages = j.messages.length;
     else if (Array.isArray(j.input)) {
@@ -225,6 +231,41 @@ export function decodeChunk(c: RecordedChunk): Buffer {
   return c.b64 !== undefined ? Buffer.from(c.b64, 'base64') : Buffer.from(c.d ?? '', 'utf8');
 }
 
+/** One admission counter shared by every proxy in a recording batch. No retries are refunded. */
+export function recordingRequestLimit(selection: { model: string; effort: string }, maxRequests: number, maxRequestBytes?: number) {
+  if (!Number.isSafeInteger(maxRequests) || maxRequests <= 0 || !selection.model || !selection.effort) {
+    throw new Error('Recording request limit needs explicit model/effort and a positive safe integer');
+  }
+  if (maxRequestBytes !== undefined && (!Number.isSafeInteger(maxRequestBytes) || maxRequestBytes <= 0)) {
+    throw new Error('Recording request byte limit needs a positive safe integer');
+  }
+  const binding = { ...selection };
+  let admitted = 0;
+  let denied = 0;
+  return {
+    snapshot: () => ({ ...binding, maxRequests, ...(maxRequestBytes === undefined ? {} : { maxRequestBytes }), admitted, denied }),
+    admit(method: string, requestPath: string, body: Buffer): string | null {
+      let request: Record<string, any>;
+      try { request = JSON.parse(body.toString('utf8')); } catch { request = {}; }
+      // Only local function/custom tools fit this allowance. Hosted tools have separate fees.
+      const localTools = Array.isArray(request?.tools) && request.tools.every((tool: any) =>
+        tool && (tool.type === 'function' || tool.type === 'custom'));
+      const valid = method === 'POST' && requestPath === '/v1/responses' && request &&
+        request.model === binding.model && request.reasoning?.effort === binding.effort &&
+        request.background !== true && (request.tools === undefined || localTools);
+      const reason = maxRequestBytes !== undefined && body.length > maxRequestBytes ? 'request exceeds the admitted byte allowance'
+        : !valid ? 'request does not match the admitted Responses model/effort/local-tool configuration'
+        : admitted >= maxRequests ? 'batch model request allowance exhausted' : null;
+      if (reason) { denied++; return reason; }
+      // Reserve synchronously before forwarding, including across concurrent session proxies.
+      admitted++;
+      return null;
+    },
+  };
+}
+
+export type RecordingRequestLimit = ReturnType<typeof recordingRequestLimit>;
+
 export interface RecordProxyOptions {
   /** e.g. http://127.0.0.1:8788 — request paths are appended verbatim. */
   upstream: string;
@@ -233,6 +274,9 @@ export interface RecordProxyOptions {
   sessionId: string;
   /** 0 = pick a free port. */
   port?: number;
+  requestLimit?: RecordingRequestLimit;
+  /** Host-owned overrides for a private bounded gateway; never recorded. */
+  upstreamHeaders?: Readonly<Record<string, string>>;
 }
 
 export interface RecordProxy {
@@ -283,10 +327,22 @@ export async function startRecordProxy(opts: RecordProxyOptions): Promise<Record
           resolve();
         };
 
+        const refusal = opts.requestLimit?.admit(req.method ?? 'GET', req.url ?? '/', body);
+        if (refusal) {
+          const payload = Buffer.from(JSON.stringify({ error: { type: 'recording_request_limit', message: refusal } }));
+          chunks.push(encodeChunk(0, payload));
+          resBytes = payload.length;
+          res.writeHead(400, { 'content-type': 'application/json' });
+          res.end(payload);
+          rec(400, 'application/json', `recording-request-limit: ${refusal}`);
+          return;
+        }
+
         const headers: http.OutgoingHttpHeaders = {};
         for (const [k, v] of Object.entries(req.headers)) {
           if (!HOP_BY_HOP.has(k.toLowerCase()) && v !== undefined) headers[k] = v;
         }
+        for (const [key, value] of Object.entries(opts.upstreamHeaders ?? {})) headers[key.toLowerCase()] = value;
         // Record plain bytes, never a compressed stream the replay would have to re-frame.
         headers['accept-encoding'] = 'identity';
         headers['content-length'] = String(body.length);

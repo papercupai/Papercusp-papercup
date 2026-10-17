@@ -1,0 +1,1717 @@
+{
+  "schemaVersion": 1,
+  "kind": "private-checkpoint-reader-cancellation-fix-matrix",
+  "workItem": "WI-6554700010016680",
+  "parent": "WI-6554700010016666",
+  "planItem": "WI-10000407",
+  "outerRecovery": {
+    "runId": "1d0d35c2-a7b6-4d84-8bc7-02ed25c346b4",
+    "taskId": "0mvbsnubxy5nqdnff9q",
+    "status": "pass",
+    "exitCode": 0
+  },
+  "preFixEvidence": "docs/evidence/byoc-p009-cancellation-pg-release-regression-20261017T023712Z.json",
+  "fix": "Forward caller AbortSignal to the checkpoint metadata reader and reuse boundedOrgTxn readonly/query.cancel support. The maintained guard checks exact query generation release before holder rollback.",
+  "cases": [
+    {
+      "case": "cancellation",
+      "runId": "20261017T024603Z-240194",
+      "testPath": "packages/operator-core/lib/agent-tools/plans/private-read-cancellation-http.integration.test.ts",
+      "sourceCommit": "86bc183d2bb47dc22b37a2ba527f218c09a91896",
+      "runGroupId": "1d0d35c2-a7b6-4d84-8bc7-02ed25c346b4",
+      "resultPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T024603Z-240194/result.json",
+      "sourcePath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T024603Z-240194/phases/prepare/source.json",
+      "observationPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T024603Z-240194/phases/execute/read-cancellation-observation.json",
+      "diagnosticsPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T024603Z-240194/phases/execute/read-cancellation-pg.ndjson",
+      "lifecyclePath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T024603Z-240194/phases/execute/lifecycle.json",
+      "sourceFiles": [
+        {
+          "path": "apps/operator/bin/hono-host.ts",
+          "sha256": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580",
+          "gitSha256": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580"
+        },
+        {
+          "path": "apps/operator/bin/host-handler.ts",
+          "sha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0",
+          "gitSha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0"
+        },
+        {
+          "path": "libs/generic/tooldef/src/dispatch-stack.ts",
+          "sha256": "26fbeb666bfbc575f2a312e2df9c41671e1483f8f6a3a894a35587ba8aceed9b",
+          "gitSha256": "26fbeb666bfbc575f2a312e2df9c41671e1483f8f6a3a894a35587ba8aceed9b"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plans/private-read-cancellation-http.integration.test.ts",
+          "sha256": "5bc503c128d32c114771f676fee4549d5aa1ba4b7de494e914e68f1078d32cfb",
+          "gitSha256": "5bc503c128d32c114771f676fee4549d5aa1ba4b7de494e914e68f1078d32cfb"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/work_items/get.ts",
+          "sha256": "5f91fad769e18997266ed6afe3ef618be290867518f5b9c17ab0ca2fa8287dd3",
+          "gitSha256": "2ee16d4f2d06fa9920e62bf3a22941f9283e2b4c1d34b9088587faa5afefc53d"
+        },
+        {
+          "path": "packages/operator-core/lib/capabilities/invoke.ts",
+          "sha256": "d38e35e116ca1d7fcc002a25d5b1e9a0bfa1263d9ad8b54836dd5da56080d3f5",
+          "gitSha256": "d38e35e116ca1d7fcc002a25d5b1e9a0bfa1263d9ad8b54836dd5da56080d3f5"
+        },
+        {
+          "path": "packages/operator-core/lib/carry-note.ts",
+          "sha256": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72",
+          "gitSha256": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72"
+        },
+        {
+          "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts",
+          "sha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4",
+          "gitSha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4"
+        },
+        {
+          "path": "packages/operator-core/lib/pg-read-query.ts",
+          "sha256": "9f3150caaac9a47bd86dc42e81635700ac0f0d457565e920320c748940aa8c54",
+          "gitSha256": "9f3150caaac9a47bd86dc42e81635700ac0f0d457565e920320c748940aa8c54"
+        },
+        {
+          "path": "packages/operator-core/lib/projected-tool-deps.ts",
+          "sha256": "848a8d9d60249f76587ce15e14b15582ee8474f1c92f4c134bc4ffa55e6a387e",
+          "gitSha256": "848a8d9d60249f76587ce15e14b15582ee8474f1c92f4c134bc4ffa55e6a387e"
+        },
+        {
+          "path": "packages/operator-core/lib/work-item-checkpoint.ts",
+          "sha256": "b4c3714645a473e20f9375a82996615fbb04dc8c4c7fab7fbd7ed6c784bdafe1",
+          "gitSha256": "0db6153cdd1142b467e940c003ea52c72a2714da6d3dcd04c5c05acf920e8e1a"
+        },
+        {
+          "path": "packages/operator-core/lib/work-items.ts",
+          "sha256": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d",
+          "gitSha256": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d"
+        },
+        {
+          "path": "packages/operator-core/test/isolated-integration-proof.ts",
+          "sha256": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d",
+          "gitSha256": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d"
+        },
+        {
+          "path": "packages/operator-core/test/private-http-workspace-preflight.ts",
+          "sha256": "1ad346261702d8b1620cd7482f9fa3131f43d4558a7218029bcc104159f25ff3",
+          "gitSha256": "1ad346261702d8b1620cd7482f9fa3131f43d4558a7218029bcc104159f25ff3"
+        },
+        {
+          "path": "packages/operator-core/test/private-read-cancellation-http-scenario.ts",
+          "sha256": "760faaba4d296defdaaf2d88caae5b8ff98c71966b54446ca7d2c372718e7f5d",
+          "gitSha256": "760faaba4d296defdaaf2d88caae5b8ff98c71966b54446ca7d2c372718e7f5d"
+        },
+        {
+          "path": "packages/operator-core/test/staging-first-http-fixture.ts",
+          "sha256": "b3b8b61b478024c8435b42aadc7b3adb30eac7e38df8b978fb21fd0850595455",
+          "gitSha256": "b3b8b61b478024c8435b42aadc7b3adb30eac7e38df8b978fb21fd0850595455"
+        },
+        {
+          "path": "packages/tooldef-mcp/src/index.ts",
+          "sha256": "bfb7cec8c7f48ef5b0ac2abc03041c47913a2feba91634ced520b204d3a39e74",
+          "gitSha256": "bfb7cec8c7f48ef5b0ac2abc03041c47913a2feba91634ced520b204d3a39e74"
+        },
+        {
+          "path": "scripts/lib/isolated-runtime-start.mjs",
+          "sha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d",
+          "gitSha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d"
+        },
+        {
+          "path": "scripts/with-test-pg.mjs",
+          "sha256": "50e73fa41c584d233c856297406bc897cef88ab9b83dbf4489fc617f6d0a7fbc",
+          "gitSha256": "50e73fa41c584d233c856297406bc897cef88ab9b83dbf4489fc617f6d0a7fbc"
+        },
+        {
+          "path": "scripts/lib/with-test-pg-cleanup.mjs",
+          "sha256": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61",
+          "gitSha256": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61"
+        }
+      ],
+      "currentInputHashMismatches": [],
+      "phases": [
+        {
+          "phase": "prepare",
+          "status": "passed",
+          "elapsedMs": 13220
+        },
+        {
+          "phase": "execute",
+          "status": "passed",
+          "elapsedMs": 152562
+        },
+        {
+          "phase": "teardown",
+          "status": "passed",
+          "elapsedMs": 1
+        }
+      ],
+      "lifecycleEnded": {
+        "kind": "isolated-runtime-end",
+        "childPid": 265606,
+        "exitCode": 0,
+        "signal": null,
+        "runtimeRemoved": true,
+        "pgDataRemoved": true,
+        "observedAt": "2026-10-17T02:48:48.654Z"
+      },
+      "measurement": {
+        "workspace": "test-runtime-fd59d5e3-410",
+        "harness": "test-runtime-fd59d5e3-410-guard",
+        "itemId": "WI-1",
+        "expectedSha": "86bc183d2b",
+        "holderPid": 346307,
+        "wait": {
+          "pid": 345351,
+          "backendStart": "2026-10-16 22:48:36.938707-04",
+          "queryStart": "2026-10-16 22:48:38.833323-04",
+          "state": "active",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            346307
+          ]
+        },
+        "abortedAtMs": 118750.974065,
+        "serverSettledAtMs": 118822.191276,
+        "clientResult": {
+          "error": {
+            "name": "AbortError",
+            "message": "private HTTP caller disconnected"
+          }
+        },
+        "ledger": {
+          "id": "2",
+          "status": "ok",
+          "errorCode": null,
+          "errorMessage": "cancelled",
+          "durationMs": 58,
+          "metadata": {
+            "format": "json",
+            "kernel": {
+              "enforce": {
+                "applied": false,
+                "decision": "allow",
+                "serverAudit": {
+                  "authorityTimings": {
+                    "schemaVersion": 1,
+                    "controlAnchorSql": {
+                      "calls": 1,
+                      "totalMs": 3.2,
+                      "executions": [
+                        {
+                          "outcome": "fulfilled",
+                          "traceId": "0de33d18-2e98-4707-826b-7a89ef0cf6bf",
+                          "backendPid": null,
+                          "queryStart": null,
+                          "clientQueryMs": 2.9,
+                          "queryFingerprint": "controlAnchorSql/v1",
+                          "clientCompletedAt": "2026-10-17T02:48:38.830Z",
+                          "poolAcquisitionMs": 0.1
+                        }
+                      ]
+                    }
+                  }
+                },
+                "availability": "unavailable"
+              },
+              "preflight": {
+                "applied": false,
+                "decision": "allow",
+                "serverAudit": {
+                  "authorityTimings": {
+                    "schemaVersion": 1,
+                    "controlAnchorSql": {
+                      "calls": 1,
+                      "totalMs": 4.8,
+                      "executions": [
+                        {
+                          "outcome": "fulfilled",
+                          "traceId": "a9090ea1-5b3f-493a-ac1c-939c6a14fbd8",
+                          "backendPid": null,
+                          "queryStart": null,
+                          "clientQueryMs": 4.6,
+                          "queryFingerprint": "controlAnchorSql/v1",
+                          "clientCompletedAt": "2026-10-17T02:48:38.824Z",
+                          "poolAcquisitionMs": 0.1
+                        }
+                      ]
+                    }
+                  }
+                },
+                "availability": "unavailable"
+              }
+            },
+            "uiClientId": "private-read-cancellation-test-runtime-fd59d5e3-410",
+            "workItemsGet": {
+              "mode": "complete",
+              "absent": 0,
+              "budgetMs": 30000,
+              "available": 0,
+              "elapsedMs": 46,
+              "requested": 1,
+              "unavailable": 1,
+              "baseReadMaxMs": 1,
+              "schemaVersion": "work-items-get-read-v1",
+              "enrichmentMaxMs": 44,
+              "receiptComplete": true,
+              "baseReadDiagnostics": [
+                {
+                  "id": "WI-1",
+                  "status": "fulfilled",
+                  "elapsedMs": 1
+                }
+              ],
+              "enrichmentDiagnostics": [
+                {
+                  "id": "WI-1",
+                  "stage": "checkpoint",
+                  "status": "pending",
+                  "elapsedMs": 45
+                }
+              ],
+              "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+            },
+            "handlerPhases": {
+              "unit": "ms",
+              "phases": [
+                {
+                  "phase": "dispatch:kernel-preflight",
+                  "startMs": 0,
+                  "durationMs": 5
+                },
+                {
+                  "phase": "dispatch:capability-envelope",
+                  "startMs": 5,
+                  "durationMs": 2
+                },
+                {
+                  "phase": "dispatch:ctx-bindings",
+                  "startMs": 7,
+                  "durationMs": 1
+                },
+                {
+                  "phase": "dispatch:kernel-enforce",
+                  "startMs": 8,
+                  "durationMs": 3
+                }
+              ],
+              "timing": "wall-time-possibly-concurrent",
+              "pending": [],
+              "elapsedMs": 58,
+              "attributedMs": 11,
+              "schemaVersion": "handler-phases-v1",
+              "completedAttributedMs": 11,
+              "omittedCompletedCount": 0
+            },
+            "resultOutcome": "soft-failure",
+            "dispatchStages": {
+              "unit": "ms",
+              "steps": [
+                {
+                  "name": "kernel-preflight",
+                  "elapsedMs": 5.020758999999089
+                },
+                {
+                  "name": "default-deny",
+                  "elapsedMs": 0.012585000000399305
+                },
+                {
+                  "name": "role-allowlist",
+                  "elapsedMs": 0.008947000000262051
+                },
+                {
+                  "name": "capability-check",
+                  "elapsedMs": 0.0052300000006653136
+                },
+                {
+                  "name": "capability-envelope",
+                  "elapsedMs": 2.1327909999999974
+                },
+                {
+                  "name": "role-requirement",
+                  "elapsedMs": 0.008295999999972992
+                },
+                {
+                  "name": "harness-check",
+                  "elapsedMs": 0.003946999999243417
+                },
+                {
+                  "name": "quota",
+                  "elapsedMs": 0.004710000001068693
+                },
+                {
+                  "name": "authorize",
+                  "elapsedMs": 0.004408999999213847
+                },
+                {
+                  "name": "preconditions",
+                  "elapsedMs": 0.014579000000594533
+                },
+                {
+                  "name": "entity-check",
+                  "elapsedMs": 0.008546999999452964
+                },
+                {
+                  "name": "premises",
+                  "elapsedMs": 0.009086999998544343
+                },
+                {
+                  "name": "timeout",
+                  "elapsedMs": 0.056469000001015957
+                },
+                {
+                  "name": "idle-watchdog",
+                  "elapsedMs": 0.00282599999991362
+                },
+                {
+                  "name": "replay-buffer",
+                  "elapsedMs": 0.002414999999018619
+                },
+                {
+                  "name": "ctx-bindings",
+                  "elapsedMs": 0.07784999999967113
+                },
+                {
+                  "name": "kernel-enforce",
+                  "elapsedMs": 3.4311049999996612
+                },
+                {
+                  "name": "invoke",
+                  "elapsedMs": 46.48849700000028
+                }
+              ],
+              "timing": "wall-time-sequential-steps",
+              "elapsedMs": 57.58225499999935,
+              "schemaVersion": "dispatch-stages-v1"
+            },
+            "softFailureReason": "cancelled"
+          }
+        },
+        "queryReleasedAtMs": 118827.310606,
+        "beforeRollback": {
+          "stage": "pg-query-release-check",
+          "observedAtMs": 118831.704357,
+          "activity": [
+            {
+              "pid": 345348,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.924978-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 345351,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.933865-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "rollback"
+            },
+            {
+              "pid": 345354,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.82906-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "\n      /* papercusp:controlAnchorSql/v1 */\n      SELECT pg_backend_pid() AS backend_pid, statement_timestamp() AS query_start,\n             b.control_state, b.control_generation, COALESCE(b.workspace_id, a.workspace_id) AS workspace_id,\n             a.id AS adv_session_id, a.launch_header_known,\n             a.launch_spec_type, a.launch_spec_workspace_id, a.launch_spec_harness_slug,\n             a.launch_spec_has_accepted_operation, a.launch_spec_accepted_operation,\n             a.launch_spec_xmin AS adv_session_xmin\n        FROM (\n          SELECT control_state, control_generation, workspace_"
+            },
+            {
+              "pid": 345355,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:36.986637-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "listen \"sync_invalidate\""
+            },
+            {
+              "pid": 345356,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.9318-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 345567,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:37.869667-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "\n        SELECT max(\"id\") AS m FROM harness_shared.\"agent_usage_samples\""
+            },
+            {
+              "pid": 346062,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:37.822367-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 346159,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.880073-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 346162,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.779189-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 346163,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.921144-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 346305,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.945057-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "SELECT pid FROM pg_stat_activity WHERE pid = $1\n        AND backend_start::text = $2 AND query_start::text = $3\n        AND state = 'active'"
+            },
+            {
+              "pid": 346307,
+              "state": "idle in transaction",
+              "xactStart": "2026-10-16 22:48:38.812682-04",
+              "queryStart": "2026-10-16 22:48:38.813723-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "SELECT pg_backend_pid() AS pid"
+            }
+          ],
+          "locks": [
+            {
+              "pid": 346307,
+              "mode": "AccessExclusiveLock",
+              "granted": true
+            }
+          ],
+          "queryReleasedAtMs": 118827.310606,
+          "wait": {
+            "pid": 345351,
+            "backendStart": "2026-10-16 22:48:36.938707-04",
+            "queryStart": "2026-10-16 22:48:38.833323-04",
+            "state": "active",
+            "waitEventType": "Lock",
+            "blockingPids": [
+              346307
+            ]
+          }
+        },
+        "afterRollback": {
+          "stage": "post-rollback",
+          "observedAtMs": 118834.430382,
+          "activity": [
+            {
+              "pid": 345348,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.924978-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 345351,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.933865-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "rollback"
+            },
+            {
+              "pid": 345354,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.82906-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "\n      /* papercusp:controlAnchorSql/v1 */\n      SELECT pg_backend_pid() AS backend_pid, statement_timestamp() AS query_start,\n             b.control_state, b.control_generation, COALESCE(b.workspace_id, a.workspace_id) AS workspace_id,\n             a.id AS adv_session_id, a.launch_header_known,\n             a.launch_spec_type, a.launch_spec_workspace_id, a.launch_spec_harness_slug,\n             a.launch_spec_has_accepted_operation, a.launch_spec_accepted_operation,\n             a.launch_spec_xmin AS adv_session_xmin\n        FROM (\n          SELECT control_state, control_generation, workspace_"
+            },
+            {
+              "pid": 345355,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:36.986637-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "listen \"sync_invalidate\""
+            },
+            {
+              "pid": 345356,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.9318-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 345567,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:37.869667-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "\n        SELECT max(\"id\") AS m FROM harness_shared.\"agent_usage_samples\""
+            },
+            {
+              "pid": 346062,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:37.822367-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 346159,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.880073-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 346162,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.779189-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 346163,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.921144-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 346305,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.949426-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "SELECT pid, mode, granted FROM pg_locks\n      WHERE relation = 'harness_shared.carry_notes'::regclass ORDER BY pid, mode LIMIT 64"
+            },
+            {
+              "pid": 346307,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:38.950445-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "ROLLBACK"
+            }
+          ],
+          "locks": [],
+          "holderPid": 346307
+        },
+        "recovered": {
+          "status": 200,
+          "result": {
+            "ok": true,
+            "results": [
+              {
+                "ok": true,
+                "id": "WI-1",
+                "__checksOnly": true,
+                "checkpointChecks": {
+                  "count": 0,
+                  "cap": 12,
+                  "remaining": 12,
+                  "rows": []
+                },
+                "checkpointBody": {
+                  "chars": 62,
+                  "cap": 32000,
+                  "remaining": 31938
+                },
+                "checkpointAgeMs": 358,
+                "checkpointUpdatedAtMs": 1792205318630,
+                "checkpointContentHash": "9fe77f0025e6",
+                "checkpointSubjectFingerprint": {
+                  "status": "unknown",
+                  "current": {
+                    "version": 1,
+                    "sha256": "2d731103218723649a9a7ea03fdb14bed113caa66bce008e4ae8bbb634dea2fc"
+                  }
+                }
+              }
+            ],
+            "counts": {
+              "ok": 1,
+              "failed": 0
+            },
+            "read": {
+              "schemaVersion": "work-items-get-read-v1",
+              "mode": "complete",
+              "requested": 1,
+              "available": 0,
+              "absent": 0,
+              "unavailable": 0,
+              "receiptComplete": true,
+              "budgetMs": 30000,
+              "elapsedMs": 14,
+              "baseReadMaxMs": 1,
+              "enrichmentMaxMs": 13,
+              "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+            },
+            "receipt": [
+              {
+                "id": "WI-1",
+                "delivered": true
+              }
+            ],
+            "__checksOnly": true
+          }
+        },
+        "exactReadback": true,
+        "remainingWaits": [],
+        "healthBefore": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "86bc183d2b",
+          "version": "0.0.1",
+          "claimSpec": {
+            "specVersion": "1.0",
+            "revisionAdoption": [
+              "first"
+            ]
+          },
+          "ts": "2026-10-17T02:48:38.040Z"
+        },
+        "healthAfter": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "86bc183d2b",
+          "version": "0.0.1",
+          "claimSpec": {
+            "specVersion": "1.0",
+            "revisionAdoption": [
+              "first"
+            ]
+          },
+          "ts": "2026-10-17T02:48:39.265Z"
+        }
+      },
+      "queryReleaseAfterDispositionMs": 5.119330000001355,
+      "differencesFromRedRecordedSources": [
+        {
+          "path": "packages/operator-core/lib/agent-tools/work_items/get.ts",
+          "preFix": "2ee16d4f2d06fa9920e62bf3a22941f9283e2b4c1d34b9088587faa5afefc53d",
+          "postFix": "5f91fad769e18997266ed6afe3ef618be290867518f5b9c17ab0ca2fa8287dd3"
+        },
+        {
+          "path": "packages/operator-core/lib/work-item-checkpoint.ts",
+          "preFix": "0db6153cdd1142b467e940c003ea52c72a2714da6d3dcd04c5c05acf920e8e1a",
+          "postFix": "b4c3714645a473e20f9375a82996615fbb04dc8c4c7fab7fbd7ed6c784bdafe1"
+        }
+      ]
+    },
+    {
+      "case": "deadline",
+      "runId": "20261017T024603Z-240205",
+      "testPath": "packages/operator-core/lib/agent-tools/plans/private-read-deadline-http.integration.test.ts",
+      "sourceCommit": "86bc183d2bb47dc22b37a2ba527f218c09a91896",
+      "runGroupId": "1d0d35c2-a7b6-4d84-8bc7-02ed25c346b4",
+      "resultPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T024603Z-240205/result.json",
+      "sourcePath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T024603Z-240205/phases/prepare/source.json",
+      "observationPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T024603Z-240205/phases/execute/read-deadline-observation.json",
+      "diagnosticsPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T024603Z-240205/phases/execute/read-deadline-pg.ndjson",
+      "lifecyclePath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T024603Z-240205/phases/execute/lifecycle.json",
+      "sourceFiles": [
+        {
+          "path": "apps/operator/bin/hono-host.ts",
+          "sha256": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580",
+          "gitSha256": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580"
+        },
+        {
+          "path": "apps/operator/bin/host-handler.ts",
+          "sha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0",
+          "gitSha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plans/private-read-deadline-http.integration.test.ts",
+          "sha256": "a767004e3d1782e3ac19710ea60609e27c9fbdbdc61b371ef8c407ef878e480d",
+          "gitSha256": "a767004e3d1782e3ac19710ea60609e27c9fbdbdc61b371ef8c407ef878e480d"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/work_items/get.ts",
+          "sha256": "5f91fad769e18997266ed6afe3ef618be290867518f5b9c17ab0ca2fa8287dd3",
+          "gitSha256": "2ee16d4f2d06fa9920e62bf3a22941f9283e2b4c1d34b9088587faa5afefc53d"
+        },
+        {
+          "path": "packages/operator-core/lib/carry-note.ts",
+          "sha256": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72",
+          "gitSha256": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72"
+        },
+        {
+          "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts",
+          "sha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4",
+          "gitSha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4"
+        },
+        {
+          "path": "packages/operator-core/lib/pg-read-query.ts",
+          "sha256": "9f3150caaac9a47bd86dc42e81635700ac0f0d457565e920320c748940aa8c54",
+          "gitSha256": "9f3150caaac9a47bd86dc42e81635700ac0f0d457565e920320c748940aa8c54"
+        },
+        {
+          "path": "packages/operator-core/lib/work-item-checkpoint.ts",
+          "sha256": "b4c3714645a473e20f9375a82996615fbb04dc8c4c7fab7fbd7ed6c784bdafe1",
+          "gitSha256": "0db6153cdd1142b467e940c003ea52c72a2714da6d3dcd04c5c05acf920e8e1a"
+        },
+        {
+          "path": "packages/operator-core/lib/work-items.ts",
+          "sha256": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d",
+          "gitSha256": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d"
+        },
+        {
+          "path": "packages/operator-core/test/isolated-integration-proof.ts",
+          "sha256": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d",
+          "gitSha256": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d"
+        },
+        {
+          "path": "packages/operator-core/test/private-http-workspace-preflight.ts",
+          "sha256": "1ad346261702d8b1620cd7482f9fa3131f43d4558a7218029bcc104159f25ff3",
+          "gitSha256": "1ad346261702d8b1620cd7482f9fa3131f43d4558a7218029bcc104159f25ff3"
+        },
+        {
+          "path": "packages/operator-core/test/private-read-deadline-http-scenario.ts",
+          "sha256": "e7f96e54982f34c3897ae57dfc0d3ff9a9376a73eb3cef205ca1a217268146e1",
+          "gitSha256": "e7f96e54982f34c3897ae57dfc0d3ff9a9376a73eb3cef205ca1a217268146e1"
+        },
+        {
+          "path": "packages/operator-core/test/staging-first-http-fixture.ts",
+          "sha256": "b3b8b61b478024c8435b42aadc7b3adb30eac7e38df8b978fb21fd0850595455",
+          "gitSha256": "b3b8b61b478024c8435b42aadc7b3adb30eac7e38df8b978fb21fd0850595455"
+        },
+        {
+          "path": "scripts/lib/isolated-runtime-start.mjs",
+          "sha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d",
+          "gitSha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d"
+        },
+        {
+          "path": "scripts/with-test-pg.mjs",
+          "sha256": "50e73fa41c584d233c856297406bc897cef88ab9b83dbf4489fc617f6d0a7fbc",
+          "gitSha256": "50e73fa41c584d233c856297406bc897cef88ab9b83dbf4489fc617f6d0a7fbc"
+        },
+        {
+          "path": "scripts/lib/with-test-pg-cleanup.mjs",
+          "sha256": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61",
+          "gitSha256": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61"
+        }
+      ],
+      "currentInputHashMismatches": [],
+      "phases": [
+        {
+          "phase": "prepare",
+          "status": "passed",
+          "elapsedMs": 13170
+        },
+        {
+          "phase": "execute",
+          "status": "passed",
+          "elapsedMs": 178678
+        },
+        {
+          "phase": "teardown",
+          "status": "passed",
+          "elapsedMs": 2
+        }
+      ],
+      "lifecycleEnded": {
+        "kind": "isolated-runtime-end",
+        "childPid": 265598,
+        "exitCode": 0,
+        "signal": null,
+        "runtimeRemoved": true,
+        "pgDataRemoved": true,
+        "observedAt": "2026-10-17T02:49:14.694Z"
+      },
+      "measurement": {
+        "workspace": "test-runtime-384bd3e4-31e",
+        "harness": "test-runtime-384bd3e4-31e-guard",
+        "itemId": "WI-1",
+        "checkpoint": "private read deadline 0f41264c-65e4-4e3e-a734-ae5647b36e59",
+        "expectedSha": "86bc183d2b",
+        "healthBefore": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "86bc183d2b",
+          "version": "0.0.1",
+          "claimSpec": {
+            "specVersion": "1.0",
+            "revisionAdoption": [
+              "first"
+            ]
+          },
+          "ts": "2026-10-17T02:48:38.050Z"
+        },
+        "healthAfter": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "86bc183d2b",
+          "version": "0.0.1",
+          "claimSpec": {
+            "specVersion": "1.0",
+            "revisionAdoption": [
+              "first"
+            ]
+          },
+          "ts": "2026-10-17T02:49:09.141Z"
+        },
+        "holderPid": 346309,
+        "wait": {
+          "pid": 345318,
+          "backendStart": "2026-10-16 22:48:36.902115-04",
+          "queryStart": "2026-10-16 22:48:38.817524-04",
+          "state": "active",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            346309
+          ],
+          "observedAtMs": 118726.969553
+        },
+        "timed": {
+          "index": 1,
+          "startedAtMs": 118691.382794,
+          "completedAtMs": 148714.880503,
+          "status": 200,
+          "envelope": {
+            "ok": true,
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "{\"ok\":false,\"results\":[{\"ok\":false,\"id\":\"WI-1\",\"availability\":\"unavailable\",\"error\":\"timeout\",\"retryable\":true,\"phase\":\"read\",\"budgetMs\":30000,\"message\":\"work_items:get exceeded its 30000ms internal read budget and returned a retryable unavailable result instead of waiting for the MCP request deadline. The item was not reported as not-found; retry now.\"}],\"counts\":{\"ok\":0,\"failed\":1},\"read\":{\"schemaVersion\":\"work-items-get-read-v1\",\"mode\":\"complete\",\"requested\":1,\"available\":0,\"absent\":0,\"unavailable\":1,\"receiptComplete\":true,\"budgetMs\":30000,\"elapsedMs\":30001,\"baseReadMaxMs\":0,\"baseReadDiagnostics\":[{\"id\":\"WI-1\",\"status\":\"fulfilled\",\"elapsedMs\":0}],\"enrichmentMaxMs\":30001,\"enrichmentDiagnostics\":[{\"id\":\"WI-1\",\"stage\":\"checkpoint\",\"status\":\"pending\",\"elapsedMs\":30001}],\"outerStageAttribution\":\"tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time\"},\"receipt\":[{\"id\":\"WI-1\",\"delivered\":true}],\"__checksOnly\":true}"
+                },
+                {
+                  "type": "text",
+                  "text": "See also: work_items:observe (claimability of these ids without taking them); work_items:comment (post an update on one); work_items:link (record a dependency between two)"
+                }
+              ],
+              "_meta": {
+                "format": "json",
+                "_seeAlso": [
+                  {
+                    "tool": "work_items:observe (claimability of these ids without taking them)"
+                  },
+                  {
+                    "tool": "work_items:comment (post an update on one)"
+                  },
+                  {
+                    "tool": "work_items:link (record a dependency between two)"
+                  }
+                ]
+              }
+            }
+          },
+          "result": {
+            "ok": false,
+            "results": [
+              {
+                "ok": false,
+                "id": "WI-1",
+                "availability": "unavailable",
+                "error": "timeout",
+                "retryable": true,
+                "phase": "read",
+                "budgetMs": 30000,
+                "message": "work_items:get exceeded its 30000ms internal read budget and returned a retryable unavailable result instead of waiting for the MCP request deadline. The item was not reported as not-found; retry now."
+              }
+            ],
+            "counts": {
+              "ok": 0,
+              "failed": 1
+            },
+            "read": {
+              "schemaVersion": "work-items-get-read-v1",
+              "mode": "complete",
+              "requested": 1,
+              "available": 0,
+              "absent": 0,
+              "unavailable": 1,
+              "receiptComplete": true,
+              "budgetMs": 30000,
+              "elapsedMs": 30001,
+              "baseReadMaxMs": 0,
+              "baseReadDiagnostics": [
+                {
+                  "id": "WI-1",
+                  "status": "fulfilled",
+                  "elapsedMs": 0
+                }
+              ],
+              "enrichmentMaxMs": 30001,
+              "enrichmentDiagnostics": [
+                {
+                  "id": "WI-1",
+                  "stage": "checkpoint",
+                  "status": "pending",
+                  "elapsedMs": 30001
+                }
+              ],
+              "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+            },
+            "receipt": [
+              {
+                "id": "WI-1",
+                "delivered": true
+              }
+            ],
+            "__checksOnly": true
+          }
+        },
+        "stillWaiting": [],
+        "afterRollback": {
+          "stage": "post-rollback",
+          "observedAtMs": 148723.554957,
+          "activity": [
+            {
+              "pid": 345315,
+              "state": "active",
+              "xactStart": "2026-10-16 22:49:08.827946-04",
+              "queryStart": "2026-10-16 22:49:08.831432-04",
+              "waitEventType": null,
+              "waitEvent": null,
+              "blockingPids": [],
+              "query": "SELECT a.pid,\n                    EXTRACT(EPOCH FROM (now() - a.xact_start))::int AS age_s,\n                    left(regexp_replace(a.query, '\\s+', ' ', 'g'), 160) AS q,\n                    cardinality(pg_blocking_pids(a.pid)) = 0 AS unblocked\n               FROM pg_stat_activity a\n              WHERE a.datname = current_database()\n                AND a.state <> 'idle' AND a.pid <> pg_backend_pid()\n                AND (a.wait_event_type = 'Lock' OR EXISTS (\n                      SELECT 1 FROM pg_stat_activity b\n                       WHERE b.datname = current_database()\n                       "
+            },
+            {
+              "pid": 345317,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:49:08.832442-04",
+              "waitEventType": "Client",
+              "waitEvent": "ClientRead",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 345318,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:49:08.825807-04",
+              "waitEventType": "Client",
+              "waitEvent": "ClientRead",
+              "blockingPids": [],
+              "query": "rollback"
+            },
+            {
+              "pid": 345319,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:36.935284-04",
+              "waitEventType": "Client",
+              "waitEvent": "ClientRead",
+              "blockingPids": [],
+              "query": "listen \"sync_invalidate\""
+            },
+            {
+              "pid": 345320,
+              "state": "active",
+              "xactStart": "2026-10-16 22:49:08.830646-04",
+              "queryStart": "2026-10-16 22:49:08.832791-04",
+              "waitEventType": null,
+              "waitEvent": null,
+              "blockingPids": [],
+              "query": "WITH caller AS (\n  SELECT $1::text AS workspace_id, $25::text AS coord_owner_id\n), resolved AS (\n  SELECT c.*,\n    (SELECT m.subject\n       FROM harness_shared.agent_modes m\n      WHERE m.workspace_id = c.workspace_id\n        AND m.owner_id = c.coord_owner_id\n        AND m.mode = 'goal' AND m.subject IS NOT NULL\n      ORDER BY m.goal_lease_epoch DESC NULLS LAST, m.set_at DESC, m.owner_id DESC\n      LIMIT 1) AS mode_goal_id,\n    (SELECT b.goal_id\n       FROM harness_shared.session_briefs b\n      WHERE b.workspace_id = c.workspace_id\n        AND b.owner_id = c.coord_owner_id\n        AND b.goal_i"
+            },
+            {
+              "pid": 345532,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:49:01.786137-04",
+              "waitEventType": "Client",
+              "waitEvent": "ClientRead",
+              "blockingPids": [],
+              "query": "\n        SELECT max(\"id\") AS m FROM harness_shared.\"agent_usage_samples\""
+            },
+            {
+              "pid": 346045,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:49:08.809436-04",
+              "waitEventType": "Client",
+              "waitEvent": "ClientRead",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 346127,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:49:08.821369-04",
+              "waitEventType": "Client",
+              "waitEvent": "ClientRead",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 346309,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:49:08.833297-04",
+              "waitEventType": "Client",
+              "waitEvent": "ClientRead",
+              "blockingPids": [],
+              "query": "ROLLBACK"
+            },
+            {
+              "pid": 346313,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:49:08.832124-04",
+              "waitEventType": "Client",
+              "waitEvent": "ClientRead",
+              "blockingPids": [],
+              "query": "\n      SELECT pid, mode, granted FROM pg_locks\n       WHERE relation = 'harness_shared.carry_notes'::regclass ORDER BY pid, mode LIMIT 64"
+            },
+            {
+              "pid": 347470,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:49:08.825705-04",
+              "waitEventType": "Client",
+              "waitEvent": "ClientRead",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 360409,
+              "state": "active",
+              "xactStart": "2026-10-16 22:49:08.831508-04",
+              "queryStart": "2026-10-16 22:49:08.834499-04",
+              "waitEventType": null,
+              "waitEvent": null,
+              "blockingPids": [],
+              "query": "\n      SELECT value\n        FROM harness_shared.operator_settings\n       WHERE key = $1\n       LIMIT 1"
+            },
+            {
+              "pid": 360412,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:49:08.806883-04",
+              "waitEventType": "Client",
+              "waitEvent": "ClientRead",
+              "blockingPids": [],
+              "query": "commit"
+            }
+          ],
+          "locks": [],
+          "holderPid": 346309
+        },
+        "recovered": {
+          "index": 2,
+          "startedAtMs": 148724.353356,
+          "completedAtMs": 148759.830626,
+          "status": 200,
+          "envelope": {
+            "ok": true,
+            "result": {
+              "content": [
+                {
+                  "type": "text",
+                  "text": "{\"ok\":true,\"results\":[{\"ok\":true,\"id\":\"WI-1\",\"__checksOnly\":true,\"checkpointChecks\":{\"count\":0,\"cap\":12,\"remaining\":12,\"rows\":[]},\"checkpointBody\":{\"chars\":58,\"cap\":32000,\"remaining\":31942},\"checkpointAgeMs\":30226,\"checkpointUpdatedAtMs\":1792205318641,\"checkpointContentHash\":\"b8f89df510d5\",\"checkpointSubjectFingerprint\":{\"status\":\"unknown\",\"current\":{\"version\":1,\"sha256\":\"c3ec55589a7a89fa54338bf1548ba8cb7d579bdae343329b47689e1223decf2f\"}}}],\"counts\":{\"ok\":1,\"failed\":0},\"read\":{\"schemaVersion\":\"work-items-get-read-v1\",\"mode\":\"complete\",\"requested\":1,\"available\":0,\"absent\":0,\"unavailable\":0,\"receiptComplete\":true,\"budgetMs\":30000,\"elapsedMs\":6,\"baseReadMaxMs\":1,\"enrichmentMaxMs\":5,\"outerStageAttribution\":\"tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time\"},\"receipt\":[{\"id\":\"WI-1\",\"delivered\":true}],\"__checksOnly\":true}"
+                },
+                {
+                  "type": "text",
+                  "text": "See also: work_items:observe (claimability of these ids without taking them); work_items:comment (post an update on one); work_items:link (record a dependency between two)"
+                }
+              ],
+              "_meta": {
+                "format": "json",
+                "_seeAlso": [
+                  {
+                    "tool": "work_items:observe (claimability of these ids without taking them)"
+                  },
+                  {
+                    "tool": "work_items:comment (post an update on one)"
+                  },
+                  {
+                    "tool": "work_items:link (record a dependency between two)"
+                  }
+                ]
+              }
+            }
+          },
+          "result": {
+            "ok": true,
+            "results": [
+              {
+                "ok": true,
+                "id": "WI-1",
+                "__checksOnly": true,
+                "checkpointChecks": {
+                  "count": 0,
+                  "cap": 12,
+                  "remaining": 12,
+                  "rows": []
+                },
+                "checkpointBody": {
+                  "chars": 58,
+                  "cap": 32000,
+                  "remaining": 31942
+                },
+                "checkpointAgeMs": 30226,
+                "checkpointUpdatedAtMs": 1792205318641,
+                "checkpointContentHash": "b8f89df510d5",
+                "checkpointSubjectFingerprint": {
+                  "status": "unknown",
+                  "current": {
+                    "version": 1,
+                    "sha256": "c3ec55589a7a89fa54338bf1548ba8cb7d579bdae343329b47689e1223decf2f"
+                  }
+                }
+              }
+            ],
+            "counts": {
+              "ok": 1,
+              "failed": 0
+            },
+            "read": {
+              "schemaVersion": "work-items-get-read-v1",
+              "mode": "complete",
+              "requested": 1,
+              "available": 0,
+              "absent": 0,
+              "unavailable": 0,
+              "receiptComplete": true,
+              "budgetMs": 30000,
+              "elapsedMs": 6,
+              "baseReadMaxMs": 1,
+              "enrichmentMaxMs": 5,
+              "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+            },
+            "receipt": [
+              {
+                "id": "WI-1",
+                "delivered": true
+              }
+            ],
+            "__checksOnly": true
+          }
+        },
+        "exactReadback": true,
+        "remainingWaits": []
+      }
+    },
+    {
+      "case": "pg-error",
+      "runId": "20261017T024606Z-240189",
+      "testPath": "packages/operator-core/lib/agent-tools/plans/private-read-pg-error-http.integration.test.ts",
+      "sourceCommit": "86bc183d2bb47dc22b37a2ba527f218c09a91896",
+      "runGroupId": "1d0d35c2-a7b6-4d84-8bc7-02ed25c346b4",
+      "resultPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T024606Z-240189/result.json",
+      "sourcePath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T024606Z-240189/phases/prepare/source.json",
+      "observationPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T024606Z-240189/phases/execute/read-pg-error-observation.json",
+      "diagnosticsPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T024606Z-240189/phases/execute/read-pg-error-pg.ndjson",
+      "lifecyclePath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T024606Z-240189/phases/execute/lifecycle.json",
+      "sourceFiles": [
+        {
+          "path": "apps/operator/bin/hono-host.ts",
+          "sha256": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580",
+          "gitSha256": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580"
+        },
+        {
+          "path": "apps/operator/bin/host-handler.ts",
+          "sha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0",
+          "gitSha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/plans/private-read-pg-error-http.integration.test.ts",
+          "sha256": "922571c7b8e694e8c25e647adbe4f2e2508a6401d1d77939d81357f9b7e9c237",
+          "gitSha256": "922571c7b8e694e8c25e647adbe4f2e2508a6401d1d77939d81357f9b7e9c237"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/work_items/get.ts",
+          "sha256": "5f91fad769e18997266ed6afe3ef618be290867518f5b9c17ab0ca2fa8287dd3",
+          "gitSha256": "2ee16d4f2d06fa9920e62bf3a22941f9283e2b4c1d34b9088587faa5afefc53d"
+        },
+        {
+          "path": "packages/operator-core/lib/carry-note.ts",
+          "sha256": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72",
+          "gitSha256": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72"
+        },
+        {
+          "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts",
+          "sha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4",
+          "gitSha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4"
+        },
+        {
+          "path": "packages/operator-core/lib/pg-read-query.ts",
+          "sha256": "9f3150caaac9a47bd86dc42e81635700ac0f0d457565e920320c748940aa8c54",
+          "gitSha256": "9f3150caaac9a47bd86dc42e81635700ac0f0d457565e920320c748940aa8c54"
+        },
+        {
+          "path": "packages/operator-core/lib/work-item-checkpoint.ts",
+          "sha256": "b4c3714645a473e20f9375a82996615fbb04dc8c4c7fab7fbd7ed6c784bdafe1",
+          "gitSha256": "0db6153cdd1142b467e940c003ea52c72a2714da6d3dcd04c5c05acf920e8e1a"
+        },
+        {
+          "path": "packages/operator-core/lib/work-items.ts",
+          "sha256": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d",
+          "gitSha256": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d"
+        },
+        {
+          "path": "packages/operator-core/test/isolated-integration-proof.ts",
+          "sha256": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d",
+          "gitSha256": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d"
+        },
+        {
+          "path": "packages/operator-core/test/private-http-workspace-preflight.ts",
+          "sha256": "1ad346261702d8b1620cd7482f9fa3131f43d4558a7218029bcc104159f25ff3",
+          "gitSha256": "1ad346261702d8b1620cd7482f9fa3131f43d4558a7218029bcc104159f25ff3"
+        },
+        {
+          "path": "packages/operator-core/test/private-read-pg-error-http-scenario.ts",
+          "sha256": "a05a06e9474a3832479e9c18903ca7d8a80b6b1700f7e7fcd1e83912c17d8c0f",
+          "gitSha256": "a05a06e9474a3832479e9c18903ca7d8a80b6b1700f7e7fcd1e83912c17d8c0f"
+        },
+        {
+          "path": "packages/operator-core/test/staging-first-http-fixture.ts",
+          "sha256": "b3b8b61b478024c8435b42aadc7b3adb30eac7e38df8b978fb21fd0850595455",
+          "gitSha256": "b3b8b61b478024c8435b42aadc7b3adb30eac7e38df8b978fb21fd0850595455"
+        },
+        {
+          "path": "scripts/lib/isolated-runtime-start.mjs",
+          "sha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d",
+          "gitSha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d"
+        },
+        {
+          "path": "scripts/with-test-pg.mjs",
+          "sha256": "50e73fa41c584d233c856297406bc897cef88ab9b83dbf4489fc617f6d0a7fbc",
+          "gitSha256": "50e73fa41c584d233c856297406bc897cef88ab9b83dbf4489fc617f6d0a7fbc"
+        },
+        {
+          "path": "scripts/lib/with-test-pg-cleanup.mjs",
+          "sha256": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61",
+          "gitSha256": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61"
+        }
+      ],
+      "currentInputHashMismatches": [],
+      "phases": [
+        {
+          "phase": "prepare",
+          "status": "passed",
+          "elapsedMs": 16218
+        },
+        {
+          "phase": "execute",
+          "status": "passed",
+          "elapsedMs": 160618
+        },
+        {
+          "phase": "teardown",
+          "status": "passed",
+          "elapsedMs": 1
+        }
+      ],
+      "lifecycleEnded": {
+        "kind": "isolated-runtime-end",
+        "childPid": 270986,
+        "exitCode": 0,
+        "signal": null,
+        "runtimeRemoved": true,
+        "pgDataRemoved": true,
+        "observedAt": "2026-10-17T02:49:03.410Z"
+      },
+      "measurement": {
+        "workspace": "test-runtime-84b32423-34e",
+        "harness": "test-runtime-84b32423-34e-guard",
+        "itemId": "WI-1",
+        "expectedSha": "86bc183d2b",
+        "cluster": {
+          "directory": "/tmp/pcv/papercusp-test-pg-BwdnMM",
+          "port": 34839,
+          "database": "papercusp"
+        },
+        "holderPid": 361246,
+        "wait": {
+          "pid": 357448,
+          "backendStart": "2026-10-16 22:48:49.047887-04",
+          "queryStart": "2026-10-16 22:48:54.661316-04",
+          "state": "active",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            361246
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        },
+        "cancelledAtMs": 127300.469141,
+        "cancellation": [
+          {
+            "pid": 357448,
+            "cancelled": true
+          }
+        ],
+        "failed": {
+          "status": 200,
+          "result": {
+            "ok": true,
+            "results": [
+              {
+                "ok": true,
+                "id": "WI-1",
+                "__checksOnly": true,
+                "checkpointChecks": null,
+                "checkpointBody": null,
+                "checkpointAgeMs": null,
+                "checkpointUpdatedAtMs": null,
+                "checkpointContentHash": null,
+                "checkpointSubjectFingerprint": {
+                  "status": "unknown",
+                  "current": {
+                    "version": 1,
+                    "sha256": "43de1edebbde79f8f6b904ec73ae8f7a10f18c0e8366f4309787b3ed9a1f588a"
+                  }
+                },
+                "checkpointReadFailed": true
+              }
+            ],
+            "counts": {
+              "ok": 1,
+              "failed": 0
+            },
+            "read": {
+              "schemaVersion": "work-items-get-read-v1",
+              "mode": "complete",
+              "requested": 1,
+              "available": 0,
+              "absent": 0,
+              "unavailable": 0,
+              "receiptComplete": true,
+              "budgetMs": 30000,
+              "elapsedMs": 49,
+              "baseReadMaxMs": 0,
+              "enrichmentMaxMs": 48,
+              "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+            },
+            "receipt": [
+              {
+                "id": "WI-1",
+                "delivered": true
+              }
+            ],
+            "__checksOnly": true
+          },
+          "startedAtMs": 127259.401264,
+          "completedAtMs": 127331.96792
+        },
+        "afterRollback": {
+          "stage": "post-rollback",
+          "observedAtMs": 127344.268505,
+          "activity": [
+            {
+              "pid": 354843,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:49.713403-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 354844,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:49.69744-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "\n        SELECT receipt_id,\n               record->'lease'->>'leaseId' AS lease_id,\n               lease_owner AS owner\n          FROM harness_shared.resource_governor_admissions\n         WHERE workspace_id = $1\n           AND namespace = $2\n           AND state IN ('leased', 'running')\n           AND btrim(COALESCE(record->'lease'->>'leaseId', '')) <> ''\n           AND lease_owner IS NOT NULL\n         ORDER BY receipt_id ASC"
+            },
+            {
+              "pid": 354845,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:49.708069-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 357448,
+              "state": "active",
+              "xactStart": "2026-10-16 22:48:54.719186-04",
+              "queryStart": "2026-10-16 22:48:54.725288-04",
+              "waitEventType": null,
+              "blockingPids": [],
+              "query": "WITH caller AS (\n  SELECT $1::text AS workspace_id, $25::text AS coord_owner_id\n), resolved AS (\n  SELECT c.*,\n    (SELECT m.subject\n       FROM harness_shared.agent_modes m\n      WHERE m.workspace_id = c.workspace_id\n        AND m.owner_id = c.coord_owner_id\n        AND m.mode = 'goal' AND m.subject IS NOT NULL\n      ORDER BY m.goal_lease_epoch DESC NULLS LAST, m.set_at DESC, m.owner_id DESC\n      LIMIT 1) AS mode_goal_id,\n    (SELECT b.goal_id\n       FROM harness_shared.session_briefs b\n      WHERE b.workspace_id = c.workspace_id\n        AND b.owner_id = c.coord_owner_id\n        AND b.goal_i"
+            },
+            {
+              "pid": 357454,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:54.698174-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "\n    SELECT mode, enabled, ingress_port AS \"ingressPort\", operator_port AS \"operatorPort\", hostname,\n           cf_account_id AS \"cfAccountId\", cf_zone_id AS \"cfZoneId\", cf_zone_name AS \"cfZoneName\",\n           cf_tunnel_id AS \"cfTunnelId\", cf_tunnel_name AS \"cfTunnelName\", cf_dns_record_id AS \"cfDnsRecordId\",\n           last_error AS \"lastError\", last_error_at AS \"lastErrorAt\", updated_at AS \"updatedAt\"\n      FROM harness_shared.remote_access_own_tunnel\n     WHERE singleton"
+            },
+            {
+              "pid": 357456,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:54.71536-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 357458,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:54.706037-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 357460,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:49.070981-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "listen \"sync_invalidate\""
+            },
+            {
+              "pid": 357682,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:49.677103-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "\n        SELECT max(\"id\") AS m FROM harness_shared.\"agent_usage_samples\""
+            },
+            {
+              "pid": 358230,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:54.709759-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 358231,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:54.716501-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 358233,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:54.641254-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "commit"
+            },
+            {
+              "pid": 361246,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:54.724531-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "ROLLBACK"
+            },
+            {
+              "pid": 361929,
+              "state": "idle",
+              "xactStart": null,
+              "queryStart": "2026-10-16 22:48:54.723191-04",
+              "waitEventType": "Client",
+              "blockingPids": [],
+              "query": "SELECT pid, mode, granted FROM pg_locks\n      WHERE relation = 'harness_shared.carry_notes'::regclass ORDER BY pid, mode LIMIT 64"
+            }
+          ],
+          "locks": [],
+          "holderPid": 361246
+        },
+        "recovered": {
+          "status": 200,
+          "result": {
+            "ok": true,
+            "results": [
+              {
+                "ok": true,
+                "id": "WI-1",
+                "__checksOnly": true,
+                "checkpointChecks": {
+                  "count": 0,
+                  "cap": 12,
+                  "remaining": 12,
+                  "rows": []
+                },
+                "checkpointBody": {
+                  "chars": 58,
+                  "cap": 32000,
+                  "remaining": 31942
+                },
+                "checkpointAgeMs": 256,
+                "checkpointUpdatedAtMs": 1792205334488,
+                "checkpointContentHash": "ae4fbf13c4b6",
+                "checkpointSubjectFingerprint": {
+                  "status": "unknown",
+                  "current": {
+                    "version": 1,
+                    "sha256": "43de1edebbde79f8f6b904ec73ae8f7a10f18c0e8366f4309787b3ed9a1f588a"
+                  }
+                }
+              }
+            ],
+            "counts": {
+              "ok": 1,
+              "failed": 0
+            },
+            "read": {
+              "schemaVersion": "work-items-get-read-v1",
+              "mode": "complete",
+              "requested": 1,
+              "available": 0,
+              "absent": 0,
+              "unavailable": 0,
+              "receiptComplete": true,
+              "budgetMs": 30000,
+              "elapsedMs": 4,
+              "baseReadMaxMs": 0,
+              "enrichmentMaxMs": 4,
+              "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+            },
+            "receipt": [
+              {
+                "id": "WI-1",
+                "delivered": true
+              }
+            ],
+            "__checksOnly": true
+          },
+          "startedAtMs": 127344.908038,
+          "completedAtMs": 127366.66254
+        },
+        "exactReadback": true,
+        "remainingWaits": [],
+        "healthBefore": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "86bc183d2b",
+          "version": "0.0.1",
+          "claimSpec": {
+            "specVersion": "1.0",
+            "revisionAdoption": [
+              "first"
+            ]
+          },
+          "ts": "2026-10-17T02:48:49.970Z"
+        },
+        "healthAfter": {
+          "ok": true,
+          "service": "papercusp-operator",
+          "sha": "86bc183d2b",
+          "version": "0.0.1",
+          "claimSpec": {
+            "specVersion": "1.0",
+            "revisionAdoption": [
+              "first"
+            ]
+          },
+          "ts": "2026-10-17T02:48:55.015Z"
+        }
+      },
+      "actualSqlstateEvidence": {
+        "pid": 357448,
+        "sqlstate": "57014",
+        "pgError": "[with-test-pg] pg pg: 2026-10-16 22:48:54.687 EDT [357448] ERROR:  57014: canceling statement due to user request",
+        "cancellation": [
+          {
+            "pid": 357448,
+            "cancelled": true
+          }
+        ]
+      }
+    }
+  ],
+  "focusedUnitTests": {
+    "runId": "d2689498-71f1-400b-9db0-d91cc7c2b00f",
+    "testRunIds": [
+      21299031,
+      21299032
+    ],
+    "passed": 84,
+    "failed": 0,
+    "skipped": 0
+  },
+  "typecheck": {
+    "command": "npm run lint:tsc -- --files=packages/operator-core/lib/work-item-checkpoint.ts,packages/operator-core/lib/agent-tools/work_items/get.ts,packages/operator-core/test/private-read-cancellation-http-scenario.ts,packages/operator-core/lib/agent-tools/plans/private-read-cancellation-http.integration.test.ts",
+    "nativeExecSession": 71292,
+    "exitCode": 0,
+    "result": "LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean",
+    "stampHead": "86bc183d2b",
+    "scopeCaveat": "Named4files clean. Other files have existing errors including TS1xxx diagnostics; this is not a global typecheck or release-gate verdict."
+  },
+  "scope": "Private current-build fix and regression proof; not full live R003/R006, literal24h soak, customer acceptance or shipment. Historical direct-readback timeout6657 remains independently open.",
+  "inputStamp": {
+    "lastCheckedHead": "86bc183d2bb47dc22b37a2ba527f218c09a91896",
+    "currentInputHashesMatchedOriginalReceipts": true,
+    "uncommittedCoreSourcePaths": [
+      "packages/operator-core/lib/agent-tools/work_items/get.ts",
+      "packages/operator-core/lib/work-item-checkpoint.ts"
+    ],
+    "note": "Local current-build proof with exact content hashes; leave files for the automatic git-sync routine. This is not committed/deployed proof."
+  },
+  "testLedger": {
+    "source": "admin-ui",
+    "harness": "papercusp",
+    "workspace": "papercusp-workspace",
+    "runGroup": "1d0d35c2-a7b6-4d84-8bc7-02ed25c346b4",
+    "rows": [
+      {
+        "id": 21299563,
+        "case": "cancellation",
+        "status": "pass"
+      },
+      {
+        "id": 21299565,
+        "case": "deadline",
+        "status": "pass"
+      },
+      {
+        "id": 21299564,
+        "case": "pg-error",
+        "status": "pass"
+      }
+    ]
+  }
+}

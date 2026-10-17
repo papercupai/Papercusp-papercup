@@ -31,6 +31,7 @@ import { join } from 'node:path';
 import type { ActiveOperationAttestationContext, ActiveOperationModelPolicyRead } from '../blueprint/operation-worker-binding';
 import type { DirectOperationModelAttestation } from '../blueprint/operation-service';
 import { PassThrough, Readable } from 'node:stream';
+import { StringDecoder } from 'node:string_decoder';
 import { describeAdmissionCeiling } from './admission-ceiling';
 import { describeGatewayLiveAdmissionState } from './admission-state-model';
 import {
@@ -1934,6 +1935,11 @@ export interface GatewayStats {
    *  95% of its few attempts is the true dead proxy. Sort DESC by this to pick the Rayobyte proxy to fix/pull.
    *  Only accounts with ≥1 attempt appear. */
   egressFailRateByAccount: Record<string, number>;
+  /** Proxy-only transport counters. The broader egress counters also include direct routes, so watchdogs must
+   *  use these fields before calling a failure a DEAD-PROXY. Optional for deploy-skew readers of older gateways. */
+  egressProxyFailsByAccount?: Record<string, number>;
+  egressProxyAttemptsByAccount?: Record<string, number>;
+  egressProxyFailRateByAccount?: Record<string, number>;
   /** Count of in-process self-heal slot-reclaims (EI-2086) — how many times the release valve pre-empted
    *  a watchdog full-restart. A climbing value = the gateway is wedging but recovering itself instead of
    *  restarting; pair it with the watchdog's restart count to see the valve doing its job. */
@@ -3202,6 +3208,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // dead proxy — a low-traffic account failing 95% of its few attempts. Counts every attempt that reaches the
   // egress dial (post token-refresh), so a single bee request that failover-rotates increments once per account.
   const egressAttemptsByAccount = new Map<string, number>();
+  // Proxy-only counters mirror the broad counters above but exclude direct routes. The watchdog uses these
+  // counters for DEAD-PROXY attribution; direct transport failures remain visible in the broad counters and
+  // are classified separately by the watchdog.
+  const egressProxyFailsByAccount = new Map<string, number>();
+  const egressProxyAttemptsByAccount = new Map<string, number>();
   /** Per-account TRANSPORT pause the egress circuit set (= the resetAt handed to gov.penalize), so the
    *  half-open probe can lift exactly THAT pause on recovery without ever shortening a real 429 pause. */
   const egressPauseUntil = new Map<string, number>();
@@ -4636,6 +4647,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
   ): void {
     let buf = '';
     let done = false;
+    const decoder = new StringDecoder('utf8');
+    const decodeChunk = (chunk: Buffer | string): string => typeof chunk === 'string' ? chunk : decoder.write(chunk);
     // P-009: output tokens are only known at the END of a stream (the closing `message_delta` carries the
     // cumulative count), so after `message_start` a line-split watcher keeps reading — O(chunk) per chunk,
     // never buffering the body — and the LAST count seen is tallied once when the stream ends.
@@ -4643,7 +4656,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     let outputTokens: number | null = null;
     let settled = false;
     const onDelta = (chunk: Buffer | string) => {
-      const lines = (lineCarry + chunk.toString()).split('\n');
+      const lines = (lineCarry + decodeChunk(chunk)).split('\n');
       lineCarry = lines.pop() ?? '';
       // A giant unterminated line is a content delta, never the small message_delta event.
       if (lineCarry.length > 65_536) lineCarry = '';
@@ -4661,15 +4674,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (settled || !billedClass) return;
       settled = true;
       stream.off('data', onDelta);
+      lineCarry += decoder.end();
       if (lineCarry) onDelta('\n');
       if (outputTokens === null) return;
       const t = billingTally(accountId, billedClass);
       t.outputTokens += outputTokens;
       t.outputKnown++;
     };
-    const onData = (chunk: Buffer) => {
+    const onData = (chunk: Buffer | string) => {
       if (done) return;
-      buf += chunk.toString('utf8');
+      buf += decodeChunk(chunk);
       const m = buf.match(/^data: (\{"type":"message_start".*\})$/m);
       if (m) {
         done = true;
@@ -4785,9 +4799,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       done = true;
       detach();
     };
-    const onData = (chunk: Buffer) => {
+    stream.setEncoding('utf8');
+    const onData = (chunk: string) => {
       if (done) return;
-      carry += chunk.toString('utf8');
+      carry += chunk;
       const lines = carry.split(/\r?\n/);
       carry = lines.pop() ?? '';
       for (const line of lines) {
@@ -5014,6 +5029,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
         [...egressAttemptsByAccount].map(([id, attempts]) => [
           id,
           attempts > 0 ? Math.round(((egressFailsByAccount.get(id) ?? 0) / attempts) * 10_000) / 10_000 : 0,
+        ]),
+      ),
+      egressProxyFailsByAccount: Object.fromEntries(egressProxyFailsByAccount),
+      egressProxyAttemptsByAccount: Object.fromEntries(egressProxyAttemptsByAccount),
+      egressProxyFailRateByAccount: Object.fromEntries(
+        [...egressProxyAttemptsByAccount].map(([id, attempts]) => [
+          id,
+          attempts > 0 ? Math.round(((egressProxyFailsByAccount.get(id) ?? 0) / attempts) * 10_000) / 10_000 : 0,
         ]),
       ),
       maintenance: { requests: maintenanceRequests, errors: maintenanceErrors, carried: maintenanceCarried },
@@ -7068,6 +7091,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // Counted only once the token resolved — a token stall never reached
             // the proxy and must not count as an egress attempt.
             egressAttemptsByAccount.set(active.accountId, (egressAttemptsByAccount.get(active.accountId) ?? 0) + 1);
+            const routeEgress = context.route.value.egress.entry;
+            const proxyUrl = (routeEgress as AccountEgress | undefined)?.proxyUrl;
+            if (egressIsSupportedProxy(proxyUrl)) {
+              egressProxyAttemptsByAccount.set(active.accountId, (egressProxyAttemptsByAccount.get(active.accountId) ?? 0) + 1);
+            }
             return prepared;
           },
         };
@@ -7223,6 +7251,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
                   lastTransportHadProxy = hasEgressProxy;
                   if (!hasEgressProxy) return;
                   egressFailsByAccount.set(account.accountId, (egressFailsByAccount.get(account.accountId) ?? 0) + 1);
+                  egressProxyFailsByAccount.set(account.accountId, (egressProxyFailsByAccount.get(account.accountId) ?? 0) + 1);
                   // ESCALATING per-IP cooldown: a FIXED one re-admitted a
                   // permanently-dead egress on a constant cycle forever, so a
                   // hard-down host got no worse treatment than a one-off blip.
@@ -9051,9 +9080,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
           const parsed = parseCodexRateReset(headers);
           return { resetAt: parsed.resetAt, retryAfterMs: parsed.retryAfterMs, transient: parsed.transient };
         },
-        onEgressAttempt: (id) => egressAttemptsByAccount.set(id, (egressAttemptsByAccount.get(id) ?? 0) + 1),
-        onEgressFailure: (id, error) => {
+        onEgressAttempt: (id, egress) => {
+          egressAttemptsByAccount.set(id, (egressAttemptsByAccount.get(id) ?? 0) + 1);
+          const proxyUrl = (egress as AccountEgress | undefined)?.proxyUrl;
+          if (egressIsSupportedProxy(proxyUrl)) {
+            egressProxyAttemptsByAccount.set(id, (egressProxyAttemptsByAccount.get(id) ?? 0) + 1);
+          }
+        },
+        onEgressFailure: (id, error, egress) => {
           egressFailsByAccount.set(id, (egressFailsByAccount.get(id) ?? 0) + 1);
+          const proxyUrl = (egress as AccountEgress | undefined)?.proxyUrl;
+          if (egressIsSupportedProxy(proxyUrl)) {
+            egressProxyFailsByAccount.set(id, (egressProxyFailsByAccount.get(id) ?? 0) + 1);
+          }
           // WI-6554700010009426: an ADMITTED codex attempt that died on the wire (TTFB
           // deadline / connect / DNS / reset — downstream cancels and local terminal
           // decisions never reach this hook) is a measured upstream fault (D-005), the

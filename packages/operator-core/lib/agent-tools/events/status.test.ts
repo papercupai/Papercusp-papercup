@@ -10,6 +10,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { z } from 'zod';
 
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
@@ -915,24 +916,23 @@ describe('events:status projection', () => {
 });
 
 /**
- * EI-22075989127611832 — `await_id` × `event` exclusivity is enforced in the HANDLER,
- * so it was invisible to a caller reading the published arg schema: two plain optionals
- * with no declared constraint. The filed report read that rejection as the tool refusing
- * a documented argument, because the only way to discover the rule was to trip it.
- *
- * Pin the DECLARATION to the ENFORCEMENT so they cannot drift apart again: drop the
- * handler guard and the second test fails; drop the description and the first does.
+ * EI-22075989127611832 / EI-25888525487132458 — selector conflicts must be
+ * visible in the published schema, so callers do not discover the rule only
+ * after dispatch returns a handler_error.
  */
 describe('events:status — await_id/event exclusivity is declared, not only enforced', () => {
-  const shape = (status.args as unknown as {
-    shape: Record<string, { description?: string }>;
-  }).shape;
+  it('publishes selector-exclusive branches instead of two unconstrained optionals', () => {
+    const schema = z.toJSONSchema(status.args as never) as {
+      anyOf?: Array<{ required?: string[]; properties?: Record<string, unknown> }>;
+      oneOf?: Array<{ required?: string[]; properties?: Record<string, unknown> }>;
+    };
+    const branches = schema.anyOf ?? schema.oneOf ?? [];
 
-  it('declares the mutual exclusion on both args, each naming its counterpart', () => {
-    expect(shape.await_id.description).toMatch(/mutually exclusive/i);
-    expect(shape.await_id.description).toContain('event');
-    expect(shape.event.description).toMatch(/mutually exclusive/i);
-    expect(shape.event.description).toContain('await_id');
+    expect(branches).toHaveLength(3);
+    expect(branches.some((branch) => branch.required?.includes('await_id'))).toBe(true);
+    expect(branches.some((branch) => branch.required?.includes('event'))).toBe(true);
+    expect(branches.some((branch) => !branch.required?.includes('await_id') && !branch.required?.includes('event'))).toBe(true);
+    expect(JSON.stringify(schema)).toContain('mutually exclusive');
   });
 
   it('still refuses the combination at the handler', async () => {
@@ -943,12 +943,10 @@ describe('events:status — await_id/event exclusivity is declared, not only enf
 
 describe('events:status — workspace-global scope is explicit', () => {
   it('documents that harness/workspace are resolved by context, not JSON filters', () => {
-    const shape = (status.args as unknown as {
-      shape: Record<string, unknown>;
-    }).shape;
+    const schema = z.toJSONSchema(status.args as never) as Record<string, unknown>;
 
-    expect(shape).not.toHaveProperty('harness');
-    expect(shape).not.toHaveProperty('workspace');
+    expect(JSON.stringify(schema)).not.toMatch(/"harness"/);
+    expect(JSON.stringify(schema)).not.toMatch(/"workspace"/);
     expect(status.description).toMatch(/workspace-global/i);
     expect(status.description).toMatch(/do not pass `harness` or `workspace`/i);
   });

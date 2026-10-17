@@ -14,7 +14,7 @@
  * of enumerating it.
  *
  * THE PROPERTY THIS FILE EXISTS FOR. A manifest is static JSON: it cannot
- * import `socialStormPolicyFor`, so every `maxRuns`/`windowSeconds` in it is a
+ * import `providerStormPolicyFor`, so every `maxRuns`/`windowSeconds` in it is a
  * SECOND COPY of a number the registry derivation owns. That is precisely the
  * drift the repo's derived-truth rule forbids hand-maintaining, and it cannot
  * be fixed by deriving (JSON has no imports) — so it is PINNED here instead:
@@ -35,13 +35,10 @@ import {
   type PluginOAuthRequirement,
   type PluginTriggerPack,
 } from '@papercusp/plugin-sdk';
-import {
-  getSocialPlatform,
-  isSocialWriteVerified,
-  listSocialPlatforms,
-  type SocialQuotaVerb,
-} from './platform-registry';
-import { socialStormPolicyFor, type SocialStormPolicy } from './storm-policy';
+import { providerCapabilityVerificationIssue } from '@papercusp/plugin-sdk';
+import { bundledSocialProviderDescriptors } from '../../capability-verbs/social-provider.fixture';
+import { providerStormPolicyFor, type ProviderStormPolicy, type ProviderQuotaVerb } from '../provider-storm-policy';
+const socialProvider = (id: string) => bundledSocialProviderDescriptors().find((descriptor) => descriptor.id === id);
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
@@ -77,9 +74,9 @@ interface Manifest {
  * least-privilege assertion below rather than by this table.
  */
 const PACKS = [
-  { slug: 'social-mention-triage', verb: 'read' as SocialQuotaVerb, publishes: false },
-  { slug: 'social-comment-digest', verb: 'read' as SocialQuotaVerb, publishes: false },
-  { slug: 'social-scheduled-crosspost', verb: 'post' as SocialQuotaVerb, publishes: true },
+  { slug: 'social-mention-triage', verb: 'read' as ProviderQuotaVerb, publishes: false },
+  { slug: 'social-comment-digest', verb: 'read' as ProviderQuotaVerb, publishes: false },
+  { slug: 'social-scheduled-crosspost', verb: 'post' as ProviderQuotaVerb, publishes: true },
 ] as const;
 
 function readManifest(slug: string): Manifest {
@@ -95,25 +92,25 @@ function rate(policy: { maxRuns?: number; windowSeconds?: number }): number {
   return Number(policy.maxRuns) / Number(policy.windowSeconds);
 }
 
-function tightest(policies: SocialStormPolicy[]): SocialStormPolicy {
+function tightest(policies: ProviderStormPolicy[]): ProviderStormPolicy {
   return policies.reduce((a, b) => (rate(b) < rate(a) ? b : a));
 }
 
 /** Platforms whose row declares `post` AND carries a verified write path. */
 function postablePlatformIds(): string[] {
-  return listSocialPlatforms()
-    .filter((row) => row.write.verbs.includes('post') && isSocialWriteVerified(row))
+  return bundledSocialProviderDescriptors()
+    .filter((row) => row.capabilities.includes('social.post') && !providerCapabilityVerificationIssue(row, 'social.post'))
     .map((row) => row.id);
 }
 
 describe('social starter trigger packs (P-026)', () => {
   // CALIBRATION. Every pin below compares a manifest literal against
-  // `socialStormPolicyFor`. If that function ever collapsed to a constant, all
+  // `providerStormPolicyFor`. If that function ever collapsed to a constant, all
   // of those comparisons would still pass while asserting nothing — the failure
   // mode where the controls stay green because the instrument stopped
   // measuring. This asserts the derivation genuinely discriminates first.
   it('the derivation it pins against actually discriminates between platforms', () => {
-    const derived = listSocialPlatforms().map((row) => rate(socialStormPolicyFor(row, 'post')));
+    const derived = bundledSocialProviderDescriptors().map((row) => rate(providerStormPolicyFor(row, 'post')));
     expect(new Set(derived).size).toBeGreaterThan(1);
   });
 
@@ -168,7 +165,7 @@ describe('social starter trigger packs (P-026)', () => {
         // marker and the `ext:<kind>:` key are the same string.
         // Social starter packs are provider-pinned, never portable datatype sources.
         expect(binding.source.sourceKind, binding.id).toEqual(expect.any(String));
-        expect(getSocialPlatform(binding.source.sourceKind!), binding.id).toBeDefined();
+        expect(socialProvider(binding.source.sourceKind!), binding.id).toBeDefined();
         // A binding added without widening the target's accepted key would
         // otherwise pass validation and then deliver a payload the plan's own
         // input schema rejects at run time.
@@ -187,9 +184,9 @@ describe('social starter trigger packs (P-026)', () => {
       );
 
       for (const binding of external) {
-        const row = getSocialPlatform(binding.source.sourceKind);
+        const row = socialProvider(binding.source.sourceKind);
         if (!row) throw new Error(`unknown platform ${binding.source.sourceKind}`);
-        const derived = socialStormPolicyFor(row, pack.verb);
+        const derived = providerStormPolicyFor(row, pack.verb);
         // The EFFECTIVE policy is the per-binding override when present and the
         // pack default otherwise, so a binding that silently inherited a wrong
         // default is caught here too.
@@ -209,7 +206,7 @@ describe('social starter trigger packs (P-026)', () => {
       const scope = external.length > 0
         ? external.map((binding) => binding.source.sourceKind)
         : postablePlatformIds();
-      const derivedScope = scope.map((id) => socialStormPolicyFor(getSocialPlatform(id)!, pack.verb));
+      const derivedScope = scope.map((id) => providerStormPolicyFor(socialProvider(id)!, pack.verb));
       const floor = tightest(derivedScope);
       expect(fallback).toEqual({ maxRuns: floor.maxRuns, windowSeconds: floor.windowSeconds });
     });
@@ -234,12 +231,21 @@ describe('social starter trigger packs (P-026)', () => {
       // A non-publishing pack must not carry a write scope anywhere in its
       // manifest. Derived from the registry rather than a literal list, so a
       // platform whose write scopes change is still covered.
-      const writeScopes = listSocialPlatforms()
-        .flatMap((row) => row.auth.scopes)
+      const writeScopes = bundledSocialProviderDescriptors()
+        .flatMap((descriptor) => descriptor.oauth?.scopes ?? [])
         .filter((scope) => /write|publish|manage_posts|manage_engagement|submit/i.test(scope));
       expect(writeScopes.length).toBeGreaterThan(0); // positive control for the filter
       for (const scope of writeScopes) expect(serialized).not.toContain(scope);
     });
+  });
+
+  it.each(['social-mention-triage', 'social-comment-digest'])('%s consumes every delivered event', (slug) => {
+    const plan = readPlan(slug);
+    expect(plan).toContain('response.events');
+    expect(plan).toContain('process every entry');
+    expect(plan).toContain('top-level fields describe only the first event');
+    expect(plan).toContain('each entry independently');
+    expect(plan).not.toContain('it cannot read the ones that');
   });
 
   it('the crosspost destination pattern matches exactly the post-capable, write-verified platforms', () => {

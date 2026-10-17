@@ -13,8 +13,9 @@
  * carrying an outer tier" is the property that keeps its blast radius at zero.
  */
 import { describe, it, expect } from 'vitest';
+import { projectBoundedPayload } from '@papercusp/tooldef';
 
-import { forwardToolsInvokePayloadTier } from './_mcp-host';
+import { forwardToolsInvokePayloadTier, resultDoorPreservePathsForDispatch } from './_mcp-host';
 
 describe('forwardToolsInvokePayloadTier', () => {
   it('forwards an outer payloadTier into the target args', () => {
@@ -105,5 +106,110 @@ describe('forwardToolsInvokePayloadTier', () => {
     forwardToolsInvokePayloadTier('tools:invoke', input);
 
     expect(input.args).toEqual({ id: 'EI-1' });
+  });
+});
+
+describe('resultDoorPreservePathsForDispatch', () => {
+  const pick = 'results[].threadWindow.posts[].body';
+  const result = { content: [{ type: 'text' as const, text: '{}' }] };
+
+  it('keeps a nested tools:invoke projection available to the outer result door', () => {
+    const paths = resultDoorPreservePathsForDispatch(result, 'tools:invoke', {
+      name: 'work_items:get',
+      args: { id: 'WI-1', projection: { pick: [pick] } },
+    }, undefined);
+
+    expect(paths).toEqual([pick]);
+  });
+
+  it('decodes JSON-stringified nested args before reading projection picks', () => {
+    const paths = resultDoorPreservePathsForDispatch(result, 'tools:invoke', {
+      name: 'work_items:get',
+      args: JSON.stringify({ id: 'WI-1', projection: { pick: [pick] } }),
+    }, undefined);
+
+    expect(paths).toEqual([pick]);
+  });
+
+  it('ignores an explicitly null nested projection without dereferencing its absent spec', () => {
+    expect(resultDoorPreservePathsForDispatch(result, 'tools:invoke', {
+      name: 'work_items:get',
+      args: { id: 'WI-1', projection: null },
+    }, undefined)).toBeUndefined();
+  });
+
+  it('keeps picked post bodies through the budgeted outer result-door projection', () => {
+    const paths = resultDoorPreservePathsForDispatch(result, 'tools:invoke', {
+      name: 'work_items:get',
+      args: { id: 'WI-1', projection: { pick: [pick] } },
+    }, undefined);
+    const posts = Array.from({ length: 10 }, (_, index) => ({
+      id: index + 1,
+      author_id: `agent-${index}`,
+      created_ts: `2026-10-16T12:00:${String(index).padStart(2, '0')}Z`,
+      body: `thread body ${index} ${'x'.repeat(1800)}`,
+    }));
+    const projected = projectBoundedPayload({
+      results: [{ id: 'WI-1', threadWindow: { posts } }],
+    }, {
+      toolName: 'tools:invoke',
+      tier: 'trimmed',
+      forced: true,
+      targetChars: 5_000,
+      preservePaths: paths,
+    }) as {
+      results?: Array<{ threadWindow?: { posts?: Array<Record<string, unknown>> } }>;
+      _projection?: { forced?: boolean };
+    };
+
+    const projectedPosts = projected.results?.[0]?.threadWindow?.posts ?? [];
+    expect(projected._projection?.forced).toBe(true);
+    expect(projectedPosts.length).toBeGreaterThan(0);
+    expect(projectedPosts.every(post => typeof post.body === 'string')).toBe(true);
+  });
+
+  it('forwards selected plans:get item fields to the outer result-door projection', () => {
+    const picks = ['results[].items[].id', 'results[].items[].text', 'results[].items[].storedStatus'];
+    const paths = resultDoorPreservePathsForDispatch(result, 'tools:invoke', {
+      name: 'plans:get',
+      args: { slug: 'plan-1', projection: { pick: picks } },
+    }, undefined);
+    const items = Array.from({ length: 3 }, (_, index) => ({
+      id: `P-00${index + 1}`,
+      text: `selected item ${index + 1} ${'x'.repeat(120)}`,
+      storedStatus: 'todo',
+    }));
+    const projected = projectBoundedPayload({
+      results: [{ items }],
+      padding: 'P'.repeat(20_000),
+    }, {
+      toolName: 'tools:invoke',
+      tier: 'trimmed',
+      forced: true,
+      targetChars: 5_000,
+      preservePaths: paths,
+    }) as {
+      results?: Array<{ items?: Array<Record<string, unknown>> }>;
+      _projection?: { forced?: boolean };
+    };
+
+    expect(paths).toEqual(picks);
+    expect(projected._projection?.forced).toBe(true);
+    expect(projected.results?.[0]?.items).toHaveLength(3);
+    expect(projected.results?.[0]?.items?.map(item => [item.id, item.text, item.storedStatus])).toEqual(
+      items.map(item => [item.id, item.text, item.storedStatus]),
+    );
+  });
+
+  it('combines direct and nested picks while keeping other dispatches inert', () => {
+    const direct = 'results[].id';
+    expect(resultDoorPreservePathsForDispatch(result, 'tools:invoke', {
+      name: 'work_items:get',
+      args: { projection: { pick: [pick] } },
+    }, [direct])).toEqual([direct, pick]);
+
+    expect(resultDoorPreservePathsForDispatch(result, 'work_items:get', {
+      projection: { pick: [pick] },
+    }, [direct])).toEqual([direct]);
   });
 });

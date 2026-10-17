@@ -149,6 +149,10 @@ function serve(overview: { providers: unknown[]; sources: unknown[]; triggerPack
   route('GET', API, { ok: true, userId: 'user-1', triggerPacks: [], ...overview });
 }
 
+function packageDescriptor(directory: string): ProviderDescriptor {
+  return JSON.parse(readFileSync(resolve(process.cwd(), '../../libs/papercusp/plugins', directory, 'papercusp.json'), 'utf8')).provider;
+}
+
 /** A provider that signs in with a pasted credential only and syncs no tickets (P-001/P-005). */
 const CHAT = {
   id: 'chatter',
@@ -281,9 +285,8 @@ afterEach(() => {
 });
 
 describe('Settings → Integrations', () => {
-  it.each(['facebook-pages', 'instagram', 'x'])('renders actual %s package setup in the generic provider card', async (id) => {
-    const manifest = JSON.parse(readFileSync(resolve(process.cwd(), '../../libs/papercusp/plugins', id, 'papercusp.json'), 'utf8'));
-    const d = manifest.provider as ProviderDescriptor;
+  it.each(['facebook-pages', 'instagram', 'x', 'threads', 'tiktok', 'linkedin', 'linkedin-company', 'youtube', 'reddit'])('renders actual %s package setup in the generic provider card', async (id) => {
+    const d = packageDescriptor(id);
     // The backend's real installer/registry integration tests the overview projection;
     // this browser test uses the package's actual descriptor and SDK setup view.
     serve({ providers: [{
@@ -291,16 +294,107 @@ describe('Settings → Integrations', () => {
       requiredConfig: d.configSchema?.required ?? [],
       connectHref: `/api/oauth/start?plugin=${d.id}`,
       credentials: [], appRegistration: providerAppRegistrationView(d),
-      oauthClient: { ...oauthClient(d.oauth!.clientRegistrationRef!, false), secretRequired: !d.oauth!.pkce },
+      oauthClient: { ...oauthClient(d.oauth!.clientRegistrationRef!, false), secretRequired: !d.oauth!.pkce,
+        userAgentRequired: d.oauth!.userAgentRequired },
     }], sources: [] });
     render(<Page />);
     const card = within(await screen.findByRole('region', { name: d.displayName }));
     expect(card.getByRole('link', { name: `Create ${d.displayName} app` }).getAttribute('href')).toBe(d.setup!.appRegistration!.createUrl);
-    expect(card.getByRole('button', { name: `Connect ${d.displayName}` })).toBeTruthy();
+    expect((card.getByRole('button', { name: `Connect ${d.displayName}` }) as HTMLButtonElement).disabled).toBe(true);
     for (const capability of d.capabilities) expect(card.getByText(capability)).toBeTruthy();
     expect(card.getByLabelText('Client ID')).toBeTruthy();
     expect(card.getByLabelText('Client secret')).toBeTruthy();
+    if (d.oauth!.userAgentRequired) expect((card.getByLabelText('User-Agent') as HTMLInputElement).value).toBe('');
+    else expect(card.queryByLabelText('User-Agent')).toBeNull();
     expect(card.queryByRole('button', { name: 'What syncs' })).toBeNull();
+  });
+
+  it('binds actual Mastodon app setup to the selected instance before saving its registration', async () => {
+    const d = packageDescriptor('mastodon');
+    serve({ providers: [{
+      ...CHAT, id: d.id, displayName: d.displayName, capabilities: d.capabilities, datatypes: d.datatypes,
+      connectHref: `/api/oauth/start?plugin=${d.id}`, credentials: [], appRegistration: providerAppRegistrationView(d),
+      oauthClient: { ...oauthClient(d.oauth!.clientRegistrationRef!, false), instanceRequired: d.oauth!.instance },
+    }], sources: [] });
+    const path = `/api/user/integrations/providers/${d.id}/oauth-client`;
+    route('PUT', path, { ok: true });
+    render(<Page />);
+    const card = within(await screen.findByRole('region', { name: d.displayName }));
+    expect(card.queryByRole('link', { name: 'Create Mastodon app' })).toBeNull();
+    expect((card.getByRole('button', { name: 'Connect Mastodon' }) as HTMLButtonElement).disabled).toBe(true);
+    for (const origin of ['https://mastodon.social', 'https://hachyderm.io']) {
+      fireEvent.change(card.getByLabelText('Instance origin'), { target: { value: origin } });
+      expect(card.getByRole('link', { name: 'Create Mastodon app' }).getAttribute('href')).toBe(`${origin}${d.setup!.appRegistration!.createUrl}`);
+    }
+    fireEvent.change(card.getByLabelText('Client ID'), { target: { value: 'instance-client' } });
+    fireEvent.change(card.getByLabelText('Client secret'), { target: { value: 'instance-secret' } });
+    fireEvent.click(card.getByRole('button', { name: 'Save OAuth app' }));
+    await waitFor(() => expect(call('PUT', path)?.body).toEqual({
+      origin: 'https://hachyderm.io', clientId: 'instance-client', clientSecret: 'instance-secret',
+    }));
+    expect((card.getByLabelText('Client secret') as HTMLInputElement).value).toBe('');
+    expect(H.openExternal).not.toHaveBeenCalled();
+  });
+
+  it('saves the actual Bluesky app-password fields through the credential route without offering OAuth', async () => {
+    const d = packageDescriptor('bluesky');
+    const credentials = d.setup!.credentials!.map((field) => ({ ...field, configured: false, savedAt: null }));
+    serve({ providers: [{
+      ...CHAT, id: d.id, displayName: d.displayName, capabilities: d.capabilities, datatypes: d.datatypes,
+      connectHref: null, credentials, appRegistration: providerAppRegistrationView(d), oauthClient: null,
+    }], sources: [] });
+    const path = `/api/user/integrations/providers/${d.id}/credentials`;
+    route('PUT', path, { ok: true });
+    render(<Page />);
+    const card = within(await screen.findByRole('region', { name: d.displayName }));
+    expect(card.getByRole('status').textContent).toBe('Needs 2 of 2 credentials');
+    expect(card.queryByRole('button', { name: /^Connect/ })).toBeNull();
+    expect(card.queryByLabelText('Client ID')).toBeNull();
+    expect(card.queryByLabelText('Client secret')).toBeNull();
+    const values = { identifier: 'fixture.bsky.social', app_password: 'fixture-app-password' };
+    for (const field of credentials) {
+      const input = card.getByLabelText(field.label) as HTMLInputElement;
+      expect(input.type).toBe('password');
+      expect(input.value).toBe('');
+      fireEvent.change(input, { target: { value: values[field.key as keyof typeof values] } });
+    }
+    expect(card.getByRole('link', { name: 'Where to find it' }).getAttribute('href')).toBe('https://bsky.app/settings/app-passwords');
+    fireEvent.click(card.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(call('PUT', path)?.body).toEqual({ values }));
+    await waitFor(() => {
+      for (const field of credentials) expect((card.getByLabelText(field.label) as HTMLInputElement).value).toBe('');
+    });
+    expect(H.calls.filter((entry) => /oauth|createSession|refreshSession/.test(entry.url))).toEqual([]);
+    expect(H.openExternal).not.toHaveBeenCalled();
+  });
+
+  it.each(['devto', 'hashnode'])('saves the actual %s publishing credential through the generic card without OAuth', async (id) => {
+    const d = packageDescriptor(id);
+    const credentials = d.setup!.credentials!.map((field) => ({ ...field, configured: false, savedAt: null }));
+    serve({ providers: [{
+      ...CHAT, id: d.id, displayName: d.displayName, capabilities: d.capabilities, datatypes: d.datatypes,
+      requiredConfig: d.configSchema?.required ?? [],
+      connectHref: null, credentials, appRegistration: providerAppRegistrationView(d), oauthClient: null,
+    }], sources: [] });
+    const path = `/api/user/integrations/providers/${d.id}/credentials`;
+    route('PUT', path, { ok: true });
+    render(<Page />);
+    const card = within(await screen.findByRole('region', { name: d.displayName }));
+    expect(card.getByRole('status').textContent).toBe('Needs 1 of 1 credential');
+    expect(card.getByText('blog.post')).toBeTruthy();
+    expect(card.queryByRole('button', { name: /^Connect/ })).toBeNull();
+    expect(card.queryByLabelText('Client ID')).toBeNull();
+    expect(card.queryByLabelText('Client secret')).toBeNull();
+    expect(card.getByRole('link', { name: 'Where to find it' }).getAttribute('href')).toBe(credentials[0].helpUrl);
+    const input = card.getByLabelText(credentials[0].label) as HTMLInputElement;
+    expect(input.type).toBe('password');
+    expect(input.value).toBe('');
+    fireEvent.change(input, { target: { value: 'fixture-publishing-key' } });
+    fireEvent.click(card.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(call('PUT', path)?.body).toEqual({ values: { [credentials[0].key]: 'fixture-publishing-key' } }));
+    await waitFor(() => expect(input.value).toBe(''));
+    expect(H.calls.filter((entry) => /oauth|gql\.hashnode|dev\.to\/api/.test(entry.url))).toEqual([]);
+    expect(H.openExternal).not.toHaveBeenCalled();
   });
 
   it('renders each provider from the overview and subscribes the live query as the resolved user', async () => {

@@ -43,6 +43,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 
 export const OWNER_RPC_REQUEST_TYPE = 'papercusp:owner-rpc-request' as const;
 export const OWNER_RPC_RESPONSE_TYPE = 'papercusp:owner-rpc-response' as const;
+export const OWNER_RPC_PROGRESS_TYPE = 'papercusp:owner-rpc-progress' as const;
 
 /** Default budget for one relayed request (worker → primary → owner → back). */
 export const OWNER_RPC_DEFAULT_TIMEOUT_MS = 15_000;
@@ -80,11 +81,23 @@ export interface OwnerRpcResponseMessage {
   message?: string;
 }
 
+/** A non-terminal notification emitted by an owner while a request is running. */
+export interface OwnerRpcProgressMessage {
+  type: typeof OWNER_RPC_PROGRESS_TYPE;
+  id: string;
+  fromPid: number;
+  toPid: number;
+  progress: unknown;
+}
+
 export type OwnerRpcOutcome =
   | { ok: true; result: unknown }
   | { ok: false; code: OwnerRpcFailureCode; message: string };
 
-export type OwnerRpcHandler = (payload: unknown, source: { fromPid: number }) => Promise<unknown> | unknown;
+export type OwnerRpcHandler = (
+  payload: unknown,
+  source: { fromPid: number; progress?: (value: unknown) => void },
+) => Promise<unknown> | unknown;
 
 // Extend the existing relay with placement for opaque process-local handles.
 // This is lifetime metadata, not persisted VM state. A primary restart also
@@ -146,12 +159,21 @@ export function isOwnerRpcResponse(message: unknown): message is OwnerRpcRespons
   );
 }
 
+export function isOwnerRpcProgress(message: unknown): message is OwnerRpcProgressMessage {
+  const m = message as Partial<OwnerRpcProgressMessage> | null;
+  return !!m && typeof m === 'object' && m.type === OWNER_RPC_PROGRESS_TYPE &&
+    typeof m.id === 'string' && typeof m.fromPid === 'number' && typeof m.toPid === 'number' &&
+    'progress' in m;
+}
+
 interface Pending {
   resolve: (outcome: OwnerRpcOutcome) => void;
   timer: ReturnType<typeof setTimeout>;
+  targetPid: number;
+  onProgress?: (value: unknown) => void;
 }
 
-type Send = (message: OwnerRpcRequestMessage | OwnerRpcResponseMessage) => boolean | void;
+type Send = (message: OwnerRpcRequestMessage | OwnerRpcResponseMessage | OwnerRpcProgressMessage) => boolean | void;
 
 const state = pinModuleState('@papercusp/operator-core.cluster-owner-rpc', () => ({
   handlers: new Map<string, OwnerRpcHandler>(),
@@ -185,6 +207,7 @@ export function callOwnerProcess(opts: {
   kind: string;
   payload: unknown;
   timeoutMs?: number;
+  onProgress?: (value: unknown) => void;
 }): Promise<OwnerRpcOutcome> {
   const send = state.send;
   if (!send) {
@@ -207,7 +230,8 @@ export function callOwnerProcess(opts: {
     }, timeoutMs);
     // Never let an outstanding relay keep a draining worker alive.
     (timer as { unref?: () => void }).unref?.();
-    state.pending.set(id, { resolve, timer });
+    state.pending.set(id, { resolve, timer, targetPid: opts.targetPid,
+      ...(opts.onProgress ? { onProgress: opts.onProgress } : {}) });
     try {
       send({
         type: OWNER_RPC_REQUEST_TYPE,
@@ -259,7 +283,17 @@ async function serve(request: OwnerRpcRequestMessage, send: Send): Promise<void>
     return;
   }
   try {
-    reply({ ok: true, result: await handler(request.payload, { fromPid: request.fromPid }) });
+    reply({ ok: true, result: await handler(request.payload, {
+      fromPid: request.fromPid,
+      progress: (progress) => {
+        try {
+          send({ type: OWNER_RPC_PROGRESS_TYPE, id: request.id, fromPid: state.pid,
+            toPid: request.fromPid, progress });
+        } catch {
+          /* progress is best-effort; the terminal RPC result remains authoritative */
+        }
+      },
+    }) });
   } catch (error) {
     reply({
       ok: false,
@@ -296,6 +330,14 @@ export function startWorkerOwnerRpc(opts: {
   const off = opts.off ?? ((event, cb) => process.off(event, cb));
   if (opts.pid != null) state.pid = opts.pid;
   const listener = (message: unknown): void => {
+    if (isOwnerRpcProgress(message)) {
+      const pending = state.pending.get(message.id);
+      if (message.toPid === state.pid && pending?.targetPid === message.fromPid) {
+        try { pending.onProgress?.(message.progress); }
+        catch { /* observer callbacks cannot fail the owner operation */ }
+      }
+      return;
+    }
     if (isOwnerRpcResponse(message)) {
       if (message.toPid === state.pid) settle(message);
       return;
@@ -404,6 +446,15 @@ export function startPrimaryOwnerRpcRelay(opts: { cluster: OwnerRpcClusterLike }
       return;
     }
     if (isOwnerRpcResponse(message)) {
+      try {
+        findLiveWorker(cluster, message.toPid)?.send(message);
+      } catch {
+        /* requester times out */
+      }
+      return;
+    }
+    if (isOwnerRpcProgress(message)) {
+      if ((_worker as OwnerRpcWorkerLike)?.process?.pid !== message.fromPid) return;
       try {
         findLiveWorker(cluster, message.toPid)?.send(message);
       } catch {

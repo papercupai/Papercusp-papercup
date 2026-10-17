@@ -39,7 +39,25 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../..
 const PC_HEAVY = process.env.PROBE_SCRIPT || join(ROOT, 'scripts', 'pc-heavy.sh');
 
 let dir = '';
-beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'pcheavy-')); });
+let coalescingCwd = '';
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), 'pcheavy-'));
+  coalescingCwd = '';
+});
+
+// pc-heavy intentionally disables coalescing for a non-Git cwd: there is no cheap,
+// authoritative source token for an export. Coalescing tests therefore run from a
+// tiny Git worktree while keeping PC_HEAVY_DIR (and its cache artifacts) outside it.
+function ensureCoalescingCwd(): string {
+  if (coalescingCwd) return coalescingCwd;
+  coalescingCwd = join(dir, 'coalescing-worktree');
+  mkdirSync(coalescingCwd, { recursive: true });
+  execSync('git init -q', { cwd: coalescingCwd });
+  execSync('git config user.email t@example.com && git config user.name test', { cwd: coalescingCwd });
+  writeFileSync(join(coalescingCwd, '.gitkeep'), 'fixture\n');
+  execSync('git add -A && git commit -q -m fixture', { cwd: coalescingCwd });
+  return coalescingCwd;
+}
 // A preemptible monitor survives the outer wrapper long enough to reap its
 // isolated child group. The test's `finally` sends the teardown signal, but a
 // synchronous rm immediately afterwards can race that last cleanup and report
@@ -3342,6 +3360,7 @@ PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE=0 \\
 
 describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
   it('collapses N genuinely-concurrent IDENTICAL invocations into far fewer real runs, replaying the rest', async () => {
+    const cwd = ensureCoalescingCwd();
     // A burst of agents all running the exact same command (same cwd+argv) —
     // e.g. many agents confirming the same gate at once — should not each pay
     // for their own full run. One (or a small handful, bounded by the
@@ -3355,7 +3374,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
           const p = spawn(
             'bash',
             [PC_HEAVY, 'bash', '-c', `printf x >> "${marker}"; sleep 0.4; echo same-output`],
-            { env: baseEnv({ PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE_SEC: '30' }), cwd: dir },
+            { env: baseEnv({ PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE_SEC: '30' }), cwd },
           );
           let stdout = '';
           let stderr = '';
@@ -3379,6 +3398,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
   });
 
   it('collapses to EXACTLY ONE real run even when the command is SLOWER than the coalescing window (EI-19343301596011451)', async () => {
+    const cwd = ensureCoalescingCwd();
     // The regression this exists for. `_coalesce_ttl` used to serve two
     // different questions: "may I replay a FINISHED result?" and "is the leader
     // still WORKING?". A follower therefore gave up waiting after the window
@@ -3408,7 +3428,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
           const p = spawn(
             'bash',
             [PC_HEAVY, 'bash', '-c', `printf x >> "${marker}"; sleep 3; echo slow-done`],
-            { env: baseEnv({ PC_HEAVY_SLOTS: '8', PC_HEAVY_COALESCE_SEC: '2' }), cwd: dir },
+            { env: baseEnv({ PC_HEAVY_SLOTS: '8', PC_HEAVY_COALESCE_SEC: '2' }), cwd },
           );
           let stderr = '';
           p.stderr.on('data', (d) => (stderr += d));
@@ -3425,6 +3445,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
   }, 60_000);
 
   it('WI-40946: capture tees cannot retain a heavy slot after their wrapper dies', async () => {
+    const cwd = ensureCoalescingCwd();
     // A command descendant can legitimately keep stdout/stderr open after the
     // command leader exits. That keeps pc-heavy's capture tees alive, but it
     // must NOT keep the heavy slot alive through a descriptor the passive
@@ -3450,7 +3471,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
 
     const wrapper = spawn('bash', [PC_HEAVY, 'bash', '-c', command], {
       env: baseEnv({ PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE_SEC: '30' }),
-      cwd: dir,
+      cwd,
     });
     const wrapperErr = createTextCollector(wrapper.stderr);
     let lingerPid = 0;
@@ -3567,6 +3588,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
   }, 20_000);
 
   it('reclaims a lock whose leader DIED even though the stamped pid was recycled by a live process (EI-19343301596011451)', async () => {
+    const cwd = ensureCoalescingCwd();
     // Leader liveness is observed via pid, and PID wrap is ~daily on this box
     // under fleet load — so pid alone would let an unrelated live process
     // impersonate a dead leader and stall every follower for the full
@@ -3585,7 +3607,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       }>((resolve, reject) => {
         const child = spawn('bash', [PC_HEAVY, ...cmd], {
           env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '1' }),
-          cwd: dir,
+          cwd,
         });
         const stdout = createTextCollector(child.stdout);
         const stderr = createTextCollector(child.stderr);
@@ -3625,18 +3647,19 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
   }, 60_000);
 
   it('a later (non-concurrent) identical call within the window reuses the cached result, including stderr + exit code', () => {
+    const cwd = ensureCoalescingCwd();
     const command = 'echo out-x; echo err-x >&2; exit 4';
     const first = runSync(['bash', '-c', command], {
       PC_HEAVY_SLOTS: '2',
       PC_HEAVY_COALESCE_SEC: '30',
-    });
+    }, cwd);
     expect(first.status).toBe(4);
     expect(first.stderr).not.toContain('coalesced:');
 
     const second = runSync(['bash', '-c', command], {
       PC_HEAVY_SLOTS: '2',
       PC_HEAVY_COALESCE_SEC: '30',
-    });
+    }, cwd);
     expect(second.status).toBe(4);
     expect(second.stdout.trim()).toBe('out-x');
     expect(second.stderr).toContain('err-x');
@@ -3654,7 +3677,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       {
         encoding: 'utf8',
         env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }),
-        cwd: dir,
+        cwd,
         timeout: 30_000,
       },
     );
@@ -3689,6 +3712,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
   });
 
   it('reclaims an ABANDONED lock (leader killed before writing a result) instead of making a follower wait out the whole window', async () => {
+    const cwd = ensureCoalescingCwd();
     // A plain mkdir lock (unlike the flock slots) has no kernel-level
     // auto-release — a SIGKILL'd leader (never trappable) would otherwise
     // strand the lock forever, taxing every future identical call with a
@@ -3707,7 +3731,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
 
     const leader = spawn('bash', [PC_HEAVY, 'bash', '-c', cmd], {
       env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '2' }),
-      cwd: dir,
+      cwd,
       detached: true,
     });
     // Wait for the lock to actually EXIST rather than betting 400ms on it: too short and
@@ -3725,7 +3749,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       // before recreating anything. Pin it far above the poll budget below so
       // that budget stays discriminating whatever the script's default becomes.
       env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '2', PC_HEAVY_COALESCE_MAX_WAIT_SEC: '600' }),
-      cwd: dir,
+      cwd,
       detached: true,
     });
     try {
@@ -3982,6 +4006,7 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
   };
 
   it('a NEW leader does not truncate the previous entry a follower may still replay [positive-controlled]', async () => {
+    const cwd = ensureCoalescingCwd();
     // The bug: `tee "$_c_out"` truncates at OPEN — the instant the new leader
     // starts — while freshness is gated on $_c_exit, which still holds the old
     // run's rc and mtime. A follower in that window was told "fresh, rc=0" and
@@ -3992,7 +4017,7 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
     // Two callers disagreeing about freshness is all it takes, and that is
     // routine: PC_HEAVY_COALESCE_SEC is per-caller (default 90, this suite 30).
     const cmd = cmdWithMarker();
-    const first = runSync(['bash', '-c', cmd], { PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '90' });
+    const first = runSync(['bash', '-c', cmd], { PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '90' }, cwd);
     expect(first.stdout).toContain('REAL-OUTPUT-LINE');
     expect(realRunCount()).toBe(1);
     const outFile = coalesceFileByExt('.out');
@@ -4014,7 +4039,7 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
     // becoming a second leader while the entry is still fresh to a 90s caller.
     const secondLeader = spawn('bash', [PC_HEAVY, 'bash', '-c', cmd], {
       env: baseEnv({ PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '1' }),
-      cwd: dir,
+      cwd,
       detached: true,
     });
     try {
@@ -4031,7 +4056,7 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
 
       // ...so a follower that passes the freshness gate replays REAL output,
       // never an empty success.
-      const follower = runSync(['bash', '-c', cmd], { PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '90' });
+      const follower = runSync(['bash', '-c', cmd], { PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '90' }, cwd);
       expect(follower.stderr).toContain('coalesced:'); // it really did replay
       expect(follower.stdout).toContain('REAL-OUTPUT-LINE'); // and got the output
       expect(follower.stdout.trim()).not.toBe('');
@@ -4049,6 +4074,7 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
   }, 60_000);
 
   it('leaves no .part temp files behind, even when a leader is hard-killed mid-run', async (ctx) => {
+    const cwd = ensureCoalescingCwd();
     const parts = () => {
       const coalesceDir = join(dir, 'coalesce');
       if (!existsSync(coalesceDir)) return [];
@@ -4059,14 +4085,14 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
     // which the EXIT trap cannot run the `rm` that sweeps the temps.
     const FORK_REFUSED = /fork: (?:retry: )?Resource temporarily unavailable/;
     // Clean completion publishes by rename, so the temps are consumed.
-    runSync(['bash', '-c', 'echo done'], { PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '30' });
+    runSync(['bash', '-c', 'echo done'], { PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '30' }, cwd);
     expect(partCount()).toBe(0);
 
     // A hard-killed leader must not leave its in-progress temp behind either —
     // the EXIT trap that sweeps the lockdir sweeps these too.
     const doomed = spawn('bash', [PC_HEAVY, 'bash', '-c', 'echo x; sleep 30'], {
       env: baseEnv({ PC_HEAVY_SLOTS: '4', PC_HEAVY_COALESCE_SEC: '30' }),
-      cwd: dir,
+      cwd,
       detached: true,
     });
     // Event-driven, not two fixed 700ms sleeps (WI-10005207): under gate-suite
@@ -4110,12 +4136,13 @@ describe('pc-heavy.sh — per-caller freshness barrier (EI-19340233074452707)', 
   };
 
   it('replays a cached run that STARTED at/after the barrier', () => {
+    const cwd = ensureCoalescingCwd();
     // Barrier of 1 (epoch 1970) — any run at all starts after it.
-    const first = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' });
+    const first = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' }, cwd);
     expect(first.status).toBe(7);
     expect(first.stderr).not.toContain('coalesced:');
 
-    const second = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' });
+    const second = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' }, cwd);
     expect(second.status).toBe(7); // exit code survives the packed "<rc> <startedAt>" format
     expect(second.stdout).toContain('barrier-out');
     expect(second.stderr).toContain('coalesced:');
@@ -4154,7 +4181,8 @@ describe('pc-heavy.sh — per-caller freshness barrier (EI-19340233074452707)', 
   });
 
   it('refuses to replay a cached result carrying no start stamp (fail closed across an upgrade)', () => {
-    const first = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' });
+    const cwd = ensureCoalescingCwd();
+    const first = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' }, cwd);
     expect(first.status).toBe(7);
 
     // Rewrite the exit file in the pre-barrier format (bare rc, no start stamp), as a
@@ -4164,24 +4192,25 @@ describe('pc-heavy.sh — per-caller freshness barrier (EI-19340233074452707)', 
     expect(exitFile).not.toBeNull();
     writeFileSync(exitFile as string, '7\n');
 
-    const second = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' });
+    const second = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' }, cwd);
     expect(second.status).toBe(7);
     expect(second.stderr).not.toContain('coalesced:');
   });
 
   it('leaves an unbarriered caller on the old tree-token path (opt-in only)', () => {
-    const first = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' });
+    const cwd = ensureCoalescingCwd();
+    const first = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, cwd);
     expect(first.status).toBe(7);
     expect(first.stderr).not.toContain('coalesced:');
 
     // A barriered caller keys DIFFERENTLY (no token), so it must not pick up the
     // unbarriered run's cache entry — the two populations stay separate rather than
     // one silently inheriting the other's freshness assumptions.
-    const barriered = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' });
+    const barriered = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', PC_HEAVY_FRESH_AFTER: '1' }, cwd);
     expect(barriered.stderr).not.toContain('coalesced:');
 
     // ...while a second unbarriered caller still replays as it always did.
-    const second = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' });
+    const second = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, cwd);
     expect(second.stderr).toContain('coalesced:');
   });
 });
@@ -4198,7 +4227,7 @@ describe('pc-heavy.sh — declared result-affecting env in the coalescing key (E
   // "unset" here is genuinely unset and the unset-vs-empty case below is hermetic.
   const cmd = ['bash', '-c', 'echo keyenv-out; echo keyenv-err >&2; exit 9'];
   const run = (extra: Record<string, string>) =>
-    runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', ...extra });
+    runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', ...extra }, ensureCoalescingCwd());
 
   it('does NOT coalesce two callers whose declared variable DIFFERS — the EI-78 collision', () => {
     const first = run({ PC_HEAVY_KEY_ENV: 'AFFECTED_BASE', AFFECTED_BASE: 'origin/main' });

@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { srtBinOnPath } from '@papercusp/orchestrator';
 import { buildProcessSrtSettings, wrapProcessWithSrt } from '@papercusp/orchestrator/fleet-srt-spawn';
+import type { startProvisionProxy } from './network-proxy';
 
 export interface SandboxOptions {
   /** Plugin's working directory (read-only mount). */
@@ -64,33 +65,34 @@ export interface SandboxBuildResult {
 /** Compose the final command through maintained SRT; keep the existing OS
  * filesystem prefix inside its network boundary. Policy files are outside
  * the writable assigned paths and explicitly deny-write, then cleaned up. */
-export function prepareSandboxCommand(
+export async function prepareSandboxCommand(
   sandbox: SandboxBuildResult,
   command: [string, ...string[]],
   srtBin: string | null = srtBinOnPath(),
-): { argv: string[]; cleanup: () => void; settingsPath?: string } {
+): Promise<{ argv: string[]; cleanup: () => Promise<void>; settingsPath?: string }> {
   if (sandbox.unavailableReason) throw new Error(sandbox.unavailableReason);
-  if (!sandbox.active) return { argv: command, cleanup: () => {} };
+  if (!sandbox.active) return { argv: command, cleanup: async () => {} };
   if (!srtBin || !sandbox.policy) throw new Error('Required provision network sandbox (srt) is unavailable');
   const { pluginDir, scratchDir, projectDir, allowedHosts } = sandbox.policy;
-  const allowedDomains = allowedHosts.flatMap(host => {
-    // SRT *.suffix permits any depth; provisioning * promises ONE label.
-    // Refuse the unrepresentable form instead of silently widening policy.
-    if (host.startsWith('*.')) throw new Error(
-      `Provision network sandbox cannot enforce single-label wildcard ${host}; declare exact hosts or an explicit **. pattern`,
-    );
-    const domain = host.startsWith('**.') ? host.slice(1) : host;
-    return /:\d+$/.test(domain) ? [domain] : [`${domain}:80`, `${domain}:443`];
-  });
   // /dev/shm is replaced by SRT even when the test harness selects it as TMPDIR.
   const policyDir = mkdtempSync(join(process.platform === 'linux' ? '/tmp' : tmpdir(), 'papercusp-provision-srt-'));
-  const cleanup = () => rmSync(policyDir, { recursive: true, force: true });
+  let proxy: Awaited<ReturnType<typeof startProvisionProxy>> | undefined;
+  const cleanup = async () => {
+    try { await proxy?.close(); }
+    finally { rmSync(policyDir, { recursive: true, force: true }); }
+  };
   try {
-    const settings = buildProcessSrtSettings({ cwd: scratchDir, allowedDomains, denyWrite: [policyDir] }) as {
+    const { startProvisionProxy } = await import('./network-proxy');
+    proxy = await startProvisionProxy(allowedHosts);
+    const settings = buildProcessSrtSettings({ cwd: scratchDir, allowedDomains: [], denyWrite: [policyDir] }) as {
       network: Record<string, unknown>;
       filesystem: { allowWrite: string[]; allowRead?: string[]; [key: string]: unknown };
     };
     settings.network.strictAllowlist = true;
+    // HTTP and CONNECT use the DNS-pinned floor-enforcing proxy. SRT still
+    // isolates sockets; its unused SOCKS listener must not provide a bypass.
+    settings.network.httpProxyPort = proxy.port;
+    settings.network.deniedDomains = ['*'];
     settings.filesystem.allowWrite = [scratchDir, ...(projectDir ? [projectDir] : [])];
     // Scratch commonly lives below credential-denied .papercusp. Re-permit
     // only assigned paths, never their parent directory.
@@ -105,7 +107,7 @@ export function prepareSandboxCommand(
     const wrapped = wrapProcessWithSrt(bin, args, { srtBin, settingsPath });
     return { argv: [wrapped.command, ...wrapped.argv], cleanup, settingsPath };
   } catch (error) {
-    cleanup();
+    await cleanup();
     throw error;
   }
 }
@@ -295,10 +297,10 @@ export async function smokeTestSandbox(): Promise<{ ok: boolean; driver: string;
     env: {},
   });
   if (!built.active) return { ok: false, driver: built.driver, error: 'no sandbox driver available' };
-  let prepared: ReturnType<typeof prepareSandboxCommand>;
-  try { prepared = prepareSandboxCommand(built, ['/bin/true']); }
+  let prepared: Awaited<ReturnType<typeof prepareSandboxCommand>>;
+  try { prepared = await prepareSandboxCommand(built, ['/bin/true']); }
   catch (error) { return { ok: false, driver: built.driver, error: String(error) }; }
-  return new Promise((resolve) => {
+  return new Promise<{ ok: boolean; driver: string; error?: string }>((resolve) => {
     const argv = prepared.argv;
     const [bin, ...rest] = argv;
     const child = spawn(bin, rest, { stdio: 'ignore' });
@@ -307,22 +309,19 @@ export async function smokeTestSandbox(): Promise<{ ok: boolean; driver: string;
       if (resolved) return;
       resolved = true;
       child.kill('SIGKILL');
-      prepared.cleanup();
       resolve({ ok: false, driver: built.driver, error: 'timeout' });
     }, 5000);
     child.on('error', (err) => {
       if (resolved) return;
       resolved = true;
       clearTimeout(timer);
-      prepared.cleanup();
       resolve({ ok: false, driver: built.driver, error: err.message });
     });
     child.on('exit', (code) => {
       if (resolved) return;
       resolved = true;
       clearTimeout(timer);
-      prepared.cleanup();
       resolve({ ok: code === 0, driver: built.driver, error: code === 0 ? undefined : `exit ${code}` });
     });
-  });
+  }).finally(prepared.cleanup);
 }

@@ -1127,10 +1127,25 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
         RETURNING id`;
       return Number(row.id);
     });
+    const reboundBindingId = await db.adminSql.begin(async (tx) => {
+      const [row] = await tx<Array<{ id: number }>>`
+        INSERT INTO harness_shared.spec_evidence_bindings
+          (workspace_id, harness_slug, work_item_id, plan_slug, spec_id, spec_revision, spec_fingerprint,
+           evidence_kind, evidence_ref, source_fingerprint, binding_fingerprint, created_by)
+        VALUES (${issuesScopeWorkspace()}, 'papercusp', ${bindingWorkItemId}, ${bindingPlanSlug},
+          ${bindingSpecId}, 1, ${bindingSpecFingerprint}, 'mutation', 'test-run:scorecard-binding-rebound',
+          'replacement-source-fingerprint', ${'c'.repeat(64)}, 'su-test')
+        RETURNING id`;
+      return Number(row.id);
+    });
     await insert('EI-audit-target-binding', {
       ratings,
       rerunRecipe: { args: { harness: 'papercusp' }, selection: { bindingIds: [bindingId] } },
     }, '2026-06-21T10:05:00Z');
+    await insert('EI-audit-target-binding-rebound', {
+      ratings,
+      rerunRecipe: { args: { harness: 'papercusp' }, selection: { bindingIds: [reboundBindingId] } },
+    }, '2026-06-21T10:05:15Z');
     await insert('EI-audit-target-binding-legacy', {
       ratings,
       // Legacy evaluator recipes retained the exact structured evidence tuple
@@ -1221,6 +1236,9 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
         retractedBindingIds: [], unavailableBindingIds: [String(Number.MAX_SAFE_INTEGER)],
       },
     });
+    // Rebinding installs a fresh live row and retracts the previous cohort.
+    // Both exact-id and legacy tuple readers must keep the old card from becoming
+    // an audit target while the replacement remains current.
     await db.adminSql`
       UPDATE harness_shared.spec_evidence_bindings
          SET retracted_at = now(), retracted_by = 'su-test', retraction_reason = 'fixture withdrawal'
@@ -1238,6 +1256,13 @@ describe('readScorecardEvidence audit-target status (EI-24583166035391772) — r
       evidenceBindingCurrentness: {
         state: 'stale', reason: 'cited-binding-retracted', citedBindingCount: 1,
         retractedBindingIds: [String(bindingId)], unavailableBindingIds: [],
+      },
+    });
+    expect((await read('EI-audit-target-binding-rebound')).auditTarget).toMatchObject({
+      current: true,
+      evidenceBindingCurrentness: {
+        state: 'current', reason: 'current', citedBindingCount: 1,
+        retractedBindingIds: [], unavailableBindingIds: [],
       },
     });
   });

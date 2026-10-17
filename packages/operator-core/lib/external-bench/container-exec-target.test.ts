@@ -46,7 +46,12 @@ beforeAll(() => {
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 function runWrapper(args: string[], env: Record<string, string>) {
-  const { wrapperPath } = materializeDockerExecWrapper(target, { dir: mkdtempSync(join(root, 'w-')), dockerBin: fakeDocker });
+  const { wrapperPath } = materializeDockerExecWrapper(target, {
+    dir: mkdtempSync(join(root, 'w-')),
+    dockerBin: fakeDocker,
+    // Baseline wrapper assertions must not inherit the benchmark daemon selected by the host.
+    dockerHost: '',
+  });
   const r = spawnSync(wrapperPath, args, { env, stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf8' });
   const argv = readFileSync(argvLog, 'utf8').split('\n').slice(0, -1);
   return { r, argv, wrapperPath };

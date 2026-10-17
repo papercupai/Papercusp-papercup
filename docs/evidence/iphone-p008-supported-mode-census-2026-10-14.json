@@ -5,7 +5,7 @@
   "planSlug": "iphone-public-release-2026-08-11",
   "planItemId": "P-008",
   "spec": "AUTO-BAR-R-2-P-008@3",
-  "reviewedAt": "2026-10-15T02:23:29Z",
+  "reviewedAt": "2026-10-16T01:04:00Z",
   "scope": "Current source and retained simulator subsets; this census does not close the whole R-2 live acceptance bar.",
   "source": {
     "repository": "papercup-rust-mobile",
@@ -19,7 +19,7 @@
       "mode": "Desktop operator on LAN or protected public HTTPS",
       "advertised": true,
       "evidence": "Current PairView.swift and store/LISTING.md; native visible LAN pairing/reply/relaunch and public HTTPS authorized Inbox receipts retained separately.",
-      "limit": "The later native-public-chat receipt exercises actual assistant reply and ordinary Keychain relaunch through protected public HTTPS. Production hostname configuration remains separately tracked by EI-25946131547854574."
+      "limit": "The retained native-public-chat receipt exercises actual assistant reply and ordinary Keychain relaunch through protected temporary public HTTPS. The production hostname origin correction is applied and HTTP-verified as provider v19 in the 2026-10-16 public-route-recovery receipt; actual native acceptance on that hostname remains open on EI-25946131547854574."
     },
     {
       "mode": "BYOC or hosted cloud workspace through advertised relay",
@@ -80,9 +80,9 @@
       "row": 3,
       "journey": "Supported public HTTPS pairing, workspace and chat",
       "status": "partial",
-      "evidence": "docs/evidence/iphone-p008-native-public-https-2026-10-14.json; docs/evidence/iphone-p008-native-public-chat-2026-10-14.json; testRunIds 21244733 and 21245578; carried-forward bindings 45314 and 45317",
-      "observed": "Actual iOS protected 404/401 boundaries, visible pairing, authorized Inbox, actual assistant reply and ordinary Keychain relaunch passed in retained selected runs.",
-      "remaining": "Production hostname configuration EI-25946131547854574; physical cellular radio remains a known simulator limit under D-026."
+      "evidence": "docs/evidence/iphone-p008-native-public-https-2026-10-14.json; docs/evidence/iphone-p008-native-public-chat-2026-10-14.json; docs/evidence/iphone-p008-public-route-recovery-2026-10-16.json; testRunIds 21244733 and 21245578; carried-forward bindings 45314 and 45317",
+      "observed": "Actual iOS protected 404/401 boundaries, visible pairing, authorized Inbox, actual assistant reply and ordinary Keychain relaunch passed in retained selected temporary-hostname runs. After the committed listener-custody repair, the exact advertised production device route was corrected to the maintained protected ingress as Cloudflare v19. Thirty-two current-build local/public HTTP checks passed, including real pairing, replay refusal, authorized access and revocation, with owned-device cleanup verified.",
+      "remaining": "Actual native acceptance on the corrected advertised production hostname remains on EI-25946131547854574. Historical native receipts retain their exact source identities; physical cellular radio remains a known simulator limit under D-026."
     },
     {
       "row": 4,
@@ -110,10 +110,11 @@
     {
       "row": 7,
       "journey": "Expired pair and device credentials",
-      "status": "partial",
-      "evidence": "docs/evidence/iphone-p008-native-expiry-2026-10-14.json; docs/evidence/iphone-p008-native-pair-guidance-2026-10-14.json; docs/evidence/iphone-p008-native-workspace-isolation-2026-10-14.json",
-      "observed": "Retained native expired-pair guidance and fresh pairing passed against the actual disposable operator. The later guidance regression proves complete rendered text. Current integration run 21246468 expires pair/device credentials, checks read/heartbeat/switch refusal and retains positive controls.",
-      "remaining": "Actual native expired-device-token guidance is not separately established by the expired-pair case. Preserve that scope distinction; do not rerun completed expired-pair jobs to reconstruct evidence."
+      "status": "retained-passed-subset",
+      "evidence": "docs/evidence/iphone-p008-native-expiry-2026-10-14.json; docs/evidence/iphone-p008-native-pair-guidance-2026-10-14.json; docs/evidence/iphone-p008-native-workspace-isolation-2026-10-14.json; docs/evidence/iphone-p008-native-device-expiry-2026-10-15.json",
+      "observed": "Retained native expired-pair guidance and fresh pairing passed against the actual disposable operator; the guidance regression proves complete rendered text. Integration run 21246468 separately checks expired pair/device read, heartbeat and switch refusal with positive controls. The later actual native device-JWT expiry case passed 60 unit, five smoke and one selected paired test with no failures or skips: authorized access preceded the owned operator-child clock advance; the original unrevoked device and signing identity were preserved, Pair again appeared, credentials remained cleared through ordinary relaunch, and fresh pairing authorized another ordinary relaunch. All 279 artifact hashes/sizes matched and four actual screenshots were reviewed; cleanup was verified.",
+      "executedNativeSourceFingerprint": "bbd4d59cd8b04abea4e1432e67b818212e0778b7adb3cc1c87c138256bd34551",
+      "remaining": "Preserve each receipt's exact source and scope. This selected clean-source simulator proof does not assert current whole-candidate acceptance or signed-release admission. No expired-pair or device-expiry rerun is needed to reconstruct these retained subsets."
     },
     {
       "row": 8,
@@ -171,7 +172,7 @@
     "Real cellular radio, production APNs delivery, Bluetooth hardware and battery endurance are known simulator limits under D-026",
     "No signed IPA, store submission or shipment claim",
     "No rerun of completed native jobs",
-    "Native expired-device-token guidance, production hostname configuration and accepted live hosted/BYOC target/entitlement evidence remain open",
+    "Actual native acceptance on the corrected production hostname and accepted live hosted/BYOC target/entitlement evidence remain open",
     "Carried-forward native bindings retain exact historical source fingerprints; this review does not assert whole-candidate currentness",
     "Owner-directive disposition is outside this evidence census; read the authoritative directive ledger"
   ]

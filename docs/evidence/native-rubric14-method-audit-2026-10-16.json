@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "kind": "acceptance-method-repair-proposal",
+  "status": "applied-method-clarification-not-a-grade",
+  "workItems": ["WI-6554700010016419", "EI-26165740895946812"],
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "rubricRef": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "sourceRevision": 14,
+  "sourceCriteriaHash": "a5397ccd4302e9b4369f263f737805ec4358fc5b164804d06aeccc4fdf96de22",
+  "sourceBarSetHash": "d9cf1e62f959317a38d8ceed683f2a17b0afb42cefb3a25e5e8c57b52bcdd3ca",
+  "sourceCapture": "/tmp/native-p041-rubric-rev14-full-20261016.json",
+  "sourceCaptureSha256": "103196800854ca89d0ce5f381eecf5d81ea32b5f18fe4764168b53172ecaffab",
+  "sourceCaptureRecovery": "rubrics:get { rubricRef, revision:14, detail:'full' }",
+  "application": {
+    "idempotencyKey": "native-r14-method-clarifications-apply-20261016-v1",
+    "receiptState": "committed",
+    "rubricRevision": 15,
+    "subjectPlanRevision": 111,
+    "criteriaHash": "57b23b32f11fcec2eaf0f0964fa3422f45c3a23517daa7faaca523f25844c2b9",
+    "barSetHash": "fc8e93835f55bb05e2d877e3b9dcc82f5b9e8fc5e311b0abf3f1a97256efee67",
+    "decisionRef": "native-code-intelligence-ecosystem-and-dream-2026-10-09#D-022",
+    "approval": "The canonical preview classified the changed check bindings as additive and returned approvalRequired:false; no review was reopened or created.",
+    "readback": "Full revision15 readback matched the submitted field fingerprints for all29 criteria; derived barHash was excluded only for amended criteria. R30-R34 matched as complete unchanged criterion objects.",
+    "validation": "29-way criterion partition;40exact source test-name references; retained every prior check file and criterion outcome/scope/plane/rating rule. No implementation tests rerun for this method/evidence-only change.",
+    "receiptFile": "/tmp/native-rubric14-method-status2-20261016.json",
+    "historyCorrection": "D022's reason retains the words Preview only from the proposal. The actual non-dry-run transaction committed; its receipt, revision movement and this readback are authoritative.",
+    "remaining": "Current revision meta-vetting and proof/adequacy bindings remain prerequisites; the amendment is not implementation acceptance or shipment. P041 follow-through coverage remains unknown."
+  },
+  "reviewRef": "thread-post:1184934",
+  "reviewDisposition": "Read the closed critique without reopening it. Its broad pre-R32 repair request is narrowed by current full criteria and source: R30/R31 already identify instruments, detector falsifiers, observability limits and release evidence. Preserve R30-R34 exactly. Shared suite files import distinct subsystem oracles; name those oracles rather than treating a shared filename as proof that the assertions are shared.",
+  "reuse": "Extend existing criterion method fields and union each existing check file list with its named detector files. Retain every original check file, outcome, scope, evidence plane, runtime declaration, rating rule, and D011. No new measurement system, tests, outcome target, review dispatch or acceptance claim.",
+  "checkFilePolicy": "union-existing-and-testRefs; never remove an existing bound file",
+  "commonMethodAppend": "Criterion-specific replication supplement (method clarification only). Run the existing bound suites through testing:run; require the named oracle below to execute without skip and satisfy its positive and distinguishing negative control. Retain the normal test-run ledger reference, exact full test name, original production/test/fixture SHA256 values and any child source substitutions. Tree evidence identifies tested source and fixture bytes; a tree test does not establish a serving runtime. Runtime-dependent evidence additionally records the selected currentBuildTestRoute, serving build SHA and containing loaded artifact hash; final-release claims identify the exact shipped artifact separately. Preserve each criterion's existing scope and evidence plane. Missing named cases, absent required applicable records, an incomplete population, unknown runtime identity, or unavailable distinguishing observations rate unknown; an observed counterexample rates fail. Detector tests alone cannot discharge a distribution, backend verdict, deployed handover or executed Dream-benefit outcome. Store the complete criterion-specific evidence with the applicable existing docs/evidence record and bind that record and normal ledger result at grading time.",
+  "criteria": [
+    {
+      "barKey": "R-1",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts", "name": "refuses distribution even if a noncommercial incumbent is labelled approved"}],
+      "append": "R-1: the named unit case verifies admission refusal only. P027 must enumerate a nonempty final distribution/installer artifact manifest, record each artifact path and SHA256 plus the licence/source inventory version, and inspect packaged dependencies and automatic-download paths. Fail if GitNexus is packaged or downloaded without the admitted distribution licence. Missing final artifacts or manifest coverage is unknown; P001's admission register alone is not a distribution verdict."
+    },
+    {
+      "barKey": "R-2",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts", "name": "P007 exposed context labels %s as unsupported rather than compiler-backed"}, {"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts", "name": "refuses an unsupported source extension through the actual syntax handler"}],
+      "append": "R-2: execute the parameterized unadmitted Rust/Python/Go context controls and unsupported-extension syntax control through their actual handlers, retaining each requested language/intent and typed refusal. Require a nonempty uncertified language-intent population drawn from the frozen P004/P005/P026 capability matrix, including its declared C++ boundary. A healthy trustworthy empty for any uncertified pair fails. Unexecuted matrix entries remain unknown, never implicitly covered by another language's result."
+    },
+    {
+      "barKey": "R-3",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts", "name": "versions both ends of a compiler edge and re-resolves the target after an unchanged caller sees a dependency edit"}],
+      "append": "R-3: retain a nonempty returned-edge population with both endpoint repository identities, measured content versions and snapshot identity; the unchanged-caller/dependency-edit control must replace the target version. An unattributable edge or a stale target presented as current fails. P003 supplies the source contract; the final P007/P017 answers and their edge census are the witnesses, not the prerequisite declaration alone."
+    },
+    {
+      "barKey": "R-4",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts", "name": "reconciles missed dependency edits and deletes without changing the query cursor"}],
+      "append": "R-4: save the populated pre-edit answer and unchanged query key, edit then delete the dependency, and retain the subsequent answers and measured input versions. A pre-edit dependency retained as current after either mutation fails. Missing pre-edit relationships or missing edit/delete observations is unknown."
+    },
+    {
+      "barKey": "R-5",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts", "name": "P007 exposed context returns the known outgoing call and measured compiler input versions"}, {"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts", "name": "P007 real context worker consolidates heritage, members, overrides and typed field accesses"}],
+      "append": "R-5: retain the frozen admitted-operation inventory and expected source sites, then record each operation's actual graph:query request/response through the exposed handler. The named context cases distinguish exact outgoing sites and compiler relationship kinds. Require every preregistered admitted operation, not merely one context case. An expected site missing or an incorrect extra site fails; an unexecuted operation remains unknown. Adapter-only success cannot substitute for exposed-handler evidence."
+    },
+    {
+      "barKey": "R-6",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts", "name": "returns the forward reference path across an alias and re-export without mixing homonyms"}, {"file": "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts", "name": "does not report the reverse path as a forward trace"}, {"file": "packages/operator-core/lib/code-intelligence/first-party-traversal.test.ts", "name": "stops at depth one before the target rather than adding an unsubstantiated hop"}],
+      "append": "R-6: require the reference fixture's nonempty forward multi-hop path, reverse-direction negative control and depth-one truncation control. Retain requested endpoints/depth, ordered returned nodes and source versions through P008/P026's graph handler. A reverse edge or invented extra hop fails. Unit traversal controls verify the oracle; missing actual handler replay or an empty applicable forward-path fixture is unknown."
+    },
+    {
+      "barKey": "R-7",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/engine-comparison-disposition.test.ts", "name": "an UNEXECUTED required arm is nonpassing residue and never lets a winner be declared"}, {"file": "packages/operator-core/lib/code-intelligence/engine-comparison-disposition.test.ts", "name": "a tree-fingerprint mismatch downgrades the SAME winning candidate to inconclusive and names the fingerprints"}],
+      "append": "R-7: retain the nonempty frozen matched-operation corpus, source/configuration hashes, declared arms, answer keys, budgets and raw per-arm observations. Reconstruct P026's final verdict from these saved inputs using the unchanged scoring rule and compare it with the recorded verdict. A differing verdict fails; a missing required arm, unmatched source or absent corpus leaves the comparison unknown. The named disposition tests are detector guards only; P002's preregistration proof is a prerequisite, not the final comparison result."
+    },
+    {
+      "barKey": "R-8",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts", "name": "keeps baseline tests when a hashed dependency path is accepted, stale or unavailable"}, {"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts", "name": "hands source-derived consumers to the selector and preserves baseline on source drift"}],
+      "append": "R-8: save a nonempty baseline selected set and graph-augmented selected set for the same changed source; include accepted, stale and unavailable graph controls. Fail if any baseline member is absent from the augmented set. An absent baseline or unexecuted stale/unavailable control is unknown; a larger graph set alone does not prove conservative selection."
+    },
+    {
+      "barKey": "R-9",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts", "name": "cites the edited symbol reference consumer and rechecks it before review"}, {"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts", "name": "cites both reference consumers and rechecks the remaining consumer after a source edit"}],
+      "append": "R-9: enumerate the reference fixture's known consumers independently, edit its symbol and retain the exposed pre-review report, cited sites and coverage limits. Delete or change a consumer and recheck. Omission of a known consumer without the required limitation fails; an empty known-consumer population or missing recheck is unknown."
+    },
+    {
+      "barKey": "R-10",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts", "name": "uses the real safe packer/compiler and replaces stale excerpts without widening task scope"}, {"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts", "name": "attributes claim/resume source to the held task and registered repository"}],
+      "append": "R-10: use a nonempty held task/file scope and an inaccessible neighboring source control. Retain claim/resume requests, cited scope and content hashes before and after a task-file edit. Inaccessible repository evidence or stale excerpts labelled current fails. No held task, no scoped source or unexecuted exclusion control is unknown."
+    },
+    {
+      "barKey": "R-11",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts", "name": "orders scoped producer/consumer references and reports overlap without changing live assignments or file claims"}],
+      "append": "R-11: snapshot authoritative workers/assignments and actual file claims for a nonempty overlapping producer/consumer fixture, view the advisory, then compare the authoritative before/after snapshots. Any advisory-induced reassignment or lock bypass fails. Missing authoritative snapshots, an unheld reference population or an unexecuted advisory is unknown; static decomposition advice alone does not discharge this live-authority control."
+    },
+    {
+      "barKey": "R-12",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts", "name": "joins the real compiler report to a registered result contract and exposes a removed field to its typed and runtime client"}, {"file": "packages/operator-core/lib/code-intelligence/scoped-contracts.integration.test.ts", "name": "identifies the known consumer after its response field changes and changes the producer source version"}],
+      "append": "R-12: require a registered producer and independently known typed/runtime client. Remove a response field, retain the incompatible consumer site and updated producer version, then adapt the client and retain the cleared mismatch. Failure to expose the known incompatible consumer fails; absent registered clients or missing mutation observations is unknown."
+    },
+    {
+      "barKey": "R-13",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts", "name": "requires re-verification after a compiler-resolved dependency changes or disappears"}, {"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts", "name": "invalidates proof after a dependent edit while preserving its requirement and test identity"}],
+      "append": "R-13: begin with a measured populated passing proof, edit then remove a cited dependency, and retain classifications plus unchanged requirement/test identity. A prior proof still current after either source mutation fails. No initial pinned proof or missing post-mutation currentness classification is unknown."
+    },
+    {
+      "barKey": "R-14",
+      "testRefs": [{"file": "packages/operator-core/lib/harness/docs/native-source-change.integration.test.ts", "name": "flags a real committed documented rename and delivers its scoped pinned candidate through the existing review hook"}],
+      "append": "R-14: use a nonempty source-linked documentation anchor, commit/version-pin the reference source, rename the documented symbol, and retain the source-linked drift candidate delivered through the existing review hook. A renamed symbol still presented as current without a candidate fails. Missing documentation anchors, source version or delivered candidate evidence is unknown."
+    },
+    {
+      "barKey": "R-15",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts", "name": "identifies the loaded artifact and refuses to substitute a later compiler source version"}, {"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts", "name": "identifies a containing current-build artifact and keeps a newer private source distinct"}],
+      "append": "R-15: select the current-build route explicitly and retain its health/build identity, loaded artifact path/hash, containing source fingerprint and a distinguishable newer edited source. Fail if the answer substitutes the newer tree for the loaded artifact or attributes staging to release. Missing loaded artifact identity or indistinguishable versions is unknown. Final release provenance remains a separate P027/R24 shipment witness."
+    },
+    {
+      "barKey": "R-16",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/task-brief.integration.test.ts", "name": "P018: carries recorded error references and real compiler hypotheses through canonical resume without asserting causation"}, {"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts", "name": "carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun"}],
+      "append": "R-16: require an actual completed failed-test ledger record and nonempty compiler candidate path; retain the claim/resume incident brief's runtime error reference and explicit static-hypothesis label, then the distinguishing passing rerun. Claiming causation from the graph alone fails. Missing runtime failure or distinguishing rerun is unknown; a synthetic error string alone is not the runtime witness."
+    },
+    {
+      "barKey": "R-17",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/scoped-contracts.integration.test.ts", "name": "rejects workspace and harness expansion through the actual public handler before registry reads"}, {"file": "packages/operator-core/lib/code-intelligence/scoped-contracts.integration.test.ts", "name": "does not read an imported or symlinked unadmitted repository"}],
+      "append": "R-17: require a registered nonempty producer/consumer scope and an unadmitted repository containing an identifiable private marker. Exercise foreign workspace/harness requests and imported/symlinked escape attempts through the actual handler. Any unauthorized source read or returned foreign relationship fails. Missing registry scope, private control or handler execution is unknown."
+    },
+    {
+      "barKey": "R-18",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/first-party-discovery.integration.test.ts", "name": "keeps positive retrieval and nonsense absence source-bound across the worker/handler boundary"}],
+      "append": "R-18: require a nonempty positive concept-search match and a nonsense-query absence control through the worker/handler boundary. Retain evidence=retrieval, knowledge=inferred and exact source hashes. A retrieval/cluster relationship labelled authoritative compiler dependency fails. Missing positive matches or absent evidence labels is unknown; nonsense absence alone cannot pass."
+    },
+    {
+      "barKey": "R-19",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts", "name": "joins real compiler paths to exact source excerpts and expands omitted consumers after a source edit"}, {"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts", "name": "expands budget-omitted captured records through capability:read after the source changes"}],
+      "append": "R-19: deliberately exceed the bundle budget so omitted count is positive; retain the bounded preview, expansion reference and captured artifact SHA256. Change source and expand the omitted records from the saved bytes. Silent completeness or expansion from newer source fails. No actual omitted population, unreadable expansion or missing hash verification is unknown."
+    },
+    {
+      "barKey": "R-20",
+      "testRefs": [{"file": "packages/operator-core/lib/dream/capability-packets.integration.test.ts", "name": "P022: enriches a source/test packet through the real compiler and scanner, then rejects edited evidence"}],
+      "append": "R-20: require a graph-enriched packet with at least one measured source/test citation passing current-source verification. Edit a cited source and retain the rejection, not merely a changed packet description. Continued eligibility after the hash change fails. Missing enriched packets, unmeasured citations or unexecuted mutation control is unknown."
+    },
+    {
+      "barKey": "R-21",
+      "testRefs": [{"file": "packages/operator-core/lib/dream/capability-packets.integration.test.ts", "name": "P023: supplies version-bound sampler hints from real compiler packets while keeping disconnected random candidates"}],
+      "append": "R-21: require a nonempty proposed relation whose two capability identities and measured content versions are retained, plus a disconnected-candidate control. Change either capability version and verify the old relation cannot enter the current structural sample. Admission of an old relation fails. Missing either endpoint version or absence of an actual proposed relation is unknown."
+    },
+    {
+      "barKey": "R-22",
+      "testRefs": [{"file": "packages/operator-core/lib/dream/capability-review-sources.integration.test.ts", "name": "supplies the existing integration and its renamed helper with exact source versions to independent review"}, {"file": "packages/operator-core/lib/dream/capability-review-sources.integration.test.ts", "name": "detects changed integration source after retrieval and preserves an empty-search unknown rather than claiming novelty"}],
+      "append": "R-22: require an actual matching existing-integration fixture, retain exact retrieved source versions and the independent duplicate/refinement judgment. Include the renamed-helper and empty-search controls. A matching proposal accepted as verified novel fails. Retrieval alone, missing independent classification, stale source or an empty search is unknown."
+    },
+    {
+      "barKey": "R-23",
+      "testRefs": [{"file": "packages/operator-core/lib/dream/dream-study-graph-comparison.test.ts", "name": "freezes source/problem/sampler and equal treatment caps while retaining both historical blocks"}, {"file": "packages/operator-core/lib/dream/dream-evaluation.test.ts", "name": "keeps failed graph trials, missing judgments and unknown cost out of benefit claims"}],
+      "append": "R-23: the named tests guard study design and honest accounting only. P025 must retain its nonempty frozen matched-study assignment population, treatment budgets, actual trial executions, complete measured costs and independently assessed executed-benefit labels. Record the protocol/population/oracle hashes and exact outcome artifact. Apply the unchanged study decision rule; do not invent a benefit threshold. Proposal counts, reviewer acceptance or design-only fixtures cannot establish useful outcomes. Missing executions, judgments, costs or required treatment observations is unknown; a declared success based only on volume or acceptance fails."
+    },
+    {
+      "barKey": "R-24",
+      "testRefs": [{"file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts", "name": "preserves the separate internal-comparison and distribution decisions"}],
+      "append": "R-24: the named integration case verifies separation of comparison and distribution permissions only. For final P027 handover, retain P001/P042's nonempty complete consumer census and the recorded disposition/backend for every tool, routine and workflow entry, with P009/P026 replacement evidence where required. Record release-operator health/build SHA and each containing final deployed artifact identity. A retained consumer losing its backend without its approved disposition fails. Missing census entries, unmeasured consumers or absent final deployed witnesses is unknown; no tree fixture substitutes for final shipment."
+    }
+  ],
+  "unchanged": ["R-30", "R-31", "R-32", "R-33", "R-34"],
+  "measurementEvidence": {
+    "issuedRun": 21287221,
+    "actedOnRun": 21287222,
+    "grepAfterPushRun": 21287223,
+    "status": "Existing saved scheduled evidence: issuance measured; follow-through and grep-after-push unknown. No new run performed for this audit.",
+    "limit": "Three issued rows had later Stop evidence but no matching preceding native prompt. No low-rate inference or leg disablement is justified."
+  }
+}

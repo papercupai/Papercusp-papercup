@@ -23,7 +23,6 @@ import {
 import { SocialVisibilityWidened } from './social';
 import { installSocialPackages, invokedArgs } from './social-provider.fixture';
 import { PROVIDER_SOCIAL_POST_CAPABILITY } from '@papercusp/plugin-sdk';
-import { anUnverifiedPlatformId } from '../external-triggers/social/platform-exemplars.fixture';
 
 /**
  * Minimal postgres stand-in. `resolveCanonicalDocument` and
@@ -97,14 +96,14 @@ describe('social:reply — rail 1', () => {
     expect(installed.invokes[0]!.request.source).toBe('src-1');
     expect(seen()[0]!.target).toEqual({
       platform: 'mastodon',
-      inReplyToId: '109999',
-      instanceHost: 'mastodon.social',
+      externalId: '109999',
+      payload: MASTODON_DOC.metadata,
     });
     expect(seen()[0]!.text).toBe('thanks!');
     expect((seen()[0] as SocialReplyRequest & { payload: unknown }).payload).toMatchObject(MASTODON_DOC.metadata);
     expect(result.inReplyTo).toBe('mastodon:109999');
     expect(result.ref).toBe('mastodon:110000');
-    expect(result.label).toContain('mastodon.social');
+    expect(result.label).toBe('mastodon · 109999');
   });
 
   it('INHERITS the parent audience when none is requested', async () => {
@@ -186,7 +185,7 @@ describe('social:reply — gate ORDER', () => {
     // rather than the write-verified gate — earlier, not later, so the property
     // this test protects is strictly stronger, not weaker. If it ever fails, an
     // unusable platform can reach a real public identity.
-    const installed = await installSocialPackages([{ platform: 'linkedin' }]);
+    const installed = await installSocialPackages([{ platform: 'linkedin', capabilities: ['social.post', 'social.delete'] }]);
     const sql = fakeSql([
       [
         {
@@ -253,10 +252,10 @@ describe('social:reply — gate ORDER', () => {
     await expect(
       replyToCanonicalSocialPost(sql, { ...BASE, ref: 'mastodon:109999', text: 'ok' }, installed.deps),
     ).rejects.toThrow(
-      /^outbound_source_not_connected:social-post:mastodon — no installed provider package serves mastodon$/,
+      /social_platform_unusable:mastodon:unknown-platform.*no installed/,
     );
-    // Only the post was read: the owner's sources were never listed.
-    expect(sql.calls()).toBe(1);
+    // An absent package refuses before the vault or connected sources are read.
+    expect(sql.calls()).toBe(0);
     expect(installed.hostFetchesBuilt).toBe(0);
   });
 
@@ -268,7 +267,7 @@ describe('social:reply — gate ORDER', () => {
 
     await expect(
       replyToCanonicalSocialPost(sql, { ...BASE, ref: 'mastodon:109999', text: 'ok' }, installed.deps),
-    ).rejects.toThrow(/^provider_capability_unsupported:mastodon:social\.reply$/);
+    ).rejects.toThrow(/social_platform_unusable:mastodon:write-verb-unsupported/);
     expect(installed.invokes).toHaveLength(0);
     expect(installed.hostFetchesBuilt).toBe(0);
   });
@@ -287,15 +286,14 @@ describe('social:reply — gate ORDER', () => {
   });
 
   it('refuses an unverified platform before any credential lookup', async () => {
+    const installed = await installSocialPackages([{ platform: 'unverified-social', verification: { verifiedAt: null, sources: [] } }]);
     const sql = fakeSql([[], []]);
     await expect(
       replyToCanonicalSocialPost(sql, {
         ...BASE,
-        // DERIVED — see platform-exemplars.fixture; this exemplar has already
-        // moved three times as each named platform got verified.
-        ref: `${anUnverifiedPlatformId()}:123`,
+        ref: 'unverified-social:123',
         text: 'ok',
-      }),
+      }, installed.deps),
     ).rejects.toThrow(/unverified/);
     expect(sql.calls()).toBe(0);
   });

@@ -31,7 +31,26 @@ describe('URL-only directive completion evidence (R-20)', () => {
   });
 
   it('refuses a URL-only successful disposition before its datastore write', async () => {
-    const sql = vi.fn();
+    // If the guard is removed, return a successful write so the refusal assertion
+    // fails on the accepted disposition instead of crashing on an incomplete mock.
+    const sql = vi.fn().mockResolvedValue([{
+      id: 1,
+      workspace_id: 'workspace-test',
+      owner_id: 'owner-test',
+      session_ref: null,
+      source_turn_ref: null,
+      verbatim_text: 'Verify the fix.',
+      recorded_by: 'su-test',
+      created_at: '2026-10-14T00:00:00Z',
+      dispositioned_at: '2026-10-15T00:00:00Z',
+      disposition_status: 'done',
+      disposition_note: '[Report](https://example.test/report)',
+      dispositioned_by: 'su-test',
+      summary_text: null,
+      summary_by: null,
+      summary_at: null,
+      captured_by_hook: true,
+    }]);
     const result = await dispositionOwnerDirective(
       { id: 1, status: 'done', note: '[Report](https://example.test/report)', dispositionedBy: 'su-test' },
       sql as never,

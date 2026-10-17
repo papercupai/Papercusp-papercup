@@ -1,7 +1,8 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { pruneRunsWithReport } from '@papercusp/verification-harness';
 import { llmBatteryEvidenceRoot, runScenarioBattery, scenarioPhaseOutcome } from './battery-harness';
 
 const scenarios = [
@@ -11,6 +12,46 @@ const scenarios = [
 ];
 
 describe('LLM scenario battery on the verification-harness contract', () => {
+  let retentionRoot: string;
+  beforeEach(() => {
+    retentionRoot = mkdtempSync(path.join(tmpdir(), 'llm-battery-mutex-'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', path.join(retentionRoot, 'locks'));
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', path.join(retentionRoot, 'pins'));
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(retentionRoot, { recursive: true, force: true });
+  });
+
+  it.each(['executed', 'failed'] as const)('retains original %s diagnostics after later runs evict the run directory', async outcome => {
+    const root = mkdtempSync(path.join(tmpdir(), 'llm-battery-retention-'));
+    const scenario = scenarios[0]!;
+    const summary = `${JSON.stringify({ scenarioId: scenario.id, verdict: outcome,
+      runs: [{ llmCallDiagnostics: { events: [{ status: 400, error: 'unsupported model' }] } }] })}\n`;
+    const { harness } = await runScenarioBattery({
+      scenarios: [scenario], concurrency: 1, evidenceRoot: root,
+      runScenario: async (_, dir) => {
+        writeFileSync(path.join(dir, 'report-summary.json'), summary);
+        return outcome;
+      },
+    });
+    const retained = path.join(root, 'retained', harness.runId);
+    expect(readFileSync(path.join(retained, 'phases', scenario.id, 'report-summary.json'), 'utf8')).toBe(summary);
+    expect(JSON.parse(readFileSync(path.join(retained, 'result.json'), 'utf8')).verdict)
+      .toBe(outcome === 'executed' ? 'pass' : 'fail');
+    // Move latest to a later run, then exercise the real count-retention boundary.
+    const later = '20991231T235959Z-999999';
+    mkdirSync(path.join(root, later));
+    unlinkSync(path.join(root, 'latest'));
+    symlinkSync(later, path.join(root, 'latest'));
+    const report = await pruneRunsWithReport(root, 1, Date.now(), {
+      measureDisk: async () => ({ totalBytes: 100, availableBytes: 100 }), reserveBytes: () => 1,
+    });
+    expect(report.removed).toContain(harness.runId);
+    expect(existsSync(harness.evidenceDir)).toBe(false);
+    expect(readFileSync(path.join(retained, 'phases', scenario.id, 'report-summary.json'), 'utf8')).toBe(summary);
+  });
+
   it('one phase per scenario, never-abort, evidence per scenario, outcomes in scenario order', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'llm-battery-'));
     const { outcomes, harness, summaryLine } = await runScenarioBattery({

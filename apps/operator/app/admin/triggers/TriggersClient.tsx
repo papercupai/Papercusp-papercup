@@ -49,9 +49,9 @@ export function idleManualReviewRuns(
  * Render a cursor-freshness verdict (P-027).
  *
  * The four states are NOT collapsed into "last synced <time>" on purpose:
- * `position-only` means the platform's cursor carries no timestamp at all
- * (reddit's `t3_…` fullname, a bluesky `seq` before any event landed), so
- * showing it as "never synced" would report a healthy integration as dead.
+ * `position-only` means a provider position is persisted without host sync
+ * time. The position's contents stay opaque; its shape says nothing about
+ * whether the provider has timestamps.
  */
 function cursorLabel(cursor: ExternalTriggerSocialAdminFacts["cursor"]): {
   tone: "ok" | "warn" | "idle";
@@ -61,17 +61,17 @@ function cursorLabel(cursor: ExternalTriggerSocialAdminFacts["cursor"]): {
     case "synced":
       return { tone: "ok", text: `synced · ${formatAge(cursor.ageMs)}` };
     case "position-only":
-      return { tone: "ok", text: `advancing · ${cursor.position} · no timestamp on this platform` };
+      return { tone: "ok", text: `advancing · ${cursor.position} · host sync time not recorded` };
     case "never-synced":
-      return { tone: "idle", text: "never synced — no cursor persisted yet" };
+      return { tone: "idle", text: "never synced — no provider page committed yet" };
     case "unrecognized":
-      return { tone: "warn", text: `unreadable cursor — ${cursor.detail}` };
+      return { tone: "warn", text: `sync freshness unknown — ${cursor.detail}` };
     default:
       return { tone: "warn", text: cursor.detail };
   }
 }
 
-/** Compact age. Negative means the provider instant is AHEAD of us — a skew signal, shown not hidden. */
+/** Compact age. Negative means the recorded instant is ahead of us — a visible skew signal. */
 function formatAge(ageMs: number | null): string {
   if (ageMs === null) return "unknown age";
   if (ageMs < 0) return `${formatAge(-ageMs)} in the future (clock skew)`;
@@ -91,11 +91,10 @@ function SocialSourceFacts({ social }: { social: ExternalTriggerSocialAdminFacts
     <div className="tr-social" data-platform={social.platformId}>
       <div className="tr-meta">
         <span className="tr-badge tr-social-platform">{social.label}</span>
-        <span className="tr-social-tag">wave {social.wave}</span>
         <span className="tr-social-tag">{social.authMode}</span>
-        <span className="tr-social-tag">{social.readTransport}</span>
+        <span className="tr-social-tag">{social.readTransport ?? "write-only"}</span>
         {!social.verified && (
-          <span className="tr-badge status-error" title="Registry row is not verified against its cited sources">
+          <span className="tr-badge status-error" title="Provider API contract is not verified against its cited sources">
             unverified
           </span>
         )}

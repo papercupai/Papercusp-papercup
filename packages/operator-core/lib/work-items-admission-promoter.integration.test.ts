@@ -2477,6 +2477,65 @@ describe('work-item admission promoter (real Postgres)', () => {
     ]);
   });
 
+  it.each(['harness', 'workspace'] as const)('keeps unresolved duplicate candidates and degraded dedup rows pending during %s fail-open', async (scope) => {
+    await seedItem({ id: 'WI-plain-old', createdAtMs: NOW - 61 * 60_000, vector: null });
+    await seedItem({
+      id: 'WI-candidate-old',
+      createdAtMs: NOW - 62 * 60_000,
+      vector: null,
+      payload: { dedupCandidates: [{ id: 'WI-canonical', similarity: 0.94, method: 'semantic-hard' }] },
+    });
+    await seedItem({
+      id: 'WI-degraded-old',
+      createdAtMs: NOW - 63 * 60_000,
+      vector: null,
+      payload: { dedupCoverage: { lexical: 'ok', semantic: 'unavailable', degraded: true } },
+    });
+    await seedItem({
+      id: 'WI-checked-old', createdAtMs: NOW - 61 * 60_000, vector: null,
+      payload: { dedupCoverage: { lexical: 'ok', semantic: 'ok', degraded: false } },
+    });
+    const onNewlyAdmitted = vi.fn(async (_rows: readonly { id: string; harness: string }[]) => {});
+
+    const result = await runWorkItemAdmissionFailOpen({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: `fail-open-duplicate-guard-${scope}`,
+      sql: db.sql,
+      now: () => NOW,
+      scope,
+      onNewlyAdmitted,
+    });
+
+    expect(result.autoPromoted).toEqual(['WI-checked-old', 'WI-plain-old']);
+    expect(onNewlyAdmitted).toHaveBeenCalledWith(expect.arrayContaining([
+      { id: 'WI-checked-old', harness: HARNESS },
+      { id: 'WI-plain-old', harness: HARNESS },
+    ]));
+    const rows = await db.sql<Array<{ feature_id: string; admission: string; payload: Record<string, unknown> }>>`
+      SELECT feature_id, admission, payload
+        FROM harness_shared.work_items
+       WHERE feature_id IN ('WI-plain-old', 'WI-candidate-old', 'WI-degraded-old')
+       ORDER BY feature_id`;
+    expect(rows).toEqual([
+      {
+        feature_id: 'WI-candidate-old',
+        admission: 'pending',
+        payload: { dedupCandidates: [{ id: 'WI-canonical', similarity: 0.94, method: 'semantic-hard' }] },
+      },
+      {
+        feature_id: 'WI-degraded-old',
+        admission: 'pending',
+        payload: { dedupCoverage: { lexical: 'ok', semantic: 'unavailable', degraded: true } },
+      },
+      {
+        feature_id: 'WI-plain-old',
+        admission: 'unreviewed',
+        payload: expect.objectContaining({ admissionFailOpen: expect.any(Object) }),
+      },
+    ]);
+  });
+
   it('binds fail-open receipts to their exact producing runs even when timestamps coincide', async () => {
     const legacyReceipt = { actor: 'system:work-item-admission-fail-open', at: new Date(NOW).toISOString() };
     await seedItem({ id: 'WI-legacy-run', admission: 'unreviewed', payload: { admissionFailOpen: legacyReceipt } });

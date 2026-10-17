@@ -2,8 +2,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useEffect, useState, type ReactNode } from 'react';
-import { AccountProductTutorial, ProductTutorialAssistance, ProductTutorialVoiceQuestion, createProductTutorialAnalytics, productTutorialDestination, validProductTutorialRecord, type ProductTutorialAccount, type ProductTutorialVoiceLauncher } from './product-tutorial';
-import { PRODUCT_TUTORIAL_LESSONS } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
+import { AccountProductTutorial, ProductTutorialAssistance, ProductTutorialVideo, ProductTutorialVoiceQuestion, createProductTutorialAnalytics, productTutorialDestination, validProductTutorialRecord, type ProductTutorialAccount, type ProductTutorialVoiceLauncher } from './product-tutorial';
+import { PRODUCT_TUTORIAL_CHAPTERS, PRODUCT_TUTORIAL_LESSONS, type ProductTutorialVideoMedia } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
 import { captureBrowserTelemetry } from '../browser-telemetry';
 import { OperatorWorkspaceLocationProvider } from '../seam';
 vi.mock('../browser-telemetry', () => ({ captureBrowserTelemetry: vi.fn() }));
@@ -13,6 +13,81 @@ const record = (patch: Record<string, unknown> = {}) => ({ scope: { tenantId: ac
   revision: 0, mutationId: null, disposition: 'active', currentLessonId: 'welcome', reviewedLessonIds: [], ...patch });
 const response = (value: unknown, status = 200) => Response.json({ record: value }, { status });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
+const videoMedia: ProductTutorialVideoMedia = {
+  id: 'test-video-v1', src: 'https://clips.papercusp.com/test/tutorial.mp4', captionsSrc: 'https://clips.papercusp.com/test/tutorial.vtt', transcriptHref: '/tutorial-transcript',
+  chapters: PRODUCT_TUTORIAL_CHAPTERS.map((chapter, index) => ({ id: chapter.id, startSeconds: index * 10, transcript: `Transcript for ${chapter.title}.` })),
+};
+describe('combined video and practice guide', () => {
+  it('plays and seeks with captions without saving guide or product completion', async () => {
+    const fetcher = vi.fn().mockResolvedValue(response(record()));
+    vi.stubGlobal('fetch', fetcher);
+    render(<AccountProductTutorial account={account} videoMedia={videoMedia}><p>Home</p></AccountProductTutorial>);
+    await screen.findByRole('heading', { name: 'Welcome to Papercusp' });
+    const video = screen.getByLabelText('PaperCup cloud project tutorial') as HTMLVideoElement;
+    expect(video.autoplay).toBe(false);
+    expect(video.querySelector('track')?.getAttribute('src')).toBe(videoMedia.captionsSrc);
+    fireEvent.click(screen.getByRole('button', { name: 'Create one useful project' }));
+    expect(video.currentTime).toBe(10);
+    fireEvent.timeUpdate(video);
+    fireEvent.ended(video);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Choose an authorized workspace before trying this chapter.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Try it — Create one useful project' })).toBeNull();
+    expect(vi.mocked(captureBrowserTelemetry).mock.calls.some(([, value]) => value.action === 'explanation_reviewed')).toBe(false);
+  });
+  it('waits for a scoped acknowledged pause before Try it navigates, preserving reviewed lessons', async () => {
+    const assign = vi.fn();
+    vi.stubGlobal('window', Object.assign(Object.create(window), { location: { assign } }));
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
+    let acknowledge!: (value: Response) => void;
+    const fetcher = vi.fn().mockResolvedValueOnce(response(record({ reviewedLessonIds: ['welcome'] })))
+      .mockImplementationOnce(() => new Promise<Response>(resolve => { acknowledge = resolve; }));
+    vi.stubGlobal('fetch', fetcher);
+    render(<AccountProductTutorial account={{ ...account, workspaceId: 'chosen-workspace' }} videoMedia={videoMedia}><p>Home</p></AccountProductTutorial>);
+    await screen.findByRole('heading', { name: 'Welcome to Papercusp' });
+    fireEvent.click(screen.getByRole('button', { name: 'Create one useful project' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Try it — Create one useful project' }));
+    expect(pause).toHaveBeenCalled();
+    expect(assign).not.toHaveBeenCalled();
+    expect(JSON.parse(fetcher.mock.calls[1][1].body)).toMatchObject({ expectedScope: { tenantId: 'org', userId: 'user' },
+      currentLessonId: 'cloud-first-agent', disposition: 'paused', reviewedLessonIds: ['welcome'], video: { mediaId: 'test-video-v1', chapterId: 'create-project', positionSeconds: 10 } });
+    await act(async () => acknowledge(response(record({ disposition: 'paused', revision: 1, currentLessonId: 'cloud-first-agent', reviewedLessonIds: ['welcome'] }))));
+    expect(assign).toHaveBeenCalledWith('/?app=home&chatPane=true');
+    pause.mockRestore();
+  });
+  it('keeps transcript and practice usable when media fails', () => {
+    const onTry = vi.fn();
+    render(<ProductTutorialVideo media={videoMedia} lessonId="work" workspaceId="workspace" onTry={onTry} />);
+    fireEvent.error(screen.getByLabelText('PaperCup cloud project tutorial'));
+    expect(screen.getByRole('link', { name: 'Read the full transcript' }).getAttribute('href')).toBe('/tutorial-transcript');
+    fireEvent.click(screen.getByRole('button', { name: 'Try it — Follow Plans, HUD and Work' }));
+    expect(onTry).toHaveBeenCalledWith(expect.objectContaining(PRODUCT_TUTORIAL_CHAPTERS[2]));
+  });
+  it('offers a persistent entry after the guide has been closed', async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(response(record({ disposition: 'closed', reviewedLessonIds: ['welcome'] })))
+      .mockResolvedValueOnce(response(record({ revision: 1, disposition: 'active', reviewedLessonIds: ['welcome'] })));
+    vi.stubGlobal('fetch', fetcher);
+    render(<AccountProductTutorial account={account} videoMedia={videoMedia}><p>Home</p></AccountProductTutorial>);
+    fireEvent.click(await screen.findByRole('button', { name: 'Watch the project tutorial' }));
+    await screen.findByLabelText('PaperCup cloud project tutorial');
+    expect(JSON.parse(fetcher.mock.calls[1][1].body)).toMatchObject({ disposition: 'active', reviewedLessonIds: ['welcome'] });
+  });
+  it('resumes only the saved edition and keeps video time separate from reviewed explanations', async () => {
+    const video = { mediaId: videoMedia.id, chapterId: 'visible-fleet', positionSeconds: 94.5 };
+    const fetcher = vi.fn().mockResolvedValue(response(record({ video })));
+    vi.stubGlobal('fetch', fetcher);
+    const view = render(<AccountProductTutorial account={{ ...account, workspaceId: 'chosen-workspace' }} videoMedia={videoMedia}><p>Home</p></AccountProductTutorial>);
+    const player = await screen.findByLabelText('PaperCup cloud project tutorial') as HTMLVideoElement;
+    fireEvent.loadedMetadata(player);
+    expect(player.currentTime).toBe(94.5);
+    expect(screen.getByRole('button', { name: 'Try it — Continue with a visible fleet' })).toBeTruthy();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    view.rerender(<AccountProductTutorial account={{ ...account, workspaceId: 'chosen-workspace' }} videoMedia={{ ...videoMedia, id: 'new-edition' }}><p>Home</p></AccountProductTutorial>);
+    fireEvent.loadedMetadata(screen.getByLabelText('PaperCup cloud project tutorial'));
+    expect((screen.getByLabelText('PaperCup cloud project tutorial') as HTMLVideoElement).currentTime).toBe(0);
+    expect(vi.mocked(captureBrowserTelemetry).mock.calls.some(([, value]) => value.action === 'explanation_reviewed')).toBe(false);
+  });
+});
 describe('account product guide entry', () => {
   it('passes the hosted location to analytics instead of probing desktop consent', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => response(record())));

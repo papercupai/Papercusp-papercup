@@ -22,6 +22,7 @@ import {
   resetPgDiagnosticContextResolver,
   resetAcquireRegistryForTest,
 } from '@papercusp/db-org';
+import { SU_LOCK_TX_POOL_LABEL } from '@papercusp/locks';
 import { recordPgResult } from '../../../../../libs/papercusp/libs/db/src/acquire-registry';
 import { pgHealth } from '../../dev-data';
 import pgHealthTool from './pg_health';
@@ -78,6 +79,30 @@ describe('dev:pg_health completed-result delivery', () => {
       tickets: { pool: 'org-admin', active: 1, tickets: [{ state: 'waiting' }] },
     });
     expect(data.processDiagnostics.pools[1].results).toEqual([]);
+  });
+
+  it('surfaces the dedicated su-lock-tx acquisition counters', async () => {
+    const acquisition = beginAcquire(SU_LOCK_TX_POOL_LABEL);
+    acquisition.acquired();
+    try {
+      const { data } = await run({ localOnly: true });
+      expect(data.acquisitionDiagnostics.pools[3]).toMatchObject({
+        counters: {
+          pool: SU_LOCK_TX_POOL_LABEL,
+          waiting: 0,
+          held: 1,
+          max: null,
+          totalAcquired: 1,
+        },
+        tickets: {
+          pool: SU_LOCK_TX_POOL_LABEL,
+          active: 1,
+          tickets: [{ state: 'held' }],
+        },
+      });
+    } finally {
+      acquisition.release();
+    }
   });
   it.each([
     { label: 'is explicitly configured', value: '24', expected: '24' },

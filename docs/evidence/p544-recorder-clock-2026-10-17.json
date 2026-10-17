@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "planItem": "P-544",
+  "workItem": "WI-6554700010016836",
+  "classification": "Local maintained regression evidence; no provider sends, cloud run, monthly cost qualification or shipment claim",
+  "rootCause": "TSX evaluates the ESM package clock through separate static CommonJS and dynamic ESM module instances. Per-module UUID generation assigns different identities even though both samplers use the same runtime performance.now domain. The recorder consequently refuses gateway attempts as foreign-clock before fetch.",
+  "alternativeHypothesis": "The recorder and gateway run in separate processes and legitimately need distinct clock domains.",
+  "distinguishingTest": "The maintained Vitest test captures exact clock source bytes in a temporary type:module fixture, launches the real installed TSX loader with inherited source guards, and imports the fixture statically and dynamically within one child. A second case compares separately launched processes. Child-computed source SHA256 must match the captured source.",
+  "predictions": {
+    "rootCause": "Within one TSX child the original module yields different objects; a process-global singleton makes them equal while separate children remain distinct.",
+    "alternativeHypothesis": "Within-process objects would already agree before the change; a subprocess is required to observe identity divergence."
+  },
+  "before": {
+    "log": "/tmp/p544-clock-esm-before-20261017.log",
+    "sourceSha256": "4d1b02b133cdd7d7e4dd72e48a384274d672a2a4e36991d4b257666ad2beb41f",
+    "passed": 1,
+    "failed": 1,
+    "failure": "sameObject was false inside one TSX process",
+    "childSubstituted": 0
+  },
+  "after": {
+    "log": "/tmp/p544-clock-budget-after-20261017.log",
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- scripts/agent-capacity/record-budget.test.ts packages/operator-core/lib/process-monotonic-clock.test.ts",
+    "passed": 47,
+    "failed": 0,
+    "skipped": 0,
+    "childSubstituted": 0,
+    "headAtRun": "7f1ada8ef4",
+    "testedNamedPathProvenance": "1 of 2 named test paths dirty; production clock source captured directly by child fixture",
+    "coverage": [
+      "Static CommonJS and dynamic ESM imports share immutable object and id",
+      "Separately launched processes retain distinct clock ids",
+      "Foreign clock attempt remains denied before reservation",
+      "Maintained real gateway with loopback mock provider permits one send and refuses exhausted second attempt",
+      "Full write-ahead reservations cover concurrency, retries and response outcomes"
+    ],
+    "postTestChange": "Production JSDoc clarified runtime-global semantics only; executable source unchanged after the successful run"
+  },
+  "currentSourceSha256": {
+    "packages/operator-core/lib/process-monotonic-clock.ts": "639650e56a64ef693063064dea7fafdb26f546d8d8ca373c4734c56dc840e55c",
+    "packages/operator-core/lib/process-monotonic-clock.test.ts": "786eaf5448fcbca9209c712bf21b7cb3b7d0e44ed2532e7610f5f2489d479a09",
+    "scripts/agent-capacity/record-budget.ts": "cf303f1b1b1d71bd46ce204c025223d411ecce9c4927ca91f6672b3f8c62ea9b",
+    "scripts/agent-capacity/record-budget.test.ts": "c621cfd8e5cab8b55d31bca5128f22bb04b8102aaf1aaabc0d6b8c99c197d06d"
+  },
+  "seamAudit": {
+    "requestShape": "Maintained tests cover native additional_tools developer namespaces and reject hosted/remote content",
+    "credential": "Gateway hashes the selected complete Authorization header; live admission must hash Bearer plus accessToken, never the raw token",
+    "clock": "Existing processMonotonicClock abstraction now reuses one immutable runtime-global value across module copies",
+    "finalSend": "Gateway validates matching clock and unexpired receipt, then synchronously invokes write-ahead budget authorization before fetch",
+    "priorReservations": "Retained without refund; no additional provider attempt admitted by this evidence"
+  }
+}

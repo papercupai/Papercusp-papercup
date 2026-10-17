@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { withSubmissionReceipt } from '../../cupboard/submission-receipt';
 import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
 
 export const exportTool = defineTool({
@@ -125,7 +126,7 @@ export const publishTool = defineTool({
     });
     if (!result.ok) return text({ ok: false, error: result.error, detail: result.detail, status: result.status });
     const data = result.data as { id?: string; review_status?: string; pending_review?: boolean };
-    return text({
+    return text(withSubmissionReceipt({
       ok: true,
       listingId: data.id,
       review_status: data.review_status ?? 'pending',
@@ -133,7 +134,7 @@ export const publishTool = defineTool({
         data.review_status === 'pending' || data.pending_review
           ? 'Published PENDING — an operator must approve it before it is publicly visible (you can watch your own listing meanwhile).'
           : undefined,
-    });
+    }));
   },
 });
 

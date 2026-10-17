@@ -57,6 +57,7 @@ export const RETRIEVAL_DEGRADATION_MECHANISM = 'retrieval';
 export function retrievalSampleDecision(sample: LegSample): FallbackDecision {
   const reasons = [
     sample.semanticBlocked && 'semantic-blocked', sample.lexicalBlocked && 'lexical-blocked',
+    sample.semanticSourceFailed && 'semantic-source-failed', sample.lexicalSourceFailed && 'lexical-source-failed',
     sample.semanticEmpty && 'semantic-empty', sample.lexicalEmpty && 'lexical-empty',
   ].filter((reason): reason is string => typeof reason === 'string');
   return { eligible: 1, applied: sample.degraded ? 0 : 1,
@@ -89,6 +90,8 @@ export function judgeRetrievalHealth(
   const counts: [string, number][] = [
     ['semantic leg blocked', health.semanticBlocked],
     ['lexical leg blocked', health.lexicalBlocked],
+    ['semantic source call failed', health.semanticSourceFailed],
+    ['lexical source call failed', health.lexicalSourceFailed],
     ['semantic leg returned nothing', health.semanticEmpty],
     ['lexical leg returned nothing', health.lexicalEmpty],
   ];

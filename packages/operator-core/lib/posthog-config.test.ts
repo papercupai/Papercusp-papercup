@@ -5,8 +5,10 @@
  * os.homedir is mocked to a temp home; the discovery file is real.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 const H = vi.hoisted(() => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -112,3 +114,30 @@ describe('caching', () => {
     expect(getPosthogConfig()).toBe(first); // still cached
   });
 });
+
+it('reloads a changed discovery file without keeping its owning process alive', () => {
+  const home = mkdtempSync(join(tmpdir(), 'posthog-watch-exit-'));
+  const source = new URL('./posthog-config.ts', import.meta.url).href;
+  const script = `
+    import { watchPosthogConfig, setOnConfigChange } from ${JSON.stringify(source)};
+    import { writeFileSync } from 'node:fs';
+    import { homedir } from 'node:os';
+    import { join } from 'node:path';
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('discovery change was not observed')), 2000);
+      setOnConfigChange(() => { clearTimeout(timeout); console.log('POSTHOG_WATCH_CHANGED'); resolve(); });
+      watchPosthogConfig();
+      writeFileSync(join(homedir(), '.papercusp', 'posthog.json'), '{"testingFeatures":true}');
+    });
+  `;
+  try {
+    const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script], {
+      cwd: join(import.meta.dirname, '../../..'), env: { ...process.env, HOME: home },
+      encoding: 'utf8', timeout: 10_000,
+    });
+    expect(result.stdout, result.stderr).toContain('POSTHOG_WATCH_CHANGED');
+    expect(result.error, result.stderr).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.signal).toBeNull();
+  } finally { rmSync(home, { recursive: true, force: true }); }
+}, 15_000);

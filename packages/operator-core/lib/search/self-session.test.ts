@@ -52,6 +52,33 @@ describe('resolveSelfSession — launcher executable paths', () => {
       expect(resolved).toEqual({ sourceKind: 'omp', sessionId: SID, filePath });
     },
   );
+
+  it('trusts the active adv-session client when a stale psu-pty record names another client', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'self-session-'));
+    roots.push(home);
+    const owner = 'su-mixed-client';
+    const staleClaude = '119f4fa9-4a09-78f2-8334-8e8a53001ea0';
+    const ptyDir = join(home, '.papercusp', 'psu-pty');
+    const rolloutDir = join(home, '.papercusp', 'su-codex-homes', 'session-11801', 'sessions', '2026', '10', '16');
+    await mkdir(ptyDir, { recursive: true });
+    await mkdir(rolloutDir, { recursive: true });
+    // The discovery record can lag a client handoff and still contain the old
+    // Claude command/UUID while the active adv-session row already identifies
+    // the live Codex process.
+    await writeFile(
+      join(ptyDir, `${owner}.json`),
+      JSON.stringify({ command: 'claude', args: ['--session-id', staleClaude] }),
+    );
+    const filePath = join(rolloutDir, `rollout-2026-10-16T19-05-11-${SID}.jsonl`);
+    await writeFile(filePath, '{}\n');
+
+    const resolved = await resolveSelfSession(owner, {
+      home,
+      loadActiveSessions: async () => [{ id: 11801, agent: 'codex', session_id: SID, omp_thread_id: null }],
+    });
+
+    expect(resolved).toEqual({ sourceKind: 'codex', sessionId: SID, filePath });
+  });
 });
 
 describe('resolveSelfSession — fresh Codex without a rollout', () => {
@@ -80,6 +107,29 @@ describe('resolveSelfSession — fresh Codex without a rollout', () => {
       sessionId: SID,
       filePath: join(codexHome, 'history.jsonl'),
     });
+  });
+
+  it('uses live psu-pty Codex metadata when the active-session lookup is unavailable', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'self-session-'));
+    roots.push(home);
+    const owner = 'su-pty-fallback';
+    const codexHome = join(home, '.papercusp', 'su-codex-homes', 'session-11801');
+    const rolloutDir = join(codexHome, 'sessions', '2026', '10', '17');
+    await mkdir(join(home, '.papercusp', 'psu-pty'), { recursive: true });
+    await mkdir(rolloutDir, { recursive: true });
+    const filePath = join(rolloutDir, `rollout-2026-10-17T04-02-33-${SID}.jsonl`);
+    await writeFile(filePath, '{}\n');
+    await writeFile(
+      join(home, '.papercusp', 'psu-pty', `${owner}.json`),
+      JSON.stringify({ command: 'codex', args: [], advSessionId: '11801', nativeSessionId: SID }),
+    );
+
+    const resolved = await resolveSelfSession(owner, {
+      home,
+      loadActiveSessions: async () => [],
+    });
+
+    expect(resolved).toEqual({ sourceKind: 'codex', sessionId: SID, filePath });
   });
 });
 

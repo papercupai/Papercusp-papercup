@@ -58,6 +58,21 @@ const ts = (over: Partial<Client> = {}): Client => ({
 });
 
 describe('healthForAnswer — an empty answer must earn the right to be believed', () => {
+  it('uses the ESM-resolvable vscode-jsonrpc node entrypoint', async () => {
+    // Vitest resolves extensionless package paths that native ESM rejects.
+    // Check the adapter's actual import with Node's resolver and filesystem
+    // before letting Vitest load it, so the native plans path stays covered.
+    const source = readFileSync(new URL('./lsp-adapter.ts', import.meta.url), 'utf8');
+    const entrypoint = source.match(/from '(vscode-jsonrpc\/[^']+)'/)?.[1];
+    expect(entrypoint).toBeDefined();
+    expect((await stat(new URL(import.meta.resolve(entrypoint!)))).isFile()).toBe(true);
+    await expect(import(entrypoint!)).resolves.toMatchObject({
+      createMessageConnection: expect.any(Function),
+      StreamMessageReader: expect.any(Function),
+      StreamMessageWriter: expect.any(Function),
+    });
+  });
+
   it('REFUSES to certify an empty from a rust server that never reported quiescent', () => {
     // The exact measured defect: rust-analyzer answered implementations
     // healthy-and-EMPTY while still indexing, and isTrustworthyEmpty blessed

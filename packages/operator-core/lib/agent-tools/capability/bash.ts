@@ -966,6 +966,7 @@ export default defineTool({
         response_window_ms: responseWindowMs,
         timeout_ms: job.timeoutMs,
         deadline: job.deadlineAt ? new Date(job.deadlineAt).toISOString() : undefined,
+        ...(r.reason ? { reason: r.reason } : {}),
         ...(integrationEntries.length > 0 ? { integration_env: integrationEnvView } : {}),
         ...(processNotice ? { process_table_notice: processNotice } : {}),
         advice:
@@ -999,7 +1000,9 @@ export default defineTool({
     const isError = r.status === 'failed' && r.exitCode === null;
     const timeoutHint =
       r.status === 'timed_out'
-        ? `\n⏱ execution deadline reached after ${((job.timeoutMs ?? executionTimeoutMs) / 1000).toFixed(0)}s; the same job's whole process tree was terminated. Partial/full permitted output: ${r.logPath}.`
+        ? `\n⏱ execution deadline reached after ${((job.timeoutMs ?? executionTimeoutMs) / 1000).toFixed(0)}s; the same job's whole process tree was terminated.` +
+          (r.reason ? ` Diagnostic reason: ${r.reason}.` : '') +
+          ` Partial/full permitted output: ${r.logPath}.`
         : '';
 
     return {
@@ -1045,6 +1048,7 @@ export default defineTool({
               response_window_ms: responseWindowMs,
               timeout_ms: job.timeoutMs,
               deadline: job.deadlineAt ? new Date(job.deadlineAt).toISOString() : undefined,
+              ...(r.reason ? { reason: r.reason } : {}),
               ...(integrationEntries.length > 0 ? { integration_env: integrationEnvView } : {}),
               ...(processNotice ? { process_table_notice: processNotice } : {}),
             },

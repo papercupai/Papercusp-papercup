@@ -37,6 +37,27 @@ export function verifyPrivateHistoryStreams(
   return selected.map(({ url, status }) => ({ url, status }));
 }
 
+/** Expected mutation failure cannot substitute for a complete native cleanup. */
+export function verifyPrivateStopCleanup(output: string) {
+  const lines = output.split('\n');
+  const prefix = 'ROSTER_STOP_HTTP_CLEANUP_PHASE ';
+  const phases = lines.filter(line => line.startsWith(prefix)).map(line => JSON.parse(line.slice(prefix.length)));
+  const stages = ['native-shutdown', 'native-exit', 'session-end-records', 'api-stop', 'listeners-stop',
+    'auth-invalidation-listener-stop', 'database-census', 'database-close', 'db-org-pools-reset',
+    'database-resources-closed'];
+  assert.deepEqual(phases.map(({ stage, status }) => ({ stage, status })),
+    stages.flatMap(stage => [{ stage, status: 'start' }, { stage, status: 'complete' }]),
+    'every private stop cleanup phase must complete without a failed or missing phase');
+  for (const phase of phases) {
+    assert.ok(Number.isFinite(phase.elapsedMs) && phase.elapsedMs >= 0 && phase.elapsedMs <= 15_000,
+      `private stop cleanup exceeded its 15s deadline: ${phase.stage}`);
+  }
+  const summaryPrefix = 'ROSTER_STOP_HTTP_CLEANUP ';
+  const summaries = lines.filter(line => line.startsWith(summaryPrefix));
+  assert.equal(summaries.length, 1, 'one original private stop cleanup summary is required');
+  assert.deepEqual(JSON.parse(summaries[0].slice(summaryPrefix.length)), { childrenStopped: true, apiStopped: true });
+}
+
 /** A stop receipt identifies one launch, not just an owner reused over time. */
 export function verifyPrivateStopReceipt(
   receipt: { status: number; body: any },

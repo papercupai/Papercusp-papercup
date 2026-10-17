@@ -306,6 +306,36 @@ describe('RSR-P-043-A: bind-time targeting agrees with the evaluator', () => {
     expect(await mutationTargetingRefusal(corrected, SCOPE, loaderFor(c))).toBeNull();
   });
 
+  it('returns a compact replay call for a refused fromTestRun item', async () => {
+    const c = scenarioClause();
+    const correctionInput = {
+      workItemId: 'WI-143',
+      specId: 'SPEC-003-01',
+      specRevision: 1,
+      fromTestRun: 214,
+      details: { adequacy: { testCases: [MUTATION_CASE] } },
+    };
+    const refusal = await mutationTargetingRefusal(
+      binding(undefined),
+      { ...SCOPE, harnessArg: 'web' },
+      loaderFor(c),
+      correctionInput,
+    );
+
+    expect(refusal?.correctedCall).toEqual({
+      tool: 'plans:bind-spec-evidence',
+      args: {
+        harness: 'web',
+        slug: 'reconnect-plan',
+        items: [{
+          ...correctionInput,
+          details: { adequacy: { testCases: [MUTATION_CASE], targeted: SCENARIO } },
+        }],
+      },
+    });
+    expect(JSON.stringify(refusal?.correctedCall).length).toBeLessThan(600);
+  });
+
   it('names the D-009 own-specId fallback for a clause with no declared scenarios', async () => {
     const refusal = await mutationTargetingRefusal(binding(undefined), SCOPE, loaderFor(clause()));
     expect(refusal?.acceptedTargets).toEqual(['SPEC-003-01', 'spec-003-01']);

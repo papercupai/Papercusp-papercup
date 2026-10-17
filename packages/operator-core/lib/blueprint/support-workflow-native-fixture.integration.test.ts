@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import type { Sql } from 'postgres';
 import type { ZodTypeAny } from 'zod';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { seedSupportWorkflowNativeFixture, supportWorkflowNativeLoginScript,
+import { seedSupportWorkflowNativeFixture, supportWorkflowNativeLoginScript, setSupportWorkflowNativeReviewerAccess,
   type SupportWorkflowNativeFixture } from '../../../../apps/operator/e2e/_support-workflow-native-fixture';
 import { registerRoute, type RouteDefinition } from '../endpoint-route/define-route';
 import authLogin from '../endpoint-route/routes/auth/login';
@@ -19,6 +19,7 @@ import { runWithWorkspace } from '../workspace-als';
 import { resolveProjectDir } from '../spawn-config';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { readWorkflowAdministration } from './support-workflow-administration';
+import { loadExternalTriggerAdminSnapshot } from '../external-triggers/admin';
 
 const connection = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 vi.mock('@papercusp/db-org', async original => ({
@@ -56,6 +57,24 @@ describe('maintained native support seed and production cookie switching', () =>
         .rejects.toThrow(/registry must use the same isolated PostgreSQL/);
     } finally { connection.sql = db.adminSql; }
     expect(await users()).toEqual(before);
+  });
+
+  it('installs a disarmed support operation in the Workflows catalog without execution evidence', async () => {
+    const catalog = await loadExternalTriggerAdminSnapshot(db.adminSql, workspaceId);
+    const bindings = catalog.bindings.filter(binding =>
+      binding.action.type === 'blueprint-operation'
+      && binding.action.operationHarnessSlug === fixture.harnessSlug
+      && binding.action.operationId === fixture.operationId);
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toMatchObject({ armed: false, sourceKind: 'slack',
+      eventPattern: 'ext:slack:message.received', createdBy: fixture.actors.admin.id });
+    expect(catalog.sources.find(source => source.id === bindings[0]!.sourceId))
+      .toMatchObject({ kind: 'slack', status: 'unconfigured', credentialRef: null });
+    expect(catalog.recentRuns).toEqual([]);
+    const [invocations] = await db.adminSql<{ n: number }[]>`SELECT count(*)::int AS n
+      FROM harness_shared.blueprint_operation_invocations WHERE workspace_id=${workspaceId}
+      AND harness_slug=${fixture.harnessSlug}`;
+    expect(invocations?.n).toBe(0);
   });
 
   it('switches three real password-authenticated cookie principals and admits only accessible source input', async () => {
@@ -134,4 +153,32 @@ describe('maintained native support seed and production cookie switching', () =>
     expect(administration.retainedRevisions).toContainEqual({ revision: fixture.candidateRevision, version: '2' });
     expect(administration.history).toEqual([]);
   });
+
+  it('measures reviewer grant and source ACL denials independently without manufacturing execution evidence', async () => {
+    const selected = await seedSupportWorkflowNativeFixture(db.adminSql, { workspaceId });
+    const keys = await db.adminSql<{ key: string }[]>`SELECT encode(public_key, 'hex') AS key
+      FROM harness_shared.pots WHERE workspace_id=${workspaceId}
+      AND pot_home_slug IN (${fixture.harnessSlug}, ${selected.harnessSlug})`;
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys.map(row => row.key)).size).toBe(2);
+    const evidence = () => db.adminSql<{ n: number }[]>`SELECT count(*)::int AS n
+      FROM harness_shared.blueprint_operation_invocations WHERE workspace_id=${workspaceId}
+      AND harness_slug=${selected.harnessSlug}`;
+    const before = await evidence();
+    expect(await setSupportWorkflowNativeReviewerAccess(db.adminSql, selected, 'no-grant'))
+      .toMatchObject({ allowed: false, documentIds: [], reason: 'no_live_grant' });
+    expect(await setSupportWorkflowNativeReviewerAccess(db.adminSql, selected, 'no-source-acl'))
+      .toMatchObject({ allowed: true, documentIds: [] });
+    expect(await setSupportWorkflowNativeReviewerAccess(db.adminSql, selected, 'allowed'))
+      .toMatchObject({ allowed: true, documentIds: [selected.documentId] });
+    expect(await evidence()).toEqual(before);
+    const forbidden = vi.fn();
+    await expect(setSupportWorkflowNativeReviewerAccess(forbidden as unknown as Sql,
+      { ...selected, workspaceId: 'papercusp-workspace' }, 'no-grant')).rejects.toThrow(/isolated workspace/);
+    expect(forbidden).not.toHaveBeenCalled();
+    await expect(setSupportWorkflowNativeReviewerAccess(db.adminSql,
+      { ...selected, listId: crypto.randomUUID() }, 'no-grant')).rejects.toThrow(/does not match/);
+    expect(await setSupportWorkflowNativeReviewerAccess(db.adminSql, selected, 'allowed'))
+      .toMatchObject({ allowed: true, documentIds: [selected.documentId] });
+  }, 30_000);
 });

@@ -7,6 +7,7 @@ import { NuqsAdapter } from "../../../operator-vite/src/lib/nuqs-tanstack-router
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
 import { OperatorWorkspaceLocationProvider } from "@papercusp/operator-ui";
 import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION, currentTutorialStep, type TutorialEvent, type TutorialState } from "@papercusp/operator-core/lib/onboarding/cloud-tutorial-lesson";
+import { cloudTelemetryEventSchema } from "@papercusp/operator-core/lib/telemetry-kinds";
 import { hostedBrowserApiMarker } from "../hosted-browser-api";
 import CloudWorkspacesPage from "@/app/cloud-workspaces/page";
 import type { CloudWorkspacesControlRow } from "@/app/cloud-workspaces/page";
@@ -121,8 +122,16 @@ function expectNoHiddenProductWrites() {
   expect(data.mutate).not.toHaveBeenCalled();
   for (const [input, init] of vi.mocked(fetch).mock.calls) {
     const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
-    // Progress persistence is allowed; provisioning, repair and agent requests are not.
+    // Permit only progress persistence and the maintained tutorial telemetry
+    // contract. Provisioning, repair and agent requests remain unexpected.
     expect(url.origin).toBe(window.location.origin);
+    if (url.pathname === "/api/hosted/browser/monitoring/event") {
+      expect(init).toMatchObject({ method: "POST", credentials: "include", keepalive: true });
+      const event = cloudTelemetryEventSchema.parse(JSON.parse(String(init?.body)));
+      expect(event.event).toBe("cloud_tutorial");
+      expect(event.properties).toMatchObject({ lesson_id: CLOUD_TUTORIAL_ID });
+      continue;
+    }
     expect(url.pathname).toBe("/api/hosted/browser/onboarding/tutorial-progress");
     expect(init?.method ?? "GET").toMatch(/^(GET|POST)$/);
   }

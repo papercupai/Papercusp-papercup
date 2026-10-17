@@ -543,8 +543,38 @@ export function evaluateServingRuntime(probe: ServingRuntimeProbe): ServingRunti
       `${spec.label} booted a last-known-good bundle after its rebuild failed, and reported neither a matching baked sha nor that bundle's build time.`,
     );
   }
-  if (probe.blobContains === true) {
+  // For a bundled canonical-tree runtime, only /api/health's SHA is baked into
+  // the loaded artifact. A runtime-vintage row can describe the boot tree while
+  // ExecStartPre has left a different bundle on disk; matching the boot SHA to
+  // the source therefore does not prove that the loaded bundle contains it.
+  if (probe.buildShaSource === 'health') {
+    if (probe.blobContains !== null) {
+      return { ...base, containsChange: probe.blobContains, method: 'blob', unknownReason: null };
+    }
+    return unknown(
+      probe.blobUnknown?.code ?? 'resolver-failed',
+      probe.blobUnknown?.detail ?? `Could not compare the bundle's baked sha ${probe.buildSha ?? '(missing)'} with the tree.`,
+    );
+  }
+  if (probe.blobContains === true && spec.healthPort === null) {
     return { ...base, containsChange: true, method: 'blob', unknownReason: null };
+  }
+  // A healthy bundle still needs an identity of its own.  The unit start time
+  // only proves that the process started after the source file changed; it does
+  // not prove that ExecStartPre rebuilt the bundle from those bytes.  Reusing
+  // that heuristic for a bundled canonical-tree host can report a marker as
+  // live while the loaded dist-host file is older (EI-26048015059197913).
+  if (spec.healthPort !== null && probe.bundle) {
+    return unknown(
+      'insufficient-data',
+      `${spec.label} reported a healthy bundle but no health-reported baked source sha or bundle build time; a runtime-vintage boot sha and process start cannot prove which bytes it loaded.`,
+    );
+  }
+  if (spec.healthPort !== null && probe.bundle === null) {
+    return unknown(
+      'resolver-failed',
+      `${spec.label} could not report its bundle identity, so process start cannot prove which bytes it loaded.`,
+    );
   }
   if (probe.startedAtMs !== null && probe.fileMtimeMs !== null) {
     return {

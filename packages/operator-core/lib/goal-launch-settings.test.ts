@@ -2451,6 +2451,42 @@ describe('P-012 authoritative GOAL portfolio brief', () => {
     expect(bothRendered).toContain('plan:papercusp/beta is the highest-priority eligible worklist plan');
   });
 
+  it('owner reordering two eligible plans changes the next canonical launch from alpha to beta', async () => {
+    const alpha = 'plan:papercusp/alpha';
+    const beta = 'plan:papercusp/beta';
+    const property_schema = {
+      worklist: { datatype: 'plan-ref-list', editable_by: 'both', collection: {
+        source: 'active-workspace-plans', policy: 'worklist_policy', order: 'priority',
+        selectable: true, defaultSelected: true,
+      } },
+      worklist_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner',
+        default: { order: [], excluded: [] } },
+    };
+    const plans = ['alpha', 'beta'].map((slug, index) => ({
+      ...portfolioRow.plans[0], ref: `plan:papercusp/${slug}`, slug,
+      ordinal: index + 1, title: `${slug} plan`,
+    }));
+    for (const [order, expected, other] of [
+      [[alpha, beta], 'alpha', 'beta'], [[beta, alpha], 'beta', 'alpha'],
+    ] as const) {
+      const brief = await readGoalPortfolioBrief({
+        workspaceId: WS, goalId: 'goal-1', now: NOW, launch,
+        sql: mockSql({ portfolio: { 'goal-1': {
+          ...portfolioRow, property_schema, plans,
+          properties: { worklist: { value: [alpha, beta] },
+            worklist_policy: { value: { order: [...order], excluded: [] }, version: 1,
+              edited_at: NOW.toISOString(), edited_by: 'owner', provenance: 'owner-edit' } },
+        } } }),
+      });
+      expect(brief?.collection).toMatchObject({ available: true, policyVersion: 1 });
+      expect(brief?.worklist.map(plan => plan.slug)).toEqual([expected, other]);
+      const eligible = brief?.worklist.filter(plan => plan.placement.reconciliation.toolCall?.tool === 'fleet:launch-on-plan');
+      expect(eligible).toHaveLength(2);
+      expect(eligible?.[0].placement.reconciliation.toolCall?.args.plan).toBe(expected);
+      expect(renderGoalPortfolioBrief(brief!)).toContain(`plan:papercusp/${expected} is the highest-priority eligible worklist plan`);
+    }
+  });
+
   it('skips a blocked first worklist plan and emits the next eligible launch', async () => {
     const brief = await readGoalPortfolioBrief({
       workspaceId: WS,

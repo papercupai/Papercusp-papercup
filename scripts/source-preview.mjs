@@ -46,6 +46,8 @@
 import assert from 'node:assert/strict';
 import { committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
 import { readTaskDeadlineEpochMs, formatTaskDeadlineRefusal } from './lib/budgeted-task-scheduler.mjs';
+import { createProgressAwareWatchdog } from './lib/batch-watchdog.mjs';
+import { processGroupLifetime } from '@papercusp/operator-core/lib/fleet/process-group-lifetime';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { promises as fs, appendFileSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from 'node:fs';
@@ -58,6 +60,10 @@ import { parseEnv } from 'node:util';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { verifierSourceFiles, verifierGitCheckoutSync, verifyVerifierSourceSync as verifyArchivedSourceSync, VerifierSourceError, writeVerifierTaskReceipt } from '@papercusp/operator-core/lib/verifier-source';
 import { NOTICES_FILE, collectThirdPartyNotices } from './check-licenses.mjs';
+import { runTreeRestrictedHoldPreflight, formatTreeRestrictedHoldRefusal,
+  RESTRICTED_HOLD_PREFLIGHT_ENV, RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER } from './lib/restricted-hold-preflight.mjs';
+import { applyEnvLocal, PG_URL_ENV_VARS } from './lib/pg-url.mjs';
+import { findUnusableRuntimeDeps, formatRuntimeFailures } from './check-declared-deps-extracted.mjs';
 
 export const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 export const PREVIEW_REPO = 'Papercusp/papercusp-preview';
@@ -476,6 +482,7 @@ export const TAURI_VERIFIER_INPUTS = Object.freeze([
   'scripts/restricted-hold-tree-gate.mjs',
   'scripts/lib/spa-require-built.sh',
   'scripts/lib/budgeted-task-scheduler.mjs',
+  'scripts/lib/task-cgroup-limits.mjs',
   'scripts/pc-heavy.sh',
   'apps/operator/bin/release/dependency-generation.sh',
   'papercusp-desktop/bin/tauri-guarded',
@@ -699,29 +706,114 @@ function verifierPhaseRunner(path, env) {
   };
 }
 
+/** Run a bounded dependency preflight without abandoning writers in its owned tree.
+ * The maintained helpers emit measured byte, lock and completed-tree counters;
+ * only increases extend the watchdog. Join its process group before cleanup.
+ * @param {string} command
+ * @param {string[]} args
+ * @param {{ cwd: string, env: NodeJS.ProcessEnv, timeoutMs?: number, maxMs?: number,
+ *   stallWindowMs?: number, extensionMs?: number, signal?: AbortSignal }} options
+ */
+export async function runVerifierDependencyCommand(command, args, { cwd, env,
+  timeoutMs = 600_000, maxMs = 1_800_000, stallWindowMs = 150_000, extensionMs = 60_000, signal }) {
+  if (signal?.aborted) throw new PreviewError('verifier dependency preflight canceled before launch', 2);
+  const deadline = readTaskDeadlineEpochMs(env);
+  if (deadline !== null) maxMs = Math.min(maxMs, deadline - Date.now() - 10_000);
+  if (maxMs <= 0) throw new PreviewError('verifier dependency preflight has no task budget remaining', 2);
+  const child = spawn(command, args, { cwd, env, detached: process.platform !== 'win32',
+    stdio: ['ignore', 'pipe', 'pipe'] });
+  const lifetime = processGroupLifetime(child, message => process.stderr.write(`${message}\n`));
+  let stdout = '', stderr = '', pending = '';
+  const counters = new Map();
+  let termination;
+  let terminationReason;
+  let rejectAborted;
+  const aborted = new Promise((_, reject) => { rejectAborted = reject; });
+  const terminate = reason => {
+    if (termination) return;
+    terminationReason = reason;
+    termination = lifetime.terminate({ graceMs: 1_000, killWaitMs: 5_000 });
+    termination.then(() => rejectAborted(new PreviewError(reason, 2)), error => {
+      error.retainVerifierTree = true;
+      rejectAborted(error);
+    });
+  };
+  const watchdog = createProgressAwareWatchdog({ timeoutMs: Math.min(timeoutMs, maxMs), maxMs,
+    stallWindowMs, extensionMs,
+    onExtend: () => process.stderr.write('VERIFIER_DEPENDENCY_PROGRESS watchdog extended on advancing dependency counters\n'),
+    onKill: decision => terminate(`verifier dependency preflight timed out: ${decision.reason}`) });
+  const collect = (stream, chunk) => {
+    const text = chunk.toString();
+    if (stream === 'stdout') stdout = (stdout + text).slice(-4 * 1024 * 1024);
+    else stderr = (stderr + text).slice(-4 * 1024 * 1024);
+    process[stream].write(chunk);
+    pending += text;
+    const lines = pending.split('\n');
+    pending = lines.pop().slice(-4096);
+    for (const line of lines) {
+      const counter = /((?:checksum read|copy) progress:.*?) (?:written|read)=(\d+)MiB/.exec(line)
+        ?? /(copy lock progress:.*?) advances=(\d+)/.exec(line)
+        ?? /^(snapshot progress:) completed=(\d+)(?: |$)/.exec(line);
+      if (counter && Number(counter[2]) > (counters.get(counter[1]) ?? 0)) {
+        counters.set(counter[1], Number(counter[2]));
+        watchdog.noteProgress();
+      }
+    }
+  };
+  child.stdout.on('data', chunk => collect('stdout', chunk));
+  child.stderr.on('data', chunk => collect('stderr', chunk));
+  const closed = new Promise((done, reject) => {
+    child.once('error', reject);
+    child.once('close', (code, signal) => done({ code, signal }));
+  });
+  const onAbort = () => terminate('verifier dependency preflight canceled');
+  signal?.addEventListener('abort', onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+  try {
+    const result = await Promise.race([closed, aborted]);
+    await Promise.race([lifetime.waitForExit({ timeoutMs: maxMs }), aborted]);
+    if (terminationReason) throw new PreviewError(terminationReason, 2);
+    if (result.code !== 0 || result.signal)
+      throw new PreviewError(`verifier dependency preflight failed: ${stderr || stdout || result.signal || result.code}`, 2);
+    return stdout;
+  } catch (error) {
+    if (child.pid !== undefined) {
+      if (!termination) termination = lifetime.terminate({ graceMs: 1_000, killWaitMs: 5_000 });
+      try { await termination; }
+      catch (exitError) {
+        exitError.retainVerifierTree = true;
+        throw new AggregateError([error, exitError], `${error.message}; ${exitError.message}`,
+          { cause: Object.assign(exitError, { retainVerifierTree: true }) });
+      }
+    }
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+    watchdog.stop();
+  }
+}
+
 /** Attach dependencies to the independently invoked tree before its first Node
  * command. Reuse the release helper's donor install mutex and private snapshot.
- * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner }} options
+ * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner, signal?: AbortSignal }} options
  */
-export async function prepareVerifierDependencies({ donor, dest, receipt, runPhase = async (_phase, operation) => operation() }) {
+export async function prepareVerifierDependencies({ donor, dest, receipt, runPhase = async (_phase, operation) => operation(), signal }) {
   await runPhase('deps.source.before', () => verifyVerifierSource(dest, receipt));
   const env = { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' };
-  const run = (command, args) => {
-    const result = spawnSync(command, args, { cwd: dest, env, encoding: 'utf8',
-      timeout: 600_000, maxBuffer: 16 * 1024 * 1024 });
-    if (result.error || result.status !== 0)
-      throw new PreviewError(`verifier dependency preflight failed: ${result.error?.message || result.stderr || result.stdout || result.status}`, 2);
-    return result.stdout;
-  };
+  const run = (command, args) => runVerifierDependencyCommand(command, args, { cwd: dest, env, signal });
+  const copyMode = (await fs.stat(donor)).dev === (await fs.stat(dest)).dev ? 'hardlink' : 'copy';
   await runPhase('deps.snapshot', () => run('bash', [join(dest, 'papercusp-desktop/bin/lib/pinned-deps.sh'),
-    'snapshot-locked', realpathSync(donor), realpathSync(dest), 'hardlink']));
+    'snapshot-locked', realpathSync(donor), realpathSync(dest), copyMode]));
   await runPhase('deps.source.after-snapshot', () => verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }));
   const script = join(dest, 'scripts/source-preview.mjs');
-  await runPhase('deps.inputs', () => run(process.execPath, [script, 'verifier-inputs-check', '--repo', dest,
+  // The CLI imports workspace TypeScript, including extensionless and directory
+  // imports. Resolve its loader from the private snapshot, never ambient options.
+  const nodeArgs = ['--import', 'tsx', script];
+  await runPhase('deps.inputs', () => run(process.execPath, [...nodeArgs, 'verifier-inputs-check', '--repo', dest,
     '--ref', receipt.sourceCommit, '--inputs', receipt.testedInputs.map(input => input.path).join(',')]));
-  await runPhase('deps.measure', () => {
-    const bytes = run(process.execPath, [script, 'verifier-measure', '--repo', dest,
-      '--ref', receipt.sourceCommit]).trim();
+  await runPhase('deps.measure', async () => {
+    const bytes = (await run(process.execPath, [...nodeArgs, 'verifier-measure', '--repo', dest,
+      '--ref', receipt.sourceCommit])).trim();
     if (!/^\d+$/.test(bytes) || Number(bytes) <= 0)
       throw new PreviewError('verifier dependency preflight returned no source size', 2);
   });
@@ -782,6 +874,28 @@ export function captureVerifierDependencies({ dest, receipt }) {
     sourceReceiptSha256: createHash('sha256').update(JSON.stringify(receipt)).digest('hex'), trees };
 }
 
+/** Admit against the caller's disclosure ledger before leaving its checkout.
+ * Frozen source excludes local operator configuration. Preserve its database
+ * pins in the child environment so governed admission uses the same control
+ * plane, without copying the config file or unrelated secrets into the archive.
+ * Explicit database pins and isolated PG selection keep their precedence.
+ * @param {{ repo: string, env?: NodeJS.ProcessEnv, preflight?: typeof runTreeRestrictedHoldPreflight }} options
+ * @returns {NodeJS.ProcessEnv}
+ */
+export function verifierCommandAdmissionEnv({ repo, env = process.env, preflight = runTreeRestrictedHoldPreflight }) {
+  const verdict = preflight({ roots: [repo], env });
+  if (verdict.verdict === 'refuse')
+    throw new PreviewError(formatTreeRestrictedHoldRefusal('verifier-run', verdict), 3);
+  const childEnv = verdict.verdict === 'admit'
+    ? { ...env, [RESTRICTED_HOLD_PREFLIGHT_ENV]: RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER }
+    : { ...env };
+  // Resolve while the caller's .env.local still exists. A frozen child otherwise
+  // discovers a different desktop cluster when its dedicated queue client opens.
+  if (!PG_URL_ENV_VARS.some(key => childEnv[key]))
+    applyEnvLocal({ root: join(repo, 'apps', 'operator'), env: childEnv });
+  return childEnv;
+}
+
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
  * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number }} options
@@ -793,25 +907,68 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   if (!Number.isSafeInteger(childEstimateMs) || childEstimateMs < 0)
     throw new PreviewError('verifier child estimate must be a nonnegative integer', 2);
   const sourceRepo = realpathSync(repo);
+  env = verifierCommandAdmissionEnv({ repo: sourceRepo, env });
   const donor = committedWorkRootDependencyDonor(sourceRepo);
-  // A materialized source tree may live on another device. Dependency snapshots
-  // use hardlinks, so allocate beside the physical donor while keeping sourceRepo
-  // as the source identity passed to the freezer and task receipt.
-  const scratch = join(donor, '.papercusp', 'scratch');
+  // Keep hardlinks beside a donor on a data device. A donor on the root device
+  // must use the admitted data scratch instead; pinned-deps already supports
+  // independent cross-device copies and checks their headroom before copying.
+  let scratch = join(donor, '.papercusp', 'scratch');
+  if (process.platform === 'linux' && (await fs.stat(donor)).dev === (await fs.stat('/')).dev) {
+    const data = await fs.realpath('/mnt/data');
+    const dataDevice = (await fs.stat(data)).dev;
+    if (dataDevice === (await fs.stat('/')).dev)
+      throw new PreviewError('verifier command requires a separate /mnt/data filesystem', 2);
+    scratch = join(data, 'tmp');
+    await fs.mkdir(scratch, { recursive: true });
+    scratch = await fs.realpath(scratch);
+    if ((await fs.stat(scratch)).dev !== dataDevice)
+      throw new PreviewError('verifier command scratch resolves outside the data filesystem', 2);
+  }
   await fs.mkdir(scratch, { recursive: true });
-  const owned = await fs.mkdtemp(join(scratch, 'verifier-command-'));
+  const taskReceiptPath = `${resolve(receiptPath)}.task.json`;
+  const cancellation = new AbortController();
+  let cancellationSignal;
+  const cancel = signal => {
+    cancellationSignal ??= signal;
+    cancellation.abort();
+  };
+  const onInt = () => cancel('SIGINT'), onTerm = () => cancel('SIGTERM');
+  process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);
+  let owned;
+  try { owned = await fs.mkdtemp(join(scratch, 'verifier-command-')); }
+  catch (error) {
+    process.off('SIGINT', onInt); process.off('SIGTERM', onTerm);
+    throw error;
+  }
   const root = join(owned, 'invoked-source');
+  const checkCancellation = () => {
+    if (cancellationSignal)
+      throw new PreviewError(`verifier command canceled by ${cancellationSignal}`,
+        128 + constants.signals[cancellationSignal]);
+  };
+  let ownership;
   /** @type {VerifierPhaseRunner} */
   let runPhase = async (_phase, operation) => operation();
+  let failure;
   try {
-    writeVerifierTaskReceipt(owned, sourceRepo, env);
     assertOutsideArchive(owned, resolve(receiptPath));
+    ownership = writeVerifierTaskReceipt(owned, sourceRepo, env, taskReceiptPath);
     const tracedPhase = verifierPhaseRunner(`${resolve(receiptPath)}.phases.jsonl`, env);
     const measurements = {};
     runPhase = async (phase, operation) => {
+      // Synchronous archive/census work delays JS signal delivery. Yield before
+      // admitting the next phase, so a pending cancellation cannot start tests.
+      if (phase !== 'cleanup') {
+        await new Promise(resolve => setImmediate(resolve));
+        checkCancellation();
+      }
       const before = performance.now();
       const result = await tracedPhase(phase, operation);
       measurements[phase] = Math.ceil(performance.now() - before);
+      if (phase !== 'cleanup') {
+        await new Promise(resolve => setImmediate(resolve));
+        checkCancellation();
+      }
       return result;
     };
     await runPhase('source.admission', () => {
@@ -823,7 +980,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: sourceRepo, ref, dest: root,
       inputs, inputsFile, tauriInputs, gitCheckout: true }));
     await runPhase('receipt.write', () => fs.writeFile(receiptPath, `${JSON.stringify(receipt)}\n`, { flag: 'wx', mode: 0o600 }));
-    const dependencies = await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase });
+    const dependencies = await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase, signal: cancellation.signal });
     await runPhase('deps.receipt.write', () => fs.writeFile(`${receiptPath}.dependencies.json`,
       `${JSON.stringify(dependencies)}\n`, { flag: 'wx', mode: 0o600 }));
     await runPhase('child.admission', () => admitVerifierCommandBudget(
@@ -832,18 +989,35 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
         env: { ...env, PAPERCUSP_REPO_DIR: root, NODE_OPTIONS: '', NODE_PATH: '',
           VERIFY_TAURI_SOURCE_INPUTS: receipt.testedInputs.map(input => input.path).join(',') } }));
     const exitCode = await runPhase('child.run', async () => {
-      const child = spawn(command[0], command.slice(1), { cwd: root, env: childEnv, stdio: 'inherit' });
-      const onInt = () => child.kill('SIGINT'), onTerm = () => child.kill('SIGTERM');
-      process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);
+      const child = spawn(command[0], command.slice(1), { cwd: root, env: childEnv,
+        detached: process.platform !== 'win32', stdio: 'inherit' });
+      const lifetime = processGroupLifetime(child, message => process.stderr.write(`${message}\n`));
+      let termination;
+      const onAbort = () => {
+        termination ??= lifetime.terminate({ graceMs: 1_000, killWaitMs: 5_000 });
+        // Keep a rejection handled while the child's close notification is pending.
+        termination.catch(() => {});
+      };
       try {
         /** @type {Promise<number>} */
         const closed = new Promise((done, reject) => {
           child.once('error', reject);
           child.once('close', (code, signal) => done(code ?? (128 + (constants.signals[signal] || 0))));
         });
-        return await closed;
+        cancellation.signal.addEventListener('abort', onAbort, { once: true });
+        if (cancellation.signal.aborted) onAbort();
+        const code = await closed;
+        await (termination ?? lifetime.waitForExit({ timeoutMs: 60_000 }));
+        return code;
+      } catch (error) {
+        try { await (termination ?? lifetime.terminate({ graceMs: 1_000, killWaitMs: 5_000 })); }
+        catch (exitError) {
+          throw new AggregateError([error, exitError], `${error.message}; ${exitError.message}`,
+            { cause: Object.assign(exitError, { retainVerifierTree: true }) });
+        }
+        throw error;
       } finally {
-        process.off('SIGINT', onInt); process.off('SIGTERM', onTerm);
+        cancellation.signal.removeEventListener('abort', onAbort);
       }
     });
     await runPhase('deps.postverify', async () => {
@@ -856,17 +1030,63 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     });
     await runPhase('source.postverify', () => verifyVerifierSource(root, receipt, { runtimeArtifacts: true }));
     return exitCode;
-  } finally {
-    let cleaned = false;
-    try {
-      await runPhase('cleanup', async () => {
-        await fs.rm(owned, { recursive: true, force: true });
-        cleaned = true;
-      });
-    } finally {
-      // A phase-receipt IO failure must never prevent owned-tree cleanup.
-      if (!cleaned) await fs.rm(owned, { recursive: true, force: true });
+  } catch (error) {
+    // Cancellation is a signal outcome, not a successful test or a generic
+    // preflight error; preserve any unverified-writer retention fence.
+    if (cancellationSignal) {
+      failure = new PreviewError(`verifier command canceled by ${cancellationSignal}`,
+        128 + constants.signals[cancellationSignal]);
+      if (error.retainVerifierTree || error.cause?.retainVerifierTree) failure.retainVerifierTree = true;
+      throw failure;
     }
+    failure = error;
+    throw error;
+  } finally {
+    let cleanup = 'pending';
+    try {
+      // An unverified exit is not permission to race a live writer. The task's
+      // retained ownership receipt lets the existing reconciler clean it later.
+      if (failure?.retainVerifierTree || failure?.cause?.retainVerifierTree) {
+        cleanup = 'deferred';
+        process.stderr.write(`VERIFIER_CLEANUP_DEFERRED unverified process exit: ${owned}\n`);
+      } else {
+        let cleaned = false;
+        try {
+          try {
+            await runPhase('cleanup', async () => {
+              await fs.rm(owned, { recursive: true, force: true });
+              cleaned = true;
+            });
+          } finally {
+            // A phase-receipt IO failure must never prevent owned-tree cleanup.
+            if (!cleaned) {
+              await fs.rm(owned, { recursive: true, force: true });
+              cleaned = true;
+            }
+            cleanup = 'completed';
+          }
+        } catch (cleanupError) {
+          cleanup = cleaned ? 'completed' : 'failed';
+          if (failure) throw new AggregateError([failure, cleanupError],
+            `${failure.message}; verifier cleanup failed: ${cleanupError.message}`);
+          throw cleanupError;
+        }
+      }
+    } finally {
+      try {
+        if (ownership) {
+          const next = `${taskReceiptPath}.${process.pid}.tmp`;
+          try {
+            await fs.writeFile(next, `${JSON.stringify({ ...ownership, cleanup,
+              ...(cancellationSignal ? { cancellationSignal } : {}) })}\n`, { flag: 'wx', mode: 0o600 });
+            await fs.rename(next, taskReceiptPath);
+          } finally { await fs.rm(next, { force: true }); }
+        }
+      } finally {
+        process.off('SIGINT', onInt); process.off('SIGTERM', onTerm);
+      }
+    }
+    checkCancellation();
   }
 }
 
@@ -2001,8 +2221,13 @@ async function main(argv) {
     if (!opts.repo || !opts.ref || !(opts.inputs || opts['inputs-file'])) {
       throw new PreviewError('verifier input check requires --repo, --ref and --inputs or --inputs-file', 2);
     }
-    console.log(JSON.stringify(await validateVerifierInputs({ repo: opts.repo, ref: opts.ref,
-      inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'], tauriInputs: opts.tauriInputs === true })));
+    const result = await validateVerifierInputs({ repo: opts.repo, ref: opts.ref,
+      inputs: opts.inputs?.split(',').filter(Boolean) ?? [], inputsFile: opts['inputs-file'], tauriInputs: opts.tauriInputs === true });
+    // This command runs inside the private dependency snapshot before the
+    // native child. A stable census alone cannot detect an incomplete donor.
+    const failures = findUnusableRuntimeDeps({ repoRoot: opts.repo });
+    if (failures.length) throw new PreviewError(formatRuntimeFailures(failures), 2);
+    console.log(JSON.stringify(result));
     return 0;
   }
   if (cmd === 'verifier-measure') {

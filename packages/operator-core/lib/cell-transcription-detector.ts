@@ -115,6 +115,22 @@ const EXPLICIT_PIPELINE_STATE_AFTER_SOURCE_HEAD =
 const REFERENCE_COMMIT_PREFIX =
   /\b(?:target|reference|historical|prior|baseline|validate|check|verify|prove|trace|inspect|confirm|test|assert|ensure)\b[^\n]{0,50}\bcommit\s*$/i;
 
+/**
+ * A SHA selected as the baseline for source-bound acceptance is a reference,
+ * not a transcription of the pipeline position. Keep this anchored to the
+ * value so nearby `staging`/`main` words cannot turn the selection into a hit.
+ */
+const ACCEPTANCE_PIN_VALUE_PREFIX =
+  /\b(?:pin|pinned|pinning)\b[^\n]{0,50}\b(?:acceptance|verification|test(?:s)?|run)\s+to\s*$/i;
+
+/**
+ * A file/path's last commit is historical containment evidence. Keep the
+ * qualifier anchored to the value so a nearby pipeline word cannot make it
+ * look like the currently deployed commit.
+ */
+const HISTORICAL_COMMIT_VALUE_PREFIX =
+  /\b(?:last|latest|most\s+recent)\s+commit(?:\s+(?:sha|hash))?\s*(?:is|=|:)?\s*$/i;
+
 const EXPLICIT_PIPELINE_STATE_AFTER_VALUE =
   /^\s*(?:is|was|now|currently)\s+(?:(?:(?:the|a)\s+)?(?:deploy(?:ed|ing|ment)?|serving|serves|live|release[d]?|staging|main|running|shipped)\b|at\s+:(?:3070|3170)\b)/i;
 
@@ -249,6 +265,24 @@ function isUnlinkedReferenceCommitCitation(haystack: string, valueStart: number,
   return !EXPLICIT_PIPELINE_STATE_AFTER_VALUE.test(after);
 }
 
+function isUnlinkedAcceptancePinCitation(haystack: string, valueStart: number, valueLength: number): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  if (!ACCEPTANCE_PIN_VALUE_PREFIX.test(before)) return false;
+
+  const afterStart = valueStart + valueLength;
+  const after = haystack.slice(afterStart, Math.min(haystack.length, afterStart + CONTEXT_WINDOW));
+  return !EXPLICIT_PIPELINE_STATE_AFTER_VALUE.test(after);
+}
+
+function isUnlinkedHistoricalCommitCitation(haystack: string, valueStart: number, valueLength: number): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  if (!HISTORICAL_COMMIT_VALUE_PREFIX.test(before)) return false;
+
+  const afterStart = valueStart + valueLength;
+  const after = haystack.slice(afterStart, Math.min(haystack.length, afterStart + CONTEXT_WINDOW));
+  return !EXPLICIT_PIPELINE_STATE_AFTER_VALUE.test(after);
+}
+
 function isStagingOnlyCommitCitation(haystack: string, valueStart: number, valueLength: number): boolean {
   const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
   if (!STAGING_ONLY_COMMIT_PREFIX.test(before)) return false;
@@ -373,6 +407,8 @@ export function detectCellTranscriptions(text: unknown, options: DetectOptions =
         (p.field === 'positions.deployed / serving.startedSinceCodeChange' &&
           (isUnlinkedSourceHeadCitation(haystack, m.index, m[0].length) ||
             isUnlinkedReferenceCommitCitation(haystack, m.index, m[0].length) ||
+            isUnlinkedAcceptancePinCitation(haystack, m.index, m[0].length) ||
+            isUnlinkedHistoricalCommitCitation(haystack, m.index, m[0].length) ||
             isStagingOnlyCommitCitation(haystack, m.index, m[0].length) ||
             isCheckpointMetadataValue(haystack, m.index) ||
             isGitBlobHash(haystack, m.index)))

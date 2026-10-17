@@ -17,6 +17,7 @@ import * as path from 'node:path';
 import postgres from 'postgres';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import type { AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
+import { createTextCollector } from '../../child-output';
 import { readIdentity } from '../locks/identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { guardResource, type FenceToken } from '../locks/resource-lock-guard';
@@ -493,22 +494,25 @@ export const runPsql: PsqlRunner = (cmd, args, opts) =>
           });
           if (opts.fence) {
             let pendingOutput = '';
-            child.stdout?.on('data', (data: string | Buffer) => {
-              pendingOutput += data.toString();
-              let newline: number;
-              while ((newline = pendingOutput.indexOf('\n')) >= 0) {
-                const line = pendingOutput.slice(0, newline).replace(/\r$/, '');
-                pendingOutput = pendingOutput.slice(newline + 1);
-                if (line !== opts.fence!.marker) continue;
-                // Do not reuse a periodic check begun before the marker.
-                void (async () => {
-                  if (checking) await checking;
-                  if (!(await checkFence()) || nextPart >= parts.length) return;
-                  const input = parts[nextPart++];
-                  if (nextPart === parts.length) child.stdin?.end(input);
-                  else child.stdin?.write(input + markerLine);
-                })().catch(fail);
-              }
+            createTextCollector(child.stdout, {
+              retainText: false,
+              onDecodedText(text) {
+                pendingOutput += text;
+                let newline: number;
+                while ((newline = pendingOutput.indexOf('\n')) >= 0) {
+                  const line = pendingOutput.slice(0, newline).replace(/\r$/, '');
+                  pendingOutput = pendingOutput.slice(newline + 1);
+                  if (line !== opts.fence!.marker) continue;
+                  // Do not reuse a periodic check begun before the marker.
+                  void (async () => {
+                    if (checking) await checking;
+                    if (!(await checkFence()) || nextPart >= parts.length) return;
+                    const input = parts[nextPart++];
+                    if (nextPart === parts.length) child.stdin?.end(input);
+                    else child.stdin?.write(input + markerLine);
+                  })().catch(fail);
+                }
+              },
             });
             child.stdin?.write(parts[0] + markerLine);
           } else {

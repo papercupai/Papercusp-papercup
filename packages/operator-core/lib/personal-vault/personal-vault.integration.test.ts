@@ -349,6 +349,30 @@ describe('Personal Vault core', () => {
     await org.adminSql`DELETE FROM harness_shared.users WHERE id = ${otherUser.id}`;
   });
 
+  it('stores source-bound social posts under their provider scope and excludes them from Facebook searches', async () => {
+    await setPersonalVaultEnabled(org.adminSql, WS, userId, true, 'source-scope-regression');
+    for (const kind of ['linkedin-company', 'bluesky', 'facebook-pages']) {
+      const [source] = await org.adminSql<Array<{ id: string }>>`
+        INSERT INTO harness_shared.data_sources
+          (workspace_id, kind, owner_user_id, provider_account_id, status)
+        VALUES (${WS}, ${kind}, ${userId}, 'connected-member', 'connected')
+        RETURNING id`;
+      const sink = await createPersonalVaultExternalSinkForSource(org.adminSql, WS, source.id);
+      await sink.deliver({
+        key: `external-trigger:${kind}:post`, datatypeId: 'social-post', externalId: 'shared-post-id',
+        payload: { platform: 'facebook', author: 'Organization', text: 'Scoped company launch' },
+      });
+      const hits = await searchPersonalDocuments(org.adminSql, WS, userId, {
+        query: 'Scoped company launch', scopes: [`personal:${kind}`],
+      });
+      expect(hits).toHaveLength(1);
+      expect(hits[0]).toMatchObject({ source: kind, externalId: 'shared-post-id' });
+    }
+    expect(await searchPersonalDocuments(org.adminSql, WS, userId, {
+      query: 'Scoped company launch', scopes: ['personal:facebook'],
+    })).toEqual([]);
+  });
+
   it('consumes normalized Gmail/Calendar events and paged Google Contacts locally', async () => {
     const sources = await org.adminSql<Array<{ id: string; kind: string }>>`
       INSERT INTO harness_shared.data_sources

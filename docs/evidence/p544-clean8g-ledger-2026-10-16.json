@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P544 GCP2vCPU8GiB native50 profile D075 acceptance",
+  "framework": "operational",
+  "command": [
+    "python3",
+    "scripts/agent-capacity/vm/swap-tier.py",
+    "run",
+    "--out",
+    "/tmp/p544-8g-run-v4",
+    "--server-cgroup",
+    "/sys/fs/cgroup/user.slice/user-1003.slice/user@1003.service/app.slice/papercusp-server.service",
+    "--agents",
+    "50",
+    "--warm",
+    "1",
+    "--warm-concurrency",
+    "5",
+    "--single",
+    "0",
+    "--active",
+    "1",
+    "--active",
+    "5",
+    "--active",
+    "10",
+    "--active-rounds",
+    "3",
+    "--ram-gb",
+    "8",
+    "--arm",
+    "zram:lz4",
+    "--cli",
+    "codex",
+    "--model",
+    "gpt-6-luna",
+    "--effort",
+    "low",
+    "--gateway-url",
+    "http://127.0.0.1:18794/v1",
+    "--owner",
+    "su-c817144f-b276-410c-9685-7baad6e5f9ee"
+  ],
+  "commandSource": "Maintained driver argv reconstructed from archived run-start metadata and exact server-population record; records completed run without replay",
+  "exitCode": 0,
+  "startedAt": "2026-10-16T22:21:26.039446+00:00",
+  "finishedAt": "2026-10-16T22:30:50.551016+00:00",
+  "summary": "Completed native experiment with98verified tool tasks and0taskfailures/OOM;1/5/10activecohorts pass D075; fullprofile FAILS burstp95inputecho6.775s>3s. Coldwake/growth/AWS outside this verdict.",
+  "assertions": [
+    {
+      "id": "native-file-hash-tasks",
+      "passed": true,
+      "evidence": "98verifiedwake tasks;50assigned,1/5/10active3rounds and50unbatchedburst; archived results.jsonl plus native histories"
+    },
+    {
+      "id": "no-oom-clean-boot",
+      "passed": true,
+      "evidence": "Recorded/proc/vmstat before/after sameboot has oom_kill0"
+    },
+    {
+      "id": "active-1",
+      "passed": true,
+      "evidence": "{\"passed\": true, \"echoP95Sec\": 0.109, \"fullModelAndCliWallP95Sec\": 10.189, \"hostForkExecP95Ms\": 6.47, \"uniqueActiveAgents\": 1, \"taskSamples\": 3}"
+    },
+    {
+      "id": "active-5",
+      "passed": true,
+      "evidence": "{\"passed\": true, \"echoP95Sec\": 0.348, \"fullModelAndCliWallP95Sec\": 15.55, \"hostForkExecP95Ms\": 21.09, \"uniqueActiveAgents\": 5, \"taskSamples\": 15}"
+    },
+    {
+      "id": "active-10",
+      "passed": true,
+      "evidence": "{\"passed\": true, \"echoP95Sec\": 0.728, \"fullModelAndCliWallP95Sec\": 18.969, \"hostForkExecP95Ms\": 16.23, \"uniqueActiveAgents\": 10, \"taskSamples\": 30}"
+    },
+    {
+      "id": "burst-50",
+      "passed": false,
+      "evidence": "{\"passed\": false, \"echoP95Sec\": 6.775, \"allDoneSec\": 33.316, \"uniqueActiveAgents\": 50, \"taskSamples\": 50}"
+    }
+  ],
+  "details": {
+    "profileEvidence": "docs/evidence/p544-clean8g-profile-2026-10-16.json",
+    "rawArchives": [
+      {
+        "path": "/tmp/p544-native-evidence/p544-native8g-v4.tgz",
+        "bytes": 32236492,
+        "sha256": "faa58fdf8d6ba6e80a624a8db53b24d32ef6be5fd4222e35374f1e6e1be2cc5f",
+        "guestHashMatches": true,
+        "tarMembers": 22,
+        "regularFilesAndDirectories": 22,
+        "extractRoot": "/tmp/p544-native-evidence/8g-v4"
+      },
+      {
+        "path": "/tmp/p544-native-evidence/p544-native8g-v4-histories.tgz",
+        "bytes": 33519196,
+        "sha256": "e1a84be64da713e4aa1a394f1c155003a8a947fd89b6031ccc0e0c9d23e5b6ea",
+        "guestHashMatches": true,
+        "tarMembers": 5899,
+        "regularFilesAndDirectories": 5749,
+        "extractRoot": "/tmp/p544-native-evidence/8g-v4-histories"
+      }
+    ],
+    "rawHashes": {
+      "tmp/p544-8g-run-v4/results.jsonl": "a30d1191394f20c8dab65a49528d1613d6e4aa045116ab654e1af99d72a53c42",
+      "tmp/p544-8g-run-v4/summary.json": "b1f094f5c71892ed9c771345d5b5e7b8ce4605d69d858d74b419cc9877f589b5",
+      "tmp/p544-8g-run-v4/probe.csv": "c432a55a21717c29d5153f142f8504b2e9f17579e44cd5f2b6687bdec2db2709",
+      "mnt/p544-data/p544-evidence/native8g-server-v4.jsonl": "3ea797f873b0c4e57be6787a5249c2e98146f6fd5ee89413a599b1f08e5d9ca3"
+    },
+    "driverSourceHashes": {
+      "scripts/agent-capacity/vm/swap-tier.py": "62383e18dc777a0460c617d4ca9be120c33d5ce2558cd5066f959510ebaec14b",
+      "scripts/agent-capacity/vm/swap-tier.test.ts": "b7e6b02d6fde840aae80d45984fb7fde839f8de6ddf49ec4d5bd800a5c5ed805",
+      "scripts/agent-capacity/vm/sample-footprint.py": "b2d253423c9506edf372fa79bfd70bfef96e000db817e6d0f68f744634afb887"
+    },
+    "actualTask": "0mvbj82dovypry3737j",
+    "regressionEvidence": {
+      "runId": "e5fc4e3e-01d0-437a-9437-637764b28ecf",
+      "ledgerId": 21295204,
+      "passed": 65,
+      "scope": "Driver unit/regression proof; does not establish capacity"
+    }
+  }
+}

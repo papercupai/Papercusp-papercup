@@ -53,6 +53,7 @@ const listLoopCarryNoteScopes = vi.fn(
   async (..._a: unknown[]) => [] as { harness: string; updatedAtMs: number | null }[],
 );
 const getLoopStatus = vi.fn();
+const readActiveLoopFacts = vi.fn();
 const getSessionBrief = vi.fn();
 const getPresence = vi.fn();
 const readInbox = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
@@ -88,6 +89,7 @@ const readFrozenRepairMarker = vi.hoisted(() => vi.fn());
 const unresolvedPlanDecisionRefs = vi.hoisted(() => vi.fn());
 const resolveCurrentTurnStamp = vi.hoisted(() => vi.fn());
 const verifyTurnRefs = vi.hoisted(() => vi.fn());
+const readSuccessfulActionInvocations = vi.hoisted(() => vi.fn());
 // Mock the STORE fns; a sentinel renderCarryNote keeps the routing tests about ROUTING
 // (structured → render, raw → passthrough), not renderCarryNote's exact output. The pure
 // walls machinery (splitCarryNoteWalls / withCarryNoteWalls / normalizeWallEntries) stays
@@ -224,7 +226,10 @@ vi.mock('../../pot/wake', () => ({
 // harness is only a fallback when no routine is active; otherwise a transient project
 // scope must not create a verified note invisible to the cold reader. Most tests have no
 // armed routine (null), so they fall through to the old arg/ctx/home-hive chain.
-vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: (...a: unknown[]) => getLoopStatus(...a) }));
+vi.mock('../../harness/routines/loop', () => ({
+  getLoopStatus: (...a: unknown[]) => getLoopStatus(...a),
+  readActiveLoopFacts: (...a: unknown[]) => readActiveLoopFacts(...a),
+}));
 vi.mock('../../session-brief', () => ({ getSessionBrief: (...a: unknown[]) => getSessionBrief(...a) }));
 vi.mock('../../bounded-timeout', () => ({
   withBoundedTimeout: (...a: unknown[]) => withBoundedTimeout(...a),
@@ -245,6 +250,10 @@ vi.mock('../../turn-provenance/turn-ref', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   resolveCurrentTurnStamp: (...a: unknown[]) => resolveCurrentTurnStamp(...a),
   verifyTurnRefs: (...a: unknown[]) => verifyTurnRefs(...a),
+}));
+vi.mock('../../carry-surface-action-proof', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  readSuccessfulActionInvocations: (...a: unknown[]) => readSuccessfulActionInvocations(...a),
 }));
 // P-005 / D-030 (7). The suite-wide withBoundedTimeout double never runs the guard's
 // work, so this spy is reached only by tests that route its label through for real.
@@ -284,6 +293,9 @@ const call = (args: Record<string, unknown>, ctx: unknown = { harnessSlug: 'pape
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
 
 beforeEach(() => {
+  // Existing scope fixtures also describe the lean routine facts. Tests that
+  // distinguish telemetry availability override this independently below.
+  readActiveLoopFacts.mockImplementation((...args: unknown[]) => getLoopStatus(...args));
   vi.clearAllMocks();
   storePriorOverride = undefined; // default: the store's prior IS getLoopCarryNote's value
   lastStoredNote = null; // WI-7124: reset the verify-read fixture between tests
@@ -292,6 +304,7 @@ beforeEach(() => {
   getLoopStatus.mockResolvedValue(null); // default: no armed routine found
   resolveCurrentTurnStamp.mockResolvedValue(null);
   verifyTurnRefs.mockResolvedValue([]);
+  readSuccessfulActionInvocations.mockResolvedValue([]);
   getSessionBrief.mockResolvedValue(null); // default: no durable coord:orient scope found
   getPresence.mockResolvedValue(null);
   readInbox.mockResolvedValue([]);
@@ -318,8 +331,11 @@ beforeEach(() => {
           degraded: false,
           elapsedMs: 0,
         };
-      } catch {
-        return { value: null, degraded: true, elapsedMs: 0 };
+      } catch (error) {
+        return {
+          value: null, degraded: true, reason: 'error', elapsedMs: 0,
+          errorMessage: error instanceof Error ? error.message : String(error),
+        };
       }
     }
     if (label === 'loop:checkpoint decision-ref advisory') {
@@ -332,6 +348,9 @@ beforeEach(() => {
       } catch {
         return { value: undefined, degraded: true, elapsedMs: 0 };
       }
+    }
+    if (label === 'carry-provenance-stamp') {
+      return { value: [[], null], degraded: false, elapsedMs: 0 };
     }
     return { value: undefined, degraded: false, elapsedMs: 0 };
   });
@@ -743,6 +762,15 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
 });
 
 describe('loop:checkpoint — the loop carry-note producer', () => {
+  it('rejects PostgreSQL-invalid U+0000 text before carry-note persistence', () => {
+    const nul = `before${String.fromCharCode(0)}after`;
+
+    expect(() => parse({ note: nul })).toThrow(/U\+0000/);
+    expect(() => parse({ checkpoint: { did: nul } })).toThrow(/U\+0000/);
+    expect(setLoopCarryNoteWithPrior).not.toHaveBeenCalled();
+    expect(setLoopCarryNote).not.toHaveBeenCalled();
+  });
+
   it('distinguishes the 48-row input ceiling from the 12-row durable cap in its schema', () => {
     const shape = (tool.args as unknown as { shape: Record<string, { description?: string }> }).shape;
 
@@ -1630,6 +1658,26 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     );
   });
 
+  it.each([undefined, 'papercusp'])('keeps the active routine scope when diagnostic status fails (explicit harness: %s)', async (harness) => {
+    // The scope lives in the routine row even when the diagnostic reader's
+    // wake/transcript enrichment fails. Falling back would strand the note in
+    // papercusp while the cold reader still opens sb-devboard-hive.
+    getLoopStatus.mockRejectedValue(new Error('diagnostic wake-history query failed'));
+    readActiveLoopFacts.mockResolvedValue({ active: true, harnessSlug: 'sb-devboard-hive' });
+
+    const result = body(await call({ next: 'continue the existing loop', ...(harness ? { harness } : {}) }, {
+      harnessSlug: 'papercusp', workspaceId: 'ws-1',
+    }));
+
+    expect(setLoopCarryNote).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: 'sb-devboard-hive', ownerId: 'su-caller' }),
+      expect.any(String),
+    );
+    expect(result).toMatchObject({ ok: true, harness: 'sb-devboard-hive', verified: true });
+    expect(readActiveLoopFacts).toHaveBeenCalledWith('su-caller');
+    expect(result.routineProbeFailed).toBeUndefined();
+  });
+
   it('WI-2148: falls back to args/ctx/home-hive when getLoopStatus errors (fail-open, never blocks a checkpoint write)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     getLoopStatus.mockRejectedValueOnce(new Error('pg down'));
@@ -1643,7 +1691,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     // routine — the write is no longer silently indistinguishable from a verified one.
     const body = JSON.parse(result.content[0].text as string);
     expect(body.routineProbeFailed).toEqual(
-      expect.objectContaining({ wroteTo: 'papercusp' }),
+      expect.objectContaining({ wroteTo: 'papercusp', reason: 'error', errorMessage: 'pg down', elapsedMs: 0 }),
     );
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
@@ -1668,7 +1716,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(resultBody).toMatchObject({
       ok: true,
       harness: 'papercusp',
-      routineProbeFailed: { wroteTo: 'papercusp' },
+      routineProbeFailed: { wroteTo: 'papercusp', reason: 'timeout', elapsedMs: 5_000 },
     });
     expect(setLoopCarryNoteWithPrior).toHaveBeenCalledOnce();
     const { CONTINUATION_READ_BUDGET_MS } = await import('./checkpoint');
@@ -2859,6 +2907,96 @@ describe('loop:checkpoint — current-turn sentinel reuses its resolved transcri
     );
     expect(setLoopCarryNote.mock.calls[0]?.[1]).toContain(currentTurn.ref);
   });
+
+  it('expands [turn:self] in structured check and wall rows before linting and storage', async () => {
+    const currentTurn = {
+      ref: '[turn:claude:current-row@2026-10-16T12:00:00.000Z]',
+      verdict: 'agent-injected' as const,
+      origin: 'loop-fire',
+    };
+    const checkClaim = 'Posted completion evidence to WI-2144600 [turn:self]';
+    resolveCurrentTurnStamp.mockReset();
+    resolveCurrentTurnStamp.mockResolvedValue(currentTurn);
+    withBoundedTimeout.mockImplementation(async (work: unknown, options: unknown) => {
+      const label = (options as { label?: string }).label;
+      if (label === 'carry-provenance-stamp') {
+        return { value: await (work as Promise<unknown>), degraded: false, elapsedMs: 0 };
+      }
+      if (label === 'loop:checkpoint decision-ref advisory') {
+        try {
+          return { value: await (work as Promise<unknown>), degraded: false, elapsedMs: 0 };
+        } catch {
+          return { value: undefined, degraded: true, elapsedMs: 0 };
+        }
+      }
+      return { value: undefined, degraded: false, elapsedMs: 0 };
+    });
+
+    const result = body(
+      await call({
+        checks: [{ claim: checkClaim, recheck: 'read the matching work-item thread', verified: 'tool receipt', ok: true }],
+        walls: [{ claim: 'The carry row was recorded during [turn:self].' }],
+      }),
+    );
+    const stored = String(setLoopCarryNote.mock.calls[0]?.[1] ?? '');
+
+    expect(result).toMatchObject({ ok: true, verified: true, checks: 1, walls: 1 });
+    expect(resolveCurrentTurnStamp).toHaveBeenCalled();
+    expect(stored).not.toContain('[turn:self]');
+    expect(stored.split(currentTurn.ref)).toHaveLength(3);
+    expect(result.turnProvenance?.refs).toMatchObject([
+      { ref: currentTurn.ref, found: true, checked: true, verdict: 'agent-injected', origin: 'loop-fire' },
+    ]);
+    expect(result.provenanceLint?.flagged ?? false).toBe(false);
+  });
+});
+
+describe('loop:checkpoint — same-turn action proof (EI-25298018130887432)', () => {
+  const actionContext = {
+    harnessSlug: 'papercusp',
+    workspaceId: 'ws-1',
+    spawnId: 'spawn-action-proof',
+  };
+
+  it('suppresses a matching successful coord action and scopes the ledger read to this caller', async () => {
+    readSuccessfulActionInvocations.mockResolvedValueOnce([
+      { toolName: 'coord:send', args: { to: ['su-bce40c51'], summary: 'handoff' } },
+    ]);
+
+    const result = body(await call({ note: 'Messaged fleet leader su-bce40c51 directly' }, actionContext));
+
+    expect(result).toMatchObject({ ok: true, verified: true });
+    expect(result.provenanceLint).toBeUndefined();
+    expect(readSuccessfulActionInvocations).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      spawnId: 'spawn-action-proof',
+      coordOwnerId: 'su-caller',
+    });
+  });
+
+  it('uses the successful action proof when the documented current-turn sentinel cannot resolve', async () => {
+    resolveCurrentTurnStamp.mockResolvedValueOnce(null);
+    readSuccessfulActionInvocations.mockResolvedValueOnce([
+      { toolName: 'coord:send', args: { to: ['su-bce40c51'], summary: 'handoff' } },
+    ]);
+
+    const result = body(
+      await call({ did: '[turn:self] Messaged fleet leader su-bce40c51 directly' }, actionContext),
+    );
+
+    expect(result).toMatchObject({ ok: true, verified: true });
+    expect(result.provenanceLint).toBeUndefined();
+    expect(String(setLoopCarryNote.mock.calls[0]?.[1] ?? '')).toContain('[turn:self]');
+  });
+
+  it('keeps the warning when the same-turn action ledger is unavailable', async () => {
+    readSuccessfulActionInvocations.mockResolvedValueOnce(null);
+
+    const result = body(await call({ note: 'Messaged fleet leader su-bce40c51 directly' }, actionContext));
+
+    expect(result.ok).toBe(true);
+    expect(result.provenanceLint?.matches[0]?.kind).toBe('unverified-action-claim');
+  });
 });
 
 describe('pickUnreadCursor — P-007 fleet-member-dx (EI-9035)', () => {
@@ -3006,6 +3144,46 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(b.repairs).toBeUndefined();
       const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
       expect(written).toContain(' — falsifier: the parser rejects checks[0].falsifier as unrecognized');
+    });
+
+    it('preserves canonical verified evidence when the ok:true alias is also present through immediate readback (EI-25632229189825943)', async () => {
+      const evidence = 'the focused checkpoint probe passed';
+      // The default store double returns a sentinel, which is enough for the
+      // write-path assertions but cannot model a reader seeing the persisted
+      // note. Return the actual second argument so this regression covers the
+      // write -> read:true round trip as the production store does.
+      setLoopCarryNote.mockImplementationOnce(async (_ref: unknown, note: unknown) => note as string);
+      const b = body(
+        await call({
+          did: 'checkpointed the compatibility row',
+          checks: [{ claim: 'the checkpoint probe is green', recheck: 'run the focused probe', verified: evidence, ok: true }],
+        }),
+      );
+
+      expect(b).toMatchObject({ ok: true, verified: true, checks: 1 });
+      expect(b.repairs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            field: 'checks[0].ok',
+            kind: 'renamed',
+            detail: expect.stringContaining('canonical verified value was kept'),
+          }),
+        ]),
+      );
+
+      const [, stored] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+      const storedCheck = splitCarryNoteChecks(stored).checks[0];
+      expect(storedCheck).toMatchObject({
+        claim: 'the checkpoint probe is green',
+        recheck: 'run the focused probe',
+        verified: expect.stringContaining(evidence),
+      });
+      expect(storedCheck?.observed).toBeUndefined();
+
+      const read = body(await call({ read: true }));
+      expect(read.checks).toHaveLength(1);
+      expect(read.checks[0]).toMatchObject({ verified: expect.stringContaining(evidence) });
+      expect(read.checks[0]?.observed).toBeUndefined();
     });
 
     it('maps {status, evidence} to `verified`, PRESERVING the evidence rather than dropping it', () => {
@@ -3784,14 +3962,22 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
   });
 
   it('refuses a merge that would evict a carried check at the cap', async () => {
-    getLoopCarryNote.mockResolvedValue(
-      buildPrior(Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({ claim: `carried ${i + 1}` }))),
-    );
+    const carriedChecks = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
+      id: `check-${i + 1}`,
+      claim: `carried ${i + 1}`,
+    }));
+    getLoopCarryNote.mockResolvedValue(buildPrior(carriedChecks));
     const b = body(await call({ did: 'progress', checks: [{ claim: 'one row past the cap' }], rowsMode: 'merge' }));
 
     expect(b.ok).toBe(false);
     expect(b.error).toBe('checkpoint_merge_would_evict_rows');
     expect(b.checksDropped).toEqual([`carried ${CARRY_NOTE_MAX_CHECKS}`]);
+    expect(b.checksDroppedRows).toEqual([
+      { id: `check-${CARRY_NOTE_MAX_CHECKS}`, claim: `carried ${CARRY_NOTE_MAX_CHECKS}` },
+    ]);
+    expect(b.message).toContain('checksDroppedRows');
+    const storedChecks = splitCarryNoteChecks(setLoopCarryNote.mock.calls[0]?.[1] as string).checks;
+    expect(storedChecks.map(({ id, claim }) => ({ id, claim }))).toEqual(carriedChecks);
     // EI-22377179869127416: the ROW write is still refused, but the narrative is no
     // longer taken hostage with it — the message must say so, or a caller reading
     // "NOTHING was written" would re-send a note that already committed.
@@ -3801,17 +3987,21 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
   });
 
   it('refuses a merge that would evict a carried wall at the cap', async () => {
-    getLoopCarryNote.mockResolvedValue(
-      buildPrior(
-        [],
-        Array.from({ length: CARRY_NOTE_MAX_WALLS }, (_, i) => ({ claim: `carried wall ${i + 1}` })),
-      ),
-    );
+    const carriedWalls = Array.from({ length: CARRY_NOTE_MAX_WALLS }, (_, i) => ({
+      id: `wall-${i + 1}`,
+      claim: `carried wall ${i + 1}`,
+    }));
+    getLoopCarryNote.mockResolvedValue(buildPrior([], carriedWalls));
     const b = body(await call({ did: 'progress', walls: [{ claim: 'new wall' }], rowsMode: 'merge' }));
 
     expect(b.ok).toBe(false);
     expect(b.error).toBe('checkpoint_merge_would_evict_rows');
     expect(b.wallsDropped).toEqual([`carried wall ${CARRY_NOTE_MAX_WALLS}`]);
+    expect(b.wallsDroppedRows).toEqual([
+      { id: `wall-${CARRY_NOTE_MAX_WALLS}`, claim: `carried wall ${CARRY_NOTE_MAX_WALLS}` },
+    ]);
+    const storedWalls = splitCarryNoteWalls(setLoopCarryNote.mock.calls[0]?.[1] as string).walls;
+    expect(storedWalls.map(({ id, claim }) => ({ id, claim }))).toEqual(carriedWalls);
     expect(b.message).toContain('confirmRetire:true');
     // P-025: the refusal teaches the one-row remedies, not a full resend.
     expect(b.message).toContain('replaces');

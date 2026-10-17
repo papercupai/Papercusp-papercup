@@ -287,7 +287,7 @@ describe('dev:pg_health', () => {
       source: 'current-process',
       pid: expect.any(Number),
       capturedAt: expect.any(String),
-      coverage: 'completed-results-in-selected-pools-only',
+      coverage: 'completed-results-and-recent-failures-in-selected-pools-only',
       resultLimitPerPool: 4,
       pools: expect.arrayContaining([
         expect.objectContaining({ pool: 'org-app', observed: false }),

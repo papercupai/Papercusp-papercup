@@ -39,12 +39,12 @@ vi.mock('../../components/adv/AdvShell', () => ({
   // Inlined (not a top-level const) — vi.mock factories are hoisted above
   // module-scope declarations, so referencing an outer `const` throws.
   ADV_TABS: [
-    'overview', 'hud', 'brainstorm', 'workflows', 'conversations', 'learning', 'harnesses', 'health', 'frames',
+    'overview', 'enterprise', 'hud', 'brainstorm', 'workflows', 'conversations', 'learning', 'harnesses', 'health', 'frames',
     'evals', 'calendar', 'plans', 'prs', 'insights', 'settings', 'history',
     'docs', 'git', 'stats', 'testing',
   ].map((id) => ({ id })),
   portalEmbedAdvTab: (tab: string, embedded: boolean) => (
-    embedded && !['overview', 'hud', 'learning', 'harnesses', 'workflows', 'brainstorm'].includes(tab) ? 'overview' : tab
+    embedded && !['overview', 'enterprise', 'hud', 'learning', 'harnesses', 'workflows', 'brainstorm'].includes(tab) ? 'overview' : tab
   ),
   useAdvScope: () => advScopeBoundary.entered
     ? {
@@ -79,7 +79,8 @@ vi.mock('../../components/adv/LearningTab', () => ({ default: () => <div data-te
 vi.mock('../../components/adv/AdvFramesTab', () => ({ default: () => <div data-testid="tab-frames" /> }));
 vi.mock('../../components/adv/AdvEvalsTab', () => ({ default: () => <div data-testid="tab-evals" /> }));
 vi.mock('../../components/adv/ScheduledCalendarTab', () => ({ default: () => <div data-testid="tab-calendar" /> }));
-vi.mock('../../components/adv/AdvWorkflowsTab', () => ({ default: () => <div data-testid="tab-workflows" /> }));
+vi.mock('../../components/adv/AdvWorkflowsTab', () => ({ default: ({ enterprise }: { enterprise?: boolean }) =>
+  <div data-testid={enterprise ? 'tab-enterprise' : 'tab-workflows'} /> }));
 vi.mock('../../components/adv/HealthTab', () => ({ default: () => <div data-testid="tab-health" /> }));
 vi.mock('../../components/adv/AdvHistoryTab', () => ({ default: () => <div data-testid="tab-history" /> }));
 vi.mock('../../components/adv/AdvHarnessPanelPage', () => ({
@@ -124,6 +125,7 @@ describe('/adv tab router', () => {
 
   const FIRST_CLASS = [
     { tab: 'overview', child: 'tab-overview', bar: true, pills: false },
+    { tab: 'enterprise', child: 'tab-enterprise', bar: false, pills: false },
     // HUD is a first-class tab (owner ask 2026-07-25) — /adv/HUD redirects here.
     // It is also where the pot cluster + status pills moved (owner ask 2026-07-27).
     { tab: 'hud', child: 'tab-hud', bar: true, pills: true },
@@ -140,6 +142,12 @@ describe('/adv tab router', () => {
     { tab: 'stats', child: 'tab-stats', bar: true, pills: false },
     { tab: 'history', child: 'tab-history', bar: true, pills: false },
   ] as const;
+
+  it('keeps the canonical Enterprise entry route in an embedded desktop', async () => {
+    window.history.replaceState({}, '', '/adv?tab=enterprise&portalEmbed=1');
+    renderAdv('?tab=enterprise&portalEmbed=1');
+    expect(await screen.findByTestId('tab-enterprise')).toBeTruthy();
+  });
 
   it.each(FIRST_CLASS)('renders the $tab surface (pot bar: $bar, pills: $pills)', async ({ tab, child, bar, pills }) => {
     renderAdv(`?tab=${tab}`);

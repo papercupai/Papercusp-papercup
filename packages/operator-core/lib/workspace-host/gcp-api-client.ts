@@ -181,7 +181,9 @@ function billingQuery(descriptor: GcpBillingExportDescriptor): string {
     '    CAST(ROUND(SUM(cost) * 1000000) AS INT64) AS gross_micros,',
     '    CAST(ROUND(SUM(IFNULL((SELECT SUM(credit.amount) FROM UNNEST(credits) AS credit), 0)) * 1000000) AS INT64) AS credit_micros',
     `  FROM \`${table}\``,
-    '  WHERE usage_start_time >= @usage_start_at',
+    // Provider usage buckets can start before a VM is created. Include overlapping
+    // intervals; the immutable run label attributes their already-prorated charges.
+    '  WHERE usage_end_time > @usage_start_at',
     '    AND usage_start_time < @usage_end_at',
     '    AND EXISTS (SELECT 1 FROM UNNEST(labels) AS label WHERE label.key = @label_key AND label.value = @run_id)',
     '  GROUP BY currency',
@@ -427,6 +429,7 @@ interface RawResource {
 }
 
 interface RawDisk extends RawResource {
+  id?: string;
   status?: GcpComputeDiskStatus;
   users?: string[];
   sizeGb?: string;
@@ -1204,6 +1207,8 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
       ...observedResource(raw, this.now()),
       status: raw.status ?? 'CREATING',
       attachedInstanceNames: attachedNames(raw.users),
+      attachedInstanceRefs: [...(raw.users ?? [])],
+      ...(raw.id ? { diskId: String(raw.id) } : {}),
       ...(numberValue(raw.sizeGb) !== undefined ? { sizeGb: numberValue(raw.sizeGb) } : {}),
     };
   }

@@ -133,6 +133,56 @@ beforeEach(() => {
 });
 
 describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
+  it('executes the live plan instruments when the stored acceptance seed still says none', async () => {
+    const checks = ['agents:acceptance-machinery-share', 'agents:native-session-minutes'];
+    const stored = checks.map((_, i) => ({ key: `r-${15 + i}`, barKey: `R-${15 + i}`,
+      check: { kind: 'instrument' as const, instrumentKey: 'none' } }));
+    const content = '## Requirements\n\n' + checks.map((instrumentKey, i) =>
+      `**R-${15 + i} — Outcome.**\n\n\`\`\`requirement\n` + JSON.stringify({
+        intent: { request: 'Measure real plan outcomes.', sourceRefs: ['owner-directive:1909'] },
+        acceptance: { condition: 'The outcome meets its bar.', falsifier: 'The outcome misses its bar.',
+          evidencePlane: 'live', requiredScope: ['P-015'] },
+        verification: { method: 'Run the registered measurement.', check: { kind: 'instrument', instrumentKey } },
+      }) + '\n```\n').join('\n');
+    // This read seam consumes only the plan content and revision.
+    mockResolvedTyped(vi.mocked(getPlanRow), { content, version: 35 } as PlanRow);
+    const { deps, record } = depsFor([], [], []);
+    deps.getRubric = async () => ({ rubricId: RUBRIC, kind: 'acceptance', subjectPlan: 'subject-plan',
+      workspaceId: 'ws-test', subjectHarnessSlug: 'papercusp', criteria: stored });
+    deps.runInstruments = vi.fn(async ({ criteria }: Parameters<NonNullable<RubricRescoreDeps['runInstruments']>>[0]) => criteria.map((criterion, i) => ({
+      check: { id: `${criterion.key}:instrument`, rubricRef: RUBRIC, criterionKey: criterion.key,
+        kind: 'instrument' as const, value: i, unit: 'count' },
+      verdict: 'pass' as const, measuredAt: '2026-10-16T00:00:00Z', durationMs: 1,
+    })));
+    const out = await rescoreRubric({ rubricRef: RUBRIC, workspaceId: 'wrong-workspace', harnessSlug: 'wrong-harness' }, deps);
+    expect(getPlanRow).toHaveBeenCalledWith('subject-plan', { workspaceId: 'ws-test', harnessSlug: 'papercusp' });
+    expect(deps.runInstruments).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-test', harnessSlug: 'papercusp', criteria: checks.map((instrumentKey, i) =>
+        expect.objectContaining({ key: `r-${15 + i}`, check: { kind: 'instrument', instrumentKey } })),
+    }));
+    expect(out.executed).toBe(2);
+    expect(record).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({ check: expect.objectContaining({ criterionKey: 'r-15' }) }),
+      expect.objectContaining({ check: expect.objectContaining({ criterionKey: 'r-16' }) }),
+    ]), { workspaceId: 'ws-test', harnessSlug: 'papercusp' });
+    expect(stored.map(c => c.check.instrumentKey)).toEqual(['none', 'none']);
+  });
+
+  it.each([
+    ['unreadable', null, 'subject-plan-unreadable'],
+    ['malformed', { content: '## Requirements\n```requirement\n{invalid}\n```', version: 1 }, 'requirements-unparseable'],
+  ] as const)('refuses %s live requirements before running or recording stale checks', async (_label, plan, reason) => {
+    mockResolvedTyped(vi.mocked(getPlanRow), plan as PlanRow | null);
+    const { deps, record, readLatest } = depsFor([probeCriterion('stale')], [], []);
+    deps.getRubric = async () => ({ rubricId: RUBRIC, kind: 'acceptance', subjectPlan: 'subject-plan',
+      workspaceId: 'ws-test', subjectHarnessSlug: 'papercusp', criteria: [probeCriterion('stale')] });
+    await expect(rescoreRubric({ rubricRef: RUBRIC, workspaceId: 'ws-test', harnessSlug: 'papercusp' }, deps))
+      .rejects.toThrow(`rubric_rescore_live_requirements_unavailable: ${RUBRIC}: ${reason}`);
+    expect(deps.runInstruments).not.toHaveBeenCalled();
+    expect(readLatest).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+  });
+
   it('includes scheduled platform checks, passes canonical workspace scope, and emits their regression', async () => {
     const criterion: CheckedCriterion = { key: 'r-31', check: { kind: 'instrument', instrumentKey: 'code-intel:native-adoption-good-use' } };
     const prior = { ...row('r-31', 1, 1), check: { id: 'r-31:instrument', rubricRef: RUBRIC,
@@ -140,7 +190,7 @@ describe('rubric re-score: crossing alert (R-8 falsifiers 1 and 2)', () => {
     const failed = { ...prior, testRunId: 2, status: 'fail' as const, check: { ...prior.check, value: 0 } };
     const { deps, emit } = depsFor([criterion], [prior], [failed]);
     await rescoreRubric({ rubricRef: RUBRIC, workspaceId: 'untrusted-fallback', harnessSlug: 'papercusp' }, deps);
-    expect(deps.runInstruments).toHaveBeenCalledWith({ rubricRef: RUBRIC, criteria: [criterion], workspaceId: 'ws-test' });
+    expect(deps.runInstruments).toHaveBeenCalledWith({ rubricRef: RUBRIC, criteria: [criterion], workspaceId: 'ws-test', harnessSlug: 'papercusp' });
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ payload: {
       rubricRef: RUBRIC, criterionKey: 'r-31', before: 'pass', after: 'fail', testRunId: 2,
     } }));

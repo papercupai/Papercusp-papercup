@@ -31,7 +31,15 @@ describe('coord:focus-window', () => {
       windowId: '0x01e70b14',
     });
     expect(getLatestActiveAdvSessionByOwner).toHaveBeenCalledWith('su-8ee55568');
-    expect(focusSessionWindow).toHaveBeenCalledWith({ id: 28143 }, row);
+    expect(focusSessionWindow).toHaveBeenCalledWith({ id: 28143, workspace: undefined }, row);
+  });
+
+  it('forwards a workspace choice without launching another session', async () => {
+    const row = { id: 28143, windowId: '0x01e70b14' };
+    getLatestActiveAdvSessionByOwner.mockResolvedValue(row);
+    focusSessionWindow.mockResolvedValue({ focused: true, windowId: row.windowId });
+    await run({ ownerId: 'su-live', workspace: 'window' });
+    expect(focusSessionWindow).toHaveBeenCalledWith({ id: row.id, workspace: 'window' }, row);
   });
 
   it('returns a typed no_active_session result instead of launching anything', async () => {

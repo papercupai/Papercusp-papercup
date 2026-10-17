@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { installDefaultSocialPackages } from '../capability-verbs/social-provider.fixture';
+import { providerRegistry } from '../integrations/provider-registry';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
@@ -22,12 +24,18 @@ const PLAN = 'trigger-admin-fixture';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '../../../..');
 
+vi.mock('../integrations/provider-registry', async (original) => {
+  const actual = await original<typeof import('../integrations/provider-registry')>();
+  return { ...actual, readyProviderRegistry: async () => actual.providerRegistry() };
+});
+
 let org: OrgTestDb;
 let sql: Sql;
 let sourceId: string;
 let bindingId: string;
 
 beforeAll(async () => {
+  await installDefaultSocialPackages();
   org = await createOrgTestDb();
   sql = org.adminSql;
   const operationMigration = path.join(REPO, 'libs/papercusp/libs/db/sql/1228-blueprint-operation-automation-bindings.sql');
@@ -35,6 +43,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  providerRegistry().clear();
   await org?.cleanup();
 });
 
@@ -601,10 +610,14 @@ describe('external-trigger admin shared seam', () => {
   it('validates and persists the binding-engine storm-policy vocabulary', async () => {
     expect(
       await updateExternalTriggerBindingStormPolicy(sql, WS, bindingId, {
+        mode: 'coalesce-with-cap',
         maxRuns: 5,
         windowSeconds: 300,
       }),
-    ).toMatchObject({ stormPolicy: { maxRuns: 5, windowSeconds: 300 } });
+    ).toMatchObject({ stormPolicy: { mode: 'coalesce-with-cap', maxRuns: 5, windowSeconds: 300 } });
+    await expect(updateExternalTriggerBindingStormPolicy(sql, WS, bindingId, {
+      mode: 'invented', maxRuns: 5, windowSeconds: 300,
+    })).rejects.toThrow('external_trigger_invalid_storm_mode');
     await expect(
       updateExternalTriggerBindingStormPolicy(sql, WS, bindingId, {
         maxRuns: 0,
@@ -943,7 +956,8 @@ describe('P-027 — the admin snapshot carries social platform facts per source'
 
     expect(row.social).not.toBeNull();
     expect(row.social?.platformId).toBe('reddit');
-    expect(row.social?.wave).toBe('A');
+    expect(row.social?.readTransport).toBe('poll');
+    expect(row.social).not.toHaveProperty('wave');
     // A cap the budget actually funds — never unbounded.
     expect(row.social?.rateBudget.maxRuns).toBeGreaterThan(0);
     expect(row.social?.rateBudget.windowSeconds).toBeGreaterThan(0);
@@ -965,42 +979,60 @@ describe('P-027 — the admin snapshot carries social platform facts per source'
     expect(row.social?.cursor.state).toBe('never-synced');
   });
 
-  it('reads a persisted watermark cursor as synced, through the real column', async () => {
+  it('reads committed host sync time and loss evidence through the real cursor column', async () => {
     const created = await createExternalTriggerSource(sql, WS, { kind: 'threads' });
     const at = new Date(Date.now() - 90_000).toISOString();
+    const lossRisk = { kind: 'capped-window-overflow', oldestReachableAt: at, detail: 'Provider window was capped' };
     await sql`
       UPDATE harness_shared.data_sources
-         SET cursor = ${JSON.stringify({ watermark: at, boundaryIds: ['m1'] })}::jsonb
+         SET cursor = ${JSON.stringify({ provider: null, providerSync: { lastSyncedAt: at, lossRisk } })}::jsonb
        WHERE workspace_id = ${WS} AND id = ${created.id}::uuid`;
 
     const row = await snapshotSource('threads');
     expect(row.social?.cursor.state).toBe('synced');
     expect(row.social?.cursor.at).toBe(at);
+    expect(row.social?.cursor.lossRisk).toEqual(lossRisk);
     // ~90s, allowing for the round trip.
     expect(row.social?.cursor.ageMs ?? 0).toBeGreaterThanOrEqual(89_000);
     expect(row.social?.cursor.ageMs ?? 0).toBeLessThan(600_000);
   });
 
-  it('reads reddit’s timeless fullname cursor as position-only, not never-synced', async () => {
-    // The regression this exists to catch: a pane keyed on `cursor.watermark`
-    // reports a perfectly healthy reddit source as never synced, forever.
+  it('reads an opaque provider position without decoding vendor cursor fields', async () => {
     const created = await createExternalTriggerSource(sql, WS, { kind: 'reddit' });
     await sql`
       UPDATE harness_shared.data_sources
-         SET cursor = ${JSON.stringify({ newestFullname: 't3_abc123' })}::jsonb
+         SET cursor = ${JSON.stringify({ provider: 'opaque:t3_abc123' })}::jsonb
        WHERE workspace_id = ${WS} AND id = ${created.id}::uuid`;
 
     const row = await snapshotSource('reddit');
     expect(row.social?.cursor.state).toBe('position-only');
-    expect(row.social?.cursor.position).toBe('newestFullname=t3_abc123');
+    expect(row.social?.cursor.position).toBe('opaque:t3_abc123');
   });
 
-  it('surfaces the owner-side wall on a review-gated platform', async () => {
-    // Wave B is gated on Meta app review; the pane must say so rather than
-    // presenting it as merely disconnected.
-    await createExternalTriggerSource(sql, WS, { kind: 'instagram' });
-    const row = await snapshotSource('instagram');
-    expect(row.social?.platformId).toBe('instagram');
-    expect(row.social?.wave).toBe('B');
+  it('does not present a persisted legacy watermark as a committed provider sync', async () => {
+    const created = await createExternalTriggerSource(sql, WS, { kind: 'threads' });
+    await sql`
+      UPDATE harness_shared.data_sources
+         SET cursor = ${JSON.stringify({ watermark: new Date().toISOString(), boundaryIds: ['m1'] })}::jsonb
+       WHERE workspace_id = ${WS} AND id = ${created.id}::uuid`;
+    expect((await snapshotSource('threads')).social?.cursor).toMatchObject({
+      state: 'unrecognized', at: null, ageMs: null, position: null,
+    });
+  });
+
+  it('surfaces the actual package owner wall through the persisted source', async () => {
+    await createExternalTriggerSource(sql, WS, { kind: 'x-twitter' });
+    const row = await snapshotSource('x-twitter');
+    expect(row.social?.platformId).toBe('x-twitter');
+    expect(row.social?.blockedOn).toBe(providerRegistry().get('x-twitter')!.descriptor.verification!.blockedOn);
+    expect(row.social?.verified).toBe(true);
+  });
+
+  it('does not advertise a legacy social platform after its package is unloaded', async () => {
+    await createExternalTriggerSource(sql, WS, { kind: 'tiktok' });
+    expect((await snapshotSource('tiktok')).social?.writeVerbs).toEqual([]);
+    providerRegistry().unregister('tiktok');
+    try { expect((await snapshotSource('tiktok')).social).toBeNull(); }
+    finally { await installDefaultSocialPackages(); }
   });
 });

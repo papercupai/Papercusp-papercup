@@ -1,0 +1,193 @@
+{
+  "schemaVersion": "native-p042-p018-receipts-v1",
+  "workItem": "WI-6554700010016658",
+  "parentWorkItem": "WI-6554700010015356",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "scope": "Current-source receipt instrumentation and bounded historical investigation. No loaded-runtime, continuous 48-hour, gate or shipment verdict.",
+  "rootCause": "The routine computed and logged each snapshot measurement and overwrote its mutable health metadata, while its existing durable DBOS result retained only maintenance mode. Later routine receipts could not show the per-fire status, age or observation timestamp. Fail-soft tracking failures also produced a mode-only healthy-looking receipt.",
+  "reuse": "Extend the same SystemActionResult.diagnostics returned by gitnexus-reindex. Existing DBOS operation_outputs and routine-last-fire.ts remain the history and read mechanism; no new store, tool, routine or config key.",
+  "change": "Return compact actual measurement fields from trackDependencySnapshot. On initial failure record unavailable. When bookkeeping fails after measurement preserve that observation with trackingError. Source-only action returns existing softError for either failure so its last_error detector sees it. Analyzer opt-in and first-party default remain guarded.",
+  "history": {
+    "capture": "/tmp/native-p018-dbos-48h-20261017.json",
+    "sha256": "0cc4959da2de63a8010cec745d5d23ebc840ed4c4cc856c8be437e252d9c1950",
+    "rowCount": 44,
+    "truncated": false,
+    "receiptCount": 44,
+    "withDiagnostics": 27,
+    "withoutDiagnostics": 17,
+    "sourceOnlyFirst": {
+      "completedAt": "2026-10-15 22:39:15.871+00",
+      "workflowId": "sched-.routinesTick-2026-10-15T20:35:00.000Z-27",
+      "diagnostics": {
+        "maintenanceMode": "first-party-snapshot",
+        "snapshotBackend": "first-party-imports",
+        "analyzeEnabled": false
+      },
+      "error": null
+    },
+    "sourceOnlyLast": {
+      "completedAt": "2026-10-17 00:35:10.6+00",
+      "workflowId": "sched-.routinesTick-2026-10-17T00:35:00.000Z-17",
+      "diagnostics": {
+        "maintenanceMode": "first-party-snapshot",
+        "snapshotBackend": "first-party-imports",
+        "analyzeEnabled": false
+      },
+      "error": null
+    },
+    "recordedErrors": 0,
+    "binding": {
+      "routineId": "rt_papercusp_gitnexus_reindex",
+      "functionName": "system:gitnexus-reindex",
+      "workflowName": "routineFire",
+      "inputIndex": 0,
+      "lookback": "48 hours at execution time"
+    },
+    "readerSource": "packages/operator-core/lib/agent-tools/routines/routine-last-fire.ts"
+  },
+  "journal": {
+    "capture": "/tmp/native-p018-filtered-journal-summary-20261017.json",
+    "sha256": "9758b9216380fa4c9d09151f7f684ead195fad43ee6fe6033630cdde1533f231",
+    "timedOut": true,
+    "exit": null,
+    "observations": [
+      {
+        "status": "fresh",
+        "age": "8.0h",
+        "checkedAt": 1792197307634,
+        "producer": false,
+        "journalTimeUs": "1792197308720114",
+        "pid": "1645940"
+      },
+      {
+        "status": "fresh",
+        "age": "7.0h",
+        "checkedAt": 1792193741317,
+        "producer": false,
+        "journalTimeUs": "1792193741318149",
+        "pid": "1645940"
+      },
+      {
+        "status": "fresh",
+        "age": "6.0h",
+        "checkedAt": 1792190182902,
+        "producer": false,
+        "journalTimeUs": "1792190182903293",
+        "pid": "1645940"
+      }
+    ],
+    "complete": false,
+    "serviceIdentity": "systemctl --user resolves papercup-bg-host.service and papercusp-bg-host.service to active canonical papercusp-bg-host.service; system-scope units are not loaded"
+  },
+  "red": {
+    "log": "/tmp/native-p018-receipt-red-20261017.log",
+    "capture": "/tmp/native-p018-receipt-red-source-20261017.json",
+    "exitCode": 1,
+    "failed": 6,
+    "passed": 1,
+    "interpretation": "All six receipt assertions failed before production edits; graph-backend refusal passed."
+  },
+  "green": {
+    "capture": "/tmp/native-p018-receipt-green-source-20261017.json",
+    "captureSha256": "c75430018cf4a0be01bffa49d2e3eff0538a381a6132a6412a34abc98686466c",
+    "recordedSha": "fadbd35203407cd855384e131e49dbc7e8b76316",
+    "diagnostics": [
+      {
+        "testFile": "packages/operator-core/lib/harness/routines/gitnexus-snapshot-only.test.ts",
+        "state": "passed",
+        "sourceStatus": "stable"
+      },
+      {
+        "testFile": "packages/operator-core/lib/harness/routines/gitnexus-dependency-snapshot.test.ts",
+        "state": "passed",
+        "sourceStatus": "stable"
+      }
+    ],
+    "nativeRun": {
+      "reason": "passed",
+      "unhandledErrorCount": 0,
+      "modulePopulationMatched": true,
+      "files": [
+        {
+          "testFile": "packages/operator-core/lib/harness/routines/gitnexus-snapshot-only.test.ts",
+          "state": "passed",
+          "firstAttemptVerdict": "pass",
+          "execution": {
+            "passed": 7,
+            "failed": 0,
+            "skipped": 0,
+            "collectionFailed": false
+          }
+        },
+        {
+          "testFile": "packages/operator-core/lib/harness/routines/gitnexus-dependency-snapshot.test.ts",
+          "state": "passed",
+          "firstAttemptVerdict": "pass",
+          "execution": {
+            "passed": 23,
+            "failed": 0,
+            "skipped": 0,
+            "collectionFailed": false
+          }
+        }
+      ],
+      "gaps": []
+    },
+    "namedSources": {
+      "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts": {
+        "currentSha256": "4ada214f4dfdf03f22ad1d703ea253a53e565773f3f0c2778ce1c7584d357d50",
+        "capturedSha256": [
+          "4ada214f4dfdf03f22ad1d703ea253a53e565773f3f0c2778ce1c7584d357d50"
+        ],
+        "matches": true
+      },
+      "packages/operator-core/lib/harness/routines/gitnexus-snapshot-only.test.ts": {
+        "currentSha256": "a9268722d37ccb4e17443db3b049e24cb6730511bd1aa70c61d189671be5bb1c",
+        "capturedSha256": [
+          "a9268722d37ccb4e17443db3b049e24cb6730511bd1aa70c61d189671be5bb1c"
+        ],
+        "matches": true
+      },
+      "packages/operator-core/lib/harness/routines/gitnexus-dependency-snapshot.test.ts": {
+        "currentSha256": "d3841c319c4750a13aced5b0d423c06cfa7611875fdabdd512e237652f8d37de",
+        "capturedSha256": [
+          "d3841c319c4750a13aced5b0d423c06cfa7611875fdabdd512e237652f8d37de"
+        ],
+        "matches": true
+      }
+    },
+    "uniqueWorkerOriginalPaths": 1106,
+    "configStatus": {
+      "configSources": "unknown",
+      "configLoadedSources": "unknown",
+      "mainProcessLoadedSources": "unknown"
+    },
+    "testResultLine": [
+      "TEST_FILE_RESULT requested=2 executed=2 matched=2 status=passed head=fadbd35203 uncommittedPaths=1/2 provenance=stamped startedAt=2026-10-17T01:15:43.189Z childSubstituted=0 skippedTests=0"
+    ],
+    "log": "/tmp/native-p018-receipt-green-20261017.log",
+    "exitCode": 0,
+    "childSubstituted": 0
+  },
+  "typecheck": {
+    "command": "npm run lint:tsc -- --files packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts,packages/operator-core/lib/harness/routines/gitnexus-snapshot-only.test.ts",
+    "log": "/tmp/native-p018-receipt-types-20261017.log",
+    "exitCode": 0,
+    "status": "clean",
+    "head": "fadbd35203",
+    "files": 2
+  },
+  "filesChanged": [
+    "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts",
+    "packages/operator-core/lib/harness/routines/gitnexus-snapshot-only.test.ts",
+    "docs/evidence/native-p042-p018-receipts-2026-10-17.json"
+  ],
+  "limits": [
+    "Historical mode-only or null receipts are unknown for freshness; no backfill or inferred pass.",
+    "The source-filtered journal read timed out and yielded three actual observations only.",
+    "Only the three named captured worker-original source hashes were compared at readback; loaded config/main-process source evidence remains unknown. This is not a full execution graph.",
+    "P018 deployed 48-hour continuity and real gate selector log remain open on the parent.",
+    "Git-sync settlement, loaded runtime and final shipment remain unverified.",
+    "The original P012 final fourteen-day outcome follow-up remains on WI-6554700010008509. P040/P041 owner scope answer remains pending."
+  ]
+}

@@ -1430,6 +1430,12 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       slug: it.slug,
       intent: `plans:set-status ${it.itemId} → ${it.status}`,
       ...(harnessSlug ? { harnessSlug } : {}),
+      // The terminal-item reflection may also repair an awaiting-acceptance
+      // plan whose graph became live again. That transition restores an
+      // already-activated plan to ready; it is not a fresh activation and
+      // must use the same narrow lifecycle-repair exception as the periodic
+      // plan-drain reconciler.
+      allowAwaitingAcceptanceRestore: true,
       afterWrite: rev.afterWrite,
       inTransaction: async (tx, _writtenBody, scope, value) => {
         if (value.ok && carryRequired) {

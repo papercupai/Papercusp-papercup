@@ -213,8 +213,8 @@ export const HOSTED_CUSTOMER_DATA_TABLES: readonly CustomerDataTable[] = [
   table('papercusp_auth', 'hosted_entitlements', {
     purpose: 'What an organization (or user in it) is entitled to.',
     systemOfRecord: 'papercusp', retention: 'account', organizationLink: ORG,
-    billing: 'kind source',
-    operational: 'organization_id user_id created_at',
+    billing: 'kind source authority',
+    operational: 'organization_id user_id authority_revision created_at',
   }),
   table('papercusp_auth', 'hosted_user_preferences', {
     purpose: 'Per-user, per-organization locale, time zone, profile and notification settings.',

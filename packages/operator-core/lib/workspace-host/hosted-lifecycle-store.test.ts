@@ -14,6 +14,11 @@ import {
 
 type QueryHandler = (text: string, values: unknown[]) => unknown[] | Promise<unknown[]>;
 
+// Notifications are an effect too; a unit reconciliation must never open a live PG pool.
+vi.mock('../attention-notify', () => ({
+  notifyAttentionOnce: vi.fn(async () => ({ recordId: 1, deduped: false, mobileDelivered: false, desktopDelivered: false })),
+}));
+
 function fakeTransaction(handler: QueryHandler) {
   return async <T>(_workspaceId: string, fn: (tx: Sql) => Promise<T>): Promise<T> => {
     const tag = ((strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -83,6 +88,29 @@ const deferredSpendSignal = () => ({
 afterEach(() => setHostedLifecycleStoreHooks(null));
 
 describe('hosted lifecycle store', () => {
+  it('replays the saved admission before directory/quota reads', async () => {
+    const saved = {
+      operationId: 'op-1', created: true, hostId: 'selected-warm', organizationId: 'org-a',
+      customerWorkspaceId: 'customer-a', providerTarget: 'gcp',
+      decision: { allowed: true, reasons: [], projectedMonthlyCents: 1200, emergencyBypass: false },
+    };
+    setHostedLifecycleStoreHooks({ transaction: fakeTransaction((text) => {
+      if (text.includes('SELECT admission_receipt,')) return [{ admission_receipt: { result: saved }, input_matches: true }];
+      if (!text.includes('pg_advisory_xact_lock')) throw new Error('replay must not re-admit');
+      return [];
+    }) });
+    expect(await admitHostedLifecycleJob(baseInput)).toEqual({ ...saved, created: false });
+  });
+
+  it('refuses an operation identity collision before admission writes', async () => {
+    setHostedLifecycleStoreHooks({ transaction: fakeTransaction((text) => {
+      if (text.includes('SELECT admission_receipt,')) return [{ admission_receipt: null, input_matches: false }];
+      if (!text.includes('pg_advisory_xact_lock')) throw new Error('collision must not write');
+      return [];
+    }) });
+    await expect(admitHostedLifecycleJob(baseInput)).rejects.toThrow('hosted_lifecycle_operation_conflict');
+  });
+
   it('serializes admission, reads the writer counters, and inserts the canonical operation row', async () => {
     const queries: string[] = [];
     setHostedLifecycleStoreHooks({
@@ -103,7 +131,7 @@ describe('hosted lifecycle store', () => {
       organizationId: 'org-a',
       decision: { allowed: true, projectedMonthlyCents: 3200 },
     });
-    expect(queries.filter((query) => query.includes('pg_advisory_xact_lock'))).toHaveLength(2);
+    expect(queries.filter((query) => query.includes('pg_advisory_xact_lock'))).toHaveLength(3);
     expect(queries.some((query) => query.includes('INSERT INTO harness_shared.workspace_host_operations'))).toBe(true);
   });
 

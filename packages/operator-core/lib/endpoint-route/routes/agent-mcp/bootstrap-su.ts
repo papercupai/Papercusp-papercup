@@ -603,6 +603,30 @@ export async function resolveAccountPin(
 }
 
 /**
+ * A direct Codex launch uses the machine's native auth sources, while the
+ * per-session CODEX_HOME writer only inherits ~/.codex/auth.json when it exists.
+ * Check for a credential before the bootstrap creates an adv_sessions row.
+ * Never return or log credential contents from this preflight.
+ */
+function hasDirectCodexCredential(): boolean {
+  if (process.env.OPENAI_API_KEY?.trim()) return true;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(homedir(), '.codex', 'auth.json'), 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+    const auth = parsed as Record<string, unknown>;
+    const tokenValue = auth.tokens;
+    const tokens = tokenValue && typeof tokenValue === 'object' && !Array.isArray(tokenValue)
+      ? tokenValue as Record<string, unknown>
+      : {};
+    return [auth.OPENAI_API_KEY, tokens.access_token, tokens.refresh_token].some(
+      (value) => typeof value === 'string' && value.trim().length > 0,
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * psu-account-chooser P-005: the account choices the interactive psu picker offers.
  * Returns the pool account ids + the active session-override — but ONLY when the
  * inference gateway is on (pinning is a no-op otherwise, so the picker stays hidden
@@ -2420,6 +2444,21 @@ export const bootstrapSu = defineTool({
             409,
           );
       }
+    }
+    // Direct/default Codex config relies on the host's native login. Gateway
+    // auto and pinned accounts carry their own credentials in the generated
+    // provider config and must not depend on ~/.codex/auth.json.
+    if (agent === 'codex' && accountPin.provider == null && !hasDirectCodexCredential()) {
+      return jsonRes(
+        {
+          status: 'error',
+          code: 'codex_native_auth_missing',
+          error:
+            'direct/default Codex requires a credential in ~/.codex/auth.json or OPENAI_API_KEY; ' +
+            'sign in to Codex or select --account=auto to route through the inference gateway.',
+        },
+        409,
+      );
     }
 
     // named-su-agent-fleets P-006: resolve the chosen fleet (create-on-new-name +

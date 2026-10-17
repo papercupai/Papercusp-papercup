@@ -41,6 +41,8 @@ const control = vi.hoisted(() => ({
   runDestroy: vi.fn(),
   runProvisioning: vi.fn(),
   recordTerminalFailure: vi.fn(async (_input: unknown) => true),
+  updateOperation: vi.fn(async (_input: unknown) => {}),
+  appendEvent: vi.fn(async (_input: unknown) => {}),
 }));
 
 vi.mock('../workspace-host/initialization-admission', () => ({
@@ -78,6 +80,8 @@ vi.mock('../workspace-host/observability-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../workspace-host/observability-store')>()),
   recordWorkspaceHostOperationTerminalFailure: control.recordTerminalFailure,
   readWorkspaceHostDestroyTarget: control.readDestroyTarget,
+  updateWorkspaceHostOperation: control.updateOperation,
+  appendWorkspaceHostEvent: control.appendEvent,
 }));
 
 vi.mock('@dbos-inc/dbos-sdk', () => {
@@ -198,6 +202,8 @@ beforeEach(() => {
   control.stepOptionsByName = {};
   control.stepCalls = [];
   control.recordTerminalFailure.mockReset().mockResolvedValue(true);
+  control.updateOperation.mockClear();
+  control.appendEvent.mockClear();
   control.sleep.mockClear();
   _resetWorkspaceHostProvidersForTests();
   registerWorkspaceHostProvider(control.provider as never);
@@ -410,6 +416,51 @@ describe('workspace-host provisioning DBOS admission', () => {
         control.readDestroyTarget.mockResolvedValue({ desired: input.desired });
       });
 
+      it.each(['start', 'restart', 'repair', 'upgrade'] as const)('keeps %s pending until retained data and connector readiness complete', async (action) => {
+        const order = recordOrder();
+        control.readHostedBinding.mockResolvedValue({ customerWorkspaceId: 'customer-ws-1' });
+        control.runLifecycle.mockResolvedValue({ ...lifecycleDone, status: 'in-progress', lifecycleStage: 'provider-complete' });
+        control.enrollConnector.mockImplementation(async () => {
+          expect(control.updateOperation).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'succeeded' }));
+          order.push('connector');
+          return { generation: 2, routeLabel: 'host-1' };
+        });
+        await expect(workspaceHostProvisioningWorkflow({ ...lifecycle, action })).resolves.toMatchObject({
+          status: 'succeeded', lifecycleStage: 'workspace-usable', requiresInitialization: false,
+        });
+        expect(control.runLifecycle).toHaveBeenCalledWith(expect.objectContaining({ providerCompletionMode: 'defer-to-product-controller', hostedCustomerWorkspaceId: 'customer-ws-1' }));
+        expect(control.prepareInitialization).toHaveBeenCalledWith(expect.objectContaining({ source: { kind: 'retained', tenantIdentity: expect.stringMatching(/^[a-f0-9]{64}$/) } }));
+        expect(order).toEqual(['admit-initialize', 'initialize', 'desktop-pack', 'connector', 'activate']);
+        expect(control.updateOperation).toHaveBeenCalledWith(expect.objectContaining({ operationId: 'op-up', status: 'succeeded' }));
+        expect(control.sleep).not.toHaveBeenCalled();
+      });
+
+      it.each(['initialize', 'connector'] as const)('records parent failure when retained %s fails and never publishes ready', async (stage) => {
+        recordOrder();
+        const failure = new Error('retained state unavailable');
+        control.readHostedBinding.mockResolvedValue({ customerWorkspaceId: 'customer-ws-1' });
+        control.runLifecycle.mockResolvedValue({ ...lifecycleDone, status: 'in-progress', lifecycleStage: 'provider-complete' });
+        (stage === 'initialize' ? control.runInitialization : control.enrollConnector).mockRejectedValueOnce(failure);
+        await expect(workspaceHostProvisioningWorkflow({ ...lifecycle, action: 'start' })).rejects.toBe(failure);
+        expect(control.updateOperation).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'succeeded' }));
+        expect(control.activateCustomerWorkspace).not.toHaveBeenCalled();
+        expect(control.recordTerminalFailure).toHaveBeenCalledWith(expect.objectContaining({ operationId: 'op-up', error: failure }));
+      });
+
+      it('preserves the retained readiness error if failure bookkeeping also fails', async () => {
+        recordOrder();
+        const failure = new Error('retained volume refused');
+        control.readHostedBinding.mockResolvedValue({ customerWorkspaceId: 'customer-ws-1' });
+        control.runLifecycle.mockResolvedValue({ ...lifecycleDone, status: 'in-progress', lifecycleStage: 'provider-complete' });
+        control.enrollConnector.mockRejectedValueOnce(failure);
+        control.recordTerminalFailure.mockRejectedValueOnce(new Error('ledger unavailable'));
+        const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => {});
+        try {
+          await expect(workspaceHostProvisioningWorkflow({ ...lifecycle, action: 'start' })).rejects.toBe(failure);
+          expect(diagnostic).toHaveBeenCalled();
+        } finally { diagnostic.mockRestore(); }
+      });
+
       it.each(['upgrade', 'repair'] as const)(
         'brings a hosted machine up again after %s, under that operation and from its recorded spec',
         async (action) => {
@@ -450,10 +501,10 @@ describe('workspace-host provisioning DBOS admission', () => {
         expect(control.readDestroyTarget).not.toHaveBeenCalled();
       });
 
-      it('leaves a hosted machine alone after actions that keep its setup and an upgrade without a completed rollback', async () => {
+      it('does not run readiness for stop, snapshot or an upgrade without a completed rollback', async () => {
         const order = recordOrder();
         control.readHostedBinding.mockResolvedValue({ customerWorkspaceId: 'customer-ws-1' });
-        for (const action of ['start', 'stop', 'restart', 'snapshot'] as const) {
+        for (const action of ['stop', 'snapshot'] as const) {
           control.runLifecycle.mockResolvedValueOnce({
             ...lifecycleDone,
             operationId: `op-${action}`,
@@ -471,9 +522,9 @@ describe('workspace-host provisioning DBOS admission', () => {
         });
         await workspaceHostProvisioningWorkflow({ ...lifecycle, action: 'upgrade' }).catch(() => undefined);
 
-        expect(control.runLifecycle).toHaveBeenCalledTimes(5);
+        expect(control.runLifecycle).toHaveBeenCalledTimes(3);
         expect(order).toEqual([]);
-        expect(control.readHostedBinding).not.toHaveBeenCalled();
+        expect(control.readHostedBinding).toHaveBeenCalledTimes(1);
       });
 
       it('re-runs hosted bring-up after an upgrade rollback recreated the machine', async () => {

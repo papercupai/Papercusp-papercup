@@ -61,11 +61,12 @@ export interface CodexContextSnapshot {
   modelContextWindow: number | null;
 }
 
-/** One bounded tail read is enough: Codex writes a token_count event after each
- * model response, so the newest valid event is the authoritative current gauge.
+/** The fast path reads one bounded tail. If a large tool result displaced the
+ * latest token_count beyond it, extend the read backward in bounded chunks.
  * A native compaction/reset is reflected by the next event's lower
  * last_token_usage; cumulative total_token_usage is deliberately ignored. */
 const CODEX_TOKEN_TAIL_BYTES = 1024 * 1024;
+const CODEX_TOKEN_SCAN_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
  * WI-10005305: the compaction-compliance sweep asks for the same rollout twice
@@ -111,25 +112,44 @@ export async function codexContextSnapshotFromRollout(
       rememberCodexSnapshot(pathStr, memo);
       return memo.snapshot;
     }
-    const start = Math.max(0, st.size - CODEX_TOKEN_TAIL_BYTES);
+    let readStart = Math.max(0, st.size - CODEX_TOKEN_TAIL_BYTES);
     const fh = await fileOps.open(pathStr, 'r');
     let text: string;
     let complete: boolean;
     try {
-      const buf = Buffer.alloc(st.size - start);
-      const { bytesRead } = await fh.read(buf, 0, buf.length, start);
-      complete = bytesRead === buf.length;
-      text = buf.toString('utf8', 0, bytesRead);
+      const initial = Buffer.alloc(st.size - readStart);
+      const { bytesRead: initialBytesRead } = await fh.read(initial, 0, initial.length, readStart);
+      complete = initialBytesRead === initial.length;
+      const chunks = [initial.subarray(0, initialBytesRead)];
+      let scannedBytes = initialBytesRead;
+      text = Buffer.concat(chunks).toString('utf8');
+      let snapshot = codexContextSnapshotFromText(text);
+      while (complete && snapshot === null && readStart > 0 && scannedBytes < CODEX_TOKEN_SCAN_MAX_BYTES) {
+        const chunkStart = Math.max(0, readStart - Math.min(
+          CODEX_TOKEN_TAIL_BYTES,
+          CODEX_TOKEN_SCAN_MAX_BYTES - scannedBytes,
+        ));
+        const older = Buffer.alloc(readStart - chunkStart);
+        const { bytesRead } = await fh.read(older, 0, older.length, chunkStart);
+        if (bytesRead !== older.length) {
+          complete = false;
+          break;
+        }
+        chunks.unshift(older);
+        scannedBytes += bytesRead;
+        readStart = chunkStart;
+        text = Buffer.concat(chunks).toString('utf8');
+        snapshot = codexContextSnapshotFromText(text);
+      }
+      // Keep the complete stat'ed tail, including a no-sample result, so an
+      // unchanged rollout does not repeat the bounded fallback scan each sweep.
+      if (complete) {
+        rememberCodexSnapshot(pathStr, { size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, snapshot });
+      }
+      return snapshot;
     } finally {
       await fh.close();
     }
-    const snapshot = codexContextSnapshotFromText(text);
-    // A short read means the file shrank after the stat; the result does not
-    // describe the stat'ed contents, so it is returned but not remembered.
-    if (complete) {
-      rememberCodexSnapshot(pathStr, { size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, snapshot });
-    }
-    return snapshot;
   } catch {
     return null;
   }
@@ -191,6 +211,8 @@ export interface EstimateContextDeps {
   findCodexRolloutByUuid?: typeof findCodexRolloutPathByUuid;
   /** WI-42507 seam: the owner's OTHER codex adv-session row ids, newest first. */
   codexSiblingSessionKeys?: (ownerId: string, exceptKey: number | string) => Promise<number[]>;
+  /** EI-26134257119546348 seam: newest rollout in one sibling adv-session home. */
+  findCodexRolloutForSessionKey?: (sessionKey: number) => Promise<string | null>;
   /** WI-42507 seam: mtime of a resolved path (null ⇒ vanished / unreadable). */
   statMtimeMs?: (p: string) => number | null;
 }
@@ -225,6 +247,11 @@ export function codexRolloutSessionId(rolloutPath: string): string | null {
  *  still bounds the miss path to a handful of home walks — a blanket scan is not
  *  an option (1302 codex homes existed on this box at the time). */
 const CODEX_SIBLING_HOME_LIMIT = 6;
+/** A fresh rollout in exactly one sibling home is evidence of the live Codex row
+ *  when the newest adv row points at an idle/stale home. Keep this bounded to the
+ *  same grace used for a newly-written successor; older files are indistinguishable
+ *  from parked predecessors and must not be adopted. */
+const CODEX_ACTIVE_ROLLOUT_FRESH_MS = 10 * 60_000;
 
 /** The owner's OTHER codex adv-session row ids, newest first. */
 async function codexSiblingSessionKeysForOwner(ownerId: string, exceptKey: number | string): Promise<number[]> {
@@ -325,6 +352,39 @@ export async function resolveCodexRolloutPathForRef(
     }
     // (b): strictly fresher only. A tie or an older file keeps the keyed answer.
     if (candidateMtime > keyedMtime) return candidate;
+  }
+
+  // EI-26134257119546348: an owner can accumulate multiple non-ended Codex rows
+  // without a native-session-id match between them. `resolveSessionRef` chooses the
+  // newest row by started_at, but that row can be a parked successor whose home has
+  // no token_count events while an older row's home is still receiving the live
+  // rollout. Returning the stale keyed path leaves the watchdog with null telemetry
+  // (or a frozen predecessor) even though a single sibling has fresh, parseable
+  // usage. Adopt that sibling only when it is BOTH newer than the keyed file and
+  // freshly written, and only when exactly one candidate qualifies; ambiguity stays
+  // on the incumbent so this repair cannot silently bind two live sessions together.
+  const now = Date.now();
+  const keyedFresh = keyedMtime != null && now - keyedMtime <= CODEX_ACTIVE_ROLLOUT_FRESH_MS;
+  if (!keyedFresh) {
+    const findSiblingRollout =
+      deps.findCodexRolloutForSessionKey ?? ((key: number) => findCodexRolloutPath(key));
+    const freshCandidates: Array<{ path: string; mtime: number }> = [];
+    for (const key of siblingKeys) {
+      let candidate: string | null = null;
+      try {
+        candidate = await findSiblingRollout(key);
+      } catch {
+        continue;
+      }
+      if (!candidate || candidate === keyed) continue;
+      const candidateMtime = statMtime(candidate);
+      if (candidateMtime == null || now - candidateMtime > CODEX_ACTIVE_ROLLOUT_FRESH_MS ||
+          (keyedMtime != null && candidateMtime <= keyedMtime)) continue;
+      if (!(await codexContextSnapshotFromRollout(candidate))) continue;
+      freshCandidates.push({ path: candidate, mtime: candidateMtime });
+      if (freshCandidates.length > 1) break;
+    }
+    if (freshCandidates.length === 1) return freshCandidates[0].path;
   }
   return keyed;
 }

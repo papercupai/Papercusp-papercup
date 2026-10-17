@@ -177,6 +177,36 @@ describe('sessions:search explicit session refresh scope (EI-21720673196644332)'
     expect(JSON.parse(res.content[0].text)).toMatchObject({ ok: true, total_hits: 0 });
     expect(logs.some((message) => /\[sessions:search:phase\] secondary_live_refresh duration_ms=\d+/.test(message))).toBe(true);
   });
+
+  it('correlates per-leg liveness timing with the search request', async () => {
+    refreshLiveSessionsBeforeRead.mockImplementationOnce(async (...args: unknown[]) => {
+      const deps = args[2] as {
+        onLivenessTiming?: (leg: string, durationMs: number, outcome: 'ok' | 'error') => void;
+      };
+      deps.onLivenessTiming?.('presence_hydration', 23, 'ok');
+      return { attempted: 0, refreshed: 0 };
+    });
+    const logs: string[] = [];
+    const metadata = vi.fn();
+    const slowTx = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 110));
+      return [];
+    });
+
+    await callTool({ query: 'timing probe', mode: 'verbatim', context: 0 }, slowTx,
+      (message) => logs.push(message), metadata);
+
+    const timingLog = logs.find((message) => message.includes('[sessions:search:liveness]'));
+    expect(timingLog).toMatch(/\[sessions:search:liveness\] correlation_id=[0-9a-f-]{36} leg=presence_hydration outcome=ok duration_ms=23/);
+    const correlationId = timingLog?.match(/correlation_id=([0-9a-f-]{36})/)?.[1];
+    const countLog = logs.find((message) => message.includes('[sessions:search:phase] restricted_turn_count'));
+    expect(countLog).toContain('correlation_id=' + correlationId);
+    expect(metadata).toHaveBeenCalledWith({ sessionsSearchRead: {
+      schemaVersion: 'sessions-search-read-v1',
+      correlationId,
+      livenessTiming: true,
+    } });
+  });
 });
 
 describe('sessions:search explicit session + include_coord scope (EI-23130749427955806)', () => {
@@ -267,6 +297,18 @@ describe('sessions:search self cursor authority (EI-22528353817146321)', () => {
         mainQueryCount += 1;
         return mainQueryCount === 1 ? rows : [rows[1]];
       }
+      if (sql.includes(' AS head')) {
+        const matching = mainQueryCount === 1 ? rows : [rows[1]];
+        return matching.map((row) => ({
+          source_kind: row.source_kind,
+          session_id: row.session_id,
+          turn_idx: row.turn_idx,
+          speaker: row.speaker,
+          head: row.text.slice(0, 512),
+          tail: row.text.slice(-256),
+          turn_origin_verdict: null,
+        }));
+      }
       return [];
     });
 
@@ -325,6 +367,44 @@ describe('sessions:search EI-18877285731929394 — verbatim 0-hit hint', () => {
     expect(parsed.hint).toBeUndefined();
   });
 
+  it('drops a transcript ref that disappears during coordinate re-read', async () => {
+    const staleRef = 'session_turn:codex:stale-session:14';
+    const readableRef = 'session_turn:codex:still-readable:15';
+    const tx = vi.fn(async (...args: unknown[]) => {
+      const [strings] = args;
+      const sql = Array.isArray(strings) ? (strings as string[]).join(' ') : String(strings);
+      if (sql.includes('left(text, 700)')) {
+        return [{
+          source_kind: 'codex', session_id: 'stale-session', turn_idx: 14,
+          speaker: 'assistant', owner: 'su-self', harness_slug: null, ts: null,
+          text: 'a hit that was removed before the ref was followed',
+        }, {
+          source_kind: 'codex', session_id: 'still-readable', turn_idx: 15,
+          speaker: 'assistant', owner: 'su-self', harness_slug: null, ts: null,
+          text: 'a second hit whose canonical ref remains readable',
+        }];
+      }
+      // The re-read that resolves turn origin is the authoritative existence
+      // check for the readMore ref; an empty result models retention/cleanup
+      // winning the race between search and the follow-up read.
+      if (sql.includes(' AS head')) return [{
+        source_kind: 'codex', session_id: 'still-readable', turn_idx: 15,
+        speaker: 'assistant', head: 'a second hit whose canonical ref remains readable',
+        tail: 'a second hit whose canonical ref remains readable', turn_origin_verdict: null,
+      }];
+      return [];
+    });
+
+    const res = await callTool({ query: 'removed before follow-up', mode: 'verbatim', limit: 2, context: 3 }, tx);
+    const parsed = JSON.parse(res.content[0].text) as ParsedResult;
+
+    expect(parsed.total_hits).toBe(1);
+    expect(parsed.results).toMatchObject([{ ref: readableRef }]);
+    expect(parsed.zeroHitCaveat).toMatch(/SEARCH REF DROPPED/);
+    expect(JSON.stringify(parsed)).not.toContain(staleRef);
+    expect(parsed.nextCursor).toBeUndefined();
+  });
+
   it('never adds the verbatim hint in hybrid mode (default), even on 0 hits', async () => {
     runHybridSearch.mockResolvedValueOnce({ results: [], totalHits: 0, embedderAvailable: true });
     const res = await callTool({ query: 'anything', context: 0 }, makeTx([]));
@@ -353,7 +433,17 @@ describe('sessions:search owner-directive provenance filters', () => {
       const [strings, ...values] = args;
       const sql = Array.isArray(strings) ? (strings as string[]).join(' ? ') : String(strings);
       calls.push({ sql, values });
-      return sql.includes('left(text, 700)') ? [hit] : [];
+      if (sql.includes('left(text, 700)')) return [hit];
+      if (sql.includes(' AS head')) return [{
+        source_kind: hit.source_kind,
+        session_id: hit.session_id,
+        turn_idx: hit.turn_idx,
+        speaker: hit.speaker,
+        head: hit.text.slice(0, 512),
+        tail: hit.text.slice(-256),
+        turn_origin_verdict: 'owner-typed',
+      }];
+      return [];
     });
 
     const res = await callTool({
@@ -417,7 +507,17 @@ describe('sessions:search response-door shaping', () => {
     const tx = vi.fn(async (strings: readonly string[]) => {
       const sql = strings.join(' ');
       if (sql.includes('left(text, 700)')) return rows;
-      if (sql.includes('left(text, 512)')) return [];
+      if (sql.includes(' AS head')) {
+        return rows.map(({ source_kind, session_id, turn_idx, speaker, text: rowText }) => ({
+          source_kind,
+          session_id,
+          turn_idx,
+          speaker,
+          head: rowText.slice(0, 512),
+          tail: rowText.slice(-256),
+          turn_origin_verdict: null,
+        }));
+      }
       if (sql.includes('SELECT turn_idx, speaker')) return windowRows;
       return [];
     });

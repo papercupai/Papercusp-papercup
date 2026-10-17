@@ -4,9 +4,31 @@
  * window is stubbed; the no-window (SSR) path runs in the bare node env.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getBrowserWorkspaceId, resolveActiveWorkspaceId, wsLocalKey } from './browser-workspace';
+import { getBrowserMachineId, getBrowserWorkspaceId, resolveActiveWorkspaceId, setBrowserMachineId, wsLocalKey } from './browser-workspace';
 
 afterEach(() => vi.unstubAllGlobals());
+
+describe('per-window machine selection', () => {
+  it('survives navigation while leaving an independent window and workspace unchanged', () => {
+    const makeWindow = () => {
+      const storage = new Map<string, string>();
+      return { __PAPERCUSP_WS__: 'own-workspace', location: { href: 'http://localhost/desktops?desktopHost=a' },
+        sessionStorage: { getItem: (key: string) => storage.get(key), setItem: (key: string, value: string) => storage.set(key, value) } };
+    };
+    const a = makeWindow(); const b = makeWindow();
+    vi.stubGlobal('window', a);
+    setBrowserMachineId('b');
+    a.location.href = 'http://localhost/agents';
+    expect(getBrowserMachineId()).toBe('b');
+    expect(getBrowserWorkspaceId()).toBe('own-workspace');
+    vi.stubGlobal('window', b);
+    expect(getBrowserMachineId()).toBe('a');
+    b.location.href = 'http://localhost/agents';
+    expect(getBrowserMachineId()).toBeUndefined();
+    vi.stubGlobal('window', a);
+    expect(getBrowserMachineId()).toBe('b');
+  });
+});
 
 describe('getBrowserWorkspaceId', () => {
   it("returns 'default' when there is no window (SSR)", () => {

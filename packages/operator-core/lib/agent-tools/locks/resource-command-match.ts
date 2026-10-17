@@ -21,6 +21,7 @@ import {
   type ResourceEnforcement,
   type ResourceRegistryRow,
 } from './su-lock-store';
+import { withPgRetry } from '../../pg-transient-retry';
 
 /** Resources whose any match_pattern (regex) matches `command`. Pure. */
 export function matchCommandToResources(
@@ -67,17 +68,28 @@ export async function checkBashCommand(params: {
   coordinationDomain: string;
   ownerId?: string;
 }): Promise<BashCheckVerdict> {
-  const registry = await listResources(getTxPool());
+  // These are read-only registry/queue queries. A postgres-js CONNECT_TIMEOUT
+  // happens before the SELECT reaches PostgreSQL, so replaying the bounded read
+  // is safe and lets the pool reconnect instead of leaking an MCP handler_error
+  // to every PreToolUse Bash hook during a transient pool blip.
+  const pool = getTxPool();
+  const registry = await withPgRetry(() => listResources(pool), {
+    label: 'locks:check_command:list-resources',
+  });
   const matched = matchCommandToResources(params.command, registry);
   if (matched.length === 0) return { decision: 'allow', matched: [] };
 
   const entries: BashMatchEntry[] = [];
   let decision: BashCheckVerdict['decision'] = 'allow';
   for (const r of matched) {
-    const q = await readResourceQueue(getTxPool(), {
-      coordinationDomain: params.coordinationDomain,
-      resource: r.resource,
-    });
+    const q = await withPgRetry(
+      () =>
+        readResourceQueue(pool, {
+          coordinationDomain: params.coordinationDomain,
+          resource: r.resource,
+        }),
+      { label: `locks:check_command:read-resource:${r.resource}` },
+    );
     const exclusiveActive = q.holders.some((h) => h.mode === 'exclusive');
     const exclusiveByOther = q.holders.some(
       (h) => h.mode === 'exclusive' && h.owner !== params.ownerId,

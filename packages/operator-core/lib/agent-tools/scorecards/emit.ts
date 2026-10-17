@@ -1,9 +1,9 @@
 /** scorecards:emit — the typed write facade over the canonical observation ledger. */
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import postgres from 'postgres';
 import { defineTool } from '@papercusp/agent-mcp';
 import { decode } from '@papercusp/result-encoding';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 import {
   parseJsonWithTrailer,
   trackPhase,
@@ -15,6 +15,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getOrgPg } from '@papercusp/db-org';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
+import { getLongLivedAdminPool, _endLongLivedAdminPoolForTests } from '../../long-lived-admin-pool';
 import { deriveAgentRunEvidenceRecordSafe, type EvidenceRecordSql } from './agent-run-evidence-record';
 import {
   classifyRubricEvidenceCurrentness,
@@ -34,6 +35,8 @@ import { OperationHandleSchema, getBlueprintOperationTerminalWorker } from '../.
 import { readVettingConsultCritique } from '../../consult/get-feedback-core';
 import { getWorkItem, readVettingWorkItemCritique, type WorkItem } from '../../work-items';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { PgReadQueryTimeoutError } from '../../pg-read-query';
 import {
   normalizeScorecardRatings,
   validateObservationRatings,
@@ -68,11 +71,16 @@ import {
   computeWorkOnEverythingRollup,
   resolveScorecardInstrumentSnapshots,
   validateRubricRatingContracts,
+  reserveScorecardMutexConnection,
+  isScorecardMutexPoolAcquisitionError,
+  scorecardMutexPoolAcquireTimeoutMs,
   type ScorecardInstrumentSnapshot,
   type ScorecardReleaseGateSnapshot,
 } from '../../scorecards';
-import { realGitProbe } from '../../release/judged-sha-containment';
-import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from './evaluate';
+import { revParseAsync } from '../../release/judged-sha-containment';
+import { scorecardEvaluateArgs, scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema,
+  pendingDeliveryReviewRefusal } from './evaluate';
+import { scorecardRepairArgs } from './repair';
 import {
   CLIPPED_SCORECARD_TEXT_CODE,
   clippedScorecardTextMessage,
@@ -99,7 +107,7 @@ import { acceptanceGraderLabelPrefix, advanceGradingCascadeOnCard } from '../../
 import { gradingCardDigestExcerpt } from '../../consult/grading-cascade';
 import { closeSourceAuditConsults } from '../../grading-audit-routing';
 import {
-  assessGenerationAncestry,
+  assessGenerationAncestryAsync,
   dispatchPendingGradingAudits,
   GRADING_INTEGRITY_RUBRIC_REF,
   gradingAuditGateEnabled,
@@ -313,13 +321,13 @@ export async function runRecoverableScorecardChecks(
     readRows?: typeof readHarnessTestRunEvidence;
     listTaskRows?: (launchedBy: string, workspaceId: string) => Promise<Array<Pick<TaskRow, 'state' | 'exitCode'>>>;
     runFiles?: CriterionCheckRunner;
-    sourceSha?: (root: string) => string | null;
+    sourceSha?: (root: string) => string | null | Promise<string | null>;
   } = {},
 ): Promise<CriterionCheckRunnerResult> {
   const runFiles = deps.runFiles ?? runCriterionCheckFiles;
   const workspaceId = opts.workspaceId;
   const harnessSlug = opts.harnessSlug;
-  const sourceSha = (deps.sourceSha ?? ((root) => realGitProbe.revParse(root, 'HEAD')))(opts.root);
+  const sourceSha = await (deps.sourceSha ?? ((root) => revParseAsync(root, 'HEAD')))(opts.root);
   // Non-repository or unattributed rubrics retain the ordinary route. They
   // cannot make a durable replay claim because its source/scope is unknown.
   if (!sourceSha || !workspaceId || !harnessSlug) return runFiles(opts);
@@ -400,51 +408,45 @@ export async function runRecoverableScorecardChecks(
  * helper is doing its work.
  */
 const SCORECARD_EMIT_MUTEX_NAMESPACE = 'scorecards:emit:dedup';
-let _scorecardEmitMutexSql: postgres.Sql | null = null;
+const SCORECARD_EMIT_MUTEX_POOL = 'scorecard-emit-mutex';
 
 export function scorecardEmitMutexUrl(): string {
   return getHarnessAdminUrl();
 }
 
-function scorecardEmitMutexSql(): postgres.Sql {
-  if (!_scorecardEmitMutexSql) {
-    _scorecardEmitMutexSql = postgres(scorecardEmitMutexUrl(), {
-      onnotice: () => {},
-      // The database advisory lock serializes emitters for the same dedup key.
-      // Keep a bounded set of sessions available so distinct keys can proceed
-      // independently instead of queueing behind one process-wide reservation.
-      max: 8,
-      idle_timeout: 0,
-      connection: {
-        application_name: `pcusp:scorecard-emit-mutex:p${process.pid}`.slice(0, 63),
-      },
-    });
-  }
-  return _scorecardEmitMutexSql;
+function scorecardEmitMutexSql() {
+  // The accessor re-resolves the endpoint and drains a pool that was built
+  // against an old discovery target. A module-scoped postgres client otherwise
+  // survives an embedded-PG restart and strands every later reserve() call.
+  return getLongLivedAdminPool(SCORECARD_EMIT_MUTEX_POOL, {
+    max: 8,
+    idle_timeout: 0,
+  });
 }
 
 /** Test-only — close + drop the dedicated scorecard emit mutex connection. */
 export async function _closeScorecardEmitMutexForTests(): Promise<void> {
-  if (_scorecardEmitMutexSql) {
-    await _scorecardEmitMutexSql.end({ timeout: 1 }).catch(() => {});
-    _scorecardEmitMutexSql = null;
-  }
+  await _endLongLivedAdminPoolForTests(SCORECARD_EMIT_MUTEX_POOL);
 }
 
 export function scorecardEmitMutexKey(input: {
   workspaceId: string;
   rubricRef: string;
   sourceHive?: string;
+  subjectKind?: string;
+  subjectRef?: string;
 }): string {
-  // The final scorecard history read is partitioned by workspace, rubric and
-  // sourceHive. Keep the same scope here; subject is intentionally omitted
-  // because the final read also omits subjectRef, and a narrower lock would not
-  // protect that actual read/write predicate.
+  // The final scorecard history read is partitioned by workspace, rubric,
+  // sourceHive, and (when supplied) the typed subject. Keep the lock at that
+  // same scope so unrelated subjects do not serialize while identical emits
+  // still share one read-to-write critical section.
   return [
     SCORECARD_EMIT_MUTEX_NAMESPACE,
     input.workspaceId,
     input.rubricRef,
     input.sourceHive ?? '<unscoped>',
+    input.subjectKind ?? '<untyped>',
+    input.subjectRef ?? '<unscoped>',
   ]
     .map((part) => `${part.length}:${part}`)
     .join('|');
@@ -457,20 +459,25 @@ async function acquireScorecardEmitMutex(
   phases?: PhaseTracker,
   waitTimeoutMs = SCORECARD_EMIT_MUTEX_WAIT_TIMEOUT_MS,
 ): Promise<() => Promise<void>> {
-  const reserved: ScorecardEmitMutexReservation = await trackPhase(
-    phases,
-    'scorecards:emit:mutex:dedup:pool-reservation',
-    () => scorecardEmitMutexSql().reserve(),
-  );
+  const poolPhase = 'scorecards:emit:mutex:dedup:pool-reservation';
+  const reservationTimeoutMs = scorecardMutexPoolAcquireTimeoutMs(waitTimeoutMs);
+  let reserved: ScorecardEmitMutexReservation | undefined;
   let acquired = false;
   try {
+    const connection = await reserveScorecardMutexConnection(
+      () => scorecardEmitMutexSql().reserve(),
+      phases,
+      poolPhase,
+      waitTimeoutMs,
+    );
+    reserved = connection;
     // Allow valid serialization waits beyond the role's inherited timeout, but
     // stay below the 300s MCP caller deadline so a stuck holder becomes a
     // retryable refusal. This client is dedicated to the mutex.
-    await reserved`SELECT set_config('lock_timeout', ${`${waitTimeoutMs}ms`}, false)`;
-    await reserved`SET statement_timeout = 0`;
+    await connection`SELECT set_config('lock_timeout', ${`${waitTimeoutMs}ms`}, false)`;
+    await connection`SET statement_timeout = 0`;
     await trackPhase(phases, 'scorecards:emit:mutex:dedup:advisory-lock', () =>
-      reserved`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`,
+      connection`SELECT pg_advisory_lock(hashtextextended(${key}, 0))`,
     );
     acquired = true;
     return async () => {
@@ -479,13 +486,16 @@ async function acquireScorecardEmitMutex(
       try {
         // If the backend has died, PostgreSQL already released the session lock;
         // still drop the reserved client so a future emit can reconnect cleanly.
-        await reserved`SELECT pg_advisory_unlock(hashtextextended(${key}, 0))`.catch(() => {});
+        await connection`SELECT pg_advisory_unlock(hashtextextended(${key}, 0))`.catch(() => {});
       } finally {
-        reserved.release();
+        connection.release();
       }
     };
   } catch (error) {
-    reserved.release();
+    reserved?.release();
+    if (isScorecardMutexPoolAcquisitionError(error)) {
+      throw new ScorecardEmitMutexWaitTimeoutError('dedup', reservationTimeoutMs, 'pool-reservation');
+    }
     if ((error as { code?: string } | null)?.code === '55P03') {
       throw new ScorecardEmitMutexWaitTimeoutError('dedup', waitTimeoutMs);
     }
@@ -539,6 +549,7 @@ const specTestAdequacyBindingMeasurementSchema = z
     evidenceRef: z.string().trim().min(1).max(2000),
     status: z.enum(['measured', 'unavailable', 'unmeasured']),
     measuredAtCommit: z.string().trim().min(1).max(128).optional(),
+    measurementFingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   })
   .strict()
   .superRefine((binding, ctx) => {
@@ -547,6 +558,13 @@ const specTestAdequacyBindingMeasurementSchema = z
         code: z.ZodIssueCode.custom,
         path: ['measuredAtCommit'],
         message: 'only a server-measured binding can carry measuredAtCommit',
+      });
+    }
+    if (binding.status !== 'measured' && binding.measurementFingerprint !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['measurementFingerprint'],
+        message: 'only a server-measured binding can carry measurementFingerprint',
       });
     }
   });
@@ -654,6 +672,10 @@ const specTestAdequacyRerunRecipeSchema = z
 
 const scorecardEmitBaseShape = {
     rubricRef: z.string().min(1).max(120),
+    pendingDeliveryBarKeys: scorecardEvaluateArgs.shape.pendingDeliveryBarKeys,
+    gradingLaunch: scorecardRepairArgs.shape.gradingLaunch.describe(
+      'Optional existing audit launch profile: pin the newly emitted card\'s independent auditor to codex/gpt-6.1-sol/xhigh through account auto. Uses the same strict profile as scorecards:repair; does not change the scorecard author or grading authority.',
+    ),
     interactionReviewerHandle: OperationHandleSchema.optional()
       .describe('CRM review operation receipt. Resolves the actual terminal reviewer independently of the submitting app caller.'),
     rubricRevision: z.number().int().positive().optional()
@@ -862,7 +884,7 @@ type SpecTestAdequacyReplayRow = {
   measurementEvidence?: unknown;
 };
 
-function measurementEvidenceFingerprint(value: unknown): string | undefined {
+function measurementEvidenceFingerprint(value: unknown, contentBindings: ReadonlySet<number>): string | undefined {
   const parsed = specTestAdequacyMeasurementEvidenceSchema.safeParse(value);
   if (!parsed.success) return undefined;
   const evidence = parsed.data;
@@ -876,7 +898,13 @@ function measurementEvidenceFingerprint(value: unknown): string | undefined {
     withoutMeasurementBasis: [...evidence.withoutMeasurementBasis].sort((a, b) =>
       a.id - b.id || a.evidenceKind.localeCompare(b.evidenceKind) || a.evidenceRef.localeCompare(b.evidenceRef),
     ),
-    bindings: [...evidence.bindings].sort((a, b) => a.bindingId - b.bindingId),
+    bindings: [...evidence.bindings].sort((a, b) => a.bindingId - b.bindingId).map(binding =>
+      // New recipes compare the measured bytes. Legacy recipes still require
+      // the exact commit; adding a fresh digest must not relax their contract.
+      contentBindings.has(binding.bindingId)
+        ? { ...binding, measuredAtCommit: undefined }
+        : { ...binding, measurementFingerprint: undefined },
+    ),
   });
 }
 
@@ -926,8 +954,8 @@ function unwrapSpecTestAdequacyReplay(result: unknown): unknown {
 }
 
 /**
- * The replay guard compares only clause identity, criterion ratings, and
- * wouldBlock. Replaying an evaluator-authored `detail:"full"` recipe needlessly
+ * The replay guard reads clause identity, measurement provenance, criterion
+ * ratings, and wouldBlock. Replaying an evaluator-authored `detail:"full"` recipe needlessly
  * materializes every evidence narrative and another scorecard draft; real plans
  * can exceed the result door and return a spill envelope instead of the payload
  * the guard must inspect. Force the evaluator's contract-equivalent summary
@@ -955,6 +983,7 @@ function compactSpecTestAdequacyReplayArgs(
 async function validateSpecTestAdequacyReplay(
   args: z.infer<typeof scorecardEmitArgs>,
   dispatchTool: ((name: string, args: Record<string, unknown>) => Promise<unknown>) | undefined,
+  onMeasurementVerified?: (evidence: z.infer<typeof specTestAdequacyMeasurementEvidenceSchema>) => void,
 ): Promise<SpecTestAdequacyBindingError | undefined> {
   if (args.rubricRef !== SPEC_TEST_ADEQUACY_RUBRIC_REF || !args.rerunRecipe) return undefined;
 
@@ -1069,9 +1098,31 @@ async function validateSpecTestAdequacyReplay(
     };
   }
 
+  // Keep the measurement failure from THIS replay before provenance or rating
+  // comparisons replace it with a generic mismatch. A later read cannot recover it.
+  const replayMeasurement = specTestAdequacyMeasurementEvidenceSchema.safeParse(row.measurementEvidence);
+  if (replayMeasurement.success && replayMeasurement.data.unavailableBindings.length > 0) {
+    const unavailable = replayMeasurement.data.unavailableBindings;
+    const diagnostic = unavailable.slice(0, 4).map(binding =>
+      `binding ${binding.id} (${binding.evidenceRef.slice(0, 160)}): ${binding.reason.slice(0, 400)}` +
+      (binding.evidenceRef.length > 160 || binding.reason.length > 400 ? ' [truncated]' : ''),
+    ).join('; ');
+    return {
+      code: 'invalid_spec_test_adequacy_binding',
+      error:
+        `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' replay measurement unavailable ` +
+        `(${unavailable.length} unavailable bindings): ${diagnostic}; ` +
+        (unavailable.length > 4 ? `${unavailable.length - 4} additional unavailable bindings omitted; ` : '') +
+        'repair the unavailable measurements and re-run plans:evaluate-spec-test-adequacy; no scorecard was persisted',
+    };
+  }
+
   if (recordedMeasurementEvidence !== undefined) {
-    const recordedFingerprint = measurementEvidenceFingerprint(recordedMeasurementEvidence);
-    const replayFingerprint = measurementEvidenceFingerprint(row.measurementEvidence);
+    const contentBindings = new Set(recordedMeasurementEvidence.bindings
+      .filter(binding => binding.measurementFingerprint !== undefined)
+      .map(binding => binding.bindingId));
+    const recordedFingerprint = measurementEvidenceFingerprint(recordedMeasurementEvidence, contentBindings);
+    const replayFingerprint = measurementEvidenceFingerprint(row.measurementEvidence, contentBindings);
     if (recordedFingerprint === undefined || replayFingerprint === undefined || recordedFingerprint !== replayFingerprint) {
       return {
         code: 'invalid_spec_test_adequacy_binding',
@@ -1117,6 +1168,11 @@ async function validateSpecTestAdequacyReplay(
           'use the evaluator ratings returned by plans:evaluate-spec-test-adequacy',
       };
     }
+  }
+  if (recordedMeasurementEvidence !== undefined) {
+    // Persist only the fresh server provenance, including its actual commit.
+    // A supplied commit is never promoted into the canonical observation.
+    onMeasurementVerified?.(specTestAdequacyMeasurementEvidenceSchema.parse(row.measurementEvidence));
   }
   return undefined;
 }
@@ -1857,11 +1913,20 @@ export async function emitScorecard(
   if (rubric.kind === 'acceptance' && rubric.status === 'retired') {
     return { ok: false as const, ...retiredAcceptanceRubricRefusal(rubric) };
   }
+  const pendingRefusal = pendingDeliveryReviewRefusal(rubric, args.pendingDeliveryBarKeys, args.ratings);
+  if (pendingRefusal || (args.pendingDeliveryBarKeys?.length && args.acceptance?.verdict === 'accept')) {
+    return { ok: false as const, code: 'pending_delivery_review_invalid',
+      error: pendingRefusal ?? 'Pending delivery cannot record final accept; use accept-pending-delivery.' };
+  }
   // acceptance-runtime-plane P-004: an unknown/mismatch/not-deployed rating on a live or
   // deployed BAR must name the runtime AND build sha it measured — refused before any
   // ledger work, so the grader re-measures on the right runtime instead of "wait for main".
   if (rubric.kind === 'acceptance') {
-    const citationRefusal = runtimeCitationRefusal(rubric.criteria, args.ratings);
+    // The explicitly pending manual publication has no serving runtime yet.
+    // Requiring a process SHA here would force the reviewer to invent one.
+    // Every other deployed/live rating still owes its measured runtime citation.
+    const citationRefusal = runtimeCitationRefusal(rubric.criteria.filter((criterion) =>
+      !args.pendingDeliveryBarKeys?.includes(criterion.barKey ?? '')), args.ratings);
     if (citationRefusal) return { ok: false as const, ...citationRefusal };
   }
   const specTestAdequacyBindingError = validateSpecTestAdequacyBinding(args);
@@ -1888,7 +1953,9 @@ export async function emitScorecard(
     // so it can reuse the emitter's guards without replaying the evaluator again.
     const specTestAdequacyReplayError = input.previewOnly
       ? undefined
-      : await validateSpecTestAdequacyReplay(args, deps.dispatchTool);
+      : await validateSpecTestAdequacyReplay(args, deps.dispatchTool, measurementEvidence => {
+          args = { ...args, rerunRecipe: { ...args.rerunRecipe!, measurementEvidence } };
+        });
     if (specTestAdequacyReplayError) return { ok: false as const, ...specTestAdequacyReplayError };
     // EI-21765534049482705: a meta-rubric card whose subject is an active
     // acceptance rubric is the vetting attestation consumed by the completion
@@ -2001,6 +2068,7 @@ export async function emitScorecard(
           expectedApplicable: true,
           harnessSlug: rubric.subjectHarnessSlug,
           ...(args.current ? { current: args.current } : {}),
+          ...(args.pendingDeliveryBarKeys ? { pendingDeliveryBarKeys: args.pendingDeliveryBarKeys } : {}),
         });
         if (!lifecycle.satisfied) {
           return {
@@ -2249,10 +2317,9 @@ export async function emitScorecard(
                 ? `acceptance rubric '${rubric.rubricId}' was vetted at revision ` +
                   `${vettingStatus.attestedRevisions.join('/') || '(unrecorded)'}, but the rubric is now at ` +
                   `revision ${vettingStatus.currentRevision} — the content changed after vetting, so the ` +
-                  `attestation no longer covers what you are about to grade. Re-vet the CURRENT revision first: ` +
-                  `scorecards:emit { rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', ` +
-                  `subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, vettingConsult:'<consult conversation_id>' ` +
-                  `(or vettingWorkItem:'<review WI-/EI- id>'), ratings:{ <every meta criterion> } } — THEN grade. ` +
+                  `record no longer covers what you are about to grade. Obtain independent critique naming ` +
+                  `'${rubric.rubricId}' and criteriaHash '${rubric.criteriaHash ?? '(unrecorded)'}' ` +
+                  `or revision ${vettingStatus.currentRevision}, then grade. ` +
                   `Grading now would be discovered invalid only at ship, after this pass is spent.` +
                   (vettingStatus.diagnosis ? ` Other cards were rejected: ${vettingStatus.diagnosis}.` : '')
                 : vettingStatus.reason === 'rejected-attestation'
@@ -2263,19 +2330,16 @@ export async function emitScorecard(
                     `acceptance rubric '${rubric.rubricId}' has attestation card(s) on record, but NOT ONE of them ` +
                     `counts as a settled attestation — each failed a specific vetting check. ` +
                     `WHICH card failed WHICH check: ${vettingStatus.diagnosis}. ` +
-                    `Repair the named cause on the named card where you can (a pending grade-the-grader audit or a ` +
-                    `missing critique linkage is fixable in place); otherwise emit a fresh attestation: ` +
-                    `scorecards:emit { rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', ` +
-                    `subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, vettingConsult:'<consult conversation_id>' ` +
-                    `(or vettingWorkItem:'<review WI-/EI- id>'), ratings:{ <every meta criterion> } } — THEN grade.`
+                    `Obtain current independent critique naming '${rubric.rubricId}' and criteriaHash ` +
+                    `'${rubric.criteriaHash ?? '(unrecorded)'}' or revision ${vettingStatus.currentRevision}. ` +
+                    `Critique records satisfy vetting directly; an attestation card and its audit are unnecessary.`
                   : `acceptance rubric '${rubric.rubricId}' has not been VETTED against the meta-rubric yet ` +
                   `(consult-min-max-and-rubric-vetting-2026-08-17). Grading it now would be discovered invalid ` +
                   `only at ship — AFTER your independent grading pass is spent, which the independent-grader pool's ` +
                   `own constraints can make expensive to redo. Have the rubric AUTHOR vet it first: ` +
-                  `consult:get_feedback for external critique of the rubric, then scorecards:emit ` +
-                  `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
-                  `vettingConsult:'<the consult conversation_id>', ratings:{ <every meta criterion, with evidence> } } ` +
-                  `— THEN grade.`,
+                  `consult:get_feedback for external critique naming '${rubric.rubricId}' and criteriaHash ` +
+                  `'${rubric.criteriaHash ?? '(unrecorded)'}' or revision ${vettingStatus.currentRevision}, then grade. ` +
+                  `The critique is read directly without an attestation card or attestation audit.`,
           };
         }
       }
@@ -2382,6 +2446,10 @@ export async function emitScorecard(
       };
     }
     const ratings = normalizeScorecardRatings(suppliedRatings, rubric);
+    // Validate again after acceptanceOf/fromLedger adoption: omitted caller ratings
+    // must never turn a pending-delivery review into an adopted positive claim.
+    const pendingRatingRefusal = pendingDeliveryReviewRefusal(rubric, args.pendingDeliveryBarKeys, ratings);
+    if (pendingRatingRefusal) return { ok: false as const, code: 'pending_delivery_review_invalid', error: pendingRatingRefusal };
     const observationForValidation = { rubricRef: args.rubricRef, ratings };
     // `validateScorecardCompleteness` intentionally permits an empty ratings map
     // for generic/free-text observations. scorecards:emit is different: it has
@@ -3163,12 +3231,11 @@ export async function emitScorecard(
             : undefined;
         const gradedGeneration = parseGradedGeneration(rawGeneration);
         const auditorGeneration = await readCurrentGeneration();
-        const generationCheck = assessGenerationAncestry(
+        const generationCheck = await assessGenerationAncestryAsync(
           gradedGeneration?.deployedSha,
           auditorGeneration?.deployedSha,
           input.checkRoot ?? resolveAgentWorkspaceRoot({}),
-          deps.generationAncestry ??
-            ((root, ancestor, descendant) => realGitProbe.isAncestor(root, ancestor, descendant)),
+          deps.generationAncestry,
         );
         if (!generationCheck.ok) {
           return {
@@ -3350,6 +3417,8 @@ export async function emitScorecard(
           workspaceId: input.workspaceId ?? activeWorkspaceId(),
           rubricRef: args.rubricRef,
           sourceHive,
+          subjectKind: args.subject?.kind,
+          subjectRef: args.subject?.ref,
         }),
         input.phases,
         scorecardMutexWaitTimeoutMs,
@@ -4031,10 +4100,15 @@ export async function emitScorecard(
     // scorecards:emit latency or fail a card that was already written.
     if (result.created && result.issue?.id && input.launchContext && args.rubricRef !== GRADING_INTEGRITY_RUBRIC_REF) {
       const dispatchAudits = deps.dispatchPendingGradingAudits ?? dispatchPendingGradingAudits;
+      const auditLaunchContext = args.gradingLaunch
+        ? { ...input.launchContext, gradingLaunch: args.gradingLaunch }
+        : input.launchContext;
       void trackDetached(
         dispatchAudits({
-          targetIds: [],
-          ctx: input.launchContext,
+          // A caller's explicit profile belongs to this card, not the unrelated
+          // backlog. Preserve the ordinary bounded backlog sweep when omitted.
+          targetIds: args.gradingLaunch ? [result.issue.id] : [],
+          ctx: auditLaunchContext,
           harness: input.ctxHarness,
         }).then(() => undefined),
       ).catch(() => {});
@@ -4122,6 +4196,32 @@ export async function emitScorecard(
         code: error.code,
         error: error.message,
         retryable: true as const,
+      };
+    }
+    if (error instanceof OrgTxnTimeoutError) {
+      return {
+        ok: false as const,
+        code: 'scorecard_emit_timeout' as const,
+        pgCode: error.pgCode,
+        retryable: true as const,
+        error:
+          `scorecards:emit write hit transient database contention (${error.pgCode}): ${error.message}. ` +
+          'No scorecard was persisted by this attempt; retry shortly.',
+      };
+    }
+    // Bounded read paths use the same database pool as the emit write. Both a
+    // measured pool-acquisition deadline and a whole-call read deadline are
+    // transient, no-write outcomes; keep them typed and retryable so a pool or
+    // operator outage cannot escape as the generic MCP `handler_error` envelope
+    // (EI-25927264403638822, EI-25813947184793874).
+    if (error instanceof DbCallDeadlineError || error instanceof PgReadQueryTimeoutError) {
+      return {
+        ok: false as const,
+        code: 'scorecard_emit_timeout' as const,
+        retryable: true as const,
+        error:
+          `scorecards:emit read hit transient database contention: ${error.message}. ` +
+          'No scorecard was persisted by this attempt; retry shortly.',
       };
     }
     if (error instanceof ObservationEvidenceError) return { ok: false as const, error: error.message };

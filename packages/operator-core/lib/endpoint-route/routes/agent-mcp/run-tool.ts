@@ -37,6 +37,10 @@ export default defineTool({
   method: 'POST',
   path: '/agent-mcp/run-tool',
   auth: 'loopback',
+  // Governed tool dispatch owns its timeout, caller cancellation and terminal
+  // receipt. A second route watchdog can replace the reader's keyed unavailable
+  // result (or a completed mutation receipt) with a generic HTTP 408.
+  timeoutSec: null,
   async handler(req) {
     if (!isLoopbackRequest(req.headers)) {
       return Response.json({ ok: false, error: 'forbidden', detail: 'loopback only' }, { status: 403 });
@@ -61,6 +65,7 @@ export default defineTool({
       name,
       args: body.args,
       confirmed: body.confirmed === true,
+      signal: req.signal,
       ...(callerSid ? { callerSid } : {}),
       ...(authenticatedPrincipal ? { authenticatedPrincipal } : {}),
       ...(body.harness === undefined ? {} : { harness: body.harness }),

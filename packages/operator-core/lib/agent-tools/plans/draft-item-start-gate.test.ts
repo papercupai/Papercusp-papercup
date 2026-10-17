@@ -10,11 +10,17 @@ function plan(status: string, items: Record<string, string>, template?: string):
 const unaudited = { satisfied: false as const, code: 'conversation_audit_required', message: 'audit first' };
 const audited = { satisfied: true as const, auditSeq: 1 };
 
-function deps(content: string | null, gate: { satisfied: boolean; code?: string; message?: string }, covered = false) {
+function deps(
+  content: string | null,
+  gate: { satisfied: boolean; code?: string; message?: string },
+  covered = false,
+  terminalCovered = false,
+) {
   return {
     readPlanContent: vi.fn().mockResolvedValue(content),
     evaluateGate: vi.fn().mockResolvedValue(gate),
     hasCoveringWorkItem: vi.fn().mockResolvedValue(covered),
+    hasTerminalCoveringWorkItem: vi.fn().mockResolvedValue(terminalCovered),
   };
 }
 
@@ -26,6 +32,12 @@ describe('checkDraftItemStartGate (WI-10008137)', () => {
       expect(out).toMatchObject({ ok: false, error: 'activation_audit_required', gateCode: 'conversation_audit_required' });
       expect(out?.hint).toContain("plans:audit { phase:'activation' }");
     }
+  });
+
+  it('allows todo→done reflection when a terminal linked work-item proves completion', async () => {
+    const d = deps(plan('draft', { 'P-001': 'todo' }), unaudited, false, true);
+    expect(await checkDraftItemStartGate({ slug: 's', itemId: 'P-001', toStatus: 'done', ...d })).toBeNull();
+    expect(d.evaluateGate).not.toHaveBeenCalled();
   });
 
   it('allows the start once the activation audit exists', async () => {

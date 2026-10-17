@@ -153,6 +153,7 @@ RUN set -eux; \
          bubblewrap \
          ca-certificates \
          curl \
+         e2fsprogs \
          dracut \
          `# git <- the release's content bootstrap shallow-clones the first-party bundle with` \
          `# git (offline-content-bundle-install-io.ts gitCloneShallow). Stock Ubuntu ships git,` \
@@ -166,6 +167,7 @@ RUN set -eux; \
          jq \
          nvme-cli \
          openssh-server \
+         quota \
          rsyslog \
          WALinuxAgent \
          sudo \
@@ -180,6 +182,7 @@ RUN set -eux; \
          `# the bootstrap apt-get installs zstd ON DEMAND at runtime because stock` \
          `# Ubuntu ships no unzstd. Baking it removes that imperative install.` \
          zstd \
+         util-linux \
          `# native SONAME providers — WORKSPACE_HOST_BOOTSTRAP_NATIVE_RUNTIME_APT_PACKAGES,` \
          `# mapped through RPM-EQUIVALENCE.md §D. All 8 are kept: §F measured that only 4` \
          `# are load-bearing for r19 but explicitly refuses to act on that, because readelf` \
@@ -248,7 +251,7 @@ RUN set -eux; \
               /usr/share/rpm/rpmdb.sqlite-wal \
     && install -m 0644 /tmp/papercusp-rpmdb.sqlite /usr/share/rpm/rpmdb.sqlite \
     && rm -f /tmp/papercusp-rpmdb.sqlite \
-    && rpm -q minisign dnf-automatic alsa-lib libatomic git-core \
+    && rpm -q minisign dnf-automatic alsa-lib libatomic git-core e2fsprogs quota util-linux \
               google-compute-engine google-compute-engine-oslogin google-guest-agent \
               amazon-ssm-agent
 

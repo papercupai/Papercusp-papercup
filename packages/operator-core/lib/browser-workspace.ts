@@ -43,6 +43,24 @@ export function getBrowserWorkspaceId(): string {
   return 'default';
 }
 
+const MACHINE_KEY = 'pc:selected-machine';
+
+/** A per-window routing hint, not a workspace identity or an authorization grant.
+ * sessionStorage survives navigation without changing another window's target. */
+export function getBrowserMachineId(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  try {
+    const selected = new URL(window.location.href).searchParams.get('desktopHost');
+    if (selected) return selected;
+    return window.sessionStorage.getItem(MACHINE_KEY) || undefined;
+  } catch { return undefined; }
+}
+
+export function setBrowserMachineId(machineId: string): void {
+  if (typeof window === 'undefined') return;
+  try { window.sessionStorage.setItem(MACHINE_KEY, machineId); } catch { /* URL selection remains available. */ }
+}
+
 /** Namespace a localStorage key to the active workspace: `pc:ws:<id>:<key>`. */
 export function wsLocalKey(key: string): string {
   return `pc:ws:${getBrowserWorkspaceId()}:${key}`;

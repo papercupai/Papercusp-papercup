@@ -153,6 +153,9 @@ class RecordingHost implements WorkspaceHostRemoteInitializerHost {
   createWorkspace(input: unknown) {
     return this.record("createWorkspace", input);
   }
+  verifyRetainedWorkspace(input: unknown) {
+    return this.record("verifyRetainedWorkspace", input);
+  }
   installDesktopPack(input: { hostId: string }) {
     return this.record("installDesktopPack", input);
   }
@@ -321,6 +324,7 @@ function lifecycleDelivery(generation = 1): WorkspaceHostCredentialDeliverySet {
 const STEP_INPUTS: Record<string, Record<string, unknown>> = {
   "install-desktop-pack": { hostId: "byoc-canary-01" },
   "create-workspace": { workspaceId: "ws-1", hostId: "byoc-canary-01" },
+  "verify-retained-workspace": { workspaceId: "ws-1", hostId: "byoc-canary-01", tenantIdentity: "a".repeat(64) },
   "clone-repository": {
     repositoryUrl: "https://github.com/Papercusp/papercusp-byoc-canary.git",
     visibility: "private",
@@ -354,6 +358,7 @@ const STEP_INPUTS: Record<string, Record<string, unknown>> = {
 /** The host seam (or resolver) each kind must reach. */
 const EXPECTED_SEAM: Record<string, string> = {
   "create-workspace": "createWorkspace",
+  "verify-retained-workspace": "verifyRetainedWorkspace",
   "clone-repository": "cloneRepository",
   "pair-workspace": "pairWorkspace",
   "import-workspace": "importWorkspace",
@@ -619,6 +624,18 @@ describe("executeWorkspaceHostRemoteInitializerStep", () => {
       const seam = EXPECTED_SEAM[kind];
       if (seam) expect(deps.host.calls.map((call) => call.op)).toContain(seam);
     }
+  });
+
+  it("refuses retained admission on old adapters and malformed tenant identity without creating data", async () => {
+    const deps = makeDeps();
+    deps.host.verifyRetainedWorkspace = undefined as never;
+    await expect(executeWorkspaceHostRemoteInitializerStep(
+      parseWorkspaceHostRemoteInitializerRequest(request("verify-retained-workspace")), deps,
+    )).rejects.toThrow(UnsupportedWorkspaceHostInitializationStepKindError);
+    expect(deps.host.calls).toEqual([]);
+    await expect(executeWorkspaceHostRemoteInitializerStep(
+      parseWorkspaceHostRemoteInitializerRequest(request("verify-retained-workspace", { tenantIdentity: "foreign" })), makeDeps(),
+    )).rejects.toThrow(/tenant identity/);
   });
 
   it("passes create-workspace identifiers straight through", async () => {

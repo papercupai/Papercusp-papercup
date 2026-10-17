@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { performance } from 'node:perf_hooks';
 import { resolveFsMutexLockRoot } from './lib/fs-mutex.mjs';
 import { snapshotMigrationSource } from './lib/with-test-pg-migrations.mjs';
+import { ensureRequiredEmbeddedExtensions } from './install-embedded-pgvector.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -53,11 +54,33 @@ if (cmd.length === 0 || (options.length > 0 && !isolatedRuntime) || (managedTask
   process.exit(2);
 }
 
+// This internal mode sends admission/teardown receipts to its supervising
+// verifier. A plain CLI has no receiver: reject before allocating private state
+// rather than discovering the missing channel after a successful test child.
+if (process.env.PC_ISOLATED_RUNTIME_PROOF === '1' &&
+    (!isolatedRuntime || !process.connected || typeof process.send !== 'function')) {
+  console.error('[with-test-pg] proof preflight failed: PC_ISOLATED_RUNTIME_PROOF requires an isolated runtime and a connected parent IPC channel');
+  process.exit(1);
+}
+
 // An explicit-but-empty sink commonly comes from expanding an unset shell
 // variable. Refuse before allocating PG instead of silently losing evidence.
 if (process.env.PAPERCUSP_TEST_RUNS_DB_URL !== undefined && !process.env.PAPERCUSP_TEST_RUNS_DB_URL.trim()) {
   console.error('[with-test-pg] evidence preflight failed: PAPERCUSP_TEST_RUNS_DB_URL must not be blank');
   process.exit(1);
+}
+// A resolver returns { url, ...metadata }; assigning that object to a child env
+// turns it into "[object Object]". The reporter cannot construct its client and
+// loses the ledger receipt after the entire suite. Reject invalid explicit
+// sinks here without printing their potentially credential-bearing contents.
+if (process.env.PAPERCUSP_TEST_RUNS_DB_URL !== undefined) {
+  try {
+    const sink = new URL(process.env.PAPERCUSP_TEST_RUNS_DB_URL.trim());
+    if (sink.protocol !== 'postgres:' && sink.protocol !== 'postgresql:') throw new Error('unsupported protocol');
+  } catch {
+    console.error('[with-test-pg] evidence preflight failed: PAPERCUSP_TEST_RUNS_DB_URL must be a valid PostgreSQL URL');
+    process.exit(1);
+  }
 }
 
 // Evidence must outlive the private database. Require an explicit reporter-only
@@ -191,6 +214,15 @@ let sqlDir;
 try { sqlDir = resolveSqlDir(); }
 catch (error) {
   console.error('[with-test-pg] migration preflight failed: ' + error.message);
+  process.exit(1);
+}
+
+// npm can replace the native tree after postinstall provisioned its extensions.
+// Repair from the existing compatible host source, or refuse before allocating
+// private state and applying migrations that require vector columns.
+try { ensureRequiredEmbeddedExtensions({ root: ROOT }); }
+catch (error) {
+  console.error('[with-test-pg] extension preflight failed: ' + error.message);
   process.exit(1);
 }
 
@@ -611,7 +643,7 @@ if (isolatedRuntime) {
   const evidenceKeys = new Set([
     // Optional receipts from the existing committed-source loader are evidence,
     // not an operator identity or endpoint. Retain them in the profile child.
-    'PAPERCUSP_COMMITTED_SOURCE_AUDIT',
+    'PAPERCUSP_COMMITTED_SOURCE_AUDIT', 'PAPERCUSP_COMMITTED_SOURCE_NOTICES',
     'PAPERCUSP_TEST_RUNS_DB_URL', 'PAPERCUSP_TEST_RUN_RECEIPT_FILE',
     'PAPERCUSP_TEST_RUN_WORKSPACE', 'PAPERCUSP_TEST_RUN_HARNESS',
     'PAPERCUSP_TEST_RUN_GROUP', 'PAPERCUSP_TEST_RUN_SOURCE',

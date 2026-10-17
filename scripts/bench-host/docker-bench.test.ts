@@ -83,6 +83,44 @@ describe('docker-bench daemon config', () => {
     expect(() => execFileSync('bash', ['-n', netPath])).not.toThrow();
   });
 
+  it('installs and removes only its scoped bridge forwarding rule idempotently', () => {
+    const { netPath } = render({ BENCH_POOL_BASE: '10.240.0.0/16' });
+    const dir = mkdtempSync(join(tmpdir(), 'docker-bench-firewall-'));
+    dirs.push(dir);
+    const state = join(dir, 'rules.json'), calls = join(dir, 'calls.jsonl');
+    const peer = ['FORWARD', '-i', 'peer0', '-j', 'ACCEPT'];
+    writeFileSync(state, JSON.stringify([peer]));
+    writeFileSync(join(dir, 'ip'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    writeFileSync(join(dir, 'iptables'), `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2), path = ${JSON.stringify(state)};
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');
+if (args[0] === '-t') process.exit(args[2] === '-C' ? 1 : 0);
+const rules = JSON.parse(fs.readFileSync(path, 'utf8'));
+const operation = args[0], rule = operation === '-I' ? [args[1], ...args.slice(3)] : args.slice(1);
+const index = rules.findIndex(value => JSON.stringify(value) === JSON.stringify(rule));
+if (operation === '-C') process.exit(index < 0 ? 1 : 0);
+if (operation === '-I') rules.unshift(rule);
+else if (operation === '-D' && index >= 0) rules.splice(index, 1);
+else process.exit(9);
+fs.writeFileSync(path, JSON.stringify(rules));
+`, { mode: 0o755 });
+    const run = (action: string) => execFileSync('bash', [netPath, action], {
+      env: { PATH: dir + ':' + (process.env.PATH ?? '') },
+    });
+    run('up'); run('up');
+    const rule = ['FORWARD', '-s', '10.240.0.0/16', '-d', '10.240.0.0/16',
+      '-m', 'physdev', '--physdev-is-bridged', '-j', 'ACCEPT'];
+    expect(JSON.parse(readFileSync(state, 'utf8'))).toEqual([rule, peer]);
+    run('down'); run('down');
+    expect(JSON.parse(readFileSync(state, 'utf8'))).toEqual([peer]);
+    const commands: string[][] = readFileSync(calls, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(commands.filter(command => command[0] === '-I')).toHaveLength(1);
+    expect(commands.filter(command => command[0] === '-D')).toHaveLength(1);
+    expect(commands.every(command => !command.includes('-F') && !command.includes('-P') &&
+      !command.some(value => value.startsWith('DOCKER')))).toBe(true);
+  });
+
   it('follows a relocated bench mount', () => {
     const { daemon, unit } = render({ BENCH_MOUNT: '/srv/bench2' });
     expect(daemon['data-root']).toBe('/srv/bench2/docker');

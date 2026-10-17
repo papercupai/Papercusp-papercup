@@ -48,6 +48,15 @@ function parityProblems(sourceDir: string, installedDir: string): string[] {
 }
 
 describe('installed cc hook parity', () => {
+  it('keeps atomic-edit temporary files out of the source hook directory', () => {
+    const transient = readdirSync(SOURCE_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.includes('.tmp'))
+      .map((entry) => entry.name)
+      .sort();
+
+    expect(transient).toEqual([]);
+  });
+
   it('detects a missing installed hook and byte drift', () => {
     const root = mkdtempSync(join(tmpdir(), 'cc-hook-parity-'));
     const sourceDir = join(root, 'source');

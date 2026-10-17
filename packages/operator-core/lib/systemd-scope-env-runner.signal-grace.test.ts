@@ -28,6 +28,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createTextCollector } from './child-output.js';
 import { mkNonRepoTmpDir } from './agent-tools/locks/non-repo-tmpdir';
 import { SYSTEMD_RUNNER_OUTPUT_PATH_ENV, SYSTEMD_RUNNER_REDACTIONS_ENV } from './systemd-scope-env-runner.mjs';
 
@@ -76,14 +77,13 @@ describe('systemd-scope-env-runner SIGTERM grace (WI-1064487)', () => {
     const runner = spawn(process.execPath, [RUNNER, '--env-fd-path', envPath, '--', 'bash', '-c', 'printf phase-proof'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let output = '';
-    runner.stdout.on('data', (chunk) => { output += chunk.toString(); });
+    const output = createTextCollector(runner.stdout);
     const code = await new Promise<number | null>((resolve, reject) => {
       runner.once('error', reject);
       runner.once('close', resolve);
     });
     expect(code).toBe(0);
-    expect(output).toBe('phase-proof');
+    expect(output.text()).toBe('phase-proof');
     const log = readFileSync(logPath, 'utf8');
     const phases = [...log.matchAll(/JOB PHASE: phase=([a-z-]+) at=(\d+)/g)];
     expect(phases.map((match) => match[1])).toEqual([

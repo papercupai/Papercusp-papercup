@@ -34,6 +34,15 @@ afterEach(() => {
 });
 
 describe('useUiPresence starvation prevention', () => {
+  it('advertises native desktop capability separately from ordinary browser tabs', () => {
+    renderHook(() => useUiPresence());
+    expect(JSON.parse(callRoute.mock.calls[0][1].body).viewport.nativeDesktop).toBe(false);
+    cleanup();
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: {} });
+    renderHook(() => useUiPresence());
+    expect(JSON.parse(callRoute.mock.calls.at(-1)![1].body).viewport.nativeDesktop).toBe(true);
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+  });
   it('demotes presence to background work and gives it a cancellation signal', () => {
     renderHook(() => useUiPresence());
     expect(callRoute).toHaveBeenCalledWith('/api/ui/presence', expect.objectContaining({

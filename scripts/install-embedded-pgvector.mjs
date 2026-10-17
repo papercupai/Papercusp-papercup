@@ -359,6 +359,24 @@ export function installEmbeddedExtensions({
   return report;
 }
 
+/** Repair required extensions after dependency replacement, before a fresh PG boot. */
+export function ensureRequiredEmbeddedExtensions(options = {}) {
+  const extensions = (options.extensions ?? EMBEDDED_EXTENSIONS).filter(extension => extension.required);
+  const report = installEmbeddedExtensions({ ...options, extensions });
+  if (extensions.length > 0 && report.trees.length === 0) {
+    throw new Error('no embedded-postgres native installation found; install the repository dependencies before starting a private database');
+  }
+  const unavailable = report.trees.filter(row => !['present', 'installed', 'updated'].includes(row.status));
+  if (unavailable.length > 0) {
+    const details = unavailable.map(row => {
+      const missing = report.missingSource.find(miss => miss.location === row.location && miss.extension === row.extension);
+      return missing ? missingWarning(missing) : `${row.location}: required ${row.extension} unavailable (${row.status}); reinstall the embedded-postgres package`;
+    });
+    throw new Error(details.join('\n'));
+  }
+  return report;
+}
+
 export function missingWarning(miss) {
   const where = miss.location ?? `@embedded-postgres/${miss.tree}`;
   if (miss.incompatible) {

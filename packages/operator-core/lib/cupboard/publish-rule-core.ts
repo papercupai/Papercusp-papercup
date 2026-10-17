@@ -12,7 +12,7 @@
  * rule this box can parse, so a malformed manifest is never advertised.
  */
 import { publishListingToCupboard } from './publish-listing';
-import { resolveLocalRule } from './rule-store';
+import { resolveLocalRule, writeRulePackageDir, type AsyncRuleDeclaration, type SyncRuleDeclaration } from './rule-store';
 import { fetchGithubRepoMeta, parseGithubRemote } from './resolve-repo-coords';
 
 // A ref is a within-repo subdir and a directory name — one safe segment.
@@ -26,15 +26,19 @@ export interface PublishRuleInput {
   project_ref?: string;
   title?: string;
   description?: string;
+  exportOnly?: boolean;
 }
 
 export type PublishRuleResult =
-  | { ok: true; listing: unknown }
+  | { ok: true; listing?: unknown; exportedOnly?: boolean; export?: ReturnType<typeof writeRulePackageDir> }
   | { ok: false; status: number; error: string; detail?: unknown; upstream_status?: number };
 
-export async function publishRuleToCupboard(input: PublishRuleInput): Promise<PublishRuleResult> {
+export async function publishRuleToCupboard(input: PublishRuleInput, deps: {
+  localRule?: AsyncRuleDeclaration | SyncRuleDeclaration;
+  writePackage?: typeof writeRulePackageDir;
+} = {}): Promise<PublishRuleResult> {
   const ref = String(input.ref ?? '').trim();
-  if (!SAFE_REF_RE.test(ref)) return { ok: false, status: 400, error: `invalid rule ref "${ref}"` };
+  if (!SAFE_REF_RE.test(ref) || ref === '.' || ref === '..') return { ok: false, status: 400, error: `invalid rule ref "${ref}"` };
   const githubUrl = typeof input.github_url === 'string' ? input.github_url.trim() : '';
   if (!githubUrl) {
     return { ok: false, status: 400, error: 'github_url required (the public mirror repo the rule dir lives in)' };
@@ -42,11 +46,17 @@ export async function publishRuleToCupboard(input: PublishRuleInput): Promise<Pu
   const parsed = parseGithubRemote(githubUrl);
   if (!parsed) return { ok: false, status: 400, error: `invalid github_url "${githubUrl}"` };
 
-  const local = resolveLocalRule(ref);
+  const local = deps.localRule ?? resolveLocalRule(ref);
   if (!local) {
     return { ok: false, status: 404, error: `rule "${ref}" is not installed here or its rule.json does not parse` };
   }
 
+  let exported: ReturnType<typeof writeRulePackageDir> | undefined;
+  if (deps.localRule) {
+    try { exported = (deps.writePackage ?? writeRulePackageDir)(deps.localRule, { ref: input.listing_ref ?? ref, source: githubUrl }); }
+    catch (error) { return { ok: false, status: 422, error: String(error) }; }
+  }
+  if (input.exportOnly) return { ok: true, exportedOnly: true, ...(exported ? { export: exported } : {}) };
   const meta = await fetchGithubRepoMeta(parsed.owner, parsed.repo);
   if (!meta) return { ok: false, status: 422, error: `could not resolve GitHub repo ${parsed.owner}/${parsed.repo}` };
 
@@ -72,5 +82,5 @@ export async function publishRuleToCupboard(input: PublishRuleInput): Promise<Pu
       upstream_status: result.upstream_status,
     };
   }
-  return { ok: true, listing: result.data };
+  return { ok: true, listing: result.data, exportedOnly: false, ...(exported ? { export: exported } : {}) };
 }

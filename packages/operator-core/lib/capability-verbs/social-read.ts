@@ -22,29 +22,25 @@
  * same row its id came from, and verified by round-trip before it is emitted
  * (`mintSocialPostRef`). A ref that cannot round-trip is never handed out.
  *
- * The read gate is `assertSocialPlatformUsable`, NOT `assertSocialWriteAllowed`.
- * Those genuinely differ: Bluesky's event stream is fully specified (readable
- * today) while its createRecord shape is unread (write-refused). Using the write
- * gate here would refuse verified reads; using no gate would read rows from an
- * unverified platform. Reading and writing are separately earned.
+ * Contract evidence and each write capability are checked independently against
+ * the installed descriptor. A readable provider can therefore report that replying
+ * is unverified or unsupported without hiding the stored post.
  */
 import type postgres from 'postgres';
 import { personalScope, searchPersonalDocuments } from '../personal-vault/store';
 import type { PersonalSearchResult } from '../personal-vault/types';
+import { providerRegistry, readyProviderRegistry, type ProviderRegistry } from '../integrations/provider-registry';
 import {
-  assertSocialWriteAllowed,
-  getSocialPlatform,
-  listSocialPlatforms,
   SocialPlatformUnusableError,
   type SocialPlatformId,
-  type SocialPlatformRow,
   type SocialWriteVerb,
-} from '../external-triggers/social/platform-registry';
-import {
   formatSocialPostRef,
   normalizeSocialVisibility,
   parseSocialPostRef,
   resolveSocialPost,
+  socialProviderInfo,
+  SOCIAL_CAPABILITY_BY_VERB,
+  type SocialProviderInfo,
   type SocialPostRef,
   type SocialVisibility,
 } from './social';
@@ -67,8 +63,8 @@ const READ_TEXT_LIMIT = 8_000;
  * and the drift is silent: a platform added to the registry would simply never
  * appear in search results, which reads as "the owner has no posts there".
  */
-export function socialVaultScopes(): string[] {
-  return listSocialPlatforms().map((row) => personalScope(row.id));
+export function socialVaultScopes(registry: ProviderRegistry = providerRegistry()): string[] {
+  return registry.forDatatype('social-post').map((entry) => personalScope(entry.descriptor.id));
 }
 
 /**
@@ -89,8 +85,8 @@ export function socialVaultScopes(): string[] {
  * So: take what was granted, intersect locally, and let an empty intersection be
  * an explicit named refusal. Never fall through to an unscoped search.
  */
-export function selectGrantedSocialScopes(granted: readonly string[]): string[] {
-  const social = new Set(socialVaultScopes());
+export function selectGrantedSocialScopes(granted: readonly string[], registry: ProviderRegistry = providerRegistry()): string[] {
+  const social = new Set(socialVaultScopes(registry));
   const seen = new Set<string>();
   const out: string[] = [];
   for (const raw of granted) {
@@ -110,9 +106,9 @@ export function selectGrantedSocialScopes(granted: readonly string[]): string[] 
 }
 
 /** The platform id a social vault scope names (`personal:bluesky` → `bluesky`). */
-export function platformIdForScope(scope: string): SocialPlatformId | null {
+export function platformIdForScope(scope: string, registry: ProviderRegistry = providerRegistry()): SocialPlatformId | null {
   const id = scope.startsWith('personal:') ? scope.slice('personal:'.length) : scope;
-  return getSocialPlatform(id) ? (id as SocialPlatformId) : null;
+  return registry.get(id)?.descriptor.datatypes.includes('social-post') ? (id as SocialPlatformId) : null;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -144,9 +140,9 @@ export type MintOutcome =
  * vault row whose source is `gmail` (which would mint a plausible-looking ref
  * for something that is not a post at all).
  */
-export function mintSocialPostRef(source: string, externalId: string | null): MintOutcome {
+export function mintSocialPostRef(source: string, externalId: string | null, registry: ProviderRegistry = providerRegistry()): MintOutcome {
   const platform = string(source).toLowerCase();
-  const row = getSocialPlatform(platform);
+  const row = registry.get(platform)?.descriptor.datatypes.includes('social-post');
   if (!row) {
     return {
       ok: false,
@@ -166,7 +162,7 @@ export function mintSocialPostRef(source: string, externalId: string | null): Mi
   const postId = formatSocialPostRef(candidate);
   let parsed: SocialPostRef;
   try {
-    parsed = parseSocialPostRef(postId);
+    parsed = parseSocialPostRef(postId, registry);
   } catch (err) {
     // An unverified/owner-blocked platform refuses here, via the registry's own
     // reason — the same refusal `social:reply` would give, surfaced at mint time
@@ -215,9 +211,10 @@ export interface SocialWriteAvailability {
 export function socialWriteAvailability(
   platform: SocialPlatformId,
   verb: SocialWriteVerb = 'reply',
+  registry: ProviderRegistry = providerRegistry(),
 ): SocialWriteAvailability {
   try {
-    assertSocialWriteAllowed(platform, verb);
+    socialProviderInfo(platform, registry, SOCIAL_CAPABILITY_BY_VERB[verb]);
     return { allowed: true };
   } catch (err) {
     if (err instanceof SocialPlatformUnusableError) {
@@ -268,7 +265,7 @@ function authorOf(payload: Record<string, unknown>, participants: readonly strin
   return string(payload.authorHandle) || string(payload.author) || string(participants[0]) || '';
 }
 
-function viewFromDocument(doc: CanonicalDocument, row: SocialPlatformRow, postId: string): SocialPostView {
+function viewFromDocument(doc: CanonicalDocument, row: SocialProviderInfo, postId: string, registry: ProviderRegistry): SocialPostView {
   const text = doc.text.length > READ_TEXT_LIMIT ? `${doc.text.slice(0, READ_TEXT_LIMIT)}…` : doc.text;
   return {
     postId,
@@ -280,7 +277,7 @@ function viewFromDocument(doc: CanonicalDocument, row: SocialPlatformRow, postId
     text,
     url: string(doc.payload.url),
     visibility: normalizeSocialVisibility(doc.payload.visibility),
-    replyable: socialWriteAvailability(row.id),
+    replyable: socialWriteAvailability(row.id, 'reply', registry),
     // Computed from the FULL stored text, not the bounded `text` above: the
     // token must be reproducible at delete time from the row, and the delete
     // path bounds it identically rather than trusting what was displayed.
@@ -303,15 +300,17 @@ function viewFromDocument(doc: CanonicalDocument, row: SocialPlatformRow, postId
 export async function readSocialPost(
   sql: postgres.Sql | postgres.TransactionSql,
   params: { workspaceId: string; userId: string; postId: string; agentOwnerId: string | null },
+  deps: { registry?: ProviderRegistry } = {},
 ): Promise<SocialPostView & { privacy: DocumentLabel | null }> {
+  const registry = deps.registry ?? await readyProviderRegistry();
   const resolved = await resolveSocialPost(sql, {
     workspaceId: params.workspaceId,
     userId: params.userId,
     ref: params.postId,
-  });
+  }, { registry });
   // Re-mint from the STORED row rather than echoing the caller's token, so the
   // ref we hand back is anchored to what was actually found.
-  const minted = mintSocialPostRef(resolved.doc.source, resolved.doc.externalId);
+  const minted = mintSocialPostRef(resolved.doc.source, resolved.doc.externalId, registry);
   if (!minted.ok) throw new Error(`social_read_ref_unmintable:${minted.reason}: ${minted.detail}`);
   // Reader-set labels (P-008): the post reaches the agent only with its
   // disclosure row, exactly as a personal:search result does.
@@ -323,7 +322,8 @@ export async function readSocialPost(
     via: 'social:read',
   });
   if (disclosed.withheld) throw new Error('social_read_withheld: restricted post and no attributable agent identity');
-  return { ...viewFromDocument(resolved.doc, resolved.row, minted.postId), privacy: disclosed.documents[0]?.privacy ?? null };
+  const current = socialProviderInfo(resolved.doc.source, registry);
+  return { ...viewFromDocument(resolved.doc, current, minted.postId, registry), privacy: disclosed.documents[0]?.privacy ?? null };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -388,8 +388,10 @@ export async function searchSocialPosts(
     limit?: number;
     queryEmbedding?: number[] | null;
   },
+  deps: { registry?: ProviderRegistry } = {},
 ): Promise<SocialSearchOutcome> {
-  const grantedSocial = selectGrantedSocialScopes(params.grantedScopes);
+  const registry = deps.registry ?? await readyProviderRegistry();
+  const grantedSocial = selectGrantedSocialScopes(params.grantedScopes, registry);
   if (!grantedSocial.length) throw new SocialSearchNotGranted([...params.grantedScopes]);
 
   // An explicit platform filter may only NARROW what the grant already allows —
@@ -412,7 +414,7 @@ export async function searchSocialPosts(
     queryEmbedding: params.queryEmbedding ?? null,
   });
 
-  return { scopesSearched: scopes, ...collectSocialHits(rows) };
+  return { scopesSearched: scopes, ...collectSocialHits(rows, registry) };
 }
 
 /**
@@ -426,22 +428,18 @@ export async function searchSocialPosts(
  */
 export function collectSocialHits(
   rows: readonly PersonalSearchResult[],
+  registry: ProviderRegistry = providerRegistry(),
 ): { hits: SocialSearchHit[]; skipped: Array<{ reason: MintRefusal; count: number }> } {
   const hits: SocialSearchHit[] = [];
   const skipped = new Map<MintRefusal, number>();
   for (const row of rows) {
-    const minted = mintSocialPostRef(row.source, row.externalId);
+    const minted = mintSocialPostRef(row.source, row.externalId, registry);
     if (!minted.ok) {
       skipped.set(minted.reason, (skipped.get(minted.reason) ?? 0) + 1);
       continue;
     }
-    const platformRow = getSocialPlatform(minted.ref.platform);
-    if (!platformRow) {
-      // Unreachable: mintSocialPostRef resolves the row before returning ok.
-      skipped.set('not-a-social-platform', (skipped.get('not-a-social-platform') ?? 0) + 1);
-      continue;
-    }
-    hits.push(hitFromRow(row, platformRow, minted.postId));
+    const platformRow = socialProviderInfo(minted.ref.platform, registry);
+    hits.push(hitFromRow(row, platformRow, minted.postId, registry));
   }
   return {
     hits,
@@ -451,8 +449,9 @@ export function collectSocialHits(
 
 function hitFromRow(
   row: PersonalSearchResult,
-  platformRow: SocialPlatformRow,
+  platformRow: SocialProviderInfo,
   postId: string,
+  registry: ProviderRegistry,
 ): SocialSearchHit {
   const payload = (row.metadata ?? {}) as Record<string, unknown>;
   return {
@@ -464,6 +463,6 @@ function hitFromRow(
     title: row.title,
     snippet: row.snippet,
     score: row.score,
-    replyable: socialWriteAvailability(platformRow.id),
+    replyable: socialWriteAvailability(platformRow.id, 'reply', registry),
   };
 }

@@ -19,10 +19,12 @@ import { statePlaneForDoor } from '../state-plane-door';
 /**
  * Keep the composite diagnostic below the MCP transport deadline even when one
  * of its independent release/PG reads is queued behind a saturated pool.
- * The three budgets are sequential in the handler, so their sum remains below
- * the ~55s client deadline in the worst case. The position leg is 20s because
- * a measured live read can take about 19.5s while the gate is repairing; a
- * 15s cap turns a slow-but-valid position into an unknown release verdict.
+ * Snapshot, position, and await-history are sequential and total at most 50s.
+ * The independent manual-run authority and progress-certificate reads start
+ * alongside the snapshot and each have a 10s cap, so they cannot extend that
+ * budget. The position leg is 20s because a measured live read can take about
+ * 19.5s while the gate is repairing; a 15s cap turns a slow-but-valid position
+ * into an unknown release verdict.
  */
 export const RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS = 20_000;
 export const RELEASE_TRACE_POSITION_TIMEOUT_MS = 20_000;
@@ -197,6 +199,25 @@ export default defineTool({
     const subjectStamp = releaseTraceSubjectStamp(ctx);
     if (!args.path && !args.sha) return { data: { ok: false, ...subjectStamp, error: 'Provide path or sha.' } };
     const identity = resolveAgentIdentity(ctx);
+    // These independent reads used to run after the sequential snapshot,
+    // position, and history stages. Start them now so their own 10s deadlines
+    // cannot push a slow composite past the MCP transport deadline.
+    const manualRunAuthorityRead = withBoundedTimeout(
+      () => resolveManualRunAuthority({ readerOwnerId: identity.ownerId }),
+      {
+        fallback: null,
+        timeoutMs: RELEASE_TRACE_AWAIT_TIMEOUT_MS,
+        label: 'release:trace:manual-run-authority',
+      },
+    );
+    const progressCertificateRead = withBoundedTimeout(
+      () => getFlag(FLAGS.RELEASE_TRACE_PROGRESS_CERTIFICATE, identity.ownerId).catch(() => true),
+      {
+        fallback: true,
+        timeoutMs: RELEASE_TRACE_AWAIT_TIMEOUT_MS,
+        label: 'release:trace:progress-certificate-flag',
+      },
+    );
     // A diagnostic read must stay fork/sidecar-free. The default enables the
     // dev-deploy spawner sidecar, which can block this read while composing
     // release truth (EI-20264406467393669).
@@ -338,27 +359,16 @@ export default defineTool({
       })),
     );
 
-    // EI-21456558908416090: read the live manual-run authority alongside the other release
-    // authorities. Bounded and fail-open by construction — `withBoundedTimeout`'s fallback is
-    // the "no recorded prohibition" answer, which preserves this tool's pre-existing behaviour
-    // exactly when the authority store is slow or down.
-    const manualRunAuthority = await withBoundedTimeout(
-      () => resolveManualRunAuthority({ readerOwnerId: identity.ownerId }),
-      {
-        fallback: null,
-        timeoutMs: RELEASE_TRACE_AWAIT_TIMEOUT_MS,
-        label: 'release:trace:manual-run-authority',
-      },
-    );
+    const [manualRunAuthority, progressCertificate] = await Promise.all([
+      manualRunAuthorityRead,
+      progressCertificateRead,
+    ]);
 
     // P-005 / D-015 io seam: buildReleaseTrace stays pure, so the steering kill-switch is
-    // resolved HERE and handed in. `.catch(() => true)` fails OPEN to the shipped default-ON
-    // behaviour — a flag store that is down must not silently strip the certificate, because a
-    // missing certificate is indistinguishable from a healthy run in the rendered verb.
-    const progressCertificateEnabled = await getFlag(
-      FLAGS.RELEASE_TRACE_PROGRESS_CERTIFICATE,
-      identity.ownerId,
-    ).catch(() => true);
+    // resolved HERE and handed in. Errors and timeouts fail OPEN to the shipped default-ON
+    // behaviour — a missing certificate is indistinguishable from a healthy run in the rendered
+    // verb.
+    const progressCertificateEnabled = progressCertificate.value ?? true;
 
     const trace = buildReleaseTrace({
       position,

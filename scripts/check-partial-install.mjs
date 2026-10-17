@@ -162,6 +162,9 @@ function scanNodeModules(nodeModulesDir, workspace, findings) {
  * an orphaned workspace shim still points at its removed local copy. npm's normal
  * hoisted reify does not inventory orphan shims, so an up-to-date install can leave
  * them untouched. Share this detector with install:safe's verified repair boundary.
+ * Include physical nested dependency trees: the immutable dependency publisher
+ * validates those links too. Never follow package/scope/node_modules symlinks to
+ * discover more trees; workspace links and external stores are not ours to repair.
  *
  * @param {string} root
  * @param {{ workspaceDirs?: string[] }} [options]
@@ -180,8 +183,35 @@ export function findBrokenBinLinks(root, { workspaceDirs } = {}) {
     workspaceDirs = expandWorkspaceDirs(patterns, root);
   }
   const findings = [];
-  for (const workspace of new Set(['', ...workspaceDirs])) {
+  // Set iteration also visits newly discovered nested trees, once per path.
+  const workspaces = new Set(['', ...workspaceDirs]);
+  for (const workspace of workspaces) {
     const nodeModulesDir = join(root, workspace, 'node_modules');
+    let packages;
+    try {
+      packages = readdirSync(nodeModulesDir, { withFileTypes: true });
+    } catch (error) {
+      if (error.code === 'ENOENT' || error.code === 'ENOTDIR') continue;
+      throw error;
+    }
+    const visitPackage = (packageDir) => {
+      try {
+        if (lstatSync(join(packageDir, 'node_modules')).isDirectory())
+          workspaces.add(relative(root, packageDir));
+      } catch (error) {
+        if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+      }
+    };
+    for (const entry of packages) {
+      if (entry.name.startsWith('.') || !entry.isDirectory()) continue;
+      const packageDir = join(nodeModulesDir, entry.name);
+      if (entry.name.startsWith('@')) {
+        for (const scoped of readdirSync(packageDir, { withFileTypes: true })) {
+          if (!scoped.name.startsWith('.') && scoped.isDirectory())
+            visitPackage(join(packageDir, scoped.name));
+        }
+      } else visitPackage(packageDir);
+    }
     const binDir = join(nodeModulesDir, '.bin');
     let entries;
     try {

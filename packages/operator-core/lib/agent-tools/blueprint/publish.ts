@@ -21,6 +21,7 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { withSubmissionReceipt } from '../../cupboard/submission-receipt';
 import { defineTool } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -28,7 +29,7 @@ import { operatorResolveExtends } from '../../blueprint/installed-blueprints';
 import { BlueprintLifecycleError, prepareBlueprintPublicRelease } from '../../cupboard/blueprint-release';
 
 const text = (payload: Record<string, unknown>) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+  content: [{ type: 'text' as const, text: JSON.stringify(withSubmissionReceipt(payload)) }],
 });
 
 const DEFAULT_BLUEPRINT_RELEASE_TIMEOUT_MS = 20_000;

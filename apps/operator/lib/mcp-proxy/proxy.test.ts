@@ -38,6 +38,7 @@ import {
   DEFAULT_CONTROL_PLANE_RESERVE,
   DEFAULT_MAX_HANDSHAKES_IN_FLIGHT,
   DEFAULT_MAX_HANDSHAKE_QUEUE,
+  DEFAULT_MAX_ORDINARY_QUEUE,
   DEFAULT_MAX_CRITICAL_CONTINUATION_QUEUE,
   DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS,
   DEFAULT_COORD_SEND_QUEUE_WAIT_MS,
@@ -68,6 +69,8 @@ import {
   staticMcpProxyTargets,
   resolveDefaultMcpProxyTargets,
   describeMcpProxyTarget,
+  mcpProxyGenerationAffinityKey,
+  isGenerationBoundMcpRequest,
   startMcpProxy,
   type McpProxyTarget,
 } from "./proxy";
@@ -635,7 +638,7 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(r.body).toBe(body);
     expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
   });
-  it.each(["run", "prepare-tag", "handoff", "run-leg", "abort-leg", "reclaim"])(
+  it.each(["run", "prepare-tag", "handoff", "run-leg", "abort-leg"])(
     "tools:invoke wrapping release:cut %s remains keyed",
     (op) => {
       const body = Buffer.from(
@@ -799,6 +802,78 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
           arguments: {
             name: "capability:bash",
             args: JSON.stringify({ command: "printf x > /tmp/proxy-write" }),
+          },
+        },
+      }),
+    );
+    const r = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: gen,
+    });
+    expect(r.klass).toBe("keyed");
+    expect(JSON.parse(r.body.toString()).params._meta.idempotencyKey).toBe(
+      "KEY123",
+    );
+  });
+  it.each([
+    [
+      "direct",
+      {
+        name: "capability:bash_output",
+        arguments: { task_id: "task-1", peek: true },
+      },
+    ],
+    [
+      "tools:invoke with object args",
+      {
+        name: "tools:invoke",
+        arguments: {
+          name: "capability:bash_output",
+          args: { task_id: "task-1", peek: true },
+        },
+      },
+    ],
+    [
+      "tools:invoke with ptool-stringified args",
+      {
+        name: "tools:invoke",
+        arguments: {
+          name: "capability:bash_output",
+          args: JSON.stringify({ task_id: "task-1", peek: true }),
+        },
+      },
+    ],
+  ])(
+    "EI-25459298107511969: %s cursor-preserving capability:bash_output read is replay-safe",
+    (_label, params) => {
+      const body = Buffer.from(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params,
+        }),
+      );
+      const r = prepareForward("POST", {}, body, {
+        keyingEnabled: true,
+        genKey: gen,
+      });
+      expect(r.klass).toBe("readonly");
+      expect(r.body).toBe(body);
+      expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
+    },
+  );
+  it("EI-25459298107511969: a consuming capability:bash_output poll remains keyed", () => {
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "capability:bash_output",
+            args: { task_id: "task-1" },
           },
         },
       }),
@@ -985,6 +1060,41 @@ describe("postConnectRetryable — write-free requests only", () => {
 // EI-21268234394605529 guard: the curated allowlist must NEVER contain a mutating verb —
 // a write wrongly listed here would be silently double-applied on a post-connect replay.
 describe("READ_ONLY_TOOLS — writer-exclusion guard", () => {
+  it("EI-25753161998628343: replays work_items:observe after a post-connect reset", () => {
+    const args = { id: "WI-1", harness: "papercusp" };
+    const calls = [
+      { name: "work_items:observe", arguments: args },
+      { name: "mcp__papercusp-su__work_items_observe", arguments: args },
+      { name: "tools:invoke", arguments: { name: "work_items:observe", args } },
+    ];
+
+    expect(READ_ONLY_TOOLS).toContain("work_items:observe");
+    for (const [index, params] of calls.entries()) {
+      const body = Buffer.from(JSON.stringify({
+        jsonrpc: "2.0",
+        id: index + 1,
+        method: "tools/call",
+        params,
+      }));
+      const prepared = prepareForward("POST", {}, body, {
+        keyingEnabled: true,
+        genKey: () => "00000000-0000-4000-8000-000000000000",
+      });
+
+      expect(prepared.klass).toBe("readonly");
+      expect(prepared.body).toBe(body);
+      expect(
+        postConnectRetryable(
+          prepared.klass,
+          0,
+          MAX_POST_CONNECT_RETRIES,
+          100,
+          5_000,
+        ),
+      ).toBe(true);
+    }
+  });
+
   it("keeps sessions:search out of pure-read retries because live refresh writes", () => {
     const body = Buffer.from(
       JSON.stringify({
@@ -1446,6 +1556,85 @@ describe("createMcpProxy — proxy-local health path stays truthful during an up
 
     expect(res.status).toBe(503); // held for the whole window, then gave up
     expect(elapsed).toBeGreaterThanOrEqual(600);
+  });
+});
+
+describe("MCP proxy serving-generation affinity", () => {
+  it("derives a bounded key from native session identity before client fallback", () => {
+    const queryKey = mcpProxyGenerationAffinityKey(
+      "/api/mcp?native_session=query-secret&client=client-a",
+    );
+    const headerKey = mcpProxyGenerationAffinityKey(
+      "/api/mcp?native_session=query-secret&client=client-a",
+      { "x-papercusp-native-session": "header-secret" },
+    );
+    expect(queryKey).toMatch(/^mcp-affinity:[0-9a-f]{32}$/);
+    expect(headerKey).toMatch(/^mcp-affinity:[0-9a-f]{32}$/);
+    expect(headerKey).not.toBe(queryKey);
+    expect(mcpProxyGenerationAffinityKey("/api/other?client=client-a")).toBeNull();
+  });
+
+  it("recognizes handshake and generation-bound tools:invoke requests", () => {
+    const path = "/api/mcp?client=client-a";
+    expect(
+      isGenerationBoundMcpRequest(
+        Buffer.from('{"jsonrpc":"2.0","id":1,"method":"tools/list"}'),
+        path,
+      ),
+    ).toBe(true);
+    expect(
+      isGenerationBoundMcpRequest(
+        Buffer.from(
+          '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tools:invoke","arguments":{"name":"scorecards:get","servingGeneration":"serving-generation-v1:test"}}}',
+        ),
+        path,
+      ),
+    ).toBe(true);
+    expect(
+      isGenerationBoundMcpRequest(
+        Buffer.from('{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"scorecards:get","arguments":{}}}'),
+        path,
+      ),
+    ).toBe(false);
+  });
+
+  it("reuses one upstream socket for a generation-bound client while preserving fresh sockets for unbound calls", async () => {
+    let connections = 0;
+    const upstream = track(
+      http.createServer((_req, res) => {
+        res.writeHead(200, {
+          "content-type": "application/json",
+          connection: "keep-alive",
+        });
+        res.end('{"jsonrpc":"2.0","id":1,"result":{}}');
+      }),
+    );
+    upstream.on("connection", () => {
+      connections++;
+    });
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const listBody = '{"jsonrpc":"2.0","id":1,"method":"tools/list"}';
+    const invokeBody =
+      '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tools:invoke","arguments":{"name":"scorecards:get","servingGeneration":"serving-generation-v1:test"}}}';
+    const sessionPath = "/api/mcp?client=affinity-client";
+    expect((await request(port(proxy), listBody, sessionPath)).status).toBe(200);
+    expect((await request(port(proxy), invokeBody, sessionPath)).status).toBe(200);
+    expect(connections).toBe(1);
+
+    expect((await request(port(proxy), listBody)).status).toBe(200);
+    expect((await request(port(proxy), listBody)).status).toBe(200);
+    expect(connections).toBe(3);
   });
 });
 
@@ -2268,8 +2457,9 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     let hits = 0;
     const receivedKeys: string[] = [];
     const appliedKeys = new Set<string>();
+    const storedResponses = new Map<string, string>();
     const server = track(
-      http.createServer((req) => {
+      http.createServer((req, res) => {
         hits++;
         const chunks: Buffer[] = [];
         req.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
@@ -2280,7 +2470,14 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
           const rawKey = envelope.params?._meta?.idempotencyKey;
           const key = typeof rawKey === "string" ? rawKey : "";
           receivedKeys.push(key);
+          const stored = storedResponses.get(key);
+          if (stored) {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(stored);
+            return;
+          }
           if (key) appliedKeys.add(key);
+          if (key) storedResponses.set(key, '{"result":{"receipt":"applied-once"}}');
           req.socket.destroy();
         });
       }),
@@ -2461,6 +2658,15 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
           forwardingResult?: string;
           attempts?: number;
           note?: string;
+          recovery?: {
+            idempotencyKeys?: Array<{
+              requestId: string | number;
+              toolName: string;
+              key: string;
+            }>;
+            truncated?: boolean;
+            instructions?: string;
+          };
         };
         expect(payload.forwardingResult).toBe("outcome_unknown");
         expect(payload.attempts).toBe(1);
@@ -2471,6 +2677,35 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
         expect(upstream.appliedEffects()).toBe(1);
         expect(upstream.receivedKeys()).toHaveLength(1);
         expect(upstream.receivedKeys()[0]).toBeTruthy();
+        expect(payload.recovery).toMatchObject({
+          idempotencyKeys: [{ requestId: 1, toolName: "code:run" }],
+          truncated: false,
+        });
+        expect(payload.recovery?.idempotencyKeys?.[0]?.key).toBe(
+          upstream.receivedKeys()[0],
+        );
+        expect(payload.recovery?.instructions).toContain("--idempotency-key <key>");
+        expect(payload.note).toContain("recovery.idempotencyKeys");
+
+        // The first attempt may have committed but lost its response. Reconcile state,
+        // then replay the same logical call with the receipt key to retrieve the stored result.
+        const recoveryKey = payload.recovery!.idempotencyKeys![0]!.key;
+        const replayCall = {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "code:run",
+            arguments: { script: "return 'controlled apply-then-reset';" },
+            _meta: { idempotencyKey: recoveryKey },
+          },
+        };
+        const replayed = await request(port(proxy), JSON.stringify(replayCall));
+        expect(replayed.status).toBe(200);
+        expect(replayed.body).toBe('{"result":{"receipt":"applied-once"}}');
+        expect(upstream.hits()).toBe(2);
+        expect(upstream.appliedEffects()).toBe(1);
+        expect(upstream.receivedKeys()).toEqual([recoveryKey, recoveryKey]);
 
         const entries = fs
           .readFileSync(logFile, "utf8")
@@ -2514,6 +2749,74 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
           delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
         else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previousLogFile;
       }
+    }),
+  );
+
+  it(
+    "EI-25709337570583795: tools:invoke-wrapped events:emit reset exposes a replay receipt",
+    withKeyedRetry("1", async () => {
+      const upstream = applyThenResetUpstream();
+      await listen(upstream);
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0,
+          targetHost: "127.0.0.1",
+          targetPort: port(upstream),
+          retryWindowMs: 2_000,
+          retryBackoffMs: 40,
+          log: () => {},
+        }),
+      );
+      await listen(proxy);
+
+      const call = {
+        jsonrpc: "2.0",
+        id: "announce-1",
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "events:emit",
+            args: {
+              event: "gate:control:ready",
+              announce: true,
+              announceScope: "global",
+            },
+          },
+        },
+      };
+      const first = await request(port(proxy), JSON.stringify(call));
+      expect(first.status).toBe(502);
+      const failure = JSON.parse(first.body) as {
+        forwardingResult?: string;
+        recovery?: {
+          idempotencyKeys?: Array<{
+            requestId: string | number;
+            toolName: string;
+            key: string;
+          }>;
+        };
+      };
+      expect(failure.forwardingResult).toBe("outcome_unknown");
+      expect(failure.recovery?.idempotencyKeys).toMatchObject([
+        { requestId: "announce-1", toolName: "tools:invoke" },
+      ]);
+      const recoveryKey = failure.recovery?.idempotencyKeys?.[0]?.key;
+      expect(recoveryKey).toBeTruthy();
+      expect(upstream.receivedKeys()).toEqual([recoveryKey]);
+      expect(upstream.appliedEffects()).toBe(1);
+
+      const replayed = await request(
+        port(proxy),
+        JSON.stringify({
+          ...call,
+          params: { ...call.params, _meta: { idempotencyKey: recoveryKey } },
+        }),
+      );
+      expect(replayed.status).toBe(200);
+      expect(replayed.body).toBe('{"result":{"receipt":"applied-once"}}');
+      expect(upstream.receivedKeys()).toEqual([recoveryKey, recoveryKey]);
+      expect(upstream.appliedEffects()).toBe(1);
     }),
   );
 
@@ -2623,6 +2926,7 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
       const r = await request(port(proxy), TOOLS_CALL);
       expect(r.status).toBe(502);
       expect(r.body).toContain("mcp_proxy_upstream_error");
+      expect(JSON.parse(r.body).recovery).toBeUndefined();
       expect(upstream.hits()).toBe(1); // opaque → not replayed
     }),
   );
@@ -2651,6 +2955,39 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
       '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"build:typecheck","arguments":{}}}',
     );
     expect(r.status).toBe(200);
+    expect(upstream.hits()).toBe(2);
+  });
+
+  it("EI-25993505156348444: tools:invoke-wrapped audit:list retries once after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":"audit-recovered"}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: { name: "audit:list", args: { detail: "summary", limit: 10 } },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":"audit-recovered"}');
     expect(upstream.hits()).toBe(2);
   });
 
@@ -2835,6 +3172,42 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     expect(upstream.hits()).toBe(2);
   });
 
+  it("EI-25459298107511969: tools:invoke-wrapped bash_output peek retries after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"output":"still available"}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "capability:bash_output",
+            args: { task_id: "task-1", peek: true },
+          },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":{"output":"still available"}}');
+    expect(upstream.hits()).toBe(2);
+  });
+
   it("EI-24734741850141953: tools:invoke-wrapped logs:read retries after a post-connect reset", async () => {
     const upstream = resetOnceUpstream(
       '{"result":{"entries":[{"unit":"papercup-staging-sync.service","message":"sync completed"}],"matched":1}}',
@@ -2873,6 +3246,46 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     );
     expect(r.status).toBe(200);
     expect(r.body).toContain("sync completed");
+    expect(upstream.hits()).toBe(2);
+  });
+
+  it("EI-26054464973454475: tools:invoke-wrapped plans:evaluate-spec-test-adequacy retries after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"ok":true,"rows":[],"count":0}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "plans:evaluate-spec-test-adequacy",
+            args: {
+              scorecardId: "EI-26004169159232210",
+              slug: "grading-replay-fixture",
+              replaySnapshot: true,
+            },
+          },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":{"ok":true,"rows":[],"count":0}}');
     expect(upstream.hits()).toBe(2);
   });
 
@@ -2984,6 +3397,78 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
     );
     expect(r.status).toBe(200);
     expect(r.body).toContain('"state":"running"');
+    expect(upstream.hits()).toBe(2);
+  });
+
+  it("EI-26107428212758754: tools:invoke-wrapped dry-run release:cut reclaim is replay-safe", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"ok":true,"op":"reclaim","dryRun":true}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "release:cut",
+            args: JSON.stringify({ op: "reclaim", minIdleHours: 24 }),
+          },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toContain('"dryRun":true');
+    expect(upstream.hits()).toBe(2);
+  });
+
+  it("EI-21568697005575627: tools:invoke-wrapped release:trace retries after a post-connect reset", async () => {
+    const upstream = resetOnceUpstream(
+      '{"result":{"ok":true,"summary":"recovered"}}',
+    ) as http.Server & { hits: () => number };
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        retryBackoffMs: 40,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+    const r = await request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: {
+            name: "release:trace",
+            args: { sha: "bb1128e2d8c28c185e6c1f83723bad539bcaf645" },
+          },
+        },
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(r.body).toBe('{"result":{"ok":true,"summary":"recovered"}}');
     expect(upstream.hits()).toBe(2);
   });
 
@@ -3106,7 +3591,7 @@ describe("WI-6740: upstream silence — bounded + replayed for the handshake, ne
       });
     }));
     await listen(upstream);
-    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: "127.0.0.1", targetPort: port(upstream), handshakeTimeoutMs: 40, retryBackoffMs: 5, log: () => {} }));
+    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: "127.0.0.1", targetPort: port(upstream), retryWindowMs: 5_000, handshakeTimeoutMs: 40, retryBackoffMs: 5, log: () => {} }));
     await listen(proxy);
     const response = await request(port(proxy), JSON.stringify(delivery), "/api/adv/sessions/port/delivery");
     expect(response.status).toBe(200);
@@ -3118,7 +3603,9 @@ describe("WI-6740: upstream silence — bounded + replayed for the handshake, ne
     let hits = 0;
     const upstream = track(http.createServer((req) => { hits++; req.socket.destroy(); }));
     await listen(upstream);
-    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: "127.0.0.1", targetPort: port(upstream), retryBackoffMs: 5, log: () => {} }));
+    // A real retry window, so hits===1 proves the post-connect reset is NOT replayed
+    // (an absent window would pass vacuously — nothing would ever retry).
+    const proxy = track(createMcpProxy({ listenPort: 0, targetHost: "127.0.0.1", targetPort: port(upstream), retryWindowMs: 5_000, retryBackoffMs: 5, log: () => {} }));
     await listen(proxy);
     const response = await request(port(proxy), JSON.stringify({ status: "delivered", targetAdvSessionId: 99 }), "/api/adv/sessions/port/delivery");
     expect(response.status).toBe(502);
@@ -4196,12 +4683,14 @@ describe("WI-35737: a departed client stops the retry loop", () => {
  */
 describe("WI-10006908: an upstream SSE closure after headers ends the client response", () => {
   type UpstreamMode = "complete" | "die-at-boundary" | "die-mid-event";
-  const TOOL_CALL = JSON.stringify({
-    jsonrpc: "2.0",
-    id: 7,
-    method: "tools/call",
-    params: { name: "testing:run", arguments: {} },
-  });
+  function toolCall(toolName = "testing:run"): string {
+    return JSON.stringify({
+      jsonrpc: "2.0",
+      id: 7,
+      method: "tools/call",
+      params: { name: toolName, arguments: {} },
+    });
+  }
 
   function sseUpstream(mode: UpstreamMode): http.Server {
     return track(
@@ -4229,6 +4718,7 @@ describe("WI-10006908: an upstream SSE closure after headers ends the client res
   function callTool(
     p: number,
     budgetMs: number,
+    toolName = "testing:run",
   ): Promise<{ outcome: "end" | "aborted" | "error" | "still-open"; body: string; ms: number }> {
     return new Promise((resolve) => {
       const t0 = Date.now();
@@ -4266,7 +4756,7 @@ describe("WI-10006908: an upstream SSE closure after headers ends the client res
         },
       );
       r.on("error", () => settle("error"));
-      r.end(TOOL_CALL);
+      r.end(toolCall(toolName));
     });
   }
 
@@ -4343,6 +4833,9 @@ describe("WI-10006908: an upstream SSE closure after headers ends the client res
           "upstream connection for this tools/call closed before the response completed",
         );
         expect(events[0].error.message).not.toContain("operator process");
+        expect(events[0].error.message).toContain(
+          "effects are UNKNOWN: check state before retrying a write.",
+        );
         expect(events[0]).toMatchObject({
           jsonrpc: "2.0",
           id: 7,
@@ -4359,7 +4852,16 @@ describe("WI-10006908: an upstream SSE closure after headers ends the client res
           status: 200,
           clientResolution: "jsonrpc_error_events",
           forwardingResult: MCP_PROXY_FORWARDING_RESULTS.outcomeUnknown,
+          upstreamResponseLifecycle: {
+            responseComplete: false,
+            responseAborted: true,
+            responseDestroyed: true,
+            socketDestroyed: true,
+          },
         });
+        const lifecycle = rec?.upstreamResponseLifecycle as Record<string, unknown> | undefined;
+        expect(lifecycle).toHaveProperty("responseErrorCode");
+        expect(lifecycle).toHaveProperty("socketErrorCode");
         expect(rec?.traceId).toBe(events[0].error.data.traceId);
 
         const traceLine = traceInfo.mock.calls
@@ -4376,11 +4878,35 @@ describe("WI-10006908: an upstream SSE closure after headers ends the client res
           stage: "proxy_response_finished",
           outcome: "rejected",
           httpStatus: 200,
+          upstreamResponseLifecycle: {
+            responseComplete: false,
+            responseAborted: true,
+            responseDestroyed: true,
+            socketDestroyed: true,
+          },
         });
       });
     } finally {
       traceInfo.mockRestore();
     }
+  }, 10_000);
+
+  it("SUBJECT: read-only tools/call gets safe retry guidance after upstream SSE closure", async () => {
+    const proxy = await proxyFor(sseUpstream("die-at-boundary"));
+    const r = await callTool(port(proxy), 1_500, "plans:get");
+    expect(r.outcome).toBe("end");
+    const events = r.body
+      .split("\n")
+      .filter((l) => l.startsWith("data: "))
+      .map((l) => JSON.parse(l.slice("data: ".length)));
+    expect(events).toHaveLength(1);
+    expect(events[0].error.message).toContain(
+      "The read was dispatched, but its result is unknown. Retrying this read is safe.",
+    );
+    expect(events[0].error.message).not.toContain("effects are UNKNOWN");
+    expect(events[0].error.data.forwardingResult).toBe(
+      MCP_PROXY_FORWARDING_RESULTS.outcomeUnknown,
+    );
   }, 10_000);
 
   it("SUBJECT: upstream SSE closure mid-event cannot append a parseable event, so the client response is destroyed promptly", async () => {
@@ -4606,6 +5132,49 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(targetedCall("coord:roster", { view: "claims", owner: "su-target" }))).toBe(false);
     expect(isReservedControlPlaneCall(call("state:read"))).toBe(true);
     expect(isReservedControlPlaneCall(call("coord:inbox"))).toBe(true);
+    expect(isReservedControlPlaneCall(call("coord:thread"))).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        targetedCall("coord:feed", {
+          owner: "su-target",
+          since: "2026-10-17T06:00:00.000Z",
+          limit: 20,
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isReservedControlPlaneCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: {
+              name: "tools:invoke",
+              arguments: {
+                name: "mcp__papercusp_su__coord_feed",
+                args: {
+                  from: "su-target",
+                  since_ts: "2026-10-17T06:00:00.000Z",
+                  limit: 20,
+                },
+              },
+            },
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(isReservedControlPlaneCall(call("coord:feed"))).toBe(false);
+    expect(
+      isReservedControlPlaneCall(targetedCall("coord:feed", { limit: 20 })),
+    ).toBe(false);
+    expect(
+      isReservedControlPlaneCall(
+        targetedCall("coord:feed", {
+          owner: "su-target",
+          since: "2026-10-17T06:00:00.000Z",
+          include_retracted: true,
+        }),
+      ),
+    ).toBe(false);
     expect(isReservedControlPlaneCall(call("fleet:assignments"))).toBe(true);
     expect(isReservedControlPlaneCall(call("fleet:leader-brief"))).toBe(true);
     expect(isReservedControlPlaneCall(call("loop:checkpoint"))).toBe(true);
@@ -4712,6 +5281,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call("events:await"))).toBe(true);
     expect(isReservedControlPlaneCall(call("events:cancel"))).toBe(true);
     expect(isReservedControlPlaneCall(call("events:status"))).toBe(true);
+    expect(isReservedControlPlaneCall(call("facts:list"))).toBe(true);
+    expect(isReservedControlPlaneCall(call("loop:status"))).toBe(true);
     expect(isReservedControlPlaneCall(call("work_items:checkpoint"))).toBe(
       true,
     );
@@ -4789,70 +5360,79 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(Buffer.from("{bad json"))).toBe(false);
   });
 
-  it("keeps tools:invoke events:status available while ordinary admission is saturated", async () => {
-    let releaseOrdinary: () => void = () => {};
-    const ordinaryGate = new Promise<void>((resolve) => {
-      releaseOrdinary = resolve;
-    });
-    let ordinaryStarted: () => void = () => {};
-    const ordinaryStartedGate = new Promise<void>((resolve) => {
-      ordinaryStarted = resolve;
-    });
-    let upstreamRequests = 0;
-    const upstream = track(
-      http.createServer((_req, res) => {
-        upstreamRequests += 1;
-        if (upstreamRequests === 1) {
-          ordinaryStarted();
-          void ordinaryGate.then(() => {
-            res.writeHead(200, { "content-type": "application/json" });
-            res.end('{"result":"ordinary"}');
-          });
-          return;
-        }
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end('{"result":"events-status"}');
-      }),
-    );
-    await listen(upstream);
-    const proxy = track(
-      createMcpProxy({
-        listenPort: 0,
-        targetHost: "127.0.0.1",
-        targetPort: port(upstream),
-        retryWindowMs: 1_000,
-        maxInFlight: 2,
-        controlPlaneReserve: 1,
-        log: () => {},
-      }),
-    );
-    await listen(proxy);
+  it.each([
+    ["events:status", { event: "unit:liveness" }],
+    ["facts:list", { scope: "workspace" }],
+    ["loop:status", {}],
+    // Recording a typed external blocker parks the claim and frees a scheduler slot.
+    ["work_items:set_blocker", { id: "WI-1", kind: "event", ref: "event:unit" }],
+  ])(
+    "keeps tools:invoke %s available while ordinary admission is saturated",
+    async (reservedTool, reservedArgs) => {
+      let releaseOrdinary: () => void = () => {};
+      const ordinaryGate = new Promise<void>((resolve) => {
+        releaseOrdinary = resolve;
+      });
+      let ordinaryStarted: () => void = () => {};
+      const ordinaryStartedGate = new Promise<void>((resolve) => {
+        ordinaryStarted = resolve;
+      });
+      let upstreamRequests = 0;
+      const upstream = track(
+        http.createServer((_req, res) => {
+          upstreamRequests += 1;
+          if (upstreamRequests === 1) {
+            ordinaryStarted();
+            void ordinaryGate.then(() => {
+              res.writeHead(200, { "content-type": "application/json" });
+              res.end('{"result":"ordinary"}');
+            });
+            return;
+          }
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(`{"result":"${reservedTool}"}`);
+        }),
+      );
+      await listen(upstream);
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0,
+          targetHost: "127.0.0.1",
+          targetPort: port(upstream),
+          retryWindowMs: 1_000,
+          maxInFlight: 2,
+          controlPlaneReserve: 1,
+          log: () => {},
+        }),
+      );
+      await listen(proxy);
 
-    const heldOrdinary = request(
-      port(proxy),
-      JSON.stringify({ method: "tools/call", params: { name: "unit:ordinary" } }),
-    );
-    await ordinaryStartedGate;
+      const heldOrdinary = request(
+        port(proxy),
+        JSON.stringify({ method: "tools/call", params: { name: "unit:ordinary" } }),
+      );
+      await ordinaryStartedGate;
 
-    const eventsStatus = await request(
-      port(proxy),
-      JSON.stringify({
-        method: "tools/call",
-        params: {
-          name: "tools:invoke",
-          arguments: {
-            name: "mcp__papercusp_su__events_status",
-            args: { event: "unit:liveness" },
+      const eventsStatus = await request(
+        port(proxy),
+        JSON.stringify({
+          method: "tools/call",
+          params: {
+            name: "tools:invoke",
+            arguments: {
+              name: `mcp__papercusp_su__${reservedTool.replace(":", "_")}`,
+              args: reservedArgs,
+            },
           },
-        },
-      }),
-    );
-    expect(eventsStatus.status).toBe(200);
-    expect(upstreamRequests).toBe(2);
+        }),
+      );
+      expect(eventsStatus.status).toBe(200);
+      expect(upstreamRequests).toBe(2);
 
-    releaseOrdinary();
-    await expect(heldOrdinary).resolves.toMatchObject({ status: 200 });
-  });
+      releaseOrdinary();
+      await expect(heldOrdinary).resolves.toMatchObject({ status: 200 });
+    },
+  );
 
   it("reserves only the bounded lexical-only recipes:search recovery form", () => {
     const direct = (args: Record<string, unknown>) =>
@@ -5236,6 +5816,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       isReservedControlPlanePath("/api/agent-mcp/console/bootstrap-su/"),
     ).toBe(true);
     for (const path of [
+      "/api/adv/sessions/ensure-codex-home",
       "/api/agent-mcp/console/bootstrap-su/session-ended",
       "/api/agent-mcp/console/bootstrap-su/session-resumed",
       "/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
@@ -5311,6 +5892,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         retryWindowMs: 5_000,
         maxInFlight: 2,
         controlPlaneReserve: 1,
+        // This fixture exercises immediate shedding; the default FIFO has its own cases.
+        maxOrdinaryQueue: 0,
         log: () => {},
       }),
     );
@@ -5635,6 +6218,10 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     "dev:pg_query",
     "loop:arm",
     "plans:get",
+    "plans:get-spec-evidence",
+    "conversations:get",
+    "tools:invoke → plans:get-spec-evidence",
+    "tools:invoke → conversations:get",
     "improvements:capture",
     "locks:acquire",
     "locks:queue",
@@ -5672,6 +6259,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
           retryWindowMs: 5_000,
           maxInFlight: 2,
           controlPlaneReserve: 1,
+          maxOrdinaryQueue: 0,
           log: () => {},
         }),
       );
@@ -5685,13 +6273,15 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       await new Promise((r) => setTimeout(r, 40));
       expect((await request(port(proxy), ordinaryBody)).status).toBe(429);
 
-      const wrappedDiscovery = controlPlaneTool === "tools:invoke → tools:find";
+      const invokedTool = controlPlaneTool.startsWith("tools:invoke → ")
+        ? controlPlaneTool.slice("tools:invoke → ".length)
+        : null;
       const controlPlaneBody = JSON.stringify({
         method: "tools/call",
-        params: wrappedDiscovery
+        params: invokedTool !== null
           ? {
               name: "tools:invoke",
-              arguments: { name: "tools:find", args: {} },
+              arguments: { name: invokedTool, args: {} },
             }
           : {
               name: controlPlaneTool,
@@ -5737,6 +6327,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
           retryWindowMs: 5_000,
           maxInFlight: 2,
           controlPlaneReserve: 1,
+          maxOrdinaryQueue: 0,
           log: () => {},
         }),
       );
@@ -5807,6 +6398,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         retryWindowMs: 5_000,
         maxInFlight: 4,
         controlPlaneReserve: 2,
+        maxOrdinaryQueue: 0,
         log: () => {},
       }),
     );
@@ -5839,7 +6431,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(results.every((result) => result.status === 200)).toBe(true);
   });
 
-  it("routes direct and deferred coord:declare-intent around a saturated ordinary class", async () => {
+  it("routes coord:thread and direct/deferred coord:declare-intent around a saturated ordinary class", async () => {
     let releaseUpstream: () => void = () => {};
     const gate = new Promise<void>((resolve) => {
       releaseUpstream = resolve;
@@ -5856,8 +6448,9 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         targetHost: "127.0.0.1",
         targetPort: port(upstream),
         retryWindowMs: 5_000,
-        maxInFlight: 4,
-        controlPlaneReserve: 2,
+        maxInFlight: 5,
+        controlPlaneReserve: 3,
+        maxOrdinaryQueue: 0,
         log: () => {},
       }),
     );
@@ -5903,6 +6496,18 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         },
       }),
     );
+    const threadRead = request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: {
+          name: "coord:thread",
+          arguments: { root_msg_id: "coord-message-fixture" },
+        },
+      }),
+    );
     await new Promise((r) => setTimeout(r, 40));
 
     const health = JSON.parse(
@@ -5910,8 +6515,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     );
     expect(health.inFlight).toMatchObject({
       ordinary: 2,
-      reservedControlPlane: 2,
-      maxInFlight: 4,
+      reservedControlPlane: 3,
+      maxInFlight: 5,
     });
 
     releaseUpstream();
@@ -5919,8 +6524,75 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       ...heldOrdinary,
       directIntent,
       deferredIntent,
+      threadRead,
     ]);
     expect(results.every((result) => result.status === 200)).toBe(true);
+  });
+
+  it("routes a bounded coord:feed read around a saturated ordinary class", async () => {
+    let releaseUpstream: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseUpstream = resolve;
+    });
+    const upstream = track(
+      http.createServer(
+        (_req, res) => void gate.then(() => res.end('{"result":"ok"}')),
+      ),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 5_000,
+        maxInFlight: 2,
+        controlPlaneReserve: 1,
+        maxOrdinaryQueue: 0,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const ordinaryBody = JSON.stringify({
+      method: "tools/call",
+      params: { name: "work_items:list", arguments: {} },
+    });
+    const heldOrdinary = request(port(proxy), ordinaryBody);
+    await new Promise((r) => setTimeout(r, 40));
+    expect((await request(port(proxy), ordinaryBody)).status).toBe(429);
+
+    const boundedFeed = request(
+      port(proxy),
+      JSON.stringify({
+        method: "tools/call",
+        params: {
+          name: "coord:feed",
+          arguments: {
+            owner: "su-target",
+            since: "2026-10-17T06:00:00.000Z",
+            limit: 20,
+          },
+        },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 40));
+    const health = JSON.parse(
+      (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+    );
+    expect(health.inFlight).toMatchObject({
+      ordinary: 1,
+      reservedControlPlane: 1,
+      maxInFlight: 2,
+    });
+
+    releaseUpstream();
+    const [ordinaryResult, feedResult] = await Promise.all([
+      heldOrdinary,
+      boundedFeed,
+    ]);
+    expect(ordinaryResult.status).toBe(200);
+    expect(feedResult.status).toBe(200);
   });
 
   it("EI-21548622458694037: reserved traffic cannot consume ordinary capacity when the reserved class fills first", async () => {
@@ -5942,6 +6614,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         retryWindowMs: 5_000,
         maxInFlight: 4,
         controlPlaneReserve: 2,
+        maxOrdinaryQueue: 0,
         log: () => {},
       }),
     );
@@ -6001,6 +6674,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         retryWindowMs: 5_000,
         maxInFlight: 6,
         controlPlaneReserve: 2,
+        maxOrdinaryQueue: 0,
         log: () => {},
       }),
     );
@@ -6573,6 +7247,79 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect((await ordinary).status).toBe(200);
     criticalContinuationAgent.destroy();
     controlPlaneAgent.destroy();
+  });
+
+  it.each(["connected", "before-headers", "after-headers"])("holds same-item continuation until the streamed response ends (client disconnected: %s)", async (disconnect) => {
+    let releaseFirst = () => {};
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let releaseHeaders = () => {};
+    const headersGate = new Promise<void>((resolve) => { releaseHeaders = resolve; });
+    let firstReached = () => {};
+    const firstStarted = new Promise<void>((resolve) => { firstReached = resolve; });
+    let receivedFrame = () => {};
+    const firstFrame = new Promise<void>((resolve) => { receivedFrame = resolve; });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(http.createServer((req, res) => {
+      const client = new URL(req.url ?? "/", "http://localhost").searchParams.get("client")!;
+      hits.push(client);
+      if (client === "first") {
+        firstReached();
+        void (async () => {
+          if (disconnect === "before-headers") await headersGate;
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          res.write(": tool still running\n\n");
+          await firstGate;
+          res.end('data: {"jsonrpc":"2.0","id":1,"result":{}}\n\n');
+        })();
+      } else {
+        res.end('{"result":{}}');
+      }
+    }));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0, targetHost: "127.0.0.1", targetPort: port(upstream),
+      retryWindowMs: 1_000, maxInFlight: 10, controlPlaneReserve: 2,
+      criticalContinuationQueueWaitLogMs: 0, log: (line) => logs.push(line),
+    }));
+    await listen(proxy);
+    const body = (id: string) => JSON.stringify({ jsonrpc: "2.0", id: 1,
+      method: "tools/call", params: { name: "work_items:checkpoint", arguments: { id } } });
+    let clientRequest: http.ClientRequest;
+    const first = new Promise<number>((resolve) => {
+      clientRequest = http.request({ host: "127.0.0.1", port: port(proxy), method: "POST",
+        path: "/api/mcp?client=first" }, (res) => {
+        res.on("data", receivedFrame);
+        res.once("end", () => resolve(res.statusCode ?? 0));
+        res.once("aborted", () => resolve(res.statusCode ?? 0));
+      });
+      clientRequest.once("error", () => resolve(0));
+      clientRequest.end(body("WI-1"));
+    });
+    let second: ReturnType<typeof request> | undefined;
+    try {
+      if (disconnect === "before-headers") {
+        await firstStarted;
+        clientRequest!.destroy();
+        releaseHeaders();
+      } else {
+        await firstFrame;
+        if (disconnect === "after-headers") clientRequest!.destroy();
+      }
+      second = request(port(proxy), body("WI-1"), "/api/mcp?client=second");
+      await waitFor(() => hits.includes("second") || logs.some((line) =>
+        line.includes("queued critical-continuation request")));
+      expect(hits).toEqual(["first"]);
+      expect((await request(port(proxy), body("WI-2"), "/api/mcp?client=unrelated")).status).toBe(200);
+      expect(hits).toEqual(["first", "unrelated"]);
+      releaseFirst();
+      expect((await second).status).toBe(200);
+      expect(hits).toEqual(["first", "unrelated", "second"]);
+    } finally {
+      releaseHeaders();
+      releaseFirst();
+      await Promise.allSettled([first, ...(second ? [second] : [])]);
+    }
   });
 
   it("EI-21552316713302755 / EI-21556422206126497: queues loop:end and compaction behind a continuation write", async () => {
@@ -8413,7 +9160,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         method: "tools/call",
         params: { name: "improvements:capture", arguments: args },
       });
-    const deferredToolFailureBody = (id: number) =>
+    const deferredToolFailureBody = (id: number, stringifyArgs = false) =>
       JSON.stringify({
         jsonrpc: "2.0",
         id,
@@ -8422,12 +9169,19 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
           name: "tools:invoke",
           arguments: {
             name: "improvements:capture",
-            args: {
-              toolFailure: {
-                toolName: "storage:usage",
-                message: "The read exceeded its request deadline.",
-              },
-            },
+            args: stringifyArgs
+              ? JSON.stringify({
+                  toolFailure: {
+                    toolName: "storage:usage",
+                    message: "The read exceeded its request deadline.",
+                  },
+                })
+              : {
+                  toolFailure: {
+                    toolName: "storage:usage",
+                    message: "The read exceeded its request deadline.",
+                  },
+                },
           },
         },
       });
@@ -8445,7 +9199,9 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
 
       failure = request(
         port(proxy),
-        deferredToolFailureBody(2),
+        // ptool's tools:invoke transport stringifies the nested args object;
+        // this must still enter the dedicated toolFailure lane.
+        deferredToolFailureBody(2, true),
         "/api/mcp?client=held-tool-failure",
       );
       await waitFor(() => hits.includes("held-tool-failure"));
@@ -10092,6 +10848,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(Number.isFinite(DEFAULT_MAX_HANDSHAKES_IN_FLIGHT)).toBe(true);
     expect(DEFAULT_MAX_HANDSHAKE_QUEUE).toBeGreaterThan(0);
     expect(Number.isFinite(DEFAULT_MAX_HANDSHAKE_QUEUE)).toBe(true);
+    expect(DEFAULT_MAX_ORDINARY_QUEUE).toBeGreaterThan(0);
+    expect(Number.isFinite(DEFAULT_MAX_ORDINARY_QUEUE)).toBe(true);
   });
 
   it("EI-21656350947178031: default durability FIFO covers the proxy admission population", () => {
@@ -10132,6 +10890,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         retryBackoffMs: 20,
         maxInFlight: 2,
         controlPlaneReserve: 0,
+        maxOrdinaryQueue: 0,
         log: () => {},
       }),
     );
@@ -10164,6 +10923,203 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     // upstream still answers 200 immediately post-gate-release for any further hits.
     expect([200, 429]).toContain(after.status);
   });
+
+  it("EI-25792330557867199: queues an ordinary request FIFO and forwards it after a slot opens", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstStarted: () => void = () => {};
+    const firstStartedGate = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    const logs: string[] = [];
+    const hits: number[] = [];
+    const upstream = track(
+      http.createServer((_req, res) => {
+        hits.push(hits.length + 1);
+        if (hits.length === 1) {
+          firstStarted();
+          void firstGate.then(() => {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end('{"result":"first"}');
+          });
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end('{"result":"queued"}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 2_000,
+        retryBackoffMs: 5,
+        maxInFlight: 1,
+        controlPlaneReserve: 0,
+        maxOrdinaryQueue: 1,
+        maxOrdinaryQueueWaitMs: 2_000,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const ordinaryCall =
+      '{"method":"tools/call","params":{"name":"unit:ordinary"}}';
+    const first = request(port(proxy), ordinaryCall);
+    await firstStartedGate;
+    const queued = request(port(proxy), ordinaryCall);
+    await waitFor(() =>
+      logs.some((line) => line.includes("queued ordinary request")),
+    );
+
+    releaseFirst();
+    const [firstResult, queuedResult] = await Promise.all([first, queued]);
+    expect(firstResult.status).toBe(200);
+    expect(queuedResult.status).toBe(200);
+    expect(hits).toEqual([1, 2]);
+  }, 10_000);
+
+  it("EI-25792330557867199: hard-bounds the ordinary FIFO and reports local overload as not forwarded", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstStarted: () => void = () => {};
+    const firstStartedGate = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    const logs: string[] = [];
+    let hits = 0;
+    const upstream = track(
+      http.createServer((_req, res) => {
+        hits++;
+        if (hits === 1) {
+          firstStarted();
+          void firstGate.then(() => {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end('{"result":"first"}');
+          });
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end('{"result":"queued"}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 2_000,
+        retryBackoffMs: 5,
+        maxInFlight: 1,
+        controlPlaneReserve: 0,
+        maxOrdinaryQueue: 1,
+        maxOrdinaryQueueWaitMs: 2_000,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const ordinaryCall =
+      '{"method":"tools/call","params":{"name":"unit:ordinary"}}';
+    const first = request(port(proxy), ordinaryCall);
+    await firstStartedGate;
+    const queued = request(port(proxy), ordinaryCall);
+    await waitFor(() =>
+      logs.some((line) => line.includes("queued ordinary request")),
+    );
+
+    const overflow = await request(port(proxy), ordinaryCall);
+    expect(overflow.status).toBe(429);
+    expect(JSON.parse(overflow.body)).toMatchObject({
+      error: "mcp_proxy_overloaded",
+      retryable: true,
+      forwardingResult: "not_forwarded",
+    });
+    expect(overflow.headers["retry-after"]).toBeTruthy();
+    expect(hits).toBe(1);
+
+    releaseFirst();
+    const [firstResult, queuedResult] = await Promise.all([first, queued]);
+    expect(firstResult.status).toBe(200);
+    expect(queuedResult.status).toBe(200);
+    expect(hits).toBe(2);
+  }, 10_000);
+
+  it("EI-25792330557867199: exposes ordinary FIFO size and waiter age in local health", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstStarted: () => void = () => {};
+    const firstStartedGate = new Promise<void>((resolve) => {
+      firstStarted = resolve;
+    });
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((_req, res) => {
+        firstStarted();
+        void firstGate.then(() => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end('{"result":"ok"}');
+        });
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 2_000,
+        retryBackoffMs: 5,
+        maxInFlight: 1,
+        controlPlaneReserve: 0,
+        maxOrdinaryQueue: 2,
+        maxOrdinaryQueueWaitMs: 2_000,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const ordinaryCall =
+      '{"method":"tools/call","params":{"name":"unit:ordinary"}}';
+    const first = request(port(proxy), ordinaryCall);
+    await firstStartedGate;
+    const queued = request(port(proxy), ordinaryCall);
+    await waitFor(() =>
+      logs.some((line) => line.includes("queued ordinary request")),
+    );
+
+    const health = JSON.parse(
+      (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+    );
+    expect(health.inFlight.ordinaryQueue).toMatchObject({
+      waiting: 1,
+      max: 2,
+      maxWaitMs: 2_000,
+      grantReservations: 0,
+    });
+    expect(health.inFlight.ordinaryQueue.oldestAgeMs).toEqual(
+      expect.any(Number),
+    );
+    expect(health.inFlight.ordinaryQueue.requests).toHaveLength(1);
+    expect(health.inFlight.ordinaryQueue.requests[0]).toMatchObject({
+      maxWaitMs: 2_000,
+      ageMs: expect.any(Number),
+    });
+
+    releaseFirst();
+    const [firstResult, queuedResult] = await Promise.all([first, queued]);
+    expect(firstResult.status).toBe(200);
+    expect(queuedResult.status).toBe(200);
+  }, 10_000);
 
   it("maxInFlight:0 (explicit) never sheds, even with many concurrent holds", async () => {
     let releaseUpstream: () => void = () => {};

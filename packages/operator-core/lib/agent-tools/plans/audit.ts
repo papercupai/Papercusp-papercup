@@ -50,6 +50,8 @@ import {
   resolveCitation,
   resolvePlanItemHomeHarness,
   summarizeCoverage,
+  deadActivationAuditTargets,
+  describeActivationAuditPlanTargetProblems,
   validateActivationAuditPlanTargets,
   type AuditCitation,
   type AuditItemEntry,
@@ -89,6 +91,7 @@ import { resolveActivationClassRef } from './activation-class-ref';
 import { previewPlanStartConsult } from './get-activation-readiness';
 import { previewProductShaping } from './product-shaping';
 import { recoverHarnessFromSlugs, slugScopeErrorResult } from './slug-scope';
+import { proposeAuditCitations } from './audit-derived-citations';
 
 const citationPathSchema = z.string().min(1).describe(
   'Repo-relative path. No leading `/` or `~`, no `..` segments — a citation that needs one is not evidence.',
@@ -202,6 +205,7 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
   dryRun: z.boolean().default(false).describe(
     'Validate and preview the audit without recording an audit row, repair filing, derived spec clause, or plan event.',
   ),
+  proposeCitations: z.boolean().optional().describe('Completion only: read-only proposals for done items from edit/commit attribution, with measured blob SHAs; records no audit.'),
   classRef: z.enum(PLAN_CLASS_RUBRIC_REFS).optional().describe(
     'Activation: the plans:evaluate-spec-quality class; derived when omitted; must match the acceptance class. Ignored at completion.',
   ),
@@ -234,17 +238,17 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
     if (args.mappings && new Set(args.mappings.map((mapping) => mapping.id)).size !== args.mappings.length) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mappings'], message: 'mapping ids must be unique within an activation audit' });
     }
-    for (const field of ['items', 'findings', 'auditedSha'] as const) {
+    for (const field of ['items', 'findings', 'auditedSha', 'proposeCitations'] as const) {
       if (args[field] !== undefined) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is completion-phase only` });
       }
     }
   } else if (args.phase === 'shaping') {
-    for (const field of ['items', 'findings', 'auditedSha', 'sourceRanges', 'mappings', 'itemProvenance', 'repairedOmissions', 'rejectedOrSuperseded', 'unresolvedBlockers', 'classRef'] as const) {
+    for (const field of ['items', 'findings', 'auditedSha', 'sourceRanges', 'mappings', 'itemProvenance', 'repairedOmissions', 'rejectedOrSuperseded', 'unresolvedBlockers', 'classRef', 'proposeCitations'] as const) {
       if (args[field] !== undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is not used by the read-only shaping preview` });
     }
   } else {
-    if (!args.items) {
+    if (!args.items && !args.proposeCitations) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['items'], message: 'items is required for phase:completion' });
     }
     // classRef is accepted and ignored here (with a result note) rather than refused (P-003).
@@ -256,7 +260,7 @@ const argsSchema = refineEvenWithShapeIssues(z.object({
   }
 }).meta({
   'x-papercusp-call-constraint':
-    'phase=shaping => read-only preview; audit payload fields forbidden. phase=activation => classRef derived if omitted; items, findings, auditedSha forbidden. phase=completion (including omitted phase) => items required; classRef ignored; sourceRanges, mappings, itemProvenance, repairedOmissions, rejectedOrSuperseded, unresolvedBlockers forbidden.',
+    'phase=shaping => read-only preview; audit payload fields forbidden. phase=activation => classRef derived if omitted; items, findings, auditedSha, proposeCitations forbidden. phase=completion (including omitted phase) => items required unless proposeCitations=true (read-only); classRef ignored; sourceRanges, mappings, itemProvenance, repairedOmissions, rejectedOrSuperseded, unresolvedBlockers forbidden.',
 });
 
 interface Problem {
@@ -322,7 +326,7 @@ export default defineTool({
   guidance: {
     when: "Before activation read the COMPLETE source conversation; map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, follow-up. ## Requirements: **R-N — Title.** outcome; use a fenced `requirement` JSON block for METHOD/check/layers. Design needs a BAR-to-work map; ordinary bullet lists do not satisfy the BAR parser. Shape brief/scenarios/assumptions before specs; completion cites actual code.",
     returns:
-      "Shaping: {productShaping}, advisory gaps/trace/reviewerBrief, not semantic proof. Activation: {auditSeq, auditedPlanRevision, mappings, sourceRefsResolved, itemProvenance, barSeed, activationReadiness}; provenance gaps refuse. Completion: {auditSeq, coverage, uncoveredItems, partial, problems, rejectedItemIds}.",
+      "Shaping: {productShaping}, advisory gaps/trace/reviewerBrief, not semantic proof. Activation: {auditSeq, auditedPlanRevision, mappings, sourceRefsResolved, itemProvenance, barSeed, activationReadiness}; provenance gaps refuse. Completion: {auditSeq, coverage, uncoveredItems, partial, problems, rejectedItemIds}; proposeCitations:true returns {proposals, unresolved, truncatedByLimit} without recording an audit.",
     notWhen: "Rubrics: scorecards:emit. Decisions: plans:add-decision.",
     chaining:
       `shaping → plans:set-content → independent review → activation → start. Edits preserve audited/current revision id/seq/contentHash; re-audit after ${ACTIVATION_REAUDIT_MATERIAL_CHANGES.join(', ')}; not ${ACTIVATION_REAUDIT_COSMETIC_CHANGES.join(', ')}. completion → rubric/scorecard → shipped.`,
@@ -348,6 +352,9 @@ export default defineTool({
       productShaping: z.unknown().optional(),
       dryRun: z.boolean().optional(),
       preview: z.boolean().optional(),
+      proposals: z.unknown().optional(),
+      unresolved: z.unknown().optional(),
+      truncatedByLimit: z.boolean().optional(),
       auditSeq: z.number().int().nonnegative().optional(),
       auditedPlanRevision: z.unknown().optional(),
       mappings: z.unknown().optional(),
@@ -519,11 +526,12 @@ export default defineTool({
       // A prior target whose destination the current plan no longer contains (an R-N removed
       // by a rubric amendment, a deleted item/decision/section) is dead: it may be retired,
       // because keeping it could never pass the plan-target validation below. A malformed
-      // target is not "dead" — it never named a destination, so it stays a conflict.
+      // target is not "dead" — it never named a destination, so it stays a conflict; nor is
+      // an R-N this build cannot parse (deadActivationAuditTargets, WI-6554700010015337).
       const deadTargets = previousAudit?.activation && currentPlan
-        ? validateActivationAuditPlanTargets(previousAudit.activation, currentPlan.content)
-          .filter((problem) => problem.code !== 'invalid_plan_target')
-          .map(({ mappingId, target }) => ({ mappingId, target }))
+        ? deadActivationAuditTargets(
+          validateActivationAuditPlanTargets(previousAudit.activation, currentPlan.content),
+        )
         : [];
       const merged = mergeActivationAuditCoverage(previousAudit?.activation, submittedActivation, {
         deadTargets,
@@ -723,7 +731,7 @@ export default defineTool({
             preview: true as const,
             error: 'plan_targets_invalid' as const,
             problems: targetProblems,
-            message: `${targetProblems.length} mapping target(s) do not exist in the current plan revision; no writes were performed.`,
+            message: describeActivationAuditPlanTargetProblems(targetProblems, 'no writes were performed.'),
           } };
         }
         // BAR seeding is a precondition on the PLAN, not on this payload, so the
@@ -1140,6 +1148,17 @@ export default defineTool({
       } };
     }
     const known = new Set(planItems.map((i) => i.itemId));
+
+    if (args.proposeCitations) {
+      const context = await repoCitationContextForHarness(harnessSlug);
+      if (!harnessSlug || !context || isCitationContextFailure(context)) {
+        return { data: { ok: false as const, error: 'citation_context_unavailable', slug: args.slug } };
+      }
+      const derived = await proposeAuditCitations({
+        workspaceId: sctx.workspaceId ?? activeWorkspaceId(), harnessSlug, planSlug: args.slug, items: planItems,
+      }, { blobSha: (path) => context.deps.blobSha?.(path) ?? null });
+      return { data: { ok: true as const, phase: 'completion' as const, preview: true, slug: args.slug, ...derived } };
+    }
 
     const submittedCitations = (args.items ?? []).flatMap((item) => item.citations ?? []) as AuditCitation[];
     // Root selection is deliberately still a WHOLE-PLAN decision: mixing evidence from

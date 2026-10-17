@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "native-p042-blueprint-reference-v1",
+  "workItem": "EI-26181077825916890",
+  "sourceHashes": {
+    "packages/operator-core/lib/desktop-install/__tests__/papercusp-files.test.ts": "2cfc7c876fc5d3ff92e484f295fa644bc4b939fbae5cdf8d58ab23b687e55322",
+    "packages/operator-core/lib/desktop-install/papercusp-files.ts": "678a16cbf74359a5847da5e44e92f0c99b3a5602305df8e89aec67974a061a67",
+    "packages/operator-core/lib/prompt-reference-sections.ts": "34b41c80fe2ccb78db7d2e6abe18f9d76db2637f3aaa220b2f9656ccbb10afbc",
+    "libs/papercusp/packages/harness/blueprints/base/prompts/su.md": "68e208cd48836ba8f8822f11ad66993ce5478416a05f9a5074db4a3f75934f2e"
+  },
+  "capturedWorkerOriginalMismatches": {},
+  "evidenceHashes": {
+    "/tmp/native-p042-blueprint-reference-source-20261016.json": "81dd3fb28bef794411610acf118f56ead674e19ff028cab54b3a35724de4d512",
+    "/tmp/native-p042-blueprint-reference-tests-20261016.log": "78fb4322bbbfcc03d10d3b41dbd9775d719d8e7cff3a41d263414eb1b8542104",
+    "/tmp/native-p042-blueprint-reference-types-20261016.log": "489459bc5ac800d1c9f96fdef0175f4f1c41af3c1be9f47d73714e89f50f7523"
+  },
+  "opacityByTest": {
+    "packages/operator-core/lib/desktop-install/__tests__/papercusp-files.test.ts": [
+      "child-process",
+      "config-deps-unavailable"
+    ]
+  },
+  "recordedHead": "0fc8486b3ccf4a716683621f16df8fca7a8b36d6",
+  "rootCause": "Full-reference regression tests implicitly used the on-demand default, which deliberately replaces fleet-member and delivery procedures with summaries and source references.",
+  "change": "Three full-reference contracts explicitly select referenceMode:inline; a separate real-base default-path regression requires source discoverability and fetch-before-publishing guidance. Renderer and persona production behavior unchanged.",
+  "verification": {
+    "tests": "Complete maintained papercusp-files.test.ts suite passed76 with zero skips/child substitutions and terminal exit0.",
+    "types": "Scoped one-file lint:tsc exit0 clean.",
+    "distinguishingTest": "The three previous failures pass when complete-inline references are explicitly selected; the new default-path test passes against the actual blueprint source."
+  },
+  "limits": [
+    "Focused local dirty-source proof; no release-gate, native-client installation, final shipment or complete execution-graph claim.",
+    "Capture records child-process and unavailable-config-dependency opacity.",
+    "Named source hashes and captured worker originals were checked after the run; no separate launch-context refresh was requested because renderer/persona behavior did not change."
+  ]
+}

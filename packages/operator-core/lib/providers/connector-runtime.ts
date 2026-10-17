@@ -964,7 +964,8 @@ export async function runConnectorSync(
   // plugin providers and skip (or fail) every Linear/Asana source (WI-10006703).
   const registry = deps.registry ?? (await readyProviderRegistry());
   const providers = registry.list();
-  const byKind = new Map(providers.map((provider) => [provider.descriptor.id, provider]));
+  const byKind = new Map(providers.filter((provider) => provider.descriptor.sync !== false)
+    .map((provider) => [provider.descriptor.id, provider]));
   const resolved = {
     ...opts,
     maxPagesPerSource: opts.maxPagesPerSource ?? DEFAULT_CONNECTOR_MAX_PAGES,

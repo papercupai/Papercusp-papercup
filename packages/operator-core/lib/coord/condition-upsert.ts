@@ -282,9 +282,12 @@ export interface ConditionUpsertResult {
 }
 
 /**
- * Refresh the incumbent with the newest reading: bump the occurrence counter,
- * stamp lastSeenAt, and replace title/summary. Returns false when the row
- * vanished between the read and the write (caller treats it as a miss).
+ * Refresh the incumbent with the newest reading: bump the occurrence counter
+ * and stamp lastSeenAt. An unclaimed row also receives the newest title/summary;
+ * an actively claimed row keeps the subject its holder claimed so a later
+ * detector emission cannot make the claim point at a different work item.
+ * Returns false when the row vanished between the read and the write (caller
+ * treats it as a miss).
  */
 async function refreshIncumbent(
   id: string,
@@ -295,8 +298,15 @@ async function refreshIncumbent(
   const marker = CONDITION_UPSERT_MARKER;
   const rows = await sql<{ feature_id: string }[]>`
     UPDATE harness_shared.work_items
-       SET title = ${input.title},
-           summary = COALESCE(${input.summary ?? null}::text, summary),
+       SET title = CASE
+             WHEN NULLIF(BTRIM(COALESCE(taken_by, '')), '') IS NULL THEN ${input.title}
+             ELSE title
+           END,
+           summary = CASE
+             WHEN NULLIF(BTRIM(COALESCE(taken_by, '')), '') IS NULL
+             THEN COALESCE(${input.summary ?? null}::text, summary)
+             ELSE summary
+           END,
            updated_ts = (EXTRACT(EPOCH FROM now()) * 1000)::bigint,
            payload = jsonb_set(
              COALESCE(payload, '{}'::jsonb),

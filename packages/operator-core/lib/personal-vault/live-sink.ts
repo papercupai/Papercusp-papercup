@@ -2,16 +2,16 @@ import type { Sql } from 'postgres';
 import { getExternalTriggerSource } from '../external-triggers/source-store';
 import { GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT } from '../oauth/providers';
 import type { PersonalDocumentInput } from './types';
-import { setPersonalSyncState, upsertPersonalDocuments } from './store';
+import { normalizePersonalSource, setPersonalSyncState, upsertPersonalDocuments } from './store';
 
 export interface NormalizedExternalEvent {
   key: string;
   externalId: string;
   /**
    * Canonical datatype registry id (`email-message`, `calendar-event`, …).
-   * This — never the provider-named event key — selects the Vault and app
-   * route (D-010), so any registered provider emitting a known datatype lands
-   * in the same place Google does.
+   * This — never the provider-named event key — selects the document shape
+   * and app route (D-010). Bound social records use the server-owned provider
+   * kind for their Vault permission partition.
    */
   datatypeId: string;
   /** Server-owned source id, present on every canonical ingestion event. */
@@ -27,6 +27,8 @@ const strings = (value: unknown): string[] => Array.isArray(value)
 export interface PersonalDocumentProvenance {
   sourceId?: string | null;
   providerAccountId?: string | null;
+  /** Server-owned data source kind; never a provider payload's platform label. */
+  sourceKind?: string;
 }
 
 interface VaultRouteShape {
@@ -41,11 +43,12 @@ interface VaultRouteShape {
 interface VaultRoute {
   /**
    * Vault partition (documents.source, so also the `personal:<category>` scope).
-   * Named for the DATATYPE, never a provider: every provider's mail lands in
-   * `mail` (migration 1414 renamed the old Google-named `gmail`, WI-10006490).
+   * Default for the datatype: every provider's mail lands in `mail` (migration
+   * 1414 renamed `gmail`, WI-10006490). Bound social records override this
+   * default with their server-owned provider kind to match social read grants.
    */
   category: string;
-  shape(payload: Record<string, unknown>): VaultRouteShape;
+  shape(payload: Record<string, unknown>, category: string): VaultRouteShape;
 }
 
 /**
@@ -79,15 +82,16 @@ const VAULT_ROUTES: Readonly<Record<string, VaultRoute>> = {
   },
   'social-post': {
     category: 'facebook',
-    shape: (p) => {
+    shape: (p, category) => {
+      const label = category === 'facebook' ? 'Facebook' : 'Social';
       const entityType = p.entityType === 'profile' || p.entityType === 'photo' ? p.entityType : 'post';
       const author = typeof p.author === 'string' && p.author.trim() ? p.author.trim() : null;
       const text = String(p.text ?? '');
       const title = entityType === 'profile'
-        ? author ?? 'Facebook profile'
+        ? author ?? `${label} profile`
         : entityType === 'photo'
-          ? text || 'Facebook photo'
-          : 'Facebook post';
+          ? text || `${label} photo`
+          : `${label} post`;
       return { kind: entityType, participants: author ? [author] : [], title, text, keyQualifier: entityType };
     },
   },
@@ -117,13 +121,19 @@ export function personalDocumentFromExternalEvent(
   const route = VAULT_ROUTES[event.datatypeId];
   if (!route) throw new Error(`unsupported_personal_datatype:${event.datatypeId}`);
   const p = event.payload;
-  const shaped = route.shape(p);
+  const { sourceKind, ...storedProvenance } = provenance;
+  // Social read grants use the installed provider's scope. Keep the legacy
+  // Facebook fallback for unbound events, but route a bound connector using
+  // its server-owned kind, regardless of payload/key/sourceId substitutions.
+  const category = event.datatypeId === 'social-post' && sourceKind
+    ? normalizePersonalSource(sourceKind) : route.category;
+  const shaped = route.shape(p, category);
   // Server-owned sink provenance wins over the event's own copy: the sink was
   // built for exactly one resolved source and principal.
   const sourceId = provenance.sourceId?.trim() || event.sourceId?.trim() || null;
   return {
-    source: route.category,
-    ...provenance,
+    source: category,
+    ...storedProvenance,
     sourceId,
     datatypeId: event.datatypeId,
     kind: shaped.kind,
@@ -133,7 +143,7 @@ export function personalDocumentFromExternalEvent(
     title: shaped.title,
     text: shaped.text,
     metadata: p,
-    dedupeKey: vaultDedupeKey(route.category, event.externalId, sourceId, shaped.keyQualifier),
+    dedupeKey: vaultDedupeKey(category, event.externalId, sourceId, shaped.keyQualifier),
   };
 }
 
@@ -197,6 +207,7 @@ export async function createPersonalVaultExternalSinkForSource(
   return createPersonalVaultExternalSink(sql, workspaceId, source.ownerUserId, {
     sourceId: source.id,
     providerAccountId: source.providerAccountId,
+    sourceKind: source.kind,
   });
 }
 

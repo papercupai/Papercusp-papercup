@@ -1,0 +1,42 @@
+# Built-app user bug reports — acceptance procedure
+URL: /internal/docs/agent-insights/built-app-user-report-acceptance
+
+Pre-implementation method for fresh template-app reports, shared verification, privacy, hosted per-app admission and published-fix notices.
+
+This is the pre-implementation acceptance procedure for built-app-end-user-bug-reports-2026-10-05. It defines future checks and does not assert product implementation, parent shipment, relay deployment or independent acceptance.
+
+## Admission and runtime
+
+Read the canonical child plan, parent D-013/D-014 and parent P-011/P-016 checkpoints. The parent unified-bug-pipeline-and-honest-queue-2026-10-05 must ship before child activation. Keep preparation separate from the activation audit. Use templates:list to enumerate the applicable maintained app roots at execution time.
+
+Select the owning current-build runtime with dev:pipeline\_position and the actual test class before functional checks. Drive desktop UI through Tauri. Use the supported mobile device harness for mobile roots. Staging/current-build evidence supports implementation; final relay shipment evidence comes from its exact deployed artifact. Never infer deployment from a passing local fixture.
+
+## Foundation checks
+
+Run the existing project runner, recording authoritative test-ledger scope and source fingerprints before binding evidence:
+
+```bash
+PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/workspace-host/hosted-app-relay.test.ts packages/operator-core/lib/harness/improvements/reporter-status.test.ts apps/operator/lib/release/reporter-release.test.ts packages/operator-core/lib/work-admission/admit-bug-intake.integration.test.ts
+```
+
+These are foundation checks, not the child feature's acceptance suite. Add the relay, feedback-aspect and builder behavior tests to their owning project suites with implementation. Run passing baselines and counterexamples/mutations tied to exact spec revisions. A setup refusal is unexecuted verification, not a failed product assertion or passing check. Do not bypass shared PostgreSQL storage guards or touch another test's databases.
+
+## R-1: a fresh app report completes the shared lifecycle
+
+Materialize each applicable root with the maintained feedback aspect, recording the template identities and resulting app identity. A user without Papercusp opens Report a problem from the desktop menu or specified mobile shake gesture, previews a distinctive URL-held screen state and sends anonymously with no builder setup. Inspect the admitted source and shared candidate in the designated builder pot.
+
+Try a worker claim before reproduction: it must be refused. Establish reproduction through the shared verification stage, then confirm ordinary claimability. Submit a matching report from a second install. Check grouped reporter counts and current verification state. Do not treat corroboration as verification.
+
+Exercise contact and attachment selections independently. With consent unselected, inspect the outbound payload and require no contact or attachment. With explicit selection, seed recognized secret markers and require device-side redaction before transmission. Close an item with a consented attachment and test both sides of the exact 90-day retention boundary.
+
+Reply through the shared status thread and observe it on the originating install without contact opt-in. Carry one real report through reproduction and repair. Require awaiting-release before publication and reject an unrelated artifact as fixed evidence. Publish a matching artifact containing the verified repair and require the reporting install to display its fixed-in-version notice. Retain report, install, source, canonical item, verification, completion, publication and artifact evidence references.
+
+## R-2: hosted admission and bounded app cost
+
+With legitimately provisioned relay credentials injected outside the repository, send a valid report through the actual Papercusp-hosted endpoint from an app user without Papercusp. Record the relay deployment identity and destination builder pot. Builders must require no service setup. Never distribute owner/admin credentials or a general app-tool key inside the public widget.
+
+Use known-positive valid-app controls beside missing, invalid and cross-app identities. No invalid request may admit a report. Exhaust app A's configured report quota; the next report must be refused while app B with remaining budget still admits its report. Check enforced rate limits and bounded usage on the report-only admission surface. Do not substitute workspace-level transport quotas for the per-app reporting contract.
+
+## Independent verdict
+
+Bind evidence to the exact current source and spec revisions. An independent grader checks the complete materialized-root population, named negative controls and actual shipped relay artifact. The implementer must not grade their own product acceptance or fabricate a vetting receipt. If no independent grader is available, retain that boundary and report the exact missing authority. Missing relay credentials, a parent plan not shipped, and unexecuted tests remain explicit blockers.

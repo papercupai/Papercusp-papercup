@@ -3,11 +3,28 @@
  * get-feedback-relevance-consults-2026-08-16). The SQL/sweep behaviour lives in
  * interest-watch.integration.test.ts against a real Postgres.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { configureScheduledRegistry, getManaged, resetScheduledRegistry } from '@papercusp/scheduled-registry';
+
+const lifecycle = vi.hoisted(() => ({
+  boot: undefined as Promise<void> | undefined,
+  importing: vi.fn(),
+  sql: vi.fn(),
+}));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: lifecycle.sql }) }));
+vi.mock('@papercusp/coordination/event-log', () => ({ DEFAULT_COORD_WORKSPACE: 'private-lifecycle' }));
+vi.mock('./engine', async () => {
+  lifecycle.importing();
+  await lifecycle.boot;
+  return { emitAwaitedEvent: vi.fn() };
+});
 import {
   computeSweepWindow,
   renderInterestSummary,
   INTEREST_WATERMARK_LAG_MS,
+  createInterestWatchSweepDrain,
+  startInterestWatchSweeper,
+  stopInterestWatchSweeper,
   type InterestMatch,
 } from './interest-watch';
 
@@ -74,5 +91,72 @@ describe('renderInterestSummary', () => {
     const s = renderInterestSummary(long, [match('a', 0.9)]);
     expect(s).toContain('…');
     expect(s.length).toBeLessThan(200);
+  });
+});
+
+describe('interest-watch lifecycle', () => {
+  afterEach(async () => {
+    await stopInterestWatchSweeper();
+    resetScheduledRegistry();
+    lifecycle.sql.mockReset();
+  });
+
+  it('joins a pending lazy start without arming its cancelled continuation', async () => {
+    let release!: () => void;
+    lifecycle.boot = new Promise<void>(resolve => { release = resolve; });
+    configureScheduledRegistry({ setIntervalImpl: vi.fn(() => ({})), clearIntervalImpl: vi.fn() });
+    const startup = startInterestWatchSweeper();
+    try {
+      await vi.waitFor(() => expect(lifecycle.importing).toHaveBeenCalled());
+      let stopped = false;
+      const stopping = stopInterestWatchSweeper().then(() => { stopped = true; });
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+      release();
+      await Promise.all([startup, stopping]);
+      expect(getManaged('interest-watch-sweeper')).toBeUndefined();
+    } finally { release(); }
+  });
+
+  it('stops the real managed callback and awaits its pending SQL before returning', async () => {
+    let tick!: () => void;
+    let release!: (rows: never[]) => void;
+    const query = new Promise<never[]>(resolve => { release = resolve; });
+    lifecycle.sql.mockImplementationOnce(() => query).mockResolvedValue([]);
+    configureScheduledRegistry({ setIntervalImpl: callback => { tick = callback; return {}; }, clearIntervalImpl: vi.fn() });
+    await startInterestWatchSweeper();
+    tick();
+    expect(getManaged('interest-watch-sweeper')?.running).toBe(true);
+    try {
+      let stopped = false;
+      const stopping = stopInterestWatchSweeper().then(() => { stopped = true; });
+      await vi.waitFor(() => expect(getManaged('interest-watch-sweeper')).toBeUndefined());
+      expect(stopped).toBe(false);
+      release([]);
+      await stopping;
+      expect(lifecycle.sql).toHaveBeenCalledTimes(2);
+      tick();
+      expect(lifecycle.sql).toHaveBeenCalledTimes(2);
+    } finally { release([]); }
+  });
+
+  it('awaits an active sweep before teardown continues', async () => {
+    const drain = createInterestWatchSweepDrain();
+    let release!: () => void;
+    const sweep = new Promise<void>((resolve) => { release = resolve; });
+    drain.track(sweep);
+    let drained = false;
+    const waiting = drain.drain().then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    release();
+    await waiting;
+    expect(drained).toBe(true);
+  });
+
+  it('settles failed sweeps so teardown cannot leave a rejected background task', async () => {
+    const drain = createInterestWatchSweepDrain();
+    drain.track(Promise.reject(new Error('simulated PG close')));
+    await expect(drain.drain()).resolves.toBeUndefined();
   });
 });

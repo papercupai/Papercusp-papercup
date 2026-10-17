@@ -850,6 +850,38 @@ export class ProductionWorkspaceHostRemoteInitializerHost implements WorkspaceHo
     return { ...attestation };
   }
 
+  async verifyRetainedWorkspace(
+    input: WorkspaceHostCreateWorkspaceInput & { tenantIdentity: string },
+  ): Promise<WorkspaceHostRemoteStepEvidence> {
+    if (!/^[a-f0-9]{64}$/.test(input.tenantIdentity)) {
+      throw new WorkspaceHostOperationError("verifyRetainedWorkspace", 1, "invalid retained tenant identity");
+    }
+    const directory = resolveWithinRoot(this.workspaceRoot, input.workspaceId, "workspaceId");
+    // This is observation only. A missing mount/home must never be repaired with mkdir or a
+    // fresh native agent home: the existing CLI checkpoint files are the resume authority.
+    await this.require("verifyRetainedWorkspace", {
+      command: "/bin/bash",
+      args: ["-c", [
+        "set -euo pipefail",
+        'tenant=$1; workspace_root=$2; directory=$3; native_home=$4; workspace_user=$5',
+        'data_mount=/var/lib/papercusp',
+        'read -r data_uuid data_fs data_root extra < <(findmnt -n --mountpoint "$data_mount" -o UUID,FSTYPE,FSROOT)',
+        '[[ -n "$data_uuid" && "$data_fs" == ext4 && "$data_root" == / && -z "${extra:-}" ]]',
+        'marker="$data_mount/.papercusp-tenant"',
+        '[[ -f "$marker" && ! -L "$marker" && "$(stat -c %u:%a "$marker")" == 0:600 ]]',
+        '[[ "$(cat "$marker")" == "papercusp-tenant-v1:$tenant:$data_uuid" ]]',
+        '[[ -d "$directory" && ! -L "$directory" && -d "$native_home" && ! -L "$native_home" ]]',
+        '[[ "$(stat -Lc %d:%i "$workspace_root")" == "$(stat -Lc %d:%i "$data_mount/workspaces")" ]]',
+        '[[ "$(stat -Lc %d:%i "$native_home")" == "$(stat -Lc %d:%i "$data_mount/home/$workspace_user")" ]]',
+        'sync -f "$native_home"',
+      ].join("\n"), "--", input.tenantIdentity, this.workspaceRoot, directory, this.workspaceHome, this.workspaceUser],
+    });
+    return {
+      workspaceId: input.workspaceId, hostId: input.hostId, directory,
+      retained: true, nativeSessionHomeRetained: true, observedAt: this.now().toISOString(),
+    };
+  }
+
   async createWorkspace(
     input: WorkspaceHostCreateWorkspaceInput,
   ): Promise<WorkspaceHostRemoteStepEvidence> {

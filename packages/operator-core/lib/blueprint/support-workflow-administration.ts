@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { BlueprintSchema, operationFromSpecification } from '@papercusp/orchestrator/blueprint';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { readHostedAllocationAccountingExport, readHostedAllocationReport } from '../auth/hosted/billing/allocation-store';
-import { listPersonalGrants, revokePersonalGrant } from '../personal-vault/store';
+import { listPersonalGrants, personalScope, revokePersonalGrant } from '../personal-vault/store';
 import { ORGANIZATION_CORPUS_SCOPE } from '../data-sources/documents-corpus';
 import { runWithWorkspace } from '../workspace-als';
 import { BlueprintOperationRefusal } from './operation-refusal';
@@ -165,7 +165,7 @@ export async function administerWorkflow(sql: Sql, input: Selection, raw: Action
         const grants = await listPersonalGrants(client, input.workspaceId, userId);
         for (const grant of grants) if (grant.principal_type === 'agent-role' &&
             grant.principal_id === execution.role && Array.isArray(grant.scopes) &&
-            grant.scopes.includes(ORGANIZATION_CORPUS_SCOPE) && !grant.revoked_at)
+            grant.scopes.includes(personalScope(ORGANIZATION_CORPUS_SCOPE)) && !grant.revoked_at)
           await revokePersonalGrant(client, input.workspaceId, userId, grant.id);
       }
     }

@@ -1,22 +1,20 @@
 /**
  * plans:revision-diff — unified diff between a revision and its
- * predecessor, sourced from the `plan_revisions` snapshot pair.
+ * predecessor, sourced from the plan_revisions snapshot pair.
  *
  * plan-agent-launch-2026-05-21, Phase 4 (P-018).
  *
- * The conversation-linked counterpart to `plans:diff` (which is the
- * git-backed coarse view, D-003). Sources the patch from the two
- * `content_snapshot` rows — no `git diff` shell-out, no working-tree
- * coupling. Reads two rows in one query (`getPlanRevisionPairById`).
+ * Sources the patch from the two content_snapshot rows — no git
+ * shell-out or working-tree coupling. Reads two rows in one query
+ * (getPlanRevisionPairById).
  *
  * - seq 1 returns the file-against-empty patch (the original creation
- *   diff) — `older` is `null`.
- * - Unknown `revisionId` returns `error: 'unknown_revision'` (not 404
- *   — same MCP envelope as the other plans:* verbs).
- * - DB failure returns `error: 'revision_diff_unavailable'`.
+ *   diff) — older is null.
+ * - Unknown revisionId returns error: 'unknown_revision'.
+ * - DB failure returns error: 'revision_diff_unavailable'.
  *
  * Output is a standard unified-diff string consumable by
- * `react-diff-view`'s `parseDiff` — exactly what `plans:diff` returns.
+ * react-diff-view's parseDiff.
  */
 
 import { createPatch } from 'diff';
@@ -60,11 +58,11 @@ export function buildRevisionDiffText(pair: PlanRevisionPair): string {
 export default defineTool({
   name: 'plans:revision-diff',
   description:
-    "Unified diff between a plan revision and its immediate predecessor — sourced from the plan_revisions snapshot pair, not git. Returns a `react-diff-view`-parseable patch string. Seq 1 returns the file-against-empty creation diff.",
+    'Unified diff between a plan revision and its immediate predecessor, sourced from PG-canonical plan_revisions snapshots. Returns a react-diff-view-parseable patch string. Seq 1 returns the file-against-empty creation diff.',
   guidance: {
     when: 'You have a revisionId from plans:revisions and want the patch — what exactly changed in that revision.',
     notWhen:
-      'You want a coarse git patch — that is plans:diff. The revision chain — plans:revisions. The current plan body — plans:get.',
+      'You want the revision list — plans:revisions. You want the authoring conversation — plans:revision-transcript. You want the current plan body — plans:get.',
     chaining: 'plans:revisions → plans:revision-diff { revisionId } for any revision.',
     seeAlso: [
       'plans:revisions (list revisions)',

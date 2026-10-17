@@ -30,7 +30,6 @@ import {
   countOpenOwnerDirectives,
   findCapturedTwin,
   OWNER_DIRECTIVE_DEFAULT_OWNER,
-  OWNER_DIRECTIVE_VERBATIM_MAX,
 } from '../../owner-directives';
 
 export default defineTool({
@@ -54,7 +53,6 @@ export default defineTool({
     verbatim: z
       .string()
       .min(1)
-      .max(OWNER_DIRECTIVE_VERBATIM_MAX)
       .describe("The owner's directive VERBATIM — their literal words, never your paraphrase."),
     sourceTurnRef: z
       .string()

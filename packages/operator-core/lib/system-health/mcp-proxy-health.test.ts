@@ -93,7 +93,8 @@ describe('summarizeMcpProxyHealth — classification', () => {
 
   // D-005 (outage-must-not-be-silent-2026-08-02). Before these branches existed,
   // `handshake_timeout_retry` and `shed_max_in_flight` matched NO classification arm and
-  // survived only as a `byKind` tally — so nothing could alarm on them. That mattered most
+  // survived only as a `byKind` tally — so nothing could alarm on them. Ordinary queue-full
+  // shedding later exposed the same fallthrough for a second admission class. That mattered most
   // for the handshake stall: WI-6740's marker for the upstream silence that leaves an MCP
   // session tool-dark for its whole life (269 stalls 2026-07-10..08-01). Verified live
   // 2026-08-02: the fleet-facing proxy (pid 2704092, listenPort 9071) emits these in prod.
@@ -112,10 +113,18 @@ describe('summarizeMcpProxyHealth — classification', () => {
       expect(d.benign).toBe(0);
     });
 
-    it('shed_max_in_flight is counted as a first-class shed, not a hard failure', () => {
-      const d = summarizeMcpProxyHealth([rec({ kind: 'shed_max_in_flight', listenPort: 9071 })], NOW);
-      expect(d.shed).toBe(1);
+    it('both admission-shed kinds are first-class sheds, not hard failures', () => {
+      const d = summarizeMcpProxyHealth(
+        [
+          rec({ kind: 'shed_max_in_flight', listenPort: 9071 }),
+          rec({ kind: 'shed_ordinary_queue_full', listenPort: 9071 }),
+        ],
+        NOW,
+      );
+      expect(d.shed).toBe(2);
       expect(d.hardFailures).toBe(0);
+      expect(d.byKind['shed_max_in_flight']).toBe(1);
+      expect(d.byKind['shed_ordinary_queue_full']).toBe(1);
     });
 
     it('the listenPort:0 exclusion still applies to the new classes — a test/sidecar writer never alarms', () => {
@@ -126,13 +135,15 @@ describe('summarizeMcpProxyHealth — classification', () => {
         [
           rec({ kind: 'handshake_timeout_retry', listenPort: 0 }),
           rec({ kind: 'shed_max_in_flight', listenPort: 0 }),
+          rec({ kind: 'shed_ordinary_queue_full', listenPort: 0 }),
         ],
         NOW,
       );
       expect(d.handshakeStalls).toBe(0);
       expect(d.shed).toBe(0);
-      expect(d.nonInstance).toBe(2);
+      expect(d.nonInstance).toBe(3);
       expect(d.byKind['handshake_timeout_retry']).toBe(1); // forensically visible, never alarming
+      expect(d.byKind['shed_ordinary_queue_full']).toBe(1); // visible, but excluded from alarm classes
     });
 
     it('a stall and a hard failure stay distinguishable in one window', () => {

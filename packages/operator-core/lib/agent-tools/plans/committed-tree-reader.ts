@@ -22,6 +22,7 @@
  */
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import { join, posix, resolve as resolvePath } from 'node:path';
 import { minimatch } from 'minimatch';
@@ -180,49 +181,63 @@ const WORKTREE_CONFIG_RE = /^\s*worktree\s*=\s*(.+?)\s*$/gim;
  * safe.directory refusal), core.worktree / reftable / bare config, an unborn branch, a
  * subdirectory, a non-git directory.
  */
-export async function readHeadCommitFromFiles(root: string): Promise<string | undefined> {
+/*
+ * Synchronous metadata-only variant of the HEAD reader. Root/commit resolution
+ * runs before evidence fan-out; async fs calls would queue every tiny metadata
+ * read on libuv's shared threadpool and can stretch them into tens of seconds
+ * while the operator is busy. Git metadata is bounded, so keep this path
+ * synchronous and read it fresh on every call.
+ */
+export function readHeadCommitFromFilesSync(root: string): string | undefined {
   if (process.env.GIT_DIR || process.env.GIT_WORK_TREE || process.env.GIT_COMMON_DIR) return undefined;
   try {
     const uid = typeof process.getuid === 'function' ? process.getuid() : null;
-    if (uid !== null && (await lstat(root)).uid !== uid) return undefined;
+    if (uid !== null && lstatSync(root).uid !== uid) return undefined;
     const dotGit = join(root, '.git');
-    const entry = await lstat(dotGit);
+    const entry = lstatSync(dotGit);
     let gitDir: string;
     if (entry.isDirectory()) {
       gitDir = dotGit;
     } else if (entry.isFile()) {
-      const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(await readFile(dotGit, 'utf8'));
+      const pointer = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(dotGit, 'utf8'));
       if (!pointer) return undefined;
       gitDir = resolvePath(root, pointer[1]);
     } else {
       return undefined;
     }
-    const commonDir = await readFile(join(gitDir, 'commondir'), 'utf8').then(
-      (text) => resolvePath(gitDir, text.trim()),
-      () => gitDir,
-    );
-    const [config, worktreeConfig] = await Promise.all([
-      readFile(join(commonDir, 'config'), 'utf8').catch(() => ''),
-      readFile(join(gitDir, 'config.worktree'), 'utf8').catch(() => ''),
-    ]);
+    let commonDir = gitDir;
+    try {
+      commonDir = resolvePath(gitDir, readFileSync(join(gitDir, 'commondir'), 'utf8').trim());
+    } catch { /* regular checkout: the git dir is its common dir */ }
+    let config = '';
+    let worktreeConfig = '';
+    try { config = readFileSync(join(commonDir, 'config'), 'utf8'); } catch { /* git answers below */ }
+    try { worktreeConfig = readFileSync(join(gitDir, 'config.worktree'), 'utf8'); } catch { /* optional */ }
     if (UNSUPPORTED_CONFIG_RE.test(config) || UNSUPPORTED_CONFIG_RE.test(worktreeConfig)) return undefined;
     // A core.worktree is accepted only when it names `root` itself (the submodule layout);
     // one pointing anywhere else moves the work tree, and git must answer.
     const worktrees = [...`${config}\n${worktreeConfig}`.matchAll(WORKTREE_CONFIG_RE)].map((m) => m[1]);
     if (worktrees.length > 0) {
-      const realRoot = await realpath(root);
+      const realRoot = realpathSync(root);
       for (const worktree of worktrees) {
-        const target = await realpath(resolvePath(gitDir, worktree.replace(/^"(.*)"$/, '$1'))).catch(() => null);
+        let target: string | null;
+        try {
+          target = realpathSync(resolvePath(gitDir, worktree.replace(/^"(.*)"$/, '$1')));
+        } catch {
+          target = null;
+        }
         if (target !== realRoot) return undefined;
       }
     }
-    const head = (await readFile(join(gitDir, 'HEAD'), 'utf8')).trim();
+    const head = readFileSync(join(gitDir, 'HEAD'), 'utf8').trim();
     if (HEX_OID_RE.test(head)) return head;
     const ref = /^ref:\s*(refs\/heads\/\S+)$/.exec(head)?.[1];
     if (!ref || ref.includes('..')) return undefined;
-    const loose = await readFile(join(commonDir, ref), 'utf8').then((text) => text.trim(), () => null);
+    let loose: string | null;
+    try { loose = readFileSync(join(commonDir, ref), 'utf8').trim(); } catch { loose = null; }
     if (loose !== null) return HEX_OID_RE.test(loose) ? loose : undefined;
-    const packed = await readFile(join(commonDir, 'packed-refs'), 'utf8').catch(() => null);
+    let packed: string | null;
+    try { packed = readFileSync(join(commonDir, 'packed-refs'), 'utf8'); } catch { packed = null; }
     if (packed === null) return undefined;
     for (const line of packed.split('\n')) {
       const space = line.indexOf(' ');
@@ -237,6 +252,11 @@ export async function readHeadCommitFromFiles(root: string): Promise<string | un
   }
 }
 
+/** Async compatibility wrapper; the default resolver uses the sync metadata path. */
+export async function readHeadCommitFromFiles(root: string): Promise<string | undefined> {
+  return readHeadCommitFromFilesSync(root);
+}
+
 /**
  * The commit a measurement root's HEAD points at, or null when the root is not the TOP
  * LEVEL of a git checkout. A non-git root, a root with no commit yet, and a root that is a
@@ -248,7 +268,7 @@ export async function resolveMeasurementCommit(root: string, git: GitRunner = de
   // The in-process read is the DEFAULT runner's fast path only (WI-6554700010008489): an
   // injected runner is a test double or a deliberate route and keeps exact git semantics.
   if (git === defaultGitRunner) {
-    const fromFiles = await readHeadCommitFromFiles(root);
+    const fromFiles = readHeadCommitFromFilesSync(root);
     if (fromFiles !== undefined) return fromFiles;
   }
   try {

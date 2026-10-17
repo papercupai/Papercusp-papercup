@@ -104,14 +104,19 @@ describe('carryNativeOwnerInputFreshness scan evidence', () => {
   it('completes the snapshot when the filesystem returns short reads', () => {
     const rows = Array.from({ length: 100 }, (_, i) => JSON.stringify({ type: 'event_msg', n: i })).join('\n') + '\n';
     const fixture = transcriptFixture(rows);
+    const failures: unknown[] = [];
     const scan = readIsolatedNativeTranscriptForward({
       agent: 'codex',
       env: fixture.env,
       transcriptPath: fixture.transcriptPath,
-      readSyncFn: (fd, buffer, offset, length, position) =>
-        readSync(fd, buffer, offset, Math.min(length, 13), position),
+      // The production default is the overloaded `readSync`; this stub implements
+      // only the positional overload the scanner calls, so assert it to that type.
+      readSyncFn: ((fd, buffer, offset, length, position) =>
+        readSync(fd, buffer, offset, Math.min(length, 13), position)) as typeof readSync,
+      onFailure: (failure: unknown) => { failures.push(failure); },
     });
 
+    expect(failures).toEqual([]);
     expect(scan).toMatchObject({
       size: Buffer.byteLength(rows),
       nextOffset: Buffer.byteLength(rows),

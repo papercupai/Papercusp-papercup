@@ -44,6 +44,7 @@ import {
   type WallEntry,
 } from '../../carry-note';
 import { getOrgPg } from '@papercusp/db-org';
+import { readWakeDelta as defaultReadWakeDelta, wakeHasNoDelta } from '../../wake-no-delta-skip';
 import {
   readGoalHolderRows,
   resolveGoalHoldersBatch,
@@ -117,6 +118,7 @@ export interface LoopFireInput {
 }
 
 export interface LoopFireDeps {
+  readWakeDelta?: typeof defaultReadWakeDelta;
   checkFireGate?: typeof defaultCheckFireGate;
   recordFire?: typeof defaultRecordFire;
   /** EI-14483: record a fire-gate withhold to a durable, queryable trail (separate from
@@ -197,7 +199,7 @@ export interface LoopFireDeps {
 export interface LoopFireResult {
   fired: boolean;
   /** Why a fire was withheld (when fired=false). */
-  reason?: 'no-target' | 'fire-gate' | 'cost-cap' | 'dead-man' | 'no-session-now' | 'await-blocking';
+  reason?: 'no-target' | 'fire-gate' | 'cost-cap' | 'dead-man' | 'no-session-now' | 'await-blocking' | 'no-delta';
   woken?: number;
   staged?: number;
   detail?: string;
@@ -1227,6 +1229,25 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
       // autoloop:status / fire history, and withhold the wake.
       await recordFire(input.installSlug, input.routineName, `dead-man ${dm.reason}`, 'error').catch(() => {});
       return { fired: false, reason: 'dead-man', detail: `dead-man guard tripped: ${dm.reason} — loop auto-paused` };
+    }
+  }
+
+  // A timer alone is not new work. Save the skip and restore the finite loop
+  // schedule before returning; an unknown read or failed re-arm delivers normally.
+  const delta = await (deps.readWakeDelta ?? defaultReadWakeDelta)({
+    ownerId: input.targetOwnerId, workspaceId: input.workspaceId, sql: input.sql,
+  }).catch(() => null);
+  if (wakeHasNoDelta(delta)) {
+    const resumeAtMs = Date.now() + Math.max(1, input.intervalSec ?? 60) * 1000;
+    const rearmed = await rescheduleSuppressedWake({
+      routineId: input.routineId, workspaceId: input.workspaceId, installSlug: input.installSlug,
+      routineName: input.routineName, targetOwnerId: input.targetOwnerId,
+      intervalSec: input.intervalSec, resumeAtMs, sql: input.sql,
+    }).catch(() => false);
+    if (rearmed) {
+      const detail = 'Skipped: no new directed mail, event payload, owner directive, held-item change or due obligation.';
+      await recordWithheld(input.installSlug, input.routineName, 'no-delta', detail).catch(() => {});
+      return { fired: false, reason: 'no-delta', detail };
     }
   }
 

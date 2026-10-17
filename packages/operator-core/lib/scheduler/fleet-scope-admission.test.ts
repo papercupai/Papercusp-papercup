@@ -915,7 +915,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       // livelock-vs-churn distinction below, they do not revert this.
       expect(miss.advice).toMatch(/not a scope\/spec mismatch/);
       expect(miss.advice).toMatch(/do NOT re-author the claim spec/);
-      expect(miss.advice).not.toMatch(/report the scoped miss to the fleet leader/);
+      expect(miss.advice).not.toMatch(/Report the scoped miss to the fleet leader/);
     });
 
     // EI-14615/EI-16519: a cooldown-only miss whose relative `cooldownExpirySec` alone
@@ -1444,7 +1444,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
       expect(miss.advice).toMatch(/park the standing watch `watch:create/);
       expect(miss.advice).toMatch(/wake:true, once:false/);
-      expect(miss.advice).not.toMatch(/events:await/);
+      expect(miss.advice).toContain('backlog interest only');
       expect(miss.advice).toMatch(/work-item:claimable/);
       expect(miss.advice).toMatch(/payload_filter/);
       expect(miss.excludedBreakdownSummary).toMatch(/all 2 are terminal/);
@@ -1456,19 +1456,71 @@ describe('fleet scope assignment admission (P-016)', () => {
       });
     });
 
-    it('P-008: "release remaining lane resources" keeps a held blocked item held and defers its wake to loop:end', () => {
-      const miss = fleetScopedMiss(issueScope, [], {
+    it.each([
+      ['completed plan', () => fleetScopedMiss(issueScope, [], {
+        issueBreakdown: zeroMatchBreakdown,
+        planTerminality: { planSlugs: ['finished'], terminalPlanSlugs: ['finished'], allTerminal: true },
+      })],
+      ['exhausted spec', () => fleetScopedMiss(issueScope, [], {
         issueBreakdown: zeroMatchBreakdown,
         terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 2, inFlightMatchedByFilter: 0, parkedMatchedByFilter: 0 },
-      });
-
-      // The release instruction must not read as "drop the blocked item you still hold".
-      expect(miss.advice).toMatch(/release remaining lane resources \(a blocked item you still hold stays held/);
-      expect(miss.advice).toMatch(/work_items:set_blocker/);
-      expect(miss.advice).toMatch(/recovery\.steps/);
-      // The wake is NOT restated as an events:await: this advice also prescribes a work-item:claimable
-      // watch:create, and naming events:await beside it is the EI-15185 conflation.
-      expect(miss.advice).not.toMatch(/events:await/);
+      })],
+      ['held remainder', () => fleetScopedMiss(issueScope, [], {
+        issueBreakdown: zeroMatchBreakdown,
+        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 1, inFlightMatchedByFilter: 1, parkedMatchedByFilter: 0 },
+      })],
+      ['ordinary feature drain', () => fleetScopedMiss({
+        ...issueScope,
+        record: { ...issueScope.record, spec: { ...issueScope.record.spec, view: {
+          filter: { field: 'kind', op: '=' as const, value: 'feature' },
+        } } },
+      }, [], {
+        issueBreakdown: zeroMatchBreakdown,
+        featureBreakdown: { matchedByFilter: 0, claimable: 0, excluded: { claimFloors: 0, reservedPlanLane: 0 } },
+      })],
+      ['empty spec with live leader', () => fleetScopedMiss(issueScope, [], { issueBreakdown: zeroMatchBreakdown })],
+      ['empty spec with dead leader', () => fleetScopedMiss(issueScope, [], { issueBreakdown: zeroMatchBreakdown, leaderLiveness: false })],
+      ['floor-gated spec', () => fleetScopedMiss(issueScope, [], {
+        issueBreakdown: { ...zeroMatchBreakdown, matchedByFilter: 1, excluded: { ...zeroMatchBreakdown.excluded, claimHold: 1 } },
+      })],
+      ['filtered idle watch', () => fleetScopedMiss(issueScope)],
+      ['unfilterable idle scope', () => fleetScopedMiss({
+        ...issueScope,
+        record: { ...issueScope.record, spec: { ...issueScope.record.spec, view: {} } },
+      })],
+    ] as const)('P-008: %s checks retained obligations before winding down', (_label, buildMiss) => {
+      const { advice } = buildMiss();
+      // A scheduler miss describes the pool, not whether this caller has finished its own work.
+      expect(advice).toContain('First finish independent work on held items');
+      // S41 repeats 0 and 2 completed local verification but treated the armed
+      // loop as a substitute for registering the known dependency's exact wake.
+      expect(advice).toContain('After that work completes, reassess the remaining held obligations in this same turn');
+      expect(advice).toContain('An already-armed loop is not a substitute for this exact dependency await');
+      expect(advice).toContain('a blocked item you still hold stays held');
+      expect(advice).toContain('retained blocked claims stay held');
+      expect(advice).toContain('work_items:set_blocker');
+      expect(advice).toContain('exact recorded blocker event');
+      expect(advice).toContain('events:await');
+      expect(advice).toContain('timeout_sec');
+      expect(advice).toContain('on_timeout:"wake"');
+      expect(advice).toContain('Keep the existing loop armed until registration succeeds');
+      expect(advice).toContain('If no independently actionable blocker event is recorded');
+      expect(advice).toContain('do not invent an event from blocked status');
+      // The missing-key branch must be decided before an instruction to create a blocker.
+      // S41 observed an invented peer-review:<item id> ref when registration came first.
+      const missingKey = advice.indexOf('If no independently actionable blocker event is recorded');
+      const knownKey = advice.indexOf('Otherwise copy the supplied dependency event key exactly');
+      expect(knownKey).toBeGreaterThan(missingKey);
+      expect(advice.slice(missingKey, knownKey)).toContain('do not call work_items:set_blocker or events:await');
+      expect(advice.slice(missingKey, knownKey)).toContain('Never fabricate a blocker ref or derive an event key from an item id');
+      expect(advice).toContain('backlog interest only');
+      expect(advice).not.toContain('recovery.steps');
+      // D-009 still permits replacing the loop AFTER a guaranteed wake exists, and stopping
+      // after completed work or a verified stop/handoff. Neither depends on a refusal first.
+      expect(advice).toContain('Only after a guaranteed wake is registered');
+      const stop = 'call loop:end { acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true }';
+      expect(advice).toContain(stop);
+      expect(advice.indexOf('events:await')).toBeLessThan(advice.indexOf(stop));
     });
 
     it('EI-20260781488788952: reports a completed bound plan as a successful plan wind-down', () => {
@@ -1636,12 +1688,12 @@ describe('fleet scope assignment admission (P-016)', () => {
         expect(miss.advice).toMatch(/spec_in_flight/);
         expect(miss.advice).toMatch(/Do NOT escalate, widen, or re-author/);
         expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
-        expect(miss.advice).toMatch(/release remaining lane resources \(a blocked item you still hold stays held/);
+        expect(miss.advice).toContain('a blocked item you still hold stays held');
         expect(miss.advice).toMatch(/park the standing watch `watch:create/);
         expect(miss.advice).toMatch(/work-item:claimable/);
         expect(miss.advice).toMatch(/payload_filter/);
         expect(miss.advice).not.toMatch(/ESCALATE to your fleet leader NOW/);
-        expect(miss.advice).not.toMatch(/events:await/);
+        expect(miss.advice).toContain('backlog interest only');
         expect(miss.excludedBreakdownSummary).toMatch(/16 terminal, 1 held by an agent, 0 parked/);
         expect(miss.excludedBreakdownSummary).toMatch(/the spec is not empty/);
         expect(miss.excludedBreakdownSummary).not.toMatch(/SPEC ITSELF is the problem/);

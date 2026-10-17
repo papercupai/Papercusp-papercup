@@ -13,7 +13,7 @@
  */
 import { DBOSClient } from '@dbos-inc/dbos-sdk';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
+import { adminUrl } from '@papercusp/db-org/connection';
 import { withDbosIdleTxGrace } from './bootstrap';
 
 /** The application version the primary's executor runs (`bg-host-v1` on this box). */
@@ -32,7 +32,7 @@ const state = pinModuleState('@papercusp/operator-core.dbos.primary-dbos-client'
 /** One shared client per process; a failed creation is not cached. */
 export function getPrimaryDbosClient(): Promise<DBOSClient> {
   state.client ??= DBOSClient.create({
-    systemDatabaseUrl: withDbosIdleTxGrace(getHarnessAdminUrlWithSource().url),
+    systemDatabaseUrl: withDbosIdleTxGrace(adminUrl()),
     systemDatabaseSchemaName: 'dbos',
   }).catch((error: unknown) => {
     state.client = null;

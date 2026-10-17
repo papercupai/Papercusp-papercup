@@ -242,6 +242,13 @@ export interface ResumeTarget {
   account: string | null;
   /** Recorded terminal placement; used by recovery paths that forbid caller overrides. */
   headless?: boolean;
+  /** Local terminal process handle, when the source launch recorded one. Used only by
+   * hostless recovery after an explicit local-liveness probe; never treated as an
+   * owner identity on its own. */
+  pid?: number | null;
+  /** Launch display provenance. `terminal` is local by construction; other values
+   * are not safe to probe as a hostless source. */
+  display?: string | null;
   /** ⚠ Only an end time when {@link endedBy} is `'self'`. Otherwise a sweeper stamped it on
    *  NOTICING the process was gone, so it cannot answer "when did this session end". */
   endedAt: string | null;
@@ -409,7 +416,7 @@ export async function resolveResumeTarget(ref: {
        LIMIT 1
     )
     SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-           window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code,
+           window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, display, started_at, ended_at, exit_code,
            ended_by, launch_argv, started_at::text AS binding_started_at
       FROM harness_shared.adv_sessions
      WHERE ${
@@ -469,6 +476,8 @@ export async function resolveResumeTarget(ref: {
     feature: row.feature,
     cwd: row.cwd,
     ...launchMetadata,
+    pid: row.pid,
+    display: row.display,
     headless: row.launchArgv?.includes('--headless') === true,
     endedAt: row.endedAt,
     endedBy: row.endedBy,
@@ -515,6 +524,8 @@ export function buildAgentLaunchCommand(opts: {
   plan?: string | null;
   harness?: string | null;
   account?: string | null;
+  /** Emit the retained fleet leader role on an in-place resume. */
+  fleetRole?: 'leader';
   model?: string | null;
   modelSource?: CodexModelSource | null;
   /** psu reasoning effort — composed onto the model spec via {@link composeModelSpec}
@@ -637,6 +648,7 @@ export function buildAgentLaunchCommand(opts: {
     }
     const resumeLabel = opts.resumeId?.trim() ? 'resumeId' : 'sessionId';
     parts.push(`--resume=${safe(resumeLabel, requestedResumeId)}`);
+    if (opts.fleetRole === 'leader') parts.push('--fleet-role=leader');
     if (opts.mode === 'fork') parts.push('--fork');
     // Pre-pinned coord identity on the launches that MINT one (see the option's
     // doc). Refuse it on a same-backend resume rather than dropping it: a caller
@@ -1132,6 +1144,10 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   {
     head: 'Already-fixed check FIRST',
     body: "Before building, spend ~2 min checking code/tests, `git log`, and sibling work-items for an existing fix. If it shipped, close as already-fixed WITH that evidence; do not rebuild it.",
+  },
+  {
+    head: 'One-agent route scopes implementation fan-out',
+    body: '“One agent on this plan” / “launch no additional agents” limits extra implementation workers, fleets, or subagents you start; it does not disable platform-routed independent reviews, graders, or validators required for acceptance. Use their canonical workflow and do not omit the review request or park acceptance on the owner because the reviewer is another agent.',
   },
   {
     // EI-8318: members were completing exactly ONE item per external wake, then ending

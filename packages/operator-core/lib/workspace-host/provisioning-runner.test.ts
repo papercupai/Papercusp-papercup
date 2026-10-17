@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
+import { workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
+import type { HostedLifecycleAdmissionReceipt } from './hosted-lifecycle-store';
 import {
   fakeWorkspaceHostCapabilities,
   makeFakeWorkspaceHostProvider,
@@ -156,6 +158,46 @@ function runInput(provider: WorkspaceHostProvider, store: WorkspaceHostProvision
 }
 
 describe('workspace-host provisioning bootstrap release selection', () => {
+  it('derives the on-volume tenant identity from the admitted customer and control workspace', async () => {
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness([planStep('create-instance')]);
+    store.readHostedAdmission = vi.fn(async () => ({ operationId: 'op-1', hostId: 'host-1',
+      action: 'provision', customerWorkspaceId: 'customer-1', providerTarget: 'gcp',
+      placement: { kind: 'provision' }, resourceAdmission: { storage: { capacity: { dbGiB: 12, workspaceGiB: 8 } } },
+    } as HostedLifecycleAdmissionReceipt));
+    apply.mockResolvedValue({ operationId: 'op-1', stepId: 'create-instance', state: 'applied',
+      observedAt: '2026-08-25T00:00:05Z', resource: { target: 'gcp', kind: 'vm', providerId: 'vm' } });
+    await runWorkspaceHostProvisioning({ ...runInput(provider, store), hostedCustomerWorkspaceId: 'customer-1' });
+    expect(provider.plan).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      durableTenantIdentity: workspaceHostDurableTenantIdentity('ws-1', 'customer-1'),
+      durableStorageAllocation: { dbGiB: 12, workspaceGiB: 8 },
+    }));
+    expect(store.readHostedAdmission).toHaveBeenCalledWith({ workspaceId: 'ws-1', operationId: 'op-1',
+      customerWorkspaceId: 'customer-1', actorId: '', request: { connectionId: 'connection-1',
+        name: 'Research host', desired } });
+    expect(provider.apply).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      durableStorageAllocation: { dbGiB: 12, workspaceGiB: 8 },
+    }));
+  });
+
+  it.each([null, { hostId: 'foreign' }, { action: 'start' }, { resourceAdmission: undefined },
+    { resourceAdmission: { storage: { capacity: { dbGiB: 20, workspaceGiB: 0 } } } }])(
+    'refuses absent, foreign or unbootable pooled admission before provider calls: %j', async override => {
+      const { store } = storeHarness();
+      const { provider } = providerHarness([planStep('create-instance')]);
+      store.readHostedAdmission = vi.fn(async () => override === null ? null : ({ operationId: 'op-1',
+        hostId: 'host-1', action: 'provision', customerWorkspaceId: 'customer-1', providerTarget: 'gcp',
+        placement: { kind: 'provision' }, ...override,
+      } as HostedLifecycleAdmissionReceipt));
+      await expect(runWorkspaceHostProvisioning({ ...runInput(provider, store), hostedCustomerWorkspaceId: 'customer-1' }))
+        .rejects.toBeInstanceOf(WorkspaceHostProvisioningRequestError);
+      expect(provider.validateConnection).not.toHaveBeenCalled();
+      expect(provider.plan).not.toHaveBeenCalled();
+      expect(provider.apply).not.toHaveBeenCalled();
+      expect(store.upsertHost).not.toHaveBeenCalled();
+    },
+  );
+
   it('forwards an operation-scoped release pin through the provision runner', async () => {
     const bootstrapReleaseOverride = {
       manifestPath: '/var/lib/papercusp/releases/aws-canary.json',

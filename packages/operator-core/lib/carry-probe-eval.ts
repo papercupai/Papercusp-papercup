@@ -85,6 +85,8 @@ export interface CarriedProbeDeliveryDeps {
   dispatchTool?: ContinuityProbeDispatchContext['dispatchTool'];
   /** Harness the default dispatcher scopes to. */
   harness?: string | null;
+  /** Trusted delivery workspace; background dispatch must not use the desktop's current workspace. */
+  workspaceId?: string | null;
   /** Per-probe budget (defaults to the runner's wake budget). */
   timeoutMs?: number;
   /** Injectable runner (tests). */
@@ -105,7 +107,7 @@ export async function runCarriedProbesForDelivery(
     let dispatchTool = deps.dispatchTool;
     if (!dispatchTool) {
       const { rescoreProbeDispatcher } = await import('./harness/routines/rubric-rescore-action');
-      dispatchTool = rescoreProbeDispatcher(deps.harness ?? undefined);
+      dispatchTool = rescoreProbeDispatcher(deps.harness ?? undefined, undefined, deps.workspaceId ?? undefined);
     }
     const run = deps.runBatch ?? runContinuityProbeBatch;
     const timeoutMs = deps.timeoutMs ?? CONTINUITY_PROBE_TIMEOUT_MS;

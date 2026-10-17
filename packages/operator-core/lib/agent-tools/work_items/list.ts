@@ -265,6 +265,20 @@ export default defineTool({
       'Read-only PR-bypass audit of EVERY admission from explicit workflow ruleIds, including disabled rules and rules omitting delivery:pr. Returns {prDeliveryAudit}; missing evidence or truncated populations are unknown. Ordinary list filters do not narrow this audit.',
     ),
     harness: z.string().max(80).optional(),
+    // WI-6554700010010580: compound agent reads (for example coord:orient's
+    // feature-lane fold) must be able to request the source projection they
+    // actually need. These flags are deliberately separate from the ambient
+    // payload tier: an in-process compound may clear the session tier while it
+    // still only needs identity/state rows. Owner/detail callers keep the
+    // historical full read by omitting both flags (or using payloadTier:"full").
+    includeBody: z
+      .boolean()
+      .optional()
+      .describe('Internal source projection override: omit issue body/summary when false.'),
+    includePayload: z
+      .boolean()
+      .optional()
+      .describe('Internal source projection override: omit JSONB payload when false.'),
     q: z
       .string()
       .max(200)
@@ -471,11 +485,14 @@ export default defineTool({
       contextTier?: "trimmed" | "standard" | "full";
       payloadTierOverride?: "trimmed" | "standard" | "full";
     };
-    const leanSource =
+    const ambientLeanSource =
       tierCtx.payloadTierOverride !== "full" &&
       (tierCtx.contextTier === "trimmed" || tierCtx.contextTier === "standard");
-    const includeBody = !leanSource;
-    const includePayload = !leanSource;
+    // Explicit source flags win over the ambient/session tier. This is the
+    // durable escape for in-process agent compounds whose own context policy
+    // intentionally clears contextTier before re-dispatching sub-tools.
+    const includeBody = args.includeBody ?? !ambientLeanSource;
+    const includePayload = args.includePayload ?? !ambientLeanSource;
     // EI-6506: `mine` resolves to the CALLER's own agent identity — an explicit
     // `assignee` wins if both are passed (mine is the no-args-needed convenience,
     // not an override of a deliberate lookup of someone else's work).

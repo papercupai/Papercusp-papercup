@@ -683,6 +683,15 @@ describe('readAgentReviewState', () => {
     expect(agentReviewIsReproductionValidation({ agentReview: { ...base, status: 'pending', revisionKind: 'reproduction' } }))
       .toBe(false);
   });
+
+  it('preserves only a well-formed reviewer-visible source revision pin', () => {
+    const base = { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 };
+    const revision = acceptanceSourceRevision(BUG_SOURCE);
+    expect(readAgentReviewState({ agentReview: { ...base, reviewedSourceRevision: revision } }))
+      .toEqual({ ...base, reviewedSourceRevision: revision });
+    expect(readAgentReviewState({ agentReview: { ...base, reviewedSourceRevision: 'src-v1:bad' } }))
+      .toEqual(base);
+  });
 });
 
 describe('agentReviewEligibility (abolish-human-review D-003)', () => {
@@ -785,6 +794,9 @@ describe('verifier lane: the verifier-conflict rule (P-007 / D-021)', () => {
   const subject = {
     id: 'EI-1',
     harness: 'papercusp',
+    kind: 'bug',
+    title: 'Reviewable issue',
+    summary: 'Initial issue body.',
     createdBy: 'su-filer',
     terminalOwner: 'su-closer',
     payload: {
@@ -850,6 +862,7 @@ describe('verifier lane: the verifier-conflict rule (P-007 / D-021)', () => {
         reviewer,
         harnessSlug: 'papercusp',
         review: REVIEW,
+        source: subject,
         parties: verificationParties(subject),
       });
     expect(mint('su-filer')).toBeNull();
@@ -857,6 +870,10 @@ describe('verifier lane: the verifier-conflict rule (P-007 / D-021)', () => {
     const admission = mint('su-verifier');
     expect(admission).not.toBeNull();
     expect(matchesAgentReviewClaimAdmission(admission, subject, 'su-verifier')).toBe(true);
+    expect(admission).toMatchObject({ reviewedSourceRevision: acceptanceSourceRevision(subject) });
+    // The row writer re-derives the revision: editing its body after capability minting refuses it.
+    expect(matchesAgentReviewClaimAdmission(admission, { ...subject, summary: 'Corrected issue body.' }, 'su-verifier'))
+      .toBe(false);
     // Re-derived from the row at the writer: a row whose closer is now the reviewer refuses.
     expect(
       matchesAgentReviewClaimAdmission(admission, { ...subject, terminalOwner: 'su-verifier' }, 'su-verifier'),

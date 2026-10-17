@@ -75,6 +75,14 @@ export const ALLOW_PREFIXES = [
   'apps/operator/dist-sidecar/',
 ];
 
+// Native host parity fixtures are emitted by the maintained bundle producer into a
+// run-specific `dist-host-native-fixture-debug-<id>/` directory. The bundle is a
+// wholesale build artifact (and can be nested under a duplicated apps/operator
+// prefix when the producer receives a relative outfile), so it is not hand-authored
+// source to rewrite. Keep this as a path-shape exclusion so every future fixture id
+// and either producer layout receives the same policy as the sibling source guards.
+const GENERATED_NATIVE_FIXTURE_RE = /(?:^|\/)dist-host-native-fixture-debug-[^/]+(?:\/|$)/;
+
 /**
  * Vendored dependency trees are never hand-authored source.
  *
@@ -125,7 +133,11 @@ function extensionOf(file) {
 // the very byte that red-pins the fleet gate an hour later.
 export function isScannedPath(file) {
   if (isVendoredDependencyPath(file)) return false;
-  return SOURCE_EXTENSIONS.has(extensionOf(file)) && !ALLOW_PREFIXES.some((prefix) => file.startsWith(prefix));
+  return (
+    SOURCE_EXTENSIONS.has(extensionOf(file)) &&
+    !GENERATED_NATIVE_FIXTURE_RE.test(file) &&
+    !ALLOW_PREFIXES.some((prefix) => file.startsWith(prefix))
+  );
 }
 
 function gitLines(args, cwd = ROOT) {
@@ -259,10 +271,13 @@ function main() {
   // instrument nobody proved was pointed at the thing being measured.
   const uncovered = uncoveredSubmodules(scanned);
   if (uncovered.length > 0) {
+    const prefixes = submodulePrefixes();
+    const covered = prefixes.filter((prefix) => !uncovered.includes(prefix));
     console.error(
       `\ncheck-no-control-bytes: COVERAGE GAP — ${uncovered.length} submodule(s) hold files this guard ` +
         'would scan but contributed ZERO to the scan.\n' +
-        'A pass here would be evidence of nothing. Check that `git ls-files --recurse-submodules` still recurses.\n',
+        describeUnscanned({ declared: prefixes, scanned: covered, unscanned: uncovered, unscannedPresent: uncovered }, ROOT) +
+        '\nA pass here would be evidence of nothing. Check submodule registration and that `git ls-files --recurse-submodules` still recurses.\n',
     );
     for (const prefix of uncovered) console.error(`  unscanned submodule: ${prefix}`);
     process.exit(1);

@@ -555,7 +555,12 @@ export interface CodexRolloutPersistenceWatchdogResult {
 export interface CodexRolloutPersistenceWatchdogOptions extends CodexRolloutPersistenceThresholds {
   rail?: AlarmAttentionDeps;
   now?: () => number;
-  readOpenConditions?: () => Promise<Array<{ conditionKey: string; openedAtMs: number }>>;
+  /** Override the condition census while preserving the production reader's
+   * workspace SQL client and measured clock inputs. */
+  readOpenConditions?: (
+    sql: Sql,
+    now: number,
+  ) => Promise<Array<{ conditionKey: string; openedAtMs: number }>>;
   pidAlive?: (pid: number) => boolean;
   intervalMs?: number;
   providerFailureConsecutive?: number;
@@ -727,7 +732,7 @@ export async function checkCodexRolloutPersistence(
     let episodesKnown = false;
     try {
       episodes = opts.readOpenConditions
-        ? await opts.readOpenConditions()
+        ? await opts.readOpenConditions(sql, now)
         : await readOpenCodexConditions(sql, now);
       episodesKnown = true;
     } catch { /* Unknown state cannot prove an old condition recovered. */ }

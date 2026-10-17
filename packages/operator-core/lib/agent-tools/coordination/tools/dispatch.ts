@@ -30,7 +30,6 @@ import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from 
 import { resolveEffectiveStatusForItems, type PlanItem } from '@papercusp/plan-parser';
 import { COORD_ROLES } from '../roles';
 import { inProcessCall, type InnerCall } from '../../_compound-dispatch';
-import { hardText } from '../../limits';
 import type { HydratableRef } from '../ref-hydrate';
 import { renderHydratedRefs } from '../ref-hydrate';
 import { hydrateRefs, makePlanItemResolver } from '../ref-hydrate-resolve';
@@ -1097,9 +1096,8 @@ export default defineTool({
       note: z
         .string()
         .min(1)
-        .max(DEFAULT_INBOX_BODY_CAP)
         .describe(
-          `The directed instruction the target reads in its inbox on waking — what to pick up and do. Name the plan + items explicitly; max ${DEFAULT_INBOX_BODY_CAP} characters so the required action body fits the inbox.`,
+          'The directed instruction the target reads in its inbox on waking — what to pick up and do. Name the plan + items explicitly. coord:send delivers over-cap text as ordered inbox-sized parts and keeps the required wake on the final part.',
         ),
       planSlug: z
         .string()
@@ -1119,9 +1117,13 @@ export default defineTool({
         .describe(
           'Concrete promoted work-item ids to assign to the stable target. Re-read through canonical readiness; only actionable ids are claimed and included in the required wake. Mutually exclusive with `items`.',
         ),
-      body: hardText(DEFAULT_INBOX_BODY_CAP)
+      body: z
+        .string()
+        .min(1)
         .optional()
-        .describe(`Optional body for the inbox note (max ${DEFAULT_INBOX_BODY_CAP} characters).`),
+        .describe(
+          'Optional body for the inbox note. coord:send delivers over-cap text as ordered inbox-sized parts; content beyond its chunk limit is refused with a durable-surface pointer.',
+        ),
       harness: z
         .string()
         .max(120)

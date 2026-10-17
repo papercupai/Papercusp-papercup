@@ -2232,8 +2232,54 @@ export interface RecordCurrentActivationAuditInput {
 export interface ActivationAuditPlanTargetProblem {
   mappingId: string;
   target: string;
-  code: 'unknown_acceptance_bar' | 'unknown_item' | 'unknown_decision' | 'unknown_section' | 'invalid_plan_target';
+  code:
+    | 'unknown_acceptance_bar'
+    | 'requirements_unparseable'
+    | 'unknown_item'
+    | 'unknown_decision'
+    | 'unknown_section'
+    | 'invalid_plan_target';
   detail: string;
+}
+
+/**
+ * One accurate refusal sentence for a non-empty problem list. A
+ * `requirements_unparseable` problem means the target may well exist, so it
+ * must never be summarised as "do not exist" (WI-6554700010015337: an older
+ * build could not parse a valid Requirements section and reported 38 R-N
+ * targets as missing).
+ */
+/**
+ * Prior mapping targets a re-audit may RETIRE because the current plan no
+ * longer contains them. Two codes are not "dead": `invalid_plan_target` never
+ * named a destination, and `requirements_unparseable` may name a bar that still
+ * exists but this build cannot read. Retiring the latter would silently drop
+ * owner-mapped coverage on any build whose parser lags the plan (WI-6554700010015337).
+ */
+export function deadActivationAuditTargets(
+  problems: readonly ActivationAuditPlanTargetProblem[],
+): Array<{ mappingId: string; target: string }> {
+  return problems
+    .filter((problem) => problem.code !== 'invalid_plan_target' && problem.code !== 'requirements_unparseable')
+    .map(({ mappingId, target }) => ({ mappingId, target }));
+}
+
+export function describeActivationAuditPlanTargetProblems(
+  problems: readonly ActivationAuditPlanTargetProblem[],
+  consequence: string,
+): string {
+  const unparseable = problems.filter((problem) => problem.code === 'requirements_unparseable').length;
+  const missing = problems.length - unparseable;
+  const parts: string[] = [];
+  if (missing > 0) {
+    parts.push(`${missing} mapping target(s) do not exist in the current plan revision`);
+  }
+  if (unparseable > 0) {
+    parts.push(
+      `${unparseable} acceptance-bar target(s) could not be resolved because this build could not parse ## Requirements (see problems[].detail)`,
+    );
+  }
+  return `${parts.join('; ')}; ${consequence}`;
 }
 
 /** Validate every mapping destination against the exact plan bytes being audited. */
@@ -2252,6 +2298,15 @@ export function validateActivationAuditPlanTargets(
   const acceptanceBars = requirements.ok
     ? new Set(requirements.bars.map((bar) => bar.barKey))
     : new Set<string>();
+  // A parse failure empties the bar set, so every R-N target would otherwise
+  // read as "no exact record". Name the parse problems instead.
+  const requirementsParseFailure = requirements.ok
+    ? null
+    : requirements.problems
+        .slice(0, 3)
+        .map((problem) => problem.detail.replace(/\s+/g, ' ').slice(0, 200))
+        .join(' | ') +
+      (requirements.problems.length > 3 ? ` | +${requirements.problems.length - 3} more` : '');
   const sections = new Set(
     splitPlanSections(planContent).map((section) => section.heading.trim().toLowerCase()),
   );
@@ -2259,6 +2314,15 @@ export function validateActivationAuditPlanTargets(
   for (const mapping of activation.mappings) {
     for (const target of mapping.planTargets) {
       if (/^R-\d+$/.test(target)) {
+        if (requirementsParseFailure !== null) {
+          problems.push({
+            mappingId: mapping.id,
+            target,
+            code: 'requirements_unparseable',
+            detail: `${mapping.id} targets acceptance bar '${target}', but ## Requirements could not be parsed, so no bar can be resolved: ${requirementsParseFailure}`,
+          });
+          continue;
+        }
         if (!acceptanceBars.has(target)) {
           problems.push({
             mappingId: mapping.id,
@@ -2641,7 +2705,7 @@ async function executeCurrentActivationAudit(
       return {
         ok: false as const,
         error: 'plan_targets_invalid' as const,
-        message: `${problems.length} mapping target(s) do not exist in the current plan revision; no audit was recorded.`,
+        message: describeActivationAuditPlanTargetProblems(problems, 'no audit was recorded.'),
         problems,
       };
     }

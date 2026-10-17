@@ -55,6 +55,8 @@ describe('vm/install-server.sh extra KEY=VAL environment (faked sudo/systemctl/a
       'systemctl',
       [
         `echo "$@" >> "${dir}/systemctl.log"`,
+        '[[ "$*" == *" mask --now "* ]] && [ "${FAKE_MASK_FAIL:-0}" = 1 ] && exit 1',
+        '[[ "$*" == *" is-enabled "* ]] && echo "${FAKE_LOGIN_STATE:-masked}"',
         '[[ "$*" == *"ControlGroup"* ]] && echo /cg',
         '[[ "$*" == *"MainPID"* ]] && echo 999',
         `[[ "$*" == *" restart "* ]] && [ -f "${dir}/environ.after" ] && mv "${dir}/environ.after" "${dir}/environ"`,
@@ -72,16 +74,53 @@ describe('vm/install-server.sh extra KEY=VAL environment (faked sudo/systemctl/a
     );
     stub('dpkg-query', 'exit 0');
     stub('pgrep', 'exit 1');
-    stub('id', '[ "$1" = "-u" ] && echo 4321; exit 0');
+    stub('id', '[ "$1" = "-u" ] && echo 4321; [ "$1" = "-un" ] && echo sshlogin; exit 0');
     stub('journalctl', 'echo "operator_hint=1"');
     stub('find', 'exit 0');
     stub('ss', 'exit 0');
-    stub('curl', `echo '{"ok":true}'`);
+    stub('curl', `echo '{"ok":true,"service":"papercusp-operator"}'`);
     stub('sleep', 'exit 0');
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  const env = () => ({ ...process.env, PATH: `${bin()}:${process.env.PATH}`, SVC_HOME: home() });
+  const env = () => ({ ...process.env, PATH: `${bin()}:${process.env.PATH}`, SVC_HOME: home(), SUDO_USER: 'sshlogin' });
+
+  it.each(['<html>SPA</html>', '{"ok":false,"service":"papercusp-operator"}', '{"ok":true}', '{"ok":true,"service":"other"}', '[]', '{"ok":"true","service":"papercusp-operator"}'])('does not announce readiness for an HTTP 200 with invalid body: %s', (invalid) => {
+    writeFileSync(path.join(dir, 'invalid-health'), invalid);
+    stub('curl', `echo "$@" >> "${dir}/curl.args"\nn=$(cat "${dir}/curl.n" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${dir}/curl.n"\nif [ $n -eq 1 ]; then cat "${dir}/invalid-health"; else echo '{"ok":true,"service":"papercusp-operator"}'; fi`);
+    const r = run();
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(readFileSync(path.join(dir, 'curl.n'), 'utf8').trim()).toBe('2');
+    expect(readFileSync(path.join(dir, 'curl.args'), 'utf8').trim().split('\n').every((line) => line.includes('/api/health'))).toBe(true);
+    expect(r.stdout).toContain('SERVER_HEALTH={"ok":true,"service":"papercusp-operator"}');
+  });
+
+  it('masks the SSH account before starting a tenant, so the global package enable cannot add a server', () => {
+    const r = run();
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toContain('LOGIN_SERVER_EXCLUDED=sshlogin');
+    expect(log().indexOf('--user mask --now papercusp-server.service')).toBeLessThan(log().indexOf('loginctl enable-linger pcsrv'));
+  });
+
+  it.each([
+    { FAKE_MASK_FAIL: '1' },
+    { FAKE_LOGIN_STATE: 'enabled' },
+  ])('refuses a capacity run when login-server exclusion fails: %j', (vars) => {
+    const r = spawnSync('bash', [SCRIPT, 'gs://b/server.deb', SHA], {
+      encoding: 'utf8', env: { ...env(), ...vars },
+    });
+    expect(r.status).toBe(8);
+    expect(r.stdout).not.toContain('SERVER_PORT=');
+    expect(log()).not.toContain('loginctl enable-linger');
+  });
+
+  it('preserves the login account when it is the requested tenant', () => {
+    const r = spawnSync('bash', [SCRIPT, 'gs://b/server.deb', SHA], {
+      encoding: 'utf8', env: { ...env(), SVC_USER: 'sshlogin' },
+    });
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(log()).not.toContain(' mask --now ');
+  });
   const run = (...extra: string[]) =>
     spawnSync('bash', [SCRIPT, 'gs://b/server.deb', SHA, ...extra], { encoding: 'utf8', env: env(), stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -225,6 +264,7 @@ describe('vm/install-server.sh extra KEY=VAL environment (faked sudo/systemctl/a
       expect(r.stdout).toMatch(/^APT_DOWNLOAD_RETRY attempt=1 rc=124 /m);
       expect(r.stdout).not.toMatch(/APT_DOWNLOAD_RETRY attempt=2/);
       expect(r.stdout).toMatch(/^T_APT=\d+$/m);
+      expect(r.stdout.indexOf('LOGIN_SERVER_EXCLUDED=sshlogin')).toBeLessThan(r.stdout.indexOf('== fetch'));
       const installs = calls().filter((c) => c.startsWith('install '));
       expect(installs.filter((c) => c.includes('--download-only'))).toHaveLength(2);
       // the real install comes last and is not a download-only call

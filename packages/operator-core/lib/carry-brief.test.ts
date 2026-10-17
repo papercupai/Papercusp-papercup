@@ -2316,6 +2316,35 @@ describe('readHeldWorkItems — scope→harness resolution (EI-8813 regression)'
       holderProof: { ownerId: 'owner-x', workspaceId: 'ws-test' },
     }]);
   });
+
+  it('reads held-item checkpoint metadata concurrently', async () => {
+    const started: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const pending = readHeldWorkItems('su-abc', 'ws-test', {
+      sql: fakeIssuesSql([
+        { issue_id: 'WI-1', title: 'one', body: 'b', scope: 'harness:papercusp' },
+        { issue_id: 'WI-2', title: 'two', body: 'b', scope: 'harness:papercusp' },
+      ]),
+      getWorkItemCheckpointWithMetaFn: async ({ workItemId }) => {
+        started.push(workItemId);
+        await gate;
+        return { checkpoint: `checkpoint:${workItemId}`, updatedAtMs: 1 };
+      },
+    });
+    try {
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(started).toEqual(['WI-1', 'WI-2']);
+    } finally {
+      release();
+      await pending;
+    }
+    expect(await pending).toEqual([
+      expect.objectContaining({ id: 'WI-1', checkpoint: 'checkpoint:WI-1' }),
+      expect.objectContaining({ id: 'WI-2', checkpoint: 'checkpoint:WI-2' }),
+    ]);
+  });
 });
 
 describe('readHeldWorkItems — EI-9013 (feature-family coverage + workspace canonicalization)', () => {

@@ -20,6 +20,9 @@ import type { HostedConnectorBinding, HostedConnectorTicketBinding } from '../en
 import { HostedWorkspaceHostSessionAdapter } from '../workspace-host/hosted-session-host';
 import { ByocSealedChannel, isByocSealedPacket } from '../workspace-host/byoc-sealed-channel';
 
+// Resolve paths from this file's lib/harness-insights directory: ../ reaches
+// sibling lib modules, while ../../test reaches package-root test fixtures.
+
 // Keep the production HTTP handler and query unchanged; route its maintained
 // withWorkspace seam onto the migrated role-scoped private database.
 const httpFixture = vi.hoisted(() => ({ sql: null as Sql | null, sent: null as CloudTelemetryEnvelope[] | null }));

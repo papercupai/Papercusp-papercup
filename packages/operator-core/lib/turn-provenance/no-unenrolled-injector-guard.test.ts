@@ -93,6 +93,18 @@ describe('no-unenrolled-injector guard predicate (EI-21903660573830465)', () => 
     expect(found[0]).toMatchObject({ enrolled: true, dataText: 'warmText' });
   });
 
+  it('recognizes the reviewed headless watchdog carry wrapper', () => {
+    const found = sites(`
+      async function send(raw: string) {
+        const carry = await taggedHeadlessMcpRecoveryWakeText(owner, 45);
+        await injectIntoHost(sock, { mode: 'carry-respawn', data: carry, ownerId: owner });
+      }
+    `);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ enrolled: true, dataText: 'carry' });
+  });
+
   it('does not trust a raw string parameter just because it crosses the same helper boundary', () => {
     const found = sites(`
       function injectWake(warmText: string) {
@@ -171,6 +183,7 @@ describe('no-unenrolled-injector guard predicate (EI-21903660573830465)', () => 
   it('excludes test-support and generated sidecar sources while retaining runtime sources', () => {
     expect(isExcluded('packages/operator-core/test/_multi-session-testbed.ts')).toBe(true);
     expect(isExcluded('papercusp-desktop/src-tauri/env-sidecars/host.mjs')).toBe(true);
+    expect(isExcluded('apps/operator/apps/operator/dist-host-native-fixture-debug-2001983/hono-host.mjs')).toBe(true);
     expect(isExcluded('packages/operator-core/lib/events/await/wake-executor.ts')).toBe(false);
   });
 });

@@ -41,6 +41,7 @@ import {
   resolveTestRunWorkspaceId,
   appendTestRunReceipts,
   reporterWriteBudget,
+  testRunReceiptBaseFor,
 } from '@papercusp/test-config/admin-test-runs-reporter';
 import {
   mutationDescriptorForRow,
@@ -239,15 +240,17 @@ async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, ro
   // may describe a different tree if git-sync or a peer changed it while the
   // Playwright run was in flight.
   const commit = worktreeAfter.commit;
+  // One receipt identity for this row: a late `inserted` supersedes its `timeout` under it.
+  // Playwright configs are committed specs, never a scratch config (the Vitest-only flag).
+  const receipt = testRunReceiptBaseFor({
+    filePath: row.filePath, status: row.status, durationMs: row.durationMs,
+    startedAt: row.startedAt, finishedAt: row.finishedAt, outputTail: row.outputTail,
+    isScratchConfig: false, worktreeDirty: row.worktreeDirty, commitSha: commit,
+  });
 
   const pg = await tryGetPg();
   if (!pg) {
-    appendTestRunReceipts(process.env, [{
-      filePath: row.filePath,
-      status: row.status,
-      outcome: 'failed',
-      reason: 'pg_unavailable',
-    }]);
+    appendTestRunReceipts(process.env, [{ ...receipt, outcome: 'failed', reason: 'pg_unavailable', replayable: false }]);
     return;
   }
 
@@ -273,24 +276,24 @@ async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot, ro
     `).then((result) => {
     const first = Array.isArray(result) ? result[0] as { id?: unknown } | undefined : undefined;
     appendTestRunReceipts(process.env, first?.id === undefined || first.id === null
-      ? [{ filePath: row.filePath, status: row.status, outcome: 'failed', reason: 'insert_returned_no_id' }]
-      : [{ filePath: row.filePath, status: row.status, outcome: 'inserted', id: String(first.id) }]);
+      ? [{ ...receipt, outcome: 'failed', reason: 'insert_returned_no_id', replayable: false }]
+      : [{ ...receipt, outcome: 'inserted', id: String(first.id) }]);
   }, (error: unknown) => {
     const reason = error instanceof Error ? error.message : String(error);
     appendTestRunReceipts(process.env, [{
-      filePath: row.filePath,
-      status: row.status,
+      ...receipt,
       outcome: 'failed',
       reason: reason.slice(0, 200) || 'unknown',
+      replayable: false,
     }]);
   });
 
   if (!(await settleWithin(query, budget.insertTimeoutMs))) {
     appendTestRunReceipts(process.env, [{
-      filePath: row.filePath,
-      status: row.status,
+      ...receipt,
       outcome: 'timeout',
       reason: `pg_insert_timeout_${budget.insertTimeoutMs}ms`,
+      replayable: false,
     }]);
     // The query may still commit after the first deadline. Keep the reporter
     // alive through its bounded flush window so its late RETURNING id can

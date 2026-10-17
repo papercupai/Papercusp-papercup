@@ -40,7 +40,10 @@ vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
 
 import { emitScorecard } from './emit';
-import { asStructuredObservation } from '../../harness/improvements/observation-types';
+import {
+  asStructuredObservation,
+  type SpecTestAdequacyRerunRecipe,
+} from '../../harness/improvements/observation-types';
 import { scorecardEvidenceFingerprint } from '../../scorecards';
 
 const RUBRIC = {
@@ -69,9 +72,13 @@ const rerunRecipe = {
   evaluator: 'plans:evaluate-spec-test-adequacy' as const,
   evaluatorBuild: { sha: 'd740fc3802', version: '0.0.0' },
   evaluatorRevision: 3,
-  classRef: 'plan-class-feature-ship',
+  classRef: 'plan-class-feature-ship' as const,
   args: {
     harness: 'papercusp',
+    slug: 'plan-alpha',
+    classRef: 'plan-class-feature-ship' as const,
+    specIds: ['SPEC-P-001'],
+    includeDraft: true as const,
     planItemIds: ['P-001'],
     specFingerprint: 'spec-fingerprint-v1',
   },
@@ -103,7 +110,7 @@ const rerunRecipe = {
     classifier: 'classifySpecEvidenceCurrentness' as const,
     unknownWhenMissing: true as const,
   },
-};
+} satisfies SpecTestAdequacyRerunRecipe;
 
 beforeEach(() => {
   vi.clearAllMocks();

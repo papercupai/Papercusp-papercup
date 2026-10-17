@@ -1151,7 +1151,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       ...(holderContext ? { holderContext } : {}),
       hint: selfHeld
         ? `You already hold ${it.id} — nobody else took it, so this is NOT a peer conflict. Handing it to ${claimer} is normally atomic; this write was refused by an admission/trust gate on the item, or the row changed under the re-read. ⚠ Do NOT work_items:release to hand it over: that clears the assignee and makes the item claimable by the WHOLE fleet, so a self-selecting peer can take it before ${claimer} does. Re-check with work_items:get, then have ${claimer} claim it by id once the gate is satisfied.`
-        : `Already claimed by ${failure.holder} — the item exists (get/observe/comment/complete resolve it). Coordinate with the holder via coord:send, or pick another item; if that agent is dead, the stale-claim reclaim lane frees it. Do not blind-retry with a different harness.`,
+        : `Already claimed by ${failure.holder} — the item exists (get/observe/comment/complete resolve it). If ${failure.holder} is dead or stale, retry this named claim with { force:true, reason:<why> }; force is liveness-checked, audited, and compare-and-claim protected. Coordinate with the holder via coord:send, or pick another item; the stale-claim lane remains the asynchronous fallback. Do not blind-retry with a different harness.`,
     };
   }
   // EI-21637135941119450: a named issue claim can be refused by the same durable
@@ -1232,7 +1232,9 @@ export default defineTool({
   // REDS the green gate and freezes deploys fleet-wide. Trimmed to the load-bearing contract;
   // the rationale that used to live in the prompt now lives here, where it costs no context:
   //   · claim_conflict → a LIVE peer holds it. Coordinate via coord:send; do NOT blind-retry.
-  //     A DEAD holder is freed automatically by the stale-claim lane, so retrying only races.
+  //     If the holder is dead or stale, retry the named claim with `force:true` and a reason:
+  //     the takeover is liveness-checked, audited, and CAS-protected; the stale-claim lane is
+  //     only the asynchronous fallback.
   //   · Readiness/lifecycle floors (including claim-hold, blockers, and terminal state) gate
   //     self-select only; a named by-id claim is the deliberate operator override. The
   //     successful response carries advisory signals for the caller to inspect.
@@ -1245,7 +1247,7 @@ export default defineTool({
   guidance: {
     when: 'Before editing: claim to prevent duplicate work. Use ids:[…] for a swath. By-id claims override readiness/lifecycle floors, not fleet scope or ordinary born-pending admission/trust; server-derived dispatch/force may bypass pending rows.',
     notWhen:
-      '`claim_conflict` means a live peer holds it: coordinate, do not retry. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed. Never claim non-work or human-audience rows: data or a person\'s job.',
+      '`claim_conflict` means a peer currently holds it. If that holder is dead or stale, retry the named claim with `force:true` and a reason; the takeover is liveness-checked and audited. A live holder still requires coordination. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed. Never claim non-work or human-audience rows: data or a person\'s job.',
     chaining:
       'work_items:list → claim → set_state → release/close. No heartbeat; platform calls refresh liveness. During long local-only work, checkpoint (EI-6772).',
     seeAlso: [

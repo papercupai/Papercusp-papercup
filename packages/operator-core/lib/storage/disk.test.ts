@@ -46,6 +46,39 @@ describe('Storage prune gatherProtectedSessionIdentity — OWNERSHIP (WI-6554700
     expect(gather.identity.ownerIds.has('su-ended-mine')).toBe(false);
   });
 
+  it('protects a Codex home while an ended adv session still has an in-flight wake', async () => {
+    const wakeSql = async (strings: TemplateStringsArray): Promise<Array<Record<string, unknown>>> => {
+      const q = strings.join('?');
+      if (q.includes('coord_presence')) return [];
+      if (q.includes('spawned_agents')) return [];
+      if (q.includes('event_wake_deliveries')) return [{ subscriber_id: 'su-awaiting' }];
+      if (q.includes('event_awaits')) return [];
+      if (q.includes('adv_sessions')) {
+        if (q.includes('ended_at IS NULL')) return [];
+        if (q.includes('coord_owner_id = ANY')) return [{ id: 42 }];
+        return [{ id: 42, coord_owner_id: 'su-awaiting' }];
+      }
+      throw new Error(`unexpected query: ${q}`);
+    };
+
+    const gather = await gatherProtectedSessionIdentity(wakeSql);
+    expect(gather.ok).toBe(true);
+    expect(gather.identity.ownerIds.has('su-awaiting')).toBe(true);
+    expect(gather.identity.sessionKeys.has('42')).toBe(true);
+
+    const plan = planSessionDirGc({
+      candidates: [
+        { path: '/tmp/session-42', keyKind: 'session', key: '42', mtimeMs: 0 },
+        { path: '/tmp/su-awaiting', keyKind: 'owner', key: 'su-awaiting', mtimeMs: 0 },
+      ],
+      protectedIdentity: gather.identity,
+      nowMs: 10_000,
+      retentionMs: 1,
+    });
+    expect(plan.remove).toEqual([]);
+    expect(plan.keptProtected.map((candidate) => candidate.key).sort()).toEqual(['42', 'su-awaiting']);
+  });
+
   it('a prune plan keeps a foreign dir and still collects its own ended dir', async () => {
     const gather = await gatherProtectedSessionIdentity(fakeSql);
     const now = 10_000_000_000;

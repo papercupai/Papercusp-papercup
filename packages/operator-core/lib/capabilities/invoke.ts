@@ -90,6 +90,7 @@ type ServerCapabilityInvoker = (opts: {
   callerSid?: string;
   harness?: string;
   authenticatedPrincipal?: Principal;
+  signal?: AbortSignal;
 }) => Promise<InvokeResult>;
 
 /**
@@ -105,6 +106,7 @@ export async function dispatchPaletteTarget(
     callerSid?: string;
     harness?: string;
     authenticatedPrincipal?: Principal;
+    signal?: AbortSignal;
   },
   invoke: ServerCapabilityInvoker = invokeServerCapability,
 ): Promise<PaletteDispatchResult> {
@@ -151,6 +153,8 @@ export async function invokeServerCapability(opts: {
   harness?: string;
   /** Server-resolved cookie actor; never accepted from the request body. */
   authenticatedPrincipal?: Principal;
+  /** Transport-owned cancellation; nested targets share the same lifetime. */
+  signal?: AbortSignal;
 }): Promise<InvokeResult> {
   // The projected registry is the lookup of record — it carries EVERY tool
   // (principal-gated, role-gated, plugin); the legacy getCatalog() misses all
@@ -239,7 +243,7 @@ export async function invokeServerCapability(opts: {
       log: () => {},
       progress: () => {},
       emit: () => {},
-      signal: new AbortController().signal,
+      signal: opts.signal ?? new AbortController().signal,
       ...(tx ? { tx } : {}),
       // The loopback caller IS the operator/brain — carry the brain RBAC role so a
       // `requireRoles:[BRAIN_PRINCIPAL_ROLE]` tool (the spawn-approval gate, P-006)
@@ -268,6 +272,7 @@ export async function invokeServerCapability(opts: {
         args,
         confirmed: opts.confirmed,
         callerSid: opts.callerSid,
+        signal: ctx.signal,
         ...(authenticatedPrincipal ? { authenticatedPrincipal } : {}),
         ...(opts.harness === undefined ? {} : { harness: harnessSlug }),
       });

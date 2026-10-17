@@ -292,8 +292,8 @@ function ProviderCard({
           </span>
         )}
       </div>
-      <ProviderAppRegistration providerId={provider.id} displayName={provider.displayName} registration={provider.appRegistration} />
-      <ProviderOAuthClientForm providerId={provider.id} displayName={provider.displayName} client={provider.oauthClient ?? null} />
+      {!provider.oauthClient?.instanceRequired ? <ProviderAppRegistration providerId={provider.id} displayName={provider.displayName} registration={provider.appRegistration} /> : null}
+      <ProviderOAuthClientForm providerId={provider.id} displayName={provider.displayName} client={provider.oauthClient ?? null} appRegistration={provider.appRegistration} />
       <ProviderCredentialsForm providerId={provider.id} displayName={provider.displayName} credentials={provider.credentials} />
       <ProviderSourceSettingsForm
         providerId={provider.id}

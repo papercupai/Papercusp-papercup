@@ -503,16 +503,54 @@ if [ "$KEYPERM_DEEP" = 1 ]; then
     scan_diagnostics_dir="$(mktemp -d "${TMPDIR:-/tmp}/papercusp-keyperm-scan.XXXXXX" 2>/dev/null || true)"
     find_stderr_file="$scan_diagnostics_dir/find.stderr"
     grep_stderr_file="$scan_diagnostics_dir/grep.stderr"
+    find_race_file="$scan_diagnostics_dir/find.races"
     deep_out=""
     rc=125
     if [ -n "$scan_diagnostics_dir" ] && chmod 700 "$scan_diagnostics_dir" 2>/dev/null &&
       : > "$find_stderr_file" && : > "$grep_stderr_file" &&
-      chmod 600 "$find_stderr_file" "$grep_stderr_file" 2>/dev/null; then
+      : > "$find_race_file" &&
+      chmod 600 "$find_stderr_file" "$grep_stderr_file" "$find_race_file" 2>/dev/null; then
       deep_out="$(timeout "$KEYPERM_DEEP_TIMEOUT_S" nice -n 10 ionice -c 2 -n 7 bash -c '
           set -o pipefail
           diagnostic_dir="$1"; shift
           re="$1"; shift
           root="$1"; shift
+          root_identity_before="$(stat -Lc "%d:%i" -- "$root" 2>/dev/null)" || exit 125
+
+          vanished_find_errors_only() {
+            local line path count=0 byte_count root_identity_after
+            local quote prefix suffix
+            quote="$(printf "\\047")"
+            prefix="find: ${quote}"
+            suffix="${quote}: No such file or directory"
+            [ -s "$diagnostic_dir/find.stderr" ] || return 1
+            byte_count="$(wc -c < "$diagnostic_dir/find.stderr" 2>/dev/null | tr -d "[:space:]")"
+            [[ "$byte_count" =~ ^[0-9]+$ ]] && [ "$byte_count" -lt 32768 ] || return 1
+            root_identity_after="$(stat -Lc "%d:%i" -- "$root" 2>/dev/null)" || return 1
+            [ "$root_identity_before" = "$root_identity_after" ] || return 1
+
+            while IFS= read -r line || [ -n "$line" ]; do
+              case "$line" in "$prefix"*"$suffix") ;; *) return 1 ;; esac
+              path="${line#"$prefix"}"
+              path="${path%"$suffix"}"
+              [ -n "$path" ] || return 1
+              # Be conservative around GNU find shell quoting: only accept
+              # ordinary path bytes, then independently prove each path is
+              # beneath this root and has actually vanished. Oddly quoted
+              # names remain INDETERMINATE instead of being guessed at.
+              case "$path" in *[!A-Za-z0-9_./\ -]*) return 1 ;; esac
+              if [ "$root" = "/" ]; then
+                case "$path" in /*) ;; *) return 1 ;; esac
+              else
+                case "$path" in "$root"/*) ;; *) return 1 ;; esac
+              fi
+              if [ -e "$path" ] || [ -L "$path" ]; then return 1; fi
+              count=$((count + 1))
+            done < "$diagnostic_dir/find.stderr"
+
+            [ "$count" -gt 0 ] || return 1
+            printf "%s\n" "$count" > "$diagnostic_dir/find.races"
+          }
           # ulimit -f is in 512-byte blocks: keep each temporary stderr file
           # at or below 32 KiB even if a root produces thousands of errors.
           ulimit -f 64 || exit 125
@@ -523,9 +561,27 @@ if [ "$KEYPERM_DEEP" = 1 ]; then
           # Files with no group/other bits cannot satisfy group_or_other_bits,
           # so do not open them. Ignore only entries that disappear while find
           # traverses; other find errors remain fatal below.
+          LC_ALL=C
+          export LC_ALL
           find "$root" -ignore_readdir_race "$@" -perm /0077 -print0 2>"$diagnostic_dir/find.stderr" | xargs -0 -r -P 4 -n 1000 bash -c "grep -laIE -m1 \"\$0\" \"\$@\" 2>>\"\$KEYPERM_DIAG_DIR/grep.stderr\"; status=\$?; [ \"\$status\" -eq 1 ] && exit 0; exit \"\$status\"" "$re"
+          pipeline_status=("${PIPESTATUS[@]}")
+          find_status="${pipeline_status[0]}"
+          xargs_status="${pipeline_status[1]}"
+          [ "$find_status" -eq 0 ] && exit "$xargs_status"
+          if [ "$find_status" -ne 1 ] || [ "$xargs_status" -ne 0 ]; then
+            [ "$xargs_status" -eq 0 ] && exit "$find_status"
+            exit "$xargs_status"
+          fi
+          vanished_find_errors_only && exit 0
+          exit "$find_status"
         ' _ "$scan_diagnostics_dir" "$KEY_HEADER_RE" "$root" "${PRUNE_ARGS[@]}" -type f -size -64k -size +100c)"
       rc=$?
+      if [ -s "$find_race_file" ]; then
+        find_race_count="$(cat "$find_race_file" 2>/dev/null || true)"
+        if [[ "$find_race_count" =~ ^[0-9]+$ ]]; then
+          log "tier2: ignored $find_race_count verified vanished descendant(s) under unchanged root=$root"
+        fi
+      fi
       summarize_scan_stderr "$root" "find" "$find_stderr_file"
       summarize_scan_stderr "$root" "grep" "$grep_stderr_file"
     else

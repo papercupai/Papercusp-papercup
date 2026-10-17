@@ -219,8 +219,8 @@ export function isSoftBeatFailure(
  *                                          fix working) but first-class, because this is the
  *                                          leading indicator of the class that left agent
  *                                          sessions tool-dark for hours. See the field doc.
- *  - `shed_max_in_flight`                 → `shed`. Agent-facing 429, but admission control
- *                                          working; sustained nonzero = :3070 not draining.
+ *  - `shed_max_in_flight` | `shed_ordinary_queue_full` → `shed`. Both are pre-forwarding
+ *                                          admission sheds; `byKind` preserves which bound filled.
  *  - `critical_continuation_queue_wait`   → distinct request count once `waitedMs` reaches
  *                                          the five-minute alarm floor; periodic samples are
  *                                          deduplicated by traceId. Short queue dwell stays quiet.
@@ -294,8 +294,9 @@ export function summarizeMcpProxyHealth(
       // layer" failure WI-6740 itself documents. Verified live 2026-08-02: the fleet-facing
       // proxy (pid 2704092, listenPort 9071) writes these in production.
       handshakeStalls += 1;
-    } else if (r.kind === 'shed_max_in_flight') {
-      // EI-19305299022434394 admission control: agent-facing 429, but the bound working.
+    } else if (r.kind === 'shed_max_in_flight' || r.kind === 'shed_ordinary_queue_full') {
+      // Both admission limits can shed valid agent traffic before forwarding; keep the
+      // aggregate alarm-visible while `byKind` preserves which limit rejected the request.
       shed += 1;
     } else if (r.kind === 'exhausted_refused' || r.kind === 'upstream_error') {
       hardFailures += 1;

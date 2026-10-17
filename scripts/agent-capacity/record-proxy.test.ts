@@ -8,6 +8,7 @@ import {
   decodeChunk,
   encodeChunk,
   fingerprintRequest,
+  recordingRequestLimit,
   startRecordProxy,
   type RecordedExchange,
 } from './record-proxy';
@@ -72,6 +73,83 @@ function readExchanges(file: string): RecordedExchange[] {
 }
 
 describe('record proxy', () => {
+  it('overrides caller auth with host-owned private gateway headers without recording the token', async () => {
+    const file = path.join(dir, 'private.jsonl');
+    const proxy = await startRecordProxy({ upstream: upstreamUrl, outFile: file, sessionId: 'private',
+      upstreamHeaders: { authorization: 'Bearer PRIVATE_GATEWAY_TOKEN' } });
+    try {
+      expect((await post(proxy.url + '/v1/responses', '{}', { authorization: 'Bearer CALLER_TOKEN' })).status).toBe(200);
+      expect(seen[0].auth).toBe('Bearer PRIVATE_GATEWAY_TOKEN');
+    } finally { await proxy.close(); }
+    expect(readExchanges(file)).toHaveLength(1);
+    expect(readFileSync(file, 'utf8')).not.toContain('PRIVATE_GATEWAY_TOKEN');
+  });
+  it('refuses an oversized UTF-8 request before upstream and admits the exact byte boundary without changing the body', async () => {
+    const body = JSON.stringify({ model: 'gpt-6-luna', reasoning: { effort: 'low' }, input: 'héllo' });
+    const maxRequestBytes = Buffer.byteLength(body);
+    const requestLimit = recordingRequestLimit({ model: 'gpt-6-luna', effort: 'low' }, 2, maxRequestBytes);
+    const proxy = await startRecordProxy({ upstream: upstreamUrl, outFile: path.join(dir, 'bytes.jsonl'), sessionId: 'bytes', requestLimit });
+    try {
+      expect((await post(proxy.url + '/v1/responses', body + ' ')).status).toBe(400);
+      expect(seen).toHaveLength(0);
+      expect((await post(proxy.url + '/v1/responses', body)).status).toBe(200);
+      expect(seen.map((request) => request.body)).toEqual([body]);
+      expect(requestLimit.snapshot()).toMatchObject({ maxRequestBytes, admitted: 1, denied: 1 });
+    } finally { await proxy.close(); }
+    expect(readExchanges(path.join(dir, 'bytes.jsonl'))[0].error).toContain('byte allowance');
+  });
+
+  it.each([0, -1, 1.5, Infinity, Number.MAX_SAFE_INTEGER + 1])('rejects an invalid byte allowance %s before opening a proxy', (bytes) => {
+    expect(() => recordingRequestLimit({ model: 'gpt-6-luna', effort: 'low' }, 2, bytes)).toThrow(/byte limit/);
+  });
+
+  it('shares a synchronous request cap across concurrent session proxies and records refusals', async () => {
+    const requestLimit = recordingRequestLimit({ model: 'gpt-6-luna', effort: 'low' }, 2);
+    const proxies = await Promise.all(['first', 'second'].map((sessionId) => startRecordProxy({
+      upstream: upstreamUrl, outFile: path.join(dir, sessionId + '.jsonl'), sessionId, requestLimit,
+    })));
+    const body = JSON.stringify({ model: 'gpt-6-luna', reasoning: { effort: 'low' }, tools: [{ type: 'function' }] });
+    try {
+      const responses = await Promise.all([0, 1, 0, 1].map((index) => post(proxies[index].url + '/v1/responses', body)));
+      expect(responses.map((response) => response.status).sort()).toEqual([200, 200, 400, 400]);
+      expect(seen).toHaveLength(2);
+      expect(requestLimit.snapshot()).toMatchObject({ maxRequests: 2, admitted: 2, denied: 2 });
+    } finally { await Promise.all(proxies.map((proxy) => proxy.close())); }
+    const exchanges = ['first', 'second'].flatMap((name) => readExchanges(path.join(dir, name + '.jsonl')));
+    expect(exchanges).toHaveLength(4);
+    expect(exchanges.filter((exchange) => exchange.status === 400).every((exchange) =>
+      exchange.error?.includes('allowance exhausted') && exchange.req.reasoningEffort === 'low')).toBe(true);
+  });
+
+  it.each([
+    ['/v1/messages', { model: 'gpt-6-luna', reasoning: { effort: 'low' } }],
+    ['/v1/responses', { model: 'gpt-6-sol', reasoning: { effort: 'low' } }],
+    ['/v1/responses', { model: 'gpt-6-luna', reasoning: { effort: 'high' } }],
+    ['/v1/responses', { model: 'gpt-6-luna' }],
+    ['/v1/responses', { model: 'gpt-6-luna', reasoning: { effort: 'low' }, background: true }],
+    ['/v1/responses', { model: 'gpt-6-luna', reasoning: { effort: 'low' }, tools: [{ type: 'web_search' }] }],
+    ['/v1/responses', null],
+  ])('refuses an unadmitted configuration before reaching upstream: %s %j', async (endpoint, payload) => {
+    const requestLimit = recordingRequestLimit({ model: 'gpt-6-luna', effort: 'low' }, 2);
+    const proxy = await startRecordProxy({ upstream: upstreamUrl, outFile: path.join(dir, 'denied.jsonl'), sessionId: 'denied', requestLimit });
+    try {
+      expect((await post(proxy.url + endpoint, JSON.stringify(payload))).status).toBe(400);
+      expect(seen).toHaveLength(0);
+      expect(requestLimit.snapshot()).toMatchObject({ admitted: 0, denied: 1 });
+    } finally { await proxy.close(); }
+  });
+
+  it('counts failed upstream attempts against the allowance without refunding retries', async () => {
+    const requestLimit = recordingRequestLimit({ model: 'gpt-6-luna', effort: 'low' }, 1);
+    const proxy = await startRecordProxy({ upstream: 'http://127.0.0.1:1', outFile: path.join(dir, 'retry.jsonl'), sessionId: 'retry', requestLimit });
+    const body = JSON.stringify({ model: 'gpt-6-luna', reasoning: { effort: 'low' } });
+    try {
+      expect((await post(proxy.url + '/v1/responses', body)).status).toBe(502);
+      expect((await post(proxy.url + '/v1/responses', body)).status).toBe(400);
+      expect(requestLimit.snapshot()).toMatchObject({ admitted: 1, denied: 1 });
+    } finally { await proxy.close(); }
+  });
+
   it('forwards a streamed reply byte-for-byte and records its chunks with increasing offsets', async () => {
     const outFile = path.join(dir, 'ex.jsonl');
     const proxy = await startRecordProxy({ upstream: upstreamUrl, outFile, sessionId: 's1' });
@@ -164,6 +242,7 @@ describe('chunk encoding', () => {
     const fp = fingerprintRequest(Buffer.from('not json'));
     expect(fp.model).toBeNull();
     expect(fp.bytes).toBe(8);
+    expect(fp.reasoningEffort).toBeUndefined();
   });
 
   it('records bounded, redacted tool-output metadata for OpenAI and Anthropic requests', () => {

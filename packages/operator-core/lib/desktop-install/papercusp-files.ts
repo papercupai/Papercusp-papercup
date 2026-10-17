@@ -17,6 +17,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { resolveOperatorAppRootFromModuleDir } from '../operator-app-root';
+import { deferSuPromptReferences, SU_KERNEL_END } from '../prompt-reference-sections';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import * as TOML from '@iarna/toml';
@@ -1713,6 +1714,21 @@ export async function writeShim(
   const shellLiteral = (value: string): string => JSON.stringify(value);
   const fallbackLiterals = runtime.fallbackLaunchers.map(shellLiteral);
   const relativeLiterals = relativeLauncherPaths.map(shellLiteral);
+  // `psu-terminal-repair` activates Node's inspector with SIGUSR1. Node's
+  // default publish destinations include stderr, which appends a debugger URL
+  // directly to an interactive TUI. Keep the diagnostic endpoint available
+  // over loopback HTTP while leaving an explicit caller setting untouched.
+  // This is a LAUNCHER argv option, never an exported NODE_OPTIONS addition:
+  // native Claude 2.1.293 silently exits 1 at startup when it inherits that
+  // Node-only option, even though its --version probe succeeds (WI-6554700010016842).
+  const terminalSafeInspector = label === 'superuser launcher (psu)'
+    ? 'psu_inspector_args=()\n' +
+      'case " ${NODE_OPTIONS:-} " in\n' +
+      "  *' --inspect-publish-uid='*) ;;\n" +
+      '  *) psu_inspector_args=(--inspect-publish-uid=http) ;;\n' +
+      'esac\n'
+    : '';
+  const inspectorArgv = terminalSafeInspector ? ' "${psu_inspector_args[@]}"' : '';
   const body =
     '#!/usr/bin/env bash\n' +
     `# papercusp ${label} shim — managed by Papercusp.app (installPapercuspFiles).\n` +
@@ -1726,6 +1742,7 @@ export async function writeShim(
     (bundledBinDir
       ? `export PATH=${shellLiteral(bundledBinDir)}:"$HOME/.local/bin:$PATH"\n`
       : 'export PATH="$HOME/.local/bin:$PATH"\n') +
+    terminalSafeInspector +
     'resolve_launcher() {\n' +
     `  if [ -n "\${${runtime.explicitLauncherEnv}:-}" ] && [ -f "\${${runtime.explicitLauncherEnv}}" ]; then\n` +
     `    printf '%s\\n' "\${${runtime.explicitLauncherEnv}}"\n` +
@@ -1758,7 +1775,7 @@ export async function writeShim(
     'launcher="$(resolve_launcher)" || exit $?\n' +
     `printf '%s\\n' ${shellLiteral(`papercusp ${label}: launcher`)} "$launcher" >&2\n` +
     (runtime.reexecExitCode == null
-      ? `exec ${shellLiteral(nodeCmd)} "$launcher" "$@"\n`
+      ? `exec ${shellLiteral(nodeCmd)}${inspectorArgv} "$launcher" "$@"\n`
       : // WI-38292 re-exec loop. NOT `exec`: bash must survive the swap so the
         // terminal's foreground process group outlives it (see reexecExitCode).
         // The launcher is RE-RESOLVED each pass — picking up new code is the
@@ -1778,7 +1795,7 @@ export async function writeShim(
         // Capability is advertised on every pass; only passes after exit 87
         // have a predecessor handoff to recover. Overwrite inherited markers.
         '  export PAPERCUSP_PSU_REEXEC_COUNT="$psu_reexecs"\n' +
-        `  ${shellLiteral(nodeCmd)} "$launcher" "$@"\n` +
+        `  ${shellLiteral(nodeCmd)}${inspectorArgv} "$launcher" "$@"\n` +
         '  psu_code=$?\n' +
         `  [ "$psu_code" -eq ${runtime.reexecExitCode} ] || exit "$psu_code"\n` +
         // EI-20994934425970874: kickoff is a ONE-SHOT launch input. The shim's
@@ -1948,7 +1965,7 @@ async function writeSentinelShim(shimPath: string, psuShimPath: string): Promise
  *
  * `claudeExecutable` is the resolved claude binary, or undefined when none was
  * found. Undefined still writes the shim, which then exits 127 with a pointer to
- * grep/gitnexus — a stated "ripgrep is unavailable here" beats `command not found`,
+ * grep/lsp — a stated "ripgrep is unavailable here" beats `command not found`,
  * which reads as a PATH bug and sent four agents down the wrong path already.
  */
 export async function writeRipgrepShim(
@@ -1984,7 +2001,7 @@ export async function writeRipgrepShim(
     'if [[ ! -x ${_cc} ]]; then\n' +
     '  echo "rg: ripgrep is unavailable — no standalone ripgrep binary is installed on this host," >&2\n' +
     '  echo "rg: and the claude executable that embeds it was not found at \'${_cc}\'." >&2\n' +
-    '  echo "rg: use grep -rn (exhaustive text search) or gitnexus.context { name } (symbol lookup)." >&2\n' +
+    '  echo "rg: use grep -rn (exhaustive text search) or lsp:query (compiler symbol lookup)." >&2\n' +
     '  exit 127\n' +
     'fi\n' +
     '\n' +
@@ -2828,12 +2845,12 @@ type HookEntry = { matcher?: string; hooks: HookCommand[] };
  *  command on a real live settings.json (EI-8997 follow-up) — this is the fix. Mirrors
  *  the python is_ours filter used by every merge_* helper in install-standalone-mcp.sh
  *  (KEEP THE TWO IN SYNC — see that script's own merge_* comments). */
-function replaceOurHookEntries(arr: HookEntry[], ours: readonly string[], fresh: HookEntry): HookEntry[] {
+function replaceOurHookEntries(arr: HookEntry[], ours: readonly string[], fresh?: HookEntry): HookEntry[] {
   const isOursCmd = (h: HookCommand) => ours.some((o) => String(h?.command ?? '').includes(o));
   const filtered = arr
     .map((e) => (Array.isArray(e?.hooks) ? { ...e, hooks: e.hooks.filter((h) => !isOursCmd(h)) } : e))
     .filter((e) => Array.isArray(e?.hooks) && e.hooks.length > 0);
-  return [...filtered, fresh];
+  return fresh ? [...filtered, fresh] : filtered;
 }
 
 /**
@@ -2964,11 +2981,10 @@ export function mergeClaudeHookSettings(
   // (EI-19374535041074908). Advisory only: it can never deny, because adding a required
   // field is usually correct. Reports to the AUTHOR while it is still their turn — the one
   // moment the signal is both correct (HEAD is still pre-edit) and actionable.
-  if (has('posttooluse-required-field-strand-nudge.mjs'))
-    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-required-field-strand-nudge.mjs'), {
-      matcher: 'Edit|Write|MultiEdit',
-      hooks: cmd('posttooluse-required-field-strand-nudge.mjs'),
-    });
+  // P-037: these modules remain installed as shared injector dependencies. Retire
+  // their independent delivery entries, including entries from an older install.
+  if (Array.isArray(hooks.PostToolUse))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-required-field-strand-nudge.mjs'));
   // merge_behavioural_strand_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-20022235111425919). The BEHAVIOURAL sibling of the block above: that one catches a
   // required field stranding construction sites, this one catches an added CALL stranding
@@ -2977,11 +2993,8 @@ export function mergeClaudeHookSettings(
   // a filter. Registered here rather than merely copied: the file shipped in hooks/cc
   // unregistered, which orphaned-cc-hooks.test.ts flags precisely because a copied-but-
   // unregistered hook is inert while looking installed.
-  if (has('posttooluse-behavioural-strand-nudge.mjs'))
-    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-behavioural-strand-nudge.mjs'), {
-      matcher: 'Edit|Write|MultiEdit',
-      hooks: cmd('posttooluse-behavioural-strand-nudge.mjs'),
-    });
+  if (Array.isArray(hooks.PostToolUse))
+    hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-behavioural-strand-nudge.mjs'));
   // merge_ts_parse_nudge_hook — PostToolUse, matcher 'Edit|Write|MultiEdit'
   // (EI-19457231269012320 / EI-19457320059999661). Advisory only, and this one MUST stay
   // advisory: a multi-step refactor legitimately passes through unparseable intermediate
@@ -3460,7 +3473,7 @@ export async function checkHookSyntax(
  * ONE path. Best-effort + idempotent; a missing source (hooks not shipped) degrades to "nothing
  * installed" and leaves settings.json untouched. `srcDir` = the resolved sidecar/dev hooks/cc dir.
  */
-async function installClaudeHooks(
+export async function installClaudeHooks(
   home: string,
   srcDir: string,
 ): Promise<{ installed: string[]; settingsMerged: boolean }> {
@@ -4221,6 +4234,8 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
 }
 
 export interface RenderSuPlaybookInput {
+  /** Operational runbooks are fetched on demand; inline supports full-reference diagnosis/baselines. */
+  referenceMode?: 'on-demand' | 'inline';
   /** Which client's tooling overlay to splice in (omp/claude/codex). */
   agent: string;
   /** Resolved launch restrictions, when the caller already has them. Defaults to the canonical policy. */
@@ -4443,7 +4458,17 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   // Deliberately NOT PROJECT_GUIDE_MARKER alone: that is precisely the assumption that broke
   // when the blueprint base (AUTO-MODE yes, PROJECT-GUIDE no) became the live one.
   const isSuPlaybook = base.includes(PROJECT_GUIDE_MARKER) || base.includes(AUTO_MODE_MARKER);
-  const withNotes = injectSharedBaseNotes(withCompaction, {
+  // The sealed source kernel ends BEFORE the generated reference bundle. Its
+  // insertion anchor may be inside the original base, so an EOF sentinel would
+  // incorrectly protect the entire generated bundle too.
+  const kernelBoundary = base.includes('<!-- PAPERCUSP-KERNEL:SEAL -->')
+    ? withCompaction.includes(SHARED_BASE_NOTES_MARKER)
+      ? withCompaction.replace(SHARED_BASE_NOTES_MARKER, SU_KERNEL_END + '\n' + SHARED_BASE_NOTES_MARKER)
+      : withCompaction.includes(PROJECT_GUIDE_MARKER)
+        ? withCompaction.replace(PROJECT_GUIDE_MARKER, SU_KERNEL_END + '\n' + PROJECT_GUIDE_MARKER)
+        : withCompaction + '\n' + SU_KERNEL_END
+    : withCompaction;
+  const withNotes = injectSharedBaseNotes(kernelBoundary, {
     repoSpecific: profile === 'engineer',
     eligible: isSuPlaybook,
   });
@@ -4473,5 +4498,10 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   // FULL tier keeps the content but drops the marker comment lines — no
   // internal marker leaks into a rendered prompt (psu-prompt-isolation).
   text = tier === 'fleet' ? stripFullOnlySections(text) : stripFullOnlyMarkers(text);
+  if (input.referenceMode !== 'inline') {
+    text = deferSuPromptReferences(text, {
+      base: baseSource, overlay: overlaySource, repoRoot: path.resolve(operatorAppRoot, '../..'),
+    }).text;
+  } else text = text.replace(SU_KERNEL_END, '');
   return { text, baseSource, overlaySource, projectGuideSource, projectGuideAddressed };
 }

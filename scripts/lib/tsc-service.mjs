@@ -16,7 +16,7 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import ts from 'typescript';
 
 /** Set to `0` to force the full CLI compile (the A/B control, and the escape hatch). */
@@ -450,6 +450,34 @@ export function checkedSetFor({ root, named, programFiles, readText, configFile 
 }
 
 /**
+ * The exact named-file scope used by cross-leg consumers. Consumers only need diagnostics for the
+ * requested files; reverse importers are the owning scoped verdict's responsibility. Keeping this
+ * separate from checkedSetFor lets a large consumer graph reuse the loaded program without making
+ * the service decline because its dependency closure exceeds the owner-check limit.
+ *
+ * @param {{ root: string, named: Iterable<string>, programFiles: readonly string[] }} opts
+ * @returns {{ files: string[], named: number, typeReferencing: number, importers: number, namedNotInProgram: string[] }}
+ */
+export function namedSetFor({ root, named, programFiles }) {
+  const base = resolve(root);
+  const program = new Set(programFiles.map((file) => resolve(file)));
+  const members = [];
+  const namedNotInProgram = [];
+  for (const raw of named) {
+    const absolute = isAbsolute(raw) ? resolve(raw) : resolve(base, raw);
+    if (program.has(absolute)) members.push(absolute);
+    else namedNotInProgram.push(relative(base, absolute));
+  }
+  return {
+    files: members,
+    named: members.length,
+    typeReferencing: 0,
+    importers: 0,
+    namedNotInProgram,
+  };
+}
+
+/**
  * Shared CLI/service attribution (EI-25720784739215773). Resolve actual import/export edges
  * with TypeScript, then walk reverse edges from the changed modules. Aliases, namespace
  * imports, inferred callbacks, barrels and cycles retain provenance; comments, strings and
@@ -678,11 +706,12 @@ export function requestTscService({ socketPath, request, timeoutMs = TSC_SERVICE
  *   files: string[],
  *   label: string,
  *   log?: (line: string) => void,
+ *   scope?: 'dependencies' | 'named',
  *   env?: Record<string, string | undefined>,
  * }} opts
  * @returns {Promise<Extract<TscServiceResponse, { ok: true }> | null>}
  */
-export async function typecheckViaService({ root, project, files, label, log = (line) => console.error(line), env = process.env }) {
+export async function typecheckViaService({ root, project, files, label, log = (line) => console.error(line), scope, env = process.env }) {
   let socketPath = tscServiceSocketPath(env);
   const template = env[TSC_SERVICE_UNIT_TEMPLATE_ENV];
   if (template) {
@@ -694,7 +723,10 @@ export async function typecheckViaService({ root, project, files, label, log = (
     socketPath = located.socketPath;
   }
   try {
-    const response = await requestTscService({ socketPath, request: { v: 1, root, project, files } });
+    const response = await requestTscService({
+      socketPath,
+      request: { v: 1, root, project, files, ...(scope === undefined ? {} : { scope }) },
+    });
     if (response.ok) return response;
     log(`⚠ TSC_SERVICE declined (${response.reason}${response.detail ? `: ${response.detail}` : ''}) — running the full ${label} compile instead.`);
   } catch (error) {

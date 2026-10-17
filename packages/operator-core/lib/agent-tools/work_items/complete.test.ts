@@ -30,10 +30,16 @@ const hiveMocks = vi.hoisted(() => ({
 }));
 const parkReachability = vi.hoisted(() => ({ read: vi.fn() }));
 const conformanceClosure = vi.hoisted(() => ({
-  read: vi.fn(async (..._args: unknown[]): Promise<unknown> => null),
+  read: vi.fn(async (..._args: unknown[]): Promise<unknown> => ({
+    applicable: true,
+    mappedRequirements: ['R-1'],
+    declaredRequirements: ['R-1'],
+    declarationSatisfied: true,
+    refusal: null,
+  })),
 }));
 vi.mock('../../spec-conformance/closure-guard', () => ({
-  conformanceClosureRefusal: (...args: unknown[]) => conformanceClosure.read(...args),
+  conformanceClosureAssessment: (...args: unknown[]) => conformanceClosure.read(...args),
 }));
 vi.mock('../../external-condition-reachability', () => ({
   readEventConditionReachability: (...args: unknown[]) => parkReachability.read(...args),
@@ -66,6 +72,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 
 const getWorkItem = vi.fn();
 const getWorkItemsByIds = vi.fn();
+const listWorkItems = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
 const setWorkItemClaimHold = vi.fn();
 const mergeWorkItemOutputPayload = vi.fn();
@@ -87,6 +94,7 @@ const commentWorkItem = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   getWorkItemsByIds: (...a: unknown[]) => getWorkItemsByIds(...a),
+  listWorkItems: (...a: unknown[]) => listWorkItems(...a),
   // The improvement-review module is imported through complete.ts's analysis
   // dependency graph and binds these references at import time.
   getWorkItemDetail: vi.fn(),
@@ -154,6 +162,10 @@ vi.mock('../../harness/improvements/completion-verification-store', () => ({
 // exercise the gate WIRING in completeOne (flag-off skips, flag-on consults, refusal blocks)
 // without PG. The default beforeEach state is flag OFF + gate OK (= today's behavior).
 const getFlag = vi.fn();
+const completionBriefPort = vi.hoisted(() => ({ read: vi.fn() }));
+vi.mock('../../code-intelligence/task-brief', () => ({
+  getCompletionTimeBrief: (...args: unknown[]) => completionBriefPort.read(...args),
+}));
 // `onFlagChange` is required even though this suite never exercises it: importing
 // locks/configure.ts pulls in txn-timeouts-config.ts, which calls onFlagChange() at
 // MODULE SCOPE (D-010 event-driven refresh). A mock omitting it fails the whole file
@@ -355,8 +367,16 @@ function okState(workItem: Record<string, unknown>) {
 }
 
 beforeEach(() => {
+  completionBriefPort.read.mockReset();
+  completionBriefPort.read.mockResolvedValue(null);
   conformanceClosure.read.mockReset();
-  conformanceClosure.read.mockResolvedValue(null);
+    conformanceClosure.read.mockResolvedValue({
+      applicable: true,
+      mappedRequirements: ['R-1'],
+      declaredRequirements: ['R-1'],
+      declarationSatisfied: true,
+      refusal: null,
+    });
   parkReachability.read.mockResolvedValue({
     verdict: 'reachable', basis: 'catalogued', evidence: 'catalogued unblocked producer is live',
   });
@@ -371,6 +391,8 @@ beforeEach(() => {
   hiveMocks.potHomeSlugForHarness.mockReset();
   hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
   getWorkItem.mockReset();
+  listWorkItems.mockReset();
+  listWorkItems.mockResolvedValue([]);
   setWorkItemStateWithAliasInfo.mockReset();
   setWorkItemClaimHold.mockReset();
   setWorkItemClaimHold.mockResolvedValue({ id: 'WI-1', harness: 'papercup', hold: true, applicable: true });
@@ -403,6 +425,44 @@ beforeEach(() => {
 });
 
 // ── EI-20286699547467039: unmet completion gates accumulate into ONE refusal ──────────
+describe('P039 completion source brief delivery', () => {
+  it('attaches the bounded pre-review brief after a successful close using declared changed files', async () => {
+    const row = { id: 'WI-brief', kind: 'task', family: 'issue', state: 'open', harness: 'papercup' };
+    getWorkItem.mockResolvedValue(row);
+    setWorkItemStateWithAliasInfo.mockResolvedValue({ workItem: { ...row, state: 'done' }, appliedState: 'done', requestedState: 'done', aliased: false });
+    getFlag.mockImplementation(async (name: string) => name === 'papercusp-code-intel-push-completion');
+    const brief = { phase: 'pre-review', status: 'measured', testsWithoutRunEvidence: ['target.test.ts'], executionCoverage: 'unmeasured' };
+    completionBriefPort.read.mockResolvedValue(brief);
+    const result = await one({ id: 'WI-brief', state: 'done', completion: { summary: 'changed source',
+      filesChanged: ['packages/operator-core/lib/code-intelligence/task-brief.ts'] } });
+    expect(result.ok).toBe(true); expect(result.completionBrief).toEqual(brief);
+    expect(completionBriefPort.read).toHaveBeenCalledWith(expect.objectContaining({
+      harness: 'papercup', paths: ['packages/operator-core/lib/code-intelligence/task-brief.ts'],
+    }), expect.objectContaining({ runs: expect.any(Function) }));
+    const readRuns = completionBriefPort.read.mock.calls[0]![1].runs;
+    const invocation = { invoked_at: new Date(), duration_ms: 10, files: ['target.test.ts'], work_item_id: 'WI-brief' };
+    dbMocks.planItemStatusRows.mockResolvedValueOnce([invocation]).mockResolvedValueOnce([
+      { file_path: 'target.test.ts', status: 'pass', run_group_id: 'bound-run' },
+    ]);
+    expect(await readRuns(['target.test.ts'])).toEqual([{ path: 'target.test.ts', status: 'pass', runGroupId: 'bound-run' }]);
+    dbMocks.planItemStatusRows.mockResolvedValueOnce([invocation]).mockResolvedValueOnce([
+      { file_path: 'target.test.ts', status: 'pass', run_group_id: 'bound-run' },
+      { file_path: 'target.test.ts', status: 'pass', run_group_id: 'peer-run' },
+    ]);
+    expect(await readRuns(['target.test.ts'])).toBeNull();
+    dbMocks.planItemStatusRows.mockResolvedValueOnce([{ ...invocation, work_item_id: 'WI-foreign' }]);
+    expect(await readRuns(['target.test.ts'])).toBeNull();
+    dbMocks.planItemStatusRows.mockRejectedValueOnce(new Error('ledger unavailable'));
+    expect(await readRuns(['target.test.ts'])).toBeNull();
+  });
+  it('does not start source analysis on a record-only completion', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-brief', kind: 'task', family: 'issue', state: 'open', harness: 'papercup' });
+    getFlag.mockResolvedValue(true);
+    await one({ id: 'WI-brief', recordOnly: true, completion: { summary: 'record only', filesChanged: ['target.ts'] } });
+    expect(completionBriefPort.read).not.toHaveBeenCalled();
+  });
+});
+
 // The contract gates used to be sequential early-returns, so a caller violating three of
 // them learned about them across three round-trips — one full model turn each. They now
 // all evaluate and report together. The three tests below are a matched set and should
@@ -1007,6 +1067,27 @@ describe('work_items:complete (keyed-array)', () => {
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
+  it('EI-26068584723658382: names the exact open claim after a shortened id miss', async () => {
+    getWorkItem.mockResolvedValue(null);
+    listWorkItems.mockResolvedValue([
+      { id: 'WI-6554700010013312', state: 'open', harness: 'papercusp' },
+    ]);
+
+    const out = await env({ id: 'WI-6554700013312', completion: { summary: 'x' } });
+
+    expect(out.results[0].ok).toBe(false);
+    expect(out.results[0].error).toContain("work_item 'WI-6554700013312' not found.");
+    expect(out.results[0].error).toContain('WI-6554700010013312');
+    expect(out.results[0].error).toContain('re-read the exact id');
+    expect(listWorkItems).toHaveBeenCalledWith({
+      assignee: 'su-tester',
+      harness: undefined,
+      notTerminal: true,
+      limit: 20,
+    });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
   // EI-19285045282744205: a DB-connection fault reading the item must surface as a
   // connection error, NEVER as the crafted "not found" text — the two are different
   // facts (unreachable vs authoritative absence) with different correct responses.
@@ -1282,12 +1363,119 @@ describe('work_items:complete (keyed-array)', () => {
   it('refuses conformance violations before writing or emitting a linked completion', async () => {
     getWorkItem.mockResolvedValue({ ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-001'] });
     conformanceClosure.read.mockResolvedValue({
-      code: 'conformance_done_when_not_passing', error: 'R-1 failed.', requirements: ['R-1'],
+      applicable: true,
+      mappedRequirements: ['R-1'],
+      declaredRequirements: ['R-1'],
+      declarationSatisfied: true,
+      refusal: { code: 'conformance_done_when_not_passing', error: 'R-1 failed.', requirements: ['R-1'] },
     });
     const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'R-1 delivered', discharges: ['R-1'] } });
-    expect(r).toMatchObject({ ok: false, specConformanceRefusal: { code: 'conformance_done_when_not_passing' } });
+    expect(r).toMatchObject({
+      ok: false,
+      specConformanceRefusal: { code: 'conformance_done_when_not_passing' },
+      completionContract: {
+        requirements: expect.arrayContaining([
+          expect.objectContaining({
+            key: 'spec-conformance-closure',
+            applicable: true,
+            satisfied: false,
+            details: {
+              mappedRequirements: ['R-1'],
+              declaredRequirements: ['R-1'],
+              declarationFields: ['completion.discharges', 'completion.contributesTo'],
+              declarationSatisfied: true,
+            },
+          }),
+        ]),
+      },
+    });
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     expect(fireReactionInProcess).not.toHaveBeenCalled();
+  });
+
+  it('shows the mapped declaration requirement in the same validateOnly refusal as other contract gates', async () => {
+    getWorkItem.mockResolvedValue({ ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-001'] });
+    conformanceClosure.read.mockResolvedValue({
+      applicable: true,
+      mappedRequirements: ['R-1', 'R-3'],
+      declaredRequirements: [],
+      declarationSatisfied: false,
+      refusal: {
+        code: 'conformance_requirements_missing',
+        error: 'Name a mapped requirement in completion.discharges or completion.contributesTo.',
+        requirements: ['R-1', 'R-3'],
+      },
+    });
+
+    const r = await one({
+      id: 'F-12',
+      state: 'passed',
+      validateOnly: true,
+      completion: { summary: 'R-1 and R-3 delivered', testsRun: 'focused tests', testResult: 'pass' },
+    });
+
+    expect(r).toMatchObject({
+      ok: false,
+      specConformanceRefusal: { code: 'conformance_requirements_missing', requirements: ['R-1', 'R-3'] },
+      completionContract: {
+        requirements: expect.arrayContaining([
+          expect.objectContaining({
+            key: 'spec-conformance-closure',
+            applicable: true,
+            satisfied: false,
+            details: {
+              mappedRequirements: ['R-1', 'R-3'],
+              declaredRequirements: [],
+              declarationFields: ['completion.discharges', 'completion.contributesTo'],
+              declarationSatisfied: false,
+            },
+          }),
+        ]),
+      },
+    });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(fireReactionInProcess).not.toHaveBeenCalled();
+  });
+
+  it('shows mapped and supplied requirement declarations on a successful validateOnly preview', async () => {
+    const linked = { ...item, sourcePlanSlug: 'requirement-plan', sourcePlanItemIds: ['P-001'] };
+    getWorkItem.mockResolvedValue(linked);
+    conformanceClosure.read.mockResolvedValue({
+      applicable: true,
+      mappedRequirements: ['R-1', 'R-3'],
+      declaredRequirements: ['R-1', 'R-3'],
+      declarationSatisfied: true,
+      refusal: null,
+    });
+
+    const r = await one({
+      id: 'F-12',
+      state: 'passed',
+      validateOnly: true,
+      completion: { summary: 'R-1 and R-3 delivered', discharges: ['R-1'], contributesTo: ['R-3'] },
+    });
+
+    expect(r).toMatchObject({
+      ok: true,
+      validationOnly: true,
+      completionContract: {
+        requirements: expect.arrayContaining([
+          expect.objectContaining({
+            key: 'spec-conformance-closure',
+            applicable: true,
+            satisfied: true,
+            details: {
+              mappedRequirements: ['R-1', 'R-3'],
+              declaredRequirements: ['R-1', 'R-3'],
+              declarationFields: ['completion.discharges', 'completion.contributesTo'],
+              declarationSatisfied: true,
+            },
+          }),
+        ]),
+      },
+    });
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
   });
 
   it('refuses an unavailable conformance read without writing a completion', async () => {

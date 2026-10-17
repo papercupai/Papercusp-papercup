@@ -97,6 +97,36 @@ afterEach(() => {
 });
 
 describe('findHollowPackages — the true positives', () => {
+  it('flags nested dependency bins below scoped and unscoped packages without a parent bin directory', () => {
+    const r = makeRoot();
+    const nm = nodeModulesOf(r);
+    installPackage(nm, '@bundled-es-modules/glob');
+    const nested = nodeModulesOf(join(nm, '@bundled-es-modules/glob'));
+    installPackage(nested, 'tool');
+    const deep = nodeModulesOf(join(nested, 'tool'));
+    mkdirSync(join(deep, '.bin'));
+    symlinkSync('../missing/cli.js', join(deep, '.bin', '.tool-retired'));
+    expect(findHollowPackages(r).findings).toEqual([
+      { workspace: 'node_modules/@bundled-es-modules/glob/node_modules/tool',
+        pkg: '.bin/.tool-retired', kind: 'dangling-bin-symlink' },
+    ]);
+  });
+
+  it('does not follow dependency, scope, or nested node_modules symlinks while scanning bins', () => {
+    const r = makeRoot();
+    const outside = makeRoot();
+    const externalNm = nodeModulesOf(outside);
+    installPackage(externalNm, 'tool');
+    mkdirSync(join(externalNm, '.bin'));
+    symlinkSync('../missing/cli.js', join(externalNm, '.bin', 'external'));
+    const nm = nodeModulesOf(r);
+    installPackage(nm, 'local');
+    symlinkSync(externalNm, join(nm, 'local/node_modules'));
+    symlinkSync(join(externalNm, 'tool'), join(nm, 'linked'));
+    symlinkSync(externalNm, join(nm, '@external'));
+    expect(findHollowPackages(r).findings).toEqual([]);
+  });
+
   it('flags a dangling workspace .bin link even when a healthy hoisted package exists', () => {
     const r = makeRoot(['libs/*']);
     const ws = join(r, 'libs', 'tooling');

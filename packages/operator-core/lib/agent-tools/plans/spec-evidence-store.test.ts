@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { hostname } from 'node:os';
+import * as coldEnvironment from '../../storage/cold-tier-evidence';
 
 const h = vi.hoisted(() => ({
   rows: [] as Array<Record<string, unknown>>,
@@ -51,6 +52,11 @@ vi.mock('./source', async (importOriginal) => {
   };
 });
 
+// Retraction pushes scorecard invalidations after commit in production. Keep this
+// unit suite on its in-memory seam; the sync server's own integration tests cover
+// the transport and must not be opened by this store test.
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
+
 // A replay that MEASURES resolves a real harness checkout. Point that resolution at this
 // suite's temp fixture root so the measuring path can be observed end to end; without this
 // the measurement can only ever fail with repo_measurement_harness_root_unavailable, which
@@ -73,6 +79,7 @@ import {
   type ListSpecEvidenceDiagnostics,
   measureAndPinEvidenceForScope,
   measureAndPinRepoFilesEvidenceAtRoot,
+  measureAndPinRepoFilesEvidenceAtCommitForScope,
   measureRepoFilesEvidenceDetailedAtRoot,
   measureRepoFilesEvidenceDetailedAtCommit,
   measureCompletedTestRuntime,
@@ -80,6 +87,7 @@ import {
   measureRepoFilesEvidenceAtRoot,
   measureWorkItemsEvidenceForScope,
   hasMatchingDeclaredCaseTitle,
+  retractSpecEvidence,
 } from './spec-evidence-store';
 import { configureRuntimeVintageStore, resetRuntimeVintageStore, InMemoryRuntimeVintageStore,
   reportRuntimeVintage, listRuntimeVintage, measureRuntimeVintageEnvironment } from '../../runtime-vintage';
@@ -268,6 +276,41 @@ describe('completed isolated runtime certification', () => {
     await setupIsolated();
     expect((await read()).currentness.dimensions.environment).toBe('current');
   });
+  it('certifies original isolated receipts when the first binding omitted the completion selector without changing its recipe', async () => {
+    const state = await setupIsolated();
+    delete state.basis.completedRuntime;
+    const originalRecipe = structuredClone(state.basis);
+    const evidence = await read();
+    expect(evidence.currentness).toMatchObject({ overall: 'current', provenance: 'server-measured',
+      dimensions: { source: 'current', test: 'current', environment: 'current', testRun: 'current' } });
+    expect(state.row.details.currentMeasurement).toEqual(originalRecipe);
+  });
+  it.each(['tampered-receipt', 'missing-artifact', 'missing-receipts', 'wrong-unit', 'wrong-scope',
+    'wrong-source', 'wrong-commit', 'missing-teardown', 'deployed', 'explicit-wrong-selector'])(
+    'keeps inferred completion fail-closed for %s', async failure => {
+      const state = await setupIsolated();
+      delete state.basis.completedRuntime;
+      if (failure === 'tampered-receipt') state.life.pgPort++;
+      if (failure === 'wrong-source') state.source.files[0].gitSha256 = 'b'.repeat(64);
+      if (failure === 'wrong-scope') state.source.workspaceId = 'foreign';
+      if (failure === 'missing-teardown') state.life.ended.pgDataRemoved = false;
+      await state.save(failure !== 'tampered-receipt');
+      if (failure === 'missing-artifact') await rm(join(state.dir, 'phases/execute/lifecycle.json'));
+      if (failure === 'missing-receipts') delete (state.execution as any).isolatedRuntimeReceipts;
+      if (failure === 'wrong-unit') state.basis.runtimeUnits = ['bg-host'];
+      if (failure === 'wrong-commit') state.row.test_run_commit_sha = 'b'.repeat(40);
+      if (failure === 'deployed') state.row.details.evidencePlane = 'deployed';
+      if (failure === 'explicit-wrong-selector') state.basis.completedRuntime = {
+        kind: 'isolated-integration', runIds: ['20261008T000022Z-202'] };
+      expect((await read()).currentness.dimensions.environment).toBe('unknown');
+    });
+  it.each(['tree', 'live', 'deployed', 'unknown', undefined])(
+    'certifies the retained isolated lifetime only for tree or live evidence: %s', async evidencePlane => {
+      const state = await setupIsolated();
+      state.row.details.evidencePlane = evidencePlane as string;
+      expect((await read()).currentness.dimensions.environment)
+        .toBe(evidencePlane === 'tree' || evidencePlane === 'live' ? 'current' : 'unknown');
+    });
   it.each(['filtered', 'missing-pattern', 'invalid-pattern', 'selected-skip', 'missing-ledger', 'missing-case', 'failed-case'])(
     'certifies only ledger-proven excluded cases: %s', async condition => {
       const state = await setupIsolated();
@@ -493,6 +536,8 @@ describe('completed isolated runtime certification', () => {
   });
   it('keeps exact certification receipts through actual harness retention pruning', async () => {
     const state = await setup();
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(artifacts, 'mutex'));
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(artifacts, 'pins'));
     // A completed verifier must satisfy the retention policy's terminal-result
     // contract; without endedAt this fixture exercises the 24-hour grace instead.
     Object.assign(state.verifier, { startedAt: at(0), endedAt: at(50) });
@@ -828,6 +873,58 @@ describe('repo-backed server measurement', () => {
       h.fixtureMeasurementRoot = '';
       await rm(fixtureRoot, { recursive: true, force: true });
     }
+  });
+
+  it('binds and independently rechecks native host proof, rejecting unavailable or changed observations', async () => {
+    const native = vi.spyOn(coldEnvironment, 'measureNativeColdEnvironment');
+    const fingerprint = 'sha256-native-storage-environment-v1:' + 'a'.repeat(64);
+    const recipe = { schemaVersion: 1 as const, kind: 'repo-files' as const,
+      sourcePaths: ['src/feature.ts'], testPaths: ['test/feature.test.ts'],
+      nativeInstrumentKey: coldEnvironment.COLD_MOVES_INSTRUMENT_KEY } satisfies Parameters<typeof measureAndPinEvidenceForScope>[2];
+    try {
+      native.mockResolvedValue(fingerprint);
+      const bound = await measureAndPinEvidenceForScope('workspace-test', 'papercusp', recipe);
+      expect(bound.environmentFingerprint).toBe(fingerprint);
+      expect(native).toHaveBeenLastCalledWith('workspace-test', 'papercusp', recipe.nativeInstrumentKey, true);
+      h.rows = [{ id: 9201, plan_slug: 'native-plan', spec_id: 'NATIVE-1', spec_revision: 1,
+        spec_is_current: true, evidence_kind: 'operational', evidence_ref: 'native:cold-cutover',
+        source_fingerprint: bound.sourceFingerprint, test_fingerprint: bound.testFingerprint,
+        fixture_fingerprint: null, rubric_fingerprint: null, environment_fingerprint: fingerprint,
+        coverage_evidence_ref: null, coverage_evidence_present: false, test_run_id: null, test_run_present: false,
+        details: { currentMeasurement: recipe, evidencePlane: 'live' },
+        observed_at: '2026-10-16T00:00:00Z', created_at: '2026-10-16T00:00:00Z', created_by: 'su-test',
+        binding_fingerprint: 'native-binding' }];
+      const read = async () => (await listSpecEvidence({ planSlugs: ['native-plan'], harnessSlug: 'papercusp', workspaceId: 'workspace-test' }))[0]!;
+      expect((await read()).currentness.overall).toBe('current');
+      expect(native).toHaveBeenLastCalledWith('workspace-test', 'papercusp', recipe.nativeInstrumentKey);
+      native.mockResolvedValue('sha256-native-storage-environment-v1:' + 'b'.repeat(64));
+      expect((await read()).currentness.dimensions.environment).toBe('stale');
+      native.mockResolvedValue(null);
+      expect((await read()).currentness.dimensions.environment).toBe('unknown');
+      native.mockRejectedValue(new Error('native observation unavailable'));
+      expect((await read()).currentness.overall).toBe('unknown');
+      await expect(measureAndPinEvidenceForScope('workspace-test', 'papercusp', recipe)).rejects.toThrow('native observation unavailable');
+    } finally { native.mockRestore(); }
+  });
+
+  it('allows only native storage selectors and refuses ambiguous environment selectors', () => {
+    const base = { kind: 'repo-files', sourcePaths: ['src/feature.ts'], nativeInstrumentKey: coldEnvironment.COLD_MOVES_INSTRUMENT_KEY };
+    expect(evidenceMeasurementSchema.safeParse(base).success).toBe(true);
+    for (const extra of [{ runtimeUnits: ['operator'] }, { artifactReceiptPath: 'docs/evidence/package.json' },
+      { nativeInstrumentKey: 'unregistered:fake' }]) {
+      expect(evidenceMeasurementSchema.safeParse({ ...base, ...extra }).success).toBe(false);
+    }
+  });
+
+  it('refuses to restamp a historical test commit with a native observation taken now', async () => {
+    const native = vi.spyOn(coldEnvironment, 'measureNativeColdEnvironment');
+    try {
+      await expect(measureAndPinRepoFilesEvidenceAtCommitForScope('workspace-test', 'papercusp', {
+        schemaVersion: 1, kind: 'repo-files', sourcePaths: ['src/feature.ts'],
+        nativeInstrumentKey: coldEnvironment.COLD_MOVES_INSTRUMENT_KEY,
+      }, { commitSha: 'a'.repeat(40), repoPrefix: null })).rejects.toThrow('cannot certify a historical test commit');
+      expect(native).not.toHaveBeenCalled();
+    } finally { native.mockRestore(); }
   });
 
   it('includes globbed source changes, additions, and removals in the source fingerprint', async () => {
@@ -1197,9 +1294,9 @@ describe('classifySpecEvidenceCurrentness exact current comparisons', () => {
     { plane: 'deployed', expectedEnvironment: 'unknown', expectedOverall: 'unknown' },
     { plane: 'local', expectedEnvironment: 'not-applicable', expectedOverall: 'current' },
     { plane: undefined, expectedEnvironment: 'not-applicable', expectedOverall: 'current' },
-  ])(
-    'requires a recorded environment fingerprint for $plane evidence and preserves other planes',
-    ({ plane, expectedEnvironment, expectedOverall }) => {
+  ].flatMap((entry) => [false, true].map((nested) => ({ ...entry, nested }))))(
+    'requires a recorded environment fingerprint for $plane evidence (nested=$nested) and preserves other planes',
+    ({ plane, nested, expectedEnvironment, expectedOverall }) => {
       const currentness = classifySpecEvidenceCurrentness(
         {
           spec_is_current: true,
@@ -1214,8 +1311,8 @@ describe('classifySpecEvidenceCurrentness exact current comparisons', () => {
           test_run_present: false,
           evidence_kind: 'test',
           details: {
-            ...(plane === undefined ? {} : { evidencePlane: plane }),
-            adequacy: { testLayer: 'e2e' },
+            ...(plane === undefined || nested ? {} : { evidencePlane: plane }),
+            adequacy: { testLayer: 'e2e', ...(nested && plane !== undefined ? { evidencePlane: plane } : {}) },
           },
         },
         {
@@ -1429,7 +1526,7 @@ describe('listSpecEvidence timestamp normalization', () => {
     expect(h.workspaceScopes).toEqual(['workspace-historical']);
   });
 
-  it('projects structured failed identities even without a human tail, fenced to a failed mutation run (EI-25248905256718690)', async () => {
+  it('projects every structured failed identity over a one-line human tail, fenced to a failed mutation run (EI-25248905256718690)', async () => {
     h.rows = [{
       id: 1, work_item_id: 'WI-1', plan_slug: 'plan-one', spec_id: 'SPEC-1',
       spec_revision: 1, current_revision: 1, spec_fingerprint: 'spec', spec_is_current: true,
@@ -1437,20 +1534,26 @@ describe('listSpecEvidence timestamp normalization', () => {
       source_fingerprint: null, test_fingerprint: null, fixture_fingerprint: null,
       rubric_fingerprint: null, environment_fingerprint: null, coverage_evidence_ref: null,
       test_run_id: 43, test_run_present: true, test_run_file_path: 'test/a.test.ts',
-      test_run_commit_sha: 'abc', test_run_worktree_dirty: false, mutation_failure_tail: null,
+      test_run_commit_sha: 'abc', test_run_worktree_dirty: false,
+      mutation_failure_tail: 'suite > failed with a long DOM error: expected false to be true',
       mutation_execution_details: {
         schemaVersion: 1, root: '/repo', filePath: 'test/a.test.ts', runGroupId: null,
         workspaceId: 'ws', harnessSlug: 'papercusp', testNamePattern: null,
-        passed: 1, failed: 1, skipped: 0, collectionFailed: false, mutationPhase: 'mutant',
-        commitSha: 'abc', worktreeDirty: false, failedCaseTitles: ['suite > failed with a long DOM error'],
+        passed: 1, failed: 2, skipped: 0, collectionFailed: false, mutationPhase: 'mutant',
+        commitSha: 'abc', worktreeDirty: false,
+        failedCaseTitles: ['suite > failed with a long DOM error', 'suite > second failed case'],
       },
       observed_at: '2026-10-06T16:35:00.000Z', created_at: '2026-10-06T16:36:00.000Z',
     }];
     const [row] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
     expect(row.testRunProvenance?.mutationFailureLines).toEqual([
       'suite > failed with a long DOM error: (recorded failed assertion)',
+      'suite > second failed case: (recorded failed assertion)',
     ]);
-    expect(row.testRunProvenance?.mutationFailedCaseTitles).toEqual(['suite > failed with a long DOM error']);
+    expect(row.testRunProvenance?.mutationFailedCaseTitles).toEqual([
+      'suite > failed with a long DOM error',
+      'suite > second failed case',
+    ]);
     const query = h.queries.find(query => query.sql.includes('SELECT b.id'))?.sql ?? '';
     expect(query).toContain("WHEN b.evidence_kind IN ('mutation', 'counterexample')");
     expect(query).toContain("AND tr.execution_details->>'mutationPhase' = 'mutant'");
@@ -1806,6 +1909,67 @@ describe('listSpecEvidence timestamp normalization', () => {
     expect(stale).toHaveProperty('serverMeasurement.movedPaths', expect.arrayContaining([
       expect.objectContaining({ path: fixturePath, dimension: 'fixture', change: 'changed' }),
     ]));
+  });
+
+  it('preserves the default harness identity when diffing fixture files against a pinned measurement', async () => {
+    const fixturePath = 'fixture/root-identity.ts';
+    await mkdir(join(measurementRoot, 'fixture'), { recursive: true });
+    await writeFile(join(measurementRoot, fixturePath), 'export const fixtureVersion = 1;\n');
+    const recipe = {
+      schemaVersion: 1 as const,
+      kind: 'repo-files' as const,
+      sourcePaths: ['src/feature.ts'],
+      testPaths: ['test/feature.test.ts'],
+      fixturePaths: [fixturePath],
+    };
+    try {
+      const pinned = await measureAndPinRepoFilesEvidenceAtRoot(measurementRoot, recipe, {
+        fixtureRootHarnessSlug: 'papercusp',
+      });
+      expect(pinned.pin.files).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: fixturePath, dimension: 'fixture', rootHarnessSlug: 'papercusp' }),
+      ]));
+      await writeFile(join(measurementRoot, fixturePath), 'export const fixtureVersion = 2;\n');
+      h.rows = [{
+        id: 57,
+        work_item_id: 'WI-fixture-root-identity',
+        plan_slug: 'plan-one',
+        spec_id: 'SPEC-fixture-root-identity',
+        source_val_id: null,
+        spec_revision: 1,
+        current_revision: 1,
+        spec_fingerprint: 'sha256:spec-fixture-root-identity',
+        evidence_kind: 'test',
+        evidence_ref: 'vitest:fixture-root-identity',
+        source_fingerprint: pinned.sourceFingerprint,
+        test_fingerprint: pinned.testFingerprint,
+        fixture_fingerprint: pinned.fixtureFingerprint,
+        rubric_fingerprint: null,
+        environment_fingerprint: null,
+        coverage_evidence_ref: null,
+        coverage_evidence_present: false,
+        test_run_id: null,
+        test_run_present: false,
+        details: { currentMeasurement: recipe, measurementPin: pinned.pin },
+        observed_at: '2026-08-20T21:10:00.000Z',
+        binding_fingerprint: 'sha256:fixture-root-identity-binding',
+        created_by: 'su-test',
+        created_at: '2026-08-20T21:10:01.000Z',
+        spec_is_current: true,
+      }];
+
+      const [stale] = await listSpecEvidence({ harnessSlug: 'papercusp', planSlugs: ['plan-one'] });
+      expect(stale.currentness).toMatchObject({
+        overall: 'stale',
+        dimensions: { fixture: 'stale' },
+        staleReasons: ['fixture-stale'],
+      });
+      expect(stale).toHaveProperty('serverMeasurement.movedPaths', [
+        { path: fixturePath, dimension: 'fixture', rootHarnessSlug: 'papercusp', change: 'changed' },
+      ]);
+    } finally {
+      await rm(join(measurementRoot, fixturePath), { force: true });
+    }
   });
 
   it('matches scoped currentness by clause identity when two specs share one artifact reference', async () => {
@@ -2636,5 +2800,44 @@ describe('ledger-state server measurement', () => {
     expect(
       evidenceMeasurementSchema.safeParse({ schemaVersion: 1, kind: 'work-items', workItemIds: ['not a ref'] }).success,
     ).toBe(false);
+  });
+});
+
+describe('spec evidence retraction and grading-audit cancellation', () => {
+  beforeEach(() => {
+    h.rows = [{
+      id: 30308,
+      work_item_id: 'WI-101',
+      plan_slug: 'reconnect-plan',
+      spec_id: 'SPEC-003-01',
+      spec_revision: 1,
+      evidence_kind: 'coverage-census',
+      evidence_ref: 'surface:POST /events',
+      retracted_at: null,
+      retracted_by: null,
+      retraction_reason: null,
+      feature_id: 'EI-TARGET',
+    }];
+    h.queries = [];
+  });
+
+  it('cancels pending grading audits in the retraction transaction before notifying readers', async () => {
+    const result = await retractSpecEvidence({
+      harnessSlug: 'papercusp',
+      bindingId: 30308,
+      reason: 'withdrawn fixture evidence',
+      actorId: 'su-retractor',
+    });
+
+    expect(result).toMatchObject({ status: 'retracted', bindingId: 30308 });
+    const bindingUpdateIndex = h.queries.findIndex(({ sql }) => sql.includes('UPDATE harness_shared.spec_evidence_bindings'));
+    const auditCancellationIndex = h.queries.findIndex(({ sql }) => sql.includes('UPDATE harness_shared.work_items'));
+    expect(bindingUpdateIndex).toBeGreaterThanOrEqual(0);
+    expect(auditCancellationIndex).toBeGreaterThan(bindingUpdateIndex);
+    const cancellation = h.queries[auditCancellationIndex]!;
+    expect(cancellation.sql).toContain("gradingAudit'->>'state' = 'pending'");
+    expect(cancellation.sql).toContain('jsonb_array_elements_text');
+    expect(cancellation.sql).toContain("cited.binding_id =");
+    expect(cancellation.values).toEqual(expect.arrayContaining(['workspace-test', '30308']));
   });
 });

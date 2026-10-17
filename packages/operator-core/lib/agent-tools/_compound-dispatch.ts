@@ -51,7 +51,12 @@ const COMPACT_MARKER_RE = /^format:\s*(toon)\n/;
  * that returns a business-level `{ ok:false, error }` resolves normally — the
  * composition inspects that payload itself.
  */
-export type InnerCall = (name: string, args: unknown) => Promise<unknown>;
+/**
+ * Dispatch one in-process sub-tool.  A per-call signal is optional so compound
+ * callers can cancel a timed-out leg without aborting the parent tool.  Existing
+ * callers omit it and continue inheriting the parent context signal.
+ */
+export type InnerCall = (name: string, args: unknown, signal?: AbortSignal) => Promise<unknown>;
 
 /** Unwrap a settled ToolResult into the plain value the composition should see.
  *  Mirrors tooldef's `unwrapToolResult` (cast-in-guard so the strict content union
@@ -167,10 +172,20 @@ export function inProcessCall(
     ...(opts?.ignoreSessionPayloadTier ? { contextTier: undefined } : {}),
     ...(opts?.telemetrySurface ? { telemetrySurface: opts.telemetrySurface } : {}),
   };
-  return async (name, args) => {
+  return async (name, args, signal) => {
     const tool = lookupByMcpName(name);
     if (!tool) throw new Error(`compound: tool "${name}" is not registered`);
-    let dispatchCtx = innerCtx;
+    // withBoundedTimeout owns the per-leg controller.  Combine it with the
+    // parent dispatch signal so an inner leg can be cancelled independently,
+    // while parent cancellation still tears down every child.
+    const effectiveSignal = signal
+      ? innerCtx.signal
+        ? AbortSignal.any([innerCtx.signal, signal])
+        : signal
+      : innerCtx.signal;
+    let dispatchCtx = effectiveSignal === innerCtx.signal
+      ? innerCtx
+      : { ...innerCtx, signal: effectiveSignal };
     if (tool.crossWorkspace === true) {
       const { sql: adminTx } = getOrgPg();
       const workspaceId = innerCtx.workspaceId ?? innerCtx.principal?.workspaceId ?? '';

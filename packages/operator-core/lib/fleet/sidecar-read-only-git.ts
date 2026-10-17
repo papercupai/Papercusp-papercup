@@ -38,6 +38,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
  */
 export const LAZY_RECEIPT_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set([
   'cat-file',
+  'check-ignore',
   'check-ref-format',
   'config',
   'describe',

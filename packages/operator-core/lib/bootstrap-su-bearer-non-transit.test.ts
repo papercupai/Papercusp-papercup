@@ -122,13 +122,23 @@ vi.mock('./role-launch-spec', async (importOriginal) => ({
 vi.mock('./modes/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./modes/store')>()),
   reconcileImpliedModes: vi.fn(async () => []),
+  getModes: vi.fn(async () => []),
+}));
+// Match the main bootstrap-su suite: context-budget reads and boot stamps are
+// registry leaves, independent of the bearer transport contract tested here.
+vi.mock('./agent-tools/coordination/presence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agent-tools/coordination/presence')>()),
+  getPresence: vi.fn(async () => null),
+  writePresence: vi.fn(async () => null),
 }));
 vi.mock('./task-manager/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./task-manager/store')>()),
   bindLiveAgentSessionTasksToNativeSession: vi.fn(async () => []),
 }));
-vi.mock('./role-codex-home', () => ({
+vi.mock('./role-codex-home', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./role-codex-home')>()),
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
+  writeSuCodexHomeAsync: async (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
 }));
 // bootstrap-su fails CLOSED on the identity-activation receipt (returns 500 when it
 // cannot persist). The real module opens the org-admin pool, which the unit-test PG
@@ -209,7 +219,7 @@ describe('bootstrap-su bearer non-transit (D-006)', () => {
 
     // It genuinely went to the codex-home writer (the legitimate sink).
     expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ token: SECRET_BEARER }),
+      expect.objectContaining({ token: SECRET_BEARER, isOwnerLive: expect.any(Function) }),
     );
     expect(json.codexHome).toMatch(/su-codex-homes\/session-42$/);
 

@@ -16,7 +16,9 @@ import { promisify } from 'node:util';
 import { isCliEntry } from '../packages/operator-core/lib/util/cli-entry';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const exec = promisify(execFile);
+let execMemo: typeof execFile.__promisify__ | null = null;
+const exec = ((...args: unknown[]) =>
+  Reflect.apply((execMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 const SOURCE_PATHS = [
   'packages/operator-core/lib/agent-tools/work_items/get.ts',
   'packages/operator-core/lib/agent-tools/work_items/get-shape.ts',

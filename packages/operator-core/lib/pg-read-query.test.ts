@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 // Enrolled in tsconfig.declarations.json — typed, so no @ts-expect-error directive
 // (one here would be TS2578 "unused"). Used by the AUTO-BAR-R-001-P-002 guard below
 // so its tree scan cannot match detection tokens that live inside string literals.
@@ -4380,6 +4381,22 @@ describe('buildNonSummingPartitionAdvisory (WI-10002034 — the scalar whose buc
       ),
       'one plain column cannot hide a fall-through worth a full partition',
     ).toBeNull();
+  });
+
+  it('keeps shape checks linear for large dollar-quoted projections', () => {
+    // The partition detector masks string bodies with spaces before checking
+    // whether a projection is a scalar EXISTS. An end-anchored alias regex
+    // used to backtrack across those spaces quadratically, so this otherwise
+    // ordinary 32 KB read spent seconds in preflight and hit dev:pg_query's
+    // default whole-call deadline.
+    const literal = 'x'.repeat(31_799);
+    const sql =
+      `SELECT encode(sha256(convert_to($qx7zk$${literal}$qx7zk$,'UTF8')),'hex') AS h, ` +
+      `octet_length($qx7zk$${literal}$qx7zk$) AS n`;
+    const started = performance.now();
+    expect(buildNonSummingPartitionAdvisory(sql)).toBeNull();
+    const PARTITION_SHAPE_BUDGET_MS = 500;
+    expect(performance.now() - started).toBeLessThan(PARTITION_SHAPE_BUDGET_MS);
   });
 
   it('stays silent when the query scopes but never discriminates', () => {

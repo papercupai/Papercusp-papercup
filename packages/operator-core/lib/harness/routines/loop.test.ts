@@ -110,8 +110,10 @@ import {
   computeCadenceDrift,
   LOOP_WAKE_ACTION,
   LOOP_INTERVAL_FLOOR_SEC,
+  LOOP_END_PAUSE_PREFIX,
   countAgentToolCallsInWindow,
 } from './loop';
+import { resolveAlarm } from '../../alarm-attention';
 
 describe('getLoopStatuses — default client acquisition attribution (EI-25884587459468153)', () => {
   it('labels the getOrgPg client as org-admin when its connection acquisition times out', async () => {
@@ -651,6 +653,7 @@ describe('computeLifecycleBackoff (EI-19325288514307343 — backed-off vs dead, 
 beforeEach(() => {
   upsertRoutineSpy.mockReset();
   recordLoopTransitionSpy.mockReset();
+  (resolveAlarm as unknown as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue(true);
   // Echo the input back as a plausible RoutineRow (materializeLoop reads .id/.name/.nextFireAt/.targetRole).
   upsertRoutineSpy.mockImplementation(async (_sql: unknown, input: any) => ({
     id: `rt_${input.installSlug}_${input.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase(),
@@ -669,6 +672,42 @@ beforeEach(() => {
     rescheduleIntervalSec: input.rescheduleIntervalSec ?? null,
     targetOwnerId: input.targetOwnerId ?? null,
   }));
+});
+
+describe('deactivateLoop — dead-man condition disposition', () => {
+  it('resolves a dead-man alarm when the owner ends a loop already paused by the guard', async () => {
+    const sql = vi.fn()
+      .mockResolvedValueOnce([{ id: 'rt_ws_loop_su-dead' }])
+      .mockResolvedValueOnce([]);
+
+    await expect(deactivateLoop('su-dead', { sql: sql as any, reason: 'intentional wind-down' }))
+      .resolves.toBe(false);
+
+    expect(resolveAlarm).toHaveBeenCalledExactlyOnceWith(
+      'alarm:loop-dead-man:rt_ws_loop_su-dead',
+      'loop-dead-man',
+    );
+  });
+
+  it('resolves dead-man alarms for every loop row it deactivates', async () => {
+    const sql = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        id: 'rt_ws_loop_su-active',
+        workspace_id: 'ws',
+        install_slug: 'papercusp',
+        name: 'loop-su-active',
+        target_role: LOOP_WAKE_ACTION,
+        reschedule_interval_sec: 60,
+      }]);
+
+    await expect(deactivateLoop('su-active', { sql: sql as any })).resolves.toBe(true);
+
+    expect(resolveAlarm).toHaveBeenCalledExactlyOnceWith(
+      'alarm:loop-dead-man:rt_ws_loop_su-active',
+      'loop-dead-man',
+    );
+  });
 });
 
 describe('deactivateLoopForGoal (EI-21123319355080521)', () => {
@@ -1086,6 +1125,27 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
     expect(legacyFacts?.customWakePrompt).toBe(false);
   });
 
+  it.each([false, true])('records the arm writer attribution (recovery=$0)', async (recovery) => {
+    await materializeLoop({
+      workspaceId: 'ws', harnessSlug: 'h', ownerId: 'o', intervalSec: 60,
+      kickoff: 'owned work', onlyIfInactive: recovery,
+    });
+    expect(recordLoopTransitionSpy).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      targetOwnerId: 'o', event: 'rearmed',
+      actor: recovery ? 'loop-recovery-materialize' : 'loop-explicit-materialize',
+    }));
+  });
+
+  it.each(['infinity', new Date(NaN), new Date(8_640_000_000_000_000)])('records a parked arm as PostgreSQL infinity (%s)', async (nextFireAt) => {
+    upsertRoutineSpy.mockResolvedValueOnce({ id: 'rt_cold', name: 'loop-o', targetRole: LOOP_WAKE_ACTION, nextFireAt });
+
+    await materializeLoop({ workspaceId: 'ws', harnessSlug: 'h', ownerId: 'o', intervalSec: 60, kickoff: 'owned work', carry: 'cold' });
+
+    expect(recordLoopTransitionSpy).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      event: 'rearmed', newNextFireAt: 'infinity',
+    }));
+  });
+
   it('stamps carry:"cold" onto payload_template only when armed cold (su-cold-auto P-003)', async () => {
     await materializeLoop({
       workspaceId: 'ws',
@@ -1374,6 +1434,20 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001)', 
     expect(res).toEqual({ armed: false, reason: 'already-armed', loopName: 'loop-su-member-1' });
     expect(upsertRoutineSpy).not.toHaveBeenCalled();
     expect(armInboxWakeSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-arm a member whose loop was explicitly ended', async () => {
+    const sql = transactionalSql((strings) => /DISTINCT ON/.test(strings.join(' ')) ? [{
+      install_slug: 'papercusp', name: 'loop-su-member-1', active: false,
+      reschedule_interval_sec: 600, target_owner_id: 'su-member-1',
+      payload_template: { goal: 'completed work' }, fire_count: 3,
+      metadata: { pause: { reason: `${LOOP_END_PAUSE_PREFIX} finished`, pausedAtMs: 1 } },
+    }] : []);
+
+    const result = await autoArmFleetMemberLoop({ ...baseOpts, sql: sql as unknown as Sql });
+
+    expect(result).toEqual({ armed: false, reason: 'explicit-loop-end', loopName: 'loop-su-member-1' });
+    expect(upsertRoutineSpy).not.toHaveBeenCalled();
   });
 
   function inactiveMonitorSql(
@@ -1815,11 +1889,11 @@ describe('getLoopStatuses — loop:standdown-all bulk pause reaches the status s
   // pause (routines:set / loop:end, no marker) must NEVER populate it — that discrimination is
   // the whole point of the marker (a fleet-wide "stand-down" broadcast must be verifiable
   // against real per-loop state, not conflated with any other reason a loop happens to be off).
-  function pauseRowSql(pause: unknown) {
+  function pauseRowSql(pause: unknown, active = false) {
     const row = {
       install_slug: 'papercusp',
       name: 'loop-su-x',
-      active: false,
+      active,
       reschedule_interval_sec: 60,
       target_owner_id: 'su-x',
       payload_template: { carry: 'warm', continuation: 'settle', mode: 'work' },
@@ -1844,6 +1918,17 @@ describe('getLoopStatuses — loop:standdown-all bulk pause reaches the status s
     };
     return transactionalSql(() => [row]);
   }
+
+  it.each([
+    { reason: `${LOOP_END_PAUSE_PREFIX} finished`, active: false, ended: true },
+    { reason: `${LOOP_END_PAUSE_PREFIX} old end`, active: true, ended: false },
+    { reason: 'recoverable worker failure', active: false, ended: false },
+  ])('distinguishes explicit end from recovery and later explicit arm: $reason/$active', async ({ reason, active, ended }) => {
+    const out = await getLoopStatuses(['su-x'], {
+      sql: pauseRowSql({ reason, pausedAtMs: 1 }, active) as unknown as Sql,
+    });
+    expect(out.get('su-x')?.explicitlyEnded ?? false).toBe(ended);
+  });
 
   it('surfaces an active stand-down with a ready-to-render banner and the parsed pause fields', async () => {
     const out = await getLoopStatuses(['su-x'], {

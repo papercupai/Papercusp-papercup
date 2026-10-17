@@ -13,6 +13,10 @@ import {
   nativeAdoptionCriterionForInstrument,
   rateNativeAdoption,
   summarizeNativeAdoption,
+  summarizeNativePushOutcomes,
+  nativePushFollowThrough,
+  NATIVE_PUSH_INSTRUMENT_KEYS, nativePushCriterionForInstrument, rateNativePushOutcomes,
+  type NativePushOutcomeRow,
   type NativeAdoptionInvocation,
   type NativeAdoptionShellCommand,
   type NativeAdoptionTarget,
@@ -21,6 +25,111 @@ import { getRegisteredInstrument, platformComputedInstrumentKeys } from '../rubr
 
 const WINDOW = { workspaceId: 'ws-test', windowStart: '2026-10-01T00:00:00.000Z', windowEnd: '2026-10-04T00:00:00.000Z' };
 const at = '2026-10-02T12:00:00.000Z';
+
+describe('P-041 recorded follow-through', () => {
+  const input = { leg: 'grep', subject: 'Foo', citedPaths: ['src/foo.ts'], suggestedCall: null,
+    activities: [{ tool: 'Read', status: 'ok', detail: { file: 'src/foo.ts' } }], executedTests: [] };
+
+  it('counts an exact cited path, with independent same-symbol grep evidence', () => {
+    expect(nativePushFollowThrough(input)).toEqual({ actedOn: true, grepAfterPush: false });
+    expect(nativePushFollowThrough({ ...input, activities: [
+      ...input.activities, { tool: 'Bash', status: 'ok', detail: { command: 'rg -n "Foo" src' } },
+    ] })).toEqual({ actedOn: true, grepAfterPush: true });
+  });
+
+  it('does not turn no telemetry, errors or unknown absolute paths into negatives', () => {
+    expect(nativePushFollowThrough({ ...input, activities: [] })).toEqual({ actedOn: null, grepAfterPush: null });
+    expect(nativePushFollowThrough({ ...input, activities: [{ tool: 'Read', status: 'error', detail: { file: 'src/foo.ts' } }] }).actedOn).toBeNull();
+    expect(nativePushFollowThrough({ ...input, activities: [{ tool: 'Read', status: 'ok', detail: { file: '/another/src/foo.ts' } }] }).actedOn).toBeNull();
+    expect(nativePushFollowThrough({ ...input, activities: [{ tool: 'Read', status: 'ok', detail: { file: 'src/other.ts' } }] }).actedOn).toBe(false);
+  });
+
+  it('never guesses symbol identity from non-grep leg subjects', () => {
+    expect(nativePushFollowThrough({ ...input, leg: 'interface' }).grepAfterPush).toBeNull();
+  });
+
+  it('requires exact literal search patterns and preserves uncertainty for truncated/complex input', () => {
+    for (const command of ['rg -n other "Foo"', 'rg -e "Foo|Bar" src', `rg other ${'x'.repeat(500)}`]) {
+      expect(nativePushFollowThrough({ ...input, activities: [{ tool: 'Bash', status: 'ok', detail: { command } }] }).grepAfterPush).toBeNull();
+    }
+    expect(nativePushFollowThrough({ ...input, activities: [{ tool: 'Grep', status: 'ok', detail: { pattern: 'Foo' } }] }).grepAfterPush).toBe(true);
+    expect(nativePushFollowThrough({ ...input, activities: [{ tool: 'Bash', status: 'ok', detail: { command: 'rg Other src' } }] }).grepAfterPush).toBe(false);
+  });
+
+  it('counts suggested tests only with completed execution evidence', () => {
+    const suggested = { ...input, activities: [], suggestedCall: 'testing:run {"files":["src/foo.test.ts"]}' };
+    expect(nativePushFollowThrough(suggested).actedOn).toBeNull();
+    expect(nativePushFollowThrough({ ...suggested, executedTests: ['src/other.test.ts'] }).actedOn).toBeNull();
+    expect(nativePushFollowThrough({ ...suggested, executedTests: ['src/foo.test.ts'] }).actedOn).toBe(true);
+    expect(nativePushFollowThrough({ ...suggested, suggestedCall: 'testing:run invalid' }).actedOn).toBeNull();
+  });
+});
+
+describe('P-041 push-outcome summary', () => {
+  const row = (id: string, over: Partial<NativePushOutcomeRow> = {}): NativePushOutcomeRow => ({
+    id, workspaceId: WINDOW.workspaceId, leg: 'grep', pushedAt: at,
+    windowComplete: true, actedOn: false, grepAfterPush: false, ...over,
+  });
+
+  it('keeps each leg and each measured denominator separate', () => {
+    const result = summarizeNativePushOutcomes({ window: WINDOW, rows: [
+      row('1', { actedOn: true, grepAfterPush: null }), row('2', { grepAfterPush: true }),
+      row('3', { leg: 'interface', actedOn: null, grepAfterPush: null }),
+    ] });
+    expect(result.byLeg.grep).toEqual({ issued: 2, closedWindows: 2,
+      actedOn: { measured: 2, positive: 1, rate: 0.5 },
+      grepAfterPush: { measured: 1, positive: 1, rate: 1 } });
+    expect(result.byLeg.interface?.actedOn).toEqual({ measured: 0, positive: 0, rate: null });
+    expect(result.byLeg.interface?.grepAfterPush.rate).toBeNull();
+  });
+
+  it('does not turn an open window into a positive or a negative', () => {
+    const result = summarizeNativePushOutcomes({ window: WINDOW, rows: [
+      row('1', { windowComplete: false, actedOn: true, grepAfterPush: false }),
+    ] });
+    expect(result.byLeg.grep).toEqual({ issued: 1, closedWindows: 0,
+      actedOn: { measured: 0, positive: 0, rate: null },
+      grepAfterPush: { measured: 0, positive: 0, rate: null } });
+  });
+
+  it('excludes foreign, invalid and out-of-window rows, and counts a ledger id once', () => {
+    const one = row('1');
+    const result = summarizeNativePushOutcomes({ window: WINDOW, rows: [one, { ...one },
+      row('2', { workspaceId: 'other' }), row('3', { pushedAt: WINDOW.windowEnd }),
+      row('4', { pushedAt: '2026-09-30T00:00:00Z' }), row('5', { pushedAt: 'invalid' }),
+    ] });
+    expect(result.byLeg.grep?.issued).toBe(1);
+    expect(result.byLeg.grep?.actedOn.rate).toBe(0);
+    expect(summarizeNativePushOutcomes({ window: WINDOW, rows: [] }).byLeg).toEqual({});
+  });
+
+  it('refuses invalid windows and conflicting evidence rather than choosing a verdict', () => {
+    expect(() => summarizeNativePushOutcomes({ window: { ...WINDOW, windowEnd: WINDOW.windowStart }, rows: [] })).toThrow();
+    expect(() => summarizeNativePushOutcomes({ window: WINDOW, rows: [row('1'), row('1', { actedOn: true })] })).toThrow(/Conflicting/);
+    expect(() => summarizeNativePushOutcomes({ window: WINDOW, rows: [row('')] })).toThrow(/ledger id/);
+  });
+
+  it('registers all three new measurement criteria with recurring rescore support', () => {
+    for (const [criterion, key] of Object.entries(NATIVE_PUSH_INSTRUMENT_KEYS)) {
+      expect(nativePushCriterionForInstrument(key)).toBe(criterion);
+      expect(platformComputedInstrumentKeys()).toContain(key);
+      expect(getRegisteredInstrument(key)).toMatchObject({ evaluator: 'platform', rescore: { windowMs: 72 * 60 * 60_000 } });
+    }
+    expect(nativePushCriterionForInstrument(NATIVE_ADOPTION_INSTRUMENT_KEYS.goodUse)).toBeNull();
+  });
+
+  it('grades measurement availability without inventing a usefulness threshold or zero for missing legs', () => {
+    const measured = summarizeNativePushOutcomes({ window: WINDOW, rows: [row('1')] });
+    for (const criterion of ['issued', 'actedOn', 'grepAfterPush'] as const) {
+      expect(rateNativePushOutcomes(measured, criterion).verdict).toBe('pass');
+      expect(rateNativePushOutcomes(summarizeNativePushOutcomes({ window: WINDOW, rows: [] }), criterion).verdict).toBe('unknown');
+    }
+    const partial = summarizeNativePushOutcomes({ window: WINDOW, rows: [row('1'), row('2', { leg: 'interface', actedOn: null })] });
+    expect(rateNativePushOutcomes(partial, 'actedOn').verdict).toBe('unknown');
+    expect(rateNativePushOutcomes(partial, 'grepAfterPush').verdict).toBe('pass');
+    expect(rateNativePushOutcomes(summarizeNativePushOutcomes({ window: WINDOW, rows: [row('1', { leg: 'interface' })] }), 'grepAfterPush').verdict).toBe('unknown');
+  });
+});
 
 const inv = (over: Partial<NativeAdoptionInvocation> & Pick<NativeAdoptionInvocation, 'toolName'>): NativeAdoptionInvocation => ({
   ownerId: null, role: 'operator', status: 'ok', errorCode: null, durationMs: null, invokedAt: at, ...over,

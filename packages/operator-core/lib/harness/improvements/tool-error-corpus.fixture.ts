@@ -29,6 +29,8 @@
  * EI-25389944836048866; tools:invoke preserves the 42703 payload for correction.
  * The explicit capability:bash cwd refusal was added 2026-10-09 from
  * EI-25541385148400614; it is a caller path error, not a structural spawn failure.
+ * The capability:bash nsenter namespace refusal was added 2026-10-16 from
+ * EI-26011423316141422; OS permission denial is not a capability implementation bug.
  * The missing-UI-client rows were added 2026-10-07 from EI-24710297442793828;
  * they are expected caller context refusals, not structural UI defects.
  * The native-owner transport capability refusal was added 2026-10-09 from
@@ -102,6 +104,54 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'transient',
     note: 'captured toolFailure prose retained the whole-call deadline but omitted the persisted call_timeout code/message envelope',
   },
+  {
+    n: 0, errorCode: 'query_embed_deadline', status: 'error',
+    message: 'query embed exceeded 4000ms budget',
+    expectedClass: 'transient',
+    note: 'EI-25521910842775592: bounded embedding deadline is a timeout, not a structural tool defect',
+  },
+  {
+    n: 0, errorCode: 'query_embed_deadline', status: 'error',
+    message: 'embedding request exceeded its budget',
+    expectedClass: 'transient',
+    note: 'synthetic exact-code control: the deadline code remains transient when message wording changes',
+  },
+  {
+    n: 0, errorCode: 'handler_error', status: 'error',
+    message: 'query embed failed: query embed exceeded 4000ms budget',
+    expectedClass: 'transient',
+    note: 'nested handler wrapper retains the maintained EmbedTimeoutError message',
+  },
+  {
+    n: 0, errorCode: null, status: 'error',
+    message: 'query embed exceeded 250ms budget',
+    expectedClass: 'transient',
+    note: 'message-only EmbedTimeoutError with another bounded duration',
+  },
+  {
+    n: 0, errorCode: 'handler_error', status: 'error',
+    message: 'query embed failed: relation "embedding_cache" does not exist',
+    expectedClass: 'structural',
+    note: 'genuine embedding dependency failures remain structural',
+  },
+  {
+    n: 0, errorCode: 'handler_error', status: 'error',
+    message: 'query embed exceeded expectations while validating configuration',
+    expectedClass: 'structural',
+    note: 'similar prose without a numeric deadline must not become transient',
+  },
+  {
+    n: 0, errorCode: 'handler_error', status: 'error',
+    message: 'invalid_args: query_embed_deadline is not an accepted argument',
+    expectedClass: 'caller',
+    note: 'mentioning the deadline code in a caller argument refusal is not a timeout',
+  },
+  {
+    n: 0, errorCode: 'structured_result_shape', status: 'error',
+    message: 'secondary text: query embed exceeded 4000ms budget',
+    expectedClass: 'caller',
+    note: 'the primary caller shape code retains precedence over secondary deadline prose',
+  },
 
   // ── transient: shared-infra exhaustion (PG-wedge collateral) ───────────────
   {
@@ -152,6 +202,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'transient',
     note: 'the operator admission gate explicitly shed this call for critical loop pressure; retryable shared backpressure, not a per-tool bug',
   },
+  {
+    n: 2, errorCode: 'handler_error', status: 'error',
+    message: 'an admission job is already running in this process; retry after it settles',
+    expectedClass: 'transient',
+    note: 'EI-26223225337009975: the release admission worker intentionally refuses overlapping same-process jobs; this retryable busy condition must not enter the structural tool-bug lane',
+  },
 
   // ── rate-limit: external provider 429 (capacity, not a code bug) ────────────
   {
@@ -169,10 +225,28 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
 
   // ── caller: bad input / scope (DX, not a tool bug) ─────────────────────────
   {
+    n: 1, errorCode: 'blocked_command', status: 'denied',
+    message: 'The shell command was refused before execution by the PreToolUse guard: the command contains rm -f style cleanup, which is not permitted.',
+    expectedClass: 'caller',
+    note: 'the native exec guard rejected rm -f cleanup syntax before running the command; this is expected caller-side control flow (EI-26073126519701733)',
+  },
+  {
+    n: 1, errorCode: 'PreToolUseCommandRejected', status: 'denied',
+    message: 'A path-free diagnostic was rejected because the guard said rm -f style commands are not permitted.',
+    expectedClass: 'caller',
+    note: 'the same native exec guard refusal is also reported with its PreToolUseCommandRejected code (EI-26010063340730329)',
+  },
+  {
     n: 2, errorCode: 'handler_error', status: 'error',
     message: "capability:bash cwd '" + missingHomeCwdFixture + "' does not exist — the child process cannot start. (Node would report this as a misleading \"spawn /usr/bin/bash ENOENT\".) Pass an existing directory as cwd.",
     expectedClass: 'caller',
     note: 'capability:bash explicitly preflights cwd before spawning; the supplied missing path is invalid caller input, not a structural tool defect (EI-25541385148400614)',
+  },
+  {
+    n: 2, errorCode: 'child_failed', status: 'failed',
+    message: 'nsenter: cannot open /proc/1/ns/pid: Permission denied',
+    expectedClass: 'caller',
+    note: 'the OS refused an nsenter request to open a process namespace; this caller-side boundary is not a capability:bash defect (EI-26011423316141422)',
   },
   {
     n: 1, errorCode: 'aborted', status: 'error',
@@ -215,6 +289,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: 'superuser_invalid_bearer',
     expectedClass: 'caller',
     note: 'MCP auth gate recorded an invalid-bearer refusal before dispatch; keep this credential rejection out of the structural bug lane (EI-24772367245361033)',
+  },
+  {
+    n: 2, errorCode: 'handler_error', status: 'error',
+    message: 'stale_tool_contract: schema was discovered from serving-generation-v1:old, but this operator serves serving-generation-v1:current; refresh tools:find on this operator',
+    expectedClass: 'caller',
+    note: 'tools:invoke intentionally rejected a stale serving-generation binding before dispatch; refresh the catalog instead of filing a structural tool bug (EI-26182697062618996)',
   },
   {
     n: 1, errorCode: 'mcp_auth_failed', status: 'error',
@@ -473,6 +553,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     note: 'the patch tool refused stale/mismatched hunk context before writing; re-read the exact source lines (EI-25197457482157766)',
   },
   {
+    n: 1, errorCode: null, status: 'parse-error',
+    message: 'The nested call returned text beginning `format: toon`; a script assumed content[0].text was JSON and JSON.parse threw SyntaxError, discarding the raw event-status payload. The event status was not interpreted, and the call has not been retried.',
+    expectedClass: 'caller',
+    note: 'events:status returned valid compact TOON; JSON.parse of its tagged content is caller misuse and must not be promoted as a structural tool bug (EI-24868283216064457)',
+  },
+  {
     n: 1, errorCode: 'handler_error', status: 'error',
     message: 'Code-run script treated nested activity:recent typed output as an MCP content envelope and failed with structured_result_shape; the returned activity data is in the typed root.',
     expectedClass: 'caller',
@@ -489,6 +575,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     message: 'The normalized direct wrapper tools.mcp__papercusp_su__locks_list was undefined, so attempting it raised a local TypeError before MCP dispatch. tools:find activated locks:list; no server-side locks:list call was made.',
     expectedClass: 'caller',
     note: 'the client called an unseeded deferred wrapper before tools:find discovery; no MCP request reached the server (EI-25486226169848485)',
+  },
+  {
+    n: 1, errorCode: 'client_wrapper_unavailable', status: 'not_dispatched',
+    message: 'The normalized direct wrapper tools.mcp__papercusp_su__coord_read was not callable (TypeError) before dispatch. The tool is present in the registry; reading the directed message must use the sanctioned ptool route.',
+    expectedClass: 'caller',
+    note: 'the normalized wrapper was absent before MCP dispatch; the catalog/ptool route remained available (EI-25654124340277423)',
   },
   {
     n: 1, errorCode: 'unknown_tool_wrapper', status: 'client',

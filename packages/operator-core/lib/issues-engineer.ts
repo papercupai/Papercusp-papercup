@@ -59,7 +59,7 @@ import { lockGoalPlanClaimSelections, goalPlanClaimFragments, assertGoalPlanClai
 import { sealSharedTextInTxOrRefuse } from './personal-vault/shared-store-seal';
 import { boundedPgReadTxn } from './pg-read-query';
 import type { Sql } from 'postgres';
-import { bm25LegIfAvailable } from './search/lexical/rank';
+import { boundedExactTopK, bm25LegIfAvailable, mergeExactAndBm25 } from './search/lexical/rank';
 import { getBuildInfo } from './build-info';
 import { createBugFreshnessEnvelope, isFreshnessTrackedKind } from './work-item-claim-freshness';
 import { resolveProject } from './harness-core';
@@ -101,6 +101,7 @@ import {
   intakeStageClaimFloorSql,
   createImplementationReadiness,
   agentReviewPendingAdmissionSql,
+  agentReviewClaimPayloadSql,
   agentReviewRevisionAdoptionSql,
   isAgentReviewClaimAdmission,
   isAgentReviewRevisionAdoptionAdmission,
@@ -3235,6 +3236,9 @@ export async function claimIssue(
         OR ${agentReviewPendingAdmissionSql(sql, agentReviewAdmission, {
           payload: 'target.payload',
           admission: 'target.admission',
+          itemKind: 'target.kind',
+          title: 'target.title',
+          summary: 'target.body',
         })}
       )`
     : admittedWhereSql(sql);
@@ -3326,6 +3330,14 @@ export async function claimIssue(
       ), 0)),
       true
     )`;
+  const claimPayload = sql`CASE
+    WHEN ${sameHolderPredicate}
+      AND target.payload -> ${CLAIM_SUBJECT_BASELINE_KEY} IS NOT DISTINCT FROM ${claimSubjectBaseline}
+    THEN target.payload
+    WHEN ${sameHolderPredicate} THEN ${stampedClaimSubjectPayload}
+    ELSE ${stampedNewClaimPayload}
+  END`;
+  const claimPayloadWithReviewRevision = agentReviewClaimPayloadSql(sql, claimPayload, agentReviewAdmission);
   const rows = await withPgContentionRetry(() => boundedOrgTxn(async (tx) => {
     const sql = tx;
     const selection = goalPlanClaimFragments(sql,
@@ -3335,13 +3347,7 @@ export async function claimIssue(
       }, assignee);
     return sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues AS target SET
-      payload = CASE
-        WHEN ${sameHolderPredicate}
-          AND target.payload -> ${CLAIM_SUBJECT_BASELINE_KEY} IS NOT DISTINCT FROM ${claimSubjectBaseline}
-        THEN target.payload
-        WHEN ${sameHolderPredicate} THEN ${stampedClaimSubjectPayload}
-        ELSE ${stampedNewClaimPayload}
-      END,
+      payload = ${claimPayloadWithReviewRevision},
       assignee = ${assignee}, assigned_by = COALESCE(${opts.assignedBy ?? null}, assigned_by),
       assigned_at = now(), origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
@@ -3349,6 +3355,13 @@ export async function claimIssue(
        AND ${operationClaims.operationWorkerClaimWhereSql(sql, operationClaimRead, {
          payload: 'target.payload', id: 'target.issue_id', harness: 'target.scope',
        })}
+       -- Reviewer pickup is self-select, even though it reaches the shared by-id writer.
+       -- The capability lifts the intake floor only; a concurrent durable park still wins.
+       AND ${
+         agentReviewAdmission
+           ? sql`COALESCE(target.payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'`
+           : sql`TRUE`
+       }
        -- EI-15027: a literal 'unassigned' sentinel (case/whitespace-insensitive) — some
        -- federated/legacy writers use it as a "not taken" placeholder instead of NULL/''
        -- (mirrors EI-7939's normalizeTakenBy for the feature-family taken_by column) —
@@ -4719,12 +4732,12 @@ async function bm25IssueSearch(
   workspaces: string[],
   limit: number,
   observer?: DedupSearchTimingObserver,
-): Promise<IssueRowDb[] | null> {
+): Promise<RankedIssueRowDb[] | null> {
   const leg = await measureDedupSearchStage(observer, 'bm25-leg-resolution', () =>
     bm25LegIfAvailable(sql, 'work_items', text, 'w'),
   );
   if (!leg) return null;
-  return measureDedupSearchStage(observer, 'bm25-candidate-query', () => sql<IssueRowDb[]>`
+  return measureDedupSearchStage(observer, 'bm25-candidate-query', () => sql<RankedIssueRowDb[]>`
       WITH ranked AS (
         SELECT w.workspace_id AS ranked_ws, w.feature_id AS ranked_id, ${leg.score} AS ranked_score
           FROM harness_shared.work_items w
@@ -4733,11 +4746,15 @@ async function bm25IssueSearch(
            AND ${leg.match}
          ORDER BY ${leg.order}
          LIMIT ${limit})
-      SELECT ${sql.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
+      SELECT ${sql.unsafe(ISSUE_COLS)}, ranked.ranked_score AS lexical_rank
+        FROM harness_shared.engineer_issues
         JOIN ranked ON ranked.ranked_id = engineer_issues.issue_id
                    AND ranked.ranked_ws = engineer_issues.workspace_id
        ORDER BY ranked.ranked_score DESC, engineer_issues.issue_id`);
 }
+
+/** BM25 rows carry their lexical score so the exact-list companion can use the shared D-016 merger. */
+type RankedIssueRowDb = IssueRowDb & { lexical_rank: number };
 
 /**
  * EI-18713447977097831: `websearch_to_tsquery` combines bare (unquoted) terms
@@ -4796,7 +4813,32 @@ export async function searchIssuesForDedup(
         n,
         observer,
       );
-      if (bm25Rows) return bm25Rows;
+      if (bm25Rows) {
+        // BM25 ranks by individual-term relevance and can place a verbatim fragment of a
+        // long title below the top-k rows when its terms are common. Keep the bounded legacy
+        // AND list beside it, as the direct work-item search does (D-016), so title-only
+        // improvements:capture checks still see near-identical existing titles.
+        const exactTop = boundedExactTopK(tx as unknown as Sql, {
+          columns: tx`w.feature_id AS ranked_id, w.workspace_id AS ranked_ws`,
+          from: tx`harness_shared.work_items w`,
+          where: tx`w.workspace_id = ANY(${workspaces}::text[])
+                    AND w.item_kind IN ('bug', 'change', 'task')`,
+          tsv: tx`w._search`,
+          query,
+          limit: n,
+        });
+        const exactRows = await measureDedupSearchStage(observer, 'exact-candidate-query', () => tx<RankedIssueRowDb[]>`
+          SELECT ${tx.unsafe(ISSUE_COLS)}, exact.exact_rank AS lexical_rank
+            FROM (${exactTop}) exact
+            JOIN harness_shared.engineer_issues
+              ON engineer_issues.issue_id = exact.ranked_id
+             AND engineer_issues.workspace_id = exact.ranked_ws
+        ORDER BY exact.exact_rank DESC, engineer_issues.issue_id`);
+        if (exactRows.length === 0) return bm25Rows.map(({ lexical_rank: _rank, ...row }) => row);
+        const exact = exactRows.map(({ lexical_rank, ...row }) => ({ ...row, rank: Number(lexical_rank) }));
+        const bm25 = bm25Rows.map(({ lexical_rank, ...row }) => ({ ...row, rank: Number(lexical_rank) }));
+        return mergeExactAndBm25(exact, bm25, (row) => row.issue_id, n).map(({ rank: _rank, ...row }) => row);
+      }
       return measureDedupSearchStage(observer, 'legacy-candidate-query', () => tx<IssueRowDb[]>`
         SELECT ${tx.unsafe(ISSUE_COLS)} FROM harness_shared.engineer_issues
          WHERE workspace_id = ANY(${workspaces}::text[])

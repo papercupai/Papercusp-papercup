@@ -28,6 +28,10 @@ describe('harness-state table-registry (P-002 two-axis model)', () => {
     }
   });
 
+  it('keeps native code-intelligence push state workspace-owned and local', () => {
+    expect(resolveTableSpec('code_intel_pushes')).toMatchObject({ key: 'workspace-owned', sync: 'none' });
+  });
+
   it('P-002 review: telemetry / mem0 / coord-presence / plugin / backup → workspace-owned', () => {
     for (const t of [
       'tool_invocations', 'tool_invocations_spawn_tree', 'route_invocations', 'adaptive_telemetry',

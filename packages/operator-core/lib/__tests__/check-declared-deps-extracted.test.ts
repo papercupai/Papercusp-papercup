@@ -528,14 +528,14 @@ describe('runtime-content probes catch partial packages that directory checks ca
         },
       },
       extracted: {
-        '': ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native'],
+        '': ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native', 'onnxruntime-web', 'react-icons'],
       },
     });
     writeFileSync(
       join(root, 'package-lock.json'),
       JSON.stringify({
         packages: Object.fromEntries(
-          ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native'].map(
+          ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native', 'onnxruntime-web', 'react-icons', 'lucide-react'].map(
             (name) => [`node_modules/${name}`, {}],
           ),
         ),
@@ -571,10 +571,88 @@ describe('runtime-content probes catch partial packages that directory checks ca
       { 'index.js': "import '@lydell/node-pty-linux-x64'; export const fork = () => {};" },
     );
     writePackage('rocksdb-native', { type: 'module', exports: './binding.js' });
+    writePackage('onnxruntime-web', { type: 'module', exports: './dist/ort.node.min.mjs' });
+    writePackage('react-icons', { exports: { './ai': './ai/index.mjs' } }, {
+      'ai/index.mjs': "export { IconBase } from '../lib/index.mjs';",
+    });
+    writePackage('lucide-react', {
+      type: 'module',
+      exports: './dist/index.mjs',
+      typings: './dist/lucide-react.d.ts',
+    }, {
+      'dist/index.mjs': 'export const Check = {};',
+    });
 
     const failures = findUnusableRuntimeDeps({ repoRoot: root }) as RuntimeProbeFailure[];
     expect(failures.map((failure) => failure.specifier)).toEqual(RUNTIME_CONTENT_PROBES);
-    for (const failure of failures) expect(failure.detail).toMatch(/(?:ERR_MODULE_NOT_FOUND|Cannot find package)/);
+    for (const failure of failures) {
+      if (failure.specifier === 'lucide-react') {
+        expect(failure.detail).toContain('declared type entrypoint is missing:');
+        expect(failure).toMatchObject({
+          code: 'ERR_MODULE_NOT_FOUND',
+          missingPath: join(root, 'node_modules/lucide-react/dist/lucide-react.d.ts'),
+        });
+      } else {
+        expect(failure.detail).toMatch(/(?:ERR_MODULE_NOT_FOUND|Cannot find package)/);
+      }
+    }
+    writeFileSync(join(root, 'node_modules/lucide-react/dist/lucide-react.d.ts'), 'export declare const Check: {};');
+    expect(findUnusableRuntimeDeps({ repoRoot: root, probeSpecifiers: ['lucide-react'] })).toEqual([]);
+  });
+
+  it('rejects ONNX with working CommonJS but missing ESM content, and accepts the restored entrypoint', () => {
+    const root = fixture({
+      packages: { 'apps/operator': { dependencies: { 'onnxruntime-web': '*' } } },
+      extracted: { '': ['onnxruntime-web'] },
+    });
+    writeFileSync(join(root, 'package-lock.json'), JSON.stringify({
+      packages: { 'node_modules/onnxruntime-web': { version: '1.24.1' } },
+    }));
+    const dir = join(root, 'node_modules/onnxruntime-web');
+    mkdirSync(join(dir, 'dist'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      name: 'onnxruntime-web', version: '1.24.1',
+      exports: { '.': { node: { import: './dist/ort.node.min.mjs', require: './dist/ort.node.min.js' } } },
+    }));
+    writeFileSync(join(dir, 'dist/ort.node.min.js'), 'module.exports = {};');
+    execFileSync(process.execPath, ['-e', "require('onnxruntime-web')"], { cwd: root });
+    expect(findUnextractedDeps({ repoRoot: root })).toEqual([]);
+    expect(resolveRuntimeContentProbes(root)).toEqual(['onnxruntime-web']);
+    expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([
+      { specifier: 'onnxruntime-web', detail: expect.stringMatching(/ERR_MODULE_NOT_FOUND.*ort\.node\.min\.mjs/),
+        code: 'ERR_MODULE_NOT_FOUND', missingPath: join(dir, 'dist/ort.node.min.mjs') },
+    ]);
+
+    writeFileSync(join(dir, 'dist/ort.node.min.mjs'), 'export const env = {};');
+    expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([]);
+  });
+
+  it('detects a missing shared icon ESM payload despite a working CommonJS icon set', () => {
+    const root = fixture({
+      packages: { 'apps/ui': { dependencies: { 'react-icons': '*' } } },
+      extracted: { '': ['react-icons'] },
+    });
+    writeFileSync(join(root, 'package-lock.json'), JSON.stringify({
+      packages: { 'node_modules/react-icons': { version: '5.6.0' } },
+    }));
+    const dir = join(root, 'node_modules/react-icons');
+    mkdirSync(join(dir, 'ai'));
+    mkdirSync(join(dir, 'lib'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      name: 'react-icons', version: '5.6.0',
+      exports: { './ai': { import: './ai/index.mjs', require: './ai/index.js' } },
+    }));
+    writeFileSync(join(dir, 'ai/index.js'), 'module.exports = {};');
+    writeFileSync(join(dir, 'ai/index.mjs'), "export { IconBase } from '../lib/index.mjs';");
+    execFileSync(process.execPath, ['-e', "require('react-icons/ai')"], { cwd: root });
+    expect(findUnextractedDeps({ repoRoot: root })).toEqual([]);
+    expect(resolveRuntimeContentProbes(root)).toEqual(['react-icons/ai']);
+    expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([
+      { specifier: 'react-icons/ai', detail: expect.stringMatching(/ERR_MODULE_NOT_FOUND.*lib\/index\.mjs/),
+        code: 'ERR_MODULE_NOT_FOUND', missingPath: join(dir, 'lib/index.mjs') },
+    ]);
+    writeFileSync(join(dir, 'lib/index.mjs'), 'export const IconBase = {};');
+    expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([]);
   });
 
   it('retries a real import so a filesystem-settle race does not become a false failure', async () => {
@@ -595,6 +673,75 @@ describe('runtime-content probes catch partial packages that directory checks ca
 });
 
 describe('install:safe post-install verification (the half the mutex cannot cover)', () => {
+  it('re-extracts a broken hoisted runtime from its locked tarball when plain npm leaves it up to date', async () => {
+    silenceConsole();
+    const root = fixture({ packages: { 'apps/selected': {} }, extracted: {} });
+    const source = join(root, 'vendor/runtime');
+    mkdirSync(join(source, 'dist'), { recursive: true });
+    writeFileSync(join(source, 'package.json'), JSON.stringify({
+      name: 'fixture-runtime', version: '1.0.0',
+      exports: { '.': { import: './dist/index.mjs', require: './dist/index.cjs' } },
+    }));
+    writeFileSync(join(source, 'dist/index.mjs'), 'export const loaded = true;');
+    writeFileSync(join(source, 'dist/index.cjs'), 'module.exports = {};');
+    const env = { ...process.env, PAPERCUSP_INSTALL_SAFE_ACTIVE: '1',
+      npm_config_prefix: undefined, NPM_CONFIG_PREFIX: undefined,
+      npm_config_package_lock_only: undefined, NPM_CONFIG_PACKAGE_LOCK_ONLY: undefined };
+    const npm = (args: string[]) => execFileSync('npm', args, { cwd: root, env, timeout: 30_000, stdio: 'pipe' });
+    npm(['pack', source, '--ignore-scripts', '--pack-destination', root]);
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+    pkg.dependencies = { 'fixture-runtime': 'file:fixture-runtime-1.0.0.tgz' };
+    writeFileSync(join(root, 'package.json'), JSON.stringify(pkg));
+    const install = () => npm(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund', '--legacy-peer-deps']);
+    install();
+    const target = join(root, 'node_modules/fixture-runtime');
+    const entrypoint = join(target, 'dist/index.mjs');
+    rmSync(entrypoint);
+    execFileSync(process.execPath, ['-e', "require('fixture-runtime')"], { cwd: root });
+    install();
+    expect(existsSync(entrypoint)).toBe(false); // the measured npm no-op
+    const lock = readFileSync(join(root, 'package-lock.json'), 'utf8');
+    let repairs = 0;
+    const status = await verifyDepsExtracted({ repoRoot: root,
+      npmArgs: ['install', '--workspace=apps/selected'], probeSpecifiers: ['fixture-runtime'],
+      deps: { sleep: async () => {} }, runNpm: (args: string[]) => {
+        repairs++;
+        expect(args).toEqual(['install', '--legacy-peer-deps']);
+        expect(existsSync(target)).toBe(false);
+        expect(readFileSync(join(root, 'package-lock.json'), 'utf8')).toBe(lock);
+        install();
+        return 0;
+      } });
+    expect(status).toBe(0);
+    expect(repairs).toBe(1);
+    expect(findUnusableRuntimeDeps({ repoRoot: root, probeSpecifiers: ['fixture-runtime'] })).toEqual([]);
+  }, 45_000);
+
+  it.each(['generic-error', 'external', 'symlink', 'workspace-link', 'already-present'])('does not evict a runtime package for %s evidence', async (kind) => {
+    silenceConsole();
+    const root = fixture({ packages: { 'apps/operator': {} }, extracted: { '': ['hono'] } });
+    const target = join(root, 'node_modules/hono');
+    const manifest = { name: 'hono', version: '4.0.0', type: 'module', exports: './missing.mjs' };
+    writeFileSync(join(target, 'package.json'), JSON.stringify(manifest));
+    const external = fixture({ packages: {}, extracted: {} });
+    writeFileSync(join(external, 'package.json'), JSON.stringify(manifest));
+    if (kind === 'symlink') { rmSync(target, { recursive: true }); symlinkSync(external, target); }
+    if (kind === 'already-present') writeFileSync(join(target, 'missing.mjs'), 'throw new Error("bad configuration");');
+    writeFileSync(join(root, 'package-lock.json'), JSON.stringify({ packages: {
+      'node_modules/hono': { version: '4.0.0', ...(kind === 'workspace-link' ? { link: true } : {}) },
+    } }));
+    const before = readFileSync(join(target, 'package.json'), 'utf8');
+    let repairs = 0;
+    const status = await verifyDepsExtracted({ repoRoot: root, probeSpecifiers: ['hono'],
+      deps: { sleep: async () => {}, probeRuntimeImport: () => ({ ok: false, detail: 'failed',
+        ...(kind === 'generic-error' ? {} : { code: 'ERR_MODULE_NOT_FOUND',
+          missingPath: join(kind === 'external' ? external : target, 'missing.mjs') }) }) },
+      runNpm: () => { repairs++; expect(readFileSync(join(target, 'package.json'), 'utf8')).toBe(before); return 0; } });
+    expect(status).toBe(1);
+    expect(repairs).toBe(1);
+    expect(readFileSync(join(target, 'package.json'), 'utf8')).toBe(before);
+  });
+
   it('retains a local executable that becomes healthy during asynchronous runtime verification', async () => {
     const root = fixture({ packages: { 'libs/tooling': {} }, extracted: { 'libs/tooling': ['tool'] } });
     const nm = join(root, 'libs/tooling/node_modules');

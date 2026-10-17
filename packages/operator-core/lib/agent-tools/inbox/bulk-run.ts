@@ -34,14 +34,17 @@
  */
 
 import { z } from 'zod';
+import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { ADMIN_COORD_UI_OWNER, resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
+import { readAckedMsgIds, readInboxWindow } from '../coordination/messages';
 import { inProcessCall, type InnerCall } from '../_compound-dispatch';
 import { softText, clampText, LIMITS } from '../limits';
+import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import {
   executeBulkRunAction,
   failRunIfExecuting,
@@ -61,6 +64,7 @@ import {
   type TerminalActionDependencies,
   type TerminalAttentionItem,
 } from '../../attention/terminal-action-dispatch';
+import { coordMessageToAttention } from '../../attention/adapters';
 import { deliverInboxOwnerReply } from '../coordination/inbox-reply';
 import {
   BULK_CONFIDENCE_LEVELS,
@@ -98,6 +102,7 @@ import {
   intakeSourceRevision,
   readIntakeSource,
 } from '../../attention/intake-promotion';
+import { completedResultPayload } from '../abort-completion-payload';
 
 /**
  * WI-41021 — the resolver's own verbs have to honour the kill switch.
@@ -176,6 +181,11 @@ interface ManifestItem {
 type LiveAction = { id: string; label: string; terminal: boolean };
 type LiveActionIndex = Map<string, LiveAction[]>;
 
+interface LiveActionTarget {
+  itemId: string;
+  ref?: Record<string, unknown>;
+}
+
 class LiveActionDiscoveryError extends Error {
   readonly code = 'action_discovery_failed' as const;
   readonly retryable = true as const;
@@ -230,7 +240,10 @@ function normalizeLiveActions(it: AttentionFeedItem): LiveAction[] {
  * deadline. Invocation-local reuse keeps membership live without creating a
  * cross-call cache whose authority could go stale.
  */
-async function liveActionsById(): Promise<LiveActionIndex> {
+async function liveActionsById(
+  targets: readonly LiveActionTarget[] = [],
+  workspaceId?: string,
+): Promise<LiveActionIndex> {
   try {
     const { callPlansRead } = await import('../plans/read-dispatch');
     // The UI list projection deliberately DROPS `actions` to keep the ~1MB
@@ -252,6 +265,72 @@ async function liveActionsById(): Promise<LiveActionIndex> {
         byId.set(it.id, normalizeLiveActions(it));
       }
     }
+
+    // `plans:attention` deliberately bounds its coord-message source to the
+    // newest 50 raw messages. A bulk run, however, snapshots the exact rows a
+    // pane displayed and may retain older messages after the feed window moves.
+    // Hydrate only those selected canonical message ids from the bounded
+    // keyset reader, stopping as soon as every target is found. This keeps the
+    // feed read for all other kinds while making membership exact for the one
+    // source whose presentation window is smaller than a bulk run.
+    const missingMessages = targets
+      .filter((target) => target.itemId.startsWith('coord-message:') && !byId.has(target.itemId))
+      .map((target) => {
+        const refMsgId = target.ref?.msgId;
+        const itemMsgId = target.itemId.slice('coord-message:'.length);
+        const msgId = typeof refMsgId === 'string' && refMsgId.length > 0 ? refMsgId : itemMsgId;
+        return { ...target, msgId };
+      })
+      .filter((target) => target.msgId.length > 0);
+    if (missingMessages.length > 0) {
+      const wanted = new Map(missingMessages.map((target) => [target.msgId, target.itemId] as const));
+      const exact = await runWithWorkspaceIfConcrete(workspaceId, () =>
+        // The attention feed's coord-message source is addressed to the human
+        // audience. ADMIN_COORD_UI_OWNER is the author identity for the ack
+        // fold below, not a recipient in the message envelope. Using it here
+        // drops human-directed messages from the exact-window hydration once
+        // they age out of plans:attention, even though coord:read still sees
+        // them.
+        readInboxWindow(
+          'human',
+          { kinds: ['message'] },
+          (entries) => {
+            const seen = new Set(entries.map((entry) => entry.msg_id).filter((id): id is string => typeof id === 'string'));
+            return [...wanted.keys()].every((msgId) => seen.has(msgId));
+          },
+        ),
+      );
+      const acked = await runWithWorkspaceIfConcrete(workspaceId, () => readAckedMsgIds(ADMIN_COORD_UI_OWNER));
+      for (const raw of exact.entries) {
+        if (typeof raw.msg_id !== 'string') continue;
+        const itemId = wanted.get(raw.msg_id);
+        if (!itemId || acked.has(raw.msg_id)) continue;
+        const attention = coordMessageToAttention({
+          msgId: raw.msg_id,
+          summary: typeof raw.summary === 'string' ? raw.summary : undefined,
+          body: typeof raw.body === 'string' ? raw.body : undefined,
+          from: typeof raw.from === 'string' ? raw.from : undefined,
+          planSlug: typeof raw.plan_slug === 'string' ? raw.plan_slug : null,
+          harnessSlug: typeof raw.harness_slug === 'string' ? raw.harness_slug : null,
+          auto: raw.auto === true,
+          lifecycle: typeof raw.lifecycle === 'string' ? raw.lifecycle : null,
+          directToOwner: Array.isArray(raw.to) && raw.to.includes('human'),
+          report: raw.report,
+        });
+        byId.set(itemId, normalizeLiveActions(attention));
+      }
+      // A fully exhausted exact read is authoritative evidence that a target
+      // is no longer live (closed, filtered, or already acknowledged). Keep a
+      // present empty entry so callers can distinguish that from an unknown
+      // target and refuse a stale action deterministically.
+      if (exact.exhausted) {
+        for (const target of missingMessages) {
+          if (!byId.has(target.itemId)) byId.set(target.itemId, []);
+        }
+      } else {
+        throw new LiveActionDiscoveryError();
+      }
+    }
     return byId;
   } catch {
     throw new LiveActionDiscoveryError();
@@ -263,8 +342,12 @@ async function liveActionsById(): Promise<LiveActionIndex> {
  * this separate lookup inside the run-row authority lock; manifest/report may
  * reuse an invocation-local index, but an irreversible action may not.
  */
-async function liveActionsFor(itemId: string): Promise<LiveAction[] | null> {
-  const byId = await liveActionsById();
+async function liveActionsFor(
+  itemId: string,
+  ref: Record<string, unknown> | undefined,
+  workspaceId?: string,
+): Promise<LiveAction[] | null> {
+  const byId = await liveActionsById([{ itemId, ref }], workspaceId);
   return byId?.get(itemId) ?? null;
 }
 
@@ -279,6 +362,8 @@ function actionDiscoveryRetryResponse(runId: string, details: Record<string, unk
           retryable: true,
           message: 'The live attention action snapshot could not be read; no action or report was accepted. Retry shortly.',
           runId,
+          wrote: 0,
+          updatedItemIds: [],
           ...details,
         }),
       },
@@ -519,7 +604,10 @@ export const bulkRunManifest = defineTool({
     let liveActions: LiveActionIndex | null = null;
     if (wanted.length > 0 && !isSourceLivenessRunKind(storedRun.runKind)) {
       try {
-        liveActions = await liveActionsById();
+        liveActions = await liveActionsById(
+          wanted.map((row) => ({ itemId: row.itemId, ref: row.ref })),
+          run.workspaceId,
+        );
       } catch (error) {
         if (error instanceof LiveActionDiscoveryError) return actionDiscoveryRetryResponse(runId);
         throw error;
@@ -777,7 +865,7 @@ export const bulkRunAct = defineTool({
           // P-008: an intake-triage row is never an attention-feed member; its
           // liveness is the source row itself, re-read by the intake executor.
           const sourceLiveness = args.actionId === INTAKE_APPLY_ACTION_ID && isSourceLivenessRunKind(run.runKind);
-          const actions = sourceLiveness ? null : await liveActionsFor(row.itemId);
+          const actions = sourceLiveness ? null : await liveActionsFor(row.itemId, row.ref, run.workspaceId);
           // P-006: applying a RECORDED intake decision is not a card button — its
           // authority is the validated decision on this run row (plus the policy
           // gate above), and the item must still be live.
@@ -1220,6 +1308,59 @@ const OutcomeItem = z
   })
   .meta({ 'x-papercusp-call-constraint': BULK_RUN_REPORT_ITEM_ERROR_CONSTRAINT });
 
+function bulkRunReportAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  const payload = completedResultPayload(result);
+  const runId = payload?.runId;
+  const wrote = payload?.wrote;
+  const updatedItemIds = payload?.updatedItemIds;
+  if (
+    typeof wrote !== 'number' ||
+    !Number.isSafeInteger(wrote) ||
+    wrote < 0 ||
+    !Array.isArray(updatedItemIds) ||
+    !updatedItemIds.every((itemId) => typeof itemId === 'string' && itemId.length > 0) ||
+    new Set(updatedItemIds).size !== updatedItemIds.length ||
+    wrote !== updatedItemIds.length
+  ) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'inbox:bulk-run-report did not return an exact outcome-write receipt',
+      failures: ['missing-report-write-evidence'],
+    };
+  }
+
+  const diagnostics = {
+    runId: typeof runId === 'string' ? runId : null,
+    wrote,
+    updatedItemIds,
+  };
+  if (wrote === 0) {
+    return {
+      status: 'not-recorded',
+      reason: 'inbox:bulk-run-report completed without updating an outcome row',
+      diagnostics,
+    };
+  }
+  if (typeof runId !== 'string' || runId.length === 0) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'inbox:bulk-run-report reported updated rows without their run id',
+      failures: ['missing-report-run-id'],
+      diagnostics,
+    };
+  }
+
+  return {
+    status: 'recorded',
+    effectRef: `inbox-bulk-run-report:${context.callId}:${runId}:items:${updatedItemIds.join(',')}`,
+    diagnostics,
+  };
+}
+
 export const bulkRunReport = defineTool({
   name: 'inbox:bulk-run-report',
   description:
@@ -1229,6 +1370,7 @@ export const bulkRunReport = defineTool({
     notWhen: 'Ending the run (inbox:bulk-run-settle). Triaging an attention item outside a run (inbox:triage).',
   },
   capability: 'coord:write',
+  abortCompletionReceipt: bulkRunReportAbortCompletionReceipt,
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z
@@ -1295,7 +1437,10 @@ export const bulkRunReport = defineTool({
     const runId = await resolveRunId(args.runId);
     if (!runId) {
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'no_active_run' }) }],
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({ ok: false, error: 'no_active_run', runId: null, wrote: 0, updatedItemIds: [] }),
+        }],
       };
     }
 
@@ -1315,6 +1460,7 @@ export const bulkRunReport = defineTool({
               flag: FLAGS.INBOX_BULK_RESOLVE,
               runId,
               wrote: 0,
+              updatedItemIds: [],
               message:
                 "Bulk resolve has been turned OFF by the owner while this run was in flight. Nothing from this report was written. STOP: take no further action on any item in this run, and do NOT re-route the work to the item's own verb outside the run. If you already took an action before this refusal, say so plainly in your final message rather than retrying or hiding it.",
             }),
@@ -1330,7 +1476,7 @@ export const bulkRunReport = defineTool({
           workspaceId: run.workspaceId,
         }).catch(() => null)
       : null;
-    if (!heartbeat) {
+    if (!heartbeat || !run) {
       return {
         content: [
           {
@@ -1340,6 +1486,7 @@ export const bulkRunReport = defineTool({
               refused: 'resolver_owner_mismatch_or_not_executing',
               runId,
               wrote: 0,
+              updatedItemIds: [],
             }),
           },
         ],
@@ -1389,7 +1536,11 @@ export const bulkRunReport = defineTool({
     let liveActions: LiveActionIndex | null = null;
     if (reports.some((report) => Boolean(report.actionId))) {
       try {
-        liveActions = await liveActionsById();
+        const targetById = new Map(runRows.map((row) => [row.itemId, row.ref] as const));
+        liveActions = await liveActionsById(
+          reports.map((report) => ({ itemId: report.itemId, ref: targetById.get(report.itemId) })),
+          run.workspaceId,
+        );
       } catch (error) {
         if (error instanceof LiveActionDiscoveryError) return actionDiscoveryRetryResponse(runId);
         throw error;
@@ -1400,14 +1551,15 @@ export const bulkRunReport = defineTool({
       reports,
       async (r) => {
         if (r.actionId) {
-          const actions = liveActions?.get(r.itemId) ?? null;
-          if (actions && actions.length > 0) {
-            const match = actions.find((a) => a.id === r.actionId);
-            if (!match) {
-              throw new Error(
-                `action "${r.actionId}" is not offered by ${r.itemId} (offered: ${actions.map((a) => a.id).join(', ') || 'none'})`,
-              );
-            }
+          const actions = liveActions?.get(r.itemId);
+          if (!actions) {
+            throw new LiveActionDiscoveryError();
+          }
+          const match = actions.find((a) => a.id === r.actionId);
+          if (!match) {
+            throw new Error(
+              `action "${r.actionId}" is not offered by ${r.itemId} (offered: ${actions.map((a) => a.id).join(', ') || 'none'})`,
+            );
           }
         }
 
@@ -1463,6 +1615,7 @@ export const bulkRunReport = defineTool({
     );
 
     let unknown: string[] = [];
+    let updatedItemIds: string[] = [];
     let preservedOutcomes: Array<Record<string, unknown>> = [];
     let autoAccept = autoAcceptSummary({
       reportedRecommendations: 0,
@@ -1478,6 +1631,7 @@ export const bulkRunReport = defineTool({
         workspaceId: heartbeat.workspaceId,
       });
       unknown = res.unknown;
+      updatedItemIds = [...new Set(res.updated)];
       const preservedRows = res.preserved ?? [];
       preservedOutcomes = preservedRows.map((row) => ({
         itemId: row.itemId,
@@ -1509,6 +1663,7 @@ export const bulkRunReport = defineTool({
                 phase: res.refused.phase,
                 runId,
                 wrote: 0,
+                updatedItemIds: [],
                 preservedOutcomes,
                 message:
                   'This run is no longer accepting reports — the owner stopped it, or it has already settled. STOP: take no further action on any item in this run. Nothing from this report was written.',
@@ -1597,7 +1752,14 @@ export const bulkRunReport = defineTool({
     }
 
     if (unknown.length === 0) {
-      return bulkContent({ ...(env as unknown as Record<string, unknown>), autoAccept, preservedOutcomes });
+      return bulkContent({
+        ...(env as unknown as Record<string, unknown>),
+        runId,
+        wrote: updatedItemIds.length,
+        updatedItemIds,
+        autoAccept,
+        preservedOutcomes,
+      });
     }
     // Unknown ids are surfaced BESIDE the bulk envelope rather than as failures:
     // each reported item that existed still landed, and the resolver needs to
@@ -1609,6 +1771,9 @@ export const bulkRunReport = defineTool({
         itemIds: unknown,
         why: 'A run acts on exactly the items the owner was looking at; widening it silently would break that guarantee.',
       },
+      runId,
+      wrote: updatedItemIds.length,
+      updatedItemIds,
       autoAccept,
       preservedOutcomes,
     });

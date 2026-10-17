@@ -9801,17 +9801,100 @@ describe("direct su-ID tracked-session recovery", () => {
     { name: "legacy different owner", result: { sessions: [{ ...latest, coordOwnerId: "su-other" }] } },
     { name: "legacy owner prefix", result: { sessions: [{ ...latest, coordOwnerId: owner + "a" }] } },
   ])("handles a $name response", async ({ result, expected = null }) => {
-    expect(await resolveDirectTrackedResumeSession([], owner, { apiImpl: async () => result })).toBe(expected);
+    const apiImpl = async (path) => path.includes("/roster/agent?") && expected
+      ? { ownerId: owner, nativeSession: { backend: "codex", source: "adv_sessions", ownerId: owner, codexHome: `/tmp/session-${expected.id}` } }
+      : result;
+    expect(await resolveDirectTrackedResumeSession([], owner, { apiImpl })).toBe(expected);
   });
 
   it("keeps the newest legacy registration without using mutable activity order", async () => {
     const source = { ...latest, cwd: "/repo" };
-    const apiImpl = vi.fn(async () => ({ sessions: [
+    const apiImpl = vi.fn(async (path) => path.includes("/roster/agent?")
+      ? { ownerId: owner, nativeSession: { backend: "codex", source: "adv_sessions", ownerId: owner, codexHome: `/tmp/session-${source.id}` } }
+      : { sessions: [
       { ...source, id: 100, sessionId: "older-native-id" },
       { ...source, id: 99999, coordOwnerId: "su-other" },
       source,
-    ] }));
+    ] });
     expect(await resolveDirectTrackedResumeSession([], owner, { apiImpl })).toBe(source);
+  });
+
+  it.each(["codex", "omp", "claude"])("recovers an out-of-window %s owner through its exact native handle", async (agent) => {
+    const source = { ...latest, agent, sessionId: "11111111-1111-4111-8111-111111111111" };
+    const handle = {
+      backend: agent, source: "adv_sessions", ownerId: owner,
+      codexHome: `/home/test/.papercusp/su-codex-homes/session-${source.id}`,
+      agentHome: `/home/test/.papercusp/su-omp-homes/session-${source.id}/agent`,
+      sessionId: source.sessionId,
+    };
+    const exactPath = agent === "claude"
+      ? `/api/adv/sessions/resumable?sessionId=${source.sessionId}`
+      : `/api/adv/sessions/resumable?id=${source.id}`;
+    const apiImpl = vi.fn(async (path) => {
+      if (path.includes("?agentId=")) return { sessions: [{ ...source, id: 99 }] };
+      if (path.includes("/roster/agent?owner=")) return { ownerId: owner, nativeSession: handle };
+      if (path === exactPath) return {
+        sessions: [{ ...source, id: 99 }, source],
+        exact: { id: source.id, ownerId: owner, requestedSessionId: source.sessionId },
+      };
+      throw new Error(`unexpected lookup: ${path}`);
+    });
+    expect(await resolveDirectTrackedResumeSession([], owner, { apiImpl })).toBe(source);
+    expect(apiImpl.mock.calls.map(([path]) => path)).toEqual([
+      `/api/adv/sessions/resumable?agentId=${owner}`,
+      `/api/adv/roster/agent?owner=${owner}`,
+      exactPath,
+    ]);
+  });
+
+  it.each([
+    { ownerId: "su-other", nativeSession: { backend: "codex", source: "adv_sessions", ownerId: owner } },
+    { ownerId: owner, nativeSession: { backend: "codex", source: "adv_sessions", ownerId: "su-other" } },
+    { ownerId: owner, nativeSession: { backend: "codex", source: "spawned_agents", ownerId: owner } },
+    { ownerId: owner, nativeSession: null },
+  ])("refuses an unproven legacy dossier binding %#", async (detail) => {
+    const apiImpl = vi.fn(async (path) => path.includes("?agentId=") ? { sessions: [] } : detail);
+    expect(await resolveDirectTrackedResumeSession([], owner, { apiImpl })).toBeNull();
+    expect(apiImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { ...latest, coordOwnerId: "su-other" },
+    { ...latest, agent: "claude" },
+    { ...latest, id: 99999 },
+  ])("does not trust a legacy native-store path over the exact row identity %#", async (source) => {
+    const apiImpl = vi.fn(async (path) => path.includes("/roster/agent?")
+      ? { ownerId: owner, nativeSession: { backend: "codex", source: "adv_sessions", ownerId: owner, codexHome: `/tmp/session-${latest.id}` } }
+      : { sessions: path.includes("?id=") ? [source] : [] });
+    expect(await resolveDirectTrackedResumeSession([], owner, { apiImpl })).toBeNull();
+  });
+
+  it("reports an unsupported legacy handle rather than blaming a valid owner ID", async () => {
+    const apiImpl = vi.fn(async (path) => path.includes("?agentId=") ? { sessions: [] } : {
+      ownerId: owner, nativeSession: { backend: "codex", source: "adv_sessions", ownerId: owner, codexHome: "/tmp/custom-store" },
+    });
+    await expect(resolveDirectTrackedResumeSession([], owner, { apiImpl })).rejects.toThrow("upgrade the operator");
+  });
+
+  it("propagates an out-of-window owner-handle read failure", async () => {
+    const apiImpl = vi.fn(async (path) => {
+      if (path.includes("?agentId=")) return { sessions: [] };
+      throw new Error("operator unavailable during owner lookup");
+    });
+    await expect(resolveDirectTrackedResumeSession([], owner, { apiImpl })).rejects.toThrow("operator unavailable during owner lookup");
+  });
+
+  it.each(["ownerId", "requestedSessionId", "id"])("checks the legacy Claude exact %s binding", async (field) => {
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    const source = { ...latest, agent: "claude", sessionId };
+    const apiImpl = vi.fn(async (path) => {
+      if (path.includes("?agentId=")) return { sessions: [] };
+      if (path.includes("/roster/agent?")) return {
+        ownerId: owner, nativeSession: { backend: "claude", source: "adv_sessions", ownerId: owner, sessionId },
+      };
+      return { sessions: [source], exact: { id: source.id, ownerId: owner, requestedSessionId: sessionId, [field]: "foreign-binding" } };
+    });
+    expect(await resolveDirectTrackedResumeSession([], owner, { apiImpl })).toBeNull();
   });
 
   it("propagates owner lookup failure instead of interpreting the su ID as a native thread", async () => {
@@ -13729,6 +13812,59 @@ describe("reportSessionEnded (acknowledged idempotent eligibility transition)", 
       token: "t",
     });
     expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    ["malformed JSON", "{broken-json"],
+    ["JSON null", "null"],
+    ["an unrelated object", "{}"],
+    ["a refusal", '{"ok":false}'],
+  ])("retains the end witness for %s and replays its original observation", async (_label, responseBody) => {
+    const home = mkdtempSync(join(tmpdir(), "psu-end-invalid-ack-"));
+    const observedAt = "2026-10-16T12:01:48.000Z";
+    const bodies: Array<{ endAttemptKey: string; observedAt: string }> = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(bodies.length === 1 ? responseBody : '{"ok":true}', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const options = {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      token: "t",
+      endAttemptKey: "end-invalid-ack-17",
+      observedAt,
+      home,
+    };
+    try {
+      await expect(reportSessionEnded(17, 1, options)).resolves.toMatchObject({
+        reported: false,
+        reason: "http",
+        status: 200,
+      });
+      const pending = readPendingSessionEndWitness(17, home);
+      expect(pending).toMatchObject({
+        advSessionId: 17,
+        endAttemptKey: options.endAttemptKey,
+        observedAt,
+      });
+      // Only a real acknowledgement may remove the witness; replay retains
+      // the original observation so it cannot re-end a newer incarnation.
+      await expect(reportSessionEnded(17, 1, {
+        ...options,
+        endAttemptKey: pending.endAttemptKey,
+        observedAt: pending.observedAt,
+      })).resolves.toMatchObject({ reported: true });
+      expect(bodies).toEqual([
+        expect.objectContaining({ endAttemptKey: options.endAttemptKey, observedAt }),
+        expect.objectContaining({ endAttemptKey: options.endAttemptKey, observedAt }),
+      ]);
+      expect(existsSync(pendingSessionEndWitnessPath(17, home))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("returns a transport outcome and keeps the pending witness when acknowledgement fails", async () => {

@@ -25,6 +25,17 @@ function mount(port = host(), selected: BlueprintOperationHandle | null = handle
 }
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('workflow administration', () => {
+  it('opens in Enterprise with unread evidence explicit, and preserves owner authorization on refresh', async () => {
+    const port = host(); port.read.mockRejectedValue(new Error('Requires authenticated accountable owner'));
+    render(<NuqsTestingAdapter hasMemory><WorkflowAdministration harnessSlug="support" operationId="handoff"
+      defaultExpanded host={port} /></NuqsTestingAdapter>);
+    expect(screen.getByText(/history have not been read/)).toBeTruthy();
+    expect(port.read).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh administration' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('authenticated accountable owner');
+    expect(screen.queryByRole('button', { name: 'Promote revision' })).toBeNull();
+    expect(port.act).not.toHaveBeenCalled();
+  });
   it('shows finite allocation and measured/unknown costs with their evidence; pins a stop to the selected old receipt', async () => {
     const port = mount();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh administration' }));

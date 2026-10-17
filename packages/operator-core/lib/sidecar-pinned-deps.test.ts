@@ -20,6 +20,7 @@
  */
 import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   readFileSync,
   writeFileSync,
@@ -29,6 +30,7 @@ import {
   rmSync,
   symlinkSync,
   statSync,
+  lstatSync,
   chmodSync,
   linkSync,
   utimesSync,
@@ -186,6 +188,49 @@ describe('EI-21832562420831737 — a pinned cut owns its dependencies', () => {
   });
 
   describe('WI-41095 donor and planned source closure preflight', () => {
+    it.each(['hardlink', 'copy'])('excludes exact npm-retired executable shims from a %s snapshot without changing the donor', mode => {
+      const t = fixture(); const donor = join(t, 'donor'); const out = join(t, 'snapshot');
+      const modules = join(donor, 'node_modules/@fixture/glob/node_modules');
+      // Include rsync metacharacters: exclusion must identify this exact entry.
+      const name = 'glob[old]*'; const bin = join(modules, '.bin', name);
+      const hash = createHash('sha1').update(bin).digest('base64').replace(/[^a-zA-Z0-9]+/g, '').slice(0, 8);
+      const retiredName = `.${name}-${hash}`;
+      const retired = join(modules, '.bin', retiredName);
+      write(join(modules, 'glob/bin.js'), 'healthy executable');
+      mkdirSync(dirname(bin)); symlinkSync('../glob/bin.js', bin);
+      symlinkSync('../.glob-retired/bin.js', retired);
+      const retiredOutput = join(out, 'node_modules/@fixture/glob/node_modules/.bin', retiredName);
+      const r = runLib(['snapshot', donor, out, mode]);
+      expect(r.code, r.err).toBe(0);
+      expect(readFileSync(join(out, 'node_modules/@fixture/glob/node_modules/.bin', name), 'utf8')).toBe('healthy executable');
+      expect(lstatSync(retiredOutput, { throwIfNoEntry: false })).toBeUndefined();
+      expect(lstatSync(retired).isSymbolicLink()).toBe(true);
+      // A resumed/reused destination must lose old excluded entries as well.
+      symlinkSync('../.glob-retired/bin.js', retiredOutput);
+      const resumed = runLib(['snapshot', donor, out, mode]);
+      expect(resumed.code, resumed.err).toBe(0);
+      expect(lstatSync(retiredOutput, { throwIfNoEntry: false })).toBeUndefined();
+      expect(lstatSync(retired).isSymbolicLink()).toBe(true);
+    });
+    it('still rejects broken active executables beside an exact npm-retired shim', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const out = join(t, 'snapshot');
+      const bin = join(donor, 'node_modules/.bin/glob');
+      const hash = createHash('sha1').update(bin).digest('base64').replace(/[^a-zA-Z0-9]+/g, '').slice(0, 8);
+      mkdirSync(dirname(bin), { recursive: true });
+      symlinkSync('../missing/bin.js', join(dirname(bin), `.glob-${hash}`));
+      symlinkSync('../missing/bin.js', bin);
+      const r = runLib(['snapshot', donor, out]);
+      expect(r.code).toBe(1); expect(r.err).toContain('dangling-pinned-dependency-link:node_modules/.bin/glob');
+      expect(existsSync(out)).toBe(false);
+    });
+    it('does not classify a retirement-shaped name with the wrong npm hash as disposable', () => {
+      const t = fixture(); const donor = join(t, 'donor'); const out = join(t, 'snapshot');
+      mkdirSync(join(donor, 'node_modules/.bin'), { recursive: true });
+      symlinkSync('../missing/bin.js', join(donor, 'node_modules/.bin/.glob-00000000'));
+      const r = runLib(['snapshot', donor, out]);
+      expect(r.code).toBe(1); expect(r.err).toContain('dangling-pinned-dependency-link:node_modules/.bin/.glob-00000000');
+      expect(existsSync(out)).toBe(false);
+    });
     it('refuses dangling .bin links before allocating a snapshot', () => {
       const t = fixture(); const donor = join(t, 'donor'); const out = join(t, 'snapshot');
       mkdirSync(join(donor, 'node_modules/.bin'), { recursive: true });
@@ -390,6 +435,26 @@ process.exit(result.status ?? 1);`);
       expect(existsSync(join(snapshot, 'node_modules/.vite-temp'))).toBe(false);
     });
 
+    it.each(['hardlink', 'copy'])('reports completed small trees for %s publication and verified reuse', mode => {
+      const t = fixture(); const donor = join(t, 'donor'); const snapshot = join(t, 'snap');
+      const trees = ['node_modules', 'apps/web/node_modules'];
+      for (const tree of trees) write(join(donor, tree, 'dep/index.js'), tree);
+      const check = (result: ReturnType<typeof runLib>) => {
+        expect(result.code, result.err).toBe(0);
+        const rows = result.out.split('\n').filter(line => line.startsWith('snapshot progress:'));
+        expect(rows.map(line => Number(/completed=(\d+)/.exec(line)?.[1]))).toEqual([1, 2]);
+        expect(rows.map(line => line.split(' tree=')[1]).sort()).toEqual([...trees].sort());
+        for (const tree of trees)
+          expect(readFileSync(join(snapshot, tree, 'dep/index.js'), 'utf8')).toBe(tree);
+      };
+      check(runLib(['snapshot', donor, snapshot, mode]));
+      if (mode === 'copy') {
+        const reused = runLib(['snapshot', donor, snapshot, mode]);
+        check(reused);
+        for (const tree of trees) expect(reused.out).toContain('reused verified completed snapshot ' + tree);
+      }
+    });
+
     it('preserves the failed copy diagnostic and refuses both fresh and stale success receipts', () => {
       const t = fixture();
       const donor = join(t, 'donor');
@@ -403,6 +468,7 @@ process.exit(result.status ?? 1);`);
       expect(result.code).toBe(1);
       expect(result.err).toContain('rsync: fixture hardlink path: Permission denied');
       expect(result.err).toContain('FAILED to snapshot node_modules (exit=17)');
+      expect(result.out).not.toContain('snapshot progress:');
       expect(existsSync(join(snapshot, '.papercusp-pinned-deps'))).toBe(false);
       expect(existsSync(join(snapshot, 'node_modules'))).toBe(false);
     });

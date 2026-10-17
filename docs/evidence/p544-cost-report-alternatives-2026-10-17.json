@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010016702",
+  "parent": "WI-6554700010016277",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "scope": "Preparatory local cost report supporting R-10; no complete criterion, measured all-in trial cost, activated price or shipment claim",
+  "changes": [
+    "Extend existing cost-model report with base-plus-assigned-agent and metered busy-agent-hour alternatives using existing achieved-capacity rows",
+    "Separate compute/Server core cost, additional infrastructure and inference",
+    "Keep omitted/null monthly categories and both all-in totals unknown; explicit zero requires an evidence reference",
+    "Retain modeled-duty, pending-measurement and capacity-bound provenance; exclude dedicated lumpy VM costs from metered pool rates",
+    "Allow sourced monthly inputs through the existing CLI --report-month JSON file option"
+  ],
+  "sourceSha256": {
+    "scripts/agent-capacity/cost-model.ts": "0a9da797106dfa47994d148281c3f32d5f8c66b0495a9b5514f73523fa7f6b38",
+    "scripts/agent-capacity/cost-model.test.ts": "d842deabf5dee7b7c82937c6d058958007804ad9efbd1e7aaa0fdbdabd3e1f75"
+  },
+  "tests": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- scripts/agent-capacity/cost-model.test.ts",
+    "log": "/tmp/p544-cost-report-tests.log",
+    "logSha256": "8caafeae99dce616f35a3a6b0ac589ff3be1cfe71ab76fdfc0d0ff02adcc1d00",
+    "testRunId": 21300809,
+    "workspaceId": "papercusp-workspace",
+    "harnessSlug": "papercusp",
+    "repositoryScope": "Verified canonical staging checkout; exact machine-local root retained in /tmp/p544-cost-report-ledger.json and durable test-run 21300809",
+    "passed": 54,
+    "failed": 0,
+    "skipped": 0,
+    "exitCode": 0,
+    "checkoutHead": "6a7ad62d8c0fcb88e7978647f3dee1af8f843b74",
+    "worktreeDirty": true,
+    "limitation": "Named-path local provenance; no prospective full-import-graph source capture or committed acceptance binding",
+    "coverage": [
+      "1/50 assigned agents at matching modeled activity",
+      "zero busy time retains base and monthly costs",
+      "omitted/null category propagation",
+      "sourced zero and separate inference crossing $20",
+      "invalid usage/cost, missing source and arithmetic overflow",
+      "pending and lower-bound capacity provenance, dedicated VM exclusion"
+    ]
+  },
+  "typecheck": {
+    "receipt": "/tmp/p544-cost-report-typecheck.json",
+    "project": "scripts/tsconfig.json",
+    "scopeToFiles": true,
+    "requestedFiles": 2,
+    "checkedFilesIncludingImmediateImporters": 4,
+    "errors": 0,
+    "exitCode": 0,
+    "incomplete": false,
+    "limitation": "Scoped source check; not a full-project or release gate verdict"
+  },
+  "cli": {
+    "command": "node --import tsx scripts/agent-capacity/cost-model.ts --agents 1 --report-month /dev/stdin --json",
+    "inputs": "Synthetic monthly categories, zero busy-agent-hours, sourceRef synthetic:cli-month-evidence",
+    "output": "/tmp/p544-cost-report-cli.json",
+    "outputSha256": "b31a52d5979c02e60bcc679564976eded5d27043cd90408309d84977b184e2d2",
+    "exitCode": 0,
+    "rows": 10,
+    "pooledComparisons": 8,
+    "M3": {
+      "assignedAgents": 1,
+      "busyAgentHours": 0,
+      "baseServerUsd": 17.631291428571426,
+      "additionalInfrastructureUsd": 4,
+      "inferenceUsd": 3,
+      "basePlusAgentTotalUsd": 25.6156168930523,
+      "busyHoursTotalUsd": 24.631291428571426
+    },
+    "limitation": "Synthetic CLI functional check, not an observed customer/provider usage window or qualified under-$20 profile"
+  },
+  "remainingParentWork": [
+    "R-10 production accounting integration and complete criterion detector",
+    "R-11 bounded capacity reconciliation through existing durable lifecycle workflows",
+    "Actual running hosted runtime configuration evidence",
+    "Qualified D-075 real-VM performance and complete D-076 measured monthly all-in cost"
+  ]
+}

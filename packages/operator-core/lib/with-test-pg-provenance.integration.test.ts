@@ -99,15 +99,31 @@ describe('isolated PostgreSQL mutation evidence', () => {
   it.each([true, false])('keeps committed-source receipts optional across the private runtime (configured=%s)', async configured => {
     const directory = mkdtempSync(join(tmpdir(), 'private-pg-source-audit-'));
     const auditPath = join(directory, 'load-receipts.jsonl');
+    const noticePath = join(directory, 'source-notices.jsonl');
     const env = { ...process.env };
-    if (configured) env.PAPERCUSP_COMMITTED_SOURCE_AUDIT = auditPath;
-    else delete env.PAPERCUSP_COMMITTED_SOURCE_AUDIT;
+    if (configured) {
+      env.PAPERCUSP_COMMITTED_SOURCE_AUDIT = auditPath;
+      env.PAPERCUSP_COMMITTED_SOURCE_NOTICES = noticePath;
+    } else {
+      delete env.PAPERCUSP_COMMITTED_SOURCE_AUDIT;
+      delete env.PAPERCUSP_COMMITTED_SOURCE_NOTICES;
+    }
     env.PAPERCUSP_SUBSTRATE_IPC_SOCKET = '/ambient/operator.sock';
     const child = `
       import assert from 'node:assert/strict';
       assert.equal(process.env.PAPERCUSP_SUBSTRATE_IPC_SOCKET, undefined);
       assert.equal(process.env.PAPERCUSP_COMMITTED_SOURCE_AUDIT, ${JSON.stringify(configured ? auditPath : undefined)});
+      assert.equal(process.env.PAPERCUSP_COMMITTED_SOURCE_NOTICES, ${JSON.stringify(configured ? noticePath : undefined)});
       await import('./scripts/lib/pg-url.mjs');
+      // Exercise the real substitution/notice writer without editing shared
+      // source: the next loader offers dirty bytes for a tracked module. The
+      // committed-source boundary must still return HEAD and report that choice.
+      const { load } = await import('./scripts/lib/committed-source-loader.mjs');
+      const { pathToFileURL } = await import('node:url');
+      const dirty = 'export const mustNotRun = true;';
+      const loaded = await load(pathToFileURL(process.cwd() + '/scripts/lib/pg-url.mjs').href,
+        {}, async () => ({ format: 'module', source: dirty }));
+      assert.notEqual(Buffer.from(loaded.source).toString(), dirty);
       console.log('PRIVATE_SOURCE_AUDIT_RESULT=' + JSON.stringify({ pid: process.pid }));
     `;
     try {
@@ -126,8 +142,14 @@ describe('isolated PostgreSQL mutation evidence', () => {
           schemaVersion: 'committed-source-load-receipt-v1', boundary: 'node-esm-load-return',
           returnedSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         });
+        const notices = readFileSync(noticePath, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        expect(notices).toContainEqual(expect.objectContaining({
+          schemaVersion: 'committed-source-notice-v1', kind: 'substituted',
+          via: 'esm', rel: 'scripts/lib/pg-url.mjs', pid,
+        }));
       } else {
         expect(existsSync(auditPath)).toBe(false);
+        expect(existsSync(noticePath)).toBe(false);
       }
       expect(stdout).toContain('"runtimeRemoved":true,"pgDataRemoved":true');
     } finally {

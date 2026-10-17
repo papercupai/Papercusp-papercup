@@ -222,6 +222,28 @@ describe('actual admission-rule cohort query', () => {
     const result = await loadPrDeliveryAuditPopulation('papercusp-workspace', [directRule], sql);
     expect(result).toMatchObject({ total: 1, missingRuleIds: [], rows: [{ id: 'EI-audit-missing', ruleId: directRule, state: null }] });
   });
+  it.each(['open', 'done'])('resolves a %s issue at its pot home while retaining the admitted member Git route', async state => {
+    const id = `EI-home-${randomUUID()}`;
+    const member = `audit-member-${randomUUID()}`;
+    const home = `${member}-pot`;
+    const payload = { standingPr: { url: 'https://github.com/acme/subject/pull/7' } };
+    const [rule] = await sql`INSERT INTO harness_shared.admission_rules
+      (workspace_id, data_source_id, title, match, harness_slug, enabled, created_by, lifecycle)
+      VALUES ('papercusp-workspace', ${source}, 'member route', '{"labels":{"contains":"bug"}}', ${member}, true, 'fixture', '{}') RETURNING id`;
+    await sql`INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, authority, payload)
+      VALUES ('papercusp-workspace', ${home}, ${id}, 'home issue', 'home issue', ${state}, 'bug', 'committed', ${sql.json(payload)})`;
+    await sql`INSERT INTO harness_shared.work_admissions
+      (workspace_id, work_item_id, harness_slug, source_kind, source_key, admitted_via, admitted_by, rule_id)
+      VALUES ('papercusp-workspace', ${id}, ${member}, 'record', ${randomUUID()}, 'rule', 'fixture', ${rule!.id})`;
+    const result = await loadPrDeliveryAuditPopulation('papercusp-workspace', [rule!.id], sql);
+    expect(result).toMatchObject({ total: 1, missingRuleIds: [], rows: [{
+      id, harness: member, ruleId: rule!.id, state, authority: 'committed', payload,
+    }] });
+    // A loose member hint may resolve only inside the requested workspace.
+    expect(await loadPrDeliveryAuditPopulation('another-workspace', [rule!.id], sql))
+      .toMatchObject({ total: 0, rows: [], missingRuleIds: [rule!.id] });
+  });
   it('reports exact missing and foreign-workspace rule scope', async () => {
     const absent = randomUUID();
     expect(await loadPrDeliveryAuditPopulation('papercusp-workspace', [absent], sql))

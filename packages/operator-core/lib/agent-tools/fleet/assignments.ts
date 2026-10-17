@@ -94,6 +94,7 @@ import { shapeDagFrontier, claimsFromCoverage, type DagFrontierView } from '../.
 import { getLoopStatuses, type LoopStatus, type LifecycleBackoffInfo } from '../../harness/routines/loop';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { getWorkItem, type WorkItem } from '../../work-items';
+import { getLongCallsInFlight } from '../../in-flight-calls';
 import {
   readClaimConcurrencyBatch,
   type ClaimConcurrencyVerdict,
@@ -529,6 +530,26 @@ export type MemberVerdict =
 export const VERDICT_SPEAKING_FRESH_MS = 5 * 60_000;
 /** Holding work-items with no tool call for this long ⇒ `stalled` (member-level). */
 export const VERDICT_STALL_MS = 15 * 60_000;
+/** A currently executing call is direct progress evidence once it outlasts ordinary RPCs. */
+export const VERDICT_LONG_CALL_IN_FLIGHT_MS = 30_000;
+
+type LongCallSignal = { tool: string; ageSec: number };
+
+function longCallsInFlightByOwner(ownerIds: string[]): Map<string, LongCallSignal> {
+  const wanted = new Set(ownerIds);
+  const out = new Map<string, LongCallSignal>();
+  try {
+    // Registry output is longest-first; one active call is enough to prove the
+    // member is executing. Keep absence as no observation, never as idle proof.
+    for (const call of getLongCallsInFlight(VERDICT_LONG_CALL_IN_FLIGHT_MS)) {
+      if (!call.ownerId || !wanted.has(call.ownerId) || out.has(call.ownerId)) continue;
+      out.set(call.ownerId, { tool: call.toolName, ageSec: call.ageSec });
+    }
+  } catch {
+    // A liveness read must never fail the roster it is enriching.
+  }
+  return out;
+}
 
 /**
  * A healthy, reachable engine loop is productive lifecycle state, not absence
@@ -636,6 +657,8 @@ export function deriveMemberVerdict(
      *  omitted) preserves the legacy any-tool behaviour, so no existing caller
      *  is stranded by this field's addition. */
     lastProductiveToolCallAtMs?: number | null;
+    /** A presently executing call observed in the process-local dispatch registry. */
+    longCallInFlight?: LongCallSignal | null;
     /** Healthy loop-owned monitor lifecycle, derived from the loop engine. */
     monitorState?: MonitorState | null;
     /** Active non-inbox-wake events:await registrations (decorateParkedOn).
@@ -662,7 +685,8 @@ export function deriveMemberVerdict(
   // completely blank ("dead") mid-task, unable to tell it apart from a genuinely
   // gone holder. A fresh tool call now overrides a bare (unconfirmed) heartbeat-dead
   // read, matching this function's own "speaking outranks stalled" precedent.
-  const speakingNow = a.lastToolCallAtMs != null && nowMs - a.lastToolCallAtMs <= VERDICT_SPEAKING_FRESH_MS;
+  const speakingNow = Boolean(a.longCallInFlight) ||
+    (a.lastToolCallAtMs != null && nowMs - a.lastToolCallAtMs <= VERDICT_SPEAKING_FRESH_MS);
   if (a.sessionState === 'ended' || a.sessionState === 'draining') return 'dead';
   // EI-21125380796386851: a suspect owner with a live inbox-wake await is
   // recoverable by waking it before any claim takeover. A suspect owner without
@@ -736,6 +760,7 @@ export async function decorateMemberVerdicts<
     lastToolCallAt?: string | null;
     monitorState?: MonitorState | null;
     parkedOn?: string[];
+    longCallInFlight?: LongCallSignal | null;
   },
 >(
   agents: T[],
@@ -748,6 +773,7 @@ export async function decorateMemberVerdicts<
   fetchProductiveToolCalls: (
     ownerIds: string[],
   ) => Promise<Map<string, string>> = lastProductiveToolCallAtByOwner,
+  fetchLongCallsInFlight: (ownerIds: string[]) => Map<string, LongCallSignal> = longCallsInFlightByOwner,
 ): Promise<T[]> {
   if (agents.length === 0) return agents;
   const [lastCalls, overrides, defaultMode, productiveCallsOrUnknown] = await Promise.all([
@@ -764,6 +790,12 @@ export async function decorateMemberVerdicts<
     // that never happened.)
     fetchProductiveToolCalls(agents.map((a) => a.agentId)).catch(() => null),
   ]);
+  let longCallsByOwner: Map<string, LongCallSignal> | null = null;
+  try {
+    longCallsByOwner = fetchLongCallsInFlight(agents.map((agent) => agent.agentId));
+  } catch {
+    // Missing process-local evidence is unknown, not evidence that a member is idle.
+  }
   for (const a of agents) {
     const iso = lastCalls.get(a.agentId) ?? null;
     const lastMs = iso ? Date.parse(iso) : null;
@@ -771,7 +803,9 @@ export async function decorateMemberVerdicts<
       ? (productiveCallsOrUnknown.get(a.agentId) ?? null)
       : undefined;
     const productiveParsed = productiveIso == null ? productiveIso : Date.parse(productiveIso);
+    const longCallInFlight = longCallsByOwner?.get(a.agentId) ?? null;
     a.lastToolCallAt = iso;
+    a.longCallInFlight = longCallInFlight;
     a.verdict = deriveMemberVerdict(
       {
         present: a.present,
@@ -785,6 +819,7 @@ export async function decorateMemberVerdicts<
           productiveParsed === undefined || Number.isFinite(productiveParsed as number)
             ? productiveParsed
             : null,
+        longCallInFlight,
         monitorState: a.monitorState,
         parkedOn: a.parkedOn,
       },

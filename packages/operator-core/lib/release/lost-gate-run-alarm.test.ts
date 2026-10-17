@@ -289,6 +289,12 @@ describe('qualification progress in the existing lost-run sweep', () => {
     return Object.assign(deps(), { probeQualificationRunner: vi.fn(() => liveness) });
   }
 
+  function progressingSuccessor(): CheckpointQualificationTransaction {
+    const tx = qualification(NOW - 60_000);
+    tx.currentPhysicalRunner = { ...tx.currentPhysicalRunner!, id: 'successor-runner', pid: DEAD_PID + 1 };
+    return tx;
+  }
+
   it.each(['live', 'unknown', 'dead'] as const)('an alarmed old marker cannot hide a newer %s qualification runner', async (liveness) => {
     const oldMarker = marker();
     const { sql, row } = fakeRoutineRow(oldMarker);
@@ -352,6 +358,32 @@ describe('qualification progress in the existing lost-run sweep', () => {
     await sweepLostGateRuns(sql, d);
     expect(d.broadcast).not.toHaveBeenCalled();
     expect(row.retries).toBe(0);
+  });
+
+  it('ignores a stale dead candidate marker while the current qualification runner is progressing', async () => {
+    const { sql, row } = fakeRoutineRow(marker(), progressingSuccessor());
+    const d = progressDeps('live');
+
+    await expect(sweepLostGateRuns(sql, d)).resolves.toEqual({ alarmed: [], deduped: [], failed: [] });
+    expect(d.broadcast).not.toHaveBeenCalled();
+    expect(row.alarmKey).toBeNull();
+    expect(row.progressAlarmKey).toBeNull();
+    expect(row.retries).toBe(0);
+  });
+
+  it('resolves an old lost-run alarm when a current qualification runner proves progress', async () => {
+    const resolve = vi.fn(async () => true);
+    const { sql, row } = fakeRoutineRow(marker(), progressingSuccessor());
+    row.alarmKey = lostRunAlarmKey(marker());
+    const d = Object.assign(deps({ attention: { resolve } }), { probeQualificationRunner: vi.fn(() => 'live' as const) });
+
+    await expect(sweepLostGateRuns(sql, d)).resolves.toEqual({ alarmed: [], deduped: [], failed: [] });
+    expect(d.broadcast).not.toHaveBeenCalled();
+    expect(resolve).toHaveBeenCalledWith({
+      conditionKey: 'green-checkpoint-lost-run:papercusp',
+      summary: 'lost-gate-run-alarm recovered',
+    });
+    expect(row.alarmKey).toBe(lostRunAlarmKey(marker()));
   });
 
   // WI-6554700010009616: run b874ad21 sat ~2h past its verdict while its heartbeat stayed fresh.

@@ -106,7 +106,7 @@ export default defineTool({
                                 THEN EXCLUDED.workspace_id
                                 ELSE harness_text_artifacts.workspace_id END
         `;
-        return { ok: true as const, slug, rel_path: key, bytes: item.content.length, updated_at: now };
+        return { ok: true as const, slug, rel_path: key, bytes: Buffer.byteLength(item.content, 'utf8'), updated_at: now };
       },
       { keyOf: (item) => ({ slug: item.slug ?? null, rel_path: normalizeRelPath(item.rel_path) }) },
     );

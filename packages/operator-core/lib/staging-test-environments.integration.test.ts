@@ -43,12 +43,14 @@ describe('current-build execution route contract', () => {
     let output = '';
     let ready!: (receipt: { taskId: string; cgroupPath: string; payloadPid: number }) => void;
     const receipt = new Promise<{ taskId: string; cgroupPath: string; payloadPid: number }>(done => { ready = done; });
-    child.stdout.on('data', chunk => {
-      output += String(chunk);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      output += chunk;
       const line = output.split('\n').find(row => row.startsWith('PRIVATE_SCOPE_READY '));
       if (line) ready(JSON.parse(line.slice('PRIVATE_SCOPE_READY '.length)));
     });
-    child.stderr.on('data', chunk => { output += String(chunk); });
+    child.stderr.on('data', (chunk: string) => { output += chunk; });
     const closed = new Promise<{ code: number | null; signal: string | null }>((done, reject) => {
       child.once('error', reject);
       child.once('close', (code, signal) => done({ code, signal }));
@@ -73,7 +75,7 @@ describe('current-build execution route contract', () => {
     }
   }, 220000);
 
-  it('prepares only a dummy Codex account in the native fixture private pool', () => {
+  it('prepares the dummy account and real hooks in the native fixture private home', () => {
     const evidenceDir = mkdtempSync(join(tmpdir(), 'private-native-setup-'));
     try {
       const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
@@ -91,7 +93,9 @@ describe('current-build execution route contract', () => {
       expect(receipt).toMatchObject({
         workspace: expect.stringMatching(/^test-runtime-/), accountId: 'private-current-su',
         provider: 'codex', providerForwarding: false,
-        launcherPath: join(root, 'apps/operator/scripts/psu-launcher.mjs') });
+        launcherPath: join(root, 'apps/operator/scripts/psu-launcher.mjs'),
+        nativeHookPreflight: { beforeInstall: false, configured: true, privateHookRoot: true,
+          events: expect.arrayContaining(['PreToolUse', 'PostToolUse', 'SessionStart', 'SessionEnd']) } });
       expect(receipt.nodeOptions).not.toContain('vitest-startup-trace.mjs');
       expect(receipt.nodeOptions).not.toMatch(/(?:^|\s)(?:--import|--loader)=?tsx/);
       expect(receipt.nodeOptions).toContain('--trace-warnings');
@@ -102,7 +106,7 @@ describe('current-build execution route contract', () => {
 
   it.each([
     ['pool', false], ['pool', true], ['launch', false], ['launch', true],
-    ['spawn', false], ['spawn', true],
+    ['spawn', false], ['spawn', true], ['hub', false], ['hub', true],
   ] as const)('retires private native %s pools after the fixture (failure=%s)', (kind, failure) => {
     const evidenceDir = mkdtempSync(join(tmpdir(), 'private-native-pool-cleanup-'));
     try {
@@ -126,6 +130,9 @@ describe('current-build execution route contract', () => {
       expect(progress.at(-1)).toMatchObject({ exitCode: failure ? 1 : 0 });
       expect(progress.at(-2).pgConnections).toEqual(expect.arrayContaining([
         expect.objectContaining({ application_name: expect.any(String), client_port: expect.any(Number) }),
+      ]));
+      if (kind === 'hub') expect(progress.at(-2).pgConnections).toEqual(expect.arrayContaining([
+        expect.objectContaining({ application_name: expect.stringMatching(/^pcusp:listen-hub:/) }),
       ]));
       // A disconnected TCP handle can retain its local endpoint for one more
       // close callback even though this child already exited normally. The
@@ -422,8 +429,10 @@ describe('current-build execution route contract', () => {
         cwd: path.join(process.cwd(), 'apps/operator'), env: process.env, stdio: ['ignore', 'pipe', 'pipe']
       });
       let head = '', tail = '', lastHttp = 'unreachable', paired = null;
-      for (const stream of [host.stdout, host.stderr]) stream.on('data', chunk => {
-        const text = chunk.toString(); head = (head + text).slice(0, 2000); tail = (tail + text).slice(-2000);
+      host.stdout.setEncoding('utf8');
+      host.stderr.setEncoding('utf8');
+      for (const stream of [host.stdout, host.stderr]) stream.on('data', (text: string) => {
+        head = (head + text).slice(0, 2000); tail = (tail + text).slice(-2000);
       });
       const call = async (route, method = 'GET', body, token, origin = base) => {
         const response = await fetch(origin + route, {
@@ -529,9 +538,10 @@ describe('current-build execution route contract', () => {
       let head = '';
       let tail = '';
       let lastHttp = 'unreachable';
+      host.stdout.setEncoding('utf8');
+      host.stderr.setEncoding('utf8');
       for (const stream of [host.stdout, host.stderr]) {
-        stream.on('data', (chunk) => {
-          const text = chunk.toString();
+        stream.on('data', (text: string) => {
           head = (head + text).slice(0, 2000);
           tail = (tail + text).slice(-2000);
         });

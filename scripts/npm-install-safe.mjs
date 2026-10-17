@@ -98,6 +98,7 @@ import {
 } from "./check-declared-deps-extracted.mjs";
 import { findBrokenBinLinks } from "./check-partial-install.mjs";
 import { auditLockfile } from "../apps/operator/bin/release/dependency-lock-tree-audit.mjs";
+import { EMBEDDED_EXTENSIONS, installEmbeddedExtensions, missingWarning } from "./install-embedded-pgvector.mjs";
 
 const DEFAULT_REPO_ROOT = resolve(
   dirname(fileURLToPath(import.meta.url)),
@@ -462,6 +463,43 @@ function removePackageLocalRepairTargets({ repoRoot, findings, deps = {} }) {
   const targets = packageLocalRepairTargets({ repoRoot, findings });
   for (const target of targets) removePath(target);
   return targets;
+}
+
+/** Re-extract only the locked package containing a measured missing import file.
+ * Keep lockfile intent intact. Generic import errors, workspace links, external
+ * paths and symlinked parents are not evidence of a damaged installed package.
+ */
+function runtimeContentRepairFindings({ repoRoot, failures }) {
+  const missingFiles = failures.filter((failure) =>
+    failure.code === 'ERR_MODULE_NOT_FOUND' && isAbsolute(failure.missingPath ?? ''));
+  if (missingFiles.length === 0) return [];
+  const root = realpathSync(repoRoot);
+  const lockPath = existsSync(join(root, 'npm-shrinkwrap.json'))
+    ? join(root, 'npm-shrinkwrap.json') : join(root, 'package-lock.json');
+  if (!existsSync(lockPath)) return [];
+  const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+  const findings = [];
+  for (const failure of missingFiles) {
+    const missing = resolve(failure.missingPath);
+    if (!isStrictlyWithin(root, missing) || existsSync(missing)) continue;
+    const parts = relative(root, missing).split(sep);
+    const index = parts.lastIndexOf('node_modules');
+    if (index < 0 || !parts[index + 1]) continue;
+    const packageLength = parts[index + 1].startsWith('@') ? 2 : 1;
+    if (parts.length <= index + 1 + packageLength) continue;
+    const packageName = parts.slice(index + 1, index + 1 + packageLength).join('/');
+    const key = parts.slice(0, index + 1 + packageLength).join('/');
+    const entry = lock.packages?.[key];
+    if (!entry?.version || entry.link) continue;
+    const target = join(root, key);
+    // Validate physical identity before any repair deletion, including ancestors.
+    if (!existsSync(target) || realpathSync(target) !== target) continue;
+    let manifest;
+    try { manifest = JSON.parse(readFileSync(join(target, 'package.json'), 'utf8')); } catch { continue; }
+    if (manifest.name !== packageName || manifest.version !== entry.version) continue;
+    findings.push({ workspace: parts.slice(0, index).join('/') || '.', package: packageName });
+  }
+  return findings;
 }
 
 /**
@@ -837,10 +875,39 @@ export async function verifyDepsExtracted({
     runtimeFailures.length === 0 &&
     brokenBinLinks.length === 0;
 
+  // Scoped npm reify/repair can replace native packages without running the
+  // root postinstall. Imports still work, but a fresh database then fails its
+  // first VECTOR column. Reuse the postinstall provisioner before accepting
+  // either healthy dependency path, while the install writer is still held.
+  const verifyNativeExtensions = () => {
+    const extensions = installEmbeddedExtensions({ root: repoRoot, env });
+    for (const missing of extensions.missingSource) console.error(missingWarning(missing));
+    const required = new Set(EMBEDDED_EXTENSIONS.filter(extension => extension.required).map(extension => extension.name));
+    const unavailable = extensions.trees.filter(tree => required.has(tree.extension) &&
+      !["present", "installed", "updated"].includes(tree.status));
+    if (unavailable.length > 0) {
+      console.error("NPM_INSTALL_SAFE_FATAL: required embedded Postgres extensions are unavailable: " +
+        unavailable.map(tree => `${tree.location} (${tree.extension}: ${tree.status})`).join(", "));
+      return 1;
+    }
+    return 0;
+  };
+
   const first = await inspect();
-  if (healthy(first)) return 0;
+  if (healthy(first)) return verifyNativeExtensions();
 
   report(first);
+  // A prefix reifies an independent package tree. Keep the full-root verdict,
+  // but never turn its failure into a root install or root-lock mutation.
+  // The caller must repair the explicitly selected tree before retrying.
+  if (npmArgs.some((arg) => arg === "--prefix" || arg.startsWith("--prefix="))) {
+    console.error(
+      "NPM_INSTALL_SAFE_FATAL: explicit-prefix install failed full-root verification; refusing to broaden repair to the repository root.",
+    );
+    return 1;
+  }
+  const runtimeFindings = first.runtimeFailures.length > 0
+    ? runtimeContentRepairFindings({ repoRoot, failures: first.runtimeFailures }) : [];
   // Validate every parent before modifying any detected link or its local owner.
   // unlink removes only the link; it cannot recursively delete its target.
   const binTargets = first.brokenBinLinks.map((finding) => {
@@ -872,7 +939,7 @@ export async function verifyDepsExtracted({
   });
   const removedTargets = removePackageLocalRepairTargets({
     repoRoot,
-    findings: [...first.incomplete, ...first.invalidVersions, ...binPackageFindings],
+    findings: [...first.incomplete, ...first.invalidVersions, ...binPackageFindings, ...runtimeFindings],
     deps,
   });
   if (removedTargets.length > 0) {
@@ -893,7 +960,7 @@ export async function verifyDepsExtracted({
   // the originally selected workspace cannot repair drift elsewhere in it.
   const repairArgs = [
     ...REPAIR_ARGS,
-    ...(first.lockTreeDefects.length > 0 ? [] : repairWorkspaceArgs),
+    ...(first.lockTreeDefects.length > 0 || runtimeFindings.length > 0 ? [] : repairWorkspaceArgs),
   ];
   console.error(
     `NPM_INSTALL_SAFE repairing: npm ${repairArgs.join(" ")} (one bounded attempt, still holding the lock)`,
@@ -915,6 +982,7 @@ export async function verifyDepsExtracted({
 
   const second = await inspect();
   if (healthy(second)) {
+    if (verifyNativeExtensions() !== 0) return 1;
     console.log(
       "NPM_INSTALL_SAFE repaired: dependency directories, package-local manifests and versions, executable links, and critical runtime imports are healthy",
     );

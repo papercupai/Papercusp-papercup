@@ -347,6 +347,8 @@ export interface PreSnapshotHookResult {
   ok: boolean;
   bytes?: number;
   error?: string;
+  /** Admission refused before pg_dump or Kopia began; never a failed dump. */
+  deferred?: 'host-backup-in-progress';
   /**
    * Set when the dump was deliberately and provably UNNECESSARY rather than
    * attempted — today, only when the host backup already dumped this exact
@@ -580,7 +582,7 @@ async function runPreSnapshotHookNow(ctx: HookContext): Promise<PreSnapshotHookR
   if (coverage.inProgress) {
     await log(`pg SKIP: ${coverage.reason}`);
     await log('hook done (degraded: host-backup-in-progress)');
-    return { ok: false, error: coverage.reason };
+    return { ok: false, error: coverage.reason, deferred: 'host-backup-in-progress' };
   }
   if (hostStatus) await log(`host-dump coverage not established: ${coverage.reason}`);
 

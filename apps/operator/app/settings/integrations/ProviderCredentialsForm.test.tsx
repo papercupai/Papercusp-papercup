@@ -10,6 +10,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ProviderCredentialStatus } from '@papercusp/operator-core/lib/integrations/provider-credentials';
+import devto from '../../../../../libs/papercusp/plugins/devto/papercusp.json';
+import hashnode from '../../../../../libs/papercusp/plugins/hashnode/papercusp.json';
 
 const H = vi.hoisted(() => ({
   toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
@@ -56,6 +58,18 @@ afterEach(() => {
 });
 
 describe('ProviderCredentialsForm', () => {
+  it.each([devto, hashnode])('renders the $name package credential declaration and saves only the entered value', async (manifest) => {
+    const apiKeyFixture = 'fixture-api-key';
+    const declared = manifest.provider.setup.credentials[0];
+    render(<ProviderCredentialsForm providerId={manifest.provider.id} displayName={manifest.provider.displayName}
+      credentials={[field({ ...declared, pattern: null, configured: false, savedAt: null })]} />);
+    const input = screen.getByLabelText(declared.label) as HTMLInputElement;
+    expect(input.type).toBe('password'); expect(input.value).toBe('');
+    fireEvent.change(input, { target: { value: apiKeyFixture } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(H.calls).toHaveLength(1));
+    expect(H.calls[0]).toEqual({ method: 'PUT', url: providerCredentialsPath(manifest.provider.id), body: { values: { api_key: apiKeyFixture } } });
+  });
   it('renders nothing when the provider declares no credentials', () => {
     const { container } = render(<ProviderCredentialsForm providerId="fixture-chat" displayName="Fixture Chat" credentials={[]} />);
     expect(container.innerHTML).toBe('');

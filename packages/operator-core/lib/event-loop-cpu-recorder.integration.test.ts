@@ -478,6 +478,9 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
               traceLines: Record<'primary' | 'recoveryLifecycle' | 'recoveryWork', Array<{ line: string; count: number }>>;
             }>((resolve, reject) => {
               const child = spawn(process.execPath, childArgs, { stdio: ['ignore', 'pipe', 'pipe', 'pipe'] });
+              child.stdout?.setEncoding('utf8');
+              child.stderr?.setEncoding('utf8');
+              (child.stdio[3] as (NodeJS.ReadableStream & { setEncoding(encoding: string): void }) | null)?.setEncoding('utf8');
               let json = '';
               let pendingLine = '';
               let stderrTail = '';
@@ -511,14 +514,14 @@ describe('real monitor CPU recorder in an isolated Node process', () => {
                   else if (counts.size < 24) counts.set(boundedLine, 1);
                 }
               };
-              child.stdout?.on('data', chunk => {
-                pendingLine += chunk.toString();
+              child.stdout?.on('data', (chunk: string) => {
+                pendingLine += chunk;
                 const lines = pendingLine.split(/\r?\n/);
                 pendingLine = lines.pop() ?? '';
                 for (const line of lines) onLine(line);
               });
-              child.stdio[2]?.on('data', chunk => { stderrTail = (stderrTail + chunk.toString()).slice(-8_000); });
-              child.stdio[3]?.on('data', chunk => { json += chunk.toString(); });
+              child.stdio[2]?.on('data', (chunk: string) => { stderrTail = (stderrTail + chunk).slice(-8_000); });
+              child.stdio[3]?.on('data', (chunk: string) => { json += chunk; });
               const timer = setTimeout(() => {
                 if (settled) return;
                 settled = true;

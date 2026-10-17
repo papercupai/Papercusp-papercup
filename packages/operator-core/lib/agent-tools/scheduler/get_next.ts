@@ -57,8 +57,13 @@ import { loadHarnessRegistry } from '../../harness-registry';
 import { cancelClaimableAwaits } from '../../events/await/store';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { backfillToolInvocationMetadataByCallId } from '../../projected-tool-deps';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 import { OrgTxnTimeoutError, type CandidateWaitSnapshot } from '../../pg-bounded-txn';
-import { liveLockedPaths } from '../locks/live-lock-paths';
+import {
+  liveLockedPaths,
+  type LiveLockPathPhase,
+  type LiveLockPathPhaseEvent,
+} from '../locks/live-lock-paths';
 
 /** The claimable-state subset diagnoseClaimNextMiss accepts (mirrors CLAIM_STATES_ALLOWLIST). */
 type ClaimNextStates = ('open' | 'failing')[] | undefined;
@@ -75,6 +80,7 @@ import {
   diagnoseFleetScopePlanTerminality,
   diagnoseFleetScopeLeaderLiveness,
   reconcileFleetScopeLeaderSuccession,
+  resumeFleetLeaderWithLaunchAgent,
   fleetLeaderUnavailableRefusal,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from '../work_items/retraction-advisory';
@@ -215,6 +221,16 @@ export interface ClaimTimeoutReconciliation {
   heldIds: string[];
 }
 
+type PreflightTimingSnapshot = {
+  totalElapsedMs: number;
+  completedSteps: Array<{ step: string; elapsedMs: number }>;
+  activeStep: { step: string; elapsedMs: number };
+  liveLockRead?: {
+    completedSteps: Array<{ phase: LiveLockPathPhase; elapsedMs: number }>;
+    activeStep: { phase: LiveLockPathPhase; elapsedMs: number } | null;
+  };
+};
+
 /**
  * EI-21863190622583520: the budget for the OPTIONAL per-floor miss breakdown — applied to the
  * caller (`withBoundedTimeout`) and to PostgreSQL (`statement_timeout`) from this single
@@ -333,11 +349,7 @@ export function getNextPreflightTimeoutResult(
   reason: 'timeout' | 'aborted' | 'error' = 'timeout',
   errorMessage?: string,
   lastPreflightStep?: string,
-  preflightTiming?: {
-    totalElapsedMs: number;
-    completedSteps: Array<{ step: string; elapsedMs: number }>;
-    activeStep: { step: string; elapsedMs: number };
-  },
+  preflightTiming?: PreflightTimingSnapshot,
 ): {
   ok: false;
   error: 'timeout';
@@ -345,11 +357,7 @@ export function getNextPreflightTimeoutResult(
   phase: 'preflight';
   budgetMs: number;
   lastPreflightStep?: string;
-  preflightTiming?: {
-    totalElapsedMs: number;
-    completedSteps: Array<{ step: string; elapsedMs: number }>;
-    activeStep: { step: string; elapsedMs: number };
-  };
+  preflightTiming?: PreflightTimingSnapshot;
   message: string;
 } {
   const detail =
@@ -392,6 +400,15 @@ export function getNextContentionResult(error: OrgTxnTimeoutError, lastClaimStep
   timeoutSource: 'pg' | 'caller-budget';
   message: string;
   candidateWaitSnapshot?: CandidateWaitSnapshot;
+  setupAcquisition?: {
+    label: string;
+    deadlineMs: number;
+    elapsedMs: number;
+    pool: string | null;
+    measured: string | null;
+    retryable: boolean;
+    acquisitionTickets: DbCallDeadlineError['acquisitionTickets'];
+  };
 } {
   // EI-21831306274538775: `pgCode: '57014'` here does NOT prove PostgreSQL timed out. The
   // claim ladder SYNTHESIZES the same typed error when its own wall-clock budget expires,
@@ -409,6 +426,18 @@ export function getNextContentionResult(error: OrgTxnTimeoutError, lastClaimStep
           lastClaimStep +
           '". It locates the phase, not the cause; measure that phase before attributing the timeout to claim-ladder cost, backlog shape, or pool contention.'
         : 'The result does not identify a phase or prove PG pool saturation; inspect lastClaimStep before assigning a cause.';
+  const setupAcquisition =
+    error.cause instanceof DbCallDeadlineError
+      ? {
+          label: error.cause.label,
+          deadlineMs: error.cause.deadlineMs,
+          elapsedMs: error.cause.elapsedMs,
+          pool: error.cause.pool,
+          measured: error.cause.measured,
+          retryable: error.cause.retryable,
+          acquisitionTickets: error.cause.acquisitionTickets,
+        }
+      : undefined;
   return {
     ok: false,
     error: 'timeout',
@@ -416,6 +445,7 @@ export function getNextContentionResult(error: OrgTxnTimeoutError, lastClaimStep
     pgCode: error.pgCode,
     timeoutSource: error.timeoutSource,
     ...(error.candidateWaitSnapshot ? { candidateWaitSnapshot: error.candidateWaitSnapshot } : {}),
+    ...(setupAcquisition ? { setupAcquisition } : {}),
     message: callerBudget
       ? `scheduler:get_next abandoned its claim after exhausting the scheduler's OWN budget (reported as ${error.pgCode}; PostgreSQL did not time out): ${error.messageWithoutBlockerHint}. ` +
         'Retry now; no claim was returned. ' +
@@ -963,7 +993,14 @@ async function buildMissDiagnosis(args: {
       );
       if (agg.value) {
         excludedBreakdown = agg.value;
-        reviewable = reviewableMiss(agg.value.queueControl, { harness: args.harness });
+        // The generic miss path still serves callers whose effective spec is inherited from a
+        // fleet (for example when the request workspace cannot resolve member scope). Keep the
+        // reviewability read on that same fleet lane; omitting it widens work_items:claimable to
+        // the harness-wide review queue and can drain unrelated reviews.
+        reviewable = reviewableMiss(agg.value.queueControl, {
+          harness: args.harness,
+          spec: rec?.fleetSlug,
+        });
         const top = Object.entries(agg.value.excluded)
           .filter(([, n]) => (n as number) > 0)
           .sort((a, b) => (b[1] as number) - (a[1] as number));
@@ -1468,6 +1505,32 @@ export default defineTool({
     let currentPreflightStep = 'work-scope-policy';
     let currentPreflightStepStartedAtMs = preflightStartedAtMs;
     const completedPreflightSteps: Array<{ step: string; elapsedMs: number }> = [];
+    const liveLockReadState: {
+      started: boolean;
+      completedSteps: Array<{ phase: LiveLockPathPhase; elapsedMs: number }>;
+      activeStep: { phase: LiveLockPathPhase; startedAtMs: number } | null;
+    } = {
+      started: false,
+      completedSteps: [],
+      activeStep: null,
+    };
+    const observeLiveLockPathPhase = (event: LiveLockPathPhaseEvent): void => {
+      const nowMs = Date.now();
+      if (event.state === 'start') {
+        liveLockReadState.started = true;
+        liveLockReadState.activeStep = { phase: event.phase, startedAtMs: nowMs };
+        return;
+      }
+      const active = liveLockReadState.activeStep;
+      const elapsedMs = event.durationMs ?? (
+        active?.phase === event.phase ? nowMs - active.startedAtMs : 0
+      );
+      liveLockReadState.completedSteps.push({
+        phase: event.phase,
+        elapsedMs: Math.max(0, elapsedMs),
+      });
+      if (active?.phase === event.phase) liveLockReadState.activeStep = null;
+    };
     const beginPreflightStep = (step: string): void => {
       const nowMs = Date.now();
       completedPreflightSteps.push({
@@ -1477,8 +1540,19 @@ export default defineTool({
       currentPreflightStep = step;
       currentPreflightStepStartedAtMs = nowMs;
     };
-    const preflightTimingSnapshot = () => {
+    const preflightTimingSnapshot = (): PreflightTimingSnapshot => {
       const nowMs = Date.now();
+      const liveLockRead = liveLockReadState.started
+        ? {
+            completedSteps: [...liveLockReadState.completedSteps],
+            activeStep: liveLockReadState.activeStep
+              ? {
+                  phase: liveLockReadState.activeStep.phase,
+                  elapsedMs: Math.max(0, nowMs - liveLockReadState.activeStep.startedAtMs),
+                }
+              : null,
+          }
+        : undefined;
       return {
         totalElapsedMs: Math.max(0, nowMs - preflightStartedAtMs),
         completedSteps: [...completedPreflightSteps],
@@ -1486,6 +1560,7 @@ export default defineTool({
           step: currentPreflightStep,
           elapsedMs: Math.max(0, nowMs - currentPreflightStepStartedAtMs),
         },
+        ...(liveLockRead ? { liveLockRead } : {}),
       };
     };
     const preflightBudgetMs = remainingBudgetMs();
@@ -1632,6 +1707,10 @@ export default defineTool({
           const leaderSuccession = await reconcileFleetScopeLeaderSuccession({
             scope: reconciliation.scope,
             identity: ident,
+            resumeLeader: (resume) => resumeFleetLeaderWithLaunchAgent({
+              ...resume,
+              ctx: ctx as unknown as Record<string, unknown>,
+            }),
           });
           if (leaderSuccession === 'unavailable') return { kind: 'leader-unavailable', reconciliation };
         }
@@ -1676,7 +1755,10 @@ export default defineTool({
         // caller. Fail-soft is implemented by liveLockedPaths; cap the SQL parameter so
         // a pathological lock storm cannot inflate a claim request without bound.
         beginPreflightStep('live-lock-paths');
-        const contendedPaths = (await liveLockedPaths({ excludeOwner: ident.ownerId })).slice(0, 500);
+        const contendedPaths = (await liveLockedPaths({
+          excludeOwner: ident.ownerId,
+          onPhase: observeLiveLockPathPhase,
+        })).slice(0, 500);
         return { kind: 'ready', reconciliation, specOn, contendedPaths };
       },
       { fallback: null, timeoutMs: preflightBudgetMs, label: 'scheduler:get_next:preflight' },
@@ -1730,14 +1812,16 @@ export default defineTool({
       // FAIL-SOFT, always: the refusal is the load-bearing behaviour and ships unchanged
       // whether or not the bench registers. A bench failure must never convert a clean
       // compact-first verdict into an error.
-      const benchOutcome = await autoBenchContextCriticalCallerCore(
-        { ownerId: ident.ownerId, bucket: preflightState.bucket },
-        {
-          listParkedAwaitsForSubscribers: listParkedAwaitsForSubscribersStore,
-          registerBenchPark,
-          captureWakeHandleForOwner: captureWakeHandleForOwnerStore,
-          registerAwait: registerAwaitStore,
-        },
+      const benchOutcome = await trackPhase(ctx.phases, 'get_next:refusal:contextCriticalBench', () =>
+        autoBenchContextCriticalCallerCore(
+          { ownerId: ident.ownerId, bucket: preflightState.bucket },
+          {
+            listParkedAwaitsForSubscribers: listParkedAwaitsForSubscribersStore,
+            registerBenchPark,
+            captureWakeHandleForOwner: captureWakeHandleForOwnerStore,
+            registerAwait: registerAwaitStore,
+          },
+        ),
       );
       return recordNoClaim({
         content: [
@@ -1778,7 +1862,9 @@ export default defineTool({
       // claimable await(s) right here so no future release re-wakes them for a
       // pull they're forbidden to make anyway. Self/subscriber-scoped + best-effort,
       // same posture as the successful-claim cancel below.
-      const claimableAwaitsCancelled = await cancelClaimableAwaits(ident.ownerId, { includeStanding: true }).catch(() => 0);
+      const claimableAwaitsCancelled = await trackPhase(ctx.phases, 'get_next:refusal:cancelAwaits', () =>
+        cancelClaimableAwaits(ident.ownerId, { includeStanding: true }).catch(() => 0),
+      );
       return recordNoClaim({
         content: [
           {

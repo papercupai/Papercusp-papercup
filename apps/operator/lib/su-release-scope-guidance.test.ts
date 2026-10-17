@@ -79,6 +79,24 @@ describe('SU workspace-global scope guidance', () => {
   }
 });
 
+describe('SU workspace discovery guidance', () => {
+  for (const source of RELEASE_SOURCES) {
+    it(`${source} uses current scope before cross-workspace discovery`, () => {
+      const prompt = readFileSync(join(PROMPTS, source), 'utf8');
+
+      expect(prompt).toMatch(
+        /workspace-scoped session[\s\S]*call `harness:list`\s+directly[\s\S]*unscoped superuser session[\s\S]*`papercusp:list_workspaces`/,
+      );
+      expect(prompt).not.toMatch(
+        /When the user names a topic:\s*`papercusp:list_workspaces`\s*→\s*`harness:list/,
+      );
+      expect(prompt).not.toMatch(
+        /\*\*"What's the state of X"\*\*:\s*`papercusp:list_workspaces`\s*→\s*`harness:list/,
+      );
+    });
+  }
+});
+
 describe('SU two-port staging checkout guidance', () => {
   it('keeps the canonical guide and engineer playbook honest about :3170', () => {
     const sources = [

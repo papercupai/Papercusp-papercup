@@ -300,7 +300,7 @@ export function resetResultDoorAggregatesForTests(): void {
 // build:typecheck's public fields (errorsTruncated, byFileTruncated).
 const INNER_TRUNCATION_MARKER_REGEX =
   /(?:"((?:\w+_truncated|\w+Truncated))"|(?<![\w"])((?:\w+_truncated|\w+Truncated)))\s*:\s*true\b/g;
-const INNER_TRUNCATION_TEXT_REGEX = /(?:…|\.\.\.)\[TRUNCATED[^\]]*\]/g;
+const INNER_TRUNCATION_TEXT_REGEX = /(?:…|\.\.\.)\s*\[TRUNCATED[^\]]*\]/gi;
 const INNER_PARTIAL_FLAG_CANDIDATE_REGEX = /(?<!\\)"_partial"\s*:\s*true\b/;
 const SUMMARY_NOTICE_JSON_CANDIDATE_REGEX = /(?<!\\)"summaryNotice"\s*:\s*\{/;
 const SUMMARY_NOTICE_TEXT_MARKER_REGEX = /^\s*summaryNotice\s*:\s*\{\s*truncated\s*:\s*true\b/m;
@@ -778,6 +778,11 @@ const SCORECARDS_EMIT_SPILL_PRESERVE_PATHS = [
   'ok',
   'committed',
   'completionReceipt',
+  'canonicalRatings.base-rate-check.rating',
+  'canonicalRatings.instrument-split.rating',
+  'canonicalRatings.terminal-re-rate.rating',
+  'canonicalRatings.platform-telemetry-excluded.rating',
+  'canonicalRatings.re-runnable-evidence.rating',
   'canonicalRatings.degenerate-distribution.rating',
   'created',
   'issueId',
@@ -786,6 +791,20 @@ const SCORECARDS_EMIT_SPILL_PRESERVE_PATHS = [
 
 // A failed admission does not roll back approval or promotion. Retain the
 // committed legs beside the refusal; the immutable spill holds full diagnostics.
+const PLANS_BIND_SPEC_EVIDENCE_REFUSAL_PRESERVE_PATHS = [
+  'ok',
+  'counts.ok',
+  'counts.failed',
+  'results[].ok',
+  'results[].slug',
+  'results[].error',
+  'results[].clause',
+  'results[].targeted',
+  'results[].acceptedTargets',
+  'results[].reason',
+  'results[].correctedCall',
+] as const;
+
 const PLANS_START_RECEIPT_PRESERVE_PATHS = [
   'ok', 'counts.ok', 'counts.failed',
   'results[].ok', 'results[].slug', 'results[].harnessSlug', 'results[].error',
@@ -842,6 +861,87 @@ function isWorkItemsGetCall(input: { toolName: string; nestedTargetToolName?: st
     (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'work_items:get');
 }
 
+function isWorkItemsGetReceiptEntry(value: unknown): value is Record<string, unknown> & { id: string; delivered: boolean } {
+  const row = recordAt(value);
+  return typeof row?.id === 'string' && typeof row.delivered === 'boolean';
+}
+
+/** Reconcile the source manifest against the rows that survived this door. */
+function reconcileWorkItemsGetReceipt(sourceValue: unknown, outputValue: JsonObject): JsonObject {
+  const source = recordAt(sourceValue);
+  const output = recordAt(outputValue);
+  if (!source || !output || !Array.isArray(source.receipt)) return outputValue;
+
+  const sourceRead = recordAt(source.read);
+  const outputRead = recordAt(output.read);
+  const requested = typeof sourceRead?.requested === 'number'
+    ? sourceRead.requested
+    : source.receipt.filter(isWorkItemsGetReceiptEntry).length;
+  const sourceEntries = source.receipt.filter(isWorkItemsGetReceiptEntry);
+  const outputReceipt = Array.isArray(output.receipt) ? output.receipt : [];
+  const resultCounts = new Map<string, number>();
+  for (const value of Array.isArray(output.results) ? output.results : []) {
+    const row = recordAt(value);
+    if (typeof row?.id !== 'string') continue;
+    resultCounts.set(row.id, (resultCounts.get(row.id) ?? 0) + 1);
+  }
+  const sourceById = new Map<string, Array<Record<string, unknown>>>();
+  for (const entry of sourceEntries) {
+    const queue = sourceById.get(entry.id) ?? [];
+    queue.push(entry);
+    sourceById.set(entry.id, queue);
+  }
+  const receipt = outputReceipt.flatMap((value) => {
+    if (!isWorkItemsGetReceiptEntry(value)) return [];
+    const sourceEntry = sourceById.get(value.id)?.shift() ?? value;
+    if (sourceEntry.delivered !== true) {
+      return [{
+        id: value.id,
+        delivered: false,
+        ...(typeof sourceEntry.reason === 'string' ? { reason: sourceEntry.reason } : {}),
+      }];
+    }
+    const remainingRows = resultCounts.get(value.id) ?? 0;
+    if (remainingRows > 0) {
+      resultCounts.set(value.id, remainingRows - 1);
+      return [{ id: value.id, delivered: true }];
+    }
+    return [{ id: value.id, delivered: false, reason: 'projection' }];
+  });
+  const receiptComplete = sourceEntries.length === requested && receipt.length === requested;
+  const read: Record<string, unknown> = { ...(outputRead ?? {}) };
+  if (typeof read.requested !== 'number') read.requested = requested;
+  read.receiptComplete = receiptComplete;
+  if (receiptComplete) delete read.receiptOmitted;
+  else read.receiptOmitted = Math.max(0, requested - receipt.length);
+  return { ...output, receipt, read };
+}
+
+function reconcileWorkItemsGetReceiptResult<T extends DoorableResult>(
+  result: T,
+  opts: Pick<ResultDoorOpts, 'toolName' | 'nestedTargetToolName'>,
+): T {
+  if (!isWorkItemsGetCall(opts)) return result;
+  const textItems = result.content.filter(isTextItem);
+  const bodyShape = classifyProjectionBody(textItems);
+  const json = bodyShape.json;
+  if (!json || !isJsonObject(json.parsed)) return result;
+  const body = reconcileWorkItemsGetReceipt(json.parsed, json.parsed);
+  const serialized = JSON.stringify(body);
+  const original = textItems[json.itemIndex];
+  if (!original || serialized === original.text) return result;
+  const slice = findJsonPrefixSlice(original.text);
+  if (!slice) return result;
+  const contentIndex = result.content.indexOf(original);
+  if (contentIndex < 0) return result;
+  const content = [...result.content];
+  content[contentIndex] = {
+    ...original,
+    text: original.text.slice(0, slice.start) + serialized + original.text.slice(slice.end),
+  };
+  return { ...result, content } as T;
+}
+
 function isScorecardsEmitCall(input: { toolName: string; nestedTargetToolName?: string }): boolean {
   return input.toolName === 'scorecards:emit' ||
     (input.toolName === 'tools:invoke' && input.nestedTargetToolName === 'scorecards:emit');
@@ -858,7 +958,7 @@ const WORK_ITEMS_RELEASE_SPILL_RECOVERY =
 
 const SCORECARDS_EMIT_SPILL_RECOVERY =
   'scorecards:emit may have recorded a card before its response spill failed. Do NOT repeat this non-idempotent emit. ' +
-  'Use the preserved committed flag, completionReceipt, issueId, and canonicalRatings.degenerate-distribution.rating ' +
+  'Use the preserved committed flag, completionReceipt, issueId, and canonicalRatings rating entries ' +
   'to determine the write outcome; the omitted response bytes cannot be recovered.';
 
 const SCORECARDS_EMIT_UNKNOWN_SPILL_RECOVERY =
@@ -988,6 +1088,53 @@ type JsonObject = Record<string, unknown>;
 
 function isJsonObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Preserve every emitted criterion rating through a bounded scorecards:emit
+ * projection. The grading-integrity rubric currently has six canonical keys,
+ * but scorecard criteria are data-driven; deriving paths from the response
+ * keeps a newly-added criterion from silently becoming `{}` at the outer
+ * tools:invoke result door.
+ */
+function scorecardsEmitPreservePaths(value: unknown): string[] {
+  const canonicalRatings = isJsonObject(value) && isJsonObject(value.canonicalRatings)
+    ? value.canonicalRatings
+    : undefined;
+  const dynamicPaths = canonicalRatings
+    ? Object.keys(canonicalRatings)
+        .map((key) => `canonicalRatings.${key}.rating`)
+        .filter((path) => !(SCORECARDS_EMIT_SPILL_PRESERVE_PATHS as readonly string[]).includes(path))
+    : [];
+  return [...SCORECARDS_EMIT_SPILL_PRESERVE_PATHS, ...dynamicPaths];
+}
+
+/** Keep every scorecard verdict inline while leaving bulky evidence in the spill. */
+function compactScorecardsEmitRatings(value: unknown): JsonObject | null {
+  if (!isJsonObject(value)) return null;
+  const compact: JsonObject = {};
+  for (const [criterion, entry] of Object.entries(value)) {
+    if (!isJsonObject(entry) || !Object.prototype.hasOwnProperty.call(entry, 'rating')) return null;
+    compact[criterion] = { rating: entry.rating };
+  }
+  return Object.keys(compact).length > 0 ? compact : null;
+}
+
+function compactScorecardsEmitBody(value: unknown): JsonObject | null {
+  if (!isJsonObject(value)) return null;
+  const canonicalRatings = compactScorecardsEmitRatings(value.canonicalRatings);
+  if (!canonicalRatings) return null;
+  return {
+    ...value,
+    canonicalRatings,
+    _partial: true,
+    _compactProjection: {
+      kind: 'scorecards-emit',
+      preserves: ['canonicalRatings.<criterion>.rating'],
+      omits: ['canonicalRatings.<criterion>.evidence'],
+      recovery: 'full result is in _projection.cursor',
+    },
+  };
 }
 
 function scorecardsEmitReceipt(
@@ -1532,7 +1679,8 @@ function spillRecoveryNote(
 ): string {
   const referenceReader =
     'The `uri` in `content` is a framed scratch-reference container, not a raw JSON file. ' +
-    'Read it with `capability:read` to validate and unwrap its manifest before parsing the payload. ';
+    'Read it with `capability:read` byte pages (`byte_offset` + `byte_limit`, without `raw`) and follow `next_cursor` ' +
+    'to validate and unwrap its manifest before parsing the payload; the default numbered line view can truncate a long single-line payload. ';
   const recoverable =
     'Nothing was lost: the complete result was written to the reference in `content` — page it to read it. ' +
     referenceReader;
@@ -2083,14 +2231,15 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
     } as T;
   }
   const scorecardReceipt = spillPath == null ? scorecardsEmitReceipt(input.result, input.opts) : undefined;
+  const compactScorecardReceipt = scorecardReceipt ? compactScorecardsEmitBody(scorecardReceipt) : undefined;
   const boundedScorecardReceipt = scorecardReceipt
-    ? projectBoundedPayload(scorecardReceipt, {
+    ? projectBoundedPayload(compactScorecardReceipt ?? scorecardReceipt, {
         toolName: 'scorecards:emit',
         tier: 'trimmed',
         forced: true,
         originalChars: input.sourceBytes,
         targetChars: Math.min(input.doorTokens * CHARS_PER_TOKEN_ESTIMATE, 1_200),
-        preservePaths: SCORECARDS_EMIT_SPILL_PRESERVE_PATHS,
+        preservePaths: scorecardsEmitPreservePaths(compactScorecardReceipt ?? scorecardReceipt),
         preserveTopLevelKeys: ['ok', 'committed', 'completionReceipt', 'created', 'issueId', 'previousIssueId', 'canonicalRatings'],
         recovery: preferVolatileScratchRecovery(
           volatileRecovery,
@@ -2315,7 +2464,7 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
           scratchWriteFailure: { error },
         });
         const recoveryFallback = await persistTimedOutScratchFallback(volatileFallback, opts);
-        return attachPendingScratchFallback(recoveryFallback, pendingResult) ?? pendingResult;
+        return attachPendingScratchFallback(recoveryFallback, pendingResult, opts) ?? pendingResult;
       }
     }
     const failedResult = applyResultDoor(result, {
@@ -2432,14 +2581,85 @@ function promoteVolatileScratchFallback<T extends DoorableResult>(
   } as T;
 }
 
-function attachPendingScratchFallback<T extends DoorableResult>(fallback: T, pending: T): T | null {
+function fallbackRecoveryCursor(
+  fallback: DoorableResult,
+  fallbackDoor: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  const declared = recordAt(fallbackDoor?.recoveryCursor);
+  if (isPendingFallbackRecoveryCursor(declared)) return declared;
+
+  // Most structural receipt projections carry the recovery cursor in the
+  // model-facing `_projection`, while the text projection path also mirrors it
+  // into resultDoor metadata. Read both forms before deciding that a fallback
+  // cannot recover the overflow.
+  for (const item of fallback.content) {
+    if (!isTextItem(item)) continue;
+    try {
+      const body = recordAt(JSON.parse(item.text));
+      const projection = recordAt(body?._projection);
+      const cursor = recordAt(projection?.cursor);
+      if (isPendingFallbackRecoveryCursor(cursor)) return cursor;
+    } catch {
+      // A non-JSON text fallback may still expose its reference in resultDoor.
+    }
+  }
+
+  // Reference envelopes expose their URI and expiry in resultDoor instead of
+  // `_projection.cursor`. A timeout fallback can be promoted from volatile to
+  // durable after it is built, so prefer that durable URI when it is present.
+  const durableUriValue = fallbackDoor?.durableFallbackUri;
+  const durableUri = typeof durableUriValue === 'string'
+    ? durableUriValue
+    : null;
+  const volatileUriValue = fallbackDoor?.volatileFallbackUri;
+  const volatileUri = typeof volatileUriValue === 'string'
+    ? volatileUriValue
+    : null;
+  const uri = durableUri ?? volatileUri;
+  if (!uri) return null;
+  const durableExpiresAt = fallbackDoor?.durableFallbackExpiresAt;
+  const volatileExpiresAt = fallbackDoor?.volatileFallbackExpiresAt;
+  const expiresAt = typeof durableExpiresAt === 'string'
+    ? durableExpiresAt
+    : typeof volatileExpiresAt === 'string'
+      ? volatileExpiresAt
+      : undefined;
+  return {
+    kind: durableUri ? 'durable-scratch-page' : 'volatile-scratch-page',
+    tool: 'capability:read',
+    uri,
+    args: { uri, byte_offset: 0, byte_limit: 3_072 },
+    maxByteLimit: CAPABILITY_READ_MAX_BYTE_PAGE,
+    dataEncoding: 'base64',
+    ...(expiresAt ? { expiresAt } : {}),
+  };
+}
+
+function isPendingFallbackRecoveryCursor(
+  cursor: Record<string, unknown> | null,
+): cursor is Record<string, unknown> {
+  return cursor?.kind === 'volatile-scratch-page' ||
+    cursor?.kind === 'durable-scratch-page' ||
+    cursor?.kind === 'release-outcome-check';
+}
+
+function attachPendingScratchFallback<T extends DoorableResult>(
+  fallback: T,
+  pending: T,
+  opts: Pick<ResultDoorOpts, 'toolName' | 'nestedTargetToolName'>,
+): T | null {
   const fallbackDoor = recordAt(fallback._meta?.resultDoor);
   const pendingDoor = recordAt(pending._meta?.resultDoor);
-  const fallbackCursor = recordAt(fallbackDoor?.recoveryCursor);
+  const fallbackCursor = fallbackRecoveryCursor(fallback, fallbackDoor);
   const pendingCursor = recordAt(pendingDoor?.recoveryCursor);
-  const fallbackCanRecover = fallbackCursor?.kind === 'volatile-scratch-page' ||
-    fallbackCursor?.kind === 'durable-scratch-page' ||
-    fallbackCursor?.kind === 'release-outcome-check';
+  const coordSendCall = opts.toolName === 'coord:send' ||
+    (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'coord:send');
+  // The coord:send receipt path can offer only an in-process copy while the
+  // primary spill is still pending. Returning that cursor would hide the
+  // pending-write warning and its do-not-resend instruction, so keep the
+  // primary result until a durable fallback exists.
+  if (coordSendCall && fallbackCursor?.kind === 'volatile-scratch-page') return null;
+  const fallbackCanRecover = isPendingFallbackRecoveryCursor(fallbackCursor);
   if (!fallbackCanRecover || !fallbackDoor || !pendingDoor || !pendingCursor) {
     return null;
   }
@@ -2450,8 +2670,18 @@ function attachPendingScratchFallback<T extends DoorableResult>(fallback: T, pen
       ...(fallback._meta ?? {}),
       resultDoor: {
         ...fallbackDoor,
+        ...(typeof fallbackDoor.spillPath === 'string' || typeof pendingDoor.spillPath !== 'string'
+          ? {}
+          : { spillPath: pendingDoor.spillPath }),
+        ...(typeof fallbackDoor.spillUri === 'string' || typeof pendingDoor.spillUri !== 'string'
+          ? {}
+          : { spillUri: pendingDoor.spillUri }),
         spillPending: true,
         spillFailed: false,
+        // coord:send's primary cursor carries the delivery-unknown safety
+        // contract. Its fallback envelope may still expose a readable page,
+        // but replacing this cursor would hide the instruction not to resend.
+        recoveryCursor: coordSendCall ? pendingCursor : fallbackCursor,
         pendingSpill: {
           ...(typeof pendingDoor.spillPath === 'string' ? { path: pendingDoor.spillPath } : {}),
           ...(typeof pendingDoor.spillUri === 'string' ? { uri: pendingDoor.spillUri } : {}),
@@ -2479,8 +2709,14 @@ function markPendingScratchWrite<T extends DoorableResult>(
     kind: 'pending-spill',
     tool: 'capability:read',
     args: {
-      ...(recordAt(sourceCursor?.args) ?? {}),
-      file_path: spillPath,
+      // A pending write's absolute path can be much longer than the result-door
+      // envelope allows capability:read to page.  The scratch URI resolves to the
+      // same reference without putting that path in the cursor (and remains valid
+      // after the writer settles).  Do not spread the source cursor's file_path:
+      // capability:read prefers file_path when both keys are present.
+      uri: spillUri,
+      byte_offset: 0,
+      byte_limit: 3_072,
     },
     path: spillPath,
     uri: spillUri,
@@ -2901,7 +3137,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // aggregate fan-out budget.
     const recoveryBytePage = isScratchReferenceBytePageResult(result, opts);
     const scratchReferenceRead = isScratchReferenceReadResult(result, opts);
-    const aggregate = opts.aggregateScope && !recoveryBytePage
+    const aggregate = opts.aggregateScope && !recoveryBytePage && !scratchReferenceRead
       ? reserveAggregateBytes(
           opts.aggregateScope,
           sourceBytes,
@@ -2987,7 +3223,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         opts.nestedTargetToolName,
       );
       if (!upstreamProjection?.truncated &&
-        (innerTruncationMarkers.length === 0 || threadMarkersRecoverable || scratchReferenceRead)) return result;
+        (innerTruncationMarkers.length === 0 || threadMarkersRecoverable || scratchReferenceRead)) {
+        return reconcileWorkItemsGetReceiptResult(result, opts);
+      }
       return spillResultAsReferenceEnvelope({
         result,
         opts,
@@ -3354,7 +3592,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               // The cursor points to a manifest-bearing scratch file, not the JSON body;
               // offer plaintext line windows and retain the validated byte-page path.
               `Use capability:read cursor.args (byte_offset+byte_limit; no raw). ` +
-              `Plaintext: raw:true+offset/limit lines. ` +
+              `Plaintext: raw:true+offset/limit lines (long selected lines require byte pages). ` +
               `file_path-only truncates long lines; Scratch ref, not JSON; ` +
               `response.data canonical base64; runtime codec; decoded.length===byte_length; ` +
               `follow next_cursor; ` +
@@ -3476,8 +3714,15 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             'evidenceRead.criteria',
           ]
         : []),
-      ...(isScorecardsEmitCall(opts) ? SCORECARDS_EMIT_SPILL_PRESERVE_PATHS : []),
-      ...(opts.toolName === 'plans:get' ? ['results[].shipReadiness', 'results[].items[].text'] : []),
+      ...(isScorecardsEmitCall(opts) ? scorecardsEmitPreservePaths(bodyShape.json?.parsed) : []),
+      ...(opts.toolName === 'plans:get' ||
+        (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'plans:get')
+        ? ['results[].shipReadiness', 'results[].items[].text']
+        : []),
+      ...(opts.toolName === 'plans:bind-spec-evidence' ||
+        (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'plans:bind-spec-evidence')
+        ? PLANS_BIND_SPEC_EVIDENCE_REFUSAL_PRESERVE_PATHS
+        : []),
       ...(opts.toolName === PIPELINE_POSITION_TOOL ||
         (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === PIPELINE_POSITION_TOOL)
         ? PIPELINE_POSITION_PRESERVE_PATHS
@@ -3525,6 +3770,13 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // this door could not render.
       ...(isWorkItemsGetCall(opts)
         ? [
+            'read.schemaVersion',
+            'read.requested',
+            'read.receiptComplete',
+            'read.receiptOmitted',
+            'receipt[].id',
+            'receipt[].delivered',
+            'receipt[].reason',
             'results[].id',
             'results[].ok',
             'results[].availability',
@@ -3554,7 +3806,6 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
             'results[].checkpointBody',
             'results[].checkpointReadFailed',
             'results[]._stub',
-            'read.requested',
             'read.available',
             'read.absent',
             'read.unavailable',
@@ -3613,6 +3864,10 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       parsedJsonBody && opts.toolName === SPEC_TEST_ADEQUACY_TOOL
         ? compactSpecTestAdequacyBody(bodyShape.json!.parsed)
         : null;
+    const scorecardsEmitCompactBody =
+      parsedJsonBody && isScorecardsEmitCall(opts)
+        ? compactScorecardsEmitBody(bodyShape.json!.parsed)
+        : null;
     // Full fleet indexes can outgrow even the domain emergency shaper. The
     // source body has already been spilled above; retain the atomic numeric
     // contract inline instead of walking early obligation fields until the
@@ -3633,8 +3888,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     } : null;
     const leaderBriefFits = leaderBriefPreview !== null &&
       Buffer.byteLength(JSON.stringify(leaderBriefPreview), 'utf8') <= structuralTargetChars;
-    const projected = leaderBriefFits ? leaderBriefPreview! : projectBoundedPayload(
-      evaluatorCompactBody ?? releaseReceipt?.body ?? setBlockerReceipt?.body ?? (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
+    let projected: JsonObject = leaderBriefFits ? leaderBriefPreview! : projectBoundedPayload(
+      scorecardsEmitCompactBody ?? evaluatorCompactBody ?? releaseReceipt?.body ?? setBlockerReceipt?.body ??
+        (parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }),
       {
       toolName: opts.toolName,
       // `work_items:get` is the continuity read. If its spill cannot be
@@ -3661,7 +3917,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       // from the generic identity fields. Keep them visible even if
       // projection metadata forces the final identity-only fallback;
       // ordinary tools retain the generic behavior.
-      ...(opts.toolName === 'coord:orient'
+      ...(scorecardsEmitCompactBody != null
+        ? { preserveTopLevelKeys: ['ok', 'committed', 'completionReceipt', 'created', 'issueId', 'previousIssueId', 'canonicalRatings'] as const }
+        : opts.toolName === 'coord:orient'
         ? { preserveTopLevelKeys: ['self', 'recovery'] as const }
         : opts.toolName === 'events:status'
           ? { preserveTopLevelKeys: ['ok', 'event_inspection'] as const }
@@ -3686,6 +3944,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     if (parsedJsonBody && (opts.toolName === 'tools:find' ||
       (opts.toolName === 'tools:invoke' && opts.nestedTargetToolName === 'tools:find'))) {
       repairDiscoverySchemaProjection(bodyShape.json!.parsed, projected, structuralTargetChars);
+    }
+    if (isWorkItemsGetCall(opts)) {
+      projected = reconcileWorkItemsGetReceipt(bodyShape.json?.parsed, projected);
     }
     const structuralText = JSON.stringify(projected);
     let inserted = false;
@@ -3714,7 +3975,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           ...baseResultDoorMeta,
           structural: true,
           ...(leaderBriefFits ? { compactProjection: 'fleet:leader-brief-numeric-core' } : {}),
-          ...(evaluatorCompactBody != null
+      ...(scorecardsEmitCompactBody != null
+            ? { compactProjection: 'scorecards-emit:canonical-ratings' }
+            : evaluatorCompactBody != null
             ? { compactProjection: 'evaluator-specific:plans:evaluate-spec-test-adequacy' }
             : {}),
           recoveryCursor: recovery.cursor,

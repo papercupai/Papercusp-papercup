@@ -15,7 +15,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import type { Sql } from 'postgres';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, promises as fsPromises, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, promises as fsPromises, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -30,8 +31,10 @@ import {
   measureVerifierSourceBytes,
   prepareVerifierSource,
   prepareVerifierDependencies,
+  runVerifierDependencyCommand,
   captureVerifierDependencies,
   runVerifierCommand,
+  verifierCommandAdmissionEnv,
   readVerifierPhaseMeasurements,
   estimateVerifierCommandBudget,
   admitVerifierCommandBudget,
@@ -51,6 +54,79 @@ import type { TaskRow } from './task-manager/types';
 let tmp: string;
 let fx: Superproject;
 let out: string;
+
+describe('verifier command disclosure admission', () => {
+  const marker = 'PAPERCUSP_RESTRICTED_HOLD_PREFLIGHT';
+
+  it('admits in the caller checkout and transports the actual verdict without changing the caller environment', () => {
+    const env = { PATH: '/fixture/bin', DATABASE_URL: 'postgresql://fixture.invalid/application' };
+    const preflight = vi.fn(() => ({ verdict: 'admit' as const }));
+    const child = verifierCommandAdmissionEnv({ repo: '/caller/checkout', env, preflight });
+    expect(preflight).toHaveBeenCalledExactlyOnceWith({ roots: ['/caller/checkout'], env });
+    expect(child).toEqual({ ...env, [marker]: 'admitted-by-test-router' });
+    expect(env).not.toHaveProperty(marker);
+    expect(child).not.toHaveProperty('HARNESS_ADMIN_DATABASE_URL');
+  });
+
+  it.each(['restricted_write_held', 'restricted_hold_state_unknown'])(
+    'refuses %s before source preparation and never creates an admission marker', (error) => {
+      const env = { PATH: '/fixture/bin' };
+      const preflight = vi.fn(() => ({ verdict: 'refuse' as const, error, hint: 'nothing may start' }));
+      expect(() => verifierCommandAdmissionEnv({ repo: '/caller/checkout', env, preflight }))
+        .toThrow(expect.objectContaining({ exitCode: 3, message: expect.stringContaining(error) }));
+      expect(env).not.toHaveProperty(marker);
+    },
+  );
+
+  it('preserves upstream admission but does not turn a test-runner skip into a new admission', () => {
+    const preflight = vi.fn(() => ({ verdict: 'skipped', reason: 'nested-in-test-runner' } as const));
+    expect(verifierCommandAdmissionEnv({ repo: '/caller/checkout', env: { VITEST: '1' }, preflight }))
+      .toEqual({ VITEST: '1' });
+    const upstream = { [marker]: 'admitted-by-testing-run' };
+    expect(verifierCommandAdmissionEnv({ repo: '/caller/checkout', env: upstream,
+      preflight: () => ({ verdict: 'skipped', reason: 'testing-run' }) })).toEqual(upstream);
+  });
+
+  it('keeps the caller database available after freezing excludes its local config', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'verifier-control-plane-'));
+    try {
+      write(repo, 'apps/operator/.env.local',
+        'DATABASE_URL=postgresql://fixture.invalid/caller-control-plane\nUNRELATED_SECRET=must-not-forward\n');
+      const env = { PATH: '/fixture/bin' };
+      const child = verifierCommandAdmissionEnv({ repo, env, preflight: () => ({ verdict: 'admit' }) });
+      rmSync(join(repo, 'apps/operator/.env.local'));
+      expect(child.DATABASE_URL).toBe('postgresql://fixture.invalid/caller-control-plane');
+      expect(child[marker]).toBe('admitted-by-test-router');
+      expect(child).not.toHaveProperty('UNRELATED_SECRET');
+      expect(env).toEqual({ PATH: '/fixture/bin' });
+    } finally { rmSync(repo, { recursive: true, force: true }); }
+  });
+
+  it.each(['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL'])(
+    'preserves an explicit %s instead of importing a higher-priority local pin', (key) => {
+      const repo = mkdtempSync(join(tmpdir(), 'verifier-control-plane-pin-'));
+      try {
+        write(repo, 'apps/operator/.env.local', 'HARNESS_ADMIN_DATABASE_URL=postgresql://fixture.invalid/local\n');
+        const env = { [key]: 'postgresql://fixture.invalid/explicit' };
+        const child = verifierCommandAdmissionEnv({ repo, env,
+          preflight: () => ({ verdict: 'skipped', reason: 'nested-in-test-runner' }) });
+        expect(child).toEqual(env);
+      } finally { rmSync(repo, { recursive: true, force: true }); }
+    },
+  );
+
+  it.each([{ PAPERCUSP_PG_PORT: '54321' }, { PAPERCUSP_SKIP_PG_DISCOVERY: '1' }])(
+    'keeps isolated PG selection %j away from caller database credentials', (env) => {
+      const repo = mkdtempSync(join(tmpdir(), 'verifier-control-plane-isolation-'));
+      try {
+        write(repo, 'apps/operator/.env.local', 'DATABASE_URL=postgresql://fixture.invalid/live\n');
+        const child = verifierCommandAdmissionEnv({ repo, env,
+          preflight: () => ({ verdict: 'skipped', reason: 'nested-in-test-runner' }) });
+        expect(child).toEqual(env);
+      } finally { rmSync(repo, { recursive: true, force: true }); }
+    },
+  );
+});
 let manifest: Awaited<ReturnType<typeof exportSnapshot>>['manifest'];
 
 const NATIVE_RUNTIME_FILES = [
@@ -67,8 +143,59 @@ const NATIVE_RUNTIME_FILES = [
 ];
 
 const VITEST_RESULT_CACHE = 'packages/operator-core/.vitest-tmp/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709/results.json';
+// Outputs of apps/operator-vite's maintained prebuild, including both ORT roots.
+const SPA_RUNTIME_FILES = [
+  'apps/operator/public/wake-runtime/ort.bundle.min.mjs',
+  'apps/operator/public/vad-runtime/ort-wasm-simd-threaded.wasm',
+  'apps/operator/public/vditor/dist/index.js',
+  'apps/operator/public/vditor-local/d3.min.js',
+  'apps/operator/public/monaco/.version',
+  'apps/operator/public/excalidraw/chunk-6U3AYISY.js',
+  'apps/operator/public/porcupine/porcupine_params.pv',
+  'apps/operator/public/elevenlabs-runtime/rawAudioProcessor.js',
+  'apps/operator/public/silero_vad_v5.onnx',
+  'apps/operator/public/silero_vad_legacy.onnx',
+  'apps/operator/public/vad.worklet.bundle.min.js',
+  'apps/operator/public/ort-wasm-simd-threaded.wasm',
+  'apps/operator/public/ort-wasm-simd-threaded.jsep.mjs',
+];
 const DEPENDENCY_POLICY_PATH = 'apps/operator/bin/release/dependency-generation.sh';
 const DEPENDENCY_POLICY = readFileSync(new URL('../../../' + DEPENDENCY_POLICY_PATH, import.meta.url), 'utf8');
+
+/** Real private loader closure; no links back to the checkout's dependencies. */
+function installVerifierTsx(root: string): void {
+  const installed = new Set<string>();
+  const copy = (name: string, requireFrom: NodeJS.Require) => {
+    if (installed.has(name)) return;
+    let manifestPath: string;
+    try { manifestPath = requireFrom.resolve(name + '/package.json'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error;
+      let dir = dirname(requireFrom.resolve(name));
+      while (!existsSync(join(dir, 'package.json'))) {
+        const parent = dirname(dir);
+        if (parent === dir) throw new Error('package root missing: ' + name);
+        dir = parent;
+      }
+      manifestPath = join(dir, 'package.json');
+    }
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    expect(manifest.name).toBe(name);
+    installed.add(name);
+    cpSync(dirname(manifestPath), join(root, 'node_modules', name), { recursive: true, dereference: true });
+    const localRequire = createRequire(manifestPath);
+    for (const dependency of Object.keys(manifest.dependencies ?? {})) copy(dependency, localRequire);
+    for (const dependency of Object.keys(manifest.optionalDependencies ?? {})) {
+      try { localRequire.resolve(dependency + '/package.json'); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'MODULE_NOT_FOUND') continue;
+        throw error;
+      }
+      copy(dependency, localRequire);
+    }
+  };
+  copy('tsx', createRequire(import.meta.url));
+}
 
 function listFiles(dir: string): string[] {
   const acc: string[] = [];
@@ -490,18 +617,20 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     }
   });
 
-  it('loads Node from the invoked tree before native allocation and survives donor dependency removal', async () => {
+  it('loads TypeScript directory imports with the invoked tree loader before native allocation and survives donor dependency removal', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-native-dependencies'));
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
     const script = 'scripts/source-preview.mjs';
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
-    write(fixture.repo, script, "import value from '@native-proof/runtime';\nif (value !== 'private-snapshot') throw Error('wrong dependency');\nconsole.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+    write(fixture.repo, script, "import value from '@native-proof/runtime';\nimport { typed } from './schema';\nif (value !== typed) throw Error('wrong dependency');\nconsole.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+    write(fixture.repo, 'scripts/schema/index.ts', "export const typed: string = 'private-snapshot';\n");
+    write(fixture.repo, 'scripts/schema/package.json', '{"type":"module"}\n');
     write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
     // Substitute the expensive copy only; execute real Node resolution from the
     // independent source tree, with ambient loaders and NODE_PATH excluded.
     write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
     write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
-    git(fixture.repo, ['add', script, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
+    git(fixture.repo, ['add', script, 'scripts/schema', helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
     git(fixture.repo, ['commit', '-qm', 'native dependency preflight fixture']);
     const scratch = join(fixture.repo, '.papercusp', 'scratch');
     await fsPromises.mkdir(scratch, { recursive: true });
@@ -514,30 +643,105 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       receipt = await prepareVerifierSource({ repo: fixture.repo, ref: 'HEAD',
         dest, inputs: [script], gitCheckout: true });
     } finally { vi.unstubAllEnvs(); }
-    const probe = () => spawnSync(process.execPath, [join(dest, script), 'verifier-measure'],
+    const probe = (loader = false) => spawnSync(process.execPath, [...(loader ? ['--import', 'tsx'] : []), join(dest, script), 'verifier-measure'],
       { cwd: dest, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' } });
     expect(probe().stderr).toContain('ERR_MODULE_NOT_FOUND');
     write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
       name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
     write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
+    installVerifierTsx(fixture.repo);
     const dependencies = await prepareVerifierDependencies({ donor: fixture.repo, dest, receipt });
-    expect(dependencies.trees[0]!.files.map(file => file.path)).toEqual([
-      '@native-proof/runtime/index.mjs', '@native-proof/runtime/package.json',
-    ]);
+    expect(dependencies.trees[0]!.files.map(file => file.path)).toEqual(expect.arrayContaining([
+      '@native-proof/runtime/index.mjs', '@native-proof/runtime/package.json', 'tsx/package.json',
+    ]));
     expect(statSync(join(dest, 'node_modules/@native-proof/runtime/index.mjs')).ino)
       .toBe(statSync(join(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs')).ino);
-    rmSync(join(fixture.repo, 'node_modules/@native-proof/runtime'), { recursive: true });
-    expect(probe().status).toBe(0);
-    expect(probe().stdout.trim()).toBe('4096');
+    expect(probe().stderr).toContain('ERR_UNSUPPORTED_DIR_IMPORT');
+    rmSync(join(fixture.repo, 'node_modules'), { recursive: true });
+    expect(probe(true).status).toBe(0);
+    expect(probe(true).stdout.trim()).toBe('4096');
     expect(captureVerifierDependencies({ dest, receipt })).toEqual(dependencies);
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
-    rmSync(join(dest, 'node_modules'), { recursive: true });
-    await expect(prepareVerifierDependencies({ donor: fixture.repo, dest, receipt }))
-      .rejects.toThrow('ERR_MODULE_NOT_FOUND');
+    rmSync(join(dest, 'node_modules/tsx'), { recursive: true });
+    const missingLoader = probe(true);
+    expect(missingLoader.status).not.toBe(0);
+    expect(missingLoader.stderr).toContain('ERR_MODULE_NOT_FOUND');
   });
 
-  it('freezes materialized committed source beside its physical dependency donor', async () => {
-    const fixture = makeSuperproject(join(tmp, 'verifier-materialized-dependencies'));
+  it.each(['copy', 'copy-lock'])('lets advancing %s progress cross the initial watchdog deadline', async kind => {
+    const progressLine = kind === 'copy'
+      ? "'copy progress: fixture written=' + (++written) + 'MiB'"
+      : "'copy lock progress: fixture advances=' + (++written)";
+    const output = await runVerifierDependencyCommand(process.execPath, ['-e', `
+      let written = 0;
+      const timer = setInterval(() => console.log(${progressLine}), 100);
+      setTimeout(() => { clearInterval(timer); console.log('copy-complete'); }, 1800);
+    `], { cwd: tmp, env: childEnv(), timeoutMs: 1000, maxMs: 5000,
+      stallWindowMs: 500, extensionMs: 500 });
+    expect(output).toContain('copy-complete');
+  });
+
+  it('treats completed small-tree snapshots as progress after byte counters go quiet', async () => {
+    const output = await runVerifierDependencyCommand(process.execPath, ['-e', `
+      let completed = 0;
+      const timer = setInterval(() => {
+        console.log('snapshot progress: completed=' + (++completed));
+        if (completed === 12) {
+          clearInterval(timer);
+          console.log('copy-complete');
+        }
+      }, 150);
+    `], { cwd: tmp, env: childEnv(), timeoutMs: 1000, maxMs: 5000,
+      stallWindowMs: 500, extensionMs: 500 });
+    expect(output).toContain('copy-complete');
+  });
+
+  it.each(['copy', 'copy-lock', 'snapshot'])('rejects chattering stalled %s and joins a TERM-resistant descendant before cleanup', async kind => {
+    const destination = join(tmp, 'dependency-copy-writer');
+    const pidPath = join(tmp, 'dependency-copy-writer.pid');
+    await fsPromises.mkdir(destination);
+    const writer = `
+      const fs = require('node:fs');
+      process.on('SIGTERM', () => {});
+      fs.writeFileSync(process.argv[1], String(process.pid));
+      setInterval(() => fs.writeFileSync(process.argv[2] + '/progress', 'writing'), 10);
+    `;
+    await expect(runVerifierDependencyCommand(process.execPath, ['-e', `
+      const { spawn } = require('node:child_process');
+      spawn(process.execPath, ['-e', ${JSON.stringify(writer)}, ${JSON.stringify(pidPath)}, ${JSON.stringify(destination)}],
+        { stdio: 'ignore' });
+      setInterval(() => console.log(${JSON.stringify(kind === 'copy'
+        ? 'copy progress: fixture written=1MiB' : kind === 'copy-lock'
+          ? 'copy lock progress: fixture advances=1' : 'snapshot progress: completed=1 tree=fixture')}), 100);
+    `], { cwd: tmp, env: childEnv(), timeoutMs: 1500, maxMs: 5000,
+      stallWindowMs: 500, extensionMs: 500 })).rejects.toThrow('progress-stalled');
+    expect(existsSync(pidPath)).toBe(true);
+    // Remove the actual writer's directory only AFTER the awaited exit fence.
+    // A surviving descendant would recreate it and invalidate the proof.
+    await fsPromises.rm(destination, { recursive: true });
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(existsSync(destination)).toBe(false);
+    const pid = readFileSync(pidPath, 'utf8');
+    if (existsSync(`/proc/${pid}/stat`))
+      expect(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]![0]).toMatch(/[ZX]/);
+  });
+
+  it.each(['absolute', 'task'])('keeps advancing snapshot progress inside the %s deadline', async boundary => {
+    const env = childEnv();
+    if (boundary === 'task') env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS = String(Date.now() + 11_000);
+    await expect(runVerifierDependencyCommand(process.execPath, ['-e', `
+      let completed = 0;
+      setInterval(() => console.log('snapshot progress: completed=' + (++completed)), 100);
+    `], { cwd: tmp, env, timeoutMs: 500, maxMs: boundary === 'task' ? 5000 : 1000,
+      stallWindowMs: 400, extensionMs: 300 })).rejects.toThrow('absolute-ceiling');
+  });
+
+  it.each([false, true])('freezes materialized committed source without cloning on root (root donor=%s)', async rootDonor => {
+    const fixtureParent = rootDonor && process.platform === 'linux'
+      ? mkdtempSync('/var/tmp/source-preview-root-donor-') : tmp;
+    try {
+    const fixture = makeSuperproject(join(fixtureParent, 'verifier-materialized-dependencies-' + rootDonor));
+    const copiesDependencies = process.platform === 'linux' && statSync(fixture.repo).dev === statSync('/').dev;
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
     const script = 'scripts/source-preview.mjs';
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
@@ -545,7 +749,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
     // Keep the physical-donor precondition and real independent Node resolution;
     // substitute only the expensive production dependency census/copy.
-    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ntest ! -L "$2/node_modules/.bin"\ncase "$3" in "$2"/.papercusp/scratch/*) ;; *) echo "snapshot must be on physical donor filesystem" >&2; exit 1 ;; esac\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = snapshot-locked\ntest "$4" = ' + (copiesDependencies ? 'copy' : 'hardlink') + '\ntest ! -L "$2/node_modules/.bin"\nif [ "$4" = copy ]; then cp -a -- "$2/node_modules" "$3/node_modules"; else cp -al -- "$2/node_modules" "$3/node_modules"; fi\n');
     write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/node_modules/\n/.papercusp/scratch/\n');
     git(fixture.repo, ['add', script, helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
     git(fixture.repo, ['commit', '-qm', 'materialized dependency donor fixture']);
@@ -554,18 +758,19 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
       name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
     write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
-    const materialized = join(tmp, 'materialized-dependency-source');
+    installVerifierTsx(fixture.repo);
+    const materialized = join(tmp, 'materialized-dependency-source-' + rootDonor);
     git(fixture.repo, ['clone', '--local', '--shared', '--recurse-submodules', fixture.repo, materialized]);
     const shadow = await import(new URL('../../../scripts/lint-as-committed.mjs', import.meta.url).href);
     write(materialized, shadow.OWNER_MARKER, JSON.stringify({ sha, sourceRepoRoot: fixture.repo }));
     shadow.linkNodeModulesShadow(join(fixture.repo, 'node_modules'), join(materialized, 'node_modules'), fixture.repo, materialized);
     expect((await fsPromises.lstat(join(materialized, 'node_modules/.bin'))).isSymbolicLink()).toBe(true);
-    const receiptPath = join(tmp, 'materialized-dependency-source-receipt.json');
+    const receiptPath = join(tmp, 'materialized-dependency-source-receipt-' + rootDonor + '.json');
     const options = { repo: materialized, ref: sha, inputs: [script], receiptPath,
       command: [process.execPath, script, 'verifier-measure'] };
     // The donor must pass the ignored-source-scratch guard, not accidentally
     // be admitted because both fixture repositories are beneath OS tmpdir.
-    const restrictedTemp = join(tmp, 'materialized-source-only-temp');
+    const restrictedTemp = join(tmp, 'materialized-source-only-temp-' + rootDonor);
     await fsPromises.mkdir(restrictedTemp);
     vi.stubEnv('TMPDIR', restrictedTemp);
     try {
@@ -573,13 +778,19 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     } finally { vi.unstubAllEnvs(); }
     expect(JSON.parse(readFileSync(receiptPath, 'utf8')).sourceCommit).toBe(sha);
     const dependencyReceipt = JSON.parse(readFileSync(`${receiptPath}.dependencies.json`, 'utf8'));
-    expect(relative(fixture.repo, dependencyReceipt.root)).toMatch(/^\.papercusp\/scratch\/verifier-command-/);
+    if (copiesDependencies) {
+      expect(dependencyReceipt.root).toMatch(/^\/mnt\/data\/tmp\/verifier-command-/);
+      expect(statSync(fixture.repo).dev).not.toBe(statSync('/mnt/data/tmp').dev);
+    } else expect(relative(fixture.repo, dependencyReceipt.root)).toMatch(/^\.papercusp\/scratch\/verifier-command-/);
     expect(dependencyReceipt.sourceCommit).toBe(sha);
     // The recorded donor must never make a mismatched source identity acceptable.
     write(materialized, shadow.OWNER_MARKER, JSON.stringify({ sha: '0'.repeat(40), sourceRepoRoot: fixture.repo }));
-    await expect(runVerifierCommand({ ...options, receiptPath: join(tmp, 'refused-donor-receipt.json') }))
+    await expect(runVerifierCommand({ ...options, receiptPath: join(tmp, 'refused-donor-receipt-' + rootDonor + '.json') }))
       .rejects.toThrow('retained source commit does not match');
-    expect(existsSync(join(tmp, 'refused-donor-receipt.json'))).toBe(false);
+    expect(existsSync(join(tmp, 'refused-donor-receipt-' + rootDonor + '.json'))).toBe(false);
+    } finally {
+      if (fixtureParent !== tmp) rmSync(fixtureParent, { recursive: true, force: true });
+    }
   });
 
   it.each(['donor-change', 'child-failure', 'frozen-tamper', 'dependency-tamper', 'phase-io-failure', 'deadline-refusal', 'history-refusal'] as const)
@@ -617,6 +828,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
         name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
       write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
+      installVerifierTsx(fixture.repo);
       const receiptPath = join(tmp, 'verifier-command-' + mode + '.receipt.json');
       const proofPath = join(tmp, 'verifier-command-' + mode + '.proof.json');
       const command = [process.execPath, provider, fixture.repo, mode, proofPath, '--provider-flag=literal'];
@@ -695,8 +907,102 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
     });
 
-  it.each(['spawned', 'pending'] as const)('terminal task close cleans a real SIGKILL during synchronous verifier preparation with %s enrollment and preserves peers', async (enrollment) => {
-    const fixture = makeSuperproject(join(tmp, 'verifier-command-killed-' + enrollment));
+  it.each(['snapshot', 'census', 'child', 'sigint', 'sigkill'] as const)(
+    'retains plain CLI ownership and truthful cleanup on cancellation during %s', async phase => {
+      const fixture = makeSuperproject(join(tmp, 'verifier-cli-cancel-' + phase));
+      git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
+      const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+      const preflight = 'scripts/source-preview.mjs';
+      const provider = 'scripts/cancellation-fixture.mjs';
+      write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+      write(fixture.repo, preflight, "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+      write(fixture.repo, helper, [
+        '#!/bin/bash', 'set -eu',
+        'if [ "$1" = trees ]; then',
+        '  if [ "$VERIFIER_CANCEL_PHASE" = census ]; then printf "%s\\n" "$2" > "$VERIFIER_CANCEL_READY"; sleep 1; fi',
+        '  echo node_modules; exit', 'fi',
+        'if [ "$VERIFIER_CANCEL_PHASE" = snapshot ] || [ "$VERIFIER_CANCEL_PHASE" = sigkill ]; then',
+        '  printf "%s\\n" "$3" > "$VERIFIER_CANCEL_READY"; exec sleep 60', 'fi',
+        'cp -al -- "$2/node_modules" "$3/node_modules"',
+      ].join('\n') + '\n');
+      write(fixture.repo, provider, [
+        "import { spawn } from 'node:child_process';",
+        "spawn(process.execPath, ['-e', `const fs = require('node:fs'); process.on('SIGTERM', () => {}); fs.writeFileSync(process.env.VERIFIER_CANCEL_READY + '.pid', String(process.pid)); fs.writeFileSync(process.env.VERIFIER_CANCEL_READY, process.cwd()); setInterval(() => {}, 1000);`], { stdio: 'ignore' });",
+        "setInterval(() => {}, 1000);",
+      ].join('\n'));
+      write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
+      git(fixture.repo, ['add', helper, preflight, provider, '.gitignore', DEPENDENCY_POLICY_PATH]);
+      git(fixture.repo, ['commit', '-qm', 'plain CLI cancellation fixture']);
+      const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+      write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
+        name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
+      write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
+      installVerifierTsx(fixture.repo);
+      const ready = join(tmp, 'verifier-cli-cancel-ready-' + phase);
+      const receiptPath = join(tmp, 'verifier-cli-cancel-source-' + phase + '.json');
+      const options = { repo: fixture.repo, ref, receiptPath, inputs: [helper, preflight, provider],
+        command: [process.execPath, provider] };
+      const cli = new URL('../../../scripts/source-preview.mjs', import.meta.url).href;
+      const env = childEnv({ VERIFIER_CANCEL_READY: ready, VERIFIER_CANCEL_PHASE: phase });
+      delete env.PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID;
+      const child = spawn(process.execPath, ['--input-type=module', '-e',
+        `import { runVerifierCommand } from ${JSON.stringify(cli)}; try { process.exitCode = await runVerifierCommand(${JSON.stringify(options)}); } catch (error) { console.error(error.message); process.exitCode = error.exitCode ?? 1; }`],
+      { cwd: fixture.repo, detached: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let output = '';
+      child.stdout.on('data', bytes => { output += bytes; });
+      child.stderr.on('data', bytes => { output += bytes; });
+      const closed = once(child, 'close');
+      let owned: string | undefined;
+      let peer: string | undefined;
+      try {
+        await vi.waitFor(() => expect(existsSync(ready), output).toBe(true), { timeout: 20_000, interval: 20 });
+        owned = dirname(readFileSync(ready, 'utf8').trim());
+        const receipt = JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8'));
+        expect(receipt).toMatchObject({ schemaVersion: 'verifier-task-v1', taskId: null,
+          pid: child.pid, repoRoot: fixture.repo, ownedRoot: owned, cleanup: 'pending' });
+        expect(receipt.processIdentity).toBeTypeOf('string');
+        expect(receipt.processIdentity.length).toBeGreaterThan(0);
+        expect(statSync(receiptPath + '.task.json').mode & 0o777).toBe(0o600);
+        expect(JSON.parse(readFileSync(join(owned!, '.verifier-task.json'), 'utf8'))).toEqual(receipt);
+        peer = mkdtempSync(join(dirname(owned!), 'verifier-command-'));
+        writeFileSync(join(peer, 'peer-owned'), 'must survive');
+        const signal = phase === 'sigkill' ? 'SIGKILL' : phase === 'sigint' ? 'SIGINT' : 'SIGTERM';
+        process.kill(phase === 'sigkill' ? -child.pid! : child.pid!, signal);
+        const result = await closed;
+        const final = JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8'));
+        if (phase === 'sigkill') {
+          expect(result).toEqual([null, 'SIGKILL']);
+          expect(final).toEqual(receipt); // A killed finally cannot manufacture cleanup evidence.
+          expect(existsSync(owned!)).toBe(true);
+        } else {
+          expect(result, output).toEqual([phase === 'sigint' ? 130 : 143, null]);
+          expect(final).toMatchObject({ ...receipt, cleanup: 'completed', cancellationSignal: signal });
+          expect(existsSync(owned!)).toBe(false);
+          const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
+          expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
+          if (phase !== 'child' && phase !== 'sigint') expect(phases.some(row => row.phase === 'child.run')).toBe(false);
+          if (existsSync(ready + '.pid')) {
+            const pid = readFileSync(ready + '.pid', 'utf8');
+            if (existsSync(`/proc/${pid}/stat`))
+              expect(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]![0]).toMatch(/[ZX]/);
+          }
+        }
+        expect(readFileSync(join(peer, 'peer-owned'), 'utf8')).toBe('must survive');
+      } finally {
+        try { process.kill(-child.pid!, 'SIGKILL'); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+        }
+        await closed;
+        if (owned) rmSync(owned, { recursive: true, force: true });
+        if (peer) rmSync(peer, { recursive: true, force: true });
+      }
+    });
+
+  it.each([
+    ['spawned', 'repo'], ['pending', 'repo'], ['spawned', 'data'], ['pending', 'data'],
+  ] as const)('terminal task close cleans a real SIGKILL with %s enrollment in %s scratch and preserves peers', async (enrollment, scratchLocation) => {
+    const label = enrollment + '-' + scratchLocation;
+    const fixture = makeSuperproject(join(tmp, 'verifier-command-killed-' + label));
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
     write(fixture.repo, helper, '#!/bin/bash\nset -eu\nprintf "%s\\n" "$3" > "$VERIFIER_KILL_READY"\nexec sleep 60\n');
@@ -704,9 +1010,9 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     git(fixture.repo, ['add', helper, '.gitignore']);
     git(fixture.repo, ['commit', '-qm', 'kill during verifier preparation']);
     const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
-    const ready = join(tmp, 'verifier-kill-ready-' + enrollment), taskId = 'verifierkillfixture';
+    const ready = join(tmp, 'verifier-kill-ready-' + label), taskId = 'verifierkillfixture';
     const cli = new URL('../../../scripts/source-preview.mjs', import.meta.url).href;
-    const options = { repo: fixture.repo, ref, receiptPath: join(tmp, 'verifier-kill-source-' + enrollment + '.json'),
+    const options = { repo: fixture.repo, ref, receiptPath: join(tmp, 'verifier-kill-source-' + label + '.json'),
       inputs: [helper], command: [process.execPath, '-e', 'process.exit(0)'] };
     const child = spawn(process.execPath, ['--input-type=module', '-e',
       `import { runVerifierCommand } from ${JSON.stringify(cli)}; process.exitCode = await runVerifierCommand(${JSON.stringify(options)});`],
@@ -717,9 +1023,10 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     child.stdout.on('data', bytes => { output += bytes; });
     child.stderr.on('data', bytes => { output += bytes; });
     const closed = once(child, 'close');
+    const cleanupPaths: string[] = [];
     try {
       await vi.waitFor(() => expect(existsSync(ready), output).toBe(true), { timeout: 15_000, interval: 20 });
-      const owned = dirname(readFileSync(ready, 'utf8').trim());
+      let owned = dirname(readFileSync(ready, 'utf8').trim());
       const receipt = JSON.parse(readFileSync(join(owned, '.verifier-task.json'), 'utf8'));
       expect(receipt).toMatchObject({ taskId, pid: child.pid, repoRoot: fixture.repo });
       expect(statSync(join(owned, '.verifier-task.json')).mode & 0o777).toBe(0o600);
@@ -730,12 +1037,24 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         .split('\n').map(line => JSON.parse(line));
       expect(phases.at(-1)).toMatchObject({ phase: 'deps.snapshot', event: 'started', taskId });
       expect(phases.some(row => row.phase === 'child.run')).toBe(false);
+      if (scratchLocation === 'data') {
+        // The exporter uses this root for root-device donors. Exercise discovery
+        // independently of the filesystem on which this synthetic repo lives.
+        const relocated = mkdtempSync(join(await fsPromises.realpath('/mnt/data/tmp'), 'verifier-command-'));
+        cleanupPaths.push(relocated);
+        cpSync(owned, relocated, { recursive: true, verbatimSymlinks: true });
+        rmSync(owned, { recursive: true, force: true });
+        owned = relocated;
+      }
       const scratch = dirname(owned);
       const peer = mkdtempSync(join(scratch, 'verifier-command-'));
+      cleanupPaths.push(peer);
       writeFileSync(join(peer, '.verifier-task.json'), JSON.stringify({ ...receipt, taskId: 'peer-task' }));
       const live = mkdtempSync(join(scratch, 'verifier-command-'));
+      cleanupPaths.push(live);
       writeVerifierTaskReceipt(live, fixture.repo, { PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: taskId });
-      const link = join(scratch, 'verifier-command-link');
+      const link = join(scratch, 'verifier-command-link-' + label);
+      cleanupPaths.push(link);
       symlinkSync(peer, link, 'dir');
       const scopeUnit = 'pc-verifierkillfixture.service';
       const cgroupPath = '/papercusp.slice/papercusp-bash.slice/papercusp-bash-job.slice/' + scopeUnit;
@@ -794,6 +1113,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
       }
       await closed;
+      for (const path of cleanupPaths) rmSync(path, { recursive: true, force: true });
     }
   });
 
@@ -1002,7 +1322,29 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`added ${unexpected}`);
   });
 
-  it.each(['apps/operator-vite/src/routeTree.gen.ts', '.papercusp-pinned-deps', 'libs/generic/sse/dist/index.js', 'packages/omp-plugin/dist/native-extension.mjs', VITEST_RESULT_CACHE, ...NATIVE_RUNTIME_FILES])('never excludes recorded output from source attestation: %s', async input => {
+  it('allows SPA prebuild mirrors through the later host source census without hiding public source', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-spa-runtime-fixture'));
+    const dest = join(tmp, 'verifier-spa-runtime-export');
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    const receipt = await prepareVerifierSource({ repo: fixture.repo, ref: fixture.commit, dest, inputs: [input] });
+    for (const artifact of SPA_RUNTIME_FILES) write(dest, artifact, 'generated SPA runtime asset');
+    await expect(verifyVerifierSource(dest, receipt)).rejects.toThrow('tampered verification source archive');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).resolves.toEqual(receipt);
+    for (const unexpected of [
+      'apps/operator/public/unexpected.js',
+      'apps/operator/public/ort-wasm-unexpected.ts',
+      'apps/operator/public/silero_vad_unexpected.onnx',
+      'apps/operator/public/excalidraw-extra/chunk.js',
+    ]) {
+      write(dest, unexpected, 'unexpected source');
+      await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`added ${unexpected}`);
+      rmSync(join(dest, unexpected));
+    }
+    writeFileSync(join(dest, input), 'changed recorded source');
+    await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
+  });
+
+  it.each(['apps/operator-vite/src/routeTree.gen.ts', '.papercusp-pinned-deps', 'libs/generic/sse/dist/index.js', 'packages/omp-plugin/dist/native-extension.mjs', VITEST_RESULT_CACHE, ...NATIVE_RUNTIME_FILES, ...SPA_RUNTIME_FILES])('never excludes recorded output from source attestation: %s', async input => {
     const suffix = input.replaceAll('/', '-');
     const fixture = makeSuperproject(join(tmp, `verifier-output-recorded-${suffix}`));
     write(fixture.repo, input, 'recorded route tree');
@@ -1035,7 +1377,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow(`changed ${input}`);
   });
 
-  it.each(['.papercusp-pinned-deps', 'libs/generic/sse/dist', 'packages/omp-plugin/dist', 'papercusp-desktop/src-tauri/gen/schemas', VITEST_RESULT_CACHE, ...NATIVE_RUNTIME_FILES.filter(path => path.endsWith('PLACEHOLDER-README.txt') || path.endsWith('sidecar.lock'))])('rejects a redirect posing as runtime output: %s', async artifact => {
+  it.each(['.papercusp-pinned-deps', 'libs/generic/sse/dist', 'packages/omp-plugin/dist', 'papercusp-desktop/src-tauri/gen/schemas', VITEST_RESULT_CACHE, ...NATIVE_RUNTIME_FILES.filter(path => path.endsWith('PLACEHOLDER-README.txt') || path.endsWith('sidecar.lock')), ...new Set(SPA_RUNTIME_FILES.map(path => path.split('/').slice(0, 4).join('/')))])('rejects a redirect posing as runtime output: %s', async artifact => {
     const fixture = makeSuperproject(join(tmp, `verifier-output-link-${artifact.replaceAll('/', '-')}`));
     const input = SHIPPED.find(p => p.startsWith('apps/'))!;
     const dest = join(tmp, `verifier-output-link-export-${artifact.replaceAll('/', '-')}`);
@@ -1055,6 +1397,24 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     rmSync(join(dest, 'apps/operator-vite/src/routeTree.gen.ts'));
     symlinkSync(join(dest, input), join(dest, 'apps/operator-vite/src/routeTree.gen.ts'));
     await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true })).rejects.toThrow('runtime artifact is not an independent file');
+  });
+
+  it('refuses incomplete icon ESM content before verifier input admission and accepts restored content', async () => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-incomplete-icon-content'));
+    const input = SHIPPED.find(p => p.startsWith('apps/'))!;
+    write(fixture.repo, 'package-lock.json', JSON.stringify({
+      packages: { 'node_modules/react-icons': { version: '5.6.0' } },
+    }));
+    write(fixture.repo, 'node_modules/react-icons/package.json', JSON.stringify({
+      name: 'react-icons', exports: { './ai': './ai/index.mjs' },
+    }));
+    write(fixture.repo, 'node_modules/react-icons/ai/index.mjs', "export { IconBase } from '../lib/index.mjs';");
+    const args = ['verifier-inputs-check', '--repo', fixture.repo, '--ref', fixture.commit, '--inputs', input];
+    await expect(runCli(args)).rejects.toThrow(/RUNTIME_DEPS_UNUSABLE[\s\S]*react-icons\/ai/);
+    write(fixture.repo, 'node_modules/react-icons/lib/index.mjs', 'export const IconBase = {};');
+    const output = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try { expect(await runCli(args)).toBe(0); }
+    finally { output.mockRestore(); }
   });
 
   it('checks committed inputs without allocating a snapshot and rejects later source edits', async () => {

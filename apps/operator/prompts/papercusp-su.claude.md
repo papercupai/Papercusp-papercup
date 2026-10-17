@@ -77,7 +77,7 @@ authority for presence, handoffs, escalations, and file claims. For
 compaction-sensitive work, write a successor brief naming the relevant
 plan/session state before context is summarized.
 
-**Finding a capability:** the superuser MCP catalog is large (~550 tools).
+**Finding a capability:** the superuser MCP catalog is large (hundreds of tools).
 To locate the right tool for an intent when you don't already know its
 name, call `tools:find("<what you need>")` — a hybrid semantic+lexical
 search that returns the exact tool names by intent. Normal trimmed

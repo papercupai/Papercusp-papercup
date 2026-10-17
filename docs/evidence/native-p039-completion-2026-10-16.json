@@ -1,0 +1,80 @@
+{
+  "recordedAt": "2026-10-16T15:23:35.728843+00:00",
+  "plane": "local-current-source",
+  "shipment": "unverified",
+  "workItem": "WI-6554700010016164",
+  "status": "local-source-qualified-runtime-open",
+  "verification": [
+    {
+      "map": "/tmp/native-p039-completion-v2-source-20261016.json",
+      "mapSha256": "469dbe5fd528812d7fdeef4430dae7d95fb0daf06a7963872e65be533225c400",
+      "testFile": "packages/operator-core/lib/code-intelligence/task-brief.test.ts",
+      "state": "passed",
+      "passed": 21,
+      "failed": 0,
+      "skipped": 0,
+      "sourceStatus": "stable",
+      "sources": [
+        {
+          "path": "packages/operator-core/lib/code-intelligence/task-brief.ts",
+          "sha256": "2d6afe7c742686f87566e8892de6c5c3429764e93802df28a4c94227e4854278",
+          "captureBasis": "vite-pre-transform"
+        },
+        {
+          "path": "packages/operator-core/lib/code-intelligence/task-brief.test.ts",
+          "sha256": "ff7d3bafc23a7564d0f80464420d7bc163a1be51f214a3e3712031e08e909fab",
+          "captureBasis": "vite-pre-transform"
+        }
+      ]
+    },
+    {
+      "map": "/tmp/native-p039-receipt-v2-source-20261016.json",
+      "mapSha256": "19596acbadd28caa84f649309653c197849a15eb4cfeb1dc867dd1550bf2b6f1",
+      "testFile": "packages/operator-core/lib/agent-tools/work_items/complete.test.ts",
+      "state": "passed",
+      "passed": 2,
+      "failed": 0,
+      "skipped": 440,
+      "sourceStatus": "stable",
+      "sources": [
+        {
+          "path": "packages/operator-core/lib/agent-tools/work_items/complete.ts",
+          "sha256": "4da10de32ac5bb1dd9784cde7b6fb9e95d579b24bfec9c64d84f82e0829df6e3",
+          "captureBasis": "vite-pre-transform"
+        },
+        {
+          "path": "packages/operator-core/lib/agent-tools/work_items/complete.test.ts",
+          "sha256": "7515e890d4b46d50eff54d35afd7808877f4bc45d2a6bb388c9aeea31675cfd5",
+          "captureBasis": "vite-pre-transform"
+        }
+      ]
+    }
+  ],
+  "priorCompleteFile": {
+    "passed": 442,
+    "failed": 0,
+    "skipped": 0,
+    "map": "/tmp/native-p039-completion-source-20261016.json",
+    "limitation": "complete.ts was then corrected with a nullish fallback; the affected two receipt cases were requalified, not all 442."
+  },
+  "types": {
+    "command": "npm run lint:tsc -- --files=packages/operator-core/lib/code-intelligence/task-brief.ts,packages/operator-core/lib/code-intelligence/task-brief.test.ts,packages/operator-core/lib/agent-tools/work_items/complete.ts,packages/operator-core/lib/agent-tools/work_items/complete.test.ts",
+    "log": "/tmp/native-p039-completion-v2-types-20261016.log",
+    "exitCode": 0,
+    "crossLegs": "operator-vite,operator,scripts clean",
+    "limitation": "Additional test assertions for the run reader were added after this typecheck began."
+  },
+  "logs": [
+    "/tmp/native-p039-completion-v2-tests-20261016.log",
+    "/tmp/native-p039-receipt-v2-tests-20261016.log"
+  ],
+  "remaining": [
+    "Native no-claim intent/orient delivery witness.",
+    "Native completion receipt witness on the containing current-build runtime.",
+    "Final release and parent-plan acceptance."
+  ],
+  "limits": [
+    "Recorded test file results may be filtered or stale; current-source execution coverage is explicitly unmeasured.",
+    "Source report has a two-symbol bound; source completeness and uninspected changes remain unknown."
+  ]
+}

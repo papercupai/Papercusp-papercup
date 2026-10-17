@@ -214,7 +214,18 @@ describe('blueprint ordered capacity failover (P-004 R-4)', () => {
     expect(routingFixture.observation).toHaveBeenCalledWith('blueprint-launch',
       expect.objectContaining({ reason: 'capacity', applied: 0 }), expect.objectContaining({ workspaceId: opts.workspaceId }));
     expect(routingFixture.notice).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: opts.workspaceId }),
-      expect.objectContaining({ summary: expect.stringContaining('sonnet:high'), extra: { expects: 'none', reason: 'capacity' } }));
+      expect.objectContaining({ to: ['human'], summary: expect.stringContaining('sonnet:high'), extra: { expects: 'none', reason: 'capacity' } }));
+  });
+
+  it('addresses the capacity substitution to the initiating operation owner on direct and durable paths', async () => {
+    const input = { ...opts, parent: { spawnId: 'su-operation-leader', role: 'su' } };
+    setLaunchBlueprintFire(vi.fn());
+    await fireLaunchBlueprint('release-fix', input);
+    await buildLaunchSpawnRequest('release-fix', input, 'capacity:recipient');
+    expect(routingFixture.notice).toHaveBeenCalledTimes(2);
+    for (const [, notice] of routingFixture.notice.mock.calls as unknown as Array<[unknown, { to: string[] }]>) {
+      expect(notice.to).toEqual(['su-operation-leader']);
+    }
   });
 
   it('skips a walled first backup and selects the second without reordering', async () => {
@@ -306,11 +317,57 @@ describe('blueprint ordered capacity failover (P-004 R-4)', () => {
       backend: 'claude-code', model: backend.model!, effort: backend.effort, resolvedAccountIds });
     expect(written).toMatchObject({ ownerId: 's-backup', requestedBackend: 'codex', requestedModel: 'gpt-5.4',
       launchedBackend: 'claude-code', launchedModel: 'sonnet[1m]', launchedEffort: 'high', reason: 'capacity', resolvedAccountIds: ['claude-a'] });
-    const pinned = await resolveSpawnGatewayEnv({ workspaceId: opts.workspaceId, slug: opts.installSlug, ownerId: 's-pin',
+    const pinned = await resolveSpawnGatewayEnv({ workspaceId: opts.workspaceId, slug: opts.installSlug, ownerId: 's-backup',
       backend: 'claude-code', account: 'claude-a' });
     applyExplicitSpawnAccountRoute(pinned, 'claude-a');
     expect(pinned.PAPERCUSP_ACCOUNT_ID).toBe('claude-a');
     expect(pinned.ANTHROPIC_CUSTOM_HEADERS).toContain('claude-a');
+    // Cross the same command and on-disk config boundaries as invoke(), with
+    // fixture signing material and no native process or provider request.
+    const { buildInvokeOnce } = await import('../harness-invoke-once');
+    const { splitCommand, claudeMcpArgs } = await import('../../../../libs/papercusp/packages/orchestrator/src/invoke');
+    const { writeSignedSpawnMcp, restoreSpawnMcp, writeSpawnClaudeConfig } = await import('../../../../libs/papercusp/packages/orchestrator/src/spawn-mcp');
+    const { privateClaudeModelConfig } = await import('../../test/private-http-workspace-preflight');
+    vi.stubEnv('PAPERCUSP_SPAWN_SU_BEARER', '');
+    const directory = mkdtempSync(join(tmpdir(), 'blueprint-claude-config-'));
+    const config = writeSpawnClaudeConfig(directory);
+    const signingInput = { harnessSlug: opts.installSlug, workspaceId: opts.workspaceId, role: 'release-fixer',
+      runId: 'capacity:bridge', spawnId: 's-backup', clientId: 's-backup', operatorUrl: 'http://127.0.0.1:3070' };
+    try {
+      const mcp = await writeSignedSpawnMcp(directory, signingInput, { probe: async () => true,
+        pg: (async () => [{ value_b64: Buffer.alloc(32, 7).toString('base64'), rotated_at: new Date('2026-08-25') }]) as never });
+      try {
+        const writtenMcp = JSON.parse(readFileSync(mcp.path, 'utf8')).mcpServers.papercusp;
+        expect(writtenMcp.type).toBe('http');
+        expect(new URL(writtenMcp.url).searchParams.has('sig')).toBe(true);
+        for (const [account, gatewayEnv, ownerId] of [['auto', env, 's-backup'], ['claude-a', pinned, 's-backup']] as const) {
+          const invocation = buildInvokeOnce({ projectDir: directory, stateDir: directory, harnessDir: directory,
+            role: 'release-fixer', extras: parsed.extra, extraEnv: { ...gatewayEnv,
+              PAPERCUSP_SPAWN_MODEL: parsed.spawnModelPin, PAPERCUSP_SPAWN_BACKEND: parsed.spawnBackendPin,
+              CLAUDE_CONFIG_DIR: config.configDir } });
+          const argv = [...splitCommand(invocation.env.AGENT_CMD!), ...claudeMcpArgs('claude-code',
+            'claude-stream-json', invocation.env.AGENT_CMD!, mcp.path, true, 'release-fixer')];
+          expect(invocation.env.AGENT_BACKEND).toBe('claude-code');
+          expect(invocation.env.CLAUDE_CONFIG_DIR).toBe(config.configDir);
+          expect(privateClaudeModelConfig(argv, invocation.env)).toMatchObject({ model: 'sonnet[1m]', effort: 'high',
+            ownerId, accountPinPresent: account !== 'auto', mcpOwnerId: 's-backup', mcpWorkspace: opts.workspaceId });
+          expect(() => privateClaudeModelConfig(argv.filter(arg => arg !== '--strict-mcp-config'), invocation.env))
+            .toThrow(/ambient MCP/);
+        }
+      } finally { restoreSpawnMcp(mcp); }
+      // Force the documented five-minute signing-key cache to miss, so this
+      // rejection control cannot accidentally reuse the healthy fixture key.
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 5 * 60_000 + 1);
+      const unavailableKey = vi.fn(async () => { throw new Error('fixture signing key unavailable'); });
+      try {
+        await expect(writeSignedSpawnMcp(directory, signingInput, { probe: async () => true,
+          pg: unavailableKey as never })).rejects.toThrow(/fixture signing key unavailable/);
+        expect(unavailableKey).toHaveBeenCalledOnce();
+      } finally { clock.mockRestore(); }
+    } finally {
+      config.cleanup();
+      rmSync(directory, { recursive: true, force: true });
+    }
     expect(() => parseBlueprintInvokeRequest({ ...request.body, requestedSpawnModel: undefined })).toThrow(/requires requested/);
   });
 

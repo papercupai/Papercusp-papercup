@@ -1,5 +1,5 @@
 import type { Sql } from 'postgres';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { BlueprintSchema, compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
@@ -7,20 +7,17 @@ import { projectBlueprintToPg, retainBlueprintSpecificationSnapshot } from '../.
 import { supportToEngineeringOperation } from '../../../packages/operator-core/lib/blueprint/support-workflow-operation';
 import { currentBenchOpenAiInputContract } from '../../../packages/operator-core/lib/external-bench/current-su';
 import { defineHostedAllocation } from '../../../packages/operator-core/lib/auth/hosted/billing/allocation-store';
-import { createPersonalGrant } from '../../../packages/operator-core/lib/personal-vault/store';
+import { createPersonalGrant, listPersonalGrants, personalScope, revokePersonalGrant } from '../../../packages/operator-core/lib/personal-vault/store';
 import { getIdentitySource } from '../../../packages/operator-core/lib/agent-identities/source';
 import { getOrgPg } from '@papercusp/db-org';
 import { mutateHarnessRegistry } from '../../../packages/operator-core/lib/harness-registry';
+import { createExternalTriggerBinding, createExternalTriggerSource } from '../../../packages/operator-core/lib/external-triggers/admin';
 import { isCodingAgentRole } from '../../../packages/operator-core/lib/personal-vault/coding-roles';
-import { ORGANIZATION_CORPUS_SCOPE, mapProviderIdentity, replacePermissionListMembers,
+import { readWorkflowAdministration } from '../../../packages/operator-core/lib/blueprint/support-workflow-administration';
+import { ORGANIZATION_CORPUS_SCOPE, mapProviderIdentity, replacePermissionListMembers, searchOrganizationDocuments,
   upsertOrganizationDocuments, upsertPermissionList } from '../../../packages/operator-core/lib/data-sources/documents-corpus';
 
-/** This is test input, never worker-completion/model evidence or acceptance. */
-export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
-  workspaceId: string;
-  harnessSlug?: string;
-}) {
-  const { workspaceId } = input;
+async function assertSupportFixtureDatabase(sql: Sql, workspaceId: string) {
   if (!/^verify-tauri-isolated-[a-zA-Z0-9-]+$/.test(workspaceId))
     throw new Error('Support native fixture requires a verify-tauri-isolated workspace');
   // The maintained native rig has its own data directory; the conventional PG
@@ -37,7 +34,15 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
     SELECT current_database() AS name, current_setting('data_directory') AS directory`;
   if (registryDatabase?.name !== database.name || registryDatabase?.directory !== database.directory)
     throw new Error('Support native fixture registry must use the same isolated PostgreSQL database');
+}
 
+/** This is test input, never worker-completion/model evidence or acceptance. */
+export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
+  workspaceId: string;
+  harnessSlug?: string;
+}) {
+  const { workspaceId } = input;
+  await assertSupportFixtureDatabase(sql, workspaceId);
   // Admission alone accepts a syntactically valid identity pin. The actual
   // worker bootstrap also resolves its source, so pin the maintained identity
   // instead of inventing a role-named source and a placeholder content hash.
@@ -81,7 +86,7 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
       actors[actor] = { id: user.id, username, password };
     }
     await tx`INSERT INTO harness_shared.pots (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
-      VALUES (${workspaceId}, ${harnessSlug}, ${Buffer.from([0])}, 'synthetic-native-support', 0)`;
+      VALUES (${workspaceId}, ${harnessSlug}, ${randomBytes(32)}, 'synthetic-native-support', 0)`;
     const identities = {
       employee: { provider: 'slack', providerUserId: `T1:EMPLOYEE:${nonce}` },
       reviewer: { provider: 'slack', providerUserId: `T1:REVIEWER:${nonce}` },
@@ -137,6 +142,15 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
         evidenceRef: 'synthetic:native-support-fixture', recordedBy: actors.admin.id });
       if (result.outcome !== 'created') throw new Error(`Fixture allocation was refused: ${result.outcome}`);
     }
+    // Workflows inventories operation installations through trigger bindings,
+    // not blueprint declarations alone. Install the synthetic input through
+    // that same seam, without credentials, arming, events, or execution proof.
+    const source = await createExternalTriggerSource(client, workspaceId, { kind: 'slack',
+      config: { label: `Native support ${nonce}`, synthetic: true }, createdBy: actors.admin.id });
+    await createExternalTriggerBinding(client, workspaceId, { sourceId: source.id,
+      operationHarnessSlug: harnessSlug, operationId, eventPattern: 'ext:slack:message.received',
+      eventFilter: { supportCaseId }, stormPolicy: { maxRuns: 1, windowSeconds: 60 },
+      createdBy: actors.admin.id });
     return { workspaceId, harnessSlug, operationId, supportCaseId, query, documentTitle,
       documentId: document.id, listId: list.id, externalId, sourceUrl, role, actors, identities,
       approvedRevision: specification.specificationRevision, blueprint, specification, funding,
@@ -153,6 +167,47 @@ export async function seedSupportWorkflowNativeFixture(sql: Sql, input: {
 }
 
 export type SupportWorkflowNativeFixture = Awaited<ReturnType<typeof seedSupportWorkflowNativeFixture>>;
+
+export type SupportWorkflowReviewerAccess = 'allowed' | 'no-grant' | 'no-source-acl';
+export type SupportWorkflowAccessSelection = Pick<SupportWorkflowNativeFixture,
+  'workspaceId' | 'harnessSlug' | 'operationId' | 'documentId' | 'listId' | 'role' | 'identities' | 'query'> & {
+    actors: Record<keyof SupportWorkflowNativeFixture['actors'], { id: string }>;
+  };
+
+/** Change only test input permissions in the private rig. Never write a
+ * completion, model attestation or review decision to make a journey pass. */
+export async function setSupportWorkflowNativeReviewerAccess(sql: Sql,
+  fixture: SupportWorkflowAccessSelection, access: SupportWorkflowReviewerAccess) {
+  await assertSupportFixtureDatabase(sql, fixture.workspaceId);
+  if (!['allowed', 'no-grant', 'no-source-acl'].includes(access) || fixture.role !== 'operator')
+    throw new Error('Invalid native support reviewer access');
+  const { workspaceId, actors } = fixture;
+  const administration = await readWorkflowAdministration(sql, { workspaceId,
+    harness: fixture.harnessSlug, operationId: fixture.operationId, principalId: actors.admin.id });
+  const [document] = await sql<{ id: string }[]>`SELECT id FROM harness_shared.documents
+    WHERE workspace_id=${workspaceId} AND id=${fixture.documentId}::uuid AND permission_list_id=${fixture.listId}::uuid`;
+  if (!document || !administration.reviewerPrincipals.includes(actors.reviewer.id))
+    throw new Error('Native support reviewer fixture does not match its retained operation');
+  const scope = personalScope(ORGANIZATION_CORPUS_SCOPE);
+  const grants = await listPersonalGrants(sql, workspaceId, actors.reviewer.id);
+  for (const grant of grants) {
+    if (!grant.revoked_at && grant.principal_type === 'agent-role' && grant.principal_id === fixture.role
+      && grant.scopes.includes(scope)) await revokePersonalGrant(sql, workspaceId, actors.reviewer.id, grant.id);
+  }
+  if (access !== 'no-grant') await createPersonalGrant(sql, { workspaceId,
+    userId: actors.reviewer.id, principalType: 'agent-role', principalId: fixture.role,
+    scopes: [ORGANIZATION_CORPUS_SCOPE], grantedBy: actors.admin.id });
+  await replacePermissionListMembers(sql, workspaceId, fixture.listId,
+    access === 'no-source-acl' ? [fixture.identities.employee] : Object.values(fixture.identities));
+  const measured = await searchOrganizationDocuments(sql,
+    { workspaceId, role: fixture.role, harnessSlug: fixture.harnessSlug }, {
+      workspaceId, principalUserId: actors.reviewer.id, agentOwnerId: actors.reviewer.id,
+      query: fixture.query, sources: ['slack'], documentIds: [fixture.documentId], limit: 1,
+    });
+  return { access, allowed: measured.allowed,
+    documentIds: measured.allowed ? measured.results.map(row => row.id) : [],
+    reason: measured.allowed ? null : measured.reason };
+}
 
 /** Evaluate INSIDE the owned webview. HttpOnly cookies remain browser-managed.
  * Return only the measured user id; never print fixture passwords or cookies. */

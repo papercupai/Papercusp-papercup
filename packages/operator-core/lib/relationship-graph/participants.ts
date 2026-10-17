@@ -16,6 +16,10 @@
 import type { Sql } from 'postgres';
 import { createDatatypeDestinationSinks } from '../data-sources/datatype-destination-sink';
 import type { CanonicalExternalEvent, ExternalTriggerSink } from '../external-triggers/ingestion';
+import {
+  isGoogleWorkspaceProvisionalProviderAccountId,
+  googleWorkspaceSourceIsPersonalGmail,
+} from '../external-triggers/google-workspace';
 import { createRelationshipGraphSink } from './graph-sink';
 import { type IdentityKey, type InteractionParticipant, interactionParticipants, PARTICIPANT_FIELDS } from './identity-keys';
 import { PARTICIPANT_DERIVATION } from './merge';
@@ -116,6 +120,54 @@ export interface ParticipantChain {
   deliverParticipants(event: CanonicalExternalEvent, participants: readonly InteractionParticipant[]): Promise<void>;
 }
 
+interface GoogleSourceIdentityRow {
+  kind: string;
+  ownerUserId: string | null;
+  providerAccountId: string | null;
+  cursor: Record<string, unknown>;
+  config: Record<string, unknown>;
+}
+
+/**
+ * D-039 defense in depth for rows created before account-aware provisioning. A legacy gcal row
+ * can retain a provisional account id while its Gmail sibling's cursor identifies the personal
+ * mailbox, so resolve that sibling before deciding whether to build the participant sink.
+ */
+async function isLegacyPersonalGmailSource(
+  sql: Sql,
+  input: { workspaceId: string; sourceId: string },
+): Promise<boolean> {
+  const rows = await sql<GoogleSourceIdentityRow[]>`
+    SELECT kind,
+           owner_user_id::text AS "ownerUserId",
+           provider_account_id AS "providerAccountId",
+           cursor,
+           config
+      FROM harness_shared.data_sources
+     WHERE workspace_id = ${input.workspaceId}
+       AND id = ${input.sourceId}::uuid
+     LIMIT 1`;
+  const source = rows[0];
+  if (!source || (source.kind !== 'gmail' && source.kind !== 'gcal')) return false;
+  const candidates: GoogleSourceIdentityRow[] = [source];
+  const providerAccountId = source.providerAccountId?.trim() ?? '';
+  if (source.ownerUserId && isGoogleWorkspaceProvisionalProviderAccountId(providerAccountId)) {
+    const siblings = await sql<GoogleSourceIdentityRow[]>`
+      SELECT kind,
+             owner_user_id::text AS "ownerUserId",
+             provider_account_id AS "providerAccountId",
+             cursor,
+             config
+        FROM harness_shared.data_sources
+       WHERE workspace_id = ${input.workspaceId}
+         AND owner_user_id = ${source.ownerUserId}::uuid
+         AND kind = 'gmail'
+         AND provider_account_id = ${providerAccountId}`;
+    candidates.push(...siblings);
+  }
+  return googleWorkspaceSourceIsPersonalGmail(source, candidates);
+}
+
 /**
  * The person-record + resolver chain one source's participants go through, shared by live delivery
  * (createInteractionParticipantSink) and the stored-interaction backfill. Null when the source does
@@ -126,6 +178,7 @@ export async function createParticipantChain(
   input: { workspaceId: string; sourceId: string; datatype: string },
   deps: ParticipantSinkDeps = {},
 ): Promise<ParticipantChain | null> {
+  if (await isLegacyPersonalGmailSource(sql, input)) return null;
   const createPersonSinks = deps.createPersonSinks ?? createDatatypeDestinationSinks;
   const createGraphSink = deps.createGraphSink ?? createRelationshipGraphSink;
   const personSinks = await createPersonSinks(sql, {

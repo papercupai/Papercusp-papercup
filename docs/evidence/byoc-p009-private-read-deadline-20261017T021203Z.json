@@ -1,0 +1,448 @@
+{
+  "schemaVersion": 1,
+  "kind": "private-http-read-deadline-current-source-reverification",
+  "workItem": "WI-6554700010016645",
+  "parent": "WI-10000407",
+  "runId": "20261017T021203Z-2258226",
+  "outerRecovery": {
+    "runId": "111418e2-a7e5-4978-8dd3-ad70934b5874",
+    "taskId": "0mvbrgexzr5b4nqbx5l",
+    "status": "pass",
+    "exitCode": 0
+  },
+  "resultPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T021203Z-2258226/result.json",
+  "sourcePath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T021203Z-2258226/phases/prepare/source.json",
+  "observationPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T021203Z-2258226/phases/execute/read-deadline-observation.json",
+  "diagnosticsPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T021203Z-2258226/phases/execute/read-deadline-pg.ndjson",
+  "lifecyclePath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T021203Z-2258226/phases/execute/lifecycle.json",
+  "sourceCommit": "62994650ca1e2d173a85bb198dc07ca6d2c8f3ca",
+  "sourceFiles": [
+    {
+      "path": "apps/operator/bin/hono-host.ts",
+      "sha256": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580",
+      "gitSha256": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580"
+    },
+    {
+      "path": "apps/operator/bin/host-handler.ts",
+      "sha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0",
+      "gitSha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/private-read-deadline-http.integration.test.ts",
+      "sha256": "a767004e3d1782e3ac19710ea60609e27c9fbdbdc61b371ef8c407ef878e480d",
+      "gitSha256": "a767004e3d1782e3ac19710ea60609e27c9fbdbdc61b371ef8c407ef878e480d"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/work_items/get.ts",
+      "sha256": "2ee16d4f2d06fa9920e62bf3a22941f9283e2b4c1d34b9088587faa5afefc53d",
+      "gitSha256": "2ee16d4f2d06fa9920e62bf3a22941f9283e2b4c1d34b9088587faa5afefc53d"
+    },
+    {
+      "path": "packages/operator-core/lib/carry-note.ts",
+      "sha256": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72",
+      "gitSha256": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts",
+      "sha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4",
+      "gitSha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4"
+    },
+    {
+      "path": "packages/operator-core/lib/pg-read-query.ts",
+      "sha256": "9f3150caaac9a47bd86dc42e81635700ac0f0d457565e920320c748940aa8c54",
+      "gitSha256": "9f3150caaac9a47bd86dc42e81635700ac0f0d457565e920320c748940aa8c54"
+    },
+    {
+      "path": "packages/operator-core/lib/work-item-checkpoint.ts",
+      "sha256": "0db6153cdd1142b467e940c003ea52c72a2714da6d3dcd04c5c05acf920e8e1a",
+      "gitSha256": "0db6153cdd1142b467e940c003ea52c72a2714da6d3dcd04c5c05acf920e8e1a"
+    },
+    {
+      "path": "packages/operator-core/lib/work-items.ts",
+      "sha256": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d",
+      "gitSha256": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d"
+    },
+    {
+      "path": "packages/operator-core/test/isolated-integration-proof.ts",
+      "sha256": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d",
+      "gitSha256": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d"
+    },
+    {
+      "path": "packages/operator-core/test/private-http-workspace-preflight.ts",
+      "sha256": "1ad346261702d8b1620cd7482f9fa3131f43d4558a7218029bcc104159f25ff3",
+      "gitSha256": "1ad346261702d8b1620cd7482f9fa3131f43d4558a7218029bcc104159f25ff3"
+    },
+    {
+      "path": "packages/operator-core/test/private-read-deadline-http-scenario.ts",
+      "sha256": "e7f96e54982f34c3897ae57dfc0d3ff9a9376a73eb3cef205ca1a217268146e1",
+      "gitSha256": "e7f96e54982f34c3897ae57dfc0d3ff9a9376a73eb3cef205ca1a217268146e1"
+    },
+    {
+      "path": "packages/operator-core/test/staging-first-http-fixture.ts",
+      "sha256": "b3b8b61b478024c8435b42aadc7b3adb30eac7e38df8b978fb21fd0850595455",
+      "gitSha256": "b3b8b61b478024c8435b42aadc7b3adb30eac7e38df8b978fb21fd0850595455"
+    },
+    {
+      "path": "scripts/lib/isolated-runtime-start.mjs",
+      "sha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d",
+      "gitSha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d"
+    },
+    {
+      "path": "scripts/with-test-pg.mjs",
+      "sha256": "50e73fa41c584d233c856297406bc897cef88ab9b83dbf4489fc617f6d0a7fbc",
+      "gitSha256": "50e73fa41c584d233c856297406bc897cef88ab9b83dbf4489fc617f6d0a7fbc"
+    },
+    {
+      "path": "scripts/lib/with-test-pg-cleanup.mjs",
+      "sha256": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61",
+      "gitSha256": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61"
+    }
+  ],
+  "currentInputsMatchRecorded": [
+    {
+      "path": "apps/operator/bin/hono-host.ts",
+      "expected": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580",
+      "actual": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580",
+      "matches": true
+    },
+    {
+      "path": "apps/operator/bin/host-handler.ts",
+      "expected": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0",
+      "actual": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0",
+      "matches": true
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/private-read-deadline-http.integration.test.ts",
+      "expected": "a767004e3d1782e3ac19710ea60609e27c9fbdbdc61b371ef8c407ef878e480d",
+      "actual": "a767004e3d1782e3ac19710ea60609e27c9fbdbdc61b371ef8c407ef878e480d",
+      "matches": true
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/work_items/get.ts",
+      "expected": "2ee16d4f2d06fa9920e62bf3a22941f9283e2b4c1d34b9088587faa5afefc53d",
+      "actual": "2ee16d4f2d06fa9920e62bf3a22941f9283e2b4c1d34b9088587faa5afefc53d",
+      "matches": true
+    },
+    {
+      "path": "packages/operator-core/lib/carry-note.ts",
+      "expected": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72",
+      "actual": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72",
+      "matches": true
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts",
+      "expected": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4",
+      "actual": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4",
+      "matches": true
+    },
+    {
+      "path": "packages/operator-core/lib/pg-read-query.ts",
+      "expected": "9f3150caaac9a47bd86dc42e81635700ac0f0d457565e920320c748940aa8c54",
+      "actual": "9f3150caaac9a47bd86dc42e81635700ac0f0d457565e920320c748940aa8c54",
+      "matches": true
+    },
+    {
+      "path": "packages/operator-core/lib/work-item-checkpoint.ts",
+      "expected": "0db6153cdd1142b467e940c003ea52c72a2714da6d3dcd04c5c05acf920e8e1a",
+      "actual": "0db6153cdd1142b467e940c003ea52c72a2714da6d3dcd04c5c05acf920e8e1a",
+      "matches": true
+    },
+    {
+      "path": "packages/operator-core/lib/work-items.ts",
+      "expected": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d",
+      "actual": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d",
+      "matches": true
+    },
+    {
+      "path": "packages/operator-core/test/isolated-integration-proof.ts",
+      "expected": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d",
+      "actual": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d",
+      "matches": true
+    },
+    {
+      "path": "packages/operator-core/test/private-http-workspace-preflight.ts",
+      "expected": "1ad346261702d8b1620cd7482f9fa3131f43d4558a7218029bcc104159f25ff3",
+      "actual": "1ad346261702d8b1620cd7482f9fa3131f43d4558a7218029bcc104159f25ff3",
+      "matches": true
+    },
+    {
+      "path": "packages/operator-core/test/private-read-deadline-http-scenario.ts",
+      "expected": "e7f96e54982f34c3897ae57dfc0d3ff9a9376a73eb3cef205ca1a217268146e1",
+      "actual": "e7f96e54982f34c3897ae57dfc0d3ff9a9376a73eb3cef205ca1a217268146e1",
+      "matches": true
+    },
+    {
+      "path": "packages/operator-core/test/staging-first-http-fixture.ts",
+      "expected": "b3b8b61b478024c8435b42aadc7b3adb30eac7e38df8b978fb21fd0850595455",
+      "actual": "b3b8b61b478024c8435b42aadc7b3adb30eac7e38df8b978fb21fd0850595455",
+      "matches": true
+    },
+    {
+      "path": "scripts/lib/isolated-runtime-start.mjs",
+      "expected": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d",
+      "actual": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d",
+      "matches": true
+    },
+    {
+      "path": "scripts/with-test-pg.mjs",
+      "expected": "50e73fa41c584d233c856297406bc897cef88ab9b83dbf4489fc617f6d0a7fbc",
+      "actual": "50e73fa41c584d233c856297406bc897cef88ab9b83dbf4489fc617f6d0a7fbc",
+      "matches": true
+    },
+    {
+      "path": "scripts/lib/with-test-pg-cleanup.mjs",
+      "expected": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61",
+      "actual": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61",
+      "matches": true
+    }
+  ],
+  "phases": [
+    {
+      "phase": "prepare",
+      "status": "passed",
+      "elapsedMs": 2205
+    },
+    {
+      "phase": "execute",
+      "status": "passed",
+      "elapsedMs": 131032
+    },
+    {
+      "phase": "teardown",
+      "status": "passed",
+      "elapsedMs": 0
+    }
+  ],
+  "measurement": {
+    "workspace": "test-runtime-8e344351-2f0",
+    "harness": "test-runtime-8e344351-2f0-guard",
+    "itemId": "WI-1",
+    "expectedSha": "62994650ca",
+    "holderPid": 2366823,
+    "wait": {
+      "pid": 2384074,
+      "backendStart": "2026-10-16 22:13:43.141913-04",
+      "queryStart": "2026-10-16 22:13:44.27289-04",
+      "state": "active",
+      "waitEventType": "Lock",
+      "blockingPids": [
+        2366823
+      ],
+      "observedAtMs": 76282.355832
+    },
+    "timed": {
+      "index": 1,
+      "startedAtMs": 76251.472496,
+      "completedAtMs": 106266.348127,
+      "status": 200,
+      "envelope": {
+        "ok": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"ok\":false,\"results\":[{\"ok\":false,\"id\":\"WI-1\",\"availability\":\"unavailable\",\"error\":\"timeout\",\"retryable\":true,\"phase\":\"read\",\"budgetMs\":30000,\"message\":\"work_items:get exceeded its 30000ms internal read budget and returned a retryable unavailable result instead of waiting for the MCP request deadline. The item was not reported as not-found; retry now.\"}],\"counts\":{\"ok\":0,\"failed\":1},\"read\":{\"schemaVersion\":\"work-items-get-read-v1\",\"mode\":\"complete\",\"requested\":1,\"available\":0,\"absent\":0,\"unavailable\":1,\"receiptComplete\":true,\"budgetMs\":30000,\"elapsedMs\":30001,\"baseReadMaxMs\":0,\"baseReadDiagnostics\":[{\"id\":\"WI-1\",\"status\":\"fulfilled\",\"elapsedMs\":0}],\"enrichmentMaxMs\":30001,\"enrichmentDiagnostics\":[{\"id\":\"WI-1\",\"stage\":\"checkpoint\",\"status\":\"pending\",\"elapsedMs\":30001}],\"outerStageAttribution\":\"tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time\"},\"receipt\":[{\"id\":\"WI-1\",\"delivered\":true}],\"__checksOnly\":true}"
+            },
+            {
+              "type": "text",
+              "text": "See also: work_items:observe (claimability of these ids without taking them); work_items:comment (post an update on one); work_items:link (record a dependency between two)"
+            }
+          ],
+          "_meta": {
+            "format": "json",
+            "_seeAlso": [
+              {
+                "tool": "work_items:observe (claimability of these ids without taking them)"
+              },
+              {
+                "tool": "work_items:comment (post an update on one)"
+              },
+              {
+                "tool": "work_items:link (record a dependency between two)"
+              }
+            ]
+          }
+        }
+      },
+      "result": {
+        "ok": false,
+        "results": [
+          {
+            "ok": false,
+            "id": "WI-1",
+            "availability": "unavailable",
+            "error": "timeout",
+            "retryable": true,
+            "phase": "read",
+            "budgetMs": 30000,
+            "message": "work_items:get exceeded its 30000ms internal read budget and returned a retryable unavailable result instead of waiting for the MCP request deadline. The item was not reported as not-found; retry now."
+          }
+        ],
+        "counts": {
+          "ok": 0,
+          "failed": 1
+        },
+        "read": {
+          "schemaVersion": "work-items-get-read-v1",
+          "mode": "complete",
+          "requested": 1,
+          "available": 0,
+          "absent": 0,
+          "unavailable": 1,
+          "receiptComplete": true,
+          "budgetMs": 30000,
+          "elapsedMs": 30001,
+          "baseReadMaxMs": 0,
+          "baseReadDiagnostics": [
+            {
+              "id": "WI-1",
+              "status": "fulfilled",
+              "elapsedMs": 0
+            }
+          ],
+          "enrichmentMaxMs": 30001,
+          "enrichmentDiagnostics": [
+            {
+              "id": "WI-1",
+              "stage": "checkpoint",
+              "status": "pending",
+              "elapsedMs": 30001
+            }
+          ],
+          "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+        },
+        "receipt": [
+          {
+            "id": "WI-1",
+            "delivered": true
+          }
+        ],
+        "__checksOnly": true
+      }
+    },
+    "recovered": {
+      "index": 2,
+      "startedAtMs": 106273.23662,
+      "completedAtMs": 106288.428677,
+      "status": 200,
+      "envelope": {
+        "ok": true,
+        "result": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"ok\":true,\"results\":[{\"ok\":true,\"id\":\"WI-1\",\"__checksOnly\":true,\"checkpointChecks\":{\"count\":0,\"cap\":12,\"remaining\":12,\"rows\":[]},\"checkpointBody\":{\"chars\":58,\"cap\":32000,\"remaining\":31942},\"checkpointAgeMs\":30123,\"checkpointUpdatedAtMs\":1792203224173,\"checkpointContentHash\":\"84fd18c9dceb\",\"checkpointSubjectFingerprint\":{\"status\":\"unknown\",\"current\":{\"version\":1,\"sha256\":\"db621183871cd9e997170c72deb467e49b361c34e1365675574225901da1d947\"}}}],\"counts\":{\"ok\":1,\"failed\":0},\"read\":{\"schemaVersion\":\"work-items-get-read-v1\",\"mode\":\"complete\",\"requested\":1,\"available\":0,\"absent\":0,\"unavailable\":0,\"receiptComplete\":true,\"budgetMs\":30000,\"elapsedMs\":1,\"baseReadMaxMs\":0,\"enrichmentMaxMs\":1,\"outerStageAttribution\":\"tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time\"},\"receipt\":[{\"id\":\"WI-1\",\"delivered\":true}],\"__checksOnly\":true}"
+            },
+            {
+              "type": "text",
+              "text": "See also: work_items:observe (claimability of these ids without taking them); work_items:comment (post an update on one); work_items:link (record a dependency between two)"
+            }
+          ],
+          "_meta": {
+            "format": "json",
+            "_seeAlso": [
+              {
+                "tool": "work_items:observe (claimability of these ids without taking them)"
+              },
+              {
+                "tool": "work_items:comment (post an update on one)"
+              },
+              {
+                "tool": "work_items:link (record a dependency between two)"
+              }
+            ]
+          }
+        }
+      },
+      "result": {
+        "ok": true,
+        "results": [
+          {
+            "ok": true,
+            "id": "WI-1",
+            "__checksOnly": true,
+            "checkpointChecks": {
+              "count": 0,
+              "cap": 12,
+              "remaining": 12,
+              "rows": []
+            },
+            "checkpointBody": {
+              "chars": 58,
+              "cap": 32000,
+              "remaining": 31942
+            },
+            "checkpointAgeMs": 30123,
+            "checkpointUpdatedAtMs": 1792203224173,
+            "checkpointContentHash": "84fd18c9dceb",
+            "checkpointSubjectFingerprint": {
+              "status": "unknown",
+              "current": {
+                "version": 1,
+                "sha256": "db621183871cd9e997170c72deb467e49b361c34e1365675574225901da1d947"
+              }
+            }
+          }
+        ],
+        "counts": {
+          "ok": 1,
+          "failed": 0
+        },
+        "read": {
+          "schemaVersion": "work-items-get-read-v1",
+          "mode": "complete",
+          "requested": 1,
+          "available": 0,
+          "absent": 0,
+          "unavailable": 0,
+          "receiptComplete": true,
+          "budgetMs": 30000,
+          "elapsedMs": 1,
+          "baseReadMaxMs": 0,
+          "enrichmentMaxMs": 1,
+          "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+        },
+        "receipt": [
+          {
+            "id": "WI-1",
+            "delivered": true
+          }
+        ],
+        "__checksOnly": true
+      }
+    },
+    "exactReadback": true,
+    "remainingWaits": []
+  },
+  "deadlineHttpElapsedMs": 30014.875631000003,
+  "recoveredHttpElapsedMs": 15.19205700000748,
+  "diagnosticStages": [
+    "selected-http-wait",
+    "http-deadline-returned",
+    "post-rollback",
+    "http-recovered",
+    "direct-readback-pending",
+    "direct-readback-settled"
+  ],
+  "holderAfterRollback": {
+    "pid": 2366823,
+    "state": "idle",
+    "xactStart": null,
+    "queryStart": "2026-10-16 22:14:14.283666-04",
+    "waitEventType": "Client",
+    "waitEvent": "ClientRead",
+    "blockingPids": [],
+    "query": "ROLLBACK"
+  },
+  "postRollbackLocks": [],
+  "lifecycleEnded": {
+    "kind": "isolated-runtime-end",
+    "childPid": 2294005,
+    "exitCode": 0,
+    "signal": null,
+    "runtimeRemoved": true,
+    "pgDataRemoved": true,
+    "observedAt": "2026-10-17T02:14:16.393Z"
+  },
+  "scope": "Fresh deadline proof after cancellation and PG57014 shared-fixture edits. Prior20261017T012144Z proof preserved. Private current-build preparation only; no historical6657 root-cause resolution or full deployed acceptance/shipment claim."
+}

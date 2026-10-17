@@ -1365,6 +1365,24 @@ describe('wedged-vs-down detection', () => {
     }
   });
 
+  it('does not infer load or listener state from an indeterminate preflight and failed HTTP fetch', async () => {
+    const res = await probeEndpoint(
+      { name: 'operator', url: 'http://127.0.0.1:1/', timeoutMs: 50 },
+      50,
+      async () => ({ sockets: [socket({ acceptQueue: { pending: 0, backlog: 511 } })] }),
+      async () => null,
+      async () => 'indeterminate',
+    );
+
+    expect(res.up).toBe(false);
+    expect(res.wedged).toBe(false);
+    expect(res.acceptQueue).toEqual({ pending: 0, backlog: 511 });
+    expect(res.note).toContain('TCP preflight timed out without a connect or refusal result');
+    expect(res.note).toContain('follow-up HTTP fetch also failed');
+    expect(res.note).toContain('could not determine why');
+    expect(res.note).not.toMatch(/under load|likely|genuinely down|event-loop lag/i);
+  });
+
   it('escalates a wedge under its OWN watchdog key, not merged into the generic down signal', () => {
     // Detection here happens in a DIFFERENT process from the wedged one (:3070
     // probing :3170) — which is the whole point, since an in-process guard rides

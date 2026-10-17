@@ -10,7 +10,7 @@
  *                        leave this install. SAFE to trim by age.
  *   • bloat-queue      — `sync:'none'` queue table whose logical delete does NOT
  *                        return disk (substrate_outbox, audit R1) → trim + a
- *                        VACUUM FULL reclaim (coordinated via the db:migrate
+ *                        VACUUM FULL reclaim (coordinated via the db-schema
  *                        resource lock).
  *   • federated        — `sync:'git'|'peer-log'` tables that peers see. Trimming
  *                        changes shared state → surfaced READ-ONLY with a warning;

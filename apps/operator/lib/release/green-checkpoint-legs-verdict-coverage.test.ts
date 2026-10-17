@@ -32,6 +32,10 @@ import { join, dirname } from 'node:path';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
+import { pathToFileURL } from 'node:url';
+import { createFrozenCandidateRepairQueue, markFrozenRepairAdmitted } from '@papercusp/operator-core/lib/release/frozen-candidate-repair-queue';
+import { withMeasuredLegSubjects, withRepairManifest } from '@papercusp/operator-core/lib/release/repair-manifest';
+import { readGateCandidateFailures } from '@papercusp/operator-core/lib/gate-candidate-failures';
 import {
   runPostSuiteLegs,
   isRerunnableGateEntry,
@@ -84,6 +88,39 @@ function legEntries(legs: Awaited<ReturnType<typeof runLegs>>['legs']) {
 }
 
 describe('green-checkpoint post-suite legs — verdict coverage', () => {
+  it('P036: a seeded real lint violation survives output truncation into manifest, admission and named per-leg evidence', async () => {
+    const file = 'packages/operator-core/lib/seeded-violation.test.ts';
+    const { findMockCastEscapesInText } = await import(pathToFileURL(join(ROOT, 'scripts/check-mock-cast-escape.mjs')).href);
+    const findings = findMockCastEscapesInText('vi.mocked(fn).mockResolvedValue({} as never);', file);
+    expect(findings).toHaveLength(1);
+    const id = 'lint:mock-cast-escape';
+    const exec: CheckpointExec = async (cmd, args) => {
+      if (cmd === 'git') return { code: 1, stdout: '', stderr: '' };
+      return npmScriptOf(cmd, args) === id
+        ? { code: 1, stdout: `${file}:1: mock cast escape\n${'generic trailer\n'.repeat(600)}`, stderr: '' }
+        : ok;
+    };
+    const legs = await runPostSuiteLegs(ROOT, process.env, exec, '@papercusp/operator-vite', {
+      identity: { candidate: 'a'.repeat(40), headAtStart: 'a'.repeat(40), runId: 'seeded-lint' },
+    });
+    const leg = legs.records.find((record) => record.id === id)!;
+    expect(leg.status).toBe('failed');
+    expect(leg.executionIdentity?.result.output).not.toContain(file);
+    expect(leg.subjectPaths).toEqual([file]);
+    const head = 'a'.repeat(40);
+    const queue = createFrozenCandidateRepairQueue({ candidate: head, base: null, nowMs: 1,
+      failingTests: [id], signature: [{ id, kind: 'lint-leg', recipe: `npm run ${id}` }],
+    });
+    const measured = withMeasuredLegSubjects(queue, head, legs.records, 2);
+    const persisted = withRepairManifest(measured, 3).queue;
+    expect(persisted.manifest.rows.find((row) => row.legId === id)).toMatchObject({ subjectPaths: [file], admitCommand: expect.stringContaining(file) });
+    const reading = await readGateCandidateFailures({ candidateSha: null, repairHeadSha: head, root: ROOT, queueLegs: persisted.legs });
+    expect(reading.nonTestLegs.perLeg.map((row) => row.id)).toContain(id);
+    const admitted = markFrozenRepairAdmitted(persisted, { atMs: 4, actor: 'test-fixer', source: { ref: 'staging', sha: 'b'.repeat(40) },
+      fromRepairHead: head, toRepairHead: 'c'.repeat(40), paths: [file], unchanged: [], blobs: { [file]: 'd'.repeat(40) },
+    });
+    expect(withRepairManifest(admitted, 5).manifest.rows.find((row) => row.legId === id)?.status.kind).toBe('admitted');
+  });
   it('runs a discoverable set of npm-script legs on the happy path', async () => {
     const { legs, invokedScripts } = await runLegs(null);
     // Sanity: the chain really ran (a zero-leg run would make every assertion below vacuous

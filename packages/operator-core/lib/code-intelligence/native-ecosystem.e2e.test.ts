@@ -44,12 +44,45 @@ function nativeFixtureFailureDiagnostic(
     })),
   };
   return `${label} child exit=${JSON.stringify({ code: result.code, signal: result.signal, timing: timingSummary })}\n` +
+    `primary child failure:\n${result.failureOutput}\n` +
     `child output tail:\n${childOutput.slice(-4_000)}`;
 }
 
-describe('native P018 private operator CLI incident claim and resume', () => {
-  it('carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun', async () => {
+async function privateNativeJourney(mode: 'incident' | 'task-brief' | 'first-touch' | 'grep') {
     const root = resolve(import.meta.dirname, '../../../..');
+    const sourcePaths = ['packages/operator-core/lib/code-intelligence/push-channel.ts',
+      'packages/operator-core/lib/code-intelligence/push-snapshot.ts',
+      'packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts',
+      'packages/operator-core/lib/edit-attribution.ts',
+      'apps/operator/scripts/hooks/inject/core.mjs',
+      'apps/operator/scripts/hooks/inject/index.mjs',
+      'apps/operator/scripts/hooks/inject/ports.mjs',
+      'apps/operator/scripts/hooks/inject/adapters/codex.mjs',
+      'apps/operator/scripts/hooks/inject/delivery-ledger.mjs',
+      'packages/operator-core/lib/desktop-install/papercusp-files.ts',
+      'packages/operator-core/lib/desktop-install/install-provenance.ts',
+      'apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs',
+      'scripts/check-required-field-strands.mjs',
+      'scripts/check-behavioural-strands.mjs',
+      'packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts',
+      'packages/operator-core/lib/code-intelligence/task-brief.ts',
+      'packages/operator-core/lib/code-intelligence/packer-facade.ts',
+      'packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.ts',
+      'packages/operator-core/lib/agent-tools/coordination/tools/orient.ts',
+      'packages/operator-core/lib/agent-tools/work_items/complete.ts'];
+    const sourceHashes = () => Object.fromEntries(sourcePaths.map(path =>
+      [path, createHash('sha256').update(readFileSync(join(root, path))).digest('hex')]));
+    const beforeHashes = sourceHashes();
+    // Native Node children execute committed source under the inherited guard.
+    // Refuse before bundling/allocating PG if their fixture would be substituted.
+    const fixturePath = 'packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts';
+    const fixtureBlob = spawnSync('git', ['show', `HEAD:${fixturePath}`], {
+      cwd: root, encoding: 'buffer', timeout: 10_000,
+    });
+    expect(fixtureBlob.status, 'Native fixture must be committed before its guarded child can run').toBe(0);
+    expect(createHash('sha256').update(fixtureBlob.stdout).digest('hex'),
+      'Native fixture differs from HEAD; let git-sync commit it before replay (the child would substitute old assertions)')
+      .toBe(beforeHashes[fixturePath]);
     // Prepare the maintained ESM handler artifact before allocating private PG.
     // A direct tsx import of apps/operator's CommonJS entry is intentionally
     // refused by the committed-source guard.
@@ -70,7 +103,7 @@ describe('native P018 private operator CLI incident claim and resume', () => {
         '--isolated-runtime=operator-api', '--', process.execPath,
         ...scopedNativeFixtureArgs(new URL('./__fixtures__/incident-api-client.ts', import.meta.url).href,
           'runNativeIncidentApi', [join(homedir(), '.papercusp/vendor/repomix'),
-            join(homedir(), '.papercusp/vendor/lsp'), handlerPath, handlerHash])], {
+            join(homedir(), '.papercusp/vendor/lsp'), handlerPath, handlerHash, mode])], {
         cwd: root, env: { ...process.env, TMPDIR: '/dev/shm' }, timeoutMs: 180_000,
         onOutput: (text, timing) => {
           const lines = (pendingStage + text).split('\n');
@@ -82,15 +115,79 @@ describe('native P018 private operator CLI incident claim and resume', () => {
         },
       });
     expect(result.code, nativeFixtureFailureDiagnostic('Private fixture', result)).toBe(0);
-    const line = result.output.split('\n').find(row => row.startsWith('NATIVE_INCIDENT_API_PROOF='));
+    const prefix = mode === 'incident' ? 'NATIVE_INCIDENT_API_PROOF='
+      : mode === 'first-touch' ? 'NATIVE_FIRST_TOUCH_API_PROOF='
+      : mode === 'grep' ? 'NATIVE_GREP_API_PROOF=' : 'NATIVE_TASK_BRIEF_API_PROOF=';
+    const line = result.output.split('\n').find(row => row.startsWith(prefix));
     expect(line, result.output).toBeDefined();
-    expect(JSON.parse(line!.slice('NATIVE_INCIDENT_API_PROOF='.length))).toMatchObject({
+    const proof = JSON.parse(line!.slice(prefix.length));
+    const afterHashes = sourceHashes();
+    expect(afterHashes).toEqual(beforeHashes);
+    writeSync(2, `${mode === 'incident' ? 'NATIVE_P038_RUNTIME_PROOF'
+      : mode === 'first-touch' ? 'NATIVE_P036_RUNTIME_PROOF'
+      : mode === 'grep' ? 'NATIVE_P035_RUNTIME_PROOF' : 'NATIVE_P039_RUNTIME_PROOF'}=${JSON.stringify({ ...proof, beforeHashes, afterHashes })}\n`);
+    return proof;
+    } finally { rmSync(artifactRoot, { recursive: true, force: true }); }
+}
+
+describe('native P035 private operator installed grep answer', () => {
+  it('lets real rg finish, supplies the resolved alias caller and stays quiet for an unresolved symbol', async () => {
+    const proof = await privateNativeJourney('grep');
+    expect(proof).toMatchObject({ transport: 'real-cli-http', duplicateSuppressed: true,
+      unresolvedSuppressed: true, shell: { status: 0, stdout: expect.stringContaining('firstTouchTarget') },
+      ledger: { subject: 'firstTouchTarget' },
+      installed: { nodeOptions: '', envelope: { hookSpecificOutput: {
+        hookEventName: 'PostToolUse', additionalContext: expect.stringContaining('Code intelligence (grep)') } } },
+      scope: expect.stringContaining('no live Codex model session'),
+    });
+  }, 120_000 + 180_000 + 20_000);
+});
+
+describe('native P036 private operator installed first-touch Read', () => {
+  it('delivers the snapshot brief through fresh installed hook processes and suppresses a second Read', async () => {
+    const proof = await privateNativeJourney('first-touch');
+    expect(proof).toMatchObject({ transport: 'real-cli-http', readPath: 'a-target.ts',
+      duplicateSuppressed: true, ledger: { subject: 'a-target.ts' },
+      deliveryBoundary: 'installed Codex dispatcher/native PostToolUse event to stdout context envelope',
+      installed: { nodeOptions: '', processes: expect.any(Number),
+        envelope: { hookSpecificOutput: { hookEventName: 'PostToolUse',
+          additionalContext: expect.stringContaining('Code intelligence (first-touch)') } } },
+      scope: expect.stringContaining('no live Codex model session'),
+    });
+  }, 120_000 + 180_000 + 20_000);
+});
+
+describe('native P018 private operator CLI incident claim and resume', () => {
+  it('carries an actual failed assertion and compiler candidate, then clears the incident after a passing rerun', async () => {
+    const proof = await privateNativeJourney('incident');
+    expect(proof).toMatchObject({
       transport: 'real-cli-http', failure: 'actual-node-assertion', staticCandidate: true,
       cause: 'unknown', runtimeExecution: 'unmeasured', resume: 'current', repaired: true,
+      push: { duplicateSuppressed: true, attribution: { status: 'measured',
+        recentEdits: [expect.objectContaining({ path: 'a-target.ts', symbols: [{ name: 'incidentTarget', line: 1 }] })] },
+        handlerHash: expect.stringMatching(/^[a-f0-9]{64}$/), observationProducer: 'maintained collector and delivery ledger with controlled before image',
+        deliveryBoundary: 'installed Codex dispatcher/native PostToolUse event to stdout context envelope',
+        installed: { nodeOptions: '', processes: expect.any(Number),
+          envelope: { hookSpecificOutput: { hookEventName: 'PostToolUse',
+            additionalContext: expect.stringContaining('Code intelligence (incident)') } } },
+        scope: expect.stringContaining('private current-source installed dispatcher replay') },
     });
-    } finally { rmSync(artifactRoot, { recursive: true, force: true }); }
   // The build and private journey have separate producer deadlines. The test
   // deadline must allow both plus the maintained process-group exit fence.
+  }, 120_000 + 180_000 + 20_000);
+});
+
+describe('native P039 private operator intent and completion briefs', () => {
+  it('delivers no-claim declare/orient scope and a pre-review receipt without inventing test execution', async () => {
+    const proof = await privateNativeJourney('task-brief');
+    expect(proof).toMatchObject({ transport: 'real-cli-http', noClaimBeforeIntent: true,
+      declare: { status: 'current', scope: { paths: ['a-target.ts', 'b-consumer.ts', 'target.test.ts'] } },
+      orient: { status: 'current' }, heldClaimSuppressed: true,
+      completion: { phase: 'pre-review', status: 'measured', executionCoverage: 'unmeasured',
+        changes: [expect.objectContaining({ file: 'a-target.ts', symbol: 'briefTarget' })],
+        tests: [expect.objectContaining({ path: 'target.test.ts', execution: 'not-recorded-in-bound-run' })],
+        testsWithoutRunEvidence: ['target.test.ts'] }, terminal: true,
+    });
   }, 120_000 + 180_000 + 20_000);
 });
 

@@ -21,6 +21,7 @@ export { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 import { fetchWakeability } from '../coordination/presence-wakeability';
 import { claimSpecSchema, claimSpecReferencesField, positiveIdCohortIds, validateClaimSpec, type ClaimSpec } from '../../scheduler/claim-spec';
+import { claimSpecFilterToClaimablePayloadFilter } from '../../scheduler/claim-spec-payload-filter';
 import type { ClaimFloorAttribution } from '../../work-items';
 import { evaluateGoalFenceGuardForIncumbent } from '../../scheduler/spec-pool-preview';
 
@@ -399,6 +400,7 @@ export async function wakeClaimableAwaitersAfterSpecChange(input: {
   fleet?: string;
   specId?: string | null;
   revision?: number | null;
+  payloadFilter?: unknown;
 }): Promise<{ woken: number; warning?: string }> {
   try {
     const subscriberIds = input.fleet
@@ -410,6 +412,7 @@ export async function wakeClaimableAwaitersAfterSpecChange(input: {
         subscriberIds,
         specId: input.specId,
         revision: input.revision,
+        ...(input.payloadFilter !== undefined ? { payloadFilter: input.payloadFilter } : {}),
       }),
     };
   } catch (error) {
@@ -419,6 +422,23 @@ export async function wakeClaimableAwaitersAfterSpecChange(input: {
       warning: `claim-spec revision stored, but parked claimable awaiters could not be woken: ${detail}`,
     };
   }
+}
+
+/**
+ * Reuse scheduler:get_next's conservative claimable-payload derivation when a
+ * replacement spec refreshes a member's standing wake. The harness predicate is
+ * payload-only context, so it remains safe even though claim specs cannot filter
+ * on that field directly.
+ */
+function claimablePayloadFilterForSpec(spec: ClaimSpec | undefined, harness?: string | null): unknown | undefined {
+  const derived = spec ? claimSpecFilterToClaimablePayloadFilter(spec.view.filter) : undefined;
+  if (!harness) return derived;
+  return {
+    all: [
+      { harness: { equals: harness } },
+      ...(derived ? [derived] : []),
+    ],
+  };
 }
 
 export default defineTool({
@@ -516,6 +536,8 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
+    const resolvedHarness = resolveClaimSpecPotSlug(args.harness, ctxHarnessRaw);
     // EI-12830: CLEAR path — delete the target's per-bee (or fleet-sentinel) row so
     // it falls back to fleet inheritance (bee → fleet → default). No spec to validate
     // and no admission preview; the store's DELETE tombstones any hive-federated row.
@@ -533,6 +555,7 @@ export default defineTool({
             fleet: fleetSlug,
             specId: null,
             revision: null,
+            payloadFilter: claimablePayloadFilterForSpec(undefined, resolvedHarness),
           })
         : { woken: 0 };
       return {
@@ -544,8 +567,6 @@ export default defineTool({
         },
       };
     }
-    const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
-    const resolvedHarness = resolveClaimSpecPotSlug(args.harness, ctxHarnessRaw);
     // Fleet target (P-002): validate the fleet exists (mirrors WI-1408 — a typo'd slug
     // must fail loud, not store a spec no member will ever inherit), then store under
     // the sentinel key. Membership-spec resolution happens bee-side in getClaimSpec.
@@ -588,6 +609,7 @@ export default defineTool({
       const wake = res.ok && res.spec
         ? await wakeClaimableAwaitersAfterSpecChange({
             cupId: targetBeeId, fleet: args.fleet?.trim(), specId: res.spec.specId, revision: res.revision ?? null,
+            payloadFilter: claimablePayloadFilterForSpec(res.spec, resolvedHarness),
           })
         : { woken: 0 };
       return { data: {
@@ -772,6 +794,7 @@ export default defineTool({
           fleet: args.fleet?.trim(),
           specId: validated.spec.specId,
           revision: res.revision ?? null,
+          payloadFilter: claimablePayloadFilterForSpec(validated.spec, resolvedHarness),
         })
       : { woken: 0 };
 

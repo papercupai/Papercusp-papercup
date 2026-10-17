@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { closeSync, existsSync, openSync, unlinkSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createTextCollector } from './child-output';
 import { controlPlaneTempCandidates } from './control-plane-temp.mjs';
 
 /**
@@ -72,7 +73,12 @@ export function probeTransientScopeSupport({
         '--property=RuntimeMaxSec=5', '--property=TimeoutStopSec=1', '--', '/usr/bin/true',
       ], { env, stdio: ['ignore', 'ignore', 'pipe'] });
       let stderr = '';
-      child.stderr?.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-512); });
+      createTextCollector(child.stderr, {
+        retainText: false,
+        onDecodedText(text) {
+          stderr = (stderr + text).slice(-512);
+        },
+      });
       timer = setTimeout(() => {
         try { child.kill('SIGKILL'); } catch { /* already gone */ }
         done({ ok: false, reason: 'systemd-run probe timed out' });

@@ -11,6 +11,8 @@ import gradeIdea from './scout/grade-idea';
 import repairQueue from './release/repair-queue';
 import scorecardsEmit from './scorecards/emit';
 import workItemsCreate from './work_items/create';
+import workItemsSetBlocker from './work_items/set_blocker';
+import workItemsCheckpoint from './work_items/checkpoint';
 import codeRun from './code/run';
 import testingRun, { testingRunAbortCompletionReceipt } from './testing/run';
 import docsAuthor from './docs/author';
@@ -19,6 +21,9 @@ import coordDispatch from './coordination/tools/dispatch';
 import agentReview from './improvements/agent-review';
 import storagePrune from './storage/prune';
 import bindSpecEvidence from './plans/bind-spec-evidence';
+import plansSetSpecs, { SET_SPECS_MAX_CONCURRENCY, setSpecsAbortCompletionReceipt } from './plans/set-specs';
+import buildTypecheck, { buildTypecheckAbortCompletionReceipt } from './build/typecheck';
+import { bulkRunReport } from './inbox/bulk-run';
 
 /**
  * WI-10005670 recurrence guard — the commit-unknown window.
@@ -56,6 +61,10 @@ const LATE_RETURN_MUTATORS = {
   'docs:author': docsAuthor,
   // WI-10005718: the INSERT precedes the response; a late return lost the id + downgrade notice.
   'work_items:create': workItemsCreate,
+  // EI-25996559668652955: a completed blocker mutation exceeded its dispatch deadline after persisting.
+  'work_items:set_blocker': workItemsSetBlocker,
+  // EI-26067444415170093: checkpoint writes can commit before the verify/advisory tail returns.
+  'work_items:checkpoint': workItemsCheckpoint,
   // EI-25288245178425318: a delivered coord:send must expose its persisted message id after a late return.
   'coord:send': coordSend,
   // EI-25922563546988521: dispatch must receipt only proven message and assignment effects.
@@ -66,6 +75,12 @@ const LATE_RETURN_MUTATORS = {
   'storage:prune': storagePrune,
   // EI-25965568135498194: bind can return after dispatch aborts with durable evidence rows.
   'plans:bind-spec-evidence': bindSpecEvidence,
+  // EI-26072621145526647: bulk clause writes can finish after dispatch aborts with revisions committed.
+  'plans:set-specs': plansSetSpecs,
+  // EI-25833565319673625: the long compiler tail needs an attempt receipt so a late verdict is not retried blindly.
+  'build:typecheck': buildTypecheck,
+  // EI-26207329377923256: a late report must name its exact updated run rows.
+  'inbox:bulk-run-report': bulkRunReport,
 } as const;
 
 /** The population check, factored so the calibration control below can run the same code. */
@@ -85,6 +100,44 @@ describe('late-return mutating tools declare an abortCompletionReceipt (WI-10005
     for (const [name, tool] of Object.entries(LATE_RETURN_MUTATORS)) {
       expect(tool.name).toBe(name);
     }
+  });
+
+  it('inbox:bulk-run-report identifies partial writes and explicit no-write results', () => {
+    const receipt = bulkRunReport.abortCompletionReceipt;
+    expect(receipt).toBeTypeOf('function');
+    const attempt = { callId: 'bulk-report-call-1', toolName: 'inbox:bulk-run-report' };
+    const result = (payload: unknown) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    }) as ToolResult;
+
+    expect(receipt!({}, result({
+      ok: false,
+      runId: 'run-1',
+      wrote: 2,
+      updatedItemIds: ['item-1', 'item-2'],
+    }), attempt)).toMatchObject({
+      status: 'recorded',
+      effectRef: 'inbox-bulk-run-report:bulk-report-call-1:run-1:items:item-1,item-2',
+      diagnostics: { runId: 'run-1', wrote: 2, updatedItemIds: ['item-1', 'item-2'] },
+    });
+
+    expect(receipt!({}, result({
+      ok: false,
+      error: 'no_active_run',
+      runId: null,
+      wrote: 0,
+      updatedItemIds: [],
+    }), attempt)).toMatchObject({ status: 'not-recorded' });
+
+    expect(receipt!({}, result({
+      ok: true,
+      runId: 'run-1',
+      wrote: 1,
+      updatedItemIds: [],
+    }), attempt)).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['missing-report-write-evidence'],
+    });
   });
 
   it('testing:run distinguishes completed verdicts, durable recovery, and unknown outcomes', () => {
@@ -128,6 +181,32 @@ describe('late-return mutating tools declare an abortCompletionReceipt (WI-10005
       detachedRunId: 'run-undurable',
       detachedDurable: false,
     }), attempt)).toMatchObject({ status: 'recovery-incomplete' });
+  });
+
+  it('build:typecheck distinguishes a completed verdict, a timeout, and a refusal', () => {
+    const attempt = { callId: 'typecheck-call-coverage', toolName: 'build:typecheck' };
+    const result = (payload: unknown) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify({ data: payload }) }],
+    }) as ToolResult;
+
+    expect(buildTypecheckAbortCompletionReceipt(
+      {},
+      result({ ok: true, project: 'packages/operator-core', errorCount: 0 }),
+      attempt,
+    )).toMatchObject({
+      status: 'recorded',
+      effectRef: 'build-typecheck:typecheck-call-coverage:packages/operator-core',
+    });
+    expect(buildTypecheckAbortCompletionReceipt(
+      {},
+      result({ ok: false, error: 'timeout', project: 'packages/operator-core' }),
+      attempt,
+    )).toMatchObject({ status: 'recovery-incomplete', failures: ['typecheck-timeout'] });
+    expect(buildTypecheckAbortCompletionReceipt(
+      {},
+      result({ ok: false, error: 'scope_requires_files' }),
+      attempt,
+    )).toMatchObject({ status: 'not-recorded' });
   });
 
   it('storage:prune reports the effect or fails closed when an aborted attempt is unclear', () => {
@@ -210,6 +289,50 @@ describe('late-return mutating tools declare an abortCompletionReceipt (WI-10005
     }), attempt)).toMatchObject({
       status: 'recovery-incomplete',
       failures: ['missing-landed-evidence-id'],
+    });
+  });
+
+  it('plans:set-specs reports committed clause revisions and fails closed on incomplete rows', () => {
+    expect(plansSetSpecs.abortCompletionReceipt).toBe(setSpecsAbortCompletionReceipt);
+    expect(SET_SPECS_MAX_CONCURRENCY).toBe(4);
+    const attempt = { callId: 'set-specs-call-1', toolName: 'plans:set-specs' };
+    const result = (payload: unknown) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify({ data: payload }) }],
+    }) as ToolResult;
+    const receipt = plansSetSpecs.abortCompletionReceipt!;
+
+    expect(receipt({}, result({
+      ok: false,
+      results: [
+        { ok: true, slug: 'plan', specId: 'SPEC-B', status: 'revised', revision: 3 },
+        { ok: false, slug: 'plan', specId: 'SPEC-C', error: 'conflict' },
+        { ok: true, slug: 'plan', specId: 'SPEC-A', status: 'created', revision: 1 },
+      ],
+      counts: { ok: 2, failed: 1 },
+    }), attempt)).toMatchObject({
+      status: 'recorded',
+      effectRef: 'plans-set-specs:set-specs-call-1:revisions:SPEC-A@1,SPEC-B@3',
+      diagnostics: {
+        revisions: [
+          { specId: 'SPEC-A', revision: 1, status: 'created' },
+          { specId: 'SPEC-B', revision: 3, status: 'revised' },
+        ],
+      },
+    });
+
+    expect(receipt({}, result({
+      ok: false,
+      results: [{ ok: false, slug: 'plan', specId: 'SPEC-C', error: 'conflict' }],
+      counts: { ok: 0, failed: 1 },
+    }), attempt)).toMatchObject({ status: 'not-recorded' });
+
+    expect(setSpecsAbortCompletionReceipt({}, result({
+      ok: true,
+      results: [{ ok: true, slug: 'plan', specId: 'SPEC-A', status: 'revised' }],
+      counts: { ok: 1, failed: 0 },
+    }), attempt)).toMatchObject({
+      status: 'recovery-incomplete',
+      failures: ['missing-landed-spec-revision'],
     });
   });
 });

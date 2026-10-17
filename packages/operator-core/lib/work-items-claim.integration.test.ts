@@ -1174,6 +1174,19 @@ describe('work_items observe — `rd` (D-004, real PG)', () => {
     expect(await wi.observeWorkItem('F-missing', { harness: H })).toBeNull();
   });
 
+  it('reports terminal rows as unavailable while an unclaimed open row remains available (WI-6554700010009219)', async () => {
+    await seedIssue('WI-done-observe', { status: 'done' });
+    await seedFeature('F-done-observe', { status: 'done' });
+    await seedIssue('WI-open-observe', { status: 'open' });
+
+    expect(await wi.observeWorkItem('WI-done-observe', { harness: H }))
+      .toMatchObject({ available: false, claimedBy: null });
+    expect(await wi.observeWorkItem('F-done-observe', { harness: H }))
+      .toMatchObject({ available: false, claimedBy: null });
+    expect(await wi.observeWorkItem('WI-open-observe', { harness: H }))
+      .toMatchObject({ available: true, claimedBy: null });
+  });
+
   // EI-7841: observe/list historically reported `available: true` for ANY unclaimed
   // row while the claim paths ADDITIONALLY enforce the G2 admission/trust gate
   // (autoPickableWhereSql) for feature-family items — so a remote, un-admitted item

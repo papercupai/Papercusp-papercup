@@ -273,7 +273,7 @@ export function OnboardingConsole() {
   const focusExternal = useCallback(() => {
     // Best-effort, as the raw invoke was: outside a Tauri webview there is no IPC
     // and the binding rejects rather than no-op'ing, so swallow it either way.
-    void commands.focusWindowByTitle(EXTERNAL_CONSOLE_TITLE).catch(() => {
+    void commands.focusWindowByTitle(EXTERNAL_CONSOLE_TITLE, null).catch(() => {
       /* focus is a convenience — never surface a failure here */
     });
   }, []);

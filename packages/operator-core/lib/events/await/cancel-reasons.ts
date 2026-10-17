@@ -44,6 +44,8 @@ export const AWAIT_CANCEL_REASONS = {
   composedRootSettled: 'composed-root-settled',
   /** rebind-identity: the moved await duplicated one the new identity already holds. */
   identityRebound: 'identity-rebound',
+  /** Channel 2 withheld a grading-auditor resume because its exact target lease settled or changed. */
+  gradingAuditNoLongerCurrent: 'grading-audit-no-longer-current',
   /** reclaimDanglingInboxWakeAwaits: the idle reaper found the owner dead. */
   danglingInboxWakeReclaimed: 'dangling-inbox-wake-reclaimed',
 } as const;

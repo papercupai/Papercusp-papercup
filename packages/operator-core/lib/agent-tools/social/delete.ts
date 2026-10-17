@@ -4,6 +4,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getSessionUserOrDefault } from '../../auth';
 import { authorizePersonalAccess } from '../../personal-vault/authorization';
 import { parseSocialPostRef } from '../../capability-verbs/social';
+import { readyProviderRegistry } from '../../integrations/provider-registry';
 import { deleteCanonicalSocialPost, SocialDeleteNotConfirmed } from '../../capability-verbs/social-delete';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
@@ -41,7 +42,7 @@ export default defineTool({
     if (!workspaceId || workspaceId === '*') throw new Error('social_delete_workspace_required');
     // Parse first so an unknown or unverified platform refuses with the
     // registry's reason before any grant or vault work happens.
-    const ref = parseSocialPostRef(args.postId);
+    const ref = parseSocialPostRef(args.postId, await readyProviderRegistry());
     const user = await getSessionUserOrDefault();
     const auth = await authorizePersonalAccess(ctx.tx!, ctx, workspaceId, user.id, [
       `personal:${ref.platform}`,

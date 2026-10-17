@@ -1,0 +1,51 @@
+const [messageRead, loop] = await Promise.all([
+  tools.coord.read({ msg_id: inputs.messageId }),
+  tools.loop.status({}),
+]);
+
+const message = messageRead?.message;
+const fail = (error) => ({
+  ok: false,
+  error,
+  requestedMessageId: inputs.messageId,
+  observedMessageId: message?.msg_id ?? messageRead?.msg_id ?? null,
+});
+
+if (!messageRead?.ok || !messageRead.found || !message) return fail('message-not-found');
+if (message.msg_id !== inputs.messageId) return fail('message-id-mismatch');
+if (!inputs.requesterId || !inputs.leaderId || !inputs.fleetSlug) return fail('live-context-unavailable');
+if (message.from !== inputs.leaderId) return fail('message-not-from-current-leader');
+
+const recipients = Array.isArray(message.to) ? message.to : [];
+const addressedToRequester = recipients.includes(inputs.requesterId);
+const addressedToCurrentFleet = recipients.includes(`@fleet:${inputs.fleetSlug}`);
+if (!addressedToRequester && !addressedToCurrentFleet) return fail('message-not-addressed-to-requester');
+
+const contextSinceMs = Date.parse(inputs.contextSince);
+const messageAtMs = Date.parse(message.ts);
+if (!Number.isFinite(contextSinceMs) || !Number.isFinite(messageAtMs)) return fail('invalid-context-timestamp');
+if (messageAtMs < contextSinceMs) return fail('message-predates-current-context');
+
+const bodyText = typeof message.body === 'string'
+  ? message.body
+  : Array.isArray(message.body)
+    ? message.body.map((section) => typeof section?.text === 'string' ? section.text : '').join('\n')
+    : '';
+if (!(message.summary ?? '').includes(inputs.workItemId) && !bodyText.includes(inputs.workItemId)) {
+  return fail('message-does-not-reference-current-work-item');
+}
+
+return {
+  ok: true,
+  message: {
+    id: message.msg_id,
+    from: message.from,
+    ts: message.ts,
+    summary: message.summary,
+    body: message.body,
+  },
+  owner: inputs.requesterId,
+  fleet: { slug: inputs.fleetSlug, leaderId: inputs.leaderId },
+  workItemId: inputs.workItemId,
+  loopStatus: loop,
+};

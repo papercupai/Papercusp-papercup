@@ -2,10 +2,67 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, symlinkSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildTaskBrief, getClaimTimeTaskBrief, taskIncidentBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
+import * as ts from 'typescript';
+import { buildTaskBrief, getClaimTimeTaskBrief, getIntentTimeTaskBrief, getCompletionTimeBrief, taskIncidentBrief, TASK_BRIEF_BUDGET_MS, TASK_BRIEF_MAX_CHARS, type TaskBriefDeps } from './task-brief';
+import { nativeChangeReport } from './packer-facade';
+import { firstPartyCallers } from './first-party-callers';
 import type { CodeIntelAnswer } from './contracts';
 
 const dirs: string[] = [];
+describe('P039 completion pre-review briefs', () => {
+  const ref = (paths = ['target.ts']) => ({ workspaceId: 'w', harness: 'h', paths });
+  const setup = () => {
+    const root = fixture();
+    writeFileSync(join(root, 'target.ts'), 'export function target() { return 1; }');
+    writeFileSync(join(root, 'target.test.ts'), 'import { target } from "./target"; target();');
+    const report: typeof nativeChangeReport = (args, subject) => nativeChangeReport(args, subject, {
+      exec: async () => ({ stdout: '', stderr: '' }), writeArtifact: async () => 'fixture-artifact',
+      graph: async () => firstPartyCallers({ ts, root, name: subject.symbol, filePath: subject.file,
+        op: 'impact', direction: 'downstream', paths: ['.'], includeInterfaces: true }),
+    });
+    return { root, report, rootResolver: async () => root };
+  };
+  it('uses actual compiler test reach and flags missing bound execution without trusting prose', async () => {
+    const { report, rootResolver } = setup();
+    const brief = await getCompletionTimeBrief(ref(), { root: rootResolver, report, runs: async () => [] });
+    expect(brief.status).toBe('measured'); expect(brief.phase).toBe('pre-review');
+    expect(brief.changes).toEqual([expect.objectContaining({ file: 'target.ts', symbol: 'target' })]);
+    expect(brief.testsWithoutRunEvidence).toContain('target.test.ts');
+    expect(brief.executionCoverage).toBe('unmeasured');
+    expect(JSON.stringify(brief).length).toBeLessThanOrEqual(TASK_BRIEF_MAX_CHARS);
+    const recorded = await getCompletionTimeBrief(ref(), { root: rootResolver, report,
+      runs: async () => [{ path: 'target.test.ts', status: 'pass', runGroupId: 'bound-run' }] });
+    expect(recorded.tests).toContainEqual({ path: 'target.test.ts', execution: 'recorded', status: 'pass', runGroupId: 'bound-run' });
+    expect(recorded.testsWithoutRunEvidence).toEqual([]);
+    expect(recorded.executionCoverage).toBe('unmeasured');
+  });
+  it('keeps unavailable ledger evidence unknown and excludes skipped tests from recorded execution', async () => {
+    const { report, rootResolver } = setup();
+    const unknown = await getCompletionTimeBrief(ref(), { root: rootResolver, report, runs: async () => null });
+    expect(unknown.testsWithoutRunEvidence).toBeNull(); expect(unknown.tests[0]?.execution).toBe('unknown');
+    const skipped = await getCompletionTimeBrief(ref(), { root: rootResolver, report,
+      runs: async () => [{ path: 'target.test.ts', status: 'skip', runGroupId: 'bound-run' }] });
+    expect(skipped.testsWithoutRunEvidence).toContain('target.test.ts');
+  });
+  it('invalidates consequences when the source changes during the ledger read', async () => {
+    const { root, report, rootResolver } = setup();
+    const result = await getCompletionTimeBrief(ref(), { root: rootResolver, report, runs: async () => {
+      writeFileSync(join(root, 'target.ts'), 'export function target() { return 2; }'); return [];
+    } });
+    expect(result).toMatchObject({ status: 'unknown', changes: [], tests: [], testsWithoutRunEvidence: null });
+  });
+  it('never analyzes an escaping source or an unbounded path population', async () => {
+    const { root, report, rootResolver } = setup(); const outside = fixture();
+    writeFileSync(join(outside, 'private.ts'), 'export function privateSource() {}');
+    symlinkSync(join(outside, 'private.ts'), join(root, 'escape.ts'));
+    const spy = vi.fn(report);
+    const result = await getCompletionTimeBrief(ref(['escape.ts', '../private.ts']), { root: rootResolver, report: spy });
+    expect(result.status).toBe('unknown'); expect(spy).not.toHaveBeenCalled();
+    const bounded = await getCompletionTimeBrief(ref(Array.from({ length: 40 }, (_, i) => `${'x'.repeat(210)}${i}.ts`)),
+      { root: async () => null, report: spy });
+    expect(JSON.stringify(bounded).length).toBeLessThanOrEqual(TASK_BRIEF_MAX_CHARS);
+  });
+});
 describe('P018 scoped incident hypotheses', () => {
   it('keeps observed failures and static candidates distinct from proven causation', () => {
     const failures = [{ testRunId: 42, path: 'target.test.ts', status: 'fail' as const, commit: 'a'.repeat(40), logSha256: 'b'.repeat(64) }];
@@ -67,6 +124,30 @@ function depsFor(root: string): TaskBriefDeps {
   };
 }
 describe('P012 bounded scoped task briefs', () => {
+  it('captures explicit no-claim intent scope without inventing a work-item identity', async () => {
+    const root = fixture(); writeFileSync(join(root, 'target.ts'), 'export function target() { return "INTENT_SOURCE"; }');
+    const deps = depsFor(root); deps.hasClaim = vi.fn(async () => false); deps.failures = vi.fn(async () => []);
+    const ref = { owner: 'su-intent', workspaceId: 'w', harness: 'h', intent: 'Inspect target', paths: ['target.ts'] };
+    const first = (await getIntentTimeTaskBrief(ref, deps))!.taskBrief;
+    expect(first.status).toBe('current'); expect(first.files[0]?.path).toBe('target.ts');
+    expect(JSON.stringify(first.excerpts)).toContain('INTENT_SOURCE'); expect(first.incident).toBeUndefined();
+    expect(deps.failures).not.toHaveBeenCalled(); expect(first.recover.tool).toBe('code:pack');
+    const next = (await getIntentTimeTaskBrief({ ...ref, intent: 'Change target' }, deps))!.taskBrief;
+    expect(next.intent?.fingerprint).not.toBe(first.intent?.fingerprint);
+    expect(next.sourceFingerprint).toBe(first.sourceFingerprint);
+    expect(JSON.stringify(first).length).toBeLessThanOrEqual(TASK_BRIEF_MAX_CHARS);
+  });
+  it('suppresses no-claim briefs for held or unreadable ownership and refuses unsafe transient paths', async () => {
+    const deps = depsFor(fixture()); deps.hasClaim = vi.fn(async () => true);
+    const ref = { owner: 'su-intent', workspaceId: 'w', harness: 'h', intent: 'Inspect target', paths: ['target.ts'] };
+    expect(await getIntentTimeTaskBrief(ref, deps)).toBeNull();
+    deps.hasClaim = async () => { throw new Error('unavailable'); };
+    expect(await getIntentTimeTaskBrief(ref, deps)).toBeNull(); expect(deps.root).not.toHaveBeenCalled();
+    deps.hasClaim = async () => false;
+    const result = await getIntentTimeTaskBrief({ ...ref, paths: ['../private.ts', '.env', '**/*'] }, deps);
+    expect(result?.taskBrief.status).toBe('unknown'); expect(deps.pack).not.toHaveBeenCalled();
+    expect(result?.taskBrief.recover.tool).toBe('coord:declare-intent');
+  });
   it('does not infer a root or search when stored task scope is missing', async () => {
     const deps = depsFor(fixture());
     const brief = await buildTaskBrief({ workItem: { id: 'WI-task', harness: 'h' }, workspaceId: 'w' }, deps);

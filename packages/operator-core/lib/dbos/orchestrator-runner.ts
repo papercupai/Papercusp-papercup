@@ -683,6 +683,10 @@ function runChild(
     // that same tree — it inherits the group's pgid). The new group is the child's
     // alone, so it can never signal the operator host (a different group).
     const child = spawn(spawnCommand, spawnArgs, { cwd: projectDir, env, detached: true });
+    // Decode at the stream boundary; decoding each Buffer chunk independently
+    // corrupts multi-byte UTF-8 sequences split by the child stream.
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
     // EI-85: surface the child OS pid so the caller can record it on the nursery
     // row — the reclaim sweep liveness-checks /proc/<pid> rather than blindly
     // reclaiming a stale-heartbeat row whose child is actually still alive. Under
@@ -759,8 +763,7 @@ function runChild(
     // P-008: every emitted chunk is the mid-turn signal — stderr counts too
     // (some backends log progress there while stdout buffers).
     const reportActivity = () => { try { onOutputActivity?.(); } catch { /* best-effort */ } };
-    child.stdout?.on('data', (d) => {
-      const chunk = String(d);
+    child.stdout?.on('data', (chunk: string) => {
       // invoke-once prefixes its own bootstrap/log lines with timestamps. The
       // first non-log stdout chunk is the agent stream; prompt-budget and PG
       // bootstrap output therefore cannot falsely satisfy this guard.
@@ -772,8 +775,7 @@ function runChild(
       reportActivity();
       stdout += chunk;
     });
-    child.stderr?.on('data', (d) => {
-      const chunk = String(d);
+    child.stderr?.on('data', (chunk: string) => {
       // WI-85288: the inner agent CLI's own stdout is NEVER echoed onto this child's
       // stdout — WI-3302 deliberately routes its liveness signal to STDERR instead
       // (`OUTER_ACTIVITY_ECHO_MARKER`, invoke.ts:4160), because downstream consumers

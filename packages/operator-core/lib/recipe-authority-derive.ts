@@ -47,6 +47,8 @@ export type RecipeUnresolvedCause =
   | { kind: 'volatile-coordination-args'; tool: string; keys: string[] }
   /** A recipe embeds a concrete agent owner id that can be retired or replaced between wakes. */
   | { kind: 'volatile-coordination-owner-id'; ownerId: string }
+  /** A recipe reads or mutates a concrete goal whose identity is caller-scoped. */
+  | { kind: 'volatile-goal-reference'; tool: string }
   /** A loop call writes caller-scoped session state whose values cannot be proved reusable. */
   | { kind: 'volatile-session-state'; tool: string }
   /**
@@ -120,6 +122,12 @@ const OPAQUE_TOOLS = new Set(['dev:pgquery', 'capability:bash', 'capability:scri
 // dimension for these caller-scoped mutations, so fail closed instead of
 // treating them as generic recipes.
 const VOLATILE_SESSION_STATE_TOOLS = new Set(['loop:checkpoint', 'loop:arm', 'loop:end']);
+// Goal ids are the subject of the current GOAL-mode run, not a durable recipe
+// binding. A saved `goals:get({ id })` (including an id held in a const) can
+// inspect a different run after the original goal is replaced or retired. The
+// authority model has no goal-ref dimension, so fail closed instead of treating
+// the call as an unbound generic read.
+const GOAL_REFERENCE_KEYS = new Set(['id', 'goalid', 'goalref', 'slug']);
 // Coordination cursors and sender ids describe a momentary conversation, not a
 // reusable lane. A saved recipe carrying one must fail closed: neither the
 // recipe's stable entity refs nor a later authority proof can prove that the
@@ -350,6 +358,20 @@ function inspectCall(
   }
 
   collectArgs(call.tool, call.args, out);
+
+  // `goals:*` calls carry a caller-owned goal identity outside the six durable
+  // authority dimensions. Detect the identity key even when its value is a
+  // variable (`const gid = '…'; goals.get({ id: gid })`): parse-check keeps the
+  // projected object shape, but the generic collector cannot resolve that value.
+  // A missing/dynamic args object is also not safe to recommend because the
+  // goal subject cannot be proved before execution.
+  if (ns === 'goals') {
+    const args = asRecord(call.args);
+    const keys = args ? Object.keys(args).map(normPart) : [];
+    if (call.dynamicArgs || !args || keys.some((key) => GOAL_REFERENCE_KEYS.has(key))) {
+      return { kind: 'volatile-goal-reference', tool: call.tool };
+    }
+  }
 
   // `work_items:claim` still supports the compact positional write form used by
   // Tier-3 prompt encoding: { row: "<id>,<assignee>,<harness>" }. The generic

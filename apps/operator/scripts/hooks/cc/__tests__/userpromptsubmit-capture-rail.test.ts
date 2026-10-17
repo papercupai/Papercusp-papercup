@@ -245,6 +245,18 @@ function captureCalls(): ToolCall[] {
 }
 
 describe('userpromptsubmit-provenance.sh — hybrid owner-directive capture rail', () => {
+  it('captures the complete long owner prompt with its original source hash', async () => {
+    writeMachineRow();
+    const prompt = 'x'.repeat(15_999) + '🚀\nKeep the final requirement.\n' + 'é'.repeat(5_000);
+    const ctx = contextOf(await runHook({ prompt, session_id: 'native-session-long' }));
+
+    expect(ctx).toContain('OWNER (interactive)');
+    const captures = captureCalls();
+    expect(captures).toHaveLength(1);
+    expect(captures[0]!.args.verbatim).toBe(prompt);
+    expect(captures[0]!.args.sourceTurnRef).toBe(`native-session-long:${sha256Normalized(prompt)}`);
+  });
+
   it('an OWNER turn makes the hook itself capture the verbatim prompt as an open directive — the session calls nothing', async () => {
     writeMachineRow();
     const prompt = 'please stop the release and roll back to the previous pin';

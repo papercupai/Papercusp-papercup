@@ -15,11 +15,15 @@
  * stripe-subscription-signup-2026-10-01 P-005; receipts:
  * agent-economy-flywheel-2026-08-30 P-046 / D-029 §7 (WI-10004802).
  */
+import { randomUUID } from 'node:crypto';
 import type { HostedPermission, HostedPrincipal } from '../../../auth/hosted-principal';
 import type { HostedBillingStore } from '../../../auth/hosted/billing/billing-store';
 import { logHostedBillingFailure, observeHostedBillingFailure, type HostedBillingFailureObserver } from '../../../auth/hosted/billing/billing-recovery';
 import type { HostedBillingUsageSource } from '../../../auth/hosted/billing/usage-service';
 import type { HostedUsageStatement } from '../../../auth/hosted/billing/usage-statement';
+import { HOSTED_COST_CLASSES, type HostedAllocationOrganization, type HostedAllocationReport,
+  type HostedAllocationAccountingExport, type HostedCostClass, type KnownOrUnknown,
+  type HostedAllocationRequest, type HostedAllocationOutcome } from '../../../auth/hosted/billing/allocation-store';
 import {
   SUBSCRIBED_STATUSES,
   resolveHostedSubscriptionEntitlement,
@@ -38,6 +42,7 @@ export const HOSTED_BILLING_ROUTES = [
   { method: 'POST', path: '/hosted/billing/portal', access: 'authenticated' },
   { method: 'GET', path: '/hosted/billing/receipts', access: 'authenticated' },
   { method: 'GET', path: '/hosted/billing/usage', access: 'authenticated' },
+  { method: 'POST', path: '/hosted/billing/usage', access: 'authenticated' },
   { method: 'POST', path: '/hosted/billing/webhook', access: 'public' },
 ] as const;
 
@@ -47,6 +52,24 @@ export const HOSTED_BILLING_ROUTES = [
  * ledger holds the receipts is the composition's decision.
  */
 export type HostedBillingReceiptSource = (stripeCustomerId: string) => Promise<readonly CustomerReceiptEntry[]>;
+
+/** Server-owned monthly ledger snapshot. Its census covers recorded allocation
+ * costs only; it does not attest that every provider bill has been recorded. */
+export interface HostedBillingAllocationFinance {
+  readonly organization: HostedAllocationOrganization;
+  readonly asOfMs: number;
+  readonly report: HostedAllocationReport;
+  readonly accounting: HostedAllocationAccountingExport;
+}
+export type HostedBillingAllocationSource = (input: Readonly<{
+  organization: HostedAllocationOrganization; month: string; asOfMs: number;
+}>) => Promise<HostedBillingAllocationFinance>;
+
+/** Defines limits only; this seam cannot credit funding or settle provider costs. */
+export type HostedBillingAllocationAdmin = (input: HostedAllocationRequest) => Promise<{
+  readonly organization: HostedAllocationOrganization;
+  readonly result: HostedAllocationOutcome;
+}>;
 
 /** One entry of `GET /hosted/billing/receipts`. */
 export interface HostedBillingReceiptView {
@@ -83,6 +106,8 @@ export interface HostedBillingPlan {
   readonly priceId: string;
   readonly label: string;
   readonly description: string | null;
+  /** Server-authored resource policy, excluded from the public plan list. */
+  readonly entitlementBundle?: import('../../../auth/hosted-entitlement-schema').HostedEntitlementBundle;
 }
 
 /** Everything that exists only once Stripe is configured. */
@@ -108,6 +133,8 @@ export interface HostedBillingRouteDependencies {
   readonly receipts?: HostedBillingReceiptSource;
   /** A server-owned collector/read composition; the request supplies no billing facts. */
   readonly usage?: HostedBillingUsageSource;
+  readonly allocations?: HostedBillingAllocationSource;
+  readonly allocationAdmin?: HostedBillingAllocationAdmin;
   readonly clock?: () => Date;
 }
 
@@ -160,6 +187,59 @@ function usageView(statement: HostedUsageStatement): HostedUsageStatement {
         costSource: revision.costSource, costMicros: revision.costMicros, observedAtMs: revision.observedAtMs,
         ...(revision.costMicrosExact === undefined ? {} : { costMicrosExact: revision.costMicrosExact }),
       })) })),
+  };
+}
+
+type ReportCostClassView = HostedAllocationReport['byCostClass'][HostedCostClass];
+
+/** Copy the public contract at every level, including unknown measurements. */
+function allocationFinanceView(finance: HostedBillingAllocationFinance): HostedBillingAllocationFinance {
+  const measurement = (m: KnownOrUnknown<number>): KnownOrUnknown<number> =>
+    'value' in m ? { value: m.value } : { unknownReason: m.unknownReason };
+  const organization = { controlWorkspaceId: finance.organization.controlWorkspaceId,
+    organizationId: finance.organization.organizationId };
+  return { organization, asOfMs: finance.asOfMs,
+    report: { month: finance.report.month,
+      byCostClass: Object.fromEntries(HOSTED_COST_CLASSES.map((costClass): [HostedCostClass, ReportCostClassView] => {
+        const c = finance.report.byCostClass[costClass]; const f = c.forecast;
+        return [costClass, { committedMicros: c.committedMicros, unreconciledMicros: c.unreconciledMicros,
+          providerFinalMicros: c.providerFinalMicros,
+          allocations: c.allocations.map(a => ({ allocationId: a.allocationId, parentAllocationId: a.parentAllocationId,
+            level: a.level, capMicros: a.capMicros, maxUnreconciledMicros: a.maxUnreconciledMicros,
+            committedMicros: a.committedMicros, unreconciledMicros: a.unreconciledMicros,
+            providerFinalMicros: a.providerFinalMicros, availableMicros: a.availableMicros, openHolds: a.openHolds })),
+          ...(f ? { forecast: { method: f.method, basisMicros: f.basisMicros,
+            ...(f.basisMicrosExact === undefined ? {} : { basisMicrosExact: f.basisMicrosExact }),
+            elapsedMs: f.elapsedMs, periodMs: f.periodMs, projectedConsumptionMicros: f.projectedConsumptionMicros,
+            provisional: f.provisional, unavailableReason: f.unavailableReason, scope: f.scope, evidenceRef: f.evidenceRef } } : {}),
+        }];
+      })) as HostedAllocationReport['byCostClass'],
+      outcomes: finance.report.outcomes.map(o => ({ allocationId: o.allocationId, outcomes: o.outcomes,
+        byState: { accepted: o.byState.accepted, rejected: o.byState.rejected,
+          'rework-requested': o.byState['rework-requested'], unknown: o.byState.unknown },
+        evidenceClasses: [...o.evidenceClasses], acceptedResultCostMicros: o.acceptedResultCostMicros,
+        acceptedWithUnknownCost: o.acceptedWithUnknownCost, costPerAcceptedOutcomeMicros: o.costPerAcceptedOutcomeMicros,
+        costPerAcceptedUnknownReason: o.costPerAcceptedUnknownReason, reviewEffortKnownSeconds: o.reviewEffortKnownSeconds,
+        reviewEffortUnknown: o.reviewEffortUnknown, reworkKnownTotal: o.reworkKnownTotal, reworkUnknown: o.reworkUnknown })),
+    },
+    accounting: { organization: { ...organization }, month: finance.accounting.month, currency: finance.accounting.currency,
+      byCostClass: Object.fromEntries(HOSTED_COST_CLASSES.map(costClass => {
+        const c = finance.accounting.byCostClass[costClass];
+        return [costClass, { reservations: c.reservations, pendingProviderFinal: c.pendingProviderFinal,
+          committedMicros: c.committedMicros, unreconciledMicros: c.unreconciledMicros, providerFinalMicros: c.providerFinalMicros }];
+      })) as HostedAllocationAccountingExport['byCostClass'],
+      rows: finance.accounting.rows.map(r => ({ reservationId: r.reservationId, allocationId: r.allocationId,
+        allocationPath: [...r.allocationPath], costClass: r.costClass, revision: r.revision, observedAtMs: r.observedAtMs,
+        costSource: r.costSource, maximumCostMicros: r.maximumCostMicros,
+        observedCostMicros: measurement(r.observedCostMicros), providerFinalCostMicros: measurement(r.providerFinalCostMicros),
+        committedMicros: r.committedMicros, unreconciledMicros: r.unreconciledMicros, outcomeIds: [...r.outcomeIds] })),
+      outcomes: finance.accounting.outcomes.map(o => ({ outcomeId: o.outcomeId, revision: o.revision,
+        allocationId: o.allocationId, workflowRef: o.workflowRef, evidenceClass: o.evidenceClass,
+        resultState: o.resultState, resultUnknownReason: o.resultUnknownReason, reservationIds: [...o.reservationIds],
+        resultCostMicros: measurement(o.resultCostMicros), reviewEffortSeconds: measurement(o.reviewEffortSeconds),
+        reworkCount: measurement(o.reworkCount) })),
+      gaps: finance.accounting.gaps.map(g => ({ kind: g.kind, ref: g.ref, reason: g.reason })),
+    },
   };
 }
 
@@ -392,7 +472,10 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
       const organizationId = organizationOf(ctx);
       if (!organizationId || !ctx.principal) return jsonError('organization_required', 'An active organization is required.', 403);
       const parameters = new URL(req.url).searchParams;
-      if ([...parameters.keys()].some(key => !['month', 'workspaceId'].includes(key))
+      const allocations = parameters.get('view') === 'allocations';
+      if ((parameters.has('view') && !allocations)
+          || [...parameters.keys()].some(key => !(allocations ? ['month', 'view'] : ['month', 'workspaceId']).includes(key))
+          || parameters.getAll('view').length > 1
           || parameters.getAll('month').length > 1 || parameters.getAll('workspaceId').length > 1) {
         return jsonError('invalid_usage_filter', 'Choose one month and an optional workspace.', 400);
       }
@@ -403,6 +486,25 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)
           || (customerWorkspaceId !== null && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(customerWorkspaceId))) {
         return jsonError('invalid_usage_filter', 'Choose a valid month and workspace.', 400);
+      }
+      if (allocations) {
+        if (!deps.allocations) return jsonError('usage_unavailable', 'Usage is not configured.', 503);
+        const organization = Object.freeze({ controlWorkspaceId: ctx.principal.workspaceId, organizationId });
+        try {
+          const finance = await deps.allocations(Object.freeze({ organization, month, asOfMs: now }));
+          if (finance.organization.controlWorkspaceId !== organization.controlWorkspaceId
+              || finance.organization.organizationId !== organizationId || finance.asOfMs !== now
+              || finance.report.month !== month || finance.accounting.month !== month
+              || finance.accounting.organization.controlWorkspaceId !== organization.controlWorkspaceId
+              || finance.accounting.organization.organizationId !== organizationId
+              || HOSTED_COST_CLASSES.some(c => finance.report.byCostClass[c].forecast?.scope !== 'recorded-allocation-costs')) {
+            return jsonError('usage_unavailable', 'Usage could not be read.', 503);
+          }
+          return Response.json({ ok: true, allocations: allocationFinanceView(finance) },
+            { headers: { 'cache-control': 'no-store' } });
+        } catch {
+          return jsonError('usage_unavailable', 'Usage could not be read.', 503);
+        }
       }
       if (!deps.usage) return jsonError('usage_unavailable', 'Usage is not configured.', 503);
       const scope = Object.freeze({ controlWorkspaceId: ctx.principal.workspaceId, organizationId, customerWorkspaceId });
@@ -420,5 +522,71 @@ export function createHostedBillingRoutes(deps: HostedBillingRouteDependencies):
     },
   };
 
-  return [plans, subscription, checkout, portal, receipts, usage, webhook];
+  const allocationAdmin: HostedBillingRoute = {
+    method: 'POST', path: '/hosted/billing/usage', auth: { capabilities: ['billing:manage'] },
+    async handler(req, ctx) {
+      if (!sameOrigin(req)) return jsonError('cross_origin_blocked', 'The request origin is not allowed.', 403);
+      const organizationId = organizationOf(ctx);
+      if (!organizationId || !ctx.principal) return jsonError('organization_required', 'An active organization is required.', 403);
+      const parameters = new URL(req.url).searchParams;
+      if (parameters.size !== 1 || parameters.get('view') !== 'allocations') {
+        return jsonError('invalid_allocation', 'Choose the allocation view.', 400);
+      }
+      if (req.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() !== 'application/json') {
+        return jsonError('invalid_allocation', 'Send an allocation as JSON.', 400);
+      }
+      const body: unknown = await req.json().catch(() => null);
+      const keys = ['allocationId', 'parentAllocationId', 'level', 'costClass', 'month', 'capMicros', 'maxUnreconciledMicros'];
+      const id = (value: unknown): value is string => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(value);
+      if (!body || typeof body !== 'object' || Array.isArray(body)
+          || Object.keys(body).length !== keys.length || Object.keys(body).some(key => !keys.includes(key))) {
+        return jsonError('invalid_allocation', 'Send only the allocation fields.', 400);
+      }
+      const b = body as Record<string, unknown>;
+      if (!id(b.allocationId) || !(b.parentAllocationId === null || id(b.parentAllocationId))
+          || !['organization', 'department', 'project'].includes(b.level as string)
+          || !HOSTED_COST_CLASSES.includes(b.costClass as HostedCostClass)
+          || typeof b.month !== 'string' || !/^\d{4}-(0[1-9]|1[0-2])$/.test(b.month)
+          || !Number.isSafeInteger(b.capMicros) || (b.capMicros as number) < 0
+          || !Number.isSafeInteger(b.maxUnreconciledMicros) || (b.maxUnreconciledMicros as number) < 0
+          || (b.maxUnreconciledMicros as number) > (b.capMicros as number)
+          || (b.level === 'organization') !== (b.parentAllocationId === null)
+          || b.parentAllocationId === b.allocationId) {
+        return jsonError('invalid_allocation', 'Choose valid allocation limits and hierarchy.', 400);
+      }
+      if (!deps.allocationAdmin) return jsonError('usage_unavailable', 'Allocation limits are not configured.', 503);
+      const organization = Object.freeze({ controlWorkspaceId: ctx.principal.workspaceId, organizationId });
+      const input: HostedAllocationRequest = Object.freeze({ organization, allocationId: b.allocationId,
+        parentAllocationId: b.parentAllocationId as string | null, level: b.level as HostedAllocationRequest['level'],
+        costClass: b.costClass as HostedCostClass, month: b.month, capMicros: b.capMicros as number,
+        maxUnreconciledMicros: b.maxUnreconciledMicros as number, recordedBy: ctx.principal.userId,
+        evidenceRef: `hosted-billing-allocation:${randomUUID()}` });
+      try {
+        const reply = await deps.allocationAdmin(input);
+        if (reply.organization.controlWorkspaceId !== organization.controlWorkspaceId
+            || reply.organization.organizationId !== organizationId) throw new Error('allocation scope mismatch');
+        const r = reply.result;
+        if (r.outcome === 'conflict' || r.outcome === 'refused') {
+          const reasons = ['immutable-allocation-fields', 'organization-root-exists', 'parent-missing', 'level-order',
+            'children-exceed-parent', 'cap-below-children', 'cap-below-committed'];
+          if (!reasons.includes(r.reason)) throw new Error('unknown allocation refusal');
+          return jsonError('allocation_refused', r.reason, 409);
+        }
+        if (!['created', 'revised', 'duplicate'].includes(r.outcome)) throw new Error('unknown allocation result');
+        const a = r.allocation;
+        if (!a || a.allocationId !== input.allocationId || a.parentAllocationId !== input.parentAllocationId
+            || a.level !== input.level || a.costClass !== input.costClass || a.month !== input.month
+            || a.capMicros !== input.capMicros || a.maxUnreconciledMicros !== input.maxUnreconciledMicros
+            || !Number.isSafeInteger(a.revision) || a.revision < 1) throw new Error('allocation binding mismatch');
+        return Response.json({ ok: true, outcome: r.outcome, allocation: { allocationId: a.allocationId,
+          parentAllocationId: a.parentAllocationId, level: a.level, costClass: a.costClass, month: a.month,
+          capMicros: a.capMicros, maxUnreconciledMicros: a.maxUnreconciledMicros, revision: a.revision } },
+        { headers: { 'cache-control': 'no-store' } });
+      } catch {
+        return jsonError('usage_unavailable', 'Allocation limits could not be saved.', 503);
+      }
+    },
+  };
+
+  return [plans, subscription, checkout, portal, receipts, usage, allocationAdmin, webhook];
 }

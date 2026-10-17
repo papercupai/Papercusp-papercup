@@ -16,6 +16,8 @@ import {
   applyLauncherOperatorUrlEnv,
   applyHostHandoffEnv,
   resolveOperatorTarget,
+  sanitizeInheritedEnv,
+  usePtyHost,
 } from '../scripts/psu-launcher.mjs';
 import {
   HOST_HANDOFF_ENV_KEYS,
@@ -25,6 +27,16 @@ import {
 } from '../scripts/psu-pty-host.mjs';
 
 describe('host adoption receipt custody (EI-25733617164988734)', () => {
+  it('carries the native quota slot only through an explicit same-host adoption', () => {
+    const slot = JSON.stringify({ ownerId: 'su-original', processKey: 'native:existing' });
+    const before = { PAPERCUSP_SID: 'su-original', PAPERCUSP_HOSTED_NATIVE_SLOT: slot };
+    const carried = Object.fromEntries(Object.entries(before).filter(([key]) => HOST_HANDOFF_ENV_KEYS.includes(key)));
+    const independent = sanitizeInheritedEnv(before);
+    expect(independent.PAPERCUSP_HOSTED_NATIVE_SLOT).toBeUndefined();
+    applyHostHandoffEnv(independent, carried);
+    expect(independent.PAPERCUSP_HOSTED_NATIVE_SLOT).toBe(slot);
+  });
+
   it.each([false, true])('retires the original receipt even when carried by old handoff code (%s)', (carried) => {
     const receipt = {
       PAPERCUSP_KICKOFF_PROOF_PATH: '/expired-original-launch/receipt.json',
@@ -91,6 +103,39 @@ describe('host-code handoff launch provenance (EI-25370180511092356)', () => {
       fleetSlug: '',
       agentQuietMs: 60_000,
     })).toBe('not-agent-launched');
+  });
+});
+
+describe('headless host-code adoption (WI-6554700010016005)', () => {
+  const adopt = (before: Record<string, string>) => {
+    const carried = Object.fromEntries(Object.entries(before)
+      .filter(([key]) => HOST_HANDOFF_ENV_KEYS.includes(key)));
+    const successor: Record<string, string> = {};
+    applyHostHandoffEnv(successor, JSON.parse(JSON.stringify(carried)));
+    return successor;
+  };
+  const detachedStdio = { stdin: { isTTY: false }, stdout: { isTTY: false } };
+
+  it('keeps a detached carry successor on the injectable PTY path', () => {
+    const before = { PAPERCUSP_PSU_HEADLESS: '1' };
+    expect(usePtyHost({ env: before, ...detachedStdio })).toBe(true);
+
+    const successor = adopt(before);
+
+    expect(usePtyHost({ env: successor, ...detachedStdio })).toBe(true);
+    expect(successor.PAPERCUSP_PSU_HEADLESS).toBe('1');
+    expect(usePtyHost({ env: adopt({}), ...detachedStdio })).toBe(false);
+  });
+
+  it.each<Record<string, string>>([
+    { PAPERCUSP_PSU_PTY: '0' },
+    { PAPERCUSP_PSU_NO_PTY: '1' },
+  ])('preserves explicit PTY refusal across a headless handoff (%j)', (policy) => {
+    const before = { PAPERCUSP_PSU_HEADLESS: '1', ...policy };
+    expect(usePtyHost({ env: before, ...detachedStdio })).toBe(false);
+
+    expect(usePtyHost({ env: adopt(before), ...detachedStdio })).toBe(false);
+    for (const [key, value] of Object.entries(policy)) expect(adopt(before)[key]).toBe(value);
   });
 });
 

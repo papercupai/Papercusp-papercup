@@ -47,6 +47,7 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { observeFallback } from '../../../degradation/fallback-observations';
 import { readOperatorState } from '../../../operator-state-pg';
+import { ManagedUpdatePolicyError } from '../../../managed-update-policy';
 import { fetchAssetText, resolveGithubToken, releaseHostBase } from './updates-github';
 import {
   classifyChannel,
@@ -184,7 +185,15 @@ export default defineTool({
     const product: Product = params.get('product') === 'server' ? 'server' : 'gui';
 
     const stored = await readOperatorState<{ update_channel?: string }>('setup_wizard_state');
-    const channel = resolveChannel(params, stored?.update_channel);
+    let channel: Channel;
+    try {
+      channel = resolveChannel(params, stored?.update_channel);
+    } catch (error) {
+      if (error instanceof ManagedUpdatePolicyError) {
+        return Response.json({ error: error.code, message: error.message }, { status: error.status });
+      }
+      throw error;
+    }
 
     const platformKey = platformKeyFor(target, arch);
     if (!platformKey) return refusal('unknown_platform', { error: `unknown platform ${target}/${arch}` });

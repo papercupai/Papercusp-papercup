@@ -40,7 +40,9 @@ import workItemsCheckpoint from '../work_items/checkpoint';
 import workItemsSetBlocker from '../work_items/set_blocker';
 import coordSend from '../coordination/tools/send';
 import coordHandoff from '../coordination/tools/handoff';
+import coordConditions from '../coordination/tools/conditions';
 import sessionsRead from '../sessions/read';
+import ompSessions from '../omp/sessions';
 import sessionCarryDrill from '../session/carry-drill';
 import capabilityRead from '../capability/read';
 import bashOutput from '../capability/bash_output';
@@ -106,6 +108,8 @@ import toolFind, {
   compactSchemaForResult,
   DISCOVERY_RESULT_MAX_BYTES,
   PLUGIN_HOST_READINESS_TIMEOUT_MS,
+  TOOLS_FIND_DEFAULT_LIMIT,
+  TOOLS_FIND_LIMIT_MAX,
   ensureIndex,
   exactToolNamesInQuery,
   normalizeToolsFindArgs,
@@ -144,6 +148,15 @@ async function callHandler(args: Record<string, unknown>, ctx: Record<string, un
   };
 }
 
+function expectBehaviorClassInBothShapes(schema: string) {
+  const specStart = schema.indexOf('spec?:object{');
+  const itemsStart = schema.indexOf('; items?:array', specStart);
+  expect(specStart).toBeGreaterThanOrEqual(0);
+  expect(itemsStart).toBeGreaterThan(specStart);
+  expect(schema.slice(specStart, itemsStart)).toContain('behaviorClass:enum(');
+  expect(schema.slice(itemsStart)).toContain('behaviorClass:enum(');
+}
+
 beforeEach(() => {
   hiveMocks.potHomeSlugForHarness.mockReset();
   hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
@@ -172,8 +185,20 @@ describe('tools:find tool registration', () => {
     // args schema accepts a query, rejects an empty one.
     expect(def.args.safeParse({ query: 'feature flag' }).success).toBe(true);
     expect(def.args.safeParse({ query: '' }).success).toBe(false);
+    expect(def.args.safeParse({ query: 'feature flag', limit: TOOLS_FIND_LIMIT_MAX }).success).toBe(true);
+    expect(def.args.safeParse({ query: 'feature flag', limit: TOOLS_FIND_LIMIT_MAX + 1 }).success).toBe(false);
     const missing = def.args.safeParse({});
     expect(missing.success).toBe(false);
+  });
+
+  it('publishes the result-count cap in the live discovery schema', async () => {
+    const out = await callHandler({ query: 'tools:find', limit: 1 });
+    const hit = out.hits.find((entry) => entry.tool === 'tools:find');
+
+    expect(hit?.description).toContain('`limit` defaults to 8, accepts 1-25, and values above 25 are rejected');
+    expect(hit?.argSchema).toContain(`limit?:integer(>0-${TOOLS_FIND_LIMIT_MAX})`);
+    expect(hit?.argSchema).toContain(`defaults to ${TOOLS_FIND_DEFAULT_LIMIT}`);
+    expect(hit?.argSchema).toContain(`values above ${TOOLS_FIND_LIMIT_MAX} are rejected`);
   });
 
   it('accepts legacy q and normalizes it to query, with query taking precedence', () => {
@@ -431,6 +456,15 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(text).toContain('query');
   });
 
+  it('publishes coord:conditions exact-key lookup in tools:find', async () => {
+    expect(coordConditions.name).toBe('coord:conditions');
+    const result = await callHandler({ query: 'coord:conditions', limit: 1 });
+    const hit = result.hits.find((entry) => entry.tool === 'coord:conditions');
+
+    expect(hit).toBeDefined();
+    expect(hit?.argSchema).toContain('condition_key?:string(1-2000)');
+  });
+
   it('publishes capability:launch-agent conditional brief requirements in discovery output', async () => {
     expect(launchAgent.name).toBe('capability:launch-agent');
     const result = await callHandler({ query: 'capability:launch-agent', limit: 1 });
@@ -523,8 +557,23 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(plansSetSpecs.name).toBe('plans:set-specs');
     const { schemaByTool } = buildCorpus();
     const compact = compactSchemaForResult(schemaByTool.get('plans:set-specs')) ?? '';
-    expect(compact).toMatch(/spec\?:object\{[^}]*behaviorClass:enum\(/);
-    expect(compact).toMatch(/items\?:array[^;]*\{[^}]*behaviorClass:enum\(/);
+    expectBehaviorClassInBothShapes(compact);
+  });
+
+  it('preserves the nested plans:set-specs falsifier scenario pattern in compact discovery', async () => {
+    const proofObligationIdPattern = '~/^[a-z0-9]+(?:[._:-][a-z0-9]+)*$/';
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('plans:set-specs')) ?? '';
+
+    expect(compact).toMatch(/falsifier\?:object(?:\|null)?\{[^}]*requiredScenarios\?:array/);
+    expect(compact).toContain(proofObligationIdPattern);
+
+    const out = await callHandler({ query: 'plans:set-specs', limit: 1 });
+    const hit = out.hits.find((entry) => entry.tool === 'plans:set-specs');
+    const argSchema = hit?.argSchema ?? '';
+    expect(argSchema).toMatch(/falsifier\?:object(?:\|null)?\{[^}]*requiredScenarios\?:array/);
+    expect(argSchema).toContain(proofObligationIdPattern);
+    expectBehaviorClassInBothShapes(argSchema);
   });
 
   it('publishes work_items:get resume exclusivity before dispatch', async () => {
@@ -595,10 +644,13 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const entry = corpus.find((candidate) => candidate.tool === 'release:cut');
     const branchRule =
       'when op in (preflight|prepare-tag|status|handoff|abort-leg|gate-status|reclaim) => work_item_id';
+    const rootRule = 'when op in (abort-leg|reclaim) => root forbidden';
 
     expect(entry?.argSchema).toContain(branchRule);
+    expect(entry?.argSchema).toContain(rootRule);
     expect(entry?.argSchema).toContain('forbidden');
     expect(compactSchemaForResult(schemaByTool.get('release:cut'))).toContain(branchRule);
+    expect(compactSchemaForResult(schemaByTool.get('release:cut'))).toContain(rootRule);
   });
 
   it('advertises session:carry-drill fields only on the operation variants that accept them', () => {
@@ -611,6 +663,17 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compactSchemaForResult(schemaByTool.get('session:carry-drill'))).toContain(reportDrillIdRule);
     expect(sessionCarryDrill.args.safeParse({ op: 'report', drillId: 'drill-1' }).success).toBe(false);
     expect(sessionCarryDrill.args.safeParse({ op: 'grade', drillId: 'drill-1' }).success).toBe(true);
+  });
+
+  it('advertises omp:sessions advSessionId only on the link variant', () => {
+    expect(ompSessions.name).toBe('omp:sessions');
+    const { corpus, schemaByTool } = buildCorpus();
+    const entry = corpus.find((candidate) => candidate.tool === 'omp:sessions');
+    const compact = compactSchemaForResult(schemaByTool.get('omp:sessions')) ?? '';
+    const linkOnlyRule = 'when op=link => advSessionId required; when op!=link => advSessionId forbidden';
+
+    expect(entry?.argSchema).toContain(linkOnlyRule);
+    expect(compact).toContain(linkOnlyRule);
   });
 
   it('publishes activity:tool-log scope as a required owner/session one-of', () => {

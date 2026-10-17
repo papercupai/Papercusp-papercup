@@ -10,7 +10,7 @@
  *     (a read-only provider whose output lands at the sink under the D-009 budget)
  *     or a `guard` (a pure deny/allowOnly predicate over the pending tool call).
  * A manifest that mixes the two shapes is refused at parse, never rerouted. */
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, statSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { dataConditionSchema } from '@papercusp/rules';
@@ -197,3 +197,24 @@ export function resolveLocalRule(
   return enumerateSelfDescribingDirs(roots, readRuleDir)
     .find((rule) => rule.ref === key || rule.id === key) ?? null;
 }
+
+/** Same portable grammar as install; lifecycle state and grants never travel. */
+export function writeRulePackageDir(definition: AsyncRuleDeclaration | SyncRuleDeclaration,
+  opts: { ref?: string; source: string; targetDir?: string }) {
+  const ref = opts.ref ?? definition.id;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(ref)) throw new Error('unsafe rule ref');
+  const manifest = { schemaVersion: RULE_PACKAGE_SCHEMA_VERSION, ...definition };
+  const parsed = parseRulePackage(manifest);
+  if (!parsed.ok) throw new Error(parsed.error);
+  const bytes = JSON.stringify({ schemaVersion: RULE_PACKAGE_SCHEMA_VERSION, ...parsed.rule }, null, 2) + '\n';
+  if (Buffer.byteLength(bytes, 'utf8') > 64 * 1024) throw new Error('rule manifest exceeds install limit');
+  const dir = join(opts.targetDir ?? papercuspPath('rules', 'exports'), ref);
+  mkdirSync(dir, { recursive: true });
+  const manifestPath = join(dir, RULE_MANIFEST);
+  const listingPath = join(dir, 'listing.json');
+  writeFileSync(manifestPath, bytes, 'utf8');
+  writeFileSync(listingPath, JSON.stringify({ kind: 'rule', ref, title: parsed.rule.title,
+    description: parsed.rule.description, version: parsed.rule.version, source: opts.source }, null, 2) + '\n', 'utf8');
+  return { ref, dir, manifestPath, listingPath, manifest: { schemaVersion: RULE_PACKAGE_SCHEMA_VERSION, ...parsed.rule } };
+}
+

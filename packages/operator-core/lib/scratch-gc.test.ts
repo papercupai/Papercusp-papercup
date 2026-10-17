@@ -41,7 +41,7 @@ import {
 } from 'node:fs';
 import { mkdir, readdir as readdirAsync, rm as rmAsync, stat as statAsync, writeFile } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
-import { join, resolve, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 import {
   runScratchGc,
@@ -50,6 +50,7 @@ import {
   ScratchQuotaError,
   RETENTION_MS,
   SCRATCH_QUOTA_RECOVERY_HEADROOM_BYTES,
+  USAGE_REFRESH_MS,
   _resetScratchGcCountersForTests,
   scratchEvictionBytes,
   refreshScratchUsage,
@@ -71,6 +72,7 @@ import { applyResultDoorAsync, RESULT_DOOR_TOKENS } from './result-door';
 import { scratchRootForWorkspace } from './scratch-uri';
 import { createRetentionPin } from './storage/retention-pins';
 import { spawn } from 'node:child_process';
+import { createTextCollector } from './child-output.js';
 
 // Tests run against a sandbox scratch root so they don't touch the
 // real ~/.papercusp/scratch tree. `os.homedir()` on Linux reads
@@ -78,6 +80,7 @@ import { spawn } from 'node:child_process';
 // override is the only reliable swap.
 let prevScratchRoot: string | undefined;
 let prevFsMutexLockDir: string | undefined;
+let prevXdgRuntimeDir: string | undefined;
 let prevDisableFsMutex: string | undefined;
 let prevRetentionRoot: string | undefined;
 let sandbox: string;
@@ -86,6 +89,7 @@ beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'papercusp-scratch-test-'));
   prevScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
   prevFsMutexLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  prevXdgRuntimeDir = process.env.XDG_RUNTIME_DIR;
   prevDisableFsMutex = process.env.PAPERCUSP_DISABLE_FS_MUTEX;
   prevRetentionRoot = process.env.PAPERCUSP_RELEASE_RETENTION_ROOT;
   process.env.PAPERCUSP_RELEASE_RETENTION_ROOT = join(sandbox, 'retention-leases');
@@ -102,6 +106,8 @@ afterEach(() => {
   else process.env.PAPERCUSP_SCRATCH_ROOT = prevScratchRoot;
   if (prevFsMutexLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
   else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = prevFsMutexLockDir;
+  if (prevXdgRuntimeDir === undefined) delete process.env.XDG_RUNTIME_DIR;
+  else process.env.XDG_RUNTIME_DIR = prevXdgRuntimeDir;
   if (prevDisableFsMutex === undefined) delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
   else process.env.PAPERCUSP_DISABLE_FS_MUTEX = prevDisableFsMutex;
   if (prevRetentionRoot === undefined) delete process.env.PAPERCUSP_RELEASE_RETENTION_ROOT;
@@ -160,13 +166,11 @@ function startScratchChild(script: string, env: Record<string, string>) {
     env: { ...process.env, ...env },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
-  let stdout = '';
-  let stderr = '';
+  const stdout = createTextCollector(child.stdout);
+  const stderr = createTextCollector(child.stderr);
   let spawnError: string | null = null;
   const seenMessages = new Set<string>();
   const messageWaiters = new Map<string, () => void>();
-  child.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-  child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
   child.on('message', (message: unknown) => {
     const type = message && typeof message === 'object' && 'type' in message
       ? String((message as { type: unknown }).type)
@@ -176,14 +180,14 @@ function startScratchChild(script: string, env: Record<string, string>) {
   });
   child.once('error', (error) => { spawnError = error.message; });
   const finished = new Promise<{ code: number | null; stdout: string; stderr: string; spawnError: string | null }>((resolve) => {
-    child.once('close', (code) => resolve({ code, stdout, stderr, spawnError }));
+    child.once('close', (code) => resolve({ code, stdout: stdout.text(), stderr: stderr.text(), spawnError }));
   });
   const waitForMessage = (type: string) => {
     if (seenMessages.has(type)) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         messageWaiters.delete(type);
-        reject(new Error('Timed out waiting for child message ' + type + '; stderr: ' + stderr));
+        reject(new Error('Timed out waiting for child message ' + type + '; stderr: ' + stderr.peek()));
       }, 8_000);
       messageWaiters.set(type, () => {
         clearTimeout(timer);
@@ -193,7 +197,7 @@ function startScratchChild(script: string, env: Record<string, string>) {
       child.once('close', () => {
         clearTimeout(timer);
         messageWaiters.delete(type);
-        reject(new Error('Child exited before message ' + type + '; stdout: ' + stdout + '; stderr: ' + stderr));
+        reject(new Error('Child exited before message ' + type + '; stdout: ' + stdout.peek() + '; stderr: ' + stderr.peek()));
       });
     });
   };
@@ -202,6 +206,33 @@ function startScratchChild(script: string, env: Record<string, string>) {
 
 /** A complete /proc scan that saw no holder anywhere. */
 const noHolders = async (): Promise<OpenWriterScan> => ({ byPath: new Map(), complete: true });
+
+describe('scratch quota mutex root', () => {
+  it('uses XDG_RUNTIME_DIR for scratch mutex metadata when no global override is set', async () => {
+    const runtimeDir = join(sandbox, 'xdg-runtime');
+    delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    process.env.XDG_RUNTIME_DIR = runtimeDir;
+
+    makeRunDir('ws-runtime-lock', 'demo:tool', UUID(10), 8);
+    await runScratchGc({ workspaceRegistry: ['ws-runtime-lock'], enforceQuota: false });
+
+    expect(existsSync(join(runtimeDir, 'papercusp', 'fs-mutex-locks'))).toBe(true);
+    expect(existsSync(join(sandbox, 'fs-mutex-locks'))).toBe(false);
+  });
+
+  it('keeps PAPERCUSP_FS_MUTEX_LOCK_DIR authoritative over the runtime root', async () => {
+    const runtimeDir = join(sandbox, 'xdg-runtime');
+    const explicitRoot = join(sandbox, 'explicit-locks');
+    process.env.XDG_RUNTIME_DIR = runtimeDir;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = explicitRoot;
+
+    makeRunDir('ws-explicit-lock', 'demo:tool', UUID(11), 8);
+    await runScratchGc({ workspaceRegistry: ['ws-explicit-lock'], enforceQuota: false });
+
+    expect(existsSync(explicitRoot)).toBe(true);
+    expect(existsSync(join(runtimeDir, 'papercusp', 'fs-mutex-locks'))).toBe(false);
+  });
+});
 
 describe('scratch retention pins', () => {
   function pin(path: string, expiresAt = new Date(Date.now() + 3600_000).toISOString()) {
@@ -288,6 +319,62 @@ describe('runScratchGc — retention', () => {
     const r = await runScratchGc({ workspaceRegistry: ['ws-A'] });
     expect(r.retentionEvictions).toBeGreaterThanOrEqual(1);
     expect(existsSync(before)).toBe(false);
+  });
+
+  it('does not hold the workspace mutex while sizing retention candidates', async () => {
+    const workspaceId = 'ws-retention-admission';
+    const staleRun = makeRunDir(workspaceId, 'demo:tool', UUID(20), 100, RETENTION_MS + 1000);
+    await refreshScratchUsage(workspaceId);
+    const writerPath = join(
+      ensureScratchRunDir({ workspaceId, toolName: 'result-door', runId: UUID(21) }),
+      'spill.bin',
+    );
+
+    const originalStat = vi.mocked(statAsync).getMockImplementation();
+    if (!originalStat) throw new Error('async stat mock has no original implementation');
+    let releaseSizing!: () => void;
+    let reachedSizing!: () => void;
+    const sizingGate = new Promise<void>((resolve) => { releaseSizing = resolve; });
+    const sizingStarted = new Promise<void>((resolve) => { reachedSizing = resolve; });
+    vi.mocked(statAsync).mockImplementation((async (path, options) => {
+      const result = await originalStat(path, options);
+      if (String(path) === join(staleRun, 'data.bin')) {
+        reachedSizing();
+        await sizingGate;
+      }
+      return result;
+    }) as typeof statAsync);
+
+    let sweep: Promise<Awaited<ReturnType<typeof runScratchGc>>> | undefined;
+    let writer: Promise<void> | undefined;
+    try {
+      sweep = runScratchGc({ workspaceRegistry: [workspaceId], enforceQuota: false });
+      await sizingStarted;
+
+      let writeFinished!: () => void;
+      const writeDone = new Promise<void>((resolve) => { writeFinished = resolve; });
+      writer = writeWithScratchQuota({ workspaceId, filePath: writerPath, bytes: 1 }, async () => {
+        await writeFile(writerPath, Buffer.alloc(1));
+        writeFinished();
+      });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const enteredDuringSizing = await Promise.race([
+        writeDone.then(() => true),
+        new Promise<boolean>((resolve) => {
+          timeout = setTimeout(() => resolve(false), 1_000);
+        }),
+      ]);
+      if (timeout) clearTimeout(timeout);
+      expect(enteredDuringSizing).toBe(true);
+      await writer;
+    } finally {
+      releaseSizing();
+      vi.mocked(statAsync).mockImplementation(originalStat);
+      await Promise.allSettled([...(sweep ? [sweep] : []), ...(writer ? [writer] : [])]);
+    }
+
+    expect((await sweep!).retentionEvictions).toBe(1);
+    expect(existsSync(staleRun)).toBe(false);
   });
 
   it('honors an extended requested retention window without relaxing the safe default', async () => {
@@ -567,6 +654,66 @@ describe('reserveScratchSpace — no synchronous walk on the hot path (WI-100045
     }
   });
 
+  it('does not wait for a stale but valid shared ledger before publishing a spill', async () => {
+    const workspaceId = 'ws-stale-ledger-write';
+    const runDir = makeRunDir(workspaceId, 'result-door', UUID(7), 8);
+    await refreshScratchUsage(workspaceId);
+
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let releaseScan!: () => void;
+    let reachedRoot!: () => void;
+    const scanGate = new Promise<void>((resolve) => { releaseScan = resolve; });
+    const atRoot = new Promise<void>((resolve) => { reachedRoot = resolve; });
+    const wsRoot = scratchRootForWorkspace(workspaceId);
+    let rootReads = 0;
+    readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+      const entries = await read(path, options);
+      if (String(path) === wsRoot && ++rootReads === 1) {
+        reachedRoot();
+        await scanGate;
+      }
+      return entries as never;
+    }) as typeof readdirAsync);
+
+    const staleNow = Date.now() + USAGE_REFRESH_MS + 1;
+    const now = vi.spyOn(Date, 'now').mockReturnValue(staleNow);
+    const timings: ScratchWriteTimings[] = [];
+    const filePath = join(runDir, 'spill.bin');
+    let writeStarted!: () => void;
+    const started = new Promise<void>((resolve) => { writeStarted = resolve; });
+    let write: Promise<void> | undefined;
+    try {
+      write = writeWithScratchQuota({
+        workspaceId,
+        filePath,
+        bytes: 16,
+        onTiming: (row) => timings.push(row),
+      }, async () => {
+        await writeFile(filePath, Buffer.alloc(16));
+        writeStarted();
+      });
+
+      // The stale reconciliation is gated, but the payload reaches the writer first. This is the
+      // publication-deadline regression: a result-door spill must not wait on the full scan.
+      await started;
+      await write;
+      await atRoot;
+      expect(readFileSync(filePath)).toHaveLength(16);
+      expect(timings.find((row) => !row.progress)).toMatchObject({
+        refreshWaitMs: 0,
+        writeMs: expect.any(Number),
+      });
+    } finally {
+      releaseScan();
+      readdirMock.mockImplementation(originalRead);
+      now.mockRestore();
+      await Promise.allSettled([...(write ? [write] : [])]);
+      await refreshScratchUsage(workspaceId);
+    }
+  });
+
   it('keeps each workspace walk sequential and caps filesystem work across concurrent workspaces', async () => {
     for (let i = 0; i < 6; i++) {
       makeRunDir('ws-Q', `tool-${i}`, UUID(10 + i), 128);
@@ -717,6 +864,19 @@ describe('runScratchGc — no synchronous fs on the event loop (WI-10005135)', (
       unprovenEntries: 0,
       deadWorkspacesDeferred: [],
     });
+  });
+
+  it('returns a truncated summary when a caller wall-time budget is already exhausted', async () => {
+    makeRunDir('ws-A', 'tool', UUID(70), 64, RETENTION_MS + 60_000);
+    const r = await runScratchGc({
+      workspaceRegistry: ['ws-A'],
+      dryRun: true,
+      enforceQuota: false,
+      maxDurationMs: 0,
+    });
+
+    expect(r.truncated).toBe(true);
+    expect(r.retentionEvictions).toBe(0);
   });
 });
 
@@ -1582,6 +1742,60 @@ describe('deferred scratch quota recovery', () => {
     await refreshScratchUsage('ws-Q');
     expect(scratchUsageBytes('ws-Q')).toBe(100 + markerBytes('ws-Q') + 8 * 6709);
     expect(scratchRmCallCount()).toBe(0);
+  });
+
+  it('lets a spill finish while stale shared quota reconciliation is still scanning', async () => {
+    const workspaceId = 'ws-Q';
+    const workspaceRoot = scratchRootForWorkspace(workspaceId);
+    const firstPath = join(workspaceRoot, 'quota', UUID(1), 'first.spill');
+    await writeWithScratchQuota({ workspaceId, filePath: firstPath, bytes: 16 }, async () => {
+      await mkdir(dirname(firstPath), { recursive: true });
+      await writeFile(firstPath, Buffer.alloc(16));
+    });
+
+    // Make the already valid cross-process ledger stale. The next reservation can safely
+    // advance it; a full tree reconciliation should run after that spill settles.
+    const statePath = join(
+      dirname(dirname(workspaceRoot)),
+      'scratch-quota-state',
+      createHash('sha256').update(resolve(workspaceRoot)).digest('hex') + '.json',
+    );
+    const state = JSON.parse(readFileSync(statePath, 'utf8')) as { updatedAt: number };
+    writeFileSync(statePath, JSON.stringify({ ...state, updatedAt: Date.now() - USAGE_REFRESH_MS - 1 }));
+
+    const readdirMock = vi.mocked(readdirAsync);
+    const originalRead = readdirMock.getMockImplementation()!;
+    const read = originalRead as unknown as (path: unknown, options?: unknown) => Promise<unknown>;
+    let releaseScan!: () => void;
+    let reachedRoot!: () => void;
+    const scanGate = new Promise<void>((resolve) => { releaseScan = resolve; });
+    const scanStarted = new Promise<void>((resolve) => { reachedRoot = resolve; });
+    let gated = false;
+    readdirMock.mockImplementation((async (path: unknown, options: unknown) => {
+      const entries = await read(path, options);
+      if (!gated && String(path) === workspaceRoot) {
+        gated = true;
+        reachedRoot();
+        await scanGate;
+      }
+      return entries as never;
+    }) as typeof readdirAsync);
+
+    const spillPath = join(workspaceRoot, 'quota', UUID(2), 'after-stale.spill');
+    let spillSettled = false;
+    const spill = writeWithScratchQuota({ workspaceId, filePath: spillPath, bytes: 16 }, async () => {
+      await mkdir(dirname(spillPath), { recursive: true });
+      await writeFile(spillPath, Buffer.alloc(16));
+    }).then(() => { spillSettled = true; });
+    try {
+      await scanStarted;
+      expect(spillSettled).toBe(true);
+      expect(existsSync(spillPath)).toBe(true);
+    } finally {
+      releaseScan();
+      readdirMock.mockImplementation(originalRead);
+      await Promise.allSettled([spill, refreshScratchUsage(workspaceId)]);
+    }
   });
 
   it('coalesces pressure recovery while preserving concurrent reservations without synchronous scans', async () => {

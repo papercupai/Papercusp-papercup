@@ -70,6 +70,23 @@ export function isolatedWorkerFailureDetail(output: string): string {
   return fatal >= 0 ? lines.slice(fatal, fatal + 12).join('\n').slice(0, 4_000) : output.slice(-4_000);
 }
 
+/** Prefer semantic work over cleanup chatter when an execute deadline fires. */
+export function isolatedWorkerPendingStage(evidenceDir: string) {
+  const path = join(evidenceDir, 'worker-progress.ndjson');
+  if (!existsSync(path)) return null;
+  const active = new Map<string, Record<string, unknown>>();
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    try {
+      const row = JSON.parse(line) as Record<string, unknown>;
+      if (typeof row.stage !== 'string') continue;
+      if (row.stage.endsWith('-start')) active.set(row.stage.slice(0, -6), row);
+      else if (row.stage.endsWith('-complete')) active.delete(row.stage.slice(0, -9));
+      else if (row.stage.endsWith('-failed')) active.delete(row.stage.slice(0, -7));
+    } catch { /* A killed writer may leave an incomplete final line. */ }
+  }
+  return [...active.values()].at(-1) ?? null;
+}
+
 /** Persist at the observation boundary, before a timeout can erase private state. */
 export function retainIsolatedWorkerProgress(evidenceDir: string, stage: string, evidence: Record<string, unknown> = {}) {
   appendFileSync(join(evidenceDir, 'worker-progress.ndjson'), JSON.stringify({
@@ -189,11 +206,11 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
     const cleanupStages = new Set<string>();
     const cleanupIo = new Map<string, { writes: bigint; bytes: bigint }>();
     let cleanupLine = '';
-    const capture = (chunk: Buffer) => {
-      output += String(chunk); writeSync(fd, chunk);
+    const capture = (chunk: string) => {
+      output += chunk; writeSync(fd, chunk);
       if (phase === 'execute') progressWatchdog?.noteProgress();
       if (options.cleanupFromStdout && deadlines) {
-        cleanupLine += String(chunk);
+        cleanupLine += chunk;
         const lines = cleanupLine.split('\n');
         cleanupLine = lines.pop()!;
         for (const line of lines) {
@@ -276,7 +293,8 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
       child.off('error', onError);
       closeSync(fd);
       const result = { code: child.exitCode, signal: child.signalCode, timedOut, timeoutPhase, exitWaitTimedOut, stdioDrainTimedOut };
-      writeFileSync(join(evidenceDir, 'worker-result.json'), JSON.stringify({ ...result, error: error?.message ?? null }), { flag: 'wx' });
+      writeFileSync(join(evidenceDir, 'worker-result.json'), JSON.stringify({ ...result,
+        pendingStage: isolatedWorkerPendingStage(evidenceDir), error: error?.message ?? null }), { flag: 'wx' });
       if (error) reject(error);
       else resolve({ ...result, output });
     };
@@ -309,6 +327,8 @@ export function captureIsolatedWorker(child: ChildProcess, evidenceDir: string, 
         }, TEST_FILE_SCOPE_STOP_TIMEOUT_SEC * 1000);
       }, grace);
     };
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
     child.stdout?.on('data', capture);
     child.stderr?.on('data', capture);
     child.on('message', message);
@@ -575,10 +595,15 @@ export function isolatedIntegrationDiagnosticArtifacts(runDir: string): string[]
     'phases/prepare/operator-api-build.log', 'phases/prepare/hono-host.mjs.build-steps.jsonl',
     'phases/execute/build.log', 'phases/execute/operator-api-build.log',
     'phases/execute/hono-host.mjs.build-steps.jsonl',
-    'phases/execute/worker-progress.ndjson',
+    'phases/execute/worker.log', 'phases/execute/worker-progress.ndjson',
+    'phases/execute/roster-stop-cleanup.jsonl', 'phases/execute/roster-stop-resources.json',
+    'phases/execute/roster-stop-native.jsonl',
     'phases/execute/native-task-diagnostics.json', 'phases/execute/native-task-stdout.log',
     'phases/execute/native-task-normalized.log', 'phases/execute/native-task-boot.log',
     'phases/execute/native-result.json', 'phases/execute/operator-api-build-result.json',
     'phases/execute/portal-browser-source.json', 'phases/execute/portal-browser-receipt.json',
+    'phases/execute/portal-health-reads.json', 'phases/execute/portal-health-writes.json',
+    'phases/execute/portal-health-seed.json', 'phases/execute/portal-health-publication.json',
+    'phases/execute/portal-cloud-health-observations.json',
     'phases/execute/browser-inputs.json'].filter(path => existsSync(join(runDir, path)));
 }

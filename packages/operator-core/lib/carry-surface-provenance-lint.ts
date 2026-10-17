@@ -583,6 +583,13 @@ const UNVERIFIED_ACTION_CLAIM_RE =
  */
 const CONDITIONAL_ACTION_CLAUSE_RE = /\b(?:whether|if)\b[^.!?;\n]{0,120}$/i;
 
+// EI-26098960267148036: a next-action sentence can introduce a verification
+// plan with "On the next cold wake, verify ..." without spelling out
+// "whether" or "if". A past-tense action later in that planned clause is still
+// future evidence to inspect, not a completed action by the current writer.
+const FUTURE_VERIFICATION_CLAUSE_RE =
+  /\b(?:on|at|during)\s+the\s+next\s+(?:cold\s+)?wake\b[^.!?;\n]{0,100}\b(?:verify|check|read|inspect|reconcile|confirm|determine|re-?check)\b/i;
+
 function isConditionalActionMention(line: string, match: RegExpExecArray): boolean {
   if (match.index === undefined) return false;
   const prefix = line.slice(0, match.index);
@@ -592,7 +599,8 @@ function isConditionalActionMention(line: string, match: RegExpExecArray): boole
     prefix.lastIndexOf('?'),
     prefix.lastIndexOf(';'),
   );
-  return CONDITIONAL_ACTION_CLAUSE_RE.test(prefix.slice(lastClauseBoundary + 1));
+  return CONDITIONAL_ACTION_CLAUSE_RE.test(prefix.slice(lastClauseBoundary + 1)) ||
+    FUTURE_VERIFICATION_CLAUSE_RE.test(prefix);
 }
 
 /**

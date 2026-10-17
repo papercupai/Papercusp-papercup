@@ -26,6 +26,7 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
   mkdirSync(nativeDir, { recursive: true });
   const transcript = join(nativeDir, 'fixture.jsonl');
   const recovered = join(root, 'gateway-recovered');
+  const parkNativeId = '12345678-1234-4234-8234-123456789abc';
   const ownerId = `submit-rx-${process.pid}-${++serial}`;
   let output = '';
   const stdin = Object.assign(new EventEmitter(), { isTTY: true, setRawMode() {}, resume() {}, pause() {} });
@@ -63,7 +64,7 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
         : agent === 'claude' ? {type:'assistant',message:{role:'assistant',content:[{type:'text',text:'working'}]}}
         : {type:'message',message:{role:'assistant',content:[{type:'text',text:'working'}]}});
     }});
-    process.stdout.write('READY\\n');
+    process.stdout.write(agent === 'claude' ? 'READY\\n❯\\n' : 'READY\\n');
     setTimeout(()=>process.exit(0),20000);
   `;
   const env = hermeticEnv({ PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: agent,
@@ -80,6 +81,9 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
   expect(nativeTurnVerifierSupport(agent, env), 'fixture must support native receipt verification').toMatchObject({ supported: true });
   const done = hostThroughPty({ command: process.execPath, args: ['-e', childCode],
     cwd: root, ownerId, env, io: { stdin, stdout }, bridgeTty: true,
+    ...(options.env?.PAPERCUSP_PSU_PARK_IDLE_MS !== undefined ? {
+      mintParkResumeArgs: (args: string[]) => ({ args: [...args, 'resume', parkNativeId], nativeId: parkNativeId }),
+    } : {}),
     activityPersistMs: options.activityPersistMs ?? 25, onExit: () => {} });
   const sock = socketPathFor(ownerId);
   const rows = () => existsSync(eventLogPathForOwner(ownerId))
@@ -106,6 +110,34 @@ async function fixture(agent: 'codex' | 'claude' | 'omp', error: string, require
 }
 
 describe('pending submission after provider recovery (EI-25878022553042846)', () => {
+  it('records the generation refusal after unpark, when the host already ACKed acceptance', async () => {
+    const f = await fixture('claude', 'API Error: 502 Bad Gateway', true, {
+      env: { PAPERCUSP_PSU_PARK_IDLE_MS: '300', PAPERCUSP_PSU_PARK_RESUME_WAIT_MS: '3000' },
+    });
+    try {
+      await until(() => f.rows().some(row => row.kind === 'child-parked'), 6_000,
+        () => JSON.stringify({ output: f.output(), events: f.rows() }));
+      expect(await injectIntoHostWithConfirmation(f.sock, f.envelope))
+        .toMatchObject({ ok: true, reason: 'accepted' });
+      await until(() => f.rows().some(row => row.kind === 'child-unparked'), 6_000,
+        () => JSON.stringify({ output: f.output(), events: f.rows() }));
+      const resumedMeta = JSON.parse(readFileSync(metaPathFor(f.envelope.ownerId), 'utf8'));
+      expect(resumedMeta.execution.childGeneration).toBe(f.envelope.expectedChildGeneration! + 1);
+      await until(() => f.rows().some(row => row.kind === 'gated-delivery-refused' &&
+        row.deliveryId === f.envelope.deliveryId), 6_000,
+      () => JSON.stringify({ output: f.output(), events: f.rows() }));
+      expect(f.rows()).toContainEqual(expect.objectContaining({
+        kind: 'gated-delivery-refused',
+        mode: 'turn',
+        deliveryId: f.envelope.deliveryId,
+        reason: 'stale-execution-generation',
+        expectedChildGeneration: f.envelope.expectedChildGeneration,
+        childGeneration: f.envelope.expectedChildGeneration! + 1,
+      }));
+      expect(f.output()).not.toContain('SUBMITTED:');
+    } finally { await f.close(); }
+  }, 20_000);
+
   it('isolates native transcript roots even when the launcher supplies OMP overrides', () => {
     const source = { PAPERCUSP_PSU_PTY_DIR: '/tmp/private-pty-fixture',
       PI_CONFIG_DIR: '/live/omp-config', PI_CODING_AGENT_DIR: '/live/omp-agent',

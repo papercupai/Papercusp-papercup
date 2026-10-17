@@ -793,6 +793,44 @@ describe('papercup-fedplane-key-permission-check.sh (WI-2143622)', () => {
       expect(out).toContain('result INDETERMINATE, not clean');
     });
 
+    it('accepts only verified vanished descendants when find reports a traversal race', () => {
+      const fx = withControl(fixture());
+      const deep = join(fx.root, 'deep');
+      const vanished = join(deep, 'transient-build');
+      const bin = join(fx.root, 'bin');
+      mkdirSync(vanished, { recursive: true });
+      mkdirSync(bin, { recursive: true });
+
+      const findShim = join(bin, 'find');
+      writeFileSync(
+        findShim,
+        [
+          '#!/usr/bin/env bash',
+          'if [[ " $* " == *"$KEYPERM_TEST_DEEP_ROOT"* ]]; then',
+          '  /usr/bin/find "$@" || exit $?',
+          '  rmdir "$KEYPERM_TEST_VANISHED_DIR" || exit 97',
+          '  printf "find: \'%s\': No such file or directory\\n" "$KEYPERM_TEST_VANISHED_DIR" >&2',
+          '  exit 1',
+          'fi',
+          'exec /usr/bin/find "$@"',
+        ].join('\n'),
+      );
+      chmodSync(findShim, 0o755);
+
+      const out = runProbe(fx, {
+        KEYPERM_DEEP: '1',
+        KEYPERM_DEEP_ROOTS: deep,
+        KEYPERM_TEST_DEEP_ROOT: deep,
+        KEYPERM_TEST_VANISHED_DIR: vanished,
+        PATH: bin + ':' + (process.env.PATH ?? ''),
+      });
+
+      expect(out).toContain('ignored 1 verified vanished descendant(s) under unchanged root=' + deep);
+      expect(out).toContain('tier2: root result root=' + deep + ' status=0');
+      expect(out).toContain('no exposed private keys found');
+      expect(out).not.toContain('result INDETERMINATE, not clean');
+    });
+
     it('retains every failed root in the deep-sweep report', () => {
       const fx = withControl(fixture());
       const firstRoot = join(fx.root, 'deep-first');

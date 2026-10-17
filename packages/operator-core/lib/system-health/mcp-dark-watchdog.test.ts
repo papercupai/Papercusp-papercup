@@ -583,7 +583,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     const owner = 'su-dark-from-birth';
     const { tag } = fakeSql({
       openPhases: [],
-      toolSurfaceByOwner: { [owner]: { hookCalls: 23, windowMinutes: 4 } },
+      agentInvocationByOwner: { [owner]: false },
     });
     listLiveHostsMock.mockReturnValue([{ ownerId: owner, startedAt: INOW - 60 * M, lastActivityAt: INOW - 1 * M }]);
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -681,7 +681,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     // floor / absent. A null beat alone must never trigger a reconnect (2026-07-20 guard).
     const { tag } = fakeSql({
       openPhases: [],
-      toolSurfaceByOwner: { [owner]: { hookCalls: 0, windowMinutes: 4 } },
+      agentInvocationByOwner: { [owner]: false },
     });
     listLiveHostsMock.mockReturnValue([{ ownerId: owner, startedAt: INOW - 60 * M, lastActivityAt: INOW - 1 * M }]);
     vi.useFakeTimers({ toFake: ['Date'] });

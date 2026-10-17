@@ -1,0 +1,273 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "item": "P-544",
+  "recordedAt": "2026-10-16T22:40:48.683384+00:00",
+  "scope": "GCP current TEST-ARTIFACT only; moderate cohorts pass, full frozen profile fails burst input echo; no AWS or shipment claim",
+  "profile": {
+    "provider": "gcp",
+    "project": "pc-agent-capacity-0930",
+    "zone": "us-central1-a",
+    "vm": "cap-p544-8g-1016",
+    "machine": "e2-standard-2 (resolved from e2-custom-2-8192)",
+    "vCPU": 2,
+    "memoryGiB": 8,
+    "swap": "8GiB zram lz4 plus10GiB pd-balanced overflow",
+    "assignedNativeCodexSessions": 50,
+    "cli": "Codex 0.163.0",
+    "model": "gpt-6-luna",
+    "effort": "low",
+    "serverPopulation": 1,
+    "candidateSource": "dd83ee5514342f8433569539767e015f01429410",
+    "candidatePackageEvidence": "docs/evidence/p544-candidate-package-2026-10-16.json"
+  },
+  "metricSemantics": {
+    "writer": "scripts/agent-capacity/vm/swap-tier.py summarize",
+    "units": "totalSec/echoSec/submitToReplySec in seconds; probeExecMs in milliseconds",
+    "fullTaskWall": "Includes remote model and native CLI; not shell runtime",
+    "sparseCohort": "active-1 tail has only3 task samples",
+    "diagnosis": "Swap/fault counters are observations; no resource mechanism or causal attribution inferred from profile differences"
+  },
+  "frozenAcceptance": "D-075",
+  "phaseAcceptance": {
+    "active-1": {
+      "passed": true,
+      "echoP95Sec": 0.109,
+      "fullModelAndCliWallP95Sec": 10.189,
+      "hostForkExecP95Ms": 6.47,
+      "uniqueActiveAgents": 1,
+      "taskSamples": 3
+    },
+    "active-5": {
+      "passed": true,
+      "echoP95Sec": 0.348,
+      "fullModelAndCliWallP95Sec": 15.55,
+      "hostForkExecP95Ms": 21.09,
+      "uniqueActiveAgents": 5,
+      "taskSamples": 15
+    },
+    "active-10": {
+      "passed": true,
+      "echoP95Sec": 0.728,
+      "fullModelAndCliWallP95Sec": 18.969,
+      "hostForkExecP95Ms": 16.23,
+      "uniqueActiveAgents": 10,
+      "taskSamples": 30
+    },
+    "burst-50": {
+      "passed": false,
+      "echoP95Sec": 6.775,
+      "allDoneSec": 33.316,
+      "uniqueActiveAgents": 50,
+      "taskSamples": 50
+    }
+  },
+  "profilePass": false,
+  "nativeHashTasksVerified": 98,
+  "nativeTaskFailures": 0,
+  "startedAt": "2026-10-16T22:21:26.039446+00:00",
+  "finishedAt": "2026-10-16T22:30:50.551016+00:00",
+  "actualTask": "0mvbj82dovypry3737j",
+  "actualExitCode": 0,
+  "rawSummary": {
+    "arms": [
+      {
+        "arm": "zram-lz4",
+        "device": "/dev/zram0",
+        "assignedAgents": 50,
+        "reclaim": {
+          "agents": 50,
+          "beforeMiBPerAgent": 51.1,
+          "swappedMiBPerAgent": 47.4,
+          "residentAfterMiBPerAgent": 2.6,
+          "seconds": 16.2,
+          "swapOutMiBps": 146.1
+        },
+        "idleRegainedMiB": 159.9,
+        "zram": {
+          "origMiB": 2561.8,
+          "comprMiB": 909.9,
+          "usedMiB": 932.4,
+          "ratio": 2.75
+        },
+        "storm": {
+          "agents": 50,
+          "tasks": 50,
+          "failed": 0,
+          "totalSec": {
+            "p50": 29.56,
+            "p90": 31.635,
+            "p95": 31.842,
+            "max": 32.388
+          },
+          "echoSec": {
+            "p50": 2.796,
+            "p95": 6.775,
+            "max": 7.243
+          },
+          "submitToReplySec": {
+            "p50": 25.762,
+            "p95": 28.078,
+            "max": 28.405
+          },
+          "regainedMiBPerAgent": 9.7,
+          "majfltPerAgent": 1902,
+          "allDoneSec": 33.316,
+          "probeExecMs": {
+            "p50": 9.59,
+            "p95": 142.27,
+            "p99": 244.65,
+            "max": 318.45,
+            "samples": 235
+          }
+        },
+        "active-1": {
+          "agents": 1,
+          "tasks": 3,
+          "failed": 0,
+          "totalSec": {
+            "p50": 7.666,
+            "p90": 10.189,
+            "p95": 10.189,
+            "max": 10.189
+          },
+          "echoSec": {
+            "p50": 0.071,
+            "p95": 0.109,
+            "max": 0.109
+          },
+          "submitToReplySec": {
+            "p50": 7.588,
+            "p95": 10.061,
+            "max": 10.061
+          },
+          "regainedMiBPerAgent": 5.4,
+          "majfltPerAgent": 885,
+          "probeExecMs": {
+            "p50": 2.51,
+            "p95": 6.47,
+            "p99": 8.86,
+            "max": 12.68,
+            "samples": 223
+          }
+        },
+        "active-5": {
+          "agents": 5,
+          "tasks": 15,
+          "failed": 0,
+          "totalSec": {
+            "p50": 11.714,
+            "p90": 15.397,
+            "p95": 15.55,
+            "max": 15.55
+          },
+          "echoSec": {
+            "p50": 0.226,
+            "p95": 0.348,
+            "max": 0.348
+          },
+          "submitToReplySec": {
+            "p50": 11.388,
+            "p95": 15.306,
+            "max": 15.306
+          },
+          "regainedMiBPerAgent": 5.4,
+          "majfltPerAgent": 727,
+          "probeExecMs": {
+            "p50": 3.88,
+            "p95": 21.09,
+            "p99": 42.92,
+            "max": 71.59,
+            "samples": 390
+          }
+        },
+        "active-10": {
+          "agents": 10,
+          "tasks": 30,
+          "failed": 0,
+          "totalSec": {
+            "p50": 16.744,
+            "p90": 18.962,
+            "p95": 18.969,
+            "max": 20.157
+          },
+          "echoSec": {
+            "p50": 0.446,
+            "p95": 0.728,
+            "max": 0.924
+          },
+          "submitToReplySec": {
+            "p50": 16.335,
+            "p95": 18.379,
+            "max": 19.448
+          },
+          "regainedMiBPerAgent": 3.2,
+          "majfltPerAgent": 431,
+          "probeExecMs": {
+            "p50": 3.6,
+            "p95": 16.23,
+            "p99": 47.55,
+            "max": 86.36,
+            "samples": 514
+          }
+        },
+        "swapAfterStormMiB": 1377.2,
+        "residentAfterStormMiB": 1063.9
+      }
+    ],
+    "fio": []
+  },
+  "hostVmstatBefore": {
+    "pswpin": 434,
+    "pswpout": 62478,
+    "pgmajfault": 12143,
+    "oom_kill": 0
+  },
+  "hostVmstatAfter": {
+    "pswpin": 269485,
+    "pswpout": 725080,
+    "pgmajfault": 293502,
+    "oom_kill": 0
+  },
+  "archives": [
+    {
+      "path": "/tmp/p544-native-evidence/p544-native8g-v4.tgz",
+      "bytes": 32236492,
+      "sha256": "faa58fdf8d6ba6e80a624a8db53b24d32ef6be5fd4222e35374f1e6e1be2cc5f",
+      "guestHashMatches": true,
+      "tarMembers": 22,
+      "regularFilesAndDirectories": 22,
+      "extractRoot": "/tmp/p544-native-evidence/8g-v4"
+    },
+    {
+      "path": "/tmp/p544-native-evidence/p544-native8g-v4-histories.tgz",
+      "bytes": 33519196,
+      "sha256": "e1a84be64da713e4aa1a394f1c155003a8a947fd89b6031ccc0e0c9d23e5b6ea",
+      "guestHashMatches": true,
+      "tarMembers": 5899,
+      "regularFilesAndDirectories": 5749,
+      "extractRoot": "/tmp/p544-native-evidence/8g-v4-histories"
+    }
+  ],
+  "rawHashes": {
+    "tmp/p544-8g-run-v4/results.jsonl": "a30d1191394f20c8dab65a49528d1613d6e4aa045116ab654e1af99d72a53c42",
+    "tmp/p544-8g-run-v4/summary.json": "b1f094f5c71892ed9c771345d5b5e7b8ce4605d69d858d74b419cc9877f589b5",
+    "tmp/p544-8g-run-v4/probe.csv": "c432a55a21717c29d5153f142f8504b2e9f17579e44cd5f2b6687bdec2db2709",
+    "mnt/p544-data/p544-evidence/native8g-server-v4.jsonl": "3ea797f873b0c4e57be6787a5249c2e98146f6fd5ee89413a599b1f08e5d9ca3"
+  },
+  "driverSourceHashes": {
+    "scripts/agent-capacity/vm/swap-tier.py": "62383e18dc777a0460c617d4ca9be120c33d5ce2558cd5066f959510ebaec14b",
+    "scripts/agent-capacity/vm/swap-tier.test.ts": "b7e6b02d6fde840aae80d45984fb7fde839f8de6ddf49ec4d5bd800a5c5ed805",
+    "scripts/agent-capacity/vm/sample-footprint.py": "b2d253423c9506edf372fa79bfd70bfef96e000db817e6d0f68f744634afb887"
+  },
+  "regressionEvidence": {
+    "runId": "e5fc4e3e-01d0-437a-9437-637764b28ecf",
+    "ledgerId": 21295204,
+    "passed": 65,
+    "scope": "Driver unit/regression proof; does not establish capacity"
+  },
+  "coldWake": "Pending separate timed operational record",
+  "teardown": "Pending; absolute provider deletion2026-10-16T23:26:47.932Z must not increase",
+  "costQualification": "No fully passing/cost-qualified minimum profile; separate list-price sensitivity excludes unknown charges"
+}

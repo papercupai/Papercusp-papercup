@@ -13,12 +13,15 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFile, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createScopedNativeSandboxSpawn, NATIVE_CONTAINER_EXEC_ENV } from '@papercusp/orchestrator/fleet-srt-spawn';
 
 import { backendBinOverrideEnvKey, resolveBackendLaunch } from '../backend-bin-resolve.mjs';
+import { codexCliResponsesBody, codexCliResponsesCompletionSse } from '../inference-gateway/codex-cli-bridge';
+import { startBenchEgress } from './bench-egress';
 import {
   CONTAINER_CODEX_BIN_PATH,
   materializeDockerExecWrapper,
@@ -48,7 +51,7 @@ async function command(bin: string, args: string[], env?: NodeJS.ProcessEnv, tim
   return result;
 }
 
-async function startContainer(extra: string[] = []): Promise<string> {
+async function startContainer(extra: string[] = [], network = 'none'): Promise<string> {
   // A failed docker client can still have allocated the container. Own its name
   // before the call, so afterAll can clean a partial create without a returned id.
   const name = `container-exec-proof-${randomUUID()}`;
@@ -56,7 +59,7 @@ async function startContainer(extra: string[] = []): Promise<string> {
   try {
     // Separate allocation from runtime startup so a deadline identifies the
     // engine operation that stalled. A combined run -d hid that distinction.
-    const created = await command('docker', ['create', '--name', name, '--network', 'none', ...extra, 'alpine', 'sleep', '300']);
+    const created = await command('docker', ['create', '--name', name, '--network', network, ...extra, 'alpine', 'sleep', '300']);
     expect(created.status, JSON.stringify(created)).toBe(0);
     const id = created.stdout.trim();
     expect(id).toMatch(/^[a-f0-9]{64}$/);
@@ -229,7 +232,7 @@ describe('container exec target against a live container', () => {
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain('model = "frozen"');
     // Only this session is visible inside the container; session-8 and its token stay on the host.
-    expect(r.stdout.split('\n').filter(l => l.startsWith('session-'))).toEqual(['session-7']);
+    expect(r.stdout.split('\n').filter((l: string) => l.startsWith('session-'))).toEqual(['session-7']);
     // Host readers (rollout/usage ingest) see the container's write through the symlink.
     expect(readFileSync(join(homes, 'session-7', 'rollout.jsonl'), 'utf8')).toBe('from-container\n');
     } catch (error) { primaryError = error; throw error; }
@@ -249,6 +252,198 @@ describe('container exec target against a live container', () => {
     } catch (error) { primaryError = error; throw error; }
     finally { await removeContainer(cid, primaryError); }
   });
+
+  it('preserves the git submission diff and opaque session carry across wrapper recreation', async () => {
+    const base = mkdtempSync(join(root, 'resume-'));
+    const checkout = join(base, 'checkout');
+    const homes = join(base, 'homes'), perHomes = join(base, 'task-homes');
+    const home = join(homes, 'session-7');
+    for (const dir of [checkout, home, perHomes]) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(home, 'config.toml'), 'model = "frozen"\n');
+    writeFileSync(join(checkout, 'answer.txt'), 'before\n');
+    // Git owns only this disposable fixture. No operation touches the shared checkout.
+    const git = (...args: string[]) => {
+      const result = spawnSync('git', ['-C', checkout, ...args], { encoding: 'utf8', timeout: 10_000 });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout;
+    };
+    git('init', '--quiet');
+    git('add', 'answer.txt');
+    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      '-c', 'commit.gpgSign=false', 'commit', '--quiet', '-m', 'fixture base');
+    const head = git('rev-parse', 'HEAD');
+    const carry = '{"type":"compacted","encrypted_content":"opaque-session-context"}\n';
+    const cid = await startContainer(['-v', `${checkout}:/app`, '-v', `${perHomes}:${homes}`]);
+    let primaryError: unknown;
+    try {
+      const target = { kind: 'docker-exec' as const, containerId: cid, workdir: '/app', binPath: '/bin/sh',
+        sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: perHomes }] } };
+      const env = { PATH: process.env.PATH ?? '', CODEX_HOME: home };
+      const first = materializeDockerExecWrapper(target, { dir: mkdtempSync(join(root, 'before-resume-')) });
+      const written = await command(first.wrapperPath, ['-c',
+        'test "$PWD" = /app && printf "after\\n" > answer.txt && printf "%s" "$1" > "$CODEX_HOME/rollout.jsonl"',
+        'carry-fixture', carry,
+      ], env);
+      expect(written.status, written.stderr).toBe(0);
+      expect(readFileSync(join(home, 'rollout.jsonl'), 'utf8')).toBe(carry);
+      const diff = git('diff', '--', 'answer.txt');
+      expect(diff).toContain('-before\n+after');
+      rmSync(first.dir, { recursive: true, force: true });
+
+      // A fresh wrapper must reuse the relocated home and original task checkout.
+      const resumed = materializeDockerExecWrapper(target, { dir: mkdtempSync(join(root, 'after-resume-')) });
+      const read = await command(resumed.wrapperPath, ['-c',
+        'test "$PWD" = /app && test "$(cat answer.txt)" = after && cat "$CODEX_HOME/rollout.jsonl"',
+      ], env);
+      expect(read.status, read.stderr).toBe(0);
+      expect(read.stdout).toBe(carry);
+      expect(readFileSync(join(home, 'rollout.jsonl'), 'utf8')).toBe(carry);
+      expect(readFileSync(join(perHomes, 'session-7', 'rollout.jsonl'), 'utf8')).toBe(carry);
+      expect(git('rev-parse', 'HEAD')).toBe(head);
+      expect(git('diff', '--', 'answer.txt')).toBe(diff);
+    } catch (error) { primaryError = error; throw error; }
+    finally { await removeContainer(cid, primaryError); }
+  });
+
+  it('delivers minted managed carry to a fresh native container session and resumes its git checkpoint', async () => {
+    const { mintCarryRespawnArgs } = await import('../../../../apps/operator/scripts/psu-launcher.mjs');
+    const base = mkdtempSync(join(root, 'native-carry-'));
+    const checkout = join(base, 'checkout'), homes = join(base, 'homes'), perHomes = join(base, 'task-homes');
+    const home = join(homes, 'session-7');
+    const carryRoot = join(base, '.papercusp');
+    // Docker creates an absent bind source as root, regardless of --user.
+    // Establish host custody before allocation and verify it again before minting.
+    for (const dir of [checkout, home, perHomes, carryRoot]) mkdirSync(dir, { recursive: true });
+    expect(statSync(carryRoot).uid).toBe(process.getuid!());
+    writeFileSync(join(checkout, 'answer.txt'), 'before\n');
+    const git = (...args: string[]) => {
+      const result = spawnSync('git', ['-C', checkout, ...args], { encoding: 'utf8', timeout: 10_000 });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout;
+    };
+    git('init', '--quiet'); git('add', 'answer.txt');
+    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgSign=false',
+      'commit', '--quiet', '-m', 'fixture base');
+    const head = git('rev-parse', 'HEAD');
+    const requests: Array<Record<string, unknown>> = [];
+    const provider = createServer(async (req, res) => {
+      if (req.method !== 'POST' || !req.url?.endsWith('/responses')) { res.writeHead(404).end(); return; }
+      const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+      requests.push(body);
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      // Scripted protocol output only; this listener has no credentials or forwarding path.
+      res.end(codexCliResponsesCompletionSse(codexCliResponsesBody({ model: String(body.model),
+        text: 'Private native carry protocol acknowledgement.', inputTokens: 100, outputTokens: 8 })));
+    });
+    await new Promise<void>((done, reject) => { provider.once('error', reject); provider.listen(0, '127.0.0.1', done); });
+    const port = (provider.address() as { port: number }).port;
+    let egress: Awaited<ReturnType<typeof startBenchEgress>> | undefined;
+    let lease: Awaited<ReturnType<NonNullable<typeof egress>['openTaskNetwork']>> | undefined;
+    let cid: string | undefined;
+    let primaryError: unknown;
+    try {
+      egress = await startBenchEgress({ runId: `native-carry-${randomUUID()}`,
+        endpoints: [{ name: 'gw', listenPort: 8788, perTask: true }] });
+      lease = await egress.openTaskNetwork('carry');
+      egress.bindTaskEndpoint(lease.network, 'gw', port);
+      writeFileSync(join(home, 'AGENTS.md'), 'Private container carry fixture. Preserve the task checkout.\n');
+      writeFileSync(join(home, 'config.toml'), [
+        'model = "gpt-6-luna"', 'model_provider = "private-carry"', 'web_search = "disabled"',
+        '[features]', 'apps = false', 'plugins = false', 'remote_plugin = false',
+        '[model_providers.private-carry]', 'name = "Unpaid local protocol fixture"',
+        `base_url = "${egress.originFor('gw')}/v1"`, 'wire_api = "responses"',
+        'requires_openai_auth = false', 'supports_websockets = false', 'request_max_retries = 0', 'stream_max_retries = 0', '',
+      ].join('\n'));
+      cid = await startContainer(['--user', `${process.getuid!()}:${process.getgid!()}`,
+        '-v', `${checkout}:/app`, '-v', `${perHomes}:${homes}`,
+        '-v', `${carryRoot}:${carryRoot}:ro`,
+        '-v', `${resolveContainerCodexBinary()}:${CONTAINER_CODEX_BIN_PATH}:ro`], lease.network);
+      const target = { kind: 'docker-exec' as const, containerId: cid, workdir: '/app', binPath: CONTAINER_CODEX_BIN_PATH,
+        sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: perHomes }] } };
+      const env = { PATH: process.env.PATH ?? '', CODEX_HOME: home };
+      const args = ['exec', '--json', '--skip-git-repo-check', '--sandbox', 'danger-full-access'];
+      const predecessorOnly = `predecessor-only-${randomUUID()}`;
+      const first = materializeDockerExecWrapper(target, { dir: mkdtempSync(join(root, 'native-before-')) });
+      const prepared = await command(first.wrapperPath, [...args, predecessorOnly], env, 60_000);
+      expect(prepared.status, JSON.stringify(prepared)).toBe(0);
+      const sessionId = (output: string) => {
+        const started = output.split('\n').find(line => {
+          try { return JSON.parse(line).type === 'thread.started'; } catch { return false; }
+        });
+        expect(started, output).toBeDefined();
+        return JSON.parse(started!).thread_id as string;
+      };
+      const originalId = sessionId(prepared.stdout);
+      expect(originalId).toMatch(/^[a-f0-9-]{36}$/);
+      expect(requests).toHaveLength(1);
+      expect(JSON.stringify(requests[0])).toContain(predecessorOnly);
+      writeFileSync(join(checkout, 'answer.txt'), 'after\n');
+      const diff = git('diff', '--', 'answer.txt');
+      expect(diff).toContain('-before\n+after');
+      const checkpoint = `Continue the private task. Preserve this checkpoint: ${randomUUID()}`;
+      expect(statSync(carryRoot).uid).toBe(process.getuid!());
+      const carry = mintCarryRespawnArgs([], { agent: 'codex', home: base, codexHome: home,
+        ownerId: 'su-private-container-carry', systemPromptAddendum: checkpoint });
+      if (!carry.carryText || !carry.launchContextPath) throw new Error('Carry minting must produce text and a launch context');
+      expect(carry.carryText).toContain(checkpoint);
+      expect(carry.carryText).toContain(`codex-carry-lineage predecessor:${originalId}`);
+      expect(readFileSync(carry.launchContextPath, 'utf8').trim()).toBe(carry.carryText);
+      rmSync(first.dir, { recursive: true, force: true });
+      const successor = materializeDockerExecWrapper(target, { dir: mkdtempSync(join(root, 'native-after-')) });
+      const resumed = await command(successor.wrapperPath, [...args, carry.carryText], env, 60_000);
+      expect(resumed.status, JSON.stringify(resumed)).toBe(0);
+      const successorId = sessionId(resumed.stdout);
+      expect(successorId).toMatch(/^[a-f0-9-]{36}$/);
+      expect(successorId).not.toBe(originalId);
+      expect(requests).toHaveLength(2);
+      const received = JSON.stringify(requests[1]);
+      expect(received).toContain(checkpoint);
+      expect(received).toContain(`codex-carry-lineage predecessor:${originalId}`);
+      expect(received).toContain('<cwd>/app</cwd>');
+      expect(received).not.toContain(predecessorOnly);
+      expect(received).not.toContain(checkout);
+      // A fresh carry launch and a native resume are different boundaries. Reopen
+      // the persisted successor through another wrapper, without re-supplying its
+      // carry, and require the native CLI to recover that exact session context.
+      rmSync(successor.dir, { recursive: true, force: true });
+      const reopened = materializeDockerExecWrapper(target, { dir: mkdtempSync(join(root, 'native-resume-')) });
+      const resumeText = `Resume the retained private checkpoint: ${randomUUID()}`;
+      const continued = await command(reopened.wrapperPath,
+        ['exec', 'resume', '--json', '--skip-git-repo-check', successorId, resumeText], env, 60_000);
+      expect(continued.status, JSON.stringify(continued)).toBe(0);
+      expect(sessionId(continued.stdout)).toBe(successorId);
+      expect(requests).toHaveLength(3);
+      const resumeInput = JSON.stringify(requests[2]);
+      expect(resumeInput).toContain(checkpoint);
+      expect(resumeInput).toContain(`codex-carry-lineage predecessor:${originalId}`);
+      expect(resumeInput).toContain('Private native carry protocol acknowledgement.');
+      expect(resumeInput).toContain(resumeText);
+      expect(resumeInput).toContain('<cwd>/app</cwd>');
+      expect(resumeInput).not.toContain(predecessorOnly);
+      expect(resumeInput).not.toContain(checkout);
+      expect(requests.map(body => body.model)).toEqual(['gpt-6-luna', 'gpt-6-luna', 'gpt-6-luna']);
+      expect(git('rev-parse', 'HEAD')).toBe(head);
+      expect(git('diff', '--', 'answer.txt')).toBe(diff);
+      expect(readFileSync(join(checkout, 'answer.txt'), 'utf8')).toBe('after\n');
+      expect(egress.stats().gw.connections).toBeGreaterThan(0);
+      console.info('CONTAINER_NATIVE_CARRY_VERIFIED', JSON.stringify({ originalId, successorId,
+        modelRequests: requests.length, providerForwarding: false, checkpointPreserved: true,
+        freshNativeSession: true, nativeResumeVerified: true }));
+    } catch (error) { primaryError = error; throw error; }
+    finally {
+      const failures: unknown[] = [];
+      const clean = async (action: () => Promise<unknown>) => { try { await action(); } catch (error) { failures.push(error); } };
+      if (cid) await clean(() => removeContainer(cid!));
+      if (lease) await clean(async () => expect(await lease!.release()).toEqual([]));
+      if (egress) await clean(async () => expect((await egress!.stop()).errors).toEqual([]));
+      provider.closeAllConnections();
+      await clean(() => new Promise<void>((done, reject) => provider.close(error => error ? reject(error) : done())));
+      if (failures.length) throw new AggregateError([...(primaryError ? [primaryError] : []), ...failures], 'Native carry cleanup failed');
+    }
+  }, 180_000);
 
   it('runs the musl Codex from the host install, mounted read-only at the seam path, with no network', async () => {
     const musl = resolveContainerCodexBinary();

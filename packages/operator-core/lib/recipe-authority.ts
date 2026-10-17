@@ -500,6 +500,13 @@ function unresolvedReason(cause: RecipeUnresolvedCause | null | undefined): stri
         'Rewrite the recipe to derive the current sender/cursor from live context, or run the script directly via ' +
         'code:run; until then it is not safely reusable through recipes:run.'
       );
+    case 'volatile-goal-reference':
+      return (
+        `the recipe script calls \`${cause.tool}\` for a caller-owned goal identity, which can refer to a ` +
+        'different or retired GOAL-mode run when reused from a later wake. The authority model cannot prove a ' +
+        'saved goal id against the current caller, so resolve the live goal in the current session or run the ' +
+        'script directly via code:run; it is not safely reusable through recipes:run.'
+      );
     case 'volatile-session-state':
       return (
         `the recipe script calls \`${cause.tool}\`, which writes caller-scoped session carry state whose values ` +

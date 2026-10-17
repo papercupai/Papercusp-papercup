@@ -63,6 +63,19 @@ afterEach(() => {
 });
 
 describe('coalescing identical decisions (WI-6554700010009713)', () => {
+  it('does not merge unknown and measured-empty populations with the same reason', async () => {
+    const f = fakeSql();
+    const decision = { eligible: 0, applied: 0, reason: 'dirty-checkout', scope: 'task' };
+    observeFallback('gate-pass-reuse', { ...decision, populationKnown: false }, { sql: f.sql });
+    observeFallback('gate-pass-reuse', { ...decision, populationKnown: false }, { sql: f.sql });
+    observeFallback('gate-pass-reuse', { ...decision, populationKnown: true }, { sql: f.sql });
+    expect(await flushFallbackObservations()).toMatchObject({ written: 2, failed: 0 });
+    expect(f.inserts.flat()).toEqual([
+      expect.objectContaining({ eligible: 0, applied: 0, population_known: false, samples: 2 }),
+      expect.objectContaining({ eligible: 0, applied: 0, population_known: true, samples: 1 }),
+    ]);
+  });
+
   it('folds identical decisions into ONE row whose counts are the sums', async () => {
     const f = fakeSql();
     for (let i = 0; i < 3; i++) {
@@ -137,6 +150,26 @@ describe('coalescing identical decisions (WI-6554700010009713)', () => {
 });
 
 describe('summarizeFallbackWindow', () => {
+  it('preserves the known fraction while unknown samples prevent overall qualification', () => {
+    const known = { reason: 'applied', samples: 1, eligible: 20, applied: 20, unknownSamples: 0 };
+    const unknown = { reason: 'dirty-checkout', samples: 2, eligible: 0, applied: 0, unknownSamples: 2 };
+    expect(summarizeFallbackWindow('gate-pass-reuse', 1000, [known])).toMatchObject({
+      eligible: 20, applied: 20, knownAppliedRate: 1, appliedRate: 1, populationComplete: true, unknownSamples: 0,
+    });
+    const mixed = summarizeFallbackWindow('gate-pass-reuse', 1000, [known, unknown]);
+    expect(mixed).toMatchObject({
+      samples: 3, eligible: 20, applied: 20, knownAppliedRate: 1, appliedRate: null,
+      populationComplete: false, unknownSamples: 2,
+    });
+    expect(mixed.reasons.find((r) => r.reason === 'dirty-checkout')).toMatchObject({ unknownSamples: 2 });
+    expect(summarizeFallbackWindow('gate-pass-reuse', 1000, [unknown])).toMatchObject({
+      eligible: 0, applied: 0, knownAppliedRate: null, appliedRate: null, populationComplete: false, unknownSamples: 2,
+    });
+    expect(summarizeFallbackWindow('gate-pass-reuse', 1000, [
+      { reason: 'no-candidates', samples: 1, eligible: 0, applied: 0, unknownSamples: 0 },
+    ])).toMatchObject({ eligible: 0, appliedRate: null, populationComplete: false, unknownSamples: 0 });
+  });
+
   it('computes the applied rate and names the reason that dominates the fallen-back units', () => {
     const w = summarizeFallbackWindow('gate.pass-reuse', 3_600_000, [
       { reason: 'applied', samples: 3, eligible: 300, applied: 300 },
@@ -159,7 +192,7 @@ describe('summarizeFallbackWindow', () => {
       { reason: 'x', samples: 2, eligible: 6, applied: 1 },
     ]);
     expect(w.reasons).toHaveLength(1);
-    expect(w.reasons[0]).toEqual({ reason: 'x', samples: 3, eligible: 10, applied: 2, fellBack: 8 });
+    expect(w.reasons[0]).toEqual({ reason: 'x', samples: 3, eligible: 10, applied: 2, unknownSamples: 0, fellBack: 8 });
     expect(w.dominantShare).toBe(1);
   });
 
@@ -173,6 +206,12 @@ describe('summarizeFallbackWindow', () => {
 });
 
 describe('fallbackDecisionProblem', () => {
+  it('refuses invented counts for an explicitly unknown population', () => {
+    expect(fallbackDecisionProblem('m', { eligible: 1, applied: 0, reason: 'r', populationKnown: false })).toMatch(/unknown/);
+    expect(fallbackDecisionProblem('m', { eligible: 0, applied: 0, reason: 'r', populationKnown: false })).toBeNull();
+    expect(fallbackDecisionProblem('m', { eligible: 0, applied: 0, reason: 'r', populationKnown: 'false' as unknown as boolean })).toMatch(/boolean/);
+  });
+
   it('accepts a well-formed decision', () => {
     expect(fallbackDecisionProblem('gate.pass-reuse', { eligible: 3, applied: 0, reason: 'proofs-unavailable' })).toBeNull();
   });

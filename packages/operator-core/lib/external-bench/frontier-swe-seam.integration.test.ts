@@ -55,7 +55,8 @@ describe('FrontierSWE seam with an in-container Codex session home (real docker)
     const sessionHome = join(homesRoot, 'session-11');
     // The operator writes the session home (and another session's) on the host before launch.
     mkdirSync(sessionHome, { recursive: true });
-    writeFileSync(join(sessionHome, 'config.toml'), 'model = "frozen"\n');
+    writeFileSync(join(sessionHome, 'config.toml'), 'model = "frozen"\n', { mode: 0o600 });
+    expect(readFileSync(join(sessionHome, 'config.toml'), 'utf8')).toBe('model = "frozen"\n');
     mkdirSync(join(homesRoot, 'session-12'), { recursive: true });
     writeFileSync(join(homesRoot, 'session-12', 'auth.json'), '{"token":"other-session"}\n');
     // A stub Codex: proves it runs from the read-only seam mount, and writes NESTED dirs as the container user.
@@ -68,6 +69,12 @@ describe('FrontierSWE seam with an in-container Codex session home (real docker)
         'id -u',
         'cat "$CODEX_HOME/config.toml"',
         'ls "$(dirname "$CODEX_HOME")"',
+        // Native Codex may atomically replace its config with a private file.
+        // That replacement inherits the container's uid, unlike an in-place write.
+        'umask 077',
+        'printf \'model = "container-updated"\\n\' > "$CODEX_HOME/config.next"',
+        'mv "$CODEX_HOME/config.next" "$CODEX_HOME/config.toml"',
+        'umask 022',
         'mkdir -p "$CODEX_HOME/sessions/2026/10"',
         'echo rollout > "$CODEX_HOME/sessions/2026/10/r.jsonl"',
         `mkdir -p "${sqliteRoot}/session-11/db"`,
@@ -120,6 +127,18 @@ describe('FrontierSWE seam with an in-container Codex session home (real docker)
     // While the task runs, host readers see the container's writes through the symlink.
     expect(lstatSync(sessionHome).isSymbolicLink()).toBe(true);
     expect(readFileSync(join(sessionHome, 'sessions/2026/10/r.jsonl'), 'utf8')).toBe('rollout\n');
+    const privateConfig = join(sessionHome, 'config.toml');
+    const beforeHandback = statSync(privateConfig);
+    expect(beforeHandback.mode & 0o777).toBe(0o600);
+    // Rootless Docker may map the container user to this host user. On rootful
+    // Docker, the private replacement is unreadable until the maintained handback.
+    if (beforeHandback.uid !== hostOwner.uid && hostOwner.uid !== 0) {
+      expect(() => readFileSync(privateConfig, 'utf8')).toThrow(/EACCES/);
+    } else {
+      expect(readFileSync(privateConfig, 'utf8')).toBe('model = "container-updated"\n');
+    }
+    console.log('SEAM_PRIVATE_CONFIG_HANDBACK', JSON.stringify({ containerUid,
+      hostUid: hostOwner.uid, beforeUid: beforeHandback.uid, mode: beforeHandback.mode & 0o777 }));
 
     await seam.teardown(h);
 
@@ -130,7 +149,9 @@ describe('FrontierSWE seam with an in-container Codex session home (real docker)
     for (const { perTaskDir } of m.roots) expect(existsSync(perTaskDir)).toBe(false);
     // The session dir is a real dir in its shared root again, with everything the container wrote.
     expect(lstatSync(sessionHome).isSymbolicLink()).toBe(false);
-    expect(readFileSync(join(sessionHome, 'config.toml'), 'utf8')).toBe('model = "frozen"\n');
+    expect(readFileSync(privateConfig, 'utf8')).toBe('model = "container-updated"\n');
+    expect(statSync(privateConfig).uid).toBe(hostOwner.uid);
+    expect(statSync(join(sessionHome, 'config.toml')).mode & 0o777).toBe(0o600);
     expect(readFileSync(join(sessionHome, 'sessions/2026/10/r.jsonl'), 'utf8')).toBe('rollout\n');
     const sqliteHome = join(sqliteRoot, 'session-11');
     expect(readFileSync(join(sqliteHome, 'db/state.sqlite'), 'utf8')).toBe('state\n');

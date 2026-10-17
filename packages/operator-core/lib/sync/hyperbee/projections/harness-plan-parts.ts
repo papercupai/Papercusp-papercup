@@ -296,9 +296,10 @@ function defaultRecomposeSink(opts: HarnessPlanPartsProjectionOpts) {
       },
     );
     if (!admission.admitted) {
+      const reason =
+        admission.rejection?.message ?? admission.verdict.diagnostics.map((diagnostic) => diagnostic.message).join('; ');
       console.warn(
-        `[plan-dependency-admission] rejected federated part recompose for '${planSlug}': ` +
-          admission.verdict.diagnostics.map((diagnostic) => diagnostic.message).join('; '),
+        `[plan-write-admission] rejected federated part recompose for '${planSlug}': ${reason}`,
       );
     }
   };

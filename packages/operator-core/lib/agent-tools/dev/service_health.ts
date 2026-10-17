@@ -732,6 +732,7 @@ export default defineTool({
       services: z.unknown().optional(),
       telemetry: z.unknown().optional(),
       supervision: z.unknown().optional(),
+      dhtUniverse: z.unknown().optional(),
       healthPhaseTimingsMs: z.record(z.string(), z.number()),
       unitStates: z.unknown().optional(),
       unitsUnknown: z.unknown().optional(),

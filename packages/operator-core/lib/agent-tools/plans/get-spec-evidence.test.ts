@@ -5,6 +5,13 @@
  * shape and size.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  dispatchProjectedTool,
+  lookupByMcpName,
+  readJsonResult,
+  type UnifiedToolContext,
+} from '@papercusp/agent-mcp';
+import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 
 vi.mock('../_harness-scope', async (original) => ({
   ...(await original<typeof import('../_harness-scope')>()),
@@ -29,6 +36,23 @@ type EvidenceRow = Awaited<ReturnType<typeof listSpecEvidence>>[number];
 
 const call = async (args: Record<string, unknown>) =>
   ((await tool.handler(tool.args.parse(args) as never, {} as never)) as { data: Record<string, any> }).data;
+
+const makeDispatchContext = (): UnifiedToolContext => ({
+  log: vi.fn(),
+  signal: new AbortController().signal,
+  progress: vi.fn(),
+  emit: vi.fn(),
+  workspaceId: 'default',
+  runId: 'get-spec-evidence-dispatch-test',
+  isSuperuser: true,
+  uiClientId: 'su-get-spec-evidence-test',
+  role: 'su',
+  gateBypass: { role: true, capability: true, quota: true },
+  transport: 'mcp',
+  requestedFormat: 'json',
+  contextTier: 'trimmed',
+  tx: {},
+});
 
 const binding = (id: number, specId: string, overall: 'current' | 'stale' | 'unknown'): EvidenceRow => ({
   id,
@@ -138,6 +162,12 @@ describe('plans:get-spec-evidence detail levels', () => {
       bindingIds: [],
       includeRetracted: true,
     }).success).toBe(false);
+  });
+
+  it('publishes the cross-field audit selector contract in the input schema', () => {
+    expect(tool.args.shape.bindingIds.description).toMatch(/required as a non-empty selector when includeRetracted:true/i);
+    expect(tool.args.shape.includeRetracted.description).toMatch(/requires bindingIds with at least one exact row id/i);
+    expect(tool.description).toMatch(/includeRetracted:true.*non-empty exact bindingIds selector/i);
   });
 
   it.each([[true, 'full'], [false, 'summary']] as const)('detail %s and %s preserve scope, currentness and tier', async (booleanDetail, stringDetail) => {
@@ -320,5 +350,46 @@ describe('plans:get-spec-evidence detail levels', () => {
     // The summary tier never carried titles and is unchanged.
     const summary = await call({ harness: 'papercusp', slug: 'plan-a' });
     expect(summary.evidence[0]).not.toHaveProperty('testRunExecution');
+  });
+
+  it("preserves detail:'full' binding adequacy through a trimmed projected dispatch", async () => {
+    const large = binding(42, 'SPEC-A', 'current');
+    large.details = {
+      ...large.details,
+      observations: 'evidence-'.repeat(1_500),
+      adequacy: {
+        ...(large.details.adequacy as Record<string, unknown>),
+        testCases: ['selected evidence case'],
+      },
+    };
+    listEvidence.mockResolvedValue([large]);
+
+    const direct = await call({ harness: 'papercusp', slug: 'plan-a', detail: 'full' });
+    const rawChars = JSON.stringify(direct).length;
+    expect(rawChars).toBeGreaterThan(PAYLOAD_TIER_RATCHET_CHARS);
+    expect(rawChars).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+
+    const projected = lookupByMcpName('plans:get-spec-evidence');
+    expect(projected).toBeDefined();
+    expect(projected?.ignoreSessionPayloadTier).toBe(true);
+    expect(projected?.skipResultDoor).toBe('oversize-by-design');
+
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      'plans:get-spec-evidence',
+      { harness: 'papercusp', slug: 'plan-a', detail: 'full' },
+      makeDispatchContext(),
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const payload = readJsonResult<{
+      detail: 'full';
+      evidence: Array<{ details: { adequacy: { testCases: string[] } } }>;
+      _projection?: unknown;
+    }>(dispatched.result!);
+    expect(payload?._projection).toBeUndefined();
+    expect(payload?.detail).toBe('full');
+    expect(payload?.evidence[0]?.details.adequacy.testCases).toEqual(['selected evidence case']);
   });
 });

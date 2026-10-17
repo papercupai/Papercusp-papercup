@@ -292,6 +292,14 @@ describe('adapters/omp.mjs — parse (mid-turn)', () => {
     );
     expect(req?.toolCalls).toEqual([{ tool: 'grep', toolInput: '', toolResponse: 'hit' }]);
   });
+  it('keeps edited paths from full OMP arguments before clamping recall input', () => {
+    const req = withSid(() => parse('mid-turn', turnEnd(
+      [{ toolCallId: 'edit-1', toolName: 'edit', content: [{ type: 'text', text: 'ok' }] }],
+      [{ type: 'toolCall', id: 'edit-1', name: 'edit', arguments: { oldText: 'x'.repeat(900), path: '/repo/lib/target.ts' } }],
+    )));
+    expect(req?.toolCalls?.[0]).toMatchObject({ editedPaths: ['/repo/lib/target.ts'] });
+    expect(req?.toolCalls?.[0].toolInput).toHaveLength(400);
+  });
 
   it('clamps to 12 calls and 400 chars per field', () => {
     const results = Array.from({ length: 30 }, (_, i) => ({

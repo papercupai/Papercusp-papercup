@@ -328,6 +328,8 @@ const PEER_LOG_WORKSPACE_OWNED = [
  * (across-workspaces D-1: "config becomes fully workspace-owned".)
  */
 const WORKSPACE_OWNED_EXPLICIT = [
+  // Native push dedupe/budget/telemetry is owned by a local workspace/session (P-034).
+  'code_intel_pushes',
   'harness_prompt_overrides',     // the (workspace,harness,role) 3-tier override — across-workspaces Phase 1b
   'orchestrator_settings', 'setup_wizard_state', 'workspace_backup_settings',
   'pr_reviewer_settings', 'insights_first_visit', 'known_schema_versions',

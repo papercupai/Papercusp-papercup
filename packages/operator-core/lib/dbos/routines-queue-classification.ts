@@ -102,10 +102,13 @@ export const TRIGGERS_QUEUE_ACTIONS = new Set<string>([
  * Long-running CPU/memory-heavy background actions → a bounded serial lane.
  *
  * `gitnexus-reindex` shells out to `gitnexus analyze` and has measured multi-hour
- * fire budgets. Keeping it on the shared queue lets one reindex consume the same
- * admission window as short housekeeping routines, which is the starvation shape
- * this classification layer exists to prevent. Keep this exact allow-list narrow:
- * a new action belongs here only after its runtime and resource profile are known.
+ * fire budgets. Dream cycles are LLM-bound and carry a bounded ten-minute cycle
+ * deadline, so they have the same starvation risk when a large overdue shared-queue
+ * cohort consumes the admission window. Leaving either on the shared queue lets one
+ * long fire consume the same admission window as short housekeeping routines, which
+ * is the starvation shape this classification layer exists to prevent. Keep this
+ * exact allow-list narrow: a new action belongs here only after its runtime and
+ * resource profile are known.
  *
  * `work-item-admission-bulk-dedup` is LLM-bound rather than CPU-bound, but its wall
  * clock is the same shape: a census fire measured 17m and a bulk stage over a
@@ -118,6 +121,7 @@ export const TRIGGERS_QUEUE_ACTIONS = new Set<string>([
 export const HEAVY_ROUTINE_ACTIONS = new Set<string>([
   'gitnexus-reindex',
   'work-item-admission-bulk-dedup',
+  'dream-cycle',
 ]);
 
 /**

@@ -18,14 +18,19 @@ export function projectFromTscCommand(tscCommand: string): {
  * `tsc --pretty false` prints when run from the repo root. The gate's existing parser and
  * per-file counter therefore consume it unchanged.
  *
- * @param {{ root: string, tscCommand: string, files: Iterable<string>, tsModule?: typeof ts }} args
+ * @param {{ root: string, tscCommand: string, files: Iterable<string>, tsModule?: typeof ts, onProgress?: (event: { phase: string, file?: string, sourceFiles?: number }) => void }} args
  * @returns {{ project: string, members: string[], nonMembers: string[], output: string, diagnosticCount: number }}
  */
-export function legFileDiagnostics({ root, tscCommand, files, tsModule }: {
+export function legFileDiagnostics({ root, tscCommand, files, tsModule, onProgress }: {
     root: string;
     tscCommand: string;
     files: Iterable<string>;
     tsModule?: typeof ts;
+    onProgress?: (event: {
+        phase: string;
+        file?: string;
+        sourceFiles?: number;
+    }) => void;
 }): {
     project: string;
     members: string[];

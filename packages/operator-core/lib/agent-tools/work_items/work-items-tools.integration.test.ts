@@ -47,6 +47,7 @@ import {
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { createWorkItem } from '../../work-items';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { shapeWorkItemsGet } from './get-shape';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
@@ -210,7 +211,7 @@ vi.mock('../coordination/recipient-resolve', async (orig) => {
 });
 
 const { default: createTool } = await import('./create');
-const { default: getTool } = await import('./get');
+const { default: getTool, workItemsGetSourceReadOptions } = await import('./get');
 const { default: listTool } = await import('./list');
 const { default: setStateTool } = await import('./set_state');
 const { default: claimTool } = await import('./claim');
@@ -227,6 +228,8 @@ const { default: withdrawTool } = await import('./withdraw');
 
 // A superuser engineer ctx: resolveAgentIdentity reads uiClientId as the ownerId.
 const CTX = { isSuperuser: true, uiClientId: 'su-tester', workspaceId: 'default' } as never;
+// Only tests asserting full write echoes opt in; ordinary callers get compact receipts.
+const FULL_CTX = { ...(CTX as Record<string, unknown>), payloadTierOverride: 'full' };
 
 /** Invoke a tool handler and return its structured payload. Bulk-standardized verbs
  *  (create/claim/set_state/release/tag/promote) hand back `{ data: { ok, results,
@@ -303,6 +306,8 @@ beforeAll(async () => {
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(FLEET_MEMBERSHIP_EVENTS_DDL);
   await db.sql.unsafe(HFC_DDL);
+  // q-list includes canonical occurrence titles/evidence in its production SQL.
+  await db.sql.unsafe(readMigration('831-issue-occurrence-ledger.sql')).simple();
   // work_items:update's external-source ownership preflight reads the admission
   // ledger even when this test item has no admission row.
   await db.sql.unsafe(WORK_ADMISSIONS_MIN_DDL);
@@ -423,6 +428,60 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     const missRes = (missing.results as { ok: boolean; error?: string }[])[0]!;
     expect(missRes.ok).toBe(false);
     expect(missRes.error).toMatch(/not found/);
+  });
+
+  it.each([
+    { setting: 'lock_timeout', pgCode: '55P03' },
+    { setting: 'statement_timeout', pgCode: '57014' },
+  ])('R003: real PG $setting stays unavailable through shaping and recovers after contention', async ({ setting, pgCode }) => {
+    const projection = { pick: ['results[].id', 'results[].workItem.id', 'results[].workItem.state',
+      'results[].availability', 'results[].error', 'results[].retryable', 'results[].pgCode', 'counts', 'read'] };
+    // Fail the selection precondition before reserving a client or taking a
+    // real lock. Existing diagnostic fields must not turn a summary into full enrichment.
+    expect(workItemsGetSourceReadOptions(projection, false)).toBeDefined();
+    const created = await createOne({ kind: 'feature', title: 'R003 contention fixture', harness: 'papercup' });
+    expect(created.ok).toBe(true);
+    const id = (created.workItem as { id: string }).id;
+    const ids = [id, 'WI-999'];
+    const context = { ...(CTX as Record<string, unknown>), sourceProjection: projection };
+    const reader = await db.sql.reserve();
+    const originalSql = h.sql;
+    try {
+      // Both clients belong to this file's disposable database. Holding its base
+      // table blocks the actual reader behind both work-item views, with no mock
+      // of getWorkItem/getWorkItemsByIds and no lock on the operator database.
+      await reader`SELECT set_config(${setting}, '150ms', false)`;
+      h.sql = reader as unknown as postgres.Sql;
+      await db.sql.begin(async (blocker) => {
+        await blocker`LOCK TABLE harness_shared.work_items IN ACCESS EXCLUSIVE MODE`;
+        const unavailable = await call(getTool, { ids, harness: 'papercup', threadLimit: 0 }, context);
+        for (const tier of ['standard', 'trimmed'] as const) {
+          expect(shapeWorkItemsGet(unavailable, tier)).toMatchObject({
+            ok: false,
+            counts: { ok: 0, failed: 2 },
+            results: ids.map((requestedId) => ({ id: requestedId, ok: false,
+              availability: 'unavailable', error: 'timeout', retryable: true, pgCode })),
+            read: { schemaVersion: 'work-items-get-read-v1', mode: 'projected', requested: 2,
+              available: 0, absent: 0, unavailable: 2, outerStageAttribution: expect.any(String) },
+          });
+        }
+      });
+    } finally {
+      h.sql = originalSql;
+      try {
+        await reader`RESET lock_timeout`;
+        await reader`RESET statement_timeout`;
+      } finally {
+        reader.release();
+      }
+    }
+    // Unknown storage during contention must not be cached as "missing". Once
+    // the blocker is gone, distinguish the real item from the genuinely absent id.
+    const recovered = await call(getTool, { ids, harness: 'papercup', threadLimit: 0 }, context);
+    expect(recovered).toMatchObject({ counts: { ok: 1, failed: 1 }, results: [
+      { id, ok: true, availability: 'available', workItem: { id, state: 'open' } },
+      { id: 'WI-999', ok: false, availability: 'absent' },
+    ], read: { requested: 2, available: 1, absent: 1, unavailable: 0 } });
   });
 
   it('list hides historical chunks by default and exposes them through compatibility filters', async () => {
@@ -1223,7 +1282,7 @@ describe('work_items:create {assign_to} — atomic create+claim envelope (real P
   });
 
   it('issue-family: assign_to sets assignee + records the creator as assigned_by (delegator)', async () => {
-    const res = await createOne({ kind: 'task', title: 'delegate task', harness: 'papercup', assign_to: 'bee-3' });
+    const res = await createOne({ kind: 'task', title: 'delegate task', harness: 'papercup', assign_to: 'bee-3' }, FULL_CTX);
     expect(res.ok).toBe(true);
     const item = res.workItem as Record<string, unknown>;
     expect(item.assignee).toBe('bee-3');
@@ -1256,7 +1315,7 @@ describe('work_items body/summary alias round-trip (WI-4492, real PG)', () => {
   it('create accepts `body`, update accepts `summary`, and both PERSIST (get returns `summary`)', async () => {
     // create under the ALIAS `body` (the name update taught callers) — previously dropped,
     // which filed WI-4491/WI-4492 themselves as empty shells.
-    const created = await createOne({ kind: 'bug', title: 'alias round-trip', body: 'ALPHA original body', harness: 'papercup' });
+    const created = await createOne({ kind: 'bug', title: 'alias round-trip', body: 'ALPHA original body', harness: 'papercup' }, FULL_CTX);
     expect(created.ok).toBe(true);
     const id = (created.workItem as Record<string, unknown>).id as string;
     expect((created.workItem as Record<string, unknown>).summary).toBe('ALPHA original body');

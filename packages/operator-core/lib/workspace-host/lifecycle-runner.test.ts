@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
 import {
   WORKSPACE_HOST_RECOVERY_CONTRACT_VERSION,
   WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
@@ -318,6 +319,10 @@ describe('runWorkspaceHostLifecycle', () => {
 
   it('renders the current controller bootstrap before a repair plan and passes it only through provider context', async () => {
     const { store } = storeHarness();
+    const target = await store.readTarget('workspace-1', 'host-1');
+    vi.mocked(store.readTarget).mockResolvedValue({ ...target!, hostedCustomerWorkspaceId: 'customer-1',
+      durableStorageAdmission: { operationId: 'original-provision', customerWorkspaceId: 'customer-1',
+        allocation: { dbGiB: 12, workspaceGiB: 8 } } });
     const { provider, apply } = providerHarness(true);
     apply.mockResolvedValue({
       operationId: 'op-1',
@@ -337,8 +342,35 @@ describe('runWorkspaceHostLifecycle', () => {
     expect(renderHostBootstrap).toHaveBeenCalledWith('host-1');
     expect(provider.plan).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'repair' }),
-      expect.objectContaining({ hostBootstrapScript: '#!/usr/bin/env bash\necho repaired' }),
+      expect.objectContaining({ hostBootstrapScript: '#!/usr/bin/env bash\necho repaired',
+        durableTenantIdentity: workspaceHostDurableTenantIdentity('workspace-1', 'customer-1'),
+        durableStorageAllocation: { dbGiB: 12, workspaceGiB: 8 } }),
     );
+  });
+
+  it.each([null, { dbGiB: 20, workspaceGiB: 0 }, { dbGiB: -1, workspaceGiB: 21 }])(
+    'refuses an unknown or unbootable original pool allocation before provider calls: %j', async allocation => {
+      const { store } = storeHarness();
+      const target = await store.readTarget('workspace-1', 'host-1');
+      vi.mocked(store.readTarget).mockResolvedValue({ ...target!, hostedCustomerWorkspaceId: 'customer-1',
+        durableStorageAdmission: { operationId: 'original-provision', customerWorkspaceId: 'customer-1', allocation } });
+      const { provider } = providerHarness();
+      await expect(runWorkspaceHostLifecycle(input(provider, store))).rejects.toBeInstanceOf(WorkspaceHostProvisioningRequestError);
+      expect(provider.validateConnection).not.toHaveBeenCalled();
+      expect(provider.plan).not.toHaveBeenCalled();
+      expect(provider.apply).not.toHaveBeenCalled();
+    },
+  );
+
+  it('refuses a reservation for a different customer before any provider call', async () => {
+    const { store } = storeHarness();
+    const { provider } = providerHarness();
+    const target = await store.readTarget('workspace-1', 'host-1');
+    vi.mocked(store.readTarget).mockResolvedValue({ ...target!, hostedCustomerWorkspaceId: 'customer-1' });
+    await expect(runWorkspaceHostLifecycle({ ...input(provider, store), hostedCustomerWorkspaceId: 'foreign' }))
+      .rejects.toThrow('does not match stored host binding');
+    expect(provider.plan).not.toHaveBeenCalled();
+    expect(provider.apply).not.toHaveBeenCalled();
   });
 
   it('forwards an operation-scoped release pin through the lifecycle runner', async () => {
@@ -651,6 +683,19 @@ describe('runWorkspaceHostLifecycle', () => {
     );
     // Repair resets the existing instance on its current image; it must not rewrite the image.
     expect(store.recordImage).not.toHaveBeenCalled();
+  });
+
+  it.each(['start', 'restart'] as const)('defers hosted %s completion to the retained-data controller', async (action) => {
+    const { store } = storeHarness();
+    const { provider, apply } = providerHarness();
+    apply.mockResolvedValue({ operationId: 'op-1', stepId: 'start-instance', state: 'applied',
+      observedAt: '2026-08-27T00:00:05Z', resource: vm });
+    await expect(runWorkspaceHostLifecycle({ ...input(provider, store), action,
+      providerCompletionMode: 'defer-to-product-controller' })).resolves.toMatchObject({
+      status: 'in-progress', lifecycleStage: 'provider-complete',
+    });
+    expect(store.updateOperation).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'running', percent: 50 }));
+    expect(store.appendEvent).not.toHaveBeenCalledWith(expect.objectContaining({ phase: 'complete', status: 'succeeded' }));
   });
 
   it('leaves an initialization-preserving action reporting a plain completion', async () => {

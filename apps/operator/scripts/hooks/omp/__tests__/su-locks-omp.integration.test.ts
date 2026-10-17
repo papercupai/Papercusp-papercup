@@ -10,21 +10,13 @@
  *   - Release frees the file
  *
  * No live operator required: tests the store + hook directly.
- * Skipped when embedded PG is not reachable.
+ * Uses the integration runner's database; setup failures must fail the suite.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, rm, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
-let pgAvailable = false;
-try {
-  const { getTxPool } = await import('@papercusp/operator-core/lib/agent-tools/locks/su-lock-store');
-  const sql = getTxPool();
-  await sql`SELECT 1`;
-  pgAvailable = true;
-} catch { /* embedded PG not up */ }
 
 // hookOwnerId() prefers the ambient PAPERCUSP_SID (a real psu-launch session id)
 // over PAPERCUSP_AUTH_SESSION_ID — see coord-hook.ts. This suite simulates the
@@ -35,7 +27,7 @@ try {
 // SAME ambient owner and the suite spuriously fails outside a bare CI env.
 const savedPapercuspSid = process.env.PAPERCUSP_SID;
 
-const itLive = pgAvailable ? it : it.skip;
+const itLive = it;
 
 describe('su-locks OMP two-agent coordination', () => {
   let wsRoot: string;
@@ -49,8 +41,6 @@ describe('su-locks OMP two-agent coordination', () => {
   let hook: typeof import('../coord-hook');
 
   beforeAll(async () => {
-    if (!pgAvailable) return;
-
     store = await import('@papercusp/operator-core/lib/agent-tools/locks/su-lock-store');
     const txn = await import('@papercusp/operator-core/lib/agent-tools/locks/in-workspace-txn');
     inWorkspaceTxn = txn.inWorkspaceTxn;
@@ -72,11 +62,17 @@ describe('su-locks OMP two-agent coordination', () => {
     await mkdir(join(repoRoot, 'apps'), { recursive: true });
     await writeFile(join(repoRoot, 'apps', 'target.ts'), '// smoke\n');
     process.env.PAPERCUSP_WORKSPACE_ROOT = wsRoot;
+    // A managed launch pins the real canonical checkout. This synthetic
+    // workspace must own its canonical root or the worktree guard intercepts
+    // the request before the symlink/lock boundary under test.
+    vi.stubEnv('PAPERCUSP_CANONICAL_TREE', repoRoot);
     delete process.env.PAPERCUSP_BUNDLE_URL;
     delete process.env.PAPERCUSP_OPERATOR_URL;
     delete process.env.PAPERCUSP_SID;
 
     wsId = `omp-smoke-ws-${Date.now()}`;
+    // Bootstrap creates papercusp_su on a fresh private cluster. Probing its
+    // pool first used to classify a missing side database as unavailable PG.
     await store.ensureBootstrap();
 
     function ompOwner(sessionId: string): string {
@@ -90,9 +86,9 @@ describe('su-locks OMP two-agent coordination', () => {
   });
 
   afterAll(async () => {
-    if (!pgAvailable) return;
     if (wsRoot) await rm(wsRoot, { recursive: true, force: true }).catch(() => {});
     await store?._resetForTests?.().catch(() => {});
+    vi.unstubAllEnvs();
     if (savedPapercuspSid === undefined) delete process.env.PAPERCUSP_SID;
     else process.env.PAPERCUSP_SID = savedPapercuspSid;
     hook?._resetHookOwnerIdForTests?.();

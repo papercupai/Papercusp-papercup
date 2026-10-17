@@ -1,13 +1,18 @@
 import { createHash } from 'node:crypto';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerProjectedTool, unregisterProjectedToolsForPlugin, type ProjectedTool, type UnifiedToolContext } from '@papercusp/tooldef';
 import { dispatchNativeMcpTargetOnOwner, normalizeNativeMcpOwnerSpawn, recordMcpPreflightFailure, runNativeMcpTargetOnOwner, type BuiltSpawnContext } from './_mcp-host';
 import type { SuNativeToolAddress } from '../../../su-session-owner-routing';
 const telemetry = vi.hoisted(() => ({ recordInvocation: vi.fn() }));
 const nativeOwnerRouting = vi.hoisted(() => ({ run: vi.fn() }));
+const servingGeneration = vi.hoisted(() => ({ read: vi.fn() }));
 vi.mock('../../../su-session-owner-routing', async importOriginal => ({
   ...await importOriginal<typeof import('../../../su-session-owner-routing')>(),
   runOnSuNativeToolOwner: nativeOwnerRouting.run,
+}));
+vi.mock('../../../serving-generation', async importOriginal => ({
+  ...await importOriginal<typeof import('../../../serving-generation')>(),
+  readServingGeneration: servingGeneration.read,
 }));
 vi.mock('@papercusp/db-org', async importOriginal => ({
   ...await importOriginal<typeof import('@papercusp/db-org')>(),
@@ -32,6 +37,7 @@ const spawn: BuiltSpawnContext = {
     candidateAdvSessionId: 77, valueFingerprint: fingerprint, callIdFingerprint: 'a'.repeat(64) } },
 };
 const request = () => ({ toolName: 'native-fixture:run', args: { value: 7 }, spawn: structuredClone(spawn),
+  servingGeneration: 'serving-generation-v1:test',
   fullSource: true, structuredSource: true, sourceProjection: { pick: ['value'] }, indirect: false,
   requestedFormat: 'compact', requestedStructured: true, requestedDelta: 'cursor', idempotencyKey: 'native-key' });
 function target(fn: (args: unknown, ctx: UnifiedToolContext) => Promise<unknown>, extra: Partial<ProjectedTool> = {}) {
@@ -43,6 +49,14 @@ afterEach(() => {
   unregisterProjectedToolsForPlugin('native-fixture');
   telemetry.recordInvocation.mockClear();
   nativeOwnerRouting.run.mockReset();
+  servingGeneration.read.mockReset();
+});
+
+beforeEach(() => {
+  servingGeneration.read.mockResolvedValue({
+    state: 'known', revision: 'serving-generation-v1:test',
+    buildSha: 'native-fixture', appliedMigrationDigest: 'native-fixture', toolRegistryRevision: 'native-fixture',
+  });
 });
 
 describe('D-063 owner rebuild of native MCP targets', () => {
@@ -64,6 +78,58 @@ describe('D-063 owner rebuild of native MCP targets', () => {
     expect(await dispatchNativeMcpTargetOnOwner(JSON.parse(JSON.stringify(request())), address))
       .toMatchObject({ content: [{ type: 'text', text: 'owner-result' }] });
     expect(fn).toHaveBeenCalledExactlyOnceWith({ value: 7 }, expect.any(Object));
+  });
+
+  it('re-emits owner progress notifications with the caller progress token', async () => {
+    const notifications: unknown[] = [];
+    const fn = vi.fn(async (_args, ctx: UnifiedToolContext) => {
+      ctx.progress(34, 'applying migration');
+      ctx.emit('migration-heartbeat', { phase: 'apply', elapsedSec: 30 });
+      return { content: [{ type: 'text' as const, text: 'complete' }] };
+    });
+    target(fn);
+    const r = { ...request(), progressToken: 'migrate-call-1' };
+
+    await dispatchNativeMcpTargetOnOwner(r, address, { progress: value => notifications.push(value) });
+
+    expect(notifications).toEqual([
+      { method: 'notifications/papercusp/event', params: {
+        progressToken: 'migrate-call-1', event: 'progress',
+        data: { progress: 34, total: 100, message: 'applying migration' },
+      } },
+      { method: 'notifications/progress', params: {
+        progressToken: 'migrate-call-1', progress: 34, total: 100, message: 'applying migration',
+      } },
+      { method: 'notifications/papercusp/event', params: {
+        progressToken: 'migrate-call-1', event: 'migration-heartbeat', data: { phase: 'apply', elapsedSec: 30 },
+      } },
+    ]);
+  });
+
+  it('passes a caller-selected progress receiver into the native-owner relay', async () => {
+    const receive = vi.fn();
+    const r = request();
+    const local = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'local' }] }));
+    nativeOwnerRouting.run.mockImplementation(async (_address, _remoteRequest, runLocal) => runLocal());
+
+    await runNativeMcpTargetOnOwner(r, local, 1_000, receive);
+
+    expect(nativeOwnerRouting.run).toHaveBeenCalledOnce();
+    expect(nativeOwnerRouting.run.mock.calls[0][4]).toBe(receive);
+  });
+
+  it('binds the current serving generation only when the request crosses the owner relay', async () => {
+    const r = request();
+    const local = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'local' }] }));
+    nativeOwnerRouting.run.mockImplementation(async (_address, requestFactory, runLocal) => {
+      const forwarded = await requestFactory();
+      expect(forwarded.servingGeneration).toBe('serving-generation-v1:test');
+      return runLocal();
+    });
+
+    await expect(runNativeMcpTargetOnOwner(r, local, 1_000))
+      .resolves.toMatchObject({ content: [{ text: 'local' }] });
+    expect(servingGeneration.read).toHaveBeenCalledOnce();
   });
 
   it.each(['workspace', 'adv', 'owner', 'thread', 'carrier', 'unbound'] as const)(
@@ -146,6 +212,20 @@ describe('D-063 owner rebuild of native MCP targets', () => {
     r.spawn.requestOrigin!.nativeSession!.callIdFingerprint = 'unbound-call';
     await expect(dispatchNativeMcpTargetOnOwner(r, address)).rejects.toThrow('invalid_lineage');
     expect(fn).not.toHaveBeenCalled(); expect(telemetry.recordInvocation).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stale owner generation before target execution', async () => {
+    const fn = vi.fn(); target(fn);
+    const r = request(); r.servingGeneration = 'serving-generation-v1:stale';
+    await expect(dispatchNativeMcpTargetOnOwner(r, address)).rejects.toThrow('stale_tool_contract');
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unknown owner generation before target execution', async () => {
+    const fn = vi.fn(); target(fn);
+    servingGeneration.read.mockResolvedValue({ state: 'unknown', reason: 'build-sha-unknown' });
+    await expect(dispatchNativeMcpTargetOnOwner(request(), address)).rejects.toThrow('serving_generation_unknown');
+    expect(fn).not.toHaveBeenCalled();
   });
 
   it('records owner principal synthesis failure once before dispatch', async () => {

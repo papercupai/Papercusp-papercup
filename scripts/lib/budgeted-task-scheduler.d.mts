@@ -315,11 +315,7 @@ export function resolveMemoryBudgetMb(input: {
   cgroupReserveFraction?: number;
 }): number;
 
-export function readTaskCgroupMemoryMaxMb(input?: {
-  readFile?: (path: string, encoding: string) => string | Buffer;
-  procCgroupPath?: string;
-  cgroupRoot?: string;
-}): number | null;
+export { readTaskCgroupMemoryMaxMb } from './task-cgroup-limits.mjs';
 
 export function readTaskCgroupPidsMax(input?: {
   readFile?: (path: string, encoding: string) => string | Buffer;

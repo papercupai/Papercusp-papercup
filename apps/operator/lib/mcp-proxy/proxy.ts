@@ -51,6 +51,7 @@ import {
   MCP_REQUEST_TRACE_HEADER,
   MAX_MCP_REQUEST_TRACE_ID_CHARS,
   logMcpRequestTrace,
+  type McpRequestTraceEvent,
 } from "@papercusp/operator-core/lib/mcp-request-trace";
 import {
   isCheapRepeatingBeat,
@@ -69,6 +70,7 @@ import {
   isBoundedTestingRunStatusArgs,
 } from "@papercusp/operator-core/lib/endpoint-route/routes/transport/mcp-admission";
 import { classifyCapabilityBashEffect } from "@papercusp/operator-core/lib/agent-tools/capability/bash-effect";
+import { decodeToolsInvokeArgs } from "@papercusp/operator-core/lib/agent-tools/tools/invoke-args";
 import { foreignLoopbackPeerForSocket } from "@papercusp/operator-core/lib/auth/loopback-peer-trust";
 export {
   CHEAP_REPEATING_BEAT_PATHS,
@@ -308,6 +310,112 @@ function nativeSessionAttribution(
     source: "header:x-papercusp-native-session",
     trust: "unverified-client-assertion",
   };
+}
+
+/**
+ * A stateless HTTP MCP request has no server-side session key, so the proxy must
+ * carry the client's session identity when it needs to preserve a
+ * serving-generation contract. Keep the identity out of the map key itself:
+ * query strings and headers are caller-controlled and may contain secrets.
+ */
+function firstHeaderValue(
+  headers: http.IncomingHttpHeaders,
+  name: string,
+): string | null {
+  const key = Object.keys(headers).find((candidate) => candidate.toLowerCase() === name);
+  if (!key) return null;
+  const value = headers[key];
+  const first = Array.isArray(value) ? value[0] : value;
+  return typeof first === "string" && first.trim() ? first.trim() : null;
+}
+
+function boundedMcpAffinityIdentity(value: string | null): string | null {
+  if (!value || value.length === 0 || value.length > MAX_MCP_PROXY_SUCCESS_TOOL_NAME_CHARS) {
+    return null;
+  }
+  return value;
+}
+
+/** Resolve a stable, privacy-bounded affinity key for one MCP client identity. */
+export function mcpProxyGenerationAffinityKey(
+  requestPath: string,
+  headers: http.IncomingHttpHeaders = {},
+): string | null {
+  let url: URL;
+  try {
+    url = new URL(requestPath, "http://127.0.0.1");
+  } catch {
+    return null;
+  }
+  if (url.pathname !== "/api/mcp") return null;
+
+  const nativeHeader = boundedMcpAffinityIdentity(
+    firstHeaderValue(headers, "x-papercusp-native-session"),
+  );
+  const nativeQuery = boundedMcpAffinityIdentity(url.searchParams.get("native_session"));
+  const transportSession = boundedMcpAffinityIdentity(
+    firstHeaderValue(headers, "mcp-session-id"),
+  );
+  const client = boundedMcpAffinityIdentity(url.searchParams.get("client"));
+  const identity = nativeHeader
+    ? `native:${nativeHeader}`
+    : nativeQuery
+      ? `native:${nativeQuery}`
+      : transportSession
+        ? `transport:${transportSession}`
+        : client
+          ? `client:${client}`
+          : null;
+  if (!identity) return null;
+  return `mcp-affinity:${createHash("sha256").update(identity, "utf8").digest("hex").slice(0, 32)}`;
+}
+
+/** True when this MCP request must stay on the socket that served its catalog. */
+export function isGenerationBoundMcpRequest(
+  rawBody: Buffer,
+  requestPath: string,
+  headers: http.IncomingHttpHeaders = {},
+): boolean {
+  if (isMcpProxyWatchdogProbePath(requestPath)) return false;
+  const affinityKey = mcpProxyGenerationAffinityKey(requestPath, headers);
+  if (!affinityKey) return false;
+  if (isMcpSessionHandshakeCall(rawBody)) return true;
+  try {
+    const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
+    const messages = Array.isArray(parsed) ? parsed : [parsed];
+    return messages.some((message) => {
+      if (!message || typeof message !== "object") return false;
+      const request = message as {
+        method?: unknown;
+        params?: { name?: unknown; arguments?: unknown; _meta?: unknown };
+      };
+      if (request.method !== "tools/call") return false;
+      const meta = request.params?._meta;
+      if (meta && typeof meta === "object" && !Array.isArray(meta) &&
+          typeof (meta as Record<string, unknown>)["papercusp/servingGeneration"] === "string" &&
+          String((meta as Record<string, unknown>)["papercusp/servingGeneration"]).trim()) {
+        return true;
+      }
+      if (normalizeMcpName(String(request.params?.name ?? "")) !== normalizeMcpName("tools:invoke")) {
+        return false;
+      }
+      let args = request.params?.arguments;
+      for (let depth = 0; depth < 2 && typeof args === "string"; depth++) {
+        try {
+          args = JSON.parse(args);
+        } catch {
+          break;
+        }
+      }
+      return Boolean(
+        args && typeof args === "object" && !Array.isArray(args) &&
+        typeof (args as Record<string, unknown>).servingGeneration === "string" &&
+        String((args as Record<string, unknown>).servingGeneration).trim(),
+      );
+    });
+  } catch {
+    return false;
+  }
 }
 
 function boundedMcpProxyStageMs(value: number): number {
@@ -658,6 +766,17 @@ export interface McpProxyOptions {
    */
   maxInFlight?: number;
   /**
+   * EI-25792330557867199 — bounded FIFO waiters for ordinary non-handshake requests that
+   * reach the admission ceiling. A queued request owns no upstream slot until granted.
+   * Defaults to DEFAULT_MAX_ORDINARY_QUEUE; zero preserves immediate shedding.
+   */
+  maxOrdinaryQueue?: number;
+  /**
+   * Maximum time (ms) an ordinary request may wait in the admission FIFO. Defaults to the
+   * shared PAPERCUSP_MCP_PROXY_MAX_QUEUE_WAIT_MS budget (30s); zero disables dwell expiry.
+   */
+  maxOrdinaryQueueWaitMs?: number;
+  /**
    * EI-21391963810159383 — class-specific ceiling for write-free MCP session handshakes
    * (`initialize` / `ping` / `tools/list`). A reconnect burst must not consume the whole
    * reserved-control-plane pool and queue the watchdog behind the class it diagnoses.
@@ -793,6 +912,10 @@ export interface McpProxyTarget {
   port: number;
   source?: string;
 }
+
+/** Keep the per-session affinity pool bounded even when clients churn. */
+const MAX_MCP_PROXY_GENERATION_AFFINITY_SESSIONS = 512;
+const MCP_PROXY_GENERATION_AFFINITY_IDLE_MS = 10 * 60_000;
 
 /** The shared host token used by the superuser MCP endpoint. */
 export function defaultSuperuserTokenPath(): string {
@@ -1041,6 +1164,8 @@ const INJECT_MAX_BODY_BYTES = 256 * 1024;
 /** Mirrors the server's validIdempotencyKey bound (_mcp-result-replay.ts KEY_MAX=200) so a
  *  client-supplied key we "respect" is one :3070 will actually honor for replay. */
 const IDEM_KEY_MAX = 200;
+/** Bound caller-facing recovery receipts for a failed JSON-RPC batch. */
+const MAX_IDEMPOTENCY_RECOVERY_KEYS = 16;
 
 function isValidIdemKey(v: unknown): v is string {
   return (
@@ -1048,6 +1173,63 @@ function isValidIdemKey(v: unknown): v is string {
     v.trim().length > 0 &&
     v.trim().length <= IDEM_KEY_MAX
   );
+}
+
+/**
+ * Return the per-call replay keys for a keyed request that failed after connect.
+ * The receipt goes only to the caller that supplied this batch; keys are never
+ * written to proxy telemetry. Do not offer partial batch recovery: retrying the
+ * whole batch with any unkeyed member could execute that member twice.
+ */
+function idempotencyRecoveryForBody(body: Buffer): {
+  keys: Array<{ requestId: string | number; toolName: string; key: string }>;
+  truncated: boolean;
+} | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body.toString("utf8"));
+  } catch {
+    return null;
+  }
+  const messages = Array.isArray(parsed) ? parsed : [parsed];
+  const calls = messages.filter(
+    (message) =>
+      !!message &&
+      typeof message === "object" &&
+      (message as { method?: unknown }).method === "tools/call",
+  );
+  if (calls.length === 0) return null;
+
+  const keys: Array<{
+    requestId: string | number;
+    toolName: string;
+    key: string;
+  }> = [];
+  for (const message of calls) {
+    const call = message as {
+      id?: unknown;
+      params?: { name?: unknown; _meta?: { idempotencyKey?: unknown } };
+    };
+    const id = call.id;
+    const key = call.params?._meta?.idempotencyKey;
+    const toolName = call.params?.name;
+    if (
+      (typeof id !== "string" && typeof id !== "number") ||
+      !isValidIdemKey(key) ||
+      typeof toolName !== "string"
+    ) {
+      return null;
+    }
+    keys.push({
+      requestId: id,
+      toolName: toolName.slice(0, 120),
+      key: key.trim(),
+    });
+  }
+  return {
+    keys: keys.slice(0, MAX_IDEMPOTENCY_RECOVERY_KEYS),
+    truncated: keys.length > MAX_IDEMPOTENCY_RECOVERY_KEYS,
+  };
 }
 
 /** How a forwarded request may be retried AFTER the socket connected:
@@ -1094,6 +1276,7 @@ export const UPSTREAM_DIED_MID_STREAM_RPC_CODE = -32000;
 export function upstreamDeathSseErrorEvents(
   requestBody: Buffer,
   traceId: string,
+  forwardingClass: ForwardClass = "opaque",
 ): string | null {
   let parsed: unknown;
   try {
@@ -1115,8 +1298,11 @@ export function upstreamDeathSseErrorEvents(
         code: UPSTREAM_DIED_MID_STREAM_RPC_CODE,
         message:
           `Papercusp MCP proxy: the upstream connection for this ${method} closed before ` +
-          "the response completed. The call was dispatched, so " +
-          "its effects are UNKNOWN: check state before retrying a write.",
+          (forwardingClass === "readonly"
+            ? "the response completed. The read was dispatched, but its result is unknown. " +
+              "Retrying this read is safe."
+            : "the response completed. The call was dispatched, so " +
+              "its effects are UNKNOWN: check state before retrying a write."),
         data: {
           kind: "upstream_died_mid_stream",
           forwardingResult: MCP_PROXY_FORWARDING_RESULTS.outcomeUnknown,
@@ -1200,6 +1386,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "dev:rate_governor_status",
   // Journal reads have no application side effects; a bounded replay recovers a lost log response.
   "logs:read",
+  // The bounded audit timeline is a SELECT-only projection over audit_log.
+  "audit:list",
   // bounded activity ledger reads are safe to replay after a stale socket;
   // admission still reserves only the explicitly scoped form below.
   "activity:tool-log",
@@ -1220,10 +1408,14 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "work_items:get",
   "work_items:search",
   "work_items:claimable",
+  // Tuple-space rd: reports availability without claiming or changing the item.
+  "work_items:observe",
   // Reads the current scheduler lane spec without claiming or changing work.
   "scheduler:get_claim_spec",
   // Process inventory is a ledger read; its optional reconciliation is dry-run only.
   "processes:list",
+  // release:trace composes a read-only snapshot and reports nextVerb without executing it.
+  "release:trace",
   // Scorecard reads use seed-free rubric resolution; a missing/malformed rubric stays
   // unknown instead of entering the first-party lazy-seed writer.
   "scorecards:get",
@@ -1233,6 +1425,8 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "plans:get",
   "plans:get-specs",
   "plans:get-spec-evidence",
+  // This evaluator reads spec evidence and returns drafts; certification is separate.
+  "plans:evaluate-spec-test-adequacy",
   "plans:list",
   "plans:items",
   "plans:search",
@@ -1294,6 +1488,7 @@ const READ_ONLY_TOOLS_LOOKUP: ReadonlySet<string> = new Set(
 
 const READ_ONLY_TOOLS_INVOKE_NAME = normalizeMcpName("tools:invoke");
 const CAPABILITY_BASH_NAME = normalizeMcpName("capability:bash");
+const CAPABILITY_BASH_OUTPUT_NAME = normalizeMcpName("capability:bash_output");
 const RELEASE_CUT_NAME = normalizeMcpName("release:cut");
 
 function forwardedToolName(m: unknown): string | null {
@@ -1349,20 +1544,37 @@ function isReadOnlyToolCall(m: unknown): boolean {
   const name = forwardedToolName(m);
   if (name === null) return false;
   if (READ_ONLY_TOOLS_LOOKUP.has(name)) return true;
+  // A consuming bash_output poll advances the job's output cursor, so replaying
+  // it after a post-connect reset could skip the chunk whose response was lost.
+  // `peek:true` leaves that cursor untouched and is the only bash_output shape
+  // safe for the bounded read-only replay path.
+  if (name === CAPABILITY_BASH_OUTPUT_NAME) {
+    const args = forwardedToolArgs(m);
+    return (
+      !!args &&
+      typeof args === "object" &&
+      !Array.isArray(args) &&
+      (args as { peek?: unknown }).peek === true
+    );
+  }
   // loop:checkpoint is mixed-effect: `{ read: true }` is a pure carry snapshot,
   // while every other shape can write. Replay only that exact read mode after a
   // post-connect reset; leave checkpoint writes on the keyed path.
   if (isLoopCheckpointReadOnlyContinuationArgs(name, forwardedToolArgs(m)))
     return true;
   // release:cut is a mixed-effect tool. Only its status operation reads local
-  // markers/logs and systemd state; every other operation must keep the keyed path.
+  // markers/logs and systemd state. A reclaim without confirm is also a dry-run
+  // planner read; replaying it cannot remove a worktree. Confirmed reclaim and
+  // every other operation must keep the keyed path.
   if (name === RELEASE_CUT_NAME) {
     const args = forwardedToolArgs(m);
     return (
       !!args &&
       typeof args === "object" &&
       !Array.isArray(args) &&
-      (args as { op?: unknown }).op === "status"
+      ((args as { op?: unknown }).op === "status" ||
+        ((args as { op?: unknown; confirm?: unknown }).op === "reclaim" &&
+          (args as { confirm?: unknown }).confirm !== true))
     );
   }
   return (
@@ -1996,6 +2208,15 @@ export const DEFAULT_MAX_HANDSHAKE_QUEUE = Number.isFinite(
 )
   ? Math.max(0, Math.floor(configuredMaxHandshakeQueue))
   : 64;
+/** EI-25792330557867199 — hard bound for ordinary admission waiters. */
+const configuredMaxOrdinaryQueue = Number(
+  process.env.PAPERCUSP_MCP_PROXY_MAX_ORDINARY_QUEUE ?? 64,
+);
+export const DEFAULT_MAX_ORDINARY_QUEUE = Number.isFinite(
+  configuredMaxOrdinaryQueue,
+)
+  ? Math.max(0, Math.floor(configuredMaxOrdinaryQueue))
+  : 64;
 /**
  * EI-21556422206126497 — continuation writes are deliberately single-flight upstream, but
  * immediate shed-on-one made the durability plane fail exactly when two sessions checkpointed
@@ -2143,6 +2364,10 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
     // READ_ONLY_TOOLS because reading it advances message-read state, but it is
     // still liveness-critical for recovering a fleet member.
     "coord:inbox",
+    // Thread reconstruction is the durable coordination read used to recover
+    // handoffs and acknowledgements; keep it available when ordinary traffic
+    // fills the non-reserved admission ceiling.
+    "coord:thread",
     "fleet:assignments",
     "fleet:leader-brief",
     "loop:checkpoint",
@@ -2156,7 +2381,9 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
     "dev:pg_query",
     "loop:arm",
     "plans:get",
+    "plans:get-spec-evidence",
     "plans:search",
+    "conversations:get",
     "improvements:capture",
     "locks:acquire",
     "locks:queue",
@@ -2170,12 +2397,22 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
     // A bounded events:status read lets a worker inspect await/wake state when a
     // liveness event is silent. Keep that recovery read available during saturation.
     "events:status",
+    // EI-26064670039969095 / EI-25808381039378246 — these read-only state surfaces
+    // are used to recover and validate a live session. Keep them on the reserved
+    // control-plane lane so ordinary FIFO saturation cannot turn a valid read into
+    // a pre-forward 429 while the caller is diagnosing the pressure.
+    "facts:list",
+    "loop:status",
     "work_items:checkpoint",
     "work_items:claimable",
     "work_items:complete",
     "work_items:get",
     "work_items:search",
     "work_items:release",
+    // EI-26075003767019614 — recording a typed external blocker parks the active
+    // claim and frees its scheduler slot, so keep this recovery write available
+    // when ordinary admission is saturated.
+    "work_items:set_blocker",
     "work_items:set_state",
   ].map(normalizeMcpName),
 );
@@ -2185,8 +2422,104 @@ const DEV_TELEMETRY_TOOL_NAME = normalizeMcpName("dev:telemetry");
 const ACTIVITY_TOOL_LOG_TOOL_NAME = normalizeMcpName("activity:tool-log");
 const COORD_PRESENCE_TOOL_NAME = normalizeMcpName("coord:presence");
 const COORD_ROSTER_TOOL_NAME = normalizeMcpName("coord:roster");
+const COORD_FEED_TOOL_NAME = normalizeMcpName("coord:feed");
 const TESTING_RUN_STATUS_TOOL_NAME = normalizeMcpName("testing:run-status");
 const RECIPES_SEARCH_TOOL_NAME = normalizeMcpName("recipes:search");
+
+/**
+ * A filtered coordination-feed read is a recovery surface: agents use it to
+ * verify a handoff or reconstruct the owner/time-bounded history after a
+ * control-plane failure. Keep only explicitly narrowed pages on the reserved
+ * lane. The unfiltered firehose remains ordinary traffic so it cannot consume
+ * the capacity reserved for recovery.
+ */
+const RESERVED_COORD_FEED_FILTER_KEYS = new Set([
+  "owner",
+  "from",
+  "plan_slug",
+  "audience",
+  "fleet",
+  "q",
+  "since",
+  "since_ts",
+  "before_ts",
+  "before_msg_id",
+  "kinds",
+]);
+const RESERVED_COORD_FEED_MAX_LIMIT = 30;
+const RESERVED_COORD_FEED_MAX_TOKEN_BUDGET = 12_000;
+const RESERVED_COORD_FEED_MAX_STRING_CHARS = 512;
+
+function isBoundedCoordFeedArgs(args: unknown): boolean {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return false;
+  const record = args as Record<string, unknown>;
+  const allowed = new Set([
+    ...RESERVED_COORD_FEED_FILTER_KEYS,
+    "limit",
+    "token_budget",
+    "include_retracted",
+  ]);
+  if (Object.keys(record).some((key) => !allowed.has(key))) return false;
+
+  const hasFilter = [...RESERVED_COORD_FEED_FILTER_KEYS].some((key) => {
+    const value = record[key];
+    if (value === undefined || value === null) return false;
+    if (Array.isArray(value)) return value.length > 0;
+    return typeof value === "string" ? value.trim().length > 0 : true;
+  });
+  if (!hasFilter) return false;
+
+  if (
+    record.limit !== undefined &&
+    (!Number.isInteger(record.limit) ||
+      (record.limit as number) < 1 ||
+      (record.limit as number) > RESERVED_COORD_FEED_MAX_LIMIT)
+  ) {
+    return false;
+  }
+  if (
+    record.token_budget !== undefined &&
+    (!Number.isInteger(record.token_budget) ||
+      (record.token_budget as number) < 1 ||
+      (record.token_budget as number) > RESERVED_COORD_FEED_MAX_TOKEN_BUDGET)
+  ) {
+    return false;
+  }
+  if (
+    record.include_retracted !== undefined &&
+    record.include_retracted !== false
+  ) {
+    return false;
+  }
+  for (const key of RESERVED_COORD_FEED_FILTER_KEYS) {
+    const value = record[key];
+    if (value === undefined || value === null) continue;
+    if (key === "kinds") {
+      if (
+        !Array.isArray(value) ||
+        value.length < 1 ||
+        value.length > 8 ||
+        !value.every(
+          (kind) =>
+            typeof kind === "string" &&
+            kind.trim().length > 0 &&
+            kind.length <= 80,
+        )
+      ) {
+        return false;
+      }
+      continue;
+    }
+    if (
+      typeof value !== "string" ||
+      value.trim().length === 0 ||
+      value.length > RESERVED_COORD_FEED_MAX_STRING_CHARS
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function isReservedControlPlaneTool(name: string, args?: unknown, requestPath?: string): boolean {
   if (name === SCORECARDS_LIST_TOOL_NAME) return isBoundedScorecardsListArgs(args);
@@ -2197,6 +2530,7 @@ function isReservedControlPlaneTool(name: string, args?: unknown, requestPath?: 
   if (name === ACTIVITY_TOOL_LOG_TOOL_NAME) return isBoundedActivityToolLogArgs(args);
   if (name === COORD_PRESENCE_TOOL_NAME) return isBoundedCoordPresenceArgs(args);
   if (name === COORD_ROSTER_TOOL_NAME) return isBoundedCoordRosterArgs(args);
+  if (name === COORD_FEED_TOOL_NAME) return isBoundedCoordFeedArgs(args);
   if (name === TESTING_RUN_STATUS_TOOL_NAME) return isBoundedTestingRunStatusArgs(args);
   if (name === RECIPES_SEARCH_TOOL_NAME) return isBoundedRecipesSearchArgs(args);
   return RESERVED_CONTROL_PLANE_TOOLS.has(name);
@@ -2312,6 +2646,7 @@ export function isMcpProxyWatchdogProbePath(requestPath: unknown): boolean {
 // saturated. Heartbeat is intentionally absent: it is a cheap repeating beat
 // and should fail fast rather than consume a reserved slot.
 export const RESERVED_CONTROL_PLANE_PATHS = new Set([
+  "/api/adv/sessions/ensure-codex-home",
   "/api/adv/sessions/port/delivery",
   "/api/adv/sessions/port/status",
   "/api/adv/sessions/resumable",
@@ -2332,6 +2667,7 @@ export const RESERVED_CONTROL_PLANE_PATHS = new Set([
 export const CRITICAL_SESSION_LIFECYCLE_PATHS = new Set([
   // Reconciliation follows the mutation on the same durability socket rather
   // than contending with ordinary traffic or reconnect handshakes.
+  "/api/adv/sessions/ensure-codex-home",
   "/api/adv/sessions/port/delivery",
   "/api/adv/sessions/port/status",
   "/api/agent-mcp/console/bootstrap-su/session-ended",
@@ -2520,7 +2856,12 @@ function classifyImprovementsCaptureCall(
         typeof target === "string" &&
         normalizeMcpName(target) === IMPROVEMENTS_CAPTURE_TOOL_NAME;
       if (isDeferredCapture) {
-        const deferredArgs = (invokeArgs as { args?: unknown }).args;
+        // ptool serializes the nested tools:invoke args once at its second JSON
+        // boundary. Decode that wrapper here so the proxy's admission class
+        // matches the inner dispatcher (especially for toolFailure captures).
+        const deferredArgs = decodeToolsInvokeArgs(
+          (invokeArgs as { args?: unknown }).args,
+        );
         readOnlyDuplicateCheck =
           readOnlyDuplicateCheck &&
           isReadOnlyDuplicateCheckArgs(deferredArgs);
@@ -2915,6 +3256,52 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       // Reserve one socket outside normal capture capacity for toolFailure incident records.
       maxSockets: improvementsCaptureConcurrencyCeiling + 1,
     });
+  // A stateless MCP client still has a serving-generation contract: tools/list and the
+  // subsequent tools/call must reach one operator worker until that worker's socket dies.
+  // Keep this lane separate from the ordinary/control-plane pools so unbound traffic retains
+  // the fresh-socket stale-worker protection above, while each bounded client identity gets a
+  // single reusable socket and therefore one SO_REUSEPORT worker.
+  const generationAffinityAgents = new Map<
+    string,
+    { agent: http.Agent; lastUsedAtMs: number }
+  >();
+  const affinityAgentHasWork = (agent: http.Agent): boolean =>
+    Object.values(agent.sockets).some((sockets) => (sockets?.length ?? 0) > 0) ||
+    Object.values(agent.requests).some((requests) => (requests?.length ?? 0) > 0);
+  const pruneGenerationAffinityAgents = (nowMs: number): void => {
+    for (const [key, entry] of generationAffinityAgents) {
+      if (
+        nowMs - entry.lastUsedAtMs > MCP_PROXY_GENERATION_AFFINITY_IDLE_MS &&
+        !affinityAgentHasWork(entry.agent)
+      ) {
+        entry.agent.destroy();
+        generationAffinityAgents.delete(key);
+      }
+    }
+  };
+  const generationAffinityAgentFor = (
+    key: string | null,
+  ): http.Agent | null => {
+    if (!key) return null;
+    const nowMs = Date.now();
+    pruneGenerationAffinityAgents(nowMs);
+    const existing = generationAffinityAgents.get(key);
+    if (existing) {
+      existing.lastUsedAtMs = nowMs;
+      return existing.agent;
+    }
+    if (generationAffinityAgents.size >= MAX_MCP_PROXY_GENERATION_AFFINITY_SESSIONS) {
+      return null;
+    }
+    const agent = new http.Agent({
+      keepAlive: true,
+      maxSockets: 1,
+      maxFreeSockets: 1,
+      keepAliveMsecs: 1_000,
+    });
+    generationAffinityAgents.set(key, { agent, lastUsedAtMs: nowMs });
+    return agent;
+  };
   const maxHandshakeInFlight =
     opts.maxHandshakeInFlight ?? DEFAULT_MAX_HANDSHAKES_IN_FLIGHT;
   const configuredHandshakeQueue =
@@ -2922,6 +3309,18 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const maxHandshakeQueue = Number.isFinite(configuredHandshakeQueue)
     ? Math.max(0, Math.floor(configuredHandshakeQueue))
     : 0;
+  const configuredOrdinaryQueue =
+    opts.maxOrdinaryQueue ?? DEFAULT_MAX_ORDINARY_QUEUE;
+  const maxOrdinaryQueue = Number.isFinite(configuredOrdinaryQueue)
+    ? Math.max(0, Math.floor(configuredOrdinaryQueue))
+    : 0;
+  const configuredOrdinaryQueueWaitMs =
+    opts.maxOrdinaryQueueWaitMs ?? DEFAULT_HANDSHAKE_QUEUE_WAIT_MS;
+  const ordinaryQueueWaitMs =
+    Number.isFinite(configuredOrdinaryQueueWaitMs) &&
+    configuredOrdinaryQueueWaitMs >= 0
+      ? Math.floor(configuredOrdinaryQueueWaitMs)
+      : DEFAULT_HANDSHAKE_QUEUE_WAIT_MS;
   // EI-21504897841052086 — queue dwell bound + per-waiter telemetry cadence.
   const maxHandshakeQueueWaitMs =
     opts.maxHandshakeQueueWaitMs ?? DEFAULT_HANDSHAKE_QUEUE_WAIT_MS;
@@ -3119,6 +3518,13 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     maxWaitMs: number;
   }
   type QueuedHandshake = QueuedAdmission;
+  interface QueuedOrdinary extends QueuedAdmission {
+    traceId: string;
+    method: string;
+    path: string;
+    maxWaitMs: number;
+  }
+  const ordinaryQueue: QueuedOrdinary[] = [];
   const handshakeQueue: QueuedHandshake[] = [];
   const criticalContinuationQueue: QueuedCriticalContinuation[] = [];
   interface QueuedCoordSend extends QueuedAdmission {
@@ -3137,6 +3543,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   // Resolve one waiter at a time so the async continuation can increment the live counters
   // before another queued request is granted. This reservation also keeps the global hard cap
   // true while the grant continuation is between the queue and the forwarding loop.
+  let ordinaryGrantReservations = 0;
+  let pumpOrdinaryQueue: () => void = () => {};
   let handshakeGrantReservations = 0;
   let pumpHandshakeQueue: () => void = () => {};
   let criticalContinuationGrantReservations = 0;
@@ -3149,6 +3557,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
 
   const handshakeQueueLength = (): number =>
     handshakeQueue.reduce(
+      (count, waiter) => count + (waiter.cancelled || waiter.granted ? 0 : 1),
+      0,
+    );
+  const ordinaryQueueLength = (): number =>
+    ordinaryQueue.reduce(
       (count, waiter) => count + (waiter.cancelled || waiter.granted ? 0 : 1),
       0,
     );
@@ -3271,7 +3684,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     if (partitionedAdmission) {
       const reservedWithGrant =
         reservedControlPlaneInFlight + handshakeGrantReservations;
-      const normalWithGrant = ordinaryInFlight + reservedWithGrant;
+      const normalWithGrant =
+        ordinaryInFlight +
+        ordinaryGrantReservations +
+        reservedWithGrant;
       return (
         !shouldShedForInFlight(
           reservedWithGrant,
@@ -3281,8 +3697,43 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     }
     return (
       maxInFlight <= 0 ||
-      inFlightStarts.size + handshakeGrantReservations < maxInFlight
+      inFlightStarts.size +
+        handshakeGrantReservations +
+        ordinaryGrantReservations <
+        maxInFlight
     );
+  };
+
+  const canGrantOrdinary = (): boolean => {
+    if (
+      shouldShedForInFlight(
+        ordinaryInFlight + ordinaryGrantReservations,
+        ordinaryInFlightCeiling,
+      )
+    ) {
+      return false;
+    }
+    if (partitionedAdmission) {
+      const reservedWithGrant =
+        reservedControlPlaneInFlight + handshakeGrantReservations;
+      const normalWithGrant =
+        ordinaryInFlight + ordinaryGrantReservations + reservedWithGrant;
+      return !shouldShedForInFlight(normalWithGrant, maxInFlight);
+    }
+    return (
+      maxInFlight <= 0 ||
+      inFlightStarts.size +
+        ordinaryGrantReservations +
+        handshakeGrantReservations <
+        maxInFlight
+    );
+  };
+
+  const cancelQueuedOrdinary = (waiter: QueuedOrdinary): void => {
+    if (waiter.cancelled || waiter.granted) return;
+    waiter.cancelled = true;
+    waiter.resolve(false);
+    pumpOrdinaryQueue();
   };
 
   const cancelQueuedHandshake = (waiter: QueuedHandshake): void => {
@@ -3309,6 +3760,20 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       }
       waiter.granted = true;
       handshakeGrantReservations++;
+      waiter.resolve(true);
+    }
+  };
+
+  pumpOrdinaryQueue = (): void => {
+    while (ordinaryQueue.length > 0) {
+      const waiter = ordinaryQueue.shift();
+      if (!waiter || waiter.cancelled) continue;
+      if (!canGrantOrdinary()) {
+        ordinaryQueue.unshift(waiter);
+        return;
+      }
+      waiter.granted = true;
+      ordinaryGrantReservations++;
       waiter.resolve(true);
     }
   };
@@ -3709,6 +4174,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           maxWaitMs: waiter.maxWaitMs,
           ...(waiter.toolFailureCapture ? { toolFailureCapture: true } : {}),
         }));
+      const waitingOrdinaryRequests = ordinaryQueue
+        .filter((waiter) => !waiter.cancelled && !waiter.granted)
+        .slice(0, MAX_CRITICAL_CONTINUATION_HEALTH_REQUESTS)
+        .map((waiter) => ({
+          traceId: waiter.traceId,
+          method: waiter.method,
+          path: waiter.path,
+          ageMs: Math.max(0, healthNow - waiter.enqueuedAtMs),
+          maxWaitMs: waiter.maxWaitMs,
+        }));
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
@@ -3718,6 +4193,21 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           inFlight: {
             total: inFlightStarts.size,
             ordinary: ordinaryInFlight,
+            ordinaryQueue: {
+              waiting: ordinaryQueueLength(),
+              max: maxOrdinaryQueue,
+              maxWaitMs: ordinaryQueueWaitMs,
+              grantReservations: ordinaryGrantReservations,
+              oldestAgeMs:
+                waitingOrdinaryRequests.length > 0
+                  ? Math.max(
+                      ...waitingOrdinaryRequests.map(
+                        (request) => request.ageMs,
+                      ),
+                    )
+                  : null,
+              requests: waitingOrdinaryRequests,
+            },
             reservedControlPlane: reservedControlPlaneInFlight,
             watchdog: watchdogProbeInFlight,
             criticalContinuation: criticalContinuationInFlight,
@@ -3923,6 +4413,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             : standardReservedControlPlane
               ? "reserved-control-plane"
               : "ordinary";
+        const ordinaryQueueEligible =
+          admissionClass === "ordinary" && !sessionHandshake;
         const admissionCeiling =
           improvementsCapture
             ? 1
@@ -3958,7 +4450,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // Ordinary handshakes use the bounded FIFO below, which accounts for both their own
         // handshake cap and the reserved-class cap. Shedding them here would bypass that queue.
         const admissionSaturated =
-          criticalContinuation || coordSend || improvementsCapture
+          ordinaryQueueEligible ||
+          criticalContinuation ||
+          coordSend ||
+          improvementsCapture
           ? false
           : sessionHandshake && !watchdogSessionProbe
             ? false
@@ -4754,6 +5249,197 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             criticalContinuationGrantReservations - 1,
           );
         }
+        // EI-25792330557867199 — preserve work-conserving admission while making ordinary
+        // saturation a bounded FIFO. Handshakes and reserved/special recovery classes retain
+        // their own admission paths and cannot be held behind this queue.
+        if (ordinaryQueueEligible) {
+          pumpOrdinaryQueue();
+          if (ordinaryQueueLength() > 0 || !canGrantOrdinary()) {
+            const queuedNow = ordinaryQueueLength();
+            if (queuedNow >= maxOrdinaryQueue) {
+              const retryAfterSec = retryAfterSecForDrainRate(
+                ordinaryInFlight,
+                ordinaryInFlightCeiling,
+                completedForwardAtMs,
+                Date.now(),
+              );
+              res.writeHead(429, {
+                "content-type": "application/json",
+                "retry-after": String(retryAfterSec),
+              });
+              res.end(
+                JSON.stringify({
+                  ok: false,
+                  error: "mcp_proxy_overloaded",
+                  retryable: true,
+                  forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
+                  detail:
+                    "proxy ordinary FIFO already has " +
+                    queuedNow +
+                    " waiter(s) (queue max " +
+                    maxOrdinaryQueue +
+                    ") — shed before forwarding",
+                  retryAfterSec,
+                  traceId: requestTraceId,
+                }),
+              );
+              log(
+                "shed ordinary request " +
+                  requestTraceId +
+                  " — " +
+                  queuedNow +
+                  "/" +
+                  maxOrdinaryQueue +
+                  " waiters",
+              );
+              record({
+                kind: "shed_ordinary_queue_full",
+                method: req.method,
+                path: req.url,
+                traceId: requestTraceId,
+                ordinaryInFlight,
+                ordinaryInFlightCeiling,
+                normalInFlight,
+                queueLength: queuedNow,
+                maxOrdinaryQueue,
+                retryAfterSec,
+                forwardingResult: "not_forwarded",
+              });
+              return;
+            }
+
+            let queuedOrdinary!: QueuedOrdinary;
+            const enqueuedAtMs = Date.now();
+            const granted = await new Promise<boolean>((resolve) => {
+              queuedOrdinary = {
+                resolve,
+                cancelled: false,
+                granted: false,
+                enqueuedAtMs,
+                expired: false,
+                traceId: requestTraceId,
+                method: req.method ?? "",
+                path: req.url ?? "",
+                maxWaitMs: ordinaryQueueWaitMs,
+              };
+              ordinaryQueue.push(queuedOrdinary);
+              cancelQueuedAdmission = (): void => {
+                clearQueuedWaitTimer(queuedOrdinary);
+                cancelQueuedOrdinary(queuedOrdinary);
+              };
+
+              if (queuedOrdinary.maxWaitMs > 0) {
+                const expireWhenDue = (): void => {
+                  if (queuedOrdinary.granted || queuedOrdinary.cancelled)
+                    return;
+                  const remainingMs =
+                    queuedOrdinary.maxWaitMs -
+                    (Date.now() - queuedOrdinary.enqueuedAtMs);
+                  if (remainingMs > 0) {
+                    queuedOrdinary.waitTimer = setTimeout(
+                      expireWhenDue,
+                      remainingMs,
+                    );
+                    queuedOrdinary.waitTimer.unref?.();
+                    return;
+                  }
+                  queuedOrdinary.expired = true;
+                  clearQueuedWaitTimer(queuedOrdinary);
+                  cancelQueuedOrdinary(queuedOrdinary);
+                };
+                queuedOrdinary.waitTimer = setTimeout(
+                  expireWhenDue,
+                  queuedOrdinary.maxWaitMs,
+                );
+                queuedOrdinary.waitTimer.unref?.();
+              }
+
+              log(
+                "queued ordinary request " +
+                  requestTraceId +
+                  " — " +
+                  ordinaryInFlight +
+                  " in flight, " +
+                  ordinaryQueueLength() +
+                  " waiting (max " +
+                  maxOrdinaryQueue +
+                  ")",
+              );
+              record({
+                kind: "queue_ordinary",
+                method: req.method,
+                path: req.url,
+                traceId: requestTraceId,
+                ordinaryInFlight,
+                ordinaryInFlightCeiling,
+                normalInFlight,
+                queueLength: ordinaryQueueLength(),
+                maxOrdinaryQueue,
+                maxWaitMs: ordinaryQueueWaitMs,
+                forwardingResult: "queued",
+              });
+            });
+            clearQueuedWaitTimer(queuedOrdinary);
+            cancelQueuedAdmission = null;
+            if (!granted || clientGone) {
+              if (granted) {
+                ordinaryGrantReservations = Math.max(
+                  0,
+                  ordinaryGrantReservations - 1,
+                );
+                pumpOrdinaryQueue();
+              } else if (queuedOrdinary.expired && !clientGone) {
+                const waitedMs = Date.now() - queuedOrdinary.enqueuedAtMs;
+                res.writeHead(429, {
+                  "content-type": "application/json",
+                  "retry-after": "2",
+                });
+                res.end(
+                  JSON.stringify({
+                    ok: false,
+                    error: "mcp_proxy_overloaded",
+                    retryable: true,
+                    forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
+                    detail:
+                      "ordinary request waited " +
+                      waitedMs +
+                      "ms in the admission FIFO (max " +
+                      queuedOrdinary.maxWaitMs +
+                      "ms) — shed before forwarding",
+                    retryAfterSec: 2,
+                    traceId: requestTraceId,
+                  }),
+                );
+                log(
+                  "shed ordinary request " +
+                    requestTraceId +
+                    " — queue dwell " +
+                    waitedMs +
+                    "ms exceeded " +
+                    queuedOrdinary.maxWaitMs +
+                    "ms",
+                );
+                record({
+                  kind: "shed_ordinary_queue_dwell",
+                  method: req.method,
+                  path: req.url,
+                  traceId: requestTraceId,
+                  waitedMs,
+                  ordinaryInFlight,
+                  ordinaryInFlightCeiling,
+                  queueLength: ordinaryQueueLength(),
+                  maxOrdinaryQueueWaitMs: queuedOrdinary.maxWaitMs,
+                  forwardingResult: "not_forwarded",
+                });
+              }
+              return;
+            }
+            ordinaryGrantReservations = Math.max(
+              0,
+              ordinaryGrantReservations - 1,
+            );
+          }
+        }
         // EI-21391963810159383 — a proxy restart made ~60 clients reconnect at once. Because
         // initialize/tools/list/ping are reserved traffic, every one bypassed the ordinary
         // ceiling and queued/replayed inside the 8-socket control-plane pool: 1,164 internal
@@ -4983,6 +5669,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             rawBody,
             { keyingEnabled, readonlyRetryEnabled, genKey: randomUUID, requestPath: req.url },
           );
+          const generationAffinityKey = isGenerationBoundMcpRequest(
+            rawBody,
+            req.url ?? "/",
+            req.headers,
+          )
+            ? mcpProxyGenerationAffinityKey(req.url ?? "/", req.headers)
+            : null;
+          const generationAffinityAgent = generationAffinityAgentFor(
+            generationAffinityKey,
+          );
           const traceId = requestTraceId;
           fwd.headers = withDataPlaneDegradedHeader(
             { ...fwd.headers, [MCP_PROXY_TRACE_HEADER]: traceId },
@@ -5093,7 +5789,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 req.url ?? "/",
                 fwd.headers,
                 fwd.body,
-                watchdogSessionProbe
+                generationAffinityAgent ??
+                  (watchdogSessionProbe
                   ? watchdogAgent
                   : improvementsCapture
                     ? improvementsCaptureAgent
@@ -5103,7 +5800,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                       ? criticalContinuationAgent
                     : reservedControlPlane && controlPlaneReserve > 0
                       ? controlPlaneAgent
-                      : upstreamAgent,
+                      : upstreamAgent),
                 fwd.klass === "idempotent"
                   ? (opts.handshakeTimeoutMs ?? HANDSHAKE_UPSTREAM_TIMEOUT_MS)
                   : maxHoldMs > 0
@@ -5115,6 +5812,20 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               abortAttempt = null;
             }
             const upstreamMs = Date.now() - attemptStartedAt;
+            // Headers are not a mutation completion boundary, even if the caller
+            // disconnected before they arrived. Hold the key while draining its body.
+            const continuationBodyDone = criticalContinuation && outcome.ures
+              ? new Promise<void>((resolve) => {
+                  const response = outcome.ures!;
+                  const finish = () => {
+                    for (const event of ["end", "error", "aborted", "close"])
+                      response.off(event, finish);
+                    resolve();
+                  };
+                  for (const event of ["end", "error", "aborted", "close"])
+                    response.once(event, finish);
+                })
+              : null;
             // The abort above surfaces as an ordinary failed attempt; `clientGone` is what
             // decides, so a race between the abort landing and the response arriving cannot
             // write to a dead socket.
@@ -5130,6 +5841,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               // cannot rewrite) currently has no way to determine except by hand-verifying
               // application state. `upstreamStatus` present + 2xx means the write applied.
               if (outcome.ures) outcome.ures.resume(); // drain so the (keepAlive:false) socket is released
+              if (continuationBodyDone) await continuationBodyDone;
               record({
                 kind: "client_gone",
                 method: req.method,
@@ -5304,6 +6016,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               }
               // This is the proxy's flush boundary, not proof the remote client consumed the body.
               let upstreamDiedMidStream = false;
+              let upstreamResponseLifecycle: McpRequestTraceEvent["upstreamResponseLifecycle"];
               if (fwd.rpcMethods.includes("tools/call")) {
                 res.once("finish", () => {
                   const httpStatus = res.statusCode;
@@ -5319,19 +6032,21 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                         ? "success"
                         : "rejected",
                     httpStatus,
+                    ...(upstreamResponseLifecycle ? { upstreamResponseLifecycle } : {}),
                   });
                 });
               }
               res.writeHead(status, ures.headers);
-              // WI-35737: an MCP response is an SSE stream that stays open long after headers
-              // arrive (and long after this function returns and releases its in-flight slot).
-              // `pipe` does NOT tear down the SOURCE when the destination dies, so without
-              // this a client that vanishes mid-stream leaves :3070 writing into a dead socket
-              // for the life of the stream. Safe for every class, unlike aborting a request
-              // in flight: headers are already back, so the tools/call has run — destroying
-              // the RESPONSE cannot half-apply anything.
+              // SSE headers precede tool completion. Keep a continuation's conflict keys
+              // until the upstream body ends, including when its caller disconnects.
+              // Otherwise the next same-item write can overtake the first verifier.
+              // Drain a disconnected continuation so its upstream tool can finish before
+              // the conflict key is released. Other response streams retain normal cleanup.
               res.on("close", () => {
-                if (!ures.destroyed) ures.destroy();
+                if (criticalContinuation) {
+                  ures.unpipe(res);
+                  if (!ures.destroyed) ures.resume();
+                } else if (!ures.destroyed) ures.destroy();
               });
               // WI-10006908 — the REVERSE direction. `pipe` does not end the destination when
               // the SOURCE aborts, and :3070 flushes SSE headers the instant a tools/call opens
@@ -5339,18 +6054,43 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               // event-loop-sentinel SIGKILL, deploy restart) used to leave the client response
               // open forever: the agent hung to its own idle timeout (300s for Claude).
               let forwardedTail = "";
+              let responseAborted = Boolean(ures.aborted);
+              let responseErrorCode: string | null = null;
+              let socketErrorCode: string | null = null;
+              const responseErrorCodeFrom = (error: Error): string | null => {
+                const code = (error as NodeJS.ErrnoException).code;
+                return typeof code === "string" ? code.slice(0, 64) : null;
+              };
+              ures.once("aborted", () => {
+                responseAborted = true;
+              });
+              ures.once("error", (error: Error) => {
+                responseErrorCode = responseErrorCodeFrom(error);
+              });
+              const upstreamSocket = ures.socket;
+              upstreamSocket?.once("error", (error: Error) => {
+                socketErrorCode = responseErrorCodeFrom(error);
+              });
               ures.on("data", (chunk: Buffer) => {
                 forwardedTail = (forwardedTail + chunk.toString("latin1")).slice(-4);
               });
               ures.once("close", () => {
                 if (ures.complete || res.writableEnded || res.destroyed) return;
                 upstreamDiedMidStream = true;
+                upstreamResponseLifecycle = {
+                  responseComplete: Boolean(ures.complete),
+                  responseAborted: Boolean(ures.aborted || responseAborted),
+                  responseDestroyed: Boolean(ures.destroyed),
+                  socketDestroyed: upstreamSocket ? Boolean(upstreamSocket.destroyed) : null,
+                  responseErrorCode,
+                  socketErrorCode,
+                };
                 const isSse = String(ures.headers["content-type"] ?? "")
                   .toLowerCase()
                   .includes("text/event-stream");
                 const errorEvents =
                   isSse && endsOnSseEventBoundary(forwardedTail)
-                    ? upstreamDeathSseErrorEvents(rawBody, traceId)
+                    ? upstreamDeathSseErrorEvents(rawBody, traceId, fwd.klass)
                     : null;
                 record({
                   kind: "upstream_died_mid_stream",
@@ -5362,6 +6102,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   elapsedMs: Date.now() - started,
                   clientResolution: errorEvents ? "jsonrpc_error_events" : "destroyed",
                   forwardingResult: forwardingResultForUpstreamFailure(true),
+                  upstreamResponseLifecycle,
                   ...rpcTrace,
                 });
                 log(
@@ -5406,6 +6147,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   forwardingResult: "applied",
                 });
               }
+              if (continuationBodyDone) await continuationBodyDone;
               return;
             }
             last = outcome;
@@ -5510,6 +6252,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // Exhausted the window (or a post-connect error we must not / no longer replay).
           const refused = last && !last.connected;
           const failureStatus = refused ? 503 : 502;
+          const idempotencyRecovery =
+            !refused && fwd.klass === "keyed"
+              ? idempotencyRecoveryForBody(fwd.body)
+              : null;
           // A locally generated MCP failure still crosses the proxy response boundary. Keep
           // the same bounded trace event as a forwarded tools/call response so journald can
           // correlate an upstream reset with the trace id returned to the client.
@@ -5541,6 +6287,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               detail: String(last?.err?.message ?? last?.err ?? "unknown"),
               attempts,
               windowMs: retryWindowMs,
+              ...(idempotencyRecovery
+                ? {
+                    recovery: {
+                      idempotencyKeys: idempotencyRecovery.keys,
+                      truncated: idempotencyRecovery.truncated,
+                      instructions:
+                        "After reconciling state and allowing the original attempt to settle, replay the same logical call with its listed key. For ptool, pass --idempotency-key <key>; do not add the key to tool arguments. A fresh key re-executes the call.",
+                    },
+                  }
+                : {}),
               note: refused
                 ? "upstream target refused connections for the whole retry window (restart took too long or is down)"
                 : fwd.klass === "opaque"
@@ -5555,10 +6311,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                       fwd.hasCodeRunWrapper
                         ? "upstream errored AFTER connecting — not auto-retried (the outer code:run wrapper's " +
                           "nested outcome is unknown; its script may have performed reads or writes. " +
-                          "Repeating the same request is safe for writes only when the caller preserves " +
-                          "its idempotency key)"
+                          "After reconciling state and allowing the original attempt to settle, replay this " +
+                          "same logical call with the matching recovery.idempotencyKeys entry; a fresh key re-executes it)"
                         : "upstream errored AFTER connecting — not auto-retried (the write's outcome is unknown; " +
-                          "resending the same call is safe server-side dedup if the caller preserves its idempotency key)"
+                          "the recovery.idempotencyKeys receipt contains the key to replay this same logical call " +
+                          "after reconciling state and allowing the original attempt to settle; a fresh key re-executes it)"
                     : `upstream errored AFTER connecting; retried ${postConnectRetries}× (${fwd.klass}) then surfaced the error`,
             }),
           );
@@ -5637,6 +6394,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // itself was already available; pump after both counters are current so neither cap
           // is oversubscribed during the grant continuation.
           pumpHandshakeQueue();
+          pumpOrdinaryQueue();
           pumpCriticalContinuationQueue();
           pumpCoordSendQueue();
           pumpImprovementsCaptureQueue();
@@ -5686,7 +6444,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   server.on("close", () => {
     for (const timer of stallTimers.values()) clearTimeout(timer);
     stallTimers.clear();
+    for (const entry of generationAffinityAgents.values()) entry.agent.destroy();
+    generationAffinityAgents.clear();
     // EI-21504897841052086 — queued waiters' dwell watches must not hold the loop open.
+    for (const waiter of ordinaryQueue) clearQueuedWaitTimer(waiter);
     for (const waiter of handshakeQueue) clearQueuedWaitTimer(waiter);
     for (const waiter of criticalContinuationQueue)
       clearQueuedWaitTimer(waiter);

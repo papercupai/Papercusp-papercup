@@ -388,8 +388,19 @@ function deriveProvenance(
   amendment: AcceptanceBarAmendmentAuthorization | undefined,
   now: string,
   newlyAddedByAmendment: boolean,
+  incoming: AcceptanceBarProvenance | undefined,
 ): AcceptanceBarProvenance {
-  if (stored) return stored;
+  if (stored) {
+    // An authenticated, reason-bearing amendment may correct an overstated
+    // predeclaration claim. This only weakens that claim; it can never promote
+    // legacy work to pre-implementation or rewrite who declared it and when.
+    // Generic template writers still have no amendment capability.
+    const conservativeLifecycleCorrection =
+      stored.lifecycle === 'pre-implementation' &&
+      incoming?.lifecycle === 'legacy-backfilled' &&
+      Boolean(actorId && amendment?.actorId === actorId && amendment.reason.trim());
+    return conservativeLifecycleCorrection ? { ...stored, lifecycle: 'legacy-backfilled' } : stored;
+  }
   const legacy = subject?.cohort === 'legacy-backfilled' || subject?.status === 'ready' || subject?.status === 'active';
   return {
     lifecycle: legacy ? 'legacy-backfilled' : 'pre-implementation',
@@ -406,9 +417,9 @@ function deriveProvenance(
 /**
  * Guard every template_data persistence path after a subject's BAR contract has
  * started.  BAR meaning changes are rejected unless the caller is the canonical
- * amendment operation; provenance/approver fields are always canonicalized from
- * the stored contract and subject-plan state, so spoofed JSON can never become
- * authoritative.  METHOD-only edits remain legal: D-002 deliberately fills the
+ * amendment operation; provenance/approver fields are canonicalized from the
+ * stored contract and subject-plan state, with conservative lifecycle corrections
+ * allowed only by authenticated amendment. METHOD-only edits remain legal: D-002 deliberately fills the
  * METHOD after implementation.
  */
 export function guardAcceptanceBarTemplateDataWrite(
@@ -529,6 +540,7 @@ export function guardAcceptanceBarTemplateDataWrite(
       args.amendment,
       now,
       Boolean(args.amendment && !prior),
+      criterion.barProvenance as AcceptanceBarProvenance | undefined,
     );
     return { ...criterion, barProvenance: provenance };
   });

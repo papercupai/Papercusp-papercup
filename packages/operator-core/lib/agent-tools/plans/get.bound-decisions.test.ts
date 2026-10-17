@@ -29,6 +29,13 @@ describe('boundDecisionBodies (WI-274 — plans:get sections-mode decision bound
     expect(d.body_full_chars).toBe(long.length);
   });
 
+  it('keeps a body-only projection honest when sibling truncation flags are dropped', () => {
+    const out = boundDecisionBodies([{ id: 'D-006', title: 't', body: 'x'.repeat(DECISION_BODY_CAP + 500) }]);
+    const bodyOnly = out[0]!.body;
+    expect(bodyOnly).toContain('TRUNCATED');
+    expect(bodyOnly).toMatch(/\+\d+ chars/);
+  });
+
   it('keeps TOTAL decision text bounded by the budget at ANY plan size (high n)', () => {
     const n = 100;
     const decisions = Array.from({ length: n }, (_, i) => ({

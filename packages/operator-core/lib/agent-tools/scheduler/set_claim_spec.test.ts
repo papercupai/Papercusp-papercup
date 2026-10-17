@@ -142,6 +142,7 @@ describe('replacement write wakes — EI-25930135591137865', () => {
     if (ok) {
       expect(wakeClaimableAwaitersForSubscribers).toHaveBeenCalledWith({
         subscriberIds: ['su-member-a', 'su-member-b'], specId: 'adoption-lane', revision: 15,
+        payloadFilter: { all: [{ harness: { equals: 'papercusp' } }] },
       });
     } else {
       expect(result.data.errors).toEqual(['release-operator has not attested support']);
@@ -231,7 +232,12 @@ describe('scheduler:set_claim_spec appendIds', () => {
     expect(result.data).toMatchObject({ ok: true, revision: 9, spec: candidate, claimableAwaitersWoken: 1,
       admissibilityPreview: { mode: 'fixed-cohort', cohortIds: ['F-old', 'F-new'] },
     });
-    expect(wakeClaimableAwaitersForSubscribers).toHaveBeenCalledWith({ subscriberIds: ['su-member'], specId: candidate.specId, revision: 9 });
+    expect(wakeClaimableAwaitersForSubscribers).toHaveBeenCalledWith({
+      subscriberIds: ['su-member'], specId: candidate.specId, revision: 9,
+      payloadFilter: {
+        all: [{ harness: { equals: 'papercusp' } }, { id: { in: ['F-old', 'F-new'] } }],
+      },
+    });
     expect(getClaimSpecRecord).not.toHaveBeenCalled();
   });
 

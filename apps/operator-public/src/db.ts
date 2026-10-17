@@ -1028,6 +1028,28 @@ export async function listHarnesses(db: D1Database, opts: ListOpts): Promise<Har
 }
 
 /**
+ * Authenticated publisher view. Unlike the public catalog, this deliberately
+ * includes every review state and unlisted row, but scopes the result to one
+ * GitHub publisher id so another creator's pending work cannot leak.
+ */
+export async function listPublisherListings(
+  db: D1Database,
+  opts: { publisherId: number; limit?: number; offset?: number },
+): Promise<HarnessRow[]> {
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 201);
+  const result = await db
+    .prepare(
+      `SELECT * FROM harnesses
+         WHERE publisher_github_user_id = ?
+         ORDER BY updated_at DESC, id ASC
+         LIMIT ? OFFSET ?`,
+    )
+    .bind(opts.publisherId, limit, opts.offset ?? 0)
+    .all<HarnessRow>();
+  return result.results ?? [];
+}
+
+/**
  * Public browse page. Banned publishers are excluded before LIMIT, and one
  * extra row is probed so next_cursor means there is actually another page.
  */
@@ -1419,9 +1441,9 @@ export async function getCreatorDraft(db: D1Database, id: string): Promise<Creat
 
 export async function listCreatorDrafts(
   db: D1Database,
-  opts: { ownerId?: number; state?: CreatorDraftState; limit?: number } = {},
+  opts: { ownerId?: number; state?: CreatorDraftState; limit?: number; offset?: number } = {},
 ): Promise<CreatorDraftRow[]> {
-  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 200);
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 201);
   const where: string[] = [];
   const binds: unknown[] = [];
   if (opts.ownerId != null) {
@@ -1432,8 +1454,9 @@ export async function listCreatorDrafts(
     where.push('state = ?');
     binds.push(opts.state);
   }
-  const sql = `SELECT * FROM creator_drafts${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY updated_at DESC LIMIT ?`;
+  const sql = `SELECT * FROM creator_drafts${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY updated_at DESC, id ASC LIMIT ? OFFSET ?`;
   binds.push(limit);
+  binds.push(opts.offset ?? 0);
   const stmt = db.prepare(sql);
   const bound = (stmt as unknown as { bind: (...values: unknown[]) => D1PreparedStatement }).bind(...binds);
   const result = await bound.all<CreatorDraftRow>();

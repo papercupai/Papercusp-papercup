@@ -70,6 +70,8 @@ import {
   type ValidateClassFireResult,
 } from './class-fire-target';
 import type { ReactionCause } from './types';
+import { getLocalRule, localRuleSource, type LocalAuthoredRule, type LocalRuleScope } from './local-rule-store';
+import { keyMatchesPattern } from './await/pattern';
 
 /** The JSON-serializable workflow input for one identity reaction. */
 export interface IdentityReactionPayload {
@@ -83,6 +85,8 @@ export interface IdentityReactionPayload {
   readonly eventKey: string;
   readonly fireId: string;
   readonly eventPayload: unknown;
+  /** Host-authored address, never supplied by a portable package. Re-read at dispatch. */
+  readonly localRule?: { id: string; potSlug: string | null; revision: number; trigger: unknown; cause: ReactionCause };
 }
 
 export type IdentityRefusalCode =
@@ -355,6 +359,7 @@ export interface IdentityReactionDeps {
   /** The operation submit tool and the capabilities it declares; null when it is not registered here. */
   readOperationSubmit: () => Promise<{ tool: string; capabilities: readonly string[] } | null>;
   dispatch: (input: IdentityDispatchInput) => Promise<{ ok: boolean; error?: string }>;
+  readLocalRule?: (scope: LocalRuleScope, id: string) => Promise<LocalAuthoredRule | null>;
 }
 
 function defaultDeps(): IdentityReactionDeps {
@@ -381,6 +386,7 @@ function defaultDeps(): IdentityReactionDeps {
       return projected ? { tool: BLUEPRINT_OPERATION_TOOLS.submit, capabilities: [...projected.capabilities] } : null;
     },
     dispatch: dispatchAsWearer,
+    readLocalRule: (scope, id) => getLocalRule(scope, id),
   };
 }
 
@@ -405,7 +411,7 @@ export async function executeIdentityReaction(
     await settle({ status: 'refused', error: `${code}: ${reason}`, ...attribution });
     return { status: 'refused', code, reason };
   };
-  const cancelStaleRow = () => cancelIdentityRuleSubscription(deps.sql, {
+  const cancelStaleRow = () => payload.localRule ? Promise.resolve() : cancelIdentityRuleSubscription(deps.sql, {
     workspaceId: payload.workspaceId, ownerId: payload.ownerId,
     subscriberId: payload.subscriberId, eventKey: payload.eventKey,
   });
@@ -416,25 +422,31 @@ export async function executeIdentityReaction(
     await cancelStaleRow();
     return refuse('detached', `${payload.ownerId} wears no applied identity in ${payload.workspaceId}`);
   }
-  if (wearer.revisionTag !== payload.revisionTag) {
+  if (!payload.localRule && wearer.revisionTag !== payload.revisionTag) {
     await cancelStaleRow();
     return refuse('attachment-changed',
       `the subscription was written for revision ${payload.revisionTag}; ${payload.ownerId} now wears ${wearer.revisionTag}`);
   }
 
   // 2. The rule, as the applied revision pins it.
-  const entry = wornAsyncRules(wearer.rules.pins).rules.find((candidate) => candidate.pinRef === payload.pinRef);
-  if (!entry || entry.rule.on !== payload.eventKey) {
+  const local = payload.localRule ? await (deps.readLocalRule ?? getLocalRule)({ workspaceId: payload.workspaceId, potSlug: payload.localRule.potSlug }, payload.localRule.id) : null;
+  if (payload.localRule && (!local || !local.enabled || local.revision !== payload.localRule.revision || local.testedRevision !== local.revision || local.authorId !== payload.ownerId)) {
+    return refuse('rule-changed', 'local rule was disabled, deleted, edited, or belongs to another author');
+  }
+  const entry = payload.localRule
+    ? local?.definition.delivery === 'async' ? { identityId: payload.pinRef, pinRef: payload.pinRef, rule: local.definition } : undefined
+    : wornAsyncRules(wearer.rules.pins).rules.find((candidate) => candidate.pinRef === payload.pinRef);
+  if (!entry || !(payload.localRule ? keyMatchesPattern(entry.rule.on, payload.eventKey) : entry.rule.on === payload.eventKey)) {
     const unreadable = wearer.rules.pins.unreadable.find((candidate) => candidate.pinRef === payload.pinRef);
     return refuse('rule-changed', unreadable
       ? `rule pin ${payload.pinRef} no longer parses: ${unreadable.error}`
       : `revision ${payload.revisionTag} does not wear async rule ${payload.pinRef} on ${payload.eventKey}`);
   }
-  const attribution = { fire: entry.rule.fire, contributor: `identity:${entry.identityId}` };
+  const attribution = { fire: entry.rule.fire, contributor: local ? localRuleSource(local) : `identity:${entry.identityId}` };
 
   // 3. The rule's condition, over this fire.
   if (entry.rule.when &&
-      !evaluateDataCondition(entry.rule.when as DataCondition, { key: payload.eventKey, payload: payload.eventPayload })) {
+      !evaluateDataCondition(entry.rule.when as DataCondition, payload.localRule?.trigger ?? { key: payload.eventKey, payload: payload.eventPayload })) {
     return refuse('when-false', `rule ${payload.pinRef} does not match this fire`, attribution);
   }
 
@@ -446,6 +458,7 @@ export async function executeIdentityReaction(
   if (!potSlug) {
     return refuse('unbound', `harness "${wearer.harnessSlug}" resolves to no pot`, attribution);
   }
+  if (local?.potSlug && local.potSlug !== potSlug) return refuse('unbound', 'local rule is scoped to a different pot', attribution);
   const validated = await deps.validateFire(payload.workspaceId, entry.rule.fire);
   if (!validated.ok) return refuse('class-invalid', validated.error, attribution);
   const resolved = await deps.resolveFire(payload.workspaceId, potSlug, entry.rule.fire);
@@ -497,7 +510,14 @@ export async function executeIdentityReaction(
   });
   if (!allowlist.ok) return refuse('capability-empty', allowlist.reason, attribution);
 
-  // 6. Dispatch as the wearer.
+  // 6. A slow provider/ceiling lookup must not authorize a since-disabled local rule.
+  if (payload.localRule) {
+    const current = await (deps.readLocalRule ?? getLocalRule)({ workspaceId: payload.workspaceId, potSlug: payload.localRule.potSlug }, payload.localRule.id);
+    if (!current?.enabled || current.revision !== payload.localRule.revision || current.testedRevision !== current.revision || current.authorId !== payload.ownerId) {
+      return refuse('rule-changed', 'local rule changed during authorization', attribution);
+    }
+  }
+  // Dispatch as the wearer.
   const dispatched = await deps.dispatch({
     workspaceId: payload.workspaceId,
     ownerId: payload.ownerId,
@@ -506,7 +526,7 @@ export async function executeIdentityReaction(
     tool: dispatch.tool,
     args: dispatch.args,
     capabilities: allowlist.capabilities,
-    cause: { depth: 1, chain: [payload.pinRef], ruleId: payload.pinRef, rootRunId: payload.fireId },
+    cause: payload.localRule?.cause ?? { depth: 1, chain: [payload.pinRef], ruleId: payload.pinRef, rootRunId: payload.fireId },
   });
   if (!dispatched.ok) {
     const error = dispatched.error ?? 'reaction failed';

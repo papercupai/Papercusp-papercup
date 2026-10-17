@@ -20,6 +20,7 @@ import type { CoordEnvelope } from "@papercusp/coordination/core";
 import { COORD_ROLES } from "../roles";
 import { coordLog, coordSql, coordWorkspaceId, coordHasPgFastPath } from "../log";
 import { MESSAGE_GC_RETENTION_DAYS } from "../message-log-gc";
+import { asSevereEventEmitter, type SevereEventEmitter } from "../../../severe-event-emitter";
 
 /** EI-9447 (WI-3937/WI-3869 furnace class): hard backstop on rows scanned by
  *  `readConditionEnvelopes`'s PG fast path, applied even within the retention
@@ -61,6 +62,8 @@ export interface ConditionState {
   alarm_count: number;
   /** the latest alarm's one-line summary. */
   latest_summary: string | null;
+  /** process identity stamped by the latest alarm emitter, when available. */
+  latest_emitter?: SevereEventEmitter;
   /**
    * P-007 (converge-frozen-candidate-by-fix-only-admission-2026-08-27): the latest
    * alarm's FULLER BODY — what `SevereEventInput.body` is documented to carry,
@@ -99,6 +102,14 @@ export function computeConditionStates(
   envelopes: readonly Record<string, unknown>[],
 ): ConditionState[] {
   const byKey = new Map<string, ConditionState>();
+  const emitterOf = (envelope: Record<string, unknown>): SevereEventEmitter | undefined => {
+    const direct = asSevereEventEmitter(envelope["emitter"]);
+    if (direct) return direct;
+    const extra = envelope["extra"];
+    return extra && typeof extra === "object" && !Array.isArray(extra)
+      ? asSevereEventEmitter((extra as Record<string, unknown>)["emitter"])
+      : undefined;
+  };
   for (const e of envelopes) {
     const ts = typeof e["ts"] === "string" ? (e["ts"] as string) : null;
     if (!ts) continue;
@@ -145,6 +156,7 @@ export function computeConditionStates(
             alarm_count: 0,
             latest_summary: null,
             latest_body: null,
+            latest_emitter: undefined,
             resolved_at: ts,
             resolved_summary:
               typeof e["summary"] === "string" ? (e["summary"] as string) : null,
@@ -170,6 +182,7 @@ export function computeConditionStates(
         latest_summary:
           typeof e["summary"] === "string" ? (e["summary"] as string) : null,
         latest_body: typeof e["body"] === "string" ? (e["body"] as string) : null,
+        latest_emitter: emitterOf(e),
         one_shot: e["one_shot"] === true,
         resolved_at: null,
         resolved_summary: null,
@@ -188,6 +201,7 @@ export function computeConditionStates(
         // the SAME alarm. Carrying a previous episode's body forward past a body-less
         // re-alarm would attach stale evidence to a fresh failure — worse than none.
         prev.latest_body = typeof e["body"] === "string" ? (e["body"] as string) : null;
+        prev.latest_emitter = emitterOf(e);
         // WI-6228: the LATEST alarm decides — an emitter that switched to/from
         // one-shot is described by what it most recently declared.
         prev.one_shot = e["one_shot"] === true;

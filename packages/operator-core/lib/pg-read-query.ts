@@ -4802,10 +4802,52 @@ function hasTopLevelCountProjection(list: string): boolean {
 /** A standalone EXISTS is scalar only when it is the entire projection call. */
 function isOnlyExistsProjection(list: string): boolean {
   let expression = list.trim();
-  expression = expression
-    .replace(/\s+as\s+(?:"(?:""|[^"])*"|[A-Za-z_][A-Za-z0-9_$]*)\s*$/i, '')
-    .replace(/^\s*(?:distinct|all)\b/i, '')
-    .trim();
+  // Do not use a leading `\s+` in an end-anchored alias regex here. The
+  // index-preserving SQL mask turns a large dollar-quoted literal into one
+  // long run of spaces; when the projection is not an EXISTS expression,
+  // that regex backtracks over the run for every possible start and makes
+  // this cheap shape check quadratic in the query length.
+  let end = expression.length;
+  while (end > 0 && /\s/.test(expression[end - 1]!)) end--;
+  let aliasStart = end;
+  if (end > 0 && expression[end - 1] === '"') {
+    let cursor = end - 2;
+    let foundOpeningQuote = false;
+    while (cursor >= 0) {
+      if (expression[cursor] !== '"') {
+        cursor--;
+        continue;
+      }
+      if (cursor > 0 && expression[cursor - 1] === '"') {
+        cursor -= 2;
+        continue;
+      }
+      aliasStart = cursor;
+      foundOpeningQuote = true;
+      break;
+    }
+    if (!foundOpeningQuote) aliasStart = end;
+  } else {
+    let cursor = end;
+    while (cursor > 0 && /[A-Za-z0-9_$]/.test(expression[cursor - 1]!)) cursor--;
+    if (cursor < end && /[A-Za-z_]/.test(expression[cursor]!)) aliasStart = cursor;
+  }
+  if (aliasStart < end) {
+    let asEnd = aliasStart;
+    while (asEnd > 0 && /\s/.test(expression[asEnd - 1]!)) asEnd--;
+    let asStart = asEnd;
+    while (asStart > 0 && /[A-Za-z]/.test(expression[asStart - 1]!)) asStart--;
+    if (
+      asEnd - asStart === 2 &&
+      expression.slice(asStart, asEnd).toLowerCase() === 'as' &&
+      (asStart === 0 || /\s/.test(expression[asStart - 1]!))
+    ) {
+      end = asStart;
+      while (end > 0 && /\s/.test(expression[end - 1]!)) end--;
+      expression = expression.slice(0, end);
+    }
+  }
+  expression = expression.replace(/^\s*(?:distinct|all)\b/i, '').trim();
 
   // Parentheses around one expression preserve its scalar shape; do not unwrap
   // when they contain trailing operators or additional projection text.

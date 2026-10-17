@@ -289,6 +289,9 @@ export interface WorkspaceHostTransportProfile {
 export interface WorkspaceHostDataPolicy {
   /** Stop/start retains this data resource; it is never implicitly ephemeral. */
   volumeGiB: number;
+  /** Explicit shares of the ONE data volume. Pooled admission requires their sum
+   * to equal volumeGiB; filesystem enforcement is a separate runtime obligation. */
+  allocation?: { dbGiB: number; workspaceGiB: number };
   encrypted: boolean;
   backupPolicyRef?: string;
 }
@@ -563,6 +566,10 @@ export interface WorkspaceHostProviderContext {
    * startup state MUST re-render this value; ordinary start/stop/restart/snapshot actions omit it.
    */
   hostBootstrapScript?: string;
+  /** Controller-derived hash of the persisted customer workspace, stable across VM replacement. */
+  durableTenantIdentity?: string;
+  /** Immutable DB/workspace split from the server admission receipt, never the mutable desired spec. */
+  durableStorageAllocation?: { dbGiB: number; workspaceGiB: number };
   log?: (
     level: WorkspaceHostLogLevel,
     message: string,

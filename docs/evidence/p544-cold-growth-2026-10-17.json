@@ -1,0 +1,207 @@
+{
+  "schemaVersion": 1,
+  "recordedAtUtc": "2026-10-17T10:10:11.916410+00:00",
+  "updatedAtUtc": "2026-10-17T10:24:17.502649+00:00",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "planItem": "P-544",
+  "workItem": "WI-6554700010016277",
+  "detectorBug": "EI-26220503907504941",
+  "scope": "Candidate single-workspace cold API readiness, same-disk online growth and same-VM CPU resize only; no full capacity, monthly all-in cost, production acceptance or shipment claim.",
+  "candidate": {
+    "sha": "dd83ee5514",
+    "packageSha256": "929e234978a7e92c44769f9e2fdc5e97e22077ca0c7053c2e3eeb477009e5b1f"
+  },
+  "cold": {
+    "startRequestedAt": "2026-10-17T10:07:02.725422+00:00",
+    "instance": "cap-p544-cold-1017",
+    "deadline": "2026-10-17T11:41:04.643Z",
+    "instrumentSha256": "9c1ae47c349a99db8b4e5fff20f26ee380f5227079febd6537804b03a6af9836",
+    "kind": "instrumented-cold-wake",
+    "healthyObservedAt": "2026-10-17T10:08:02.114894+00:00",
+    "startRequestToValidatedHealthSeconds": 59.38947102194652,
+    "thresholdSeconds": 120,
+    "passed": true,
+    "result": {
+      "ready": true,
+      "port": 17523,
+      "health": {
+        "ok": true,
+        "service": "papercusp-operator",
+        "sha": "dd83ee5514",
+        "version": "0.0.26",
+        "claimSpec": {
+          "specVersion": "1.0",
+          "revisionAdoption": [
+            "first"
+          ]
+        },
+        "ts": "2026-10-17T10:08:01.761Z"
+      },
+      "seconds": 8.557874233,
+      "attempts": 41
+    },
+    "errors": [
+      {
+        "returnCode": 255,
+        "error": "ndation: To check for possible causes of SSH connectivity issues and get\nrecommendations, rerun the ssh command with the --troubleshoot option.\n\ngcloud compute ssh cap-p544-cold-1017 --project=pc-agent-capacity-0930 --zone=us-central1-a --troubleshoot\n\nOr, to investigate an IAP tunneling issue:\n\ngcloud compute ssh cap-p544-cold-1017 --project=pc-agent-capacity-0930 --zone=us-central1-a --troubleshoot --tunnel-through-iap\n\nERROR: (gcloud.compute.ssh) [/usr/bin/ssh] exited with return code [255].\n"
+      },
+      {
+        "returnCode": 255,
+        "error": "ndation: To check for possible causes of SSH connectivity issues and get\nrecommendations, rerun the ssh command with the --troubleshoot option.\n\ngcloud compute ssh cap-p544-cold-1017 --project=pc-agent-capacity-0930 --zone=us-central1-a --troubleshoot\n\nOr, to investigate an IAP tunneling issue:\n\ngcloud compute ssh cap-p544-cold-1017 --project=pc-agent-capacity-0930 --zone=us-central1-a --troubleshoot --tunnel-through-iap\n\nERROR: (gcloud.compute.ssh) [/usr/bin/ssh] exited with return code [255].\n"
+      },
+      {
+        "returnCode": 255,
+        "error": "ndation: To check for possible causes of SSH connectivity issues and get\nrecommendations, rerun the ssh command with the --troubleshoot option.\n\ngcloud compute ssh cap-p544-cold-1017 --project=pc-agent-capacity-0930 --zone=us-central1-a --troubleshoot\n\nOr, to investigate an IAP tunneling issue:\n\ngcloud compute ssh cap-p544-cold-1017 --project=pc-agent-capacity-0930 --zone=us-central1-a --troubleshoot --tunnel-through-iap\n\nERROR: (gcloud.compute.ssh) [/usr/bin/ssh] exited with return code [255].\n"
+      }
+    ],
+    "scope": "candidate single-workspace API readiness only"
+  },
+  "afterColdWitness": {
+    "witness": {
+      "verified": true,
+      "manifestSha256": "147a79ef5b1ec1efab8765e372b7f790937286335f1180e767132c1b7c0b118f",
+      "files": 212,
+      "sqlReadOnly": true
+    },
+    "filesystemBytes": 10464022528,
+    "availableBytes": 8362950656,
+    "instrumentSha256": "9c1ae47c349a99db8b4e5fff20f26ee380f5227079febd6537804b03a6af9836",
+    "bootId": "1d1b3353-1e8b-4948-89dd-d8a82b601cf6",
+    "cpuCount": 2
+  },
+  "growth": {
+    "witness": {
+      "verified": true,
+      "manifestSha256": "147a79ef5b1ec1efab8765e372b7f790937286335f1180e767132c1b7c0b118f",
+      "files": 212,
+      "sqlReadOnly": true
+    },
+    "health": {
+      "ready": true,
+      "port": 17523,
+      "health": {
+        "ok": true,
+        "service": "papercusp-operator",
+        "sha": "dd83ee5514",
+        "version": "0.0.26",
+        "claimSpec": {
+          "specVersion": "1.0",
+          "revisionAdoption": [
+            "first"
+          ]
+        },
+        "ts": "2026-10-17T10:09:20.905Z"
+      },
+      "seconds": 0.05950327200000061,
+      "attempts": 1
+    },
+    "filesystemBytes": 12573614080,
+    "availableBytes": 10364170240,
+    "provider": {
+      "beforeSizeGb": "10",
+      "afterSizeGb": "12",
+      "sameDiskId": true,
+      "diskId": "7063419397448072287"
+    },
+    "beforeFilesystemBytes": 10464022528
+  },
+  "deadlineBeforeStart": {
+    "status": "TERMINATED",
+    "machineType": "e2-standard-2",
+    "scheduling": {
+      "automaticRestart": true,
+      "instanceTerminationAction": "DELETE",
+      "onHostMaintenance": "MIGRATE",
+      "preemptible": false,
+      "provisioningModel": "STANDARD",
+      "terminationTime": "2026-10-17T11:41:04.643Z"
+    }
+  },
+  "custody": {
+    "verified": true,
+    "capturedAt": "2026-10-17T09:54:23.216286+00:00",
+    "manifestPath": "/tmp/p544-cold-witness-manifest-20261017.json",
+    "manifestSha256": "147a79ef5b1ec1efab8765e372b7f790937286335f1180e767132c1b7c0b118f",
+    "fileCount": 212,
+    "beforeAnyLifecycle": true,
+    "createReceipt": "/tmp/p544-cold-witness-create-20261017.json"
+  },
+  "detectorRootCause": {
+    "invalidRun": {
+      "schemaVersion": 1,
+      "kind": "instrumented-cold-wake",
+      "startRequestedAt": "2026-10-17T10:00:06.299097+00:00",
+      "healthyObservedAt": "2026-10-17T10:02:42.014774+00:00",
+      "startRequestToValidatedHealthSeconds": 155.71547512500547,
+      "thresholdSeconds": 120,
+      "passed": false,
+      "attempts": 18,
+      "result": null,
+      "instance": "cap-p544-cold-1017",
+      "scope": "candidate single workspace API readiness; capacity and product acceptance remain separate"
+    },
+    "observation": "SSH port22 raises BadStatusLine outside the original inline probe catch; healthy API simultaneously available on17523. Guest /tmp instrument absent after reboot.",
+    "durableFix": "Extended existing swap-tier.py with strict wait-health API/identity validation and HTTPException handling; stage exact instrument persistently under /data/tooling before lifecycle.",
+    "recurrenceGuard": "Maintained real-socket and CLI tests reject SSH banner, SPA HTML, non-object JSON, numeric ok, wrong service and wrong candidate SHA while reaching a later valid API."
+  },
+  "tests": {
+    "command": "npm run test:file -- scripts/agent-capacity/vm/swap-tier.test.ts",
+    "passed": 92,
+    "failed": 0,
+    "skipped": 0,
+    "head": "453c8d3ff9",
+    "uncommittedNamedPaths": "1/1",
+    "scope": "local dirty state, named-path stamp; no full import-graph or committed proof",
+    "log": "/tmp/p544-cold-detector-tests-20261017.log",
+    "logSha256": "f469bce10cb54934c868d6922a01596696a85db7320d4549400d993614e230ea",
+    "sourceSha256": {
+      "scripts/agent-capacity/vm/swap-tier.py": "9c1ae47c349a99db8b4e5fff20f26ee380f5227079febd6537804b03a6af9836",
+      "scripts/agent-capacity/vm/swap-tier.test.ts": "6b6e6e51fdc8d32c8f889c36acfe51dc50da650ba2eaba6014fa879116496323"
+    }
+  },
+  "cpuResize": {
+    "before": "e2-standard-2",
+    "after": "e2-custom-4-8192",
+    "cpuCount": 4,
+    "memTotalKb": 8124024,
+    "sameVmId": "4144040202626595935",
+    "sameAttachedDisks": true,
+    "filesystemBytes": 12573614080,
+    "bootId": "241f6952-b7d4-47d9-ae4a-6d23e8b1296b",
+    "startRequestedAt": "2026-10-17T10:19:41.123910+00:00",
+    "validatedAt": "2026-10-17T10:21:02.713519+00:00",
+    "startRequestToVerifiedHealthAndWitnessSeconds": 81.58962995000184,
+    "timingScope": "Start request through strict API health and retained SQL/file verification; does not measure complete stop-to-ready outage",
+    "api": { "ready": true, "port": 17523, "ok": true, "service": "papercusp-operator", "sha": "dd83ee5514" },
+    "witness": { "verified": true, "manifestSha256": "147a79ef5b1ec1efab8765e372b7f790937286335f1180e767132c1b7c0b118f", "files": 212, "sqlReadOnly": true },
+    "deadline": { "terminationTime": "2026-10-17T11:41:04.643Z", "instanceTerminationAction": "DELETE", "relativeLifetimeAbsent": true, "verifiedBeforeAndAfterStart": true },
+    "admission": { "admitted": true, "newCents": 24, "committedCents": 15, "ceilingCents": 5000, "maxHoursConservativelyPriced": 2, "providerMaxCostLabelUpdatedCents": 24 },
+    "evidenceRefs": [ "/tmp/p544-cpu-admission-20261017.json", "/tmp/p544-cpu-pre-witness-20261017.json", "/tmp/p544-cpu-before-20261017.json", "/tmp/p544-cpu-before-start-20261017.json", "/tmp/p544-cpu-after-start-20261017.json", "/tmp/p544-cpu-readiness-20261017.json" ]
+  },
+  "finalArchive": {
+    "path": "/tmp/p544-cold-final-guest-20261017.tar.gz",
+    "persistentArchivePath": "$HOME/.cache/agent-capacity/p544-cold-final-guest-20261017.tar.gz",
+    "sha256": "663c2bb136a152db522ca8e6e891ab3cbab32b6ce84c4e6a75006d7fd702f653",
+    "members": [ "data/retained/witness.json", "data/tooling/swap-tier.py" ],
+    "originalManifestAndExactInstrumentVerifiedLocally": true,
+    "scope": "Retained witness manifest and detector source; original corpus and candidate package are separately archived. This is not a database backup."
+  },
+  "teardown": {
+    "verifiedAt": "2026-10-17T10:24:17.502649+00:00",
+    "originalAbsoluteDeleteDeadline": "2026-10-17T11:41:04.643Z",
+    "beforeDeadline": true,
+    "runId": "p544-cold-1017",
+    "deleted": [ "cap-p544-cold-1017" ],
+    "remainingInstances": [],
+    "orphanDisks": [],
+    "verified": true,
+    "dedicatedProjectFinalCensus": { "instances": [], "disks": [], "snapshots": [], "addresses": [] },
+    "evidenceRefs": [ "/tmp/p544-cold-final-teardown-20261017.json", "/tmp/p544-cold-final-absence-20261017.json" ],
+    "scope": "Ephemeral candidate fixture deleted; existing artifacts bucket preserved. Retained bytes were verified before deletion; this does not establish product backup/restore acceptance."
+  },
+  "remaining": [
+    "D075 qualified current model/effort capacity and burst UX",
+    "D076 actual all-category monthly trial cost strictly under20",
+    "P537 authenticated production journey, exact source-to-serving parity and final shipment"
+  ]
+}

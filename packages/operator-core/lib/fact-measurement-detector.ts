@@ -138,7 +138,8 @@ const EXISTENCE_CONTEXT =
   /\b(?:exists?|existed|existence|found|present|remain(?:s|ed|ing)?|match(?:es|ed|ing)?|return(?:s|ed)?|fired?|emit(?:s|ted|ter|ters)?|touch(?:es|ed)?|appear(?:s|ed)?|surfaced?|occur(?:s|red)?|register(?:ed|s)?|record(?:ed|s)?|configured?|implement(?:ed|s)?|wired|reachable|referenc(?:e|es|ed)|cit(?:e|es|ed)|membership|rows?|results?|callers?|instances?|entr(?:y|ies)|hits?)\b/i;
 
 /** A deontic prohibition describes a rule, not an observed absence. */
-const NORMATIVE_NEGATION_PREFIX = /\b(?:must|should|shall|ought\s+to)\s+$/i;
+const NORMATIVE_NEGATION_PREFIX =
+  /(?:\b(?:must|should|shall|ought\s+to)\s+$|^\s*(?:please(?:,\s*|\s+))?do\s+$)/i;
 
 export interface FactAbsenceSignal {
   /** The negation token that triggered the advisory. */

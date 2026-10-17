@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "item": "P-544",
+  "workItems": [
+    "EI-26170240147122021",
+    "EI-26169027316282708"
+  ],
+  "recordedAt": "2026-10-16T20:52:00Z",
+  "summary": "Ubuntu swap preflight reads the kernel inventory without draining live swap or depending on unsupported swapon JSON output.",
+  "rootCause": "The active-mode swap validator used swapon --json, which Ubuntu24.04's installed util-linux rejects. Prior tests mocked this unavailable CLI response, so they could not detect the portability defect.",
+  "fix": "Read /proc/swaps, decode kernel octal filename escapes, convert KiB sizes to bytes, and fail closed for malformed inventory. Active mode preserves zram and disk overflow on startup, success and failure.",
+  "tests": {
+    "command": "testing:run files=[scripts/agent-capacity/vm/swap-tier.test.ts]",
+    "runId": "ba9cc0d8-b4e7-4470-9a43-3ffab87c1dfb",
+    "testRunIds": [
+      21291492
+    ],
+    "passed": 65,
+    "failed": 0,
+    "skipped": 0,
+    "rawResult": "/tmp/p544-proc-swaps-tests.json"
+  },
+  "sourceHashes": {
+    "scripts/agent-capacity/vm/swap-tier.py": "7b58ce85af6434d953c07b6406103b79cf8e21e0ce4e23f647188bc53947fb3c",
+    "scripts/agent-capacity/vm/swap-tier.test.ts": "6335c3428b50a3c4235566e60e94dfdd3cf19e47cabedf1097c0af7af484aa72"
+  },
+  "guest": {
+    "name": "cap-p544-min-1016",
+    "zone": "us-central1-a",
+    "project": "pc-agent-capacity-0930",
+    "machine": "e2-custom-2-4096",
+    "originalDeleteDeadline": "2026-10-16T21:19:07Z",
+    "preflightLog": "/tmp/p544-kernel-swap-stage.log",
+    "serverPopulation": 1,
+    "swapDevices": [
+      {
+        "name": "/dev/sdc",
+        "sizeBytes": 10737414144,
+        "priority": 10
+      },
+      {
+        "name": "/dev/zram0",
+        "sizeBytes": 4294963200,
+        "priority": 100
+      }
+    ],
+    "codexCatalogHttpStatus": 200,
+    "codexSandbox": "read-only preflight passed"
+  },
+  "coldDurability": {
+    "task": "0mvbfulud14bi8eyxew",
+    "log": "/tmp/p544-cold-durability-baseline.log",
+    "witnessId": "p544-single-workspace-20261016",
+    "witnessCreatedAt": "2026-10-16T20:24:58.546Z",
+    "postColdReadAt": "2026-10-16T20:47:04.904Z",
+    "manifestGroupsPreserved": [
+      "corpus",
+      "nativeHistories",
+      "nativeFiles"
+    ],
+    "coldWakeLatencyVerdict": "unmeasured; first health read was not an instrumented <=120-second acceptance probe"
+  },
+  "limitations": [
+    "No qualified capacity verdict follows from preflight or unit tests.",
+    "The current source Server package remains a test candidate, not deployed-main shipment proof."
+  ]
+}

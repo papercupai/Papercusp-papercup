@@ -451,10 +451,13 @@ describe('P-012 / D-024: the by-id claim refuses every non-agent category', () =
 
     for (const s of agent) {
       const observed = await wi.observeWorkItem(s.id, { harness: H });
+      const terminal = !['open', 'wip', 'blocked'].includes(s.status);
       expect({ id: s.id, available: observed?.available, gated: observed?.gated }).toEqual({
-        id: s.id, available: true, gated: undefined,
+        id: s.id, available: !terminal, gated: undefined,
       });
-      expect((await wi.claimWorkItem(s.id, 'observe-category-probe', { harness: H }))?.assignee).toBe('observe-category-probe');
+      if (!terminal) {
+        expect((await wi.claimWorkItem(s.id, 'observe-category-probe', { harness: H }))?.assignee).toBe('observe-category-probe');
+      }
     }
   });
 

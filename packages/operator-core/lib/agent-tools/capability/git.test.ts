@@ -8,8 +8,8 @@
  * mocking anything — the exact vector a bee's `capability:git` would have had.
  */
 import { ChildProcess, execFile, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir, platform, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
@@ -45,8 +45,8 @@ function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 }
 
-function repository(prefix: string): string {
-  const root = mkdtempSync(join(tmpdir(), prefix));
+function repository(prefix: string, parent = tmpdir()): string {
+  const root = mkdtempSync(join(parent, prefix));
   cleanup.push(root);
   git(root, ['init', '--quiet']);
   git(root, ['config', 'user.name', 'Scratch Clone Test']);
@@ -275,6 +275,35 @@ describe('runGitReadOnlyEvidence', () => {
 });
 
 describe('scratchClone — guarded cheap local materialisation (WI-38848)', () => {
+  it('places a default Linux clone on the separate data filesystem even with root-side TMPDIR', async () => {
+    const source = repository('cap-git-placement-');
+    vi.stubEnv('TMPDIR', homedir());
+    try {
+      const result = await createLocalScratchClone({ source, signal: never });
+      cleanup.push(result.path);
+      if (platform() === 'linux') {
+        expect(result.path.startsWith(`${realpathSync('/mnt/data/tmp')}/`)).toBe(true);
+        expect(statSync(result.path).dev).not.toBe(statSync('/').dev);
+      }
+      expect(git(result.path, ['rev-parse', 'HEAD'])).toBe(git(source, ['rev-parse', 'HEAD']));
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it.skipIf(platform() !== 'linux' || statSync(homedir()).dev !== statSync('/').dev)(
+    'refuses ignored root-side agent scratch before creating a checkout', async () => {
+      const source = repository('.cap-git-root-placement-', homedir());
+      writeFileSync(join(source, '.gitignore'), '/.papercusp/scratch/\n');
+      git(source, ['add', '.gitignore']);
+      git(source, ['commit', '--quiet', '-m', 'ignore owned scratch']);
+      const scratch = join(source, '.papercusp', 'scratch');
+      mkdirSync(scratch, { recursive: true });
+      const destination = join(scratch, 'refused');
+      await expect(createLocalScratchClone({ source, destination, signal: never }))
+        .rejects.toThrow('root filesystem');
+      expect(existsSync(destination)).toBe(false);
+      expect(git(source, ['status', '--porcelain'])).toBe('');
+    });
+
   it('keeps the existing argv form and exposes a mutually-exclusive scratch form', () => {
     const schema = (capabilityGit as unknown as { args: { safeParse(value: unknown): { success: boolean } } }).args;
     expect(schema.safeParse({ args: ['status', '--porcelain'] }).success).toBe(true);

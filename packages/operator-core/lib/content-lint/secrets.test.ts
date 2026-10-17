@@ -85,6 +85,29 @@ describe('findCommitBlockingSecrets', () => {
     const findings = findCommitBlockingSecrets('libs/generic/fixtures-other.ts', `const v = '${awsShape()}';\n`, exemptions);
     expect(findings).toHaveLength(1);
   });
+
+  it('skips generated native fixture bundles at root and nested producer layouts', () => {
+    const text = `${pemHeader()}\nconst token = '${awsShape()}';\n`;
+    expect(
+      findCommitBlockingSecrets('apps/operator/dist-host-native-fixture-debug-2001983/hono-host.mjs', text, NO_EXEMPTIONS),
+    ).toEqual([]);
+    expect(
+      findCommitBlockingSecrets(
+        'apps/operator/apps/operator/dist-host-native-fixture-debug-2047298/hono-host.mjs',
+        text,
+        NO_EXEMPTIONS,
+      ),
+    ).toEqual([]);
+  });
+
+  it('keeps similarly named maintained source in the scanned population', () => {
+    const findings = findCommitBlockingSecrets(
+      'packages/operator-core/lib/dist-host-native-fixture-debugger.ts',
+      `const key = '${awsShape()}';\n`,
+      NO_EXEMPTIONS,
+    );
+    expect(findings.map((finding) => finding.rule)).toEqual(['aws-access-key-id']);
+  });
 });
 
 describe('describeCommitBlockingSecrets', () => {
@@ -208,6 +231,12 @@ describe('secretsDetector (registry wiring)', () => {
     expect(secretsDetector.matches('packages/x/node_modules/pkg/index.js')).toBe(false);
     expect(secretsDetector.matches('_retired/old.ts')).toBe(false);
     expect(secretsDetector.matches('packages/x/dist/bundle.js')).toBe(false);
+  });
+
+  it('excludes generated native fixture bundles but keeps similarly named source', () => {
+    expect(secretsDetector.matches('apps/operator/dist-host-native-fixture-debug-2001983/hono-host.mjs')).toBe(false);
+    expect(secretsDetector.matches('apps/operator/apps/operator/dist-host-native-fixture-debug-2047298/hono-host.mjs')).toBe(false);
+    expect(secretsDetector.matches('packages/operator-core/lib/dist-host-native-fixture-debugger.ts')).toBe(true);
   });
 
   it('still matches a TOP-LEVEL node_modules path — documented, and harmless here', () => {

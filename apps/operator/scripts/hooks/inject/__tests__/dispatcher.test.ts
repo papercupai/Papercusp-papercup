@@ -203,6 +203,15 @@ describe('adapter parse / render', () => {
     expect(parsed.toolCalls[0].toolResponse).toHaveLength(400);
   });
 
+  it('preserves an edit path beyond the recall clamp for both native and MCP edits', () => {
+    for (const tool of ['Edit', 'mcp__papercusp_su__capability_edit', 'capability:edit']) {
+      const parsed = codex.parse('mid-turn', { tool_name: tool,
+        tool_input: { old_string: 'x'.repeat(2000), file_path: '/repo/lib/example.ts' }, tool_response: 'ok' }) as any;
+      expect(parsed.toolCalls[0].editedPath).toBe('/repo/lib/example.ts');
+      expect(parsed.toolCalls[0].toolInput).toHaveLength(400);
+    }
+  });
+
   it('codex mid-turn is PER-CALL and normalises to a one-element array', () => {
     const parsed = codex.parse('mid-turn', {
       tool_name: 'shell',
@@ -216,6 +225,14 @@ describe('adapter parse / render', () => {
     expect(parsed.toolCalls[0].tool).toBe('shell');
     // Codex supplies cwd on every event; prefer it over the hook's own cwd.
     expect(parsed.cwd).toBe('/repo');
+  });
+  it('preserves all native patch headers beyond the recall clamp', () => {
+    const patch = `*** Begin Patch\n*** Update File: lib/a.ts\n@@\n-${'x'.repeat(600)}\n+y\n*** Update File: lib/b.ts\n@@\n-a\n+b\n*** End Patch`;
+    for (const tool of ['apply_patch', 'functions.apply_patch']) {
+      const parsed = codex.parse('mid-turn', { tool_name: tool, tool_input: patch, tool_response: 'ok' }) as any;
+      expect(parsed.toolCalls[0].editedPaths).toEqual(['lib/a.ts', 'lib/b.ts']);
+      expect(parsed.toolCalls[0].toolInput).toHaveLength(400);
+    }
   });
 
   it('parse returns null when there is no signal, so nothing is spent', () => {

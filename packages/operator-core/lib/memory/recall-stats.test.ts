@@ -170,6 +170,7 @@ describe('recordRecallStats', () => {
       return Promise.resolve([]);
     }) as unknown as Sql;
     const timeout = { scope: 'request-budget' as const, phase: 'shared-budget' as const, elapsedMs: 5000 };
+    const corpusTimeout = { scope: 'backend-operation' as const, phase: 'corpus-leg' as const, elapsedMs: 2000 };
     await recordRecallStats(sql, {
       surface: 'injection',
       entries: [],
@@ -181,14 +182,41 @@ describe('recordRecallStats', () => {
         truncated: false,
         dropped: { pack: 0, feedback: 0, workspace: 0, dedup: 0, jev: 0, nearDuplicate: 0, budget: 0 },
         byLeg: { cosineOnly: 0, lexicalOnly: 0, both: 0 },
+        corpus: {
+          outcome: 'timed-out',
+          returned: 0,
+          selected: 0,
+          admitted: 0,
+          dropped: {
+            'ambient-excluded': 0,
+            'self-session': 0,
+            'out-of-scope': 0,
+            'no-term-overlap': 0,
+            'duplicate-ref': 0,
+            'not-novel': 0,
+            'cap-exhausted': 0,
+            'budget-exhausted': 0,
+          },
+          gate: null,
+          sessionDedup: 0,
+          embedderAvailable: false,
+          legs: null,
+          retrievalDepth: 0,
+          rerank: 'nothing-to-reorder',
+          timeout: corpusTimeout,
+        },
         timeout,
       },
     });
 
     const admissionJson = calls[0]![ADMISSION] as string;
-    const persisted = JSON.parse(admissionJson) as { timeout: Record<string, unknown> };
+    const persisted = JSON.parse(admissionJson) as {
+      timeout: Record<string, unknown>;
+      corpus: { timeout: Record<string, unknown> };
+    };
     expect(persisted.timeout).toEqual(timeout);
     expect(Object.keys(persisted.timeout).sort()).toEqual(['elapsedMs', 'phase', 'scope']);
+    expect(persisted.corpus.timeout).toEqual(corpusTimeout);
     expect(admissionJson).not.toContain('raw private query');
     expect(admissionJson).not.toContain('private-session-id');
   });

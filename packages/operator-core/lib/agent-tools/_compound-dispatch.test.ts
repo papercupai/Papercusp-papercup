@@ -120,6 +120,23 @@ describe('inProcessCall — registration + gate routing', () => {
     expect(passedCtx.principal).toEqual({ id: 'p1' }); // gates still run against the caller
   });
 
+  it('forwards a per-call abort signal without replacing the parent signal', async () => {
+    const parent = new AbortController();
+    const child = new AbortController();
+    const parentCtx = { who: 'caller', signal: parent.signal } as unknown as UnifiedToolContext;
+    mocks.dispatchProjectedTool.mockResolvedValue({ ok: true, result: { structuredContent: { ok: true } } });
+
+    await inProcessCall(parentCtx)('slow:read', {}, child.signal);
+
+    const passedCtx = mocks.dispatchProjectedTool.mock.calls[0]![3] as UnifiedToolContext;
+    expect(passedCtx.signal).not.toBe(parent.signal);
+    expect(passedCtx.signal).not.toBe(child.signal);
+    expect(passedCtx.signal.aborted).toBe(false);
+    child.abort(new Error('leg timed out'));
+    expect(passedCtx.signal.aborted).toBe(true);
+    expect(parent.signal.aborted).toBe(false);
+  });
+
   it('binds crossWorkspace sub-calls to the admin tx + synthesized principal', async () => {
     const adminTx = { __admin: true };
     const synthesizedPrincipal = {

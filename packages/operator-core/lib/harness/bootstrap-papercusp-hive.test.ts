@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
+import * as buildInfo from '../build-info';
 
 // The canonical invite is now COMMITTED (P-003 activation), so bakedCanonicalHiveInvite()
 // returns it by default — which would route every no-`canonicalInvite` test through the
@@ -17,6 +19,10 @@ vi.mock('../hive-store', () => ({
 // invite shipped the real team GitHub logins into the client bundle. Mocked separately here,
 // still to [], preserving this suite's existing behaviour.
 vi.mock('./canonical-hive-team-allowlist', () => ({ CANONICAL_HIVE_TEAM_ALLOWLIST: [] }));
+vi.mock('../sync/hyperbee/restore-hive-seed', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../sync/hyperbee/restore-hive-seed')>();
+  return { ...actual, restoreHiveSeed: vi.fn(actual.restoreHiveSeed) };
+});
 
 import {
   bootstrapPapercuspHive,
@@ -35,6 +41,8 @@ import { join } from 'node:path';
 import { PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hive';
 import { PAPERCUSP_WORKSPACE_ID } from './papercusp-workspace';
 import { workspacesRoot, isKnownWorkspace } from '../workspace-registry';
+import { restoreHiveSeed } from '../sync/hyperbee/restore-hive-seed';
+import { SEED_FORMAT_VERSION, SeedProviderRegistry, type SeedManifest } from '@papercusp/seed-bundle';
 
 // WI-3232: the seed CORESTORE must restore to the SAME dir boot opens it, else the
 // OFFLINE self-admit pot appears with EMPTY content (boot reads an empty corestore).
@@ -273,6 +281,144 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(/seed restore: restored=\[corestore\] deferred=\[git\]/));
     warn.mockRestore();
   });
+
+  it('P-007: default bootstrap restore logs phase boundaries and records live clone progress', async () => {
+    const seedDir = mkdtempSync(join(tmpdir(), 'pcusp-bootstrap-seed-'));
+    const previousSeedDir = process.env.PAPERCUSP_SEED_DIR;
+    const previousNoSeed = process.env.PAPERCUSP_NO_SEED;
+    const info = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      writeFileSync(join(seedDir, 'manifest.json'), '{}');
+      process.env.PAPERCUSP_SEED_DIR = seedDir;
+      delete process.env.PAPERCUSP_NO_SEED;
+      vi.mocked(restoreHiveSeed).mockImplementationOnce(async (ctx) => {
+        ctx.log?.('[seed] corestore verify started', 'info');
+        ctx.log?.('[seed] corestore verify succeeded', 'info');
+        ctx.log?.('[seed] corestore restore started', 'info');
+        return { ran: true, outcomes: [{ kind: 'corestore', ok: true }], deferred: [] };
+      });
+      const deps = spyDeps({
+        canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+        findJoinedCanonical: vi.fn(async () => null),
+        joinCanonical: vi.fn(async () => ({ state: 'joined' as const, slug: 'papercusp-view' })),
+      });
+
+      const result = await bootstrapPapercuspHive(deps);
+
+      expect(result.state).toBe('cloned-and-created');
+      expect(restoreHiveSeed).toHaveBeenCalledWith(expect.objectContaining({ seedDir, log: expect.any(Function) }));
+      expect(info).toHaveBeenCalledWith('[papercusp-hive] seed: corestore verify started');
+      expect(info).toHaveBeenCalledWith('[papercusp-hive] seed: corestore verify succeeded');
+      expect(info).toHaveBeenCalledWith('[papercusp-hive] seed: corestore restore started');
+      for (const detail of [
+        'seed: corestore verify started',
+        'seed: corestore verify succeeded',
+        'seed: corestore restore started',
+      ]) {
+        expect(deps.recordProgress).toHaveBeenCalledWith('clone', 'running', { detail });
+      }
+    } finally {
+      info.mockRestore();
+      warn.mockRestore();
+      if (previousSeedDir === undefined) delete process.env.PAPERCUSP_SEED_DIR;
+      else process.env.PAPERCUSP_SEED_DIR = previousSeedDir;
+      if (previousNoSeed === undefined) delete process.env.PAPERCUSP_NO_SEED;
+      else process.env.PAPERCUSP_NO_SEED = previousNoSeed;
+      rmSync(seedDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['verify', 'restore'] as const)(
+    'WI-6554700010011908: default bootstrap exposes a held corestore %s phase before joining',
+    async (heldPhase) => {
+      const seedDir = mkdtempSync(join(tmpdir(), 'pcusp-bootstrap-held-seed-'));
+      const installedScript = join(seedDir, 'serve.mjs');
+      const installedBytes = Buffer.from('// installed bootstrap identity fixture\n');
+      const diagnosticIdentity = { buildSha: 'd'.repeat(40),
+        sourceSha256: createHash('sha256').update(installedBytes).digest('hex'), script: installedScript };
+      const previousArgv = process.argv;
+      const buildIdentity = vi.spyOn(buildInfo, 'getBuildInfo')
+        .mockReturnValue({ sha: diagnosticIdentity.buildSha, version: '0.0.0-test' });
+      const previousSeedDir = process.env.PAPERCUSP_SEED_DIR;
+      const previousNoSeed = process.env.PAPERCUSP_NO_SEED;
+      const info = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let release!: () => void;
+      const held = new Promise<void>((resolveHeld) => { release = resolveHeld; });
+      try {
+        writeFileSync(installedScript, installedBytes);
+        process.argv = [previousArgv[0], installedScript];
+        writeFileSync(join(seedDir, 'manifest.json'), '{}');
+        process.env.PAPERCUSP_SEED_DIR = seedDir;
+        delete process.env.PAPERCUSP_NO_SEED;
+        const manifest: SeedManifest = {
+          seedFormatVersion: SEED_FORMAT_VERSION,
+          potId: 'papercusp',
+          cutAtEpoch: 0,
+          cutHlc: 'held-phase-fixture',
+          cutTs: 1,
+          stores: [{
+            kind: 'corestore', hash: 'fixture-hash', sizeBytes: 1,
+            source: { type: 'resource', path: 'seed/corestore' },
+          }],
+        };
+        const registry = new SeedProviderRegistry().register({
+          kind: 'corestore',
+          cut: vi.fn(async () => { throw new Error('cut is not used during restore'); }),
+          verify: vi.fn(async () => {
+            if (heldPhase === 'verify') await held;
+            return { ok: true };
+          }),
+          restore: vi.fn(async () => {
+            if (heldPhase === 'restore') await held;
+          }),
+        });
+        const { restoreHiveSeed: realRestoreHiveSeed } =
+          await vi.importActual<typeof import('../sync/hyperbee/restore-hive-seed')>('../sync/hyperbee/restore-hive-seed');
+        vi.mocked(restoreHiveSeed).mockImplementationOnce((ctx) =>
+          realRestoreHiveSeed({ ...ctx, readManifest: async () => manifest, registry }));
+        const progress: string[] = [];
+        const joinCanonical = vi.fn(async () => ({ state: 'joined' as const, slug: 'papercusp-view' }));
+        const deps = spyDeps({
+          canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+          findJoinedCanonical: vi.fn(async () => null),
+          joinCanonical,
+          recordProgress: vi.fn((_step, _status, extra) => {
+            if (extra?.detail) progress.push(extra.detail);
+          }),
+        });
+
+        const boot = bootstrapPapercuspHive(deps);
+        await vi.waitFor(() => expect(progress).toContain(`seed: corestore ${heldPhase} started`));
+        expect(restoreHiveSeed).toHaveBeenLastCalledWith(expect.objectContaining({ diagnosticIdentity }));
+        const journal = (globalThis as any)[Symbol.for('@papercusp/seed-bundle.restore-diagnostics')];
+        expect(journal.operations.at(-1)).toMatchObject({
+          identity: diagnosticIdentity, status: 'running',
+          events: expect.arrayContaining([expect.objectContaining({ phase: heldPhase, state: 'started' })]),
+        });
+        expect(progress).not.toContain(`seed: corestore ${heldPhase} succeeded`);
+        if (heldPhase === 'verify') expect(progress).not.toContain('seed: corestore restore started');
+        expect(joinCanonical).not.toHaveBeenCalled();
+
+        release();
+        expect((await boot).state).toBe('cloned-and-created');
+        expect(progress).toContain(`seed: corestore ${heldPhase} succeeded`);
+        expect(joinCanonical).toHaveBeenCalledOnce();
+      } finally {
+        release();
+        process.argv = previousArgv;
+        buildIdentity.mockRestore();
+        info.mockRestore();
+        warn.mockRestore();
+        if (previousSeedDir === undefined) delete process.env.PAPERCUSP_SEED_DIR;
+        else process.env.PAPERCUSP_SEED_DIR = previousSeedDir;
+        if (previousNoSeed === undefined) delete process.env.PAPERCUSP_NO_SEED;
+        else process.env.PAPERCUSP_NO_SEED = previousNoSeed;
+        rmSync(seedDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('P-007: a restore failure is non-fatal — the join still runs (cold path)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

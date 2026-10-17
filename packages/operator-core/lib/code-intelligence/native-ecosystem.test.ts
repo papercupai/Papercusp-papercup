@@ -58,6 +58,28 @@ describe('native P021 required BAR captured source bundle boundary', () => {
 });
 
 describe('native CLI fixture runtime and deadline guards', () => {
+  it.each([
+    'AssertionError [ERR_ASSERTION]: installed dispatcher returned empty context',
+    'AssertionError [ERR_ASSERTION]',
+  ])('retains the primary error %s between noisy startup and cleanup output', async errorLine => {
+    const script = `
+      process.stdout.write('startup '.repeat(2000) + '\\n');
+      process.stderr.write(${JSON.stringify(errorLine + '\n    at fixtureAssertion (fixture.ts:42:3)\n')});
+      setTimeout(() => {
+        process.stdout.write('[with-test-pg] cleanup '.repeat(2500) + '\\n');
+        process.exitCode = 1;
+      }, 20);
+    `;
+    const result = await nativeFixtureProcess(process.execPath, ['-e', script], {
+      cwd: process.cwd(), timeoutMs: 10_000,
+    });
+    expect(result.code).toBe(1);
+    expect(result.failureOutput).toContain(errorLine);
+    expect(result.output).toContain(errorLine);
+    expect(result.output).toContain('at fixtureAssertion (fixture.ts:42:3)');
+    expect(result.output.length).toBeLessThan(50_000);
+  });
+
   it('keeps built artifacts outside the scoped TypeScript fixture loader', async () => {
     const root = mkdtempSync(join(tmpdir(), 'native-scoped-fixture-'));
     try {
@@ -184,7 +206,9 @@ describe('native CLI fixture runtime and deadline guards', () => {
     expect(timing.phases.map((phase: { line: string }) => phase.line)).toEqual([
       'NATIVE_INCIDENT_API_STAGE=private-pg-start', 'NATIVE_INCIDENT_API_STAGE=cli-start:work_items:claim',
     ]);
-    expect(timing.phases[1].elapsedMs).toBeGreaterThan(timing.phases[0].elapsedMs);
+    // Both stages can be observed within one millisecond tick; ordering is
+    // already asserted by the phase lines and the clock stream remains monotonic.
+    expect(timing.phases[1].elapsedMs).toBeGreaterThanOrEqual(timing.phases[0].elapsedMs);
     // Loaders may emit diagnostics before the first fixture stage. Require the
     // stage in the retained startup section, without assuming it is byte zero.
     const startup = output.split('\nstartup:\n')[1]?.split('\ntail:\n')[0];

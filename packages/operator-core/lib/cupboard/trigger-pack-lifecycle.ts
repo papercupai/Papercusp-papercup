@@ -28,8 +28,12 @@ import type {
   TriggerPackManifest,
 } from './trigger-pack-materialize';
 import type postgres from 'postgres';
+import { providerOptionSourceOf } from '@papercusp/plugin-sdk/provider';
 import { canonicalJson } from '../authority/authority-rpc-envelope';
 import { detachExternalTriggerBinding } from '../external-triggers/admin';
+import { loadHarnessRegistry } from '../harness-registry';
+import { listProviderOptions, type ProviderOptionsDeps } from '../integrations/provider-options';
+import { requestRegistry } from '../integrations/ticket-integrations';
 import { detectPossibleSecrets } from '../memory/secret-detect';
 import { sanitizePlanForTemplate } from './plan-template-serialize';
 import type { TriggerPackResources, TriggerPackUnmet } from './trigger-pack-materialize';
@@ -125,6 +129,8 @@ interface OwnedBindingRow {
   id: string;
   sourceId: string;
   sourceKind: string | null;
+  sourceStatus: string | null;
+  ownerUserId: string | null;
   armed: boolean;
   eventPattern: string;
   eventFilter: unknown;
@@ -200,9 +206,10 @@ export async function resolveTriggerPackInstallationId(
   return rows[0]?.id ?? null;
 }
 
-async function loadOwnedBindings(sql: Db, workspaceId: string, installationId: string): Promise<OwnedBindingRow[]> {
+async function loadOwnedBindings(sql: Db, workspaceId: string, installationId: string, lock = false): Promise<OwnedBindingRow[]> {
   return sql<OwnedBindingRow[]>`
-    SELECT b.id::text AS id, b.source_id::text AS "sourceId", s.kind AS "sourceKind", b.armed,
+    SELECT b.id::text AS id, b.source_id::text AS "sourceId", s.kind AS "sourceKind",
+           s.status AS "sourceStatus", s.owner_user_id::text AS "ownerUserId", b.armed,
            b.event_pattern AS "eventPattern", b.event_filter AS "eventFilter", b.datatype_id AS "datatypeId",
            b.plan_harness_slug AS "planHarnessSlug", b.plan_slug AS "planSlug", b.action,
            b.storm_policy AS "stormPolicy"
@@ -211,7 +218,8 @@ async function loadOwnedBindings(sql: Db, workspaceId: string, installationId: s
      WHERE b.workspace_id = ${workspaceId}
        AND b.pack_installation_id = ${installationId}::uuid
        AND b.detached_at IS NULL
-     ORDER BY b.id`;
+     ORDER BY b.id
+     ${lock ? sql`FOR UPDATE OF b` : sql``}`;
 }
 
 function recipientsOf(manifest: Record<string, unknown>, inputs: Record<string, unknown>): TriggerPackReview['recipients'] {
@@ -356,6 +364,53 @@ export type ArmTriggerPackResult =
       review?: TriggerPackReviewState;
     };
 
+function armInputSnapshot(row: InstallationRow, bindings: OwnedBindingRow[]): string {
+  return canonicalJson({
+    inputs: row.inputs,
+    manifest: row.manifest,
+    sources: bindings.map(({ id, sourceId, sourceKind, sourceStatus, ownerUserId }) =>
+      ({ id, sourceId, sourceKind, sourceStatus, ownerUserId })),
+  });
+}
+
+/** Use the same source owner and option list as execution, before any arm writes. */
+async function validateArmInputs(
+  sql: postgres.Sql,
+  workspaceId: string,
+  row: InstallationRow,
+  bindings: OwnedBindingRow[],
+  options: ProviderOptionsDeps,
+): Promise<void> {
+  if (bindings.some((binding) => !binding.sourceKind || binding.sourceStatus === 'disabled')) {
+    throw new TriggerPackLifecycleError('trigger_pack_source_unavailable', 'an owned binding has a missing or disabled source');
+  }
+  const properties = asRecord(asRecord(asRecord(asRecord(row.manifest).triggerPack).inputs).properties);
+  const inputs = asRecord(row.inputs);
+  const owners = [...new Set(bindings.map((binding) => binding.ownerUserId).filter((id): id is string => Boolean(id)))];
+  for (const [key, schema] of Object.entries(properties)) {
+    const optionSource = providerOptionSourceOf(schema);
+    const value = inputs[key];
+    if (!optionSource || value === undefined || value === null || value === '') continue;
+    const values = Array.isArray(value) ? value : [value];
+    if (!owners.length || values.some((picked) => typeof picked !== 'string')) {
+      throw new TriggerPackLifecycleError('trigger_pack_input_unavailable', `cannot resolve the source owner or selected options for '${key}'`);
+    }
+    const registry = await requestRegistry(options);
+    for (const ownerUserId of owners) {
+      const listed = await listProviderOptions(sql, { workspaceId, ownerUserId, ...optionSource }, { ...options, registry });
+      const createsTicket = optionSource.capability === 'ticket.containers' && optionSource.args?.purpose === 'create';
+      for (const picked of values) {
+        const matches = listed.groups.filter((group) => !group.error
+          && group.options.some((option) => option.value === picked)
+          && (!createsTicket || registry.get(group.provider)?.descriptor.capabilities.includes('ticket.create')));
+        if (!matches.length || (createsTicket && matches.length !== 1)) {
+          throw new TriggerPackLifecycleError('trigger_pack_input_unavailable', `selected option for '${key}' is unavailable or ambiguous`);
+        }
+      }
+    }
+  }
+}
+
 /**
  * Arm a pack as a unit against the review the installer saw. A stale
  * fingerprint is refused with the current review so the caller can re-review.
@@ -364,16 +419,55 @@ export async function armTriggerPack(
   sql: postgres.Sql,
   workspaceId: string,
   input: { installationId: string; fingerprint: string; reviewedBy?: string | null },
+  deps: { options?: ProviderOptionsDeps } = {},
 ): Promise<ArmTriggerPackResult> {
+  const seen = await loadInstallation(sql, workspaceId, input.installationId);
+  if (!seen) return { ok: false, error: 'not_found', installationId: input.installationId };
+  const seenBindings = await loadOwnedBindings(sql, workspaceId, seen.id);
+  const seenState = reviewState(seen, seenBindings);
+  if (seen.status !== 'configured') {
+    return { ok: false, error: 'trigger_pack_needs_configuration', installationId: seen.id, review: seenState };
+  }
+  if (seenState.fingerprint !== input.fingerprint) {
+    return { ok: false, error: 'trigger_pack_review_stale', installationId: seen.id, review: seenState };
+  }
+  // Provider reads perform HTTP. Keep them outside the transaction and fence their inputs below.
+  await validateArmInputs(sql, workspaceId, seen, seenBindings, deps.options ?? {});
   return sql.begin(async (tx) => {
     const row = await loadInstallation(tx, workspaceId, input.installationId, true);
     if (!row) return { ok: false as const, error: 'not_found' as const, installationId: input.installationId };
-    const state = reviewState(row, await loadOwnedBindings(tx, workspaceId, row.id));
+    await loadOwnedBindings(tx, workspaceId, row.id, true);
+    // Freeze source ownership/status through the arm writes as well as the comparison.
+    await tx`
+      SELECT id FROM harness_shared.data_sources
+       WHERE workspace_id = ${workspaceId}
+         AND id IN (
+           SELECT source_id FROM harness_shared.trigger_bindings
+            WHERE workspace_id = ${workspaceId}
+              AND pack_installation_id = ${row.id}::uuid AND detached_at IS NULL
+         )
+       ORDER BY id FOR SHARE`;
+    const bindings = await loadOwnedBindings(tx, workspaceId, row.id);
+    const state = reviewState(row, bindings);
     if (row.status !== 'configured') {
       return { ok: false as const, error: 'trigger_pack_needs_configuration' as const, installationId: row.id, review: state };
     }
-    if (state.fingerprint !== input.fingerprint) {
+    if (state.fingerprint !== input.fingerprint || armInputSnapshot(seen, seenBindings) !== armInputSnapshot(row, bindings)) {
       return { ok: false as const, error: 'trigger_pack_review_stale' as const, installationId: row.id, review: state };
+    }
+    // Setup and provider reads may precede a registry removal. Hold its row through
+    // the arm writes and bypass the process cache when resolving every target.
+    await tx`SELECT workspace_id FROM harness_shared.harness_registry
+      WHERE workspace_id = ${workspaceId} FOR SHARE`;
+    const registry = await loadHarnessRegistry(workspaceId, { fresh: true });
+    const targets = new Set([row.harnessSlug, ...bindings.flatMap((binding) =>
+      binding.planHarnessSlug === null ? [] : [binding.planHarnessSlug])]);
+    for (const target of targets) {
+      if (!registry.projects.some((project) => project.slug === target
+        && typeof project.path === 'string' && project.path.trim().length > 0)) {
+        throw new TriggerPackLifecycleError('trigger_pack_target_unavailable',
+          `target pot '${target}' is unavailable`, { harnessSlug: target });
+      }
     }
     await tx`
       UPDATE harness_shared.trigger_pack_installations

@@ -1071,12 +1071,12 @@ describe('coord:orient args', () => {
       recoveredFleetScope: {
         fleet: 'orch-unify',
         role: 'member',
-        note: expect.stringContaining('role-specific scope'),
+        note: expect.stringContaining('other roles remain self-scoped'),
       },
     });
   });
 
-  it('uses the full-roster snapshot for a recovered member afterCompaction read', async () => {
+  it('keeps a recovered member afterCompaction assignment read self-scoped', async () => {
     const ownerId = 'su-orient-handler-snapshot-test';
     const nestedCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
     const recovery = {
@@ -1106,7 +1106,7 @@ describe('coord:orient args', () => {
     buildCompactionRecoveryMock.mockResolvedValue(recovery);
     readGovernorStateSnapshotMock.mockResolvedValue(null);
 
-    await orientTool.handler(
+    const result = (await orientTool.handler(
       {
         afterCompaction: true,
         harness: 'papercusp',
@@ -1128,10 +1128,74 @@ describe('coord:orient args', () => {
         progress: vi.fn(),
         activateTools: vi.fn(() => false),
       } as never,
-    );
+    )) as { data: Record<string, unknown> };
 
     const assignmentCall = nestedCalls.find((entry) => entry.name === 'fleet:assignments');
-    expect(assignmentCall?.args).toEqual({ fleet: 'orch-unify', detail: 'snapshot', harness: 'papercusp' });
+    expect(assignmentCall?.args).toEqual({ agent: ownerId, detail: 'snapshot', harness: 'papercusp' });
+    expect(result.data).toMatchObject({
+      recoveredFleetScope: {
+        fleet: 'orch-unify',
+        role: 'member',
+        note: expect.stringContaining('other roles remain self-scoped'),
+      },
+      me: {
+        agents: [{ agentId: ownerId, isSelf: true, fleetSlug: 'orch-unify', fleetRole: 'member' }],
+      },
+    });
+  });
+
+  it('uses snapshot detail for a normal self-scoped assignment read', async () => {
+    const ownerId = 'su-orient-handler-normal-snapshot-test';
+    const nestedCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+
+    inProcessCallMock.mockReturnValue(async (name: string, args: Record<string, unknown>) => {
+      nestedCalls.push({ name, args });
+      if (name === 'fleet:assignments') {
+        return {
+          ok: true,
+          detail: 'snapshot',
+          summary: { agents: 1, claims: 0 },
+          agents: [{ agentId: ownerId, isSelf: true, declaredPlanSlug: null, claims: 0 }],
+        };
+      }
+      if (name === 'coord:whoami') return { fleetSlug: null };
+      throw new Error('unexpected sub-call: ' + name);
+    });
+    getModesMock.mockResolvedValue(null);
+    readOwnerPresenceMock.mockResolvedValue({ present: false, lastSeenAgoMs: null, activeSessions: 0 });
+    getFlagMock.mockResolvedValue(false);
+    resolvePresenceFleetMock.mockResolvedValue({ fleetSlug: null, fleetRole: null });
+    fetchOrientPipelineMock.mockResolvedValue(null);
+    readGovernorStateSnapshotMock.mockResolvedValue(null);
+
+    const result = (await orientTool.handler(
+      {
+        claimableLimit: 0,
+        inboxLimit: 0,
+        includePlanEvents: false,
+        includeFleetCatchUp: false,
+        includeFleetHealth: false,
+        includeRecipes: false,
+        includePeersKnow: false,
+      } as never,
+      {
+        uiClientId: ownerId,
+        isSuperuser: true,
+        workspaceId: 'ws-test',
+        role: 'su',
+        metadata: vi.fn(),
+        log: vi.fn(),
+        progress: vi.fn(),
+        activateTools: vi.fn(() => false),
+      } as never,
+    )) as { data: Record<string, unknown> };
+
+    const assignmentCall = nestedCalls.find((entry) => entry.name === 'fleet:assignments');
+    expect(assignmentCall?.args).toEqual({ agent: ownerId, detail: 'snapshot' });
+    expect(result.data).toMatchObject({
+      ok: true,
+      me: { detail: 'snapshot', summary: { agents: 1, claims: 0 } },
+    });
   });
 
   it('applies caller-specific tool-surface activation in the real handler', async () => {
@@ -1565,7 +1629,10 @@ describe('EI-21239843876346650 recovered fleet scope', () => {
     expect(extractRecoveredFleetScope(null)).toBeNull();
   });
 
-  it('waits for the recovered route, reads the fleet, and discloses the widened scope', async () => {
+  it.each([
+    { role: 'leader', expectedArgs: { fleet: 'orch-unify', detail: 'snapshot' } },
+    { role: 'member', expectedArgs: { agent: 'member', detail: 'snapshot' } },
+  ])('waits for a recovered $role route and applies its assignment scope', async ({ role, expectedArgs }) => {
     let resolveScope!: (scope: { fleetSlug: string; fleetRole: string | null }) => void;
     const scopePromise = new Promise<{ fleetSlug: string; fleetRole: string | null }>((resolve) => {
       resolveScope = resolve;
@@ -1594,14 +1661,13 @@ describe('EI-21239843876346650 recovered fleet scope', () => {
     await Promise.resolve();
     expect(calls.some((entry) => entry.name === 'fleet:assignments')).toBe(false);
 
-    resolveScope({ fleetSlug: 'orch-unify', fleetRole: 'member' });
+    resolveScope({ fleetSlug: 'orch-unify', fleetRole: role });
     const result = await pending;
     const assignments = calls.find((entry) => entry.name === 'fleet:assignments');
-    expect(assignments?.args).toMatchObject({ fleet: 'orch-unify' });
-    expect(assignments?.args).not.toHaveProperty('agent');
+    expect(assignments?.args).toEqual(expectedArgs);
     expect(result.recoveredFleetScope).toMatchObject({
       fleet: 'orch-unify',
-      role: 'member',
+      role,
       note: expect.stringContaining('RECOVERED FLEET SCOPE'),
     });
   });
@@ -1900,6 +1966,8 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       limit: 20,
       admissibleOnly: true,
       kind: 'feature',
+      includeBody: false,
+      includePayload: false,
     });
     expect(calls[3].args).toMatchObject({ limit: 10, max_body_chars: 300 });
     // WI-5343: calls[4] batch-observes every fetched row for the real claim floors.
@@ -1966,7 +2034,9 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect((r.claimable as Array<{ id: string }>).map((x) => x.id)).toEqual(['WI-1', 'WI-2']);
     const listCalls = calls.filter((c) => c.name === 'work_items:list');
     expect(listCalls).toHaveLength(2);
+    expect(listCalls[0].args).toMatchObject({ includeBody: false, includePayload: false });
     // The fallback leg is family-agnostic (no `kind` filter) — the old whole-lane read.
+    expect(listCalls[1].args).toMatchObject({ includeBody: false, includePayload: false });
     expect(listCalls[1].args.kind).toBeUndefined();
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
@@ -1978,6 +2048,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(calls.some((c) => c.name === 'work_items:claimable')).toBe(false);
     const listCalls = calls.filter((c) => c.name === 'work_items:list');
     expect(listCalls).toHaveLength(1);
+    expect(listCalls[0].args).toMatchObject({ includeBody: false, includePayload: false });
     expect(listCalls[0].args.kind).toBeUndefined();
   });
 
@@ -2201,7 +2272,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
           },
         ],
       }),
-      'coord:declare-intent': () => ({ ok: true }),
+      'coord:declare-intent': () => ({ ok: true, taskBrief: { status: 'unknown', sourceFingerprint: 'intent-pin' } }),
       // WI-5228: planSlug is passed below, so the new orient-first plan-now leg
       // calls plans:get — register a benign empty-items response so this test
       // (which doesn't assert on r.planNow) stays focused on the intent/recipes
@@ -2213,6 +2284,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         intent: 'implement P-005',
         planSlug: 'tool-call-batching-wrappers-2026-06-21',
         planItems: ['P-005'],
+        currentFiles: ['lib/target.ts'],
         harness: 'h',
       },
       call,
@@ -2226,6 +2298,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       note: ORIENT_MEMORY_NOTE,
     });
     expect(r.intentDeclared).toBe(true);
+    expect(r.taskBrief).toMatchObject({ status: 'unknown', sourceFingerprint: 'intent-pin' });
     // memory uses intent as the query + harness_slug; declare carries the lane.
     const mem = calls.find((c) => c.name === 'memory:search')!;
     expect(mem.args).toMatchObject({ query: 'implement P-005', harness_slug: 'h', limit: 5 });
@@ -2234,6 +2307,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       intent: 'implement P-005',
       current_plan_slug: 'tool-call-batching-wrappers-2026-06-21',
       items: ['P-005'],
+      current_files: ['lib/target.ts'],
     });
     // recipes:search uses intent plus the live lane identity as a hard authority filter.
     expect(calls.find((c) => c.name === 'recipes:search')!.args).toMatchObject({
@@ -4703,14 +4777,55 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
       warnSpy.mockRestore();
     });
 
-    it('preserves recovered self membership when the fleet assignment roster exceeds orient budget', async () => {
+    it('aborts a timed-out core child instead of leaving the in-process query running', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      let seenSignal: AbortSignal | undefined;
+      let childAborted = false;
+      const call: InnerCall = async (name, args, signal) => {
+        if (name === 'work_items:claimable') {
+          seenSignal = signal;
+          return new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener('abort', () => {
+              childAborted = true;
+              reject(new Error('child aborted'));
+            }, { once: true });
+          });
+        }
+        const handler = (CORE as Record<string, ((input: Record<string, unknown>) => unknown) | undefined>)[name];
+        if (!handler) throw new Error(`unexpected sub-call: ${name}`);
+        return handler(args as Record<string, unknown>);
+      };
+
+      try {
+        const resultPromise = composeOrient({
+          harness: 'h',
+          claimableLimit: 1,
+          inboxLimit: 0,
+          includePlanEvents: false,
+          includeFleetCatchUp: false,
+          includeFleetHealth: false,
+          includeRecipes: false,
+          includePeersKnow: false,
+        }, call, 'me');
+
+        await vi.advanceTimersByTimeAsync(8_000);
+        const result = await resultPromise;
+        expect(seenSignal).toBeDefined();
+        expect(childAborted).toBe(true);
+        expect(result.claimable).toEqual(expect.any(Array));
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('preserves recovered leader membership when the fleet assignment roster exceeds orient budget', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const ownerId = 'su-recovered-membership-timeout-test';
       const { call, calls } = fakeCall({
         ...CORE,
         'fleet:assignments': () => new Promise(() => {}),
       });
-      const recoveredScope = async () => ({ fleetSlug: 'orch-unify', fleetRole: 'member' });
+      const recoveredScope = async () => ({ fleetSlug: 'orch-unify', fleetRole: 'leader' });
       try {
         const resultPromise = composeOrient(
           { mode: 'monitor', afterCompaction: true },
@@ -4748,7 +4863,7 @@ describe('P-005 full-mode delta (plan-events + fleet catch-up, server-side curso
               agentId: ownerId,
               isSelf: true,
               fleetSlug: 'orch-unify',
-              fleetRole: 'member',
+              fleetRole: 'leader',
             },
           ],
         });

@@ -283,6 +283,48 @@ async function defaultLoadDiffer(root) {
   }
 }
 
+/** P-037 shared injector collector. Both original nudges stay reusable; delivery is
+ * owned by the mid-turn channel, so consumers receive one bounded note.
+ * Pin in the owning repo exactly once, including submodule edits.
+ */
+export async function consequenceFor(filePath, deps = {}) {
+  const root = findRepoRoot(filePath, deps.exists ?? existsSync);
+  if (!root || !/\.(?:[cm]?[jt]sx?|json)$/.test(filePath) || /\.(?:test|spec)\.[^.]+$/.test(filePath)) return null;
+  const abs = resolve(filePath);
+  if ((deps.sizeOf ?? (p => statSync(p).size))(abs) > 100_000) return null;
+  const relPath = relative(root, abs).split(sep).join('/');
+  if (relPath.startsWith('../') || /(?:^|\/)(?:node_modules|dist|build|\.papercusp)\//.test(relPath)) return null;
+  const required = await (deps.loadRequired ?? (r => import(`file://${join(r, DETECTOR_REL)}`)))(root);
+  const behavioural = await (deps.loadBehavioural ?? (r => import(`file://${join(r, 'scripts/check-behavioural-strands.mjs')}`)))(root);
+  const owner = behavioural.repoForPath(relPath, behavioural.submodulePaths());
+  const base = (deps.resolveBase ?? defaultResolveBase)(owner.cwd);
+  if (!base) return null;
+  const before = (deps.showAt ?? defaultShowHead)(owner.cwd, owner.relPath, base);
+  if (before === null) return null;
+  const after = (deps.readFile ?? (p => readFileSync(p, 'utf8')))(abs);
+  if (before === after) return null;
+  const changes = required.diffInterfaceConsequences(before, after, relPath);
+  const behaviour = [
+    ...behavioural.increasedSeams(before, after, relPath),
+    ...(behavioural.changedSeamControlFlow?.(before, after, relPath) ?? []),
+    ...(behavioural.diffOutputValues?.(before, after, relPath) ?? []),
+    ...(behavioural.invokedInjectedMembers?.(before, after, relPath) ?? []),
+    ...(relPath.endsWith('/package.json') || relPath === 'package.json' ? behavioural.diffPackageScriptValues(before, after) : []),
+  ];
+  const symbols = deps.includeSourceChanges ? required.diffExportedSymbolText(before, after, relPath).slice(0, 12) : [];
+  if (!changes.length && !behaviour.length && !symbols.length) return null;
+  const checks = [];
+  // JSON quoting is valid shell quoting for these validated paths except expansion
+  // characters; refuse those rather than suggest a shell-active filename.
+  if (!/^[A-Za-z0-9_./@+-]+$/.test(relPath)) return null;
+  if (changes.length) checks.push(`node scripts/check-required-field-strands.mjs --typecheck --base ${base} --files=${relPath}`);
+  if (behaviour.length) checks.push(`node scripts/check-behavioural-strands.mjs --base ${base} --files=${relPath}`);
+  return { path: relPath, base, changes: [...changes, ...(behaviour.length ? ['behavioural strand risk'] : [])].slice(0, 4), checks,
+    ...(symbols.length ? { sourceChange: { root, path: relPath, base, symbols,
+      beforeSha256: (await import('node:crypto')).createHash('sha256').update(before).digest('hex'),
+      sha256: (await import('node:crypto')).createHash('sha256').update(after).digest('hex'), at: Date.now() } } : {}) };
+}
+
 function done() {
   process.exit(0);
 }

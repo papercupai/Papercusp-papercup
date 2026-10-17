@@ -1,0 +1,351 @@
+{
+  "schemaVersion": 1,
+  "workItemId": "WI-10007888",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "wake": 69,
+  "scope": "Focused current-source Dream guards through the registered aggregate files; original continuation105 test-name selection.",
+  "testNamePattern": "source-backed capability extraction|capability packets through the pinned secret-scanned packer|graph-enriched sampler inputs|independent capability source and skeptical review|production capability and Blender source adapter|frozen Dream evaluation protocol|source-grounded benchmark validity|native current graph study pre-registration|native P024 current existing-integration source priors",
+  "change": {
+    "issue": "EI-26209699772905503",
+    "path": "packages/operator-core/lib/dream/dream-evaluation.test.ts",
+    "sha256": "57964c0a0598b7a10bbb8583f268a563c8705b27b103ad5cec81ab2523fa6e59",
+    "rootCause": "The semantic fixture test imposed a separate100ms VM timer on trusted bounded repository code.",
+    "fix": "Compile the same fixture source and expression in a fresh VM context and invoke it under the test runner deadline, retaining every expected-value assertion.",
+    "failureLog": "/tmp/native-p025-w69-unit.log"
+  },
+  "runs": [
+    {
+      "file": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+      "testRunId": 21310148,
+      "runGroup": "native-p025-w69-unit-v2-20261017",
+      "passed": 137,
+      "failed": 0,
+      "excludedByNameFilter": 117,
+      "exitCode": 0,
+      "childSubstituted": 0,
+      "unhandledErrorCount": 0,
+      "log": "/tmp/native-p025-w69-unit-v2.log",
+      "sourceCapture": "/tmp/native-p025-w69-unit-v2-source.json",
+      "sourceCaptureSha256": "19b3736753bbc2d46ff9eab1d3477dab19147d4d890ba48074e0c06620a87b3c",
+      "sourceScope": "repository-worker-vite-original-sources",
+      "capturedOriginalCount": 1217,
+      "currentSourceMismatches": [],
+      "ledgerWorktreeDirty": true,
+      "isScratchConfig": false
+    },
+    {
+      "file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+      "testRunId": 21310164,
+      "runGroup": "native-p025-w69-integration-20261017",
+      "passed": 17,
+      "failed": 0,
+      "excludedByNameFilter": 154,
+      "exitCode": 0,
+      "childSubstituted": 0,
+      "unhandledErrorCount": 0,
+      "log": "/tmp/native-p025-w69-integration.log",
+      "sourceCapture": "/tmp/native-p025-w69-integration-source.json",
+      "sourceCaptureSha256": "454425bc07d224b87b4e0cb069e408d2056104ff84b60a01888ba180a382f3eb",
+      "sourceScope": "repository-worker-vite-original-sources",
+      "capturedOriginalCount": 1300,
+      "currentSourceMismatches": [],
+      "ledgerWorktreeDirty": true,
+      "isScratchConfig": false
+    }
+  ],
+  "limits": [
+    "Excluded sibling tests produced no evidence in these runs.",
+    "Named worker originals matched current source at readback; config-loaded sources, main-process loaded sources and the full execution graph remain unknown.",
+    "Dirty test-run rows remain unknown under current spec-evidence-store currentness rules. These passes do not satisfy clean governing P025 proof or shipment.",
+    "Frozen Dream protocol, four spent trials, two rejected labels and historical independent audit records were not reset or replayed."
+  ],
+  "cleanQualification": {
+    "pin": "60445b8db3d4f1bae77363a3adaca2483c1cd16c",
+    "verifiedCorrectionSha256": "57964c0a0598b7a10bbb8583f268a563c8705b27b103ad5cec81ab2523fa6e59",
+    "method": "Maintained npm run lint:as-committed -- test:file --any at the explicit pin; both registered aggregate files used the saved testNamePattern, explicit harness and worker-original source capture.",
+    "runGroup": "native-p025-clean-60445b8d-20261017",
+    "nativeExitCode": 0,
+    "nativeHandleDrained": true,
+    "log": "/tmp/native-p025-clean-60445b8d.log",
+    "ledgerEnvelope": "/tmp/native-p025-clean-60445b8d-ledger.json",
+    "ledgerSpill": "papercusp://scratch/papercusp-workspace/testing:runs/6cf547cf-54d3-4efb-8741-2d355f4ecb11/result-door-1792223204303-6bf84994.spill",
+    "ledgerManifestSha256": "10c8a1247dfbe0f908e61273ecf9a37006d87dba6745c7e939a9742155e72130",
+    "runs": [
+      {
+        "testRunId": 21312047,
+        "file": "packages/operator-core/lib/code-intelligence/native-ecosystem.test.ts",
+        "passed": 137,
+        "failed": 0,
+        "excludedByNameFilter": 117,
+        "ledgerWorktreeDirty": false,
+        "isScratchConfig": false,
+        "sourceCapture": "/tmp/native-p025-clean-60445b8d-source.json",
+        "sourceCaptureSha256": "ebadb58053d6688e5a37c00bd9fa685591af56b5833e316e3ffdbe26d49a65be",
+        "capturedOriginalCount": 1217,
+        "unhandledErrorCount": 0
+      },
+      {
+        "testRunId": 21312061,
+        "file": "packages/operator-core/lib/code-intelligence/native-ecosystem.integration.test.ts",
+        "passed": 17,
+        "failed": 0,
+        "excludedByNameFilter": 154,
+        "ledgerWorktreeDirty": false,
+        "isScratchConfig": false,
+        "sourceCapture": "/tmp/native-p025-clean-60445b8d-source.1.json",
+        "sourceCaptureSha256": "1bd9c589d7c95db145697833d578cab59f4c76b0e28df29a44522416b5a4914c",
+        "capturedOriginalCount": 1300,
+        "unhandledErrorCount": 0
+      }
+    ],
+    "childSubstituted": 0,
+    "currentWorkerOriginalMismatchesAtReadback": [
+      "packages/operator-core/lib/agent-tools/plans/spec-evidence-store.ts"
+    ],
+    "sourceScope": "Captured repository-worker Vite original sources at the named clean pin. The listed detector file changed in the shared tree after that pin; no complete current execution-graph or loaded-runtime equivalence is claimed.",
+    "bindingStatus": "Thirteen replacements bound and read back server-measured CURRENT. Unscoped current-build evaluation passes R20-R23; SPEC-NATIVE-P-025 fails freshness on historical mutation44543. P025 remains open; no shipment claim.",
+    "retainedGraphProofLimit": {
+      "bindingId": 53692,
+      "testRunId": 21236403,
+      "originalPin": "0930f3161d35be8e33fc1127247e1e992febb14a",
+      "omittedChangedSource": "packages/operator-core/lib/dream/study/prepare-graph-comparison.mts",
+      "finding": "The recorded two-source recipe remains current within its declared scope, but the imported preparation module differs from the original run. A fixture-metadata refresh alone cannot qualify that historical run for the changed module; use the newly executed aggregate cases before replacing it."
+    },
+    "next": "Use current staging evaluator semantics and the original case-scoped recipes. Bind the clean rows with their actual passing case titles and measured fixture/source paths; verify replacements before selectively retiring superseded API and stale evidence. Do not replay frozen study trials or manufacture L3 coverage."
+  },
+  "bindingRenewal": {
+    "observedAt": "2026-10-17T08:13:28.703889+00:00",
+    "acceptanceRuntime": "http://127.0.0.1:3170",
+    "evaluatorBuild": {
+      "sha": "824391c0ad",
+      "version": "0.0.0"
+    },
+    "cleanPin": "60445b8db3d4f1bae77363a3adaca2483c1cd16c",
+    "bound": [
+      {
+        "id": 53909,
+        "specId": "AUTO-BAR-R-20-P-025",
+        "specRevision": 3,
+        "testRunId": 21312047
+      },
+      {
+        "id": 53910,
+        "specId": "AUTO-BAR-R-21-P-025",
+        "specRevision": 3,
+        "testRunId": 21312047
+      },
+      {
+        "id": 53911,
+        "specId": "AUTO-BAR-R-22-P-025",
+        "specRevision": 3,
+        "testRunId": 21312047
+      },
+      {
+        "id": 53912,
+        "specId": "AUTO-BAR-R-23-P-025",
+        "specRevision": 3,
+        "testRunId": 21312047
+      },
+      {
+        "id": 53913,
+        "specId": "SPEC-NATIVE-P-025",
+        "specRevision": 1,
+        "testRunId": 21312047
+      },
+      {
+        "id": 53914,
+        "specId": "AUTO-BAR-R-20-P-025",
+        "specRevision": 3,
+        "testRunId": 21312061
+      },
+      {
+        "id": 53915,
+        "specId": "AUTO-BAR-R-21-P-025",
+        "specRevision": 3,
+        "testRunId": 21312061
+      },
+      {
+        "id": 53916,
+        "specId": "AUTO-BAR-R-22-P-025",
+        "specRevision": 3,
+        "testRunId": 21312061
+      },
+      {
+        "id": 53917,
+        "specId": "AUTO-BAR-R-23-P-025",
+        "specRevision": 3,
+        "testRunId": 21312061
+      },
+      {
+        "id": 53918,
+        "specId": "SPEC-NATIVE-P-025",
+        "specRevision": 1,
+        "testRunId": 21312061
+      },
+      {
+        "id": 53919,
+        "specId": "AUTO-BAR-R-23-P-025",
+        "specRevision": 3,
+        "testRunId": 21313358
+      },
+      {
+        "id": 53920,
+        "specId": "SPEC-NATIVE-P-025",
+        "specRevision": 1,
+        "testRunId": 21313358
+      },
+      {
+        "id": 53921,
+        "specId": "AUTO-BAR-R-23-P-025",
+        "specRevision": 3,
+        "testRunId": 21313359
+      }
+    ],
+    "currentReadbacks": [
+      "/tmp/native-p025-clean-readback-20261017-decoded.json",
+      "/tmp/native-p025-direct-graph-readback-decoded-20261017.json"
+    ],
+    "directRequalifications": [
+      {
+        "testRunId": 21313358,
+        "file": "packages/operator-core/lib/dream/dream-evaluation.test.ts",
+        "passed": 27,
+        "failed": 0,
+        "ledgerWorktreeDirty": false,
+        "isScratchConfig": false,
+        "sourceCapture": "/tmp/native-p025-direct-clean-60445-source.json",
+        "sourceCaptureSha256": "99409ff0d8b3d42df309a41af326f8d35c67457e95333c102de11b42cb736148",
+        "capturedOriginalCount": 142,
+        "unhandledErrorCount": 0,
+        "log": "/tmp/native-p025-direct-clean-60445.log"
+      },
+      {
+        "testRunId": 21313359,
+        "file": "packages/operator-core/lib/dream/dream-study-graph-comparison.test.ts",
+        "passed": 3,
+        "failed": 0,
+        "ledgerWorktreeDirty": false,
+        "isScratchConfig": false,
+        "sourceCapture": "/tmp/native-p025-graph-clean-60445-source.json",
+        "sourceCaptureSha256": "f610efbdbeaa8671008a697c0c8fade25e1bf07c7b76f0c190403ac01e549119",
+        "capturedOriginalCount": 159,
+        "unhandledErrorCount": 0,
+        "log": "/tmp/native-p025-graph-clean-60445.log"
+      }
+    ],
+    "retiredBindingIds": [
+      53865,
+      53866,
+      53867,
+      53868,
+      53869,
+      53807,
+      53808,
+      53692,
+      53864,
+      53862,
+      53860,
+      53858,
+      53856,
+      53853,
+      53851,
+      53849,
+      53847,
+      53845,
+      53844,
+      53843,
+      53842,
+      53841,
+      53840,
+      53839,
+      53837,
+      53835,
+      53833,
+      53831,
+      53828,
+      53826,
+      53824,
+      53822,
+      53820
+    ],
+    "retirementRule": "Only exact earlier API variants and direct/graph evidence covered by verified current replacements were withdrawn. Historical mutation44543 remains. No blanket supersession.",
+    "timeoutReconciliation": {
+      "deadlineMs": 55000,
+      "receipt": "/tmp/native-p025-retire-retained-api-receipt-20261017.err",
+      "outcome": "Timed out with UNKNOWN status; exact25-id authoritative audit proves all25 withdrawals landed. No retry.",
+      "audit": "/tmp/native-p025-retire-retained-api-audit-decoded-20261017.json",
+      "relatedIssue": "EI-25228543371713611"
+    },
+    "governingEvaluation": {
+      "path": "/tmp/native-p025-clean-final-governing-decoded-20261017.json",
+      "sha256": "adae33c1b08a871e73f692d792bf8e9caa69f3dfbb67d972c19daa40c17b4582",
+      "governing": true,
+      "clauses": [
+        {
+          "specId": "AUTO-BAR-R-20-P-025",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": [],
+          "draggingBindingIds": {}
+        },
+        {
+          "specId": "AUTO-BAR-R-21-P-025",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": [],
+          "draggingBindingIds": {}
+        },
+        {
+          "specId": "AUTO-BAR-R-22-P-025",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": [],
+          "draggingBindingIds": {}
+        },
+        {
+          "specId": "AUTO-BAR-R-23-P-025",
+          "specRevision": 3,
+          "verdict": "pass",
+          "wouldBlock": [],
+          "draggingBindingIds": {}
+        },
+        {
+          "specId": "SPEC-NATIVE-P-025",
+          "specRevision": 1,
+          "verdict": "fail",
+          "wouldBlock": [
+            "freshness"
+          ],
+          "draggingBindingIds": {
+            "freshness": [
+              44543
+            ]
+          }
+        }
+      ]
+    },
+    "limits": [
+      "Captured worker originals match current bytes for the direct142 and graph159 modules. Named declared source/fixture paths match current and clean pin. Full execution graph and loaded runtime equivalence remain unmeasured.",
+      "Custody refusal for a different same-clause aggregate recipe was honored; new direct3-case run supplies the changed graph preparation proof.",
+      "SPEC freshness fails on historical mutation44543 after its test file changed. No old run was restamped and no coverage rung invented. No frozen study, provider or mutation replay.",
+      "Avi has been asked whether the carried no-mutation-replay constraint excludes a new local regression probe. Dependent action waits for the answer.",
+      "Whole plan remains unshipped. Existing P040/P041 scope question, D011 adoption window and P042 freshness requirements remain separate."
+    ]
+  },
+  "recovery": {
+    "priorAggregateOrigin": "eb969917-d962-4bc7-8ee0-6ab4ee8c79bd",
+    "priorAggregateDetached": "6e2702dc-02cf-448b-905e-228df7273f62",
+    "priorUnitRows": [
+      21303568,
+      21303570
+    ],
+    "priorResult": "Unit pass only; integration terminal-no-result and bindings review-required.",
+    "acceptanceRuntime": "http://127.0.0.1:3170",
+    "acceptanceBuild": "ad79774f51",
+    "releaseBuild": "d740fc3802",
+    "acceptanceState": "R20-R23 unknown; SPEC-NATIVE-P-025 fail. See authoritative staging evaluator rather than older release semantics.",
+    "gitSyncReceipt": "/tmp/native-p025-w69-git-sync.json",
+    "gitSyncResult": "No fire: existing system git-sync exclusive holder. Completion event resource:released:git-sync:papercusp.",
+    "next": "After exact commit/resource event, qualify the changed source in a maintained clean committed test run using this saved selection and original-source capture; then bind original recipes and exact test cases before selective retirement."
+  }
+}

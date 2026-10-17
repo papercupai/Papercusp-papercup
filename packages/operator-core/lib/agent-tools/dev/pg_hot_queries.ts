@@ -14,6 +14,9 @@ import { extractPgErrorInfo } from '../../pg-read-query';
 
 const DEFAULT_WINDOW_SEC = 15;
 const DEFAULT_LIMIT = 15;
+const MAX_WINDOW_SEC = 600;
+const SNAPSHOT_AND_SETTLEMENT_BUDGET_SEC = 60;
+const PG_HOT_QUERIES_TIMEOUT_SEC = MAX_WINDOW_SEC + SNAPSHOT_AND_SETTLEMENT_BUDGET_SEC;
 const MAX_QUERY_CHARS = 240;
 const DEAD_CONFIDENCE = 0.95;
 const SELF_SAMPLER_MARKER = 'dev:pg_hot_queries sampler';
@@ -403,6 +406,9 @@ export default defineTool({
   description:
     'Sample pg_stat_statements twice and rank queries by IN-WINDOW execution-time delta. Returns calls/s, ms/call and rows/call beside lifetime totals, plus stale lifetime leaders with zero-call statistical power.',
   capability: 'intel:read',
+  // The accepted window is up to 600s; reserve another minute for both
+  // snapshot reads and result settlement before the dispatcher aborts the call.
+  timeoutSec: PG_HOT_QUERIES_TIMEOUT_SEC,
   guidance: {
     when: 'You need to know what is burning database time NOW, or whether a catastrophic pg_stat_statements lifetime total is still advancing. This catches frequent short queries that an instantaneous pg_stat_activity read misses.',
     notWhen:
@@ -421,7 +427,7 @@ export default defineTool({
   skipWorkspaceTx: true,
   agentRoles: ['operator', 'architect', 'debugger', 'cup', 'mug', 'scoper', 'reviewer', 'validator', 'worker'],
   args: z.object({
-    windowSec: z.number().int().min(1).max(600).optional().default(DEFAULT_WINDOW_SEC),
+    windowSec: z.number().int().min(1).max(MAX_WINDOW_SEC).optional().default(DEFAULT_WINDOW_SEC),
     limit: z.number().int().min(1).max(100).optional().default(DEFAULT_LIMIT),
     filter: z.string().trim().min(1).max(500).optional(),
   }),

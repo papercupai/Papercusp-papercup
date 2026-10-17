@@ -1,0 +1,440 @@
+{
+  "schemaVersion": 1,
+  "kind": "source-test-evidence",
+  "name": "P038 maintained private operator incident-push replay",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "workItem": "WI-6554700010015561",
+  "plane": "private-current-source-operator-api",
+  "shipment": "unverified",
+  "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/native-p038-runtime-source-v3-20261016.json npm run test:file -- packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts -- --testNamePattern='native P018 private operator CLI incident claim and resume'",
+  "exitCode": 0,
+  "startedAt": "2026-10-16T15:34:10.438Z",
+  "finishedAt": "2026-10-16T15:37:08.706Z",
+  "summary": "Maintained selected native case passed. Real CLI, actual failed Node assertion, compiled private handler, automatic AST symbol collection persisted across hook collections, file-edit/open-work-item attribution, one native PG incident push row and duplicate suppression were observed. Static relationships remain hypotheses. Seven other native cases were filtered.",
+  "qualification": {
+    "passed": 1,
+    "failed": 0,
+    "skipped": 7,
+    "unhandledErrorCount": 0,
+    "result": "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=b6aae68230 uncommittedPaths=0/1 provenance=stamped startedAt=2026-10-16T15:33:49.998Z childSubstituted=24 skippedTests=7",
+    "log": "/tmp/native-p038-runtime-v3-20261016.log",
+    "sourceMap": "/tmp/native-p038-runtime-source-v3-20261016.json",
+    "sourceMapSha256": "5a5d7c5979b8efc8b330ad376b95bd2338a1f6783de8b38b2a2bf8d511f33162",
+    "childSubstituted": 24,
+    "loggedSubstitutionPaths": [
+      "scripts/lib/fs-mutex.mjs",
+      "scripts/lib/batch-watchdog.mjs",
+      "packages/plugin-sdk/src/provider.ts",
+      "src/vitest-config.ts",
+      "src/test-pass-reuse-skip.ts"
+    ],
+    "limits": [
+      "The selected case is a private endpoint replay with controlled before-image history and a synthetic snapshot commit.",
+      "Ten named producer/consumer raw hashes are equal before and after; fixture HEAD-byte parity is asserted before bundling. This is not a closed execution-graph proof.",
+      "The runner reports 24 child substitutions. Listed paths are the explicit log disclosures, not a complete child-loaded-source census.",
+      "No newly observed installed native hook or final-release shipment is asserted."
+    ]
+  },
+  "proof": {
+    "workspace": "test-runtime-1078c70f-d95",
+    "transport": "real-cli-http",
+    "failure": "actual-node-assertion",
+    "staticCandidate": true,
+    "cause": "unknown",
+    "runtimeExecution": "unmeasured",
+    "resume": "current",
+    "repaired": true,
+    "push": {
+      "delivered": "## Code intelligence (incident)\nSnapshot aaaaaaaaaaaa · 2026-10-16T15:36:44.936Z\nObserved failing test files: target.test.ts. The observed failure is authoritative.\nStatic reach candidates (unverified): a-target.ts.\nSymbols on static reach (change status unknown): incidentTarget:a-target.ts:1; observed turn edit strands: unknown.\nRecently changed symbols (measured ledger attribution): incidentTarget:a-target.ts:1.\nWork items changed/open on these paths: WI-1 [wip] (file-edit-ledger) Private native incident request fixture; WI-1 [wip] (open-on-path) Private native incident request fixture; WI-1 [wip] (open-on-path) Private native incident request fixture. File-edit attribution does not prove symbol authorship. Graph paths are hypotheses only; cause, runtime execution and dynamic dispatch are unknown. Recover recorded failures with testing:runs {\"testRunIds\":[2],\"harness\":\"test-runtime-1078c70f-d95\"}.",
+      "duplicateSuppressed": true,
+      "ledger": {
+        "id": 1,
+        "subject": "failed-tests:target.test.ts",
+        "chars": 914,
+        "cited_paths": [
+          "target.test.ts",
+          "a-target.ts"
+        ]
+      },
+      "attribution": {
+        "status": "measured",
+        "recentEdits": [
+          {
+            "root": "/tmp/pcv/papercusp-test-runtime-SL2gFx/workspaces/test-runtime-1078c70f-d95/operator-home",
+            "path": "a-target.ts",
+            "base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "symbols": [
+              {
+                "name": "incidentTarget",
+                "line": 1
+              }
+            ],
+            "beforeSha256": "5826b7634d5d8f9e95112f458007acfdf0e01910dabe0afd5b7b45bb9343120b",
+            "sha256": "5580682278f26696bc880919f155f7416286770dedf20d56daaf2b8a8635f9da",
+            "at": 1792165002724,
+            "workspace": "test-runtime-1078c70f-d95",
+            "harness": "test-runtime-1078c70f-d95",
+            "agentId": "native-incident-private-owner"
+          }
+        ]
+      },
+      "testRunId": 2,
+      "handlerHash": "2dc105b2cfd817f843fec06e0b6bff6d04ffd08dfe10f85adb92d2fbd78973b6",
+      "snapshotSha256": "7d680eb7b72dd9c361bc62921443073b18da6081ce3ff03aac25dabcf356df1d",
+      "sourceBeforeSha256": "5826b7634d5d8f9e95112f458007acfdf0e01910dabe0afd5b7b45bb9343120b",
+      "sourceAfterSha256": "5580682278f26696bc880919f155f7416286770dedf20d56daaf2b8a8635f9da",
+      "observationProducer": "maintained collector and delivery ledger with controlled before image",
+      "scope": "private current-source endpoint replay; automatic symbol collection and edit/open-WI lookup; synthetic snapshot commit and controlled source-history seam"
+    },
+    "beforeHashes": {
+      "packages/operator-core/lib/code-intelligence/push-channel.ts": "f7d3b6aaf7705f8b6cdab7dd93ae3124cbbe14eb26a79e087d3edba22ce5d6d7",
+      "packages/operator-core/lib/code-intelligence/push-snapshot.ts": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44",
+      "packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts": "6f0eb6ffd0dbba23aef62036dfef803f27bc174ee4fb498f6d6b8bf6181fa673",
+      "packages/operator-core/lib/edit-attribution.ts": "936a3d5406d66b67a2e3c0ea182b94f4c3e84c851a5902a7d625fef37a5fd150",
+      "apps/operator/scripts/hooks/inject/core.mjs": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+      "apps/operator/scripts/hooks/inject/delivery-ledger.mjs": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+      "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec",
+      "scripts/check-required-field-strands.mjs": "20901dddaef557b9c2eb24399025c532f2b38c82806d830ac202e550bfa51113",
+      "scripts/check-behavioural-strands.mjs": "ef6a441182e1c9693b1f2a54c2975ed128940ad0a5eac0ed712f84e41460d6df",
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts": "6c86d9b17692511adcb506ed183ea24cc66765378c28e7ec6a48109ce60b2429"
+    },
+    "afterHashes": {
+      "packages/operator-core/lib/code-intelligence/push-channel.ts": "f7d3b6aaf7705f8b6cdab7dd93ae3124cbbe14eb26a79e087d3edba22ce5d6d7",
+      "packages/operator-core/lib/code-intelligence/push-snapshot.ts": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44",
+      "packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts": "6f0eb6ffd0dbba23aef62036dfef803f27bc174ee4fb498f6d6b8bf6181fa673",
+      "packages/operator-core/lib/edit-attribution.ts": "936a3d5406d66b67a2e3c0ea182b94f4c3e84c851a5902a7d625fef37a5fd150",
+      "apps/operator/scripts/hooks/inject/core.mjs": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+      "apps/operator/scripts/hooks/inject/delivery-ledger.mjs": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+      "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec",
+      "scripts/check-required-field-strands.mjs": "20901dddaef557b9c2eb24399025c532f2b38c82806d830ac202e550bfa51113",
+      "scripts/check-behavioural-strands.mjs": "ef6a441182e1c9693b1f2a54c2975ed128940ad0a5eac0ed712f84e41460d6df",
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts": "6c86d9b17692511adcb506ed183ea24cc66765378c28e7ec6a48109ce60b2429"
+    }
+  },
+  "historicalLocalQualification": {
+    "command": "npm run test:file -- packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+    "startedAt": "2026-10-16T02:47:27.689Z",
+    "finishedAt": "2026-10-16T02:47:54.302Z",
+    "exitCode": 0,
+    "head": "f5f406d73d",
+    "passed": 19,
+    "failed": 0,
+    "skipped": 0,
+    "childSubstituted": 0,
+    "testedPathDirty": true,
+    "typecheck": {
+      "command": "npm run typecheck:operator-core -- --files=packages/operator-core/lib/code-intelligence/push-channel.ts,packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+      "exitCode": 0,
+      "scope": "The two named files passed; the baseline-aware gate reported unrelated diagnostics outside this scope."
+    },
+    "sourceHashesAfterRun": {
+      "packages/operator-core/lib/code-intelligence/push-channel.ts": "cc5e223a103913feb75ade68da9da6523b7b6969bef9728f53e0a68d950522f9",
+      "packages/operator-core/lib/code-intelligence/push-channel.test.ts": "eb62ea8e133390be495050645379e752c6d79f468c408f0e0d1bf1791eca34f3"
+    },
+    "limits": [
+      "Hashes were measured after the run, not a before/after loaded-module graph capture.",
+      "Measured recent symbol changes and changing/open work-item attribution remain incomplete.",
+      "No newly observed installed client delivery or final release shipment is asserted."
+    ]
+  },
+  "historicalAssertions": [
+    {
+      "name": "push-channel focused suite",
+      "result": "passed",
+      "tests": 18,
+      "files": 1,
+      "skipped": 0,
+      "head": "87f6aa8239",
+      "scope": "packages/operator-core/lib/code-intelligence/push-channel.test.ts"
+    },
+    {
+      "name": "operator-core typecheck",
+      "result": "clean",
+      "errors": 97,
+      "baselineErrors": 225,
+      "head": "87f6aa8239",
+      "scope": "packages/operator-core"
+    },
+    {
+      "name": "source provenance",
+      "result": "local-dirty",
+      "testedPaths": 1,
+      "uncommittedPaths": 1,
+      "note": "Focused test passed against the current uncommitted P-038 edit; gate reproducibility requires the committed candidate."
+    }
+  ],
+  "remaining": [
+    "Qualify installed native delivery as part of parent acceptance; do not repeat native replay solely to reconstruct the saved proof.",
+    "P039 containing-commit/runtime witnesses, remaining parent acceptance, deployed adoption window and final shipment."
+  ],
+  "sourceQualifications": [
+    {
+      "map": "/tmp/native-p038-current-source-v4-20261016.json",
+      "sha256": "e0360fce53cc2ee8fb1a5d93f5edb1e0826105a709a5bf11fbe93a53093a84a6",
+      "files": [
+        {
+          "testFile": "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+          "state": "passed",
+          "execution": {
+            "passed": 22,
+            "failed": 0,
+            "skipped": 0,
+            "collectionFailed": false
+          }
+        },
+        {
+          "testFile": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.test.ts",
+          "state": "passed",
+          "execution": {
+            "passed": 115,
+            "failed": 0,
+            "skipped": 0,
+            "collectionFailed": false
+          }
+        }
+      ],
+      "rows": [
+        {
+          "testFile": "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+          "sourceStatus": "stable",
+          "sources": [
+            {
+              "path": "packages/operator-core/lib/code-intelligence/push-channel.ts",
+              "sha256": "f7d3b6aaf7705f8b6cdab7dd93ae3124cbbe14eb26a79e087d3edba22ce5d6d7",
+              "basis": "vite-pre-transform",
+              "matchesCurrent": false
+            }
+          ]
+        },
+        {
+          "testFile": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.test.ts",
+          "sourceStatus": "stable",
+          "sources": []
+        }
+      ]
+    },
+    {
+      "map": "/tmp/native-p037-p038-hooks-v4-source-20261016.json",
+      "sha256": "8b3040c7ac84dfd55f77d081faf53d6291a6aec06f8f45d275f7ae0e2a93b1ea",
+      "files": [
+        {
+          "testFile": "apps/operator/scripts/hooks/inject/__tests__/delivery-ledger.test.ts",
+          "state": "passed",
+          "execution": {
+            "passed": 13,
+            "failed": 0,
+            "skipped": 0,
+            "collectionFailed": false
+          }
+        },
+        {
+          "testFile": "apps/operator/scripts/hooks/inject/__tests__/operator-fallback.test.ts",
+          "state": "passed",
+          "execution": {
+            "passed": 23,
+            "failed": 0,
+            "skipped": 0,
+            "collectionFailed": false
+          }
+        },
+        {
+          "testFile": "apps/operator/scripts/hooks/omp/__tests__/inject-hook.test.ts",
+          "state": "passed",
+          "execution": {
+            "passed": 61,
+            "failed": 0,
+            "skipped": 0,
+            "collectionFailed": false
+          }
+        },
+        {
+          "testFile": "apps/operator/scripts/hooks/cc/__tests__/posttooluse-required-field-strand-nudge.test.ts",
+          "state": "passed",
+          "execution": {
+            "passed": 28,
+            "failed": 0,
+            "skipped": 0,
+            "collectionFailed": false
+          }
+        }
+      ],
+      "rows": [
+        {
+          "testFile": "apps/operator/scripts/hooks/inject/__tests__/delivery-ledger.test.ts",
+          "sourceStatus": "stable",
+          "sources": [
+            {
+              "path": "apps/operator/scripts/hooks/inject/delivery-ledger.mjs",
+              "sha256": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+              "basis": "vite-pre-transform",
+              "matchesCurrent": true
+            }
+          ]
+        },
+        {
+          "testFile": "apps/operator/scripts/hooks/inject/__tests__/operator-fallback.test.ts",
+          "sourceStatus": "stable",
+          "sources": [
+            {
+              "path": "apps/operator/scripts/hooks/inject/core.mjs",
+              "sha256": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+              "basis": "vite-pre-transform",
+              "matchesCurrent": true
+            },
+            {
+              "path": "apps/operator/scripts/hooks/inject/delivery-ledger.mjs",
+              "sha256": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+              "basis": "vite-pre-transform",
+              "matchesCurrent": true
+            }
+          ]
+        },
+        {
+          "testFile": "apps/operator/scripts/hooks/omp/__tests__/inject-hook.test.ts",
+          "sourceStatus": "stable",
+          "sources": [
+            {
+              "path": "apps/operator/scripts/hooks/inject/core.mjs",
+              "sha256": "d6f9632fadd825b8940a25faa44f9680e40f57a1484bbf41e177599230ab1da8",
+              "basis": "vite-pre-transform",
+              "matchesCurrent": true
+            },
+            {
+              "path": "apps/operator/scripts/hooks/inject/delivery-ledger.mjs",
+              "sha256": "1f604e0ed73345627fa8c9c2acd58a36be12d0fbe8015ab35d0524233baa431a",
+              "basis": "vite-pre-transform",
+              "matchesCurrent": true
+            }
+          ]
+        },
+        {
+          "testFile": "apps/operator/scripts/hooks/cc/__tests__/posttooluse-required-field-strand-nudge.test.ts",
+          "sourceStatus": "stable",
+          "sources": [
+            {
+              "path": "apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs",
+              "sha256": "ca88b23bd7672730334aff77bcfbfcab0f60ecc3b5f29ef360e34db81f2879ec",
+              "basis": "vite-pre-transform",
+              "matchesCurrent": true
+            },
+            {
+              "path": "scripts/check-required-field-strands.mjs",
+              "sha256": "20901dddaef557b9c2eb24399025c532f2b38c82806d830ac202e550bfa51113",
+              "basis": "vite-pre-transform",
+              "matchesCurrent": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "map": "/tmp/native-p038-attribution-red-source-20261016.json",
+      "sha256": "cd8db334b7044e3834890186fa12882e094592f2e744a770f16007e795e4fb77",
+      "files": [
+        {
+          "testFile": "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+          "state": "failed",
+          "execution": {
+            "passed": 0,
+            "failed": 1,
+            "skipped": 4,
+            "collectionFailed": false
+          }
+        }
+      ],
+      "rows": []
+    },
+    {
+      "map": "/tmp/native-p038-attribution-green-source-20261016.json",
+      "sha256": "8cd1939b938e45108820d8b3f73e797b1db37cee356a15b6da3138470776357e",
+      "files": [
+        {
+          "testFile": "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+          "state": "passed",
+          "execution": {
+            "passed": 5,
+            "failed": 0,
+            "skipped": 0,
+            "collectionFailed": false
+          }
+        }
+      ],
+      "rows": [
+        {
+          "testFile": "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+          "sourceStatus": "stable",
+          "sources": [
+            {
+              "path": "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+              "sha256": "2b8c27e42111068b5cd4de72a9cdc9dc7f4495eab97ee6fccb42f436e516a88a",
+              "basis": "vite-pre-transform",
+              "matchesCurrent": true
+            },
+            {
+              "path": "packages/operator-core/lib/code-intelligence/push-channel.ts",
+              "sha256": "bb80f6d17a5a506d99cd86b6274357d469bffcebc210e938caef95239142d9c4",
+              "basis": "vite-pre-transform",
+              "matchesCurrent": true
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "attributionGroupingFix": {
+    "problem": "The native incident note repeated one open-on-path item for each matching file; per-file LIMIT could also crowd out other relevant items.",
+    "rootCause": "readPushIncidentAttribution limited raw item/path rows and exposed each row as a distinct attribution.",
+    "fix": "Reuse the existing SQL reader: group canonical item/state/title/relation and aggregate distinct paths before limiting eight relationships.",
+    "detector": "New maintained real-PG multi-path case covers repeated edit rows, twelve matching files and retention of a second item.",
+    "red": {
+      "log": "/tmp/native-p038-attribution-red-tests-20261016.log",
+      "passed": 0,
+      "failed": 1,
+      "skipped": 4,
+      "exitCode": 1
+    },
+    "green": {
+      "log": "/tmp/native-p038-attribution-green-tests-20261016.log",
+      "passed": 5,
+      "failed": 0,
+      "skipped": 0,
+      "exitCode": 0
+    },
+    "runtimeLimit": "The saved native replay predates this grouping fix. The new SQL behavior is verified by the real-PG integration suite; updated native/installed delivery is not claimed.",
+    "typecheck": {
+      "command": "npm run lint:tsc -- --files=packages/operator-core/lib/code-intelligence/push-channel.ts,packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts",
+      "log": "/tmp/native-p038-attribution-types-20261016.log",
+      "exitCode": 0,
+      "scope": "Two named files clean; operator-vite/operator/scripts cross-legs clean. Unrelated global diagnostics are outside this scoped result."
+    }
+  },
+  "installedDispatcherPreparation": {
+    "recordedAt": "2026-10-16T16:14:00Z",
+    "status": "typechecked-native-run-pending-containing-commit",
+    "changedFiles": [
+      "packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts",
+      "packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts"
+    ],
+    "behavior": "The maintained fixture now installs the shared injection bundle into private HOME and sends a native Codex PostToolUse event through fresh installed dispatcher processes over real private HTTP. It checks installed byte parity/stamp, stdout context envelope without permission fields, measured attribution, native PG row and fresh-process duplicate suppression.",
+    "typecheck": {
+      "command": "npm run lint:tsc -- --files=packages/operator-core/lib/code-intelligence/__fixtures__/incident-api-client.ts,packages/operator-core/lib/code-intelligence/native-ecosystem.e2e.test.ts",
+      "log": "/tmp/native-p038-installed-types-20261016.log",
+      "exitCode": 0,
+      "scope": "Two named files, shared typecheck service; no full-suite verdict."
+    },
+    "nativeRun": "Not run: fixture differs from HEAD and the maintained committed-source precondition must hold first.",
+    "commitBlocker": {
+      "receipt": "/tmp/native-p038-containing-sync-20261016.json",
+      "attempt": "Background-host git-sync request skipped because the scheduled pass already held the resource; no manual commit.",
+      "laterEvidence": "routines:list git-sync lastFired2026-10-16T16:12:06.698Z returned skipped: submodule fetch guards reported approximately5.0-5.35GB free vs40,279,831,019.52-byte critical reserve. HEAD e9f3095206 still excluded these two dirty files.",
+      "existingRepairItem": "WI-6554700010016311",
+      "coordEvidence": "coord-send-b6c87f45dd267e9d17d32ab79374f08e4b998310cd1b2ff568e106287d6e67df"
+    },
+    "limits": [
+      "No installed native delivery success or live Codex model session is claimed.",
+      "The proposed replay retains controlled before-image history and a synthetic snapshot.",
+      "The historical passing direct-endpoint replay above remains unchanged."
+    ]
+  },
+  "latestRecordedAt": "2026-10-16T16:14:00Z"
+}

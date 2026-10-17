@@ -1,5 +1,6 @@
 /** plans:evaluate-spec-test-adequacy — compile exact clause/evidence rows into scorecard drafts. */
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
@@ -11,14 +12,17 @@ import {
   listSpecEvidence,
   readCurrentOperationalArtifactDisclosures,
   evidenceCurrentInputSchema,
+  type ListSpecEvidenceDiagnostics,
   type EvidenceCurrentInput,
 } from './spec-evidence-store';
+import { createCommittedTreeDiagnostics } from './committed-tree-reader';
 import { resolvePersistedClassRef } from './plan-spec-quality-gate';
 import {
   ADEQUACY_CRITERIA,
   evaluateSpecTestAdequacy,
   latestLogicalEvidence,
   PLAN_CLASS_RUBRIC_REFS,
+  SPEC_TEST_ADEQUACY_REPLAY_LIMIT,
   SPEC_TEST_ADEQUACY_RUBRIC_REF,
   type PlanClassRubricRef,
 } from './spec-test-adequacy';
@@ -72,6 +76,14 @@ function summarizeMeasurementEvidence(
       status,
       ...(status === 'measured' && typeof row.serverMeasurement?.measuredAtCommit === 'string'
         ? { measuredAtCommit: row.serverMeasurement.measuredAtCommit }
+        : {}),
+      ...(status === 'measured' && row.serverMeasurement?.status === 'measured'
+        ? { measurementFingerprint: 'sha256:' + createHash('sha256').update(JSON.stringify([
+            row.serverMeasurement.current.sourceFingerprint,
+            row.serverMeasurement.current.testFingerprint ?? null,
+            row.serverMeasurement.current.fixtureFingerprint ?? null,
+            row.serverMeasurement.current.environmentFingerprint ?? null,
+          ])).digest('hex') }
         : {}),
     }];
   }).sort((a, b) => a.bindingId - b.bindingId);
@@ -635,7 +647,7 @@ export function certifyPassingRef(
 export default defineTool({
   name: 'plans:evaluate-spec-test-adequacy',
   description:
-    'Grade affected current spec revisions against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns per-clause verdicts with every would-block reason. detail:"full" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; never files a verdict. evidenceRefs selects immutable refs and must contain exact persisted evidence_ref values returned by plans:get-spec-evidence; underlying test-run table IDs (for example, test_runs:<id>) are not necessarily binding refs. For a test-run-based cohort, use workItemIds + specIds or read the bound evidence refs first. bindingIds pins exact persisted rows, even when refs repeat. limit caps evidence rows, not clauses (default 1000); raise it above the filtered cohort when needed. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. For historical audit, pass scorecardId with planSlug; the evaluator replays the card’s stored recipe as of creation and marks historicalAuditOnly provenance, never a current ship-read. Historical scorecardId detail:"full" requires exactly one criteria value so the response can include that criterion’s exact evidence without returning the full evidence matrix. Check ok and rows.length before indexing.',
+    'Grade affected current spec revisions against the reusable spec-test-adequacy rubric; read-only, never files a verdict. Resolves exact P-005 evidence bindings into per-clause verdicts with every would-block reason; detail:"full" adds criterion evidence and scorecards:emit-compatible drafts. evidenceRefs must be exact evidence_ref values from plans:get-spec-evidence (a test_runs:<id> is not necessarily one); for a test-run cohort use workItemIds + specIds. bindingIds pins exact rows. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. scorecardId + slug replays a card as of its creation (historicalAuditOnly, never a current ship-read); with detail:"full" it needs exactly one criteria value.',
   guidance: {
     returns:
       'A caller classRef that disagrees with the plan acceptance class is refused with ok:false, no rows, and callerClassRef/declaredClassRef/classRefSource. The system ad-hoc scope instead requires exactly one workItemId and uses its explicit completion-class attestation, limited to its resolved BehaviorContract clauses; classRefSource is work-item-completion-attestation. On success { ok, rows, count, verdicts, wouldBlock, includeDraft, excludedDraftCount, excludedDraftSpecIds, excludedClauses } has ok:true; every successful result reports the resolved classRef and its source. Every successful result reports the lifecycle-filtered clauses and an explicit draft-exclusion count, including zero, so row counts do not imply that excluded drafts were evaluated. No call succeeds vacuously: when the plan has clauses but none is eligible — selector or not — the reply is ok:false with error:"selection_empty" rather than ok:true with zero rows. The optional limit caps evidence rows across the filtered scope, not the number of selected clauses; its default is 1000. When loaded rows reach the ceiling, evidence_selection_hit_limit returns ok:false with error, count, limit and remedy and NO rows field because the cohort may be truncated. The default detail:"summary" rows carry specId, specRevision, specFingerprint, verdict, wouldBlock and ratings[criterion].rating, plus a top-level fullBody ref (the exact re-call with detail:"full"); rows[].scorecardDraft and criterion evidence text exist only under detail:"full", where each criterion text sits once, in the draft (rows[].ratings[c].evidenceAt points there). To learn why a clause fails, follow nonPassingDetail (present when any criterion is not pass/not-applicable): the same re-call narrowed by criteria to the non-passing ones, without the draft. When a live evaluation has passing rows, certifyPassing is the ready plans:certify-spec-clauses call that files those cards.',
@@ -648,6 +660,11 @@ export default defineTool({
   capability: 'plans:read',
   requirePrincipal: false,
   skipWorkspaceTx: true,
+  // EI-26091338602477791: pinned replay cohorts can spend longer than the flat
+  // ~55s MCP transport floor in server-side evidence and test measurements. Give
+  // nested tools:invoke calls a real budget so a slow read returns its verdict
+  // instead of an opaque request_timeout while the handler is still running.
+  timeoutSec: 120,
   agentRoles: [...AGENT_ROLES],
   ignoreSessionPayloadTier: true,
   modality: ['text'],
@@ -861,6 +878,24 @@ export default defineTool({
         : undefined;
     const evaluatorStartedAt = Date.now();
     const phaseMs: Record<string, number> = {};
+    const newEvidenceDiagnostics = (): ListSpecEvidenceDiagnostics => ({
+      phaseMs: {},
+      committedTree: createCommittedTreeDiagnostics({
+        requestTraceId: ctx.requestOrigin?.mcpRequestTraceId,
+        toolName: 'plans:evaluate-spec-test-adequacy',
+      }),
+      bindings: {
+        selectedRows: 0,
+        rowsWithRecipe: 0,
+        measured: 0,
+        unavailable: 0,
+        skipped: 0,
+        totalMeasurementMs: 0,
+        maxMeasurementMs: 0,
+      },
+    });
+    const selectedEvidenceDiagnostics = newEvidenceDiagnostics();
+    const disclosedGapEvidenceDiagnostics = newEvidenceDiagnostics();
     const timePhase = async <T>(name: string, action: () => Promise<T>): Promise<T> => {
       const startedAt = Date.now();
       try {
@@ -955,6 +990,7 @@ export default defineTool({
       current,
       bindingIds: args.bindingIds,
       limit: evidenceLimit,
+      diagnostics: selectedEvidenceDiagnostics,
     }));
     if (allEvidence.length >= evidenceLimit) {
       return {
@@ -971,6 +1007,49 @@ export default defineTool({
           remedy: 'Narrow workItemIds/specIds/evidenceRefs/bindingIds or raise limit; a capped evidence set cannot produce an adequacy verdict.',
         },
       };
+    }
+    const requestedBindingIds = args.bindingIds === undefined
+      ? undefined
+      : [...new Set(args.bindingIds)].sort((a, b) => a - b);
+    if (requestedBindingIds !== undefined) {
+      const returnedBindingIds = new Set(
+        allEvidence
+          .map((row) => row.id)
+          .filter((id): id is number => Number.isSafeInteger(id)),
+      );
+      const matchedBindingIds = requestedBindingIds.filter((id) => returnedBindingIds.has(id));
+      const missingBindingIds = requestedBindingIds.filter((id) => !returnedBindingIds.has(id));
+      // A non-empty subset is just as unsafe as an empty selection: a withdrawn or
+      // superseded binding must not silently disappear from a pinned replay and let
+      // the remaining rows produce an apparently complete adequacy verdict.
+      if (matchedBindingIds.length > 0 && missingBindingIds.length > 0) {
+        return {
+          data: {
+            ok: false,
+            error: 'binding_selection_incomplete',
+            evaluatorBuild: liveEvaluatorBuild,
+            ...(evaluatorBuildDrift ? { evaluatorBuildDrift } : {}),
+            slug: args.slug,
+            harnessSlug,
+            classRef,
+            declaredClassRef: classRef,
+            classRefSource: classResolution.source,
+            count: allEvidence.length,
+            selectedEvidenceCount: allEvidence.length,
+            requestedBindingIds,
+            matchedBindingIds,
+            missingBindingIds,
+            selection: {
+              specIds: args.specIds ?? null,
+              workItemIds: args.workItemIds ?? null,
+              evidenceRefs: args.evidenceRefs ?? null,
+              bindingIds: args.bindingIds ?? null,
+              planItemIds: args.planItemIds ?? null,
+            },
+            remedy: `Only ${matchedBindingIds.length} of the ${requestedBindingIds.length} requested bindingIds are current. Missing ids may be absent, retracted, or superseded; inspect their history before changing the selector. Nothing was graded.`,
+          },
+        };
+      }
     }
     const explicitSelection =
       args.specIds !== undefined ||
@@ -1043,6 +1122,11 @@ export default defineTool({
     // disclosed-gap rubric is universal: every active binding for each clause must
     // be checked. Keep that population separate so binding selectors cannot hide a
     // disclosure without widening the rest of the diagnostic read.
+    // A persisted diagnostic replay may carry a `limit` sized exactly to its pinned
+    // bindingIds cohort. The disclosed-gap criterion is universal, so that limit must
+    // not truncate the separate clause-wide active population. Keep the smallest
+    // bounded replay ceiling as the floor; larger caller limits remain authoritative.
+    const disclosedGapEvidenceLimit = Math.max(evidenceLimit, SPEC_TEST_ADEQUACY_REPLAY_LIMIT);
     const disclosedGapEvidence = bindingSelection && eligible.length > 0
       ? await timePhase('disclosedGapEvidenceRead', () => listSpecEvidence({
           harnessSlug,
@@ -1055,10 +1139,11 @@ export default defineTool({
             ? { currentProvenance: 'replayed-snapshot' as const }
             : {}),
           current,
-          limit: evidenceLimit,
+          limit: disclosedGapEvidenceLimit,
+          diagnostics: disclosedGapEvidenceDiagnostics,
         }))
       : allEvidence;
-    if (bindingSelection && disclosedGapEvidence.length >= evidenceLimit) {
+    if (bindingSelection && disclosedGapEvidence.length >= disclosedGapEvidenceLimit) {
       return {
         data: {
           ok: false,
@@ -1072,7 +1157,7 @@ export default defineTool({
           classRefSource: classResolution.source,
           count: disclosedGapEvidence.length,
           selectedEvidenceCount: allEvidence.length,
-          limit: evidenceLimit,
+          limit: disclosedGapEvidenceLimit,
           remedy:
             'The unscoped active-binding population needed for disclosed-gap reached the evidence-row ceiling; narrow the selected clauses or raise limit. A capped population cannot produce a safe disclosed-gap verdict.',
         },
@@ -1347,6 +1432,13 @@ export default defineTool({
           bindingSelection,
           planItemPrefilter: itemClauses !== undefined,
           selectedEvidenceSkipped: itemSpecIds?.length === 0,
+        },
+        listSpecEvidenceDiagnostics: {
+          schemaVersion: 'list-spec-evidence-diagnostics-v1',
+          selectedEvidenceRead: selectedEvidenceDiagnostics,
+          disclosedGapEvidenceRead: bindingSelection && eligible.length > 0
+            ? disclosedGapEvidenceDiagnostics
+            : null,
         },
       },
     });

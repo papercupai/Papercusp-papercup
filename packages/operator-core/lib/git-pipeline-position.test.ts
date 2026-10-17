@@ -79,6 +79,7 @@ import type { RuntimeVintageRow } from './runtime-vintage';
 import { projectCheckpointQualificationState } from './release/checkpoint-qualification-transaction';
 import { unownedCell } from './coord/gate-ownership';
 import { certifyCheckpointProgress, DEFAULT_STALL_THRESHOLD_MS } from './release-trace-progress';
+import { createFrozenCandidateRepairQueue, diagnoseFrozenCandidateRepairQueue, type RepairSignatureEntry } from './release/frozen-candidate-repair-queue';
 
 /** A git-sync leg-state with nothing wrong with it — the baseline for fixtures. */
 const HEALTHY_GIT_SYNC = {
@@ -533,11 +534,12 @@ describe('accepted-source pipeline containment (WI-10007982)', () => {
     expect(missingArtifact.acceptedSource).toMatchObject({ matches: true, deployedContains: null });
   });
 
-  it('retains stale and unknown named runtime results without substituting deployed=true', async () => {
-    const stale = await readAccepted({ runtimeBlob: 'e'.repeat(40) });
-    expect(stale.acceptedSource?.deployedContains).toBe(true);
-    expect(stale.acceptedSource?.runtimeContainment['bg-host']).toBe(false);
+  it('uses an exact bundle-SHA mismatch instead of deployed containment and keeps unreadable identity unknown', async () => {
+    const mismatchedBundle = await readAccepted({ runtimeBlob: 'e'.repeat(40) });
+    expect(mismatchedBundle.acceptedSource?.deployedContains).toBe(true);
+    expect(mismatchedBundle.acceptedSource?.runtimeContainment['bg-host']).toBe(false);
     const unknown = await readAccepted({ runtimeBlob: null });
+    expect(unknown.acceptedSource?.runtimeContainment['bg-host']).toBeNull();
     expect(unknown.acceptedSource?.runtimeContainment['staging-operator']).toBeNull();
   });
 
@@ -557,8 +559,13 @@ describe('accepted-source pipeline containment (WI-10007982)', () => {
     const result = await readAccepted({ moveMtime: true, runtimeBlob: 'e'.repeat(40), startedAtMs: 2000 });
     expect(result.acceptedSource?.matches).toBe(true);
     expect(result.acceptedSource?.deployedContains).toBe(true);
-    expect(result.servingRuntimes.find((runtime) => runtime.runtime === 'bg-host')?.method).toBe('start-after-mtime');
-    expect(result.acceptedSource?.runtimeContainment['bg-host']).toBeNull();
+    // The health-reported bundle SHA is independent of path mtime and still
+    // proves that this exact accepted source is absent from the loaded build.
+    expect(result.servingRuntimes.find((runtime) => runtime.runtime === 'bg-host'))
+      .toMatchObject({ containsChange: false, method: 'blob' });
+    expect(result.acceptedSource?.runtimeContainment['bg-host']).toBe(false);
+    expect(result.servingRuntimes.find((runtime) => runtime.runtime === 'gateway')?.method).toBe('start-after-mtime');
+    expect(result.acceptedSource?.runtimeContainment.gateway).toBeNull();
   });
 
   it('binds actual PTY instance observations without demanding that every old session restart', async () => {
@@ -805,6 +812,46 @@ describe('gitPipelinePosition (P-002)', () => {
     });
     expect(res.gate.candidateFailures?.unavailable).toMatch(/not "zero failures"/);
     expect(res.gate.candidateFailures?.nonTestLegs).toBeDefined();
+  });
+
+  it('WI-6554700010009052: passes the persisted queue signature into candidateFailures', async () => {
+    const signature: RepairSignatureEntry[] = [{
+      kind: 'lint-leg',
+      id: 'lint:tsc:workspaces',
+      recipe: 'npm run lint:tsc:workspaces',
+      admittedRound: 1,
+      measuredHead: 'c'.repeat(40),
+    }];
+    const repairQueue = diagnoseFrozenCandidateRepairQueue({
+      ...createFrozenCandidateRepairQueue({ candidate: 'c'.repeat(40), base: null, nowMs: 0, signature }),
+      repairHead: 'd'.repeat(40),
+      fixerSpawnId: 'fixer',
+    }, { nowMs: 1, fixerAlive: true });
+    if (!repairQueue) throw new Error('The frozen queue diagnostic must exist');
+    const readCandidateFailures = vi.fn(async () => null as unknown as GateCandidateFailures);
+
+    await gitPipelinePosition(
+      { path: 'apps/operator/app/x.ts' },
+      {
+        git: fakeGit({}),
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap({ repairQueue }),
+        readCheckpointRunSnapshot: async () => null,
+        readCheckpointRunLock: async () => null,
+        readGateOwnership: async () => unownedCell('test'),
+        loadRuntimeVintage: async () => [],
+        readGateCandidateFailures: readCandidateFailures,
+      },
+    );
+
+    expect(readCandidateFailures).toHaveBeenCalledOnce();
+    expect(readCandidateFailures).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidateSha: repairQueue.candidate,
+        repairHeadSha: repairQueue.repairHead,
+        queueSignature: signature,
+      }),
+    );
   });
 
   it('WI-2146319: preserves an unreadable queue identity and marks candidate failures unmeasured', async () => {

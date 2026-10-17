@@ -1,0 +1,96 @@
+{
+  "schemaVersion": "native-code-intelligence-runtime-evidence-v1",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "workItem": "WI-6554700010015055",
+  "scope": "P-034 current-build shared endpoint witness; final release and P-036 first-touch acceptance remain open",
+  "runtime": {
+    "routeClass": "operator-api",
+    "endpoint": "http://127.0.0.1:3170/api/agent-mcp/mid-turn-context",
+    "buildSha": "d5b292ed83",
+    "identitySource": "dev:pipeline_position operator-api route, 2026-10-15T23:02Z",
+    "containsEndpointChange": true,
+    "owner": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "client": "codex",
+    "identityBoundary": "Verified existing session owner; loopback endpoint; no synthetic owner or turn mutation"
+  },
+  "requests": [
+    {
+      "at": "2026-10-15T23:05Z",
+      "tool": "Grep",
+      "input": { "pattern": "isLiveFleetSession" },
+      "status": 200,
+      "ok": true,
+      "elapsedMs": 143.414379,
+      "deliveredLeg": "grep",
+      "snapshotCommit": "ec311ee1563a",
+      "snapshotGeneratedAt": "2026-10-15T19:43:57.923Z",
+      "definition": ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/hud-session-fixture.mjs:11",
+      "callerExample": ".papercusp/reports/portal-design-iteration-2026-09-05/acceptance-corrections-2026-09-07/hud-session-fixture.node-test.mjs:17",
+      "observedQualifier": "Definition, forwarding and caller file hashes corroborated. Comments/strings are excluded. Dynamic dispatch, shadowed bindings, other languages, current resolver configuration and runtime execution remain unknown.",
+      "evidenceLimit": "One tracked report-fixture symbol; no global latency, completeness or production benefit claim"
+    },
+    {
+      "at": "2026-10-15T23:05:30.996Z",
+      "tool": "Grep",
+      "input": { "pattern": "isLiveFleetSession" },
+      "status": 200,
+      "ok": true,
+      "elapsedMs": 190.651279,
+      "text": "",
+      "observation": "No duplicate block returned for the same owner and symbol"
+    },
+    {
+      "at": "2026-10-15T23:05:31.276Z",
+      "tool": "Read",
+      "input": { "file_path": "apps/operator-public/src/__tests__/fake-d1.ts" },
+      "status": 200,
+      "ok": true,
+      "elapsedMs": 277.581135,
+      "text": "",
+      "observation": "No first-touch block; cause unmeasured. This request does not establish P-036 delivery or a defect."
+    }
+  ],
+  "schemaReadiness": {
+    "decision": "D-019",
+    "authoritativeEvidence": "docs/evidence/native-p042-gitnexus-consumers-2026-10-15.json#schemaReconciliation",
+    "migration": "1519-code-intel-pushes.sql",
+    "replacementBackup": 78851,
+    "readinessEventGeneration": 3,
+    "readinessEventReadback": "fired",
+    "failedAttempt78850": "Preserved as failed; no retry or new migration was performed in this continuation"
+  },
+  "qualification": {
+    "status": "passed-current-source",
+    "exitCode": 0,
+    "testLog": ".papercusp/scratch/native-p034-current-tests-v2-20261015.log",
+    "sourceMaps": [
+      ".papercusp/scratch/native-p034-current-source-map-v2-20261015.json",
+      ".papercusp/scratch/native-p034-current-source-map-v2-20261015.1.json"
+    ],
+    "suites": [
+      { "file": "packages/operator-core/lib/code-intelligence/push-channel.test.ts", "state": "passed" },
+      { "file": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.test.ts", "state": "passed" },
+      { "file": "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts", "state": "passed" }
+    ],
+    "skippedRows": 0,
+    "databaseIsolation": "Maintained with-test-pg wrapper; private localhost:40695; server stopped after terminal exit",
+    "sourceEvidenceBasis": "Vite original pre-transform SHA256, compared to current bytes after terminal completion",
+    "sourceHashes": {
+      "packages/operator-core/lib/code-intelligence/push-channel.ts": "35efa3d2a6703afe00aaf6bd26391a675b43da1c8e6357f42c4b7f5a72844c45",
+      "packages/operator-core/lib/code-intelligence/push-snapshot.ts": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44",
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts": "32f8e26f084ccbf08bc33cc67d5cfa63a2ec685757b44fe9a79a166e1d9ccbe5",
+      "packages/operator-core/lib/code-intelligence/push-channel.test.ts": "d59147bf0616bc049be3bbe112fef97f410f1be90471e6c8532a2d67718030be",
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.test.ts": "6ff22851cbce6967f53a879e43d6279c9d0f1f41da4e10fb5e8d5a5e0a6909a5",
+      "packages/operator-core/lib/code-intelligence/push-channel.integration.test.ts": "6f95e415879f2a3a6dd1709617213395da25c7ba2e1080493f08a9d4f58f3d7a"
+    },
+    "priorAttempt": {
+      "testLog": ".papercusp/scratch/native-p034-current-tests-20261015.log",
+      "exitCode": 2,
+      "verdict": "not-measured",
+      "reason": "install-reader-lock-acquisition; child never started; no source map",
+      "retryAdmission": "Install writer marker absent before retry; same guarded router and deadline retained"
+    }
+  }
+}

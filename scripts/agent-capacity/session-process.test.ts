@@ -65,6 +65,12 @@ describe('sessionSpawn', () => {
 });
 
 describe('copyTree / removeTree', () => {
+  it('refuses a root-side repository copy before replacing or creating its destination', async () => {
+    if (process.platform !== 'linux') return;
+    await expect(copyTree('/unread-source', '/capacity-uncreated/child')).rejects.toThrow(/refuse the root filesystem/);
+    expect(existsSync('/capacity-uncreated')).toBe(false);
+  });
+
   it('copies a tree including a relative symlink, then removes it', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'capdrv-copy-'));
     try {
@@ -108,6 +114,16 @@ describe('copyTree / removeTree', () => {
 
 // WI-10004672: per-session cp + rm of a 69k-file checkout capped P-005 at ~13 sessions in flight.
 describe('prepareWorkdir', () => {
+  it('refuses root-side overlays before any native cleanup or mount command', async () => {
+    if (process.platform !== 'linux') return;
+    const calls: string[] = [];
+    const run = async (cmd: string) => { calls.push(cmd); };
+    await expect(prepareWorkdir('overlay', '/unread-source', '/capacity-uncreated/child', run))
+      .rejects.toThrow(/refuse the root filesystem/);
+    expect(calls).toEqual([]);
+    expect(existsSync('/capacity-uncreated')).toBe(false);
+  });
+
   it('copy: a real private copy, removed on teardown unless kept', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'capdrv-wd-'));
     try {

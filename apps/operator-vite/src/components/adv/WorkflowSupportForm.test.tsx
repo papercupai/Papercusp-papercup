@@ -33,6 +33,15 @@ beforeEach(() => { vi.clearAllMocks(); vi.stubGlobal('crypto', webcrypto);
   ports.query.mockReturnValue({ data: [{ supportWorkflow: workflow }], error: null }); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('employee support selection on Workflows', () => {
+  it('explains unavailable employee input and pending review without hiding the administration entry', () => {
+    ports.query.mockReturnValue({ data: [{ supportWorkflow: null }], error: null });
+    renderForm({ enterprise: true });
+    expect(screen.getByText(/Employee action unavailable: no approved support workflow/)).toBeTruthy();
+    expect(screen.getByText(/Business outcome pending/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Refresh administration' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Prepare handoff' })).toBeNull();
+    expect(ports.tool).not.toHaveBeenCalled();
+  });
   it('submits selected canonical evidence and the displayed revision through the typed operation seam', async () => {
     const submitOperations = vi.fn().mockResolvedValue([handle]);
     const search = vi.fn().mockResolvedValue([document]);

@@ -53,6 +53,7 @@ import {
   type RubricKind,
   type RubricCriterionWindow,
   type RubricCriterionCheck,
+  type RubricTemplateData,
   type AcceptanceEvidencePlane as TemplateAcceptanceEvidencePlane,
   type AcceptanceBarContract as TemplateAcceptanceBarContract,
 } from './agent-tools/plans/rubric-template';
@@ -68,6 +69,7 @@ import {
   subjectPlanAllowsPlannedPaths,
   type CriterionCheckPathValidation,
 } from './rubrics-criterion-checks';
+import { LIVE_SCHEMA_REVISION, continuityProbeSchema } from './continuity-probes';
 import {
   assertAcceptanceRubricCitationPathsResolve,
   type AcceptanceRubricCitationValidation,
@@ -1957,6 +1959,114 @@ export function computeAcceptanceBarSetHash(
 }
 
 /**
+ * Classify an acceptance amendment from the server-owned complete BAR-set pin.
+ *
+ * A legacy rubric may contain continuity probes pinned to a retired projected
+ * tool revision. Rebuilding that old snapshot through the current writer schema
+ * can reject before the replacement migrates the probe. Acceptance rubrics
+ * already persist the complete-set hash, so compare that identity directly.
+ * `null` tells non-BAR callers to retain their deep canonical comparison.
+ */
+export function acceptanceBarMeaningUnchanged(
+  storedBarSetHash: string | null | undefined,
+  nextBarSetHash: string | null | undefined,
+): boolean | null {
+  if (!storedBarSetHash) return null;
+  return nextBarSetHash === storedBarSetHash;
+}
+
+/**
+ * Compare the parts of an acceptance rubric that determine its canonical
+ * contract while deliberately ignoring the structured check projection.
+ *
+ * Older acceptance rows can contain checks written against a retired tool
+ * schema. Rebuilding that stored check through the current authoring schema is
+ * unsafe, but a BAR-set hash alone is too coarse: METHOD, criterion-class,
+ * runtime, and other non-BAR projection edits must still create a revision.
+ * The amendment path separately detects check changes as BAR meaning changes,
+ * so excluding `check` here only permits a stale-check projection repair.
+ */
+export function acceptanceCanonicalUnchangedIgnoringLegacyChecks(
+  storedTemplateData: unknown,
+  nextTemplateData: unknown,
+): boolean {
+  const topLevelFields = [
+    'kind',
+    'subjectPlan',
+    'subjectHarnessSlug',
+    'subjectGoal',
+    'classRef',
+    'composes',
+    'characteristic',
+    'ratingScale',
+    'methodRef',
+    'releaseGating',
+    'stalenessWatched',
+    'gradingAuthority',
+    'historyResetAt',
+    'description',
+    'barSetHash',
+  ] as const;
+  const criterionFields = [
+    'key',
+    'title',
+    'intent',
+    'model',
+    'barKey',
+    'driftMarkers',
+    'role',
+    'mandatory',
+    'requiredScope',
+    'evidencePlane',
+    'evidenceRuntime',
+    'requiredTestLayers',
+    'passRatings',
+    'coversBarKeys',
+    'barProvenance',
+    'method',
+    'ratingScale',
+    'replication',
+    'productionConfiguration',
+    'instrumentKey',
+    'window',
+    'criterionClass',
+  ] as const;
+
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>)
+          .filter(([, nested]) => nested !== undefined)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([key, nested]) => [key, canonical(nested)]),
+      );
+    }
+    return value;
+  };
+  const comparable = (value: unknown): unknown => {
+    const record = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+    const result: Record<string, unknown> = {};
+    for (const field of topLevelFields) {
+      if (record[field] !== undefined) result[field] = record[field];
+    }
+    const criteria = Array.isArray(record.criteria) ? record.criteria : [];
+    result.criteria = criteria
+      .map((criterion) => {
+        const source = (criterion && typeof criterion === 'object' ? criterion : {}) as Record<string, unknown>;
+        const projected: Record<string, unknown> = {};
+        for (const field of criterionFields) {
+          if (source[field] !== undefined) projected[field] = source[field];
+        }
+        return projected;
+      })
+      .sort((a, b) => String(a.key ?? '').localeCompare(String(b.key ?? '')));
+    return canonical(result);
+  };
+  return isDeepStrictEqual(comparable(storedTemplateData), comparable(nextTemplateData));
+}
+
+/**
  * Canonicalize one acceptance BAR at the central writer. `bar` is only an alias:
  * it is removed before persistence, and a mismatching model+bar pair is refused.
  * Caller-supplied barHash is discarded and recomputed from normalized meaning.
@@ -2349,6 +2459,43 @@ export function rubricCompleteness(rubric: Rubric): RubricCompleteness {
  * requires a concrete falsifier; the replacement is deliberately conservative and tells
  * the grader to record unknown until a native marker is authored.
  */
+function migrateLegacyProbeRevision(probe: unknown): unknown {
+  if (probe === null || typeof probe !== 'object' || Array.isArray(probe)) return probe;
+  const record = probe as Record<string, unknown>;
+  if (typeof record.schemaRevision !== 'string' || record.schemaRevision === LIVE_SCHEMA_REVISION) return probe;
+
+  // Re-validate through the writer-only `live` sentinel. A successful parse both
+  // proves the old probe still matches the current target contract and returns the
+  // concrete current revision. If it no longer matches, preserve the stale value so
+  // the normal validation path reports the actionable contract error.
+  const migrated = continuityProbeSchema.safeParse({ ...record, schemaRevision: LIVE_SCHEMA_REVISION });
+  return migrated.success ? migrated.data : probe;
+}
+
+/**
+ * Upgrade stale persisted probe revisions while rebuilding a rubric. This is deliberately
+ * shape-preserving: only a probe that still validates against the current target contract
+ * is rewritten, while malformed or incompatible legacy probes remain fail-closed.
+ */
+export function migrateLegacyCriterionProbeRevisions<T extends { check?: RubricCriterionCheck }>(
+  criteria: readonly T[],
+): T[] {
+  return criteria.map((criterion) => {
+    const check = criterion.check;
+    if (!check || check.kind !== 'probe') return criterion;
+    if (check.probe !== undefined) {
+      const probe = migrateLegacyProbeRevision(check.probe);
+      return probe === check.probe ? criterion : { ...criterion, check: { ...check, probe } };
+    }
+    if (check.all !== undefined) {
+      const all = check.all.map(migrateLegacyProbeRevision);
+      if (all.every((probe, index) => probe === check.all?.[index])) return criterion;
+      return { ...criterion, check: { ...check, all } };
+    }
+    return criterion;
+  });
+}
+
 export function normalizeAcceptanceRubricProposal(
   criteria: ProposeRubricCriterion[],
   kind: RubricKind | undefined,
@@ -2358,6 +2505,7 @@ export function normalizeAcceptanceRubricProposal(
   ratingScale: string[];
   compatibility?: RubricCompatibilityAudit;
 } {
+  criteria = migrateLegacyCriterionProbeRevisions(criteria);
   criteria = normalizeCriterionProbeChecks(criteria);
   if ((kind ?? 'standard') !== 'acceptance') {
     return { criteria, ratingScale: [...ratingScale] };
@@ -2414,7 +2562,7 @@ export function normalizeAcceptanceRubricProposal(
 }
 
 interface BuiltRubricTemplateData {
-  data: unknown;
+  data: RubricTemplateData;
   compatibility?: RubricCompatibilityAudit;
 }
 
@@ -3459,7 +3607,7 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
   const kind = input.kind ?? 'standard';
   input = {
     ...input,
-    criteria: input.criteria.map((criterion) =>
+    criteria: migrateLegacyCriterionProbeRevisions(input.criteria).map((criterion) =>
       kind === 'acceptance'
         ? normalizeAcceptanceBarCriterion(criterion)
         : normalizeRequirementSections(criterion),
@@ -3887,6 +4035,8 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
       };
     });
   }
+
+  criteria = migrateLegacyCriterionProbeRevisions(criteria);
 
   return {
     rubricId: stored.rubricId,
@@ -4674,12 +4824,28 @@ async function amendAcceptanceBarRubric(
       }
 
       const amended = applyRubricAmendment(stored, input);
-      amended.criteria = amended.criteria.map(normalizeAcceptanceBarCriterion);
+      amended.criteria = migrateLegacyCriterionProbeRevisions(amended.criteria).map(normalizeAcceptanceBarCriterion);
       assertChangedAcceptanceBarProjectionsAtomic(
         amended.criteria,
         stored.criteria.map(normalizeAcceptanceBarCriterion),
       );
       const built = buildRubricTemplateData(amended);
+      // The stored acceptance BAR can contain continuity probes pinned to a
+      // projected-tool revision that has since rolled forward. Rebuilding the
+      // old snapshot through the current writer schema here made the amendment
+      // door reject the very replacement that would migrate those probes. The
+      // BAR contract already carries the canonical complete-set hash, so use
+      // that identity to classify meaning changes without re-validating the
+      // stale legacy snapshot. Standard/non-BAR amendments retain the deep
+      // canonical comparison used before the acceptance transaction exists.
+      const barMeaningUnchanged = acceptanceBarMeaningUnchanged(stored.barSetHash, built.data.barSetHash);
+      const canonicalUnchanged =
+        barMeaningUnchanged === true
+          ? acceptanceCanonicalUnchangedIgnoringLegacyChecks(rubricRow.template_data, built.data)
+          : barMeaningUnchanged ?? isDeepStrictEqual(built.data, buildRubricTemplateData({
+              ...applyRubricAmendment(stored, { rubricId: input.rubricId, criteria: stored.criteria }),
+              criteria: stored.criteria.map(normalizeAcceptanceBarCriterion),
+            }).data);
       await assertRubricCompositionLinksResolve(amended);
       // EI-24372605712471072: before the subject plan starts, its BARs may name proof
       // files the plan's own items will write. Those are accepted as planned (and named on
@@ -4736,6 +4902,13 @@ async function amendAcceptanceBarRubric(
       const changedBars = guard.changes
         .filter((change) => ['added', 'removed', 'meaning'].includes(change.kind))
         .map((change) => change.barKey);
+      // Provenance corrections need the authenticated amendment capability too.
+      // Sending them through the generic METHOD writer makes its boundary guard
+      // correctly preserve the old declaration and silently loses the correction.
+      const provenanceChanged = (guard.data.criteria as Array<Record<string, unknown>>).some((criterion) => {
+        const prior = stored.criteria.find((candidate) => (candidate.barKey ?? candidate.key) === (criterion.barKey ?? criterion.key));
+        return !isDeepStrictEqual(prior?.barProvenance, criterion.barProvenance);
+      });
       // D-002 (review-routing-through-relevance-router-2026-09-26): an amendment whose every change
       // only adds a check or grows required test layers skips the outside-lineage review; any
       // removal, new BAR, or rewording keeps it. A supplied approval is still validated and recorded.
@@ -4848,10 +5021,23 @@ async function amendAcceptanceBarRubric(
           `acceptance_bar_amendment_requirements_invalid:${requirements.problems.map((problem) => problem.code).join(',')}`,
         );
       }
+      const sourceMappings = parseBarMappings(subjectRow.content, new Set(requirements.bars.map((bar) => bar.barKey)));
+      if (!sourceMappings.ok) {
+        throw new Error(
+          `acceptance_bar_amendment_mapping_invalid:${sourceMappings.problems.map((problem) =>
+            [problem.code, problem.barKey, problem.planItemId, problem.detail].filter(Boolean).join(': '),
+          ).join('; ')}`,
+        );
+      }
       // Rendering follows every represented field, while proof invalidation follows BAR meaning.
       // A method-only edit needs both plan locks whenever an explicit requirement block changes.
       const requirementChangedBars = [...new Set([
         ...changedBars,
+        ...sourceMappings.mappings.filter((mapping) => {
+          const criterion = (guard.data.criteria as Array<Record<string, unknown>>)
+            .find((candidate) => candidate.barKey === mapping.barKey);
+          return criterion?.evidencePlane && criterion.evidencePlane !== mapping.evidencePlane;
+        }).map((mapping) => mapping.barKey),
         ...amendedRequirementBarKeys(
           stored.criteria as unknown as Array<Record<string, unknown>>,
           guard.data.criteria as Array<Record<string, unknown>>,
@@ -4872,7 +5058,7 @@ async function amendAcceptanceBarRubric(
         nextCriteria: guard.data.criteria as Array<Record<string, unknown>>,
         changedBars: requirementChangedBars,
       });
-      const desiredMappings = parseBarMappings(subjectRow.content, new Set(requirements.bars.map((bar) => bar.barKey)));
+      const desiredMappings = parseBarMappings(requirementsRerender.content, new Set(requirements.bars.map((bar) => bar.barKey)));
       if (!desiredMappings.ok) {
         throw new Error(
           `acceptance_bar_amendment_mapping_invalid:${desiredMappings.problems.map((problem) =>
@@ -5007,7 +5193,58 @@ async function amendAcceptanceBarRubric(
         }
       }
 
-      if (changedBars.length === 0 && requirementsRerender.rerendered.length === 0 && !preview) return {
+      // An identical canonical contract can repair an older writer's projection
+      // without creating an amendment, rubric revision, or fresh proof cohort.
+      const projectionOnly = canonicalUnchanged && changedBars.length === 0 && !provenanceChanged;
+      if (projectionOnly && !preview) {
+        if (requirementsRerender.rerendered.length === 0) return {
+          rubric: { ...stored, revision: oldRubricRevision }, decisionId: '', rubricRevision: oldRubricRevision,
+          subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!,
+          changedBars, reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
+          idempotencyKey: '',
+        };
+        const { buildAcceptanceBarSeed } = await import('./acceptance-bar-seed');
+        const validated = buildAcceptanceBarSeed({
+          planSlug: subjectPlanHint, planContent: requirementsRerender.content, actorId,
+          declaredAt: stored.barContract!.seededAt, cohort: stored.barContract!.cohort,
+          adoptionEpoch: stored.barContract!.adoptionEpoch,
+          subjectPlanRevision: nextSubjectRevision, planStatus: subjectRow.status,
+          rubricSlug: input.rubricId, rubricRevision: oldRubricRevision,
+          existingTemplateData: rubricRow.template_data, preserveExistingBars: true,
+        });
+        if (!validated.ok || validated.barSetHash !== stored.barSetHash) {
+          throw new Error('acceptance_bar_projection_repair_invalid');
+        }
+        const subjectBody = requirementsRerender.content;
+        await tx`UPDATE harness_shared.harness_plans
+          SET content=${subjectBody}, content_hash=${hashPlanContent(subjectBody)}, version=${nextSubjectRevision},
+              acceptance_bar_verified_revision=NULL, updated_at=now(), origin='local'
+          WHERE workspace_id=${subjectScope.workspaceId} AND harness_slug=${subjectScope.harnessSlug}
+            AND plan_slug=${subjectPlanHint}`;
+        await tx`UPDATE harness_shared.harness_plans
+          SET template_data=jsonb_set(template_data, '{barContract,subjectPlanRevision}', to_jsonb(${nextSubjectRevision}::integer)),
+              origin='local'
+          WHERE workspace_id=${rubricScope.workspaceId} AND harness_slug=${rubricScope.harnessSlug}
+            AND plan_slug=${input.rubricId}`;
+        await writePlanIndexRows(tx as never, {
+          workspaceId: subjectScope.workspaceId, harnessSlug: subjectScope.harnessSlug, planSlug: subjectPlanHint,
+        }, deriveIndexFromContent(subjectBody));
+        injectAmendmentFault(input, 'after-rubric');
+        await recordPlanRevisionInTransaction(tx, {
+          planSlug: subjectPlanHint, harnessSlug: subjectScope.harnessSlug, workspaceId: subjectScope.workspaceId,
+          content: subjectBody, rationale: `canonical acceptance projection repair: ${reason}`,
+          identity: { ownerId: actorId, ownerLabel: actorId, source: 'static-client', workspaceId: null, userId: null },
+        });
+        return {
+          rubric: { ...stored, revision: oldRubricRevision,
+            barContract: { ...stored.barContract!, subjectPlanRevision: nextSubjectRevision } },
+          decisionId: '', rubricRevision: oldRubricRevision, subjectPlanRevision: nextSubjectRevision,
+          barSetHash: stored.barSetHash!, changedBars, reboundContracts: 0,
+          invalidated: { evidence: 0, scorecards: 0, vetting: 0 }, idempotencyKey: '',
+        };
+      }
+
+      if (changedBars.length === 0 && !provenanceChanged && requirementsRerender.rerendered.length === 0 && !preview) return {
         rubric: stored, decisionId: '', rubricRevision: oldRubricRevision,
         subjectPlanRevision: oldSubjectRevision, barSetHash: stored.barSetHash!,
         changedBars, reboundContracts: 0, invalidated: { evidence: 0, scorecards: 0, vetting: 0 },
@@ -5142,8 +5379,13 @@ async function amendAcceptanceBarRubric(
             sourceSnapshotHash: snapshot.contentHash,
             changes,
             revisionMovement: {
-              rubric: { from: oldRubricRevision, to: nextRubricRevision },
-              subject: { from: oldSubjectRevision, to: changedBars.length || requirementsRerender.rerendered.length ? nextSubjectRevision : oldSubjectRevision },
+              rubric: { from: oldRubricRevision, to: projectionOnly ? oldRubricRevision : nextRubricRevision },
+              subject: {
+                from: oldSubjectRevision,
+                to: changedBars.length || provenanceChanged || requirementsRerender.rerendered.length
+                  ? nextSubjectRevision
+                  : oldSubjectRevision,
+              },
             },
             ...proofPartition,
             invalidatedScorecardIds: changedBars.length ? [...snapshot.sourceRevisions.scorecardIds].sort() : [],

@@ -3,6 +3,7 @@ import type postgres from 'postgres';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getSessionUserOrDefault } from '../../auth';
 import { authorizePersonalAccess } from '../../personal-vault/authorization';
+import { readyProviderRegistry } from '../../integrations/provider-registry';
 import {
   parseSocialDestinationRef,
   postToCanonicalSocialDestination,
@@ -59,7 +60,7 @@ export default defineTool({
     if (!workspaceId || workspaceId === '*') throw new Error('social_post_workspace_required');
     // Parse first so an unknown or write-unverified platform is refused with the
     // registry's own reason before any credential work happens.
-    const ref = parseSocialDestinationRef(args.destination);
+    const ref = parseSocialDestinationRef(args.destination, await readyProviderRegistry());
     const user = await getSessionUserOrDefault();
     const auth = await authorizePersonalAccess(ctx.tx!, ctx, workspaceId, user.id, [
       `personal:${ref.platform}`,

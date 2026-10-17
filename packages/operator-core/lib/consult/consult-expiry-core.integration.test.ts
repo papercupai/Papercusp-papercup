@@ -702,7 +702,7 @@ describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
         state: evidence === 'live-task' ? 'running' : 'ended_unobserved',
         endedAt: evidence === 'live-task' ? null : new Date(NOW.getTime() - 10 * 60_000).toISOString(),
         detail: { consultAnswer: { conversationId: id, sourceOwnerId: 'resp-1', answeringOwnerId: 'reserved-fork' } },
-      } as TaskRow;
+      } as unknown as TaskRow; // partial fixture: only the fields the detector reads
       const detector = consultExpiryFindSilentResponders({
         getPresence: async () => null,
         resolveSessionStates: async () => new Map(),

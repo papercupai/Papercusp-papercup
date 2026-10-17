@@ -140,10 +140,12 @@ const APT_TO_BOOTC_RPM: Readonly<Record<string, string>> = {
   bubblewrap: 'bubblewrap',
   'ca-certificates': 'ca-certificates',
   curl: 'curl',
+  e2fsprogs: 'e2fsprogs',
   git: 'git-core',
   jq: 'jq',
   minisign: 'minisign',
   'openssh-server': 'openssh-server',
+  quota: 'quota',
   sudo: 'sudo',
   // Behavioural substitutions (RPM-EQUIVALENCE.md §G), not renames.
   ufw: 'nftables',
@@ -159,6 +161,7 @@ const APT_TO_BOOTC_RPM: Readonly<Record<string, string>> = {
   // EL10 (centos-bootc:stream10, D-035 / WI-10005910) provides libz.so.1 from zlib-ng in
   // compat mode; the EL9 package name `zlib` no longer exists there.
   zlib1g: 'zlib-ng-compat',
+  'util-linux': 'util-linux',
 };
 
 describe('bootc image carries the apt host contract (WI-10005779)', () => {

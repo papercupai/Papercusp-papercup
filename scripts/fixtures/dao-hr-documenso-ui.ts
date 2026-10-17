@@ -7,6 +7,23 @@ import type { SigningPerson } from '../../packages/operator-core/lib/dao-hr/docu
 const baseUrl = process.env.DOCUMENSO_URL ?? '';
 const mailUrl = process.env.DOCUMENSO_TEST_MAIL_URL ?? '';
 
+function safeUiErrorCode(error: unknown): string {
+  if (!(error instanceof Error)) return 'unclassified';
+  // Classify against fixed literals; never copy an arbitrary message fragment.
+  // Playwright's message also contains URLs, input values and its call log.
+  const networkCodes = ['ERR_CONNECTION_REFUSED', 'ERR_CONNECTION_RESET', 'ERR_CONNECTION_CLOSED',
+    'ERR_EMPTY_RESPONSE', 'ERR_ADDRESS_UNREACHABLE', 'ERR_NAME_NOT_RESOLVED',
+    'ERR_INVALID_URL', 'ERR_ABORTED'] as const;
+  const networkCode = error.message.match(/net::(ERR_[A-Z_]+)/)?.[1];
+  if (networkCodes.some(code => code === networkCode)) return networkCode!;
+  if (error.message.includes('Cannot navigate to invalid URL')) return 'invalid-url';
+  if (error.message.includes('Target page, context or browser has been closed')) return 'target-closed';
+  if (error.message.includes('Page crashed')) return 'page-crashed';
+  if (error.name === 'TimeoutError') return 'timeout';
+  if (error.name === 'AssertionError') return 'assertion';
+  return 'unclassified';
+}
+
 async function uiPhase<T>(page: Page, name: string, action: () => Promise<T>): Promise<T> {
   try { return await action(); }
   catch (error) {
@@ -30,7 +47,8 @@ async function uiPhase<T>(page: Page, name: string, action: () => Promise<T>): P
       ].filter(([, message]) => text.includes(message!)).map(([code]) => code);
     }).catch(() => []);
     const errorType = error instanceof Error && ['TimeoutError', 'AssertionError', 'Error'].includes(error.name) ? error.name : 'unexpected';
-    throw new Error('Documenso UI phase failed: ' + name + '; errorType=' + errorType + '; issues=' + JSON.stringify(issues) + '; controls=' + JSON.stringify(controls));
+    throw new Error('Documenso UI phase failed: ' + name + '; errorType=' + errorType +
+      '; errorCode=' + safeUiErrorCode(error) + '; issues=' + JSON.stringify(issues) + '; controls=' + JSON.stringify(controls));
   }
 }
 

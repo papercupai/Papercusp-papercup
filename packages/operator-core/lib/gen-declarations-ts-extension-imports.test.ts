@@ -95,4 +95,17 @@ describe('tsconfig.declarations.json — imports in an input graph', () => {
       .filter((diagnostic) => diagnostic.code === TS_EXTENSION_IMPORT);
     expect(extensionImportDiagnostics).toEqual([]);
   });
+
+  it('keeps process-group-lifetime in the declaration graph free of TS5097', () => {
+    const input = 'packages/operator-core/lib/fleet/process-group-lifetime.ts';
+    const program = programForInput(input);
+    const source = program.getSourceFile(resolve(ROOT, input));
+    expect(source?.text).toContain("from '@papercusp/operator-core/lib/process-identity'");
+    expect(program.getSourceFiles().some((file) =>
+      resolve(file.fileName) === resolve(ROOT, 'packages/operator-core/lib/process-identity.ts'),
+    )).toBe(true);
+    const extensionImportDiagnostics = ts.getPreEmitDiagnostics(program)
+      .filter((diagnostic) => diagnostic.code === TS_EXTENSION_IMPORT);
+    expect(extensionImportDiagnostics).toEqual([]);
+  });
 });

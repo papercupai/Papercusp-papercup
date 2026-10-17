@@ -604,6 +604,15 @@ describe('lintCarrySurfaceProvenance', () => {
     expect(lintCarrySurfaceProvenance(next)).toEqual({ flagged: false, matches: [] });
   });
 
+  it('EI-26098960267148036: does not flag a next-cold-wake verification plan without whether/if', () => {
+    const next =
+      'On the next cold wake, verify both work-item claims: the subject handed off its plan-fleet leadership to WI-40537.';
+    expect(lintCarrySurfaceProvenance(next)).toEqual({ flagged: false, matches: [] });
+    expect(lintCarrySurfaceProvenance('I handed off its plan-fleet leadership to WI-40537.').matches[0]?.kind).toBe(
+      'unverified-action-claim',
+    );
+  });
+
   it('EI-18226077402946717: an action-claim is NOT laundered by a [self-imposed] directive tag on the same line', () => {
     // A source tag attributes the DIRECTIVE that ordered the action; it does not prove
     // the action happened — so the action-claim still flags (only a [turn:…] ref clears it).

@@ -18,6 +18,7 @@ import { EventEmitter } from 'node:events';
 import { createServer } from 'node:net';
 import type { Server } from 'node:net';
 import * as childProcess from 'node:child_process';
+import type { ToolResult } from '@papercusp/tooldef';
 import type { TscDiagnostic, TscFileCount } from '../../tsc-diagnostics';
 
 // WI-10003415: a scoped run asks the shared typecheck service first. Every test points at a
@@ -66,6 +67,7 @@ import buildTypecheck, {
   resolveTypecheckCwd,
   partitionScopedDiagnostics,
   serviceBudgetMs,
+  buildTypecheckAbortCompletionReceipt,
 } from './typecheck';
 // The EI-18776865728050036 class guard moved to capability/foreground-transport-cap.test.ts
 // (EI-20645849301780712) — it now lives beside the module it guards, and its tool list is
@@ -104,6 +106,58 @@ describe('registration', () => {
   it('declares the argument surface the substitution audit models', () => {
     expect(Object.keys((buildTypecheck as unknown as { args: { shape: Record<string, unknown> } }).args.shape).sort())
       .toEqual(['dirs', 'files', 'incremental', 'maxErrors', 'project', 'scopeToFiles', 'timeoutMs']);
+  });
+
+  it('declares the late-return completion receipt on the projected tool', () => {
+    expect(buildTypecheck.abortCompletionReceipt).toBe(buildTypecheckAbortCompletionReceipt);
+  });
+});
+
+describe('EI-25833565319673625 — build:typecheck late-return receipt', () => {
+  const attempt = { callId: 'typecheck-call-1', toolName: 'build:typecheck' };
+  const result = (payload: unknown) => ({
+    content: [{ type: 'text' as const, text: JSON.stringify({ data: payload }) }],
+  }) as ToolResult;
+
+  it('records a complete failed verdict because diagnostics are still a durable result', () => {
+    expect(buildTypecheckAbortCompletionReceipt(
+      { project: 'packages/operator-core' },
+      result({ ok: false, project: 'packages/operator-core', errorCount: 2, durationMs: 1200 }),
+      attempt,
+    )).toMatchObject({
+      status: 'recorded',
+      effectRef: 'build-typecheck:typecheck-call-1:packages/operator-core',
+      diagnostics: { project: 'packages/operator-core', ok: false, errorCount: 2 },
+    });
+  });
+
+  it('keeps a timeout unresolved so a caller does not overlap the timed-out compiler', () => {
+    expect(buildTypecheckAbortCompletionReceipt(
+      { project: 'packages/operator-core' },
+      result({ ok: false, error: 'timeout', project: 'packages/operator-core', durationMs: 58_000 }),
+      attempt,
+    )).toMatchObject({ status: 'recovery-incomplete', failures: ['typecheck-timeout'] });
+  });
+
+  it('marks pre-execution refusals as no-effect outcomes', () => {
+    expect(buildTypecheckAbortCompletionReceipt(
+      { project: '.' },
+      result({ ok: false, error: 'project_not_found' }),
+      attempt,
+    )).toMatchObject({ status: 'not-recorded', diagnostics: { error: 'project_not_found' } });
+  });
+
+  it('fails closed when the result lacks a verdict or attempt identity', () => {
+    expect(buildTypecheckAbortCompletionReceipt(
+      {},
+      result({ ok: true, project: 'packages/operator-core' }),
+      { callId: '', toolName: 'build:typecheck' },
+    )).toMatchObject({ status: 'recovery-incomplete', failures: ['missing-attempt-identity'] });
+    expect(buildTypecheckAbortCompletionReceipt(
+      {},
+      result({ project: 'packages/operator-core' }),
+      attempt,
+    )).toMatchObject({ status: 'recovery-incomplete', failures: ['missing-typecheck-verdict'] });
   });
 });
 

@@ -48,10 +48,13 @@ import {
   runWorkspaceHostLifecycle,
   validateWorkspaceHostLifecycleRequest,
   type RunWorkspaceHostLifecycleInput,
+  type WorkspaceHostLifecycleResult,
 } from '../workspace-host/lifecycle-runner';
 import {
   readWorkspaceHostDestroyTarget,
   recordWorkspaceHostOperationTerminalFailure,
+  updateWorkspaceHostOperation,
+  appendWorkspaceHostEvent,
   WorkspaceHostControllerFenceError,
 } from '../workspace-host/observability-store';
 import {
@@ -74,6 +77,8 @@ export interface StartWorkspaceHostProvisioningInput {
   canary?: WorkspaceHostCanaryAdmission;
   operationId?: string;
   actorId?: string;
+  /** Server-derived hosted reservation; never copied from an HTTP body. */
+  hostedCustomerWorkspaceId?: string;
   /**
    * D-401: set up the machine once it is built (initialize -> desktop pack -> workspace active).
    * Only the hosted doors set this: first-workspace for every GCP host, and the hosted provision
@@ -107,7 +112,9 @@ export interface StartWorkspaceHostDestroyInput {
 export type StartWorkspaceHostLifecycleInput = Omit<
   RunWorkspaceHostLifecycleInput,
   'provider' | 'store' | 'signal'
->;
+> & { /** Server-only: initialize a newly assigned clean warm VM after lifecycle convergence. */
+  bringUp?: WorkspaceHostBringUp;
+};
 
 type WorkspaceHostProvisioningWorkflowInput = StartWorkspaceHostProvisioningInput & {
   action: 'provision';
@@ -131,7 +138,7 @@ type WorkspaceHostWorkflowInput =
   | WorkspaceHostDesktopPackRequest;
 
 type WorkspaceHostWorkflowResult =
-  | (WorkspaceHostProvisioningResult & {
+  | (WorkspaceHostLifecycleResult & {
       offboardedCustomerWorkspaceId?: string;
       alreadyAbsent?: boolean;
     })
@@ -250,19 +257,58 @@ async function execute(input: WorkspaceHostWorkflowInput): Promise<WorkspaceHost
 async function workspaceHostProvisioningWorkflowImpl(
   input: WorkspaceHostWorkflowInput,
 ): Promise<WorkspaceHostWorkflowResult> {
-  const result = await runWorkspaceHostOperation(input);
+  const retainedBinding = isExistingHostLifecycle(input) && !input.bringUp &&
+    ['start', 'restart', 'repair', 'upgrade'].includes(input.action)
+    ? await DBOS.runStep(
+      () => readHostedBringUpBinding({ controlPlaneWorkspaceId: input.workspaceId, hostId: input.hostId }),
+      { name: 'workspace-host-retained-read-binding', retriesAllowed: true, maxAttempts: 3, intervalSeconds: 2 },
+    ) : null;
+  const executionInput = retainedBinding && isExistingHostLifecycle(input)
+    ? { ...input, providerCompletionMode: 'defer-to-product-controller' as const,
+      hostedCustomerWorkspaceId: retainedBinding.customerWorkspaceId }
+    : input;
+  const result = await runWorkspaceHostOperation(executionInput);
+  if (retainedBinding && 'lifecycleStage' in result && result.lifecycleStage === 'provider-complete' && result.status !== 'failed') {
+    try {
+      await bringUpHostedHostAgain(input as WorkspaceHostLifecycleWorkflowInput, retainedBinding);
+      await DBOS.runStep(async () => {
+        await updateWorkspaceHostOperation({ workspaceId: input.workspaceId, operationId: input.operationId,
+          status: 'succeeded', percent: 100, message: 'Retained workspace and native session home verified; connector ready' });
+        await appendWorkspaceHostEvent({ workspaceId: input.workspaceId, hostId: result.hostId,
+          operationId: input.operationId, phase: 'workspace-usable', status: 'succeeded',
+          message: 'Retained workspace and connector ready' });
+      }, { name: 'workspace-host-retained-ready', retriesAllowed: true, maxAttempts: 3, intervalSeconds: 2 });
+      return { ...result, status: 'succeeded', requiresInitialization: false, lifecycleStage: 'workspace-usable' };
+    } catch (error) {
+      try {
+        await DBOS.runStep(() => recordWorkspaceHostOperationTerminalFailure({ workspaceId: input.workspaceId,
+          operationId: input.operationId, message: 'Retained workspace readiness failed', error }),
+        { name: 'workspace-host-retained-failed', retriesAllowed: true, maxAttempts: 3, intervalSeconds: 2 });
+      } catch (recordError) {
+        console.error('[workspace-host] could not persist retained readiness failure', recordError);
+      }
+      throw error;
+    }
+  }
   if (input.action === 'provision' && input.bringUp && result.status === 'succeeded') {
     await bringUpWorkspaceHost(input, input.bringUp);
+  }
+  if (isExistingHostLifecycle(input) && input.bringUp && result.status === 'succeeded') {
+    const target = await DBOS.runStep(() => readWorkspaceHostDestroyTarget(input.workspaceId, input.hostId),
+      { name: 'workspace-host-warm-bring-up-target' });
+    if (!target) throw new Error('hosted_pool_reserved_host_missing');
+    await bringUpWorkspaceHost({ workspaceId: input.workspaceId, operationId: input.operationId, desired: target.desired }, input.bringUp);
   }
   // The lifecycle runner marks successful upgrades, repairs, restores, and completed upgrade
   // rollbacks with this explicit host-readiness signal. A rollback is still a failed upgrade
   // operation, but it has recreated the host and needs the same hosted bring-up as a success.
   if (
     isExistingHostLifecycle(input) &&
-    'requiresInitialization' in result &&
-    result.requiresInitialization === true
+    !input.bringUp &&
+    (('requiresInitialization' in result && result.requiresInitialization === true) ||
+      (result.status === 'succeeded' && (input.action === 'start' || input.action === 'restart')))
   ) {
-    await bringUpHostedHostAgain(input);
+    await bringUpHostedHostAgain(input, retainedBinding);
   }
   return result;
 }
@@ -284,12 +330,13 @@ function isExistingHostLifecycle(input: WorkspaceHostWorkflowInput): input is Wo
  * again under the same operation; a desktop/local BYOC host is left to its owner, as
  * before. `restore` builds a DIFFERENT host, which this does not cover.
  */
-async function bringUpHostedHostAgain(input: WorkspaceHostLifecycleWorkflowInput): Promise<void> {
-  if (input.action === 'restore' || !workspaceHostActionInvalidatesInitialization(input.action)) return;
-  const binding = await DBOS.runStep(
+async function bringUpHostedHostAgain(input: WorkspaceHostLifecycleWorkflowInput, suppliedBinding?: { customerWorkspaceId: string } | null): Promise<void> {
+  if (input.action === 'restore' ||
+      (!workspaceHostActionInvalidatesInitialization(input.action) && input.action !== 'start' && input.action !== 'restart')) return;
+  const binding = suppliedBinding === undefined ? await DBOS.runStep(
     () => readHostedBringUpBinding({ controlPlaneWorkspaceId: input.workspaceId, hostId: input.hostId }),
     { name: 'workspace-host-bring-up-again-read-binding', retriesAllowed: true, maxAttempts: 3, intervalSeconds: 2 },
-  );
+  ) : suppliedBinding;
   if (!binding) return;
   const desired = await DBOS.runStep(
     async () => {
@@ -302,6 +349,7 @@ async function bringUpHostedHostAgain(input: WorkspaceHostLifecycleWorkflowInput
   await bringUpWorkspaceHost(
     { workspaceId: input.workspaceId, operationId: input.operationId, desired },
     { customerWorkspaceId: binding.customerWorkspaceId, requestedAgents: PAPERCUSP_HOSTED_BRING_UP_AGENTS },
+    true,
   );
 }
 
@@ -315,6 +363,7 @@ async function bringUpHostedHostAgain(input: WorkspaceHostLifecycleWorkflowInput
 async function bringUpWorkspaceHost(
   input: Pick<WorkspaceHostProvisioningWorkflowInput, 'workspaceId' | 'operationId' | 'desired'>,
   bringUp: WorkspaceHostBringUp,
+  retained = false,
 ): Promise<void> {
   const hostId = input.desired.hostId;
   const operationIds = workspaceHostBringUpOperationIds(input.operationId);
@@ -329,6 +378,7 @@ async function bringUpWorkspaceHost(
           requestedAt: new Date().toISOString(),
           desired: input.desired,
           requestedAgents: bringUp.requestedAgents,
+          ...(retained ? { retainedCustomerWorkspaceId: bringUp.customerWorkspaceId } : {}),
         }),
       ),
     { name: 'workspace-host-bring-up-admit-initialize', retriesAllowed: true, maxAttempts: 3, intervalSeconds: 2 },
@@ -444,6 +494,8 @@ async function runWorkspaceHostOperation(
         );
         if (retired) result = { ...result, offboardedCustomerWorkspaceId: retired.customerWorkspaceId };
       }
+      if (isExistingHostLifecycle(input) && input.providerCompletionMode === 'defer-to-product-controller' &&
+          'lifecycleStage' in result && result.lifecycleStage === 'provider-complete') return result;
       if (result.status !== 'in-progress') return result;
       const retryAfterMs = Math.max(250, Math.min(30_000, result.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS));
       await DBOS.sleep(retryAfterMs);

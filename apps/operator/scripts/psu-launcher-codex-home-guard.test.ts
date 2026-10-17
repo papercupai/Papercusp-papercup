@@ -256,9 +256,9 @@ describe('launchFreshSu — preflights the exact fresh Codex home before spawnin
     );
     const body = source.slice(source.indexOf('async function launchFreshSu('));
     const reconcile = body.indexOf('reconcileCodexSystemAuth()');
-    const bootstrap = body.indexOf('const res = await api("/api/agent-mcp/console/bootstrap-su"');
+    const bootstrap = body.indexOf('const res = await apiImpl("/api/agent-mcp/console/bootstrap-su"');
     const preflight = body.indexOf('codexFreshDefaultAuthPreflight({', bootstrap);
-    const spawn = body.indexOf('runWrapper({', preflight);
+    const spawn = body.indexOf('runWrapperImpl({', preflight);
 
     expect(reconcile).toBeGreaterThan(-1);
     expect(reconcile).toBeLessThan(bootstrap);
@@ -566,6 +566,40 @@ describe('Codex resume reconciles project MCP servers', () => {
 
 describe('Codex managed carry keeps the selected account route', () => {
   it.each([
+    ['loopback', 'http://127.0.0.1:3170', { kind: 'loopback', protocol: 'http', port: 3170 }],
+    ['remote', 'https://private-user:private-password@private-host.example:4443/private-path?private-query',
+      { kind: 'remote', protocol: 'https', port: 4443 }],
+  ])('correlates sanitized request failure timing for %s', async (_label, operatorUrl, target) => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-failure-trace-'));
+    const home = join(root, 'session-7');
+    let clock = 1000;
+    let requestAttempt: string | null = null;
+    const failures: any[] = [];
+    try {
+      const result = await launcher.ensureCodexHomeViaOperator('su-failure', home, 7, {
+        env: { PAPERCUSP_SU_CODEX_HOMES_DIR: root }, operatorUrl,
+        token: 'private-token', now: () => clock,
+        onFailure: failure => { failures.push(failure); },
+        fetchImpl: async (_url, init) => {
+          requestAttempt = new Headers(init.headers).get('x-papercusp-repair-attempt');
+          clock += 37;
+          throw new TypeError('private-token private-response');
+        },
+      });
+      expect(result).toBeNull();
+      expect(requestAttempt).toMatch(/^[0-9a-f-]{36}$/);
+      expect(failures).toEqual([{
+        stage: 'request', reason: 'request-failed', status: null, errorName: 'TypeError',
+        diagnostic: {
+          attemptId: requestAttempt, startedAtMs: 1000, elapsedMs: 37, target,
+          phaseTimingsMs: { 'operator-route': 0, request: 37 },
+        },
+      }]);
+      expect(JSON.stringify(failures)).not.toMatch(/private-|https?:\/\//);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
     ['http', 'response', 'http-error', 503],
     ['json', 'response', 'invalid-response', 200],
     ['refused', 'response', 'operator-refused', 200],
@@ -591,7 +625,10 @@ describe('Codex managed carry keeps the selected account route', () => {
       });
       expect(result).toBeNull();
       expect(failures).toEqual([{ stage, reason, status,
-        ...(mode === 'throw' ? { errorName: 'TypeError' } : mode === 'pin' ? { errorName: 'Error' } : {}) }]);
+        ...(mode === 'throw' ? { errorName: 'TypeError' } : mode === 'pin' ? { errorName: 'Error' } : {}),
+        diagnostic: expect.objectContaining({ attemptId: expect.any(String),
+          startedAtMs: expect.any(Number), elapsedMs: expect.any(Number),
+          target: { kind: 'remote', protocol: 'http', port: 80 }, phaseTimingsMs: expect.any(Object) }) }]);
       expect(JSON.stringify(failures)).not.toMatch(/private-token|http:\/\/operator|private response/);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
@@ -603,7 +640,9 @@ describe('Codex managed carry keeps the selected account route', () => {
       fetchImpl, onFailure: failure => { failures.push(failure); throw new Error('observer failed'); },
     })).toBeNull();
     expect(fetchImpl).not.toHaveBeenCalled();
-    expect(failures).toEqual([{ stage: 'scope', reason: 'foreign-home', status: null }]);
+    expect(failures).toEqual([{ stage: 'scope', reason: 'foreign-home', status: null,
+      diagnostic: expect.objectContaining({ attemptId: expect.any(String),
+        target: null, phaseTimingsMs: {} }) }]);
   });
 
   it.each([

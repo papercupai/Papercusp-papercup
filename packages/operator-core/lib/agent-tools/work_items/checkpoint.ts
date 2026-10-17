@@ -149,6 +149,7 @@ import { dependsOnSpec } from '../../freshness/tool-schema';
 import { resolveCurrentTokens } from '../../freshness/resolvers';
 import { markFeatureProgress, markIssueProgress, isClaimHoldParked, isSelfOwnerRecord } from '../../work-items';
 import { lookupWorkItem } from './_lookup';
+import { workItemsCheckpointAbortCompletionReceipt } from './checkpoint-abort-completion';
 import { deriveRepoPathsFromText } from './_derive-paths';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
 import { unresolvedPlanDecisionRefs } from '../coordination/decision-ref-advisory';
@@ -1081,7 +1082,8 @@ function checksSpec() {
     )
     .optional()
     .describe(
-      'Carried CHECKS — claims about EXTERNAL state paired with the probe that falsifies them, rendered as a ' +
+      '`checks` is a sibling of `checkpoint`, never nested inside it: use root-level `checks` beside `checkpoint` ' +
+        'for a single write, or `items[n].checks` beside `items[n].checkpoint` in a batch. Carried CHECKS — claims about EXTERNAL state paired with the probe that falsifies them, rendered as a ' +
         '`## Checks` section every time this checkpoint is re-injected. Put hash/id/timestamp/state expectations ' +
         'HERE rather than in checkpoint prose, so the probe travels with the claim and a successor can tell an ' +
         'ASSERTED claim from a VERIFIED one. Carry-forward semantics: OMITTED preserves the existing rows (a ' +
@@ -1213,6 +1215,7 @@ const TERMINAL_WORK_ITEM_STATES = new Set(['passed', 'deprecated', 'resolved', '
 export default defineTool({
   name: 'work_items:checkpoint',
   profile: 'engineer',
+  abortCompletionReceipt: workItemsCheckpointAbortCompletionReceipt,
   description:
     'Write or clear work-item checkpoints. ' +
     'Single: `{ id, checkpoint? }`; many: `items:[{ id, checkpoint?, harness? }]`. ' +
@@ -1302,7 +1305,7 @@ export default defineTool({
        *  Blank strings require
        *  confirmClear:true (EI-21020695928840897). */
       checkpoint: checkpointBodySchema.describe(
-        'single shorthand: compressed in-flight state; null or clear:true ⇒ clear; omission requires `checks`, `dependsOn`, `learned`, or `learnedLevel` as a metadata-only patch; blank string requires confirmClear:true; accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
+        'single shorthand: compressed in-flight state; null or clear:true ⇒ clear; omission requires `checks`, `dependsOn`, `learned`, or `learnedLevel` as a metadata-only patch; blank string requires confirmClear:true; accepts the structured { did, left, insight, next } carry-note shape and loop aliases. `checks` is a sibling argument, not a field inside this object.',
       ),
       note: z
         .string()

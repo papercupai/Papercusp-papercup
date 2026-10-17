@@ -206,6 +206,18 @@ describe('agent-review authority survives a later plan route (EI-218490, real PG
     const revision = readAgentReviewState((await getWorkItem(id, HARNESS))!.payload)!;
     expect(Date.parse(revision.timing!.decidedAt!)).toBeGreaterThanOrEqual(Date.parse(first.timing!.enteredAt));
 
+    // A synthetic submitter may be absent from the liveness oracle, in which case
+    // grade reconciliation intentionally retains the reviewer claim. This case
+    // exercises round timing, so finish that reviewer claim before simulating the
+    // submitter's resubmission; otherwise the fixture resubmits while another agent
+    // still holds the row.
+    const afterGrade = (await getWorkItem(id, HARNESS))!;
+    expect([null, 'su-filer', 'su-reviewer']).toContain(afterGrade.assignee);
+    if (afterGrade.assignee === 'su-reviewer') {
+      expect(await releaseWorkItem(id, { harness: HARNESS, expectedAssignee: 'su-reviewer' })).not.toBeNull();
+    }
+    expect([null, 'su-filer']).toContain((await getWorkItem(id, HARNESS))!.assignee);
+
     const resetBefore = Date.now();
     expect(await resubmitAgentReview({ id, submittedBy: 'su-filer' })).toMatchObject({ resubmitted: true });
     const pending = (await getWorkItem(id, HARNESS))!;

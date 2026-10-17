@@ -20,8 +20,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AGENTS,
   chooseResumeTarget,
+  launchSessionPort,
   resolveResumeTarget,
   resumePickerBackendsFor,
+  sessionPortRequestBody,
   unresumableSourceCause,
 } from "../scripts/psu-launcher.mjs";
 
@@ -87,7 +89,7 @@ describe("psu --resume cross-backend target resolution (R-10)", () => {
         message: string; choices: Array<{ name: string; value: any }>;
       }) => {
         if (message === "Continue this session with which backend/model?") {
-          return choices.find((row) => row.value === "<choose-model>").value;
+          return choices.find((row) => row.value === "<choose-model>")!.value;
         }
         if (message === "Reasoning effort") return "high";
         expect(message).toBe("Target backend and model");
@@ -101,8 +103,8 @@ describe("psu --resume cross-backend target resolution (R-10)", () => {
         const row = choices.find((row) => row.value.kind === "model" &&
           row.value.targetAgent === targetAgent && row.value.model === expectedModel);
         expect(row).toBeDefined();
-        expect(row.name).toContain(`Port to ${targetAgent}`);
-        return row.value;
+        expect(row!.name).toContain(`Port to ${targetAgent}`);
+        return row!.value;
       });
       const readCodexModels = vi.fn(() => [{
         id: "gpt-6.1-sol", label: "GPT-6.1 Sol", efforts: ["high"],
@@ -114,6 +116,7 @@ describe("psu --resume cross-backend target resolution (R-10)", () => {
         prompts: { select, input: vi.fn(), search: vi.fn() },
         readLastActiveModel: () => null,
         fetchPortCapabilities: async () => null,
+        readOperatorTarget: () => { throw new Error("Unknown capabilities need no operator discovery"); },
         readCodexModels,
         readOmpModels,
       });
@@ -126,6 +129,39 @@ describe("psu --resume cross-backend target resolution (R-10)", () => {
       expect(select).toHaveBeenCalledTimes(3);
     },
   );
+
+  it("ties a hidden-target notice to the supplied operator without host discovery", async () => {
+    const notice = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const target = await chooseResumeTarget(trackedSession("claude"), { picker: true }, {
+        prompts: {
+          select: async ({ message, choices }: {
+            message: string; choices: Array<{ value: any }>;
+          }) => {
+            if (message === "Continue this session with which backend/model?") return "<choose-model>";
+            if (message === "Reasoning effort") return "high";
+            expect(choices.some((row) => row.value?.targetAgent === "omp")).toBe(false);
+            return choices.find((row) => row.value?.kind === "model" &&
+              row.value.targetAgent === "codex")!.value;
+          },
+          input: vi.fn(), search: vi.fn(),
+        },
+        readLastActiveModel: () => null,
+        fetchPortCapabilities: async () => ({
+          known: true, via: "capabilities", pairs: [{ source: "claude", target: "codex" }],
+        }),
+        readOperatorTarget: () => ({ url: "http://fixture-operator.invalid" }),
+        readCodexModels: () => [{ id: "gpt-6.1-sol", label: "GPT-6.1 Sol", efforts: ["high"] }],
+        readOmpModels: async () => [],
+      });
+      expect(target).toMatchObject({ operation: "port", sourceAgent: "claude", targetAgent: "codex" });
+      expect(notice).toHaveBeenCalledWith(expect.stringContaining(
+        "serving operator at http://fixture-operator.invalid cannot port a claude session",
+      ));
+    } finally {
+      notice.mockRestore();
+    }
+  });
 
   it.each(CROSS_PAIRS)(
     "a scripted %s resume with --agent=%s also resolves to a session port",
@@ -240,6 +276,60 @@ describe("psu --resume refuses an unresumable source before spawn (R-23)", () =>
       { tracked: true, home },
     );
     expect(cause).toMatch(/no source transcript to carry onto omp/);
+  });
+
+  it("checks the selected historical consult incarnation instead of the row's missing newest transcript", () => {
+    const home = tempHome();
+    const configDir = tempHome();
+    const selectedId = "5a2b7b99-61c4-4c88-9dcd-5229928ce7e0";
+    mkdirSync(join(configDir, "projects", "--repo--"), { recursive: true });
+    writeFileSync(join(configDir, "projects", "--repo--", `${selectedId}.jsonl`), '{"type":"user"}\n');
+    const source = { ...trackedSession("claude"), configDir };
+    const target = port("claude", "codex");
+    const request = sessionPortRequestBody(source, target, {}, {
+      consultEvidenceSpan: { sessionId: selectedId, turnIndices: [68, 101], contextTurns: 2 },
+    });
+    expect(request.sourceNativeSessionId).toBe(selectedId);
+    expect(unresumableSourceCause(source, target, {
+      tracked: true, home, sourceNativeSessionId: request.sourceNativeSessionId,
+    })).toBeNull();
+    expect(source.sessionId).toBe(trackedSession("claude").sessionId);
+    // The same row without historical evidence is still refused.
+    expect(unresumableSourceCause(source, target, { tracked: true, home }))
+      .toMatch(/no source transcript to carry onto codex/);
+  });
+
+  it("keeps raw-source and current-incarnation refusals when an exact source id is supplied", () => {
+    const source = { ...trackedSession("claude"), configDir: tempHome() };
+    const target = port("claude", "codex");
+    expect(unresumableSourceCause(source, target, {
+      tracked: false, home: tempHome(), sourceNativeSessionId: "5a2b7b99-61c4-4c88-9dcd-5229928ce7e0",
+    })).toMatch(/requires a psu-tracked source session/);
+    expect(unresumableSourceCause(source, target, {
+      tracked: true, home: tempHome(), sourceNativeSessionId: source.sessionId,
+    })).toMatch(/no source transcript to carry onto codex/);
+  });
+
+  it("defers historical availability to the exact operator inspector and never launches after its refusal", async () => {
+    const source = { ...trackedSession("claude"), configDir: tempHome() };
+    const target = port("claude", "codex");
+    const selectedId = "5a2b7b99-61c4-4c88-9dcd-5229928ce7e0";
+    const consultEvidenceSpan = { sessionId: selectedId, turnIndices: [68, 101], contextTurns: 2 };
+    expect(unresumableSourceCause(source, target, {
+      tracked: true, home: tempHome(), sourceNativeSessionId: selectedId,
+    })).toBeNull();
+    const sessionPortApiImpl = vi.fn(async () => { throw new Error("exact historical source unavailable"); });
+    const launchFreshSuImpl = vi.fn();
+    await expect(launchSessionPort(source, target, {}, { consultEvidenceSpan }, {
+      sessionPortApiImpl, launchFreshSuImpl,
+    })).rejects.toThrow("exact historical source unavailable");
+    expect(sessionPortApiImpl).toHaveBeenCalledTimes(1);
+    const [route, options] = sessionPortApiImpl.mock.calls[0] as unknown as [string, { body: string }];
+    expect(route).toBe("/api/adv/sessions/port/inspect");
+    expect(JSON.parse(options.body)).toMatchObject({
+      sourceAdvSessionId: source.id, sourceNativeSessionId: selectedId, consultEvidenceSpan,
+    });
+    expect(launchFreshSuImpl).not.toHaveBeenCalled();
   });
 
   it.each(["claude", "codex"] as const)(

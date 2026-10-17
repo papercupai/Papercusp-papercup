@@ -169,6 +169,7 @@ export default defineTool({
         const harnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
         installedUnits = await readInstalledUnitEvents({
           harnessSlug: typeof harnessRaw === 'string' && harnessRaw !== '*' ? harnessRaw : undefined,
+          workspaceId: resolveAgentIdentity(ctx).workspaceId ?? undefined,
         });
       } catch {
         /* best-effort — builtin-only catalog beats a dead discovery tool */

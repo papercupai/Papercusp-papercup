@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   normalizeProviderOptions,
+  normalizeProviderInstanceOrigin,
+  bindProviderInstance,
+  providerSourceEgressAllows,
   providerCoverageIssues,
   providerSyncProgressIssues,
   providerCursorFreshness,
@@ -19,8 +22,56 @@ import {
   PROVIDER_ACL_REF_PATTERN,
   PROVIDER_SEARCH_LIVE_CAPABILITY,
   validateProviderDescriptor,
+  providerCapabilityVerificationIssue,
   type ProviderDescriptor,
 } from './provider';
+
+describe('host-owned credential authentication headers', () => {
+  const base = { id: 'blog-fixture', contractVersion: 1, datatypes: ['blog-post'], capabilities: ['blog.post'], egressHosts: ['blog.test'] };
+  const field = { key: 'api_key', label: 'API key', hosts: ['blog.test'] };
+  const validate = (auth: unknown, overrides = {}) => validateProviderDescriptor({ ...base,
+    setup: { credentials: [{ ...field, auth, ...overrides }] } });
+  it('accepts raw API-key and authorization values as well as the existing Bearer default', () => {
+    for (const header of ['api-key', 'authorization', 'x-api-key']) {
+      for (const scheme of ['raw', 'bearer']) expect(validate({ header, scheme })).toEqual([]);
+    }
+    expect(validateProviderDescriptor({ ...base, setup: { credentials: [field] } })).toEqual([]);
+  });
+  it.each([null, [], 'raw', {}, { header: 'cookie', scheme: 'raw' }, { header: 'host', scheme: 'raw' },
+    { header: 'authorization\r\ninjected', scheme: 'raw' }, { header: 'api-key', scheme: 'Basic' },
+    { header: 'api-key', scheme: 'raw', value: 'secret' }])('refuses unsafe auth declarations %j', (auth) => {
+    expect(validate(auth).length).toBeGreaterThan(0);
+  });
+  it('requires a declared host for non-default authentication', () => {
+    expect(validate({ header: 'api-key', scheme: 'raw' }, { hosts: undefined })).toContain('provider.setup.credentials[0].auth requires hosts');
+  });
+});
+
+describe('provider rate budget declarations', () => {
+  const base: ProviderDescriptor = { id: 'neutral-provider', contractVersion: 1, datatypes: ['social-post'], capabilities: ['social.reply'], egressHosts: ['example.test'] };
+  const budget = () => ({ verifiedAt: '2026-08-23', sources: ['https://example.test/limits'], requestsPerMinute: 60,
+    buckets: { shared: { appliesTo: 'list and reply', perDay: 10000, unit: 'units', verbs: ['read', 'reply'] } },
+    dynamicQuota: { formula: '4800 * engaged members', driver: 'engaged members', assumedDailyFloor: 4800, retryExtendsBlock: true } });
+  const validate = (rateBudget: unknown) => validateProviderDescriptor({ ...base, rateBudget });
+  it('accepts separately dated evidence and non-fungible budgets without a usage header', () => {
+    expect(validate(budget())).toEqual([]);
+    expect(validateProviderDescriptor(base)).toEqual([]);
+  });
+  it.each([0, -1, NaN, Infinity, '60'])('refuses invalid numeric allowance %s', (requestsPerMinute) => {
+    expect(validate({ ...budget(), requestsPerMinute })).toContain('provider.rateBudget.requestsPerMinute must be a finite positive number');
+  });
+  it.each([
+    { verifiedAt: '2026-02-30' }, { verifiedAt: '2026-08-23', sources: [] }, { sources: ['http://example.test/limits'] },
+    { buckets: {} }, { buckets: { one: { appliesTo: 'write', perDay: 0, unit: 'calls' } } },
+    { buckets: { one: { appliesTo: 'write', perDay: 1, unit: 'unknown' } } },
+    { buckets: { one: { appliesTo: 'write', perDay: 1, unit: 'calls', verbs: ['post', 'post'] } } },
+    { dynamicQuota: { formula: 'x', driver: 'members', assumedDailyFloor: 0 } },
+    { dynamicQuota: { formula: 'x', driver: 'members', assumedDailyFloor: 1, retryExtendsBlock: 'true' } },
+    { budgetHeaders: ['X-Usage\r\nInjected'] }, { unrecognizedAllowance: 1000 },
+  ])('refuses malformed or unaccountable quota metadata %j', (mutation) => {
+    expect(validate({ ...budget(), ...mutation }).length).toBeGreaterThan(0);
+  });
+});
 
 describe('provider sync progress', () => {
   it('reads committed sync freshness without interpreting opaque provider cursors', () => {
@@ -77,6 +128,164 @@ function descriptor(identity: Record<string, unknown>): ProviderDescriptor {
 
 const GRAPHQL_BODY = JSON.stringify({ query: '{ organization { id name } }' });
 
+describe('package-owned sync support', () => {
+  it('accepts existing, readable and write-only providers', () => {
+    const d = descriptor({ url: 'https://api.example.com/me', idField: 'id' });
+    expect(validateProviderDescriptor(d)).toEqual([]);
+    expect(validateProviderDescriptor({ ...d, sync: true })).toEqual([]);
+    expect(validateProviderDescriptor({ ...d, sync: false })).toEqual([]);
+  });
+
+  it.each([null, 'false', 0, {}, []])('refuses malformed sync support %j', (sync) => {
+    expect(validateProviderDescriptor({ ...descriptor({ url: 'https://api.example.com/me', idField: 'id' }), sync }))
+      .toContain('provider.sync must be a boolean');
+  });
+});
+
+describe('package-owned API contract evidence', () => {
+  const verified = (): ProviderDescriptor => ({
+    id: 'example-social', contractVersion: 1, datatypes: ['social-post'],
+    capabilities: ['social.reply', 'social.delete'], egressHosts: ['api.example.com'],
+    verification: { verifiedAt: '2026-10-16', sources: ['https://example.com/api'], capabilities: { 'social.reply': '2026-10-16', 'social.delete': null } },
+  });
+
+  it('keeps a declared but unverified write closed and does not invent another verb', () => {
+    const d = verified();
+    expect(validateProviderDescriptor(d)).toEqual([]);
+    expect(providerCapabilityVerificationIssue(d, 'social.reply')).toBeNull();
+    expect(providerCapabilityVerificationIssue(d, 'social.delete')).toBe('capability-unverified');
+    expect(providerCapabilityVerificationIssue(d, 'social.post')).toBe('capability-unsupported');
+    delete d.verification;
+    expect(validateProviderDescriptor(d)).toEqual([]); // old descriptors remain installable
+    expect(providerCapabilityVerificationIssue(d, 'social.reply')).toBe('unverified');
+  });
+
+  it('preserves an explicit contract wall even with dated write evidence', () => {
+    const d = verified(); d.verification!.blockedOn = 'owner: API access authorization';
+    expect(validateProviderDescriptor(d)).toEqual([]);
+    expect(providerCapabilityVerificationIssue(d, 'social.reply')).toBe('owner-blocked');
+    expect(providerCapabilityVerificationIssue(d)).toBe('owner-blocked');
+  });
+
+  it('verifies sync/read evidence independently from any write capability', () => {
+    const d = verified(); d.capabilities = []; d.verification!.capabilities = {};
+    expect(providerCapabilityVerificationIssue(d)).toBeNull();
+    expect(providerCapabilityVerificationIssue(d, 'social.reply')).toBe('capability-unsupported');
+    d.verification!.verifiedAt = null;
+    expect(providerCapabilityVerificationIssue(d)).toBe('unverified');
+  });
+
+  it.each([
+    { verifiedAt: '2026-02-30' }, { verifiedAt: undefined }, { sources: [] },
+    { sources: ['http://example.com/api'] }, { sources: ['https://user:secret@example.com/api'] },
+    { capabilities: { 'social.post': '2026-10-16' } }, { capabilities: { 'social.reply': 'tomorrow' } },
+    { verifiedAt: null }, { blockedOn: ' ' }, { liveAccepted: true },
+  ])('rejects malformed or undeclared attestation %j', (patch) => {
+    const d = verified(); Object.assign(d.verification!, patch);
+    expect(validateProviderDescriptor(d).some((issue) => issue.startsWith('provider.verification'))).toBe(true);
+    expect(providerCapabilityVerificationIssue(d, 'social.reply')).not.toBeNull();
+  });
+
+  it('represents an explicitly unverified contract without authorizing any write', () => {
+    const d = verified(); d.verification = { verifiedAt: null, sources: [], capabilities: { 'social.reply': null } };
+    expect(validateProviderDescriptor(d)).toEqual([]);
+    expect(providerCapabilityVerificationIssue(d, 'social.reply')).toBe('unverified');
+  });
+});
+
+describe('host-held pasted credential session descriptors', () => {
+  const sessionDescriptor: ProviderDescriptor = {
+    id: 'session-example', contractVersion: 1, datatypes: ['social-post'], capabilities: ['social.post'],
+    egressHosts: ['api.example.com'], setup: {
+      credentials: [{ key: 'account', label: 'Account' }, { key: 'password', label: 'App password' }],
+      session: { url: 'https://api.example.com/login', refreshUrl: 'https://api.example.com/refresh',
+        parameters: { identifier: 'account', password: 'password' }, hosts: ['api.example.com'],
+        accessTokenField: 'access', refreshTokenField: 'refresh', activeField: 'active', maxAgeSeconds: 3600,
+        identity: { idField: 'id', displayNameField: 'name', credentialKey: 'account' } },
+    },
+  };
+  it('admits pure-data login/refresh metadata without OAuth or a pasted bearer host', () => {
+    expect(validateProviderDescriptor(sessionDescriptor)).toEqual([]);
+    const noActive = structuredClone(sessionDescriptor); delete noActive.setup!.session!.activeField;
+    expect(validateProviderDescriptor(noActive)).toEqual([]);
+  });
+  it.each([
+    { url: 'https://foreign.example/login' }, { refreshUrl: 'https://other.example/refresh' },
+    { url: 'https://api.example.com/login?password=literal' }, { hosts: ['*.example.com'] },
+    { parameters: { password: 'undeclared' } }, { accessTokenField: '__proto__.token' },
+    { activeField: 'constructor.active' }, { maxAgeSeconds: 59 }, { maxAgeSeconds: 86401 },
+    { identity: { idField: 'access' } },
+  ])('rejects invalid endpoint, credential mapping, lifetime or response path %j', (patch) => {
+    const d = structuredClone(sessionDescriptor); Object.assign(d.setup!.session!, patch);
+    expect(validateProviderDescriptor(d).length).toBeGreaterThan(0);
+  });
+  it('rejects per-person login parameters and competing bearer credentials on the session host', () => {
+    const perPerson = structuredClone(sessionDescriptor); perPerson.setup!.credentials![1].perPrincipal = true;
+    expect(validateProviderDescriptor(perPerson)).toContain('provider.setup.session.parameters must reference declared source credential keys');
+    const overlap = structuredClone(sessionDescriptor); overlap.setup!.credentials![1].hosts = ['api.example.com'];
+    expect(validateProviderDescriptor(overlap)).toContain('provider.setup.session.hosts cannot overlap another credential');
+  });
+});
+
+describe('instance-scoped OAuth descriptors', () => {
+  const instance: ProviderDescriptor = { ...descriptor({ url: '/api/v1/accounts/verify_credentials', idField: 'id' }), egressHosts: [],
+    oauth: { instance: true, authorizeUrl: '/oauth/authorize', tokenUrl: '/oauth/token', scopes: ['read'],
+      identity: { url: '/api/v1/accounts/verify_credentials', idField: 'id' } } };
+
+  it('binds all relative endpoints to a saved public HTTPS origin without mutating the descriptor', () => {
+    expect(validateProviderDescriptor(instance)).toEqual([]);
+    const bound = bindProviderInstance(instance, 'https://social.example.com/');
+    expect(validateProviderDescriptor(bound)).toEqual([]);
+    expect(bound.egressHosts).toEqual(['social.example.com']);
+    expect(bound.oauth).toMatchObject({ authorizeUrl: 'https://social.example.com/oauth/authorize', tokenUrl: 'https://social.example.com/oauth/token',
+      identity: { url: 'https://social.example.com/api/v1/accounts/verify_credentials' } });
+    expect(bound.oauth).not.toHaveProperty('instance');
+    expect(instance.oauth!.authorizeUrl).toBe('/oauth/authorize');
+  });
+
+  it('refuses insecure, credential-bearing, IP, private-literal and non-origin registration values', () => {
+    for (const value of ['http://social.example.com', 'https://name:secret@social.example.com', 'https://127.0.0.1', 'https://[::1]', 'https://0x7f000001',
+      'https://localhost', 'https://host.local', 'https://host.internal', 'https://social.example.com:8443', 'https://social.example.com/path',
+      'https://social.example.com?next=elsewhere', 'https://social.example.com#part', ' https://social.example.com', 'https://social.example.com\\evil', null]) {
+      expect(normalizeProviderInstanceOrigin(value), String(value)).toBeNull();
+      expect(() => bindProviderInstance(instance, value)).toThrow('provider_instance_origin_invalid');
+    }
+  });
+
+  it('binds instance app setup paths and refuses authority escapes or unscoped relative setup', () => {
+    const scoped = { ...instance, setup: { appRegistration: { createUrl: '/settings/applications/new' } } };
+    expect(validateProviderDescriptor(scoped)).toEqual([]);
+    expect(bindProviderInstance(scoped, 'https://social.example.com').setup?.appRegistration?.createUrl).toBe('https://social.example.com/settings/applications/new');
+    expect(scoped.setup.appRegistration.createUrl).toBe('/settings/applications/new');
+    for (const createUrl of ['//evil.example.com/new', '/\\evil.example.com/new', '/new#part']) {
+      const bad = { ...scoped, setup: { appRegistration: { createUrl } } };
+      expect(validateProviderDescriptor(bad).some((issue) => issue.includes('createUrl'))).toBe(true);
+      expect(() => bindProviderInstance(bad, 'https://social.example.com')).toThrow('provider_instance_endpoint_invalid');
+    }
+    expect(validateProviderDescriptor({ ...descriptor({ url: 'https://api.example.com/me', idField: 'id' }), setup: scoped.setup }).some((issue) => issue.includes('createUrl'))).toBe(true);
+  });
+
+  it('refuses static host budgets and endpoints that select another authority', () => {
+    expect(validateProviderDescriptor({ ...instance, egressHosts: ['collector.example.com'] })).toContain('provider.egressHosts must be empty for an instance-scoped OAuth grant');
+    for (const authorizeUrl of ['https://collector.example.com/oauth', '//collector.example.com/oauth', '/\\collector.example.com', '/oauth#fragment']) {
+      const bad = { ...instance, oauth: { ...instance.oauth!, authorizeUrl } };
+      expect(validateProviderDescriptor(bad).some((issue) => issue.includes('authorizeUrl'))).toBe(true);
+      expect(() => bindProviderInstance(bad, 'https://social.example.com')).toThrow('provider_instance_endpoint_invalid');
+    }
+    expect(validateProviderDescriptor({ ...instance, oauth: { ...instance.oauth!, instance: false } })).toContain('provider.oauth.instance must be true when present');
+  });
+
+  it('permits only the persisted source origin, including its port, never a caller-selected or static host', () => {
+    const config = { connectionOrigin: 'https://social.example.com' };
+    expect(providerSourceEgressAllows(instance, new URL('https://social.example.com/api/v1/timelines/home'), config)).toBe(true);
+    for (const value of ['https://other.example.com/api', 'https://social.example.com:8443/api', 'https://social.example.com.evil.com/api', 'http://social.example.com/api', 'https://user@social.example.com/api']) {
+      expect(providerSourceEgressAllows(instance, new URL(value), config)).toBe(false);
+    }
+    expect(providerSourceEgressAllows(instance, new URL('https://social.example.com/api'))).toBe(false);
+    expect(providerSourceEgressAllows(instance, new URL('https://social.example.com/api'), { connectionOrigin: 'https://127.0.0.1' })).toBe(false);
+  });
+});
+
 /** A new source's starting destination policy (WI-10006213): keyed by declared datatypes only. */
 describe('validateProviderDescriptor: defaultDestinations', () => {
   const base = { ...descriptor({ url: 'https://api.example.com/user', idField: 'id' }), datatypes: ['ticket', 'ticket-comment'] };
@@ -126,6 +335,39 @@ describe('validateProviderDescriptor: membership', () => {
   it('container refs are printable, without spaces, and at most 200 characters', () => {
     for (const ref of ['T01:C02', 'drive/folder-1', '#general', 'team@example.com']) expect(PROVIDER_ACL_REF_PATTERN.test(ref)).toBe(true);
     for (const ref of ['', 'two words', 'line\nbreak', 'x'.repeat(201)]) expect(PROVIDER_ACL_REF_PATTERN.test(ref)).toBe(false);
+  });
+});
+
+describe('validateProviderDescriptor: oauth.clientIdParameter', () => {
+  it('accepts only supported client-id form keys', () => {
+    const base = descriptor({ url: 'https://api.example.com/user', idField: 'id' });
+    for (const clientIdParameter of ['client_id', 'client_key'] as const) {
+      expect(validateProviderDescriptor({ ...base, oauth: { ...base.oauth!, clientIdParameter } })).toEqual([]);
+    }
+    expect(validateProviderDescriptor({ ...base, oauth: { ...base.oauth!, clientIdParameter: 'redirect_uri' as 'client_key' } }))
+      .toContain('provider.oauth.clientIdParameter must be client_id or client_key');
+  });
+});
+
+describe('validateProviderDescriptor: oauth.userAgentRequired', () => {
+  it('accepts an explicit requirement and rejects values that could silently disable it', () => {
+    const base = descriptor({ url: 'https://api.example.com/user', idField: 'id' });
+    expect(validateProviderDescriptor({ ...base, oauth: { ...base.oauth!, userAgentRequired: true } })).toEqual([]);
+    for (const value of [false, 'true', 1]) {
+      expect(validateProviderDescriptor({ ...base, oauth: { ...base.oauth!, userAgentRequired: value as true } }))
+        .toContain('provider.oauth.userAgentRequired must be true when present');
+    }
+  });
+});
+
+describe('validateProviderDescriptor: oauth.tokenEndpointAuthMethod', () => {
+  it('accepts the two host-held client authentication methods and rejects unknown methods', () => {
+    const base = descriptor({ url: 'https://api.example.com/user', idField: 'id' });
+    for (const tokenEndpointAuthMethod of ['client_secret_post', 'client_secret_basic'] as const) {
+      expect(validateProviderDescriptor({ ...base, oauth: { ...base.oauth!, tokenEndpointAuthMethod } })).toEqual([]);
+    }
+    expect(validateProviderDescriptor({ ...base, oauth: { ...base.oauth!, tokenEndpointAuthMethod: 'none' as 'client_secret_basic' } }))
+      .toContain('provider.oauth.tokenEndpointAuthMethod must be client_secret_post or client_secret_basic');
   });
 });
 

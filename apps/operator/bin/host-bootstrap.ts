@@ -1946,10 +1946,14 @@ export function runBootstrap(): void {
   if (backgroundSpawnerSidecarEnabled) {
     void (async () => {
       try {
-        const { spawnSpawnerSidecar, registerSpawnerSidecarShutdownHooks } =
+        const {
+          spawnSpawnerSidecar,
+          registerSpawnerSidecarShutdownHooks,
+          SPAWNER_WARMUP_READY_TIMEOUT_MS,
+        } =
           await import('@papercusp/operator-core/lib/fleet/spawner-sidecar-spawn');
         const t0 = Date.now();
-        await spawnSpawnerSidecar();
+        await spawnSpawnerSidecar(undefined, { readyTimeoutMs: SPAWNER_WARMUP_READY_TIMEOUT_MS });
         registerSpawnerSidecarShutdownHooks();
         observeFallback('host-startup', { eligible: 1, applied: 1, reason: 'applied', scope: 'spawner-warmup' });
         console.log(

@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GoalLaunchResolution } from '../goal-launch-settings';
 
 const beginGovernedExecutionMock = vi.fn();
+const reserveHostedAgentSlotMock = vi.fn(async (): Promise<null | { start: () => Promise<void>; finish: () => Promise<void> }> => null);
+vi.mock('../workspace-host/hosted-agent-admission-client', () => ({
+  reserveHostedAgentSlot: (...args: unknown[]) => reserveHostedAgentSlotMock(...args as []),
+}));
 const registerGoalLaunchMock = vi.fn();
 vi.mock('../goal-launch-settings', () => ({
   registerGoalLaunch: (...args: unknown[]) => registerGoalLaunchMock(...args),
@@ -58,6 +62,7 @@ describe('spawnGovernedAgentProcess', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    reserveHostedAgentSlotMock.mockResolvedValue(null);
     beginGovernedExecutionMock.mockImplementation(async (request) => ({
       context: request.metadata?.launchedBy ? { ...context, metadata: request.metadata } : context, finish, cancel,
     }));
@@ -90,6 +95,40 @@ describe('spawnGovernedAgentProcess', () => {
     expect(result).toMatchObject({ status: 'ok', admissionContext: context });
     child.emit('exit', 0, null);
     await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce());
+  });
+
+  it('hands central quota to the native host and retains it when the terminal client exits', async () => {
+    const order: string[] = [];
+    const start = vi.fn(async () => { order.push('start'); });
+    const release = vi.fn(async () => { order.push('finish'); });
+    reserveHostedAgentSlotMock.mockImplementationOnce(async () => { order.push('reserve'); return { start, finish: release }; });
+    beginGovernedExecutionMock.mockImplementationOnce(async () => {
+      order.push('local'); return { context, finish, cancel };
+    });
+    const child = new EventEmitter();
+    await spawnGovernedAgentProcess({ workspaceId: 'ws', idempotencyKey: 'hosted', owner: 'owner' }, async (received) => {
+      expect(received.metadata).toMatchObject({ hostedAgentProcessKey: 'hosted', targetOwnerId: 'owner' });
+      order.push('spawn'); return { status: 'ok', pid: 1, terminal: 'xterm', child, display: ':0' } as never;
+    });
+    expect(order).toEqual(['reserve', 'local', 'start', 'spawn']);
+    expect(release).not.toHaveBeenCalled();
+    child.emit('exit', 0, null);
+    await vi.waitFor(() => expect(finish).toHaveBeenCalledOnce());
+    expect(release).not.toHaveBeenCalled();
+  });
+
+  it('never starts a child without central quota and releases a reservation when local admission fails', async () => {
+    const spawn = vi.fn();
+    reserveHostedAgentSlotMock.mockRejectedValueOnce(new Error('quota refused'));
+    await expect(spawnGovernedAgentProcess({ workspaceId: 'ws', idempotencyKey: 'p', owner: 'o' }, spawn)).rejects.toThrow('quota refused');
+    expect(beginGovernedExecutionMock).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+    const release = vi.fn(async () => {});
+    reserveHostedAgentSlotMock.mockResolvedValueOnce({ start: vi.fn(), finish: release });
+    beginGovernedExecutionMock.mockRejectedValueOnce(new Error('local refused'));
+    await expect(spawnGovernedAgentProcess({ workspaceId: 'ws', idempotencyKey: 'p', owner: 'o' }, spawn)).rejects.toThrow('local refused');
+    expect(release).toHaveBeenCalledOnce();
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it('cancels the durable receipt when the spawn returns an error', async () => {

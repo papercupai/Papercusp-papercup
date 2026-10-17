@@ -1503,6 +1503,7 @@ export interface CheckpointVerdict {
     status: 'passed' | 'failed' | 'skipped';
     durationMs: number;
     skipReason?: string;
+    subjectPaths?: string[];
     executionIdentity?: {
       runId: string;
       candidate: string;
@@ -1612,7 +1613,7 @@ export interface CheckpointVerdict {
     atMs: number;
     ok: boolean;
     failingSignatures: string[];
-    legs: Array<{ id: string; status: 'pass' | 'fail' | 'errored'; durationMs: number; outputTail?: string }>;
+    legs: Array<{ id: string; status: 'pass' | 'fail' | 'errored'; durationMs: number; outputTail?: string; subjectPaths?: string[] }>;
   };
 }
 
@@ -2158,6 +2159,7 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
       status: leg.status,
       durationMs: Math.max(0, Math.floor(leg.durationMs)),
       ...(leg.skipReason ? { skipReason: leg.skipReason.slice(0, 500) } : {}),
+      ...(leg.subjectPaths?.length ? { subjectPaths: leg.subjectPaths.slice(0, 40) } : {}),
       ...(leg.executionIdentity
         ? {
             executionIdentity: {
@@ -2202,7 +2204,8 @@ export function buildCheckpointDetail(v: CheckpointVerdict, fallbackGateFireId?:
         id: leg.id.slice(0, 128),
         status: leg.status,
         durationMs: Math.max(0, Math.floor(leg.durationMs)),
-        ...(leg.outputTail ? { outputTail: leg.outputTail.slice(-500) } : {}),
+        ...(leg.outputTail ? { outputTail: leg.outputTail.slice(0, 500) } : {}),
+        ...(leg.subjectPaths?.length ? { subjectPaths: leg.subjectPaths.slice(0, 40) } : {}),
       })),
     };
   }
@@ -4736,6 +4739,7 @@ export async function trackGateStall(
                   status: leg.status,
                   durationMs: Math.max(0, Math.floor(leg.durationMs)),
                   ...(leg.outputTail ? { outputTail: leg.outputTail.slice(0, 1000) } : {}),
+                  ...(leg.subjectPaths?.length ? { subjectPaths: leg.subjectPaths.slice(0, 40) } : {}),
                 })),
               }),
               measuredIds,
@@ -6297,26 +6301,33 @@ export async function readFrozenCandidateRepairQueue(
 async function readRepairTickLegOutputs(
   sql: Pick<import('../../work-items').OrgSql, 'unsafe'>,
   target: GateVerdictTarget,
-): Promise<Record<string, string>> {
+  repairHead: string,
+): Promise<{ legOutputs: Record<string, string>; previousManifest: unknown }> {
   try {
     const rows = (await sql.unsafe(
-      `SELECT metadata->'gate_health'->'repairTickLegs' AS legs
+      `SELECT metadata->'gate_health'->'repairTickLegs' AS legs,
+              metadata->'repair_queue'->'manifest' AS manifest
          FROM harness_shared.routines
         WHERE workspace_id = $1 AND install_slug = $2 AND target_role = 'system:green-checkpoint'
         LIMIT 1`,
       [target.workspaceId, target.installSlug],
-    )) as unknown as Array<{ legs?: unknown }> | undefined;
+    )) as unknown as Array<{ legs?: unknown; manifest?: unknown }> | undefined;
+    const previousManifest = Array.isArray(rows) ? rows[0]?.manifest : null;
     const raw = Array.isArray(rows) ? rows[0]?.legs : undefined;
+    const head = raw && typeof raw === 'object' ? (raw as { head?: unknown }).head : null;
+    if (typeof head !== 'string' || head.length < 12 || !repairHead.startsWith(head)) return { legOutputs: {}, previousManifest };
     const legs = raw && typeof raw === 'object' && Array.isArray((raw as { legs?: unknown }).legs)
       ? ((raw as { legs: unknown[] }).legs as Array<Record<string, unknown>>)
       : [];
     const out: Record<string, string> = {};
     for (const leg of legs) {
-      if (leg && typeof leg.id === 'string' && typeof leg.outputTail === 'string') out[leg.id] = leg.outputTail;
+      if (!leg || typeof leg.id !== 'string' || (leg.status !== 'fail' && leg.status !== 'errored')) continue;
+      const paths = Array.isArray(leg.subjectPaths) ? leg.subjectPaths.filter((p): p is string => typeof p === 'string').slice(0, 40) : [];
+      out[leg.id] = [...paths, typeof leg.outputTail === 'string' ? leg.outputTail : ''].join('\n');
     }
-    return out;
+    return { legOutputs: out, previousManifest };
   } catch {
-    return {};
+    return { legOutputs: {}, previousManifest: null };
   }
 }
 
@@ -6402,7 +6413,9 @@ export function isFrozenRepairQueueWriteConflict(e: unknown): e is FrozenRepairQ
   );
 }
 
-export type FrozenRepairQueueTransition = (fresh: FrozenCandidateRepairQueue) => FrozenCandidateRepairQueue;
+export type FrozenRepairQueueTransition = (
+  fresh: FrozenCandidateRepairQueue,
+) => FrozenCandidateRepairQueue | Promise<FrozenCandidateRepairQueue>;
 
 export interface FrozenRepairQueueTransitionOutcome {
   /**
@@ -6451,7 +6464,7 @@ export async function applyFrozenCandidateRepairQueueTransition(
     }
     if (read.status === 'absent') return { status: 'absent', queue: null, fresh: null, retries: attempt };
     const fresh = read.queue;
-    let next = transition(fresh);
+    let next = await transition(fresh);
     if (next === fresh) return { status: 'unchanged', queue: fresh, fresh, retries: attempt };
     if (!(next.updatedAtMs > fresh.updatedAtMs)) next = { ...next, updatedAtMs: fresh.updatedAtMs + 1 };
     try {
@@ -6499,16 +6512,21 @@ export async function writeFrozenCandidateRepairQueue(
   // carries leg claims from the row's previous manifest and reports whether the leg set moved.
   let manifested: import('../../release/repair-manifest').WithRepairManifestResult<FrozenCandidateRepairQueue> | null = null;
   if (queue) {
-    const { withRepairManifest } = await import('../../release/repair-manifest');
+    const { withRepairManifest, parseRepairManifest } = await import('../../release/repair-manifest');
     // WI-10002500: the manifest is a PURE derivation, so the npm-workspace name→dir map is
     // resolved here (the one place that may do I/O) and passed in. Without it a workspace-task
     // leg's mined paths stay workspace-relative and can never join the repo-relative admission
     // ledger, which made every such leg read `red-at-candidate` even after its fix had landed.
     const { npmWorkspaceDirsByName } = await import('../../release/npm-workspace-dirs');
+    const evidence = await readRepairTickLegOutputs(sql, target, queue.repairHead);
     manifested = withRepairManifest(queue, Date.now(), {
-      legOutputs: await readRepairTickLegOutputs(sql, target),
+      legOutputs: evidence.legOutputs,
       workspaceDirs: npmWorkspaceDirsByName(resolveIntegrationRoot()),
     });
+    // Producers attach current paths before this write. Compare against the persisted
+    // manifest, not that already-updated input, so newly actionable paths are published.
+    const persisted = parseRepairManifest(evidence.previousManifest);
+    manifested.statusChanged ||= !persisted || JSON.stringify(persisted.rows) !== JSON.stringify(manifested.manifest.rows);
     queue = manifested.queue;
     // P-013 / D-007: project the convergence summary into `gate_health.convergence` in the
     // SAME statement that persists the queue.
@@ -7139,6 +7157,14 @@ export async function measureCandidateStaleness(
  * call it directly. A `SystemActionCtx` still satisfies this structurally at every existing
  * call site.
  */
+export interface ReleaseFixerDispatchSkip {
+  code: 'scope' | 'stale-candidate' | 'snapshot-mismatch' | 'no-measured-failures' |
+    'covered' | 'reservation-changed' | 'launch-failed';
+  reason: string;
+  /** False only when another dispatch cannot help until the queue's verdict or head changes. */
+  retryable: boolean;
+}
+
 export async function dispatchReleaseFixer(
   ctx: GateVerdictTarget,
   candidate: string,
@@ -7148,8 +7174,13 @@ export async function dispatchReleaseFixer(
   deps: {
     checkCandidate?: (root: string, candidate: string) => Promise<ReleaseFixerCandidateStaleCheck>;
     alarm?: import('../../alarm-attention').AlarmAttentionDeps;
+    onSkip?: (skip: ReleaseFixerDispatchSkip) => void;
   } = {},
 ): Promise<{ spawnId: string | null; runId: string | null } | null> {
+  const skip = (code: ReleaseFixerDispatchSkip['code'], reason: string, retryable = true): null => {
+    deps.onSkip?.({ code, reason, retryable });
+    return null;
+  };
   // workspace-work-scope-policy-2026-09-04 P-008: an out-of-scope install's gate still runs
   // (verdict-only) but never SPAWNS a release-fixer for it. Denials land on the policy
   // ledger; with no policy set this is one cached read and byte-identical behaviour.
@@ -7165,7 +7196,7 @@ export async function dispatchReleaseFixer(
         status: 'release-fixer-skipped-scope',
         detail: { candidate: candidate.slice(0, 12), allowHarnesses: scope.allowHarnesses },
       }).catch(() => {});
-      return null;
+      return skip('scope', scope.message);
     }
   }
   // EI-8718: cheap re-verify BEFORE touching dedup state — a candidate that's gone stale
@@ -7200,7 +7231,7 @@ export async function dispatchReleaseFixer(
         candidatePromoted: staleCheck.candidatePromoted,
       },
     }).catch(() => {});
-    return null;
+    return skip('stale-candidate', `stale candidate (exists=${staleCheck.candidateExists}, promoted=${staleCheck.candidatePromoted})`);
   }
 
   // WI-2140605: a FROZEN-REPAIR dispatch with an EMPTY failing set has nothing for a
@@ -7281,7 +7312,7 @@ export async function dispatchReleaseFixer(
         snapshotIdentity: candidateSnapshot?.identity ?? null,
       },
     }).catch(() => {});
-    return null;
+    return skip('snapshot-mismatch', 'no fresh candidate snapshot matches the candidate and failing-test signature');
   }
 
   if (repairQueue && frozenRepairHasNoMeasuredFailures(repairQueue, failingTests, failingTestsMeasured)) {
@@ -7303,7 +7334,9 @@ export async function dispatchReleaseFixer(
         failingTestsMeasured,
       },
     }).catch(() => {});
-    return null;
+    return skip('no-measured-failures',
+      `frozen repair queue has no measured failing tests (failingTestsMeasured=${failingTestsMeasured}) — nothing to reproduce; a fresh verdict is the unblock, not a fixer`,
+      false);
   }
 
   // WI-10007494: a frozen queue can mix a real red with an entry the latest repair tick
@@ -7344,7 +7377,7 @@ export async function dispatchReleaseFixer(
   const fixerAlive = sameSignature ? await releaseFixerSpawnAlive(sql, lf?.spawnId) : null;
   const now = Date.now();
   const decision = decideReleaseFixerDispatch({ lf, signature, now, fixerAlive });
-  if (!decision.dispatch) return null; // a live fixer is covering this gate — the good dedup
+  if (!decision.dispatch) return skip('covered', 'an existing live or reserved fixer covers this failure signature');
 
   // Claim the dedup slot BEFORE firing (anti double-fire across ticks): a concurrent
   // tick now sees a fresh `at` with no spawn id → fixerAlive=null → covered → skips.
@@ -7386,7 +7419,7 @@ export async function dispatchReleaseFixer(
       `${orchestratorStdoutTag()} release-fixer dispatch skipped for ${candidate.slice(0, 8)}: ` +
         'candidate snapshot or last_fixer changed before reservation',
     );
-    return null;
+    return skip('reservation-changed', 'candidate snapshot or last_fixer changed before reservation');
   }
 
   // EI-7443: best-effort flake annotation for the CURRENTLY-failing files, from the
@@ -7407,6 +7440,7 @@ export async function dispatchReleaseFixer(
   // path (fireLaunchBlueprintForEvent) so the fixer is liveness-trackable + survives a crash.
   const { fireLaunchBlueprintForEvent } = await import('../../blueprint/launch-blueprint');
   let fired: Awaited<ReturnType<typeof fireLaunchBlueprintForEvent>> = null;
+  let fireError: string | null = null;
   try {
     const kickoff = buildReleaseFixerKickoff({
       candidate,
@@ -7447,7 +7481,8 @@ export async function dispatchReleaseFixer(
       timeoutMs: 2_700_000,
     });
   } catch (e) {
-    console.warn(`${orchestratorStdoutTag()} release-fixer fire failed: ${e instanceof Error ? e.message : e}`);
+    fireError = e instanceof Error ? e.message : String(e);
+    console.warn(`${orchestratorStdoutTag()} release-fixer fire failed: ${fireError}`);
   }
   // A resolved launch target is not proof of a spawn: fireLaunchBlueprintForEvent returns a
   // target object with spawn:null when the launch is unavailable. Persist that distinction so
@@ -7533,7 +7568,7 @@ export async function dispatchReleaseFixer(
       ...(sameHeadContradicted.length > 0 ? { sameHeadContradicted: sameHeadContradicted.slice(0, 20) } : {}),
     },
   }).catch(() => {});
-  return spawn ? { spawnId, runId } : null;
+  return spawn ? { spawnId, runId } : skip('launch-failed', fireError ? `release-fixer fire failed: ${fireError}` : 'release-fixer launch returned no spawn');
 }
 
 /** The fixed transient-unit name for the detached auto-deploy — fixed on

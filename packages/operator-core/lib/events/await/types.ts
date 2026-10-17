@@ -253,6 +253,21 @@ export function wakeChannelInvokesTurn(channel: WakeChannel | null | undefined):
   return channel != null && WAKE_TURN_CHANNELS.includes(channel);
 }
 
+/** A parked host still owns the delivery until its exact write/cancel/drop receipt.
+ * New producers retain the accepted: marker. Keep incumbent park reasons readable
+ * across deployment so a handled inbox message cannot retire a queued host write. */
+export function isAcceptedPsuHostDelivery(delivery: Pick<DeliveryWork, 'lastError'>): boolean {
+  const reason = delivery.lastError ?? '';
+  return [
+    'psu-host accepted:',
+    'psu-host pending-delivery-id:',
+    'psu-host coalesced-into-pending-turn:',
+    'psu-host accepted the cancellation request;',
+    'psu-host still owns the accepted delivery;',
+    'psu-host accepted the fail-open wake retry;',
+  ].some((prefix) => reason.startsWith(prefix));
+}
+
 export interface DeliveryRow {
   id: number;
   workspaceId: string;

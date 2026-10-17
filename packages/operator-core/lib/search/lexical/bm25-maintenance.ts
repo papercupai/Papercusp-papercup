@@ -49,6 +49,7 @@
  */
 import type { Sql } from 'postgres';
 import { createDedicatedOrgPg } from '@papercusp/db-org';
+import { BACKUP_MIGRATION_ADVISORY_LOCK_KEY } from '@papercusp/backup/application-names';
 import { readBm25Indexes, resetBm25Availability } from './rank';
 
 /** Outcomes of `bm25_ensure_indexes()` that mean "build this one concurrently". */
@@ -62,13 +63,15 @@ const BUILD_OUTCOMES = new Set(['deferred:build-concurrently', 'invalid']);
  * box, 2026-10-11, `harness_admin` rolconfig). On a fleet database some transaction on a
  * hot table is nearly always older than that, so every build of work_items_bm25 was
  * cancelled with "canceling statement due to lock timeout" and left an INVALID index that
- * the next run dropped and retried, forever. Waiting does not block other sessions: the
- * build's ShareUpdateExclusiveLock does not conflict with the RowExclusiveLock writers
- * take. The bound only stops a run from waiting indefinitely behind a long DDL lock. It
- * is hours, not minutes, because the dev box's pg_dump backup keeps one snapshot open for
- * the whole dump: the hourly-triggered backup finished at 17:09, 20:59, 00:38 and 03:27
- * EDT (journal, 2026-10-10/11), and a live build at 08:49Z waited on its 15-minute-old
- * COPY transaction.
+ * the next run dropped and retried, forever.
+ *
+ * A host pg_dump is a distinct case: it holds the shared backup rendezvous while its
+ * snapshot keeps AccessShareLock on every relation it has visited. Starting concurrent
+ * DDL while that lock is held creates a PostgreSQL lock queue; ordinary writes then queue
+ * behind the waiting DDL even though the DDL itself is "concurrent". The DDL paths below
+ * therefore try-acquire the same rendezvous and skip before issuing any DDL when a host
+ * dump is active. This four-hour bound remains for other, non-backup old snapshots after
+ * the admission check has succeeded.
  */
 export const CONCURRENT_DDL_LOCK_TIMEOUT = '4h';
 
@@ -177,6 +180,24 @@ const BM25_PAGE_MAP_ENTRIES = (PAGE_BYTES - 24 - 16) / 4;
  */
 const RECLAIM_LOCK = 'bm25-maintenance:concurrent-ddl';
 
+/**
+ * Admit BM25 concurrent DDL only when the host backup/migration rendezvous is free.
+ *
+ * The host pg_dump holds this session advisory lock for each database dump. A failed
+ * try-lock is an intentional deferral: waiting here would let the subsequent DDL enter
+ * PostgreSQL's lock queue behind the dump and turn unrelated writes into convoy waiters.
+ */
+export async function tryAcquireBackupRendezvous(conn: Sql): Promise<boolean> {
+  const [row] = await conn<{ locked: boolean }[]>`
+    SELECT pg_try_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY})) AS locked`;
+  return row?.locked === true;
+}
+
+async function releaseBackupRendezvous(conn: Sql): Promise<void> {
+  await conn`
+    SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+}
+
 /** Segment totals from the `Total:` line of `bm25_summarize_index` (pg_textsearch 1.5.x). */
 export interface Bm25SegmentTotals {
   segments: number;
@@ -284,33 +305,38 @@ export async function runBm25Maintenance(
     const name = next.corpusIndex;
     const conn = await sql.reserve();
     let locked = false;
+    let backupLocked = false;
     try {
       [{ locked }] = await conn<{ locked: boolean }[]>`SELECT pg_try_advisory_lock(hashtext(${RECLAIM_LOCK})) AS locked`;
       // Another run holds the DDL lock: it may be building this very index, which reads as
       // `invalid` until it finishes. Leave it to that run.
-      const [state] = locked
-        ? await conn<{ valid: boolean }[]>`
-            SELECT i.indisvalid AS valid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
-              JOIN pg_namespace n ON n.oid = c.relnamespace
-             WHERE n.nspname = 'harness_shared' AND c.relname = ${name}`
-        : [];
       if (!locked) {
         report.pendingBuilds.unshift(name);
-      } else if (!state?.valid) {
-        // Session-scoped: a big build must not hit the pool's statement_timeout, and its
-        // waits for older transactions must not hit the pool's lock_timeout.
-        await conn`SET statement_timeout = 0`;
-        await conn.unsafe(`SET lock_timeout = '${CONCURRENT_DDL_LOCK_TIMEOUT}'`);
-        // Re-read under the lock: an index that was invalid when ensure ran may have been
-        // finished by a run that has since released the lock.
-        if (state) {
-          await conn`DROP INDEX CONCURRENTLY IF EXISTS ${conn(`harness_shared.${name}`)}`;
-          report.rebuiltInvalid = true;
+      } else if (!(backupLocked = await tryAcquireBackupRendezvous(conn))) {
+        // A host pg_dump owns AccessShareLock on every relation in its snapshot.
+        // Do not start concurrent DDL and enter the lock queue behind it.
+        report.pendingBuilds.unshift(name);
+      } else {
+        const [state] = await conn<{ valid: boolean }[]>`
+          SELECT i.indisvalid AS valid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+           WHERE n.nspname = 'harness_shared' AND c.relname = ${name}`;
+        if (!state?.valid) {
+          // Session-scoped: a big build must not hit the pool's statement_timeout, and its
+          // waits for older transactions must not hit the pool's lock_timeout.
+          await conn`SET statement_timeout = 0`;
+          await conn.unsafe(`SET lock_timeout = '${CONCURRENT_DDL_LOCK_TIMEOUT}'`);
+          // Re-read under the lock: an index that was invalid when ensure ran may have been
+          // finished by a run that has since released the lock.
+          if (state) {
+            await conn`DROP INDEX CONCURRENTLY IF EXISTS ${conn(`harness_shared.${name}`)}`;
+            report.rebuiltInvalid = true;
+          }
+          const [{ ddl }] = await conn<{ ddl: string }[]>`SELECT harness_shared.bm25_index_ddl(${name}, true) AS ddl`;
+          await conn.unsafe(ddl);
+          report.built = name;
+          resetBm25Availability();
         }
-        const [{ ddl }] = await conn<{ ddl: string }[]>`SELECT harness_shared.bm25_index_ddl(${name}, true) AS ddl`;
-        await conn.unsafe(ddl);
-        report.built = name;
-        resetBm25Availability();
       }
     } catch (err) {
       report.errors.push(`build ${name}: ${message(err)}`);
@@ -319,6 +345,7 @@ export async function runBm25Maintenance(
       try {
         await conn`RESET statement_timeout`;
         await conn`RESET lock_timeout`;
+        if (backupLocked) await releaseBackupRendezvous(conn);
         if (locked) await conn`SELECT pg_advisory_unlock(hashtext(${RECLAIM_LOCK}))`;
       } catch { /* connection may be broken; release anyway */ }
       conn.release();
@@ -399,9 +426,12 @@ async function dropOrphanedRebuilds(sql: Sql, report: Bm25MaintenanceReport): Pr
   if (orphans.length === 0) return;
   const conn = await sql.reserve();
   let locked = false;
+  let backupLocked = false;
   try {
     [{ locked }] = await conn<{ locked: boolean }[]>`SELECT pg_try_advisory_lock(hashtext(${RECLAIM_LOCK})) AS locked`;
     if (!locked) return;
+    backupLocked = await tryAcquireBackupRendezvous(conn);
+    if (!backupLocked) return;
     await conn`SET statement_timeout = 0`;
     await conn.unsafe(`SET lock_timeout = '${CONCURRENT_DDL_LOCK_TIMEOUT}'`);
     for (const name of orphans) {
@@ -419,6 +449,7 @@ async function dropOrphanedRebuilds(sql: Sql, report: Bm25MaintenanceReport): Pr
     try {
       await conn`RESET statement_timeout`;
       await conn`RESET lock_timeout`;
+      if (backupLocked) await releaseBackupRendezvous(conn);
       if (locked) await conn`SELECT pg_advisory_unlock(hashtext(${RECLAIM_LOCK}))`;
     } catch { /* connection may be broken; release anyway */ }
     conn.release();
@@ -471,9 +502,15 @@ async function reclaim(
   const qualified = `harness_shared.${target.name}`;
   const conn = await sql.reserve();
   let locked = false;
+  let backupLocked = false;
   try {
     [{ locked }] = await conn<{ locked: boolean }[]>`SELECT pg_try_advisory_lock(hashtext(${RECLAIM_LOCK})) AS locked`;
     if (!locked) {
+      report.pendingReclaims.unshift(qualified);
+    } else if (!(backupLocked = await tryAcquireBackupRendezvous(conn))) {
+      // Keep the target queued without issuing REINDEX while the host dump owns
+      // the snapshot rendezvous; otherwise PostgreSQL queues ordinary writes
+      // behind this waiting concurrent DDL.
       report.pendingReclaims.unshift(qualified);
     } else {
       await conn`SET statement_timeout = 0`;
@@ -493,6 +530,7 @@ async function reclaim(
     try {
       await conn`RESET statement_timeout`;
       await conn`RESET lock_timeout`;
+      if (backupLocked) await releaseBackupRendezvous(conn);
       if (locked) await conn`SELECT pg_advisory_unlock(hashtext(${RECLAIM_LOCK}))`;
     } catch { /* connection may be broken; release anyway */ }
     conn.release();

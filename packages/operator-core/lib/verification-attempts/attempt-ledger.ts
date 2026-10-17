@@ -133,7 +133,9 @@ export async function recordAttemptOnClose(
     if (!Number.isFinite(durationMs) || durationMs < (deps.minDurationMs ?? SLOW_ATTEMPT_MIN_MS)) return null;
     const outcome = attemptOutcome(closed.state, closed.exitCode);
     let fp: ReturnType<typeof failureFingerprint> | null = null;
-    if (outcome === 'fail' || outcome === 'unknown') {
+    // An unknown exit is unobserved, not evidence of failure. Log text can be
+    // partial or harmless stderr, so only a classified failure gets a fingerprint.
+    if (outcome === 'fail') {
       const logTail = closed.logPath ? await (deps.readTail ?? readLogTail)(closed.logPath) : null;
       fp = failureFingerprint({ exitCode: closed.exitCode, exitReason: closed.exitReason, logTail });
     }

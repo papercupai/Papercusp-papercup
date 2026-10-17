@@ -9,6 +9,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { ClusterHandle } from '../cluster-fork';
 import {
   httpServingProcessRole,
   remoteAccessReconcilersFor,
@@ -26,19 +27,21 @@ describe('remote-access reconcilers per process role', () => {
     expect(remoteAccessReconcilersFor('cluster-worker')).toEqual(['own-tunnel']);
   });
 
-  it('an HTTP-serving process with a primary handle is a single-process host; a worker handle is a worker', () => {
+  it('an HTTP-serving process with a standalone or primary handle is a single-process host; a worker handle is a worker', () => {
+    expect(httpServingProcessRole({ role: 'single' })).toBe('single-process');
     expect(httpServingProcessRole({ role: 'primary' })).toBe('single-process');
     expect(httpServingProcessRole({ role: 'worker' })).toBe('cluster-worker');
     expect(httpServingProcessRole(null)).toBe('single-process');
   });
 
-  it('startRemoteAccessReconcilers calls exactly the starters for its role', () => {
+  it.each(['primary', 'single'] as const)('a %s handle starts both singleton reconcilers while a worker starts only its listener', (role) => {
     const calls: RemoteAccessReconciler[] = [];
     const starters = {
       'own-tunnel': () => { calls.push('own-tunnel'); },
       'portal-relay': () => { calls.push('portal-relay'); },
     };
-    expect(startRemoteAccessReconcilers(httpServingProcessRole({ role: 'primary' }), starters))
+    const clusterHandle: ClusterHandle = { role, workerCount: 0 };
+    expect(startRemoteAccessReconcilers(httpServingProcessRole(clusterHandle), starters))
       .toEqual(['own-tunnel', 'portal-relay']);
     expect(calls).toEqual(['own-tunnel', 'portal-relay']);
     calls.length = 0;

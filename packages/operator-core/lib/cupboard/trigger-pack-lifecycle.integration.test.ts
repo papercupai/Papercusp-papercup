@@ -34,6 +34,7 @@ import {
   TriggerPackReviewRequiredError,
 } from '../external-triggers/admin';
 import { grantCapabilities } from '../plugin-grants';
+import { loadHarnessRegistry } from '../harness-registry';
 import { installPluginFromCupboardCore, type InstallPluginCoreDeps } from './install-plugin-core';
 import {
   armTriggerPack,
@@ -294,6 +295,57 @@ describe('trigger-pack lifecycle (P-013)', () => {
     await expect(
       setUpTriggerPack(sql, WS, { pluginName: PLUGIN, harnessSlug: HARNESS }, { pluginsDir, harnessExists, materialize: materializeFake }),
     ).rejects.toMatchObject({ code: 'already_set_up' });
+  });
+
+  it('keeps a setup with no matching source disarmed and refuses to arm it', async () => {
+    const installed = await materialize();
+    expect(installed.status).toBe('needs-configuration');
+    expect(await live()).toEqual([]);
+    expect(await armTriggerPack(sql, WS, { installationId: installed.id, fingerprint: installed.review.fingerprint }))
+      .toMatchObject({ ok: false, error: 'trigger_pack_needs_configuration' });
+    expect(await buildTriggerPackReview(sql, WS, installed.id))
+      .toMatchObject({ reviewedFingerprint: null, armedBindingCount: 0 });
+  });
+
+  it('refuses deletion of a selected source while its binding exists and leaves setup disarmed', async () => {
+    const source = await createExternalTriggerSource(sql, WS, { kind: 'outlook-fixture', status: 'connected' });
+    const installed = await materialize();
+    expect(installed.status).toBe('configured');
+    await expect(sql`DELETE FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND id = ${source.id}::uuid`)
+      .rejects.toMatchObject({ code: '23001' });
+    expect(await sql`SELECT id FROM harness_shared.data_sources WHERE workspace_id = ${WS} AND id = ${source.id}::uuid`)
+      .toHaveLength(1);
+    expect(await buildTriggerPackReview(sql, WS, installed.id))
+      .toMatchObject({ reviewedFingerprint: null, armedBindingCount: 0 });
+    expect((await live()).every((binding) => !binding.armed)).toBe(true);
+  });
+
+  it.each(['installation', 'binding', 'registry-row', 'empty-path'])('resolves the %s target again at arm time after valid setup', async (target) => {
+    await createExternalTriggerSource(sql, WS, { kind: 'outlook-fixture', status: 'connected' });
+    const installed = await materialize();
+    expect(installed.status).toBe('configured');
+    // A previously resolved target must not make a removed registry entry eligible.
+    expect((await loadHarnessRegistry(WS)).projects.some((project) => project.slug === HARNESS)).toBe(true);
+    if (target === 'installation') {
+      await sql`UPDATE harness_shared.harness_registry SET payload = '{"projects":[]}'::jsonb WHERE workspace_id = ${WS}`;
+    } else if (target === 'registry-row') {
+      await sql`DELETE FROM harness_shared.harness_registry WHERE workspace_id = ${WS}`;
+    } else if (target === 'empty-path') {
+      await sql`UPDATE harness_shared.harness_registry
+        SET payload = jsonb_set(payload, '{projects,0,path}', '" "'::jsonb) WHERE workspace_id = ${WS}`;
+    } else {
+      await sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug)
+        SELECT workspace_id, 'no-such-project', plan_slug FROM harness_shared.harness_plans
+        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
+      await sql`UPDATE harness_shared.trigger_bindings SET plan_harness_slug = 'no-such-project'
+        WHERE workspace_id = ${WS} AND pack_installation_id = ${installed.id}::uuid`;
+    }
+    const review = await buildTriggerPackReview(sql, WS, installed.id);
+    await expect(armTriggerPack(sql, WS, { installationId: installed.id, fingerprint: review!.fingerprint }))
+      .rejects.toMatchObject({ code: 'trigger_pack_target_unavailable' });
+    expect(await buildTriggerPackReview(sql, WS, installed.id))
+      .toMatchObject({ reviewedFingerprint: null, armedBindingCount: 0 });
+    expect((await live()).every((binding) => !binding.armed)).toBe(true);
   });
 
   it('refuses to arm a pack that still needs configuration', async () => {

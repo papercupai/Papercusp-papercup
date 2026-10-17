@@ -28,6 +28,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawn } from 'node:child_process';
+import { createTextCollector } from './child-output';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -126,9 +127,8 @@ function startAdmission(extra: Record<string, string> = {}) {
   const child = spawn('bash', [PC_HEAVY, 'sh', '-c',
     ': > "$2"; while [ ! -e "$1" ]; do sleep 0.05; done', '_', finishFile, startedFile],
   pcHeavyFixtureOptions(dir, baseEnv(extra)));
-  let stderr = '';
+  const stderr = createTextCollector(child.stderr);
   let closed = false;
-  child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
   const result = new Promise<{ code: number | null; signal: string | null }>((resolveExit, reject) => {
     child.on('error', reject);
     child.on('close', (code, signal) => { closed = true; resolveExit({ code, signal }); });
@@ -136,11 +136,12 @@ function startAdmission(extra: Record<string, string> = {}) {
   return {
     child, result, startedFile,
     finish: () => writeFileSync(finishFile, ''),
-    diagnostics: () => stderr,
+    diagnostics: () => stderr.text(),
     terminal: () => {
-      const lines = stderr.split('\n').filter((line) =>
+      const output = stderr.text();
+      const lines = output.split('\n').filter((line) =>
         line.startsWith('PC_HEAVY_ADMISSION ') && line.includes('reason=cleanup '));
-      expect(lines, `one terminal snapshot must survive cleanup; stderr: ${stderr}`).toHaveLength(1);
+      expect(lines, `one terminal snapshot must survive cleanup; stderr: ${output}`).toHaveLength(1);
       return Object.fromEntries(lines[0].split(' ').slice(1).map((field) => field.split('=')));
     },
     stop: async () => {

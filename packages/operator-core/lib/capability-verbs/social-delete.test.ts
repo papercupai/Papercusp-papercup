@@ -226,7 +226,7 @@ describe('deleteCanonicalSocialPost — through the installed provider package (
     expect(installed.invokes[0]!.request.source).toBe('src-mastodon-1');
     const [args] = invokedArgs<{ externalId: string; target: unknown; idempotencyKey: string }>(installed);
     expect(args!.externalId).toBe('109999');
-    expect(args!.target).toEqual({ platform: 'mastodon', inReplyToId: '109999', instanceHost: 'mastodon.social' });
+    expect(args!.target).toEqual({ platform: 'mastodon', externalId: '109999', payload: MASTODON_ROW.metadata });
     expect(args!.idempotencyKey).toBe(socialDeleteIdempotencyKey(MASTODON_REF));
   });
 
@@ -251,9 +251,9 @@ describe('deleteCanonicalSocialPost — through the installed provider package (
     const sql = fakeSql();
 
     await expect(del(sql, CONFIRMED, installed.deps)).rejects.toThrow(
-      /^outbound_source_not_connected:social-post:mastodon — no installed provider package serves mastodon$/,
+      /social_platform_unusable:mastodon:unknown-platform.*no installed/,
     );
-    expect(sql.calls()).toBe(1);
+    expect(sql.calls()).toBe(0);
     expect(installed.invokes).toHaveLength(0);
     expect(installed.hostFetchesBuilt).toBe(0);
   });
@@ -264,7 +264,7 @@ describe('deleteCanonicalSocialPost — through the installed provider package (
     ]);
 
     await expect(del(fakeSql(), CONFIRMED, installed.deps)).rejects.toThrow(
-      /^provider_capability_unsupported:mastodon:social\.delete$/,
+      /social_platform_unusable:mastodon:write-verb-unsupported/,
     );
     expect(installed.invokes).toHaveLength(0);
     expect(installed.hostFetchesBuilt).toBe(0);

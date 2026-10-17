@@ -25,6 +25,8 @@ import { withHostedServiceContext } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import type { HostedServiceContextRunner } from '../workos-lifecycle-postgres';
 import { lockHostedBudgetOrganization } from './budget-store';
+import { addMicrosDecimals } from '../../../cupboard/money-journal';
+import { projectHostedMonthlyCost, type HostedUsageForecast, type HostedUsageSourceCensus } from './usage-statement';
 
 export const HOSTED_COST_CLASSES = ['model', 'hosting', 'subscription'] as const;
 export type HostedCostClass = typeof HOSTED_COST_CLASSES[number];
@@ -175,8 +177,20 @@ export interface HostedAllocationReport {
     readonly committedMicros: number;
     readonly unreconciledMicros: number;
     readonly providerFinalMicros: number;
+    /** Extrapolates recorded costs only, not caps/commitments or unrecorded
+     * provider usage. Absent until a server-derived census is supplied. */
+    readonly forecast?: HostedUsageForecast & {
+      readonly scope: 'recorded-allocation-costs';
+      readonly evidenceRef: string;
+    };
   }>>;
   readonly outcomes: readonly HostedOutcomeCostSummary[];
+}
+
+export interface HostedAllocationReportInput {
+  readonly organization: HostedAllocationOrganization;
+  readonly month: string;
+  readonly forecast?: { readonly asOfMs: number; readonly source: HostedUsageSourceCensus };
 }
 
 export interface HostedAllocationAccountingRow {
@@ -555,7 +569,7 @@ async function readOutcomeRecords(sql: Sql, o: HostedAllocationOrganization, ids
 }
 
 /** A consistent per-month position, read under the organization fence. */
-export async function readHostedAllocationReport(sql: Sql, input: { organization: HostedAllocationOrganization; month: string }):
+export async function readHostedAllocationReport(sql: Sql, input: HostedAllocationReportInput):
     Promise<HostedAllocationReport> {
   const o = organization(input.organization);
   if (!MONTH.test(input.month)) throw new Error('invalid hosted allocation month');
@@ -575,10 +589,24 @@ export async function readHostedAllocationReport(sql: Sql, input: { organization
         unreconciledMicros: v.unreconciled, providerFinalMicros: v.providerFinal,
         availableMicros: Math.max(0, n.capMicros - v.committed), openHolds: v.open };
     });
+    let forecast: HostedAllocationReport['byCostClass'][HostedCostClass]['forecast'];
+    if (input.forecast) {
+      const { asOfMs, source } = input.forecast;
+      const gaps = new Set<string>();
+      for (const h of classHolds) {
+        if (h.observedAtMs > source.observedAtMs || h.observedAtMs > asOfMs) gaps.add('receipt-newer-than-census');
+        if (h.costMicros === null) gaps.add('unpriced-usage');
+        if (!h.providerFinal) gaps.add('unreconciled-provider-cost');
+      }
+      forecast = { ...projectHostedMonthlyCost({ month: input.month, asOfMs, source, gaps,
+        basisMicrosExact: addMicrosDecimals(...classHolds.map(h => String(h.costMicros ?? 0))) }),
+        scope: 'recorded-allocation-costs', evidenceRef: source.evidenceRef };
+    }
     byCostClass[costClass] = { allocations,
       committedMicros: classHolds.reduce((total, h) => add(total, committedOf(h)), 0),
       unreconciledMicros: classHolds.reduce((total, h) => add(total, unreconciledOf(h)), 0),
-      providerFinalMicros: classHolds.reduce((total, h) => add(total, h.providerFinal ? h.costMicros ?? 0 : 0), 0) };
+      providerFinalMicros: classHolds.reduce((total, h) => add(total, h.providerFinal ? h.costMicros ?? 0 : 0), 0),
+      ...(forecast ? { forecast } : {}) };
   }
   const ids = [...all.keys()];
   const records = await readOutcomeRecords(sql, o, ids);
@@ -658,7 +686,7 @@ export class PostgresHostedAllocationStore {
   reserve(input: HostedAllocationHoldRequest) { return this.run(sql => reserveHostedAllocation(sql, input)); }
   settle(input: HostedAllocationSettlement) { return this.run(sql => settleHostedAllocation(sql, input)); }
   recordOutcome(input: HostedOutcomeRecordRequest) { return this.run(sql => recordHostedOutcome(sql, input)); }
-  report(input: { organization: HostedAllocationOrganization; month: string }) {
+  report(input: HostedAllocationReportInput) {
     return this.run(sql => readHostedAllocationReport(sql, input));
   }
   accountingExport(input: { organization: HostedAllocationOrganization; month: string }) {

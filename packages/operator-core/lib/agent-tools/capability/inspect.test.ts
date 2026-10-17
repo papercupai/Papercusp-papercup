@@ -283,6 +283,20 @@ describe('resolveNpmWorkspaceAlias — EI-21200682380693689', () => {
     });
   });
 
+  it('test with a package + e2e path → uses the repository test router', () => {
+    expect(
+      resolveInspectCommand({
+        check: 'test',
+        package: 'packages/operator-core',
+        path: 'lib/workspace-host/personal-ssh-connection.e2e.test.ts',
+      }, BASE),
+    ).toEqual({
+      ok: true,
+      command: 'npm run test:file -- packages/operator-core/lib/workspace-host/personal-ssh-connection.e2e.test.ts',
+      cwd: BASE,
+    });
+  });
+
   it('test with a package-declared exact node:test script → uses that script', () => {
     expect(
       resolveInspectCommand({ check: 'test', package: 'node-tests', path: 'test/foo.test.js' }, INSPECT_STATE),
@@ -401,6 +415,7 @@ describe('resolveNpmWorkspaceAlias — EI-21200682380693689', () => {
     expect(shape.onlyPaths.description).toMatch(/For typecheck, discover the repository baseline gate/);
     expect(shape.path.description).toMatch(/one test file\/dir/);
     expect(shape.path.description).toMatch(/when omitted, it is repo-relative/);
+    expect(shape.path.description).toMatch(/\.e2e\.test\.\*/);
     expect(shape.path.description).toMatch(/multiple exact files, use `onlyPaths` instead/);
     expect(shape.runInBackground.description).toMatch(/Compatibility alias for run_in_background/);
   });

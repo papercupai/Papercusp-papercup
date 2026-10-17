@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
 import {
   admissionIdentity,
@@ -88,6 +88,19 @@ const request = {
 };
 
 describe('hosted workspace admission', () => {
+  it('uses durable pool admission and retries it after a lost enqueue without rewriting the binding', async () => {
+    const admitAndStart = vi.fn<NonNullable<HostedWorkspaceAdmissionDependencies['admitAndStart']>>()
+      .mockRejectedValueOnce(new Error('executor unavailable')).mockResolvedValue(undefined);
+    const h = harness({ admitAndStart });
+    await expect(h.port.ensureProvisioned(request)).rejects.toThrow('executor unavailable');
+    const writes = h.calls.filter(value => value === 'upsertHost' || value === 'bindWorkspace').length;
+    await h.port.ensureProvisioned(request);
+    expect(h.provisioned).toHaveLength(0);
+    expect(admitAndStart).toHaveBeenCalledTimes(2);
+    expect(admitAndStart.mock.calls[1]).toEqual(admitAndStart.mock.calls[0]);
+    expect(h.calls.filter(value => value === 'upsertHost' || value === 'bindWorkspace')).toHaveLength(writes);
+  });
+
   it('admits a first workspace and returns a stable identity pair', async () => {
     const h = harness();
     const result = await h.port.ensureProvisioned(request);

@@ -4,7 +4,7 @@ import './boot-integrity-first';
 import './boot-flag-store';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { startSidecarParentDeathWatch } from '@papercusp/operator-core/lib/process-supervision/parent-death-watch';
-import { createLspDaemonShutdown } from '../lib/lsp-daemon-shutdown';
+import { createLspDaemonShutdown } from '../lib/lsp-daemon-shutdown.mts';
 
 if (process.env.PAPERCUSP_LSP_DAEMON_MODE === '1' || isCliEntry(import.meta.url)) {
   startSidecarParentDeathWatch();

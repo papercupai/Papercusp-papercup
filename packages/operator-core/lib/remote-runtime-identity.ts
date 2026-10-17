@@ -20,6 +20,9 @@
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { measureRuntimeVintageEnvironment, type RuntimeVintageRow } from './runtime-vintage';
 import { getPosthogConfigWithSource } from './posthog-config';
@@ -110,7 +113,73 @@ const posthogProject: RemoteRuntimeProvider = {
   },
 };
 
-const PROVIDERS: readonly RemoteRuntimeProvider[] = [gcpCloudSql, posthogProject];
+// Cloudflare Pages (WI-6554700010015755): account ids are 32 lowercase hex; project names are
+// 1-58 chars of [a-z0-9-] with no leading or trailing dash. Anchored, so a unit cannot widen the
+// request path.
+const CLOUDFLARE_PAGES_UNIT = /^cloudflare-pages:([0-9a-f]{32})\/([a-z0-9](?:[a-z0-9-]{0,56}[a-z0-9])?)$/;
+const CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
+
+/** Server-side Pages API token: the operator env first, then the host token file Pages deploys use. */
+async function cloudflarePagesToken(): Promise<string | null> {
+  const fromEnv = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  if (fromEnv) return fromEnv;
+  try {
+    return (await readFile(join(homedir(), '.cloudflare-pages-token'), 'utf8')).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+const record = (value: unknown): Record<string, unknown> | null =>
+  (value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null);
+
+const cloudflarePages: RemoteRuntimeProvider = {
+  prefix: 'cloudflare-pages:',
+  describeArgv(unit) {
+    const match = CLOUDFLARE_PAGES_UNIT.exec(unit);
+    return match ? ['cloudflare-pages', match[1]!, match[2]!] : null;
+  },
+  async describe(argv) {
+    const [, account, project] = argv;
+    if (!account || !project) return null;
+    const token = await cloudflarePagesToken();
+    if (!token) return null;
+    try {
+      const res = await fetch(`${CLOUDFLARE_API}/accounts/${account}/pages/projects/${project}`, {
+        headers: { authorization: `Bearer ${token}` }, redirect: 'error', signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) return null;
+      const body = record(await res.json());
+      const result = body?.success === true ? record(body.result) : null;
+      const deployment = record(result?.canonical_deployment);
+      if (!result || !deployment) return null;
+      const stage = record(deployment.latest_stage);
+      const metadata = record(record(deployment.deployment_trigger)?.metadata);
+      // Only what identifies the serving production deployment; the token, commit messages and
+      // per-request timestamps never enter the identity document.
+      return JSON.stringify({ id: result.id ?? null, name: result.name ?? null, created_on: result.created_on ?? null,
+        deployment: { id: deployment.id ?? null, created_on: deployment.created_on ?? null,
+          environment: deployment.environment ?? null, commit_hash: metadata?.commit_hash ?? null,
+          stage: stage?.name ?? null, status: stage?.status ?? null } });
+    } catch {
+      return null;
+    }
+  },
+  identity(unit, doc) {
+    const match = CLOUDFLARE_PAGES_UNIT.exec(unit);
+    const deployment = record(doc.deployment);
+    const projectId = str(doc.id), createdOn = str(doc.created_on);
+    const deploymentId = str(deployment?.id), deployedOn = str(deployment?.created_on);
+    if (!match || doc.name !== match[2] || !projectId || !createdOn || !deploymentId || !deployedOn ||
+      deployment?.environment !== 'production' || deployment.stage !== 'deploy' || deployment.status !== 'success') {
+      return null;
+    }
+    // A new production deployment (or a recreated project) is a different runtime: bound live
+    // proof against the old one goes stale.
+    return [projectId, createdOn, deploymentId, deployedOn, str(deployment.commit_hash)];
+  },
+};
+
+const PROVIDERS: readonly RemoteRuntimeProvider[] = [gcpCloudSql, posthogProject, cloudflarePages];
 
 function providerFor(unit: string): RemoteRuntimeProvider | undefined {
   return PROVIDERS.find((provider) => unit.startsWith(provider.prefix));

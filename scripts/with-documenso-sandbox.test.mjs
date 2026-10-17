@@ -3,10 +3,106 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, startSandboxContainer, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, startSandboxReaper, cleanupSandboxResources } from './with-documenso-sandbox.mjs';
+import { parseSandboxArgs, loopbackPort, sandboxEnvironment, runSandbox, dockerAllocation, dockerAllocationScope, startDockerAllocationOwner, startSandboxContainer, prepareSandboxImages, waitForSandboxPostgres, registerSandboxReaper, startSandboxReaper, cleanupSandboxResources, waitForSandboxChild, sandboxProviderFailureSignals } from './with-documenso-sandbox.mjs';
+
+const failureRuntime = { container: 'owned-app', network: 'owned', appUrl: 'http://127.0.0.1:32123', mailUrl: 'http://127.0.0.1:32124' };
+
+test('child failure preserves provider state and reachability before returning its original exit code', async () => {
+  const calls = [], reports = [], secret = randomUUID();
+  const child = spawn(process.execPath, ['-e', 'process.exit(23)'], { stdio: 'ignore' });
+  const code = await waitForSandboxChild(child, { runtime: failureRuntime,
+    run: args => {
+      calls.push(args);
+      return { status: 0, stdout: JSON.stringify({ Status: 'running', ExitCode: 0, OOMKilled: false, Error: secret }) };
+    },
+    probe: async (url, options) => {
+      assert.equal(options.redirect, 'manual'); assert.ok(options.signal);
+      assert.ok([failureRuntime.appUrl + '/signup', failureRuntime.mailUrl + '/email'].includes(url));
+      return { status: 200, body: { cancel: async () => { calls.push('body-cancelled'); } } };
+    },
+    report: async value => { await new Promise(done => setImmediate(done)); reports.push(value); },
+  });
+  assert.equal(code, 23);
+  assert.equal(reports.length, 1, 'the caller may clean up as soon as this returns');
+  assert.deepEqual(reports[0].endpoints, [{ name: 'provider', status: 200 }, { name: 'mail', status: 200 }]);
+  assert.deepEqual(reports[0].containers.map(row => row.name), ['owned-app', 'owned-pg', 'owned-mail']);
+  assert.equal(calls.filter(Array.isArray).every(args => args[0] === 'inspect'), true, 'never collect post-signup application logs');
+  assert.equal(JSON.stringify(reports).includes(secret), false);
+  assert.equal(calls.filter(value => value === 'body-cancelled').length, 2);
+});
+
+test('child failure distinguishes a stopped provider and refused connection without exposing error text', async () => {
+  const reports = [], secret = randomUUID();
+  const child = spawn(process.execPath, ['-e', 'process.exit(7)'], { stdio: 'ignore' });
+  assert.equal(await waitForSandboxChild(child, { runtime: failureRuntime,
+    run: () => ({ status: 0, stdout: JSON.stringify({ Status: 'exited', ExitCode: 9, OOMKilled: true }) }),
+    probe: async () => { throw new Error(secret, { cause: { code: 'ECONNREFUSED' } }); },
+    report: value => reports.push(value),
+  }), 7);
+  assert.equal(reports[0].containers.every(row => row.status === 'exited' && row.exitCode === 9 && row.oomKilled), true);
+  assert.equal(reports[0].endpoints.every(row => row.failure === 'ECONNREFUSED' && row.status === null), true);
+  assert.equal(JSON.stringify(reports).includes(secret), false);
+});
+
+test('successful child does not inspect providers or issue extra requests', async () => {
+  const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+  assert.equal(await waitForSandboxChild(child, { runtime: failureRuntime,
+    run: () => assert.fail('success needs no failure diagnosis'),
+    probe: () => assert.fail('success needs no failure probe'),
+    report: () => assert.fail('success needs no failure report'),
+  }), 0);
+});
+
+test('exited provider logs produce only fixed diagnostic signals before cleanup', async () => {
+  const reports = [], calls = [], credential = randomUUID();
+  const child = spawn(process.execPath, ['-e', 'process.exit(1)'], { stdio: 'ignore' });
+  assert.equal(await waitForSandboxChild(child, { runtime: failureRuntime,
+    run: args => {
+      calls.push(args);
+      return { status: 0, stdout: args[0] === 'logs'
+        ? 'PrismaClientInitializationError P1001 credential=' + credential
+        : JSON.stringify({ Status: args.at(-1) === failureRuntime.container ? 'exited' : 'running', ExitCode: 1 }) };
+    },
+    probe: async () => ({ status: 200 }), report: value => reports.push(value),
+  }), 1);
+  assert.deepEqual(calls.filter(args => args[0] === 'logs'), [['logs', '--tail', '200', failureRuntime.container]]);
+  assert.deepEqual(reports[0].providerFailure, { inspection: 'classified', signals: ['database-unreachable'] });
+  assert.equal(JSON.stringify(reports).includes(credential), false);
+  assert.equal(JSON.stringify(reports).includes('PrismaClientInitializationError'), false);
+});
+
+test('provider diagnostic log failure preserves the original child outcome without leaking exception text', async () => {
+  const reports = [], credential = randomUUID();
+  const child = spawn(process.execPath, ['-e', 'process.exit(19)'], { stdio: 'ignore' });
+  assert.equal(await waitForSandboxChild(child, { runtime: failureRuntime,
+    run: args => {
+      if (args[0] === 'logs') throw new Error(credential);
+      return { status: 0, stdout: JSON.stringify({ Status: 'exited', ExitCode: 1 }) };
+    },
+    probe: async () => ({ status: 200 }), report: value => reports.push(value),
+  }), 19);
+  assert.deepEqual(reports[0].providerFailure, { inspection: 'unavailable' });
+  assert.equal(JSON.stringify(reports).includes(credential), false);
+});
+
+test('provider failure classifier leaves unknown errors unknown and distinguishes startup failure classes', () => {
+  assert.deepEqual(sandboxProviderFailureSignals('private token=' + randomUUID()), []);
+  for (const [text, expected] of [
+    ['Assertion pthread_create failed', 'node-thread-creation'],
+    ['FATAL ERROR: Reached heap limit Allocation failed', 'javascript-heap-exhaustion'],
+    ['P1000 Authentication failed', 'database-authentication'],
+    ['P2024 connection pool timeout', 'database-pool-timeout'],
+    ['P2021 missing table', 'database-schema-missing'],
+    ['Invalid environment variables', 'environment-invalid'],
+    ['listen EADDRINUSE', 'address-in-use'],
+    ['ERR_MODULE_NOT_FOUND', 'module-missing'],
+    ['PrismaClientRustPanicError', 'prisma-engine-panic'],
+    ['UnhandledPromiseRejection', 'unhandled-exception'],
+  ]) assert.deepEqual(sandboxProviderFailureSignals(text), [expected]);
+});
 
 async function withReaperServer(handler, run) {
   const sockets = new Set();
@@ -218,15 +314,185 @@ test('provider config routes mail and data into the isolated fixture', () => {
   assert.throws(() => sandboxEnvironment({ ...input, appUrl: 'https://example.com' }), /loopback/);
 });
 
-test('slow allocation is joined before cleanup instead of being killed at the warning threshold', async () => {
-  const observations = [];
-  const outcome = await dockerAllocation(['create', '--name', 'fixture'], {}, {
-    pendingAfterMs: 10,
-    onPending: () => observations.push('still pending'),
-    spawnChild: () => spawn(process.execPath, ['-e', 'setTimeout(()=>process.stdout.write("allocated-container"),80)']),
+for (const operation of ['create', 'start', 'stop', 'rm']) {
+  test(`slow Docker ${operation} is joined before cleanup instead of being killed at the warning threshold`, async () => {
+    const observations = [];
+    const outcome = await dockerAllocation([operation, 'fixture'], {}, {
+      pendingAfterMs: 10,
+      onPending: () => observations.push('still pending'),
+      spawnChild: () => spawn(process.execPath, ['-e', 'setTimeout(()=>process.stdout.write("daemon-outcome"),80)']),
+    });
+    observations.push('safe to continue ' + outcome);
+    assert.deepEqual(observations, ['still pending', 'safe to continue daemon-outcome']);
   });
-  observations.push('safe to clean ' + outcome);
-  assert.deepEqual(observations, ['still pending', 'safe to clean allocated-container']);
+}
+
+test('hook teardown joins late create before inspecting and refuses the timed-out setup continuation', async () => {
+  let settle, created = false, removed = false;
+  const calls = [];
+  const scope = dockerAllocationScope({ allocate: async args => {
+    calls.push(args[0]);
+    await new Promise(resolve => { settle = resolve; });
+    created = true;
+    return 'owned-container';
+  } });
+  const setup = scope.run(['create', 'owned-container']).then(() => scope.run(['start', 'owned-container']));
+  const setupFailed = assert.rejects(setup, /scope is closing/);
+  await new Promise(resolve => setImmediate(resolve));
+  const cleanup = scope.close(() => {
+    assert.equal(created, true, 'inspection must follow the actual create outcome');
+    removed = true;
+  });
+  assert.equal(scope.close(() => assert.fail('duplicate cleanup')), cleanup);
+  assert.equal(removed, false);
+  settle();
+  await setupFailed;
+  await cleanup;
+  assert.equal(removed, true);
+  assert.deepEqual(calls, ['create']);
+});
+
+test('failed pending allocation still permits cleanup and preserves its original failure', async () => {
+  let reject, cleaned = false;
+  const scope = dockerAllocationScope({ allocate: () => new Promise((_, fail) => { reject = fail; }) });
+  const outcome = scope.run(['create']);
+  const failed = assert.rejects(outcome, /daemon failure/);
+  await new Promise(resolve => setImmediate(resolve));
+  const cleanup = scope.close(() => { cleaned = true; });
+  reject(new Error('daemon failure'));
+  await failed;
+  await cleanup;
+  assert.equal(cleaned, true);
+});
+
+async function fixtureCondition(check, description) {
+  const deadline = Date.now() + 15_000;
+  while (!check()) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for ' + description);
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+}
+
+function allocationOwnerFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'pc-personal-ssh-'));
+  const control = mkdtempSync(join(tmpdir(), 'pc-allocation-control-'));
+  const name = 'pc-personal-ssh-' + randomUUID();
+  mkdirSync(join(control, 'bin'));
+  // A real CLI subprocess with a deliberately delayed mutation. Its state is
+  // outside the fixture mount, so removal ordering is independently observable.
+  writeFileSync(join(control, 'bin', 'docker'), `#!${process.execPath}
+import { existsSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+const control = ${JSON.stringify(control)}, root = ${JSON.stringify(root)}, name = ${JSON.stringify(name)};
+const operation = process.argv[2], container = control + '/container';
+if (operation === 'create') {
+  writeFileSync(control + '/started', 'started');
+  const timer = setInterval(() => {
+    if (!existsSync(control + '/release')) return;
+    clearInterval(timer);
+    writeFileSync(control + '/created', JSON.stringify({ keysRetained: existsSync(root + '/private-key') }));
+    writeFileSync(container, name);
+    process.stdout.write('abcdef123456');
+  }, 10);
+} else if (operation === 'ps') {
+  if (existsSync(container)) process.stdout.write('abcdef123456 ' + readFileSync(container, 'utf8'));
+} else if (operation === 'rm') {
+  if (process.argv.at(-1) !== 'abcdef123456') process.exit(9);
+  rmSync(container);
+  writeFileSync(control + '/removed', 'removed');
+}
+`, { mode: 0o700 });
+  writeFileSync(join(root, 'private-key'), 'disposable test fixture');
+  return { root, control, name, env: { ...process.env, PATH: join(control, 'bin') + ':' + process.env.PATH } };
+}
+
+test('external allocation owner survives killed worker cgroup and removes a late create before fixture keys', { timeout: 30_000 }, async () => {
+  const fixture = allocationOwnerFixture();
+  const { root, control, name, env } = fixture;
+  const workerUnit = 'papercusp-test-allocation-worker-' + randomUUID() + '.scope';
+  const worker = spawn('systemd-run', ['--user', '--scope', '--quiet', '--collect', '--unit=' + workerUnit,
+    '--property=RuntimeMaxSec=30', '--', process.execPath, '--import', 'tsx', '--input-type=module', '-e', `
+      import { startDockerAllocationOwner } from ${JSON.stringify(new URL('./with-documenso-sandbox.mjs', import.meta.url).href)};
+      const owner = await startDockerAllocationOwner({ name: ${JSON.stringify(name)}, root: ${JSON.stringify(root)}, onProgress() {} });
+      await owner.run(['create', ${JSON.stringify(name)}]);
+      await owner.close();
+    `], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  worker.stdout.on('data', data => { output += data; });
+  worker.stderr.on('data', data => { output += data; });
+  const exited = new Promise(resolve => worker.once('exit', (code, signal) => resolve({ code, signal })));
+  try {
+    await fixtureCondition(() => existsSync(join(control, 'started')), 'pending create; worker output=' + output);
+    const ownerUnit = 'papercusp-fixture-' + name + '.scope';
+    const cgroup = unit => spawnSync('systemctl', ['--user', 'show', '--property=ControlGroup', '--value', unit], { encoding: 'utf8' }).stdout.trim();
+    assert.ok(cgroup(workerUnit));
+    assert.ok(cgroup(ownerUnit));
+    assert.notEqual(cgroup(workerUnit), cgroup(ownerUnit));
+    const killed = spawnSync('systemctl', ['--user', 'kill', '--signal=SIGKILL', workerUnit], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(killed.status, 0, killed.stderr);
+    const result = await exited;
+    assert.notEqual(result.code, 0, output);
+    assert.equal(existsSync(join(control, 'removed')), false, 'must join the pending create');
+    assert.equal(existsSync(join(root, 'private-key')), true, 'pending daemon still owns the mount');
+    writeFileSync(join(control, 'release'), 'settle after the worker died');
+    await fixtureCondition(() => existsSync(join(control, 'removed')) && !existsSync(root), 'verified late-create cleanup');
+    assert.deepEqual(JSON.parse(readFileSync(join(control, 'created'), 'utf8')), { keysRetained: true });
+    assert.equal(existsSync(join(control, 'container')), false);
+  } finally {
+    writeFileSync(join(control, 'release'), 'release pending CLI even on assertion failure');
+    spawnSync('systemctl', ['--user', 'stop', workerUnit], { timeout: 5000 });
+    await fixtureCondition(() => !existsSync(root), 'owner cleanup after test finalization');
+    rmSync(control, { recursive: true, force: true });
+  }
+});
+
+test('external allocation owner closes admission, joins setup and verifies cleanup on normal teardown', { timeout: 30_000 }, async () => {
+  const { root, control, name, env } = allocationOwnerFixture();
+  const previousPath = process.env.PATH;
+  let owner;
+  try {
+    process.env.PATH = env.PATH;
+    owner = await startDockerAllocationOwner({ name, root, onProgress() {} });
+    const creating = owner.run(['create', name]);
+    await fixtureCondition(() => existsSync(join(control, 'started')), 'normal pending create');
+    const closing = owner.close();
+    assert.equal(owner.close(), closing);
+    await assert.rejects(owner.run(['start', name]), /scope is closing/);
+    writeFileSync(join(control, 'release'), 'settle');
+    assert.equal(await creating, 'abcdef123456');
+    assert.equal(await closing, 'cleanup-verified');
+    assert.equal(existsSync(root), false);
+    assert.equal(existsSync(join(control, 'container')), false);
+  } finally {
+    process.env.PATH = previousPath;
+    writeFileSync(join(control, 'release'), 'release pending CLI');
+    if (owner) await owner.close();
+    rmSync(root, { recursive: true, force: true });
+    rmSync(control, { recursive: true, force: true });
+  }
+});
+
+test('external allocation owner refuses another owner and retains private state for accountable cleanup', { timeout: 30_000 }, async () => {
+  const { root, control, name, env } = allocationOwnerFixture();
+  const previousPath = process.env.PATH;
+  try {
+    process.env.PATH = env.PATH;
+    const owner = await startDockerAllocationOwner({ name, root, onProgress() {} });
+    writeFileSync(join(control, 'container'), 'a-different-fixture-owner');
+    await assert.rejects(owner.close(), /cleanup ownership mismatch/);
+    assert.equal(existsSync(join(control, 'removed')), false);
+    assert.equal(existsSync(join(root, 'private-key')), true);
+    const receipts = readFileSync(join(root, 'owner.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(receipts.at(-1).status, 'cleanup-failed');
+    await assert.rejects(owner.run(['start', name]), /scope is closing/);
+  } finally {
+    process.env.PATH = previousPath;
+    rmSync(root, { recursive: true, force: true });
+    rmSync(control, { recursive: true, force: true });
+  }
+});
+
+test('external allocation owner rejects an invalid identity before allocating a socket or scope', async () => {
+  await assert.rejects(startDockerAllocationOwner({ name: 'another-persons-container', root: tmpdir() }), /Invalid Docker fixture ownership/);
 });
 
 test('allocation errors redact injected credentials', async () => {
@@ -243,8 +509,9 @@ test('allocation evidence identifies a pending request and its failed outcome wi
   await assert.rejects(dockerAllocation(['start', owner, secret], { PASSWORD: secret }, {
     pendingAfterMs: 10, onPending() {}, onProgress: receipt => receipts.push(receipt),
     spawnChild: () => spawn(process.execPath, ['-e', 'setTimeout(()=>{process.stderr.write("private output");process.exitCode=7},80)']),
+    readEvents: () => ({ status: 1, stdout: '' }),
   }), /start 7/);
-  assert.deepEqual(receipts.map(row => row.status), ['started', 'pending', 'failed']);
+  assert.deepEqual(receipts.map(row => row.status), ['started', 'pending', 'failed', 'events-unavailable']);
   assert.ok(receipts.every(row => row.operation === 'start' && row.resource === owner &&
     Number.isFinite(Date.parse(row.at)) && row.elapsedMs >= 0));
   assert.ok(receipts.at(-1).elapsedMs >= receipts[1].elapsedMs);
@@ -287,6 +554,25 @@ test('unavailable daemon history preserves the failed allocation outcome and rec
   }), /run 7/);
   assert.deepEqual(receipts.map(row => row.status), ['started', 'failed', 'events-unavailable']);
   assert.equal(JSON.stringify(receipts).includes('private daemon response'), false);
+});
+
+test('personal SSH allocation receipts retain exact resource and daemon identity without arguments', async () => {
+  const owner = 'pc-personal-ssh-' + randomUUID(), receipts = [], secret = randomUUID();
+  for (const operation of ['create', 'start', 'stop', 'rm']) {
+    await dockerAllocation([operation, '--name', owner, secret], {}, {
+      onProgress: receipt => receipts.push(receipt),
+      spawnChild: () => spawn(process.execPath, ['-e', 'process.stdout.write("owned-id")']),
+      readEvents: args => {
+        assert.equal(args[args.indexOf('--filter') + 1], 'container=' + owner);
+        return { status: 0, stdout: JSON.stringify({ Action: operation === 'rm' ? 'destroy' : operation === 'stop' ? 'die' : operation,
+          Actor: { Attributes: { name: owner, credential: secret } }, time: Math.floor(Date.now() / 1000) }) };
+      },
+    });
+  }
+  assert.ok(receipts.every(receipt => receipt.resource === owner));
+  assert.deepEqual(receipts.filter(row => row.status === 'daemon-event').map(row => [row.operation, row.daemonAction]),
+    [['create', 'create'], ['start', 'start'], ['stop', 'die'], ['rm', 'destroy']]);
+  assert.equal(JSON.stringify(receipts).includes(secret), false);
 });
 
 test('container start remains joined past its warning and cleanup follows the actual daemon outcome', { timeout: 5000 }, async () => {

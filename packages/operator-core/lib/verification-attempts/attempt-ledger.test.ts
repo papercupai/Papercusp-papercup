@@ -124,6 +124,36 @@ describe('recordAttemptOnClose', () => {
     expect(writtenStamp(calls[0]!)).toEqual(stamp);
   });
 
+  it('does not fingerprint an unobserved exit from error-shaped log text', async () => {
+    const { sql } = fakeSql();
+    let tailReads = 0;
+    const stamp = await recordAttemptOnClose(closed({ exitCode: null }), {
+      sql,
+      now: () => NOW,
+      readTail: async () => {
+        tailReads++;
+        return 'Permission denied\nJOB END exit=0\n';
+      },
+    });
+    expect(tailReads).toBe(0);
+    expect(stamp).toMatchObject({ outcome: 'unknown', fingerprint: null, label: null, source: null });
+  });
+
+  it('does not fingerprint a successful exit from error-shaped log text', async () => {
+    const { sql } = fakeSql();
+    let tailReads = 0;
+    const stamp = await recordAttemptOnClose(closed({ exitCode: 0 }), {
+      sql,
+      now: () => NOW,
+      readTail: async () => {
+        tailReads++;
+        return 'Permission denied\nJOB END exit=0\n';
+      },
+    });
+    expect(tailReads).toBe(0);
+    expect(stamp).toMatchObject({ outcome: 'pass', fingerprint: null, label: null, source: null });
+  });
+
   it('fingerprints a failed attempt from its log tail, and two runs of the same failure match', async () => {
     const run = async (logDir: string) => {
       const { sql, calls } = fakeSql();

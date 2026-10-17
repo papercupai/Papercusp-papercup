@@ -42,6 +42,156 @@ import type { FrozenRepairProgress } from './freeze-disposition';
 
 const HOUR_MS = 60 * 60 * 1000;
 
+/** R19's sealed join, prepared from original events, admission audits and run logs.
+ * These fields are NOT a provenance certificate. Before grading, independently verify
+ * every source reference, its immutable bytes, and the complete source census. In
+ * particular, a phase display or a caller-authored join cannot prove execution.
+ */
+export interface GreenMainPreflightJoin {
+  workspaceId: string;
+  installSlug: string;
+  windowStartMs: number;
+  windowEndMs: number;
+  population: {
+    status: 'complete' | 'capped' | 'unavailable' | 'invalid';
+    total: number | null;
+    /** Hash of the retained original event/audit/log population, not current gate state. */
+    sha256: string;
+  };
+  rounds: Array<{
+    candidate: string;
+    openedAtMs: number;
+    round: number;
+    previousHead: string;
+    previousVerdictAtMs: number;
+    head: string;
+    verdictAtMs: number;
+    snapshotId: string;
+    checkpoint: {
+      eventId: string;
+      workspaceId: string;
+      installSlug: string;
+      head: string;
+      runId: string;
+      verdictAtMs: number;
+      logRef: string;
+      logSha256: string;
+      /** Original execution/log identity; never a display-prefix expansion. */
+      logHead: string;
+      logRunId: string;
+      /** The original log must establish passed/failed execution, not merely a stamp. */
+      preflightStatus: 'passed' | 'failed' | 'skipped' | 'unknown';
+      phases: Array<{ phase: string; ms: number }>;
+    };
+    admissions: Array<{
+      fromRepairHead: string;
+      toRepairHead: string;
+      atMs: number;
+      /** Reconciled-from-ref records are not original admissions. */
+      provenance?: string;
+    }>;
+    /** Exactly one persisted original audit per admission; unmatched audits stay here. */
+    audits: Array<{
+      id: string;
+      atMs: number;
+      candidate: string;
+      from: string;
+      to: string;
+      persisted: boolean;
+      paths: string[];
+      unchanged: string[];
+    }>;
+  }>;
+}
+
+/** Verify the already-sealed R19 join without reading or operating the live gate.
+ * Missing/inconsistent evidence is unknown; only a completely qualified pair can
+ * establish the duration outcome. This does not establish P035's implementation,
+ * source authenticity, or any improvement over an earlier run.
+ */
+export function evaluateGreenMainPreflightJoin(input: GreenMainPreflightJoin, observedAtMs = Date.now()) {
+  const fullHead = (value: string) => typeof value === 'string' && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(value);
+  const digest = (value: string) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+  const text = (value: string) => typeof value === 'string' && value.trim().length > 0;
+  const clock = (value: number) => Number.isSafeInteger(value) && value >= 0;
+  const path = (value: string) => text(value) && value === value.trim() &&
+    !value.includes('\\') && !value.includes('\0') && !value.startsWith('/') &&
+    !/^[a-z]:/i.test(value) && value.split('/').every(part => part !== '' && part !== '.' && part !== '..');
+  const reasons: string[] = [];
+  if (!text(input.workspaceId) || !text(input.installSlug) || !clock(input.windowStartMs) ||
+      !clock(input.windowEndMs) || input.windowStartMs >= input.windowEndMs ||
+      !clock(observedAtMs) || input.windowEndMs > observedAtMs) reasons.push('invalid-scope-or-window');
+  if (input.population.status !== 'complete' || input.population.total !== input.rounds.length ||
+      input.rounds.length !== 2 || !digest(input.population.sha256)) reasons.push('incomplete-two-round-population');
+  const eventIds = new Set<string>(), runIds = new Set<string>(), auditIds = new Set<string>();
+  const measured: Array<{ round: number; head: string; admittedPaths: string[]; preflightMs: number }> = [];
+  for (const round of input.rounds) {
+    const checkpoint = round.checkpoint;
+    if (!fullHead(round.candidate) || !fullHead(round.previousHead) || !fullHead(round.head) ||
+        !clock(round.openedAtMs) || !clock(round.previousVerdictAtMs) || !clock(round.verdictAtMs) ||
+        round.openedAtMs > round.previousVerdictAtMs || round.previousVerdictAtMs >= round.verdictAtMs ||
+        round.verdictAtMs < input.windowStartMs || round.verdictAtMs > input.windowEndMs ||
+        !Number.isSafeInteger(round.round) || round.round < 2 || !text(round.snapshotId)) {
+      reasons.push('invalid-original-round');
+    }
+    if (!text(checkpoint.eventId) || eventIds.has(checkpoint.eventId) || !text(checkpoint.runId) ||
+        runIds.has(checkpoint.runId) || checkpoint.workspaceId !== input.workspaceId ||
+        checkpoint.installSlug !== input.installSlug || checkpoint.head !== round.head ||
+        checkpoint.verdictAtMs !== round.verdictAtMs || checkpoint.logHead !== round.head ||
+        checkpoint.logRunId !== checkpoint.runId || !text(checkpoint.logRef) || !digest(checkpoint.logSha256)) {
+      reasons.push('checkpoint-log-identity-mismatch');
+    }
+    eventIds.add(checkpoint.eventId);
+    runIds.add(checkpoint.runId);
+    const phases = checkpoint.phases.filter(phase => phase.phase === 'early-typecheck-preflight');
+    if (!['passed', 'failed'].includes(checkpoint.preflightStatus) || phases.length !== 1 ||
+        !clock(phases[0]?.ms as number)) reasons.push('preflight-not-originally-measured');
+    const paths = new Set<string>();
+    const heads = new Set([round.previousHead]);
+    let head = round.previousHead, admittedAtMs = round.previousVerdictAtMs;
+    if (!round.admissions.length || round.audits.length !== round.admissions.length) reasons.push('non-bijective-admission-audits');
+    for (const admission of round.admissions) {
+      if (admission.provenance !== undefined || !clock(admission.atMs) || admission.atMs <= round.previousVerdictAtMs ||
+          admission.atMs < admittedAtMs || admission.atMs > round.verdictAtMs ||
+          admission.fromRepairHead !== head || !fullHead(admission.toRepairHead) || heads.has(admission.toRepairHead)) {
+        reasons.push('broken-original-admission-chain');
+      }
+      const matches = round.audits.filter(audit => audit.candidate === round.candidate &&
+        audit.from === admission.fromRepairHead && audit.to === admission.toRepairHead);
+      if (matches.length !== 1) reasons.push('non-bijective-admission-audits');
+      for (const audit of matches) {
+        if (!text(audit.id) || auditIds.has(audit.id) || !audit.persisted || !clock(audit.atMs) ||
+            audit.atMs < admission.atMs || audit.atMs > round.verdictAtMs ||
+            !audit.paths.length || !audit.paths.every(path) || !audit.unchanged.every(path) ||
+            new Set(audit.paths).size !== audit.paths.length || new Set(audit.unchanged).size !== audit.unchanged.length ||
+            audit.unchanged.some(item => audit.paths.includes(item))) reasons.push('invalid-original-path-audit');
+        auditIds.add(audit.id);
+        for (const item of audit.paths) paths.add(item);
+      }
+      admittedAtMs = admission.atMs;
+      head = admission.toRepairHead;
+      heads.add(head);
+    }
+    if (head !== round.head) reasons.push('admission-chain-does-not-reach-verdict');
+    if (phases.length === 1 && phases[0]!.ms > round.verdictAtMs - admittedAtMs) reasons.push('phase-exceeds-original-round-window');
+    if (paths.size === 0 || paths.size > 20) reasons.push('admitted-path-population-outside-bar');
+    measured.push({ round: round.round, head: round.head, admittedPaths: [...paths].sort(), preflightMs: phases[0]?.ms ?? NaN });
+  }
+  const [before, after] = input.rounds;
+  if (!before || !after || before.candidate !== after.candidate || before.openedAtMs !== after.openedAtMs ||
+      after.round !== before.round + 1 || after.previousHead !== before.head ||
+      after.previousVerdictAtMs !== before.verdictAtMs) reasons.push('not-one-adjacent-repair-pair');
+  const qualified = reasons.length === 0;
+  const withinLimit = qualified && measured.every(round => round.preflightMs <= 600_000);
+  return { verdict: !qualified ? 'unknown' as const : withinLimit ? 'healthy' as const : 'broken' as const,
+    rounds: measured, reasons: [...new Set(reasons)], populationSha256: input.population.sha256,
+    assertions: [
+      { id: 'original-preflight-join-qualified', passed: qualified, evidence: reasons.join('; ') || 'Exact original adjacent pair, complete admission/audit and checkpoint/log identities.' },
+      { id: 'two-small-repair-preflights-at-most-ten-minutes', passed: withinLimit,
+        evidence: qualified ? measured.map(round => `round=${round.round}; paths=${round.admittedPaths.length}; preflight_ms=${round.preflightMs}`).join('; ') : 'unknown: original receipt join is incomplete' },
+    ] };
+}
+
 /**
  * Native R12 receipt preparation: resolve the immutable full-file-set ABBA artifacts,
  * then record the exact manifest/pins/population under the existing native executor.

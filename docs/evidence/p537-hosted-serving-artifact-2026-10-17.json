@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "item": "P-537",
+  "workItem": "WI-6554700010015799",
+  "status": "private-serving-acceptance-passed",
+  "scope": "Private actual hosted serve artifact, genuine WorkOS TEST identity; not production rollout, cloud provisioning, cost qualification or final source-to-serving parity",
+  "artifact": {
+    "path": "/tmp/p537-hosted-serving-20261017/serve.mjs",
+    "sha256": "9a3fa4a5ee4ea3dc69fbe636bd235c7358f3beba1ddc0dac327395c94608c9ba",
+    "metafile": "/tmp/p537-hosted-serving-20261017/serve.mjs.meta.json",
+    "buildLog": "/tmp/p537-hosted-serving-build-20261017.log",
+    "buildExited": 0,
+    "syntaxCheckPassed": true,
+    "completeInputByteBinding": "not measured"
+  },
+  "attempts": [
+    {
+      "log": "/tmp/p537-hosted-serving-test-20261017.log",
+      "result": "failed before credential resolution",
+      "cause": "Source loader refused untracked child fixture; fixture subsequently committed by background sync"
+    },
+    {
+      "log": "/tmp/p537-hosted-serving-test-20261017-run2.log",
+      "result": "failed before identity or private runtime creation",
+      "cause": "tsx dynamic import exposes launcher CommonJS exports under default; fixed by merging default and named exports",
+      "diagnostic": "/tmp/p537-credential-diagnostic.jsonl",
+      "correctedReadOnlyPreflight": "/tmp/p537-credential-diagnostic2.jsonl"
+    },
+    {
+      "log": "/tmp/p537-hosted-serving-test-20261017-run3.log",
+      "evidenceDirectory": "/tmp/pcv/p537-hosted-serving-proof-zEc5x8",
+      "result": "failed at new test's admission error-shape assertion",
+      "cause": "HTTP status was the expected 403; hosted-browser-context.jsonError emits error:string, while the new fixture asserted error.code",
+      "configuration": "Separately verified read-only secret resolution passed in memory; source loader remained enabled, committed fixture acceptance branch executed",
+      "verified": {
+        "hostedBranchListening": true,
+        "jsonHealth": true,
+        "malformedPolicyStartupRefused": true,
+        "missingSession401": true,
+        "localOperatorRoute404": true,
+        "genuineWorkOSTestSession200": true,
+        "organizationMatches": true,
+        "sessionIdMatches": true,
+        "admissionStatus403": true,
+        "hostStopped": true,
+        "privateRuntimeRemoved": true,
+        "privatePostgresRemoved": true,
+        "lifetimeObservationError": null
+      },
+      "userCleanup": "finally awaited fixture cleanup and close without a cleanup AggregateError; no independent provider census",
+      "unmeasured": [
+        "successful admission error-code assertion",
+        "revoked session 401",
+        "provision operation count delta",
+        "final successful test receipt"
+      ]
+    },
+    {
+      "log": "/tmp/p537-hosted-serving-test-20261017-run4.log",
+      "result": "failed before credential resolution, identity creation or private runtime startup",
+      "cause": "The committed-source guard rejects the launcher TypeScript module after tsx rewrites it through CommonJS. A separate guarded import reproduced this exact refusal.",
+      "sourceGuardRetained": true,
+      "repair": "Reuse the existing ESM parseEnvFile from scripts/lib/pg-url.mjs through Object.fromEntries; remove the CommonJS launcher import.",
+      "guardedImportPreflight": {
+        "path": "/tmp/p537-guarded-credential-imports-run5.json",
+        "esmEnvironmentParser": true,
+        "secretResolver": true,
+        "scope": "Both imports pass with the committed-source guard enabled; full credential resolution and the corrected fixture still require their committed-byte preflight."
+      }
+    },
+    {
+      "log": "/tmp/p537-hosted-serving-test-20261017-run5.log",
+      "evidenceDirectory": "/tmp/pcv/p537-hosted-serving-proof-z6RGnT",
+      "result": "passed",
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_TEST_HOSTED_SERVING_ARTIFACT=/tmp/p537-hosted-serving-20261017/serve.mjs npm run test:file -- packages/operator-core/lib/endpoint-route/hosted-serving-artifact.e2e.test.ts",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "runner": {
+        "head": "105c2763aec788a3a8fe1ef95bc1424aed0ca57b",
+        "uncommittedNamedTestPaths": "0/1",
+        "childSubstituted": 0,
+        "startedAt": "2026-10-17T15:59:03.875Z"
+      },
+      "guardedCredentialPreflight": {
+        "path": "/tmp/p537-guarded-credential-preflight-run5.json",
+        "exitCode": 0,
+        "referenceSlots": 4,
+        "workosTestKey": true,
+        "committedSourceGuard": true,
+        "valuesLogged": false
+      },
+      "receipt": {
+        "profile": "hosted-control-plane",
+        "bundleSha256": "9a3fa4a5ee4ea3dc69fbe636bd235c7358f3beba1ddc0dac327395c94608c9ba",
+        "policySha256": "a5059e2b2e5918528a9962be449c3a6943d696453f6ab04c915a8431fb97563c",
+        "invalidPolicyRefused": true,
+        "missingSessionStatus": 401,
+        "authenticatedSession": true,
+        "organizationMatches": true,
+        "closedAdmissionStatus": 403,
+        "closedAdmissionError": "first_workspace_not_enabled",
+        "testUserCleaned": true,
+        "revokedSessionStatus": 401,
+        "provisionOperationsCreated": 0,
+        "hostStopped": true
+      },
+      "privateRuntimeTeardown": {
+        "source": "/tmp/pcv/p537-hosted-serving-proof-z6RGnT/lifecycle-observation.json",
+        "exitCode": 0,
+        "signal": null,
+        "runtimeRemoved": true,
+        "pgDataRemoved": true,
+        "observationError": null,
+        "observedAt": "2026-10-17T16:00:13.306Z"
+      },
+      "prospectiveNamedInputs": {
+        "source": "/tmp/p537-hosted-serving-run5-inputs.json",
+        "files": {
+          "packages/operator-core/test/hosted-serving-artifact.fixture.ts": "79e53d6d1019409af337c702090a164dc9d71ccd9e082f8356f17ce2eaf1b2f7",
+          "packages/operator-core/lib/endpoint-route/hosted-serving-artifact.e2e.test.ts": "7955b8d20b003e4a2965e57030e7a5b665b614eda4b4dd2b18f521394e92e341"
+        },
+        "namedInputsUnchangedAfterRun": true,
+        "artifactUnchangedAfterRun": true,
+        "scope": "Two named test inputs and exact artifact; not complete original bundle input-byte provenance"
+      }
+    }
+  ],
+  "commitBlockerRepair": {
+    "workItem": "EI-26241540058524748",
+    "rootCause": "mirror_copy_unlinked creates unignored .mirror-tree.tmp.* staging files at the caller package root and renames them away while git-sync enumerates source. The recorded git add failure named one such file.",
+    "fix": "Extend .gitignore for this staging name and the existing maintained paused-copy regression; preserve atomic asset replacement.",
+    "baseline": "5 passed, 1 failed because the live staging file appeared in Git's untracked source census",
+    "verification": "6 passed, 0 failed, 0 skipped; authored positive control remains visible, live staging is excluded, final asset bytes and cleanup pass",
+    "runId": "b7daf53a-96f8-4bf2-8f41-f499247d2ea2",
+    "testRunId": 21338935,
+    "committedBytesVerifiedAt": "e8a32eb23ea209dece5622eff0cbcbd7c6aeb5ab",
+    "scope": "Local source and commit verified; no deployed gate or hosted acceptance claim"
+  },
+  "typecheck": {
+    "evidence": "/tmp/p537-hosted-serving-typecheck-final-local.json",
+    "requestedFileErrors": 0,
+    "otherLoadedGraphDiagnostics": 30,
+    "scope": "Both new files after credential fix, before final admission assertion and cleanup receipt edits",
+    "finalEsmParserFollowup": {
+      "engine": "tsc-cli",
+      "requestedFileErrors": 0,
+      "otherLoadedGraphDiagnostics": 30,
+      "scopedVerdictIncomplete": false,
+      "scope": "Final fixture and E2E test only; not a full-project or gate verdict"
+    }
+  },
+  "remaining": [
+    "Verify final source and artifact provenance separately from private runtime behavior",
+    "P544 D075 and D076 qualification and final shipment remain open"
+  ]
+}

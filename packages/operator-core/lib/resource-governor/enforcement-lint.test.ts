@@ -347,6 +347,14 @@ describe('resource governor enforcement lint', () => {
       source.replace("'--pull=missing', '--name', name", "'--pull=always', '--name', name"),
       source.replace('if (containers.length || networkCreated) {', 'if (false) {'),
       source.replace("try { await runPhase('cleanup', cleanup); }", 'try { await ignoreCleanup(); }'),
+      source.replace("  run = args => spawnSync('docker', args, { encoding: 'utf8', timeout: 5000, maxBuffer: 100_000 }),",
+        "  run = args => spawnSync('docker', args, { encoding: 'utf8', timeout: undefined, maxBuffer: 100_000 }),"),
+      source.replace('const exitCode = await waitForSandboxChild(child, { runtime });', 'const exitCode = 0;'),
+      source.replace("[runtime.container, runtime.network + '-pg', runtime.network + '-mail']", '[runtime.container]'),
+      source.replace("if (['exited', 'dead'].includes(containers[0].status))", 'if (true)'),
+      source.replace("run(['logs', '--tail', '200', runtime.container])", "run(['logs', runtime.container])"),
+      source.replace("signals: sandboxProviderFailureSignals((result.stdout || '') + (result.stderr || ''))",
+        "signals: result.stdout"),
       source + "\nspawnSync('unreviewed-worker', []);",
     ]) {
       expect(unsafe).not.toBe(source);

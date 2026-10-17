@@ -50,6 +50,7 @@ const SCOPED_SAFE_CROSSWORKSPACE: ReadonlySet<string> = new Set([
   'sessions:timeline',
   'sessions:digest',
   'pot_git:secrets_exemptions',
+  'pot_git:integration_requests',
 ]);
 
 /** Global flags contain no per-workspace tenant data and govern this clamp. */

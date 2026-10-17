@@ -1,7 +1,7 @@
 import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { CLOUD_TUTORIAL_ID, CLOUD_TUTORIAL_VERSION, sameTutorialScope, type SavedTutorialProgress, type TutorialScope, type TutorialVersion } from './cloud-tutorial-lesson';
-import { PRODUCT_TUTORIAL_VERSION, productTutorialLessonIds } from './product-tutorial-lesson';
+import { PRODUCT_TUTORIAL_VERSION, productTutorialChapterIds, productTutorialLessonIds, type ProductTutorialVideoPosition } from './product-tutorial-lesson';
 export { PRODUCT_TUTORIAL_VERSION } from './product-tutorial-lesson';
 
 const receipt = z.object({ sessionId: z.string().min(1).max(160), taskId: z.string().min(1).max(160), resultId: z.string().min(1).max(160) }).strict();
@@ -111,6 +111,11 @@ export async function updateTutorialProgress(tx: Sql, scope: TutorialScope, inpu
 export interface AccountTutorialScope { tenantId: string; userId: string }
 const accountScopeSchema = z.object({ tenantId: z.string().min(1).max(256), userId: z.string().min(1).max(256) }).strict();
 const lessonKey = z.string().min(1).max(120).regex(/^[a-z0-9-]+$/).refine(id => productTutorialLessonIds.has(id));
+const videoPositionSchema = z.object({
+  mediaId: z.string().min(1).max(160).regex(/^[a-zA-Z0-9._-]+$/),
+  chapterId: z.string().refine(id => productTutorialChapterIds.has(id)),
+  positionSeconds: z.number().finite().nonnegative().max(14400),
+}).strict();
 export const accountTutorialProgressUpdateSchema = z.object({
   expectedScope: accountScopeSchema,
   expectedRevision: z.number().int().nonnegative().safe(),
@@ -120,14 +125,16 @@ export const accountTutorialProgressUpdateSchema = z.object({
   currentLessonId: lessonKey,
   // These are explanations reviewed, never domain work completed.
   reviewedLessonIds: z.array(lessonKey).max(100).refine(ids => new Set(ids).size === ids.length),
+  video: videoPositionSchema.optional(),
   restart: z.literal(true).optional(),
-}).strict().refine(patch => !patch.restart || (patch.disposition === 'active' && patch.currentLessonId === 'welcome' && patch.reviewedLessonIds.length === 0), 'A restarted guide must begin at Welcome');
+}).strict().refine(patch => !patch.restart || (patch.disposition === 'active' && patch.currentLessonId === 'welcome' && patch.reviewedLessonIds.length === 0 && !patch.video), 'A restarted guide must begin at Welcome');
 export type AccountTutorialProgressUpdate = z.infer<typeof accountTutorialProgressUpdateSchema>;
 export interface AccountTutorialProgressRecord {
   scope: AccountTutorialScope; version: typeof PRODUCT_TUTORIAL_VERSION;
   revision: number; mutationId: string | null;
   disposition: AccountTutorialProgressUpdate['disposition'];
   currentLessonId: string; reviewedLessonIds: string[];
+  video?: ProductTutorialVideoPosition;
 }
 export class AccountTutorialProgressConflict extends Error {
   constructor(readonly current: AccountTutorialProgressRecord) { super('tutorial_progress_conflict'); }
@@ -140,6 +147,7 @@ function decodeAccountProgress(scope: AccountTutorialScope, value: unknown): Acc
     mutationId: accountTutorialProgressUpdateSchema.shape.mutationId.nullable(),
     disposition: accountTutorialProgressUpdateSchema.shape.disposition,
     currentLessonId: lessonKey, reviewedLessonIds: accountTutorialProgressUpdateSchema.shape.reviewedLessonIds,
+    video: videoPositionSchema.optional(),
   }).strict().safeParse(value);
   if (!parsed.success) throw new Error('tutorial_progress_invalid');
   return parsed.data;
@@ -189,16 +197,18 @@ export async function updateAccountTutorialProgress(tx: Sql, scope: AccountTutor
     WHERE organization_id = ${scope.tenantId}::uuid AND user_id = ${scope.userId}::uuid FOR UPDATE`;
   const current = decodeAccountProgress(scope, row?.record);
   if (!current) throw new Error('tutorial_not_enrolled');
+  // Old clients omit video. Preserve it unless this is an explicit restart.
+  const video = patch.video ?? (patch.restart ? undefined : current.video);
   if (current.mutationId === patch.mutationId) {
     if (current.disposition !== patch.disposition || current.currentLessonId !== patch.currentLessonId ||
-      JSON.stringify(current.reviewedLessonIds) !== JSON.stringify(patch.reviewedLessonIds)) throw new Error('tutorial_mutation_reused');
+      JSON.stringify(current.reviewedLessonIds) !== JSON.stringify(patch.reviewedLessonIds) || JSON.stringify(current.video) !== JSON.stringify(video)) throw new Error('tutorial_mutation_reused');
     return current;
   }
   if (current.revision !== patch.expectedRevision) throw new AccountTutorialProgressConflict(current);
   if (current.revision >= Number.MAX_SAFE_INTEGER) throw new Error('tutorial_revision_exhausted');
   const next: AccountTutorialProgressRecord = { scope, version: PRODUCT_TUTORIAL_VERSION,
     revision: current.revision + 1, mutationId: patch.mutationId, disposition: patch.disposition,
-    currentLessonId: patch.currentLessonId, reviewedLessonIds: patch.reviewedLessonIds };
+    currentLessonId: patch.currentLessonId, reviewedLessonIds: patch.reviewedLessonIds, ...(video ? { video } : {}) };
   await tx`UPDATE papercusp_auth.hosted_user_preferences
     SET profile = jsonb_set(profile, ARRAY['productTutorial', ${String(PRODUCT_TUTORIAL_VERSION)}]::text[], ${JSON.stringify(next)}::jsonb), updated_at = now()
     WHERE organization_id = ${scope.tenantId}::uuid AND user_id = ${scope.userId}::uuid`;

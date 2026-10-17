@@ -134,6 +134,12 @@ export interface PgAdmissionLedgerQueueStoreOptions {
    * an in-flight scan, but sequential callers each read fresh state.
    */
   readonly endedLeaseOwnerReuseMs?: number;
+  /** Server-owned tenant guard. Runs only for NEW demand, inside the same
+   * transaction as the canonical INSERT; its locks survive until commit.
+   * Return scalar audit evidence, never mutate the request/fingerprint.
+   */
+  readonly admitNewRecord?: (tx: SqlClient, record: DurableAdmissionRecord) =>
+    Promise<Readonly<Record<string, DecisionValue>>>;
 }
 
 /**
@@ -154,6 +160,7 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
   private readonly resolveSessionStatesFn: ResolveSessionStates | undefined;
   private readonly legacyAdapter: AdmissionLedgerLegacyAdapter | undefined;
   private readonly endedOwnerScans: EndedLeaseOwnerScanCoalescer;
+  private readonly admitNewRecord: PgAdmissionLedgerQueueStoreOptions['admitNewRecord'];
 
   constructor(options: PgAdmissionLedgerQueueStoreOptions = {}) {
     this.endedOwnerScans = new EndedLeaseOwnerScanCoalescer(options.endedLeaseOwnerReuseMs);
@@ -168,6 +175,7 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
         : GOVERNOR_RECEIPT_ABANDON_MS;
     this.resolveSessionStatesFn = options.resolveSessionStatesFn;
     this.legacyAdapter = options.legacyAdapter;
+    this.admitNewRecord = options.admitNewRecord;
   }
 
   private transaction<T>(fn: (tx: SqlClient) => Promise<T>): Promise<T> {
@@ -284,6 +292,14 @@ export class PgAdmissionLedgerQueueStore implements DurableAdmissionQueueStore {
       }
       if (legacy) return { ...legacy, created: false };
       if (existing) return { ...storedFromRow(existing), created: false };
+
+      // The tenant guard must run before coalescing or INSERT. Refusal rolls
+      // back every side effect, and replay above adds no second quota charge.
+      if (this.admitNewRecord) {
+        const evidence = await this.admitNewRecord(tx, record);
+        record = { ...record, decision: { ...record.decision,
+          evidence: { ...record.decision.evidence, ...evidence } } };
+      }
 
       if (record.coalesceKey) {
         await this.legacyAdapter?.supersedeActiveCoalesce(tx, record);

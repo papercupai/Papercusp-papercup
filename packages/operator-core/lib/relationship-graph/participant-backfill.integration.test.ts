@@ -371,4 +371,60 @@ describe('interaction participant backfill (P-003, D-017 point 2)', () => {
       { sourceId: waiting.id, outcome: 'backfilled', documents: 1, participants: 1 },
     ]);
   });
+
+  it('does not backfill CRM participants from legacy personal Gmail rows with a stale person grant (D-039)', async () => {
+    const legacyAccount = 'google-workspace:aviynw';
+    const legacyLead = `legacy-${randomUUID()}@prospect.example`;
+    const legacyAttendee = `legacy-${randomUUID()}@calendar.example`;
+    const legacyMail = await connect('gmail', { 'email-message': ['document', 'event'], person: ['record'] });
+    const legacyCalendar = await connect('gcal', { 'calendar-event': ['document', 'event'], person: ['record'] });
+    await sql`
+      UPDATE harness_shared.data_sources
+         SET provider_account_id = ${legacyAccount},
+             cursor = '{"emailAddress":"aviynw@gmail.com"}'::jsonb
+       WHERE id = ${legacyMail.id}::uuid`;
+    await sql`
+      UPDATE harness_shared.data_sources
+         SET provider_account_id = ${legacyAccount}
+       WHERE id = ${legacyCalendar.id}::uuid`;
+    await upsertPersonalDocuments(sql, WS, userId, [
+      {
+        source: 'gmail',
+        sourceId: legacyMail.id,
+        providerAccountId: legacyAccount,
+        kind: 'email',
+        externalId: `legacy-msg-${randomUUID()}`,
+        occurredAt: '2026-10-08T15:00:00Z',
+        participants: [legacyLead],
+        title: 'Legacy personal Gmail message',
+        text: 'legacy fixture',
+        metadata: { from: legacyLead },
+      },
+      {
+        source: 'gcal',
+        sourceId: legacyCalendar.id,
+        providerAccountId: legacyAccount,
+        kind: 'calendar-event',
+        externalId: `legacy-event-${randomUUID()}`,
+        occurredAt: '2026-10-08T17:00:00Z',
+        participants: [legacyAttendee],
+        title: 'Legacy personal Gmail calendar event',
+        text: 'legacy fixture',
+        metadata: { attendees: [legacyAttendee] },
+      },
+    ]);
+
+    const result = await backfillInteractionParticipants(sql, {
+      workspaceId: WS,
+      userId,
+      ctx: CTX,
+      sourceIds: [legacyMail.id, legacyCalendar.id],
+    });
+    expect(result).toMatchObject({ ok: true, documents: 0, participants: 0, complete: true, cursor: null });
+    if (!result.ok) throw new Error(`unexpected backfill refusal: ${result.reason}`);
+    expect(result.sources).toHaveLength(2);
+    expect(result.sources.every((source) => !source.granted && source.documents === 0 && source.participants === 0)).toBe(true);
+    expect(await searchPeople(sql, WS, { emails: [legacyLead] })).toEqual([]);
+    expect(await searchPeople(sql, WS, { emails: [legacyAttendee] })).toEqual([]);
+  });
 });

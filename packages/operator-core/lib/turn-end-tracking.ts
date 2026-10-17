@@ -81,6 +81,12 @@ export interface MechanicalCheckpointInput {
   toolLog?: string | null;
   /** The recording session, for traceability. */
   sessionId?: string | null;
+  boundary?: 'respawn';
+  ownerId?: string;
+  workItemId?: string;
+  harness?: string | null;
+  sourcePlanSlug?: string | null;
+  sourcePlanItemIds?: string[] | null;
 }
 
 const JOURNAL_NOTE_CAP = 400;
@@ -93,10 +99,14 @@ const JOURNAL_NOTE_CAP = 400;
  */
 export function composeMechanicalCheckpoint(input: MechanicalCheckpointInput): string {
   const lines = [
-    `${MECHANICAL_CHECKPOINT_MARKER} @${input.atIso}⟧ system turn-end snapshot — the holder's agent-written ` +
-      `checkpoint was missing/stale (P-015). Holder-session-level, not item-verified.`,
+    `${MECHANICAL_CHECKPOINT_MARKER} @${input.atIso}⟧ ` + (input.boundary === 'respawn'
+      ? 'system respawn snapshot. Holder-session activity, not a completion verdict.'
+      : `system turn-end snapshot — the holder's agent-written checkpoint was missing/stale (P-015). Holder-session-level, not item-verified.`),
   ];
   if (input.sessionId) lines.push(`session: ${input.sessionId}`);
+  if (input.ownerId) lines.push(`holder: ${input.ownerId}`);
+  if (input.workItemId) lines.push(`work-item: ${input.workItemId}; harness: ${input.harness ?? 'operator'}`);
+  if (input.sourcePlanSlug) lines.push(`plan: ${input.sourcePlanSlug}; items: ${(input.sourcePlanItemIds ?? []).join(', ')}`);
   const note = (input.journalNote ?? '').replace(/\s+/g, ' ').trim();
   if (note) lines.push(`latest journal: ${note.slice(0, JOURNAL_NOTE_CAP)}`);
   const log = (input.toolLog ?? '').trim();

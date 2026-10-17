@@ -70,6 +70,14 @@ export interface HostedUsageForecast {
     | 'receipt-newer-than-census' | 'unpriced-usage' | 'no-elapsed-time' | 'amount-overflow' | null;
 }
 
+/** Server-derived coverage of the exact population being forecast. */
+export interface HostedUsageSourceCensus {
+  readonly complete: boolean;
+  readonly observedAtMs: number;
+  readonly maximumAgeMs: number;
+  readonly evidenceRef: string;
+}
+
 export interface HostedUsageStatement {
   readonly scope: HostedUsageScope;
   readonly month: string;
@@ -151,6 +159,44 @@ function lineAmounts(line: HostedUsageStatementLine, record: HostedUsageRecord) 
     | 'estimatedMicrosExact' | 'reportedMicrosExact' | 'billedMicrosExact'>;
 }
 
+/** Shared display projection for provider usage and recorded allocation costs.
+ * It never supplies an admission bound or changes any billed amount. */
+export function projectHostedMonthlyCost(input: {
+  readonly month: string;
+  readonly asOfMs: number;
+  readonly source: HostedUsageSourceCensus;
+  readonly basisMicrosExact: string;
+  readonly gaps?: ReadonlySet<string>;
+}): HostedUsageForecast {
+  const { asOfMs, source, basisMicrosExact: basisExact } = input;
+  integer(asOfMs); integer(source.observedAtMs); integer(source.maximumAgeMs); id(source.evidenceRef);
+  if (typeof source.complete !== 'boolean') throw new Error('invalid usage source census');
+  const { startMs, endMs } = shadowMonthBounds(input.month);
+  const gaps = new Set(input.gaps);
+  if (asOfMs < startMs) gaps.add('window-not-started');
+  if (!source.complete) gaps.add('incomplete-source');
+  if (source.observedAtMs > asOfMs || asOfMs - source.observedAtMs > source.maximumAgeMs) gaps.add('source-not-current');
+  const periodMs = endMs - startMs;
+  // Extrapolate only through the census cutoff, never through unobserved time.
+  const elapsedMs = Math.max(0, Math.min(asOfMs, source.observedAtMs, endMs) - startMs);
+  let unavailableReason: HostedUsageForecast['unavailableReason'] = null;
+  for (const reason of ['window-not-started', 'incomplete-source', 'source-not-current', 'receipt-newer-than-census', 'unpriced-usage'] as const) {
+    if (gaps.has(reason)) { unavailableReason = reason; break; }
+  }
+  const basis = parseMicrosDecimal(basisExact); const divisor = 10n ** BigInt(basis.scale);
+  const safeBasis = basis.coefficient <= BigInt(Number.MAX_SAFE_INTEGER) * divisor;
+  if (!unavailableReason && elapsedMs === 0) unavailableReason = 'no-elapsed-time';
+  const projected = unavailableReason ? null :
+    (basis.coefficient * BigInt(periodMs) + BigInt(elapsedMs) * divisor - 1n) / (BigInt(elapsedMs) * divisor);
+  if (!unavailableReason && (!safeBasis || projected! > BigInt(Number.MAX_SAFE_INTEGER))) unavailableReason = 'amount-overflow';
+  return {
+    method: 'linear-elapsed-utc-month', basisMicros: unavailableReason || !safeBasis ? null : Number(basis.coefficient / divisor),
+    ...(!unavailableReason && safeBasis && basisExact.includes('.') ? { basisMicrosExact: basisExact } : {}),
+    elapsedMs, periodMs, projectedConsumptionMicros: unavailableReason ? null : Number(projected),
+    provisional: elapsedMs < periodMs || gaps.size > 0 || unavailableReason !== null, unavailableReason,
+  };
+}
+
 /**
  * Versioned replacements count one usage once, even after delayed provider
  * billing or replay. No amount is silently promoted from estimate to billed.
@@ -161,7 +207,7 @@ export function buildHostedUsageStatement(input: {
   readonly scope: HostedUsageScope;
   readonly month: string;
   readonly asOfMs: number;
-  readonly source: { readonly complete: boolean; readonly observedAtMs: number; readonly maximumAgeMs: number; readonly evidenceRef: string };
+  readonly source: HostedUsageSourceCensus;
   readonly records: readonly HostedUsageRecord[];
 }): HostedUsageStatement {
   const { scope, asOfMs, source } = input;
@@ -237,27 +283,9 @@ export function buildHostedUsageStatement(input: {
   const total = (payer: CostPayer) => splitMicrosDecimal(addMicrosDecimals(...ordered.filter((line) => line.payer === payer).map(line => exactLine(line, 'billed'))));
   const consumption = total('consumption'); const platform = total('platform'); const direct = total('customer-direct');
   const micros = consumption.micros;
-  const periodMs = endMs - startMs;
-  // Extrapolate from the census cutoff, not time for which no source was read.
-  const elapsedMs = Math.max(0, Math.min(asOfMs, source.observedAtMs, endMs) - startMs);
-  let unavailableReason: HostedUsageForecast['unavailableReason'] = null;
-  for (const reason of ['window-not-started', 'incomplete-source', 'source-not-current', 'receipt-newer-than-census', 'unpriced-usage'] as const) {
-    if (gaps.has(reason)) { unavailableReason = reason; break; }
-  }
   const basisExact = addMicrosDecimals(...ordered.filter(line => line.payer === 'consumption').flatMap(line =>
     [exactLine(line, 'billed'), exactLine(line, 'reported'), exactLine(line, 'estimated')]));
-  const basis = parseMicrosDecimal(basisExact); const divisor = 10n ** BigInt(basis.scale);
-  const safeBasis = basis.coefficient <= BigInt(Number.MAX_SAFE_INTEGER) * divisor;
-  if (!unavailableReason && elapsedMs === 0) unavailableReason = 'no-elapsed-time';
-  const projected = unavailableReason ? null :
-    (basis.coefficient * BigInt(periodMs) + BigInt(elapsedMs) * divisor - 1n) / (BigInt(elapsedMs) * divisor);
-  if (!unavailableReason && (!safeBasis || projected! > BigInt(Number.MAX_SAFE_INTEGER))) unavailableReason = 'amount-overflow';
-  const forecast: HostedUsageForecast = {
-    method: 'linear-elapsed-utc-month', basisMicros: unavailableReason || !safeBasis ? null : Number(basis.coefficient / divisor),
-    ...(!unavailableReason && safeBasis && basisExact.includes('.') ? { basisMicrosExact: basisExact } : {}),
-    elapsedMs, periodMs, projectedConsumptionMicros: unavailableReason ? null : Number(projected),
-    provisional: elapsedMs < periodMs || gaps.size > 0 || unavailableReason !== null, unavailableReason,
-  };
+  const forecast = projectHostedMonthlyCost({ month: input.month, asOfMs, source, basisMicrosExact: basisExact, gaps });
   return {
     scope: { controlWorkspaceId: scope.controlWorkspaceId, organizationId: scope.organizationId, customerWorkspaceId: scope.customerWorkspaceId },
     month: input.month, currency: 'USD', asOfMs, sourceRef: source.evidenceRef,

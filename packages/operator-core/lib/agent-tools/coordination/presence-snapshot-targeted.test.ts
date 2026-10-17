@@ -133,6 +133,8 @@ vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' 
 
 import {
   assemblePresenceSnapshot,
+  PRESENCE_OPTIONAL_LEG_TIMEOUT_MS,
+  PRESENCE_SOURCE_LEG_TIMEOUT_MS,
   type PresenceSnapshotDiagnostic,
   type ResolvedPresenceScope,
 } from './presence-snapshot';
@@ -381,6 +383,80 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
       elapsedMs: 12,
       status: 'error',
     });
+  });
+
+  it('degrades a wedged desktop enrichment leg at the caller deadline', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      desktopSessionsMock.mockImplementation(() => new Promise(() => {}));
+      const snapshot = assemblePresenceSnapshot(RESOLVED, {});
+      await vi.advanceTimersByTimeAsync(PRESENCE_OPTIONAL_LEG_TIMEOUT_MS + 1);
+      const result = await snapshot;
+
+      expect(result.summary.active).toBe(2);
+      expect(result.active.map((r) => r.ownerId)).toEqual(['su-aaa', 'su-bbb', 'su-ccc']);
+      expect(result.active.every((r) => r.onDesktop === false)).toBe(true);
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+      desktopSessionsMock.mockResolvedValue({
+        owners: new Set<string>(),
+        sessionIds: new Set<string>(),
+        advSessionIds: new Set<number>(),
+        windowSignalUnknown: false,
+      });
+    }
+  });
+
+  it('degrades a wedged optional database enrichment leg at the caller deadline', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      selfWakeMock.mockImplementation(() => new Promise(() => {}));
+      const diagnostics: PresenceSnapshotDiagnostic[] = [];
+      const snapshot = assemblePresenceSnapshot(RESOLVED, {
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+      });
+      await vi.advanceTimersByTimeAsync(PRESENCE_OPTIONAL_LEG_TIMEOUT_MS + 1);
+      const result = await snapshot;
+
+      expect(result.summary.active).toBe(2);
+      expect(result.active.map((r) => r.ownerId)).toEqual(['su-aaa', 'su-bbb', 'su-ccc']);
+      expect(diagnostics).toContainEqual(expect.objectContaining({
+        phase: 'enrichment',
+        name: 'fetchSelfWake',
+        status: 'error',
+      }));
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('degrades a wedged base source leg before the transport deadline', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      listPresenceMock.mockImplementation(() => new Promise(() => {}));
+      const diagnostics: PresenceSnapshotDiagnostic[] = [];
+      const snapshot = assemblePresenceSnapshot(RESOLVED, {
+        onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+      });
+      await vi.advanceTimersByTimeAsync(PRESENCE_SOURCE_LEG_TIMEOUT_MS + 1);
+      const result = await snapshot;
+
+      expect(result.summary.active).toBe(0);
+      expect(result.active).toEqual([]);
+      expect(diagnostics).toContainEqual(expect.objectContaining({
+        phase: 'source',
+        name: 'listPresence',
+        status: 'error',
+      }));
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   // WI-10006738: coord:presence used to omit the oracle's positive ended-session

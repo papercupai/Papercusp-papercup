@@ -179,6 +179,7 @@ const inputRecord = (p: string) => {
  */
 function pinnedInput(tier: (typeof TIERS)[number]): Parameters<typeof renderSuPlaybook>[0] {
   return {
+    referenceMode: 'inline',
     agent: 'claude',
     profile: 'engineer',
     baseSource: INPUTS.base,

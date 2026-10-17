@@ -140,6 +140,12 @@ const BG_CHECKPOINT =
   'no other suite depended on the old behavior — will report+complete once it finishes.';
 /** An isolated session-local handle: this must trigger without relying on other keywords. */
 const SESSION_LOCAL_TASK_HANDLE_CHECKPOINT = 'read task id bf5ryqqze output when it lands. If green -> complete.';
+const HISTORICAL_TERMINAL_TASK_CHECKPOINT = [
+  'Task ID 0mv2kuyk2ctvxu6p7qd encodes mint time 2026-10-10T15:57:11.666Z.',
+  "Current processes:list exact-task read returned state=stranded, exitReason='unaccounted residue no longer present', livePids=null, logPath=null, launchedBy='unknown', workItemId=null.",
+  'There is no live process or recorded log to wait on; there is no background job to await.',
+  "Rerunnable re-check: processes:list {taskId:'0mv2kuyk2ctvxu6p7qd', live:true, includeEnded:true}.",
+].join('\n');
 /** A server-side deferred writer is not a session-local process/job. */
 const SERVER_SIDE_DEFERRED_WRITER_CHECKPOINT =
   'The applyResultDoorAsync deferred writer may continue in the background after the request times out.';
@@ -181,6 +187,7 @@ describe('work_items:release — stranding warning (WI-38297)', () => {
     // It must tell the releaser what to actually DO, not merely that something is wrong.
     expect(w).toMatch(/work_items:complete/);
     expect(w).toMatch(/blocked/);
+    expect(w).toMatch(/cannot prove that the job is still live or owned by this session/);
   });
 
   it('warns for an isolated session-local task handle', async () => {
@@ -188,6 +195,13 @@ describe('work_items:release — stranding warning (WI-38297)', () => {
     const b = await body({ id: 'WI-TASK-HANDLE' });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-TASK-HANDLE', released: true });
     expect(b.results[0].strandedCheckpointWarning).toMatch(/BACKGROUND JOB/);
+  });
+
+  it('stays silent for a historical task handle with an exact terminal process-ledger recheck', async () => {
+    getWorkItemCheckpoint.mockResolvedValue(HISTORICAL_TERMINAL_TASK_CHECKPOINT);
+    const b = await body({ id: 'EI-25634752058895221' });
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-25634752058895221', released: true });
+    expect(b.results[0].strandedCheckpointWarning).toBeUndefined();
   });
 
   it('stays silent for a server-side deferred writer that may continue in the background', async () => {

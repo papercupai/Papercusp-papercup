@@ -60,6 +60,8 @@ import {
 } from "./selection-base";
 import { pipelineRef } from "@papercusp/operator-core/lib/release/pipeline-name";
 import { redactSensitiveText } from "@papercusp/operator-core/lib/sensitive-text";
+import { extractSubjectPathsFromLegOutput, REPAIR_MANIFEST_SUBJECT_PATH_CAP, withMeasuredLegSubjects } from "@papercusp/operator-core/lib/release/repair-manifest";
+import { npmWorkspaceDirsByName } from "@papercusp/operator-core/lib/release/npm-workspace-dirs";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
 import {
   buildRedLegsAtR1,
@@ -211,7 +213,6 @@ import {
   markFrozenRepairVerificationRed,
   parseFrozenRepairSelectiveCoverage,
   recordFrozenRepairSupersededRed,
-  recordFrozenRepairLegMeasurement,
   type RepairLegMeasurement,
   selectFrozenRepairAdmissionPaths,
   settleFrozenRepairRetestRequest,
@@ -628,6 +629,8 @@ export interface RepairTickLegRecord {
   durationMs: number;
   /** Bounded evidence tail, present only when the leg did NOT pass. */
   outputTail?: string;
+  /** Repo-relative failing paths captured before output truncation. */
+  subjectPaths?: string[];
 }
 
 /** P-009: the cheap-legs measurement an `awaiting-fixer` hold tick took at repairHead, so
@@ -2024,6 +2027,27 @@ export function runnerUnitIsOwn(
 ): boolean {
   const unit = runner.unit?.trim();
   return Boolean(unit && units?.includes(unit));
+}
+
+/**
+ * An older release:checkpoint-run launcher reserved a `manual:<attempt>:<time>` runner id,
+ * then transported a distinct gateFireId to this current CLI. If the reservation names this
+ * process's own systemd unit, the id mismatch is version skew for this runner, not a competing
+ * run. Return the stored id only for that exact, measured case; all other conflicts stay closed.
+ */
+export function ownUnitReservationRunnerIdAfterAttachConflict(
+  activation: {
+    status: string;
+    refusalReason?: string;
+    transaction?: { currentPhysicalRunner: QualificationPhysicalRunner | null };
+  },
+  gateFireId: string | undefined,
+  selfUnits: readonly string[],
+): string | null {
+  if (activation.status !== "conflict" || activation.refusalReason !== "runner-held" || !gateFireId) return null;
+  const runner = activation.transaction?.currentPhysicalRunner;
+  if (!runner?.id || runner.id === gateFireId || !runnerUnitIsOwn(runner, selfUnits)) return null;
+  return runner.id;
 }
 
 /** Report the store's failed invariant without inferring id skew from unit ownership. */
@@ -3722,6 +3746,45 @@ export async function activateCheckpointQualificationRunner(
     started: true,
     evidenceRefs: [`checkpoint-run:${input.runId}`],
   });
+}
+
+/** Keep the adopted physical runner identity when refreshing a joined attempt's candidate. */
+export function checkpointQualificationRunnerRefreshInput(
+  input: Parameters<typeof activateCheckpointQualificationRunner>[0],
+  runnerId: string | undefined,
+): Parameters<typeof activateCheckpointQualificationRunner>[0] {
+  return { ...input, gateFireId: runnerId ?? input.gateFireId };
+}
+
+/**
+ * Recover only the legacy launcher skew where a refused reservation is positively tied to this
+ * process's own systemd unit. Re-attaching with the stored physical runner id updates the existing
+ * slot; candidate/run/process invariants are still enforced by reserveQualificationRunner.
+ */
+export async function adoptOwnUnitRunnerReservationAfterAttachConflict(
+  activation: Awaited<ReturnType<typeof activateCheckpointQualificationRunner>>,
+  input: Parameters<typeof activateCheckpointQualificationRunner>[0],
+  selfUnits: readonly string[],
+  retry: typeof activateCheckpointQualificationRunner = activateCheckpointQualificationRunner,
+): Promise<{
+  activation: Awaited<ReturnType<typeof activateCheckpointQualificationRunner>>;
+  runnerId: string | undefined;
+  adopted: boolean;
+}> {
+  const legacyRunnerId = ownUnitReservationRunnerIdAfterAttachConflict(
+    activation,
+    input.gateFireId,
+    selfUnits,
+  );
+  if (!legacyRunnerId) return { activation, runnerId: input.gateFireId, adopted: false };
+
+  const attached = await retry({ ...input, gateFireId: legacyRunnerId });
+  const adopted = attached.status === 'not-qualifying' || attached.status === 'updated' || attached.status === 'idempotent';
+  return {
+    activation: attached,
+    runnerId: adopted ? legacyRunnerId : input.gateFireId,
+    adopted,
+  };
 }
 
 /**
@@ -14545,6 +14608,8 @@ async function runGreenCheckpointInner(
       // `mode:'full'` — the fallthrough the zero-wait-convergence promise forbids is then
       // countable from the queue's own history. An early typecheck-preflight failure never
       // ran the suite, so it records no radius (absent = "not recorded", never "nothing ran").
+      const withPostSuiteSubjects = (queue: FrozenCandidateRepairQueue) =>
+        withMeasuredLegSubjects(queue, candidate, postSuiteLegs ?? [], Date.now());
       const measuredSignature = {
         ...repairSignatureFromVerdict({
           failingTests,
@@ -14604,22 +14669,22 @@ async function runGreenCheckpointInner(
                     fresh.candidate,
                   )
                 : undefined;
-              return recordedGateDecision('frozen-repair-red', markFrozenRepairVerificationRed, [fresh, {
+              return withPostSuiteSubjects(recordedGateDecision('frozen-repair-red', markFrozenRepairVerificationRed, [fresh, {
                 repairHead: candidate,
                 ...measuredSignature,
                 nowMs: Date.now(),
                 ...(coverage ? { selectiveCoverage: coverage } : {}),
-              }], decisionTrace);
+              }], decisionTrace));
             },
             (fresh) => {
               supersededBy = fresh;
             },
             (fresh) =>
-              recordedGateDecision('frozen-superseded-red', recordFrozenRepairSupersededRed, [fresh, {
+              withPostSuiteSubjects(recordedGateDecision('frozen-superseded-red', recordFrozenRepairSupersededRed, [fresh, {
                 measuredHead: candidate,
                 ...measuredSignature,
                 nowMs: Date.now(),
-              }], decisionTrace),
+              }], decisionTrace)),
             decisionTrace,
           ),
           "full-gate-red",
@@ -14659,10 +14724,10 @@ async function runGreenCheckpointInner(
             deps,
             repairQueue,
             (fresh) =>
-              recordedGateDecision('frozen-candidate-red', markFrozenCandidateVerificationRed, [fresh, {
+              withPostSuiteSubjects(recordedGateDecision('frozen-candidate-red', markFrozenCandidateVerificationRed, [fresh, {
                 ...measuredSignature,
                 nowMs: Date.now(),
-              }], decisionTrace),
+              }], decisionTrace)),
             "candidate-red",
           );
           if (repairQueue.repairHead !== snapshotHead) {
@@ -14695,6 +14760,7 @@ async function runGreenCheckpointInner(
               ...measuredSignature,
               nowMs: Date.now(),
             }], decisionTrace);
+          repairQueue = withPostSuiteSubjects(repairQueue);
           await deps.writeFrozenRepairQueue(repairQueue, { expectedUpdatedAtMs });
         }
         repairQueueRedPersisted = true;
@@ -14727,14 +14793,14 @@ async function runGreenCheckpointInner(
             candidate,
           });
         } else {
-          repairQueue = createFrozenCandidateRepairQueue({
+          repairQueue = withPostSuiteSubjects(createFrozenCandidateRepairQueue({
             candidate,
             qualificationAttemptId: deps.qualificationAttemptId ?? null,
             base: lastReady,
             ...measuredSignature,
             affectedTestProofGroup: deps.runId ?? null,
             nowMs: Date.now(),
-          });
+          }));
           repairQueueCreatedThisPass = true;
         }
       }
@@ -14747,10 +14813,10 @@ async function runGreenCheckpointInner(
           deps,
           repairQueue,
           (fresh) =>
-            recordedGateDecision('frozen-candidate-red', markFrozenCandidateVerificationRed, [fresh, {
+            withPostSuiteSubjects(recordedGateDecision('frozen-candidate-red', markFrozenCandidateVerificationRed, [fresh, {
               ...measuredSignature,
               nowMs: Date.now(),
-            }], decisionTrace),
+            }], decisionTrace)),
           "deferred-candidate-red",
         );
       }
@@ -16400,7 +16466,7 @@ export async function measureRepairTickLegs(
     runScript(
       script: string,
       workspace: string | null,
-    ): Promise<{ code: number; tail: string }>;
+    ): Promise<{ code: number; tail: string; subjectPaths?: string[] }>;
     log(line: string): void;
     now?: () => number;
     /** Injectable for tests so the bounded setup-contention retry below costs no real
@@ -16454,6 +16520,7 @@ export async function measureRepairTickLegs(
     const startedAt = now();
     let worst: RepairTickLegRecord["status"] = "pass";
     const tails: string[] = [];
+    const subjectPaths = new Set<string>();
     let ranScript = false;
     // WI-10000288: distinguish "a script ran and declined to answer" from "a script ran and
     // verified", so a leg is reported `not-checked` only when NOTHING that ran verified.
@@ -16502,6 +16569,9 @@ export async function measureRepairTickLegs(
           tails.push(`${label}: NOT CHECKED (examined nothing — not gating)`);
         } else if (r.code !== 0) {
           if (worst === "pass") worst = "fail";
+          for (const file of r.subjectPaths ?? extractSubjectPathsFromLegOutput(r.tail)) {
+            if (subjectPaths.size < REPAIR_MANIFEST_SUBJECT_PATH_CAP) subjectPaths.add(file);
+          }
           tails.push(
             `${label}: exit ${r.code}${r.tail ? ` — ${r.tail}` : ""}`,
           );
@@ -16526,6 +16596,7 @@ export async function measureRepairTickLegs(
       // names the digest was built to preserve — and with several legs joined, it dropped
       // every leg but the last.
       ...(tails.length ? { outputTail: tails.join(" | ").slice(0, 3000) } : {}),
+      ...(subjectPaths.size ? { subjectPaths: [...subjectPaths] } : {}),
     });
   }
   const failingSignatures = legs
@@ -16675,11 +16746,7 @@ async function foldRepairTickLegsIntoQueue(
       (fresh) =>
         fresh.candidate !== queue.candidate
           ? fresh
-          : recordFrozenRepairLegMeasurement(fresh, {
-              measurements,
-              head: measured.head,
-              nowMs: Math.max(measured.atMs, fresh.updatedAtMs + 1),
-            }),
+          : withMeasuredLegSubjects(fresh, measured.head, measured.legs, measured.atMs),
       "repair-tick leg lifecycle",
     );
   } catch (e) {
@@ -18183,6 +18250,8 @@ interface LegOutcome {
 /** Stable, machine-readable wall-clock evidence for one logical post-suite leg. */
 export interface PostSuiteLegRecord extends LegOutcome {
   id: string;
+  /** Repo-relative failing paths captured from full command output before tailing. */
+  subjectPaths?: string[];
   /** End-to-end wall time for this logical leg. Parallel subcommands use their union span. */
   durationMs: number;
   executionIdentity?: {
@@ -19567,10 +19636,19 @@ export async function runPostSuiteLegs(
       dependencyInode = Number(statSync(nodeModulesPath).ino);
     } catch {}
     const identity = options.identity;
-    const output = commands
-      .map((command) => command.stdout + command.stderr)
-      .join("\n")
-      .slice(-2000);
+    const fullOutput = commands
+      .map((command) => command.stdout + "\n" + command.stderr)
+      .join("\n");
+    const output = fullOutput.slice(-2000);
+    const subjectPaths = outcome.status === "failed"
+      ? [...new Set(commands.filter((command) => command.code !== 0).flatMap((command) =>
+          extractSubjectPathsFromLegOutput(
+            stripAnsi(command.stdout + "\n" + command.stderr),
+            path.relative(treeDir, command.cwd).replace(/\\/g, "/") || undefined,
+            Object.values(npmWorkspaceDirsByName(treeDir)),
+          ),
+        ))].slice(0, REPAIR_MANIFEST_SUBJECT_PATH_CAP)
+      : [];
     const exitCode =
       commands.find((command) => command.code !== 0)?.code ??
       commands.at(-1)?.code ??
@@ -19579,6 +19657,7 @@ export async function runPostSuiteLegs(
       id,
       status: outcome.status,
       durationMs,
+      ...(subjectPaths.length ? { subjectPaths } : {}),
       ...(outcome.skipReason ? { skipReason: outcome.skipReason } : {}),
       ...(identity
         ? {
@@ -22760,6 +22839,11 @@ export function realCheckpointDeps(
             });
             return {
               code: r.code,
+              subjectPaths: extractSubjectPathsFromLegOutput(
+                stripAnsi(r.stdout + "\n" + r.stderr),
+                path.relative(cfg.checkpointRoot, invocation.cwd).replace(/\\/g, "/") || undefined,
+                Object.values(npmWorkspaceDirsByName(cfg.checkpointRoot)),
+              ).slice(0, REPAIR_MANIFEST_SUBJECT_PATH_CAP),
               // WI-10002075: digest-first, never a blind tail — a red lint leg's last
               // 300 chars are its generic trailer, not the files it named.
               // WI-10007516: BOTH streams — `stderr || stdout` dropped vitest's stdout
@@ -23921,7 +24005,8 @@ if (require.main === module) {
       const qualificationTarget = gateVerdictTargetFromEnv();
       const qualificationAttemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined;
       const qualificationCandidate = candidateArg ?? scheduledPrewarmTarget?.candidate ?? pinnedCandidate ?? null;
-      const activation = await activateCheckpointQualificationRunner({
+      let qualificationRunnerId = gateFireId;
+      let activation = await activateCheckpointQualificationRunner({
         target: qualificationTarget,
         attemptId: qualificationAttemptId,
         gateFireId,
@@ -23929,6 +24014,29 @@ if (require.main === module) {
         candidate: qualificationCandidate,
         pid: process.pid,
       });
+      if (activation.status !== 'not-qualifying' && activation.status !== 'updated' && activation.status !== 'idempotent') {
+        const selfUnits = ownCgroupUnits();
+        const adoption = await adoptOwnUnitRunnerReservationAfterAttachConflict(
+          activation,
+          {
+            target: qualificationTarget,
+            attemptId: qualificationAttemptId,
+            gateFireId,
+            runId,
+            candidate: qualificationCandidate,
+            pid: process.pid,
+          },
+          selfUnits,
+        );
+        activation = adoption.activation;
+        qualificationRunnerId = adoption.runnerId;
+        if (adoption.adopted) {
+          console.warn(
+            `${orchestratorStdoutTag()} adopted own-unit legacy runner reservation ${qualificationRunnerId} ` +
+              `for CLI attachment; gateFireId ${gateFireId} remains the fire correlation identity`,
+          );
+        }
+      }
       if (activation.status !== 'not-qualifying' && activation.status !== 'updated' && activation.status !== 'idempotent') {
         // WI-6554700010009570: a refusal because a DIFFERENT live runner already holds this attempt
         // is a lost launch race, not a crash. Stand down on the lock-loser terminal so the no-verdict
@@ -23958,7 +24066,7 @@ if (require.main === module) {
       qualificationProgress = startCheckpointQualificationProgress({
         target: qualificationTarget,
         attemptId: qualificationAttemptId,
-        gateFireId,
+        gateFireId: qualificationRunnerId,
         runId,
         pid: process.pid,
       });
@@ -23988,17 +24096,23 @@ if (require.main === module) {
       if (lock.acquired) {
         // The preflight may resolve the final executable candidate after dependency preparation.
         // Refresh the reservation against that exact candidate before entering the suite.
-        const refreshed = await activateCheckpointQualificationRunner({
+        const refreshInput = checkpointQualificationRunnerRefreshInput({
           target: qualificationTarget,
           attemptId: qualificationAttemptId,
           gateFireId,
           runId,
           candidate: resolvedCandidateForRun,
           pid: process.pid,
-        });
+        }, qualificationRunnerId);
+        const refreshed = await activateCheckpointQualificationRunner(refreshInput);
         if (refreshed.status !== 'not-qualifying' && refreshed.status !== 'updated' && refreshed.status !== 'idempotent') {
           lock.release();
-          throw new Error(`checkpoint qualification runner candidate refresh refused: ${refreshed.status}`);
+          throw new Error(checkpointQualificationAttachmentRefusalSummary(refreshed, {
+            attemptId: qualificationAttemptId,
+            gateFireId: refreshInput.gateFireId,
+            candidate: resolvedCandidateForRun,
+            runId,
+          }, ownCgroupUnits()));
         }
       }
     } catch (e) {

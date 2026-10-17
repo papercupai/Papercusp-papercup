@@ -1,5 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
+vi.mock('../../../managed-update-policy', async importOriginal => ({
+  ...(await importOriginal<object>()), readManagedUpdateChannel: vi.fn(() => null),
+}));
+
 vi.mock('../../../operator-state-pg', () => ({
   readOperatorState: vi.fn(async () => ({ update_channel: 'stable' })),
 }));
@@ -29,6 +33,9 @@ import route, {
 } from './updates-manifest';
 import { resolveGithubToken, fetchAssetText, releaseHostBase } from './updates-github';
 import { readOperatorState } from '../../../operator-state-pg';
+import { readManagedUpdateChannel } from '../../../managed-update-policy';
+
+beforeEach(() => { vi.mocked(readManagedUpdateChannel).mockReset().mockReturnValue(null); });
 
 const mockFetch = vi.fn<typeof fetch>();
 vi.stubGlobal('fetch', mockFetch);
@@ -167,6 +174,17 @@ describe('pickAssetUrl', () => {
 });
 
 describe('resolveChannel — default channel while the app is in alpha (WI-4389)', () => {
+  it('enforces administrator policy ahead of both URL and saved preference, and re-reads it', () => {
+    vi.mocked(readManagedUpdateChannel).mockReturnValue('stable');
+    expect(resolveChannel(new URLSearchParams('channel=alpha'), 'beta')).toBe('stable');
+    vi.mocked(readManagedUpdateChannel).mockReturnValue('beta');
+    expect(resolveChannel(new URLSearchParams('channel=alpha'), 'stable')).toBe('beta');
+  });
+
+  it('propagates invalid policy instead of silently falling back to a user-selected lane', () => {
+    vi.mocked(readManagedUpdateChannel).mockImplementation(() => { throw new Error('invalid administrator policy'); });
+    expect(() => resolveChannel(new URLSearchParams('channel=alpha'), 'beta')).toThrow('invalid administrator policy');
+  });
   it('defaults to alpha when NO ?channel= and NO stored channel (the fresh-install path)', () => {
     // The bug: this used to return 'stable', and visibleChannels('stable')={stable}
     // excludes the alpha releases that are the ONLY ones that exist → the updater

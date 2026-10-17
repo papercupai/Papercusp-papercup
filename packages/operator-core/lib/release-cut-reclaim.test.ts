@@ -29,6 +29,7 @@ import {
   planCutReclaim,
   probeTree,
   reclaimPathRefusal,
+  reclaimCutWorktrees,
   renderReclaimPlan,
   resolveReclaimTargets,
   scanProcHolders,
@@ -39,6 +40,29 @@ import {
   type RetentionLease,
   type TreeProbe,
 } from './release-cut-reclaim';
+import { createRetentionPin } from './storage/retention-pins';
+import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
+
+// Both Vitest imports and portable .mjs owners must use the same real mutex.
+// A name mock only intercepts one import path and breaks the pin-writer race.
+// Isolate the maintained lock-root seam instead of touching a live operator's lock.
+let fixtureLockRoot: string;
+let savedLockRoot: string | undefined;
+let savedDisableMutex: string | undefined;
+beforeEach(() => {
+  savedLockRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  savedDisableMutex = process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+  fixtureLockRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'release-cut-mutex-'));
+  process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = fixtureLockRoot;
+  delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+});
+afterEach(() => {
+  if (savedLockRoot === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = savedLockRoot;
+  if (savedDisableMutex === undefined) delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+  else process.env.PAPERCUSP_DISABLE_FS_MUTEX = savedDisableMutex;
+  fs.rmSync(fixtureLockRoot, { recursive: true, force: true });
+});
 
 const NOW = Date.parse('2026-09-30T04:00:00Z');
 const DAY = 86_400_000;
@@ -544,6 +568,232 @@ describe('gather + execute against a real temporary repo', () => {
     expect(fs.readdirSync(tmp).filter((n) => n.startsWith('.reclaim-trash-'))).toEqual([]);
   });
 
+  it('reclaims expired cuts oldest first and reports allocated pinned overage', async () => {
+    const newer = path.join(tmp, 'a-newer'), older = path.join(tmp, 'z-older'), pinned = path.join(tmp, 'pinned');
+    for (const tree of [newer, older, pinned]) {
+      g(repo, 'worktree', 'add', '-q', '--detach', tree);
+      fs.writeFileSync(path.join(tree, 'package-lock.json'), Buffer.alloc(8192, 1));
+    }
+    const plan = await gather();
+    for (const v of plan.verdicts) {
+      v.disposition = v.path === pinned ? 'protected' : 'reclaimable';
+      v.reasons = v.path === pinned ? ['lease:agent-pin-test'] : [];
+      v.createdAt = v.lastHeadMoveAt = new Date(NOW - (v.path === older ? 10 : 5) * DAY).toISOString();
+    }
+    const deps = { scanHolders: () => verified, archiveDir: path.join(ret, 'reclaim-archive'), appendAudit: () => {} };
+    const dry = await reclaimCutWorktrees(plan, { dryRun: true, maxBytes: 1 }, deps);
+    expect(dry.ok).toBe(true);
+    expect(dry.targets).toEqual([older, newer]);
+    expect(dry.cap.beforeBytes).toBeGreaterThan(8192 * 3);
+    expect(fs.existsSync(older)).toBe(true);
+    const result = await reclaimCutWorktrees(plan, { maxBytes: 1 }, deps);
+    expect(result.ok).toBe(true);
+    expect(result.targets).toEqual(dry.targets);
+    expect(result.execution?.ok && result.execution.results.map((r) => r.path)).toEqual([older, newer]);
+    expect(result.cap.pinnedPaths).toEqual([pinned]);
+    expect(result.cap.afterBytes).toBe(result.cap.pinnedBytes);
+    expect(result.cap.overByBytes).toBe(result.cap.afterBytes! - 1);
+    expect(result.cap.retainedPaths).toEqual([pinned]);
+    expect(fs.existsSync(pinned)).toBe(true);
+  });
+
+  it('counts an interrupted physical removal in the cap after the worktree was moved aside', async () => {
+    const tree = path.join(tmp, 'partial-cut');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    fs.writeFileSync(path.join(tree, 'package-lock.json'), Buffer.alloc(8192, 1));
+    const plan = await gather();
+    plan.verdicts[0]!.disposition = 'reclaimable';
+    const result = await reclaimCutWorktrees(plan, { maxBytes: 1 }, {
+      scanHolders: () => verified, archiveDir: path.join(ret, 'reclaim-archive'),
+      rmrf: async () => { throw new Error('injected incomplete physical deletion'); },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.cap.afterBytes).toBe(result.cap.beforeBytes);
+    expect(result.cap.overByBytes).toBeGreaterThan(8192);
+    expect(result.cap.retainedPaths[0]).toContain('.reclaim-trash-partial-cut-');
+  });
+
+  it('retains named-only cuts over cap without inventing deletion authority', async () => {
+    const tree = path.join(tmp, 'named-only');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    expect(plan.verdicts[0]!.disposition).toBe('named-only');
+    const result = await reclaimCutWorktrees(plan, { maxBytes: 1 });
+    expect(result.ok).toBe(true);
+    expect(result.targets).toEqual([]);
+    expect(result.cap.afterBytes).toBeGreaterThan(1);
+    expect(result.cap.retainedPaths).toEqual([tree]);
+    expect(fs.existsSync(tree)).toBe(true);
+  });
+
+  it('collects an expired cut below cap and reports zero remaining allocated bytes', async () => {
+    const tree = path.join(tmp, 'below-cap');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    plan.verdicts[0]!.disposition = 'reclaimable';
+    const result = await reclaimCutWorktrees(plan, {}, {
+      scanHolders: () => verified, archiveDir: path.join(ret, 'reclaim-archive'), appendAudit: () => {},
+    });
+    expect(result.ok).toBe(true);
+    expect(result.cap.beforeBytes).toBeGreaterThan(0);
+    expect(result.cap.beforeBytes).toBeLessThan(result.cap.maxBytes);
+    expect(result.cap.afterBytes).toBe(0);
+    expect(result.cap.overByBytes).toBe(0);
+    expect(result.cap.retainedPaths).toEqual([]);
+    expect(fs.existsSync(tree)).toBe(false);
+  });
+
+  it('charges shared hardlink allocation to pins before unpinned cuts', async () => {
+    const unpinned = path.join(tmp, 'a-unpinned'), pinned = path.join(tmp, 'z-pinned');
+    for (const tree of [unpinned, pinned]) g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const data = path.join(unpinned, 'package-lock.json');
+    fs.writeFileSync(data, Buffer.alloc(32768, 1));
+    fs.linkSync(data, path.join(pinned, 'package-lock.json'));
+    const plan = await gather();
+    const v = plan.verdicts.find((v) => v.path === pinned)!;
+    v.disposition = 'protected';
+    v.reasons = ['lease:agent-pin-test'];
+    const result = await reclaimCutWorktrees(plan, { dryRun: true, maxBytes: 1 });
+    expect(result.ok).toBe(true);
+    expect(result.cap.pinnedBytes).toBeGreaterThanOrEqual(fs.statSync(data).blocks * 512);
+    expect(result.cap.pinnedOverageBytes).toBe(result.cap.pinnedBytes! - 1);
+  });
+
+  it('refuses the whole sweep when allocated-byte measurement fails', async () => {
+    const tree = path.join(tmp, 'unmeasurable');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    plan.verdicts[0]!.disposition = 'reclaimable';
+    const bin = path.join(tmp, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'du'), '#!/bin/sh\nprintf "du: fixture permission denied\\n" >&2\nexit 1\n', { mode: 0o755 });
+    const previous = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await reclaimCutWorktrees(plan, { maxBytes: 1 });
+      expect(result.ok).toBe(false);
+      expect(result.cap.beforeBytes).toBeNull();
+      expect(result.cap.afterBytes).toBeNull();
+      expect(result.errors[0]).toContain('usage before reclaim');
+      const failure = JSON.parse(result.errors[0]!.split('usage before reclaim: ')[1]!);
+      expect(failure).toMatchObject({ code: 1, signal: null, killed: false,
+        stderr: 'du: fixture permission denied\n' });
+      expect(fs.existsSync(tree)).toBe(true);
+    } finally { process.env.PATH = previous; }
+  });
+
+  it('finishes a productive usage walk past ten seconds and counts only complete root totals', async () => {
+    const tree = path.join(tmp, 'productive-usage');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    const bin = path.join(tmp, 'streaming-du');
+    fs.mkdirSync(bin);
+    // One root can contain millions of files: summaries alone give no progress
+    // until its whole walk ends. Keep the real child alive beyond the old 10s
+    // absolute timeout, emitting the same NUL-framed records as du --all.
+    fs.writeFileSync(path.join(bin, 'du'), `#!${process.execPath}
+const root = ${JSON.stringify(tree)};
+let index = 0;
+const timer = setInterval(() => {
+  if (index++ < 11) process.stdout.write('4096\\t' + root + '/file-' + index + '\\0');
+  else { clearInterval(timer); process.stdout.write('8192\\t' + root + '\\0'); }
+}, 1000);
+`, { mode: 0o755 });
+    const previous = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await reclaimCutWorktrees(plan, { dryRun: true, maxBytes: 1 });
+      expect(result.errors).toEqual([]);
+      expect(result.ok).toBe(true);
+      expect(result.cap.beforeBytes).toBe(8192);
+      expect(result.cap.retainedPaths).toEqual([tree]);
+      expect(fs.existsSync(tree)).toBe(true);
+    } finally { process.env.PATH = previous; }
+  }, 25_000);
+
+  it.each(['missing-root', 'duplicate-root', 'malformed', 'outside-root', 'partial'])('refuses %s usage evidence before any removal', async (kind) => {
+    const tree = path.join(tmp, 'invalid-usage');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    plan.verdicts[0]!.disposition = 'reclaimable';
+    const row = `8192\t${tree}\0`;
+    const output = kind === 'missing-root' ? `4096\t${tree}/child\0`
+      : kind === 'duplicate-root' ? row + row
+      : kind === 'malformed' ? `NaN\t${tree}\0`
+      : kind === 'outside-root' ? `8192\t${tree}-outside\0` : row.slice(0, -1);
+    const bin = path.join(tmp, 'invalid-du');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'du'), `#!${process.execPath}\nprocess.stdout.write(${JSON.stringify(output)});\n`, { mode: 0o755 });
+    const previous = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await reclaimCutWorktrees(plan);
+      expect(result.ok).toBe(false);
+      expect(result.cap.beforeBytes).toBeNull();
+      expect(result.cap.afterBytes).toBeNull();
+      expect(result.errors[0]).toContain('usage before reclaim');
+      expect(fs.existsSync(tree)).toBe(true);
+      expect(fs.existsSync(path.join(ret, 'reclaim-archive'))).toBe(false);
+    } finally { process.env.PATH = previous; }
+  });
+
+  it('stops a still-productive usage walk at the existing shared run deadline', async () => {
+    const tree = path.join(tmp, 'deadline-usage');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    plan.verdicts[0]!.disposition = 'reclaimable';
+    const bin = path.join(tmp, 'deadline-du');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'du'), `#!${process.execPath}
+let index = 0;
+setInterval(() => process.stdout.write('4096\\t' + ${JSON.stringify(tree)} + '/child-' + index++ + '\\0'), 20);
+`, { mode: 0o755 });
+    const previous = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await reclaimCutWorktrees(plan, { notAfterMs: Date.now() + 300 });
+      expect(result.ok).toBe(false);
+      expect(result.errors[0]).toContain('run deadline exhausted');
+      expect(result.cap.beforeBytes).toBeNull();
+      expect(fs.existsSync(tree)).toBe(true);
+    } finally { process.env.PATH = previous; }
+  });
+
+  it('does not let partial records or stderr noise renew an idle usage walk', async () => {
+    const tree = path.join(tmp, 'idle-usage');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    plan.verdicts[0]!.disposition = 'reclaimable';
+    const bin = path.join(tmp, 'idle-du');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'du'), `#!${process.execPath}
+setInterval(() => { process.stdout.write('1'); process.stderr.write('noise'); }, 100);
+`, { mode: 0o755 });
+    const previous = process.env.PATH;
+    process.env.PATH = bin;
+    try {
+      const result = await reclaimCutWorktrees(plan);
+      expect(result.ok).toBe(false);
+      expect(result.errors[0]).toContain('no metadata progress for 10 seconds');
+      expect(result.cap.beforeBytes).toBeNull();
+      expect(fs.existsSync(tree)).toBe(true);
+    } finally { process.env.PATH = previous; }
+  }, 20_000);
+
+  it('measures allocated bytes for descendant paths containing tabs and newlines without following symlinks or opening FIFOs', async () => {
+    const tree = path.join(tmp, 'usage-separators');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const data = path.join(tree, 'file\twith\nseparators');
+    fs.writeFileSync(data, Buffer.alloc(8192, 1));
+    fs.symlinkSync(tmp, path.join(tree, 'outside'));
+    execFileSync('mkfifo', [path.join(tree, 'fifo')]);
+    const plan = await gather();
+    const result = await reclaimCutWorktrees(plan, { dryRun: true });
+    expect(result.ok).toBe(true);
+    expect(result.cap.beforeBytes).toBeGreaterThanOrEqual(fs.statSync(data).blocks * 512);
+    expect(result.cap.retainedPaths).toEqual([tree]);
+  });
+
   it('removes an OFFLOADED tree: the real directory and the symlink both go', async () => {
     const tree = path.join(tmp, 'relcut-0023-win');
     const offload = path.join(tmp, 'offload');
@@ -726,6 +976,62 @@ describe('gather + execute against a real temporary repo', () => {
     expect(held).toMatchObject({ ok: true, results: [{ removed: false, reason: 'in use: pid 9 cwd' }] });
     expect(fs.existsSync(tree)).toBe(true);
   });
+
+  it('re-reads agent pins under the executor mutex when a pin lands after planning', async () => {
+    const tree = path.join(tmp, 'relcut-pin-race');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const previousRoot = process.env.PAPERCUSP_RELEASE_RETENTION_ROOT;
+    process.env.PAPERCUSP_RELEASE_RETENTION_ROOT = ret;
+    try {
+      // The plan is intentionally captured before the pin exists: this is the
+      // read-to-delete race that a plan-only check cannot close.
+      const plan = await gather();
+      createRetentionPin({ path: tree, owner: 'test-owner', reason: 'race regression',
+        expiresAt: new Date(Date.now() + DAY).toISOString() }, { dir: ret });
+      const result = await executeCutReclaim(plan, [tree], {
+        scanHolders: () => ({ verified: true, holders: new Map() }),
+        archiveDir: path.join(ret, 'archive'),
+        appendAudit: () => {},
+      });
+      expect(result).toMatchObject({ ok: true, results: [{ path: tree, removed: false, reason: 'active retention pin' }] });
+      expect(fs.existsSync(tree)).toBe(true);
+    } finally {
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_RELEASE_RETENTION_ROOT;
+      else process.env.PAPERCUSP_RELEASE_RETENTION_ROOT = previousRoot;
+    }
+  });
+
+  it('waits for a pin writer before its final protection read', async () => {
+    const tree = path.join(tmp, 'relcut-pin-writer');
+    g(repo, 'worktree', 'add', '-q', '--detach', tree);
+    const plan = await gather();
+    const envKeys = ['PAPERCUSP_RELEASE_RETENTION_ROOT', 'PAPERCUSP_FS_MUTEX_LOCK_DIR', 'PAPERCUSP_DISABLE_FS_MUTEX'] as const;
+    const saved = envKeys.map((key) => process.env[key]);
+    process.env.PAPERCUSP_RELEASE_RETENTION_ROOT = ret;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = path.join(tmp, 'mutexes');
+    delete process.env.PAPERCUSP_DISABLE_FS_MUTEX;
+    let execution!: ReturnType<typeof executeCutReclaim>;
+    try {
+      await withFsMutex('papercusp-disk-retention', async () => {
+        execution = executeCutReclaim(plan, [tree], {
+          scanHolders: () => ({ verified: true, holders: new Map() }),
+          archiveDir: path.join(ret, 'archive'), appendAudit: () => {},
+        });
+        // An executor that reads before waiting or never takes the mutex would
+        // miss this pin. The writer still owns the lock for the whole delay.
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        createRetentionPin({ path: tree, owner: 'test-writer', reason: 'pin while executor waits',
+          expiresAt: new Date(Date.now() + DAY).toISOString() }, { dir: ret });
+      });
+      expect(await execution).toMatchObject({ ok: true, results: [{ removed: false, reason: 'active retention pin' }] });
+      expect(fs.existsSync(tree)).toBe(true);
+    } finally {
+      await execution?.catch(() => {});
+      envKeys.forEach((key, i) => {
+        if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i];
+      });
+    }
+  });
 });
 
 // WI-10005315 (owner directive #1155): this module runs inside the operator host via
@@ -874,7 +1180,7 @@ describe('scanProcHolders (async /proc walk) against a fabricated proc root', ()
     expect(pending).toBeInstanceOf(Promise);
     const scan = await pending;
     expect(scan.verified).toBe(true);
-    expect(scan.holders.get(held)).toEqual([`pid ${process.pid} fd`]);
+    expect(scan.holders.get(held)).toEqual([`pid ${process.pid} reference`]);
   });
 
   it('refuses verification in a nested PID namespace (a confident false idle otherwise)', async () => {
@@ -882,6 +1188,28 @@ describe('scanProcHolders (async /proc walk) against a fabricated proc root', ()
     const scan = await scanProcHolders([{ key: held, prefixes: [held] }], proc);
     expect(scan.verified).toBe(false);
     expect(scan.verified === false && scan.reason).toMatch(/nested-pid-namespace/);
+  });
+
+  it('refuses missing namespace evidence and incomplete worker reads', async () => {
+    fs.writeFileSync(path.join(proc, 'self', 'status'), 'Name:\tnode\n');
+    expect((await scanProcHolders([], proc)).verified).toBe(false);
+    const scan = vi.fn().mockResolvedValue({ complete: false,
+      byPath: new Map([[process.cwd(), [String(process.pid)]]]), diagnostics: { readFailures: 1 } });
+    const result = await scanProcHolders([{ key: held, prefixes: [held] }], '/proc', { scan });
+    expect(result.verified).toBe(false);
+    expect(result.reason).toContain('holder-scan-incomplete');
+  });
+
+  it('reuses the isolated privileged scanner and preserves alias holders with bounded diagnostics', async () => {
+    const diagnostics = { elapsedMs: 5, processesTotal: 10, processesScanned: 10, descriptorsScanned: 50, readFailures: 0 };
+    const scan = vi.fn().mockResolvedValue({ complete: true, diagnostics,
+      byPath: new Map([[process.cwd(), [String(process.pid)]], [held, ['42']], ['/real-cut', ['42', '7']]]) });
+    const result = await scanProcHolders([{ key: held, prefixes: [held, '/real-cut'] }], '/proc', { scan });
+    expect(scan).toHaveBeenCalledWith([held, '/real-cut'], { isolate: true, includeProcessLinks: true });
+    expect(result).toEqual({ verified: true, diagnostics,
+      holders: new Map([[held, ['pid 7 reference', 'pid 42 reference']]]) });
+    scan.mockResolvedValueOnce({ complete: true, byPath: new Map() });
+    expect((await scanProcHolders([], '/proc', { scan })).verified).toBe(false);
   });
 });
 

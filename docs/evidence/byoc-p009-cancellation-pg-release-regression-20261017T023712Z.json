@@ -1,0 +1,959 @@
+{
+  "schemaVersion": 1,
+  "kind": "private-http-cancellation-pg-release-regression-before-fix",
+  "workItem": "WI-6554700010016680",
+  "parent": "WI-6554700010016666",
+  "runId": "20261017T023712Z-3765564",
+  "outerRecovery": {
+    "runId": "07804410-6747-4ff6-a574-9b163fab6a55",
+    "taskId": "0mvbsclt21r3u02nni4",
+    "status": "fail",
+    "exitCode": 1
+  },
+  "resultPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T023712Z-3765564/result.json",
+  "sourcePath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T023712Z-3765564/phases/prepare/source.json",
+  "diagnosticsPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T023712Z-3765564/phases/execute/read-cancellation-pg.ndjson",
+  "lifecyclePath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T023712Z-3765564/phases/execute/lifecycle.json",
+  "preFixSourceCommit": "8fdb7d20436896addb05b9055e306907eaa29d7e",
+  "preFixSourceFiles": [
+    {
+      "path": "apps/operator/bin/hono-host.ts",
+      "sha256": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580",
+      "gitSha256": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580"
+    },
+    {
+      "path": "apps/operator/bin/host-handler.ts",
+      "sha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0",
+      "gitSha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0"
+    },
+    {
+      "path": "libs/generic/tooldef/src/dispatch-stack.ts",
+      "sha256": "26fbeb666bfbc575f2a312e2df9c41671e1483f8f6a3a894a35587ba8aceed9b",
+      "gitSha256": "26fbeb666bfbc575f2a312e2df9c41671e1483f8f6a3a894a35587ba8aceed9b"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/private-read-cancellation-http.integration.test.ts",
+      "sha256": "5bc503c128d32c114771f676fee4549d5aa1ba4b7de494e914e68f1078d32cfb",
+      "gitSha256": "52d393ccc288ab82b968439cca6ea4553f7510cf8663f907764406ba99bc3e64"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/work_items/get.ts",
+      "sha256": "2ee16d4f2d06fa9920e62bf3a22941f9283e2b4c1d34b9088587faa5afefc53d",
+      "gitSha256": "2ee16d4f2d06fa9920e62bf3a22941f9283e2b4c1d34b9088587faa5afefc53d"
+    },
+    {
+      "path": "packages/operator-core/lib/capabilities/invoke.ts",
+      "sha256": "d38e35e116ca1d7fcc002a25d5b1e9a0bfa1263d9ad8b54836dd5da56080d3f5",
+      "gitSha256": "d38e35e116ca1d7fcc002a25d5b1e9a0bfa1263d9ad8b54836dd5da56080d3f5"
+    },
+    {
+      "path": "packages/operator-core/lib/carry-note.ts",
+      "sha256": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72",
+      "gitSha256": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts",
+      "sha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4",
+      "gitSha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4"
+    },
+    {
+      "path": "packages/operator-core/lib/pg-read-query.ts",
+      "sha256": "9f3150caaac9a47bd86dc42e81635700ac0f0d457565e920320c748940aa8c54",
+      "gitSha256": "9f3150caaac9a47bd86dc42e81635700ac0f0d457565e920320c748940aa8c54"
+    },
+    {
+      "path": "packages/operator-core/lib/projected-tool-deps.ts",
+      "sha256": "848a8d9d60249f76587ce15e14b15582ee8474f1c92f4c134bc4ffa55e6a387e",
+      "gitSha256": "848a8d9d60249f76587ce15e14b15582ee8474f1c92f4c134bc4ffa55e6a387e"
+    },
+    {
+      "path": "packages/operator-core/lib/work-item-checkpoint.ts",
+      "sha256": "0db6153cdd1142b467e940c003ea52c72a2714da6d3dcd04c5c05acf920e8e1a",
+      "gitSha256": "0db6153cdd1142b467e940c003ea52c72a2714da6d3dcd04c5c05acf920e8e1a"
+    },
+    {
+      "path": "packages/operator-core/lib/work-items.ts",
+      "sha256": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d",
+      "gitSha256": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d"
+    },
+    {
+      "path": "packages/operator-core/test/isolated-integration-proof.ts",
+      "sha256": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d",
+      "gitSha256": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d"
+    },
+    {
+      "path": "packages/operator-core/test/private-http-workspace-preflight.ts",
+      "sha256": "1ad346261702d8b1620cd7482f9fa3131f43d4558a7218029bcc104159f25ff3",
+      "gitSha256": "1ad346261702d8b1620cd7482f9fa3131f43d4558a7218029bcc104159f25ff3"
+    },
+    {
+      "path": "packages/operator-core/test/private-read-cancellation-http-scenario.ts",
+      "sha256": "760faaba4d296defdaaf2d88caae5b8ff98c71966b54446ca7d2c372718e7f5d",
+      "gitSha256": "87e00b008fd1c040bf3c3dabfea0e157e83244e4c4d07b4344b001eb255ce46e"
+    },
+    {
+      "path": "packages/operator-core/test/staging-first-http-fixture.ts",
+      "sha256": "b3b8b61b478024c8435b42aadc7b3adb30eac7e38df8b978fb21fd0850595455",
+      "gitSha256": "b3b8b61b478024c8435b42aadc7b3adb30eac7e38df8b978fb21fd0850595455"
+    },
+    {
+      "path": "packages/tooldef-mcp/src/index.ts",
+      "sha256": "bfb7cec8c7f48ef5b0ac2abc03041c47913a2feba91634ced520b204d3a39e74",
+      "gitSha256": "bfb7cec8c7f48ef5b0ac2abc03041c47913a2feba91634ced520b204d3a39e74"
+    },
+    {
+      "path": "scripts/lib/isolated-runtime-start.mjs",
+      "sha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d",
+      "gitSha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d"
+    },
+    {
+      "path": "scripts/with-test-pg.mjs",
+      "sha256": "50e73fa41c584d233c856297406bc897cef88ab9b83dbf4489fc617f6d0a7fbc",
+      "gitSha256": "50e73fa41c584d233c856297406bc897cef88ab9b83dbf4489fc617f6d0a7fbc"
+    },
+    {
+      "path": "scripts/lib/with-test-pg-cleanup.mjs",
+      "sha256": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61",
+      "gitSha256": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61"
+    }
+  ],
+  "phases": [
+    {
+      "phase": "prepare",
+      "evidenceDir": "/mnt/data/offload/verification-harness/isolated-integration/20261017T023712Z-3765564/phases/prepare",
+      "startedAt": "2026-10-17T02:37:12.306Z",
+      "endedAt": "2026-10-17T02:37:19.328Z",
+      "elapsedMs": 7022,
+      "status": "passed",
+      "step": null,
+      "reasonCode": null
+    },
+    {
+      "phase": "execute",
+      "evidenceDir": "/mnt/data/offload/verification-harness/isolated-integration/20261017T023712Z-3765564/phases/execute",
+      "startedAt": "2026-10-17T02:37:19.329Z",
+      "endedAt": "2026-10-17T02:39:28.390Z",
+      "elapsedMs": 129061,
+      "status": "failed",
+      "step": null,
+      "reasonCode": "threw",
+      "detail": "ite_bytes\":\"0\",\"cancelled_write_bytes\":\"0\"}}]}\n[with-test-pg] pg stopping postgres\n[with-test-pg] cleanup {\"kind\":\"isolated-runtime-cleanup\",\"stage\":\"pg-log\",\"elapsedMs\":6402,\"supervisorPid\":3777813,\"workspace\":\"test-runtime-2b9c81f3-f5d\",\"runtimeRoot\":\"/tmp/pcv/papercusp-test-runtime-b6rF1z\",\"dataDir\":\"/tmp/pcv/papercusp-test-pg-RJT3sv\",\"pgPort\":45653,\"message\":\"stopping postgres\"}\n[with-test-pg] pg pg: 2026-10-16 22:39:27.471 EDT [3781232] LOG:  received fast shutdown request\n2026-10-16 22:39:27.472 EDT [3781232] LOG:  aborting any active transactions\n\n[with-test-pg] cleanup {\"kind\":\"isolated-runtime-cleanup\",\"stage\":\"pg-log\",\"elapsedMs\":6403,\"supervisorPid\":3777813,\"workspace\":\"test-runtime-2b9c81f3-f5d\",\"runtimeRoot\":\"/tmp/pcv/papercusp-test-runtime-b6rF1z\",\"dataDir\":\"/tmp/pcv/papercusp-test-pg-RJT3sv\",\"pgPort\":45653,\"message\":\"pg: 2026-10-16 22:39:27.471 EDT [3781232] LOG:  received fast shutdown request\\n2026-10-16 22:39:27.472 EDT [3781232] LOG:  aborting any active transactions\\n\"}\n[with-test-pg] pg pg: 2026-10-16 22:39:27.494 EDT [3781232] LOG:  background worker \"logical replication launcher\" (PID 3781263) exited with exit code 1\n\n[with-test-pg] cleanup {\"kind\":\"isolated-runtime-cleanup\",\"stage\":\"pg-log\",\"elapsedMs\":6425,\"supervisorPid\":3777813,\"workspace\":\"test-runtime-2b9c81f3-f5d\",\"runtimeRoot\":\"/tmp/pcv/papercusp-test-runtime-b6rF1z\",\"dataDir\":\"/tmp/pcv/papercusp-test-pg-RJT3sv\",\"pgPort\":45653,\"message\":\"pg: 2026-10-16 22:39:27.494 EDT [3781232] LOG:  background worker \\\"logical replication launcher\\\" (PID 3781263) exited with exit code 1\\n\"}\n[with-test-pg] pg pg: 2026-10-16 22:39:27.495 EDT [3781249] LOG:  shutting down\n\n[with-test-pg] cleanup {\"kind\":\"isolated-runtime-cleanup\",\"stage\":\"pg-log\",\"elapsedMs\":6426,\"supervisorPid\":3777813,\"workspace\":\"test-runtime-2b9c81f3-f5d\",\"runtimeRoot\":\"/tmp/pcv/papercusp-test-runtime-b6rF1z\",\"dataDir\":\"/tmp/pcv/papercusp-test-pg-RJT3sv\",\"pgPort\":45653,\"message\":\"pg: 2026-10-16 22:39:27.495 EDT [3781249] LOG:  shutting down\\n\"}\n[with-test-pg] pg pg: 2026-10-16 22:39:27.495 EDT [3781249] LOG:  checkpoint starting: shutdown immediate\n\n[with-test-pg] cleanup {\"kind\":\"isolated-runtime-cleanup\",\"stage\":\"pg-log\",\"elapsedMs\":6427,\"supervisorPid\":3777813,\"workspace\":\"test-runtime-2b9c81f3-f5d\",\"runtimeRoot\":\"/tmp/pcv/papercusp-test-runtime-b6rF1z\",\"dataDir\":\"/tmp/pcv/papercusp-test-pg-RJT3sv\",\"pgPort\":45653,\"message\":\"pg: 2026-10-16 22:39:27.495 EDT [3781249] LOG:  checkpoint starting: shutdown immediate\\n\"}\n[with-test-pg] pg pg: 2026-10-16 22:39:27.597 EDT [3781249] LOG:  checkpoint complete: wrote 4288 buffers (26.2%), wrote 4 SLRU buffers; 0 WAL file(s) added, 0 removed, 3 recycled; write=0.076 s, sync=0.001 s, total=0.102 s; sync files=0, longest=0.000 s, average=0.000 s; distance=55721 kB, estimate=55721 kB; lsn=0/4DB9EE0, redo lsn=0/4DB9EE0\n\n[with-test-pg] cleanup {\"kind\":\"isolated-runtime-cleanup\",\"stage\":\"pg-log\",\"elapsedMs\":6528,\"supervisorPid\":3777813,\"workspace\":\"test-runtime-2b9c81f3-f5d\",\"runtimeRoot\":\"/tmp/pcv/papercusp-test-runtime-b6rF1z\",\"dataDir\":\"/tmp/pcv/papercusp-test-pg-RJT3sv\",\"pgPort\":45653,\"message\":\"pg: 2026-10-16 22:39:27.597 EDT [3781249] LOG:  checkpoint complete: wrote 4288 buffers (26.2%), wrote 4 SLRU buffers; 0 WAL file(s) added, 0 removed, 3 recycled; write=0.076 s, sync=0.001 s, total=0.102 s; sync files=0, longest=0.000 s, average=0.000 s; distance=55721 kB, estimate=55721 kB; lsn=0/4DB9EE0, redo lsn=0/4DB9EE0\\n\"}\n[with-test-pg] pg pg: 2026-10-16 22:39:27.650 EDT [3781232] LOG:  database system is shut down\n\n[with-test-pg] cleanup {\"kind\":\"isolated-runtime-cleanup\",\"stage\":\"pg-log\",\"elapsedMs\":6582,\"supervisorPid\":3777813,\"workspace\":\"test-runtime-2b9c81f3-f5d\",\"runtimeRoot\":\"/tmp/pcv/papercusp-test-runtime-b6rF1z\",\"dataDir\":\"/tmp/pcv/papercusp-test-pg-RJT3sv\",\"pgPort\":45653,\"message\":\"pg: 2026-10-16 22:39:27.650 EDT [3781232] LOG:  database system is shut down\\n\"}\n[with-test-pg] cleanup {\"kind\":\"isolated-runtime-cleanup\",\"stage\":\"pg-stopped\",\"elapsedMs\":6583,\"supervisorPid\":3777813,\"workspace\":\"test-runtime-2b9c81f3-f5d\",\"runtimeRoot\":\"/tmp/pcv/papercusp-test-runtime-b6rF1z\",\"dataDir\":\"/tmp/pcv/papercusp-test-pg-RJT3sv\",\"pgPort\":45653,\"health\":{\"state\":\"running\",\"restarts\":0,\"pendingAttempt\":0,\"lastExit\":null}}\n[with-test-pg] cleanup {\"kind\":\"isolated-runtime-cleanup\",\"stage\":\"remove-private-state\",\"elapsedMs\":6584,\"supervisorPid\":3777813,\"workspace\":\"test-runtime-2b9c81f3-f5d\",\"runtimeRoot\":\"/tmp/pcv/papercusp-test-runtime-b6rF1z\",\"dataDir\":\"/tmp/pcv/papercusp-test-pg-RJT3sv\",\"pgPort\":45653}\n[with-test-pg] cleanup {\"kind\":\"isolated-runtime-cleanup\",\"stage\":\"pg-data-remove\",\"elapsedMs\":6584,\"supervisorPid\":3777813,\"workspace\":\"test-runtime-2b9c81f3-f5d\",\"runtimeRoot\":\"/tmp/pcv/papercusp-test-runtime-b6rF1z\",\"dataDir\":\"/tmp/pcv/papercusp-test-pg-RJT3sv\",\"pgPort\":45653}\n[with-test-pg] cleanup {\"kind\":\"isolated-runtime-cleanup\",\"stage\":\"pg-data-removed\",\"elapsedMs\":6999,\"supervisorPid\":3777813,\"workspace\":\"test-runtime-2b9c81f3-f5d\",\"runtimeRoot\":\"/tmp/pcv/papercusp-test-runtime-b6rF1z\",\"dataDir\":\"/tmp/pcv/papercusp-test-pg-RJT3sv\",\"pgPort\":45653}\n[with-test-pg] cleanup {\"kind\":\"isolated-runtime-cleanup\",\"stage\":\"runtime-remove\",\"elapsedMs\":6999,\"supervisorPid\":3777813,\"workspace\":\"test-runtime-2b9c81f3-f5d\",\"runtimeRoot\":\"/tmp/pcv/papercusp-test-runtime-b6rF1z\",\"dataDir\":\"/tmp/pcv/papercusp-test-pg-RJT3sv\",\"pgPort\":45653}\n[with-test-pg] cleanup {\"kind\":\"isolated-runtime-cleanup\",\"stage\":\"runtime-removed\",\"elapsedMs\":7261,\"supervisorPid\":3777813,\"workspace\":\"test-runtime-2b9c81f3-f5d\",\"runtimeRoot\":\"/tmp/pcv/papercusp-test-runtime-b6rF1z\",\"dataDir\":\"/tmp/pcv/papercusp-test-pg-RJT3sv\",\"pgPort\":45653}\n[with-test-pg] cleanup {\"kind\":\"isolated-runtime-cleanup\",\"stage\":\"complete\",\"elapsedMs\":7262,\"supervisorPid\":3777813,\"workspace\":\"test-runtime-2b9c81f3-f5d\",\"runtimeRoot\":\"/tmp/pcv/papercusp-test-runtime-b6rF1z\",\"dataDir\":\"/tmp/pcv/papercusp-test-pg-RJT3sv\",\"pgPort\":45653,\"runtimeRemoved\":true,\"pgDataRemoved\":true}\n: expected { code: 1, signal: null, \u2026(5) } to match object { code: +0, signal: null, \u2026(3) }\n(2 matching properties omitted from actual)"
+    },
+    {
+      "phase": "teardown",
+      "evidenceDir": "/mnt/data/offload/verification-harness/isolated-integration/20261017T023712Z-3765564/phases/teardown",
+      "startedAt": "2026-10-17T02:39:28.391Z",
+      "endedAt": "2026-10-17T02:39:28.392Z",
+      "elapsedMs": 1,
+      "status": "passed",
+      "step": null,
+      "reasonCode": null
+    }
+  ],
+  "selectedWait": {
+    "pid": 3934642,
+    "backendStart": "2026-10-16 22:39:13.492785-04",
+    "queryStart": "2026-10-16 22:39:15.072154-04",
+    "state": "active",
+    "waitEventType": "Lock",
+    "blockingPids": [
+      3888553
+    ]
+  },
+  "holderPid": 3888553,
+  "serverCancellationLedger": {
+    "id": "2",
+    "status": "ok",
+    "errorCode": null,
+    "errorMessage": "cancelled",
+    "durationMs": 40,
+    "metadata": {
+      "format": "json",
+      "kernel": {
+        "enforce": {
+          "applied": false,
+          "decision": "allow",
+          "serverAudit": {
+            "authorityTimings": {
+              "schemaVersion": 1,
+              "controlAnchorSql": {
+                "calls": 1,
+                "totalMs": 1.9,
+                "executions": [
+                  {
+                    "outcome": "fulfilled",
+                    "traceId": "ce6512f9-e114-4fb6-ae66-2c8f0f3bf87d",
+                    "backendPid": null,
+                    "queryStart": null,
+                    "clientQueryMs": 1.8,
+                    "queryFingerprint": "controlAnchorSql/v1",
+                    "clientCompletedAt": "2026-10-17T02:39:15.070Z",
+                    "poolAcquisitionMs": 0.1
+                  }
+                ]
+              }
+            }
+          },
+          "availability": "unavailable"
+        },
+        "preflight": {
+          "applied": false,
+          "decision": "allow",
+          "serverAudit": {
+            "authorityTimings": {
+              "schemaVersion": 1,
+              "controlAnchorSql": {
+                "calls": 1,
+                "totalMs": 2,
+                "executions": [
+                  {
+                    "outcome": "fulfilled",
+                    "traceId": "b9ea542a-d82a-4f3d-8cc0-37eb583380ea",
+                    "backendPid": null,
+                    "queryStart": null,
+                    "clientQueryMs": 1.8,
+                    "queryFingerprint": "controlAnchorSql/v1",
+                    "clientCompletedAt": "2026-10-17T02:39:15.067Z",
+                    "poolAcquisitionMs": 0.1
+                  }
+                ]
+              }
+            }
+          },
+          "availability": "unavailable"
+        }
+      },
+      "uiClientId": "private-read-cancellation-test-runtime-2b9c81f3-f5d",
+      "workItemsGet": {
+        "mode": "complete",
+        "absent": 0,
+        "budgetMs": 30000,
+        "available": 0,
+        "elapsedMs": 32,
+        "requested": 1,
+        "unavailable": 1,
+        "baseReadMaxMs": 0,
+        "schemaVersion": "work-items-get-read-v1",
+        "enrichmentMaxMs": 32,
+        "receiptComplete": true,
+        "baseReadDiagnostics": [
+          {
+            "id": "WI-1",
+            "status": "fulfilled",
+            "elapsedMs": 0
+          }
+        ],
+        "enrichmentDiagnostics": [
+          {
+            "id": "WI-1",
+            "stage": "checkpoint",
+            "status": "pending",
+            "elapsedMs": 32
+          }
+        ],
+        "outerStageAttribution": "tool_invocations.duration_ms minus elapsedMs is combined dispatch/projection/serialization time"
+      },
+      "handlerPhases": {
+        "unit": "ms",
+        "phases": [
+          {
+            "phase": "dispatch:kernel-preflight",
+            "startMs": 0,
+            "durationMs": 2
+          },
+          {
+            "phase": "dispatch:capability-envelope",
+            "startMs": 2,
+            "durationMs": 1
+          },
+          {
+            "phase": "dispatch:kernel-enforce",
+            "startMs": 3,
+            "durationMs": 3
+          }
+        ],
+        "timing": "wall-time-possibly-concurrent",
+        "pending": [],
+        "elapsedMs": 39,
+        "attributedMs": 6,
+        "schemaVersion": "handler-phases-v1",
+        "completedAttributedMs": 6,
+        "omittedCompletedCount": 0
+      },
+      "resultOutcome": "soft-failure",
+      "dispatchStages": {
+        "unit": "ms",
+        "steps": [
+          {
+            "name": "kernel-preflight",
+            "elapsedMs": 2.183665000000474
+          },
+          {
+            "name": "default-deny",
+            "elapsedMs": 0.006843000001026667
+          },
+          {
+            "name": "role-allowlist",
+            "elapsedMs": 0.009919000000081724
+          },
+          {
+            "name": "capability-check",
+            "elapsedMs": 0.004769000001033419
+          },
+          {
+            "name": "capability-envelope",
+            "elapsedMs": 1.1996710000003077
+          },
+          {
+            "name": "role-requirement",
+            "elapsedMs": 0.006212000000232365
+          },
+          {
+            "name": "harness-check",
+            "elapsedMs": 0.003798000001552282
+          },
+          {
+            "name": "quota",
+            "elapsedMs": 0.003516999999192194
+          },
+          {
+            "name": "authorize",
+            "elapsedMs": 0.0051900000016757986
+          },
+          {
+            "name": "preconditions",
+            "elapsedMs": 0.011351999999533291
+          },
+          {
+            "name": "entity-check",
+            "elapsedMs": 0.007333999999900698
+          },
+          {
+            "name": "premises",
+            "elapsedMs": 0.007214000001113163
+          },
+          {
+            "name": "timeout",
+            "elapsedMs": 0.0409189999991213
+          },
+          {
+            "name": "idle-watchdog",
+            "elapsedMs": 0.0029460000005201437
+          },
+          {
+            "name": "replay-buffer",
+            "elapsedMs": 0.0031060000001161825
+          },
+          {
+            "name": "ctx-bindings",
+            "elapsedMs": 0.1261930000000575
+          },
+          {
+            "name": "kernel-enforce",
+            "elapsedMs": 2.1872719999992114
+          },
+          {
+            "name": "invoke",
+            "elapsedMs": 33.65132199999971
+          }
+        ],
+        "timing": "wall-time-sequential-steps",
+        "elapsedMs": 39.70586100000037,
+        "schemaVersion": "dispatch-stages-v1"
+      },
+      "softFailureReason": "cancelled"
+    }
+  },
+  "postDispositionObservationMs": 5173.488154999999,
+  "samples": [
+    {
+      "stage": "selected-http-wait",
+      "observedAtMs": 90314.302935,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "cancellation-settled",
+      "observedAtMs": 90351.639604,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 90357.037348,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 90610.685677,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 90865.155186,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 91118.494069,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 91372.585962,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 91627.165014,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 91880.417031,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 92136.89994,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 92390.56348,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 92644.72509,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 92898.598535,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 93152.565611,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 93407.282141,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 93661.556089,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 93915.476426,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 94169.181478,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 94423.933468,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 94678.465405,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 94932.273417,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-still-active-before-rollback",
+      "observedAtMs": 95186.104003,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "pg-query-release-check",
+      "observedAtMs": 95525.127759,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ]
+    },
+    {
+      "stage": "scenario-failed",
+      "observedAtMs": 95532.433358,
+      "selectedActivity": [
+        {
+          "pid": 3934642,
+          "state": "active",
+          "xactStart": "2026-10-16 22:39:15.072154-04",
+          "queryStart": "2026-10-16 22:39:15.072154-04",
+          "waitEventType": "Lock",
+          "blockingPids": [
+            3888553
+          ],
+          "query": "\n      SELECT note, updated_ts,\n             journal -> -1 -> 'latestUpdate' AS latest_update,\n             journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint\n        FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 LIMIT 1"
+        }
+      ],
+      "holderLocks": [
+        {
+          "pid": 3888553,
+          "mode": "AccessExclusiveLock",
+          "granted": true
+        }
+      ],
+      "error": "AssertionError [ERR_ASSERTION]: governed cancellation must stop the exact PostgreSQL query before the fixture rolls back its holder"
+    }
+  ],
+  "lifecycleEnded": {
+    "kind": "isolated-runtime-end",
+    "childPid": 3806672,
+    "exitCode": 1,
+    "signal": null,
+    "runtimeRemoved": true,
+    "pgDataRemoved": true,
+    "observedAt": "2026-10-17T02:39:28.332Z"
+  },
+  "rootCause": "work_items:get races already-started checkpoint metadata read against caller abort, while the raw metadata SELECT receives no signal and remains active. Prior guard released the holder before checking query cancellation.",
+  "alternativeFalsified": "Normal asynchronous PG cancellation settles within the five-second pre-rollback observation window. The same query stayed active throughout while the same holder remained locked.",
+  "scope": "Deliberate recurrence-guard red with successful private teardown; not a full suite/gate failure or historical6657 root-cause claim."
+}

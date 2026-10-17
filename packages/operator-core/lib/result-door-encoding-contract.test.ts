@@ -264,7 +264,11 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     `;
     const output = execFileSync(process.execPath, [
       '--import', 'tsx', '--input-type=module', '-e', probe,
-      fileURLToPath(new URL('./agent-tools/capability/read.ts', import.meta.url)),
+      // Import the handler-only module in the child. Loading the public
+      // capability:read wrapper also boots the full agent-mcp catalog, which
+      // can consume the entire 15s contract-probe budget before the handler
+      // is exercised.
+      fileURLToPath(new URL('./agent-tools/capability/read-handler.ts', import.meta.url)),
       reference.uri, WS, owner, volatile!.uri,
     ], { encoding: 'utf8', timeout: 15_000, maxBuffer: 30_000 });
     const line = output.split('\n').find(row => row.startsWith('MEDIA_RECOVERY_RESULT '));

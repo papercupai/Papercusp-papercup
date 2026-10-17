@@ -13,7 +13,7 @@ export const HOSTED_ENTITLEMENT_SCHEMA_VERSION = 1 as const;
 export const HOSTED_CLOUD_PROVIDERS = ['gcp', 'aws', 'azure'] as const;
 export type HostedCloudProvider = (typeof HOSTED_CLOUD_PROVIDERS)[number];
 
-export const HOSTED_ENTITLEMENT_SOURCES = ['private-beta', 'staff-override', 'billing', 'migration'] as const;
+export const HOSTED_ENTITLEMENT_SOURCES = ['private-beta', 'staff-override', 'billing', 'migration', 'trial'] as const;
 export type HostedEntitlementSource = (typeof HOSTED_ENTITLEMENT_SOURCES)[number];
 
 export type HostedEntitlementActor =
@@ -76,6 +76,12 @@ export interface HostedEntitlementBundle {
   readonly bundleVersion: number;
   readonly entitlements: HostedEntitlementSet;
   readonly record: HostedEntitlementRecordMetadata;
+}
+
+/** Server-authored signup policy; never accepted from a signup request. */
+export interface HostedTrialEntitlementPolicy {
+  bundle: HostedEntitlementBundle;
+  assignmentDurationMs: number;
 }
 
 export interface HostedEntitlementAssignment {
@@ -232,7 +238,7 @@ function recordMetadata(input: unknown, path: string): HostedEntitlementRecordMe
   if ((value.source === 'private-beta' || value.source === 'staff-override') && parsedActor.kind !== 'staff') {
     failure('invalid_value', `${path}.actor.kind`, `${value.source} records require a distinct staff principal`);
   }
-  if ((value.source === 'billing' || value.source === 'migration') && parsedActor.kind !== 'service') {
+  if ((value.source === 'billing' || value.source === 'migration' || value.source === 'trial') && parsedActor.kind !== 'service') {
     failure('invalid_value', `${path}.actor.kind`, `${value.source} records require a service principal`);
   }
   const parsedInterval = interval({ effectiveFrom: value.effectiveFrom, effectiveUntil: value.effectiveUntil }, path);

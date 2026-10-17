@@ -1,0 +1,129 @@
+{
+  "schemaVersion": 1,
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "workItem": "WI-6554700010015799",
+  "status": "applied-amendment-not-acceptance",
+  "sourceRubricRevision": 2,
+  "sourceCriteriaHash": "72fa1d166ab5904819bf0c59d0d25a1d42840e8cd144348e44c1a8ab3954ef13",
+  "application": {
+    "idempotencyKey": "hybrid-d074-d075-d076-coverage-20261017-apply-v1",
+    "approvalConversation": "conv-mvbtb65j-0000-9a678df9bc5e455c82d0ab56f23f21d2",
+    "previewPostRef": "thread-post:1185710",
+    "approvalRef": "thread-post:1185715",
+    "decisionRef": "agent-capacity-and-cost-gcp-2026-09-30#D-079",
+    "rubricRevision": 3,
+    "criteriaHash": "46ef024dfb659f63f154b9e101a1aaa90ad5a704c123f25d628deec3415ddc69",
+    "barSetHash": "a2ba85b9767c0dabed63a46a93c3d50765770f3beb0e0274545ac562ed760e33",
+    "criteriaCount": 16,
+    "first13CriterionObjectsEqualRevision2": true,
+    "planRevisionAtReadback": 219,
+    "planContentHash": "921afa2ab40a6c0f715e269ade96272b0b472b1352a9170915b106972cc9d422",
+    "receiptPath": "/tmp/p537-r2-amend-apply-result.json",
+    "readbackPath": "/tmp/p537-rubric-live-0320.json",
+    "planReadbackPath": "/tmp/p537-plan-meta-0320.json",
+    "verification": "Read canonical rubric and plan after recovery. Revision 3 has all 16 criteria; its first 13 complete criterion objects exactly equal the saved revision 2. This records the existing application and does not reapply it."
+  },
+  "currentVetting": {
+    "status": "blocking-critique-not-attested",
+    "requestKey": "p537-acceptance-rubric-r3-vet-20261017",
+    "conversation": "conv-request-ca3ce552eeaf76627670e459e66aab0cc510737a2534099b3a8dbd1c1d08d51a",
+    "criteriaHash": "46ef024dfb659f63f154b9e101a1aaa90ad5a704c123f25d628deec3415ddc69",
+    "critiquePost": "thread-post:1185771",
+    "critiqueReadback": "/tmp/p537-review-live-0345.json",
+    "blockingFinding": "R-6, R-9, R-10 and R-11 require structured test bindings. Other five meta dimensions pass; live and deployed manual remainders are justified. This is rubric quality only.",
+    "preparedPartialRepair": {
+      "status": "applied-after-routed-outside-lineage-approval",
+      "argsPath": "/tmp/p537-r3-tree-binding-preview-args.json",
+      "previewPath": "/tmp/p537-r3-tree-binding-preview-v2.json",
+      "bars": ["R-6", "R-9"],
+      "proofLayers": ["unit", "integration"],
+      "remaining": "R-10 bill-conservation detector belongs to P-538; R-11 bounded autoscaling detector belongs to P-539. Existing arithmetic/lifecycle suites alone have not been established to decide their complete claims.",
+      "approvalConversation": "conv-mvbuca4w-0000-41bd645c757e47a585a78be0eb2d1991",
+      "previewPostRef": "thread-post:1185796",
+      "approvalRef": "thread-post:1185802",
+      "reviewer": "su-869f8876-49d7-441b-8bca-ec380ace7b46",
+      "applyReceipt": "/tmp/p537-r3-tree-binding-apply.json",
+      "readback": "/tmp/p537-rubric-r4-readback.json",
+      "rubricRevision": 4,
+      "subjectPlanRevision": 220,
+      "barSetHash": "30ec3f300876da7b3612e34ef4ba30f00d4a1187a0c3db5d64a290dbd533b59e",
+      "verification": "All 16 outcome and method texts match the prepared revision-3 source exactly. Independent canonical readback confirms revision 4, the applied BAR-set hash and 16 criteria. R-6/R-9 metadata only; no implementation acceptance.",
+      "next": "Implement and verify complete R-10/R-11 detectors before further binding and independent vetting. Revision 4 is not attested; never attest revision 3 against its blocking critique."
+    },
+    "receiptPath": "/tmp/p537-r3-vet-request-0322.json",
+    "limitation": "Accepted pending request is not critique, attestation, implementation acceptance or shipment."
+  },
+  "critique": {
+    "conversation": "conv-request-e1f661ba33bfa186b58c1aec223a20cba14c1c9feb43f646d0cc204968349084",
+    "post": "thread-post:1185685",
+    "verdict": "blocking-coverage-defects",
+    "scope": "Independent rubric vetting; no implementation, capacity, cost or shipment pass."
+  },
+  "preserve": "R-1 through R-13 remain verbatim. Add the three missing outcomes identified by the independent critique; no proof binding before amended-rubric vetting.",
+  "additions": [
+    {
+      "key": "r-14",
+      "barKey": "R-14",
+      "title": "Trial profile is usable and all-in under $20 per month",
+      "intent": {
+        "request": "Qualify the trial configuration only when measured usable performance and complete monthly cost satisfy Avi's strict under-$20 gate.",
+        "sourceRefs": ["D-076", "D-075", "thread-post:1185685"]
+      },
+      "model": "For every trial usage profile defined by the plan, the configuration qualified under R-15 has a measurement-backed monthly all-in cost strictly below $20 across compute, retained disks, backups, network, control-plane and inference.",
+      "method": "Enumerate the defined trial profiles and their exact qualified real-VM run identities. For each, reconcile measured active hours and provider usage to effective rates, retained resources and observed token/inference usage using the existing cost and unit-economics ledgers; recompute all six categories and their sum before comparing with $20. Preserve usage windows, currency, credit-excluded rates, observed versus modeled provenance and allocation of shared costs. An absent/unpriced category, undefined duty profile, unqualified run, or list-price arithmetic without usage evidence is unknown and cannot pass. R-15 owns workload qualification; this criterion owns the complete cost of that qualified configuration. Manual verification remains explicit until a stable live ledger instrument covers the complete claim.",
+      "driftMarkers": "Any defined trial profile costs $20 or more, lacks R-15 qualification, omits inference or another category, treats unknown cost as zero, excludes shared retained/control costs, or relies solely on list-price arithmetic.",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": ["live"],
+      "evidencePlane": "live",
+      "passRatings": ["healthy"],
+      "check": {"kind": "instrument", "instrumentKey": "none"}
+    },
+    {
+      "key": "r-15",
+      "barKey": "R-15",
+      "title": "Minimum on-demand profile passes frozen workload and UX controls",
+      "intent": {
+        "request": "Measure the cheapest workable ordinary GCP/AWS VM profile for 50 assigned native agents with moderate active use and a separately measured full burst.",
+        "sourceRefs": ["D-074", "D-075", "thread-post:1185685"]
+      },
+      "model": "Each recommended GCP/AWS minimum profile passes the frozen D-075 acceptance thresholds in a qualified real-VM run of the exact candidate with 50 assigned native sessions, verified 1/5/10-active cohorts and a separate unbatched 50-agent burst.",
+      "method": "For each recommended provider/profile enumerate the run, exact candidate artifact, raw native histories, verified file-hash results and host telemetry. Verify one arm per invocation and swap configured before native launch through shutdown. Recompute assigned population, unique active agents, task counts and p50/p95/max/sample counts independently. Apply D-075 unchanged: zero OOM/native/task failures; moderate p95 echo <=1s, host fork/exec <=100ms and full model+CLI verified task wall <=30s; burst p95 echo <=3s and all 50 settled <=120s; validated application-ready cold wake <=120s with acknowledged data hashes preserved. Inspect fresh server/DB/repository footprint, direct major-fault/swap-in counters, active hours, grow/resize/reconnect durability and provider-confirmed cleanup. Missing raw coverage, sparse populations or invalid readiness measurements cannot pass. Report raw model latency without attributing delay to resource pressure absent a measured mechanism. The existing maintained native driver and archive verifier provide supporting data; their unit tests alone cannot qualify a VM. Manual verification is required across the complete run record.",
+      "driftMarkers": "A recommended profile lacks a required cohort or unbatched burst, conflates assigned with active populations, loses raw native histories, changes thresholds after measurement, substitutes shell time for full task latency, uses an unvalidated health endpoint or wrong candidate, omits durability/cleanup evidence, or fails any frozen threshold.",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": ["live"],
+      "evidencePlane": "live",
+      "passRatings": ["healthy"],
+      "check": {"kind": "instrument", "instrumentKey": "none"}
+    },
+    {
+      "key": "r-16",
+      "barKey": "R-16",
+      "title": "On-demand recommendation uses measured economic alternatives",
+      "intent": {
+        "request": "Compare demand-based GCP/AWS capacity and actual retained costs without charging moderate use as 24/7 dedicated compute or silently adopting a new backend/IaC writer.",
+        "sourceRefs": ["D-074", "D-076", "thread-post:1185685"]
+      },
+      "model": "The GCP/AWS recommendation selects among on-demand alternatives using measurement-backed monthly scenarios for 60/120/240 active hours and near-idle, with warm-floor-zero as a first-class alternative and every retained/shared cost included.",
+      "method": "Enumerate recommended GCP/AWS options and trace compute duty, measured capacity and actual purchased storage to qualified runs, provider rates and allocation evidence. Compare direct stop/start/provision with optional budgeted warm capacity, supported small DB/storage growth ladders and economical provider disks; include backup, network, control-plane and inference. Label each quantity observed or modeled and retain unpriced values as unknown. Document Cloud Run/Fargate/Lambda/managed-DB fit limits for arbitrary CLI, writable durable data, long-lived sessions, extensions and isolation; functional equivalence requires a trial. Document Terraform/OpenTofu fit for slow-changing foundation resources and preserve one existing lifecycle writer for wake/drain/attach. Analysis of an alternative is not its implementation or a passing trial. This criterion owns comparative selection, while R-14 owns the strict price threshold and R-15 owns usability qualification. Inspect the complete comparison manually until an existing registered instrument covers this selection contract.",
+      "driftMarkers": "The recommendation assumes full-month dedicated compute for moderate use, omits a required duty scenario or retained/shared/inference cost, treats thin files as lower purchased block-storage charges, selects an unmeasured provider/profile, or asserts serverless/IaC functional equivalence from analysis alone.",
+      "role": "outcome",
+      "mandatory": true,
+      "requiredScope": ["live"],
+      "evidencePlane": "live",
+      "passRatings": ["healthy"],
+      "check": {"kind": "instrument", "instrumentKey": "none"}
+    }
+  ],
+  "dischargeMap": [
+    {"bar": "R-14", "items": ["P-544", "P-538"], "evidencePlane": "live"},
+    {"bar": "R-15", "items": ["P-544", "P-540"], "evidencePlane": "live"},
+    {"bar": "R-16", "items": ["P-544", "P-538", "P-539"], "evidencePlane": "live"}
+  ],
+  "limitations": [
+    "No implementation grade or cost/capacity/shipment acceptance is claimed.",
+    "The 4CPU/8GiB historical run still lacks raw native-history coverage; application-ready cold-wake timing remains unqualified.",
+    "Existing arithmetic unit tests do not prove a measured monthly cost below $20."
+  ]
+}

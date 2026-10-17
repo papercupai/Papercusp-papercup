@@ -2,8 +2,10 @@
  * wake-executor.test.ts — the liveness ladder, pure (injected deps, no PG)
  * (await-event-primitive-2026-06-05 P-006, D-003/D-009).
  */
+const NEVER_EMIT_MARKER = 'never-emit-me';
+
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -40,11 +42,16 @@ import { wakeAccountRouteFromArgv } from '../../inference-gateway/spawn-env';
 // timeout-fallback.ts, not wake-executor.ts — it is imported BY wake-executor and
 // by engine.ts, so hosting it here would close a wake-executor↔engine import cycle.
 import { wakeSummaryHeadline } from './timeout-fallback';
+import { AWAIT_CANCEL_REASONS } from './cancel-reasons';
 import { PtyError } from '../../pty-bridge';
 import type { CarryBrief } from '../../carry-brief';
 import { renderColdWakeInjection } from '../../su-cold-loop';
 import type { DeliveryWork, WakeHandle } from './types';
 import { getLoopStatus } from '../../harness/routines/loop';
+import {
+  codexFreshDefaultAuthPreflight,
+  rehealResumeCodexAuth,
+} from '../../../../../apps/operator/scripts/psu-launcher.mjs';
 
 // A per-session codex home (session-42) with two rollouts; the newer UUID wins.
 const ROLLOUT_UUID = '019ea541-e6ed-71c2-bc67-aa25b5164ec5';
@@ -371,6 +378,9 @@ function work(overrides: Partial<DeliveryWork> = {}): DeliveryWork {
     minSleepSec: null,
     coalescedCount: 1,
     source: null,
+    turnProof: null,
+    turnStartedAt: null,
+    pickupDeadlineAt: null,
     wakeHandle: null,
     note: 'waiting to edit foo.ts',
     ...overrides,
@@ -466,7 +476,14 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     // EI-22449230917085417: keep ordinary wake tests hermetic; the production
     // default reads the live SU-lock table at the delivery boundary.
     readLockGrantOwnership: vi.fn(async () => true),
+    observeFallback: vi.fn(),
     getCurrentWorkItem: vi.fn(async () => null) as never,
+    // Keep the Channel 2 grading-audit checks hermetic by default. Only their
+    // focused freshness tests should provide task/scorecard rows; the production
+    // readers open the live org database.
+    readGradingAuditTasks: vi.fn(async () => []) as never,
+    readGradingAuditTarget: vi.fn(async () => null) as never,
+    cancelGradingAuditAwait: vi.fn(async () => undefined) as never,
     alive: vi.fn(() => true),
     isLoopArmed: vi.fn(async () => false),
     // WI-6860: hermetic by default — the real getLoopStatus opens a live PG
@@ -528,6 +545,9 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     // Hermetic by default: the production repair helper rebuilds its launch
     // spec through PG. Dedicated Codex archive tests inject the ordering seam.
     ensureCodexHomeForWake: vi.fn(async () => ({ ok: true, repaired: false })) as never,
+    // Hermetic by default: tests of unrelated wake behavior do not depend on
+    // the runner's actual ~/.codex login.
+    prepareDirectCodexWakeAuth: vi.fn(() => ({ checked: true, ready: true, reason: 'test-ready' })),
     // Hermetic by default (turn-provenance P-002): the real tagger writes ledger
     // rows under ~/.papercusp/turn-provenance — stub it to a passthrough so the
     // long-standing exact-text assertions stay byte-identical. The dedicated
@@ -1165,6 +1185,124 @@ describe('executeWake — delivery-time fleet member-dead liveness re-check (EI-
   });
 });
 
+describe('executeWake — delivery-time fleet context-critical member actionability (EI-26207385902174159)', () => {
+  const contextCriticalWork = (overrides: Partial<DeliveryWork> = {}): DeliveryWork =>
+    work({
+      eventKey: 'fleet:context-critical:pui-cockpit',
+      payload: {
+        fleetSlug: 'pui-cockpit',
+        agentId: 'su-worker',
+        transition: 'context-critical',
+        contextEpoch: 18,
+      },
+      wakeHandle: advHandle(),
+      ...overrides,
+    });
+
+  const liveness = (sessionState: string | null, wakeable = false) =>
+    vi.fn(async () => new Map([
+      ['su-worker', { ownerId: 'su-worker', sessionState, wakeable, liveTurn: false } as never],
+    ]));
+
+  const presenceRow = { source: 'presence' } as never;
+
+  it('downgrades an absent fleet target before any wake side effect', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-should-not-run' }));
+    const write = vi.fn(() => true);
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const getCurrentFleetContextAssignments = vi.fn(async () => []);
+    const resolveMemberLiveness = liveness(null);
+    const d = deps({
+      findPty: findPty as never,
+      write: write as never,
+      sendCoordMessage: sendCoordMessage as never,
+      getCurrentFleetContextAssignments: getCurrentFleetContextAssignments as never,
+      resolveMemberLiveness: resolveMemberLiveness as never,
+      getCurrentContextPressure: vi.fn(async () => 'critical') as never,
+      getCurrentContextEpoch: vi.fn(async () => 18),
+    });
+
+    const out = await executeWake(contextCriticalWork(), d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    expect(getCurrentFleetContextAssignments).toHaveBeenCalledWith({
+      workspaceId: 'ws', fleet: 'pui-cockpit', agent: 'su-worker',
+    });
+    expect(resolveMemberLiveness).toHaveBeenCalledWith([{ ownerId: 'su-worker' }], { hydratePerId: true });
+    expect(sendCoordMessage).toHaveBeenCalledTimes(1);
+    const [, opts] = sendCoordMessage.mock.calls[0] as unknown as [unknown, { summary: string; body: string }];
+    expect(opts.summary).toContain('no current fleet presence or active claim');
+    expect(opts.summary).toContain('STALE');
+    expect(findPty).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('downgrades a target that ended after emit even while its presence row remains', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-should-not-run' }));
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const d = deps({
+      findPty: findPty as never,
+      sendCoordMessage: sendCoordMessage as never,
+      getCurrentFleetContextAssignments: vi.fn(async () => [presenceRow]) as never,
+      resolveMemberLiveness: liveness('ended') as never,
+      getCurrentContextPressure: vi.fn(async () => 'critical') as never,
+      getCurrentContextEpoch: vi.fn(async () => 18),
+    });
+
+    const out = await executeWake(contextCriticalWork(), d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    const [, opts] = sendCoordMessage.mock.calls[0] as unknown as [unknown, { summary: string }];
+    expect(opts.summary).toContain("target session is currently 'ended'");
+    expect(findPty).not.toHaveBeenCalled();
+  });
+
+  it('preserves a current target wake when the roster read is unavailable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const findPty = vi.fn(() => ({ id: 'pty-current' }));
+    const write = vi.fn(() => true);
+    try {
+      const d = deps({
+        findPty: findPty as never,
+        write: write as never,
+        getCurrentFleetContextAssignments: vi.fn(async () => { throw new Error('roster unavailable'); }) as never,
+        resolveMemberLiveness: liveness('live', true) as never,
+        getCurrentContextPressure: vi.fn(async () => 'critical') as never,
+        getCurrentContextEpoch: vi.fn(async () => 18),
+      });
+
+      const out = await executeWake(contextCriticalWork(), d);
+
+      expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+      expect(findPty).toHaveBeenCalled();
+      expect(write).toHaveBeenCalled();
+      expect(d.sendCoordMessage).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('fleet context-critical roster/su-worker failed'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('preserves a current target that still has fleet presence and a critical context', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-current' }));
+    const write = vi.fn(() => true);
+    const d = deps({
+      findPty: findPty as never,
+      write: write as never,
+      getCurrentFleetContextAssignments: vi.fn(async () => [presenceRow]) as never,
+      resolveMemberLiveness: liveness('live', true) as never,
+      getCurrentContextPressure: vi.fn(async () => 'critical') as never,
+      getCurrentContextEpoch: vi.fn(async () => 18),
+    });
+
+    const out = await executeWake(contextCriticalWork(), d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(findPty).toHaveBeenCalled();
+    expect(write).toHaveBeenCalled();
+  });
+});
+
 describe('executeWake — delivery-time canonical claimable freshness (EI-21584263523911583)', () => {
   const claimableWork = (overrides: Partial<DeliveryWork> = {}): DeliveryWork =>
     work({
@@ -1670,6 +1808,22 @@ describe('wakeTurnText', () => {
 
       await degradeToInboxOrDrop(work({ eventKey: DONE_KEY, payload: null }), 'no live pty', send);
       expect(sent[0].summary).toBe(`[await-event] ${DONE_KEY} fired — delivered to your coord inbox (no live pty)`);
+    });
+
+    it('uses one stable message id when the same delivery retries its inbox fallback', async () => {
+      const sent: { msgId?: string; summary?: string }[] = [];
+      const send = (async (_identity: unknown, opts: { msgId?: string; summary?: string }) => {
+        sent.push(opts);
+        return {} as never;
+      }) as unknown as Parameters<typeof degradeToInboxOrDrop>[2];
+      const delivery = work({ id: 764769, eventKey: 'work-item:claimable', payload: null });
+
+      await degradeToInboxOrDrop(delivery, 'first attempt', send);
+      await degradeToInboxOrDrop(delivery, 'retry after outcome-unknown append', send);
+
+      expect(sent).toHaveLength(2);
+      expect(sent[0].msgId).toBe('event-wake-inbox-764769');
+      expect(sent[1].msgId).toBe(sent[0].msgId);
     });
 
     it('does not report a loop fire as delivered when only an inbox notice was written', async () => {
@@ -2277,15 +2431,16 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
       ],
     });
     const carriedProbeBlockFn = vi.fn(async (_input: unknown) => '🧪 CARRIED PROBES re-run at delivery — 0 hold · 1 changed · 0 could not run:\n  ✗ CHANGED — gate is green [loop check 1]: observed "red"');
-    const d = work({ payload: { harness: 'papercusp', wakeCount: 3 }, subscriberId: 'su-probe' });
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 3 }, subscriberId: 'su-probe', workspaceId: 'delivery-workspace' });
     const out = await rehydrateLoopWakeText(d, STALE_TEXT, {
       getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note, updatedAtMs: Date.now() - 1_000 })),
       carriedProbeBlockFn,
     });
     expect(carriedProbeBlockFn).toHaveBeenCalledTimes(1);
-    const arg = carriedProbeBlockFn.mock.calls[0]![0] as { ownerId: string; harness: string; readAtIso: string; checks: Array<{ claim: string }> };
+    const arg = carriedProbeBlockFn.mock.calls[0]![0] as { ownerId: string; harness: string; workspaceId: string; readAtIso: string; checks: Array<{ claim: string }> };
     expect(arg.ownerId).toBe('su-probe');
     expect(arg.harness).toBe('papercusp');
+    expect(arg.workspaceId).toBe('delivery-workspace');
     expect(arg.readAtIso).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     // every carried check reaches the runner; it skips the probe-less one itself
     expect(arg.checks.map((c) => c.claim)).toEqual(['gate is green', 'prose-only claim']);
@@ -2293,6 +2448,69 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
     const block = out.slice(0, out.indexOf(STALE_TEXT));
     expect(block.indexOf('CARRIED PROBES')).toBeGreaterThan(block.indexOf('LIVE RE-CHECK'));
     expect(block.indexOf('CARRIED PROBES')).toBeLessThan(block.indexOf('TRUST THIS BLOCK'));
+  });
+
+  it.each([
+    ['su-tenant-a', 'workspace-a'],
+    ['su-tenant-b', 'workspace-b'],
+  ])('resolves coordination-namespace checks and references in subscriber %s workspace', async (ownerId, workspaceId) => {
+    const { renderCarryNote } = await import('../../carry-note');
+    const note = renderCarryNote({
+      did: 'Waiting on WI-1234.',
+      checks: [{
+        claim: 'control is green', recheck: 'read control',
+        probe: { kind: 'state-cell', cell: 'control', schemaRevision: 'rev-test', expect: { path: '$.value', op: 'eq', value: 'green' } } as never,
+      }],
+    });
+    const workspaceForCoordOwnerFn = vi.fn(async () => workspaceId);
+    const carriedProbeBlockFn = vi.fn(async (input: { workspaceId: string }) =>
+      input.workspaceId === workspaceId ? 'CHANGED — control is red' : 'COULD NOT RUN — harness_not_found',
+    );
+    const carryRefBlockFn = vi.fn(async (input: { workspaceId: string | null | undefined }) =>
+      input.workspaceId === workspaceId ? 'CHANGED — WI-1234 is wip' : 'GONE — wrong namespace',
+    );
+    const getLoopCarryNoteWithMetaFn = vi.fn(async () => ({ note, updatedAtMs: Date.now() }));
+    const out = await rehydrateLoopWakeText(
+      work({ subscriberId: ownerId, workspaceId: 'default', payload: { harness: 'papercusp', wakeCount: 3 } }),
+      STALE_TEXT,
+      { getLoopCarryNoteWithMetaFn, carriedProbeBlockFn, carryRefBlockFn, ...{ workspaceForCoordOwnerFn } },
+    );
+    expect(workspaceForCoordOwnerFn).toHaveBeenCalledWith(ownerId);
+    expect(getLoopCarryNoteWithMetaFn).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'default' }));
+    expect(carriedProbeBlockFn).toHaveBeenCalledWith(expect.objectContaining({ workspaceId, ownerId }));
+    expect(carryRefBlockFn).toHaveBeenCalledWith(expect.objectContaining({ workspaceId, ownerId }));
+    expect(out).toContain('CHANGED — control is red');
+    expect(out).toContain('CHANGED — WI-1234 is wip');
+    expect(out).not.toContain('harness_not_found');
+    expect(out).not.toContain('GONE — wrong namespace');
+  });
+
+  it('reports unavailable subscriber scope without dispatching checks or references in the host namespace', async () => {
+    const { renderCarryNote } = await import('../../carry-note');
+    const note = renderCarryNote({
+      did: 'Waiting on WI-1234.',
+      checks: [{
+        claim: 'control is green', recheck: 'read control',
+        probe: { kind: 'state-cell', cell: 'control', schemaRevision: 'rev-test', expect: { path: '$.value', op: 'eq', value: 'green' } } as never,
+      }],
+    });
+    const carriedProbeBlockFn = vi.fn(async () => 'control holds');
+    const carryRefBlockFn = vi.fn(async () => null);
+    const out = await rehydrateLoopWakeText(
+      work({ workspaceId: 'default', payload: { harness: 'papercusp', wakeCount: 3 } }),
+      STALE_TEXT,
+      {
+        getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note, updatedAtMs: Date.now() })),
+        carriedProbeBlockFn, carryRefBlockFn,
+        ...{ workspaceForCoordOwnerFn: vi.fn(async () => null) },
+      },
+    );
+    expect(carriedProbeBlockFn).not.toHaveBeenCalled();
+    expect(carryRefBlockFn).not.toHaveBeenCalled();
+    expect(out).toContain('CARRIED PROBES — COULD NOT RUN');
+    expect(out).toContain('CARRIED REFERENCES — COULD NOT RE-CHECK');
+    expect(out).toContain('subscriber workspace');
+    expect(out).toContain(STALE_TEXT);
   });
 
   // P-002 (carry-recheck-and-governed-memory-2026-10-14, R-2 / R-12 / R-21): the LIVE RE-CHECK block
@@ -2392,6 +2610,7 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
       ownerId: 'su-probe',
       checks: [],
       harness: 'papercusp',
+      workspaceId: 'ws',
       readAtIso: '2026-10-14T09:00:00.000Z',
     });
     // no checks → nothing to run → no block at all (never a false "all hold")
@@ -3184,7 +3403,7 @@ describe('executeWake — the liveness ladder', () => {
     const isHeadlessResumeTurn = vi.fn(() => true);
     const d = deps({ isHeadlessResumeTurn: isHeadlessResumeTurn as never });
     const out = await executeWake(
-      work({ wakeHandle: advHandle(), pid: 9999 }),
+      work({ wakeHandle: advHandle({ pid: 9999 }) }),
       d,
     );
 
@@ -3357,6 +3576,29 @@ describe('executeWake — the liveness ladder', () => {
     expect(readPsuHostEventTailAsync).toHaveBeenCalledTimes(3);
   });
 
+  it.each([
+    'psu-host accepted the cancellation request; waiting for its exact pre-write receipt',
+    'psu-host still owns the accepted delivery; cancellation is unsupported and the retry remains durable',
+    'psu-host accepted the fail-open wake retry; waiting for its delivery outcome',
+    'psu-host coalesced-into-pending-turn: delivery accepted before turn-start proof; retry remains durable',
+  ])('recovers a terminal host-ending receipt after incumbent park reason %s', async (lastError) => {
+    const ownerId = 'su-host-ending-cancellation';
+    const startedAt = Date.parse('2026-10-15T10:00:00.000Z');
+    const injectPsuHostWithConfirmation = vi.fn();
+    const outcome = await executeWake(work({ id: 904, subscriberId: ownerId, wakeHandle: null, lastError }), deps({
+      findPsuHost: vi.fn(async () => ({ sock: '/tmp/host-ending-cancellation.sock', ownerId, startedAt })) as never,
+      injectPsuHost: undefined,
+      injectPsuHostWithConfirmation,
+      readPsuHostEventTailAsync: vi.fn(async () => [{
+        kind: 'wake-rearm-dropped', mode: 'turn', reason: 'host-ending',
+        deliveryIds: ['904'], ts: '2026-10-15T10:01:00.000Z',
+      }]),
+    }));
+    expect(outcome).toMatchObject({ kind: 'park', reason: expect.stringContaining('terminal host-ending drop confirmed') });
+    expect(outcome.kind === 'park' && outcome.hostCommitPending).toBeFalsy();
+    expect(injectPsuHostWithConfirmation).not.toHaveBeenCalled();
+  });
+
   describe('turn-start proof on the confirming psu path (P-006/D-004)', () => {
     const confirmingDeps = (caps: string[] | undefined, reason: string) => {
       const injectPsuHostWithConfirmation = vi.fn(async () => ({ ok: true, confirmation: 'acked' as const, reason }));
@@ -3399,13 +3641,17 @@ describe('executeWake — the liveness ladder', () => {
     });
   });
 
-  it('sends the exact handled-message cancellation to the pending PTY delivery and waits for host confirmation', async () => {
+  it.each([
+    ['cancel-requested', 'psu-host accepted: cancellation request accepted; waiting for its exact pre-write receipt'],
+    ['pending-delivery-id', 'psu-host accepted: cancellation is unsupported; the accepted delivery remains host-owned and retryable'],
+    ['accepted', 'psu-host accepted: fail-open wake retry; waiting for its delivery outcome'],
+  ])('keeps cancellation host-owned after %s and waits for the exact pre-write receipt', async (reason, parkReason) => {
     const ownerId = 'su-inbox-cancel';
     const sock = '/tmp/inbox-cancel.sock';
     const injectPsuHostWithConfirmation = vi.fn(async () => ({
       ok: true,
       confirmation: 'acked' as const,
-      reason: 'cancel-requested',
+      reason,
     }));
     const delivery = work({
       id: 903,
@@ -3415,13 +3661,15 @@ describe('executeWake — the liveness ladder', () => {
       hostCancellation: { deliveryIds: ['901', '902'], handledMsgIds: ['m-a', 'm-b'] },
     });
 
-    await expect(executeWake(delivery, deps({
+    const wakeDeps = deps({
       findPsuHost: vi.fn(() => ({ sock, ownerId })) as never,
       injectPsuHostWithConfirmation: injectPsuHostWithConfirmation as never,
-    }))).resolves.toMatchObject({
+    });
+    const parked = await executeWake(delivery, wakeDeps);
+    expect(parked).toMatchObject({
       kind: 'park',
       hostCommitPending: true,
-      reason: expect.stringContaining('cancellation request'),
+      reason: parkReason,
     });
     expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(1);
     expect(injectPsuHostWithConfirmation).toHaveBeenCalledWith(sock, expect.objectContaining({
@@ -3431,6 +3679,13 @@ describe('executeWake — the liveness ladder', () => {
       cancelDeliveryIds: ['901', '902'],
       handledMsgIds: ['m-a', 'm-b'],
     }));
+    injectPsuHostWithConfirmation.mockResolvedValueOnce({
+      ok: true, confirmation: 'acked', reason: 'cancelled-before-write',
+    });
+    await expect(executeWake({ ...delivery, attempts: 2, lastError: parkReason }, wakeDeps)).resolves.toEqual({
+      kind: 'delivered', channel: 'suppressed-redundant',
+    });
+    expect(injectPsuHostWithConfirmation).toHaveBeenCalledTimes(2);
   });
 
   it('settles a handled inbox wake only after the host confirms cancellation before any write', async () => {
@@ -3582,6 +3837,195 @@ describe('executeWake — the liveness ladder', () => {
     expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
     expect(forceResume).toHaveBeenCalledWith(9999);
     expect(spawnDetached).toHaveBeenCalledTimes(1);
+  });
+
+  describe('grading-audit Channel 2 freshness guard', () => {
+    const nativeSessionId = 'native-grading-auditor-session';
+    const issueId = 'EI-grading-audit-resume';
+    const reservation = { key: `grading-audit:${issueId}`, reservedAt: '2026-10-14T17:27:26.871Z' };
+
+    function fixture(gradingAudit: Record<string, unknown> = {
+      state: 'pending', dispatchReservation: reservation,
+    }) {
+      const order: string[] = [];
+      const task = {
+        workspaceId: 'ws', taskId: 'grading-auditor-task', class: 'agent-session',
+        sessionId: nativeSessionId,
+        detail: {
+          coordOwnerId: 'su-abc',
+          gradingAudit: { issueId, evidenceFingerprint: 'evidence-v1', reservation },
+        },
+      };
+      const readGradingAuditTasks = vi.fn(async () => {
+        order.push('tasks');
+        return [task];
+      });
+      const readGradingAuditTarget = vi.fn(async () => {
+        order.push('target');
+        return { issueId, evidenceFingerprint: 'evidence-v1', gradingAudit };
+      });
+      const cancelGradingAuditAwait = vi.fn(async () => undefined);
+      const claimResume = vi.fn(async () => {
+        order.push('claim');
+        return true;
+      });
+      const spawnDetached = vi.fn(() => {
+        order.push('spawn');
+        return 4321;
+      });
+      const delivery = work({ awaitId: 515, wakeHandle: advHandle({ sessionId: nativeSessionId }) });
+      const common = deps({
+        getSession: vi.fn(async () => session({ sessionId: nativeSessionId })) as never,
+        alive: vi.fn(() => false),
+        readGradingAuditTasks: readGradingAuditTasks as never,
+        readGradingAuditTarget: readGradingAuditTarget as never,
+        cancelGradingAuditAwait: cancelGradingAuditAwait as never,
+        claimResume,
+        spawnDetached,
+      });
+      return { order, task, delivery, common, readGradingAuditTasks, readGradingAuditTarget,
+        cancelGradingAuditAwait, claimResume, spawnDetached };
+    }
+
+    it('allows the exact pending reservation and validates it before the resume claim', async () => {
+      const f = fixture();
+      const out = await executeWake(f.delivery, f.common);
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      expect(f.order.slice(0, 4)).toEqual(['tasks', 'target', 'claim', 'spawn']);
+      expect(f.readGradingAuditTasks).toHaveBeenCalledWith({
+        workspaceId: 'ws', subscriberId: 'su-abc', sessionId: nativeSessionId,
+      });
+      expect(f.claimResume).toHaveBeenCalledTimes(1);
+      expect(f.cancelGradingAuditAwait).not.toHaveBeenCalled();
+    });
+
+    it('drops a settled target and cancels only this delivery await before claiming resume', async () => {
+      const f = fixture({ state: 'passed' });
+      const out = await executeWake(f.delivery, f.common);
+      expect(out).toMatchObject({ kind: 'drop', reason: expect.stringContaining('settled (passed)') });
+      expect(f.cancelGradingAuditAwait).toHaveBeenCalledTimes(1);
+      expect(f.cancelGradingAuditAwait).toHaveBeenCalledWith({
+        awaitId: 515,
+        subscriberId: 'su-abc',
+        reason: AWAIT_CANCEL_REASONS.gradingAuditNoLongerCurrent,
+      });
+      expect(f.claimResume).not.toHaveBeenCalled();
+      expect(f.spawnDetached).not.toHaveBeenCalled();
+    });
+
+    it('drops a replaced reservation and cancels only this delivery await', async () => {
+      const f = fixture({
+        state: 'pending',
+        dispatchReservation: { key: reservation.key, reservedAt: '2026-10-14T17:35:00.000Z' },
+      });
+      const out = await executeWake(f.delivery, f.common);
+      expect(out).toMatchObject({ kind: 'drop', reason: expect.stringContaining('newer dispatch reservation') });
+      expect(f.cancelGradingAuditAwait).toHaveBeenCalledTimes(1);
+      expect(f.cancelGradingAuditAwait).toHaveBeenCalledWith({
+        awaitId: 515,
+        subscriberId: 'su-abc',
+        reason: AWAIT_CANCEL_REASONS.gradingAuditNoLongerCurrent,
+      });
+      expect(f.claimResume).not.toHaveBeenCalled();
+      expect(f.spawnDetached).not.toHaveBeenCalled();
+    });
+
+    it('drops changed evidence before the resume claim', async () => {
+      const f = fixture();
+      f.readGradingAuditTarget.mockResolvedValue({
+        issueId,
+        evidenceFingerprint: 'evidence-v2',
+        gradingAudit: { state: 'pending', dispatchReservation: reservation },
+      });
+      const out = await executeWake(f.delivery, f.common);
+      expect(out).toMatchObject({ kind: 'drop', reason: expect.stringContaining('changed evidence fingerprint') });
+      expect(f.cancelGradingAuditAwait).toHaveBeenCalledWith({
+        awaitId: 515,
+        subscriberId: 'su-abc',
+        reason: AWAIT_CANCEL_REASONS.gradingAuditNoLongerCurrent,
+      });
+      expect(f.claimResume).not.toHaveBeenCalled();
+      expect(f.spawnDetached).not.toHaveBeenCalled();
+    });
+
+    it('fails open when the pending target has no current reservation', async () => {
+      const f = fixture({ state: 'pending' });
+      const out = await executeWake(f.delivery, f.common);
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      expect(f.claimResume).toHaveBeenCalledTimes(1);
+      expect(f.cancelGradingAuditAwait).not.toHaveBeenCalled();
+    });
+
+    it('fails open when the scorecard target is absent', async () => {
+      const f = fixture();
+      const readGradingAuditTarget = vi.fn(async () => null);
+      const common = deps({
+        getSession: vi.fn(async () => session({ sessionId: nativeSessionId })) as never,
+        alive: vi.fn(() => false),
+        readGradingAuditTasks: f.readGradingAuditTasks as never,
+        readGradingAuditTarget: readGradingAuditTarget as never,
+        cancelGradingAuditAwait: f.cancelGradingAuditAwait as never,
+        claimResume: f.claimResume,
+        spawnDetached: f.spawnDetached,
+      });
+      const out = await executeWake(f.delivery, common);
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      expect(readGradingAuditTarget).toHaveBeenCalledTimes(1);
+      expect(f.claimResume).toHaveBeenCalledTimes(1);
+      expect(f.cancelGradingAuditAwait).not.toHaveBeenCalled();
+    });
+
+    it('fails open when the scorecard lookup is unavailable', async () => {
+      const f = fixture();
+      const readGradingAuditTarget = vi.fn(async () => { throw new Error('scorecard store unavailable'); });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const common = deps({
+        getSession: vi.fn(async () => session({ sessionId: nativeSessionId })) as never,
+        alive: vi.fn(() => false),
+        readGradingAuditTasks: f.readGradingAuditTasks as never,
+        readGradingAuditTarget: readGradingAuditTarget as never,
+        cancelGradingAuditAwait: f.cancelGradingAuditAwait as never,
+        claimResume: f.claimResume,
+        spawnDetached: f.spawnDetached,
+      });
+      try {
+        const out = await executeWake(f.delivery, common);
+        expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+        expect(readGradingAuditTarget).toHaveBeenCalledTimes(1);
+        expect(f.claimResume).toHaveBeenCalledTimes(1);
+        expect(f.cancelGradingAuditAwait).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+          `grading-audit target/${issueId} failed: scorecard store unavailable`,
+        ));
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('fails open when the task lookup is unavailable', async () => {
+      const f = fixture();
+      const readGradingAuditTasks = vi.fn(async () => { throw new Error('task ledger unavailable'); });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const common = deps({
+        getSession: vi.fn(async () => session({ sessionId: nativeSessionId })) as never,
+        alive: vi.fn(() => false),
+        readGradingAuditTasks: readGradingAuditTasks as never,
+        claimResume: f.claimResume,
+        spawnDetached: f.spawnDetached,
+      });
+      try {
+        const out = await executeWake(f.delivery, common);
+        expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+        expect(readGradingAuditTasks).toHaveBeenCalledTimes(1);
+        expect(f.claimResume).toHaveBeenCalledTimes(1);
+        expect(f.cancelGradingAuditAwait).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+          'grading-audit task binding/su-abc failed: task ledger unavailable',
+        ));
+      } finally {
+        warn.mockRestore();
+      }
+    });
   });
 
   it('Channel 2 lost resume claim → parks before spawning an exact-session writer', async () => {
@@ -4056,6 +4500,110 @@ describe('executeWake — the liveness ladder', () => {
       );
     } finally {
       rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('parks a direct/default Codex wake before spawn when system auth is unavailable', async () => {
+    const advSessionId = 1003;
+    const home = codexHomeForAdvSession(advSessionId);
+    const nativeId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const spawnDetached = vi.fn(() => 4321);
+    const prepareDirectCodexWakeAuth = vi.fn(() => ({
+      checked: true,
+      ready: false,
+      reason: 'missing-auth-json',
+    }));
+    rmSync(home, { recursive: true, force: true });
+    const sessionsDir = join(home, 'sessions', '2026', '10', '07');
+    mkdirSync(sessionsDir, { recursive: true });
+    writeFileSync(join(sessionsDir, `rollout-2026-10-07T18-00-00-${nativeId}.jsonl`), '{}');
+    try {
+      const out = await executeWake(
+        work({ subscriberId: 'su-codex-default-auth', wakeHandle: advHandle({ agent: 'codex', sessionId: nativeId, advSessionId }) }),
+        deps({
+          alive: vi.fn(() => false),
+          getSession: vi.fn(async () =>
+            session({
+              id: advSessionId,
+              agent: 'codex',
+              sessionId: nativeId,
+              coordOwnerId: 'su-codex-default-auth',
+              launchArgv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=default'],
+            }),
+          ) as never,
+          ensureCodexHomeForWake: vi.fn(async () => ({ ok: true, repaired: false })) as never,
+          prepareDirectCodexWakeAuth,
+          spawnDetached,
+        }),
+      );
+
+      expect(out).toEqual({
+        kind: 'park',
+        reason: 'Codex default-account auth unavailable (missing-auth-json); parked before provider request',
+      });
+      expect(prepareDirectCodexWakeAuth).toHaveBeenCalledWith(home);
+      expect(spawnDetached).not.toHaveBeenCalled();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('restores native auth into the managed home before a direct/default Codex wake', async () => {
+    const advSessionId = 1004;
+    const home = codexHomeForAdvSession(advSessionId);
+    const nativeId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const globalHome = mkdtempSync(join(tmpdir(), 'wake-codex-native-auth-'));
+    const nativeAuthPath = join(globalHome, '.codex', 'auth.json');
+    const spawnDetached = vi.fn(() => 4321);
+    const prepareDirectCodexWakeAuth = vi.fn((codexHome: string) => {
+      rehealResumeCodexAuth(codexHome, { home: globalHome });
+      return codexFreshDefaultAuthPreflight({
+        agent: 'codex',
+        headless: true,
+        account: 'default',
+        codexHome,
+      });
+    });
+    rmSync(home, { recursive: true, force: true });
+    mkdirSync(join(globalHome, '.codex'), { recursive: true });
+    writeFileSync(nativeAuthPath, JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: {
+        access_token: NEVER_EMIT_MARKER,
+        refresh_token: NEVER_EMIT_MARKER,
+        id_token: NEVER_EMIT_MARKER,
+      },
+    }), { mode: 0o600 });
+    const sessionsDir = join(home, 'sessions', '2026', '10', '07');
+    mkdirSync(sessionsDir, { recursive: true });
+    writeFileSync(join(sessionsDir, 'rollout-2026-10-07T19-00-00-' + nativeId + '.jsonl'), '{}');
+    try {
+      const out = await executeWake(
+        work({ subscriberId: 'su-codex-default-auth', wakeHandle: advHandle({ agent: 'codex', sessionId: nativeId, advSessionId }) }),
+        deps({
+          alive: vi.fn(() => false),
+          getSession: vi.fn(async () =>
+            session({
+              id: advSessionId,
+              agent: 'codex',
+              sessionId: nativeId,
+              coordOwnerId: 'su-codex-default-auth',
+              launchArgv: ['psu', '--no-picker', '--agent=codex', '--headless', '--account=default'],
+            }),
+          ) as never,
+          ensureCodexHomeForWake: vi.fn(async () => ({ ok: true, repaired: false })) as never,
+          prepareDirectCodexWakeAuth,
+          spawnDetached,
+        }),
+      );
+
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      expect(prepareDirectCodexWakeAuth).toHaveBeenCalledWith(home);
+      expect(readlinkSync(join(home, 'auth.json'))).toBe(nativeAuthPath);
+      expect(spawnDetached).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(globalHome, { recursive: true, force: true });
     }
   });
 
@@ -4899,6 +5447,68 @@ describe('GAP 3: wake resume env-assembly matrix (wake-executor.ts:441-474)', ()
       rmSync(tokenDir, { recursive: true, force: true });
     }
   });
+
+  it('parks before claiming or spawning when Codex reports an active native thread writer', async () => {
+    const observeFallback = vi.fn();
+    const codexThreadWriterHolder = vi.fn(() => ({
+      held: true,
+      pid: 12345,
+      lockPath: join(CODEX_HOMES_DIR, 'session-42', 'thread-writer-locks', `${ROLLOUT_UUID}.lock`),
+      sessionId: ROLLOUT_UUID,
+      reason: 'held',
+    }));
+    const claimResume = vi.fn(async () => true);
+    const spawnDetached = vi.fn(() => 5555);
+    const out = await executeWake(
+      work({ subscriberId: 'su-owner-9', wakeHandle: advHandle({ agent: 'codex', sessionId: null }) }),
+      deps({
+        alive: vi.fn(() => false),
+        getSession: vi.fn(async () => session({ agent: 'codex', sessionId: null, coordOwnerId: 'su-owner-9' })) as never,
+        codexThreadWriterHolder,
+        observeFallback,
+        claimResume,
+        spawnDetached,
+      }),
+    );
+
+    expect(out).toMatchObject({
+      kind: 'park',
+      reason: `Codex thread ${ROLLOUT_UUID} already has an active writer (pid 12345); parked before resume claim/spawn`,
+    });
+    expect(codexThreadWriterHolder).toHaveBeenCalledWith(join(CODEX_HOMES_DIR, 'session-42'), ROLLOUT_UUID);
+    expect(claimResume).not.toHaveBeenCalled();
+    expect(observeFallback).toHaveBeenCalledWith('routine-capability-read', {
+      eligible: 1, applied: 1, reason: 'applied', scope: 'wake-codex-writer-lock',
+    }, { workspaceId: expect.any(String) });
+    expect(spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('fails open and resumes when the Codex writer-lock probe cannot read the lock state', async () => {
+    const observeFallback = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const codexThreadWriterHolder = vi.fn(() => {
+      throw new Error('ENOENT: /proc/locks');
+    });
+    const spawnDetached = vi.fn(() => 5555);
+    const out = await executeWake(
+      work({ subscriberId: 'su-owner-9', wakeHandle: advHandle({ agent: 'codex', sessionId: null }) }),
+      deps({
+        alive: vi.fn(() => false),
+        getSession: vi.fn(async () => session({ agent: 'codex', sessionId: null, coordOwnerId: 'su-owner-9' })) as never,
+        codexThreadWriterHolder,
+        observeFallback,
+        spawnDetached,
+      }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    expect(codexThreadWriterHolder).toHaveBeenCalledTimes(1);
+    expect(observeFallback).toHaveBeenCalledWith('routine-capability-read', {
+      eligible: 1, applied: 0, reason: 'writer-lock-probe-failed', scope: 'wake-codex-writer-lock',
+    }, { workspaceId: expect.any(String) });
+    expect(spawnDetached).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('writer-lock probe failed open'));
+  });
 });
 
 describe('hive Queen fresh-per-wake cutover (queen-brief-cache-assembly B-01 / P-012)', () => {
@@ -5578,6 +6188,77 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     expect(msg.mode).toBe('carry-respawn');
     expect(msg.systemPromptAddendum).toBe(msg.data);
     expect(msg.systemPromptAddendum).toContain('(fire #8)');
+  });
+
+  it.each([
+    ['claude', 1, 'reset'],
+    ['claude', 8, 'recycle'],
+    ['codex', 1, 'carry-respawn'],
+    ['codex', 8, 'carry-respawn'],
+  ] as const)('cold transport preserves delivery-time changes for %s fire %s (%s)', async (agent, wakeCount, mode) => {
+    const { renderCarryNote } = await import('../../carry-note');
+    const note = renderCarryNote({
+      did: 'Await the controlled wake.',
+      checks: [
+        {
+          id: 'cold-probe',
+          claim: 'control is green',
+          probe: {
+            kind: 'state-cell',
+            cell: 'gate.greenCheckpoint.verdict',
+            schemaRevision: 'test-revision',
+            expect: { path: '$.value', op: 'eq', value: 'green' },
+          },
+        },
+      ],
+    });
+    for (const result of ['changed', 'could-not-run', 'unchanged'] as const) {
+      const probeLine =
+        result === 'changed'
+          ? 'CHANGED [#cold-probe]: observed "red"'
+          : result === 'could-not-run'
+            ? 'COULD NOT RUN [#cold-probe]: unavailable'
+            : null;
+      const refLine = result === 'changed' ? 'CHANGED work-item:WI-control: open → done' : null;
+      const carriedProbeBlockFn = vi.fn(async () => probeLine);
+      const carryRefBlockFn = vi.fn(async () => refLine);
+      const injectPsuHost = vi.fn(async () => true);
+      const updatedAtMs = Date.now() - 1_000;
+      await executeWake(
+        work({ wakeHandle: advHandle({ agent }), payload: coldPayload({ wakeCount }) }),
+        coldDeps({
+          getLoopCarryNoteFn: undefined,
+          getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note, updatedAtMs })) as never,
+          carriedProbeBlockFn,
+          carryRefBlockFn,
+          injectPsuHost: injectPsuHost as never,
+        }),
+      );
+      expect(carriedProbeBlockFn).toHaveBeenCalledTimes(1);
+      expect(carryRefBlockFn).toHaveBeenCalledTimes(1);
+      expect(injectPsuHost).toHaveBeenCalledTimes(1);
+      const msg = (
+        injectPsuHost.mock.calls[0] as unknown as [
+          string,
+          {
+            mode: string;
+            data: string;
+            systemPromptAddendum?: string;
+          },
+        ]
+      )[1];
+      expect(msg.mode).toBe(mode);
+      if (agent === 'codex') expect(msg.systemPromptAddendum).toBe(msg.data);
+      if (probeLine) {
+        expect(msg.data).toContain(probeLine);
+        expect(msg.data.indexOf(probeLine)).toBeLessThan(msg.data.indexOf('COLD LOOP WAKE'));
+        expect(msg.data.split(probeLine)).toHaveLength(2);
+      } else {
+        expect(msg.data).not.toContain('## Carried probe changes');
+      }
+      if (refLine) expect(msg.data).toContain(refLine);
+      else expect(msg.data).not.toContain('## Carried reference changes');
+    }
   });
 
   it('EI-18224278118395857: the production read (meta variant, no getLoopCarryNoteFn seam) threads the note write-time into the injection so a late-flushed stale note is self-evident', async () => {

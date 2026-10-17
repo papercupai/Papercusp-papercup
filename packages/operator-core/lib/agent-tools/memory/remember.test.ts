@@ -195,7 +195,7 @@ describe('memory:remember — surfaced outcome wiring', () => {
       content: `Source memory:${oldId}; repeated memory:${oldId}; unrelated ${newId}`,
       kind: 'reference',
     }, ctx);
-    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: true, ids: [newId] });
+    expect(JSON.parse((result as { content: { text: string }[] }).content[0].text)).toMatchObject({ ok: true, ids: [newId] });
     expect(outcomes()).toEqual([{ session: 'outcome-reader', ids: [oldId], outcome: 'used' }]);
   });
 
@@ -205,7 +205,7 @@ describe('memory:remember — surfaced outcome wiring', () => {
     useBackend(backend);
     const outcomes = outcomeQueries();
     const result = await remember.handler({ content: 'replacement preference', kind: 'feedback', supersede: oldId }, ctx);
-    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: true, superseded: closed ? oldId : false });
+    expect(JSON.parse((result as { content: { text: string }[] }).content[0].text)).toMatchObject({ ok: true, superseded: closed ? oldId : false });
     expect(outcomes()).toEqual(closed
       ? [{ session: 'outcome-reader', ids: [oldId], outcome: 'contradicted' }]
       : []);
@@ -217,7 +217,7 @@ describe('memory:remember — surfaced outcome wiring', () => {
     useBackend(backend);
     const outcomes = outcomeQueries();
     const result = await remember.handler({ content: `Source memory:${oldId}`, kind: 'reference' }, ctx);
-    expect(JSON.parse(result.content[0].text)).toMatchObject({ ok: false });
+    expect(JSON.parse((result as { content: { text: string }[] }).content[0].text)).toMatchObject({ ok: false });
     expect(backend.remember).not.toHaveBeenCalled();
     expect(outcomes()).toEqual([]);
   });
@@ -819,7 +819,7 @@ describe('memory:remember — anchor table wiring (P-015)', () => {
         + 'session_turn:codex:host:session:42 report:rpt_12345678-1234-1234-1234-123456789abc',
       kind: 'project',
     }, fakeCtx);
-    expect(JSON.parse(res.content[0].text)).toMatchObject({ ok: true, ids: [id] });
+    expect(JSON.parse((res as { content: { text: string }[] }).content[0].text)).toMatchObject({ ok: true, ids: [id] });
     await new Promise(resolve => setImmediate(resolve));
     const calls = sql.mock.calls as unknown as [TemplateStringsArray, string, string[], string[]][];
     const insert = calls.find(([template]) => template.join('').includes('INSERT INTO harness_shared.memory_anchors'));

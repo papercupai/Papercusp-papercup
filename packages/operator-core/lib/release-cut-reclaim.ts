@@ -47,10 +47,14 @@ import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
 import { mapWithConcurrency } from './gym/concurrency';
 import { defaultRetentionDir, isLeaseLive, parseRetentionLease, readRetentionLeases, RETENTION_SCHEMA, versionFromTag,
+  withRetentionPinProtection,
   type RetentionLease } from '../../../scripts/lib/retention-pins.mjs';
 export { defaultRetentionDir, isLeaseLive, parseRetentionLease, readRetentionLeases, RETENTION_SCHEMA, versionFromTag };
 export type { RetentionLease, LeaseParse } from '../../../scripts/lib/retention-pins.mjs';
 import { HELPER_FRAME_FN, type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
+import { RETENTION_POLICY } from './storage/retention-policy';
+import { DEFAULT_RECLAIM_RUN_BUDGET_MS, type RetentionCapReceipt } from './storage/disk-reclaim';
+import { openWriterPidsMany, type OpenWriterScan } from './native-bg-task-ledger';
 
 export { type HelperSection, nextForkSlot, parseHelperFrames } from './git-batch';
 
@@ -208,6 +212,7 @@ export interface HolderScan {
   reason?: string;
   /** keyed by registered worktree path */
   holders: Map<string, string[]>;
+  diagnostics?: OpenWriterScan['diagnostics'];
 }
 
 export type AuthoredWork =
@@ -709,58 +714,44 @@ export interface HolderTarget {
  * root PID namespace (a nested namespace sees only its own processes — a confident false
  * idle, the trap measured on this box, memory 41104d77).
  */
-export async function scanProcHolders(targets: HolderTarget[], procRoot = '/proc'): Promise<HolderScan> {
-  // Async on purpose: this walks every fd of every process (tens of thousands of readlinks
-  // on this box). A synchronous /proc walk on the operator main thread measured ~600ms per
-  // pass (WI-10005283); awaiting per process lets the event loop run between them.
+export async function scanProcHolders(targets: HolderTarget[], procRoot = '/proc', deps: {
+  scan?: typeof import('./storage/disk-reclaim').scanRetentionHolders;
+} = {}): Promise<HolderScan> {
+  // A full host walk ran for 604s in a standing pass, versus 5.2s in an isolated
+  // child. Reuse the enrolled privileged worker and its existing deadline,
+  // original-caller control and fail-closed reads. The operator never walks FDs.
   const holders = new Map<string, string[]>();
-  let nsNote = '';
   try {
     const status = await fs.promises.readFile(path.join(procRoot, 'self', 'status'), 'utf8');
     const nspid = /^NSpid:\s*(.+)$/m.exec(status)?.[1]?.trim().split(/\s+/) ?? [];
-    if (nspid.length > 1) nsNote = `nested-pid-namespace(${nspid.join('/')})`;
+    if (nspid.length !== 1) return { verified: false, reason: `nested-pid-namespace-or-missing(${nspid.join('/')})`, holders };
   } catch (e) {
-    nsNote = `self-status-unreadable:${errText(e)}`;
+    return { verified: false, reason: `self-status-unreadable:${errText(e)}`, holders };
   }
-  const control = realpathOrNull(process.cwd()) ?? process.cwd();
-  const all: HolderTarget[] = [...targets, { key: '\0control', prefixes: [control] }];
-  let pids: string[] = [];
+  const control = process.cwd();
+  const prefixes = [...new Set(targets.flatMap((target) => target.prefixes))];
+  let scan: OpenWriterScan;
   try {
-    pids = (await fs.promises.readdir(procRoot)).filter((n) => /^\d+$/.test(n));
-  } catch (e) {
-    return { verified: false, reason: `proc-unreadable:${errText(e)}`, holders };
+    scan = procRoot === '/proc'
+      ? await (deps.scan ?? (await import('./storage/disk-reclaim')).scanRetentionHolders)(prefixes, {
+        isolate: true, includeProcessLinks: true,
+      })
+      : await openWriterPidsMany([...prefixes, control], {
+        procRoot, descendants: true, includeProcessLinks: true, failClosed: true, deadlineMs: 30_000,
+      });
+  } catch (e) { return { verified: false, reason: `holder-worker:${errText(e)}`, holders }; }
+  for (const target of targets) {
+    const pids = [...new Set(target.prefixes.flatMap((prefix) => scan.byPath.get(prefix) ?? []))]
+      .sort((a, b) => Number(a) - Number(b));
+    if (pids.length) holders.set(target.key, pids.slice(0, 3).map((pid) => `pid ${pid} reference`));
   }
-  let controlSeen = false;
-  for (const pid of pids) {
-    const base = path.join(procRoot, pid);
-    const links = ['cwd', 'root', 'exe'].map((l) => path.join(base, l));
-    try {
-      for (const fd of await fs.promises.readdir(path.join(base, 'fd'))) links.push(path.join(base, 'fd', fd));
-    } catch {
-      // another user's process or one that just exited — its cwd/root/exe are still tried
-    }
-    const targetsOfLinks = await Promise.all(links.map((l) => fs.promises.readlink(l).catch(() => null)));
-    for (let i = 0; i < links.length; i++) {
-      const link = links[i] as string;
-      const target = targetsOfLinks[i];
-      if (target == null) continue;
-      for (const t of all) {
-        if (!t.prefixes.some((p) => target === p || target.startsWith(`${p}/`))) continue;
-        if (t.key === '\0control') {
-          if (pid === String(process.pid) && link.endsWith('/cwd')) controlSeen = true;
-          continue;
-        }
-        const list = holders.get(t.key) ?? [];
-        if (list.length < 3 && !list.some((h) => h.startsWith(`pid ${pid} `))) {
-          list.push(`pid ${pid} ${path.basename(link) === 'cwd' ? 'cwd' : path.basename(path.dirname(link)) === 'fd' ? 'fd' : path.basename(link)}`);
-          holders.set(t.key, list);
-        }
-      }
-    }
+  const diagnostics = scan.diagnostics;
+  if (!scan.complete) return { verified: false,
+    reason: `holder-scan-incomplete:${diagnostics?.reason ?? JSON.stringify(diagnostics ?? {})}`, holders, diagnostics };
+  if (!scan.byPath.get(control)?.includes(String(process.pid))) {
+    return { verified: false, reason: 'positive-control-failed(own cwd not seen)', holders, diagnostics };
   }
-  if (nsNote) return { verified: false, reason: nsNote, holders };
-  if (!controlSeen) return { verified: false, reason: 'positive-control-failed(own cwd not seen)', holders };
-  return { verified: true, holders };
+  return { verified: true, holders, diagnostics };
 }
 
 /**
@@ -867,6 +858,7 @@ export interface ReclaimPhaseTiming {
   stage: 'start' | 'finish';
   elapsedMs?: number;
   outcome?: 'fulfilled' | 'rejected';
+  diagnostics?: OpenWriterScan['diagnostics'];
 }
 
 function emitReclaimPhase(onPhase: GatherOptions['onPhase'], event: ReclaimPhaseTiming): void {
@@ -974,6 +966,9 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
   const holders = await measureReclaimPhaseAsync(opts.onPhase, 'holder-scan', () =>
     Promise.resolve((opts.scanHolders ?? scanProcHolders)(holderTargets)),
   );
+  if (holders.diagnostics) emitReclaimPhase(opts.onPhase, {
+    phase: 'holder-scan-evidence', stage: 'finish', diagnostics: holders.diagnostics,
+  });
   const base = {
     nowMs,
     minIdleHours: opts.minIdleHours ?? DEFAULT_MIN_IDLE_HOURS,
@@ -1027,6 +1022,10 @@ export async function gatherCutReclaimPlan(opts: GatherOptions): Promise<Reclaim
 // ---------------------------------------------------------------- removal (effectful)
 
 export interface ReclaimExecDeps {
+  /** Set by a caller that already holds papercusp-disk-retention (the scheduled adapter). */
+  retentionMutexHeld?: boolean;
+  /** Re-read under the retention mutex immediately before destructive work. */
+  pinProtection?: (path: string) => boolean;
   nowMs?: () => number;
   scanHolders?: (targets: HolderTarget[]) => HolderScan | Promise<HolderScan>;
   archive?: (tree: string, outFile: string) => void | Promise<void>;
@@ -1114,7 +1113,7 @@ export async function archiveTreeDiffs(tree: string, outFile: string): Promise<v
   }
 }
 
-export async function executeCutReclaim(
+async function executeCutReclaimUnlocked(
   plan: ReclaimPlan,
   targets: readonly string[],
   deps: ReclaimExecDeps = {},
@@ -1133,10 +1132,15 @@ export async function executeCutReclaim(
   const archiveDir = deps.archiveDir ?? path.join(defaultRetentionDir(), 'reclaim-archive');
   const auditFile = deps.auditFile ?? path.join(defaultRetentionDir(), 'deletion-audit.tsv');
   const results: ReclaimExecResult[] = [];
+  const isPinned = deps.pinProtection ?? (() => false);
   for (const v of resolved.verdicts) {
     const started = now();
     const done = (r: Omit<ReclaimExecResult, 'path' | 'ms'>) => results.push({ path: v.path, ms: now() - started, ...r });
     const real = v.realPath ?? v.path;
+    if (isPinned(v.path) || (real !== v.path && isPinned(real))) {
+      done({ removed: false, reason: 'active retention pin' });
+      continue;
+    }
     const offloaded = real !== v.path;
     // realpath can differ because a PARENT is symlinked. Only a symlink at
     // the worktree itself needs unlinking after the real directory is moved.
@@ -1227,6 +1231,173 @@ export async function executeCutReclaim(
     done({ removed: true, archive });
   }
   return { ok: true, results };
+}
+
+/** Direct release:cut callers must serialize the final pin read and deletion with storage:pin.
+ * The scheduled disk-reclaim adapter already owns this mutex and opts out to avoid a nested
+ * lock deadlock. The re-read closes the plan/read-to-delete race when a pin lands after planning. */
+export async function executeCutReclaim(
+  plan: ReclaimPlan,
+  targets: readonly string[],
+  deps: ReclaimExecDeps = {},
+): Promise<{ ok: false; refused: true; problems: string[] } | { ok: true; results: ReclaimExecResult[] }> {
+  if (deps.retentionMutexHeld) return executeCutReclaimUnlocked(plan, targets, deps);
+  return withRetentionPinProtection((isPinned) =>
+    executeCutReclaimUnlocked(plan, targets, { ...deps, retentionMutexHeld: true, pinProtection: isPinned }),
+  );
+}
+
+// Reuse the retention census's validated-record progress contract. --all exposes
+// progress even inside one large flat directory; only root rows contribute bytes.
+// Keep one du process so its inode table deduplicates hardlinks across roots.
+function measureCutUsage(roots: readonly string[], notAfterMs: number): Promise<Map<string, number>> {
+  return new Promise((resolve, reject) => {
+    const bytes = new Map<string, number>();
+    let pending = '', stderr = '', failure: string | undefined, settled = false;
+    let progressTimer: ReturnType<typeof setTimeout>;
+    let deadlineTimer: ReturnType<typeof setTimeout>;
+    if (!Number.isFinite(notAfterMs) || notAfterMs <= Date.now()) {
+      reject(new Error('release-cut usage run deadline exhausted')); return;
+    }
+    const child = spawn('du', ['--all', '--one-file-system', '--block-size=1', '--null', '--', ...roots], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const stop = (reason: string) => {
+      failure ??= reason;
+      child.kill('SIGKILL');
+    };
+    const armProgress = () => {
+      clearTimeout(progressTimer);
+      progressTimer = setTimeout(() => stop('release-cut usage made no metadata progress for 10 seconds'), 10_000);
+    };
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(progressTimer); clearTimeout(deadlineTimer);
+      if (error) reject(error); else resolve(bytes);
+    };
+    armProgress();
+    deadlineTimer = setTimeout(() => stop('release-cut usage run deadline exhausted'), notAfterMs - Date.now());
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      if (failure) return;
+      const rows = (pending + chunk).split('\0'); pending = rows.pop() ?? '';
+      for (const row of rows) {
+        const tab = row.indexOf('\t'), value = row.slice(0, tab), p = row.slice(tab + 1), n = Number(value);
+        if (tab < 1 || !/^\d+$/.test(value) || !Number.isSafeInteger(n) ||
+            path.resolve(p) !== p || !roots.some((root) => p === root || p.startsWith(`${root}/`)) || bytes.has(p)) {
+          stop('invalid release-cut usage output'); return;
+        }
+        if (roots.includes(p)) bytes.set(p, n);
+      }
+      // Bound an unterminated row, not the streamed population. Partial records
+      // and stderr noise cannot renew a stuck command's inactivity deadline.
+      if (pending.length > 64 * 1024) { stop('oversized release-cut usage record'); return; }
+      if (rows.length) armProgress();
+    });
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4096); });
+    child.once('error', (error) => finish(error));
+    child.once('close', (code, signal) => {
+      if (!failure && (code !== 0 || signal)) failure = 'release-cut usage command failed';
+      if (!failure && (pending || bytes.size !== roots.length)) failure = 'incomplete release-cut usage output';
+      if (!failure && !Number.isSafeInteger([...bytes.values()].reduce((sum, n) => sum + n, 0))) {
+        failure = 'release-cut usage exceeds safe integer bytes';
+      }
+      finish(failure ? Object.assign(new Error(failure), { code, signal, killed: child.killed, stderr }) : undefined);
+    });
+  });
+}
+
+/** The scheduled adapter holds the pin mutex across discovery and this owner call.
+ * A cap never overrides the existing published/authored/lease/holder guards. All
+ * expired eligible cuts are still collected, even when usage is already below cap. */
+export async function reclaimCutWorktrees(
+  plan: ReclaimPlan,
+  options: { dryRun?: boolean; maxBytes?: number; notAfterMs?: number } = {},
+  deps: ReclaimExecDeps = {},
+) {
+  const notAfterMs = options.notAfterMs ?? Date.now() + DEFAULT_RECLAIM_RUN_BUDGET_MS;
+  const maxBytes = options.maxBytes ?? RETENTION_POLICY.find((c) => c.id === 'release-cut-worktrees')!.maxBytes!;
+  const targets = plan.verdicts.filter((v) => v.disposition === 'reclaimable')
+    .sort((a, b) => {
+      const activity = (v: ReclaimVerdict) => Math.max(Date.parse(v.createdAt ?? '') || 0, Date.parse(v.lastHeadMoveAt ?? '') || 0);
+      return activity(a) - activity(b) || a.path.localeCompare(b.path);
+    }).map((v) => v.path);
+  const pinnedPaths = plan.verdicts.filter((v) => v.reasons.some((r) => r.startsWith('lease:agent-pin-'))).map((v) => v.path);
+  const cap: Omit<RetentionCapReceipt, 'beforeBytes' | 'afterBytes' | 'overByBytes' | 'pinnedBytes' | 'pinnedOverageBytes'> & {
+    beforeBytes: number | null; afterBytes: number | null; overByBytes: number | null;
+    pinnedBytes: number | null; pinnedOverageBytes: number | null; retainedPaths: string[];
+  } = {
+    root: plan.canonicalRoot ?? '', classId: 'release-cut-worktrees', maxBytes,
+    beforeBytes: null, afterBytes: null, overByBytes: null, pinnedBytes: null,
+    pinnedOverageBytes: null, pinnedPaths, retainedPaths: [],
+  };
+  const errors = [...plan.failClosed];
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) errors.push('invalid release-cut byte cap');
+  if (plan.verdicts.some((v) => !v.realPath)) errors.push('release-cut population has unreadable paths');
+  if (errors.length) return { ok: false, dryRun: !!options.dryRun, targets, errors, cap };
+  const population = () => {
+    const interrupted = readInterruptedCutReclaims(deps.archiveDir ?? path.join(defaultRetentionDir(), 'reclaim-archive'), plan.canonicalRoot!);
+    if (interrupted.errors.length) throw new Error(interrupted.errors.join('; '));
+    return [...new Set([
+      ...plan.verdicts.map((v) => v.realPath!),
+      ...(plan.interrupted ?? []).map((v) => v.trash),
+      ...interrupted.interrupted.map((v) => v.trash),
+    ])];
+  };
+  // GNU du supplies allocated bytes without following descendant symlinks or
+  // opening FIFOs. One process and the existing run deadline cover the population. A
+  // failed/partial measurement refuses deletion rather than treating it as zero.
+  const measure = async () => {
+    const existing: string[] = [];
+    for (const p of population()) {
+      try { await fs.promises.lstat(p); existing.push(p); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+    }
+    const roots = existing.filter((p) => !existing.some((other) => other !== p && p.startsWith(`${other}/`)));
+    // du deduplicates hardlinks across arguments. Charge pinned roots first so
+    // their still-allocated blocks cannot disappear into an evictable sibling's
+    // count. The total still counts each shared allocation only once.
+    const pinned = (p: string) => plan.verdicts.some((v) => pinnedPaths.includes(v.path) && pathsOverlap(p, v.realPath!));
+    roots.sort((a, b) => Number(pinned(b)) - Number(pinned(a)) || a.localeCompare(b));
+    if (!roots.length) return new Map<string, number>();
+    return measureCutUsage(roots, notAfterMs);
+  };
+  // Error.message starts with du's complete argument list. Retain the actual
+  // failure before that list consumes the bounded receipt's diagnostic budget.
+  const usageFailure = (error: unknown): string => {
+    const detail = error as { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown } | null;
+    return JSON.stringify({ code: detail?.code ?? null, signal: detail?.signal ?? null,
+      killed: detail?.killed === true,
+      stderr: String(detail?.stderr ?? '').slice(-1024), message: errText(error) });
+  };
+  try {
+    const before = await measure();
+    cap.beforeBytes = [...before.values()].reduce((sum, n) => sum + n, 0);
+    cap.pinnedBytes = [...before].filter(([p]) => plan.verdicts.some((v) => pinnedPaths.includes(v.path) && pathsOverlap(p, v.realPath!)))
+      .reduce((sum, [, n]) => sum + n, 0);
+    cap.pinnedOverageBytes = Math.max(0, cap.pinnedBytes - maxBytes);
+    if (options.dryRun) {
+      cap.afterBytes = cap.beforeBytes;
+      cap.overByBytes = Math.max(0, cap.afterBytes - maxBytes);
+      cap.retainedPaths = [...before.keys()];
+      return { ok: true, dryRun: true, targets, errors, cap };
+    }
+  } catch (e) {
+    errors.push(`release-cut usage before reclaim: ${usageFailure(e)}`);
+    return { ok: false, dryRun: !!options.dryRun, targets, errors, cap };
+  }
+  let execution: Awaited<ReturnType<typeof executeCutReclaim>> = { ok: true, results: [] };
+  try { if (targets.length) execution = await executeCutReclaim(plan, targets, deps); }
+  catch (e) { errors.push(`release-cut execution: ${errText(e)}`); }
+  try {
+    const after = await measure();
+    cap.afterBytes = [...after.values()].reduce((sum, n) => sum + n, 0);
+    cap.overByBytes = Math.max(0, cap.afterBytes - maxBytes);
+    cap.retainedPaths = [...after.keys()];
+  } catch (e) { errors.push(`release-cut usage after reclaim: ${usageFailure(e)}`); }
+  return { ok: errors.length === 0 && execution.ok && execution.results.every((r) => r.removed), dryRun: false, targets, errors, cap, execution };
 }
 
 /** Compact, tool-result-sized rendering (a full verdict list overruns the result cap). */

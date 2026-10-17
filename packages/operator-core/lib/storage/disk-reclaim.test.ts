@@ -4,10 +4,12 @@ import { PassThrough } from 'node:stream';
 import type { ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { compilePolicy, type RetentionClass } from './retention-policy';
-import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, readReclaimReceipt, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
+import { createRetentionHolderScanner, drainScheduledDiskReclaim, nativeRetentionCommand, physicalRetentionRoots, readReclaimReceipt, reclaimRunBudgetForDrain, scanRetentionRootHolders, scanRetentionHolders, selectRetentionEntries, type DiskReclaimReceipt, type ReclaimSql, type RetentionEntry, type RetentionCapReceipt } from './disk-reclaim';
 
 const delegateSpawn = vi.hoisted(() => vi.fn());
 vi.mock('../task-manager/managed-spawn', () => ({ managedSpawn: delegateSpawn }));
+const delegateKill = vi.hoisted(() => vi.fn());
+vi.mock('../task-manager/control', () => ({ killTask: delegateKill }));
 
 const HOUR = 3_600_000;
 const now = 1000 * HOUR;
@@ -36,6 +38,14 @@ describe('per-root allocated-byte caps', () => {
     expect(caps[0]).toMatchObject({ beforeBytes: 140, pinnedBytes: 110, pinnedPaths: ['/scratch/pin'], pinnedOverageBytes: 10 });
     compiled.pins[0]!.expiresAt = new Date(now - 1).toISOString();
     expect(selectRetentionEntries([sized('pin', 100, 110), sized('new', 1, 30)], compiled, now).map((entry) => entry.path)).toEqual(['/scratch/pin']);
+  });
+  it('counts the union of hardlinked pins without manufacturing a pinned-only overage', () => {
+    const compiled = capped(); compiled.pins = [{ paths: ['/scratch/pin-a', '/scratch/pin-b'], expiresAt: new Date(now + HOUR).toISOString() }];
+    const shared = (name: string) => ({ ...sized(name, 2, 64), hardlinks: [{ dev: 1, ino: 200, bytes: 64, paths: [`/scratch/${name}`] }] });
+    const caps: RetentionCapReceipt[] = [];
+    expect(selectRetentionEntries([shared('pin-a'), shared('pin-b'), sized('new', 1, 60)], compiled, now, caps)
+      .map(entry => entry.path)).toEqual(['/scratch/new']);
+    expect(caps[0]).toMatchObject({ beforeBytes: 124, pinnedBytes: 64, pinnedOverageBytes: 0 });
   });
   it('keeps recent entries at the ceiling and still expires old entries below it', () => {
     expect(selectRetentionEntries([sized('recent', 1, 100)], capped(), now)).toEqual([]);
@@ -78,6 +88,13 @@ describe('exact retention receipt readback', () => {
 });
 
 describe('bounded scheduled retention drain', () => {
+  it('bounds each scheduled pass to the remaining drain window', () => {
+    expect(reclaimRunBudgetForDrain(undefined, 1000)).toBeUndefined();
+    expect(reclaimRunBudgetForDrain(901_000, 1000)).toBe(900_000);
+    expect(reclaimRunBudgetForDrain(2_000_000, 1000)).toBe(900_000);
+    expect(reclaimRunBudgetForDrain(1000, 1001)).toBe(1);
+  });
+
   const partial = (overrides: Partial<DiskReclaimReceipt> = {}): DiskReclaimReceipt => ({
     schemaVersion: 1, id: 'batch-receipt', startedAt: new Date(0).toISOString(), finishedAt: new Date(1000).toISOString(),
     dryRun: false, complete: false, policyExhausted: null, devices: [], delegates: [],
@@ -89,6 +106,38 @@ describe('bounded scheduled retention drain', () => {
     const run = vi.fn().mockResolvedValueOnce(partial()).mockResolvedValueOnce(partial({ id: 'done', complete: true, errors: [] }));
     expect(await drainScheduledDiskReclaim(run)).toEqual({ batches: 2, lastReceiptId: 'done', stop: 'complete' });
     expect(run.mock.calls).toEqual([[0, undefined], [1, 900_000]]);
+  });
+  const cappedPartial = (): DiskReclaimReceipt => partial({
+    caps: [{ root: '/scratch', classId: 'scratch', maxBytes: 10, beforeBytes: 12,
+      pinnedBytes: 0, pinnedPaths: [], afterBytes: 11, overByBytes: 1, pinnedOverageBytes: 0 }],
+    errors: [...partial().errors, 'size cap remains exceeded:/scratch:1'],
+  });
+  it('resumes a productive capped root whose exact overage accompanies its effect-budget stop', async () => {
+    const run = vi.fn().mockResolvedValueOnce(cappedPartial())
+      .mockResolvedValueOnce(partial({ id: 'done', complete: true, errors: [] }));
+    expect(await drainScheduledDiskReclaim(run)).toEqual({ batches: 2, lastReceiptId: 'done', stop: 'complete' });
+    expect(run.mock.calls).toEqual([[0, undefined], [1, 900_000]]);
+  });
+  it.each(['missing-cap', 'different-root', 'different-overage', 'no-budget-stop', 'pinned-only'])(
+    'refuses a cap error without matching resumable evidence: %s', async (mismatch) => {
+      const receipt = cappedPartial();
+      if (mismatch === 'missing-cap') receipt.caps = [];
+      if (mismatch === 'different-root') receipt.caps![0]!.root = '/other';
+      if (mismatch === 'different-overage') receipt.caps![0]!.overByBytes = 2;
+      if (mismatch === 'no-budget-stop') receipt.effects![0]!.stopped = false;
+      if (mismatch === 'pinned-only') receipt.caps![0]!.pinnedOverageBytes = 1;
+      const run = vi.fn().mockResolvedValue(receipt);
+      expect((await drainScheduledDiskReclaim(run)).stop).toBe('error');
+      expect(run).toHaveBeenCalledOnce();
+    },
+  );
+  it('keeps capped continuation bounded and refuses a batch that made no removal', async () => {
+    const run = vi.fn().mockResolvedValue(cappedPartial());
+    expect((await drainScheduledDiskReclaim(run, { maxElapsedMs: 1000 })).stop).toBe('time-limit');
+    expect(run).toHaveBeenCalledOnce();
+    run.mockClear().mockResolvedValue({ ...cappedPartial(), entries: [] });
+    expect((await drainScheduledDiskReclaim(run)).stop).toBe('no-progress');
+    expect(run).toHaveBeenCalledOnce();
   });
   it.each([
     { errors: ['incomplete process-holder scan:/scratch'] },
@@ -188,6 +237,25 @@ describe('retention holder evidence', () => {
     expect(result).toEqual({ complete: true, byPath: new Map([[process.cwd(), [String(process.pid)]], ['/scratch/held', ['999']]]) });
   });
 
+  it('isolates release holder scans even for a root host and requests every process link', async () => {
+    const scan = vi.fn();
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+    delegateSpawn.mockImplementationOnce(async (command, args, _spec, options) => {
+      expect(command).toBe('/usr/bin/sudo');
+      expect(args.join(' ')).toContain('includeProcessLinks: true');
+      expect(args.join(' ')).toContain('readdirSync');
+      options.onSpawn(child as unknown as ChildProcess, 'release-holder-task');
+      child.stdout.write(JSON.stringify({ complete: true, byPath: [[process.cwd(), [String(process.pid)]], ['/cut', ['999']]] }));
+      child.emit('close', 0, null); return { child, taskId: 'release-holder-task' };
+    });
+    const result = await scanRetentionHolders(['/cut'], {
+      uid: () => 0, readStatus: async () => 'NSpid:\t1\n', scan, isolate: true, includeProcessLinks: true,
+    });
+    expect(scan).not.toHaveBeenCalled();
+    expect(result.complete).toBe(true);
+    expect(result.byPath.get('/cut')).toEqual(['999']);
+  });
+
   it('preserves full JSON stdout separately from scope diagnostics and refuses truncated evidence', async () => {
     const holderPids = Array.from({ length: 1000 }, (_, i) => String(i + 1));
     const byPath = [[process.cwd(), [String(process.pid)]], ['/scratch', holderPids]];
@@ -281,6 +349,29 @@ describe('retention holder evidence', () => {
     expect(Buffer.byteLength(input)).toBeGreaterThan(128 * 1024);
     expect(JSON.parse(input)).toEqual([...paths, process.cwd()]);
   });
+
+  it('resolves privileged scanner source independently of the caller working directory', async () => {
+    const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url)).replace(/\/$/, '');
+    const control = '/unrelated-holder-caller';
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(control);
+    vi.stubEnv('PAPERCUSP_INTEGRATION_ROOT', undefined);
+    const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() });
+    delegateSpawn.mockImplementationOnce(async (command, args, _spec, options) => {
+      expect(command).toBe('/usr/bin/sudo');
+      expect(options.spawnOptions.cwd).toBe(repoRoot);
+      expect(args.at(-1)).toBe(`${repoRoot}/packages/operator-core/lib/native-bg-task-ledger.ts`);
+      options.onSpawn(child as unknown as ChildProcess, 'source-root-holder-task');
+      child.stdout.write(JSON.stringify({ complete: true, byPath: [[control, [String(process.pid)]]] }));
+      child.emit('close', 0, null);
+      return { child, taskId: 'source-root-holder-task' };
+    });
+    try {
+      expect((await scanRetentionHolders(['/scratch'], {
+        uid: () => 1000, readStatus: async () => 'NSpid:\t1\n',
+      })).complete).toBe(true);
+      expect(delegateSpawn).toHaveBeenCalledTimes(1);
+    } finally { cwd.mockRestore(); vi.unstubAllEnvs(); }
+  });
 });
 
 describe('per-pass kernel holder transport', () => {
@@ -288,7 +379,7 @@ describe('per-pass kernel holder transport', () => {
   const evidence = (path: string, pids: string[] = [], patch = {}) => ({ complete: true,
     byPath: pids.length ? [[path, pids]] : [], diagnostics: { fdEnd: 1, cwdEnd: 1, readFailures: 0,
       identityStable: true, callerSeen: 1, descriptorsScanned: 50, processesScanned: 10, elapsedMs: 2, ...patch } });
-  const fixture = (respond: (request: { path: string; caller: number; control: string }, child: ChildProcess) => void) => {
+  const fixture = (respond: (request: { path: string; caller: number; control: string; operation?: string; [key: string]: unknown }, child: ChildProcess) => void) => {
     const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
       exitCode: null as number | null, signalCode: null, kill: vi.fn() });
     child.kill.mockImplementation(() => { child.exitCode = 1; child.emit('close', 1, 'SIGKILL'); return true; });
@@ -320,6 +411,33 @@ describe('per-pass kernel holder transport', () => {
     } finally { await scanner.close(); }
     expect(child.stdin.writableEnded).toBe(true);
     expect((await scanner.scan([target])).complete).toBe(false);
+  });
+
+  it('holds a regular-file lease through the persistent worker and releases its token', async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const child = fixture((request, spawned) => {
+      requests.push(request);
+      if (request.operation === 'lease-acquire') {
+        spawned.stdout!.emit('data', JSON.stringify({ complete: true,
+          lease: { token: '0123456789abcdef0123456789abcdef', type: 'write' },
+          diagnostics: { backend: 'fcntl-file-lease', identityStable: true } }) + '\n');
+      } else if (request.operation === 'lease-release') {
+        spawned.stdout!.emit('data', JSON.stringify({ complete: true, released: true,
+          diagnostics: { backend: 'fcntl-file-lease', breakRequested: false } }) + '\n');
+      } else {
+        spawned.stdout!.emit('data', JSON.stringify(evidence(request.path)) + '\n');
+      }
+    });
+    const scanner = createRetentionHolderScanner();
+    const candidate: RetentionEntry = { path: target, root: '/tmp', classId: 'scratch', newestWriteMs: 1,
+      bytes: 1, dev: 1, ino: 2, uid: 1000, gid: 1000 };
+    try {
+      const lease = await scanner.acquireRegularFileLease(candidate, 1_000);
+      expect(requests[0]).toMatchObject({ operation: 'lease-acquire', path: target, dev: 1, ino: 2, uid: 1000, gid: 1000 });
+      expect((await scanner.scan([target])).complete).toBe(false);
+      await lease.release();
+      expect(requests[1]).toEqual({ operation: 'lease-release', token: '0123456789abcdef0123456789abcdef' });
+    } finally { await scanner.close(); }
   });
 
   it.each([{ fdEnd: 0 }, { cwdEnd: 0 }, { callerSeen: 0 }, { readFailures: 1 }, { identityStable: false }])(
@@ -360,7 +478,7 @@ describe('per-pass kernel holder transport', () => {
 });
 
 describe('native retention completion', () => {
-  afterEach(() => { vi.useRealTimers(); delegateSpawn.mockReset(); });
+  afterEach(() => { vi.useRealTimers(); delegateSpawn.mockReset(); delegateKill.mockReset(); });
 
   it.each([0, 2])('preserves output and exit %s before the launch promise resolves', async (code) => {
     const child = Object.assign(new EventEmitter(), {
@@ -390,24 +508,93 @@ describe('native retention completion', () => {
     });
   });
 
-  it('times out a running child once and keeps the timeout verdict when kill emits close', async () => {
+  it('awaits scoped timeout cleanup and keeps the timeout verdict when termination emits close', async () => {
     vi.useFakeTimers();
     let observed!: () => void;
     const ready = new Promise<void>((resolve) => { observed = resolve; });
     const child = Object.assign(new EventEmitter(), { stdout: null, stderr: null, kill: vi.fn() });
-    child.kill.mockImplementation(() => { child.emit('close', null, 'SIGKILL'); });
+    let release!: () => void;
+    const cleanup = new Promise<void>((resolve) => { release = resolve; });
+    delegateKill.mockImplementationOnce(async () => {
+      child.emit('close', null, 'SIGKILL');
+      await cleanup;
+      return { ok: true, taskId: 'slow-retention-task', action: 'kill' };
+    });
     delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
       options.onSpawn(child as unknown as ChildProcess, 'slow-retention-task');
       observed();
       return { child, taskId: 'slow-retention-task', waitForCompletion: async () => ({ status: 'recorded' }) };
     });
-    const result = nativeRetentionCommand('/repo', 'sleep', ['300']);
+    let finished = false;
+    const result = nativeRetentionCommand('/repo', 'sleep', ['300']).then((value) => { finished = true; return value; });
     await ready;
     await vi.advanceTimersByTimeAsync(120_000);
+    expect(delegateKill).toHaveBeenCalledExactlyOnceWith('slow-retention-task', { signal: 'SIGKILL', reapTerminalResidue: true });
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(finished).toBe(false);
+    release();
     await expect(result).resolves.toEqual({
       ok: false, detail: { error: 'delegate timeout', taskId: 'slow-retention-task', output: '' },
     });
-    expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGKILL');
+  });
+
+  it('reports failed scope cleanup rather than claiming the timed out payload was reaped', async () => {
+    vi.useFakeTimers();
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => { ready = resolve; });
+    const child = Object.assign(new EventEmitter(), { stdout: null, stderr: null, kill: vi.fn() });
+    const completion = vi.fn(async () => ({ status: 'delegated' }));
+    delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
+      options.onSpawn(child as unknown as ChildProcess, 'residual-task'); ready();
+      return { child, taskId: 'residual-task', waitForCompletion: completion };
+    });
+    delegateKill.mockResolvedValueOnce({ ok: false, taskId: 'residual-task', action: 'kill', error: 'incomplete', detail: 'scope still populated' });
+    const result = nativeRetentionCommand('/repo', 'sleep', ['300'], { timeoutMs: 50 });
+    await started; await vi.advanceTimersByTimeAsync(50);
+    await expect(result).resolves.toMatchObject({ ok: false, detail: {
+      error: 'delegate timeout', cleanup: { ok: false, error: 'incomplete', detail: 'scope still populated' },
+    } });
+    expect(completion).not.toHaveBeenCalled();
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it('retains bounded worker phase stderr on a timeout without contaminating JSON stdout', async () => {
+    vi.useFakeTimers();
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => { ready = resolve; });
+    const child = Object.assign(new EventEmitter(), {
+      stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
+      options.onSpawn(child as unknown as ChildProcess, 'worker-progress-task');
+      child.stdout.write('{"removed":');
+      child.stderr.write('x'.repeat(5000));
+      child.stderr.write('\nRETENTION_WORKER {"phase":"source-scan","nodes":1024}\n');
+      ready();
+      return { child, taskId: 'worker-progress-task', waitForCompletion: async () => ({ status: 'recorded' }) };
+    });
+    delegateKill.mockResolvedValueOnce({ ok: true, taskId: 'worker-progress-task', action: 'kill' });
+    const result = nativeRetentionCommand('/repo', 'fixture-worker', [], { stdoutOnly: true, timeoutMs: 50 });
+    await started; await vi.advanceTimersByTimeAsync(50);
+    const outcome = await result;
+    expect(outcome).toMatchObject({ ok: false, detail: { error: 'delegate timeout',
+      output: '{"removed":', stderr: expect.stringContaining('RETENTION_WORKER {"phase":"source-scan","nodes":1024}') } });
+    expect((outcome.detail as { stderr: string }).stderr).toHaveLength(4000);
+    expect(delegateKill).toHaveBeenCalledExactlyOnceWith('worker-progress-task', { signal: 'SIGKILL', reapTerminalResidue: true });
+  });
+
+  it('uses scoped cleanup when the enrolled input pipe is unavailable', async () => {
+    const child = Object.assign(new EventEmitter(), { stdout: null, stderr: null, kill: vi.fn() });
+    delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
+      options.onSpawn(child as unknown as ChildProcess, 'missing-input-task');
+      return { child, taskId: 'missing-input-task', waitForCompletion: async () => ({ status: 'recorded' }) };
+    });
+    delegateKill.mockResolvedValueOnce({ ok: true, taskId: 'missing-input-task', action: 'kill' });
+    await expect(nativeRetentionCommand('/repo', 'cat', [], { stdin: 'payload' })).resolves.toMatchObject({
+      ok: false, detail: { error: 'delegate input pipe unavailable' },
+    });
+    expect(delegateKill).toHaveBeenCalledExactlyOnceWith('missing-input-task', { signal: 'SIGKILL', reapTerminalResidue: true });
+    expect(child.kill).not.toHaveBeenCalled();
   });
 
   it('keeps a successful delegate pending until its terminal evidence is persisted', async () => {
@@ -429,5 +616,35 @@ describe('native retention completion', () => {
     expect(finished).toBe(false);
     release();
     await expect(result).resolves.toMatchObject({ ok: true, detail: { code: 0, taskId: 'persisting-retention-task' } });
+  });
+
+  it('distinguishes child exit before launch bookkeeping from terminal settlement in receipt timing', async () => {
+    let clock = 1000;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    let release!: () => void, entered!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const persistence = new Promise<void>((resolve) => { release = resolve; });
+    const child = Object.assign(new EventEmitter(), { stdout: null, stderr: null, kill: vi.fn() });
+    const observeTiming = vi.fn();
+    delegateSpawn.mockImplementationOnce(async (_command, _args, _spec, options) => {
+      clock += 5; options.stage('spawn-register-task');
+      clock += 10; options.onSpawn(child as unknown as ChildProcess, 'timed-retention-task');
+      clock += 7; child.emit('close', 0, null);
+      clock += 20; options.stage('spawn-mark-running');
+      return { child, taskId: 'timed-retention-task', waitForCompletion: async () => {
+        entered(); await persistence; clock += 300; return { status: 'recorded' };
+      } };
+    });
+    try {
+      const result = nativeRetentionCommand('/repo', 'true', [], { observeTiming });
+      await waiting;
+      expect(observeTiming).not.toHaveBeenCalled();
+      release(); await expect(result).resolves.toMatchObject({ ok: true });
+      expect(observeTiming).toHaveBeenCalledExactlyOnceWith({
+        taskId: 'timed-retention-task', totalMs: 342, spawnedAfterMs: 15,
+        childClosedAfterMs: 22, launchReturnedAfterMs: 42, completedAfterMs: 342,
+        stages: [{ name: 'spawn-register-task', elapsedMs: 5 }, { name: 'spawn-mark-running', elapsedMs: 42 }],
+      });
+    } finally { release(); now.mockRestore(); }
   });
 });

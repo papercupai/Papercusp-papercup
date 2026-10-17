@@ -18,6 +18,7 @@ import {
   submoduleRelativeCandidates,
 } from './gate-candidate-failures';
 import type { FrozenRepairLegState } from './release/repair-leg-lifecycle';
+import type { RepairSignatureEntry } from './release/frozen-candidate-repair-queue';
 
 const CANDIDATE = 'adbf27530285830455f8d8df32a45752cfaff332';
 const REPAIR_HEAD = 'e7bffeac00000000000000000000000000000000';
@@ -923,9 +924,17 @@ describe('P-007 — a red non-test leg is NEVER none-failing on any reading of t
     failingRounds: state === 'failing' ? 1 : 0,
     ...(state === 'fixed' ? { resolvedHead: SHORT, resolvedAtMs: 1_800_000_000_000 } : {}),
   });
+  const lintSignature: RepairSignatureEntry = {
+    kind: 'lint-leg',
+    id: 'lint:tsc',
+    recipe: 'npm run lint:tsc',
+    admittedRound: 1,
+    measuredHead: SHORT,
+  };
   const read = (opts: {
     repairTickLegs?: ReturnType<typeof tick>;
     queueLegs?: readonly FrozenRepairLegState[];
+    queueSignature?: readonly RepairSignatureEntry[];
     failing?: Row[];
     git?: Record<string, string | null>;
   }) =>
@@ -937,6 +946,7 @@ describe('P-007 — a red non-test leg is NEVER none-failing on any reading of t
       git: fakeGit(opts.git ?? {}),
       ...(opts.repairTickLegs ? { repairTickLegs: opts.repairTickLegs } : {}),
       ...(opts.queueLegs ? { queueLegs: opts.queueLegs } : {}),
+      ...(opts.queueSignature ? { queueSignature: opts.queueSignature } : {}),
     });
 
   /** The pre-P-007 rule, verbatim in shape — kept as the control that must NOT be what ships. */
@@ -972,6 +982,46 @@ describe('P-007 — a red non-test leg is NEVER none-failing on any reading of t
       queueLegs: [lifecycle('lint:plane-ratchet', 'failing')],
     });
     expect(res.nonTestLegs!.outstanding).toEqual(['lint:plane-ratchet']);
+    expect(res.assessment).toBe('non-test-leg-failing');
+  });
+
+  it('an unmeasured queue-signature lint leg stays named and outstanding before the first repair tick', async () => {
+    const res = await read({ queueSignature: [lintSignature] });
+
+    expect(res.nonTestLegsMeasured).toBe('not-recorded');
+    expect(res.nonTestLegs!.perLeg).toMatchObject([
+      { id: 'lint:tsc', measuredNow: 'not-measured', lifecycle: 'failing', admittedRound: 1 },
+    ]);
+    expect(res.nonTestLegs!.outstanding).toEqual(['lint:tsc']);
+    expect(res.nonTestLegs!.reading).toMatch(/lint:tsc/);
+    expect(res.assessment).toBe('non-test-leg-failing');
+  });
+
+  it('a current repair-tick pass resolves a signature-only lint leg before queue lifecycle is persisted', async () => {
+    const res = await read({
+      queueSignature: [lintSignature],
+      repairTickLegs: tick([{ id: 'lint:tsc', status: 'pass' }]),
+    });
+
+    expect(res.nonTestLegs!.current).toBe(true);
+    expect(res.nonTestLegs!.perLeg).toMatchObject([
+      { id: 'lint:tsc', measuredNow: 'pass', lifecycle: 'fixed', fixedAtHead: SHORT, admittedRound: 1 },
+    ]);
+    expect(res.nonTestLegs!.outstanding).toEqual([]);
+    expect(res.assessment).toBe('all-fixes-contained');
+  });
+
+  it('a stale repair-tick pass does not erase a signature-only lint leg red', async () => {
+    const res = await read({
+      queueSignature: [lintSignature],
+      repairTickLegs: tick([{ id: 'lint:tsc', status: 'pass' }], '0123456789ab'),
+    });
+
+    expect(res.nonTestLegs!.current).toBe(false);
+    expect(res.nonTestLegs!.perLeg).toMatchObject([
+      { id: 'lint:tsc', measuredNow: 'pass', lifecycle: 'failing', admittedRound: 1 },
+    ]);
+    expect(res.nonTestLegs!.outstanding).toEqual(['lint:tsc']);
     expect(res.assessment).toBe('non-test-leg-failing');
   });
 

@@ -1,13 +1,11 @@
 /**
- * THE seam between hosted subscription billing and the (not yet ready)
- * metering/entitlement system: "what does an active subscription entitle?"
+ * The seam between hosted subscription facts and server-configured allowances.
  *
  * Signup, checkout and webhook code depend ONLY on this interface. They never
  * encode entitlement policy themselves; they persist subscription FACTS
  * (status, price, period) and ask the configured provider what those facts are
- * worth. Nothing derived is persisted, so swapping the provider (the metering
- * work, papercusp-monetization P-004/P-005) changes every organization's
- * entitlement on the next read without a data migration.
+ * worth. Resource-capable providers also project version-pinned authority into
+ * the existing grant ledger atomically with accepted billing facts.
  *
  * The output reuses the org-scoped entitlement vocabulary of
  * `hosted-entitlement-schema.ts` (WI-40806): a subscription resolves to a
@@ -17,7 +15,7 @@
  * stripe-subscription-signup-2026-10-01 P-001 / D-001.
  */
 import { pinModuleState } from '@papercusp/module-singleton';
-import type { HostedEntitlementPatch } from '../../hosted-entitlement-schema';
+import { parseHostedEntitlementBundle, type HostedEntitlementBundle, type HostedEntitlementPatch } from '../../hosted-entitlement-schema';
 
 /** Stripe subscription statuses, plus `pending` = known from checkout, no subscription event yet. */
 export const HOSTED_SUBSCRIPTION_STATUSES = [
@@ -90,6 +88,8 @@ export interface HostedSubscriptionEntitlement {
 
 export interface HostedSubscriptionEntitlementProvider {
   readonly id: string;
+  /** Server-only, version-pinned resource policy. Absent means no resource claim. */
+  resourceBundleFor?(snapshot: HostedSubscriptionSnapshot | null, now: Date): HostedEntitlementBundle | null;
   entitlementFor(
     snapshot: HostedSubscriptionSnapshot | null,
     now: Date,
@@ -97,6 +97,47 @@ export interface HostedSubscriptionEntitlementProvider {
 }
 
 export const STUB_ENTITLEMENT_PROVIDER_ID = 'stub:plan-key-bundle';
+
+/** Explicit operator configuration; never a price/label-derived allowance. */
+export function parseHostedPaidEntitlementBundle(value: unknown): HostedEntitlementBundle {
+  const parsed = parseHostedEntitlementBundle(JSON.parse(JSON.stringify(value)));
+  if (!parsed.ok) throw new Error('hosted_paid_policy_invalid');
+  const bundle = parsed.value; const e = bundle.entitlements;
+  if (bundle.record.source !== 'billing' || bundle.record.actor.kind !== 'service' || !e.allowedProviders.length ||
+      e.limits.workspaces < 1 || e.limits.members < 1 ||
+      ['pool.agents', 'pool.hosts', 'pool.cpu-millicores', 'pool.memory-mib', 'pool.db-gib', 'pool.workspace-gib']
+        .some(key => !Number.isSafeInteger(e.quotas[key]) || e.quotas[key]! < 0) ||
+      (e.quotas['pool.reserved-hosts'] ?? 0) > e.quotas['pool.hosts']! ||
+      !Object.entries(e.budgets).some(([key, amount]) => /^pool\.cost\.[a-z]{3}\.minor$/.test(key) && Number.isSafeInteger(amount) && amount >= 0)) {
+    throw new Error('hosted_paid_allowances_invalid');
+  }
+  return bundle;
+}
+
+export function createConfiguredHostedSubscriptionEntitlementProvider(plans: readonly {
+  planKey: string; priceId: string; entitlementBundle?: HostedEntitlementBundle;
+}[]): HostedSubscriptionEntitlementProvider {
+  const policies = plans.filter(plan => plan.entitlementBundle).map(plan => ({
+    planKey: plan.planKey, priceId: plan.priceId, bundle: parseHostedPaidEntitlementBundle(plan.entitlementBundle),
+  }));
+  const id = 'configured:hosted-billing-resource-policy-v1';
+  const resourceBundleFor = (snapshot: HostedSubscriptionSnapshot | null, now: Date) => {
+    if (!snapshot || !['active', 'trialing', 'past_due'].includes(snapshot.status) ||
+        !snapshot.currentPeriodEnd || !Number.isFinite(snapshot.currentPeriodEnd.getTime()) ||
+        snapshot.currentPeriodEnd.getTime() <= now.getTime()) return null;
+    const policy = policies.find(row => row.planKey === snapshot.planKey && row.priceId === snapshot.priceId);
+    if (!policy || policy.bundle.record.effectiveFrom.getTime() > now.getTime() ||
+        (policy.bundle.record.effectiveUntil && policy.bundle.record.effectiveUntil.getTime() <= now.getTime())) return null;
+    return structuredClone(policy.bundle);
+  };
+  return { id, resourceBundleFor, entitlementFor(snapshot, now) {
+    const bundle = resourceBundleFor(snapshot, now);
+    return { source: 'billing', providerId: id, entitled: bundle !== null,
+      reason: bundle ? snapshot!.status === 'past_due' ? 'grace_past_due' : snapshot!.status === 'trialing' ? 'trialing' : 'active'
+        : !snapshot ? 'not_subscribed' : !policies.some(row => row.planKey === snapshot.planKey && row.priceId === snapshot.priceId) ? 'unknown_plan' : 'inactive',
+      bundleKey: bundle?.bundleId ?? null, patch: bundle?.entitlements ?? null };
+  } };
+}
 
 /**
  * Default provider until metering is ready: an entitled status maps the plan

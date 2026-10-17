@@ -2,7 +2,7 @@
 import { expect, it, vi } from 'vitest';
 import { once } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
-import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from 'vscode-jsonrpc/node';
+import { createMessageConnection, StreamMessageReader, StreamMessageWriter } from 'vscode-jsonrpc/node.js';
 import { managedSpawn } from '../task-manager/managed-spawn';
 import { killScopeUnit } from '../task-manager/control';
 import { shutdownLspClient } from './lsp-adapter';
@@ -18,7 +18,7 @@ it.runIf(process.platform === 'linux')('drains both a responsive LSP and a nonre
   for (const hang of [false, true]) {
     const script = `
       const { spawn } = require('node:child_process');
-      const { createMessageConnection, StreamMessageReader, StreamMessageWriter } = require('vscode-jsonrpc/node');
+      const { createMessageConnection, StreamMessageReader, StreamMessageWriter } = require('vscode-jsonrpc/node.js');
       const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
       const conn = createMessageConnection(new StreamMessageReader(process.stdin), new StreamMessageWriter(process.stdout));
       conn.onRequest('probe', () => ({ pid: process.pid, descendant: descendant.pid }));

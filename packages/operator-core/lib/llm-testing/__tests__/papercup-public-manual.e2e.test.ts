@@ -967,7 +967,13 @@ async function ownHostedOperatorConnector(portalRoot: string, user: { workspaceI
   const fixture = { ...loaded.default, ...loaded };
   const controlWorkspace = fixture.isolatedHostedWorkspaceContext(process.env);
   const relayModule = await phase('connector-relay-module-import', () => import(/* @vite-ignore */ pathToFileURL(join(portalRoot, 'apps/host/src/operator-relay.ts')).href), 10_000);
-  const config = ({ ...relayModule.default, ...relayModule }).relayConfig(process.env);
+  // The Portal relay defaults to the installed hosted control plane (:3880).
+  // This fixture owns a disposable operator and database, so let the relay
+  // use that same runtime authority instead of authenticating against the
+  // shared hosted service with a session created in the private database.
+  const config = ({ ...relayModule.default, ...relayModule }).relayConfig({
+    ...process.env, PORTAL_HOSTED_CONTROL_PLANE_ORIGIN: operatorOrigin,
+  });
   if (!config) throw new Error('hosted_fixture_relay_configuration_missing');
   const workspace = user.workspaceId!;
   const [host] = await phase('connector-host-binding-read', () => withWorkspace(controlWorkspace, (sql) => sql`
@@ -1560,7 +1566,7 @@ describe('public manual selected private runtime preflight', () => {
     });
 
   it('preserves explicit automatic gateway routing without mutating the caller', () => {
-    const selected = { ...environment, PAPERCUSP_TEST_PUBLIC_CHAT: '1',
+    const selected: NodeJS.ProcessEnv = { ...environment, PAPERCUSP_TEST_PUBLIC_CHAT: '1',
       PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_GATEWAY_PORT: '8788' };
     expect(publicManualHostedRuntimeEnvironment(selected)).toMatchObject({
       PAPERCUSP_CODEX_GATEWAY: '1', PAPERCUSP_GATEWAY_PORT: '8788' });
@@ -2497,9 +2503,12 @@ describe.runIf(enabled)('real public Papercup manual behavior', () => {
       expect(registered.current).toBe(before.current);
       expect(registered.workspaces.some((entry) => entry.id === workspaceId)).toBe(true);
     }));
-    principalSessionId = `public-chat-manual-${randomUUID()}`;
+    // A const keeps the narrowing inside the phase() callback; the module-level
+    // `let` is still assigned for the afterAll cleanup.
+    const admittedSessionId = `public-chat-manual-${randomUUID()}`;
+    principalSessionId = admittedSessionId;
     const principal = await phase('principal-admission', () => startPiSession({
-      workspaceId, sessionId: principalSessionId, capabilities: ['docs:read'],
+      workspaceId, sessionId: admittedSessionId, capabilities: ['docs:read'],
       allowedTools: ['docs:search', 'docs:get'],
       expiresAt: new Date(Date.now() + 15 * 60_000),
     }));

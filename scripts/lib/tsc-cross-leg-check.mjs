@@ -54,10 +54,11 @@ function repoRelative(root, absolute) {
  * `tsc --pretty false` prints when run from the repo root. The gate's existing parser and
  * per-file counter therefore consume it unchanged.
  *
- * @param {{ root: string, tscCommand: string, files: Iterable<string>, tsModule?: typeof ts }} args
+ * @param {{ root: string, tscCommand: string, files: Iterable<string>, tsModule?: typeof ts, onProgress?: (event: { phase: string, file?: string, sourceFiles?: number }) => void }} args
  * @returns {{ project: string, members: string[], nonMembers: string[], output: string, diagnosticCount: number }}
  */
-export function legFileDiagnostics({ root, tscCommand, files, tsModule = ts }) {
+export function legFileDiagnostics({ root, tscCommand, files, tsModule = ts, onProgress = () => {} }) {
+  onProgress({ phase: 'config-start' });
   const command = projectFromTscCommand(tscCommand);
   if (!command) throw new Error(`no -p project in tsc command: ${tscCommand}`);
   const cli = tsModule.parseCommandLine(command.flags);
@@ -76,11 +77,13 @@ export function legFileDiagnostics({ root, tscCommand, files, tsModule = ts }) {
   });
   if (!config) throw new Error(`could not read ${configPath}`);
   const options = { ...config.options, noEmit: true };
+  onProgress({ phase: 'program-start' });
   const program = tsModule.createProgram({
     rootNames: config.fileNames,
     options,
     projectReferences: config.projectReferences,
   });
+  onProgress({ phase: 'program-ready', sourceFiles: program.getSourceFiles().length });
 
   /** @type {string[]} */
   const members = [];
@@ -96,6 +99,7 @@ export function legFileDiagnostics({ root, tscCommand, files, tsModule = ts }) {
       continue;
     }
     members.push(repoRelative(root, absolute));
+    onProgress({ phase: 'diagnostics-start', file: repoRelative(root, absolute) });
     diagnostics.push(
       ...program.getSyntacticDiagnostics(sourceFile),
       ...program.getSemanticDiagnostics(sourceFile),
@@ -104,6 +108,7 @@ export function legFileDiagnostics({ root, tscCommand, files, tsModule = ts }) {
     if (options.declaration || options.composite) {
       diagnostics.push(...program.getDeclarationDiagnostics(sourceFile));
     }
+    onProgress({ phase: 'diagnostics-ready', file: repoRelative(root, absolute) });
   }
   const errors = diagnostics.filter((d) => d.category === tsModule.DiagnosticCategory.Error);
   const output = tsModule.formatDiagnostics(errors, {

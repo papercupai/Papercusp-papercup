@@ -70,7 +70,7 @@ import './adv-header-pills.css';
 // mount the same BrainstormFull surface.
 // Exported for the portal's surface registry test (packages/operator-ui/src/surfaces —
 // portal-parity-adv-tabs-2026-09-05 P-001): every id here must have a portal kind.
-export const ADV_TAB_IDS = ['overview', 'hud', 'brainstorm', 'harnesses', 'health', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'history', 'git', 'stats', 'testing', 'plans', 'workflows', 'calendar', 'frames', 'evals'] as const;
+export const ADV_TAB_IDS = ['overview', 'enterprise', 'hud', 'brainstorm', 'harnesses', 'health', 'prs', 'insights', 'conversations', 'learning', 'settings', 'docs', 'history', 'git', 'stats', 'testing', 'plans', 'workflows', 'calendar', 'frames', 'evals'] as const;
 export type AdvTabId = (typeof ADV_TAB_IDS)[number];
 
 /**
@@ -129,6 +129,7 @@ export const ADV_TABS: ReadonlyArray<{
   accentRgb: string;
 }> = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard, accent: CATEGORICAL.indigo400.hex, accentRgb: CATEGORICAL.indigo400.rgb },
+  { id: 'enterprise', label: 'Enterprise', icon: Workflow, accent: CATEGORICAL.blue400.hex, accentRgb: CATEGORICAL.blue400.rgb },
   // HUD — the session board (adv-hud-fleet-board-2026-07-25). First slot right of
   // Overview by owner ask (2026-07-25): it is the "who is doing what / who needs me"
   // glance you reach for immediately after the landing dashboard. Workspace-scoped
@@ -193,6 +194,7 @@ export const ADV_TABS: ReadonlyArray<{
  */
 export const WORKSPACE_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   'overview',
+  'enterprise',
   // HUD is a roster of every SESSION in the workspace (presence-primary), not a
   // per-pot view — it stays visible under "All Pots".
   'hud',
@@ -283,6 +285,7 @@ export function advMaxToggleLabel(level: AdvMaxLevel): string {
  */
 export const PRIMARY_ADV_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   'overview',
+  'enterprise',
   'hud',
   'workflows',
   // Work (id 'harnesses') promoted to the visible strip, immediately right of

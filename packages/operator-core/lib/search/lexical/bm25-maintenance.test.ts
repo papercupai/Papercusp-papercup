@@ -11,7 +11,9 @@ import {
   formatBm25MaintenanceReport,
   orderBuildCandidates,
   parseBm25SegmentTotals,
+  runBm25Maintenance,
   runOrgBm25Maintenance,
+  tryAcquireBackupRendezvous,
   type Bm25MaintenanceReport,
 } from './bm25-maintenance';
 
@@ -33,6 +35,55 @@ describe('production maintenance connection lifetime', () => {
     dedicated.create.mockReturnValue({ sql });
     expect((await runOrgBm25Maintenance()).errors).toEqual(['ensure: ensure refused']);
     expect(sql.end).toHaveBeenCalledOnce();
+  });
+});
+
+describe('host-backup rendezvous admission', () => {
+  it('reports a busy host backup without waiting for its advisory lock', async () => {
+    const conn = vi.fn().mockResolvedValue([{ locked: false }]);
+    await expect(tryAcquireBackupRendezvous(conn as never)).resolves.toBe(false);
+    expect(conn).toHaveBeenCalledOnce();
+  });
+
+  it('defers a concurrent BM25 build before issuing DDL while the host dump owns the rendezvous', async () => {
+    const render = (strings: TemplateStringsArray, values: unknown[]) =>
+      strings.reduce((text, part, i) => text + part + (i < values.length ? String(values[i]) : ''), '');
+    const connCalls: string[] = [];
+    const conn = Object.assign(
+      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const query = render(strings, values);
+        connCalls.push(query);
+        if (query.includes('pg_try_advisory_lock')) {
+          return [{ locked: query.includes('bm25-maintenance:concurrent-ddl') }];
+        }
+        return [];
+      }),
+      {
+        unsafe: vi.fn(async (query: string) => {
+          connCalls.push(query);
+          return [];
+        }),
+        release: vi.fn(),
+      },
+    );
+    const sql = Object.assign(
+      vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+        const query = render(strings, values);
+        if (query.includes('bm25_ensure_indexes')) {
+          return [{ corpus_index: 'work_items_bm25', outcome: 'deferred:build-concurrently' }];
+        }
+        if (query.includes('to_regprocedure')) return [{ defined: false }];
+        return [];
+      }),
+      { reserve: vi.fn().mockResolvedValue(conn) },
+    );
+
+    const report = await runBm25Maintenance(sql as never, { maxCompactionSteps: 0 });
+
+    expect(report.built).toBeNull();
+    expect(report.pendingBuilds).toContain('work_items_bm25');
+    expect(connCalls.some(query => /(?:CREATE|DROP|REINDEX)\s+INDEX/i.test(query))).toBe(false);
+    expect(conn.release).toHaveBeenCalledOnce();
   });
 });
 

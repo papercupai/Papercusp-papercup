@@ -219,16 +219,19 @@ publish_staging_generation() {
 # The old check forked tr|grep|readlink for every process, once per candidate:
 # with ~7,000 processes and 13 candidates a single prune took minutes. Here one
 # grep reads every environ and one find reads every cwd, about 0.5s in total.
-# Each line of STAGING_GENERATION_REFS is a PAPERCUSP_INTEGRATION_ROOT value or
-# a process cwd. Unreadable or vanished processes are skipped.
+# Keep pid/source/path records from the same batched scan for retention evidence
+# (WI5508). STAGING_GENERATION_REFS remains the path-only pruning safety input.
+# Unreadable or vanished processes are skipped, as before.
 collect_staging_generation_refs() {
-  STAGING_GENERATION_REFS="$(
+  STAGING_GENERATION_PROCESS_REFS="$(
     {
-      grep -sazho '^PAPERCUSP_INTEGRATION_ROOT=.*' /proc/[0-9]*/environ 2>/dev/null |
-        tr '\0' '\n' | sed 's/^PAPERCUSP_INTEGRATION_ROOT=//' || true
-      find /proc/[0-9]* -maxdepth 1 -name cwd -printf '%l\n' 2>/dev/null || true
+      grep -sazHo '^PAPERCUSP_INTEGRATION_ROOT=.*' /proc/[0-9]*/environ 2>/dev/null |
+        tr '\0' '\n' | sed -n 's#^/proc/\([0-9]*\)/environ:PAPERCUSP_INTEGRATION_ROOT=#\1\tintegration-root\t#p' || true
+      find /proc/[0-9]* -maxdepth 1 -name cwd -printf '%p\t%l\n' 2>/dev/null |
+        sed -n 's#^/proc/\([0-9]*\)/cwd\t#\1\tcwd\t#p' || true
     } | sort -u || true
   )"
+  STAGING_GENERATION_REFS="$(printf '%s\n' "$STAGING_GENERATION_PROCESS_REFS" | cut -f3- | sort -u)"
 }
 
 staging_generation_in_use() {
@@ -239,6 +242,71 @@ staging_generation_in_use() {
     fi
   done <<< "${STAGING_GENERATION_REFS:-}"
   return 1
+}
+
+# Diagnostics never authorize deletion or process termination. Read metadata for
+# at most five distinct holders per retained generation, never another host-wide
+# scan. Parent state follows the existing sidecar-orphan-probe/reaper contract:
+# a missing declared PID, or one started after its child, cannot be its parent.
+# The optional proc root is only a parser/race test seam.
+staging_generation_holder_evidence() {
+  local root="$1" proc_root="${2:-/proc}" pid source ref entry stat_line rest comm
+  local parent parent_state ppid child_start parent_start shown=0 total=0
+  local -a fields
+  local -A seen=()
+  while IFS=$'\t' read -r pid source ref; do
+    [[ "$pid" =~ ^[0-9]+$ && -n "$ref" && ( "$ref" == "$root" || "$ref" == "$root/"* ) ]] || continue
+    [[ -z "${seen[$pid]:-}" ]] || continue
+    seen[$pid]=1
+    total=$((total + 1))
+    [[ "$shown" -lt 5 ]] || continue
+    shown=$((shown + 1))
+    parent=unknown parent_state=unknown ppid=unknown comm=unknown child_start=unknown
+    stat_line="$(cat "$proc_root/$pid/stat" 2>/dev/null || true)"
+    if [[ "$stat_line" == *') '* ]]; then
+      rest="${stat_line##*) }"
+      read -r -a fields <<< "$rest"
+      ppid="${fields[1]:-unknown}"
+      child_start="${fields[19]:-unknown}"
+      comm="${stat_line#*(}"
+      comm="${comm%)*}"
+      comm="${comm//[^[:alnum:]_.-]/_}"
+      comm="${comm:0:64}"
+    fi
+    if [[ -r "$proc_root/$pid/environ" ]]; then
+      parent=undeclared parent_state=undeclared
+      while IFS= read -r -d '' entry; do
+        if [[ "$entry" == PAPERCUSP_DESKTOP_PARENT_PID=* ]]; then
+          parent="${entry#*=}"
+          parent_state=unknown
+          break
+        fi
+      done < "$proc_root/$pid/environ" 2>/dev/null || true
+      if [[ "$parent" =~ ^[1-9][0-9]*$ ]]; then
+        if [[ -d "$proc_root/$parent" ]]; then
+          parent_state=live
+          stat_line="$(cat "$proc_root/$parent/stat" 2>/dev/null || true)"
+          rest="${stat_line##*) }"
+          read -r -a fields <<< "$rest"
+          parent_start="${fields[19]:-unknown}"
+          if [[ "$child_start" =~ ^[0-9]+$ && "$parent_start" =~ ^[0-9]+$ ]] &&
+             ((parent_start > child_start)); then
+            parent_state=recycled
+          fi
+        else
+          parent_state=missing
+        fi
+      elif [[ "$parent" != undeclared ]]; then
+        parent=unknown
+      fi
+    fi
+    log "staging-generation-holder generation=$root holder_pid=$pid holder_ppid=$ppid holder_comm=$comm reference=$source declared_parent_pid=$parent declared_parent_state=$parent_state"
+    if [[ "$parent_state" == missing || "$parent_state" == recycled ]]; then
+      log "ALARM: staging generation pinned by sidecar without its declared parent generation=$root holder_pid=$pid declared_parent_pid=$parent declared_parent_state=$parent_state action=inspect-sidecar-parent-watch retained=true"
+    fi
+  done <<< "${STAGING_GENERATION_PROCESS_REFS:-}"
+  log "staging-generation-retention generation=$root holders=$total shown=$shown omitted=$((total - shown)) action=inspect-holders-before-reclaim retained=true"
+  return 0
 }
 
 prune_staging_generations() {
@@ -256,6 +324,7 @@ prune_staging_generations() {
     fi
     if staging_generation_in_use "$resolved_root"; then
       log "retaining prior staging generation still referenced by a process: $resolved_root"
+      staging_generation_holder_evidence "$resolved_root" || log "retention holder evidence unavailable: $resolved_root (generation retained)"
       continue
     fi
     candidate_home="$(dirname "$resolved_root")"
@@ -308,17 +377,39 @@ copy_staging_runtime_environment() {
 }
 
 prepare_staging_candidate() {
-  local target_sha="$1" phase
+  local target_sha="$1" phase phase_log phase_status
+  local -a phase_statuses
+  local log_root="${PAPERCUSP_HOME:-$HOME/.papercusp}/checkpoint-logs"
+  local attempt="${INVOCATION_ID:-$$}"
   local snapshot_script="$INTEGRATION_ROOT/apps/operator/scripts/systemd/papercusp-script-snapshot.sh"
   local setup_script="$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"
+  [[ "$attempt" =~ ^[a-zA-Z0-9_-]+$ ]] || attempt="$$"
+  if ! mkdir -p -- "$log_root"; then
+    log "FATAL: cannot create setup failure log directory $log_root"
+    return 1
+  fi
   create_staging_candidate "$target_sha" || return 1
   log "preparing isolated staging candidate $STAGING_CANDIDATE_ROOT at ${target_sha:0:10}"
   for phase in --source-only --prepare-existing --spa-only; do
-    if ! PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_CANDIDATE_ROOT" \
+    # Stream progress while retaining raw evidence outside the candidate: the
+    # EXIT cleanup removes that checkout, including Vite's own failure logs.
+    phase_log="$log_root/staging-setup-$attempt-${phase#--}.log"
+    if PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_CANDIDATE_ROOT" \
       timeout --kill-after=10s 900s bash "$snapshot_script" "$setup_script" \
-        --ref "$target_sha" --release "$STAGING_CANDIDATE_ROOT" --node-modules auto "$phase"; then
-      log "FATAL: candidate checkout preparation failed in $phase; the published staging alias is unchanged"
-      return 1
+        --ref "$target_sha" --release "$STAGING_CANDIDATE_ROOT" --node-modules auto "$phase" 2>&1 | tee "$phase_log"; then
+      rm -f -- "$phase_log"
+    else
+      # Capture both statuses before any command overwrites PIPESTATUS. Keep
+      # timeout's 124 distinct from a child failure; also fail on a lost log.
+      phase_statuses=("${PIPESTATUS[@]}")
+      phase_status="${phase_statuses[0]}"
+      if [[ "$phase_status" -eq 0 ]]; then phase_status="${phase_statuses[1]}"; fi
+      if ! printf '\nsetup exit status: %s\nphase: %s\nsource: %s\ncandidate: %s\n' \
+        "$phase_status" "$phase" "$target_sha" "$STAGING_CANDIDATE_ROOT" >> "$phase_log"; then
+        log "FATAL: could not append setup failure metadata to $phase_log"
+      fi
+      log "FATAL: candidate checkout preparation failed in $phase (exit $phase_status); raw build evidence retained at $phase_log; the published staging alias is unchanged"
+      return "$phase_status"
     fi
     staging_sync_checkpoint "candidate phase $phase complete" || return "$?"
   done
@@ -845,10 +936,20 @@ restart_result_is_pending() {
     process.stdin.on("end", () => {
       try {
         const result = JSON.parse(body);
+        const currentPending =
+          result?.stagingReadiness?.outcome === "not-observed" &&
+          result?.stagingReadiness?.activeState !== "failed";
+        // Older hosts returned the audited request before readiness observation
+        // existed. Admit that exact receipt only to the same bounded PID/source
+        // reconciliation below; scheduled remains distinct from completed.
+        const legacyPending =
+          result?.stagingReadiness === undefined && result?.ok === true &&
+          result?.requestAuditPersisted === true &&
+          typeof result?.restartRequestId === "string" && result.restartRequestId.trim().length > 0 &&
+          result?.reason === undefined && result?.error === undefined;
         process.exit(result?.target === "staging" &&
           result?.restartScheduled === true && result?.restartObserved === false &&
-          result?.stagingReadiness?.outcome === "not-observed" &&
-          result?.stagingReadiness?.activeState !== "failed" ? 0 : 1);
+          (currentPending || legacyPending) ? 0 : 1);
       } catch { process.exit(1); }
     });
   '
@@ -1235,13 +1336,23 @@ fi
 # above), so inspect the result rather than treating process status as the verdict. A verified coalesce is a
 # success: another recent restart already cycled the same service and the
 # cooldown prevents a redundant outage.
+restart_failure_detail="$restart_result $restart_diagnostics"
+if [ "${#restart_failure_detail}" -gt 3000 ]; then
+  restart_failure_detail="${restart_failure_detail: -3000}"
+fi
 if [ "$restart_verified" -eq 1 ]; then
   log "coordinated dev:restart independently verified: MainPID $observed_main_pid serves exact source $observed_health_sha"
 elif [ "$restart_tool_status" -ne 0 ] && restart_result_is_pre_dispatch_refusal "$restart_result $restart_diagnostics"; then
   log "FATAL: coordinated dev:restart was refused before dispatch: ${restart_result:0:250} ${restart_diagnostics:0:250}"
   exit 1
+elif [ "$restart_tool_status" -ne 0 ] && printf '%s' "$restart_result $restart_diagnostics" | grep -Eq '"reason"[[:space:]]*:[[:space:]]*"resource_drain_timeout"'; then
+  # MCP error results are printed to stderr by ptool (exit 1), including a
+  # delivered drain refusal. No restart was scheduled; waiting for health here
+  # hides the blocking lease and can never make the target source appear.
+  log "FATAL: coordinated dev:restart resource drain was refused; no restart scheduled: $restart_failure_detail"
+  exit 1
 elif [ "$restart_tool_status" -ne 0 ]; then
-  log "coordinated dev:restart returned no terminal receipt (exit $restart_tool_status); waiting for exact target health before deciding"
+  log "coordinated dev:restart returned no terminal receipt (exit $restart_tool_status); waiting for exact target health before deciding; diagnostics: $restart_failure_detail"
 elif printf '%s' "$restart_result" | restart_result_is_pending; then
   restart_pending=1
   log "coordinated dev:restart is scheduled but not yet observed; waiting for a new MainPID and exact target health"

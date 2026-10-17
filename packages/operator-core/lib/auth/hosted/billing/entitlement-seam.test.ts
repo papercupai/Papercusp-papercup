@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   STUB_ENTITLEMENT_PROVIDER_ID,
+  createConfiguredHostedSubscriptionEntitlementProvider,
+  parseHostedPaidEntitlementBundle,
   configureHostedSubscriptionEntitlementProvider,
   currentHostedSubscriptionEntitlementProvider,
   resolveHostedSubscriptionEntitlement,
@@ -21,6 +23,42 @@ const snapshot = (over: Partial<HostedSubscriptionSnapshot> = {}): HostedSubscri
   livemode: false,
   latestInvoiceStatus: 'paid',
   ...over,
+});
+
+const paidBundle = () => ({ schemaVersion: 1, bundleId: 'paid-team', bundleVersion: 1,
+  record: { source: 'billing', actor: { kind: 'service', principalId: 'service:billing' },
+    auditReceiptId: 'policy:paid-team:1', effectiveFrom: '2026-01-01T00:00:00Z', effectiveUntil: null },
+  entitlements: { allowedProviders: ['gcp'], limits: { workspaces: 1, members: 5 },
+    browserAccess: { pty: true, files: true }, supportTier: 'paid',
+    quotas: { 'pool.agents': 20, 'pool.hosts': 2, 'pool.cpu-millicores': 8000, 'pool.memory-mib': 16384,
+      'pool.db-gib': 256, 'pool.workspace-gib': 32, 'pool.reserved-hosts': 1 },
+    budgets: { 'pool.cost.usd.minor': 10000 }, rolloutFlags: {} } });
+
+describe('configured paid resource policy', () => {
+  const now = new Date('2026-10-16T09:00:00Z');
+  it('pins explicit policy to both price and plan, bounds grace/cancel-at-end, and detaches configuration', async () => {
+    const bundle = parseHostedPaidEntitlementBundle(paidBundle());
+    const provider = createConfiguredHostedSubscriptionEntitlementProvider([{ planKey: 'team', priceId: 'price_team', entitlementBundle: bundle }]);
+    (bundle.entitlements.quotas as Record<string, number>)['pool.agents'] = 999;
+    for (const status of ['active', 'trialing', 'past_due'] as const) {
+      expect(await resolveHostedSubscriptionEntitlement(snapshot({ status, cancelAtPeriodEnd: true,
+        currentPeriodEnd: new Date(now.getTime() + 1) }), { provider, now }))
+        .toMatchObject({ entitled: true, bundleKey: 'paid-team', patch: { quotas: { 'pool.agents': 20 } } });
+    }
+    for (const over of [{ priceId: 'price_other' }, { planKey: 'pro' }, { currentPeriodEnd: null },
+      { currentPeriodEnd: now }, { status: 'canceled' as const }, { status: 'unpaid' as const }]) {
+      const s = snapshot({ currentPeriodEnd: new Date(now.getTime() + 1000), ...over });
+      expect(await resolveHostedSubscriptionEntitlement(s, { provider, now })).toMatchObject({ entitled: false, patch: null });
+    }
+  });
+  it('rejects label-only, partial, foreign-source, and over-reserved policies', () => {
+    for (const alter of [(b: ReturnType<typeof paidBundle>) => { delete (b.entitlements.quotas as Record<string, number>)['pool.db-gib']; },
+      (b: ReturnType<typeof paidBundle>) => { b.record.source = 'migration'; },
+      (b: ReturnType<typeof paidBundle>) => { b.entitlements.quotas['pool.reserved-hosts'] = 3; },
+      (b: ReturnType<typeof paidBundle>) => { b.entitlements.budgets = {} as typeof b.entitlements.budgets; }]) {
+      const b = paidBundle(); alter(b); expect(() => parseHostedPaidEntitlementBundle(b)).toThrow();
+    }
+  });
 });
 
 afterEach(() => {

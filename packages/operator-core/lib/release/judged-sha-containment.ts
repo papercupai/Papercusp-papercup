@@ -10,7 +10,12 @@
  * What remains here is the read side — where the integration branch is, and whether a given
  * path's content on the judged sha equals its content on that branch.
  */
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
+
+let execFileAsyncMemo: typeof execFile.__promisify__ | null = null;
+const execFileAsync = ((...args: unknown[]) =>
+  Reflect.apply((execFileAsyncMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 
 export function integrationBranch(): string {
   return process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging';
@@ -75,6 +80,56 @@ export const realGitProbe: GitProbe = {
     return r.status === 0 && /^[0-9a-f]{40,64}$/.test(out) ? out : null;
   },
 };
+
+/** Event-loop-safe ref resolution for live operator handlers. */
+export async function revParseAsync(
+  root: string,
+  ref: string,
+  run: (root: string, ref: string) => Promise<unknown> = async (probeRoot, probeRef) => {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', probeRoot, 'rev-parse', '--verify', '--quiet', probeRef],
+      { encoding: 'utf8', maxBuffer: 64 * 1024 },
+    );
+    return stdout;
+  },
+): Promise<string | null> {
+  try {
+    const output = await run(root, ref);
+    const sha = typeof output === 'string' ? output.trim() : '';
+    return /^[0-9a-f]{40,64}$/.test(sha) ? sha : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Event-loop-safe ancestry probe for live operator handlers. Keep the synchronous
+ * GitProbe API for worker-thread and CLI callers; request handlers must use async
+ * probes so a slow Git child process cannot block every MCP session on the host.
+ */
+export async function isAncestorAsync(
+  root: string,
+  ancestor: string,
+  descendant: string,
+  run: (root: string, ancestor: string, descendant: string) => Promise<unknown> =
+    async (probeRoot, probeAncestor, probeDescendant) => {
+      await execFileAsync(
+        'git',
+        ['-C', probeRoot, 'merge-base', '--is-ancestor', probeAncestor, probeDescendant],
+        { encoding: 'utf8', maxBuffer: 64 * 1024 },
+      );
+    },
+): Promise<boolean | null> {
+  try {
+    await run(root, ancestor, descendant);
+    return true;
+  } catch (error: unknown) {
+    const code = (error as { code?: unknown } | null)?.code;
+    if (Number(code) === 1) return false;
+    return null;
+  }
+}
 
 export interface PathContainment {
   path: string;

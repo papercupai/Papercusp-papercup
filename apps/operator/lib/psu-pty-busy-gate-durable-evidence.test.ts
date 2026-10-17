@@ -45,7 +45,7 @@ const DEFER_ANCHOR = 'DEFERRED/REFUSED';
 /** The terminal statement of the busy-gate defer block. */
 const DEFER_RETURN = "return { ok: false, reason: 'deferred-busy-gate' };";
 const RESPAWN_BRANCH = "if (msg.mode === 'carry-respawn') {";
-const EMIT_CALL = "appendHostEvent(ownerId, 'busy-gate-expired', {";
+const EMIT_CALL = "appendHostEvent(ownerId, 'busy-gate-expired', busyGateEvent);";
 
 /**
  * The source span of the busy-gate defer handler: from `if (atPrompt.deferred) {` through the
@@ -111,16 +111,24 @@ describe('psu-pty busy-gate defer leaves durable evidence for EVERY mode (WI-214
 
   it('records the DEFERRED MODE rather than a hardcoded carry-respawn literal', () => {
     const block = busyGateDeferBlock();
-    const payload = block.slice(block.indexOf(EMIT_CALL), block.indexOf(RESPAWN_BRANCH));
+    const payloadStart = block.indexOf('const busyGateEvent = {');
+    const respawnIdx = block.indexOf(RESPAWN_BRANCH);
+    expect(payloadStart).toBeGreaterThan(-1);
+    expect(payloadStart).toBeLessThan(respawnIdx);
+    const payload = block.slice(payloadStart, respawnIdx);
     expect(payload).toContain('mode: msg.mode');
     expect(payload).not.toContain("mode: 'carry-respawn'");
   });
 
   it('carries the EI-19480099650947832 diagnostic pair that distinguishes busy from near-miss', () => {
-    const payload = busyGateDeferBlock();
-    const emit = payload.slice(payload.indexOf(EMIT_CALL), payload.indexOf(RESPAWN_BRANCH));
+    const block = busyGateDeferBlock();
+    const payloadStart = block.indexOf('const busyGateEvent = {');
+    const emitIdx = block.indexOf(EMIT_CALL);
+    expect(payloadStart).toBeGreaterThan(-1);
+    expect(emitIdx).toBeGreaterThan(payloadStart);
+    const payload = block.slice(payloadStart, emitIdx);
     for (const field of ['capMs:', 'observedMaxQuietMs:', 'quietMs:']) {
-      expect(emit).toContain(field);
+      expect(payload).toContain(field);
     }
   });
 

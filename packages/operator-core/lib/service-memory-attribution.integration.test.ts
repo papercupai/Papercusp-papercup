@@ -2339,8 +2339,10 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
             const exited = new Promise(resolve => child.once('exit', resolve));
             let startup = '', tail = '', client, lease, poll;
             const seen = new Map();
-            for (const stream of [child.stdout, child.stderr]) stream.on('data', value => {
-              const text = value.toString(); tail = (tail + text).slice(-2000);
+            child.stdout?.setEncoding('utf8');
+            child.stderr?.setEncoding('utf8');
+            for (const stream of [child.stdout, child.stderr]) stream?.on('data', (text: string) => {
+              tail = (tail + text).slice(-2000);
               if (stream === child.stderr) startup += text;
             });
             const call = async (name, args) => {
@@ -2713,8 +2715,10 @@ describe.skipIf(process.platform !== 'linux')('P-011 private request-host memory
           cwd: path.join(process.cwd(), 'apps/operator'), env: { ...e, MALLOC_ARENA_MAX: report.arenaMax },
           stdio: ['ignore', 'pipe', 'pipe'] });
         report.pid = host.pid;
-        for (const stream of [host.stdout, host.stderr]) stream.on('data', chunk => {
-          const text = chunk.toString(); errors = (errors + text).slice(-3000);
+        host.stdout?.setEncoding('utf8');
+        host.stderr?.setEncoding('utf8');
+        for (const stream of [host.stdout, host.stderr]) stream?.on('data', (text: string) => {
+          errors = (errors + text).slice(-3000);
           if (stream === host.stderr) {
             startup = (startup + text).slice(-32768);
             const endpoints = inspectorEndpoints(startup);

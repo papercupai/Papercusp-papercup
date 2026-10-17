@@ -147,6 +147,7 @@ import { readDeployInFlight } from "../../release-deploy-launch";
 import { findGreenCheckpointVerdictForCandidate } from "../../harness/git-sync/pipeline-events";
 import { mainWaitPlanReviewForWait } from "../../acceptance-runtime-wait-guard";
 import { checkpointPipelineName } from "./sugar";
+import { mockResolvedOnceTyped } from "../../testing/typed-mock";
 
 const checkpointTool = definedTools.find(
   (tool) => tool.name === "checkpoint:await",
@@ -913,6 +914,54 @@ describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy
 describe("git-sync:await harness/workspace scoping (EI-20366619311636764)", () => {
   const gitSyncTool = definedTools.find((tool) => tool.name === "git-sync:await");
   if (!gitSyncTool) throw new Error("git-sync:await tool was not registered");
+
+  it("retries a transient statement timeout while registering the named wait (EI-23197998119991408)", async () => {
+    vi.useFakeTimers();
+    try {
+      const contention = Object.assign(new Error("canceling statement due to statement timeout"), {
+        code: "57014",
+      });
+      vi.mocked(registerAwait)
+        .mockRejectedValueOnce(contention);
+      mockResolvedOnceTyped(vi.mocked(registerAwait), {
+          id: 100,
+          workspaceId: "ws-x",
+          subscriberId: "su-awaiter",
+          eventKey: "git-sync:committed",
+          policy: "wake",
+          note: null,
+          wakeHandle: null,
+          expiresTs: "2030-01-01",
+          timeoutBehavior: "wake",
+          createdAt: "2030-01-01",
+          firedAt: null,
+          firedReason: null,
+          cancelledAt: null,
+          cancelReason: null,
+          once: true,
+          minSleepSec: null,
+          urgency: false,
+          payloadFilter: null,
+          scopeKind: null,
+          scopeRef: null,
+        });
+
+      const pending = gitSyncTool.handler(
+        { harness: "harness-a" } as never,
+        { harnessSlug: "*", workspaceId: "workspace-a" } as never,
+      );
+      await vi.advanceTimersByTimeAsync(500);
+      const res = await pending;
+
+      expect(JSON.parse(res.content[0].text)).toMatchObject({
+        ok: true,
+        events: ["git-sync:committed"],
+      });
+      expect(registerAwait).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("accepts on_timeout and threads expire through the shared await registration (EI-21671694555865156)", async () => {
     const schema = (

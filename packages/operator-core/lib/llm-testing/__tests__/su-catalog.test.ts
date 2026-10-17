@@ -4,6 +4,7 @@
  * load-bearing playbook invariants the SU behavioral scenarios assert against.
  * Run with: cd packages/operator-core && npx vitest run lib/llm-testing/__tests__/su-catalog.test.ts
  */
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { sanitizeToolName, buildCatalog, SU_CATALOG, type SuCatalogEntry } from '../targets/su-catalog';
 import { CODE_SEARCH_CATALOG } from '../targets/code-search-catalog';
@@ -53,6 +54,18 @@ describe('every catalog a target ships builds to API-legal, collision-free names
   it('refuses two canonical names that sanitize to the same wire name', () => {
     const entry = (name: string): SuCatalogEntry => ({ name, description: name, input: { type: 'object' } }) as SuCatalogEntry;
     expect(() => buildCatalog([entry('a:b'), entry('a.b')])).toThrow(/both sanitize to "a__b"/);
+  });
+});
+
+describe('the frozen S37/W01 measurement catalogue', () => {
+  it('preserves the original tool descriptions and schemas used by the GitNexus baseline', () => {
+    // The runner hashes the scenario source, not this imported catalogue. A
+    // catalogue-only edit could change model inputs under the same scenario
+    // identity. This snapshot covers every offered tool field, including order.
+    // A native-route remeasurement must version its scenario/world explicitly
+    // before changing this instrument and qualifying a new baseline.
+    const fingerprint = createHash('sha256').update(JSON.stringify(CODE_SEARCH_CATALOG)).digest('hex');
+    expect(fingerprint).toBe('2e093cbebe8a5d896fb658d2bea8af151809a31cb6601ea70f45d7fcc357f3dd');
   });
 });
 

@@ -10,6 +10,10 @@ import { withBoundedTimeout } from '../../bounded-timeout';
 
 const KIND = 'code-kernel';
 const CALLBACK = 'code-kernel-callback';
+const VOLATILE_KERNEL_PORT = '3170';
+const STALE_TOOLS_PROXY_ERROR =
+  'kernel_tools_proxy_expired: this tools proxy belongs to an ended cell; ' +
+  'pass the current cell\'s tools facade into cross-cell helpers';
 interface Caller { ownerPid: number; facade: ToolFacade; opts: RunScriptOptions }
 const callers = new Map<string, Caller>();
 const running = new Map<string, { fromPid: number; controller: AbortController }>();
@@ -30,6 +34,32 @@ function unrecoverableCause(error: unknown): string {
   return marker < 0 ? message : message.slice(marker + prefix.length);
 }
 
+/**
+ * Persistent kernels must not be created on the staging operator. The staging
+ * host is intentionally recycled about every few minutes while its checkout
+ * advances; a kernel's VM and owner mapping are process-local and cannot cross
+ * that recycle. Keep this decision at the lifecycle boundary so a caller gets
+ * an actionable refusal before loading a large, stateful audit into a lifetime
+ * that is known to be short-lived.
+ */
+export function kernelHostPlacement(env: NodeJS.ProcessEnv = process.env): {
+  host: string;
+  stable: boolean;
+  reason?: string;
+} {
+  const port = (env.PAPERCUSP_HONO_PORT ?? env.PORT ?? '').trim();
+  const host = port ? `port-${port}` : `pid-${process.pid}`;
+  if (port !== VOLATILE_KERNEL_PORT) return { host, stable: true };
+  return {
+    host,
+    stable: false,
+    reason:
+      'persistent code:run kernels are unavailable on volatile staging :3170; ' +
+      'route the long-lived MCP session to stable :3070 or use stateless code:run ' +
+      'with explicit store/load state passed back as inputs',
+  };
+}
+
 async function owner(id: string, scope: string): Promise<number> {
   const out = await locateOwnerRpcResource(KIND, id, scope);
   if (!out.ok) throw new Error(out.code === 'owner_gone'
@@ -41,6 +71,8 @@ async function owner(id: string, scope: string): Promise<number> {
 }
 
 export async function openManagedKernel(scope: string) {
+  const placement = kernelHostPlacement();
+  if (!placement.stable) throw new Error(`kernel_host_unstable: ${placement.reason}`);
   const kernel = await openOrchestrationKernel(scope);
   try { await bindOwnerRpcResource(KIND, kernel.id, scope); }
   catch (error) { closeOrchestrationKernel(kernel.id, scope); throw error; }
@@ -68,7 +100,8 @@ export async function controlManagedKernel(op: 'status' | 'close', id: string, s
 registerOwnerRpcHandler(CALLBACK, async (payload, source) => {
   const envelope = payload as { token: string; payload: unknown };
   const caller = callers.get(envelope?.token);
-  if (!caller || caller.ownerPid !== source.fromPid) throw new Error('kernel_cell_ended');
+  if (!caller) throw new Error(STALE_TOOLS_PROXY_ERROR);
+  if (caller.ownerPid !== source.fromPid) throw new Error('kernel_cell_ended');
   const p = unpack(envelope.payload) as { op: string; name?: string; ns?: string; verb?: string; args?: unknown; data?: unknown };
   if (p.op === 'timeout') { await caller.opts.onTimeout?.(); return pack(null); }
   if (caller.opts.signal?.aborted) throw new Error('kernel_cell_ended');

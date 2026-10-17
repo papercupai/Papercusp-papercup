@@ -251,7 +251,7 @@ describe('startMemoryWatchdog', () => {
 
   it('honors an explicit recycleExitCode in the default recycle', async () => {
     withRss(800); // healthy first — a grow-into-limit process
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(vi.fn<typeof process.exit>());
     const h = startMemoryWatchdog({ readSwapMb: noSwap, intervalMs: 1000, tripsToRecycle: 1, warnMb: 2400, recycleExitCode: 42, log: vi.fn() });
     vi.advanceTimersByTime(1000); // sample 1 — healthy
     withRss(4000);

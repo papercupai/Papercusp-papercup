@@ -914,6 +914,52 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(state).toEqual({ fired_at: null, fired_reason: null });
   });
 
+  it('does not create a second wake when a task-terminal event arrives after timeout', async () => {
+    const taskId = 'late-timeout-task-terminal';
+    const eventKey = `task:terminal:${taskId}`;
+    const awaited = await store.registerAwait({
+      subscriberId: 'su-task-terminal-timeout-race',
+      eventKey,
+      timeoutBehavior: 'wake',
+      timeoutSec: 60,
+      once: true,
+    });
+    const sql = h.sql as import('postgres').Sql;
+
+    // Force the deadline to pass, then let the normal timeout path consume the
+    // one-shot await before the managed task reaches its terminal ledger state.
+    await sql`
+      UPDATE harness_shared.event_awaits
+         SET expires_ts = now() - interval '1 second'
+       WHERE id = ${awaited.id}
+    `;
+    const timedOut = await store.fireTimedOutAwaits();
+    expect(timedOut).toHaveLength(1);
+    expect(timedOut[0]).toMatchObject({ id: awaited.id, firedReason: 'timeout' });
+    expect(await store.insertDeliveries({
+      awaits: timedOut,
+      payload: { timeout: true },
+      summary: 'timeout wake',
+    })).toBe(1);
+
+    // The terminal bridge still records the monotonic fire, but the consumed
+    // await cannot be claimed a second time by a late event.
+    await store.recordKeyFire({
+      eventKey,
+      firedBy: 'task-manager',
+      payload: { taskId, state: 'exited' },
+    });
+    expect(await store.fireAwaitsForKey({ eventKey, payload: { taskId, state: 'exited' } })).toEqual([]);
+    expect(await store.getKeyFireLatch(eventKey)).toMatchObject({ fireCount: 1, lastFiredBy: 'task-manager' });
+
+    const deliveries = await sql<{ count: string }[]>`
+      SELECT count(*)::text AS count
+        FROM harness_shared.event_wake_deliveries
+       WHERE await_id = ${awaited.id}
+    `;
+    expect(Number(deliveries[0]?.count)).toBe(1);
+  });
+
   it('does not timeout standing watches in the wake-timeout sweep', async () => {
     const awaited = await store.registerAwait({
       subscriberId: 'su-standing-timeout',

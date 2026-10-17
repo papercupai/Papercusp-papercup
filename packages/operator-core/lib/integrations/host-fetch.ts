@@ -11,15 +11,16 @@
  */
 import {
   providerCredentialForHost,
-  providerEgressAllows,
+  providerSourceEgressAllows,
   providerPrincipalCredentialForHost,
   type HostFetch,
   type HostFetchRequest,
   type HostFetchResponse,
   type ProviderOAuthResourceToken,
 } from '@papercusp/plugin-sdk';
-import type { ProviderRegistry } from './provider-registry';
+import { assertProviderOwnerUnblocked, type ProviderRegistry } from './provider-registry';
 import { serviceCredentialForHost, serviceCredentialResolver } from './service-credentials';
+import { normalizeOAuthUserAgent } from './oauth-client-registration';
 
 export type HostFetchErrorCode =
   | 'unknown-source'
@@ -27,6 +28,7 @@ export type HostFetchErrorCode =
   | 'egress-denied'
   | 'insecure-url'
   | 'caller-authorization-header'
+  | 'user-agent-required'
   | 'token-unavailable'
   | 'service-credential-unavailable'
   | 'credential-unavailable'
@@ -63,6 +65,8 @@ export interface HostFetchDeps {
   resolveSource(sourceId: string): Promise<HostFetchSource | null>;
   /** Returns a fresh access token for exactly this source's account; null when the source needs none. */
   accessToken(source: HostFetchSource): Promise<string | null>;
+  /** Public application identification from this source's host-held OAuth registration. */
+  userAgent?(source: HostFetchSource): Promise<string | null>;
   /**
    * Mints the host-held service credential registered under `ref` (D-018.1).
    * Defaults to the service-credentials registry.
@@ -82,6 +86,8 @@ export interface HostFetchDeps {
    * broader access. Without this dep per-person fields are never consulted.
    */
   principalCredential?(key: string): Promise<string | null>;
+  /** Session exchange stays host-side, including every credential-bearing response. */
+  credentialSession?(source: HostFetchSource): Promise<{ accessToken: string; secrets: string[] }>;
   fetchImpl?: typeof fetch;
 }
 
@@ -101,7 +107,7 @@ function field(value: unknown, path: string): unknown {
 
 /** This response contains credentials, so it stays entirely inside the host. No cache or retry. */
 async function resourceAccessToken(
-  exchange: ProviderOAuthResourceToken, source: HostFetchSource, accountAuthorization: string | null, doFetch: typeof fetch,
+  exchange: ProviderOAuthResourceToken, source: HostFetchSource, accountAuthorization: string | null, doFetch: typeof fetch, userAgent: string | null,
 ): Promise<string> {
   const id = source.config?.[exchange.configKey];
   const unavailable = (reason: string) => new HostFetchError('resource-token-unavailable', `host.fetch: resource credential ${reason}`);
@@ -116,7 +122,7 @@ async function resourceAccessToken(
     }
     seen.add(url.href);
     let response: Response;
-    try { response = await doFetch(url, { headers: { authorization: accountAuthorization }, redirect: 'manual' }); }
+    try { response = await doFetch(url, { headers: { authorization: accountAuthorization, ...(userAgent ? { 'user-agent': userAgent } : {}) }, redirect: 'manual' }); }
     catch { throw Object.assign(unavailable('exchange network request failed'), { kind: 'transient' }); }
     if (!response.ok) {
       // Never echo the body, URL query or account/resource token into an error.
@@ -188,6 +194,16 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
     }
     const registered = deps.registry.get(providerId);
     if (!registered) throw new HostFetchError('unknown-source', `host.fetch: provider "${providerId}" is not registered`);
+    assertProviderOwnerUnblocked(registered.descriptor, 'host.fetch');
+    // Credential refresh and resource-token selection await host work. Recheck at
+    // each transport boundary so an unload or newly blocked replacement cannot
+    // inherit the request authorized by this captured descriptor.
+    const guardedFetch: typeof fetch = (...args) => {
+      const current = deps.registry.get(providerId);
+      if (current) assertProviderOwnerUnblocked(current.descriptor, 'host.fetch');
+      if (current !== registered) throw new HostFetchError('unknown-source', `host.fetch: provider "${providerId}" changed before dispatch`);
+      return doFetch(...args);
+    };
 
     let url: URL;
     try {
@@ -201,13 +217,20 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
     if (url.username || url.password) {
       throw new HostFetchError('egress-denied', 'host.fetch: URLs with embedded credentials are refused');
     }
-    if (!providerEgressAllows(registered.descriptor.egressHosts, url.hostname)) {
+    if (!providerSourceEgressAllows(registered.descriptor, url, resolved.config)) {
       throw new HostFetchError(
         'egress-denied',
         `host.fetch: ${url.hostname} is not in provider "${providerId}" egressHosts`,
       );
     }
     const resourceToken = registered.descriptor.oauth?.resourceToken;
+    const session = registered.descriptor.setup?.session;
+    for (const endpointUrl of session ? [session.url, session.refreshUrl] : []) {
+      const endpoint = new URL(endpointUrl);
+      if (url.origin === endpoint.origin && url.pathname === endpoint.pathname) {
+        throw new HostFetchError('credential-endpoint-private', 'host.fetch: session credential endpoints are host-only');
+      }
+    }
     if (resourceToken) {
       const endpoint = new URL(resourceToken.url);
       if (url.origin === endpoint.origin && url.pathname === endpoint.pathname) {
@@ -218,14 +241,19 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
     const headers = new Headers();
     for (const [name, value] of Object.entries(request.headers ?? {})) {
       const lower = name.toLowerCase();
-      if (lower === 'authorization') {
+      if (['authorization', 'api-key', 'x-api-key'].includes(lower)) {
         throw new HostFetchError(
           'caller-authorization-header',
-          'host.fetch: providers may not set Authorization; the host injects the source credential',
+          'host.fetch: providers may not set authentication headers; the host injects the source credential',
         );
       }
       if (!HOP_BY_HOP.has(lower)) headers.set(name, value);
     }
+    const userAgent = normalizeOAuthUserAgent(await deps.userAgent?.(resolved));
+    if (registered.descriptor.oauth?.userAgentRequired && !userAgent) {
+      throw new HostFetchError('user-agent-required', 'host.fetch: add your app’s User-Agent to its OAuth registration');
+    }
+    if (userAgent) headers.set('user-agent', userAgent);
     // On a call made for one person, a host a per-person field claims carries that person's own
     // value, so the vendor answers with exactly what they may see (D-026).
     const principal = deps.principalCredential
@@ -248,8 +276,19 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
     // token). Declaring one must not cut an existing OAuth source off from its own account: that
     // source is sent its own token, and the pasted value is only its fallback.
     const ownToken = pasted && resolved.ownCredential ? await deps.accessToken(resolved) : null;
-    if (principalValue) {
-      headers.set('authorization', `Bearer ${principalValue}`);
+    const secretValues: string[] = [];
+    const injectPasted = (field: NonNullable<typeof pasted>, value: string) => {
+      const auth = field.auth ?? { header: 'authorization', scheme: 'bearer' };
+      headers.set(auth.header, auth.scheme === 'raw' ? value : `Bearer ${value}`);
+      secretValues.push(value);
+    };
+    if (session?.hosts.includes(url.hostname)) {
+      if (!deps.credentialSession) throw new HostFetchError('credential-unavailable', 'host.fetch: session resolver unavailable');
+      const credential = await deps.credentialSession(resolved);
+      headers.set('authorization', `Bearer ${credential.accessToken}`);
+      secretValues.push(...credential.secrets);
+    } else if (principalValue) {
+      injectPasted(principal!, principalValue);
     } else if (ownToken) {
       headers.set('authorization', `Bearer ${ownToken}`);
     } else if (pasted) {
@@ -260,7 +299,7 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
           `host.fetch: "${pasted.label}" for provider "${providerId}" is not set up; paste it on the Integrations page`,
         );
       }
-      headers.set('authorization', `Bearer ${value}`);
+      injectPasted(pasted, value);
     } else if (service) {
       let serviceToken: string;
       try {
@@ -280,11 +319,10 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
       if (token) headers.set('authorization', `Bearer ${token}`);
     }
 
-    const secretValues: string[] = [];
     const accountAuthorization = headers.get('authorization');
     if (accountAuthorization?.startsWith('Bearer ')) secretValues.push(accountAuthorization.slice(7));
     if (resourceToken?.hosts.includes(url.hostname)) {
-      const token = await resourceAccessToken(resourceToken, resolved, accountAuthorization, doFetch);
+      const token = await resourceAccessToken(resourceToken, resolved, accountAuthorization, guardedFetch, userAgent);
       secretValues.push(token);
       headers.set('authorization', `Bearer ${token}`);
     }
@@ -295,7 +333,7 @@ export function createHostFetch(providerId: string, deps: HostFetchDeps): HostFe
         : request.bodyEncoding === 'base64'
           ? Buffer.from(request.body, 'base64')
           : request.body;
-    const response = await doFetch(url, {
+    const response = await guardedFetch(url, {
       method: request.method ?? 'GET',
       headers,
       body,

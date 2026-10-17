@@ -600,10 +600,14 @@ export async function runSessionSearchIndexBuildOnce(
     }
   };
 
+  // `ensureIndexes` (also reached through refreshWindows' callback) can set `skipped` AFTER the
+  // first check. Read it through a call so the first check's narrowing is not carried past the
+  // awaited mutation — a narrowed inline re-check reads as a dead comparison to the compiler.
+  const stoppedForLowDisk = (): boolean => result.skipped === 'low-disk';
   await ensureIndexes('corpus');
-  if (result.skipped === 'low-disk') return result;
+  if (stoppedForLowDisk()) return result;
   await refreshWindows(sql, o, result, overBudget, () => ensureIndexes('windows'));
-  if (result.skipped === 'low-disk') return result;
+  if (stoppedForLowDisk()) return result;
   await refreshVocabularies(sql, o, result, overBudget);
   await ensureIndexes('vocab');
   return result;

@@ -39,9 +39,8 @@
  */
 import { spawn, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync, createWriteStream } from 'node:fs';
-import { homedir } from 'node:os';
 import path from 'node:path';
-import { assertHostAdmission } from './host-admission';
+import { assertHostAdmission, capacityCacheRoot } from './host-admission';
 import { startReplayServer, type ReplayServer, type ReplayState } from './replay-server';
 import { finished } from 'node:stream/promises';
 import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, corpusFileFromArgv, loadCorpus, promptFor, recordedWorkDir, summarizeToolOutcomes, type Corpus, type SessionMeta } from './record-session';
@@ -49,7 +48,7 @@ import { claudeEnv, cleanEnv, cliArgs, codexConfigToml, corpusFileFromArgv, load
 // server shares this event loop with every running agent's model replies.
 import { parseCgroupStats, prepareWorkdir, removeTree as rm, sessionSpawn, type Isolation, type WorkdirMode } from './session-process';
 
-const CACHE = path.join(homedir(), '.cache', 'agent-capacity');
+const CACHE = capacityCacheRoot(__dirname);
 
 export interface AgentRun {
   runId: string;
@@ -186,7 +185,7 @@ export function sessionFor(sessions: SessionMeta[], slot: number, iteration: num
 }
 
 
-export function loadMetas(corpusDir: string): SessionMeta[] {
+export function loadMetas(corpusDir = path.join(CACHE, 'corpus')): SessionMeta[] {
   const out: SessionMeta[] = [];
   for (const d of readdirSync(corpusDir)) {
     const f = path.join(corpusDir, d, 'meta.json');
@@ -305,7 +304,7 @@ async function runOne(o: {
   if (meta.cli === 'claude') {
     env = claudeEnv(process.env, base, home);
   } else {
-    writeFileSync(path.join(home, 'config.toml'), codexConfigToml(base));
+    writeFileSync(path.join(home, 'config.toml'), codexConfigToml(base, meta.codexSelection));
     env = { ...cleanEnv(process.env), CODEX_HOME: home };
   }
   // cleanEnv drops every PAPERCUSP_* variable, so a host-provided agent variable (hostedFixedEnv's

@@ -70,6 +70,8 @@ export interface AgentReviewState {
   submittedBy: string;
   ledgerIdeaId: string;
   round: number;
+  /** Exact kind/title/body revision returned to the reviewer at claim time. */
+  reviewedSourceRevision?: string;
   /** Current-round timing, written by the lifecycle; ledger routing may predate review. */
   timing?: { round: number; enteredAt: string; decidedAt?: string };
   /** Why a `revision-requested` round was sent back; see {@link AGENT_REVIEW_REVISION_KINDS}. */
@@ -207,6 +209,7 @@ export interface ImplementationAcceptanceSource {
 
 const ACCEPTANCE_SOURCE_REVISION_PREFIX = 'src-v1:';
 const ACCEPTANCE_SOURCE_REVISION_SEPARATOR = '\u001f';
+const ACCEPTANCE_SOURCE_REVISION_PATTERN = /^src-v1:[a-f0-9]{64}$/;
 
 /**
  * Revision of the candidate content an acceptance judged. Any edit to the kind,
@@ -775,13 +778,13 @@ export function countWorkItemPresentationStages(items: readonly WorkItemPresenta
 
 type WorkItemIntakeStageSqlColumns = {
   payload?: 'payload' | 'wi.payload' | 'ei.payload';
-  itemKind?: 'item_kind' | 'wi.item_kind' | 'ei.item_kind';
+  itemKind?: 'item_kind' | 'wi.item_kind' | 'ei.item_kind' | 'target.kind' | 'target.item_kind';
   status?: 'status' | 'wi.status' | 'ei.status';
   terminalOwner?: 'terminal_owner' | 'wi.terminal_owner' | 'ei.terminal_owner';
   terminalCompletionRef?: 'terminal_completion_ref' | 'wi.terminal_completion_ref' | 'ei.terminal_completion_ref';
-  title?: 'title' | 'wi.title' | 'ei.title';
+  title?: 'title' | 'wi.title' | 'ei.title' | 'target.title';
   /** `summary` on work_items; the engineer_issues view exposes the same column as `body`. */
-  summary?: 'summary' | 'wi.summary' | 'ei.body' | 'body';
+  summary?: 'summary' | 'wi.summary' | 'ei.body' | 'body' | 'target.body' | 'target.summary';
   /**
    * P-008 / D-038: the admission column. No default — a projection that does not name
    * it skips the admission-dedup leg, exactly as the TS twin does when `admission` is
@@ -1158,6 +1161,9 @@ export function readAgentReviewState(payload: unknown): AgentReviewState | null 
           ...(typeof timing.decidedAt === 'string' ? { decidedAt: timing.decidedAt } : {}),
         } }
       : {}),
+    ...(typeof row.reviewedSourceRevision === 'string' && ACCEPTANCE_SOURCE_REVISION_PATTERN.test(row.reviewedSourceRevision)
+      ? { reviewedSourceRevision: row.reviewedSourceRevision }
+      : {}),
     ...(row.status === 'revision-requested' &&
       (AGENT_REVIEW_REVISION_KINDS as readonly unknown[]).includes(row.revisionKind)
       ? { revisionKind: row.revisionKind as AgentReviewRevisionKind }
@@ -1228,6 +1234,7 @@ export interface AgentReviewClaimAdmission {
   readonly submittedBy: string;
   readonly ledgerIdeaId: string;
   readonly round: number;
+  readonly reviewedSourceRevision: string;
 }
 
 const agentReviewClaimAdmissions = new WeakSet<object>();
@@ -1403,6 +1410,7 @@ export function mintAgentReviewClaimAdmission(input: {
   reviewer: string;
   harnessSlug: string;
   review: AgentReviewState;
+  source: ImplementationAcceptanceSource;
   /** P-007: the subject's reporters and implementers; a conflicting reviewer gets no admission. */
   parties: VerificationParties;
 }): AgentReviewClaimAdmission | null {
@@ -1430,6 +1438,7 @@ export function mintAgentReviewClaimAdmission(input: {
     submittedBy: review.submittedBy,
     ledgerIdeaId: review.ledgerIdeaId,
     round: review.round,
+    reviewedSourceRevision: acceptanceSourceRevision(input.source),
   });
   agentReviewClaimAdmissions.add(admission);
   return admission;
@@ -1441,7 +1450,16 @@ export function isAgentReviewClaimAdmission(value: unknown): value is AgentRevie
 
 export function matchesAgentReviewClaimAdmission(
   value: unknown,
-  item: { id: string; harness?: string | null; payload: unknown; createdBy?: string | null; terminalOwner?: string | null },
+  item: {
+    id: string;
+    harness?: string | null;
+    payload: unknown;
+    kind: string;
+    title: string;
+    summary?: string | null;
+    createdBy?: string | null;
+    terminalOwner?: string | null;
+  },
   reviewer: string,
 ): value is AgentReviewClaimAdmission {
   if (
@@ -1460,7 +1478,8 @@ export function matchesAgentReviewClaimAdmission(
     current.submittedBy !== reviewer &&
     current.submittedBy === value.submittedBy &&
     current.ledgerIdeaId === value.ledgerIdeaId &&
-    current.round === value.round
+    current.round === value.round &&
+    acceptanceSourceRevision(item) === value.reviewedSourceRevision
   );
 }
 
@@ -1472,18 +1491,39 @@ export function matchesAgentReviewClaimAdmission(
 export function agentReviewPendingAdmissionSql(
   sql: OrgSql,
   value: unknown,
-  columns: { payload?: 'payload' | 'target.payload'; admission?: 'admission' | 'target.admission' } = {},
+  columns: Pick<WorkItemIntakeStageSqlColumns, 'itemKind' | 'title' | 'summary'> & {
+    payload?: 'payload' | 'target.payload';
+    admission?: 'admission' | 'target.admission';
+  } = {},
 ) {
   if (!isAgentReviewClaimAdmission(value)) return sql`FALSE`;
   const payload = sql.unsafe(columns.payload ?? 'payload');
   const admission = sql.unsafe(columns.admission ?? 'admission');
+  const sourceRevision = acceptanceSourceRevisionFromFragmentsSql(
+    sql,
+    sql.unsafe(columns.itemKind ?? 'item_kind'),
+    sql.unsafe(columns.title ?? 'title'),
+    sql.unsafe(columns.summary ?? 'summary'),
+  );
   return sql`(
     ${admission} = 'pending'
     AND ${payload} -> 'agentReview' ->> 'status' = 'pending'
     AND ${payload} -> 'agentReview' ->> 'submittedBy' = ${value.submittedBy}
     AND ${payload} -> 'agentReview' ->> 'ledgerIdeaId' = ${value.ledgerIdeaId}
     AND ${payload} -> 'agentReview' ->> 'round' = ${String(value.round)}
+    AND ${sourceRevision} = ${value.reviewedSourceRevision}
     AND ${value.submittedBy} <> ${value.reviewer}
+  )`;
+}
+
+/** Atomically carry the reviewer-visible source revision into the claimed row payload. */
+export function agentReviewClaimPayloadSql(sql: OrgSql, payload: postgres.Fragment, value: unknown) {
+  if (!isAgentReviewClaimAdmission(value)) return payload;
+  return sql`jsonb_set(
+    ${payload},
+    '{agentReview,reviewedSourceRevision}',
+    to_jsonb(${value.reviewedSourceRevision}::text),
+    true
   )`;
 }
 

@@ -174,6 +174,36 @@ describe('planPromoterDispositions', () => {
     expect(new Set(plan.adjudications.map((a) => a.canonical))).toEqual(new Set(['WI-1']));
   });
 
+  it('keeps a live endpoint canonical when a terminal near-neighbour has a different title identity', () => {
+    const live = item('EI-live', {
+      title: 'evaluator omits the excluded population count',
+      summary: 'The current evaluator result omits one measured population.',
+      createdAtMs: 2,
+    });
+    const terminalNearNeighbour = item('WI-closed', {
+      title: 'evaluator rates bundled clauses as structurally atomic',
+      summary: 'A completed finding about bundled evaluator clauses.',
+      state: 'done',
+      admission: 'admitted',
+      createdAtMs: 1,
+    });
+    const p = pair(live, terminalNearNeighbour, [live.id]);
+    const plan = planPromoterDispositions([live], [p], [judgement(p, 'r-finding-merge')]);
+
+    expect(plan.dispositions).toEqual([{ itemId: live.id, action: 'promote' }]);
+    expect(plan.adjudications[0]).toMatchObject({ canonical: live.id });
+  });
+
+  it('retains a completed canonical for an exact title identity match', () => {
+    const terminal = item('WI-closed', { state: 'done', admission: 'admitted', createdAtMs: 1 });
+    const repeat = item('EI-repeat', { createdAtMs: 2 });
+    const p = pair(repeat, terminal, [repeat.id]);
+    const plan = planPromoterDispositions([repeat], [p], [judgement(p, 'r-finding-merge')]);
+
+    expect(plan.dispositions).toEqual([{ itemId: repeat.id, action: 'merge', canonicalId: terminal.id }]);
+    expect(plan.adjudications[0]).toMatchObject({ canonical: terminal.id });
+  });
+
   it('adds live non-pending losers from a transitive merge component', () => {
     const canonical = item('WI-canonical', { admission: 'admitted', createdAtMs: 1 });
     const legacyLoser = item('WI-legacy-loser', { admission: null, createdAtMs: 2 });

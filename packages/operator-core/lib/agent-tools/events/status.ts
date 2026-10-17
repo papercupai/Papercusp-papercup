@@ -46,6 +46,49 @@ const EXACT_EVENT_STATUS_TEXT_MAX_CHARS = 256;
 const EXACT_EVENT_STATUS_JSON_MAX_CHARS = 512;
 const EXACT_EVENT_STATUS_SUCCESSOR_LIMIT = 5;
 
+const statusArgsCommon = {
+  meter: z
+    .boolean()
+    .optional()
+    .describe('Include the wake meter (per-agent counts by status/channel, 24h; events:await is single-workspace by design, so this is fleet-wide, not scoped to your workspace).'),
+};
+
+/**
+ * Keep selector conflicts in the published JSON Schema as well as in the handler.
+ * A single object with two optional selectors only explains the rule in prose;
+ * callers then discover the conflict after dispatch and receive a handler_error.
+ * The `z.never().optional()` fields make each selector-exclusive branch reject
+ * the other selector before the handler runs.
+ */
+const statusArgs = z.union([
+  z.object({
+    ...statusArgsCommon,
+    await_id: z
+      .number()
+      .int()
+      .positive()
+      .describe('Filter active awaits and recent wake deliveries to the id returned by events:await. A targeted recent delivery includes its payload (capped at 2000 characters). Mutually exclusive with `event`.'),
+    event: z.never().optional().describe('Only valid for exact event-key inspection; mutually exclusive with `await_id`.'),
+    after_generation: z.never().optional().describe('Only valid with an exact `event` key.'),
+  }),
+  z.object({
+    ...statusArgsCommon,
+    await_id: z.never().optional().describe('Only valid for await-id inspection; mutually exclusive with `event`.'),
+    event: z
+      .string()
+      .min(1)
+      .max(200)
+      .describe('Exact event key to inspect across declarations, waiter registrations, and wake outcomes. Mutually exclusive with `await_id`.'),
+    after_generation: z.number().int().nonnegative().optional().describe('Your cached declaration generation for `event`. The response says whether it is stale and how to resync.'),
+  }),
+  z.object({
+    ...statusArgsCommon,
+    await_id: z.never().optional().describe('Only valid for await-id inspection; mutually exclusive with `event`.'),
+    event: z.never().optional().describe('Only valid for exact event-key inspection; mutually exclusive with `await_id`.'),
+    after_generation: z.never().optional().describe('Only valid with an exact `event` key.'),
+  }),
+]);
+
 /**
  * P-006 / D-005: the LATER seam that reports pickup. `turn_invoked` says only that the channel
  * could start a turn and `status: 'delivered'` only that the delivery reached it; `turn_proof`
@@ -305,12 +348,7 @@ export default defineTool({
   requirePrincipal: false,
   skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES, 'judge'],
-  args: z.object({
-    meter: z.boolean().optional().describe('Include the wake meter (per-agent counts by status/channel, 24h; events:await is single-workspace by design, so this is fleet-wide, not scoped to your workspace).'),
-    await_id: z.number().int().positive().optional().describe('Filter active awaits and recent wake deliveries to the id returned by events:await. A targeted recent delivery includes its payload (capped at 2000 characters). Mutually exclusive with `event`.'),
-    event: z.string().min(1).max(200).optional().describe('Exact event key to inspect across declarations, waiter registrations, and wake outcomes. Mutually exclusive with `await_id`.'),
-    after_generation: z.number().int().nonnegative().optional().describe('Your cached declaration generation for `event`. The response says whether it is stale and how to resync.'),
-  }),
+  args: statusArgs,
   async handler(args, ctx) {
     // The judge's evidence lane is caller-scoped: its default view and await_id
     // path read only rows keyed by identity.ownerId. Exact event-key inspection

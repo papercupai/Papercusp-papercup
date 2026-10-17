@@ -21,6 +21,7 @@ import { closedCodexSessionPopulation } from '../interactive-usage/ingest-adapte
 import type { BenchHarnessOps } from './bench-harness-live';
 import type { BenchmarkContextReceipt } from './reproducibility/context';
 import { evaluateSessionConfinement, type SessionToolConfinement } from '../capability-envelope/session-confinement';
+import { runManagedPreCompact } from '../../../../apps/operator/scripts/hooks/cc/precompact-managed-carry.mjs';
 
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
@@ -1916,6 +1917,36 @@ describe('current benchmark restart and live binding', () => {
     }
     expect(evaluateSessionConfinement({ toolName: 'work_items:list', args: {}, confinement }).allowed).toBe(false);
     expect(evaluateSessionConfinement({ toolName: 'coord:inbox', args: {}, confinement }).allowed).toBe(false);
+    // Exercise the installed hook against the ceiling actually emitted by the
+    // maintained launch port. Transport is local, with no host respawn or model
+    // request: this is the refusal control, not successful compaction evidence.
+    const nativeSessionId = randomUUID();
+    const dispatch = vi.fn<typeof globalThis.fetch>(async (url, init) => {
+      expect(url).toBe('http://benchmark.invalid/mcp');
+      const request = JSON.parse(String(init?.body));
+      expect(request.params._meta.threadId).toBe(nativeSessionId);
+      expect(request.params.name).toBe('session:request-compaction');
+      expect(request.params.arguments).toEqual({});
+      const decision = evaluateSessionConfinement({ toolName: request.params.name,
+        args: request.params.arguments, confinement });
+      expect(decision).toMatchObject({ allowed: false, matchedGlob: 'outside-exact-ceiling' });
+      if (decision.allowed) throw new Error('Refusal control unexpectedly admitted managed compaction');
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
+        isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false,
+          error: 'session_confinement_denied', note: decision.reason }) }],
+      } }), { headers: { 'content-type': 'application/json' } });
+    });
+    const preCompact = await runManagedPreCompact({ hook_event_name: 'PreCompact', trigger: 'auto',
+      session_id: nativeSessionId }, {
+      env: { PAPERCUSP_MCP_URL: 'http://benchmark.invalid/mcp', PAPERCUSP_SID: 'private-benchmark-owner' },
+      isNested: () => false,
+      inspectTranscript: () => ({ readable: true, forkedFromId: null, sampled: true }),
+      fetchImpl: dispatch,
+    });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(preCompact.continue).toBe(false);
+    expect(preCompact.systemMessage).toContain('Managed carry was NOT queued (session_confinement_denied)');
+    expect(preCompact.systemMessage).toContain('outside the launch-declared ceiling');
     const calls = native.launch.mock.calls.length;
     // A caller cannot reintroduce an agent-facing instruction prefix outside
     // the frozen host arm, even if the frozen context suffix is unchanged.

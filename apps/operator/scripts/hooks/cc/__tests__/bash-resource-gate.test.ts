@@ -4300,6 +4300,29 @@ describe('command-substitution quote-parity break — CLASS recurrence guard (EI
   });
 });
 
+describe('mcp-call inline JSON quoting guard (EI-26073319721581332)', () => {
+  it('denies positional JSON whose apostrophe leaves the shell quote open', () => {
+    const command = `node scripts/mcp-call.mjs loop:checkpoint '{"note":"it's safe"}' --client su-test`;
+    const out = runGate(bashCmd(command), CANON_ENV);
+    expect(out.status).toBe(0);
+    const decision = parseDecision(out);
+    expect(decision.hookSpecificOutput.permissionDecision).toBe('deny');
+    expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('EI-26073319721581332');
+    expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('--json -');
+    expect(decision.hookSpecificOutput.permissionDecisionReason).toContain('--json-file');
+  });
+
+  it('allows the quoted-stdin heredoc form for the same apostrophe payload', () => {
+    const command = `node scripts/mcp-call.mjs loop:checkpoint --json - <<'JSON'\n{"note":"it's safe"}\nJSON`;
+    expectAllow(runGate(bashCmd(command), CANON_ENV));
+  });
+
+  it('allows a positional JSON payload without shell-hostile prose', () => {
+    const command = `node scripts/mcp-call.mjs loop:checkpoint '{"note":"safe"}' --client su-test`;
+    expectAllow(runGate(bashCmd(command), CANON_ENV));
+  });
+});
+
 describe('shell-write file-target guard (EI-18664655909328670)', () => {
   const expectShellWriteDeny = (out: { stdout: string; status: number | null }) => {
     const reason = denyReason(out);

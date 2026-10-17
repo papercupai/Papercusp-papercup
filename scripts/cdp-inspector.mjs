@@ -113,6 +113,224 @@ export async function readProcessMemory(client, { expectedPid, hostFacts = false
   return sample;
 }
 
+/**
+ * Name of the bounded restore-phase slot published by
+ * `@papercusp/seed-bundle`.  The inspector is intentionally kept as a plain
+ * Node script, so this literal is the cross-runtime seam rather than an import.
+ */
+export const SEED_RESTORE_DIAGNOSTIC_SLOT = '@papercusp/seed-bundle.restore-diagnostics';
+
+const MAX_SEED_RESTORE_CAPTURE_MS = 120_000;
+const MAX_SEED_RESTORE_POLL_MS = 5_000;
+
+function validateSeedRestoreIdentity({ expectedPid, expectedBuildSha, expectedSourceSha256, expectedEntry }) {
+  if (!Number.isInteger(expectedPid) || expectedPid <= 0)
+    throw new TypeError('seed restore diagnostics require a positive expectedPid');
+  if (typeof expectedBuildSha !== 'string' || !/^[a-f0-9]{7,64}$/i.test(expectedBuildSha))
+    throw new TypeError('expectedBuildSha must be a hexadecimal build identifier');
+  if (typeof expectedSourceSha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(expectedSourceSha256))
+    throw new TypeError('expectedSourceSha256 must be a 64-character hexadecimal digest');
+  if (expectedEntry !== undefined && (typeof expectedEntry !== 'string' || !expectedEntry))
+    throw new TypeError('expectedEntry must be a non-empty script path');
+}
+
+/**
+ * Read the process-global seed restore phase journal from an exact Node target.
+ * Missing journal state is an explicit unsupported result: an older installed
+ * script cannot be upgraded by the observer and must not be read as evidence
+ * that verify or restore completed.
+ *
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate'>} client
+ * Build and source hash pins are required before any target evaluation.
+ * @param {{ expectedPid: number, expectedBuildSha: string, expectedSourceSha256: string,
+ *   expectedEntry?: string, expectedOperationId?: string }} options
+ */
+export async function readSeedRestoreDiagnostics(client, {
+  expectedPid, expectedBuildSha, expectedSourceSha256, expectedEntry, expectedOperationId,
+}) {
+  validateSeedRestoreIdentity({ expectedPid, expectedBuildSha, expectedSourceSha256, expectedEntry });
+  if (expectedOperationId !== undefined && (typeof expectedOperationId !== 'string' || !expectedOperationId))
+    throw new TypeError('expectedOperationId must be a non-empty string');
+  const slot = JSON.stringify(SEED_RESTORE_DIAGNOSTIC_SLOT);
+  const result = await client.evaluate(`(() => {
+    const own = (object, key) => {
+      if (!object || (typeof object !== 'object' && typeof object !== 'function')) return undefined;
+      const descriptor = Object.getOwnPropertyDescriptor(object, key);
+      return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+    };
+    if (process.pid !== ${expectedPid}) throw new Error('Inspector PID mismatch');
+    const argv = Array.isArray(process.argv) ? process.argv : [];
+    const symbol = Symbol.for(${slot});
+    const state = own(globalThis, symbol);
+    if (!state || own(state, 'version') !== 1 || !Array.isArray(own(state, 'operations'))) {
+      return { pid: process.pid, available: false, script: typeof argv[1] === 'string' ? argv[1] : null,
+        reason: 'seed restore phase journal unavailable' };
+    }
+    const identityValue = (operation) => {
+      const identity = own(operation, 'identity');
+      return {
+        processInstanceId: typeof own(identity, 'processInstanceId') === 'string' ? own(identity, 'processInstanceId') : null,
+        buildSha: typeof own(identity, 'buildSha') === 'string' ? own(identity, 'buildSha') : null,
+        sourceSha256: typeof own(identity, 'sourceSha256') === 'string' ? own(identity, 'sourceSha256') : null,
+        script: typeof own(identity, 'script') === 'string' ? own(identity, 'script') : null,
+      };
+    };
+    const eventValue = (event) => ({
+      kind: typeof own(event, 'kind') === 'string' ? own(event, 'kind') : null,
+      phase: typeof own(event, 'phase') === 'string' ? own(event, 'phase') : null,
+      state: typeof own(event, 'state') === 'string' ? own(event, 'state') : null,
+      ...(typeof own(event, 'reason') === 'string' ? { reason: own(event, 'reason') } : {}),
+      seq: Number.isSafeInteger(own(event, 'seq')) ? own(event, 'seq') : null,
+      at: Number.isFinite(own(event, 'at')) ? own(event, 'at') : null,
+    });
+    const operationValue = (operation) => ({
+      id: typeof own(operation, 'id') === 'string' ? own(operation, 'id') : null,
+      pid: Number.isInteger(own(operation, 'pid')) ? own(operation, 'pid') : null,
+      identity: identityValue(operation),
+      startedAt: Number.isFinite(own(operation, 'startedAt')) ? own(operation, 'startedAt') : null,
+      status: typeof own(operation, 'status') === 'string' ? own(operation, 'status') : null,
+      finishedAt: Number.isFinite(own(operation, 'finishedAt')) ? own(operation, 'finishedAt') : null,
+      outcomeOk: typeof own(operation, 'outcomeOk') === 'boolean' ? own(operation, 'outcomeOk') : null,
+      droppedEvents: Number.isSafeInteger(own(operation, 'droppedEvents')) ? own(operation, 'droppedEvents') : null,
+      events: Array.isArray(own(operation, 'events')) ? own(operation, 'events').map(eventValue) : [],
+    });
+    return { pid: process.pid, available: true,
+      script: typeof argv[1] === 'string' ? argv[1] : null,
+      operations: own(state, 'operations').map(operationValue) };
+  })()`, { returnByValue: true });
+  const snapshot = result?.result?.value;
+  if (!snapshot || snapshot.pid !== expectedPid) throw new Error('Inspector PID mismatch');
+  if (expectedEntry !== undefined && snapshot.script !== expectedEntry)
+    throw new Error(`seed restore inspector script identity mismatch: expected ${expectedEntry}, observed ${snapshot.script ?? 'unknown'}`);
+  if (!snapshot.available) return snapshot;
+  if (!Array.isArray(snapshot.operations)) throw new Error('seed restore phase journal is malformed');
+  for (const operation of snapshot.operations) {
+    const identity = operation?.identity;
+    if (identity?.buildSha !== null && !/^[a-f0-9]{7,64}$/i.test(identity.buildSha))
+      throw new Error('seed restore phase journal has an invalid build identity');
+    if (identity?.sourceSha256 !== null && !/^[a-f0-9]{64}$/i.test(identity.sourceSha256))
+      throw new Error('seed restore phase journal has an invalid source identity');
+  }
+  const matching = expectedOperationId === undefined
+    ? snapshot.operations
+    : snapshot.operations.filter(operation => operation?.id === expectedOperationId);
+  if (expectedOperationId !== undefined && matching.length !== 1)
+    throw new Error(`seed restore operation ${expectedOperationId} was not observed`);
+  const identities = matching.map(operation => operation.identity);
+  if (matching.some(operation => operation.pid !== expectedPid))
+    throw new Error('seed restore operation PID identity mismatch');
+  if (expectedEntry !== undefined && identities.some(identity => identity?.script !== expectedEntry))
+    throw new Error('seed restore operation script identity mismatch');
+  if (expectedBuildSha !== undefined && identities.some(identity => identity?.buildSha !== expectedBuildSha))
+    throw new Error(`seed restore build identity mismatch: expected ${expectedBuildSha}`);
+  if (expectedSourceSha256 !== undefined && identities.some(identity => identity?.sourceSha256 !== expectedSourceSha256))
+    throw new Error(`seed restore source identity mismatch: expected ${expectedSourceSha256}`);
+  return { ...snapshot, operations: matching };
+}
+
+/**
+ * Observe one restore operation until it reaches a terminal state. The poll
+ * budget includes protocol awaits and is capped at two minutes. An unavailable
+ * journal rejects immediately; it cannot produce qualifying phase evidence. The first
+ * observed operation is pinned across polls; later operations cannot replace
+ * it. The caller's CDP transport is closed on timeout/failure.
+ * `resumeStartup` mirrors the CPU helper's exact --inspect-wait cleanup: if
+ * setup fails before the resume, a best-effort resume is attempted in finally.
+ *
+ * @param {Pick<ReturnType<typeof createCdpClient>, 'evaluate' | 'send' | 'close'>} client
+ * @param {{ expectedPid: number, expectedBuildSha: string, expectedSourceSha256: string,
+ *   expectedEntry?: string, expectedOperationId?: string, durationMs?: number,
+ *   pollIntervalMs?: number, resumeStartup?: boolean, sleepImpl?: InspectorSleep }} options
+ */
+export async function captureSeedRestorePhases(client, {
+  expectedPid, expectedBuildSha, expectedSourceSha256, expectedEntry, expectedOperationId,
+  durationMs = MAX_SEED_RESTORE_CAPTURE_MS, pollIntervalMs = 250, resumeStartup = false,
+  sleepImpl = sleep,
+}) {
+  validateSeedRestoreIdentity({ expectedPid, expectedBuildSha, expectedSourceSha256, expectedEntry });
+  if (!Number.isInteger(durationMs) || durationMs <= 0 || durationMs > MAX_SEED_RESTORE_CAPTURE_MS)
+    throw new TypeError(`durationMs must be an integer between 1 and ${MAX_SEED_RESTORE_CAPTURE_MS}`);
+  if (!Number.isInteger(pollIntervalMs) || pollIntervalMs <= 0 || pollIntervalMs > MAX_SEED_RESTORE_POLL_MS)
+    throw new TypeError(`pollIntervalMs must be an integer between 1 and ${MAX_SEED_RESTORE_POLL_MS}`);
+  if (typeof sleepImpl !== 'function') throw new TypeError('sleepImpl must be a function');
+  let resumed = false;
+  let identityConfirmed = false;
+  let completed = false;
+  let primaryError;
+  const startedAt = Date.now();
+  const deadline = startedAt + durationMs;
+  const timeoutError = () => new Error(`seed restore phase capture exceeded ${durationMs}ms`);
+  const withinDeadline = async (action) => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw timeoutError();
+    let timer;
+    try {
+      return await Promise.race([
+        Promise.resolve().then(action),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(timeoutError()), remaining); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  };
+  let operationId = expectedOperationId;
+  const read = () => withinDeadline(async () => {
+    const snapshot = await readSeedRestoreDiagnostics(client, {
+      expectedPid, expectedBuildSha, expectedSourceSha256, expectedEntry, expectedOperationId: operationId,
+    });
+    identityConfirmed = true;
+    if (!snapshot.available) {
+      throw Object.assign(new Error(snapshot.reason ?? 'seed restore phase journal unavailable'), {
+        code: 'SEED_RESTORE_DIAGNOSTICS_UNAVAILABLE',
+      });
+    }
+    return snapshot;
+  });
+  try {
+    // --inspect-wait permits evaluations before startup is resumed. Refuse a
+    // wrong PID/script without changing that target's execution state.
+    let last = await read();
+    if (resumeStartup) {
+      await withinDeadline(() => client.send('Runtime.runIfWaitingForDebugger'));
+      resumed = true;
+    }
+    while (Date.now() < deadline) {
+      if (last.available && last.operations.length) {
+        const operation = last.operations[last.operations.length - 1];
+        operationId ??= operation.id;
+        if (operation?.status === 'succeeded' || operation?.status === 'failed') {
+          completed = true;
+          return { ...last, operation, captureMs: Date.now() - startedAt };
+        }
+      }
+      await withinDeadline(() => sleepImpl(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now()))));
+      last = await read();
+    }
+    throw timeoutError();
+  } catch (error) {
+    primaryError = error;
+  } finally {
+    const cleanupErrors = [];
+    if (resumeStartup && identityConfirmed && !resumed) {
+      try {
+        if (Date.now() < deadline) await withinDeadline(() => client.send('Runtime.runIfWaitingForDebugger'));
+        else {
+          // A best-effort final resume must not add another request timeout to
+          // the exhausted capture budget. Closing rejects pending CDP calls.
+          void Promise.resolve(client.send('Runtime.runIfWaitingForDebugger')).catch(() => {});
+        }
+      } catch (error) { cleanupErrors.push(error); }
+    }
+    if (!completed) {
+      try { client.close(); } catch (error) { cleanupErrors.push(error); }
+    }
+    if (cleanupErrors.length) {
+      throw new AggregateError(primaryError ? [primaryError, ...cleanupErrors] : cleanupErrors,
+        'seed restore phase capture cleanup failed');
+    }
+  }
+  if (primaryError) throw primaryError;
+  throw new Error('seed restore phase capture returned no measurement');
+}
+
 /** Bind existing singleton values to a preceding snapshot's numeric V8 IDs.
  * Remote handles are released before returning and never enter the report.
  * Missing, unsafe and uncaptured roots stay explicit; no getter or proxy runs.

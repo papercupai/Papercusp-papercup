@@ -17,9 +17,8 @@ import {
 } from './binding-engine';
 import { keyMatchesPattern, payloadMatchesFilter } from '../events/await/pattern';
 import { getDatatype } from '../datatype-registry-store';
-import { defaultSocialStormPolicyForSourceKind, socialStormPolicyFor } from './social/storm-policy';
-import { getSocialPlatform, isSocialPlatformVerified } from './social/platform-registry';
-import { socialCursorFreshness, type SocialCursorFreshness } from './social/cursor-freshness';
+import { defaultProviderStormPolicyForSourceKind, providerStormPolicyFor } from './provider-storm-policy';
+import { readyProviderRegistry, type ProviderRegistry } from '../integrations/provider-registry';
 import type { PlanSchedule } from '../agent-tools/plans/source';
 import { planScheduleRoutineName } from '../harness/routines/materialize-plan-schedule';
 import { redactSensitiveValue } from '../sensitive-text';
@@ -108,23 +107,15 @@ export interface CreatedExternalTriggerBinding {
 }
 
 /**
- * Platform facts a social trigger source carries beyond the generic row (P-027).
- *
- * Present only when the source's `kind` resolves to a registry platform — a
- * social source's kind IS its platform id, so `getSocialPlatform(kind)` is the
- * whole mapping. Non-social sources (gmail, gcal, slack, …) keep `social: null`
- * and render exactly as they did before.
- *
- * These are all DERIVED at read time from the registry and the persisted cursor.
- * Nothing here is a second copy of state: recording, say, a platform's rate
- * budget on the source row would be a value describing code that drifts the
- * moment the registry is corrected.
+ * Installed social-provider facts beyond the generic source row (P-027).
+ * Identity, read support, auth and contract evidence follow the current package
+ * descriptor; the host cursor carries sync progress. The legacy rate-policy
+ * derivation remains until the shared policy migration is complete.
  */
 export interface ExternalTriggerSocialAdminFacts {
   platformId: string;
   label: string;
-  wave: 'A' | 'B' | 'C';
-  /** Registry row verified against its cited sources. */
+  /** Package API contract verified against its cited sources. */
   verified: boolean;
   /**
    * The owner-side wall, when the platform declares one (Meta app review, a
@@ -135,13 +126,14 @@ export interface ExternalTriggerSocialAdminFacts {
   blockedOn: string | null;
   authMode: string;
   /**
-   * Null when the platform cannot be read at any grant tier we hold — a
-   * write-only row (`read: null`). Distinct from an unknown: the registry has
-   * verified that no readable stream exists.
+   * Host delivery path from the installed descriptor. Null when the package
+   * explicitly declares sync:false (write-only).
    */
   readTransport: string | null;
-  /** Cursor freshness; see cursor-freshness.ts for why not a nullable date. */
-  cursor: SocialCursorFreshness | ProviderCursorFreshness;
+  /** Host sync progress; the provider's cursor contents stay opaque. */
+  cursor: Omit<ProviderCursorFreshness, 'state'> & {
+    state: ProviderCursorFreshness['state'] | 'not-readable';
+  };
   /**
    * The storm cap this platform's rate budget funds, and whether a provider
    * throttle currently HOLDS all launches. `hold` is not `maxRuns: 0`: a cap of
@@ -897,6 +889,7 @@ function required(value: string | null | undefined, field: string): string {
 function normalizedStormPolicy(raw: Record<string, unknown> = {}): Record<string, unknown> {
   const parsed = parseStormPolicy(raw);
   return {
+    ...(raw.mode === undefined ? {} : { mode: parsed.mode }),
     windowSeconds: parsed.windowSeconds,
     maxRuns: parsed.maxRuns,
     maxAgeSeconds: parsed.maxAgeSeconds,
@@ -1072,7 +1065,7 @@ export async function createExternalTriggerBinding(
   const statesRate =
     stated !== undefined &&
     Object.keys(stated).some((key) => key !== 'maxAgeSeconds' && key !== 'max_age_seconds');
-  const socialDefault = statesRate ? null : defaultSocialStormPolicyForSourceKind(sources[0].kind);
+  const socialDefault = statesRate ? null : defaultProviderStormPolicyForSourceKind(await readyProviderRegistry(), sources[0].kind);
   const stormPolicy = socialDefault
     ? {
         ...socialDefault,
@@ -1315,35 +1308,59 @@ export function disabledExternalTriggerAdminSnapshot(): ExternalTriggerAdminSnap
  * null for every kind the registry does not know, so that a gmail or slack
  * source can never pick up a social platform's rate budget by accident.
  */
-export function socialAdminFacts(kind: string, cursor: unknown, nowMs: number): ExternalTriggerSocialAdminFacts | null {
-  const row = getSocialPlatform(kind);
-  if (!row) return null;
+export function socialAdminFacts(
+  kind: string,
+  cursor: unknown,
+  nowMs: number,
+  installedRegistry: ProviderRegistry,
+): ExternalTriggerSocialAdminFacts | null {
+  const descriptor = installedRegistry.get(kind)?.descriptor;
+  if (!descriptor?.datatypes.includes('social-post')) return null;
+  const readable = descriptor.sync !== false;
+  const packageWriteVerbs = descriptor.capabilities
+    .filter((capability) => /^(?:social)\.(?:post|reply|delete)$/.test(capability))
+    .map((capability) => capability.slice('social.'.length));
+  const packageVerified = Boolean(descriptor.verification?.verifiedAt && descriptor.verification.sources.length > 0);
+  const packageWriteVerified = packageVerified && packageWriteVerbs.length > 0 &&
+    packageWriteVerbs.every((verb) => Boolean(descriptor.verification?.capabilities?.[`social.${verb}`]));
+  // New source rows persist an empty object before their first provider page.
+  // A nonempty legacy/unknown shape is not proof of a committed provider sync:
+  // only the SDK's host-owned metadata may supply freshness or a position.
+  const coldCursor = cursor == null || (typeof cursor === 'object' && !Array.isArray(cursor)
+    && Object.keys(cursor).length === 0);
+  const freshness = providerCursorFreshness(cursor, nowMs)
+    ?? (coldCursor ? providerCursorFreshness({ provider: null }, nowMs)! : {
+      state: 'unrecognized' as const,
+      at: null,
+      ageMs: null,
+      position: null,
+      detail: 'stored cursor has no host provider sync metadata; freshness is unknown until a provider page commits',
+    });
   // `read` for the cap: the poll loop is what spends budget continuously, and
   // it is the spend an owner watching this pane is deciding about.
-  const policy = socialStormPolicyFor(row, 'read');
+  const policy = providerStormPolicyFor(descriptor, 'read');
   return {
-    platformId: row.id,
-    label: row.label,
-    wave: row.wave,
-    verified: isSocialPlatformVerified(row),
-    blockedOn: row.blockedOn ?? null,
-    authMode: row.auth.mode,
-    readTransport: row.read?.transport ?? null,
+    platformId: descriptor.id,
+    label: descriptor.displayName || descriptor.id,
+    verified: packageVerified,
+    blockedOn: descriptor.verification?.blockedOn ?? null,
+    authMode: descriptor.oauth ? descriptor.oauth.instance ? 'instance-oauth' : 'oauth'
+      : descriptor.setup?.session ? 'app-password' : descriptor.setup?.credentials?.length ? 'credentials' : 'none',
+    readTransport: !readable ? null : descriptor.ingress ? 'socket' : descriptor.push ? 'push+poll' : 'poll',
     // A write-only platform has no cursor to classify, and letting it fall
-    // through would render `never-synced` — permanently true, permanently
-    // alarming, and not actionable by anyone. See the `not-readable` note in
-    // cursor-freshness.ts: only a caller holding the row can tell these apart.
+    // through would render `never-synced` permanently, even though there is
+    // no readable stream to run. Only the read contract can distinguish this.
     cursor:
-      row.read === null
+      !readable
         ? {
             state: 'not-readable' as const,
             at: null,
             ageMs: null,
             position: null,
             detail:
-              'this platform has no readable content stream at any grant tier we hold — it is write-only, so there is nothing to sync',
+              'the installed provider declares write-only support; it has no inbound stream to sync',
           }
-        : providerCursorFreshness(cursor, nowMs) ?? socialCursorFreshness(cursor, nowMs),
+        : freshness,
     rateBudget: {
       maxRuns: policy.maxRuns,
       windowSeconds: policy.windowSeconds,
@@ -1356,8 +1373,8 @@ export function socialAdminFacts(kind: string, cursor: unknown, nowMs: number): 
           }
         : null,
     },
-    writeVerified: typeof row.write.verifiedAt === 'string' && row.write.verifiedAt.length > 0,
-    writeVerbs: [...row.write.verbs],
+    writeVerified: packageWriteVerified,
+    writeVerbs: packageWriteVerbs,
   };
 }
 
@@ -1366,6 +1383,7 @@ export async function loadExternalTriggerAdminSnapshot(
   sql: postgres.Sql,
   workspaceId: string,
 ): Promise<ExternalTriggerAdminSnapshot> {
+  const installedRegistry = await readyProviderRegistry();
   const [sourceRows, bindingRows, recentRuns, failureRows] = await Promise.all([
     sql<SourceDbRow[]>`
       SELECT s.id::text,
@@ -1468,7 +1486,7 @@ export async function loadExternalTriggerAdminSnapshot(
     lastSyncAt: iso(row.lastSyncAt),
     nextAttemptAt: iso(row.nextAttemptAt),
     lastConnectedAt: iso(row.lastConnectedAt),
-    social: socialAdminFacts(row.kind, row.cursor, nowMs),
+    social: socialAdminFacts(row.kind, row.cursor, nowMs, installedRegistry),
   }));
   const bindings = bindingRows.map(
     (row): ExternalTriggerBindingAdminRow => ({
@@ -1941,11 +1959,12 @@ export async function updateExternalTriggerBindingStormPolicy(
   // `maxRuns: null` stays ACCEPTED at the boundary (the admin route's schema
   // still nulls it) but no longer MEANS unbounded — parseStormPolicy resolves
   // it to the bounded default, and the row is written with that cap.
-  input: { maxRuns: number | null; windowSeconds: number; maxAgeSeconds?: number },
+  input: { maxRuns: number | null; windowSeconds: number; maxAgeSeconds?: number; mode?: string },
 ): Promise<{ id: string; stormPolicy: Record<string, unknown>; updatedAt: string } | null> {
   const normalized = normalizedStormPolicy({
     maxRuns: input.maxRuns,
     windowSeconds: input.windowSeconds,
+    ...(input.mode === undefined ? {} : { mode: input.mode }),
     ...(input.maxAgeSeconds === undefined ? {} : { maxAgeSeconds: input.maxAgeSeconds }),
   });
   // An update that does not mention maxAgeSeconds must not reset a stored custom
@@ -1953,7 +1972,8 @@ export async function updateExternalTriggerBindingStormPolicy(
   // keep whatever the row already carries.
   const stormPolicy: Record<string, unknown> =
     input.maxAgeSeconds === undefined
-      ? { windowSeconds: normalized.windowSeconds, maxRuns: normalized.maxRuns }
+      ? { windowSeconds: normalized.windowSeconds, maxRuns: normalized.maxRuns,
+          ...(input.mode === undefined ? {} : { mode: normalized.mode }) }
       : normalized;
   const rows = await sql<
     Array<{

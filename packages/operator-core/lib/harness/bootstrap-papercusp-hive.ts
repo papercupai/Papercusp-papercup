@@ -23,6 +23,8 @@
  */
 
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { cloneGithubRepo, isCloneError, defaultClonesDir, parseGitProgressLine } from './clone-github';
@@ -44,13 +46,14 @@ import {
   type CanonicalHiveInvite,
 } from './papercusp-hive-join';
 import { AWAITING_GH_SIGNIN_DETAIL } from './bootstrap-papercusp-hive-detail';
-import { restoreHiveSeed, resolveSeedDir, type RestoreHiveSeedResult } from '../sync/hyperbee/restore-hive-seed';
+import { restoreHiveSeed, resolveSeedDir, type RestoreHiveSeedResult, type SeedLogLevel } from '../sync/hyperbee/restore-hive-seed';
 import { triggerDeferredGitRestore, type TriggerDeferredGitRestoreResult } from '../sync/hyperbee/deferred-git-restore';
 import { buildMemberEpochKeyProvider } from '../sync/hyperbee/hive-epoch-boot-deps';
 import { createBundledEpochKeyProvider } from '../sync/hyperbee/bundled-epoch-key-provider';
 import { chainEpochKeyProviders } from '../sync/hyperbee/epoch-key-provider-chain';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { getBuildInfo } from '../build-info';
 
 /**
  * P-011 kill-switch: the seed-bundle feature master gate (FLAGS.POT_SEED_BUNDLE,
@@ -454,6 +457,19 @@ export async function defaultSelfAdmitCanonical(
   return { state: 'admitted', slug: PAPERCUSP_HIVE_SLUG, path: targetRepoDir };
 }
 
+/** Persist ordinary seed phase boundaries in serve.log as well as live progress. */
+export function recordSeedRestoreLog(
+  msg: string,
+  level: SeedLogLevel | undefined,
+  record?: BootstrapPapercuspHiveDeps['recordProgress'],
+): void {
+  const detail = msg.replace(/^\[seed\]\s*/, 'seed: ');
+  if (level === 'error') console.error(`[papercusp-hive] ${detail}`);
+  else if (level === 'warn') console.warn(`[papercusp-hive] ${detail}`);
+  else console.log(`[papercusp-hive] ${detail}`);
+  record?.('clone', 'running', { detail });
+}
+
 /**
  * P-007 default restore-before-join. SAFE by construction: when no seed is shipped
  * (PAPERCUSP_SEED_DIR unset AND no bundled manifest) `restoreHiveSeed` returns
@@ -485,17 +501,31 @@ async function defaultRestoreHiveSeed(
   // the clones dir the join would otherwise populate (same dirs the post-admission
   // deferred-git restore targets — see seedTargetDirs).
   const { targetStoreDir, targetRepoDir } = seedTargetDirs();
+  // Use the running artifact's baked build identity, not the current checkout.
+  // Hash the installed entry script at restore entry; absent/unreadable bytes
+  // stay explicitly unknown and never masquerade as source-pinned evidence.
+  const script = process.argv[1] ?? null;
+  let sourceSha256: string | null = null;
+  if (script) {
+    try {
+      const digest = createHash('sha256');
+      for await (const chunk of createReadStream(script)) digest.update(chunk);
+      sourceSha256 = digest.digest('hex');
+    } catch {
+      recordSeedRestoreLog('[seed] diagnostic source identity unavailable; phase evidence cannot be source-pinned', 'warn', record);
+    }
+  }
   const res = await restoreHiveSeed({
     seedDir,
     targetStoreDir,
     targetRepoDir,
+    diagnosticIdentity: { buildSha: getBuildInfo().sha, sourceSha256, script },
     // decryptionKey is intentionally absent pre-admission → the git seed defers.
     // WI-9413: an 'error' here means this install will boot EMPTY offline. It used to
     // render as ordinary 'clone/running' progress — indistinguishable from success in
     // the only place it surfaced at all.
     log: (msg, level) => {
-      const detail = msg.replace(/^\[seed\]\s*/, 'seed: ');
-      if (level === 'error') console.error(`[papercusp-hive] ${detail}`);
+      recordSeedRestoreLog(msg, level, record);
       // The STEP status deliberately stays 'running'. WI-9413 originally proposed
       // flipping it to 'error', but that would assert something false: the seed
       // restore is fail-soft by design, so the clone step genuinely continues and
@@ -503,7 +533,6 @@ async function defaultRestoreHiveSeed(
       // offline", not "the clone step failed" — so it belongs in the log stream
       // (console.error, mirroring the WI-5179 precedent below), not in a step
       // state that other machinery reads as an aborted bootstrap.
-      record?.('clone', 'running', { detail });
     },
   });
   return res;

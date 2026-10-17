@@ -243,6 +243,28 @@ describe('reconcileFrozenRepairQueueWithLineageRef — real git (P-027 / D-014)'
     expect(unreadable.reconciled).toEqual([]);
   });
 
+  it('advances a ref behind the row when every first-parent commit is already covered by the row ledger', () => {
+    const { root, candidate } = repo();
+    sweep(root, { 'lib/a.ts': 'export const a = 2;\n' }, 'fix a');
+    const h1 = admit(root, candidate, candidate, ['lib/a.ts']);
+    sweep(root, { 'lib/b.ts': 'export const b = 2;\n' }, 'fix b');
+    const h2 = admit(root, candidate, h1, ['lib/b.ts']);
+
+    // Rebuild the complete ledger first, then simulate a ref reset below the row. The row has
+    // durable proof for both commits, so the reader can repair the ref with an exact CAS.
+    const rebuilt = reconcileFrozenRepairQueueWithLineageRef(queueAt(candidate), { root });
+    expect(rebuilt.status).toBe('reconciled');
+    const ref = frozenLineageRef(candidate);
+    git(root, ['update-ref', ref, h1, h2]);
+
+    const healed = reconcileFrozenRepairQueueWithLineageRef(rebuilt.queue, { root });
+    expect(healed.status).toBe('ref-advanced-to-row');
+    expect(healed.refHead).toBe(h2);
+    expect(healed.queue).toBe(rebuilt.queue);
+    expect(healed.reconciled).toEqual([]);
+    expect(git(root, ['rev-parse', ref])).toBe(h2);
+  });
+
   it('positive control for the refusals: with the foreign commit removed the same row reconciles', () => {
     const { root, candidate } = repo();
     sweep(root, { 'lib/a.ts': 'export const a = 2;\n' }, 'fix a');

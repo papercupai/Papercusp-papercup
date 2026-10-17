@@ -98,8 +98,18 @@ provisioning logic.
   `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` (RFC1918), `127.0.0.0/8`,
   `fc00::/7`.
 
-V1 emits these for the runner to enforce at the OS level (bwrap shares
-network; layer-7 proxy with TLS interception is V2).
+The runner composes the filesystem sandbox inside SRT's isolated network.
+SRT uses a per-run `proxy-chain` HTTP/CONNECT proxy that checks the declared
+host and port, rejects nonpublic DNS answers, and pins the validated address
+at connection time. The existing fetch-policy address classifier also rejects
+reserved, multicast and IPv6 link-local addresses. Only an exact loopback host
+with an explicitly declared port permits local self-talk. Bare hosts permit
+ports 80/443; `*.` matches one label and `**.` permits deeper subdomains.
+
+Direct sockets and SRT's unused SOCKS path are denied. Provisioning clients
+must honor HTTP/HTTPS proxy variables; SOCKS-only protocols are unsupported.
+The proxy and read-only settings are removed when the command ends. Missing
+SRT fails before spawn; explicit development bypass flags are audited.
 
 ## Recovery: WAL → state.json
 

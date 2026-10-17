@@ -74,7 +74,7 @@ it('exports support data over private HTTP only with a persisted scoped staff co
     await once(server, 'listening');
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('private support HTTP address unavailable');
-    const post = (value = token, tenant = organizationId) => fetch(`http://127.0.0.1:${address.port}/admin/customer-data/export`, {
+    const post = (value: string = token, tenant = organizationId) => fetch(`http://127.0.0.1:${address.port}/admin/customer-data/export`, {
       method: 'POST', headers: { host: '127.0.0.1', 'content-type': 'application/json',
         ...(value ? { cookie: `papercusp_session=${value}` } : {}) },
       body: JSON.stringify({ organizationId: tenant, grantId }),

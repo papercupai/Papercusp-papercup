@@ -12,6 +12,9 @@
  * Plan: cloud-workspaces-guided-rail-2026-08-28 P-001.
  */
 
+import { readHostedWorkspaceConnector } from "./hosted-workspace-session-protocol";
+import { LOCAL_DESKTOP_HOST } from "./local-desktop-protocol";
+
 export type ProviderTarget = "gcp" | "aws" | "azure";
 export type ConnectionStatus = "connected" | "degraded" | "invalid";
 export type LifecycleState =
@@ -174,6 +177,26 @@ export interface WorkspaceHostControlRow {
 export type CloudWorkspacesControlRow =
   | WorkspaceHostConnectionRow
   | WorkspaceHostControlRow;
+
+/** Both machine controls must describe the same default desktop target. */
+export function preferredDesktopWorkspace(
+  workspaces: readonly WorkspaceHostControlRow[],
+): WorkspaceHostControlRow | undefined {
+  return workspaces.find((row) => row.observedState === "running" && readHostedWorkspaceConnector(row.tunnel)) ??
+    workspaces.find((row) => row.observedState === "running") ??
+    workspaces.find((row) => readHostedWorkspaceConnector(row.tunnel)) ?? workspaces[0];
+}
+
+/** Machine-owned viewer state must move together, in this window's URL only. */
+export function desktopMachineSelection(hostId: string) {
+  return {
+    desktopHost: hostId,
+    host: hostId === LOCAL_DESKTOP_HOST ? null : hostId,
+    desktop: null,
+    desktopPins: null,
+    desktopFilter: null,
+  };
+}
 
 const LIFECYCLE_STATES: readonly LifecycleState[] = [
   "provisioning",

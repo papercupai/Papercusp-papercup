@@ -18,6 +18,13 @@ describe('boundRowField (EI-1597 — shared high-fanout read-tool bound)', () =>
     expect(r.body_full_chars).toBe(600);
   });
 
+  it('keeps the value self-describing when a projection drops the sibling flags', () => {
+    const out = boundRowField([{ id: 'a', body: 'x'.repeat(600) }], 'body', 200, 10_000);
+    const bodyOnly = out[0]!.body as string;
+    expect(bodyOnly).toContain('TRUNCATED');
+    expect(bodyOnly).toMatch(/\+\d+ chars/);
+  });
+
   it('keeps the TOTAL field text bounded by the budget at any row count', () => {
     const n = 500;
     const rows = Array.from({ length: n }, (_, i) => ({ id: `${i}`, body: 'y'.repeat(1000) }));

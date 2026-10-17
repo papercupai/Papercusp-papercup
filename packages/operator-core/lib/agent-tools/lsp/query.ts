@@ -41,9 +41,9 @@ const OP_VALUES = [...LSP_FACADE_OPS] as [LspFacadeOp, ...LspFacadeOp[]];
 export default defineTool({
   name: 'lsp:query',
   description:
-    'READ-ONLY TypeScript/Rust compiler intelligence from pinned servers. `op`: symbol | references | implementations | diagnostics | workspace_symbols | refactor_preview | health. Returns `{sites, truncation, freshness, coverage, latencyMs, error}`; `line1` is one-indexed. Health describes readiness, not exhaustive references. Empty or degraded results require source/scope checks; unavailable servers return an error.',
+    'READ-ONLY code intelligence. `op`: symbol | references | implementations | diagnostics | workspace_symbols | refactor_preview | health. Symbol lookups prefer hash-checked syntax snapshots; other intents and snapshot misses use pinned compilers. Returns `{sites, truncation, freshness, coverage, latencyMs, error}`; `line1` is one-indexed. Read coverage for syntax/compiler scope. Empty or degraded results require source/scope checks; unavailable servers return an error.',
   guidance: {
-    when: 'You need compiler truth rather than text: declarations across boundaries/re-exports, references, implementations, file diagnostics, or rename sites.',
+    when: 'You need declarations across boundaries/re-exports, references, implementations, diagnostics, or rename sites. Symbol answers identify syntax-only versus compiler-backed evidence.',
     // P-011 prompt weight: this field used to INTERPOLATE the ~647-char shared
     // RIPGREP_SCOPE_GUIDANCE, which alone put this tool at 1507 of the 1500-char
     // budget and red-pinned the fleet gate. The full ripgrep operating manual

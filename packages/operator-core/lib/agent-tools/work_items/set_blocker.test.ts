@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import type { ToolResult } from '@papercusp/tooldef';
 
 const getWorkItem = vi.fn();
 const mergeWorkItemPayload = vi.fn();
@@ -7,6 +8,8 @@ const setWorkItemClaimHold = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
 const getModes = vi.fn();
 const planItemNeedsHumanContradiction = vi.fn();
+const resolvePlanItemStamp = vi.fn();
+const resyncPlanItemLaneNow = vi.fn();
 const ownerAskRun = vi.fn();
 const makeCoordOpContext = vi.fn();
 const parkConsult = vi.fn();
@@ -39,6 +42,10 @@ vi.mock('../../modes/store', () => ({
 }));
 vi.mock('../../scheduler/plan-item-lane-guard', () => ({
   planItemNeedsHumanContradiction: (...args: unknown[]) => planItemNeedsHumanContradiction(...args),
+  resolvePlanItemStamp: (...args: unknown[]) => resolvePlanItemStamp(...args),
+}));
+vi.mock('../../plan-items/reconcile-linked-work-items', () => ({
+  resyncPlanItemLaneNow: (...args: unknown[]) => resyncPlanItemLaneNow(...args),
 }));
 vi.mock('../../coord-ops/ops/compose', () => ({
   askOp: { run: (...args: unknown[]) => ownerAskRun(...args) },
@@ -53,8 +60,8 @@ import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
 const ctx = { uiClientId: 'su-a', isSuperuser: true, workspaceId: 'default' } as never;
 const parse = (value: unknown) => (tool.args as { parse: (v: unknown) => unknown }).parse(value);
-async function one(value: unknown) {
-  const result = (await tool.handler(parse(value) as never, ctx)) as { data: { results: unknown[] } };
+async function one(value: unknown, handlerCtx: unknown = ctx) {
+  const result = (await tool.handler(parse(value) as never, handlerCtx as never)) as { data: { results: unknown[] } };
   return result.data.results[0] as Record<string, any>;
 }
 
@@ -69,6 +76,8 @@ beforeEach(() => {
   setWorkItemClaimHold.mockResolvedValue({ applicable: true, held: false });
   getModes.mockResolvedValue([]);
   planItemNeedsHumanContradiction.mockResolvedValue(null);
+  resolvePlanItemStamp.mockResolvedValue(null);
+  resyncPlanItemLaneNow.mockResolvedValue(null);
   ownerAskRun.mockResolvedValue({ conversation_id: 'owner-ask-direct', answered: false, answer: null });
   makeCoordOpContext.mockReturnValue({ coordOpContext: true });
   parkConsult.mockResolvedValue({ consultId: 'conv-r13' });
@@ -77,6 +86,60 @@ beforeEach(() => {
 });
 
 describe('work_items:set_blocker', () => {
+  it('records the expensive handler seams as named dispatch phases', async () => {
+    const item = { id: 'WI-1', family: 'issue', state: 'open', payload: {} };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockResolvedValue({ ...item, payload: {} });
+    setWorkItemStateWithAliasInfo.mockResolvedValue({ workItem: { ...item, state: 'blocked' } });
+    const recordedPhases: string[] = [];
+    const phases = {
+      track: async <T>(name: string, work: () => T | Promise<T>) => {
+        recordedPhases.push(name);
+        return await work();
+      },
+    };
+
+    const out = await one(
+      { id: item.id, kind: 'runtime', ref: 'runtime:probe' },
+      { uiClientId: 'su-a', isSuperuser: true, workspaceId: 'default', phases },
+    );
+
+    expect(out).toMatchObject({ ok: true, changed: true });
+    expect(recordedPhases).toEqual([
+      'set_blocker:get-work-item',
+      'set_blocker:merge-blocker-history',
+      'set_blocker:set-lifecycle',
+    ]);
+  });
+
+  it('returns an authoritative late-completion receipt for persisted and no-op rows', () => {
+    const asResult = (payload: unknown) => ({
+      content: [{ type: 'text' as const, text: JSON.stringify({ data: payload }) }],
+    }) as ToolResult;
+    const receipt = tool.abortCompletionReceipt!;
+    const attempt = { callId: 'set-blocker-call-1', toolName: 'work_items:set_blocker' };
+
+    expect(receipt({}, asResult({ results: [{ ok: true, id: 'EI-1', changed: true }] }), attempt)).toEqual({
+      status: 'recorded', effectRef: 'work-item:EI-1',
+    });
+    expect(receipt({}, asResult({ results: [{
+      ok: false,
+      id: 'EI-2',
+      partialOutcome: { blockerHistoryPersisted: true, lifecycleApplied: false },
+    }] }), attempt)).toEqual({
+      status: 'recorded', effectRef: 'work-item:EI-2',
+    });
+    expect(receipt({}, asResult({ results: [{ ok: true, id: 'EI-3', changed: false }] }), attempt)).toEqual({
+      status: 'not-recorded', reason: 'every set_blocker row completed with changed:false',
+    });
+    expect(receipt({}, asResult({ results: [{ ok: false, id: 'EI-4', error: 'handler failure' }] }), attempt))
+      .toMatchObject({ status: 'recovery-incomplete', failures: ['set-blocker-effect-unproven'] });
+  });
+
+  it('declares the resolver on the live tool contract', () => {
+    expect(tool.abortCompletionReceipt).toBeTypeOf('function');
+  });
+
   it('stays within the shared prompt-weight budget', () => {
     expect(promptWeight(tool as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
   });
@@ -1522,6 +1585,67 @@ describe('work_items:set_blocker', () => {
     expect(out.error).toContain('claim hold update failed');
     expect(out.error).toContain('do not repeat the clear blindly');
     expect(out.partialOutcome.recoveryAction).toContain('work_items:set_state');
+  });
+
+  it('re-syncs a linked plan lane after a clear leaves lifecycle restoration blocked', async () => {
+    const blocker = {
+      kind: 'runtime', ref: 'runtime:obsolete', summary: 'obsolete runtime', status: 'active',
+      createdAt: '2026-10-09T15:00:00.000Z', createdBy: 'su-a',
+      updatedAt: '2026-10-09T15:00:00.000Z',
+    };
+    const planLaneBlocker = {
+      kind: 'gate', capability: 'live-dependency', ref: 'plan-lane:codex-native-operation-protocol#P-003',
+      summary: 'linked plan lane remains blocked', status: 'active',
+      createdAt: '2026-10-09T15:01:00.000Z', createdBy: 'system:plan-item-lane-sync',
+      updatedAt: '2026-10-09T15:01:00.000Z',
+    };
+    const item = {
+      id: 'WI-1', family: 'feature', kind: 'feature', state: 'blocked', harness: 'papercusp',
+      payload: { externalBlockers: [blocker] },
+    };
+    const persisted = {
+      ...item,
+      payload: { externalBlockers: [{ ...blocker, status: 'cleared' }] },
+    };
+    const repaired = {
+      ...item,
+      payload: { externalBlockers: [planLaneBlocker] },
+    };
+    getWorkItem.mockResolvedValueOnce(item).mockResolvedValueOnce(persisted).mockResolvedValueOnce(repaired);
+    mergeWorkItemPayload.mockResolvedValue(persisted);
+    setWorkItemStateWithAliasInfo.mockRejectedValue(new Error(
+      "work_item 'WI-1' is blocked, and its linked plan-item codex-native-operation-protocol#P-003 is STILL effectively 'blocked'",
+    ));
+    resolvePlanItemStamp.mockResolvedValue({
+      plan_slug: 'codex-native-operation-protocol',
+      item_ids: ['P-003'],
+    });
+    resyncPlanItemLaneNow.mockResolvedValue({ gated: ['WI-1'] });
+
+    const out = await one({ id: 'WI-1', kind: 'runtime', ref: 'runtime:obsolete', clear: true, evidence: 'obsolete' });
+
+    expect(resyncPlanItemLaneNow).toHaveBeenCalledWith(
+      'codex-native-operation-protocol',
+      'P-003',
+      'papercusp',
+    );
+    expect(out).toMatchObject({
+      ok: false,
+      code: 'partial-clear',
+      workItem: repaired,
+      activeBlockers: [expect.objectContaining({ ref: 'plan-lane:codex-native-operation-protocol#P-003', status: 'active' })],
+      partialOutcome: {
+        blockerHistoryPersisted: true,
+        lifecycleApplied: false,
+        currentState: 'blocked',
+        activeBlockerCount: 1,
+      },
+      planLaneRepair: {
+        planSlug: 'codex-native-operation-protocol',
+        itemIds: ['P-003'],
+      },
+    });
+    expect(out.partialOutcome.recoveryAction).toContain('Plan lane codex-native-operation-protocol#P-003 was re-synced');
   });
 
   it('EI-13301 backstop: retries the restore when the primary attempt leaves state stuck at blocked', async () => {

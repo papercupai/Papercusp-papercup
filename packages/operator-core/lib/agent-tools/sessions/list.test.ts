@@ -20,6 +20,8 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/sessions/list.test.ts
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 vi.mock('../coordination/identity', () => ({
@@ -39,7 +41,11 @@ vi.mock('../../search/self-session', () => ({
   resolveSelfSession: (...a: unknown[]) => resolveSelfSession(...a),
 }));
 
-const tool = (await import('./list')).default;
+const { default: tool, HISTORICAL_CENSUS_STATEMENT_TIMEOUT_MS } = await import('./list');
+const HISTORICAL_CENSUS_MIGRATION = fileURLToPath(new URL(
+  '../../../../../libs/papercusp/libs/db/sql/1529-session-list-historical-census-bounds.sql',
+  import.meta.url,
+));
 
 interface ParsedResult {
   ok: boolean;
@@ -66,13 +72,20 @@ interface ParsedResult {
 function makeTx(results: unknown[][]) {
   let i = 0;
   const queries: string[] = [];
+  const unsafeQueries: string[] = [];
   const tx = vi.fn(async (strings: unknown) => {
     if (Array.isArray(strings)) queries.push(strings.join(' '));
     const r = results[i] ?? [];
     i += 1;
     return r;
   });
-  return { tx, calledTimes: () => tx.mock.calls.length, queries };
+  Object.assign(tx, {
+    unsafe: vi.fn(async (query: string) => {
+      unsafeQueries.push(query);
+      return [];
+    }),
+  });
+  return { tx, calledTimes: () => tx.mock.calls.length, queries, unsafeQueries };
 }
 
 function callTool(args: Record<string, unknown>, tx: unknown) {
@@ -84,9 +97,14 @@ function callTool(args: Record<string, unknown>, tx: unknown) {
 }
 
 async function run(args: Record<string, unknown>, results: unknown[][]) {
-  const { tx, calledTimes, queries } = makeTx(results);
+  const { tx, calledTimes, queries, unsafeQueries } = makeTx(results);
   const res = await callTool(args, tx);
-  return { parsed: JSON.parse(res.content[0].text) as ParsedResult, txCalls: calledTimes(), queries };
+  return {
+    parsed: JSON.parse(res.content[0].text) as ParsedResult,
+    txCalls: calledTimes(),
+    queries,
+    unsafeQueries,
+  };
 }
 
 describe('sessions:list EI-11403 active-session fallback', () => {
@@ -261,6 +279,23 @@ describe('sessions:list EI-11403 active-session fallback', () => {
 });
 
 describe('sessions:list historical bounded census', () => {
+  it('sets a transaction-local statement deadline before the cross-workspace scan', async () => {
+    const { parsed, txCalls, unsafeQueries } = await run(
+      {
+        mode: 'historical',
+        since: '2026-07-13T13:30:00Z',
+        until: '2026-07-13T14:30:00Z',
+      },
+      [[]],
+    );
+
+    expect(parsed.ok).toBe(true);
+    expect(txCalls).toBe(1);
+    expect(unsafeQueries).toEqual([
+      `SET LOCAL statement_timeout = ${HISTORICAL_CENSUS_STATEMENT_TIMEOUT_MS}`,
+    ]);
+  });
+
   it('requires an explicit finite [since, until) window', async () => {
     const { parsed, txCalls } = await run(
       { mode: 'historical', since: '2026-07-13T13:30:00Z' },
@@ -329,6 +364,76 @@ describe('sessions:list historical bounded census', () => {
     expect(sql).not.toContain('spawn_id');
   });
 
+  it('pages filtered and unfiltered rows before wide metadata hydration', async () => {
+    const window = {
+      since: '2026-07-13T13:30:00Z',
+      until: '2026-07-13T14:30:00Z',
+    };
+    const row = {
+      source_kind: 'codex',
+      session_id: 'sess-historical',
+      owner: 'su-historical',
+      first_seen_at: '2026-07-01T10:00:00.000Z',
+      first_event_at: '2026-07-13T13:35:00.000Z',
+      last_event_at: '2026-07-13T14:20:00.000Z',
+      event_count: 3,
+      event_sources: ['agent_activity', 'session_turns', 'tool_invocations'],
+      harness_slug: 'papercusp',
+      cwd: '/repo',
+      fleet_slug: 'fleet-a',
+      fleet_role: 'member',
+      model: 'gpt-5.6',
+      effort: 'xhigh',
+      total_matching: 1,
+    };
+    const { parsed: unfiltered, queries: unfilteredQueries } = await run(
+      { mode: 'historical', ...window, limit: 1 },
+      [[row]],
+    );
+    const { parsed: filtered, queries: filteredQueries } = await run(
+      { mode: 'historical', ...window, limit: 1, source_kind: 'codex', cwd_contains: '/repo' },
+      [[row]],
+    );
+    const unfilteredSql = unfilteredQueries[0];
+    const filteredSql = filteredQueries[0];
+    const assertLateHydration = (sql: string) => {
+      const mapStart = sql.indexOf('session_map AS MATERIALIZED');
+      const mapEnd = sql.indexOf('mapped_key_events AS', mapStart);
+      const pageStart = sql.indexOf('paged_event_groups AS MATERIALIZED');
+      const pageLimit = sql.indexOf('LIMIT', pageStart);
+      const finalMetadataSelect = sql.indexOf('SELECT COALESCE(a.agent', pageStart);
+      const finalMetadataLookup = sql.indexOf('FROM harness_shared.adv_sessions', finalMetadataSelect);
+      const membershipLookup = sql.indexOf('fleet_membership_events', finalMetadataSelect);
+
+      expect(mapStart).toBeGreaterThanOrEqual(0);
+      expect(mapEnd).toBeGreaterThan(mapStart);
+      expect(sql.slice(mapStart, mapEnd)).not.toContain('launch_spec');
+      expect(sql.slice(mapStart, mapEnd)).not.toContain('fleet_membership_events');
+      expect(pageStart).toBeGreaterThan(mapEnd);
+      expect(pageLimit).toBeGreaterThan(pageStart);
+      expect(finalMetadataSelect).toBeGreaterThan(pageLimit);
+      expect(finalMetadataLookup).toBeGreaterThan(finalMetadataSelect);
+      expect(membershipLookup).toBeGreaterThan(pageLimit);
+    };
+
+    expect(unfiltered.ok).toBe(true);
+    expect(unfiltered.sessions).toEqual(filtered.sessions);
+    expect(unfiltered.sessions[0]).toMatchObject({ model: 'gpt-5.6', effort: 'xhigh' });
+    assertLateHydration(unfilteredSql);
+    assertLateHydration(filteredSql);
+
+    const filteredPageStart = filteredSql.indexOf('paged_event_groups AS MATERIALIZED');
+    const filteredSourcePredicate = filteredSql.indexOf('e.source_kind =', filteredPageStart);
+    const filteredCwdPredicate = filteredSql.indexOf('e.cwd ILIKE', filteredPageStart);
+    const filteredPageOrder = filteredSql.indexOf('ORDER BY e.last_event_at DESC', filteredPageStart);
+    const filteredPageLimit = filteredSql.indexOf('LIMIT', filteredPageStart);
+    expect(filteredSourcePredicate).toBeGreaterThan(filteredPageStart);
+    expect(filteredCwdPredicate).toBeGreaterThan(filteredPageStart);
+    expect(filteredSourcePredicate).toBeLessThan(filteredPageOrder);
+    expect(filteredCwdPredicate).toBeLessThan(filteredPageOrder);
+    expect(filteredPageOrder).toBeLessThan(filteredPageLimit);
+  });
+
   it('aggregates raw event keys before mapping and splits null/non-null session joins', async () => {
     const { queries } = await run(
       {
@@ -372,8 +477,15 @@ describe('sessions:list historical bounded census', () => {
     expect(sql).toContain('sum(event_count)::int AS event_count');
     expect(sql).toContain('array_agg(DISTINCT source.event_source ORDER BY source.event_source) AS event_sources');
     expect(sessionLookup).toContain("FROM harness_shared.adv_sessions");
-    expect(sessionLookupSelect).toContain("launch_spec->>'harnessSlug' AS harness_slug");
+    expect(sessionLookupSelect).not.toContain('launch_spec');
     expect(sessionLookupSelect).not.toMatch(/,\s*harness_slug\s*,/);
+    const pageStart = sql.indexOf('paged_event_groups AS MATERIALIZED');
+    const lateMetadataSelect = sql.indexOf('SELECT COALESCE(a.agent', pageStart);
+    const lateMetadataLookup = sql.indexOf('FROM harness_shared.adv_sessions', lateMetadataSelect);
+    expect(pageStart).toBeGreaterThan(sourceRollup);
+    expect(lateMetadataSelect).toBeGreaterThan(pageStart);
+    expect(lateMetadataLookup).toBeGreaterThan(lateMetadataSelect);
+    expect(sql).toContain("launch_spec->>'harnessSlug' AS harness_slug");
   });
 
   it('uses disjoint indexed lookups for known sessions and owner-only events', async () => {
@@ -446,6 +558,20 @@ describe('sessions:list historical bounded census', () => {
     const untilMs = Date.parse(w.until);
     expect(Math.abs(sinceMs - (before - 3 * 3_600_000))).toBeLessThan(10_000);
     expect(Math.abs(untilMs - (before - 1 * 3_600_000))).toBeLessThan(10_000);
+  });
+
+  it('ships timestamp-window indexes for every historical event source', () => {
+    const sql = readFileSync(HISTORICAL_CENSUS_MIGRATION, 'utf8').replace(/\s+/g, ' ');
+
+    expect(sql).toContain('session_turns_workspace_ts_historical_idx');
+    expect(sql).toContain('(workspace_id, ts DESC)');
+    expect(sql).toContain('session_turns_workspace_ingested_historical_idx');
+    expect(sql).toContain('(workspace_id, ingested_at DESC)');
+    expect(sql).toContain('agent_activity_workspace_created_historical_idx');
+    expect(sql).toContain('(workspace_id, created_at DESC)');
+    expect(sql).toContain('tool_invocations_workspace_invoked_historical_idx');
+    expect(sql).toContain('(workspace_id, invoked_at DESC)');
+    expect(sql).toContain('INCLUDE (coord_owner_id)');
   });
 
   it('rejects an unrecognized window value NAMING the accepted forms', async () => {

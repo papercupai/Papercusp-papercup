@@ -211,6 +211,7 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   // The visible listing supplies funded release refs and explicitly refreshes
   // their outcome costs. Empty or invented refs would not measure that payload.
   'cupboard.identityOutcomeCosts': null,
+  'cupboard.myListings': null, // authenticated external D1 inventory; owner-specific, explicit refresh
   'designFeatures.detail': null, // a specific featureId (WI-7232 list/detail split)
   'designSketches.byFeature': null,
   'dockLayouts.byName': null,

@@ -167,6 +167,7 @@ interface ClaimedTriggerRun {
 
 
 export interface StormPolicy {
+  mode: 'skip' | 'coalesce-with-cap';
   /**
    * Always a positive integer. `null` is deliberately NOT representable: an
    * unbounded policy is the defect `DEFAULT_STORM_MAX_RUNS` exists to remove,
@@ -227,6 +228,13 @@ export interface TriggerDispatchDeps {
   ) => Promise<BlueprintOperationHandle>;
   batchSize?: number;
   staleAfterSeconds?: number;
+  /**
+   * Hold only binding actions that can launch model work. This is the
+   * selective spend pause configured on the dispatcher routine; it is
+   * deliberately separate from a routine row's `active:false` whole-
+   * dispatcher disarm.
+   */
+  spendPaused?: boolean;
 }
 
 type AgenticDispatchResult = NonNullable<ScheduledPlanFireStartedResult['dispatch']>;
@@ -360,6 +368,8 @@ function positiveInteger(value: unknown, field: string): number {
  * see `DEFAULT_STORM_MAX_RUNS`.
  */
 export function parseStormPolicy(raw: Record<string, unknown>): StormPolicy {
+  const mode = raw.mode ?? 'skip';
+  if (mode !== 'skip' && mode !== 'coalesce-with-cap') throw new Error('external_trigger_invalid_storm_mode');
   const maxRaw = raw.maxRuns ?? raw.max_runs;
   const windowRaw = raw.windowSeconds ?? raw.window_seconds;
   const maxAgeRaw = raw.maxAgeSeconds ?? raw.max_age_seconds;
@@ -371,6 +381,7 @@ export function parseStormPolicy(raw: Record<string, unknown>): StormPolicy {
     throw new Error('external_trigger_invalid_storm_max_age_seconds');
   }
   return {
+    mode,
     maxRuns:
       maxRaw === undefined || maxRaw === null ? DEFAULT_STORM_MAX_RUNS : positiveInteger(maxRaw, 'storm_max_runs'),
     windowSeconds:
@@ -406,6 +417,21 @@ function triggerArgs(event: CanonicalExternalEvent): TriggerRunArgs {
 function actionType(action: Record<string, unknown>): string {
   const type = typeof action.type === 'string' ? action.type.trim() : '';
   return type || 'launch-plan';
+}
+
+/**
+ * Binding-level spend classification. The dispatcher routine contains both
+ * model-spending and deterministic actions, so its routine-level `llm`
+ * classification cannot decide whether an individual receipt may run.
+ */
+const SPENDING_TRIGGER_ACTIONS: ReadonlySet<string> = new Set([
+  'launch-plan',
+  'start-goal',
+  'blueprint-operation',
+]);
+
+export function triggerActionSpends(action: Record<string, unknown>): boolean {
+  return SPENDING_TRIGGER_ACTIONS.has(actionType(action));
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -611,6 +637,13 @@ async function queueOneBinding(
     if (binding.datatypeId && binding.datatypeId !== event.datatypeId) return null;
     if (!payloadMatchesFilter(binding.eventFilter, event.payload)) return null;
 
+    // A redelivery never consumes capacity or changes batch membership.
+    const alreadyQueued = await tx<Array<{ id: string; status: string }>>`
+      SELECT id, status FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${event.workspaceId} AND binding_id = ${binding.id}
+         AND dedupe_key = ${event.dedupeKey}`;
+    if (alreadyQueued[0]) return { ...alreadyQueued[0], inserted: false };
+
     if (!SUPPORTED_TRIGGER_ACTIONS.has(actionType(binding.action))) {
       return insertTerminalTriggerRun(tx, {
         event,
@@ -632,6 +665,14 @@ async function queueOneBinding(
         status: 'failed',
         error: cause instanceof Error ? cause.message : String(cause),
       });
+    }
+
+    if (storm.mode === 'coalesce-with-cap') {
+      if (!['launch-plan', 'blueprint-operation'].includes(actionType(binding.action))) {
+        return insertTerminalTriggerRun(tx, { event, binding, deliveryId, status: 'failed',
+          error: 'external_trigger_coalesce_requires_payload_reader' });
+      }
+      return queueCoalescingReceipt(tx, event, binding, deliveryId, storm);
     }
 
     // Unconditional: `parseStormPolicy` always yields a cap, so there is no
@@ -670,6 +711,104 @@ async function queueOneBinding(
     if (!existing[0]) throw new Error('external_trigger_run_queue_lost');
     return { ...existing[0], inserted: false };
   });
+}
+
+/** Keep receipts separate; only an unattempted leader may acquire more members. */
+async function queueCoalescingReceipt(
+  tx: Db, event: CanonicalExternalEvent, binding: BindingRow, deliveryId: string, storm: StormPolicy,
+): Promise<{ id: string; inserted: boolean; status: string }> {
+  const recent = await tx<Array<{ count: number; retryAt: string | null }>>`
+    SELECT count(*)::int AS count,
+           (min(COALESCE(started_at, triggered_at)) + ${storm.windowSeconds} * interval '1 second')::text AS "retryAt"
+      FROM harness_shared.trigger_runs
+     WHERE workspace_id = ${event.workspaceId} AND binding_id = ${binding.id}
+       AND status NOT IN ('cancelled', 'skipped')
+       AND outcome ->> 'coalescedInto' IS NULL
+       AND COALESCE(started_at, triggered_at) >= now() - ${storm.windowSeconds} * interval '1 second'`;
+  let leaderId: string | null = null;
+  let retryAt: string | null = null;
+  if (recent[0].count >= storm.maxRuns) {
+    // Claiming locks this same row before attempts becomes positive. A claim
+    // that wins the race makes this predicate false after the lock wait.
+    const leaders = await tx<Array<{ id: string }>>`
+      SELECT id FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${event.workspaceId} AND binding_id = ${binding.id}
+         AND status = 'pending' AND attempts = 0 AND outcome ->> 'coalescedInto' IS NULL
+         AND triggered_at >= now() - ${storm.maxAgeSeconds} * interval '1 second'
+       ORDER BY triggered_at DESC, id DESC LIMIT 1 FOR UPDATE`;
+    leaderId = leaders[0]?.id ?? null;
+    if (!leaderId) retryAt = recent[0].retryAt;
+  }
+  if (leaderId) {
+    await tx`UPDATE harness_shared.trigger_runs
+      SET outcome = outcome || jsonb_build_object('coalescedBatch', true, 'lastEventAt', now()), updated_at = now()
+      WHERE workspace_id = ${event.workspaceId} AND id = ${leaderId}`;
+  }
+  const rows = await tx<Array<{ id: string; status: string }>>`
+    INSERT INTO harness_shared.trigger_runs
+      (workspace_id, binding_id, delivery_id, dedupe_key, status, args, outcome, next_attempt_at, updated_at)
+    VALUES (${event.workspaceId}, ${binding.id}, ${deliveryId}, ${event.dedupeKey}, 'pending',
+            ${JSON.stringify(triggerArgs(event))}::text::jsonb,
+            ${JSON.stringify(leaderId ? { coalescedInto: leaderId } : {})}::text::jsonb,
+            COALESCE(${retryAt}::timestamptz, now()), now())
+    RETURNING id, status`;
+  return { ...rows[0], inserted: true };
+}
+
+/** Repair mirrors after crashes as well as after ordinary terminal/retry writes. */
+async function syncCoalescedReceipts(sql: Db, leader?: ClaimedTriggerRun): Promise<void> {
+  await sql`
+    UPDATE harness_shared.trigger_runs member
+       SET status = leader.status, attempts = leader.attempts,
+           started_at = leader.started_at, completed_at = leader.completed_at,
+           next_attempt_at = leader.next_attempt_at, plan_run_ref = leader.plan_run_ref,
+           error = leader.error, updated_at = now()
+      FROM harness_shared.trigger_runs leader
+     WHERE member.workspace_id = leader.workspace_id AND member.binding_id = leader.binding_id
+       AND member.outcome ->> 'coalescedInto' = leader.id::text
+       ${leader ? sql`AND leader.workspace_id = ${leader.workspaceId} AND leader.id = ${leader.id}` : sql``}
+       AND (member.status, member.attempts, member.started_at, member.completed_at,
+            member.next_attempt_at, member.plan_run_ref, member.error)
+           IS DISTINCT FROM
+           (leader.status, leader.attempts, leader.started_at, leader.completed_at,
+            leader.next_attempt_at, leader.plan_run_ref, leader.error)`;
+}
+
+/** Binding locks serialize admission; a delayed outbox must still obey the launch cap. */
+async function admissibleCoalescingHeads(tx: Db, batchSize: number): Promise<string[]> {
+  const bindings = await tx<Array<{ id: string; workspaceId: string; stormPolicy: Record<string, unknown> }>>`
+    SELECT b.id, b.workspace_id AS "workspaceId", b.storm_policy AS "stormPolicy"
+      FROM harness_shared.trigger_bindings b
+     WHERE b.armed AND b.detached_at IS NULL AND b.storm_policy ->> 'mode' = 'coalesce-with-cap'
+       AND EXISTS (SELECT 1 FROM harness_shared.trigger_runs tr
+                    WHERE tr.workspace_id = b.workspace_id AND tr.binding_id = b.id
+                      AND tr.status = 'pending' AND tr.attempts = 0 AND tr.next_attempt_at <= now()
+                      AND tr.outcome ->> 'coalescedInto' IS NULL)
+     ORDER BY b.workspace_id, b.id LIMIT ${batchSize} FOR UPDATE OF b SKIP LOCKED`;
+  const ids: string[] = [];
+  for (const binding of bindings) {
+    let storm: StormPolicy;
+    try { storm = parseStormPolicy(binding.stormPolicy); } catch { continue; }
+    const recent = await tx<Array<{ count: number }>>`
+      SELECT count(*)::int AS count FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${binding.workspaceId} AND binding_id = ${binding.id}
+         AND attempts > 0 AND outcome ->> 'coalescedInto' IS NULL
+         AND COALESCE((outcome ->> 'firstAttemptAt')::timestamptz, started_at)
+             >= now() - ${storm.windowSeconds} * interval '1 second'`;
+    const available = Math.max(0, storm.maxRuns - recent[0].count);
+    if (!available) continue;
+    const heads = await tx<Array<{ id: string }>>`
+      SELECT id FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${binding.workspaceId} AND binding_id = ${binding.id}
+         AND status = 'pending' AND attempts = 0 AND next_attempt_at <= now()
+         AND outcome ->> 'coalescedInto' IS NULL
+         AND COALESCE((outcome ->> 'lastEventAt')::timestamptz, triggered_at)
+             >= now() - ${storm.maxAgeSeconds} * interval '1 second'
+       ORDER BY triggered_at, id LIMIT ${Math.min(available, batchSize - ids.length)} FOR UPDATE`;
+    ids.push(...heads.map((row) => row.id));
+    if (ids.length >= batchSize) break;
+  }
+  return ids;
 }
 
 /** Match armed bindings and durably queue one trigger_run per match. */
@@ -729,21 +868,32 @@ async function claimPendingTriggerRuns(
   sql: postgres.Sql,
   batchSize: number,
   staleAfterSeconds: number,
+  spendPaused: boolean,
 ): Promise<ClaimedTriggerRun[]> {
   return sql.begin(async (tx) => {
+    const coalescingHeads = await admissibleCoalescingHeads(tx, batchSize);
     // WI-10004920: a never-attempted run older than its binding's validity window.
     // Written once and used twice — the expiring CTE and the candidates CTE MUST stay
     // disjoint, because two data-modifying CTEs touching the same row in one statement
     // is undefined in Postgres. A malformed stored value falls back to the default
     // rather than aborting the whole claim transaction on a bad cast.
+    // A spend pause holds spending receipts in the outbox, including old
+    // never-attempted rows. Otherwise the max-age sweep would turn a deliberate
+    // hold into a skipped receipt before the owner resumes spend. Deterministic
+    // actions retain the ordinary stale policy and continue draining.
+    const spendAllowed = spendPaused
+      ? tx`AND COALESCE(NULLIF(binding.action->>'type', ''), 'launch-plan') NOT IN ('launch-plan', 'start-goal', 'blueprint-operation')`
+      : tx``;
     const stale = tx`(
       tr.status = 'pending'
       AND tr.attempts = 0
-      AND tr.triggered_at < now() - (
+      AND tr.outcome ->> 'coalescedInto' IS NULL
+      AND COALESCE((tr.outcome ->> 'lastEventAt')::timestamptz, tr.triggered_at) < now() - (
         CASE WHEN binding.storm_policy->>'maxAgeSeconds' ~ '^[0-9]{1,9}$'
              THEN GREATEST(1, LEAST((binding.storm_policy->>'maxAgeSeconds')::int, ${MAX_RUN_AGE_CEILING_SECONDS}))
              ELSE ${DEFAULT_MAX_RUN_AGE_SECONDS}
-        END * interval '1 second'))`;
+        END * interval '1 second')
+      ${spendAllowed})`;
     return tx<ClaimedTriggerRun[]>`
     WITH expired_stale AS (
       UPDATE harness_shared.trigger_runs tr
@@ -770,6 +920,7 @@ async function claimPendingTriggerRuns(
          AND binding.id = tr.binding_id
          AND binding.detached_at IS NULL
          AND binding.armed = FALSE
+         AND tr.outcome ->> 'coalescedInto' IS NULL
          AND (
            tr.status IN ('pending', 'failed')
            OR (tr.status = 'running'
@@ -777,7 +928,7 @@ async function claimPendingTriggerRuns(
          )
       RETURNING tr.workspace_id, tr.id
     ), candidates AS (
-      SELECT tr.workspace_id, tr.id
+      SELECT tr.workspace_id, tr.id, binding.storm_policy ->> 'mode' AS storm_mode
         FROM harness_shared.trigger_runs tr
         JOIN harness_shared.trigger_bindings binding
           ON binding.workspace_id = tr.workspace_id
@@ -785,7 +936,11 @@ async function claimPendingTriggerRuns(
          AND binding.detached_at IS NULL
          AND binding.armed = TRUE
        WHERE tr.next_attempt_at <= now()
+         AND tr.outcome ->> 'coalescedInto' IS NULL
+         AND (tr.attempts > 0 OR binding.storm_policy ->> 'mode' IS DISTINCT FROM 'coalesce-with-cap'
+              OR tr.id::text = ANY(${tx.array(coalescingHeads)}::text[]))
          AND NOT ${stale}
+         ${spendAllowed}
          AND (
            (tr.attempts < ${DEFAULT_MAX_ATTEMPTS}
             AND (
@@ -818,6 +973,9 @@ async function claimPendingTriggerRuns(
     ), claimed AS (
       UPDATE harness_shared.trigger_runs tr
          SET status = 'running', attempts = tr.attempts + 1, error = NULL,
+             outcome = CASE WHEN tr.attempts = 0 AND c.storm_mode = 'coalesce-with-cap'
+                            THEN tr.outcome || jsonb_build_object('firstAttemptAt', now())
+                            ELSE tr.outcome END,
              started_at = now(), completed_at = NULL, updated_at = now()
         FROM candidates c
        WHERE tr.workspace_id = c.workspace_id AND tr.id = c.id
@@ -993,7 +1151,10 @@ export async function dispatchPendingTriggerRuns(
     deps.staleAfterSeconds ?? DEFAULT_STALE_AFTER_SECONDS,
     'stale_after_seconds',
   );
-  const rows = await claimPendingTriggerRuns(sql, batchSize, staleAfterSeconds);
+  const spendPaused = deps.spendPaused === true;
+  await syncCoalescedReceipts(sql);
+  const rows = await claimPendingTriggerRuns(sql, batchSize, staleAfterSeconds, spendPaused);
+  await syncCoalescedReceipts(sql);
   const runPlan = deps.runPlan ?? runScheduledPlanFire;
   const startGoal = deps.startGoal ?? startGoalById;
   const announce = deps.announceRunWork ?? announceRunWork;
@@ -1285,6 +1446,8 @@ export async function dispatchPendingTriggerRuns(
         }
       }
       result.failed += 1;
+    } finally {
+      await syncCoalescedReceipts(sql, row);
     }
   }
   return result;

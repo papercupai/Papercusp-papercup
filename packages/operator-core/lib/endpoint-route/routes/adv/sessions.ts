@@ -1860,7 +1860,9 @@ const ensureCodexHome = defineTool({
       codexGatewayPriority: repairGatewayAuto || gatewayInputs.codexGatewayAccountId ? 'su' : null,
       headless: repairHeadless,
       compactionLimit: repairCompactionLimit,
-      trustDir: null, // the home's inherited trust tables already cover the cwd
+      // Repair rewrites config.toml from ambient defaults. A managed clone may
+      // have no ambient trust entry, so reseed its recorded launch directory.
+      trustDir: sessionRow?.cwd,
       projectDir: sessionRow?.cwd,
       promptText,
       recoverMissingHome: sessionRow?.coordOwnerId === owner,

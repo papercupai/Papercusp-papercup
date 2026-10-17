@@ -54,6 +54,7 @@ import {
 } from "./git-sync-await-scope";
 import { probeServiceUpLatch } from "./service-up-edge";
 import { mainWaitPlanReviewForWait } from "../../acceptance-runtime-wait-guard";
+import { acquireWithContentionRetry } from "../locks/contention-retry";
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): 30min default, matches events:await.
@@ -156,18 +157,24 @@ async function armAwaits(
   const timeoutBehavior = opts.timeoutBehavior ?? "wake";
   const awaitIds: number[] = [];
   for (const key of keys) {
-    const row = await registerAwait({
-      subscriberId: identity.ownerId,
-      eventKey: key,
-      policy: "wake",
-      note: clampText(note, LIMITS.ANNOTATION) ?? null,
-      wakeHandle: handle,
-      timeoutBehavior,
-      timeoutSec: timeoutSec ?? DEFAULT_TIMEOUT_SEC,
-      payloadFilter: opts.payloadFilter ?? null,
-      // Producer certificates are attached after all rows are registered.
-      producerHealthCertificate: null,
-    });
+    // EI-23197998119991408: named sugar verbs share the same PG-backed await
+    // registration as events:await. Retry transient workspace contention here
+    // too, or git-sync:await can strand a caller without its wake source while
+    // the raw events:await path correctly rides out the same 57014/55P03 dip.
+    const row = await acquireWithContentionRetry(() =>
+      registerAwait({
+        subscriberId: identity.ownerId,
+        eventKey: key,
+        policy: "wake",
+        note: clampText(note, LIMITS.ANNOTATION) ?? null,
+        wakeHandle: handle,
+        timeoutBehavior,
+        timeoutSec: timeoutSec ?? DEFAULT_TIMEOUT_SEC,
+        payloadFilter: opts.payloadFilter ?? null,
+        // Producer certificates are attached after all rows are registered.
+        producerHealthCertificate: null,
+      }),
+    );
     awaitIds.push(row.id);
   }
   return {

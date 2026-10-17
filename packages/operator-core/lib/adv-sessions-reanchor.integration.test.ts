@@ -873,6 +873,30 @@ describe('reanchorAdvSessionNativeId (real PG — the 42703 RETURNING-column reg
     expect(row.ended_at).toBeNull();
   });
 
+  it('does not re-anchor or clear terminal state on a fleet-retired row', async () => {
+    const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID, ended: true });
+    await admin`
+      UPDATE harness_shared.adv_sessions
+         SET retired_at = now(), retired_by = 'fleet:kill:test', retired_reason = 're-anchor regression test'
+       WHERE id = ${id}
+    `;
+    const [before] = await admin<{ session_id: string; started_at: Date; ended_at: Date | null; retired_at: Date | null }[]>`
+      SELECT session_id, started_at, ended_at, retired_at
+        FROM harness_shared.adv_sessions
+       WHERE id = ${id}
+    `;
+
+    await expect(reanchorAdvSessionNativeId(id, FRESH_ID))
+      .resolves.toEqual({ reanchored: false, owner: null });
+
+    const [after] = await admin<{ session_id: string; started_at: Date; ended_at: Date | null; retired_at: Date | null }[]>`
+      SELECT session_id, started_at, ended_at, retired_at
+        FROM harness_shared.adv_sessions
+       WHERE id = ${id}
+    `;
+    expect(after).toEqual(before);
+  });
+
   it('already-anchored → reanchored:false but STILL reports the owner (WI-41555)', async () => {
     // ⚠ This expectation deliberately CHANGED, and must not be "restored".
     // It used to assert `owner: null`, which encoded the frozen-gauge defect as
@@ -960,6 +984,30 @@ describe('reanchorAdvSessionNativeIdByOwner (the interactive/`psu --resume` coho
     // must now name the LIVE successor, not the dead predecessor.
     const ref = await resolveSessionRef(OWNER);
     expect(ref?.sessionId).toBe(FRESH_ID);
+  });
+
+  it('does not select or revive a fleet-retired owner row', async () => {
+    const id = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID, ended: true });
+    await admin`
+      UPDATE harness_shared.adv_sessions
+         SET retired_at = now(), retired_by = 'fleet:kill:test', retired_reason = 're-anchor regression test'
+       WHERE id = ${id}
+    `;
+    const [before] = await admin<{ session_id: string; started_at: Date; ended_at: Date | null; retired_at: Date | null }[]>`
+      SELECT session_id, started_at, ended_at, retired_at
+        FROM harness_shared.adv_sessions
+       WHERE id = ${id}
+    `;
+
+    await expect(reanchorAdvSessionNativeIdByOwner(OWNER, FRESH_ID))
+      .resolves.toEqual({ reanchored: false, owner: null });
+
+    const [after] = await admin<{ session_id: string; started_at: Date; ended_at: Date | null; retired_at: Date | null }[]>`
+      SELECT session_id, started_at, ended_at, retired_at
+        FROM harness_shared.adv_sessions
+       WHERE id = ${id}
+    `;
+    expect(after).toEqual(before);
   });
 
   it('already-anchored → reanchored:false, still reports the owner, never touches another owner (WI-41555)', async () => {
@@ -1061,6 +1109,7 @@ describe('bootstrap-role receipt through the route and real PostgreSQL', () => {
       './blueprint/operation-worker-binding', './spawn-config',
       './endpoint-route/routes/agent-mcp/bootstrap-su', '@papercusp/flags/server',
       './interactive-claude-config', './saved-prompts-materialize',
+      './blueprint/support-workflow-native-launch',
     ];
 
     vi.doMock('./auth/require-principal', async (orig) => ({
@@ -1102,6 +1151,10 @@ describe('bootstrap-role receipt through the route and real PostgreSQL', () => {
       reconstructPsuLaunchArgv: vi.fn(() => ['psu', '--role=worker']),
       stampFleetMembershipAtBoot: vi.fn(async () => null),
       stampPresenceAtBoot: vi.fn(async () => null),
+    }));
+    // The accepted operation here is synthetic; native support routing has its own route tests.
+    vi.doMock('./blueprint/support-workflow-native-launch', () => ({
+      prepareSupportOperationNativeLaunch: vi.fn(async () => null),
     }));
     vi.doMock('@papercusp/flags/server', async (orig) => ({
       ...(await orig<typeof import('@papercusp/flags/server')>()),

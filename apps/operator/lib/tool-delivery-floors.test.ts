@@ -135,4 +135,9 @@ describe('the resolved floor set', () => {
     expect(names.has('tools:find')).toBe(true);
     expect(names.has('tools:invoke')).toBe(true);
   });
+
+  it('keeps events:status on the floor so wake liveness cannot be mistaken for a missing tool', () => {
+    const names = new Set(deliveryFloorNames());
+    expect(names.has('events:status')).toBe(true);
+  });
 });

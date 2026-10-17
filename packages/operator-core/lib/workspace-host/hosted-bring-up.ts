@@ -34,7 +34,9 @@ import {
   PostgresHostedWorkspaceConnectorStore,
 } from '../endpoint-route/hosted-workspace-connector';
 import { enrollGcpIapWorkspaceHostConnector } from './gcp-iap-connector-enrollment';
+import { workspaceHostDurableTenantIdentity } from './aws-host-bootstrap-push-core.mjs';
 import type { WorkspaceHostInitializationAdmission } from './initialization-admission';
+import { retireHostedPoolAgentReservations } from './hosted-agent-admission';
 import {
   resolveWorkspaceHostInitializationControllerProfile,
   resolveWorkspaceHostInitializationOperationsForHost,
@@ -119,6 +121,8 @@ export function hostedBringUpInitialization(input: {
   requestedAt: string;
   desired: WorkspaceHostDesiredSpec;
   requestedAgents: readonly WorkspaceHostCanaryAgent[];
+  /** Controller-read binding for an existing customer disk; never accepted from the browser. */
+  retainedCustomerWorkspaceId?: string;
 }): WorkspaceHostInitializationAdmission {
   const { desired } = input;
   const workload = hostedBringUpWorkload(desired);
@@ -129,7 +133,9 @@ export function hostedBringUpInitialization(input: {
     hostId: desired.hostId,
     operationId: input.operationId,
     requestedAt: input.requestedAt,
-    source: { kind: 'empty' },
+    source: input.retainedCustomerWorkspaceId
+      ? { kind: 'retained', tenantIdentity: workspaceHostDurableTenantIdentity(input.workspaceId, input.retainedCustomerWorkspaceId) }
+      : { kind: 'empty' },
     credentialRefs: {
       cloudCredentialRef: {
         kind: 'cloud',
@@ -288,6 +294,7 @@ export async function retireHostedCustomerWorkspaceAfterDestroy(
   input: { controlPlaneWorkspaceId: string; hostId: string },
   dependencies: {
     revokeConnectors?: (input: { controlPlaneWorkspaceId: string; hostId: string }) => Promise<void>;
+    retireAgentReservations?: typeof retireHostedPoolAgentReservations;
   } = {},
 ): Promise<{ customerWorkspaceId: string } | null> {
   const bindings = await withWorkspace(input.controlPlaneWorkspaceId, async (query) =>
@@ -308,7 +315,13 @@ export async function retireHostedCustomerWorkspaceAfterDestroy(
        LIMIT 2
     `,
   );
-  if (bindings.length === 0) return null;
+  if (bindings.length === 0) {
+    // Replacement can move the directory before the old VM finishes destroy.
+    // The receipt helper independently requires provider-confirmed absence.
+    await (dependencies.retireAgentReservations ?? retireHostedPoolAgentReservations)(input);
+    await (dependencies.revokeConnectors ?? revokeHostedWorkspaceConnectorsForDestroyedHost)(input);
+    return null;
+  }
   if (bindings.length > 1) {
     throw new Error(`host ${input.hostId} is bound to multiple customer workspaces`);
   }
@@ -322,6 +335,7 @@ export async function retireHostedCustomerWorkspaceAfterDestroy(
   }
 
   await (dependencies.revokeConnectors ?? revokeHostedWorkspaceConnectorsForDestroyedHost)(input);
+  await (dependencies.retireAgentReservations ?? retireHostedPoolAgentReservations)(input);
 
   const updated = await withWorkspace(input.controlPlaneWorkspaceId, async (query) =>
     query<Array<{ id: string }>>`

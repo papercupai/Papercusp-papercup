@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "kind": "source-qualification",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "workItem": "WI-6554700010016419",
+  "status": "reader-and-instrument-focused-tests-passed",
+  "shipment": "unverified",
+  "sourceHashes": {
+    "packages/operator-core/lib/code-intelligence/native-adoption.ts": "419cb326a81105050eac781fc75edf25fafb6ca7e0ff24b2081860f08d76e1dd",
+    "packages/operator-core/lib/code-intelligence/native-adoption.test.ts": "7237b20310eec08a82256d3dc2eb0f18d0877bd9c191fb722611346df08f7d2f",
+    "packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts": "a7f498de56441251b4058ff52d00f826baeb946de640e6fd59f09d7647b6c581",
+    "packages/operator-core/lib/rubric-instrument-registry.ts": "cdbe3a865bca99c1a9efe63e03f4d88d85fd1c3a1d159c51ece0d684940fa134",
+    "packages/operator-core/lib/scorecards.ts": "61e2ad67988780df0f74f1a778dc77a9a5677b5bb3b8b9c662d96be1c80ddbfe"
+  },
+  "change": "Extend the existing native-adoption reader, platform instrument registry and scorecard resolver. Use existing push, transcript, journal, activity, invocation and test-run ledgers. D011 adoption target/rater remains separate.",
+  "measurement": {
+    "issued": "Server-issued hook-response ledger rows, not confirmed client receipt.",
+    "closedWindow": "One native session with a preceding transcript prompt and corroborating pre-push post-tool activity, followed by a Stop-hook journal native final-message timestamp. Reject intervening prompts, prior completions, overlapping candidate sessions and other-session activity.",
+    "actedOn": "Successful recorded exact relative cited-path read/edit, or a completed suggested-test row in the matching invocation run group, workspace, owner and observed window. Test requests alone do not count.",
+    "grepAfterPush": "Same recorded identifier on the grep leg through supported literal search forms. Missing symbol identity and truncated/unsupported searches remain unknown.",
+    "rating": "Three new instruments grade measurement availability and expose independent per-leg denominators/rates. They do not assert usefulness or silently invent a new adoption target.",
+    "instrumentKeys": [
+      "code-intel:native-push-issued-measured",
+      "code-intel:native-push-acted-on-measured",
+      "code-intel:native-push-grep-after-measured"
+    ]
+  },
+  "verification": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/native-p041-instruments-source-20261016.json npm run test:file -- packages/operator-core/lib/code-intelligence/native-adoption.test.ts packages/operator-core/lib/code-intelligence/native-adoption.integration.test.ts",
+    "log": "/tmp/native-p041-instruments-tests-20261016.log",
+    "exitCode": 0,
+    "unit": { "passed": 41, "failed": 0, "skipped": 0 },
+    "realPg": { "passed": 12, "failed": 0, "skipped": 0 },
+    "captures": [
+      { "path": "/tmp/native-p041-instruments-source-20261016.json", "sha256": "c51036f65b7cf617f11f91ec86abef0a47af601d2ba217a01108d1d9dd8ab166" },
+      { "path": "/tmp/native-p041-instruments-source-20261016.1.json", "sha256": "7e9b9c32569978e4406a2e339d57872e9991eef36f0085ac5b7931f994db5daa" }
+    ],
+    "sourceQualification": "Vite pre-transform captures match the five named original source/test files at readback. Focused dirty-source qualification only.",
+    "routerProvenance": "unknown; recorded HEAD 7bf12b3503, dirty source and moving shared tree",
+    "childSubstituted": 2,
+    "childLimit": "Both child substitutions are scripts/lib/test-pass-reuse.mjs. No claim about current raw runner logic or full execution-graph closure.",
+    "typecheck": {
+      "log": "/tmp/native-p041-instruments-types-20261016.log",
+      "status": "clean",
+      "exitCode": 0,
+      "scope": "Five named files; three cross legs clean, then full operator-core fallback. Terminal LINT_TSC_RESULT exit0/statusclean and exec31133 exit0 observed."
+    },
+    "priorReaderQualification": "Before instrument wiring, the reader passed39 unit +10 real-PG cases and a three-file typecheck; /tmp/native-p041-reader-v2-tests-20261016.log and /tmp/native-p041-reader-types-20261016.log. These are superseded source bytes, not current typecheck proof.",
+    "failedAttempt": "Initial collection failed on intermediate await-in-non-async bytes in unrelated committed-tree-reader.ts during its async-to-sync edit. Current-source read and retry cleared collection. Preserve /tmp/native-p041-reader-tests-20261016.log; no P041 assertion failed in that attempt."
+  },
+  "limits": [
+    "No rubric amendment, native production measurement, recurring scorecard receipt or final shipment is claimed.",
+    "No elapsed-time fallback or mutable current-launch interval is treated as historical turn evidence.",
+    "Missing or overlapping historical boundaries, absent successful telemetry, unsupported absolute-path scope and truncated commands can leave rates unknown.",
+    "Positive follow-through is evidence of recorded action, not causation or attention.",
+    "Existing P037 saved hashes have drifted in shared push/hook modules; its checkpoint names files needing current requalification."
+  ],
+  "next": "Add NEW rubric criteria through the reviewed amendment route, preserving all existing BARs and D011. Verify the running current-build contains these instruments before binding, then measure an exact completed native window and record any low-rate tuning disposition."
+}

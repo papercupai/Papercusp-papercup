@@ -11,6 +11,7 @@
  * GitHub calls are injected so the resolver is unit-testable.
  */
 import { getGhAuthToken } from '../identity/gh-token';
+import { createTextCollector } from '../child-output';
 
 export interface RepoCoords {
   github_repository_id: number;
@@ -66,10 +67,12 @@ export async function gitOriginUrl(dir: string): Promise<string | null> {
     const child = spawn('git', ['-C', dir, 'remote', 'get-url', 'origin'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let out = '';
-    child.stdout.on('data', (d) => (out += d.toString()));
+    const out = createTextCollector(child.stdout);
     child.on('error', () => resolve(null));
-    child.on('close', (code) => resolve(code === 0 && out.trim() ? out.trim() : null));
+    child.on('close', (code) => {
+      const output = out.text().trim();
+      resolve(code === 0 && output ? output : null);
+    });
   });
 }
 

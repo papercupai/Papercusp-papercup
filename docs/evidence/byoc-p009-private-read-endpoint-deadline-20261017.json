@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "kind": "private-endpoint-deadline-correction",
+  "workItem": "WI-6554700010016649",
+  "parent": "WI-10000407",
+  "rootCause": "The palette endpoint's independent 30-second watchdog overwrote a governed checkpoint-reader timeout receipt with generic HTTP408. Governed tool dispatch already owns the tool deadline and parent cancellation.",
+  "correction": "Set the existing palette route timeoutSec to null, delegating timeout ownership to governed tool dispatch. The work_items:get read budget remains30000ms.",
+  "sourceFiles": [
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts",
+      "sha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.test.ts",
+      "sha256": "b94becd9496c3158efe255cf1b80543facf798b6f8de357ccd275cde8a440cb7"
+    }
+  ],
+  "mountedRoute": {
+    "redTestRunId": 21297419,
+    "redFailed": 2,
+    "correctedTestRunId": 21297437,
+    "corrected": { "passed": 17, "failed": 0, "skipped": 0 },
+    "distinguishingProcedure": "Mount the real endpoint invoke stack, return a keyed unavailable receipt after30001ms from the governed dispatcher, and advance fake timers through30010ms. Both direct work_items:get and tools:invoke must preserve HTTP200 plus the exact governed receipt. Prior source produced408; corrected source preserves200. The same route suite includes caller cancellation propagation."
+  },
+  "actualHttpBeforeCorrection": {
+    "runId": "20261017T001642Z-285375",
+    "receiptPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T001642Z-285375/phases/execute/read-deadline-request-1.json",
+    "status": 408,
+    "error": { "code": "timeout", "message": "route exceeded 30s" }
+  },
+  "actualHttpAfterCorrection": {
+    "runId": "20261017T004321Z-1701694",
+    "sourcePath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T004321Z-1701694/phases/prepare/source.json",
+    "receiptPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T004321Z-1701694/phases/execute/read-deadline-request-1.json",
+    "status": 200,
+    "elapsedMs": 30016.248496,
+    "requestedId": "WI-1",
+    "readReceipt": { "availability": "unavailable", "ok": false, "error": "timeout", "retryable": true, "phase": "read", "budgetMs": 30000 },
+    "recoveredReceiptPath": "/mnt/data/offload/verification-harness/isolated-integration/20261017T004321Z-1701694/phases/execute/read-deadline-request-2.json",
+    "recoveredStatus": 200,
+    "recoveredCounts": { "ok": 1, "failed": 0 },
+    "recoveredElapsedMs": 17.814026,
+    "wholeIntegrationVerdict": "fail",
+    "laterFailure": "Independent direct getWorkItemCheckpoint/getCarryNote readback hit PostgreSQL statement_timeout. Owned and audited separately on WI-6554700010016657."
+  },
+  "typecheck": { "namedFiles": 2, "namedFileErrors": 0, "exitCode": 0, "evidenceRef": "WI-6554700010016649 checkpoint ca5c6c30953e; native77808 drained" },
+  "limitations": [
+    "Endpoint correction is verified independently of the later fixture readback failure; this is not a whole-integration pass.",
+    "Source and tests were uncommitted when measured; git-sync owns committing and publication.",
+    "No full P009 matrix, deployed R003/R006 acceptance, source-producer revival, acceptance binding, or shipment is established."
+  ]
+}

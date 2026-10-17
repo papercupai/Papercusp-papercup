@@ -110,6 +110,15 @@ export {
   assertWorkspaceHostReplacement,
   projectWorkspaceHostVendorControlMetadata,
 } from "./workspace-host-domain";
+export { selectWorkspaceHostPoolPlacement } from "./workspace-host-pool";
+export type {
+  WorkspaceHostPoolAffinity,
+  WorkspaceHostPoolRequest,
+  WorkspaceHostPoolCandidate,
+  WorkspaceHostPoolRefusal,
+  WorkspaceHostPoolRejection,
+  WorkspaceHostPoolPlacement,
+} from "./workspace-host-pool";
 export {
   resolveWorkspaceHostHealthStatus,
   unmeasuredHealthCheck,

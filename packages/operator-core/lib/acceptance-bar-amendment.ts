@@ -332,12 +332,15 @@ export async function resolveAcceptanceBarApproval(
   const reviewerLines = post.body.split(/\r?\n/);
   const firstNonEmptyLine = reviewerLines.findIndex((line) => line.trim().length > 0);
   const firstLine = firstNonEmptyLine >= 0 ? reviewerLines[firstNonEmptyLine]!.trim() : '';
-  const previewPointer = /^approve thread-post:([1-9][0-9]*)$/.exec(firstLine);
+  // The first-line pointer is the approval signature. Reviewers sometimes put
+  // their explanation after it on the same line, so accept that suffix while
+  // still checking the full note for a conflicting preview pointer.
+  const previewPointer = /^approve thread-post:([1-9][0-9]*)(?:[ \t]+(.*))?$/.exec(firstLine);
   let receiptBody = post.body;
   if (previewPointer) {
-    const laterPointerIds = reviewerLines.slice(firstNonEmptyLine + 1).flatMap((line) =>
-      [...line.matchAll(/\bapprove thread-post:([1-9][0-9]*)\b/g)].map((match) => match[1]!),
-    );
+    const approvalNotes = [previewPointer[2] ?? '', ...reviewerLines.slice(firstNonEmptyLine + 1)].join('\n');
+    const laterPointerIds = [...approvalNotes.matchAll(/\bapprove thread-post:([1-9][0-9]*)\b/g)]
+      .map((match) => match[1]!);
     if (laterPointerIds.some((id) => id !== previewPointer[1])) {
       throw new Error('acceptance_bar_approval_ambiguous_preview_pointer');
     }

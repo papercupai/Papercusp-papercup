@@ -38,12 +38,13 @@
  */
 import {
   normalizeRepoPath,
+  recordFrozenRepairLegMeasurement,
   type FrozenCandidateRepairQueue,
   type FrozenRepairAdmission,
   type RepairSignatureEntry,
   type RepairSignatureKind,
 } from './frozen-candidate-repair-queue';
-import type { FrozenRepairLegState } from './repair-leg-lifecycle';
+import type { FrozenRepairLegState, RepairLegMeasurement } from './repair-leg-lifecycle';
 
 export const REPAIR_MANIFEST_SCHEMA_VERSION = 1 as const;
 /** Row cap — mirrors FROZEN_REPAIR_LEG_CAP's order of magnitude; the signature is already capped upstream. */
@@ -132,7 +133,11 @@ export function repairSignatureFingerprint(signature: readonly Pick<RepairSignat
  * escaping tokens are dropped. Missing a path costs a fixer one manual `paths:[…]`; inventing one
  * would put a wrong file on the admission allowlist, which is the failure D-008 exists to stop.
  */
-export function extractSubjectPathsFromLegOutput(output: string | undefined | null): string[] {
+export function extractSubjectPathsFromLegOutput(
+  output: string | undefined | null,
+  workspaceDir?: string,
+  knownWorkspaceDirs: readonly string[] = [],
+): string[] {
   if (!output) return [];
   const seen = new Set<string>();
   const out: string[] = [];
@@ -146,7 +151,7 @@ export function extractSubjectPathsFromLegOutput(output: string | undefined | nu
     const normalized = normalizeRepoPath(raw);
     if (!normalized || seen.has(normalized)) continue;
     seen.add(normalized);
-    out.push(normalized);
+    out.push(toRepoRelativeLegPath(normalized, workspaceDir, knownWorkspaceDirs));
   }
   return out;
 }
@@ -207,7 +212,46 @@ function resolveSubjectPaths(
     );
     return { paths: lifted, source: 'leg-output' };
   }
+  // Rebuilding a queue after an admission must not erase evidence already measured
+  // for this candidate. Never inherit paths from a different candidate, kind or workspace.
+  const previous = input.previous?.candidate === input.queue.candidate
+    ? input.previous.rows.find((row) => row.legId === entry.id && row.kind === entry.kind && row.workspace === entry.workspace)
+    : undefined;
+  if (previous) {
+    const paths = extractSubjectPathsFromLegOutput(previous.subjectPaths.join('\n'));
+    if (paths.length) return { paths, source: previous.subjectSource };
+  }
   return { paths: [], source: 'none' };
+}
+
+/** Attach structured paths at the same CAS boundary as the measured queue transition. */
+export function withMeasuredLegSubjects(
+  queue: FrozenCandidateRepairQueue,
+  measuredHead: string,
+  legs: readonly { id: string; status: string; subjectPaths?: readonly string[] }[],
+  nowMs: number,
+): FrozenCandidateRepairQueue {
+  if (queue.repairHead !== measuredHead) return queue;
+  // The initial full-gate red needs the same named lifecycle as a later hold tick.
+  // A skipped leg supplies neither a pass nor a failure.
+  const measurements = legs.flatMap<RepairLegMeasurement>((leg) =>
+    leg.status === 'failed' || leg.status === 'fail' ? [{ id: leg.id, status: 'fail' as const }]
+      : leg.status === 'passed' || leg.status === 'pass' ? [{ id: leg.id, status: 'pass' as const }]
+        : leg.status === 'errored' ? [{ id: leg.id, status: 'errored' as const }] : [],
+  );
+  if (measurements.length) queue = recordFrozenRepairLegMeasurement(queue, {
+    measurements, head: measuredHead, nowMs: Math.max(nowMs, queue.updatedAtMs + 1),
+  });
+  const subjectPaths: Record<string, string[]> = {};
+  for (const leg of legs) {
+    if (leg.status !== 'failed' && leg.status !== 'fail' && leg.status !== 'errored') continue;
+    const paths = extractSubjectPathsFromLegOutput((leg.subjectPaths ?? []).join('\n'))
+      .slice(0, REPAIR_MANIFEST_SUBJECT_PATH_CAP);
+    if (paths.length) subjectPaths[leg.id] = paths;
+  }
+  return Object.keys(subjectPaths).length
+    ? withRepairManifest(queue, nowMs, { subjectPaths }).queue
+    : queue;
 }
 
 function admissionCovering(
@@ -302,7 +346,7 @@ export interface WithRepairManifestResult<Q extends BuildRepairManifestInput['qu
   manifest: RepairManifest;
   /** The leg set differs from the previous manifest's (or there was none): the D-007 re-write trigger. */
   signatureChanged: boolean;
-  /** Any leg's status label moved (an admission landed, a leg went green). */
+  /** A leg's status or actionable subject paths moved. */
   statusChanged: boolean;
 }
 
@@ -323,7 +367,10 @@ export function withRepairManifest<Q extends BuildRepairManifestInput['queue'] &
     previous.signatureFingerprint !== manifest.signatureFingerprint;
   const prevLabels = new Map((previous?.rows ?? []).map((r) => [r.legId, r.statusLabel] as const));
   const statusChanged =
-    signatureChanged || manifest.rows.some((r) => prevLabels.get(r.legId) !== r.statusLabel);
+    signatureChanged || manifest.rows.some((r) =>
+      prevLabels.get(r.legId) !== r.statusLabel ||
+      JSON.stringify(previous?.rows.find((prior) => prior.legId === r.legId)?.subjectPaths) !== JSON.stringify(r.subjectPaths),
+    );
   return { queue: { ...queue, manifest }, manifest, signatureChanged, statusChanged };
 }
 

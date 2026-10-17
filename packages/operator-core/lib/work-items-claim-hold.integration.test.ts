@@ -80,14 +80,18 @@ async function seedIssue(
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, created_ts, updated_ts, payload)
     VALUES (${H}, ${id}, 'bug', ${`title ${id}`}, ${opts.status ?? 'open'}, ${opts.takenBy ?? null},
-       ${WS}, ${opts.createdTs ?? 0}, 0, ${opts.payload ? db.sql.json(opts.payload) : null})`;
+       ${WS}, ${opts.createdTs ?? 0}, 0, ${opts.payload ? db.sql.json(opts.payload as unknown as Parameters<typeof db.sql.json>[0]) : null})`;
 }
 
-async function seedFeature(id: string, opts: { createdTs?: number; status?: string } = {}) {
+async function seedFeature(
+  id: string,
+  opts: { createdTs?: number; status?: string; payload?: Record<string, unknown> | null } = {},
+) {
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
-      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts)
-    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'open'}, NULL, ${WS}, ${opts.createdTs ?? 0}, 0)`;
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, payload)
+    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'open'}, NULL, ${WS}, ${opts.createdTs ?? 0}, 0,
+       ${opts.payload ? db.sql.json(opts.payload as unknown as Parameters<typeof db.sql.json>[0]) : db.sql.json({})})`;
 }
 
 async function readPayload(id: string): Promise<Record<string, unknown> | null> {
@@ -378,6 +382,60 @@ describe('claimNextWorkItem SKIPS a claim-held issue (WI-2797)', () => {
     expect(claimed?.id).toBe('WI-held-direct');
     expect(claimed?.assignee).toBe('bee-direct');
   });
+
+  it.each(['issue', 'feature'] as const)(
+    'a pending-review admission cannot bypass a durable claim hold for %s rows',
+    async (family) => {
+      const id = family === 'issue' ? 'WI-held-review-admission' : 'F-held-review-admission';
+      const payload = {
+        _claimHold: true,
+        agentReview: {
+          status: 'pending',
+          submittedBy: 'bee-submitter',
+          ledgerIdeaId: id,
+          round: 1,
+        },
+      };
+      if (family === 'issue') await seedIssue(id, { payload });
+      else await seedFeature(id, { payload });
+
+      const {
+        acceptanceSourceRevision,
+        mintAgentReviewClaimAdmission,
+        readAgentReviewState,
+        verificationParties,
+      } = await import('./harness/improvements/agent-review-policy');
+      const review = readAgentReviewState(payload);
+      expect(review).not.toBeNull();
+      const source = await wi.getWorkItem(id, H);
+      expect(source).not.toBeNull();
+      const admission = mintAgentReviewClaimAdmission({
+        itemId: id,
+        reviewer: 'bee-reviewer',
+        harnessSlug: H,
+        review: review!,
+        source: source!,
+        parties: verificationParties({ payload }),
+      });
+      expect(admission).not.toBeNull();
+
+      expect(await wi.claimWorkItem(id, 'bee-reviewer', {
+        harness: H,
+        agentReviewAdmission: admission!,
+      })).toBeNull();
+
+      // Prove the exact reviewer capability otherwise admits this same row.
+      await wi.setWorkItemClaimHold(id, false, { harness: H });
+      const claimed = await wi.claimWorkItem(id, 'bee-reviewer', {
+        harness: H,
+        agentReviewAdmission: admission!,
+      });
+      expect(claimed?.id).toBe(id);
+      expect(readAgentReviewState(claimed!.payload)).toMatchObject({
+        reviewedSourceRevision: acceptanceSourceRevision(source!),
+      });
+    },
+  );
 
   it('the FEATURE tier likewise skips a held feature and serves the unheld one (P-006 floor)', async () => {
     await seedFeature('F-held', { createdTs: 100 });

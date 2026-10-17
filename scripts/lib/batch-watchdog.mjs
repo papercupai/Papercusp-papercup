@@ -262,7 +262,7 @@ export function createProgressAwareWatchdog({
  * wall-clock to have essentially cleared the configured window is what makes
  * the attribution positive rather than a guess.
  *
- * @param {{ signal: string | null, status: number | null, elapsedMs: number }} result
+ * @param {{ signal: string | null, status: number | null, elapsedMs?: number }} result
  * @param {{ killSignal: string, timeoutMs: number, slackMs?: number }} opts
  * @returns {boolean}
  */
@@ -284,8 +284,8 @@ export function isWatchdogTimeout(result, { killSignal, timeoutMs, slackMs = 200
  * after the watchdog fired. The group kill makes the watchdog a real bound on
  * the task tree rather than merely a signal sent to its shallowest process.
  *
- * @param {{ pid?: number, kill?: (signal: string) => unknown } | null | undefined} child
- * @param {string} signal
+ * @param {Pick<import('node:child_process').ChildProcess, 'pid' | 'kill'> | null | undefined} child
+ * @param {NodeJS.Signals} signal
  * @returns {'group' | 'child' | 'gone'}
  */
 export function killSpawnedProcessTree(child, signal) {
@@ -367,6 +367,25 @@ export function parseBatchProgress(output, { totalFiles } = {}) {
     lastDurationMs,
     completionRows,
   };
+}
+
+/**
+ * Return only Vitest's completed PASS rows. The `❯` row is a completed failure;
+ * it must remain in a resumed task so a partial checkpoint can never hide a red.
+ * This is deliberately weaker than a pass proof: it only names files that may be
+ * excluded from the next bounded attempt when the source identity is unchanged.
+ *
+ * @param {string | null | undefined} output
+ * @returns {string[]}
+ */
+export function parsePassingFilePaths(output) {
+  if (typeof output !== "string") return [];
+  const paths = new Set();
+  for (const line of output.replace(ANSI_RE, "").split(/\r?\n/)) {
+    const match = /^\s*✓\s+(\S+\.(?:test|spec)\.[cm]?[jt]sx?)\s+\([^)]*\)\s+(?:\d+(?:\.\d+)?)ms\s*$/.exec(line);
+    if (match) paths.add(match[1]);
+  }
+  return [...paths].sort();
 }
 
 /**

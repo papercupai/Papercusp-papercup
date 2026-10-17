@@ -4,6 +4,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getSessionUserOrDefault } from '../../auth';
 import { authorizePersonalAccess } from '../../personal-vault/authorization';
 import { parseSocialPostRef, replyToCanonicalSocialPost } from '../../capability-verbs/social';
+import { readyProviderRegistry } from '../../integrations/provider-registry';
 import { DisclosureRefused, disclosureRefusalData } from '../../personal-vault/disclosure-ledger';
 import { disclosureSubject } from '../_disclosure-subject';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
@@ -42,7 +43,7 @@ export default defineTool({
     if (!workspaceId || workspaceId === '*') throw new Error('social_reply_workspace_required');
     // Parse first so an unknown or unverified platform is refused with the
     // registry's own reason before any credential work happens.
-    const ref = parseSocialPostRef(args.postId);
+    const ref = parseSocialPostRef(args.postId, await readyProviderRegistry());
     const user = await getSessionUserOrDefault();
     const auth = await authorizePersonalAccess(ctx.tx!, ctx, workspaceId, user.id, [
       `personal:${ref.platform}`,

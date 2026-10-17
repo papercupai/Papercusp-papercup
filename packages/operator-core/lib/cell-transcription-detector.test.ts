@@ -211,6 +211,34 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     expect(hits[0]!.value).toBe('abc1234');
   });
 
+  it('does not classify a SHA selected for source-bound acceptance as deployed beside staging prose', async () => {
+    const text =
+      'Its last commit is f8d6ba4fd180 at 2026-10-12T23:43:10Z (+2/-2). ' +
+      'You can pin your source-bound acceptance to f8d6ba4f or any later staging commit.';
+    expect(detectCellTranscriptions(text, { resolvesToCommit: () => true })).toEqual([]);
+
+    const requested: string[] = [];
+    const hint = await cellTranscriptionHintResolvingCommits(text, async (token) => {
+      requested.push(token);
+      return true;
+    });
+    expect(requested).toEqual([]);
+    expect(hint).toBeNull();
+  });
+
+  it('does not classify a file last-commit SHA beside unrelated staging state', () => {
+    const text = 'The file last commit is f8d6ba4f; staging remains ahead of main.';
+    expect(detectCellTranscriptions(text, { resolvesToCommit: () => true })).toEqual([]);
+  });
+
+  it('still flags a last-commit SHA when it is explicitly described as deployed', () => {
+    const hits = detectCellTranscriptions('The file last commit abc1234 is deployed to :3070', {
+      resolvesToCommit: () => true,
+    });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.value).toBe('abc1234');
+  });
+
   it('still detects a release commit when it is not labeled as a lock or lease id', () => {
     const hits = detectCellTranscriptions('release commit cac76150 is live on :3070');
     expect(hits).toHaveLength(1);

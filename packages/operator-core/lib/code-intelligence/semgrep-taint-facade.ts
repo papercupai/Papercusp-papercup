@@ -7,7 +7,9 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { promisify } from 'node:util';
 import pinnedManifest from './semgrep-runtime-manifest.json';
 
-const execute = promisify(execFile);
+let executeMemo: typeof execFile.__promisify__ | null = null;
+const execute = ((...args: unknown[]) =>
+  Reflect.apply((executeMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 export const SEMGREP_VERSION = '1.180.0';
 export const SEMGREP_CORE_SHA256 = 'cd95f3b3838b4830b387af722f9d65831854a415cfee124a8841158a5eb12ff2';
 export const SEMGREP_WHEEL_SHA256 = '16db2e2706ab814a975eeec25debfad49abba846b7c513d88e041447152f8447';

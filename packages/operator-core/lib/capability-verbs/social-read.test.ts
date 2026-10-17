@@ -11,7 +11,9 @@
  * tree to prove it is unsafe here (git-sync commits the whole tree on a timer).
  * The controls are the in-file tier of `scripts/mutation-probe.sh`.
  */
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { installDefaultSocialPackages } from './social-provider.fixture';
+import { providerRegistry } from '../integrations/provider-registry';
 import {
   collectSocialHits,
   mintSocialPostRef,
@@ -24,8 +26,11 @@ import {
 } from './social-read';
 import type { PersonalSearchResult } from '../personal-vault/types';
 import { formatSocialPostRef, parseSocialPostRef } from './social';
-import { listSocialPlatforms } from '../external-triggers/social/platform-registry';
-import { anUnverifiedPlatformId } from '../external-triggers/social/platform-exemplars.fixture';
+const anUnverifiedPlatformId = () => 'unverified-social';
+const listSocialPlatforms = () => providerRegistry().forDatatype('social-post').map(({ descriptor: d }) => ({
+  id: d.id, verifiedAt: d.verification?.verifiedAt ?? null, blockedOn: d.verification?.blockedOn,
+}));
+beforeEach(installDefaultSocialPackages);
 
 describe('social vault scopes are derived from the registry', () => {
   it('covers every registered platform, with no hand-written list to drift', () => {
@@ -219,7 +224,7 @@ describe('socialWriteAvailability — read verified, write refused, told at read
     // DERIVED, not named. This exemplar moved bluesky -> linkedin -> tiktok as
     // each got verified; pinning it to the PROPERTY stops that recurring churn
     // (platform-exemplars.fixture).
-    const availability = socialWriteAvailability(anUnverifiedPlatformId(), 'reply');
+    const availability = socialWriteAvailability(anUnverifiedPlatformId() as never, 'reply');
     expect(availability.allowed).toBe(false);
     expect(availability.reason).toBe('unverified');
   });
@@ -243,7 +248,7 @@ describe('socialWriteAvailability — read verified, write refused, told at read
 
   it('never throws for a registered platform — it is a report, not a gate', () => {
     for (const row of listSocialPlatforms()) {
-      expect(() => socialWriteAvailability(row.id, 'reply')).not.toThrow();
+      expect(() => socialWriteAvailability(row.id as never, 'reply')).not.toThrow();
     }
   });
 
@@ -304,7 +309,7 @@ describe('searchSocialPosts — scoping and minting under a real grant shape', (
         userId,
         query: 'anything',
         grantedScopes: ['personal:mail', 'personal:calendar'],
-      }),
+      }, { registry: providerRegistry() }),
     ).rejects.toBeInstanceOf(SocialSearchNotGranted);
   });
 
@@ -374,7 +379,7 @@ describe('searchSocialPosts — scoping and minting under a real grant shape', (
         query: 'anything',
         grantedScopes: ['personal:bluesky'],
         platforms: ['mastodon'],
-      }),
+      }, { registry: providerRegistry() }),
     ).rejects.toBeInstanceOf(SocialSearchNotGranted);
   });
 });

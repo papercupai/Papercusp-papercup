@@ -201,6 +201,7 @@ import {
   applyCompactTier,
   filterListingsByAllowlist,
   getSessionSurface,
+  restoreSessionTools,
   activateSessionTools,
   rememberSessionToolRegistryRevision,
   sessionToolRegistryRevisionState,
@@ -320,6 +321,33 @@ function resultDoorPreservePaths(
 ): readonly string[] | undefined {
   const paths = [...new Set([...(directPaths ?? []), ...(nestedResultDoorPreservePaths(result) ?? [])])];
   return paths.length > 0 ? paths : undefined;
+}
+
+/**
+ * `tools:invoke` keeps a target projection inside its dispatch envelope. The
+ * result door runs after the wrapper returns, so recover those paths from the
+ * original invocation args as well as the nested result metadata.
+ */
+// Exported for tests; not part of the route's public surface.
+// eslint-disable-next-line @typescript-eslint/naming-convention
+export function resultDoorPreservePathsForDispatch(
+  result: McpCallResult,
+  toolName: string,
+  dispatchArgs: unknown,
+  directPaths: readonly string[] | undefined,
+): readonly string[] | undefined {
+  let nestedPaths: readonly string[] | undefined;
+  if (toolName === 'tools:invoke' && dispatchArgs && typeof dispatchArgs === 'object' && !Array.isArray(dispatchArgs)) {
+    const nestedArgs = decodeToolsInvokeArgs((dispatchArgs as Record<string, unknown>).args);
+    if (nestedArgs && typeof nestedArgs === 'object' && !Array.isArray(nestedArgs)) {
+      const rawProjection = (nestedArgs as Record<string, unknown>)[PROJECTION_ARG];
+      if (rawProjection !== undefined) {
+        const parsed = parseProjection(rawProjection);
+        if (parsed.ok && parsed.spec) nestedPaths = parsed.spec.pick;
+      }
+    }
+  }
+  return resultDoorPreservePaths(result, [...(directPaths ?? []), ...(nestedPaths ?? [])]);
 }
 
 function carryNestedResultDoorSkip(result: McpCallResult, reason: ResultDoorSkipReason | undefined): McpCallResult {
@@ -2691,6 +2719,31 @@ export async function resolveMcpTargetAfterPluginHostWarm(
   return resolve(toolName);
 }
 
+type McpProgressNotification = { method: string; params: Record<string, unknown> };
+
+function nativeMcpProgressBridge(
+  progressToken: string | number | undefined,
+  sendNotification: ((notification: McpProgressNotification) => Promise<void>) | undefined,
+): { progressToken?: string | number; onProgress?: (value: unknown) => void } {
+  if (progressToken === undefined || !sendNotification) return {};
+  return {
+    progressToken,
+    onProgress: (value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+      const notification = value as Partial<McpProgressNotification>;
+      if (typeof notification.method !== 'string' || !notification.params || typeof notification.params !== 'object' ||
+          Array.isArray(notification.params)) return;
+      try {
+        void sendNotification(notification as McpProgressNotification).catch((error) => {
+          console.warn(`[mcp-tool] relayed sendNotification(${notification.method}) failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      } catch (error) {
+        console.warn(`[mcp-tool] relayed sendNotification(${notification.method}) failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    },
+  };
+}
+
 async function buildMcpToolContext(
   spawn: BuiltSpawnContext,
   progressToken: string | number | undefined,
@@ -2953,14 +3006,18 @@ async function buildMcpToolContext(
         );
         return dispatchProjectedToolToMcp(target, canonicalName, dispatchToolArgs, materializationCtx, PROJECTED_DEPS);
       })) as McpCallResult;
+    const progressBridge = nativeMcpProgressBridge(progressToken, sendNotification);
     const dispatched = await dispatchNestedWithMcpDeadline(canonicalName, target.timeoutSec, () =>
       nativeOwnerAddress ? runLocalTarget() : runNativeMcpTargetOnOwner({
         toolName: canonicalName, args: dispatchToolArgs, spawn: spawnCtx,
         requestedFormat: baseCtx.requestedFormat, requestedStructured: baseCtx.requestedStructured,
         requestedDelta: baseCtx.requestedDelta, idempotencyKey: baseCtx.idempotencyKey,
+        ...(progressBridge.progressToken !== undefined ? { progressToken: progressBridge.progressToken } : {}),
         fullSource: projectionNeedsFullSource, structuredSource: projectionSpec?.pick !== undefined,
         sourceProjection: projectionSpec, indirect: true,
-      }, runLocalTarget, effectiveMcpDeadlineMs(target.timeoutSec)),
+      }, runLocalTarget, effectiveMcpDeadlineMs(target.timeoutSec), progressBridge.onProgress),
+      undefined,
+      baseCtx.requestOrigin?.mcpRequestTraceId,
     );
     const freeFormProjected = projectionSpec
       ? applyResultProjection(dispatched, projectionSpec, { toolName: canonicalName, effect: target.effect })
@@ -3344,6 +3401,12 @@ async function resolveVisibleToolListings(extra: unknown): Promise<
   // there's no seed at all. Keyed by the su session identity (uiClientId).
   const seed = parseToolsAllowlist(urlFromExtra(extra)?.searchParams.get('tools'));
   const sessionKey = spawnRes.kind === 'ok' ? spawnRes.ctx.uiClientId : null;
+  if (!identityListings && spawnRes.kind === 'ok' && seed && sessionKey) {
+    await restoreSessionTools({ sessionKey, seed,
+      ownerId: resolveAgentIdentity(spawnRes.ctx).ownerId,
+      workspaceId: spawnRes.ctx.workspaceId,
+    });
+  }
   const allow = identityListings ? null : getSessionSurface(sessionKey, seed);
   // `?tools_compact=` is the SECOND axis of the same decision (deterministic-
   // tool-definition-delivery-2026-09-21): `?tools=` says WHICH tools are
@@ -3650,14 +3713,40 @@ interface NativeMcpTargetRequest {
   toolName: string;
   args: Record<string, unknown> | undefined;
   spawn: BuiltSpawnContext;
+  /** The serving generation observed before a request crosses the owner RPC. */
+  servingGeneration?: string;
   requestedFormat?: string;
   requestedStructured?: boolean;
   requestedDelta?: string;
   idempotencyKey?: string;
+  progressToken?: string | number;
   fullSource: boolean;
   structuredSource: boolean;
   sourceProjection?: ProjectionSpec | null;
   indirect: boolean;
+}
+
+async function currentNativeOwnerServingGeneration(): Promise<string> {
+  const generation = await readServingGeneration();
+  if (generation.state !== 'known') {
+    throw new Error(
+      `serving_generation_unknown: ${generation.reason}; native owner dispatch is blocked before target execution`,
+    );
+  }
+  return generation.revision;
+}
+
+async function assertNativeOwnerServingGeneration(declared: unknown): Promise<void> {
+  if (typeof declared !== 'string' || !declared.trim()) {
+    throw new Error('native_tool_owner_missing_generation');
+  }
+  const current = await currentNativeOwnerServingGeneration();
+  if (declared !== current) {
+    throw new Error(
+      `stale_tool_contract: native owner request declares serving generation ${declared}, but the owner now serves ${current}; ` +
+      'refresh tools/list before retrying tools/call',
+    );
+  }
 }
 
 function nativeMcpToolAddress(spawn: BuiltSpawnContext): SuNativeToolAddress | null {
@@ -3691,6 +3780,7 @@ export async function runNativeMcpTargetOnOwner(
   request: NativeMcpTargetRequest,
   local: () => Promise<McpCallResult>,
   timeoutMs: number,
+  onProgress?: (value: unknown) => void,
 ): Promise<McpCallResult> {
   const address = nativeMcpToolAddress(request.spawn);
   if (!address) return local();
@@ -3698,8 +3788,16 @@ export async function runNativeMcpTargetOnOwner(
   // schema-checked credential digest, not a saved grant; keep its current-key
   // validation in admissionReplayContext on the owner. Normalize lazily so an
   // owner-local call can keep its principal in-process without serializing it.
-  const ownerRequest = () => ({ ...request, spawn: normalizeNativeMcpOwnerSpawn(request.spawn) });
-  return runOnSuNativeToolOwner(address, ownerRequest, local, timeoutMs);
+  // Keep this read lazy: owner-local requests remain on the fast path and do
+  // not need to materialize a cross-process compatibility proof. A forwarded
+  // request carries the caller's current generation, which the owner checks
+  // again against its own process and migration frontier before dispatch.
+  const ownerRequest = async () => ({
+    ...request,
+    servingGeneration: await currentNativeOwnerServingGeneration(),
+    spawn: normalizeNativeMcpOwnerSpawn(request.spawn),
+  });
+  return runOnSuNativeToolOwner(address, ownerRequest, local, timeoutMs, onProgress);
 }
 
 export async function recordMcpPreflightFailure(
@@ -3735,6 +3833,7 @@ export async function recordMcpPreflightFailure(
 export async function dispatchNativeMcpTargetOnOwner(
   body: unknown,
   address: SuNativeToolAddress,
+  source: { progress?: (value: unknown) => void } = {},
 ): Promise<McpCallResult> {
   const request = body as NativeMcpTargetRequest | null;
   if (!request || typeof request.toolName !== 'string' || !request.spawn ||
@@ -3745,6 +3844,8 @@ export async function dispatchNativeMcpTargetOnOwner(
       (request.requestedFormat !== undefined && typeof request.requestedFormat !== 'string') ||
       (request.requestedDelta !== undefined && typeof request.requestedDelta !== 'string') ||
       (request.requestedStructured !== undefined && typeof request.requestedStructured !== 'boolean') ||
+      (request.progressToken !== undefined && typeof request.progressToken !== 'string' &&
+        (typeof request.progressToken !== 'number' || !Number.isFinite(request.progressToken))) ||
       (request.idempotencyKey !== undefined && validIdempotencyKey(request.idempotencyKey) !== request.idempotencyKey))
     throw new Error('native_tool_owner_invalid_request');
   const ownerRequest = { ...request, spawn: normalizeNativeMcpOwnerSpawn(request.spawn) };
@@ -3752,13 +3853,17 @@ export async function dispatchNativeMcpTargetOnOwner(
   if (!derived || derived.workspaceId !== address.workspaceId || derived.advSessionId !== address.advSessionId ||
       derived.ownerId !== address.ownerId || derived.nativeSessionIdFingerprint !== address.nativeSessionIdFingerprint)
     throw new Error('native_tool_owner_request_address_mismatch');
+  await assertNativeOwnerServingGeneration(request.servingGeneration);
   const projection = ownerRequest.sourceProjection ? parseProjection(ownerRequest.sourceProjection) : null;
   if (projection && !projection.ok) throw new Error('native_tool_owner_invalid_projection');
   const target = isPluginNamespacedToolName(ownerRequest.toolName)
     ? await resolveMcpTargetAfterPluginHostWarm(ownerRequest.toolName) : resolveMcpName(ownerRequest.toolName);
   if (!target?.expose?.mcp || target.expose.mcp.name !== ownerRequest.toolName)
     throw new Error('native_tool_owner_target_unavailable');
-  const base = await buildMcpToolContext(ownerRequest.spawn, undefined, undefined, target.pluginName,
+  const sendNotification = source.progress
+    ? async (notification: McpProgressNotification) => { source.progress!(notification); }
+    : undefined;
+  const base = await buildMcpToolContext(ownerRequest.spawn, ownerRequest.progressToken, sendNotification, target.pluginName,
     ownerRequest.requestedFormat, ownerRequest.requestedStructured, ownerRequest.requestedDelta, ownerRequest.idempotencyKey,
     undefined, address);
   const startedAt = Date.now();
@@ -4009,7 +4114,7 @@ export function registerMcpHost(server: McpServer): void {
             Math.round(performance.now() - activePreDispatchPhaseStartedAt),
           );
         }
-        const measuredMs = Object.values(phases).reduce((sum, elapsedMs) => sum + (elapsedMs ?? 0), 0);
+        const measuredMs = Object.values(phases).reduce<number>((sum, elapsedMs) => sum + (elapsedMs ?? 0), 0);
         const elapsedMs = Math.max(0, performance.now() - requestStartedAtMonotonic);
         return {
           ...phases,
@@ -4803,7 +4908,7 @@ export function registerMcpHost(server: McpServer): void {
               // outcomes were already per-result-doored before persistence,
               // but this request must consume the CURRENT aggregate cohort or
               // retry fan-out can bypass the one-budget invariant entirely.
-              const preservePaths = resultDoorPreservePaths(storedResult, projectionSpec?.pick);
+              const preservePaths = resultDoorPreservePathsForDispatch(storedResult, toolName, dispatchArgs, projectionSpec?.pick);
               const replayedResult = projected.skipResultDoor
                 ? storedResult
               : await applyResultDoorAsync(storedResult, {
@@ -5043,6 +5148,7 @@ export function registerMcpHost(server: McpServer): void {
                 explicitDelta,
                 itemKeyField: projected.delta?.itemKeyField,
                 runRaw: async (autoRequestedDelta, overrideDelta = true) => {
+                  const progressBridge = nativeMcpProgressBridge(progressToken, sendNotification);
                   const deltaCtx = overrideDelta ? { ...ctx, requestedDelta: autoRequestedDelta } : ctx;
                   const materializationCtx = projectionMaterializationContext(
                     deltaCtx,
@@ -5066,6 +5172,7 @@ export function registerMcpHost(server: McpServer): void {
                       idempotencyKey: idempotencyKey ?? undefined, fullSource: projectionNeedsFullSource,
                       structuredSource: projectionSpec?.pick !== undefined, sourceProjection: projectionSpec,
                       indirect: false,
+                      ...(progressBridge.progressToken !== undefined ? { progressToken: progressBridge.progressToken } : {}),
                     }, () => dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, materializationCtx, async localCtx => {
                       if (raced.deadlineFired || (deadlineAt !== null && Date.now() >= deadlineAt)) {
                         if (!raced.deadlineFired) {
@@ -5082,7 +5189,7 @@ export function registerMcpHost(server: McpServer): void {
                       dispatchStarted = true;
                       markInnerDispatchStarted(deadlineMs);
                       return dispatchProjectedToolToMcp(projected, toolName, dispatchArgs, localCtx, PROJECTED_DEPS) as Promise<McpCallResult>;
-                    }), deadlineMs);
+                    }), deadlineMs, progressBridge.onProgress);
                   }
                   return runLocalTarget();
                 },
@@ -5099,7 +5206,7 @@ export function registerMcpHost(server: McpServer): void {
             // door's fixed policy rather than racing it.
             const viewedResult = namedView ? applyNamedViewToResult(projectedResult, namedView) : projectedResult;
             const doorInput = stripImplicitProjectionFullRequest(viewedResult, projectionNeedsFullSource, ctx);
-            const preservePaths = resultDoorPreservePaths(doorInput, projectionSpec?.pick);
+            const preservePaths = resultDoorPreservePathsForDispatch(doorInput, toolName, dispatchArgs, projectionSpec?.pick);
             // EI-19386201256023240: a tool whose documented/near-exclusive
             // caller is a programmatic client (a shell hook `json.loads`-ing
             // the raw body — e.g. activity:report's hook_bundle fold — see
@@ -6341,8 +6448,16 @@ export function dispatchNestedWithMcpDeadline(
   toolTimeoutSec: number | null | undefined,
   run: () => Promise<McpCallResult>,
   baseDeadlineMs: number = MCP_DEADLINE_MS,
+  requestTraceId?: string | null,
 ): Promise<McpCallResult> {
   const deadlineMs = effectiveMcpDeadlineMs(toolTimeoutSec, baseDeadlineMs);
+  const timeoutReceipt = requestTraceId
+    ? {
+        status: 'recovery-incomplete' as const,
+        reason: `nested tool "${toolName}" exceeded ${deadlineMs}ms before the target settled`,
+        mcpRequestTraceId: requestTraceId,
+      }
+    : undefined;
   return raceDeadline(
     deadlineMs,
     run,
@@ -6355,9 +6470,10 @@ export function dispatchNestedWithMcpDeadline(
             `request_timeout: nested tool "${toolName}" exceeded ${deadlineMs}ms via tools:invoke ` +
             `(commit status is UNKNOWN: the target may still be running server-side. This nested call has no ` +
             `independent idempotent replay. Re-read the target's state before retrying; a blind retry may ` +
-            `repeat a mutation.`,
+            `repeat a mutation.${requestTraceId ? ` request trace id: ${requestTraceId}.` : ''}`,
         },
       ],
+      ...(timeoutReceipt ? { _meta: { abortCompletionReceipt: timeoutReceipt } } : {}),
     }),
   );
 }

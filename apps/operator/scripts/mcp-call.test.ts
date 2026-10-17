@@ -9,8 +9,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
+  admissionRetryDelayMs,
   MCP_CALL_TOOL_NOT_OK_EXIT,
   MCP_CALL_PROJECTED_RESULT_EXIT,
+  isRetryableAdmissionShed,
   projectedResultReason,
   toolResultNotOkReason,
   buildMcpCallParams,
@@ -719,7 +721,9 @@ async function withMcpCallFetchFixture<T>(run: (fixture: McpCallFetchFixture) =>
   await mkdir(isolatedHome, { recursive: true });
   const preloadSource = [
     "import { appendFileSync } from 'node:fs';",
+    'let fetchCount = 0;',
     'globalThis.fetch = async (input, init = {}) => {',
+    '  fetchCount += 1;',
     '  const request = {',
     '    url: String(input),',
     "    authorization: new Headers(init.headers).get('authorization'),",
@@ -737,6 +741,8 @@ async function withMcpCallFetchFixture<T>(run: (fixture: McpCallFetchFixture) =>
     "    result = { isError: true, content: [{ type: 'text', text: 'request_rejected: authorization_denied' }] };",
     "  } else if (mode === 'foreign-native' && new URL(request.url).searchParams.has('native_session')) {",
     "    result = { isError: true, content: [{ type: 'text', text: 'request_rejected: superuser_foreign_native_session' }] };",
+    "  } else if (mode === 'admission-shed' && fetchCount < 3) {",
+    "    return new Response(JSON.stringify({ jsonrpc: '2.0', id: request.body.id, error: { code: -32000, message: 'operator MCP admission is saturated — request shed, retry shortly', data: { retryable: true, reason: 'loop_pressure_critical' } } }), { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '0' } });",
     '  } else {',
     "    result = { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };",
     '  }',
@@ -850,6 +856,23 @@ function runMcpCall(port: number, home: string, extraArgs: string[] = []): Promi
 }
 
 describe('mcp-call actual CLI token and endpoint recovery', () => {
+  it('retries a pre-dispatch admission shed and preserves the original request', async () => {
+    await withMcpCallFetchFixture(async (fixture) => {
+      await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'isolated-valid\n');
+      const run = await runMcpCallWithFetchFixture(fixture, ['--port', '3170'], {
+        MCP_CALL_FETCH_MODE: 'admission-shed',
+      });
+      const requests = await readMcpCallFetchLog(fixture.logPath);
+
+      expect(run.code, run.stderr).toBe(0);
+      expect(JSON.parse(run.stdout)).toEqual({ ok: true });
+      expect(requests).toHaveLength(3);
+      expect(requests[0].body).toEqual(requests[1].body);
+      expect(requests[1].body).toEqual(requests[2].body);
+      expect(run.stderr).toContain('rejected the request before dispatch');
+    });
+  });
+
   it('retries an inherited foreign Codex session without changing the client or call', async () => {
     await withMcpCallFetchFixture(async (fixture) => {
       await writeFile(join(fixture.isolatedHome, 'superuser-token'), 'test-token\n');
@@ -1003,6 +1026,24 @@ describe('mcp-call ok:false exit status (EI-24654733539966460)', () => {
     const run = await withFakeMcpEndpoint({ ok: true, id: 'EI-1' }, runMcpCall);
     expect(run.code, run.stderr).toBe(0);
     expect(JSON.parse(run.stdout)).toEqual({ ok: true, id: 'EI-1' });
+  });
+});
+
+describe('mcp-call admission-shed retry classification', () => {
+  it('retries only the operator pre-dispatch reasons', () => {
+    for (const reason of ['loop_pressure_critical', 'operator_admission_capacity']) {
+      expect(isRetryableAdmissionShed({ code: -32000, data: { retryable: true, reason } }, 429)).toBe(true);
+    }
+    expect(isRetryableAdmissionShed({ code: -32000, data: { retryable: true, reason: 'provider_rate_limit' } }, 429)).toBe(false);
+    expect(isRetryableAdmissionShed({ code: -32000, data: { retryable: false, reason: 'loop_pressure_critical' } }, 429)).toBe(false);
+    expect(isRetryableAdmissionShed({ code: -32000, data: { retryable: true, reason: 'loop_pressure_critical' } }, 200)).toBe(true);
+  });
+
+  it('honors a bounded Retry-After hint', () => {
+    const response = new Response('', { headers: { 'retry-after': '2' } });
+    expect(admissionRetryDelayMs(response, { data: { retryAfterSec: 9 } })).toBe(2_000);
+    expect(admissionRetryDelayMs(new Response(''), {})).toBe(1_000);
+    expect(admissionRetryDelayMs(new Response('', { headers: { 'retry-after': '999' } }), {})).toBe(10_000);
   });
 });
 

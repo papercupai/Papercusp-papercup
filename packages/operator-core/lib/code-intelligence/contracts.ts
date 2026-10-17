@@ -27,6 +27,8 @@ export type CodeIntelBackend =
   | 'ast-grep'
   | 'repomix'
   | 'code2prompt'
+  /** Hash-corroborated positive syntax matches from the maintained source snapshot. */
+  | 'first-party-snapshot'
   /** The vendored TypeScript's own LanguageService, in-process (first-party-callers.ts, D-026). */
   | 'typescript-service';
 
@@ -70,6 +72,7 @@ export const LINE_INDEX_BASE: Readonly<Record<CodeIntelBackend, 0 | 1>> = Object
   'ast-grep': 0,
   repomix: 1,
   code2prompt: 1,
+  'first-party-snapshot': 1,
   // getLineAndCharacterOfPosition is zero-based; first-party-callers.ts adds 1 itself.
   'typescript-service': 0,
 });

@@ -2699,6 +2699,7 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
     const producer = await import('../system-health/retrieval-degradation-watchdog');
     const watchdog = await import('../system-health/degradation-watchdog');
     const { summarizeFallbackWindow } = await import('./fallback-observations');
+    const { expect } = await import('vitest');
     const observations: Array<{ reason: string; samples: number; eligible: number; applied: number }> = [];
     const open = new Set<string>();
     const openedKeys: string[] = [];
@@ -2715,17 +2716,32 @@ export const RAIL_MIGRATION_CASES: RailMigrationCase[] = [...HOST_STARTUP_MIGRAT
       resolve: async ({ conditionKey }) => { open.delete(conditionKey); resolvedKeys.push(conditionKey); return true; },
       prune: async () => 0,
     });
-    const leg = { status: 'ran', candidates: 5, blocked: null };
-    const legs = { lexical: leg, semantic: { ...leg, status: 'errored', candidates: 0, blocked: 'timeout' }, degraded: true } as import('@papercusp/search').SearchLegs;
+    const leg = {
+      status: 'ran', candidates: 5, floored: 0, stage2Added: 0, callsRun: 0, callsFailed: 0,
+      blocked: null, failures: [],
+    };
+    const legs = {
+      lexical: leg, semantic: { ...leg, status: 'errored', candidates: 0, blocked: 'timeout' },
+      degraded: true, warning: 'semantic leg blocked',
+    } as import('@papercusp/search').SearchLegs;
+    const partialSourceFailureLegs = {
+      lexical: leg,
+      semantic: { ...leg, failures: [{ source: 'semantic-source', ranker: 'semantic', error: 'vector query timed out' }], callsFailed: 1 },
+      degraded: true,
+      warning: '1 semantic source call(s) failed',
+    } as import('@papercusp/search').SearchLegs;
     try {
       // Executes the actual startup wiring and existing search recorder, not source assertions.
       producer.startRetrievalDegradationWatchdog({ observe });
+      search.observeLegs(partialSourceFailureLegs);
+      expect(observations).toContainEqual({ reason: 'semantic-source-failed', samples: 1, eligible: 1, applied: 0 });
       for (let i = 0; i < 20; i++) search.observeLegs(legs);
       await sweep();
       // Executes the seed's old owner-only escalation site through its actual sweep.
       await producer.runRetrievalDegradationSweepOnce({ flagEnabled: async () => true, observe,
         readHealth: () => ({ windowMs: 60_000, searches: 100, degraded: 90, degradedRate: 0.9,
-          semanticBlocked: 90, lexicalBlocked: 0, semanticEmpty: 0, lexicalEmpty: 0,
+          semanticBlocked: 90, lexicalBlocked: 0, semanticSourceFailed: 0, lexicalSourceFailed: 0,
+          semanticEmpty: 0, lexicalEmpty: 0,
           oldestSampleMs: 1, newestSampleMs: 2, truncatedByCapacity: false }) });
       await sweep();
       for (let i = 0; i < 400; i++) search.observeLegs({ ...legs, semantic: leg, degraded: false } as import('@papercusp/search').SearchLegs);
@@ -4293,11 +4309,14 @@ RAIL_MIGRATION_CASES.push({
     const host = await import('../system-health/retrieval-degradation-watchdog');
     const { expect } = await import('vitest');
     const observations: Array<{ eligible: number; applied: number; reason: string }> = [];
-    const leg = { status: 'ran', candidates: 5, blocked: null };
+    const leg = {
+      status: 'ran', candidates: 5, floored: 0, stage2Added: 0, callsRun: 0, callsFailed: 0,
+      blocked: null, failures: [],
+    };
     try {
       host.startRetrievalDegradationWatchdog({ observe: (_mechanism, decision) => { observations.push(decision); return true; } });
-      search.observeLegs({ lexical: leg, semantic: { ...leg, candidates: 0, blocked: 'timeout' }, degraded: true } as import('@papercusp/search').SearchLegs);
-      search.observeLegs({ lexical: leg, semantic: leg, degraded: false } as import('@papercusp/search').SearchLegs);
+      search.observeLegs({ lexical: leg, semantic: { ...leg, candidates: 0, blocked: 'timeout' }, degraded: true, warning: 'semantic leg blocked' } as import('@papercusp/search').SearchLegs);
+      search.observeLegs({ lexical: leg, semantic: leg, degraded: false, warning: null } as import('@papercusp/search').SearchLegs);
       expect(observations.map((row) => row.applied)).toEqual([0, 1]);
       return { route: 'observation', mechanism: 'retrieval', observations };
     } finally { search.setLegHealthObserver(null); }

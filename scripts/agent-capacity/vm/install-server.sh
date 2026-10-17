@@ -27,6 +27,23 @@ SVC_USER="${SVC_USER:-pcsrv}"
 DEB=/var/tmp/papercusp-server.deb
 t0=$(date +%s)
 
+# The package enables its user unit globally. On an SSH test VM that also starts a
+# second Server in the login user's already-running manager, outside the tenant
+# cgroup we measure. Mask that account BEFORE apt can activate the package; leave
+# explicitly installed capacity tenants alone (tenant-density.sh reuses this VM).
+login_user="${SUDO_USER:-$(id -un)}"
+if [ "$login_user" != root ] && [ "$login_user" != "$SVC_USER" ]; then
+  login_uid=$(id -u "$login_user")
+  sudo -u "$login_user" XDG_RUNTIME_DIR="/run/user/$login_uid" \
+    systemctl --user mask --now papercusp-server.service \
+    || { echo "LOGIN_SERVER_MASK_FAILED user=$login_user"; exit 8; }
+  login_state=$(sudo -u "$login_user" XDG_RUNTIME_DIR="/run/user/$login_uid" \
+    systemctl --user is-enabled papercusp-server.service 2>/dev/null || true)
+  [ "$login_state" = masked ] \
+    || { echo "LOGIN_SERVER_NOT_MASKED user=$login_user state=$login_state"; exit 8; }
+  echo "LOGIN_SERVER_EXCLUDED=$login_user"
+fi
+
 # A re-run on a VM that already holds this exact package skips the ~5 min fetch + install.
 # The marker records the sha of the .deb that was installed, so a different artifact reinstalls.
 MARKER=/var/lib/papercusp-capacity-installed.sha256
@@ -155,7 +172,8 @@ candidate_ports() {
 }
 for _ in $(seq 1 180); do
   for port in $(candidate_ports | sort -u); do
-    if body=$(curl -fsS -m 3 "http://127.0.0.1:$port/api/health" 2>/dev/null); then
+    if body=$(curl -fsS -m 3 "http://127.0.0.1:$port/api/health" 2>/dev/null) &&
+      python3 -c 'import json,sys; h=json.load(sys.stdin); sys.exit(0 if isinstance(h,dict) and h.get("ok") is True and h.get("service")=="papercusp-operator" else 1)' <<<"$body" 2>/dev/null; then
       echo "SERVER_PORT=$port"
       echo "SERVER_HEALTH=$body"
       echo "T_BOOT_TO_HEALTH=$(( $(date +%s) - t3 ))"

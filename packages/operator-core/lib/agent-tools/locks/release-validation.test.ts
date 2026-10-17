@@ -42,7 +42,7 @@ describe('locks:release UUID validation', () => {
     expect(jsonSchema.properties?.paths).toMatchObject({
       description: expect.stringContaining('path-only selector'),
     });
-    expect(tool.description).toContain('paths to select your active locks across every coordination domain');
+    expect(tool.description).toContain('caller-owned classic locks with paths (across coordination domains)');
   });
 
   it('accepts a path-only selector and rejects an empty selector', () => {

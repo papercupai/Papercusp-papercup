@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const BOOT_MS = 1_790_000_000_000;
 const LOADED_SHA = 'b'.repeat(40);
 const HEAD_SHA = 'c'.repeat(40);
+const PROXY_LISTENER_PID = 4343;
 
 const { execFileViaSidecar, boundedPgReadTxn } = vi.hoisted(() => ({
   execFileViaSidecar: vi.fn(),
@@ -37,6 +38,12 @@ function seamResponse(cmd: string, args: string[]): { stdout: string; stderr: st
   if (cmd === 'git' && args.join(' ') === 'rev-parse --show-toplevel') return { stdout: '/repo\n', stderr: '' };
   if (cmd === 'git' && args.join(' ') === 'rev-parse HEAD') return { stdout: `${HEAD_SHA}\n`, stderr: '' };
   if (cmd === 'git' && args[0] === 'diff') return { stdout: 'packages/operator-core/lib/dbos/x.ts\n', stderr: '' };
+  if (cmd === 'ss' && args.join(' ') === '-tlnpH') {
+    return {
+      stdout: `LISTEN 0 511 127.0.0.1:9071 0.0.0.0:* users:(("node-MainThread",pid=${PROXY_LISTENER_PID},fd=34))\n`,
+      stderr: '',
+    };
+  }
   if (cmd === 'find') return { stdout: `${(BOOT_MS + 120_000) / 1000} packages/operator-core/lib/dbos/x.ts\n`, stderr: '' };
   throw new Error(`unexpected spawn: ${cmd} ${args.join(' ')}`);
 }
@@ -111,6 +118,51 @@ describe('code-drift probes route git/find through the spawner sidecar (WI-10005
       expect(result.present).not.toBe(false);
       expect(result.note).not.toContain('probe failed');
       expect(JSON.stringify(result)).toContain(LOADED_SHA.slice(0, 7));
+    },
+  );
+
+  it.runIf(process.platform === 'linux')(
+    'probeMcpProxyCodeDrift matches runtime-vintage to the listener PID when systemd MainPID is an npx wrapper',
+    async () => {
+      const { probeMcpProxyCodeDrift } = await import('./service-health');
+      const { probeServiceStart } = await import('./agent-tools/dev/systemd-service-probe');
+      vi.mocked(probeServiceStart).mockResolvedValue({
+        ok: true,
+        mainPid: 4242,
+        startedAtMs: BOOT_MS,
+      });
+      boundedPgReadTxn.mockResolvedValue([
+        {
+          host: hostname(),
+          pid: PROXY_LISTENER_PID,
+          reportedAt: new Date(BOOT_MS + 1_000).toISOString(),
+          treeSha: LOADED_SHA,
+          bundleVersion: null,
+        },
+      ]);
+      execFileViaSidecar.mockImplementation(async (cmd: string, args: string[]) => {
+        if (cmd === 'find') {
+          return {
+            stdout: `${(BOOT_MS - 120_000) / 1000} apps/operator/lib/mcp-proxy/proxy.ts\n`,
+            stderr: '',
+          };
+        }
+        return seamResponse(cmd, args);
+      });
+
+      const result = await probeMcpProxyCodeDrift(BOOT_MS + 600_000);
+
+      expect(execFileViaSidecar).toHaveBeenCalledWith(
+        'ss',
+        ['-tlnpH'],
+        expect.objectContaining({ subsystem: 'listening-sockets' }),
+      );
+      expect(result.provenance).toMatchObject({
+        source: 'runtime-vintage',
+        loadedSha: LOADED_SHA,
+        expectedSha: HEAD_SHA,
+        loadedPid: PROXY_LISTENER_PID,
+      });
     },
   );
 });

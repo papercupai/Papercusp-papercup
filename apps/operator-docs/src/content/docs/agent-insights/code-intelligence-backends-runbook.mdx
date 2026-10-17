@@ -5,7 +5,7 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Code intelligence: which backend answers which question, and how to operate them"
-description: "The operator runbook for code-intelligence backends (rg, LSP, GitNexus, ast-grep, packers): the ratified routing contract, pinned versions, six high-risk failure modes (including the fail-closed raw query path), automatic GitNexus crash-residue recovery, and — new 2026-09-05 — the GitNexus embeddings leg: how the vector index is populated and refreshed by the hourly full rebuild, what a live tick costs (6,446 s vs 2,343 s isolated), and how it fails (WI-39394, gitnexus-embeddings-enablement-2026-09-05)."
+description: "Code-intelligence routing and maintenance runbook: current-source first-party topology and snapshot defaults under D-018, optional internal GitNexus constraints, and dated backend/recovery/embedding evidence. Loaded runtime, consumer outcomes and deployed freshness require separate proof."
 type: Insight
 discovered: 2026-08-21
 tags: ["code-intelligence", "lsp", "gitnexus", "routing", "runbook", "embeddings"]
@@ -21,10 +21,45 @@ documents:
   - "packages/operator-core/lib/harness/routines/gitnexus-reindex-action.test.ts"
   - "packages/operator-core/lib/harness/routines/seed-gitnexus-reindex-routine.ts"
   - "libs/papercusp/plugins/gitnexus-bridge/index.ts"
+  - "packages/operator-core/lib/agent-tools/gitnexus/query.ts"
 plans:
   - "code-intelligence-routing-lsp-gitnexus-2026-08-20"
   - "gitnexus-embeddings-enablement-2026-09-05"
 ---
+
+## Current source contract — 2026-10-16
+
+Native plan `native-code-intelligence-ecosystem-and-dream-2026-10-09`, D-018/P-042,
+changes the default maintenance route. The statements in this section were checked
+against the current source; they do not attest which background build is loaded,
+48-hour deployed freshness, current engine benefit or final shipment.
+
+- Native topology uses `graph:query` with bounded `paths`. The current tool
+  describes first-party syntax/compiler producers for `context`, `callers`,
+  `callees`, `impact`, `trace`, `contracts` and bounded discovery. Read its coverage
+  and limitations; static sites and paths do not prove runtime execution.
+- `gitnexus-reindex` stays active on its existing hourly schedule, but its default
+  work is first-party dependency-snapshot refresh. Only the literal
+  `trigger_config.analyze_enabled: true` opts into the legacy internal analyzer.
+  Missing or false does not inspect, repair or delete the optional GitNexus index.
+  `snapshot_backend: gitnexus` requires that explicit analyzer opt-in.
+- Raw `gitnexus.*` remains an optional internal route under the predecessor plan's
+  D-005 authority. D-004 still excludes GitNexus from shipped dependencies and
+  installers. A registered tool, an invocation count or a successful fixture is
+  not evidence of consumer benefit. `gitnexus.query` remains refused before
+  dispatch; keep the warning in §3.1.
+- The versions, timings, embedding procedures and recovery incidents dated below
+  are historical operating evidence for that optional route. They do not make
+  full analysis or embedding rebuilds the current default. Qualify the loaded
+  runtime and retain the existing backup, writer and authorization rails before
+  undertaking maintenance; this page does not authorize a new analyzer run.
+
+Source anchors: `packages/operator-core/lib/agent-tools/gitnexus/query.ts`,
+`packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts` and
+`packages/operator-core/lib/harness/routines/seed-gitnexus-reindex-routine.ts`.
+The original P-012 outcome measures, P-018 deployed freshness window and final
+per-consumer keep/retire decisions remain open; D-018 is a bounded maintenance
+ruling.
 
 The operator runbook for the code-intelligence backends (rg, LSP, GitNexus, ast-grep, packers): the ratified routing contract, the exact pinned versions and where they live, the SIX failure modes that return a CONFIDENT WRONG ANSWER rather than an error, and the crash-residue mode that once killed GitNexus fleet-wide while it still advertised 17 working tools. Re-verified against source at HEAD 2026-09-03 under plan code-intelligence-routing-lsp-gitnexus-2026-08-20; the GitNexus embeddings leg (§8) was added 2026-09-05 under plan gitnexus-embeddings-enablement-2026-09-05.
 
@@ -40,9 +75,9 @@ The operator runbook for the code-intelligence backends (rg, LSP, GitNexus, ast-
 > superseded and should not be followed.
 >
 > Extended 2026-09-05 under `gitnexus-embeddings-enablement-2026-09-05` (its
-> D-002; WI-39394): the GitNexus VECTOR leg is now populated and refreshed by the
-> hourly reindex, which became a FULL rebuild per tick with an embedding-cache
-> restore. The old §5 "unexplained `analyze` duration" caveat is retired — the
+> D-002; WI-39394): the historical GitNexus VECTOR leg used an hourly FULL
+> rebuild with an embedding-cache restore. D-018 below supersedes that default;
+> these observations now describe the optional analyzer path. The old §5 "unexplained `analyze` duration" caveat is retired — the
 > incremental write set was the driver — and §8 is the operating guide for the
 > embeddings leg, including the one failure mode that needed a vendored patch and
 > the re-provision step (§2) that patch adds.
@@ -56,7 +91,7 @@ question is what the contract exists to stop.
 | -------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
 | definition, references, type truth           | `lsp:query` — real compiler semantics                        | a grep for the declaration: it cannot resolve shadowing or re-exports              |
 | who CALLS this symbol                        | `graph:query { op:'callers' }`                               | `gitnexus.impact { direction:'callers' }` — silently answers **callees**, see §3.6 |
-| call chains, impact radius, topology         | `gitnexus.context` / `gitnexus.impact` (dot form, not colon) | `gitnexus.query` — see §3.1                                                        |
+| call chains, impact radius, topology         | `graph:query` with bounded `paths`, using `context`, `impact` or `trace`; read syntax/compiler coverage | Raw `gitnexus.*` is an optional internal backend, not the default native authority. |
 | structural code patterns (shape, not text)   | the ast-grep facade                                          | a regex that approximates an AST                                                   |
 | an exact keyword or phrase                   | `search:fulltext`                                            | `ILIKE '%…%'`                                                                      |
 | a paraphrased concept                        | `search:semantic`                                            | keyword search that misses the wording                                             |
@@ -416,6 +451,11 @@ graph and exits 0 with a one-line notice, which is exactly how the vector leg sa
 empty for a month. Only `--embeddings 0` (uncapped) populates it.
 
 ## 8. The embeddings leg: how the vector index is populated, and how it fails
+
+**Historical optional-analyzer procedure.** D-018 makes first-party snapshot
+refresh the default. This section applies only to an independently authorized
+legacy analyzer run with `analyze_enabled: true`; its dated costs and embedding
+observations do not establish current default behavior or current benefit.
 
 Added 2026-09-05 (plan `gitnexus-embeddings-enablement-2026-09-05`, D-002;
 WI-39394). Until then the vector leg of the graph had been EMPTY since WI-35557 —

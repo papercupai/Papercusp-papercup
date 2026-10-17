@@ -25,7 +25,7 @@ import {
   PROVIDER_SOCIAL_DELETE_CAPABILITY,
   PROVIDER_SOCIAL_POST_CAPABILITY,
   PROVIDER_SOCIAL_REPLY_CAPABILITY,
-  providerEgressAllows,
+  providerSourceEgressAllows,
   providerLiveSearchResultIssue,
   providerSocialDeleteResultIssue,
   providerSocialWriteResultIssue,
@@ -270,7 +270,6 @@ export async function runProviderConformance(harness: ProviderConformanceHarness
   const providerId = typeof descriptor?.id === 'string' ? descriptor.id : 'unknown';
   const descriptorIssues = validateProviderDescriptor(descriptor);
   for (const issue of descriptorIssues) fail('descriptor-valid', issue);
-  const egressHosts = Array.isArray(descriptor?.egressHosts) ? descriptor.egressHosts : [];
   const datatypes = new Set(Array.isArray(descriptor?.datatypes) ? descriptor.datatypes : []);
   const capabilities = Array.isArray(descriptor?.capabilities) ? descriptor.capabilities : [];
 
@@ -295,7 +294,7 @@ export async function runProviderConformance(harness: ProviderConformanceHarness
       } catch {
         url = null;
       }
-      if (!url || url.protocol !== 'https:' || !providerEgressAllows(egressHosts, url.hostname)) {
+      if (!url || !providerSourceEgressAllows(descriptor, url, harness.config)) {
         egressViolations.add(input.request.url);
         throw new Error(`egress_refused: ${input.request.url} is outside the declared egressHosts`);
       }
@@ -633,7 +632,8 @@ export async function runProviderConformance(harness: ProviderConformanceHarness
     }
   }
 
-  for (const url of egressViolations) fail('egress-confined', `requested ${url}, outside egressHosts [${egressHosts.join(', ')}]`);
+  for (const url of egressViolations) fail('egress-confined', `requested ${url}, outside ${descriptor.oauth?.instance
+    ? 'the source connection origin' : `egressHosts [${descriptor.egressHosts.join(', ')}]`}`);
   for (const other of foreignSources) fail('fetch-uses-request-source', `host.fetch was called for source '${other}', not the request's source '${source}'`);
 
   return { providerId, checksRun, checksSkipped, failures, ok: failures.length === 0 };

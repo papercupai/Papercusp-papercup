@@ -80,7 +80,7 @@ import { resolveHomeGateVerdictTarget } from '../../release/gate-verdict-target'
 import { promotedFromSchema, validatePromotedFrom } from '../../promotion-lineage';
 
 const FACT_LIFETIME_CALL_CONSTRAINT =
-  "Declare exactly one lifetime: ordinary facts, including verified conclusions, require ttlSec; omit it only for kind:'convention', wall:/dead-end:/guard-rail: keys, or confidence:'provisional'|'suspected'. permanent:true is allowed only for conventions/typed keys; never combine it with ttlSec or a volatile measurement.";
+  "Declare exactly one lifetime: ordinary facts, including verified conclusions, require ttlSec; omit it for a measuredAt snapshot (subjectVolatile is inferred and the TTL is 15 minutes), kind:'convention', wall:/dead-end:/guard-rail: keys, or confidence:'provisional'|'suspected'. permanent:true is allowed only for conventions/typed keys; never combine it with ttlSec or a volatile measurement.";
 const FACT_SETTLED_BY_CALL_CONSTRAINT =
   "required when kind:'undecidable'; refused for every other kind.";
 const FACT_VOLATILE_TTL_CALL_CONSTRAINT =

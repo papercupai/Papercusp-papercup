@@ -3,7 +3,6 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, openSync, 
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
-import { spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import { describe, expect, it } from 'vitest';
 import { prepareIdentityFixture, installIdentityFixture } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
@@ -12,28 +11,44 @@ import { startDaoHrWalletBindingFixture } from './wallet-binding-fixture';
 import { register, authenticatedAccount, accountToken } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
 import { resolveExecutedMapPgUrl } from '../../../../scripts/lib/executed-source-map.mjs';
 import { prepareVerifierSource, prepareVerifierDependencies, verifyVerifierSource, verifierSourceChildEnv } from '../../../../scripts/source-preview.mjs';
+import { checkNativeLedger } from '../../../../scripts/tauri-surface-verify-reports.mts';
+import { nativeBootstrapEnvironment, runNativeVerifier, NATIVE_BOOTSTRAP_TIMEOUT_MS,
+  NATIVE_BOOTSTRAP_TEARDOWN_MS, NATIVE_VERIFIER_PHASE_BUDGETS } from './native-bootstrap-runtime';
 
 const NATIVE_SOURCE_INPUTS = [
   'packages/operator-core/lib/dao-hr/native-bootstrap.e2e.test.ts',
   'packages/operator-core/lib/dao-hr/native.e2e.test.ts',
+  'packages/operator-core/lib/dao-hr/native-bootstrap-runtime.ts',
   'scripts/tauri-surface-verify-dao-hr.mts', 'scripts/fixtures/dao-hr-documenso-ui.ts',
   'scripts/fixtures/dao-hr-test-chain.ts', 'scripts/fixtures/dao-hr-wallet-binding.ts',
   'scripts/fixtures/dao-hr-wallet-binding-contract.ts', 'packages/operator-core/lib/dao-hr/wallet-binding-fixture.ts',
   'scripts/lib/dao-workbench-controls.mts', 'packages/operator-core/lib/dao-finance.ts',
   'scripts/fixtures/dao-workbench-identity.mjs',
+  'scripts/lib/batch-watchdog.mjs', 'scripts/lib/verify-tauri-assertion-env.mjs',
+  'scripts/tauri-surface-verify-reports.mts', 'scripts/source-preview.mjs',
   'scripts/with-documenso-sandbox.mjs',
 ];
 
 describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined native hire bootstrap', () => {
-  it('runs the isolated native hire journey with actual provider accounts, hosted wallet routes and signed V2 chain', async () => {
+  it('runs the isolated native hire journey with actual provider accounts, hosted wallet routes and signed V2 chain', async ({ onTestFinished }) => {
+    const verifierDeadline = Date.now() + NATIVE_BOOTSTRAP_TIMEOUT_MS - NATIVE_BOOTSTRAP_TEARDOWN_MS;
+    const cancellation = new AbortController();
+    let verifier: Promise<number | null> | undefined;
+    onTestFinished(async () => {
+      cancellation.abort();
+      await verifier?.catch(() => {}); // The original rejection remains the test's failure.
+    });
     expect(Boolean(process.env.DOCUMENSO_TEST_RUNTIME)).toBe(true);
     const runtime = JSON.parse(process.env.DOCUMENSO_TEST_RUNTIME!);
     expect(runtime).toMatchObject({ isolatedDatabase: true, externalMail: false, testCertificate: true });
-    const directory = mkdtempSync(join(tmpdir(), 'dao-hr-native-'));
     const root = resolve(import.meta.dirname, '../../../..');
+    const env = nativeBootstrapEnvironment(process.env,
+      process.env.PAPERCUSP_TEST_RUNS_DB_URL || resolveExecutedMapPgUrl().url);
+    env.PAPERCUSP_VERIFY_TAURI_ISOLATED = '1';
+    env.PAPERCUSP_REPO_DIR = process.env.PAPERCUSP_REPO_DIR || root;
+    checkNativeLedger(root, env);
+    const directory = mkdtempSync(join(tmpdir(), 'dao-hr-native-'));
     let sourceDirectory: string | undefined;
-    const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_VERIFY_TAURI_ISOLATED: '1',
-      PAPERCUSP_REPO_DIR: process.env.PAPERCUSP_REPO_DIR || root };
     const evidenceRoot = '/tmp/pcv/dao-hr-native'; mkdirSync(evidenceRoot, { recursive: true });
     const logPath = process.env.DAO_HR_NATIVE_BOOT_LOG || join(evidenceRoot, 'native-boot-' + Date.now() + '.log');
     const priorIsolation = process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED;
@@ -72,6 +87,7 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
         await prepareVerifierDependencies({ donor: root, dest: sourceRoot, receipt });
         Object.assign(env, verifierSourceChildEnv({ root: sourceRoot, receiptPath, env }));
       }
+      cancellation.signal.throwIfAborted();
       writeFileSync(logPath + '.invoked-source-receipt.json', JSON.stringify(receipt), { mode: 0o600 });
       env.PAPERCUSP_REPO_DIR = sourceRoot;
       env.VERIFY_TAURI_SOURCE_REF = receipt.sourceCommit;
@@ -82,9 +98,15 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
       restoreIdentity = installIdentityFixture(identity, env);
       process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED = '1';
       browser = await chromium.launch({ headless: true });
-      chain = await startDaoHrTestChain(); wallet = await startDaoHrWalletBindingFixture();
+      cancellation.signal.throwIfAborted();
+      chain = await startDaoHrTestChain();
+      cancellation.signal.throwIfAborted();
+      wallet = await startDaoHrWalletBindingFixture();
+      cancellation.signal.throwIfAborted();
       const candidate = await register(browser, { personId: 'PER-native-candidate', name: 'Native candidate', email: identity.actors.candidate.email });
+      cancellation.signal.throwIfAborted();
       const company = await register(browser, { personId: 'PER-native-approver', name: 'Native countersigner', email: identity.actors.approver.email });
+      cancellation.signal.throwIfAborted();
       await authenticatedAccount(company.page, identity.actors.approver.email);
       env.DOCUMENSO_API_KEY = await accountToken(company.page);
       env.DOCUMENSO_WEBHOOK_SECRET = randomBytes(32).toString('hex');
@@ -96,19 +118,18 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
         equity: chain.equity.address, governor: chain.governor.address, timelock: chain.timelock.address,
         candidateSession, companySession, resultPath: join(directory, 'result.json') }), { mode: 0o600 });
       env.DAO_HR_NATIVE_CONFIG = configPath;
-      env.PAPERCUSP_TEST_RUNS_DB_URL = process.env.PAPERCUSP_TEST_RUNS_DB_URL || resolveExecutedMapPgUrl().url;
-      env.PAPERCUSP_TEST_RUN_WORKSPACE = process.env.PAPERCUSP_TEST_RUN_WORKSPACE || process.env.PAPERCUSP_WORKSPACE_ID || process.env.PAPERCUSP_WORKSPACE!;
-      expect(Boolean(env.PAPERCUSP_TEST_RUN_WORKSPACE)).toBe(true);
       await verifyVerifierSource(sourceRoot, receipt, { runtimeArtifacts: true });
       const fd = openSync(logPath, 'w', 0o600);
       let code: number | null;
       try {
-        const child = spawn('bash', [join(sourceRoot, 'scripts/verify-tauri-headless.sh'), '--', 'node', '--import', 'tsx',
+        verifier = runNativeVerifier('bash', [join(sourceRoot, 'scripts/verify-tauri-headless.sh'), '--', 'node', '--import', 'tsx',
           join(sourceRoot, 'scripts/tauri-surface-verify-dao-hr.mts')], { cwd: sourceRoot,
+          signal: cancellation.signal, timeoutMs: verifierDeadline - Date.now(),
+          phaseBudgetsMs: NATIVE_VERIFIER_PHASE_BUDGETS, logFd: fd,
           env: { ...env, VERIFY_TAURI_ISOLATED_DB: '1', VERIFY_TAURI_ISOLATED_SEED: 'ready', VERIFY_TAURI_WINDOW: '1440x1000',
             NODE_OPTIONS: (env.NODE_OPTIONS || '') + ' --import=' + join(sourceRoot, 'scripts/fixtures/dao-workbench-identity.mjs') },
           stdio: ['ignore', fd, fd] });
-        code = await new Promise<number | null>((done, reject) => { child.once('error', reject); child.once('exit', done); });
+        code = await verifier;
       } finally { closeSync(fd); }
       expect(code, 'Native boot/journey log: ' + logPath).toBe(0);
       const result = JSON.parse(readFileSync(join(directory, 'result.json'), 'utf8'));
@@ -123,5 +144,5 @@ describe.skipIf(process.env.PAPERCUSP_DAO_HR_NATIVE !== '1')('P012 combined nati
       if (sourceDirectory) rmSync(sourceDirectory, { recursive: true, force: true });
       rmSync(directory, { recursive: true, force: true });
     }
-  }, 1_200_000);
+  }, NATIVE_BOOTSTRAP_TIMEOUT_MS);
 });

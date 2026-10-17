@@ -1,0 +1,561 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010015799",
+  "fixtureIssue": "EI-26150015657910811",
+  "scope": "Current-source full guest filesystem renderer on a disposable GCP real VM; not deployed hosted product acceptance",
+  "recordedSha": "b6aae68230471be3ca2513afb8629cff1bf6c5c1",
+  "worktreeDirty": true,
+  "nativeRun": {
+    "schemaVersion": "native-vitest-run-v1",
+    "scope": "vitest-reporter-callbacks",
+    "pid": 2370747,
+    "ppid": 2370738,
+    "startedAtMs": 1792164830555,
+    "finishedAtMs": 1792165065124,
+    "terminalHook": "onTestRunEnd",
+    "reason": "passed",
+    "unhandledErrorCount": 0,
+    "reportedModulePaths": [
+      "packages/operator-core/lib/workspace-host/durable-storage-quota.kernel.test.ts"
+    ],
+    "modulePopulationMatched": true,
+    "files": [
+      {
+        "testFile": "packages/operator-core/lib/workspace-host/durable-storage-quota.kernel.test.ts",
+        "state": "passed",
+        "observedAtMs": 1792165065014,
+        "firstAttemptVerdict": "unknown",
+        "execution": {
+          "passed": 1,
+          "failed": 0,
+          "skipped": 1,
+          "collectionFailed": false,
+          "passedCaseTitles": [
+            "retains enforced DB/workspace quotas and customer data across a real GCP reboot"
+          ]
+        },
+        "cases": [
+          {
+            "caseIndex": 0,
+            "caseKey": "enforces independent DB and shared workspace projects across an ext4 remount",
+            "occurrence": 1,
+            "status": "skip",
+            "durationMs": null,
+            "errorTail": null
+          },
+          {
+            "caseIndex": 1,
+            "caseKey": "retains enforced DB/workspace quotas and customer data across a real GCP reboot",
+            "occurrence": 1,
+            "status": "pass",
+            "durationMs": 232632,
+            "errorTail": null
+          }
+        ]
+      }
+    ],
+    "gaps": []
+  },
+  "cloud": {
+    "runId": "p537-quota-1792164832346",
+    "name": "cap-p537-quota-1792164832346",
+    "project": "pc-agent-capacity-0930",
+    "zone": "us-central1-a",
+    "admission": {
+      "admitted": true,
+      "newCents": 6,
+      "committedCents": 0,
+      "ceilingCents": 5000,
+      "reason": "within the concurrent worst-case ceiling",
+      "created": true
+    },
+    "before": {
+      "before": {
+        "phase": "before",
+        "bootId": "13f3213f-5d1d-4f7d-b352-977441c8ac9f",
+        "uuid": "0e800b11-9571-4818-b3fb-3ff71b8cb204",
+        "pin": "ba763c4bb12cc7881d6d5b53bee501345cea12853fd723a00891f38dca08d05a",
+        "edquotDirectories": 5
+      },
+      "bootId": "13f3213f-5d1d-4f7d-b352-977441c8ac9f"
+    },
+    "reboot": {
+      "before": {
+        "phase": "before",
+        "bootId": "13f3213f-5d1d-4f7d-b352-977441c8ac9f",
+        "uuid": "0e800b11-9571-4818-b3fb-3ff71b8cb204",
+        "pin": "ba763c4bb12cc7881d6d5b53bee501345cea12853fd723a00891f38dca08d05a",
+        "edquotDirectories": 5
+      },
+      "bootId": "69621315-2bdb-4f00-866e-422f414f172b"
+    },
+    "after": {
+      "phase": "after",
+      "bootId": "69621315-2bdb-4f00-866e-422f414f172b",
+      "uuid": "0e800b11-9571-4818-b3fb-3ff71b8cb204",
+      "pin": "ba763c4bb12cc7881d6d5b53bee501345cea12853fd723a00891f38dca08d05a",
+      "edquotDirectories": 5
+    },
+    "teardown": {
+      "runId": "p537-quota-1792164832346",
+      "deleted": [
+        "cap-p537-quota-1792164832346"
+      ],
+      "remainingInstances": [],
+      "orphanDisks": [],
+      "verified": true
+    }
+  },
+  "sourceEvidence": {
+    "schemaVersion": "vite-collected-source-evidence-v1",
+    "scope": "repository-worker-vite-original-sources",
+    "status": "stable",
+    "sources": [
+      {
+        "path": "libs/generic/deployment-driver/src/bwrap-userns-grant.ts",
+        "sha256": "0a2ba769d47015d4e1f17e31d77094c306740840ee78b3632d738f1ba3bcd5e7",
+        "basis": "vite-pre-transform",
+        "currentSha256": "0a2ba769d47015d4e1f17e31d77094c306740840ee78b3632d738f1ba3bcd5e7"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/index.ts",
+        "sha256": "06b00a0e43d92b2f4fd936a746945b1ec0a6951e9877bdf6379ffd26c6baef2e",
+        "basis": "vite-pre-transform",
+        "currentSha256": "06b00a0e43d92b2f4fd936a746945b1ec0a6951e9877bdf6379ffd26c6baef2e"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/local-driver.ts",
+        "sha256": "c5d12f35b80ed94509c6385c4bbc952e42ec64638ae6810c3ac10a682b1916dd",
+        "basis": "vite-pre-transform",
+        "currentSha256": "c5d12f35b80ed94509c6385c4bbc952e42ec64638ae6810c3ac10a682b1916dd"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/registry.ts",
+        "sha256": "254ac2bd64585ed752b38c40c2773b1dbed28e39eaf3455ec3fa06bf25c1bd43",
+        "basis": "vite-pre-transform",
+        "currentSha256": "254ac2bd64585ed752b38c40c2773b1dbed28e39eaf3455ec3fa06bf25c1bd43"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/types.ts",
+        "sha256": "49b961724056ff0492300be1ffbcf1e8d7617cc0a52224db5050914c742ed389",
+        "basis": "vite-pre-transform",
+        "currentSha256": "49b961724056ff0492300be1ffbcf1e8d7617cc0a52224db5050914c742ed389"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-agent-authentication.ts",
+        "sha256": "7edf7d6a9c829148c9a0becb688a353ddb3178c3365a47242fc6529158bcb033",
+        "basis": "vite-pre-transform",
+        "currentSha256": "7edf7d6a9c829148c9a0becb688a353ddb3178c3365a47242fc6529158bcb033"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-agent-home.ts",
+        "sha256": "159574ee80b0e743dd313c4997a620c13c7bb7eb1ecca3ff367e0d809c21ae10",
+        "basis": "vite-pre-transform",
+        "currentSha256": "159574ee80b0e743dd313c4997a620c13c7bb7eb1ecca3ff367e0d809c21ae10"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-bootstrap.ts",
+        "sha256": "bc6c59046f35f88025ecf14bc5199029eb616c6c613cf82aa19e001b69b4d589",
+        "basis": "vite-pre-transform",
+        "currentSha256": "bc6c59046f35f88025ecf14bc5199029eb616c6c613cf82aa19e001b69b4d589"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-build-manifest.ts",
+        "sha256": "3fa507e5d2e62f1336f5a26fc6fae3f9484990cc7d472356aecc3c0d4e6eb2e0",
+        "basis": "vite-pre-transform",
+        "currentSha256": "3fa507e5d2e62f1336f5a26fc6fae3f9484990cc7d472356aecc3c0d4e6eb2e0"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-canary-identity.ts",
+        "sha256": "b0ae6a02c5090a6efca11e784540f3f337662187de87a274ece7aafb2378799b",
+        "basis": "vite-pre-transform",
+        "currentSha256": "b0ae6a02c5090a6efca11e784540f3f337662187de87a274ece7aafb2378799b"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-chaos-classes.ts",
+        "sha256": "0ad16fac1a7de2723cfc2bfbd1382d1ab86634bc5a223215b2275134fee843f4",
+        "basis": "vite-pre-transform",
+        "currentSha256": "0ad16fac1a7de2723cfc2bfbd1382d1ab86634bc5a223215b2275134fee843f4"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-credential-delivery-cli.ts",
+        "sha256": "4d45b81032cd99066919e60dbd1301d12e8d3496a43d216e0305be4d0f1f0f5a",
+        "basis": "vite-pre-transform",
+        "currentSha256": "4d45b81032cd99066919e60dbd1301d12e8d3496a43d216e0305be4d0f1f0f5a"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-credential-delivery.ts",
+        "sha256": "7ba96a73293217f0d68181fec7d70034bad479e66fe4691e13a829407625f834",
+        "basis": "vite-pre-transform",
+        "currentSha256": "7ba96a73293217f0d68181fec7d70034bad479e66fe4691e13a829407625f834"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-credential-namespace.ts",
+        "sha256": "bb4dd5ff0f0e6454bb03bec7d7bad26ffeae3320929a3c1d3919b03933a2b642",
+        "basis": "vite-pre-transform",
+        "currentSha256": "bb4dd5ff0f0e6454bb03bec7d7bad26ffeae3320929a3c1d3919b03933a2b642"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-desktop-pack.ts",
+        "sha256": "2c48d8b1f94b80137ba06620ff498a82f96d1302f8afecd354a6d679871b3adc",
+        "basis": "vite-pre-transform",
+        "currentSha256": "2c48d8b1f94b80137ba06620ff498a82f96d1302f8afecd354a6d679871b3adc"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-destroy-evidence.ts",
+        "sha256": "36e587d9329016fbf792a1263439ec22de259bd04424dd6b6acf0b468df4c2cf",
+        "basis": "vite-pre-transform",
+        "currentSha256": "36e587d9329016fbf792a1263439ec22de259bd04424dd6b6acf0b468df4c2cf"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-domain.ts",
+        "sha256": "daebbd3c06bf5aa8bad4e45bf40e62acb20ba0d916db7af5c0c36da32f459e65",
+        "basis": "vite-pre-transform",
+        "currentSha256": "daebbd3c06bf5aa8bad4e45bf40e62acb20ba0d916db7af5c0c36da32f459e65"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-health.ts",
+        "sha256": "1667162d85df8040b340a506f561da6535f87f5c7885073139bcffb04e439740",
+        "basis": "vite-pre-transform",
+        "currentSha256": "1667162d85df8040b340a506f561da6535f87f5c7885073139bcffb04e439740"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-image.ts",
+        "sha256": "7d5c5f0f476d90792315af8e8d96f97d48ed70e5bad125cfbd48457511895d61",
+        "basis": "vite-pre-transform",
+        "currentSha256": "7d5c5f0f476d90792315af8e8d96f97d48ed70e5bad125cfbd48457511895d61"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-initialization-validity.ts",
+        "sha256": "503f2d8be0175f8370be5eed7a0aebf37546d84a6b4c0941cab9c3d112a8fc19",
+        "basis": "vite-pre-transform",
+        "currentSha256": "503f2d8be0175f8370be5eed7a0aebf37546d84a6b4c0941cab9c3d112a8fc19"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-initialization.ts",
+        "sha256": "8b0eb5121733d024b2ce85b74fa3ea8c0ce042fd66bab629263063c25ec08b90",
+        "basis": "vite-pre-transform",
+        "currentSha256": "8b0eb5121733d024b2ce85b74fa3ea8c0ce042fd66bab629263063c25ec08b90"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-pool.ts",
+        "sha256": "0560fdea4149b71b3d5885b0351a75ace24a9b968ea6f35e1ec7da9ef686b4ea",
+        "basis": "vite-pre-transform",
+        "currentSha256": "0560fdea4149b71b3d5885b0351a75ace24a9b968ea6f35e1ec7da9ef686b4ea"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-recovery.ts",
+        "sha256": "978f42a2a12f4e01ef94e1161c5c8296d84491d46e859fd38b9622a6859e7218",
+        "basis": "vite-pre-transform",
+        "currentSha256": "978f42a2a12f4e01ef94e1161c5c8296d84491d46e859fd38b9622a6859e7218"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-registry.ts",
+        "sha256": "41ffa19950215bee4cd736a2ee6c8cbeb66d489a316779c29ce1379b3a8a521c",
+        "basis": "vite-pre-transform",
+        "currentSha256": "41ffa19950215bee4cd736a2ee6c8cbeb66d489a316779c29ce1379b3a8a521c"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-remote-initializer-cli.ts",
+        "sha256": "eb74c3bb3e48e2a0b4e64248ac363bbdd473fe4b578fb35638c357cc0fb46998",
+        "basis": "vite-pre-transform",
+        "currentSha256": "eb74c3bb3e48e2a0b4e64248ac363bbdd473fe4b578fb35638c357cc0fb46998"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-remote-initializer-host.ts",
+        "sha256": "a9525bb71eabe5f156cc4db068ce3f63cc6d7c3e1ef6b4f4a4fe2e1522ee31a4",
+        "basis": "vite-pre-transform",
+        "currentSha256": "a9525bb71eabe5f156cc4db068ce3f63cc6d7c3e1ef6b4f4a4fe2e1522ee31a4"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-remote-initializer.ts",
+        "sha256": "15bd99635f2446a8a82aab1dfc9085a4adf4fef8a803af97e11d97ec8c33c381",
+        "basis": "vite-pre-transform",
+        "currentSha256": "15bd99635f2446a8a82aab1dfc9085a4adf4fef8a803af97e11d97ec8c33c381"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-required-material-fixtures.ts",
+        "sha256": "546b9f6f07adc039c252018a51fae260ab324b844a588905a93f60c3811f8822",
+        "basis": "vite-pre-transform",
+        "currentSha256": "546b9f6f07adc039c252018a51fae260ab324b844a588905a93f60c3811f8822"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-test-harness.ts",
+        "sha256": "b03badc76d5679ee480e04195947f6d0880b0c235fec01efc9d00b25bbd20c3d",
+        "basis": "vite-pre-transform",
+        "currentSha256": "b03badc76d5679ee480e04195947f6d0880b0c235fec01efc9d00b25bbd20c3d"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-transport.ts",
+        "sha256": "c21d1f7e7768e924a37613495e01d7623359fe793a900b245e741c593abcc1d6",
+        "basis": "vite-pre-transform",
+        "currentSha256": "c21d1f7e7768e924a37613495e01d7623359fe793a900b245e741c593abcc1d6"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-types.ts",
+        "sha256": "2fff852b71c7bcb9c020d6615f0020eba432c298e899001aa87ee965863c4f66",
+        "basis": "vite-pre-transform",
+        "currentSha256": "2fff852b71c7bcb9c020d6615f0020eba432c298e899001aa87ee965863c4f66"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/workspace-host-workflow.ts",
+        "sha256": "4f8aa51719d8cef0e547a9a2287a372d148bedf32c993f6e3a5e9db9ae138b41",
+        "basis": "vite-pre-transform",
+        "currentSha256": "4f8aa51719d8cef0e547a9a2287a372d148bedf32c993f6e3a5e9db9ae138b41"
+      },
+      {
+        "path": "libs/generic/deployment-driver/src/zram-swap.ts",
+        "sha256": "36657d2649727bef6d8c5d0f58baf5191d859226c33d198ec6148733e33931d5",
+        "basis": "vite-pre-transform",
+        "currentSha256": "36657d2649727bef6d8c5d0f58baf5191d859226c33d198ec6148733e33931d5"
+      },
+      {
+        "path": "libs/generic/module-singleton/src/index.ts",
+        "sha256": "4d8852efe38c7fddf07a77c821ba0bb704df0e52c7324182a2941db564712dbf",
+        "basis": "vite-pre-transform",
+        "currentSha256": "4d8852efe38c7fddf07a77c821ba0bb704df0e52c7324182a2941db564712dbf"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/contract.ts",
+        "sha256": "7639eae8328508f476fb9c3370285a680bcacd6fc694938531e5316dfa42f219",
+        "basis": "vite-pre-transform",
+        "currentSha256": "7639eae8328508f476fb9c3370285a680bcacd6fc694938531e5316dfa42f219"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/converge.ts",
+        "sha256": "a57388ea06071add01afb7b246900728c780cc268c5875bd3e702e09d909d979",
+        "basis": "vite-pre-transform",
+        "currentSha256": "a57388ea06071add01afb7b246900728c780cc268c5875bd3e702e09d909d979"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/evidence-root.ts",
+        "sha256": "c7c6d95ccb33914f95e8a218b1c3203a3427d8c19f585a9451fb17cc4d8c2a6b",
+        "basis": "vite-pre-transform",
+        "currentSha256": "c7c6d95ccb33914f95e8a218b1c3203a3427d8c19f585a9451fb17cc4d8c2a6b"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/guard-rails.ts",
+        "sha256": "33f70e97ef1c7f91898ceaf5ce8a988fc850911927c62a680c66fb10057edadc",
+        "basis": "vite-pre-transform",
+        "currentSha256": "33f70e97ef1c7f91898ceaf5ce8a988fc850911927c62a680c66fb10057edadc"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/index.ts",
+        "sha256": "9c2207750409f92bb41fba70121835607ac1dd2a82b06faad352711d5cc2761e",
+        "basis": "vite-pre-transform",
+        "currentSha256": "9c2207750409f92bb41fba70121835607ac1dd2a82b06faad352711d5cc2761e"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/runner.ts",
+        "sha256": "d312e0a83bb2050ef18341a2f31b8d43f9790fc3a67e245e8405de3bbe23cd6a",
+        "basis": "vite-pre-transform",
+        "currentSha256": "d312e0a83bb2050ef18341a2f31b8d43f9790fc3a67e245e8405de3bbe23cd6a"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/select.ts",
+        "sha256": "a48b3c0dea416c814baea724140756bad3263391aa71f5df8868bf8cc00be57a",
+        "basis": "vite-pre-transform",
+        "currentSha256": "a48b3c0dea416c814baea724140756bad3263391aa71f5df8868bf8cc00be57a"
+      },
+      {
+        "path": "libs/generic/verification-harness/src/tier-gate.ts",
+        "sha256": "9979a508b73f5a66ed3dcb038cd1b5824c4b95deffc2298a89d207bc01908aa7",
+        "basis": "vite-pre-transform",
+        "currentSha256": "9979a508b73f5a66ed3dcb038cd1b5824c4b95deffc2298a89d207bc01908aa7"
+      },
+      {
+        "path": "libs/papercusp-publish-auth/src/jcs.ts",
+        "sha256": "4e457f60db824ec2ced262d3ad25bcaa649f3052f4763d4ae6d0a52d1f96bfdf",
+        "basis": "vite-pre-transform",
+        "currentSha256": "4e457f60db824ec2ced262d3ad25bcaa649f3052f4763d4ae6d0a52d1f96bfdf"
+      },
+      {
+        "path": "libs/test-config/src/admin-test-runs-reporter.ts",
+        "sha256": "ac85fa795e411b5fa84b179ebfcf97b4d6ccf3a8310c9d7d9fd480619a481eb3",
+        "basis": "vite-pre-transform",
+        "currentSha256": "ac85fa795e411b5fa84b179ebfcf97b4d6ccf3a8310c9d7d9fd480619a481eb3"
+      },
+      {
+        "path": "libs/test-config/src/configuration-snapshot.ts",
+        "sha256": "8f55385b29a9cc6e5dcf2acdd73fdf2c0faeefc854216e66661052cfb22e73b1",
+        "basis": "vite-pre-transform",
+        "currentSha256": "8f55385b29a9cc6e5dcf2acdd73fdf2c0faeefc854216e66661052cfb22e73b1"
+      },
+      {
+        "path": "libs/test-config/src/console-noise-filter.ts",
+        "sha256": "3d6a101a6935f02a9189a98b6e4124f5f791c82e0daaefcc6c6b724a5673d888",
+        "basis": "vite-pre-transform",
+        "currentSha256": "3d6a101a6935f02a9189a98b6e4124f5f791c82e0daaefcc6c6b724a5673d888"
+      },
+      {
+        "path": "libs/test-config/src/executed-inputs-capture-setup.ts",
+        "sha256": "f6ead51b45d50e4a586520f87b68be06a6f95bc3473963f869e71a9f7e345233",
+        "basis": "vite-pre-transform",
+        "currentSha256": "f6ead51b45d50e4a586520f87b68be06a6f95bc3473963f869e71a9f7e345233"
+      },
+      {
+        "path": "libs/test-config/src/executed-inputs-capture.ts",
+        "sha256": "5bbbc6d86e8df3c8dc7d53f4a3b8aa14bad21115a1b85208508bc38072649a90",
+        "basis": "vite-pre-transform",
+        "currentSha256": "5bbbc6d86e8df3c8dc7d53f4a3b8aa14bad21115a1b85208508bc38072649a90"
+      },
+      {
+        "path": "libs/test-config/src/execution-details.ts",
+        "sha256": "487bbb0454f0bcf1f64848e53aa3fad331dd1d476df50ab47f12feaa0c868428",
+        "basis": "vite-pre-transform",
+        "currentSha256": "487bbb0454f0bcf1f64848e53aa3fad331dd1d476df50ab47f12feaa0c868428"
+      },
+      {
+        "path": "libs/test-config/src/handle-leak-delta.ts",
+        "sha256": "b39b39d4f30ea67994a797204132a38a0d32b110a893da1aa671b38dcd46869c",
+        "basis": "vite-pre-transform",
+        "currentSha256": "b39b39d4f30ea67994a797204132a38a0d32b110a893da1aa671b38dcd46869c"
+      },
+      {
+        "path": "libs/test-config/src/hermetic-tmpdir.ts",
+        "sha256": "ae76382cac590062b0b8e4a127fae780802c98151c09423b66c3655fa81322aa",
+        "basis": "vite-pre-transform",
+        "currentSha256": "ae76382cac590062b0b8e4a127fae780802c98151c09423b66c3655fa81322aa"
+      },
+      {
+        "path": "libs/test-config/src/mutation-descriptor.ts",
+        "sha256": "bbdf14344ef6ab8a61c66087624385dff4190330120381bfe04da4d16f994c40",
+        "basis": "vite-pre-transform",
+        "currentSha256": "bbdf14344ef6ab8a61c66087624385dff4190330120381bfe04da4d16f994c40"
+      },
+      {
+        "path": "libs/test-config/src/setup-fail-on-console.ts",
+        "sha256": "f740bb992a61c9d75a37f3791161d36a6b3220615e91c6e2ab4ad4bca56540bb",
+        "basis": "vite-pre-transform",
+        "currentSha256": "f740bb992a61c9d75a37f3791161d36a6b3220615e91c6e2ab4ad4bca56540bb"
+      },
+      {
+        "path": "libs/test-config/src/setup-handle-leak-detector.ts",
+        "sha256": "56b9f669f67d9d12e9a8e8b80f197c9203a516845a33127a17705300f365c3d8",
+        "basis": "vite-pre-transform",
+        "currentSha256": "56b9f669f67d9d12e9a8e8b80f197c9203a516845a33127a17705300f365c3d8"
+      },
+      {
+        "path": "libs/test-config/src/setup-hermetic-env.ts",
+        "sha256": "2616f4dd67e40012ec790aa029907f640e8dda4295ee4f47893cb04e717a0acd",
+        "basis": "vite-pre-transform",
+        "currentSha256": "2616f4dd67e40012ec790aa029907f640e8dda4295ee4f47893cb04e717a0acd"
+      },
+      {
+        "path": "libs/test-config/src/setup-no-real-pg.ts",
+        "sha256": "2f2147c36d0d0132d66aaf1d2eee66ec76fab04d85828117416c9b4d9f262906",
+        "basis": "vite-pre-transform",
+        "currentSha256": "2f2147c36d0d0132d66aaf1d2eee66ec76fab04d85828117416c9b4d9f262906"
+      },
+      {
+        "path": "libs/test-config/src/setup-testing-library-timeout.ts",
+        "sha256": "424be5f6c7d32b05373f95d2f1418fa8a6faf0ce2cd786a304472654a0e30274",
+        "basis": "vite-pre-transform",
+        "currentSha256": "424be5f6c7d32b05373f95d2f1418fa8a6faf0ce2cd786a304472654a0e30274"
+      },
+      {
+        "path": "libs/test-config/src/silenced-console-census.ts",
+        "sha256": "91bf40c41d514f9cfc2e5f5d9bec3ea871b13e05d46c518ff37118bdf82b6d9f",
+        "basis": "vite-pre-transform",
+        "currentSha256": "91bf40c41d514f9cfc2e5f5d9bec3ea871b13e05d46c518ff37118bdf82b6d9f"
+      },
+      {
+        "path": "libs/test-config/src/timer-leak-ledger.ts",
+        "sha256": "e032992f18c1d6bf75071546030db33e3d998ebde81d0fc26865ffc5636d2e6f",
+        "basis": "vite-pre-transform",
+        "currentSha256": "e032992f18c1d6bf75071546030db33e3d998ebde81d0fc26865ffc5636d2e6f"
+      },
+      {
+        "path": "libs/test-config/src/tmpdir-guard.ts",
+        "sha256": "7d50fde3eab79e25c94304ed1cf93aa0c9a529142006207994c380c5a3943b10",
+        "basis": "vite-pre-transform",
+        "currentSha256": "7d50fde3eab79e25c94304ed1cf93aa0c9a529142006207994c380c5a3943b10"
+      },
+      {
+        "path": "libs/test-config/src/verifier-source.ts",
+        "sha256": "06fa569ed34535fff798be9cb3953c64d5072f05d5407a4327a73e496ee99101",
+        "basis": "vite-pre-transform",
+        "currentSha256": "06fa569ed34535fff798be9cb3953c64d5072f05d5407a4327a73e496ee99101"
+      },
+      {
+        "path": "packages/operator-core/lib/coverage-census/attribution/context.ts",
+        "sha256": "a67b60bc0ecad9ff7f99dfb03f7cabf5a6443cdee7eb4e4f7bcb0041059dedc1",
+        "basis": "vite-pre-transform",
+        "currentSha256": "a67b60bc0ecad9ff7f99dfb03f7cabf5a6443cdee7eb4e4f7bcb0041059dedc1"
+      },
+      {
+        "path": "packages/operator-core/lib/coverage-census/attribution/setup-vitest.ts",
+        "sha256": "11c0d96a8d1ddc23baad84c3f516a701cbac1392d5e67ddbc7443002c7caf1f9",
+        "basis": "vite-pre-transform",
+        "currentSha256": "11c0d96a8d1ddc23baad84c3f516a701cbac1392d5e67ddbc7443002c7caf1f9"
+      },
+      {
+        "path": "packages/operator-core/lib/detached-imports/index.ts",
+        "sha256": "04a702af3625adf2c7bbcb9742c73c3d26ee58311bc2107148c2bc3aa0cf3f0d",
+        "basis": "vite-pre-transform",
+        "currentSha256": "04a702af3625adf2c7bbcb9742c73c3d26ee58311bc2107148c2bc3aa0cf3f0d"
+      },
+      {
+        "path": "packages/operator-core/lib/detached-imports/setup-vitest.ts",
+        "sha256": "ff26e069491e86d04b09d5444f015dcdf9103b83776755544d4911b8dd2c0526",
+        "basis": "vite-pre-transform",
+        "currentSha256": "ff26e069491e86d04b09d5444f015dcdf9103b83776755544d4911b8dd2c0526"
+      },
+      {
+        "path": "packages/operator-core/lib/release/dependency-copy-isolation.setup-vitest.ts",
+        "sha256": "2ebb7872d8e9060543163239c28fa11c6977651495a5ce889baaa8c658809f7e",
+        "basis": "vite-pre-transform",
+        "currentSha256": "2ebb7872d8e9060543163239c28fa11c6977651495a5ce889baaa8c658809f7e"
+      },
+      {
+        "path": "packages/operator-core/lib/workspace-host/aws-host-bootstrap-push-core.mjs",
+        "sha256": "bec48dbf02997e1d96a5403a28d7b3fce1042528456eb128b3678c2006b45514",
+        "basis": "vite-pre-transform",
+        "currentSha256": "bec48dbf02997e1d96a5403a28d7b3fce1042528456eb128b3678c2006b45514"
+      },
+      {
+        "path": "packages/operator-core/lib/workspace-host/durable-filesystem-script.ts",
+        "sha256": "25c8ed16523de30629a56e1a2e527c9f7bbb421c5e6e4309deb9311d4b7bd121",
+        "basis": "vite-pre-transform",
+        "currentSha256": "25c8ed16523de30629a56e1a2e527c9f7bbb421c5e6e4309deb9311d4b7bd121"
+      },
+      {
+        "path": "packages/operator-core/lib/workspace-host/durable-storage-quota.kernel.test.ts",
+        "sha256": "e739a7914fe78bd702849c00c62936fb0abc3dc3c994cc0dcb184512d605e074",
+        "basis": "vite-pre-transform",
+        "currentSha256": "e739a7914fe78bd702849c00c62936fb0abc3dc3c994cc0dcb184512d605e074"
+      },
+      {
+        "path": "scripts/agent-capacity/gcp-rails.ts",
+        "sha256": "199e4c0ab8d143f0f39d3e8f792a398d825fc8deefb01ac54eeccd33d4b568a4",
+        "basis": "vite-pre-transform",
+        "currentSha256": "199e4c0ab8d143f0f39d3e8f792a398d825fc8deefb01ac54eeccd33d4b568a4"
+      },
+      {
+        "path": "scripts/lib/fs-mutex.mjs",
+        "sha256": "64ea4aa60e24a0d9b7fea0a1269c973f1920a4229953b0f41de2151d8cc07c2f",
+        "basis": "vite-pre-transform",
+        "currentSha256": "64ea4aa60e24a0d9b7fea0a1269c973f1920a4229953b0f41de2151d8cc07c2f"
+      },
+      {
+        "path": "scripts/lib/retention-pins.mjs",
+        "sha256": "bd2430d48d4a07143c42545482b3e55dfe306e6bdfcc71edd9f61170aed93dd6",
+        "basis": "vite-pre-transform",
+        "currentSha256": "bd2430d48d4a07143c42545482b3e55dfe306e6bdfcc71edd9f61170aed93dd6"
+      }
+    ],
+    "reasons": []
+  },
+  "limitations": [
+    "Local remount case collected but skipped in this GCP run; its earlier local proof is separate.",
+    "Quota limits 4GiB DB plus 4GiB shared workspace are proof values, not a chosen production allocation.",
+    "Renderer exercised; no production customer signup/paid/native-host customer journey or release artifact claim."
+  ],
+  "fixtureRepair": {
+    "hypothesis": "Hard reset occurred before guest provisioning/first receipt writes were flushed; reboot startup also restored probe directories to root, invalidating nonprivileged quota checks.",
+    "alternativeHypothesis": "Durable home bind or project quotas fail to survive a provider reboot.",
+    "distinguishingTest": "Sync guest filesystem before provider hard reset; preserve immutable first receipt, gate readiness on current boot, configure and assert probe UID each boot; verify different boot with same receipt/UUID/pin and post-reboot EDQUOT.",
+    "actualObservation": "Maintained GCP test passed with different bootId, equal original receipt, retained DB/repository/home files, equal quota pin and UUID, and EDQUOT in five directories; teardown verified.",
+    "recurrenceGuard": "packages/operator-core/lib/workspace-host/durable-storage-quota.kernel.test.ts"
+  }
+}

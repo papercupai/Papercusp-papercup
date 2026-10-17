@@ -72,7 +72,7 @@ export const TICKET_SOURCE_CONFIG_KEYS = ['teamIds', 'workspaceGid', 'projectGid
 export type TicketSourceConfigKey = (typeof TICKET_SOURCE_CONFIG_KEYS)[number];
 
 /** Config the connection flow owns. It is reported back but never settable from the page. */
-const CONNECTION_OWNED_CONFIG_KEYS = ['accountLabel'] as const;
+const CONNECTION_OWNED_CONFIG_KEYS = ['accountLabel', 'connectionOrigin', 'connectionAccountId'] as const;
 
 /**
  * The config keys a source of this provider may set: the properties its descriptor's configSchema
@@ -159,6 +159,9 @@ export interface TicketProviderSummary {
 
 /** An OAuth provider's client registration status, plus whether its flow needs a client secret. */
 export interface ProviderOAuthClientSummary extends OAuthClientRegistrationStatus {
+  userAgentRequired?: boolean;
+  /** The client registration must name the instance it belongs to. */
+  instanceRequired?: boolean;
   /** False when the provider's flow uses PKCE and can run with a client ID alone. */
   secretRequired: boolean;
 }
@@ -282,8 +285,8 @@ const tracksTickets = (descriptor: ProviderDescriptor): boolean =>
   descriptor.datatypes.includes(TICKET_DATATYPE) && Boolean(descriptor.oauth);
 
 /** The existing OAuth start link for a descriptor provider, returning to Settings → Integrations. */
-export function ticketConnectHref(descriptor: ProviderDescriptor): string {
-  const plugin = descriptorOAuthPlugin(descriptor);
+export function ticketConnectHref(descriptor: ProviderDescriptor, instanceOrigin?: string): string {
+  const plugin = descriptorOAuthPlugin(descriptor, instanceOrigin);
   const params = new URLSearchParams({
     provider: plugin,
     plugin,
@@ -307,6 +310,8 @@ export function summarizeIntegrationProvider(
   const d = entry.descriptor;
   const schema = configSchemaOf(d);
   const properties = isPlainObject(schema?.properties) ? schema.properties : {};
+  const settable = settableTicketConfigKeys(schema);
+  const requiredConfig = missingRequiredJsonSchemaKeys(schema, {}).filter((key) => settable.includes(key));
   return {
     id: d.id,
     displayName: d.displayName ?? d.id,
@@ -315,20 +320,26 @@ export function summarizeIntegrationProvider(
     tracksTickets: tracksTickets(d),
     canListContainers: d.capabilities.includes(TICKET_CONTAINERS_CAPABILITY),
     statusMapping: 'sectionCategories' in properties ? 'sections' : 'provider-defined',
-    requiredConfig: missingRequiredJsonSchemaKeys(schema, {}),
+    requiredConfig,
     sourceConfigSchema: schema ? {
       ...schema,
       properties: {
         ...Object.fromEntries(Object.entries(properties).filter(([key]) => settableTicketConfigKeys(schema).includes(key))),
         harnessSlug: { type: 'string', title: 'Project to store activity in', minLength: 1 },
       },
-      required: [...new Set([...missingRequiredJsonSchemaKeys(schema, {}), 'harnessSlug'])],
+      required: [...new Set([...requiredConfig, 'harnessSlug'])],
     } : null,
-    connectHref: d.oauth ? ticketConnectHref(d) : null,
+    connectHref: d.oauth ? ticketConnectHref(d, oauthClient?.origin) : null,
     credentials,
     sourceSettings: providerSourceSettingsOffer(d),
+    // Keep an instance setup path relative: the form binds it to its current
+    // origin input before credentials exist and when changing instances.
     appRegistration: providerAppRegistrationView(d),
-    oauthClient: d.oauth && oauthClient ? { ...oauthClient, secretRequired: !d.oauth.pkce } : null,
+    oauthClient: d.oauth && oauthClient ? { ...oauthClient, secretRequired: !d.oauth.pkce,
+      configured: oauthClient.configured && (!d.oauth.userAgentRequired || Boolean(oauthClient.userAgent)) && (!d.oauth.instance || Boolean(oauthClient.origin)),
+      ...(d.oauth.userAgentRequired ? { userAgentRequired: true } : {}),
+      ...(d.oauth.instance ? { instanceRequired: true } : {}),
+    } : null,
   };
 }
 

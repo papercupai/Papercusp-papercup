@@ -80,10 +80,10 @@ export const CARRY_DRILL_DROP_BACKFILL_MS = 15 * 60_000;
 export const PRODUCTION_CARRY_WINDOW_MS = 60 * 60_000;
 export const PRODUCTION_CARRY_MIN_TERMINAL_OUTCOMES = 20;
 export const PRODUCTION_CARRY_DELIVERY_RATE_FLOOR = 0.5;
-/** The host writer caps each per-owner ledger at 256 KiB. Reading that same
- *  ceiling makes the watchdog bounded without discarding rows the writer still
- *  retains from a busy trailing hour. */
-export const PRODUCTION_CARRY_SCAN_TAIL_BYTES = 256 * 1024;
+/** Bounded page size for complete per-owner ledger scans. */
+export const PRODUCTION_CARRY_SCAN_CHUNK_BYTES = 256 * 1024;
+/** @deprecated Use PRODUCTION_CARRY_SCAN_CHUNK_BYTES. */
+export const PRODUCTION_CARRY_SCAN_TAIL_BYTES = PRODUCTION_CARRY_SCAN_CHUNK_BYTES;
 
 /**
  * An orphan older than this is history, not news — the same horizon
@@ -275,19 +275,34 @@ export function summarizeProductionCarryDelivery(
 }
 
 /**
- * Read recently-modified per-owner event ledgers, bounded to the writer's own
- * 256 KiB cap. The shared drill ledger is excluded: some production drop rows
- * are mirrored there for drill-report compatibility and would be double-counted.
+ * Read recently-modified per-owner event ledgers in bounded pages. Strict reads
+ * validate the whole ledger while retaining only in-window terminal outcomes,
+ * so an over-cap file cannot abort this census or inflate its memory use with
+ * old rows. Owner files are read sequentially to keep the shared libuv worker
+ * pool available to other filesystem work. The shared drill ledger is excluded:
+ * some production drop rows are mirrored there for drill-report compatibility
+ * and would be double-counted.
  */
 export async function readRecentProductionCarryEvents(
   dir: string = PSU_PTY_DIR,
   now: number = Date.now(),
   windowMs: number = PRODUCTION_CARRY_WINDOW_MS,
-  maxBytes: number = PRODUCTION_CARRY_SCAN_TAIL_BYTES,
+  chunkBytes: number = PRODUCTION_CARRY_SCAN_CHUNK_BYTES,
 ): Promise<PtyHostEvent[]> {
   const events: PtyHostEvent[] = [];
+  const windowStartMs = now - windowMs;
+  const isWindowTerminalOutcome = (event: PtyHostEvent): boolean => {
+    if (event.mode !== 'carry-respawn') return false;
+    const ts = eventTimeMs(event);
+    if (ts == null || ts < windowStartMs || ts > now) return false;
+    return event.kind === 'respawn-carry-delivered' || event.kind === 'respawn-carry-dropped' ||
+      event.kind === 'respawn-failed';
+  };
   for (const ownerId of await listRecentHostEventOwners(dir, now - windowMs, true)) {
-    events.push(...(await readHostEventTailAsync(ownerId, dir, maxBytes, { requireComplete: true })));
+    events.push(...(await readHostEventTailAsync(ownerId, dir, chunkBytes, {
+      requireComplete: true,
+      filterEvent: isWindowTerminalOutcome,
+    })));
   }
   return events;
 }
@@ -584,16 +599,33 @@ export async function runCarryDrillDropSweepOnce(
     }
   }
   // Absence from an incremental scan (or an unreadable ledger's empty fallback)
-  // says nothing about recovery. Only the matching drill's later terminal delivery does.
+  // says nothing about recovery. A matching drill's later delivery does; so does
+  // a superseded retirement when it is the latest terminal history. The latter
+  // repairs one-shot conditions emitted by older watchdog versions, including
+  // retirements that predate this sweep's watermark. A later real failure keeps
+  // the condition open.
+  const nowMs = deps.now();
   for (const key of openKeys) {
     const attempt = carryAttempt(key, prefix);
     if (!attempt) continue;
     const [drillId, failedAt] = attempt;
-    const latest = events.filter((event) => event.drillId === drillId &&
-      ['carry-drill-carry-delivered', 'carry-drill-carry-dropped', 'carry-drill-respawn-failed'].includes(event.kind) &&
-      Date.parse(event.ts) >= Date.parse(failedAt) && Date.parse(event.ts) <= deps.now())
-      .sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts))[0];
-    if (latest?.kind === 'carry-drill-carry-delivered' && Date.parse(latest.ts) > Date.parse(failedAt)) {
+    const failedAtMs = Date.parse(failedAt);
+    const terminal = events.flatMap((event) => {
+      if (event.drillId !== drillId ||
+          !['carry-drill-carry-delivered', 'carry-drill-carry-dropped', 'carry-drill-respawn-failed'].includes(event.kind)) {
+        return [];
+      }
+      const ts = Date.parse(event.ts);
+      return Number.isFinite(ts) && ts >= failedAtMs && ts <= nowMs ? [{ event, ts }] : [];
+    });
+    if (terminal.length === 0) continue;
+    const latestTs = terminal.reduce((max, { ts }) => Math.max(max, ts), Number.NEGATIVE_INFINITY);
+    const latest = terminal.filter(({ ts }) => ts === latestTs);
+    const delivered = latestTs > failedAtMs &&
+      latest.every(({ event }) => event.kind === 'carry-drill-carry-delivered');
+    const retiredSuperseded = latestTs >= failedAtMs &&
+      latest.every(({ event }) => event.kind === 'carry-drill-carry-dropped' && event.reason === 'superseded');
+    if (delivered || retiredSuperseded) {
       await resolveAlarm(key, 'carry-drill-drop-watchdog', deps.rail);
     }
   }

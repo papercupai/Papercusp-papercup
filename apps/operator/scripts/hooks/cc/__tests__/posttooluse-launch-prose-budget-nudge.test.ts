@@ -4,6 +4,8 @@ import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// @ts-ignore — pure JS guard; the existing hook subprocess cases verify verbatim installation.
+import { STANDALONE_ENTRY_EXEMPTIONS } from '../../../../../../scripts/check-no-hand-rolled-cli-entry.mjs';
 
 const {
   findRepoRoot,
@@ -16,6 +18,10 @@ const {
 } = await import(process.env.PAPERCUSP_PROSE_BUDGET_SUBJECT || '../posttooluse-launch-prose-budget-nudge.mjs');
 
 describe('posttooluse-launch-prose-budget-nudge', () => {
+  it('records exactly one standalone CLI guard with its installation reason', () => {
+    const exemption = STANDALONE_ENTRY_EXEMPTIONS.get('apps/operator/scripts/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs|file-url-to-path');
+    expect(exemption).toMatchObject({ count: 1, reason: expect.stringContaining('Installed verbatim') });
+  });
   it('recognises prompt and projected guide paths, but not ordinary source files', () => {
     expect(isLaunchProsePath('/repo/apps/operator/prompts/papercusp-su.codex.md')).toBe(true);
     expect(isLaunchProsePath('/repo/CLAUDE.md')).toBe(true);
@@ -76,7 +82,7 @@ describe('posttooluse-launch-prose-budget-nudge', () => {
   });
 
   it('finds the repository from a nested hook path', () => {
-    expect(findRepoRoot('/repo/apps/operator/prompts/foo.md', (path) => path === '/repo/scripts/check-launch-prose-budget.ts')).toBe('/repo');
+    expect(findRepoRoot('/repo/apps/operator/prompts/foo.md', (path: string) => path === '/repo/scripts/check-launch-prose-budget.ts')).toBe('/repo');
   });
 
   it.each([

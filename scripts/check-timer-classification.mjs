@@ -307,6 +307,10 @@ export const CLIENT_BASELINE = new Set([
 export const isExcluded = (f) =>
   f.startsWith('_retired/') ||
   f.includes('/_retired/') ||
+  // Host bundle debug fixtures are generated artifacts, not hand-authored source.
+  // Their copied managedSetInterval calls cannot carry a D-004 classification and
+  // must not make the source guard fail when a fixture is present in the tree.
+  /(?:^|\/)dist-host-native-fixture-debug-[^/]+(?:\/|$)/.test(f) ||
   f.includes('/node_modules/') ||
   f.includes('/dist/') ||
   f.includes('/.next/') ||

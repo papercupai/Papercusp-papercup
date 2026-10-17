@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { Rubric } from './rubrics';
 import type { ScorecardRow } from './scorecards';
 import { getAcceptanceRubricVettingStatus } from './acceptance-rubric-vetting';
+vi.mock('./acceptance-rubric-critique', () => ({ readCurrentAcceptanceRubricCritique: vi.fn(async () => null) }));
 
 const rubric = {
   rubricId: 'acceptance-plan',

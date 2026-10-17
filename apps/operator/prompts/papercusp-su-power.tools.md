@@ -133,7 +133,7 @@ work-item-scoped conversation threads).
   |---|---|
   | exact text, a literal, a config key, a filename | `rg` (working-tree bytes) |
   | definition, references, implementations, type truth, diagnostics, refactor preview | `lsp:query` (compiler semantics) |
-  | call chains, impact radius, subsystem/route topology | `gitnexus.context` / `gitnexus.impact` (indexed graph; freshness always explicit) |
+  | call chains, impact radius, subsystem/route topology | `graph:query` (`context` / `impact` / `trace`, bounded `paths`; first-party JS/TS compiler or syntax evidence, with explicit coverage and runtime limits) |
   | a syntax pattern or a mechanical codemod | `code:structural` (ast-grep shape, never type truth) |
   | packaging evidence for a reviewer or a model | `code:pack` — strictly POST-retrieval, never an authority for symbol truth |
 
@@ -141,10 +141,13 @@ work-item-scoped conversation threads).
   is UNAVAILABLE: historical builds returned empty or unranked noise, and
   current real-symbol probes SIGSEGV the shared GitNexus MCP process (D-065).
   The bridge now refuses it before child dispatch so it cannot take down the
-  otherwise-working siblings. Use `gitnexus.context` for a known symbol,
-  `graph:query` for topology, or `rg` for keywords. Raw `repomix.pack` skips
+  otherwise-working siblings. Use `graph:query` for topology or `rg` for keywords.
+  Optional internal `gitnexus.context` / `gitnexus.impact` comparisons remain
+  authorized by gitnexus-deterministic-integration D-005, with index freshness
+  explicit; D-004 excludes GitNexus from public/installer distribution and
+  shipped dependencies. Raw `repomix.pack` skips
   the pinned version and the secret-scanning rails `code:pack` enforces
-  (D-040/D-041). ⚠ The gitnexus row reaches you through the plugin bridge, so
+  (D-040/D-041). ⚠ Optional GitNexus tools reach you through the plugin bridge, so
   test it rather than assuming: if a call answers `Unknown namespace(s):
   gitnexus`, the pinned-resolver fix has not deployed yet (P-006) — fall back to
   `rg` + `lsp:query` for that question class until it does, and do NOT read the

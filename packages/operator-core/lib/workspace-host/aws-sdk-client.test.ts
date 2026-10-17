@@ -320,10 +320,11 @@ class FakeAws {
     }
   }
 
-  private volumeShape(volume: { id: string; state: string; attachedTo?: string }) {
+  private volumeShape(volume: { id: string; state: string; tags: { Key: string; Value: string }[]; attachedTo?: string }) {
     return {
       VolumeId: volume.id,
       State: volume.state,
+      Tags: volume.tags,
       Attachments: volume.attachedTo ? [{ InstanceId: volume.attachedTo, State: 'attached' }] : [],
     };
   }
@@ -932,6 +933,20 @@ describe('seam methods send the expected SDK command and input (AUTO-BAR-R-2-P-0
     expect(restored!.input).toMatchObject({ SnapshotId: 'snap-1', VolumeInitializationRate: 250 });
     expect(fresh!.input).not.toHaveProperty('VolumeInitializationRate');
     expect(fresh!.input).not.toHaveProperty('SnapshotId');
+  });
+
+  it('retains every active EBS attachment, zone, encryption and tenant tags for writer fencing', async () => {
+    const { aws, client } = setup();
+    aws.overrides.set('ec2:DescribeVolumesCommand', () => ({ Volumes: [{
+      VolumeId: 'vol-1', State: 'in-use', AvailabilityZone: 'us-east-2a', Encrypted: true, MultiAttachEnabled: true,
+      Tags: [{ Key: 'papercusp:host-id', Value: 'host-1' }],
+      Attachments: [{ InstanceId: 'i-owner', State: 'attached' }, { InstanceId: 'i-foreign', State: 'detaching' }],
+    }] }));
+    await expect(client.describeVolume('vol-1')).resolves.toMatchObject({
+      availabilityZone: 'us-east-2a', encrypted: true, multiAttachEnabled: true,
+      attachedInstanceId: 'i-owner', attachedInstanceIds: ['i-owner', 'i-foreign'],
+      tags: { 'papercusp:host-id': 'host-1' },
+    });
   });
 
   it('volumes and snapshots: find by token tag, wait, attach, delete, idempotent snapshot', async () => {

@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { createTextCollector } from '../child-output';
 import { managedSpawn } from '../task-manager/managed-spawn';
 import { parseArgoTunnelCert, parseLoginUrl, type ArgoTunnelLogin } from './config';
 
@@ -240,12 +241,14 @@ export async function startLogin(opts: {
   });
   const session: LoginSession = { child, homeDir, state: 'waiting', loginUrl: null, login: null, error: null, output: '' };
   state.login = session;
-  const onData = (d: Buffer | string) => {
-    session.output = (session.output + String(d)).slice(-8000);
-    session.loginUrl ??= parseLoginUrl(session.output);
-  };
-  child.stdout?.on('data', onData);
-  child.stderr?.on('data', onData);
+  const collector = createTextCollector(child.stdout, {
+    retainText: false,
+    onDecodedText(text) {
+      session.output = (session.output + text).slice(-8000);
+      session.loginUrl ??= parseLoginUrl(session.output);
+    },
+  });
+  collector.attach(child.stderr);
   const killer = setTimeout(() => {
     if (session.state === 'waiting') {
       session.state = 'failed';

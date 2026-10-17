@@ -54,8 +54,10 @@ import { convertPlanItem } from '../../../plan-items/convert';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { withBoundedTimeout } from '../../../bounded-timeout';
+import { detectIntentPivot } from '../../../intent-pivot';
 import { cellTranscriptionHintResolvingCommits } from '../../../git-commit-resolver';
 import { goalRefSchema } from '../../../agent-goal-ref';
+import { clearExplicitInboxWakePark } from '../../../events/await/store';
 
 /**
  * EI-9484 — "coord:declare-intent timing out repeatedly": the watchdog observed
@@ -287,6 +289,18 @@ export default defineTool({
       args.harness ?? null,
     );
 
+    // Declaring resumed work supersedes an old deliberate inbox park. Keep the
+    // standing channel/queued wakes; SessionStart alone must still preserve parks.
+    let inboxWakePark: { cleared: boolean; warning?: string } | undefined;
+    try {
+      if (await clearExplicitInboxWakePark(identity.ownerId)) inboxWakePark = { cleared: true };
+    } catch (error) {
+      inboxWakePark = {
+        cleared: false,
+        warning: `Work declared, but the previous inbox park could not be cleared: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+
     // Offline-member mailbox (shared-hive-collaboration P-016): declaring intent is
     // the explicit ARRIVAL signal (the OMP hook calls it at session start), so a
     // returning member's parked `@user:` assignments are delivered into their inbox
@@ -467,15 +481,21 @@ export default defineTool({
     // bounded so the leg can never hold the declare past its budget.
     const pivot = (
       await withBoundedTimeout(
-        (async () => {
-          if (!prevIntent) return null;
-          const { detectIntentPivot } = await import('../../../intent-pivot');
+        async signal => {
+          if (!prevIntent || signal.aborted) return null;
+          // Reuse the comparator's eligibility rules before any optional model
+          // work. Short or unchanged intents never require a warm-up.
+          const lexical = await detectIntentPivot(prevIntent, args.intent, {});
+          if (!lexical || signal.aborted) return lexical;
           // Lazy embedder: resolved only if the comparison actually runs (the
           // short/identical-intent short-circuits never pay for it). An
           // unresolvable/disabled embedder throws → lexical fallback inside.
           const embed = async (text: string): Promise<number[]> => {
+            if (signal.aborted) throw new Error('intent pivot deadline elapsed');
             const { resolveBackfillEmbedder } = await import('../../../search/embed-backfill');
+            if (signal.aborted) throw new Error('intent pivot deadline elapsed');
             const resolved = await resolveBackfillEmbedder();
+            if (signal.aborted) throw new Error('intent pivot deadline elapsed');
             if (resolved.mode === 'disabled') throw new Error('embedder disabled');
             return resolved.embed(text);
           };
@@ -496,24 +516,35 @@ export default defineTool({
           // result is discarded) and answers lexically; every later call in the
           // same process races the warm embedder within budget.
           const { isLocalEmbedAcquisitionCheap } = await import('../../../memory/embed-sidecar-wiring');
-          if (!isLocalEmbedAcquisitionCheap()) return detectIntentPivot(prevIntent, args.intent, {});
+          // Imports may finish after the optional leg returned its fallback.
+          // Such abandoned work must not start a detached model warm-up.
+          if (signal.aborted) return null;
+          if (!isLocalEmbedAcquisitionCheap()) return lexical;
           if (!pivotEmbedWarm) {
             void embed(args.intent)
               .then(() => {
                 pivotEmbedWarm = true;
               })
               .catch(() => {});
-            return detectIntentPivot(prevIntent, args.intent, {});
+            return lexical;
           }
           return detectIntentPivot(prevIntent, args.intent, { embed });
-        })(),
-        { fallback: null, timeoutMs: 2_500, label: 'declare-intent:pivot' },
+        },
+        { fallback: null, timeoutMs: 2_500, label: 'declare-intent:pivot', signal: ctx.signal },
       )
     ).value;
     const pivotField =
       pivot?.pivot === true
         ? { pivotHint: (await import('../../../intent-pivot')).pivotHint(pivot) }
         : undefined;
+    const taskBrief = args.current_files?.length && identity.workspaceId
+      && await getFlag(FLAGS.CODE_INTEL_PUSH_INTENT, identity.ownerId).catch(() => false)
+      ? (await withBoundedTimeout(async () => {
+        const { getIntentTimeTaskBrief } = await import('../../../code-intelligence/task-brief');
+        return getIntentTimeTaskBrief({ owner: identity.ownerId, workspaceId: identity.workspaceId!,
+          harness: args.harness ?? ctx.harnessSlug ?? presence?.potSlug ?? '', intent: args.intent, paths: args.current_files! });
+      }, { timeoutMs: 6_000, fallback: null, label: 'declare-intent:task-brief' })).value
+      : null;
     return {
       content: [
         {
@@ -521,7 +552,9 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             presence,
+            ...(inboxWakePark ? { inboxWakePark } : {}),
             ...(claims ? { claims } : {}),
+            ...(taskBrief ?? {}),
             ...(overCoverageHint ? { overCoverageHint } : {}),
             ...(cellHint ? { cellHint } : {}),
             ...(pivotField ?? {}),

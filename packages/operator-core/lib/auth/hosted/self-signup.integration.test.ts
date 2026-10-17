@@ -31,6 +31,9 @@ import {
 } from './self-signup';
 import { createHostedIdentityBinder } from '../hosted-identity-binding';
 import {
+  readHostedEntitlementAuthority, type HostedTrialEntitlementPolicy,
+} from '../hosted-entitlement-store';
+import {
   HostedRuntimeMembershipAuthority,
   HostedServiceIdentityDirectory,
 } from './service-adapters';
@@ -72,6 +75,20 @@ function signupInput(email: string, overrides: Partial<HostedSelfSignupInput> = 
     acceptedAt: new Date(),
     ...overrides,
   };
+}
+
+/** Explicit fixture policy, never a production price or capacity default. */
+function trialPolicy(): HostedTrialEntitlementPolicy {
+  return { assignmentDurationMs: 86_400_000, bundle: {
+    schemaVersion: 1, bundleId: 'trial-fixture', bundleVersion: 3,
+    record: { source: 'trial', actor: { kind: 'service', principalId: 'service:trial-policy' },
+      auditReceiptId: 'trial-policy:fixture-v3', effectiveFrom: new Date('2020-01-01'), effectiveUntil: new Date('2099-01-01') },
+    entitlements: { allowedProviders: ['gcp'], limits: { workspaces: 1, members: 1 },
+      browserAccess: { pty: true, files: true }, supportTier: 'trial',
+      quotas: { 'pool.agents': 50, 'pool.hosts': 1, 'pool.cpu-millicores': 4000,
+        'pool.memory-mib': 16384, 'pool.db-gib': 256, 'pool.workspace-gib': 100 },
+      budgets: { 'pool.cost.usd.minor': 10000 }, rolloutFlags: {} },
+  } };
 }
 
 interface AdmissionCensus {
@@ -170,6 +187,68 @@ describe('hosted self-signup admission (real Postgres, real roles)', () => {
 
   afterAll(async () => {
     await db?.cleanup();
+  });
+
+  it('atomically produces canonical trial authority from server policy and ignores caller allowances', async () => {
+    const policy = trialPolicy();
+    const configured = new PostgresHostedSelfSignupAdmission(runService, { trialPolicy: policy });
+    // Neither a retained configuration reference nor request-only fields may widen it.
+    (policy.bundle.entitlements.quotas as Record<string, number>)['pool.agents'] = 999;
+    const input = signupInput(`${unique('trial-authority')}@example.test`);
+    const result = await configured.complete({ ...input, trialPolicy: policy, tier: 'paid' } as HostedSelfSignupInput);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('configured trial signup failed');
+    const read = await runService(sql => readHostedEntitlementAuthority(sql, result.binding.organizationId));
+    expect(read).toMatchObject({ ok: true, authorityRevision: 1, grantUserId: result.binding.userId,
+      resolution: { bundleId: 'trial-fixture', bundleVersion: 3, quotas: { 'pool.agents': 50, 'pool.db-gib': 256 },
+        auditReceiptIds: ['trial-policy:fixture-v3', `trial-signup:${result.binding.organizationId}`] } });
+    const [stored] = await db.adminSql`SELECT authority, authority_revision FROM papercusp_auth.hosted_entitlements
+      WHERE organization_id = ${result.binding.organizationId}::uuid`;
+    const record = stored.authority.assignments[0].record;
+    expect(new Date(record.effectiveUntil).getTime() - new Date(record.effectiveFrom).getTime()).toBe(86_400_000);
+    expect(await runService(sql => readHostedEntitlementAuthority(sql, result.binding.organizationId,
+      new Date(record.effectiveUntil)))).toMatchObject({ ok: false, reason: 'no_active_assignment' });
+    // A completed callback with a new policy cannot mint a second trial or extend expiry.
+    const changed = trialPolicy(); changed.assignmentDurationMs *= 2;
+    expect(await new PostgresHostedSelfSignupAdmission(runService, { trialPolicy: changed }).complete(input))
+      .toMatchObject({ ok: true, binding: result.binding });
+    const [replayed] = await db.adminSql`SELECT authority, authority_revision FROM papercusp_auth.hosted_entitlements
+      WHERE organization_id = ${result.binding.organizationId}::uuid`;
+    expect(replayed).toEqual(stored);
+  });
+
+  it('keeps unconfigured free labels allowance-free and refuses inactive policy without a partial tenant', async () => {
+    const legacy = await admission().complete(signupInput(`${unique('no-trial-policy')}@example.test`));
+    expect(legacy.ok).toBe(true);
+    if (!legacy.ok) throw new Error('unconfigured signup failed');
+    expect(await runService(sql => readHostedEntitlementAuthority(sql, legacy.binding.organizationId)))
+      .toEqual({ ok: false, reason: 'authority_missing' });
+    const expired = trialPolicy();
+    expired.bundle = { ...expired.bundle, record: { ...expired.bundle.record, effectiveUntil: new Date('2021-01-01') } };
+    const input = signupInput(`${unique('expired-trial-policy')}@example.test`);
+    expect(await new PostgresHostedSelfSignupAdmission(runService, { trialPolicy: expired }).complete(input))
+      .toEqual({ ok: false, code: 'unavailable', retryable: true });
+    expect(await census(input.identity.primaryEmail)).toEqual(EMPTY);
+    expect(await attemptStatuses(input.identity.primaryEmail)).toEqual(['pending']);
+  });
+
+  it('rolls trial authority back with the admission when a later effect fails', async () => {
+    const input = signupInput(`${unique('trial-rollback')}@example.test`);
+    let sawAuthority = false;
+    const failAfterAdmission: HostedServiceContextRunner = fn => runService(async sql => {
+      const result = await fn(sql);
+      if (typeof result === 'object' && result !== null && 'ok' in result && result.ok === true) {
+        const [row] = await sql`SELECT authority FROM papercusp_auth.hosted_entitlements
+          WHERE user_id IN (SELECT id FROM papercusp_auth.hosted_users WHERE primary_email = ${input.identity.primaryEmail})`;
+        sawAuthority = row?.authority?.assignments?.length === 1;
+        throw new Error('injected_failure_after_trial_authority');
+      }
+      return result;
+    });
+    expect(await new PostgresHostedSelfSignupAdmission(failAfterAdmission, { trialPolicy: trialPolicy() }).complete(input))
+      .toEqual({ ok: false, code: 'unavailable', retryable: true });
+    expect(sawAuthority).toBe(true);
+    expect(await census(input.identity.primaryEmail)).toEqual(EMPTY);
   });
 
   it('enrolls a newly admitted invitation account before workspace selection and preserves completed progress on replay', async () => {

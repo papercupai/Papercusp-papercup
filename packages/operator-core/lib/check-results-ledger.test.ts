@@ -12,6 +12,23 @@ const AT = '2026-10-13T04:00:00.000Z';
 const adoption = { key: 'r-31', check: { kind: 'instrument', instrumentKey: 'code-intel:native-adoption-good-use' } };
 
 describe('scheduled platform instrument results', () => {
+  it('runs work-overhead checks in the canonical rubric harness and completed daily window', async () => {
+    const criterion = { key: 'R-15', check: { kind: 'instrument', instrumentKey: 'agents:acceptance-machinery-share' } };
+    const windows: unknown[] = [];
+    const resolvePlatform = async (window: unknown) => {
+      windows.push(window); return { verdict: 'fail' as const, detail: 'share above target' };
+    };
+    const [missingScope] = await runInstrumentChecks({ rubricRef: 'paperwork', criteria: [criterion],
+      workspaceId: 'ws', now: () => Date.parse(AT), resolvePlatform });
+    expect(missingScope).toMatchObject({ verdict: 'error', check: { value: null } });
+    expect(windows).toEqual([]);
+    const [result] = await runInstrumentChecks({ rubricRef: 'paperwork', criteria: [criterion],
+      workspaceId: 'ws', harnessSlug: 'papercusp', now: () => Date.parse(AT), resolvePlatform });
+    expect(windows).toEqual([{ workspaceId: 'ws', harnessSlug: 'papercusp',
+      windowStart: '2026-10-12T04:00:00.000Z', windowEnd: AT }]);
+    expect(result).toMatchObject({ verdict: 'fail', measuredAt: AT, check: { id: 'R-15:instrument', value: 0 } });
+  });
+
   it('measures the exact completed trailing window in the rubric workspace and records failure', async () => {
     const windows: unknown[] = [];
     const [result] = await runInstrumentChecks({ rubricRef: 'native', criteria: [adoption],

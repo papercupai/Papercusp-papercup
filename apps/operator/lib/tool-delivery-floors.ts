@@ -110,6 +110,12 @@ export const DECLARED_FLOORS: readonly FloorEntry[] = Object.freeze([
     reason: 'a directed question outranks own work; without inbox access a blocked peer waits on an answer that never comes',
   },
   {
+    name: 'events:status',
+    tier: 'silent-halt-lifecycle',
+    reason:
+      'wake and await recovery depends on its live delivery rows; without status an agent cannot distinguish a progressing emitter from a stranded wait before re-arming',
+  },
+  {
     name: 'coord:whoami',
     tier: 'prose-mandate',
     reason:

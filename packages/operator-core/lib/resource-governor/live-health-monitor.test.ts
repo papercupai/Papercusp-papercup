@@ -383,7 +383,7 @@ describe('LiveHealthMonitor composition', () => {
       await monitor.sampleOnce();
       const slow = log.mock.calls.find(([line]) => line.startsWith('[resource-governor-health] sample exceeded freshness: '))![0];
       expect(JSON.parse(slow.slice(slow.indexOf('{')))).toEqual({
-        sequence: 1, outcome: 'complete', sampleMs: 16_200,
+        writer: monitor.writer, sequence: 1, outcome: 'complete', sampleMs: 16_200,
         phases: { collectHost: 40, readFragments: 60, compose: 0, writeSnapshot: 100, historyYield: 0, history: 16_000 },
       });
       expect(log.mock.calls.some(([line]) => line.includes('history write failed: archive unavailable'))).toBe(failHistory);
@@ -395,6 +395,45 @@ describe('LiveHealthMonitor composition', () => {
         previousPhases: { history: 16_000 },
       });
     } finally { await monitor.stop(); clock.mockRestore(); }
+  });
+
+  it('attributes equal-sequence slow samples and gaps to their replacement monitor instances', async () => {
+    let tick = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => tick);
+    const log = vi.fn();
+    const createMonitor = () => new LiveHealthMonitor({ paths: PATHS, now: () => 2_000 + tick,
+      collectHost: async () => counters(), readFragments: async () => [],
+      writeSnapshot: async () => { tick += 16_000; }, writeHistory: async () => {}, log });
+    const first = createMonitor();
+    let replacement: LiveHealthMonitor | undefined;
+    try {
+      await first.sampleOnce();
+      tick += 1_200;
+      await first.sampleOnce();
+      await first.stop();
+      replacement = createMonitor();
+      await replacement.sampleOnce();
+      tick += 1_200;
+      await replacement.sampleOnce();
+      const records = log.mock.calls.map(([line]) => ({
+        kind: line.slice(0, line.indexOf('{')), value: JSON.parse(line.slice(line.indexOf('{'))),
+      }));
+      const slow = records.filter(({ kind }) => kind.includes('sample exceeded freshness:'));
+      expect(slow.map(({ value }) => value.sequence)).toEqual([1, 2, 1, 2]);
+      // A replacement can reuse both the process PID and sample sequence. Only
+      // the recorded writer instance identifies which sample/gap it produced.
+      expect(first.writer.pid).toBe(replacement.writer.pid);
+      expect(first.writer.instanceId).not.toBe(replacement.writer.instanceId);
+      expect(slow.map(({ value }) => value.writer)).toEqual([
+        first.writer, first.writer, replacement.writer, replacement.writer,
+      ]);
+      const gaps = records.filter(({ kind }) => kind.includes('sample gap exceeded freshness:'));
+      expect(gaps.map(({ value }) => value.writer)).toEqual([first.writer, replacement.writer]);
+    } finally {
+      await first.stop();
+      await replacement?.stop();
+      clock.mockRestore();
+    }
   });
 
   it('detects an idle cadence gap after a fast sample without blaming archival work', async () => {

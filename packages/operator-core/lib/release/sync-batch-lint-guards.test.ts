@@ -54,6 +54,16 @@ describe('classifyGuardRun', () => {
     expect(classifyGuardRun({ exitCode: 1, output: actualLintFailure }, 'lint:design-primitives')).toBe('fail');
     expect(parseGuardOffenders(actualLintFailure, ROOT, 'lint:design-primitives')).toEqual(['apps/operator/app/example.tsx']);
   });
+  it('treats a JSON-escaped runner stack in a design-lint assertion as undetermined', () => {
+    const testFile = `${ROOT}/apps/operator/app/_lints/design-primitives.test.ts`;
+    const stack = `Error: STACK_TRACE_ERROR\n    at task (${testFile}:100:1)`;
+    const output = `TEST_FILE_ASSERTION_FAILURE file=${JSON.stringify(testFile)} ` +
+      `name=${JSON.stringify('blocks new native <select> controls in app UI')} message=${JSON.stringify(stack)}`;
+
+    expect(output).not.toContain('\n    at task (');
+    expect(classifyGuardRun({ exitCode: 1, output }, 'lint:design-primitives')).toBe('undetermined');
+    expect(parseGuardOffenders(output, ROOT, 'lint:design-primitives')).toEqual([]);
+  });
   it('timeouts, spawn failures, crashes and environment faults are undetermined', () => {
     expect(classifyGuardRun({ exitCode: null, output: '' })).toBe('undetermined');
     expect(
@@ -84,6 +94,48 @@ describe('parseGuardOffenders', () => {
       'apps/operator/e2e/_keyboard-input.ts',
       'packages/x/abs.ts',
       'app/api/[[...route]]/route.ts',
+    ]);
+  });
+
+  it('uses identity-lint diagnostic headers, not paths inside matched source excerpts', () => {
+    const out = [
+      '  docs/evidence/green-main-materialized-dependencies-preparation-20261014.json:57  [build-user-name]',
+      '      { "scope": "scripts/source-preview.d.mts only; .mjs is outside scripts compiler program", "exitCode": 0 }',
+      '  docs/evidence/green-main-ordered-chain-preparation-20261014.json:28  [build-user-name]',
+    ].join('\n');
+
+    expect(parseGuardOffenders(out, ROOT, 'lint:no-identity-literals')).toEqual([
+      'docs/evidence/green-main-materialized-dependencies-preparation-20261014.json',
+      'docs/evidence/green-main-ordered-chain-preparation-20261014.json',
+    ]);
+  });
+
+  it('uses owner-name-tag diagnostic headers, not paths in the explanation or source excerpts', () => {
+    const bracketTag = ['[owner', ':Person …]'].join('');
+    const parentheticalTag = 'OWNER … (Person, …)';
+    const out = [
+      '✗ 2 named provenance tags in shipped source (bin/audit-release-bundle.py)',
+      '  docs/evidence/owner-name-tag-output.md:79  ' + bracketTag,
+      '      **Source turn:** ' + bracketTag + ' appears in this excerpt',
+      '  docs/evidence/other-owner-name-tag-output.md:1991  ' + parentheticalTag,
+      '      another excerpt mentioning docs/evidence/unrelated.md',
+    ].join('\n');
+
+    expect(parseGuardOffenders(out, ROOT, 'lint:no-owner-name-tags')).toEqual([
+      'docs/evidence/owner-name-tag-output.md',
+      'docs/evidence/other-owner-name-tag-output.md',
+    ]);
+  });
+
+  it('uses box-identity diagnostic headers, not paths inside matched source excerpts', () => {
+    const out = [
+      '✗ 1 hardcoded home path(s) in tracked source.',
+      '  docs/evidence/green-main-materialized-dependencies-preparation-20261014.json:57  (user "build-user-name")',
+      '      { "scope": "scripts/source-preview.d.mts only; .mjs is outside scripts compiler program", "exitCode": 0, "log": "~/.papercusp/scratch/check.log" }',
+    ].join('\n');
+
+    expect(parseGuardOffenders(out, ROOT, 'lint:no-box-identity')).toEqual([
+      'docs/evidence/green-main-materialized-dependencies-preparation-20261014.json',
     ]);
   });
 

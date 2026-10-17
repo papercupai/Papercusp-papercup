@@ -659,6 +659,47 @@ describe('spec-test-adequacy evaluator → scorecards:emit round trip', () => {
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
+  // EI-26040696142518678: a repository commit is provenance, not a content change.
+  it('certifies unchanged bound content after an unrelated repository commit', async () => {
+    await installMeasuredFalsifiabilityProof();
+    const live = await runEvaluator({
+      harness: 'papercusp',
+      slug: PLAN,
+      classRef: 'plan-class-feature-ship',
+      specIds: [SPEC],
+      detail: 'full',
+    });
+    expect(live.rows[0]!.verdict).toBe('pass');
+
+    await writeFile(join(root, 'unrelated.txt'), 'This file is outside the bound measurement.\n');
+    execFileSync('git', ['add', '--all'], { cwd: root, stdio: 'ignore' });
+    execFileSync('git', [
+      '-c', 'user.name=Spec Adequacy Test',
+      '-c', 'user.email=spec-adequacy@example.invalid',
+      'commit', '--quiet', '-m', 'change an unrelated file after grading',
+    ], { cwd: root, stdio: 'ignore' });
+
+    const replay = await runEvaluator({
+      ...live.rows[0]!.scorecardDraft.rerunRecipe.args,
+      detail: 'summary',
+      payloadTier: 'full',
+    });
+    expect(replay.rows[0]!.verdict).toBe('pass');
+    expect(replay.rows[0]!.measurementEvidence.bindings[0]!.measuredAtCommit)
+      .not.toBe(live.rows[0]!.measurementEvidence.bindings[0]!.measuredAtCommit);
+    expect(replay.rows[0]!.measurementEvidence.bindings[0]!.measurementFingerprint)
+      .toBe(live.rows[0]!.measurementEvidence.bindings[0]!.measurementFingerprint);
+
+    const draft = live.rows[0]!.scorecardDraft;
+    draft.rerunRecipe.measurementEvidence!.bindings[0]!.measuredAtCommit = 'caller-forged-commit';
+    const result = await emitDraft(draft);
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, created: true, issueId: 'EI-ROUND-TRIP' });
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(captureImprovement.mock.calls[0])).not.toContain('caller-forged-commit');
+    expect(JSON.stringify(captureImprovement.mock.calls[0]))
+      .toContain(replay.rows[0]!.measurementEvidence.bindings[0]!.measuredAtCommit!);
+  });
+
   it('refuses the same card once the proven source moves because its stored measurement no longer matches replay', async () => {
     await installMeasuredFalsifiabilityProof();
     const live = await runEvaluator({

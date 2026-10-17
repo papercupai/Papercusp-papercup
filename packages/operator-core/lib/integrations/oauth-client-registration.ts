@@ -19,7 +19,7 @@ import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { dirname } from 'node:path';
 import { pinModuleState } from '@papercusp/module-singleton';
-import type { ProviderDescriptor } from '@papercusp/plugin-sdk';
+import { normalizeProviderInstanceOrigin, type ProviderDescriptor } from '@papercusp/plugin-sdk';
 import { operatorApiBase } from '../operator-api-base';
 import { papercuspPath } from '../papercusp-root';
 
@@ -27,7 +27,11 @@ export const OAUTH_APPS_FILE = 'oauth-apps.json';
 
 /** One entry of oauth-apps.json, as the connect path reads it. */
 export interface OAuthClientRegistration {
+  /** Host selected for this instance's registration. Never inferred from an API request. */
+  origin?: string;
   clientId: string;
+  /** Public application identification supplied by the owner, never invented by the host. */
+  userAgent?: string;
   clientSecret?: string;
   clientSecretFile?: string;
   redirectUri?: string;
@@ -37,10 +41,13 @@ export interface OAuthClientRegistration {
 
 /** What the settings page may know about a registration. Never the secret. */
 export interface OAuthClientRegistrationStatus {
+  /** Public instance origin; the credential itself is never returned. */
+  origin?: string;
   /** The oauth-apps.json key this provider's connect flow reads. */
   ref: string;
   configured: boolean;
   clientId: string | null;
+  userAgent?: string;
   hasClientSecret: boolean;
   /** The redirect URL to enter in the vendor's app settings: the registration's own, else the operator's callback. */
   redirectUri: string;
@@ -50,7 +57,10 @@ export interface OAuthClientRegistrationStatus {
 export type OAuthClientRegistrationErrorCode =
   | 'invalid-client-id'
   | 'invalid-client-secret'
+  | 'invalid-user-agent'
+  | 'user-agent-required'
   | 'client-secret-required'
+  | 'invalid-instance-origin'
   | 'registrations-unreadable';
 
 export class OAuthClientRegistrationError extends Error {
@@ -65,6 +75,34 @@ export class OAuthClientRegistrationError extends Error {
 
 const MAX_CLIENT_ID = 512;
 const MAX_CLIENT_SECRET = 4096;
+
+/** One printable ASCII HTTP header value. Spaces are valid; control/non-ASCII bytes are not. */
+export function normalizeOAuthUserAgent(value: unknown): string | null {
+  if (typeof value !== 'string' || /[^\x20-\x7e]/.test(value)) return null;
+  const normalized = value.trim();
+  return normalized.length > 0 && normalized.length <= 512 ? normalized : null;
+}
+
+/** Resolve only the descriptor group's host-held registration, pinned to its instance when present. */
+export async function providerOAuthUserAgent(
+  descriptor: ProviderDescriptor, registered: readonly ProviderDescriptor[], origin?: unknown,
+): Promise<string | null> {
+  const baseRef = clientRegistrationRefOf(descriptor, registered);
+  const ref = baseRef && (descriptor.oauth?.instance || origin != null) ? instanceClientRegistrationRef(baseRef, origin) : baseRef;
+  const client = ref ? await readOAuthClientRegistration(ref) : null;
+  const userAgent = normalizeOAuthUserAgent(client?.userAgent);
+  if (descriptor.oauth?.userAgentRequired && !userAgent) {
+    throw new OAuthClientRegistrationError('user-agent-required', 'This provider needs your app’s User-Agent in its OAuth registration.');
+  }
+  return userAgent;
+}
+
+/** Stable instance entry; changing the card's active registration never retargets older grants. */
+export function instanceClientRegistrationRef(ref: string, value: unknown): string {
+  const origin = normalizeProviderInstanceOrigin(value);
+  if (!origin) throw new OAuthClientRegistrationError('invalid-instance-origin', 'Enter the instance’s HTTPS origin without a path, port or credentials.');
+  return `${ref}@${new URL(origin).hostname}`;
+}
 
 /** The credential group a descriptor's OAuth connection belongs to (one token per group). */
 export function credentialGroupOf(descriptor: ProviderDescriptor): string {
@@ -129,10 +167,13 @@ export async function readOAuthClientRegistration(ref: string): Promise<OAuthCli
 }
 
 function statusOf(ref: string, entry: OAuthClientRegistration | null): OAuthClientRegistrationStatus {
+  const origin = normalizeProviderInstanceOrigin(entry?.origin);
   return {
+    ...(origin ? { origin } : {}),
     ref,
     configured: entry !== null,
     clientId: entry?.clientId ?? null,
+    ...(normalizeOAuthUserAgent(entry?.userAgent) ? { userAgent: normalizeOAuthUserAgent(entry?.userAgent)! } : {}),
     hasClientSecret: Boolean(entry && (entry.clientSecret || entry.clientSecretFile)),
     redirectUri: entry?.redirectUri ?? defaultOAuthRedirectUri(),
     savedAt: typeof entry?.savedAt === 'string' ? entry.savedAt : null,
@@ -159,12 +200,18 @@ function credentialValueIssue(value: string, max: number): string | null {
 }
 
 export interface SaveOAuthClientRegistrationInput {
+  /** Omission keeps the saved value; empty text removes an optional value. */
+  userAgent?: unknown;
+  /** Required only for an instance-scoped descriptor. */
+  origin?: unknown;
   clientId: unknown;
   /** Omitted or empty keeps the secret already saved. */
   clientSecret?: unknown;
 }
 
 export interface SaveOAuthClientRegistrationOptions {
+  requireUserAgent?: boolean;
+  requireOrigin?: boolean;
   /** True when the provider's flow needs a client secret (it does not use PKCE). */
   requireSecret: boolean;
 }
@@ -205,6 +252,10 @@ export async function saveOAuthClientRegistration(
   options: SaveOAuthClientRegistrationOptions,
 ): Promise<OAuthClientRegistrationStatus> {
   const clientId = typeof input.clientId === 'string' ? input.clientId.trim() : '';
+  const userAgent = normalizeOAuthUserAgent(input.userAgent);
+  if (input.userAgent !== undefined && input.userAgent !== '' && !userAgent) {
+    throw new OAuthClientRegistrationError('invalid-user-agent', 'User-Agent must be one printable ASCII line of at most 512 characters.');
+  }
   const idIssue = credentialValueIssue(clientId, MAX_CLIENT_ID);
   if (idIssue) throw new OAuthClientRegistrationError('invalid-client-id', `Client ID ${idIssue}.`);
   const secretGiven = typeof input.clientSecret === 'string' && input.clientSecret.trim() !== '';
@@ -225,8 +276,21 @@ export async function saveOAuthClientRegistration(
         `${OAUTH_APPS_FILE} exists but is not a JSON object; fix or remove it before saving here.`,
       );
     }
-    const previous = isPlainObject(file[ref]) ? (file[ref] as Record<string, unknown>) : {};
-    const next: Record<string, unknown> = { ...previous, clientId, savedAt: new Date().toISOString() };
+    const origin = options.requireOrigin ? normalizeProviderInstanceOrigin(input.origin) : null;
+    if ((options.requireOrigin && !origin) || (!options.requireOrigin && input.origin !== undefined)) {
+      throw new OAuthClientRegistrationError('invalid-instance-origin', 'This registration needs its own valid HTTPS instance origin.');
+    }
+    const pinnedRef = origin ? instanceClientRegistrationRef(ref, origin) : ref;
+    // Reuse a secret only from THIS origin, never from the card's previously selected origin.
+    const previous = isPlainObject(file[pinnedRef]) ? (file[pinnedRef] as Record<string, unknown>) : {};
+    const next: Record<string, unknown> = { ...previous, clientId, savedAt: new Date().toISOString(), ...(origin ? { origin } : {}) };
+    if (input.userAgent !== undefined) {
+      if (userAgent) next.userAgent = userAgent;
+      else delete next.userAgent;
+    }
+    if (options.requireUserAgent && !normalizeOAuthUserAgent(next.userAgent)) {
+      throw new OAuthClientRegistrationError('user-agent-required', 'This provider needs your app’s User-Agent as well as its client ID.');
+    }
     if (clientSecret !== undefined) {
       next.clientSecret = clientSecret;
       delete next.clientSecretFile;
@@ -234,7 +298,7 @@ export async function saveOAuthClientRegistration(
     if (options.requireSecret && !next.clientSecret && !next.clientSecretFile) {
       throw new OAuthClientRegistrationError('client-secret-required', 'This provider needs the app’s client secret as well as its client ID.');
     }
-    await writeRegistrationsFile({ ...file, [ref]: next });
+    await writeRegistrationsFile({ ...file, [pinnedRef]: next, [ref]: next });
     return statusOf(ref, asRegistration(next));
   });
 }

@@ -56,6 +56,9 @@ export async function runScenarioBattery<S extends BatteryScenario>(args: {
   const harness = await runHarness({
     contract: llmBatteryContract(args.scenarios),
     evidenceRoot: args.evidenceRoot ?? llmBatteryEvidenceRoot(),
+    // Preserve original diagnostics before retention can evict completed runs,
+    // including failed provider attempts that remain evidence for open work.
+    retainedArtifacts: args.scenarios.map(s => `phases/${s.id}/report-summary.json`),
     concurrency: args.concurrency,
     runPhase: async (ctx) => {
       ctx.markStep('run-scenario');

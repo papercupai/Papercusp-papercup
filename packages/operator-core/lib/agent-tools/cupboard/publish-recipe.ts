@@ -14,12 +14,13 @@
  * says. Generalize the recipe and re-capture it instead.
  */
 import { z } from 'zod';
+import { withSubmissionReceipt } from '../../cupboard/submission-receipt';
 import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 /** Canonical `{ data }` envelope — the framework owns wire encoding (auto-TOON on the MCP transport). */
-const ok = (payload: Record<string, unknown>) => ({ data: payload });
+const ok = (payload: Record<string, unknown>) => ({ data: withSubmissionReceipt(payload) });
 
 export default defineTool({
   name: 'cupboard:publish-recipe',

@@ -5,9 +5,9 @@
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ADMISSION_WORKER_TSX_BOOTSTRAP,
@@ -19,6 +19,7 @@ import {
 } from './admission-offthread';
 import { executeAdmissionJob } from './admission-jobs';
 import { evaluateFixPrecheck, precheckPopulation } from './admission-fix-precheck';
+import { createFrozenCandidateQueue } from './frozen-candidate-repair-queue';
 
 let repo: string;
 
@@ -82,11 +83,15 @@ describe('admission off-thread host (WI-10005223)', () => {
       git(fixture, 'update-index', '--add', '--cacheinfo', `160000,${pin},component`);
       git(fixture, 'commit', '-q', '-m', 'frozen paired tree');
       const commit = git(fixture, 'rev-parse', 'HEAD');
-      const missingHelper = spawnSync(process.execPath, ['--test', '--test-reporter=tap', 'component/paired.test.mjs'], { cwd: fixture, encoding: 'utf8' });
+      // The focused test runner preloads committed-source-loader through NODE_OPTIONS.
+      // These child processes intentionally execute an uncommitted temporary fixture,
+      // so inherit the normal process environment without that repository-only guard.
+      const childEnv = { ...process.env, NODE_OPTIONS: '' };
+      const missingHelper = spawnSync(process.execPath, ['--test', '--test-reporter=tap', 'component/paired.test.mjs'], { cwd: fixture, encoding: 'utf8', env: childEnv });
       expect(missingHelper.status).toBe(1);
       expect(missingHelper.stdout + missingHelper.stderr).toContain('ERR_MODULE_NOT_FOUND');
       writeFileSync(join(fixture, 'missing-parent-helper.mjs'), 'export const value = 1;\n');
-      const pairedControl = spawnSync(process.execPath, ['--test', '--test-reporter=tap', 'component/paired.test.mjs'], { cwd: fixture, encoding: 'utf8' });
+      const pairedControl = spawnSync(process.execPath, ['--test', '--test-reporter=tap', 'component/paired.test.mjs'], { cwd: fixture, encoding: 'utf8', env: childEnv });
       expect(pairedControl.status).toBe(0);
       expect(pairedControl.stdout).toContain('# pass 1');
       // Staging now has another checkout and untracked test; neither may enter the proof.
@@ -172,6 +177,36 @@ describe('admission off-thread host (WI-10005223)', () => {
     expect(turns).toBeGreaterThanOrEqual(15);
   }, 60_000);
 
+  it('runs lineage reconciliation on the worker while its sync Git read is delayed', async () => {
+    const gitBinary = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+    const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+    const queue = createFrozenCandidateQueue({ candidate, base: null, nowMs: Date.now() });
+    await runAdmissionJob({ kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo }); // warm the worker
+
+    const shim = mkdtempSync(join(tmpdir(), 'admission-lineage-git-shim-'));
+    const originalPath = process.env.PATH;
+    const originalRealGit = process.env.ADMISSION_TEST_REAL_GIT;
+    const wrapper = join(shim, 'git');
+    writeFileSync(wrapper, '#!/bin/sh\nsleep 0.5\nexec "$ADMISSION_TEST_REAL_GIT" "$@"\n');
+    chmodSync(wrapper, 0o755);
+    process.env.ADMISSION_TEST_REAL_GIT = gitBinary;
+    process.env.PATH = [shim, originalPath].filter(Boolean).join(delimiter);
+    try {
+      const turns = await loopTurnsDuring(runAdmissionJob(
+        { kind: 'reconcile-lineage', queue, root: repo },
+        { timeoutMs: 10_000, stepName: 'lineage-reconcile-test' },
+      ));
+      expect(turns).toBeGreaterThanOrEqual(10);
+      expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 2, jobsInline: 0, loadFailures: 0 });
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+      if (originalRealGit === undefined) delete process.env.ADMISSION_TEST_REAL_GIT;
+      else process.env.ADMISSION_TEST_REAL_GIT = originalRealGit;
+      rmSync(shim, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it('CONTROL: the same call inline blocks the loop, so the turn count can fail', async () => {
     configureAdmissionOffthread({ mode: 'inline' });
     const turns = await loopTurnsDuring(runAdmissionJob({ kind: 'git', argv: ['nap'], cwd: repo }));
@@ -223,27 +258,37 @@ describe('admission off-thread host (WI-10005223)', () => {
         "parentPort.on('message', () => { while (true) {} });",
       ].join('\n'),
     );
-    configureAdmissionOffthread({ workerPath: stuckWorker });
+    // A test:file run inherits committed-source-loader via NODE_OPTIONS. The fixture
+    // worker is deliberately uncommitted and has no loader-aware source, so remove the
+    // repository guard while exercising worker termination, then restore the caller env.
+    const inheritedNodeOptions = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = '';
+    try {
+      configureAdmissionOffthread({ workerPath: stuckWorker });
 
-    await expect(
-      runAdmissionJob(
-        { kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo },
-        { timeoutMs: 100, stepName: 'build-proof' },
-      ),
-    ).rejects.toMatchObject({
-      name: 'AdmissionOffthreadTimeoutError',
-      code: 'ADMISSION_OFFTHREAD_TIMEOUT',
-      jobKind: 'git',
-      stepName: 'build-proof',
-      timeoutMs: 100,
-    });
-    expect(admissionOffthreadStats().workerLive).toBe(false);
+      await expect(
+        runAdmissionJob(
+          { kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo },
+          { timeoutMs: 100, stepName: 'build-proof' },
+        ),
+      ).rejects.toMatchObject({
+        name: 'AdmissionOffthreadTimeoutError',
+        code: 'ADMISSION_OFFTHREAD_TIMEOUT',
+        jobKind: 'git',
+        stepName: 'build-proof',
+        timeoutMs: 100,
+      });
+      expect(admissionOffthreadStats().workerLive).toBe(false);
 
-    configureAdmissionOffthread({ workerPath: null });
-    await expect(runAdmissionJob({ kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo })).resolves.toMatchObject({
-      status: 0,
-    });
-    expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 2, jobsInline: 0, loadFailures: 0 });
+      configureAdmissionOffthread({ workerPath: null });
+      await expect(runAdmissionJob({ kind: 'git', argv: ['rev-parse', 'HEAD'], cwd: repo })).resolves.toMatchObject({
+        status: 0,
+      });
+      expect(admissionOffthreadStats()).toMatchObject({ jobsOnWorker: 2, jobsInline: 0, loadFailures: 0 });
+    } finally {
+      if (inheritedNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = inheritedNodeOptions;
+    }
   }, 60_000);
 
   it('reaps an idle worker and starts a fresh worker for later work', async () => {

@@ -59,9 +59,10 @@
  */
 import { existsSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { withFsMutex } from '../../../scripts/lib/fs-mutex.mjs';
 import { pinProtectsPath, readRetentionPins, readRetentionPinsAsync, type RetentionPin } from './storage/retention-pins';
+import { AGENT_ROOT_MAX_BYTES } from './storage/retention-policy';
 import { listLiveHostsAsync, type PsuPtyHost } from './events/await/psu-pty-discovery';
 import {
   sessionClaudeRoot,
@@ -112,6 +113,8 @@ export interface SessionDirRoot {
   keyKind: SessionDirKeyKind;
   /** Short label for logs/diagnostics. */
   label: string;
+  /** Same per-root ceiling as the standing collector; live/archive guards win. */
+  maxBytes?: number;
 }
 
 /** One candidate per-session dir discovered under a root. */
@@ -321,6 +324,10 @@ export interface SessionDirGcResult {
   errors: Array<{ path: string; error: string }>;
   /** Set when the sweep was ABORTED before removing anything (fail-closed). */
   skipped?: 'degraded-protected-set';
+  caps?: Array<{
+    root: string; maxBytes: number; beforeBytes: number | null; afterBytes: number | null;
+    pinnedBytes: number | null; overByBytes: number | null; error?: string;
+  }>;
 }
 
 /**
@@ -343,6 +350,8 @@ export function sweepStaleSessionDirs(opts: {
   unarchivedPaths?: ReadonlySet<string>;
   /** Production supplies a snapshot read under the storage:pin mutex. */
   retentionPins?: readonly RetentionPin[];
+  /** Full last-write evidence from the bounded native census, when available. */
+  newestWrites?: ReadonlyMap<string, number>;
 }): SessionDirGcResult {
   const roots = opts.roots ?? defaultSessionDirRoots();
   const retentionMs = opts.retentionMs ?? DEFAULT_RETENTION_MS;
@@ -360,7 +369,10 @@ export function sweepStaleSessionDirs(opts: {
   const read = opts.retentionPins ? { pins: opts.retentionPins, errors: [] } : readRetentionPins({ nowMs: opts.nowMs });
   if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
   let keptPinned = 0;
-  for (const c of plan.remove) {
+  // Pressure must never make a newer collectible session precede an older one.
+  // The same order applies to ordinary expiry, without weakening any guard.
+  for (const c of plan.remove.sort((a, b) =>
+    (opts.newestWrites?.get(a.path) ?? a.mtimeMs) - (opts.newestWrites?.get(b.path) ?? b.mtimeMs) || a.path.localeCompare(b.path))) {
     let physical = c.path;
     try { physical = realpathSync(c.path); } catch { /* A missing candidate cannot have a physical alias. */ }
     if (pinProtectsPath(c.path, read.pins, opts.nowMs) || pinProtectsPath(physical, read.pins, opts.nowMs)) {
@@ -566,6 +578,8 @@ export async function runSessionDirGc(
     archiveGuard?: boolean;
     /** Injected for tests; production gathers it from PG. */
     protectedIdentity?: ProtectedSessionIdentity;
+    /** Same roots as the existing sweep; injected by fixture tests. */
+    roots?: SessionDirRoot[];
   } = {},
 ): Promise<SessionDirGcResult> {
   const protectedIdentity = opts.protectedIdentity ?? (await gatherProtectedSessionIdentity());
@@ -591,7 +605,12 @@ export async function runSessionDirGc(
 
   const nowMs = Date.now();
   const retentionMs = opts.retentionMs ?? DEFAULT_RETENTION_MS;
-  const candidates = discoverSessionDirCandidates(defaultSessionDirRoots());
+  const roots = opts.roots ?? defaultSessionDirRoots();
+  for (const root of roots) {
+    const maxBytes = root.maxBytes ?? AGENT_ROOT_MAX_BYTES;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new Error(`invalid session root cap: ${root.root}`);
+  }
+  const candidates = discoverSessionDirCandidates(roots);
 
   // Only the dirs retention would actually collect need the (PG-hitting) guard.
   let unarchivedPaths: ReadonlySet<string> | undefined;
@@ -603,7 +622,40 @@ export async function runSessionDirGc(
   return withFsMutex('papercusp-disk-retention', async () => {
     const read = await readRetentionPinsAsync();
     if (read.errors.length) throw new Error(`retention pins unreadable: ${read.errors.join('; ')}`);
-    return sweepStaleSessionDirs({
+    const { inspectRetentionTrees } = await import('./storage/disk-consumer-census');
+    const newestWrites = new Map<string, number>();
+    const measure = async (root: SessionDirRoot) => {
+      try {
+        let physical: string;
+        try { physical = realpathSync(root.root); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { bytes: 0, pinnedBytes: 0 };
+          throw error;
+        }
+        // Reuse the bounded, no-follow census. Symlink mirrors contribute their
+        // own blocks, never the owner's targets. Size-only accounting uses the
+        // collector's own uid; foreign or mounted subtrees cannot be counted as
+        // an empty/complete tree, or justify privileged session deletion.
+        const census = await inspectRetentionTrees(physical, { retainAfterMs: 0,
+          includeRecent: true, sudo: null, timeoutMs: 5_000 });
+        if (census.error) throw new Error(census.error);
+        const partial = census.retained.find((entry) => ['foreign ownership boundary', 'filesystem boundary'].includes(entry.reason));
+        if (partial) throw new Error(`${partial.reason}: ${partial.path}`);
+        const entries = [...census.entries, ...census.retained.flatMap((entry) => entry.entry ? [entry.entry] : [])];
+        let bytes = 0, pinnedBytes = 0;
+        for (const entry of entries) {
+          bytes += entry.bytes;
+          const logical = join(resolve(root.root), basename(entry.path));
+          newestWrites.set(logical, entry.newestWriteMs);
+          if (pinProtectsPath(logical, read.pins, nowMs) || pinProtectsPath(entry.path, read.pins, nowMs)) pinnedBytes += entry.bytes;
+        }
+        return { bytes, pinnedBytes };
+      } catch (error) { return { bytes: null, pinnedBytes: null, error: String(error) }; }
+    };
+    const before = [];
+    for (const root of roots) before.push(await measure(root));
+    const result = sweepStaleSessionDirs({
+      roots,
       protectedIdentity,
       candidates,
       nowMs,
@@ -611,6 +663,21 @@ export async function runSessionDirGc(
       dryRun: opts.dryRun,
       unarchivedPaths,
       retentionPins: read.pins,
+      newestWrites,
     });
+    result.caps = [];
+    for (const [index, root] of roots.entries()) {
+      // Read actual retained usage after effects, including failures. A dry run
+      // reports the unchanged filesystem, rather than projected reclaimed bytes.
+      const after = await measure(root);
+      const maxBytes = root.maxBytes ?? AGENT_ROOT_MAX_BYTES;
+      const error = before[index]!.error ?? after.error;
+      result.caps.push({ root: root.root, maxBytes, beforeBytes: before[index]!.bytes,
+        afterBytes: after.bytes, pinnedBytes: after.pinnedBytes,
+        overByBytes: after.bytes === null ? null : Math.max(0, after.bytes - maxBytes),
+        ...(error ? { error } : {}) });
+      if (error) result.errors.push({ path: root.root, error: `session cap measurement incomplete: ${error}` });
+    }
+    return result;
   });
 }

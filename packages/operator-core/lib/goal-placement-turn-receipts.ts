@@ -18,7 +18,7 @@ const launchSchema = z.object({ fleetSlug: nonempty, requestedSeats: z.number().
 const admissionSchema = z.object({
   version: z.literal(1), planRef: planRefSchema, observedAt: dateTime,
   launch: launchSchema.optional(),
-  planReason: z.enum(['ready', 'plan-not-found', 'no-actionable-plan-items', 'promotion-lag', 'duplicate-coverage',
+  planReason: z.enum(['ready', 'plan-not-found', 'invalid-plan-item-scope', 'no-actionable-plan-items', 'promotion-lag', 'duplicate-coverage',
     'lane-unknown', 'floor-diagnostics-unavailable', 'floor-gated', 'family-disagreement', 'insufficient-executable-width', 'unknown']),
   governor: z.enum(['open', 'restricted', 'unknown']),
   attempts: z.enum(['none', 'present', 'unknown']), evidenceRefs: z.array(nonempty).max(24),

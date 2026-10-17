@@ -1138,8 +1138,12 @@ export async function readOwnerSessionTimeline(req: Request, options: OwnerTimel
           ticking = true;
           void followTick().catch(() => sink.done({ reason: 'transcript_unavailable' })).finally(() => { ticking = false; });
         };
+        // D-004: must-sample — the transcript is appended by an external CLI process, so no
+        // in-process store emits a change event for it; the new bytes exist only once we stat
+        // and read the file. The timer is per-stream (instanced) and stops with the sink.
         handle = managedSetInterval('adv-session-thinking-follow', 1000, tick, {
           category: 'lifecycle',
+          classification: 'must-sample',
           instanced: true,
         });
         sink.onClose(() => handle?.stop());

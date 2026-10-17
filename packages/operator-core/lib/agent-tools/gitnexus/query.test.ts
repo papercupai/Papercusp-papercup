@@ -7,7 +7,12 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { versionedSymbolIdentity, type CodeIntelAnswer, type SymbolSite } from '../../code-intelligence/contracts';
+const snapshotState = vi.hoisted(() => ({ answer: null as CodeIntelAnswer | null, calls: [] as unknown[] }));
+vi.mock('../../code-intelligence/push-snapshot', () => ({ queryPushSnapshot: async (args: unknown) => {
+  snapshotState.calls.push(args); return snapshotState.answer;
+} }));
 import graphQuery from './query';
 
 let root = '';
@@ -27,6 +32,27 @@ const run = async (args: Record<string, unknown>) => {
 };
 
 describe('graph:query callers', () => {
+  it('routes a source-proven snapshot answer through the public evidence guard', async () => {
+    const site: SymbolSite = { path: 'src/use.ts', line1: 2, kind: null, name: 'target' };
+    const source = { path: site.path, contentHash: 'a'.repeat(64), language: 'typescript', representation: 'full-source' as const };
+    snapshotState.answer = { backend: 'first-party-snapshot', intent: 'callers', query: 'target', sites: [site], error: null,
+      latencyMs: 1, truncation: { truncated: false, totalAvailable: null, continuation: null },
+      freshness: { health: 'healthy', indexedAt: null, indexedCommit: null, staleVsDisk: null },
+      coverage: { basis: 'syntax', sourceCompleteness: 'unverified', limitations: [] },
+      evidence: { schemaVersion: 1, sourceScope: { repositoryId: 'fixture', identityKind: 'local-root',
+        sourceFingerprint: 'b'.repeat(64), paths: ['src'], supportingFiles: [source] },
+        graphScope: { basis: 'syntax', sourceCompleteness: 'unverified', limitations: [] },
+        languageCapabilities: [{ language: 'typescript', intent: 'callers', status: 'syntax-only' }],
+        siteIdentities: [{ siteIndex: 0, sourcePath: site.path, contentHash: source.contentHash,
+          versionedSymbolId: versionedSymbolIdentity('fixture', site, source) }], relationships: [],
+      } };
+    try {
+      const a = await run({ op: 'callers', name: 'target', paths: ['src'], uid: 'ignored' });
+      expect(a).toMatchObject({ backend: 'first-party-snapshot', error: null, sites: [site] });
+      expect(a.coverage.limitations.join('\n')).toContain('callers ignores uid');
+      expect(snapshotState.calls.at(-1)).toMatchObject({ op: 'callers', name: 'target', root, paths: ['src'] });
+    } finally { snapshotState.answer = null; }
+  });
   it('is answered by the first-party TypeScript backend, never the GitNexus facade', async () => {
     const a = await run({ op: 'callers', name: 'target' });
     expect(a.backend).toBe('typescript-service');

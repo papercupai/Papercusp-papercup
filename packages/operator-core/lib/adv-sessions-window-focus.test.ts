@@ -20,6 +20,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const listWindowsByTitleMock = vi.fn();
 const focusWindowByTitleMock = vi.fn();
 const isWindowsDesktopHostMock = vi.fn(() => false);
+const focusMacWindowMock = vi.hoisted(() => vi.fn());
+vi.mock('./macos-desktop-windows', () => ({ focusMacWindow: focusMacWindowMock, resolveMacWindow: vi.fn() }));
+
+/** Existing activation tests use a visible, same-workspace desktop fixture. */
+function visibleX11(run: (command: string, args: string[]) => { status: number | null; stdout: string } | Promise<{ status: number | null; stdout: string }>) {
+  return (command: string, args: string[]) => {
+    if (command === 'xprop') return { status: 0, stdout: args[0] === '-root' ? '_NET_CURRENT_DESKTOP(CARDINAL) = 0' : '_NET_WM_DESKTOP(CARDINAL) = 0' };
+    if (command === 'xwininfo') return { status: 0, stdout: 'Map State: IsViewable' };
+    if (command === 'xdotool' && args[0] === 'windowmap') return { status: 0, stdout: '' };
+    return run(command, args);
+  };
+}
 
 vi.mock('./windows-desktop-windows', () => ({
   listWindowsByTitle: (...args: unknown[]) => listWindowsByTitleMock(...args),
@@ -67,6 +79,12 @@ describe('resolveWindowIdForTitleFragment — Windows-desktop-host branch', () =
 });
 
 describe('focusWindowId — Windows-desktop-host branch', () => {
+  it('refuses unsupported desktop-switch mode rather than silently moving a Windows window', async () => {
+    isWindowsDesktopHostMock.mockReturnValue(true);
+    const { focusWindowId } = await import('./adv-session-windows');
+    expect(await focusWindowId('Papercup — abc-123', { workspace: 'window' })).toBe(false);
+    expect(focusWindowByTitleMock).not.toHaveBeenCalled();
+  });
   it('treats windowId as a TITLE and delegates to focusWindowByTitle', async () => {
     isWindowsDesktopHostMock.mockReturnValue(true);
     focusWindowByTitleMock.mockResolvedValueOnce(true);
@@ -91,6 +109,19 @@ describe('focusWindowId — Windows-desktop-host branch', () => {
   });
 });
 
+describe('focusWindowId — macOS platform routing', () => {
+  it('uses the native macOS adapter rather than X11 commands', async () => {
+    focusMacWindowMock.mockResolvedValueOnce(true);
+    const runCommand = vi.fn();
+    const { focusWindowId } = await import('./adv-session-windows');
+    expect(await focusWindowId('macos:exact', { platform: 'darwin', runCommand })).toBe(true);
+    expect(focusMacWindowMock).toHaveBeenCalledWith('macos:exact');
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(await focusWindowId('macos:exact', { platform: 'darwin', workspace: 'current' })).toBe(false);
+    expect(focusMacWindowMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('focusWindowId — Linux activation is observed, not inferred from exit 0', () => {
   const TARGET = '0x01ebdf3e';
   const TARGET_DECIMAL = BigInt(TARGET).toString();
@@ -104,7 +135,7 @@ describe('focusWindowId — Linux activation is observed, not inferred from exit
       .mockReturnValueOnce({ status: 0, stdout: `${TARGET_DECIMAL}\n` });
 
     const { focusWindowId } = await import('./adv-session-windows');
-    expect(await focusWindowId(TARGET, { runCommand })).toBe(true);
+    expect(await focusWindowId(TARGET, { runCommand: visibleX11(runCommand) })).toBe(true);
     expect(runCommand.mock.calls).toEqual([
       ['wmctrl', ['-ia', TARGET]],
       ['xdotool', ['getactivewindow']],
@@ -121,7 +152,7 @@ describe('focusWindowId — Linux activation is observed, not inferred from exit
     const settle = vi.fn(async () => {});
 
     const { focusWindowId } = await import('./adv-session-windows');
-    expect(await focusWindowId(TARGET, { runCommand, settle })).toBe(false);
+    expect(await focusWindowId(TARGET, { runCommand: visibleX11(runCommand), settle })).toBe(false);
     expect(settle).toHaveBeenCalledTimes(20);
     expect(runCommand.mock.calls).toContainEqual(['xdotool', ['windowraise', TARGET]]);
     expect(runCommand.mock.calls).toContainEqual(['xdotool', ['windowfocus', '--sync', TARGET]]);
@@ -139,7 +170,7 @@ describe('focusWindowId — Linux activation is observed, not inferred from exit
     const settle = vi.fn(async () => {});
 
     const { focusWindowId } = await import('./adv-session-windows');
-    expect(await focusWindowId(TARGET, { runCommand, settle })).toBe(true);
+    expect(await focusWindowId(TARGET, { runCommand: visibleX11(runCommand), settle })).toBe(true);
     expect(runCommand.mock.calls).toContainEqual(['xdotool', ['windowraise', TARGET]]);
     expect(runCommand.mock.calls).toContainEqual(['xdotool', ['windowfocus', '--sync', TARGET]]);
     expect(runCommand.mock.calls.at(-1)).toEqual(['xdotool', ['getactivewindow']]);
@@ -155,7 +186,7 @@ describe('focusWindowId — Linux activation is observed, not inferred from exit
     const settle = vi.fn(async () => {});
 
     const { focusWindowId } = await import('./adv-session-windows');
-    expect(await focusWindowId(TARGET, { runCommand, settle })).toBe(true);
+    expect(await focusWindowId(TARGET, { runCommand: visibleX11(runCommand), settle })).toBe(true);
     expect(settle).toHaveBeenCalledTimes(1);
   });
 
@@ -165,8 +196,68 @@ describe('focusWindowId — Linux activation is observed, not inferred from exit
       .mockReturnValueOnce({ status: 0, stdout: `${TARGET_DECIMAL}\n` });
 
     const { focusWindowId } = await import('./adv-session-windows');
-    expect(await focusWindowId(TARGET, { runCommand })).toBe(true);
+    expect(await focusWindowId(TARGET, { runCommand: visibleX11(runCommand) })).toBe(true);
     expect(runCommand).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('focusWindowId — workspace visibility', () => {
+  const TARGET = '0x01d80142';
+
+  function desktop(opts: { moveRefused?: boolean; hidden?: boolean; restoreRefused?: boolean; sticky?: boolean } = {}) {
+    let current = 17;
+    let target = opts.sticky ? 0xffffffff : 15;
+    let hidden = opts.hidden ?? false;
+    const runCommand = vi.fn((command: string, args: string[]) => {
+      if (command === 'xdotool' && args[0] === 'getactivewindow') return { status: 0, stdout: String(BigInt(TARGET)) };
+      if (command === 'xprop' && args[0] === '-root') return { status: 0, stdout: `_NET_CURRENT_DESKTOP(CARDINAL) = ${current}` };
+      if (command === 'xprop' && args[0] === '-id') return { status: 0, stdout: `_NET_WM_DESKTOP(CARDINAL) = ${target}\n_NET_WM_STATE(ATOM) = ${hidden ? '_NET_WM_STATE_HIDDEN' : '_NET_WM_STATE_FOCUSED'}` };
+      if (command === 'xwininfo') return { status: 0, stdout: `Map State: ${hidden ? 'IsUnMapped' : 'IsViewable'}` };
+      if (command === 'wmctrl' && args[2] === '-t' && !opts.moveRefused) target = Number(args[3]);
+      if (command === 'wmctrl' && args[0] === '-s') current = Number(args[1]);
+      if (command === 'xdotool' && args[0] === 'windowmap' && !opts.restoreRefused) hidden = false;
+      return { status: 0, stdout: '' };
+    });
+    return { runCommand, settle: async () => {}, state: () => ({ current, target, hidden }) };
+  }
+
+  it('rejects a matching active id on an invisible workspace when the move is ignored', async () => {
+    const { focusWindowId } = await import('./adv-session-windows');
+    const env = desktop({ moveRefused: true });
+    expect(await focusWindowId(TARGET, env)).toBe(false);
+    expect(env.runCommand.mock.calls.some(([cmd, args]) => cmd === 'xdotool' && args[0] === 'windowfocus')).toBe(false);
+  });
+
+  it('brings the existing window to the current workspace by default', async () => {
+    const { focusWindowId } = await import('./adv-session-windows');
+    const env = desktop();
+    expect(await focusWindowId(TARGET, env)).toBe(true);
+    expect(env.state()).toMatchObject({ current: 17, target: 17 });
+    expect(env.runCommand).toHaveBeenCalledWith('wmctrl', ['-ir', TARGET, '-t', '17']);
+  });
+
+  it('can switch to the window workspace without relocating the window', async () => {
+    const { focusWindowId } = await import('./adv-session-windows');
+    const env = desktop();
+    expect(await focusWindowId(TARGET, { ...env, workspace: 'window' })).toBe(true);
+    expect(env.state()).toMatchObject({ current: 15, target: 15 });
+    expect(env.runCommand).toHaveBeenCalledWith('wmctrl', ['-s', '15']);
+  });
+
+  it('restores a minimized window and requires it to be viewable', async () => {
+    const { focusWindowId } = await import('./adv-session-windows');
+    const env = desktop({ hidden: true });
+    expect(await focusWindowId(TARGET, env)).toBe(true);
+    expect(env.state().hidden).toBe(false);
+    expect(await focusWindowId(TARGET, desktop({ hidden: true, restoreRefused: true }))).toBe(false);
+  });
+
+  it('accepts sticky windows without changing the current workspace', async () => {
+    const { focusWindowId } = await import('./adv-session-windows');
+    const env = desktop({ sticky: true });
+    expect(await focusWindowId(TARGET, env)).toBe(true);
+    expect(env.state()).toMatchObject({ current: 17, target: 0xffffffff });
+    expect(env.runCommand.mock.calls.some(([cmd, args]) => cmd === 'wmctrl' && args.includes('-t'))).toBe(false);
   });
 });
 
@@ -253,7 +344,7 @@ describe('X11 window commands stay off the operator main thread (WI-10005394 gua
       if (command === 'xdotool' && args[0] === 'getactivewindow') return { status: 0, stdout: `${0x04200007}\n` };
       return { status: 0, stdout: '' };
     };
-    await expect(focusWindowId('0x04200007', { runCommand, settle: async () => {} })).resolves.toBe(true);
+    await expect(focusWindowId('0x04200007', { runCommand: visibleX11(runCommand), settle: async () => {} })).resolves.toBe(true);
     expect(calls).toEqual(['wmctrl -ia 0x04200007', 'xdotool getactivewindow']);
   });
 });

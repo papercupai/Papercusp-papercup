@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 967,
+  "count": 977,
   "tools": [
     {
       "name": "ablation:report",
@@ -1883,7 +1883,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Create a new backup snapshot of the workspace. Use before risky migrations or major state changes.",
-        "notWhen": "For routine commits, this isn't needed — backup snapshots are heavyweight (whole-workspace). For per-harness portable snapshots, use the snapshots tools instead. To reconcile a still-running receipt returned by an earlier call, pass that row as resumeSnapshotId instead of creating another snapshot."
+        "notWhen": "For routine commits, this isn't needed — backup snapshots are heavyweight (whole-workspace). For per-harness portable snapshots, use the snapshots tools instead. To reconcile a still-running receipt, pass resumeSnapshotId. If its producer was lost before an artifact exists, also pass resumeProducer:true to re-drive that SAME receipt under the cross-process backup lock; no sibling receipt is created."
       }
     },
     {
@@ -2229,6 +2229,39 @@
         "when": "Checking whether the self-learning substrate is actually WORKING on real rows — closing out the blender-self-learning program, or auditing whether rubric-grounded ideation / volume-mode cadence / grading throughput are live.",
         "notWhen": "Asking whether Scout ideas are getting BETTER over time (the quality/degradation report — this is an absolute done-check, not a trend). Grading an individual idea (blender:grade-idea).",
         "chaining": "Read verdict and each bar's evidence/unknownReason. Cite resolvedWindow + runningGeneration alongside the verdict (EI-12146: default window comes from the rubric, not a fixed 48h) — sinceMs/watermarkRef only overrides which window judges it."
+      }
+    },
+    {
+      "name": "blog:post",
+      "http": {
+        "path": "/api/agent-tools/blog/post",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Cross-post Markdown to an installed publishing provider and an explicit connected source. Creates a vendor draft by default; published:true requests public publication, subject to the existing owner publication setting. canonicalUrl must point to HTTPS papercusp.com.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The owner asks to cross-post a blog article or documentation to a connected publishing account.",
+        "notWhen": "For a short social post use social:post.",
+        "chaining": "Use the owner-selected source. Report drafted, published or withheld exactly as returned. A draft is stored at the vendor. Hashnode requires a Pro publication. Ambiguous create errors require reconciliation before another attempt."
       }
     },
     {
@@ -3310,7 +3343,7 @@
           "POST"
         ]
       },
-      "description": "Judge-only read-only Git evidence: check ancestry between full commit SHAs or read a file pinned to a full commit SHA in the active harness repository or an explicitly registered evidence harness. Historical reads follow gitlinks pinned by the commit and return the resolved repository, commit, and blob identity. Oversized files return bounded byte pages.",
+      "description": "Judge-only read-only Git evidence: check ancestry between full commit SHAs or read a file pinned to a full commit SHA in the active harness repository or an explicitly registered evidence harness in the caller's allowed hive. Historical reads follow gitlinks pinned by the commit and return the resolved repository, commit, and blob identity.",
       "capabilities": [
         "capability:git-evidence:read"
       ],
@@ -3320,7 +3353,7 @@
       "guidance": {
         "when": "A grading method requires proof about commit ancestry or the exact contents of a file at a pinned commit.",
         "notWhen": "For general Git commands, worktree state, mutation, refs, or scratch clones, use the separately authorized engineering tools.",
-        "chaining": "Use op:\"isAncestor\" with two full SHAs, or op:\"readFileAtCommit\" with a full SHA and repository-relative path. Paths below a submodule follow the child commit pinned by each parent gitlink; the result reports resolved.repositoryPath, resolved.commitSha, and resolved.blobSha while commitSha remains the requested superproject commit. When a binding measurement pins a nested repository HEAD directly, pass its path as repositoryPath and use the child-relative file path and commit; the nested repository must resolve inside the selected root. For an external test checkout, copy rootHarnessSlug from the cited binding measurement. For a whole-file read, omit byte_offset and byte_limit: blobs up to 128 KiB return {bytes, content} in one call (including a 94,304-byte blob). Larger blobs, or deliberate pages, return {encoding:\"base64\", byte_offset, byte_length, total_bytes, eof, data, next_cursor} and have no content field. Base64-decode data, follow next_cursor.args unchanged to preserve the pinned commit/path/root, and stop only when eof is true and next_cursor is null."
+        "chaining": "isAncestor: two full SHAs. readFileAtCommit: full SHA + repository-relative path; submodule paths follow parent gitlinks, resolved.{repositoryPath, commitSha, blobSha} name the read, commitSha keeps the requested superproject commit. Nested HEAD binding: repositoryPath inside the registered root + child-relative path and commit. Copy rootHarnessSlug from the cited external-checkout measurement; a hive-scoped session reads only roots in its own hive (sibling-hive: harness_forbidden at the transport), so use a session scoped to that hive, never a bypass. contentSha256 hashes exact committed blob bytes. Whole blobs up to 128 KiB: omit byte_offset/byte_limit, get {bytes, content, contentSha256}. Larger or paged: base64 {byte_offset, byte_length, total_bytes, contentSha256, eof, data, next_cursor}; decode data, follow next_cursor.args unchanged until eof:true and next_cursor null."
       }
     },
     {
@@ -7182,7 +7215,7 @@
           "POST"
         ]
       },
-      "description": "Focus, raise, activate, or bring to the foreground an EXISTING live managed agent's desktop terminal window by coordination ownerId. Reuses the same observed-activation backend as the HUD's Focus window button and never resumes, forks, terminates, or duplicates the agent. Returns focused:false with a typed reason when the session is headless, unrecorded, missing its window, or the desktop refuses activation.",
+      "description": "Focus, raise, activate, or bring to the foreground an EXISTING live managed agent's desktop terminal window by coordination ownerId. Workspace-aware on Linux/X11, Windows (including WSL desktop hosts), and macOS. Linux supports workspace current (bring here, default) or window (switch there); Windows brings here; macOS switches to the window's Space and needs Accessibility/Screen Recording permission. Reuses the same observed-activation backend as the HUD's Focus window button and never resumes, forks, terminates, or duplicates the agent. Returns focused:false when visibility or activation cannot be verified.",
       "capabilities": [
         "coord:mark-terminal"
       ],
@@ -8848,6 +8881,24 @@
         "when": "Serving or paying for a unit of a per-use Cupboard offer, after cupboard:checkout returned a microcharge preflight and the channel was funded.",
         "notWhen": "A one-time or subscription offer (cupboard:checkout alone settles those). Funding the channel itself. Reading what an org bought (cupboard:commerce-dashboards).",
         "chaining": "reserve → execute the unit → settle with actualQuantity. Reserve FIRST: settling a nonce that was never reserved is refused rather than billed, and a unit executed before reserving may turn out to be uncoverable. Reuse the SAME usageNonce across the pair; a fresh one on retry double-bills."
+      }
+    },
+    {
+      "name": "cupboard:my-listings",
+      "http": {
+        "path": "/api/agent-tools/cupboard/my-listings",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List your Cupboard submissions, including pending review, approved, rejected, delisted listings and creator drafts. Authenticates with the operator’s GitHub identity. Follow nextCursor for more pages.",
+      "capabilities": [
+        "harness:read"
+      ],
+      "guidance": {
+        "when": "Checking what you published, its moderation state or rejection reason, or finding your own listing to delist.",
+        "notWhen": "Searching the public catalog for someone else’s packages; use cupboard:search.",
+        "chaining": "Read submissions → inspect review_status/review_reason → use cupboard:unpublish with a listing id to delist."
       }
     },
     {
@@ -14106,7 +14157,7 @@
           "POST"
         ]
       },
-      "description": "Per-owner inference-gateway outcome + routing-quality report (GET :8788/admin/owner-report). With `agent` (an owner/spawn id): that agent's ledger {requests, ok, upstream429, upstreamErrors, sheds, stalls, pinYields, lastAccount, lastStatus, recent events} + its last-routed account + live pin + owner-filtered recent routing decisions explaining why each account was picked. Optional `from` (inclusive) and `to` (exclusive) epoch-millisecond bounds plus `limit` filter the durable per-request `requestOutcomes` rows (retained for 14 days across gateway restarts). Without `agent`: the top ~25 owners ranked by bad outcomes plus the bounded all-owner routing-quality snapshot. `routingQuality` measures true upstream HTTP 429s per logical initial pick, automatic pick-vs-best-available divergence, and explicit/affinity pin-yield frequency; intentional pins are labeled and excluded from automatic-divergence counts. In-memory counters are since the last gateway restart.",
+      "description": "Per-owner inference-gateway outcome + routing-quality report (GET :8788/admin/owner-report). With `agent`: that agent's ledger {requests, ok, upstream429, upstreamErrors, sheds, stalls, pinYields, lastAccount, lastStatus, recent events}, last-routed account, live pin, and owner-filtered routing decisions explaining each pick; `from`/`to`/`limit` filter the durable `requestOutcomes` rows (kept 14 days across restarts). Without `agent`: the top ~25 owners by bad outcomes plus the all-owner `routingQuality` snapshot (true upstream 429s per initial pick, pick-vs-best divergence, pin-yield frequency; intentional pins are excluded from divergence). In-memory counters reset on gateway restart.",
       "capabilities": [
         "harness:read"
       ],
@@ -14131,7 +14182,7 @@
         "content-fixer"
       ],
       "guidance": {
-        "when": "An agent reports API errors / slow turns and you need the gateway's view of THAT agent: what it got (429? shed? stall? pin yield?), on which account, when. Pass `from`/`to` to inspect a historical time window from durable per-request outcomes after a gateway restart. Also fleet-wide triage (no args) after an error storm. Also: confirming an accounts:pin actually took effect / reading a session's current routing before deciding whether to re-pin it.",
+        "when": "An agent reports API errors or slow turns and you need the gateway's view of it: what it got (429, shed, stall, pin yield), on which account, when; `from`/`to` reach a historical window after a restart. Also fleet-wide triage (no args) after an error storm, or confirming an accounts:pin took effect before re-pinning.",
         "notWhen": "Pool-level health — gateway:status (config/AIMD) or the /stats endpoint. Per-account usage — accounts:list.",
         "chaining": "gateway:owner_report { agent, from, to, limit } → (if pin yields/429s on a capped pin) accounts:pin to move it, or accounts:list to find headroom."
       }
@@ -14896,7 +14947,7 @@
           "POST"
         ]
       },
-      "description": "Code topology: symbol | context | callers | callees | impact | trace | contracts | communities | flows | concept-search | health. Native operations use current JS/TS snapshots. Discovery requires explicit bounded paths; communities are weak call components, flows are possible zero-incoming call paths, and concept-search fuses symbol/path and source-text rankings. Discovery is inferred retrieval evidence; semantic similarity and runtime execution are unmeasured. contracts joins scoped static HTTP/RPC/event evidence. Other languages receive explicit unsupported results.",
+      "description": "Code topology: symbol | context | callers | callees | impact | trace | contracts | communities | flows | concept-search | health. Callers prefer hash-checked positive syntax snapshots; misses use the compiler. Read coverage for lower bounds. Other native operations use JS/TS compiler snapshots. Discovery requires bounded paths; communities are weak call components, flows are possible call paths, and concept-search fuses symbol/path and source-text rankings. Retrieval and static paths do not prove runtime execution. contracts joins scoped static HTTP/RPC/event evidence. Other languages receive explicit unsupported results.",
       "capabilities": [
         "intel:read"
       ],
@@ -14957,7 +15008,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "For \"who calls X?\", use op:\"callers\", name and bounded paths; for \"what does X call?\", use op:\"callees\". Call-site rg also matches comments and strings; use compiler topology to establish calls or change impact.",
+        "when": "For \"who calls X?\", use op:\"callers\", name and bounded paths; for \"what does X call?\", use op:\"callees\". Read syntax/compiler coverage before treating sites as binding or change-impact evidence.",
         "notWhen": "Use lsp:query for references, implementations, diagnostics and rename previews; scoped rg for literals. Native symbol/context/callees currently admit JS/TS compiler inputs. Runtime diagnosis needs state/log tools.",
         "chaining": "op:\"context\" → op:\"impact\" for the change radius → op:\"trace\", target:\"name\" for a forward call path. Use paths to bound compiler source scope. Static paths do not establish runtime execution. op:\"health\" reports index freshness; lsp:query handles references/diagnostics."
       }
@@ -18900,7 +18951,7 @@
           "POST"
         ]
       },
-      "description": "READ-ONLY TypeScript/Rust compiler intelligence from pinned servers. `op`: symbol | references | implementations | diagnostics | workspace_symbols | refactor_preview | health. Returns `{sites, truncation, freshness, coverage, latencyMs, error}`; `line1` is one-indexed. Health describes readiness, not exhaustive references. Empty or degraded results require source/scope checks; unavailable servers return an error.",
+      "description": "READ-ONLY code intelligence. `op`: symbol | references | implementations | diagnostics | workspace_symbols | refactor_preview | health. Symbol lookups prefer hash-checked syntax snapshots; other intents and snapshot misses use pinned compilers. Returns `{sites, truncation, freshness, coverage, latencyMs, error}`; `line1` is one-indexed. Read coverage for syntax/compiler scope. Empty or degraded results require source/scope checks; unavailable servers return an error.",
       "capabilities": [
         "intel:read"
       ],
@@ -18961,7 +19012,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "You need compiler truth rather than text: declarations across boundaries/re-exports, references, implementations, file diagnostics, or rename sites.",
+        "when": "You need declarations across boundaries/re-exports, references, implementations, diagnostics, or rename sites. Symbol answers identify syntax-only versus compiler-backed evidence.",
         "notWhen": "Use text/regex search (`rg`/`grep`, scoped to source roots — see capability:bash guidance) for text, and gitnexus.context for call graphs. Unsupported files refuse and name the alternative.",
         "chaining": "op:\"workspace_symbols\" { name } → op:\"symbol\"/\"references\" { file, line1, character }. On degradation, op:\"health\" reports servers and the processes:kill taskId."
       }
@@ -19142,7 +19193,7 @@
           "POST"
         ]
       },
-      "description": "List all memories for the current user. Supports filtering by kind and harness scope.",
+      "description": "List memories for the current user in a bounded page. Supports filtering by kind and harness scope; use next_offset while truncated is true.",
       "capabilities": [
         "memory:read"
       ],
@@ -23162,7 +23213,7 @@
           "POST"
         ]
       },
-      "description": "Grade affected current spec revisions against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns per-clause verdicts with every would-block reason. detail:\"full\" adds criterion evidence and scorecards:emit-compatible drafts. Read-only; never files a verdict. evidenceRefs selects immutable refs and must contain exact persisted evidence_ref values returned by plans:get-spec-evidence; underlying test-run table IDs (for example, test_runs:<id>) are not necessarily binding refs. For a test-run-based cohort, use workItemIds + specIds or read the bound evidence refs first. bindingIds pins exact persisted rows, even when refs repeat. limit caps evidence rows, not clauses (default 1000); raise it above the filtered cohort when needed. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. For historical audit, pass scorecardId with planSlug; the evaluator replays the card’s stored recipe as of creation and marks historicalAuditOnly provenance, never a current ship-read. Historical scorecardId detail:\"full\" requires exactly one criteria value so the response can include that criterion’s exact evidence without returning the full evidence matrix. Check ok and rows.length before indexing.",
+      "description": "Grade affected current spec revisions against the reusable spec-test-adequacy rubric; read-only, never files a verdict. Resolves exact P-005 evidence bindings into per-clause verdicts with every would-block reason; detail:\"full\" adds criterion evidence and scorecards:emit-compatible drafts. evidenceRefs must be exact evidence_ref values from plans:get-spec-evidence (a test_runs:<id> is not necessarily one); for a test-run cohort use workItemIds + specIds. bindingIds pins exact rows. When replaySnapshot is true, include both specRevision and specFingerprint from the same immutable clause revision. scorecardId + slug replays a card as of its creation (historicalAuditOnly, never a current ship-read); with detail:\"full\" it needs exactly one criteria value.",
       "capabilities": [
         "plans:read"
       ],
@@ -23459,7 +23510,7 @@
           "POST"
         ]
       },
-      "description": "Read exact work-item/spec-revision evidence and compute per-dimension current|stale|unknown|not-applicable status. Spec currentness comes from the canonical revision pointer; source/test/fixture/rubric/environment values compare with explicit current fingerprints, and missing inputs remain unknown. The aggregate bounded field reports whether the requested row limit omitted evidence. Default detail:\"summary\" returns a per-binding currentness table, a byClause rollup and a fullBody ref; detail:\"full\" adds fingerprints, per-dimension status and binding details. For audit-only inspection of withdrawn evidence, pass exact bindingIds with includeRetracted:true; this selector is not for gate/evaluator reads.",
+      "description": "Read exact work-item/spec-revision evidence and compute per-dimension current|stale|unknown|not-applicable status. Spec currentness comes from the canonical revision pointer; source/test/fixture/rubric/environment values compare with explicit current fingerprints, and missing inputs remain unknown. The aggregate bounded field reports whether the requested row limit omitted evidence. Default detail:\"summary\" returns a per-binding currentness table, a byClause rollup and a fullBody ref; detail:\"full\" adds fingerprints, per-dimension status and binding details. For audit-only inspection of withdrawn evidence, includeRetracted:true must be paired with a non-empty exact bindingIds selector; workItemIds/specIds selectors alone are insufficient, and this selector is never for gate/evaluator reads.",
       "capabilities": [
         "plans:read"
       ],
@@ -24243,7 +24294,7 @@
           "POST"
         ]
       },
-      "description": "Unified diff between a plan revision and its immediate predecessor — sourced from the plan_revisions snapshot pair, not git. Returns a `react-diff-view`-parseable patch string. Seq 1 returns the file-against-empty creation diff.",
+      "description": "Unified diff between a plan revision and its immediate predecessor, sourced from PG-canonical plan_revisions snapshots. Returns a react-diff-view-parseable patch string. Seq 1 returns the file-against-empty creation diff.",
       "capabilities": [
         "plans:read"
       ],
@@ -24261,7 +24312,7 @@
       ],
       "guidance": {
         "when": "You have a revisionId from plans:revisions and want the patch — what exactly changed in that revision.",
-        "notWhen": "You want a coarse git patch — that is plans:diff. The revision chain — plans:revisions. The current plan body — plans:get.",
+        "notWhen": "You want the revision list — plans:revisions. You want the authoring conversation — plans:revision-transcript. You want the current plan body — plans:get.",
         "chaining": "plans:revisions → plans:revision-diff { revisionId } for any revision."
       }
     },
@@ -24303,7 +24354,7 @@
           "POST"
         ]
       },
-      "description": "The revision chain for a plan, newest-first — one row per recorded plans:* write: seq, author (agent|human), the rationale, the session that produced it, a +/- diff-stat vs the prior revision, and timestamp. The conversation-linked counterpart to plans:history (git commits). Empty chain when the plan has no recorded revisions yet.",
+      "description": "The PG-canonical revision chain for a plan, newest-first — one metadata row per recorded plans:* write: seq, author (agent|human), rationale, authoring session, diff-stat, and timestamp. Use plans:revision-diff for one revision patch and plans:revision-transcript for its authoring conversation. This list does not include full historical snapshots.",
       "capabilities": [
         "plans:read"
       ],
@@ -24322,7 +24373,7 @@
       ],
       "guidance": {
         "when": "You need a plan's edit history with the *why* — what changed at each revision and the rationale behind it. The basis of the Revisions panel and of the context an agent launched from the plan is seeded with.",
-        "notWhen": "You want raw git commit history of the file — that is plans:history. The current plan body — plans:get.",
+        "notWhen": "You want a single revision patch — plans:revision-diff. You want the authoring conversation — plans:revision-transcript. You want the current plan body — plans:get. This list is metadata only.",
         "chaining": "plans:revisions → plans:revision-diff for one revision patch, or plans:revision-transcript for the conversation behind a revision."
       }
     },
@@ -28993,7 +29044,7 @@
           "POST"
         ]
       },
-      "description": "Fetch one OR many published reports by id — including the full markdown body. Pass `id` for one or `ids` for several. A RETIRED report still resolves (retirement is soft, so a citation to a report id never breaks); its `retired_at` is set. Pass `lineage:true` to also get the full supersede history behind each report, newest first. Read-only. Reports you may not see come back as `not_found`.",
+      "description": "Fetch one OR many published reports by id — including the full markdown body. Pass `id` (or the publish receipt alias `report_id`) for one or `ids` for several. A RETIRED report still resolves (retirement is soft, so a citation to a report id never breaks); its `retired_at` is set. Pass `lineage:true` to also get the full supersede history behind each report, newest first. Read-only. Reports you may not see come back as `not_found`.",
       "capabilities": [
         "reports:read"
       ],
@@ -29141,7 +29192,7 @@
           "POST"
         ]
       },
-      "description": "Publish a finished owner-facing Markdown report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. The server stamps author, pot, and session. Over-cap bodies are refused, not truncated; corrections use `supersedes` and preserve the prior body. Returns a stable `report_id` and UI path. After publish, call `reports:get { id: report_id }` and verify the complete body and visibility. Cite a descriptive Markdown link to the GUI report page, using the returned same-origin path directly as its Markdown target. Use an absolute HTTP(S) URL only when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link.",
+      "description": "Publish a finished owner-facing Markdown report (audit, review, analysis, postmortem, status digest, proposal) to the Reports library. The server stamps author, pot, and session. Over-cap bodies are refused, not truncated; corrections use `supersedes` and preserve the prior body. Returns a stable `report_id` and UI path. After publish, call `reports:get { id: report_id }` (or pass the receipt value as `report_id`) and verify the complete body and visibility. Cite a descriptive Markdown link to the GUI report page, using the returned same-origin path directly as its Markdown target. Use an absolute HTTP(S) URL only when a verified GUI origin is available; never guess or ask the owner for an origin solely to format the link.",
       "capabilities": [
         "reports:write"
       ],
@@ -29780,7 +29831,7 @@
           "POST"
         ]
       },
-      "description": "Poll a rubrics:amend receipt: running, committed (apply result), previewed (dry-run result), failed, or not_found. A missing dry-run receipt is safe to regenerate because dryRun does not write.",
+      "description": "Poll a rubrics:amend receipt: running, orphaned (executor restarted and reclaimable now), committed (apply result), previewed (dry-run result), failed, or not_found. A missing dry-run receipt is safe to regenerate because dryRun does not write.",
       "capabilities": [
         "coord:read"
       ],
@@ -30240,6 +30291,246 @@
       }
     },
     {
+      "name": "rules:create",
+      "http": {
+        "path": "/api/agent-tools/rules/create",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Create a disabled local rule in Postgres, or edit your rule with expectedRevision. Edits invalidate prior replay proof and disable execution.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
+      }
+    },
+    {
+      "name": "rules:delete",
+      "http": {
+        "path": "/api/agent-tools/rules/delete",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Delete a local rule in this scope; the runtime re-reads authoritative rows before execution.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
+      }
+    },
+    {
+      "name": "rules:disable",
+      "http": {
+        "path": "/api/agent-tools/rules/disable",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Disable any local rule in this scope immediately. No passing test or author ownership is required to recover from a bad rule.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
+      }
+    },
+    {
+      "name": "rules:enable",
+      "http": {
+        "path": "/api/agent-tools/rules/enable",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Enable a local rule only when rules:test passed for its current revision. Execution still rechecks author identity and ceilings.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
+      }
+    },
+    {
+      "name": "rules:get",
+      "http": {
+        "path": "/api/agent-tools/rules/get",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read a local rule definition, revision, enabled state and replay receipt in the requested scope.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
+      }
+    },
+    {
+      "name": "rules:list",
+      "http": {
+        "path": "/api/agent-tools/rules/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List local, built-in, plugin and inert Cupboard rules with explicit source and enabled state. Local scope defaults to the current pot.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
+      }
+    },
+    {
+      "name": "rules:test",
+      "http": {
+        "path": "/api/agent-tools/rules/test",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Dry-run a draft or saved rule over at most 200 matching historical triggers. Never dispatches actions or providers. Saved rules get revision-bound proof only with nonempty, complete evidence. Event history retains the latest payload per key, not every occurrence; tool result bodies are unavailable.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
+      }
+    },
+    {
+      "name": "rules:validate",
+      "http": {
+        "path": "/api/agent-tools/rules/validate",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Validate a portable async or sync rule using the shared grammar, condition bounds, class targets and hook budgets. Writes nothing.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "guidance": {
+        "when": "Author or inspect a local rule. Creates and edits start disabled; replay its current revision before enabling.",
+        "notWhen": "To change built-in/plugin rules or grant capabilities. Local rules run as their author within current wearer and pot ceilings.",
+        "chaining": "rules:validate → rules:create → rules:test → rules:enable; rules:disable or rules:delete recovers a bad rule."
+      }
+    },
+    {
       "name": "saved_prompts:list",
       "http": {
         "path": "/api/agent-tools/saved_prompts/list",
@@ -30654,7 +30945,7 @@
           "POST"
         ]
       },
-      "description": "Read one rubric scorecard by issue id. Pass issueId (preferred) or id (compatibility alias); issueId wins. The evidence fingerprint scopes the read. Small cards return exact criterion evidence. Oversized cards expose an index through evidenceRead and recipes through rerunRecipeRead. Follow returned cursors, concatenate exact JSON chunks, and parse only when complete; audit metadata stays on every page. Never treat an incomplete page or index as missing evidence. Use criterionKey to select a criterion; use indexOffset, evidenceOffset, or rerunRecipeOffset to resume pages. History-only payload is omitted. For spec-test-adequacy cards, direct rerunRecipe.args measure current evidence freshness; scorecardId replay reconstructs the creation-time grading for an audit.",
+      "description": "Read one rubric scorecard by issueId (id is a compatibility alias; issueId wins). Small cards return exact criterion evidence; oversized cards return an index via evidenceRead and recipes via rerunRecipeRead; follow their cursors, and never treat an incomplete page or index as missing evidence. Select with criterionKey; resume with indexOffset, evidenceOffset or rerunRecipeOffset. History-only payload is omitted.",
       "capabilities": [
         "coord:read"
       ],
@@ -30681,9 +30972,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Audit one existing scorecard and re-run every probe named in its criterion evidence. Use issueId from scorecards:list or a grading-audit reservation; id is a compatibility alias. For grade-the-grader comparison of a spec-test-adequacy card, call plans:evaluate-spec-test-adequacy with its harness, slug, and scorecardId: issueId to reproduce the emission-time ratings.",
-        "notWhen": "Use the stored rerunRecipe.args when checking current evidence freshness; that live remeasurement may differ from the emitted rating after evidence changes. Use scorecards:list for history, trends, or multiple rows; rubrics:get for rubric definitions; scorecards:emit to file a scorecard.",
-        "chaining": "Follow rerunRecipeRead.read/next sequentially. Concatenate complete pages as exact JSON chunks and parse only when complete. For a spec-test-adequacy grading audit, call plans:evaluate-spec-test-adequacy with { harness, slug, scorecardId: issueId } and no direct selectors; compare rows[].ratings to the card and confirm historicalAuditOnly.asOf matches the card creation time. The stored rerunRecipe.args are a separate current-state measurement, so freshness can change after evidence changes. For oversized cards, page evidenceRead.next through the criterion index, then fetch each criterion’s evidence pages in small Promise.all groups. Resolve papercusp.output-envelope/v1 via capability:read before reading scorecard.criteria. Read one criterion’s pages sequentially. Emit the grading-integrity audit last."
+        "when": "Audit one existing scorecard and re-run the probes its criterion evidence names. Take issueId from scorecards:list or a grading-audit reservation.",
+        "notWhen": "Use scorecards:list for history or multiple rows, rubrics:get for rubric definitions, scorecards:emit to file a scorecard.",
+        "chaining": "Spec-test-adequacy audit: call plans:evaluate-spec-test-adequacy { harness, slug, scorecardId: issueId } with no direct selectors, compare rows[].ratings to the card, and confirm historicalAuditOnly.asOf matches its creation time. The stored rerunRecipe.args are a separate current-state measurement, so freshness can change after evidence changes. Oversized cards: page evidenceRead.next through the index, fetch criteria in small Promise.all groups (one criterion’s pages sequentially), and resolve papercusp.output-envelope/v1 via capability:read before reading scorecard.criteria. Concatenate complete pages as exact JSON chunks and parse only when complete. Emit the grading-integrity audit last."
       }
     },
     {
@@ -33191,7 +33482,7 @@
           "POST"
         ]
       },
-      "description": "Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). ACTIVATION IS CONDITIONAL: on a seeded (small-surface) session the matches are added to the server tool surface (activated:true); the client may need a tool-list refresh before direct-call wrappers appear, so follow `howToCall` and use tools:invoke when a wrapper is absent. On a full-catalog session there is nothing to expand (activated:false) — call tools:invoke. High-confidence runtime symptoms (slow/queued, connection-refused, no-window, change-live?, value-stale?) route their decisive diagnostic to hit #1.",
+      "description": "Find tools by INTENT across the full tool catalog (hybrid lexical + semantic). ACTIVATION IS The optional `limit` defaults to 8, accepts 1-25, and values above 25 are rejected. CONDITIONAL: on a seeded (small-surface) session the matches are added to the server tool surface (activated:true); the client may need a tool-list refresh before direct-call wrappers appear, so follow `howToCall` and use tools:invoke when a wrapper is absent. On a full-catalog session there is nothing to expand (activated:false) — call tools:invoke. High-confidence runtime symptoms (slow/queued, connection-refused, no-window, change-live?, value-stale?) route their decisive diagnostic to hit #1.",
       "capabilities": [
         "agent_tools:read"
       ],
@@ -33265,7 +33556,7 @@
           "POST"
         ]
       },
-      "description": "Call ANY tool in the full ~550-tool catalog by name, even one not in your loaded tool list. ⚠ Use colon tool names (flags:set); NEVER underscored display names. Args go in `args`. The call is dispatched server-side and gated exactly as a direct call would be. Pair with tools:find: tools:find(\"<intent>\") to get the name + arg schema, then tools:invoke({ name, args }) to run it. Use this when a tool you need is not in your loaded set and your client has not surfaced it directly.",
+      "description": "Call ANY tool in the full tool catalog by name, even one not in your loaded tool list. ⚠ Use colon tool names (flags:set); NEVER underscored display names. Args go in `args`. The call is dispatched server-side and gated exactly as a direct call would be. Pair with tools:find: tools:find(\"<intent>\") to get the name + arg schema, then tools:invoke({ name, args }) to run it. Use this when a tool you need is not in your loaded set and your client has not surfaced it directly.",
       "capabilities": [
         "agent_tools:read"
       ],
@@ -33946,7 +34237,7 @@
           "POST"
         ]
       },
-      "description": "Read the external event that triggered one plan run or trigger-fired operation (inbound Gmail message, Slack mention, calendar event), resolved server-side from planRunId or the operation work item id.",
+      "description": "Read the external events that triggered one plan run or trigger-fired operation, resolved server-side from planRunId or the operation work item id. When events is present, it is the complete coalesced batch: process every entry, including its own routing and payload. Top-level fields describe only the first event.",
       "capabilities": [
         "operator:read"
       ],
@@ -34909,7 +35200,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Before editing: claim to prevent duplicate work. Use ids:[…] for a swath. By-id claims override readiness/lifecycle floors, not fleet scope or ordinary born-pending admission/trust; server-derived dispatch/force may bypass pending rows.",
-        "notWhen": "`claim_conflict` means a live peer holds it: coordinate, do not retry. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed. Never claim non-work or human-audience rows: data or a person's job.",
+        "notWhen": "`claim_conflict` means a peer currently holds it. If that holder is dead or stale, retry the named claim with `force:true` and a reason; the takeover is liveness-checked and audited. A live holder still requires coordination. `force_unauthorized` means takeover refused. `work_item_unreadable` means the pre-claim read failed. Never claim non-work or human-audience rows: data or a person's job.",
         "chaining": "work_items:list → claim → set_state → release/close. No heartbeat; platform calls refresh liveness. During long local-only work, checkpoint (EI-6772)."
       }
     },
@@ -35352,7 +35643,7 @@
           "POST"
         ]
       },
-      "description": "Read work-items by ID (`id` for one; `ids` for a batch). Returns `{ ok, results:[…], counts }`; correlate rows by id, not position. Read `returns` for conditional warnings.",
+      "description": "Read work-items by ID (`id` for one; `ids` for a batch). Returns `{ ok, results:[…], counts }`; correlate rows by id, not position. Batch reads also include a per-requested-ID receipt. Read `returns` for conditional warnings.",
       "capabilities": [
         "work_items:read"
       ],

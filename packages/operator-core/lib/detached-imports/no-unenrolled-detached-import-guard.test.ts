@@ -22,6 +22,7 @@
  *     fleet gate once already.
  *   - `neverFlags` catches nothing → proves the positive cases have teeth.
  */
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only.
@@ -171,5 +172,12 @@ describe('derived failing scope — classifyVitestConfig (WI-39811)', () => {
       'export default defineVitestConfig({ laneSplit: true });',
     ].join('\n');
     expect(classifyVitestConfig(cfg)).toEqual({ laneSplit: true, drainWired: false });
+  });
+
+  it('keeps the apps/operator teardown drain wired', () => {
+    for (const config of ['vitest.config.ts', 'vitest.integration.config.ts']) {
+      const cfg = readFileSync(new URL(`../../../../apps/operator/${config}`, import.meta.url), 'utf8');
+      expect(classifyVitestConfig(cfg, `apps/operator/${config}`).drainWired).toBe(true);
+    }
   });
 });

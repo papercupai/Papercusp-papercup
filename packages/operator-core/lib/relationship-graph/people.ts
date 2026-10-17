@@ -95,7 +95,7 @@ export async function searchPeople(sql: Sql, workspaceId: string, input: SearchP
            (${hasKeys} AND payload->'identityKeys' ?| ${sql.array(keys.length ? keys : [''])}::text[]) AS exact
       FROM harness_shared.work_items
      WHERE workspace_id = ${workspaceId} AND item_kind = ${PERSON_DATATYPE} AND nature = 'record'
-       AND feature_id LIKE 'PER-%' AND NOT (payload ? 'mergedInto')
+       AND feature_id LIKE 'PER-%' AND NOT (payload ? 'mergedInto') AND NOT (payload ? 'retiredAt')
        AND (
          NOT ${filtered}
          OR (${hasKeys} AND payload->'identityKeys' ?| ${sql.array(keys.length ? keys : [''])}::text[])

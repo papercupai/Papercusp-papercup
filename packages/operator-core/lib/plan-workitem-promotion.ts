@@ -16,8 +16,10 @@
  * the flag) lives in the plans:start handler.
  */
 
+import { isAcceptanceWork, type AcceptanceOrderingItem } from './agent-tools/plans/acceptance-after-build';
+
 /** An open (todo/wip/blocked/needs-human) plan item eligible for promotion. */
-export interface OpenPlanItem {
+export interface OpenPlanItem extends AcceptanceOrderingItem {
   /** The plan-item id, e.g. "P-003". */
   id: string;
   /** The item's free text — becomes the work-item title (trimmed/clamped). */
@@ -63,7 +65,9 @@ export function titleFromPlanItem(item: OpenPlanItem): string {
  */
 export function computePromotions(input: PromotionInput): WorkItemCreateSpec[] {
   const already = new Set(input.existingPromotedItemIds);
+  const buildOpen = input.openItems.some(item => !isAcceptanceWork(item));
   return input.openItems
+    .filter(item => !buildOpen || !isAcceptanceWork(item))
     .filter((it) => !already.has(it.id))
     .map((it) => ({
       kind: 'feature' as const,

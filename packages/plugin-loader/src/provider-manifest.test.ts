@@ -63,6 +63,32 @@ afterAll(async () => {
 });
 
 describe('provider manifest declaration', () => {
+  it('loads host-owned API-key headers but refuses unknown and unsafe authentication metadata', async () => {
+    for (const [name, auth, valid] of [
+      ['raw-key', { header: 'api-key', scheme: 'raw' }, true],
+      ['raw-auth', { header: 'authorization', scheme: 'raw' }, true],
+      ['unsafe-cookie', { header: 'cookie', scheme: 'raw' }, false],
+      ['unknown-scheme', { header: 'api-key', scheme: 'Basic' }, false],
+      ['secret-in-auth', { header: 'api-key', scheme: 'raw', value: 'private' }, false],
+    ] as const) {
+      const result = await loadPluginFromDir(await makeProviderPlugin(`fixture-${name}`, descriptor({
+        setup: { credentials: [{ key: 'api_key', label: 'API key', hosts: ['mail.example.com'], auth }] },
+      })), 'global');
+      assert.equal(!('error' in result), valid, JSON.stringify(result));
+    }
+  });
+  it('loads an explicit instance-scoped descriptor but refuses absent egress without that declaration', async () => {
+    const provider = descriptor({ egressHosts: [], oauth: { instance: true, authorizeUrl: '/oauth/authorize', tokenUrl: '/oauth/token', scopes: ['read'],
+      identity: { url: '/api/v1/me', idField: 'id' } } });
+    const result = await loadPluginFromDir(await makeProviderPlugin('fixture-provider-instance', provider), 'global');
+    assert(!('error' in result), JSON.stringify(result));
+    const missing = await loadPluginFromDir(await makeProviderPlugin('fixture-provider-no-egress', descriptor({ egressHosts: [] })), 'global');
+    assert('error' in missing);
+    const foreign = { ...provider, oauth: { ...(provider.oauth as object), tokenUrl: 'https://foreign.example.com/token' } };
+    const refused = await loadPluginFromDir(await makeProviderPlugin('fixture-provider-instance-foreign', foreign), 'global');
+    assert('error' in refused);
+    assert.match(refused.error, /tokenUrl/);
+  });
   it('loads an explicit reauthorization policy and rejects unknown expiry policies', async () => {
     for (const refreshPolicy of ['refresh-token', 'reauthorize']) {
       const d = descriptor();

@@ -25,11 +25,12 @@
  * workspace) is NOT wired here; this tool publishes standalone apps only.
  */
 import { z } from 'zod';
+import { withSubmissionReceipt } from '../../cupboard/submission-receipt';
 import { defineTool } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
 
-const text = (payload: Record<string, unknown>) => ({ data: payload });
+const text = (payload: Record<string, unknown>) => ({ data: withSubmissionReceipt(payload) });
 
 const HTTPS = /^https:\/\//;
 const RELEASE_REPO = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;

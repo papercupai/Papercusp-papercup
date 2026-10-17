@@ -116,13 +116,23 @@ vi.mock('./role-launch-spec', async (importOriginal) => ({
 vi.mock('./modes/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./modes/store')>()),
   reconcileImpliedModes: vi.fn(async () => []),
+  getModes: vi.fn(async () => []),
+}));
+// Codex bootstrap reads the current context budget before materializing its home.
+// Keep that registry read hermetic, as in the main bootstrap-su route suite.
+vi.mock('./agent-tools/coordination/presence', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./agent-tools/coordination/presence')>()),
+  getPresence: vi.fn(async () => null),
+  writePresence: vi.fn(async () => null),
 }));
 vi.mock('./task-manager/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./task-manager/store')>()),
   bindLiveAgentSessionTasksToNativeSession: vi.fn(async () => []),
 }));
-vi.mock('./role-codex-home', () => ({
+vi.mock('./role-codex-home', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./role-codex-home')>()),
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
+  writeSuCodexHomeAsync: async (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
 }));
 vi.mock('./saved-prompts-materialize', () => ({
   materializeWorkspacePrompts: vi.fn(async () => ({ written: 0, skipped: 0 })),
@@ -260,6 +270,11 @@ describe('native session id round-trip (bootstrap-su → suLaunchArgs → resume
 
     expect(json.nativeSessionId).toBeNull();
     expect(recordedSessionId).toBeNull();
+    expect(json.codexHome).toBe('/fake/su-codex-homes/session-42');
+    expect(json.envelopeEnv.CODEX_HOME).toBe(json.codexHome);
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ isOwnerLive: expect.any(Function) }),
+    );
 
     expect(json.envelopeEnv.PAPERCUSP_MODEL_SOURCE).toBe('configured-default');
     const launch = suLaunchArgs('codex', {

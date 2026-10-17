@@ -8,7 +8,10 @@ const h = vi.hoisted(() => ({
   statsQueue: [] as Array<{ b: number; r: number }>,
   deleteQueue: [] as number[],
   countMatched: 0,
+  statementTimeoutOnCount: false,
+  unsafeQueries: [] as string[],
   vacuumCalls: [] as string[],
+  guardSpecs: [] as unknown[],
   guardAcquired: true,
   diskEntries: [] as Array<{ path: string; mtimeMs: number; sizeBytes: number }>,
   sessionCandidates: [] as Array<{ path: string; keyKind: 'owner'; key: string; mtimeMs: number }>,
@@ -20,6 +23,10 @@ function makeSql() {
   const sql: unknown = () => Promise.resolve([h.statsQueue.shift() ?? { b: 0, r: 0 }]);
   const s = sql as { unsafe: (q: string) => Promise<unknown[]>; begin: (fn: (x: unknown) => Promise<unknown>) => Promise<unknown> };
   s.unsafe = (q: string) => {
+    h.unsafeQueries.push(q);
+    if (h.statementTimeoutOnCount && q.includes('count(*)')) {
+      return Promise.reject(Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }));
+    }
     if (q.includes('WITH del')) return Promise.resolve([{ n: h.deleteQueue.shift() ?? 0 }]);
     if (q.includes('count(*)')) return Promise.resolve([{ n: h.countMatched }]);
     if (q.includes('VACUUM')) {
@@ -34,10 +41,12 @@ function makeSql() {
 
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: makeSql() }) }));
 vi.mock('../agent-tools/locks/resource-lock-guard', () => ({
-  guardResource: async (_spec: unknown, run: (f: unknown) => Promise<unknown>) =>
-    h.guardAcquired
+  guardResource: async (spec: unknown, run: (f: unknown) => Promise<unknown>) => {
+    h.guardSpecs.push(spec);
+    return h.guardAcquired
       ? { acquired: true, result: await run({}), lock_id: 'x' }
-      : { acquired: false, reason: 'busy', holders: [] },
+      : { acquired: false, reason: 'busy', holders: [] };
+  },
 }));
 vi.mock('./disk', () => ({
   listDiskEntries: () => h.diskEntries,
@@ -75,6 +84,8 @@ beforeEach(() => {
   h.statsQueue = [];
   h.deleteQueue = [];
   h.countMatched = 0;
+  h.statementTimeoutOnCount = false;
+  h.unsafeQueries = [];
   h.vacuumCalls = [];
   h.guardAcquired = true;
   h.diskEntries = [];
@@ -154,6 +165,22 @@ describe('pruneStorageCategory — PG', () => {
     expect(r.reclaimedBytes).toBe(400); // perRow 10 * 40
     expect(r.reclaimEstimated).toBe(true);
     expect(h.deleteQueue.length).toBe(0); // nothing consumed
+    expect(h.unsafeQueries).toContain('SET LOCAL statement_timeout = 15000');
+  });
+
+  it('returns an explicit bounded timeout when the dry-run count cannot finish', async () => {
+    h.statsQueue = [{ b: 1000, r: 100 }];
+    h.statementTimeoutOnCount = true;
+    const r = await pruneStorageCategory(REQ({ dryRun: true, categoryId: 'tool-invocations', olderThanDays: 0 }));
+    expect(r).toMatchObject({
+      ok: false,
+      categoryId: 'tool-invocations',
+      dryRun: true,
+      removed: 0,
+      reason: 'dry_run_timed_out',
+    });
+    expect(r.note).toContain('no rows were deleted');
+    expect(h.deleteQueue).toHaveLength(0);
   });
 
   it('executes a chunked delete and does NOT vacuum a non-bloat table', async () => {
@@ -187,6 +214,8 @@ describe('pruneStorageCategory — PG', () => {
     expect(r.ok).toBe(true);
     expect(r.removed).toBe(40);
     expect(r.vacuumed).toBe(true);
+    expect(h.guardSpecs).toHaveLength(1);
+    expect(h.guardSpecs[0]).toMatchObject({ resource: 'db-schema', mode: 'exclusive' });
     expect(h.vacuumCalls.some((q) => q.includes('VACUUM (FULL, ANALYZE)'))).toBe(true);
     expect(r.reclaimedBytes).toBe(400); // 1000 - 600
     expect(r.reclaimEstimated).toBe(false);
@@ -201,6 +230,7 @@ describe('pruneStorageCategory — PG', () => {
     expect(r.removed).toBe(40);
     expect(r.vacuumed).toBe(false);
     expect(r.note).toMatch(/VACUUM FULL skipped/);
+    expect(r.note).toContain('(db-schema busy)');
   });
 });
 
@@ -395,6 +425,24 @@ describe('pruneStorageCategory — disk (plain store)', () => {
     expect(existsSync(fixture.freshRun)).toBe(true);
     expect(existsSync(fixture.workspaceRoot)).toBe(true);
     expect(existsSync(fixture.agentFile)).toBe(true);
+  });
+
+  it('returns a bounded partial scratch preview when the scan budget expires', async () => {
+    const fixture = makeScratchPruneFixture();
+    const r = await pruneStorageCategory(REQ({
+      categoryId: 'scratch',
+      olderThanDays: 1,
+      dryRun: true,
+      scanBudgetMs: 0,
+    }));
+
+    expect(r.ok).toBe(true);
+    expect(r.partial).toBe(true);
+    expect(r.complete).toBe(false);
+    expect(r.continuation).toEqual({ categoryId: 'scratch', olderThanDays: 1 });
+    expect(r.reclaimEstimated).toBe(true);
+    expect(r.note).toMatch(/scan budget of 0ms exhausted/);
+    expect(existsSync(fixture.staleRun)).toBe(true);
   });
 });
 

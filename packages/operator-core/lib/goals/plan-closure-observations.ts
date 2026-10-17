@@ -77,7 +77,8 @@ export function planClosureSubjectKey(subject: PlanClosureSubject): string {
  * fields or message text, and `harnessSlug` only disambiguates the subject.
  */
 export function isCanonicalClosureGateCall(opts: PlanAcceptanceGateOpts): boolean {
-  return !opts.force && !opts.gradingRecruitment && !(opts.current && opts.current.length > 0);
+  return !opts.force && !opts.gradingRecruitment && !opts.pendingDeliveryBarKeys?.length
+    && !(opts.current && opts.current.length > 0);
 }
 
 interface FingerprintRow {

@@ -326,6 +326,12 @@ function compactPipelineResult(
 ): JsonRecord {
   const out: JsonRecord = {};
   const source = result as unknown as JsonRecord;
+  // A selected test route is the action-bearing answer to a functional-test
+  // query. Put it before the large pipeline digest so a downstream result door
+  // that bounds this JSON cannot truncate the route off the end.
+  if (extras.currentBuildTestRoute !== undefined) {
+    out.currentBuildTestRoute = compactPipelineValue(extras.currentBuildTestRoute, opts);
+  }
 
   for (const field of [
     'input',
@@ -463,7 +469,9 @@ function compactPipelineResult(
       out[field] = compactPipelineValue(source[field], { ...opts, depth: 0 });
     }
   }
-  Object.assign(out, compactPipelineValue(extras, opts) as JsonRecord);
+  const remainingExtras = { ...extras };
+  delete remainingExtras.currentBuildTestRoute;
+  Object.assign(out, compactPipelineValue(remainingExtras, opts) as JsonRecord);
   return out;
 }
 
@@ -474,6 +482,10 @@ function minimalPipelineResult(
 ): JsonRecord {
   const source = result as unknown as JsonRecord;
   const out: JsonRecord = {};
+  // Keep the current-build route in the bounded response's retained prefix too.
+  if (extras.currentBuildTestRoute !== undefined) {
+    out.currentBuildTestRoute = compactPipelineValue(extras.currentBuildTestRoute, opts);
+  }
   for (const field of [
     'input',
     'targetSha',
@@ -534,7 +546,9 @@ function minimalPipelineResult(
   for (const field of ['nextAction', 'summary']) {
     if (source[field] !== undefined) out[field] = clipPipelineText(source[field], opts.textChars);
   }
-  Object.assign(out, compactPipelineValue(extras, opts) as JsonRecord);
+  const remainingExtras = { ...extras };
+  delete remainingExtras.currentBuildTestRoute;
+  Object.assign(out, compactPipelineValue(remainingExtras, opts) as JsonRecord);
   return out;
 }
 
@@ -549,7 +563,13 @@ export function shapePipelinePosition(
   rereadArgs: { path?: string; sha?: string; marker?: string; testClass?: string; expectedSourceSha256?: string } = {},
   opts: { unbounded?: boolean } = {},
 ): JsonRecord | PipelinePosition {
-  const original = { ...(result as unknown as JsonRecord), ...extras };
+  const route = extras.currentBuildTestRoute;
+  // Preserve the route at the front even on the identity fast path. The generic
+  // result door bounds serialized JSON, so object insertion order is part of the
+  // delivery contract for this field.
+  const original = route === undefined
+    ? { ...(result as unknown as JsonRecord), ...extras }
+    : { currentBuildTestRoute: route, ...(result as unknown as JsonRecord), ...extras };
   const originalChars = serializedChars(original);
   /**
    * WI-38266 — the budget is skipped for a MACHINE consumer that asked for the whole

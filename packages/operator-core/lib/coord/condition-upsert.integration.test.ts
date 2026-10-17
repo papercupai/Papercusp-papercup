@@ -252,6 +252,41 @@ describe('upsertConditionWorkItem — the WI-39594 acceptance', () => {
     expect((await findConditionObject(KEY, { harnessSlug: H })).workItem).toBe(first.id);
   });
 
+  it('does not rewrite the subject of an actively claimed incumbent (EI-23214372553570185)', async () => {
+    const KEY = 'detector-test:held-subject';
+    const first = await upsertConditionWorkItem(KEY, {
+      ...spec('claimed reading: original subject'),
+      summary: 'original summary',
+    });
+    expect(first.created).toBe(true);
+
+    // Model the claim that races a later detector emission. The refresh UPDATE must
+    // observe this holder atomically and retain the title/summary that the holder
+    // actually claimed.
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET taken_by = 'su-condition-holder', taken_at = now()
+       WHERE feature_id = ${first.id}
+    `;
+
+    const second = await upsertConditionWorkItem(KEY, {
+      ...spec('later detector reading: different subject'),
+      summary: 'later summary',
+    });
+    expect(second).toMatchObject({ id: first.id, created: false });
+
+    const [row] = await db.sql<{ title: string; summary: string; marker: Record<string, unknown> }[]>`
+      SELECT title, summary, payload -> ${CONDITION_UPSERT_MARKER}::text AS marker
+        FROM harness_shared.work_items
+       WHERE feature_id = ${first.id}
+    `;
+    expect(row).toMatchObject({
+      title: 'claimed reading: original subject',
+      summary: 'original summary',
+      marker: expect.objectContaining({ occurrences: 2 }),
+    });
+  });
+
   it('CONCURRENT filers: the unique index serializes to one open owner; losers settle themselves', async () => {
     const KEY = 'detector-test:race';
     const results = await Promise.all([

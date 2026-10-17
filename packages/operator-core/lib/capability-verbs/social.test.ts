@@ -15,7 +15,10 @@
  * guard that has never failed is a guard nobody has tested, and these controls
  * are what stop this suite from passing because the property became untestable.
  */
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { installDefaultSocialPackages, installSocialPackages, type SocialPackageSpec } from './social-provider.fixture';
+import { providerRegistry } from '../integrations/provider-registry';
+import { providerCapabilityVerificationIssue, type ProviderDescriptor } from '@papercusp/plugin-sdk';
 import {
   SocialVisibilityWidened,
   formatSocialPostRef,
@@ -23,17 +26,17 @@ import {
   parseSocialPostRef,
   resolveReplyVisibility,
   resolveSocialReplyCoordinates,
+  socialProviderInfo,
+  SocialPlatformUnusableError,
   type SocialVisibility,
 } from './social';
-import {
-  SocialPlatformUnusableError,
-  assertSocialWriteAllowed,
-  isSocialWriteVerified,
-  listSocialPlatforms,
-  socialWriteRefusal,
-  type SocialPlatformRow,
-} from '../external-triggers/social/platform-registry';
-import { anUnverifiedPlatformId } from '../external-triggers/social/platform-exemplars.fixture';
+const anUnverifiedPlatformId = () => 'unverified-social';
+const installedSocialDescriptors = () => providerRegistry().forDatatype('social-post').map(({ descriptor }) => descriptor);
+const assertSocialWriteAllowed = (id: string, verb: string) => socialProviderInfo(id, providerRegistry(), `social.${verb}`);
+beforeEach(async () => {
+  await installDefaultSocialPackages();
+  await installSocialPackages([HALF_VERIFIED_PACKAGE], providerRegistry());
+});
 import type { CanonicalDocument } from './resolve';
 
 function doc(source: string, externalId: string, payload: Record<string, unknown>): CanonicalDocument {
@@ -89,7 +92,7 @@ describe('parseSocialPostRef', () => {
 
   it('refuses an unverified Wave B/C platform even though the id is well-formed', () => {
     // D-005: an unverified row is UNUSABLE, not permissive.
-    // DERIVED, not named — see platform-exemplars.fixture.
+    // A synthetic installed package keeps the refusal independent of vendor changes.
     expect(() => parseSocialPostRef(`${anUnverifiedPlatformId()}:12345`)).toThrow(/unverified/);
   });
 });
@@ -148,34 +151,30 @@ describe('visibility rail — a reply never widens its parent', () => {
 /* -------------------------------------------------------------------------- */
 
 describe('rail 1 — reply coordinates come from the document alone', () => {
-  it('derives a Bluesky strong ref for both parent and root', () => {
+  it('passes Bluesky strong-ref metadata intact to the package', () => {
     const coordinates = resolveSocialReplyCoordinates(
       doc('bluesky', BLUESKY_PARENT.uri, { ...BLUESKY_PARENT, visibility: 'public' }),
     );
     expect(coordinates.target).toEqual({
       platform: 'bluesky',
-      rootUri: BLUESKY_PARENT.rootUri,
-      rootCid: BLUESKY_PARENT.rootCid,
-      parentUri: BLUESKY_PARENT.uri,
-      parentCid: BLUESKY_PARENT.cid,
+      externalId: BLUESKY_PARENT.uri,
+      payload: { ...BLUESKY_PARENT, visibility: 'public' },
     });
-    expect(coordinates.label).toContain('alice.bsky.social');
+    expect(coordinates.label).toContain(BLUESKY_PARENT.uri);
   });
 
-  it('treats a root post as its own thread root', () => {
+  it('leaves root fallback to the package', () => {
     const coordinates = resolveSocialReplyCoordinates(
       doc('bluesky', BLUESKY_PARENT.uri, { uri: BLUESKY_PARENT.uri, cid: BLUESKY_PARENT.cid }),
     );
     expect(coordinates.target).toMatchObject({
-      rootUri: BLUESKY_PARENT.uri,
-      parentUri: BLUESKY_PARENT.uri,
+      externalId: BLUESKY_PARENT.uri,
+      payload: { uri: BLUESKY_PARENT.uri, cid: BLUESKY_PARENT.cid },
     });
   });
 
-  it('refuses a Bluesky post missing its cid — a strong ref needs both halves', () => {
-    expect(() =>
-      resolveSocialReplyCoordinates(doc('bluesky', BLUESKY_PARENT.uri, { uri: BLUESKY_PARENT.uri })),
-    ).toThrow(/coordinates_missing:bluesky/);
+  it('passes incomplete vendor metadata for package validation', () => {
+    expect(resolveSocialReplyCoordinates(doc('bluesky', BLUESKY_PARENT.uri, { uri: BLUESKY_PARENT.uri })).target.payload).toEqual({ uri: BLUESKY_PARENT.uri });
   });
 
   it('carries the parent visibility through, so the rail has something to check', () => {
@@ -188,24 +187,18 @@ describe('rail 1 — reply coordinates come from the document alone', () => {
     );
   });
 
-  it('refuses a Mastodon status with no instance host rather than defaulting one', () => {
-    // Mastodon is federated: there is no platform-wide API host to fall back
-    // to, so a missing host is unrecoverable, not defaultable.
-    expect(() =>
-      resolveSocialReplyCoordinates(doc('mastodon', '109999', { statusId: '109999' })),
-    ).toThrow(/mastodon.*federated/s);
+  it('does not invent a missing Mastodon instance host', () => {
+    expect(resolveSocialReplyCoordinates(doc('mastodon', '109999', { statusId: '109999' })).target.payload).toEqual({ statusId: '109999' });
   });
 
-  it('requires a Reddit fullname, not a bare id', () => {
+  it('passes Reddit fullnames and metadata without deriving a vendor selector', () => {
     const ok = resolveSocialReplyCoordinates(
       doc('reddit', 't3_abc123', { fullname: 't3_abc123', subreddit: 'papercusp' }),
     );
-    expect(ok.target).toEqual({ platform: 'reddit', parentFullname: 't3_abc123', subreddit: 'papercusp' });
-    expect(ok.label).toContain('r/papercusp');
+    expect(ok.target).toEqual({ platform: 'reddit', externalId: 't3_abc123', payload: { fullname: 't3_abc123', subreddit: 'papercusp' } });
+    expect(ok.label).toContain('t3_abc123');
 
-    expect(() =>
-      resolveSocialReplyCoordinates(doc('reddit', 'abc123', { fullname: 'abc123' })),
-    ).toThrow(/expected a fullname/);
+    expect(resolveSocialReplyCoordinates(doc('reddit', 'abc123', { fullname: 'abc123' })).target.externalId).toBe('abc123');
   });
 
   it('is a PURE function of the document — no caller argument can steer it', () => {
@@ -260,79 +253,50 @@ describe('rail 1 — reply coordinates come from the document alone', () => {
 /* -------------------------------------------------------------------------- */
 
 /**
- * A row that reads fine and whose write path is unread. SYNTHETIC on purpose.
- *
- * Until 2026-08-23 Bluesky was this case in real data, and these tests named it
- * directly. Verifying Bluesky's write path (P-011) made every Wave A row
- * write-verified, while every remaining row carries `blockedOn` and is refused
- * EARLIER as `owner-blocked`/`unverified`. So no real row reaches the
- * `write-unverified` branch any more — and a gate whose whole job is to stop a
- * guessed write from reaching the owner's real public identity would have
- * silently lost its coverage at the exact moment Wave A started writing.
- *
- * Binding these tests to a synthetic row instead of to whichever platform
- * happens to be half-verified means this can never rot again. It is at module
- * scope because the write-gate block and the CONTROL at the bottom of the file
- * must be talking about the SAME row — a second copy could drift into being
- * write-verified and silently disarm the control.
+ * An installed package whose read contract is verified and writes are not.
+ * Synthetic so a newly verified vendor cannot erase this refusal/control.
  */
-const HALF_VERIFIED_ROW: SocialPlatformRow = {
-  id: 'bluesky',
-  label: 'Synthetic half-verified platform',
-  wave: 'A',
-  verifiedAt: '2026-08-23',
-  sources: ['https://example.invalid/spec'],
-  auth: { mode: 'app-password', scopes: [] },
-  read: { transport: 'outbound-websocket', replay: 'bounded-cursor-window' },
-  write: { verbs: ['reply', 'post'], idempotency: 'unknown', verifiedAt: null },
-  limits: {},
-  // P-024: an egress budget is required on every row. This synthetic one is
-  // deliberately per-connection with no fixed host, so it grants nothing — the
-  // write gate under test is about verification, not reachability, and a fixture
-  // that quietly declared a real host would let a later test reach one.
-  egress: { hostPolicy: 'per-connection', apiHosts: [] },
+const HALF_VERIFIED_PACKAGE: SocialPackageSpec = {
+  platform: 'half-verified-social',
+  capabilities: ['social.reply', 'social.post'],
+  verification: {
+    verifiedAt: '2026-10-16', sources: ['https://example.invalid/spec'],
+    capabilities: { 'social.reply': null, 'social.post': null },
+  },
 };
 
 describe('write gate — read-verified does not imply write-verified', () => {
-  const halfVerifiedRow = HALF_VERIFIED_ROW;
-
   it('REFUSES a write whose path is unread, even though the row reads fine', () => {
-    const refusal = socialWriteRefusal(halfVerifiedRow, 'reply');
-    expect(refusal, 'a read-verified row with write.verifiedAt=null must be refused').toBeTruthy();
-    expect(refusal!.reason).toBe('write-unverified');
+    expect(socialProviderInfo(HALF_VERIFIED_PACKAGE.platform).id).toBe(HALF_VERIFIED_PACKAGE.platform);
+    expect(() => assertSocialWriteAllowed(HALF_VERIFIED_PACKAGE.platform, 'reply')).toThrow(/write-unverified/);
   });
 
-  it('ALLOWS the same row once its write path is verified — the gate is the date, not the id', () => {
-    const verified: SocialPlatformRow = {
-      ...halfVerifiedRow,
-      write: { ...halfVerifiedRow.write, verifiedAt: '2026-08-23' },
-    };
-    expect(socialWriteRefusal(verified, 'reply')).toBeNull();
+  it('ALLOWS the same installed id once its write capability is attested', async () => {
+    const registry = providerRegistry();
+    registry.unregister(HALF_VERIFIED_PACKAGE.platform);
+    await installSocialPackages([{ ...HALF_VERIFIED_PACKAGE, verification: {
+      ...HALF_VERIFIED_PACKAGE.verification!, capabilities: { 'social.reply': '2026-10-16', 'social.post': null },
+    } }], registry);
+    expect(assertSocialWriteAllowed(HALF_VERIFIED_PACKAGE.platform, 'reply').id).toBe(HALF_VERIFIED_PACKAGE.platform);
+    expect(() => assertSocialWriteAllowed(HALF_VERIFIED_PACKAGE.platform, 'post')).toThrow(/write-unverified/);
   });
 
   it('refuses an undeclared verb BEFORE it considers write verification', () => {
     // Ordering matters: a platform that genuinely cannot do the verb should say
     // so, not send someone off to verify a lexicon that would not help.
-    expect(socialWriteRefusal(halfVerifiedRow, 'delete')!.reason).toBe('write-verb-unsupported');
+    expect(() => assertSocialWriteAllowed(HALF_VERIFIED_PACKAGE.platform, 'delete')).toThrow(/write-verb-unsupported/);
   });
 
   it('keeps the branch reachable for any real row that ever lands in that state', () => {
-    // Data-driven, so a future platform that verifies its read path before its
-    // write path is covered the day it is added, with no test edit. Vacuous
-    // today by construction — the assertion below states that plainly rather
-    // than letting an empty loop masquerade as coverage.
-    const halfVerified = listSocialPlatforms().filter(
-      (row) => Boolean(row.verifiedAt) && !row.blockedOn && !isSocialWriteVerified(row),
-    );
+    const halfVerified = installedSocialDescriptors().filter((row) =>
+      providerCapabilityVerificationIssue(row, 'social.post') === 'capability-unverified');
     for (const row of halfVerified) {
       expect(() => assertSocialWriteAllowed(row.id, 'post')).toThrow(/write-unverified/);
     }
-    // Pin the population itself. If this ever fails, the synthetic control
-    // above is no longer the ONLY coverage — which is good news, not a defect.
-    expect(halfVerified.map((row) => row.id)).toEqual([]);
+    expect(halfVerified.map((row) => row.id)).toContain(HALF_VERIFIED_PACKAGE.platform);
   });
 
-  it('now allows Bluesky writes — its write path was verified 2026-08-23 (P-011)', () => {
+  it('allows the write capabilities attested by the installed Bluesky package', () => {
     expect(assertSocialWriteAllowed('bluesky', 'reply').id).toBe('bluesky');
     expect(assertSocialWriteAllowed('bluesky', 'post').id).toBe('bluesky');
     expect(assertSocialWriteAllowed('bluesky', 'delete').id).toBe('bluesky');
@@ -356,13 +320,8 @@ describe('write gate — read-verified does not imply write-verified', () => {
   });
 
   it('refuses every unverified platform outright', () => {
-    // Filtered on VERIFICATION, not on wave. Those were the same set until
-    // P-021 verified LinkedIn — a Wave C row whose posting grant turned out to
-    // be self-serve — at which point "wave !== A" started meaning "unverified"
-    // only by coincidence. Keying on the property the assertion is actually
-    // about stops the next verified Wave B/C row from failing a test that never
-    // meant to make a claim about it.
-    const unverified = listSocialPlatforms().filter((candidate) => !candidate.write.verifiedAt);
+    const unverified = installedSocialDescriptors().filter((candidate) =>
+      providerCapabilityVerificationIssue(candidate) === 'unverified');
     // Anti-vacuity: if every row became verified this would pass while checking
     // nothing.
     expect(unverified.length).toBeGreaterThan(0);
@@ -381,15 +340,20 @@ describe('registry-derived source mapping', () => {
     // unresolvable — which a hand-maintained map would do silently.
     const { CANONICAL_SOURCE_BY_DATATYPE } = await import('./resolve');
     expect(CANONICAL_SOURCE_BY_DATATYPE).toBeDefined();
-    for (const row of listSocialPlatforms()) {
+    for (const row of installedSocialDescriptors()) {
       expect(row.id).toMatch(/^[a-z0-9][a-z0-9._-]{0,63}$/); // normalizePersonalSource-compatible
     }
   });
 
-  it('every platform row declares a write verifiedAt, even if null', () => {
-    for (const row of listSocialPlatforms()) {
-      expect(row.write).toHaveProperty('verifiedAt');
-      expect(row.write.verifiedAt === null || typeof row.write.verifiedAt === 'string').toBe(true);
+  it('the installed descriptor owns each declared write capability attestation', () => {
+    const rows = installedSocialDescriptors();
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      for (const capability of row.capabilities.filter((name) => name.startsWith('social.'))) {
+        const issue = providerCapabilityVerificationIssue(row, capability);
+        if (issue === null) expect(row.verification?.capabilities?.[capability]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+        else expect(['unverified', 'owner-blocked', 'capability-unverified']).toContain(issue);
+      }
     }
   });
 });
@@ -427,22 +391,11 @@ describe('controls — deliberately wrong implementations, kept so the guards st
     expect(parseSocialPostRef(raw).externalId).toBe(BLUESKY_PARENT.uri);
   });
 
-  it('CONTROL: a write gate reading only the ROW verifiedAt would publish a guess', () => {
-    // Re-pointed 2026-08-23 at the SYNTHETIC half-verified row, and the reason
-    // is worth recording: this control used to name Bluesky, and when P-011
-    // verified Bluesky's write path the control FAILED — not because the guard
-    // regressed, but because its subject stopped being a discriminating case.
-    // A control is only a control while the broken implementation and the real
-    // one still disagree about it. That is precisely the rot this file exists
-    // to catch, so it caught itself.
-    const row = HALF_VERIFIED_ROW;
-    // The row IS verified for reading …
-    expect(row.verifiedAt).toBeTruthy();
-    // … so a gate that stopped there would admit the write.
-    const brokenGate = (candidate: SocialPlatformRow) => Boolean(candidate.verifiedAt);
+  it('CONTROL: a write gate reading only contract verifiedAt would publish a guess', () => {
+    const row = providerRegistry().get(HALF_VERIFIED_PACKAGE.platform)!.descriptor;
+    const brokenGate = (candidate: ProviderDescriptor) => Boolean(candidate.verification?.verifiedAt);
     expect(brokenGate(row)).toBe(true);
-    // The real gate reads the WRITE half and refuses.
-    expect(socialWriteRefusal(row, 'reply')?.reason).toBe('write-unverified');
+    expect(() => assertSocialWriteAllowed(row.id, 'reply')).toThrow(/write-unverified/);
   });
 
   it('CONTROL: a resolver that trusts participants[0] is redirected by an injected post', () => {
@@ -462,7 +415,7 @@ describe('controls — deliberately wrong implementations, kept so the guards st
     // … while the real one stays on the host recorded in the stored payload.
     expect(resolveSocialReplyCoordinates(injected).target).toMatchObject({
       platform: 'mastodon',
-      instanceHost: 'mastodon.social',
+      payload: { instanceHost: 'mastodon.social' },
     });
   });
 

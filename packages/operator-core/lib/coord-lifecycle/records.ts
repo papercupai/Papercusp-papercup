@@ -333,7 +333,11 @@ export type CompletionTreeContentIdentity = {
    * evidence artifact (`~/.papercusp/evidence/<id>/*.png`), which
    * `verifiedHow: 'live-drove-ui'` REQUIRES the closer to cite and which the identity
    * floor then counted as an unproven citation. Excluded from the floor rather than
-   * failed by it; never set for a path that has an owning repository.
+   * failed by it. Also covers a measured ignored installed npm package cited by
+   * absolute path in a global npm installation layout beneath an incidental
+   * toolchain-manager checkout outside the primary project. Tracked files,
+   * primary-project source, local dependencies and unknown observations remain
+   * repository-backed.
    */
   outOfRepoArtifact?: true;
 };

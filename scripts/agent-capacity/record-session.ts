@@ -4,6 +4,12 @@
  *   npx tsx scripts/agent-capacity/record-session.ts --cli claude|codex --tasks all|<id,id> \
  *     [--parallel 3] [--out ~/.cache/agent-capacity/corpus] [--upstream http://127.0.0.1:8788] \
  *     [--claude-model sonnet] [--isolation systemd|none] [--keep-work] [--tasks-file <tasks.json>]
+ *     [--codex-model <model> --codex-effort low|medium|high]
+ *     [--max-model-requests <batch-wide positive integer; requires explicit Codex selection>]
+ *     [--max-request-bytes <positive integer; requires --max-model-requests>]
+ *     [--max-model-usd <USD, six decimal places max> --max-provider-attempts <integer>
+ *      --provider-account <id> --provider-credential-sha256 <digest> --provider-target <exact HTTPS URL>]
+ * The credential digest binds the complete outgoing Authorization header, including its Bearer prefix.
  *
  * For each task: copy the prepared (dependencies-installed) checkout of its pinned repo,
  * start a recording proxy in front of the local inference gateway, run the real CLI
@@ -23,11 +29,11 @@
  */
 import { spawn, execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, createWriteStream } from 'node:fs';
-import { homedir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { assertHostAdmission } from './host-admission';
-import { startRecordProxy } from './record-proxy';
+import { assertHostAdmission, capacityCacheRoot } from './host-admission';
+import { recordingRequestLimit, startRecordProxy, type RecordingRequestLimit } from './record-proxy';
+import { recordingBudgetFromArgv, recordingBudgetJournal, startRecordingBudgetGateway } from './record-budget';
 import { copyTree, parseCgroupStats, removeTree, sessionSpawn, type Isolation } from './session-process';
 
 // Lazy + memoized, NOT promisified at module scope (EI-10161): under a narrow
@@ -52,7 +58,7 @@ export interface Corpus {
 
 export const CORPUS_FILE = path.join(__dirname, 'corpus', 'tasks.json');
 export const OWNER_HEADER_VALUE = 'agent-capacity-corpus';
-const CACHE = path.join(homedir(), '.cache', 'agent-capacity');
+const CACHE = capacityCacheRoot(__dirname);
 
 /**
  * The task file a CLI run reads: `--tasks-file <path>` when given, else the shipped corpus. P-019
@@ -94,9 +100,52 @@ export function claudeEnv(base: NodeJS.ProcessEnv, proxyUrl: string, configDir: 
   };
 }
 
+export interface CodexSelection { model: string; effort: 'low' | 'medium' | 'high' }
+
+function validateCodexSelection(selection: CodexSelection): CodexSelection {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(selection.model) ||
+      !['low', 'medium', 'high'].includes(selection.effort)) {
+    throw new Error('Codex selection needs a model id and effort low|medium|high');
+  }
+  return { model: selection.model, effort: selection.effort };
+}
+
+/** No selection means unknown defaults; never backfill a historical binding. */
+export function codexSelectionFromArgv(argv: readonly string[]): CodexSelection | undefined {
+  const modelIndex = argv.indexOf('--codex-model');
+  const effortIndex = argv.indexOf('--codex-effort');
+  if (modelIndex < 0 && effortIndex < 0) return undefined;
+  const model = modelIndex < 0 ? undefined : argv[modelIndex + 1];
+  const effort = effortIndex < 0 ? undefined : argv[effortIndex + 1];
+  if (!model || model.startsWith('--') || !effort || effort.startsWith('--')) {
+    throw new Error('--codex-model and --codex-effort must both have values');
+  }
+  return validateCodexSelection({ model, effort: effort as CodexSelection['effort'] });
+}
+
+export function recordingLimitFromArgv(argv: readonly string[], cli: Cli, selection?: CodexSelection): RecordingRequestLimit | undefined {
+  const index = argv.indexOf('--max-model-requests');
+  const bytesIndex = argv.indexOf('--max-request-bytes');
+  if (index < 0) {
+    if (bytesIndex >= 0) throw new Error('--max-request-bytes requires --max-model-requests');
+    return undefined;
+  }
+  const raw = argv[index + 1];
+  if (cli !== 'codex' || !selection || !raw || !/^[1-9][0-9]*$/.test(raw)) {
+    throw new Error('--max-model-requests requires explicit Codex model/effort and a positive integer');
+  }
+  const bytes = bytesIndex < 0 ? undefined : argv[bytesIndex + 1];
+  if (bytesIndex >= 0 && (!bytes || !/^[1-9][0-9]*$/.test(bytes))) {
+    throw new Error('--max-request-bytes requires a positive integer');
+  }
+  return recordingRequestLimit(selection, Number(raw), bytes === undefined ? undefined : Number(bytes));
+}
+
 /** config.toml for a fresh CODEX_HOME whose only model provider is the recording proxy. */
-export function codexConfigToml(proxyUrl: string): string {
+export function codexConfigToml(proxyUrl: string, selection?: CodexSelection): string {
+  const chosen = selection === undefined ? undefined : validateCodexSelection(selection);
   return [
+    ...(chosen ? [`model = ${JSON.stringify(chosen.model)}`, `model_reasoning_effort = ${JSON.stringify(chosen.effort)}`] : []),
     'model_provider = "capture"',
     'check_for_update_on_startup = false',
     '',
@@ -219,6 +268,10 @@ export interface SessionMeta {
   cli: Cli;
   cliVersion: string;
   claudeModel: string | null;
+  /** Requested settings, not proof of the model served; inspect exchanges for that. */
+  codexSelection?: CodexSelection;
+  /** Snapshot of the batch counter at session completion, not a billed cost. */
+  recordingLimit?: ReturnType<RecordingRequestLimit['snapshot']>;
   startedAt: string;
   wallMs: number;
   exitCode: number | null;
@@ -254,11 +307,16 @@ export async function recordSession(opts: {
   outDir: string;
   upstream: string;
   claudeModel: string;
+  codexSelection?: CodexSelection;
+  requestLimit?: RecordingRequestLimit;
+  upstreamHeaders?: Readonly<Record<string, string>>;
   keepWork: boolean;
   /** Default `systemd`: per-session cgroup accounting in caprec.slice. */
   isolation?: Isolation;
 }): Promise<SessionMeta> {
   const { corpus, task, cli } = opts;
+  const codexSelection = cli === 'codex' && opts.codexSelection !== undefined
+    ? validateCodexSelection(opts.codexSelection) : undefined;
   const isolation = opts.isolation ?? 'systemd';
   const repo = corpus.repos[task.repo];
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '');
@@ -272,14 +330,15 @@ export async function recordSession(opts: {
   mkdirSync(sessionDir, { recursive: true });
   await copyTree(prepared, workDir);
 
-  const proxy = await startRecordProxy({ upstream: opts.upstream, outFile: path.join(sessionDir, 'exchanges.jsonl'), sessionId });
+  const proxy = await startRecordProxy({ upstream: opts.upstream, outFile: path.join(sessionDir, 'exchanges.jsonl'), sessionId,
+    requestLimit: opts.requestLimit, upstreamHeaders: opts.upstreamHeaders });
   const home = path.join(CACHE, 'cli-home', sessionId);
   mkdirSync(home, { recursive: true });
   let env: Record<string, string>;
   if (cli === 'claude') {
     env = claudeEnv(process.env, proxy.url, home);
   } else {
-    writeFileSync(path.join(home, 'config.toml'), codexConfigToml(proxy.url));
+    writeFileSync(path.join(home, 'config.toml'), codexConfigToml(proxy.url, codexSelection));
     env = { ...cleanEnv(process.env), CODEX_HOME: home };
   }
   const prompt = promptFor(corpus, task);
@@ -328,6 +387,8 @@ export async function recordSession(opts: {
     cli,
     cliVersion: await versionOn(cli, env.PATH, 'unknown'),
     claudeModel: cli === 'claude' ? opts.claudeModel : null,
+    ...(codexSelection ? { codexSelection } : {}),
+    ...(opts.requestLimit ? { recordingLimit: opts.requestLimit.snapshot() } : {}),
     startedAt,
     wallMs,
     exitCode,
@@ -356,6 +417,13 @@ async function main(): Promise<void> {
   const corpus = loadCorpus(corpusFileFromArgv(process.argv));
   const cli = arg('cli') as Cli;
   if (cli !== 'claude' && cli !== 'codex') throw new Error('--cli claude|codex required');
+  const codexSelection = codexSelectionFromArgv(process.argv);
+  if (cli !== 'codex' && codexSelection) throw new Error('--codex-model/--codex-effort require --cli codex');
+  const requestLimit = recordingLimitFromArgv(process.argv, cli, codexSelection);
+  const budgetConfig = recordingBudgetFromArgv(process.argv, codexSelection);
+  if (budgetConfig && (cli !== 'codex' || !requestLimit || process.argv.includes('--upstream'))) {
+    throw new Error('Provider budget requires bounded Codex recording and its private gateway (no --upstream)');
+  }
   const sel = arg('tasks', 'all')!;
   const tasks = sel === 'all' ? corpus.tasks : corpus.tasks.filter((t) => sel.split(',').includes(t.id));
   if (!tasks.length) throw new Error(`no tasks match ${sel}`);
@@ -363,6 +431,15 @@ async function main(): Promise<void> {
   const parallel = Math.max(1, Number(arg('parallel', '1')));
   const isolation = arg('isolation', 'systemd');
   if (isolation !== 'systemd' && isolation !== 'none') throw new Error('--isolation systemd|none');
+  mkdirSync(outDir, { recursive: true });
+  if (budgetConfig && existsSync(path.join(outDir, 'recording-budget.json'))) {
+    throw new Error('Recording budget output already exists; preserve prior reservations and use a newly admitted batch directory');
+  }
+  const journal = budgetConfig ? recordingBudgetJournal(path.join(outDir, 'recording-budget.jsonl')) : undefined;
+  let boundedGateway: Awaited<ReturnType<typeof startRecordingBudgetGateway>> | undefined;
+  try {
+    boundedGateway = budgetConfig ? await startRecordingBudgetGateway(budgetConfig, journal!.persist) : undefined;
+  } catch (error) { journal?.close(); throw error; }
   const queue = [...tasks];
   const worker = async () => {
     for (let task = queue.shift(); task; task = queue.shift()) {
@@ -372,8 +449,11 @@ async function main(): Promise<void> {
           task,
           cli,
           outDir,
-          upstream: arg('upstream', 'http://127.0.0.1:8788')!,
+          upstream: boundedGateway?.upstream ?? arg('upstream', 'http://127.0.0.1:8788')!,
+          upstreamHeaders: boundedGateway?.headers,
           claudeModel: arg('claude-model', 'sonnet')!,
+          codexSelection,
+          requestLimit,
           keepWork: process.argv.includes('--keep-work'),
           isolation,
         });
@@ -385,7 +465,14 @@ async function main(): Promise<void> {
       }
     }
   };
-  await Promise.all(Array.from({ length: parallel }, worker));
+  try {
+    await Promise.all(Array.from({ length: parallel }, worker));
+  } finally {
+    try { await boundedGateway?.stop(); } finally { journal?.close(); }
+    if (requestLimit) {
+      writeFileSync(path.join(outDir, 'recording-limit.json'), JSON.stringify(requestLimit.snapshot(), null, 2) + '\n');
+    }
+  }
 }
 
 if (process.argv[1] && /record-session\.ts$/.test(process.argv[1])) {

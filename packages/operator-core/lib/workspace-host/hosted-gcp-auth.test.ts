@@ -4,11 +4,13 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   HOSTED_GCP_DELEGATION_SOURCE_ENV,
+  HOSTED_GCP_DELEGATION_SOURCE_REF_ENV,
   HOSTED_GCP_ORGANIZATION_IDENTITY_PROJECT_ENV,
   ensureOrganizationDelegationAccount,
   hostedGcpDelegationSource,
   hostedGcpOrganizationIdentityProject,
   keyFileDelegationSource,
+  secretRefDelegationSource,
   organizationDelegationAccountId,
   organizationDelegationEmail,
   organizationDelegationPrincipal,
@@ -63,8 +65,41 @@ function record(method: 'service-account-impersonation' | 'workload-identity' = 
  */
 const NEVER_EMIT_MARKER = 'never-emit-me';
 const MINTED_TOKEN = 'customer-token';
+const GCP_SECRET_REF_PREFIX = ['gcp', 'secret'].join('-') + ':';
 
 describe('hosted GCP auth resolver', () => {
+  it('loads a managed delegation key into memory and refreshes when its pinned version changes', async () => {
+    const ref = `${GCP_SECRET_REF_PREFIX}projects/123456789012/locations/us-central1/secrets/test-delegation/versions/1`;
+    const resolveSecret = vi.fn(async () => JSON.stringify({ type: 'service_account', client_email: CONTROLLER_EMAIL }));
+    const env = { PAPERCUSP_DEPLOYMENT_ENVIRONMENT: 'production', [HOSTED_GCP_DELEGATION_SOURCE_REF_ENV]: ref };
+    const first = hostedGcpDelegationSource(env, fetch, resolveSecret);
+    await expect(first.principal()).resolves.toBe(`serviceAccount:${CONTROLLER_EMAIL}`);
+    await first.principal();
+    expect(resolveSecret).toHaveBeenCalledTimes(1);
+    const rotated = hostedGcpDelegationSource({ ...env, [HOSTED_GCP_DELEGATION_SOURCE_REF_ENV]: ref.replace('/1', '/2') }, fetch, resolveSecret);
+    expect(rotated).not.toBe(first);
+    await rotated.principal();
+    expect(resolveSecret).toHaveBeenLastCalledWith(ref.replace('/1', '/2'));
+  });
+
+  it('production refuses a local delegation key, ambiguous config and unpinned managed refs before reading', () => {
+    const resolveSecret = vi.fn(async () => 'must-not-read');
+    const production = { PAPERCUSP_DEPLOYMENT_ENVIRONMENT: 'production' };
+    expect(() => hostedGcpDelegationSource({ ...production, [HOSTED_GCP_DELEGATION_SOURCE_ENV]: '/dev-box/key.json' }))
+      .toThrow('production_key_file_forbidden');
+    expect(() => hostedGcpDelegationSource({ ...production, [HOSTED_GCP_DELEGATION_SOURCE_REF_ENV]: 'env:KEY' }, fetch, resolveSecret))
+      .toThrow('requires_pinned_secret_manager');
+    expect(() => hostedGcpDelegationSource({ ...production, [HOSTED_GCP_DELEGATION_SOURCE_ENV]: '/key.json',
+      [HOSTED_GCP_DELEGATION_SOURCE_REF_ENV]: 'env:KEY' })).toThrow('source_ambiguous');
+    expect(resolveSecret).not.toHaveBeenCalled();
+  });
+
+  it('does not expose managed key material in invalid JSON or resolution errors', async () => {
+    await expect(secretRefDelegationSource('test-reference', async () => 'credential-sentinel').principal())
+      .rejects.toThrow(/^gcp_workspace_host_delegation_source_invalid_json$/);
+    await expect(secretRefDelegationSource('test-reference', async () => { throw new Error('credential-sentinel'); }).principal())
+      .rejects.toThrow(/^gcp_workspace_host_delegation_source_unreadable$/);
+  });
   it('mints a short-lived token through the organization account from the metadata identity', async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input) => {
       const url = String(input);

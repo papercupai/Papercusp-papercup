@@ -11,6 +11,7 @@
  * measured timeout source without claiming query cost, lock wait, or a particular blocker.
  */
 import { describe, expect, it } from 'vitest';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { getNextContentionResult } from './get_next';
 
@@ -83,6 +84,7 @@ describe('getNextContentionResult surfaces the cause (EI-21831306274538775)', ()
     expect(out.message).not.toContain('transient PostgreSQL contention');
     expect(out.message).toContain('PostgreSQL did not time out');
     expect(out.message).toContain('does not identify a phase or prove PG pool saturation');
+    expect(out).not.toHaveProperty('setupAcquisition');
   });
 
   it('identifies setup-acquisition as before the claim ladder without guessing at connect latency', () => {
@@ -100,5 +102,35 @@ describe('getNextContentionResult surfaces the cause (EI-21831306274538775)', ()
     expect(out.message).toContain('does not isolate connection-establishment latency');
     expect(out.message).toContain('or prove pool saturation');
     expect(out.message).not.toContain('claim-ladder cost or backlog shape');
+  });
+
+  it('passes bounded same-process acquisition measurements through a wrapped setup timeout', () => {
+    const cause = new DbCallDeadlineError(
+      'boundedOrgTxn:acquire(scheduler-claim)',
+      5_000,
+      5_017,
+      'scheduler-claim',
+    );
+    const error = new OrgTxnTimeoutError(
+      '57014',
+      cause,
+      'separate-connection blocker snapshot with private query text',
+      'caller-budget',
+    );
+
+    const out = getNextContentionResult(error, 'claim-setup-acquisition');
+
+    expect(out.setupAcquisition).toEqual({
+      label: cause.label,
+      deadlineMs: cause.deadlineMs,
+      elapsedMs: cause.elapsedMs,
+      pool: cause.pool,
+      measured: cause.measured,
+      retryable: cause.retryable,
+      acquisitionTickets: cause.acquisitionTickets,
+    });
+    expect(out.setupAcquisition?.acquisitionTickets?.tickets.length ?? 0).toBeLessThanOrEqual(8);
+    expect(JSON.stringify(out)).not.toContain(cause.message);
+    expect(JSON.stringify(out)).not.toContain('private query text');
   });
 });

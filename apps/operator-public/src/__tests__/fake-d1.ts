@@ -473,17 +473,28 @@ export class FakeStore {
       let i = 0;
       const owner = upper.includes('OWNER_GITHUB_USER_ID = ?') ? binds[i++] : undefined;
       const state = upper.includes('STATE = ?') ? binds[i++] : undefined;
-      const limit = binds[binds.length - 1] as number;
+      const hasOffset = upper.includes('OFFSET ?');
+      const limit = binds[binds.length - (hasOffset ? 2 : 1)] as number;
+      const offset = hasOffset ? binds[binds.length - 1] as number : 0;
       return this.tables.creator_drafts
         .filter((r) => owner == null || r.owner_github_user_id === owner)
         .filter((r) => state == null || r.state === state)
-        .sort((a, b) => (b.updated_at as number) - (a.updated_at as number))
-        .slice(0, limit);
+        .sort((a, b) => (b.updated_at as number) - (a.updated_at as number) || String(a.id).localeCompare(String(b.id)))
+        .slice(offset, offset + limit);
     }
     if (upper.startsWith('SELECT * FROM HARNESSES WHERE ID =')) {
       const [id] = binds;
       const row = this.tables.harnesses.find((r) => r.id === id);
       return row ? [row] : [];
+    }
+    if (upper.startsWith('SELECT * FROM HARNESSES') && upper.includes('PUBLISHER_GITHUB_USER_ID = ?')) {
+      const [publisherId] = binds;
+      const limit = binds[1] as number;
+      const offset = binds[2] as number;
+      return this.tables.harnesses
+        .filter((r) => r.publisher_github_user_id === publisherId)
+        .sort((a, b) => (b.updated_at as number) - (a.updated_at as number) || String(a.id).localeCompare(String(b.id)))
+        .slice(offset, offset + limit);
     }
     // getActiveListingByRefs: repo + kind + listing_ref (must precede the
     // harness-repo branch since both start with GITHUB_REPOSITORY_ID).

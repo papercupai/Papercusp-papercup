@@ -115,6 +115,78 @@ describe('withMcpDiagnosticWarnings', () => {
     expect(annotated._meta).toBeUndefined();
   });
 
+  it.each([
+    ['returned matches', [{ line: 12, text: 'measurementPin', before: [], after: [] }], 3],
+    ['positive count', [], 3],
+  ])('does not warn on a populated capability:read query with %s', (_case, matches, matchCount) => {
+    const body = {
+      ok: true,
+      file_path: '/tmp/result.spill',
+      query: 'measurementPin',
+      terms: ['measurementPin'],
+      view: 'json-pretty',
+      matches,
+      matchCount,
+      nextFromLine: null,
+      coverage: {
+        payloadBytes: 31543,
+        searchedLines: 40,
+        fromLine: 1,
+        scannedToEnd: true,
+        upstreamPartialMarkers: 0,
+      },
+      next_cursor: null,
+      read_around: {
+        tool: 'capability:read',
+        args: { file_path: '/tmp/result.spill', view_lines: { offset: 9, limit: 40 } },
+      },
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+    };
+
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-15T08:54:26.113Z') }),
+    );
+
+    expect(annotated).toBe(result);
+    expect(annotated._meta).toBeUndefined();
+  });
+
+  it('still warns on an empty capability:read query result', () => {
+    const resultBody = {
+      ok: true,
+      file_path: '/tmp/result.spill',
+      query: 'measurementPin',
+      terms: ['measurementPin'],
+      view: 'json-pretty',
+      matches: [],
+      matchCount: 0,
+      nextFromLine: null,
+      coverage: {
+        payloadBytes: 31543,
+        searchedLines: 40,
+        fromLine: 1,
+        scannedToEnd: true,
+        upstreamPartialMarkers: 0,
+      },
+      next_cursor: null,
+      note: 'No line in the searched view contains every term.',
+    };
+    const result: McpCallResult = {
+      content: [{ type: 'text', text: JSON.stringify(resultBody) }],
+    };
+
+    const annotated = withMcpDiagnosticWarnings(
+      result,
+      context({ dataPlaneDegradedAtMs: Date.parse('2026-10-15T08:54:26.113Z') }),
+    );
+    const body = JSON.parse((annotated.content[0] as { text: string }).text);
+
+    expect(body._dataPlaneMayBeDegraded).toContain('unexpected empty/not-found');
+  });
+
   it('does not warn on a populated sessions:read result with turns', () => {
     const body = {
       ok: true,

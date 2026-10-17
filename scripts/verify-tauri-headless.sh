@@ -594,6 +594,15 @@ TAURI_LAUNCH_PROVENANCE="agent:$TAURI_OWNER_SID:run:$(date +%s%N)-$$-$RANDOM"
 # only: it never reclaims a stale lock and a failed diagnostic must not prevent a
 # verifier launch.
 install_in_flight_preflight() {
+  # A pinned source clone supplies code, while REPO_DIR supplies the installed
+  # dependencies. Refuse a source-only/shadow donor before allocating WORK or
+  # exporting another source snapshot; the snapshot repeats its full census.
+  if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && \
+    { [ ! -d "$REPO_DIR/node_modules" ] || [ -L "$REPO_DIR/node_modules" ]; }; then
+    echo "VERIFY_TAURI_DEPENDENCY_DONOR_INVALID: pinned source requires a physical installed dependency donor: $REPO_DIR" >&2
+    echo 'Set PAPERCUSP_REPO_DIR to the installed canonical tree, independently of the frozen wrapper/source directory.' >&2
+    return 2
+  fi
   PAPERCUSP_PREFLIGHT_REPO_DIR="$REPO_DIR" node --input-type=module <<'NODE'
 import { pathToFileURL } from 'node:url';
 
@@ -963,6 +972,12 @@ handle_signal() {
 # on stderr. It starts AFTER the dependency preflights above, which must fail in seconds
 # without creating anything (the contract's tsx step writes a cache under TMPDIR).
 # VH_FAIL_OPEN: instrumentation that cannot start never blocks a verify.
+# The enclosing native controller also consumes these lifecycle markers. Keep
+# that required signal independent of optional evidence capture and retention.
+verifier_begin_phase() {
+  printf 'VH_BEGIN phase=%s\n' "$1" >&2
+  vh_begin "$1"
+}
 VH_SH="$REPO_DIR/libs/generic/verification-harness/bin/vh.sh"
 if [ -f "$VH_SH" ]; then
   # shellcheck source=libs/generic/verification-harness/bin/vh.sh
@@ -972,8 +987,13 @@ if [ -f "$VH_SH" ]; then
   vh_phase prepare ""
   vh_phase boot prepare
   vh_phase assert boot
-  vh_init verify-tauri-headless "${VERIFY_TAURI_EVIDENCE_ROOT:-$(vh_default_root verify-tauri-headless)}"
-  vh_begin prepare
+  verifier_retained_args=()
+  if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ]; then
+    verifier_retained_args+=(--retain-artifact phases/prepare/verifier-source-receipt.json)
+  fi
+  vh_init verify-tauri-headless "${VERIFY_TAURI_EVIDENCE_ROOT:-$(vh_default_root verify-tauri-headless)}" \
+    ${verifier_retained_args[@]+"${verifier_retained_args[@]}"}
+  verifier_begin_phase prepare
   trap 'vh_capture_phase_stop' EXIT
   vh_capture_phase_start
   vh_step prepare-start
@@ -983,10 +1003,76 @@ else
   vh_begin() { :; }; vh_step() { :; }; vh_end() { :; }; vh_skip_rest() { :; }; vh_exit() { :; }
   vh_capture_phase_start() { :; }; vh_capture_phase_stop() { :; }
   vh_run_step() { shift; "$@"; }
+  verifier_begin_phase prepare
 fi
 trap 'handle_signal INT' INT
 trap 'handle_signal TERM' TERM
 trap 'handle_signal HUP' HUP
+
+# Repository snapshots must satisfy scratchClone's filesystem admission before
+# native checks allocate anything. Reuse pinned-deps' independent copy mode for
+# root-device donors; hardlinks remain the default on eligible data devices.
+select_verifier_snapshot_root() {
+  local work_root="${TMPDIR:-/tmp}" donor_device work_device root_device data_root data_device
+  local mode="${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE:-hardlink}"
+  case "$mode" in
+    hardlink|copy) ;;
+    *) echo 'FATAL: VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE must be hardlink or copy' >&2; return 2 ;;
+  esac
+  if [ -f "$REPO_DIR/.verifier-source.json" ] && [[ "$work_root/" == "$REPO_DIR/"* ]]; then
+    work_root="$(dirname "$REPO_DIR")"
+  fi
+  donor_device="$(stat -c %d -- "$REPO_DIR")" || return 1
+  work_device="$(stat -c %d -- "$work_root")" || return 1
+  if [ "$(uname -s)" = Linux ]; then
+    root_device="$(stat -c %d -- /)" || return 1
+    if [ "$donor_device" = "$root_device" ]; then
+      if [ "${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE+x}" = x ] && [ "$mode" = hardlink ]; then
+        echo 'FATAL: root-filesystem donors require VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE=copy' >&2
+        return 2
+      fi
+      mode=copy
+    fi
+    if [ "$mode" = copy ] && { [ "$donor_device" = "$root_device" ] || [ "$work_device" = "$root_device" ]; }; then
+      data_root="$(realpath -e -- /mnt/data)" || return 1
+      data_device="$(stat -c %d -- "$data_root")" || return 1
+      if [ "$data_device" = "$root_device" ]; then
+        echo 'FATAL: verifier snapshot requires a separate /mnt/data filesystem' >&2
+        return 1
+      fi
+      work_root="$data_root/tmp"
+      mkdir -p -- "$work_root" || return 1
+      work_root="$(realpath -e -- "$work_root")" || return 1
+      work_device="$(stat -c %d -- "$work_root")" || return 1
+      if [ "$work_device" != "$data_device" ]; then
+        echo 'FATAL: verifier snapshot scratch resolves outside the data filesystem' >&2
+        return 1
+      fi
+    fi
+  fi
+  if [ "$mode" = hardlink ]; then
+    if [ "$donor_device" != "$work_device" ]; then
+      if [ -f "$REPO_DIR/.verifier-source.json" ]; then
+        work_root="$(dirname "$REPO_DIR")"
+      else
+        work_root="$REPO_DIR/.papercusp/scratch"
+      fi
+      mkdir -p -- "$work_root" || return 1
+      work_device="$(stat -c %d -- "$work_root")" || return 1
+    fi
+    if [ "$donor_device" != "$work_device" ]; then
+      echo "FATAL: no verifier snapshot root on the dependency donor filesystem: $work_root" >&2
+      return 1
+    fi
+  fi
+  [ -d "$work_root" ] || return 1
+  OPERATOR_SNAPSHOT_PARENT="$work_root"
+  VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE="$mode"
+  export VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE
+  printf '%s\n' "$OPERATOR_SNAPSHOT_PARENT"
+}
+# Run in this shell: a command substitution would discard the selected mode.
+vh_run_step verifier-snapshot-root select_verifier_snapshot_root || exit $?
 
 # EI-25558788631579977: claim the actual native slot and reject its known
 # capacity shortage before source/dependency/SPA/database preparation. Keep the
@@ -1171,31 +1257,6 @@ shared_schema_readiness_preflight() {
 }
 vh_run_step shared-schema-readiness shared_schema_readiness_preflight || exit $?
 
-# Hardlinks need the donor device; an explicitly selected independent copy
-# uses the requested temporary device. Bulk SPA/profile/database payloads
-# remain on TMPDIR in either mode.
-# .papercusp is excluded from both source and dependency snapshots.
-select_verifier_snapshot_root() {
-  local work_root="${TMPDIR:-/tmp}" donor_device work_device
-  case "${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE:-hardlink}" in
-    hardlink) ;;
-    copy) [ -d "$work_root" ] || return 1; printf '%s\n' "$work_root"; return 0 ;;
-    *) echo 'FATAL: VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE must be hardlink or copy' >&2; return 2 ;;
-  esac
-  donor_device="$(stat -c %d -- "$REPO_DIR")" || return 1
-  work_device="$(stat -c %d -- "$work_root")" || return 1
-  if [ "$donor_device" != "$work_device" ]; then
-    work_root="$REPO_DIR/.papercusp/scratch"
-    mkdir -p -- "$work_root" || return 1
-    work_device="$(stat -c %d -- "$work_root")" || return 1
-  fi
-  if [ "$donor_device" != "$work_device" ]; then
-    echo "FATAL: no verifier snapshot root on the dependency donor filesystem: $work_root" >&2
-    return 1
-  fi
-  printf '%s\n' "$work_root"
-}
-OPERATOR_SNAPSHOT_PARENT="$(vh_run_step verifier-snapshot-root select_verifier_snapshot_root)" || exit $?
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/verify-tauri-headless.XXXXXX")"
 LOG="$WORK/tauri.log"
 # The operator sidecar must not compile the mutable shared checkout while this
@@ -1330,8 +1391,8 @@ reserve_verifier_disk() {
       cargo_extra_gb=$((cargo_extra_gb + bulk_gb)); bulk_gb=0
     fi
     if [ "$cargo_extra_gb" -gt 0 ]; then
-      papercusp_require_disk_reservation "$NATIVE_CARGO_TARGET" \
-        "$((NATIVE_CARGO_NEED_GB + cargo_extra_gb))" "native dev Cargo build" \
+      papercusp_require_native_dev_disk_reservation "$NATIVE_CARGO_TARGET" \
+        "$((NATIVE_CARGO_NEED_GB + cargo_extra_gb))" \
         "$NATIVE_CARGO_DISK_RESERVATION_FILE" >&2 || {
           status=$?; release_verifier_disk_reservations; return "$status"
         }
@@ -1488,8 +1549,8 @@ snapshot_verifier_pinned_deps() {
       mkdir -p -- "$(dirname "$pinned_deps_copy")" || return 1
       cp -- "$helper_source" "$pinned_deps_copy" || return 1
     fi
-    # Reuse the task scheduler's measured cgroup ceiling. The copy and all its
-    # checksum children stay in this task; no unbounded detached copy is allowed.
+    # Read the same task ceiling without importing the scheduler/toolchain:
+    # this frozen tree has no node_modules until the copy below succeeds.
     node --input-type=module -e '
       const { readTaskCgroupMemoryMaxMb } = await import(process.argv[1]);
       const limit = readTaskCgroupMemoryMaxMb();
@@ -1498,7 +1559,7 @@ snapshot_verifier_pinned_deps() {
         process.exit(2);
       }
       console.error(`VERIFY_TAURI_COPY_MEMORY_MAX_MB=${limit}`);
-    ' "$snapshot_root/scripts/lib/budgeted-task-scheduler.mjs" || return $?
+    ' "$snapshot_root/scripts/lib/task-cgroup-limits.mjs" || return $?
     # The existing heavy-command wrapper admits the copy's memory reserve;
     # pinned-deps still owns the host copy lease and donor install mutex.
     bash "$snapshot_root/scripts/pc-heavy.sh" -- bash "$pinned_deps_copy" \
@@ -1763,6 +1824,51 @@ smoke_verifier_operator_host() {
   esac
   log "frozen plain-node operator host import smoke passed"
 }
+prepare_verifier_spa() {
+  VERIFIER_SPA_DIST=""
+  [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] || return 0
+  # A committed archive has no ignored dist/. Never borrow the donor's bundle
+  # for a pinned source verdict: it can contain different UI bytes entirely.
+  if [ -n "${PAPERCUSP_SHARED_SPA_DIST:-}" ]; then
+    echo 'VERIFY_TAURI_SPA_UNBOUND: a pinned run must build its frozen source, not select an external SPA' >&2
+    return 3
+  fi
+  local app="$OPERATOR_SOURCE_ROOT/apps/operator-vite"
+  # Hardlinked source stays on the donor device; generated output belongs on
+  # WORK's admitted build volume. The donor can have no build capacity left.
+  local build_root="$WORK/verifier-spa"
+  [ -x "$app/bin/vite-build-singleflight" ] || {
+    echo "VERIFY_TAURI_SPA_BUILD_MISSING: frozen source has no maintained Vite builder: $app" >&2
+    return 3
+  }
+  log "building frozen operator SPA through the maintained workspace prebuild and singleflight builder"
+  # Keep npm's asset prebuild and the existing admission/atomic-output contract.
+  # Reset inherited build seams and pin output to this run's private work tree.
+  (
+    cd "$OPERATOR_SOURCE_ROOT" || exit 1
+    unset VITE_BUILD_CMD VITE_BUILD_LOCK VITE_BUILD_SNAPSHOT_DIR
+    export VITE_BUILD_OUT_ROOT="$build_root" VITE_BUILD_LOG="${VH_PHASE_DIR:-$WORK}/spa-build.log" \
+      PAPERCUSP_RETAIN_DIST_CHUNKS=0 \
+      PAPERCUSP_VITE_OUT_DIR="$build_root/dist" PAPERCUSP_VITE_FINAL_OUT_DIR="$build_root/dist"
+    bash scripts/pc-heavy.sh -- npm --workspace @papercusp/operator-vite run prebuild || exit $?
+    # Prebuild materializes runtime mirrors inside the archive. Validate the
+    # source boundary NOW, before spending a full Vite build on a tree that the
+    # subsequent host bundler would reject. Do not regenerate the source receipt.
+    node scripts/source-preview.mjs verifier-verify \
+      --out "$OPERATOR_SOURCE_ROOT" --receipt "$VERIFY_TAURI_SOURCE_RECEIPT" \
+      --runtime-artifacts || exit $?
+    # npm still runs the explicit build script, without repeating prebuild.
+    bash scripts/pc-heavy.sh -- npm --ignore-scripts --workspace @papercusp/operator-vite run build
+  ) || return $?
+  if [ ! -s "$build_root/dist/index.html" ] || [ ! -d "$build_root/dist/assets" ] \
+    || [ -z "$(find "$build_root/dist/assets" -type f -size +0c -print -quit)" ]; then
+    echo "VERIFY_TAURI_SPA_BUILD_INCOMPLETE: frozen build needs non-empty index.html and assets: $build_root/dist" >&2
+    return 3
+  fi
+  VERIFIER_SPA_DIST="$build_root/dist"
+  log "frozen operator SPA ready at $VERIFIER_SPA_DIST"
+}
+vh_run_step verifier-spa-build prepare_verifier_spa || { spa_rc=$?; cleanup_operator_source_snapshot; exit "$spa_rc"; }
 vh_run_step verifier-host-bundle build_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
 vh_run_step verifier-host-import-smoke smoke_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
 if [ "$PREPARE_ONLY" -eq 1 ]; then
@@ -2922,6 +3028,13 @@ teardown() {
   fi
   vh_capture_phase_stop
   vh_exit "$ec"   # record the open phase (failed unless ec=0) + HARNESS_RESULT; never changes ec
+  # finalize returns 1 for a faithfully retained failing verdict; only 2+
+  # signals a finalization error. A test failure must not masquerade as lost proof.
+  if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ "${VH_FINISH_RC:-2}" -gt 1 ]; then
+    artifacts_retained=0
+    [ "$ec" -ne 0 ] || ec=1
+    log "FATAL: pinned verifier completion evidence was not retained; preserving source at $OPERATOR_SOURCE_ROOT"
+  fi
   log "tearing down (exit=$ec)"
   capture_isolated_pg_diagnostics
   write_stop_script
@@ -3077,7 +3190,9 @@ fi
 #   PAPERCUSP_SHARED_SPA_DIST="$WORK/spa-dev" bash scripts/verify-tauri-headless.sh
 # Still frozen into $WORK/spa exactly as below, so the isolation property holds
 # whichever source it came from.
-SHARED_SPA_DIST="${PAPERCUSP_SHARED_SPA_DIST:-$REPO_DIR/apps/operator-vite/dist}"
+SHARED_SPA_DIST="${VERIFIER_SPA_DIST:-${PAPERCUSP_SHARED_SPA_DIST:-$REPO_DIR/apps/operator-vite/dist}}"
+SPA_SOURCE_ROOT="$REPO_DIR"
+[ -z "${VERIFIER_SPA_DIST:-}" ] || SPA_SOURCE_ROOT="$OPERATOR_SOURCE_ROOT"
 SPA_DIST=""
 if [ -f "$SHARED_SPA_DIST/index.html" ]; then
   # WI-10004972: quiescence (below) proves the dist stopped CHANGING, not that it
@@ -3093,10 +3208,10 @@ if [ -f "$SHARED_SPA_DIST/index.html" ]; then
   # after a full boot, and it needs no source string that survives
   # minification. Every run logs how many sources are newer than the bundle.
   if [ -n "${VERIFY_TAURI_REQUIRE_BUILT:-}" ] \
-    && ! spa_require_built_gate "$SHARED_SPA_DIST" "$REPO_DIR" "$VERIFY_TAURI_REQUIRE_BUILT"; then
+    && ! spa_require_built_gate "$SHARED_SPA_DIST" "$SPA_SOURCE_ROOT" "$VERIFY_TAURI_REQUIRE_BUILT"; then
     exit 3
   fi
-  spa_require_built_note "$SHARED_SPA_DIST" "$REPO_DIR"
+  spa_require_built_note "$SHARED_SPA_DIST" "$SPA_SOURCE_ROOT"
   # EI-19382195051346372: wait for QUIESCENCE before freezing. The shared
   # dist's builder rewrites $SHARED_SPA_DIST/assets on every rebuild and
   # RETAINS old hashed chunks (emptyOutDir:false), so a freeze racing a
@@ -3824,10 +3939,13 @@ gtk_init_failed() {
 # stays correct wherever cargo chooses to place the escapes.
 strip_ansi() { sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g'; }
 desktop_binary_started() {
-  strip_ansi < "$LOG" 2>/dev/null | grep -qE "Running[[:space:]]+.*papercusp-desktop"
+  # Put stderr redirection before input redirection. If cargo has not created
+  # the log yet, opening it is the expected non-ready result; placing `< "$LOG"`
+  # first leaks bash's "No such file or directory" diagnostic during each poll.
+  strip_ansi 2>/dev/null < "$LOG" | grep -qE "Running[[:space:]]+.*papercusp-desktop"
 }
 vh_capture_phase_stop
-vh_begin boot
+verifier_begin_phase boot
 while :; do
   BOOT_ATTEMPTS=$((BOOT_ATTEMPTS + 1))
   vh_step "launch-attempt-$BOOT_ATTEMPTS"
@@ -4931,9 +5049,15 @@ if [ "$ISOLATED_DB" = "1" ]; then
   export PAPERCUSP_VERIFY_TAURI_ISOLATED=1
 fi
 
-vh_begin assert
+verifier_begin_phase assert
 # Assertions write diagnostics outside the disposable operator source. Export
 # after vh_begin so children receive the current phase, not the boot directory.
+# When the retention preflight fails, the verification-harness shim is
+# intentionally disabled and vh_begin is a no-op. Keep the assertion boundary
+# runnable under nounset in that mode, and retain its diagnostics in WORK.
+if [ -z "${VH_PHASE_DIR:-}" ]; then
+  VH_PHASE_DIR="${WORK:-${TMPDIR:-/tmp}}"
+fi
 export VH_PHASE_DIR
 if [ -n "${VERIFY_TAURI_SOURCE_RECEIPT:-}" ]; then
   # Native builds generate schemas/placeholders before the browser starts.

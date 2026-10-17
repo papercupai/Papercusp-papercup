@@ -261,11 +261,15 @@ function ensureRef(
   };
 }
 
-function fingerprintRef(integration: string, ref: string): ShellResult {
+function fingerprintRef(
+  integration: string,
+  ref: string,
+  env: NodeJS.ProcessEnv = process.env,
+): ShellResult {
   const result = spawnSync(
     'bash',
     [SCRIPT, '--integration', integration, '--fingerprint-ref', ref],
-    { encoding: 'utf8', env: process.env },
+    { encoding: 'utf8', env },
   );
   return {
     status: result.status,
@@ -536,6 +540,41 @@ describe('WI-10002299: patch-package patches are dependency inputs', () => {
     },
     NATIVE_SHELL_TIMEOUT_MS,
   );
+});
+
+describe('exact-ref dependency record filtering', () => {
+  it('filters the immutable tree listing before the Bash manifest loop', () => {
+    const integration = makeIntegration();
+    const candidate = commitFixture(integration, 'candidate with ordinary dependency inputs');
+    const shimDir = join(integration, 'grep-shim');
+    const traceFile = join(integration, 'grep-filter.trace');
+    mkdirSync(shimDir);
+    const realGrep = execFileSync('bash', ['-lc', 'command -v grep'], {
+      encoding: 'utf8',
+    }).trim();
+    writeFileSync(
+      join(shimDir, 'grep'),
+      '#!/bin/sh\nif [ "$1" = "-zE" ]; then printf filtered >> "$DEPENDENCY_GENERATION_FILTER_TRACE"; fi\nexec "$DEPENDENCY_GENERATION_REAL_GREP" "$@"\n',
+      { mode: 0o755 },
+    );
+
+    const result = fingerprintRef(integration, candidate, {
+      ...process.env,
+      PATH: `${shimDir}:${process.env.PATH ?? ''}`,
+      DEPENDENCY_GENERATION_FILTER_TRACE: traceFile,
+      DEPENDENCY_GENERATION_REAL_GREP: realGrep,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const lockDigest = createHash('sha256')
+      .update(readFileSync(join(integration, 'package-lock.json')))
+      .digest('hex');
+    const expected = createHash('sha256')
+      .update(`schema\t1\npackage-lock.json\t${lockDigest}\n`)
+      .digest('hex');
+    expect(publishedInputFingerprint(result.stdout)).toBe(expected);
+    expect(readFileSync(traceFile, 'utf8')).toContain('filtered');
+  });
 });
 
 describe('immutable dependency generation', () => {
@@ -1779,6 +1818,50 @@ exec /bin/cp "$@"
     expect(predictionOf(predictRef(integration, candidate).stdout).verdict).toBe('prewarmed');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it.each([
+    ['malformed selector', 'invalid prewarmed dependency selector'],
+    ['dangling generation', 'has an invalid publication token'],
+    ['changed publication token', 'has an invalid publication token'],
+  ])('WI-6554700010016558: prediction and ensure both reject a %s', (defect, diagnostic) => {
+    const integration = makeIntegration();
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    const candidate = commitFixture(integration, 'installed exact-ref candidate');
+    const published = ensureRef(integration, candidate);
+    expect(published.status, published.stderr).toBe(0);
+    const input = publishedInputFingerprint(published.stdout);
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const selector = join(generationRoot, '.inputs', input);
+    const healthySelector = readFileSync(selector, 'utf8');
+    const healthyPrediction = predictRef(integration, candidate);
+    expect(healthyPrediction.status, healthyPrediction.stderr).toBe(0);
+    expect(predictionOf(healthyPrediction.stdout)).toMatchObject({ verdict: 'prewarmed', input });
+
+    if (defect === 'malformed selector') {
+      writeFileSync(selector, healthySelector.replace('schema=1\n', 'schema=99\n'));
+    } else if (defect === 'dangling generation') {
+      writeFileSync(selector, healthySelector.replace(publishedIdentity(published.stdout), `v1-${'f'.repeat(64)}`));
+    } else {
+      const marker = join(publishedPath(published.stdout), '.papercusp-dependency-generation');
+      chmodSync(marker, 0o644);
+      appendFileSync(marker, 'tampered=1\n');
+    }
+    const damagedSelector = readFileSync(selector, 'utf8');
+    const generationsBefore = readdirSync(generationRoot).sort();
+
+    // Equal input keys and an existing selector are insufficient: the builder
+    // validates the referenced immutable publication before trusting the hit.
+    const ensured = ensureRef(integration, candidate);
+    expect(ensured.status, ensured.stderr).toBe(74);
+    expect(ensured.stderr).toContain(diagnostic);
+    expect(ensured.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+    const prediction = predictRef(integration, candidate);
+    expect(prediction.status, prediction.stdout).toBe(ensured.status);
+    expect(prediction.stderr).toContain(diagnostic);
+    expect(prediction.stdout).not.toContain('DEPENDENCY_GENERATION_PREDICTION ');
+    expect(readFileSync(selector, 'utf8')).toBe(damagedSelector);
+    expect(readdirSync(generationRoot).sort()).toEqual(generationsBefore);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('WI-10004151: --predict-ref reports refused with each reason, exits 0, and leaves no scratch', () => {
     const integration = makeIntegration();
     writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
@@ -2097,6 +2180,11 @@ exec /bin/cp "$@"
     expect(result.stderr).toContain('refusing to publish');
     expect(lastSummary(result)).toMatchObject({ result: 'lock-tree-incomplete' });
     expect(result.stdout).not.toContain('DEPENDENCY_GENERATION_RESULT');
+    // A known-incomplete donor must refuse before spending time copying it.
+    expect(telemetryRecords(result.stderr, 'PHASE')).toContainEqual(
+      expect.objectContaining({ phase: 'source-lock-tree-audit', outcome: 'failed' }),
+    );
+    expect(telemetryRecords(result.stderr, 'PHASE').map(({ phase }) => phase)).not.toContain('tree-copy');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it.each([
@@ -3261,6 +3349,51 @@ describe('WI-42354: the generation store is born un-committable', () => {
     expect(readFileSync(ignore, 'utf8').trim()).toBe('*');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  it('EI-26183925708230574: a live exact-ref scratch tree stays out of Git without enclosing ignore rules', () => {
+    const integration = makeIntegration();
+    const candidate = commitFixture(integration, 'exact-ref scratch fixture');
+    const fingerprint = fingerprintRef(integration, candidate);
+    expect(fingerprint.status, fingerprint.stderr).toBe(0);
+    expect(existsSync(join(integration, '.gitignore'))).toBe(false);
+    const staged = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_stage_exact_ref_inputs "$INTEGRATION" "$CANDIDATE" "$EXACT_INPUT"',
+      'printf "%s\\n" "$DEPENDENCY_GENERATION_EXACT_SCRATCH"',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: {
+        ...process.env, SCRIPT, INTEGRATION: integration, CANDIDATE: candidate,
+        EXACT_INPUT: publishedInputFingerprint(fingerprint.stdout),
+      },
+    });
+    expect(staged.status, staged.stderr).toBe(0);
+    const scratch = staged.stdout.trim();
+    expect(existsSync(join(scratch, '.papercusp-exact-ref-writer'))).toBe(true);
+    expect(existsSync(join(scratch, 'package-lock.json'))).toBe(true);
+    const relativeScratch = scratch.slice(integration.length + 1);
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: integration, encoding: 'utf8' });
+    expect(git('ls-files', '--others', '--exclude-standard', '--', relativeScratch).trim()).toBe('');
+
+    // Calibration: ordinary source still participates in the same staging pass.
+    writeFileSync(join(integration, 'ordinary-source.ts'), 'export const current = true;\n');
+    git('add', '-A');
+    expect(git('diff', '--cached', '--name-only', '--', relativeScratch).trim()).toBe('');
+    expect(git('diff', '--cached', '--name-only', '--', 'ordinary-source.ts').trim()).toBe('ordinary-source.ts');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it.each(['', 'nested/pot/'])('EI-26183925708230574: canonical ignore rules protect abandoned exact-ref inputs at %s', (prefix) => {
+    const integration = makeIntegration();
+    execFileSync('git', ['init', '-q'], { cwd: integration });
+    writeFileSync(join(integration, '.gitignore'), readFileSync(join(REPO_ROOT, '.gitignore')));
+    const path = `${prefix}.papercusp/dependency-exact-ref/abandoned/.papercusp-exact-ref-writer`;
+    mkdirSync(dirname(join(integration, path)), { recursive: true });
+    writeFileSync(join(integration, path), 'pid=99999999\n');
+    expect(execFileSync('git', ['check-ignore', '--no-index', '--', path], { cwd: integration, encoding: 'utf8' }).trim()).toBe(path);
+    writeFileSync(join(integration, 'ordinary-source.ts'), 'export {};\n');
+    expect(execFileSync('git', ['ls-files', '--others', '--exclude-standard', '--', 'ordinary-source.ts'], { cwd: integration, encoding: 'utf8' }).trim()).toBe('ordinary-source.ts');
+  });
+
   it('git reports NOTHING to commit for a store that has published pins', () => {
     const integration = makeIntegration();
     const git = (...args: string[]) =>
@@ -4152,6 +4285,60 @@ describe('WI-10004849: dependency copy lock + headroom preflight', () => {
       held.kill();
     }
     await held.exited;
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('relays measured copy progress when the waiter cannot see the holder process namespace', async () => {
+    const { root } = copyFixture();
+    const lock = join(root, 'namespace-progress.lock');
+    let holderOutput = '';
+    let result: ShellResult | undefined;
+    const holder = spawn('bash', ['-c', [
+      'source "$LIB"',
+      'dependency_generation_acquire_copy_lock fixture || exit $?',
+      'trap dependency_generation_release_copy_lock EXIT',
+      // Real writes in the holder remain measurable; only the waiter loses /proc visibility.
+      'cp() { for i in $(seq 1 80); do printf "%04096d" 0 >> "$2"; sleep 0.1; done; }',
+      'dependency_generation_copy_with_progress ignored "$WORK"',
+    ].join('\n')], { stdio: ['ignore', 'ignore', 'pipe'], detached: true, env: {
+      ...process.env, LIB: SCRIPT, WORK: join(root, 'copied-bytes'),
+      DEPENDENCY_GENERATION_COPY_LOCK_FILE: lock, DEPENDENCY_GENERATION_COPY_PROGRESS_SEC: '1',
+    } });
+    holder.stderr!.on('data', chunk => { holderOutput += chunk.toString(); });
+    const exited = new Promise(resolve => holder.once('exit', resolve));
+    try {
+      for (let i = 0; i < 100 && !existsSync(`${lock}.holder`); i++)
+        await new Promise(resolve => setTimeout(resolve, 50));
+      expect(existsSync(`${lock}.holder`)).toBe(true);
+      result = runShell([
+        'dependency_generation_subtree_io() { return 0; }',
+        'dependency_generation_acquire_copy_lock waiter && echo ACQUIRED',
+      // Four one-second sampling intervals fit inside this fixture's stall budget.
+      // The writer still runs for twice the budget, so the old implementation fails.
+      ].join('\n'), waitEnv(lock, { DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '4' }));
+    } finally {
+      try { process.kill(-(holder.pid as number), 'SIGKILL'); } catch { holder.kill('SIGKILL'); }
+      await exited;
+    }
+    expect(result?.status, `${result?.stderr}\nholder:\n${holderOutput}`).toBe(0);
+    expect(result?.stdout).toContain('ACQUIRED');
+    expect(result?.stderr).toMatch(/copy lock progress: .* advances=[1-9]/);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('does not turn a repeated holder progress record into progress without process visibility', async () => {
+    const { root } = copyFixture();
+    const lock = join(root, 'namespace-stalled.lock');
+    const held = await holdLock(lock, join(root, 'work'), 'echo progress=copy:1:1:1024:0 >> "$LOCK.holder"; sleep 30');
+    try {
+      const result = runShell([
+        'dependency_generation_subtree_io() { return 0; }',
+        'dependency_generation_acquire_copy_lock waiter',
+      ].join('\n'), waitEnv(lock, { DEPENDENCY_GENERATION_COPY_LOCK_TIMEOUT_SEC: '1' }));
+      expect(result.status, result.stderr).toBe(76);
+      expect(result.stderr).toMatch(/DEPENDENCY_GENERATION_LOCK_TIMEOUT .*reason=stalled/);
+    } finally {
+      held.kill();
+      await held.exited;
+    }
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('times out reason=stalled behind a live holder that does no I/O', async () => {

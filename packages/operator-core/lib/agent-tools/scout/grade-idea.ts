@@ -769,6 +769,7 @@ export async function runGradeIdea(
   const agentReviewPreflight = await measure('preflightAgentReviewGrade', () => deps.preflightAgentReviewGrade({
     ideaId,
     grade: args.grade,
+    gradedBy,
     ...(feedback !== undefined ? { feedback } : {}),
   }));
   if (agentReviewPreflight.refusal) {

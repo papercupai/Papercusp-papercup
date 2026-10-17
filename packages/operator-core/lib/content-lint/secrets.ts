@@ -38,6 +38,7 @@ import {
   scanTextForSecrets,
   scanTextForSecretsSliced,
   isFixtureFile,
+  isGeneratedNativeFixturePath,
   describeSecretFindings,
   type SecretFinding,
 } from '../sync/pot-git/secrets-guard';
@@ -90,7 +91,7 @@ export async function findCommitBlockingSecretsSliced(
 
 /** The static fixture set plus the runtime exemption rows: one rule for both scanners. */
 function isCommitScanExempt(file: string, exemptions: ReadonlySet<string>): boolean {
-  return isFixtureFile(file) || isPathExempt(exemptions, file);
+  return isGeneratedNativeFixturePath(file) || isFixtureFile(file) || isPathExempt(exemptions, file);
 }
 
 /**

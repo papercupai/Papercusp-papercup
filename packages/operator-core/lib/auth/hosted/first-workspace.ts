@@ -149,7 +149,7 @@ export interface HostedFirstWorkspaceDependencies {
    */
   createAdmission(
     resolveDesiredSpec: ResolveFirstWorkspaceSpec,
-    options?: { bringUp?: Pick<WorkspaceHostBringUp, 'requestedAgents'> },
+    options?: { bringUp?: Pick<WorkspaceHostBringUp, 'requestedAgents'>; pooled?: boolean },
   ): HostedOnboardingWorkspacePort;
   /** Rotate the caller's session onto the new workspace; null when the session moved on. */
   selectWorkspace(input: {
@@ -254,6 +254,14 @@ export const GCP_FIRST_WORKSPACE_DEFAULTS = {
   volumeGiB: 100,
 } as const;
 
+// D-074/D-077: the allowance ceiling is not purchased capacity. New funded
+// workspaces begin on the provider's 10GiB data disk; retained disks keep their
+// immutable admission split. Both providers must persist the same explicit
+// allocation that pooled admission and the guest quota renderer enforce.
+const FUNDED_FIRST_WORKSPACE_DATA = {
+  encrypted: true, volumeGiB: 10, allocation: { dbGiB: 8, workspaceGiB: 2 },
+} as const;
+
 /**
  * The provisioning model of a NEW Papercusp-hosted host (WI-10005210, plan
  * agent-capacity-and-cost-gcp-2026-09-30 D-028): spot, which roughly halves the cost per active
@@ -306,7 +314,9 @@ export function gcpFirstWorkspaceDesiredSpec(input: {
     zone: location.zone,
     size,
     image: { ...GCP_FIRST_WORKSPACE_DEFAULTS.image },
-    data: { encrypted: true, volumeGiB: GCP_FIRST_WORKSPACE_DEFAULTS.volumeGiB },
+    data: papercuspHosted
+      ? { ...FUNDED_FIRST_WORKSPACE_DATA, allocation: { ...FUNDED_FIRST_WORKSPACE_DATA.allocation } }
+      : { encrypted: true, volumeGiB: GCP_FIRST_WORKSPACE_DEFAULTS.volumeGiB },
     credentials: { cloudCredentialRef: { kind: 'cloud', ref: input.record.credentialRef } },
     provider: {
       projectId: source.projectId,
@@ -366,7 +376,9 @@ export function awsFirstWorkspaceDesiredSpec(input: {
     zone: infra.zone,
     size: AWS_FIRST_WORKSPACE_DEFAULTS.size,
     image: { ...infra.image },
-    data: { encrypted: true, volumeGiB: AWS_FIRST_WORKSPACE_DEFAULTS.volumeGiB },
+    data: configuration.papercuspHosted
+      ? { ...FUNDED_FIRST_WORKSPACE_DATA, allocation: { ...FUNDED_FIRST_WORKSPACE_DATA.allocation } }
+      : { encrypted: true, volumeGiB: AWS_FIRST_WORKSPACE_DEFAULTS.volumeGiB },
     credentials: { cloudCredentialRef: { kind: 'cloud', ref: input.record.credentialRef } },
     provider: {
       vpcId: infra.vpcId,
@@ -621,9 +633,8 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
       // connection's own role (D-015 rule 3, WI-10005354).
       const admission = deps.createAdmission(
         resolveSpec,
-        hostedBringUpSupportsProvider(provider)
-          ? { bringUp: { requestedAgents: PAPERCUSP_HOSTED_BRING_UP_AGENTS } }
-          : {},
+        { ...(hosting === 'papercusp' ? { pooled: true } : {}), ...(hostedBringUpSupportsProvider(provider)
+          ? { bringUp: { requestedAgents: PAPERCUSP_HOSTED_BRING_UP_AGENTS } } : {}) },
       );
       let admitted: { workspaceId: string; provisionOperationId: string };
       try {
@@ -642,7 +653,9 @@ export function createHostedFirstWorkspace(deps: HostedFirstWorkspaceDependencie
           return failure('organization_already_has_workspace', 409, false);
         }
         console.error(`[hosted-first-workspace] admission failed for host ${identity.hostId}`, safeCloudError('provisioning_failure', error));
-        return failure('workspace_admission_failed', 500, true, { connectionId: identity.connectionId });
+        return failure('workspace_admission_failed',
+          error instanceof HostedWorkspaceAdmissionError && error.code === 'lifecycle_admission_unavailable' ? 503 : 500,
+          true, { connectionId: identity.connectionId });
       }
       if (hosting === 'papercusp') {
         // An organization holds ONE reservation, so a concurrent attempt under another key can

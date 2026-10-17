@@ -151,6 +151,8 @@ describe('dev:pipeline_position current-build test route selection', () => {
       path: request.path, marker: request.marker,
     }));
     expect(out.data.currentBuildTestRoute).toMatchObject({ id: 'operator-api', runtime: 'staging-operator' });
+    expect(Object.keys(out.data)[0]).toBe('currentBuildTestRoute');
+    expect(JSON.stringify(out.data).slice(0, 2_000)).toContain('"currentBuildTestRoute"');
     expect(out.data.projection?.fullRead.args).toEqual(request);
     expect(JSON.stringify(out.data).length).toBeLessThanOrEqual(PIPELINE_POSITION_RESPONSE_BUDGET_CHARS);
   });

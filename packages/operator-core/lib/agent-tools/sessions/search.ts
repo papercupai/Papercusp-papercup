@@ -62,19 +62,25 @@ const SESSION_SEARCH_WINDOW_TURN_CHARS = 280;
 const SEARCH_TRUNCATION_MARKER = '…[truncated]';
 const SEARCH_PHASE_LOG_THRESHOLD_MS = 100;
 const SEARCH_PHASE_WARN_AFTER_MS = 1_000;
+// WI-6554700010010580: this is a best-effort caveat probe on the 8.6GB
+// session_turn_parts table. Keep the database bound tighter than the route
+// watchdog so lock contention degrades the caveat instead of wedging a worker.
+const ZERO_HIT_TOOL_PART_STATEMENT_TIMEOUT_MS = 2_000;
 
 function logSearchPhase(
   ctx: PapercuspUnifiedToolContext,
   phase: string,
   elapsedMs: number,
   kind: 'duration' | 'still-running' = 'duration',
+  requestCorrelationId?: string,
 ): void {
   if (typeof ctx.log !== 'function') return;
   const detail = kind === 'still-running'
     ? ' still_running_after_ms=' + elapsedMs
     : ' duration_ms=' + elapsedMs;
   try {
-    ctx.log('[sessions:search:phase] ' + phase + detail);
+    const correlation = requestCorrelationId ? ' correlation_id=' + requestCorrelationId : '';
+    ctx.log('[sessions:search:phase] ' + phase + detail + correlation);
   } catch {
     // Diagnostics must never change search behavior.
   }
@@ -84,10 +90,11 @@ async function measureSearchPhase<T>(
   ctx: PapercuspUnifiedToolContext,
   phase: string,
   action: () => Promise<T>,
+  requestCorrelationId?: string,
 ): Promise<T> {
   const startedAt = performance.now();
   const slowPhaseTimer = setTimeout(
-    () => logSearchPhase(ctx, phase, SEARCH_PHASE_WARN_AFTER_MS, 'still-running'),
+    () => logSearchPhase(ctx, phase, SEARCH_PHASE_WARN_AFTER_MS, 'still-running', requestCorrelationId),
     SEARCH_PHASE_WARN_AFTER_MS,
   );
   try {
@@ -96,7 +103,7 @@ async function measureSearchPhase<T>(
     clearTimeout(slowPhaseTimer);
     const elapsedMs = Math.max(0, Math.round(performance.now() - startedAt));
     if (elapsedMs >= SEARCH_PHASE_LOG_THRESHOLD_MS) {
-      logSearchPhase(ctx, phase, elapsedMs);
+      logSearchPhase(ctx, phase, elapsedMs, 'duration', requestCorrelationId);
     }
   }
 }
@@ -189,6 +196,7 @@ export default defineTool({
     const mode = args.mode ?? 'hybrid';
     const workspaceId = ctx.workspaceId ?? '';
     const callerOwnerId = resolveAgentIdentity(ctx).ownerId ?? '';
+    const requestCorrelationId = randomUUID();
     const fingerprint = sessionCursorFingerprint(
       { ...args, cursor: undefined, limit: undefined },
       {
@@ -214,6 +222,7 @@ export default defineTool({
       ctx,
       'filter_resolution_and_self_refresh',
       () => resolveSearchFilters(tx, effectiveArgs, callerOwnerId, { workspaceId }),
+      requestCorrelationId,
     );
     // EI-21699129692862363: this refresh is what makes session:'self' able to
     // find a turn written seconds ago — it tails the live transcript into the
@@ -228,9 +237,25 @@ export default defineTool({
     // fall through to the unfiltered refresh path: with no owner filter that
     // path enumerates up to 20 open Codex owners before the actual query,
     // turning a targeted read into unrelated filesystem work (EI-217206...).
+    const onLivenessTiming = (leg: string, durationMs: number, outcome: 'ok' | 'error') => {
+      if (typeof ctx.log !== 'function') return;
+      try {
+        ctx.log(
+          '[sessions:search:liveness] correlation_id=' + requestCorrelationId +
+          ' leg=' + leg + ' outcome=' + outcome + ' duration_ms=' + durationMs,
+        );
+      } catch {
+        // Diagnostics must never change search behavior.
+      }
+    };
     const liveRefresh = await measureSearchPhase(ctx, 'secondary_live_refresh', () => filters?.sessionId
       ? refreshTargetSessionBeforeRead(tx, filters.sourceKind, filters.sessionId)
-      : refreshLiveSessionsBeforeRead(tx, filters?.owners ?? null));
+      : refreshLiveSessionsBeforeRead(tx, filters?.owners ?? null, { onLivenessTiming }), requestCorrelationId);
+    (ctx as { metadata?: (value: Record<string, unknown>) => void }).metadata?.({ sessionsSearchRead: {
+      schemaVersion: 'sessions-search-read-v1',
+      correlationId: requestCorrelationId,
+      livenessTiming: true,
+    } });
     const refreshDegraded =
       liveRefresh.attempted > liveRefresh.refreshed ||
       (liveRefresh.unconfirmed ?? 0) > 0 ||
@@ -250,7 +275,7 @@ export default defineTool({
       inScope = await measureSearchPhase(ctx, 'restricted_turn_count', () => countRestrictedTurnsInScope(tx, {
         selfOwnerIds,
         scope: sessionTurnScopeSql({ sql: tx, workspaceId, scopeFilter: args.harness_slug ?? null, filters }) as never,
-      }));
+      }), requestCorrelationId);
     } catch (error) {
       if (error instanceof DisclosureRefused) {
         return { content: [{ type: 'text' as const, text: JSON.stringify(disclosureRefusalData(error)) }], isError: true };
@@ -296,7 +321,7 @@ export default defineTool({
       ORDER BY COALESCE(ts, ingested_at) DESC
          LIMIT ${limit + 1}
         OFFSET ${offset}
-      `);
+      `, requestCorrelationId);
       for (const r of rows) {
         hits.push({
           sourceKind: r.source_kind, sessionId: r.session_id, turnIdx: r.turn_idx,
@@ -315,8 +340,7 @@ export default defineTool({
         : ['session_turn'];
       const sources = SEARCH_SOURCES.filter((s) => scopeNames.includes(s.name));
       const embedder = await measureSearchPhase(ctx, 'query_embedder_acquisition', () =>
-        buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }));
-      const correlationId = randomUUID();
+        buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() }), requestCorrelationId);
       // WI-3929 (same class as EI-9312): bound the ACTUAL per-query embed
       // call inside runHybridSearch, not just the acquisition above.
       const { results, legs } = await measureSearchPhase(ctx, 'hybrid_main_query', () => runHybridSearch(sources, {
@@ -325,7 +349,7 @@ export default defineTool({
         query: args.query,
         workspaceId,
         scopeFilter: args.harness_slug ?? null,
-        correlationId,
+        correlationId: requestCorrelationId,
         limit: offset + limit + 1,
         mode: 'hybrid',
         embedder,
@@ -333,11 +357,12 @@ export default defineTool({
         // readerIds: the session_turn source excludes restricted turns in SQL.
         filters: { ...(filters ?? {}), readerIds: selfOwnerIds },
         log: ctx.log,
-      }));
+      }), requestCorrelationId);
       searchLegs = legs;
       (ctx as { metadata?: (value: Record<string, unknown>) => void }).metadata?.({ sessionsSearchRead: {
         schemaVersion: 'sessions-search-read-v1',
-        correlationId,
+        correlationId: requestCorrelationId,
+        livenessTiming: true,
         legs: describeSearchLegs(legs),
       } });
       for (const r of results) {
@@ -379,7 +404,7 @@ export default defineTool({
     // agents to verify a claimed owner directive with exactly this call: a stale
     // zero read as "the owner never said it" is the documented directive-rot
     // failure arriving through a tool result instead of a summary.
-    const staleIndexCaveat = pageHits.length === 0 && refreshDegraded
+    let staleIndexCaveat = pageHits.length === 0 && refreshDegraded
       ? `⚠ UNVERIFIABLE, NOT ABSENT: the pre-read ingest that tails live transcript(s) into the search index ` +
         [
           liveRefresh.attempted > liveRefresh.refreshed
@@ -469,7 +494,7 @@ export default defineTool({
             FROM harness_shared.session_turns
            WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
              AND owner = ANY(${ownerIds}::text[])
-        `);
+        `, requestCorrelationId);
         const sessionCount = row ? Number(row.session_count) : 0;
         if (sessionCount > 1) {
           zeroHitCaveat =
@@ -531,7 +556,7 @@ export default defineTool({
                   AND c.relname = 'session_turn_parts_owner_workspace_tool_result_idx'
                   AND i.indisvalid AND i.indisready
               ) AS tool_result_ready
-          `);
+          `, requestCorrelationId);
 
           if (!indexes?.tool_use_ready || !indexes?.tool_result_ready) {
             toolPartCaveat =
@@ -543,12 +568,12 @@ export default defineTool({
             // owner-scoped tool part just to report an exact occurrence total.
             // Keep the partial-index predicates explicit as an OR so the
             // planner can BitmapOr the tool_use and tool_result owner indexes.
-            const [toolParts] = await measureSearchPhase(ctx, 'zero_hit_tool_part_caveat', () => tx<Array<{ found: boolean }>>`
+            const probe = async (probeTx: typeof tx) => probeTx<Array<{ found: boolean }>>`
               SELECT EXISTS (
                 SELECT 1
                   FROM harness_shared.session_turn_parts p
                  WHERE (p.workspace_id = ${workspaceId} OR p.workspace_id = 'default')
-                   AND NOT ${restrictedTurnSql(tx, 'p', selfOwnerIds)}
+                   AND NOT ${restrictedTurnSql(probeTx, 'p', selfOwnerIds)}
                    AND p.owner = ANY(${pOwners}::text[])
                    AND (${pf.sessionId ?? null}::text IS NULL OR p.session_id = ${pf.sessionId ?? null})
                    AND (${pf.sourceKind ?? null}::text IS NULL OR p.source_kind = ${pf.sourceKind ?? null})
@@ -560,7 +585,21 @@ export default defineTool({
                      (p.part_kind = 'tool_use' AND p.text ILIKE '%' || ${args.query} || '%')
                    )
               ) AS found
-            `);
+            `;
+            const [toolParts] = await measureSearchPhase(ctx, 'zero_hit_tool_part_caveat', async () => {
+              // `sessions:search` is cross-workspace and normally receives a bare
+              // admin-pool handle. SET LOCAL must therefore live in a transaction;
+              // setting it on the pool handle would leak to an unrelated checkout.
+              if (typeof tx.begin === 'function') {
+                return tx.begin(async (probeTx) => {
+                  await probeTx.unsafe(`SET LOCAL statement_timeout = ${ZERO_HIT_TOOL_PART_STATEMENT_TIMEOUT_MS}`);
+                  return probe(probeTx as unknown as typeof tx);
+                });
+              }
+              // Keep lightweight test doubles and partial host contexts working;
+              // production Sql handles always take the bounded transaction path.
+              return probe(tx);
+            }, requestCorrelationId);
 
             if (toolParts?.found) {
               toolPartCaveat =
@@ -596,11 +635,43 @@ export default defineTool({
     if (originKeys.length) {
       try {
         turnOrigins = await measureSearchPhase(ctx, 'result_turn_origin_lookup', () =>
-          resolveHitTurnOrigins(tx, workspaceId, originKeys));
+          resolveHitTurnOrigins(tx, workspaceId, originKeys), requestCorrelationId);
       } catch {
         turnOriginsResolved = false; // every hit falls through to `unknown`
       }
     }
+
+    // The search leg and the coordinate re-read run as separate statements. A
+    // retention sweep or concurrent ingest cleanup can remove a row between
+    // them, leaving a plausible-looking hit whose sessions:read ref returns an
+    // empty window. Never publish a transcript reference that this same read
+    // could not resolve; callers otherwise follow a canonical ref into a
+    // confident `turn_count:0` result. Keep this fail-open when the validation
+    // query itself failed: an unknown validation result is not proof of a stale
+    // row, and the existing origin uncertainty remains the honest fallback.
+    const readablePageHits = (() => {
+      if (!turnOriginsResolved) return pageHits;
+      const staleRefs = new Set(
+        pageHits
+          .filter((hit) => hit.source === 'session_turn')
+          .filter((hit) => !turnOrigins.has(turnOriginKey({
+            sourceKind: hit.sourceKind,
+            sessionId: hit.sessionId,
+            turnIdx: hit.turnIdx,
+          })))
+          .map((hit) => formatSessionTurnRef(hit.sourceKind, hit.sessionId, hit.turnIdx)),
+      );
+      if (staleRefs.size === 0) return pageHits;
+      staleIndexCaveat = [
+        staleIndexCaveat,
+        `SEARCH REF DROPPED: ${staleRefs.size} indexed hit(s) disappeared during coordinate re-read, ` +
+          'so no unreadable sessions:read reference was emitted. Retry search if needed; this is index churn, ' +
+          'not evidence that the matching text never existed.',
+      ].filter(Boolean).join(' ');
+      return pageHits.filter((hit) =>
+        hit.source !== 'session_turn' || !staleRefs.has(formatSessionTurnRef(hit.sourceKind, hit.sessionId, hit.turnIdx)),
+      );
+    })();
 
     // D-006 / P-013: restricted turns were already excluded from matching (and
     // counted in `inScope`). The ±context window around a kept hit is read by
@@ -608,12 +679,12 @@ export default defineTool({
     // counted here. The same per-turn check runs over the hits as a second line
     // of defence. Hybrid hits carry no owner/time, so stamp them from the index
     // first; one ledger read then decides the whole page.
-    const turnHits = pageHits.filter((h) => h.source === 'session_turn');
+    const turnHits = readablePageHits.filter((h) => h.source === 'session_turn');
     const stampByRef = await measureSearchPhase(ctx, 'result_turn_stamp_load', () => loadTurnStamps(
       tx,
       workspaceId,
       turnHits.filter((h) => h.owner === null).map((h) => ({ sourceKind: h.sourceKind, sessionId: h.sessionId, turnIdx: h.turnIdx })),
-    ));
+    ), requestCorrelationId);
     const hitStamp = (h: RawHit) =>
       h.owner !== null
         ? { owner: h.owner, at: h.ts }
@@ -634,14 +705,14 @@ export default defineTool({
             ));
           } catch { /* window is a bonus, never fail the search */ }
         }
-      });
+      }, requestCorrelationId);
     }
     let exclusion: TranscriptExclusion;
     try {
       exclusion = await measureSearchPhase(ctx, 'result_transcript_exclusion', () => loadTranscriptExclusion(tx, {
         selfOwnerIds,
         stamps: [...turnHits.map(hitStamp), ...[...windowsByHit.values()].flat()],
-      }));
+      }), requestCorrelationId);
     } catch (error) {
       if (error instanceof DisclosureRefused) {
         return { content: [{ type: 'text' as const, text: JSON.stringify(disclosureRefusalData(error)) }], isError: true };
@@ -652,7 +723,7 @@ export default defineTool({
     const withheld = addTally(emptyTally(), inScope);
     const fromWindows = emptyTally();
     const keptHits: RawHit[] = [];
-    for (const h of pageHits) {
+    for (const h of readablePageHits) {
       const reason = h.source === 'session_turn' ? exclusion.withholds(hitStamp(h)) : null;
       if (reason === null) {
         keptHits.push(h);
@@ -664,7 +735,10 @@ export default defineTool({
 
     // Hydrate ±context windows only for this page.
     const out: SearchOutput[] = [];
+    const rawPositionByHit = new Map(pageHits.map((hit, index) => [hit, index]));
+    const outSourcePositions: number[] = [];
     for (const h of keptHits) {
+      outSourcePositions.push(rawPositionByHit.get(h) ?? 0);
       const turnOrigin = h.source === 'session_turn'
         ? turnOrigins.get(turnOriginKey({ sourceKind: h.sourceKind, sessionId: h.sessionId, turnIdx: h.turnIdx }))
           ?? unknownTurnOrigin(
@@ -771,8 +845,13 @@ export default defineTool({
       }),
     };
 
-    const cursorFor = (resultCount: number, more: boolean): string | undefined => more
-      ? encodeSessionCursor('sessions:search', offset + resultCount, fingerprint, { until: snapshotUntil })
+    const rawCountForResults = (resultCount: number): number => {
+      if (resultCount <= 0) return pageHits.length;
+      const lastResult = outSourcePositions[resultCount - 1];
+      return lastResult === undefined ? pageHits.length : lastResult + 1;
+    };
+    const cursorFor = (rawCount: number, more: boolean): string | undefined => more
+      ? encodeSessionCursor('sessions:search', offset + rawCount, fingerprint, { until: snapshotUntil })
       : undefined;
     const serializeResponse = (
       results: SearchOutput[],
@@ -802,14 +881,14 @@ export default defineTool({
     let responseText = serializeResponse(
       out,
       sourceHasMore,
-      cursorFor(out.length, sourceHasMore),
+      cursorFor(rawCountForResults(out.length), sourceHasMore),
       false,
     );
     let selected = false;
     for (let count = out.length; count >= 1; count -= 1) {
       const results = out.slice(0, count);
       const more = sourceHasMore || count < out.length;
-      const candidate = serializeResponse(results, more, cursorFor(count, more), count < out.length);
+      const candidate = serializeResponse(results, more, cursorFor(rawCountForResults(count), more), count < out.length);
       if (candidate.length <= SESSION_SEARCH_RESPONSE_BUDGET_CHARS) {
         responseText = candidate;
         selected = true;
@@ -823,7 +902,7 @@ export default defineTool({
     if (!selected && out.length > 0) {
       const results = [minimizeSearchOutput(out[0])];
       const more = sourceHasMore || out.length > 1;
-      const candidate = serializeResponse(results, more, cursorFor(1, more), true);
+      const candidate = serializeResponse(results, more, cursorFor(rawCountForResults(1), more), true);
       responseText = candidate.length <= SESSION_SEARCH_RESPONSE_BUDGET_CHARS
         ? candidate
         : serializeResponse([], true, cursorFor(0, true), true);

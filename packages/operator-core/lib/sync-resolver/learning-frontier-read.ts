@@ -65,6 +65,7 @@ export const FRONTIER_LANE_FLAGS: Record<string, FlagKey | null> = {
   'red-queen': FLAGS.RED_QUEEN,
   'change-ledger': FLAGS.CHANGE_LEDGER,
   scout: null, // always-on by construction (ALWAYS_ON_LEARNING_LOOPS)
+  'su-ideate': null, // scheduler pauses through its routine row; no feature flag
   'iq-battery': null, // always-on by construction
   'memory-precision': FLAGS.MEMORY_PRECISION_BENCH,
   'memory-live-recall-canary': FLAGS.MEMORY_LIVE_RECALL_CANARY,

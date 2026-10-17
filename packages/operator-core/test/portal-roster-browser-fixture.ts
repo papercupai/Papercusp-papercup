@@ -72,7 +72,9 @@ export async function verifyPrivateHudReadPolicy() {
   const { requireLoopbackOr403 } = await import('../lib/endpoint-route/loopback-guard');
   const app = new Hono();
   let handlerReads = 0;
-  app.use('/api/*', hostRebindingGuard);
+  // This preflight models the private desktop host, independently of the
+  // launching operator's intentional remote-admin/distribution exemptions.
+  app.use('/api/*', (c, next) => hostRebindingGuard(c, next, {}));
   app.get('/api/zero-harness/rest-query', c => {
     const refused = requireLoopbackOr403(c.req.raw);
     if (refused) return refused;
@@ -709,6 +711,18 @@ export async function retainPortalBrowserFailure(page: Pick<Page, 'url' | 'conte
 export function retainPortalResponse<T>(pending: Promise<T>): Promise<T> {
   void pending.catch(() => {});
   return pending;
+}
+
+/** Capture the browser's actual query body while reload is still settling.
+ * Waiting for navigation first can leave CDP with an expired response id.
+ * Playwright's json() already waits for the response body to finish. */
+export async function reloadPrivateHealthSnapshot<T>(page: Pick<Page, 'waitForResponse' | 'reload'>): Promise<{ rows: T[] }> {
+  const bodyPromise = retainPortalResponse(page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return response.status() === 200 && url.searchParams.get('name') === 'health.snapshot';
+  }).then(response => response.json() as Promise<{ rows: T[] }>));
+  const [body] = await Promise.all([bodyPromise, page.reload()]);
+  return body;
 }
 
 /** Evaluate the real ADV module graph before allocating a private database. */
@@ -3041,7 +3055,8 @@ async function runPrivateHealthPage(page: Page, context: BrowserContext, input: 
  * does not witness the generation just published by the collector. */
 export async function waitForPrivateHealthSnapshot<T extends { workspaceId: string }>(
   read: () => Promise<{ rows: T[] }>, workspaceId: string, matches: (row: T) => boolean,
-  options: { timeoutMs?: number; now?: () => number; pause?: (ms: number) => Promise<void> } = {},
+  options: { timeoutMs?: number; now?: () => number; pause?: (ms: number) => Promise<void>;
+    observe?: (body: { rows: T[] }) => void | Promise<void> } = {},
 ): Promise<{ rows: T[] }> {
   const now = options.now ?? Date.now;
   const pause = options.pause ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
@@ -3049,6 +3064,8 @@ export async function waitForPrivateHealthSnapshot<T extends { workspaceId: stri
   let last: { rows: T[] };
   do {
     last = await read();
+    // Retain mismatched generations before the deadline assertion can fail.
+    await options.observe?.(last);
     if (last.rows.length === 1 && last.rows[0].workspaceId === workspaceId && matches(last.rows[0])) return last;
     if (now() >= deadline) break;
     await pause(Math.min(1_000, deadline - now()));
@@ -3063,7 +3080,7 @@ async function verifyPrivateHostedHealthPage(page: Page, input: PortalRosterBrow
   const { upsertWorkspaceHost, recordWorkspaceHostHealth, readWorkspaceHostReliability } =
     await import('../lib/workspace-host/observability-store');
   const { computeSystemHealth } = await import('../lib/system-health/compute');
-  const { writeSharedSnapshot } = await import('../lib/derived-reads/shared-snapshot');
+  const { writeSharedSnapshot, readSharedSnapshot } = await import('../lib/derived-reads/shared-snapshot');
   const { recordHealthHistory } = await import('../lib/system-health/history');
   const { sql } = getOrgPg();
   const now = Date.now();
@@ -3103,6 +3120,7 @@ async function verifyPrivateHostedHealthPage(page: Page, input: PortalRosterBrow
   const foreign = await readWorkspaceHostReliability(input.workspace + '-foreign', now);
   assert.equal(foreign.ownedCost?.estimatedUsdCents, null, 'customer-funded spend must not become platform spend');
   const snapshots: Awaited<ReturnType<typeof computeSystemHealth>>[] = [];
+  const observations: unknown[] = [];
   const publishAndObserve = async (unhealthy: number) => {
     const snapshot = await computeSystemHealth(input.workspace);
     const hosted = snapshot.panels.infra.data?.hostedControlPlane;
@@ -3115,14 +3133,24 @@ async function verifyPrivateHostedHealthPage(page: Page, input: PortalRosterBrow
     snapshots.push(snapshot);
     await writeSharedSnapshot('system.health', input.workspace, snapshot, 1);
     await recordHealthHistory(previous, snapshot);
-    const body = await waitForPrivateHealthSnapshot<Awaited<ReturnType<typeof computeSystemHealth>>>(async () => {
-      const responsePromise = page.waitForResponse(response => {
-        const url = new URL(response.url());
-        return response.status() === 200 && url.searchParams.get('name') === 'health.snapshot';
+    const body = await waitForPrivateHealthSnapshot<Awaited<ReturnType<typeof computeSystemHealth>>>(
+      () => reloadPrivateHealthSnapshot(page), input.workspace,
+      row => isDeepStrictEqual(row.panels.infra.data?.hostedControlPlane, hosted), {
+        observe: async query => {
+          const shared = await readSharedSnapshot<Awaited<ReturnType<typeof computeSystemHealth>>>(
+            'system.health', input.workspace, 1, 300_000);
+          observations.push({ at: Date.now(), expected: hosted,
+            shared: shared && { computedAt: shared.computedAt, ageMs: shared.ageMs,
+              workspaceId: shared.payload.workspaceId, evaluatedAt: shared.payload.evaluatedAt,
+              hosted: shared.payload.panels.infra.data?.hostedControlPlane },
+            query: query.rows.map(row => ({ workspaceId: row.workspaceId, evaluatedAt: row.evaluatedAt,
+              hosted: row.panels.infra.data?.hostedControlPlane })) });
+          writeFileSync(join(input.evidence, 'portal-cloud-health-observations.json'), JSON.stringify({
+            snapshots, observations,
+            scope: 'Collector publication and actual HTTP generations, retained before convergence or DOM assertions',
+          }, null, 2));
+        },
       });
-      await page.reload();
-      return (await responsePromise).json();
-    }, input.workspace, row => isDeepStrictEqual(row.panels.infra.data?.hostedControlPlane, hosted));
     assert.deepEqual(body.rows[0].panels.infra.data?.hostedControlPlane, hosted,
       'actual workspace-scoped HTTP query must return the collector reading');
     const infra = page.locator('[data-panel="infra"]');
@@ -3139,7 +3167,7 @@ async function verifyPrivateHostedHealthPage(page: Page, input: PortalRosterBrow
     await expectMetric('provider infrastructure invoices', 'unknown — account access not granted');
     assert.equal((await infra.textContent())?.includes('$999.99'), false, 'foreign customer cost must stay out of this view');
     writeFileSync(join(input.evidence, 'portal-cloud-health-observations.json'), JSON.stringify({
-      snapshots, query: body, rendered: await infra.textContent(), foreignCustomerCost: foreign.ownedCost,
+      snapshots, observations, query: body, rendered: await infra.textContent(), foreignCustomerCost: foreign.ownedCost,
       scope: 'Controlled real PG records and actual health producer/collector/query/HealthTab; no provider invoice access or shipment claim',
     }, null, 2));
   };

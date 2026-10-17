@@ -305,6 +305,7 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
     await expect(runPreSnapshotHook(ctx)).resolves.toMatchObject({
       ok: false,
       error: 'host backup is in progress (phase guard-queued, pid 4242)',
+      deferred: 'host-backup-in-progress',
     });
 
     expect(pgDumpCall()).toBeUndefined();

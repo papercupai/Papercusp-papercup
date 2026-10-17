@@ -1,0 +1,218 @@
+{
+  "schemaVersion": 1,
+  "recordedAtUtc": "2026-10-17T08:03:26.587Z",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "planItem": "P-544",
+  "workItem": "WI-6554700010016277",
+  "billingReaderBug": "EI-26212766640987660",
+  "scope": "Actual provider-export observations and locally verified billing-reader correction. Export completeness, monthly trial qualification, committed proof and shipment remain open.",
+  "reuse": "Discovered existing account-level BigQuery export and reused GoogleBigQueryBillingExportReader/createGcpWorkspaceHostAcquireAuth. No dataset, billing collector, credentials, VM or billing configuration was created.",
+  "discovery": {
+    "billingAccount": "0113AC-50E9A0-8BB71D",
+    "projectMembershipTask": "0mvc3qgte1jauv0g1lo",
+    "accessibleNonHiddenDatasetCensusTask": "0mvc3qwdz1on0edngof",
+    "projectsChecked": [
+      "active-alcove-504205-q3",
+      "papercusp-hosted-workspaces",
+      "papercusp-cloud-prod",
+      "pc-byoc-canary-1002",
+      "pc-agent-capacity-0930"
+    ],
+    "datasetCensusQualification": "bq ls requested up to1000 datasets per project; one dataset returned in active-alcove and zero in the other four. This is an accessible non-hidden dataset census, not proof that no hidden or inaccessible export exists.",
+    "datasetInspectionTask": "0mvc3rb7zczyd6ehu9k",
+    "tableInspectionTask": "0mvc3rvkq1h5x7t52jj",
+    "descriptor": {
+      "schemaVersion": "gcp-billing-export-v1",
+      "projectId": "active-alcove-504205-q3",
+      "datasetId": "papercusp_billing",
+      "tableId": "gcp_billing_export_v1_0113AC_50E9A0_8BB71D",
+      "location": "US",
+      "labelKey": "papercusp-run",
+      "maximumBytesBilled": "100000000"
+    },
+    "partitioning": "DAY ingestion-time partitions",
+    "clarification": "The previous evidence correctly found no BigQuery export in the dedicated test project. An applicable account export exists in a different project. Do not treat the earlier project-local absence as account-wide absence."
+  },
+  "programmeSnapshot": {
+    "classification": "Partial exported provider charges; not a final invoice or exact remaining budget",
+    "queryTask": "0mvc3sjmgrbpt3x1c3m",
+    "queryLog": ".papercusp/scratch/bash-5c486766-a6a.log",
+    "readAtUtc": "2026-10-17T07:57:32Z",
+    "project": "pc-agent-capacity-0930",
+    "usageWindow": {
+      "start": "2026-09-30T00:00:00Z",
+      "endExclusive": "2026-10-17T07:57:00Z"
+    },
+    "currency": "USD",
+    "rowCount": 5071,
+    "firstUsageStartUtc": "2026-09-30T19:00:00Z",
+    "latestUsageEndUtc": "2026-10-17T00:00:00Z",
+    "latestExportUtc": "2026-10-17T06:14:35Z",
+    "grossMicros": "40744617",
+    "creditMicros": "-40646640",
+    "netMicros": "97977",
+    "p544Rows": 65,
+    "p544GrossMicros": "43082",
+    "unlabelledRows": 769,
+    "unlabelledGrossMicros": "3845290",
+    "semantics": "Gross is SUM(cost), excluding the separate SUM(credits.amount); the aggregate rounds to currency micros once. Net reconciles gross plus credits. These exported charges are measured rather than list-price arithmetic, but delayed or omitted export lines remain possible. Project-only totals exclude inference and control resources billed elsewhere. Do not release conservative programme reservations from this partial snapshot.",
+    "querySql": "WITH scoped AS (\nSELECT currency,cost,\nIFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c),0) AS credit,\nusage_start_time,usage_end_time,export_time,cost_type,\n(SELECT l.value FROM UNNEST(labels) l WHERE l.key='papercusp-run' LIMIT 1) AS run_id\nFROM `active-alcove-504205-q3.papercusp_billing.gcp_billing_export_v1_0113AC_50E9A0_8BB71D`\nWHERE project.id='pc-agent-capacity-0930'\nAND usage_start_time >= TIMESTAMP('2026-09-30T00:00:00Z')\nAND usage_start_time < TIMESTAMP('2026-10-17T07:57:00Z')\nAND (_PARTITIONTIME >= TIMESTAMP('2026-09-30T00:00:00Z') OR _PARTITIONTIME IS NULL)\n)\nSELECT currency,COUNT(*) AS row_count,MIN(usage_start_time) AS first_usage_start,\nMAX(usage_end_time) AS last_usage_end,MAX(export_time) AS last_export,\nCAST(ROUND(SUM(cost)*1000000) AS INT64) AS gross_micros,\nCAST(ROUND(SUM(credit)*1000000) AS INT64) AS credit_micros,\nCAST(ROUND(SUM(cost+credit)*1000000) AS INT64) AS net_micros,\nCOUNTIF(run_id LIKE 'p544%') AS p544_rows,\nCAST(ROUND(SUM(IF(run_id LIKE 'p544%',cost,0))*1000000) AS INT64) AS p544_gross_micros,\nCOUNTIF(run_id IS NULL) AS unlabeled_rows,\nCAST(ROUND(SUM(IF(run_id IS NULL,cost,0))*1000000) AS INT64) AS unlabeled_gross_micros\nFROM scoped GROUP BY currency"
+  },
+  "p544LabelSnapshot": {
+    "queryTask": "0mvc3v3q0hp31q1pwq3",
+    "readAtUtc": "2026-10-17T07:59:25Z",
+    "jobReference": "gcp://bigquery/projects/active-alcove-504205-q3/jobs/p544_run_costs_20261017_0759_v1",
+    "queryMaximumBytesBilled": "100000000",
+    "rows": [
+      {
+        "runId": "p544-8g-1016",
+        "service": "Compute Engine",
+        "currency": "USD",
+        "rowCount": 20,
+        "grossMicros": "163",
+        "creditMicros": "-163",
+        "firstUsageStartUtc": "2026-10-16T21:00:00Z",
+        "lastUsageEndUtc": "2026-10-16T22:00:00Z"
+      },
+      {
+        "runId": "p544-min-1016",
+        "service": "Compute Engine",
+        "currency": "USD",
+        "rowCount": 45,
+        "grossMicros": "42919",
+        "creditMicros": "-42913",
+        "firstUsageStartUtc": "2026-10-16T19:00:00Z",
+        "lastUsageEndUtc": "2026-10-16T22:00:00Z"
+      }
+    ],
+    "coverage": "The p544-8g export rows end at22:00Z, before its native benchmark at22:21–22:30Z and teardown near23:17Z. Its163grossmicros is only the currently exported subset. Shared/unlabelled storage, network, query and control costs are not assigned to this run by the label filter.",
+    "querySql": "WITH scoped AS (\nSELECT currency,cost,IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c),0) credit,\nusage_start_time,usage_end_time,export_time,\nservice.description AS service,sku.description AS sku,\n(SELECT l.value FROM UNNEST(labels) l WHERE l.key='papercusp-run' LIMIT 1) AS run_id\nFROM `active-alcove-504205-q3.papercusp_billing.gcp_billing_export_v1_0113AC_50E9A0_8BB71D`\nWHERE project.id='pc-agent-capacity-0930'\nAND usage_start_time >= TIMESTAMP('2026-09-30T00:00:00Z')\nAND usage_start_time < TIMESTAMP('2026-10-17T07:57:00Z')\nAND (_PARTITIONTIME >= TIMESTAMP('2026-09-30T00:00:00Z') OR _PARTITIONTIME IS NULL)\n)\nSELECT run_id,service,currency,COUNT(*) AS row_count,\nCAST(ROUND(SUM(cost)*1000000) AS INT64) gross_micros,\nCAST(ROUND(SUM(credit)*1000000) AS INT64) credit_micros,\nMIN(usage_start_time) first_usage_start,MAX(usage_end_time) last_usage_end\nFROM scoped WHERE run_id LIKE 'p544%' GROUP BY run_id,service,currency ORDER BY run_id,service"
+  },
+  "readerFix": {
+    "rootCause": "billingQuery required usage_start_time>=runStart. GCP usage intervals can begin at the hour boundary before VM creation; their already-prorated, run-labelled charges were excluded.",
+    "fix": "Match usage intervals overlapping the requested half-open window: usage_end_time>start AND usage_start_time<end, preserving the immutable run-label predicate.",
+    "detectorGap": "Existing billing-reader tests returned preselected aggregate responses without executing the generated time predicate; none exercised a non-hour-aligned run start.",
+    "recurrenceGuard": "Eight maintained Vitest cases execute the generated temporal predicate in real node:sqlite against canonical ISO timestamps: leading partial hour, contained, enclosing, exact, adjacent-start/end and disjoint intervals. This exercises dialect-independent time predicates, not BigQuery arrays or full SQL semantics.",
+    "input": {
+      "runId": "p544-8g-1016",
+      "usageStartAt": "2026-10-16T21:26:47.932Z",
+      "usageEndAt": "2026-10-16T23:17:00Z"
+    },
+    "before": {
+      "taskId": "0mvc3wj25kd1sab1usp",
+      "providerJob": "job_TjhCwE-JY2Wt-ilpL6q4H7RrFPMR",
+      "result": "retryable:no-data",
+      "readAtUtc": "2026-10-17T08:00:18.340Z"
+    },
+    "after": {
+      "taskId": "0mvc40ldmbvrv661u69",
+      "providerJob": "job_Ogtvo4YB7fVAguB9Q6QaT9NjNr_q",
+      "result": "observed",
+      "grossMicros": "163",
+      "creditMicros": "-163",
+      "netMicros": "0",
+      "conservativeBudgetCents": 1,
+      "totalBytesProcessed": "17881270",
+      "cacheHit": false,
+      "readAtUtc": "2026-10-17T08:03:26.587Z"
+    },
+    "tests": {
+      "before": {
+        "runId": "584f114c-7d73-473a-84ec-a0f4eac87568",
+        "ledgerId": 21313355,
+        "passed": 5,
+        "failed": 3,
+        "excluded": 31,
+        "qualification": "Leading/enclosing failures reproduced the product omission. The third failure was a SQLite fixture mismatch between timestamp precision formats; the fixture now normalizes parameters and rows to canonical ISO before comparison."
+      },
+      "after": {
+        "runId": "2517d230-ddd1-4546-9d4e-7311ad7ea8fd",
+        "ledgerId": 21313356,
+        "passed": 39,
+        "failed": 0,
+        "skipped": 0
+      }
+    },
+    "sourceSha256": {
+      "packages/operator-core/lib/workspace-host/gcp-api-client.ts": "a566a407cb6c2114041f391f7335beca348c298b10d0da4fd167d8728e13f521",
+      "packages/operator-core/lib/workspace-host/gcp-api-client.test.ts": "8842ce679543a955c53e435acc4ce873d6eab0ade76d67d72940656009308a8c"
+    },
+    "qualification": "Local staging source and test file hashes; no complete import-graph, settled commit, deployed runtime or full-suite gate claim."
+  },
+  "categoryRefresh": {
+    "recordedAtUtc": "2026-10-17T10:32:50.931110Z",
+    "scope": "Complete retrieval of the existing query result, not complete provider export coverage or monthly trial qualification",
+    "sourceDirectory": "/tmp/p544-cost-refresh-20261017_103152",
+    "providerJob": "gcp://bigquery/projects/active-alcove-504205-q3/jobs/p544_category_refresh_20261017_103152",
+    "queryFile": "/tmp/p544-cost-refresh-20261017_103152/query.sql",
+    "querySha256": "f862a2046761a311b76788afc490c2461c616f69527105872756f274c18400dd",
+    "resultFile": "/tmp/p544-cost-refresh-20261017_103152/rows-complete.json",
+    "resultSha256": "6d302042776ef9cb8e05a3eaf55752af4f81679f78a0051ed5ddbf20c09e00a7",
+    "jobMetadataSha256": "b7fda49b04fa0aca786b3eef2e5c490a907b7cfbbf8eaf1953d8476fa7bd707e",
+    "totalGroupedRows": 1720,
+    "retrievedGroupedRows": 1720,
+    "paginationGuard": "COUNT(*) OVER() detected the initial bq --max_rows=1000 truncation. Read the original job destination table with bq head --max_rows=5000; no query rerun. The complete result count is 1720/1720.",
+    "queryBytesBilled": "27262976",
+    "queryMaximumBytesBilled": "100000000",
+    "cacheHit": false,
+    "latestExportUtc": "2026-10-17T07:22:51Z",
+    "latestUsageEndUtc": "2026-10-17T00:00:00Z",
+    "programmeGrossMicrosSumOfRoundedSkuGroups": "40788958",
+    "roundingQualification": "Each service/SKU/run group was rounded once in SQL; the displayed programme sum adds those rounded groups and is not an independently rounded exact programme aggregate.",
+    "partialRunCosts": [
+      {
+        "runId": "p544-8g-1016",
+        "grossMicrosSumOfRoundedSkuGroups": "8433",
+        "skuGroups": 18,
+        "latestUsageEndUtc": "2026-10-16T23:00:00Z",
+        "coverage": "Includes one E2 RAM charge and network lines. No core or IPv4 charge is yet present for this run, and its teardown was after23:00Z. Do not interpret the subset as a complete experiment price."
+      },
+      {
+        "runId": "p544-min-1016",
+        "grossMicrosSumOfRoundedSkuGroups": "73399",
+        "skuGroups": 23,
+        "latestUsageEndUtc": "2026-10-16T22:00:00Z",
+        "coverage": "Includes custom core/RAM, IPv4 and network lines; retained disk costs remain unassigned by run."
+      }
+    ],
+    "unlabelledBalancedDisk": {
+      "skuId": "6AE1-525F-8B80",
+      "sku": "Balanced PD Capacity",
+      "grossMicros": "1361750",
+      "creditMicros": "-1358862",
+      "pricingAmount": "13.618344516",
+      "pricingUnit": "gibibyte month",
+      "rows": 193,
+      "coverage": "Programme-wide disk charge across multiple experiments. The export run label is null; this amount cannot be assigned to P544 alone or divided by one candidate VM lifetime."
+    },
+    "categoryQualification": {
+      "compute": "Partial observed core/RAM charges exist; complete same-profile coverage remains open.",
+      "retainedStorage": "Observed programme disk charges exist but need accountable candidate/run allocation.",
+      "backup": "No qualified same-profile backup/restore usage and charge allocation in this query; unknown, not zero.",
+      "network": "Observed run network lines exist; final exposure and monthly workload scaling remain open.",
+      "controlPlane": "Programme logging/networking overhead exists; applicable workspace control allocation is unresolved, not zero.",
+      "inference": "Not covered by the GCP project export. Saved native/coding estimates remain estimates; actual applicable account or subscription allocation is unresolved."
+    },
+    "providerCensus": {
+      "readWindowUtc": "2026-10-17T10:31:52Z/2026-10-17T10:32:10Z",
+      "instances": 0,
+      "disks": 0,
+      "snapshots": 0,
+      "staticAddresses": 0,
+      "files": ["instances.json", "disks.json", "snapshots.json", "addresses.json"],
+      "qualification": "Sequential authoritative project lists saved in sourceDirectory; no VM or model call created. The conservative168.5USD programme reservation is not released by partial exported charges."
+    }
+  },
+  "friction": {
+    "taskId": "0mvc3tkd41c6y17qu5u",
+    "detail": "Optional bq job-history list exceeded its caller25second deadline. Cause unproven; not retried. Subsequent CLI query used an explicit durable job id; production reader supplies provider job ids."
+  },
+  "remaining": [
+    "D-076 strict all-in under-$20 measured monthly trial qualification",
+    "D081 monthly task profile is now recorded; applicable actual inference/control/retained storage/backup/network charges remain open",
+    "Complete experiment export coverage and accountable allocation of unlabelled/shared costs",
+    "D-075 qualifying burst response pass; historical6.775s burst remains a failure",
+    "Cold readiness and retained disk/CPU growth fixture proofs are recorded separately in p544-cold-growth-2026-10-17.json; full product backup/restore and cost qualification remain open",
+    "P-537 authenticated production acceptance and exact source-to-serving parity"
+  ]
+}

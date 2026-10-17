@@ -16,8 +16,8 @@
  *     Stop `<ask>`-tag mirror branches.
  *
  * Cardinal contract shared with every sibling cc/ hook: this hook must NEVER
- * exit non-zero, and every branch except the Stop bounce prints EMPTY stdout
- * (the bounce is the one deliberate exception — that IS its job).
+ * exit non-zero. Most branches print EMPTY stdout; the Stop bounce and the
+ * headless native-dialog refusal emit explicit decisions.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { runHookProcess } from './spawn-hook';
@@ -105,6 +105,28 @@ describe('ask-gate-mirror — operator-independent paths', () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toBe('');
   });
+
+  it.each(['AskUserQuestion', 'ExitPlanMode'])(
+    'PreToolUse headless %s → denies the invisible dialog and points to a durable owner channel',
+    (tool_name) => {
+    const tool_input = tool_name === 'AskUserQuestion'
+      ? { questions: [{ question: 'Which route?', header: 'Route', multiSelect: false, options: [{ label: 'A' }] }] }
+      : { plan: '## Proposed plan\n1. do the work' };
+    const r = run(
+      payload({ hook_event_name: 'PreToolUse', tool_name, tool_use_id: 'headless-ask', session_id: 'headless-session', tool_input }),
+      { PAPERCUSP_PSU_HEADLESS: '1' },
+    );
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput).toMatchObject({
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+    });
+    expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/no human-visible dialog surface/i);
+    expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/coord:ask-owner/);
+    expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/coord:escalate/);
+    },
+  );
 
   it('PostToolUse on an unrelated tool (Read) → no-op', () => {
     const r = run(payload({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_input: {} }));
@@ -286,6 +308,19 @@ describe('ask-gate-mirror — operator-independent paths', () => {
     // It may MENTION <ask> only to prohibit it — assert the prohibition wording
     // is present, so the reason never reads as a recommendation to emit the tag.
     expect(out.reason).toMatch(/Do NOT emit a raw <ask>/i);
+  });
+
+  it('the headless bounce routes an owner question through coord:ask-owner, not a native dialog', () => {
+    const r = run(
+      payload({ hook_event_name: 'Stop', session_id: 'headless-session', transcript_path: transcriptWith('Should I proceed with the migration now?') }),
+      { PAPERCUSP_PSU_HEADLESS: '1' },
+    );
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout);
+    expect(out.decision).toBe('block');
+    expect(out.reason).toMatch(/coord:ask-owner/);
+    expect(out.reason).toMatch(/no human-visible dialog surface/i);
+    expect(out.reason).not.toMatch(/native AskUserQuestion tool \(preferred/i);
   });
 
   // WI-5865 — the DEFERRED-DELIVERABLE bounce. Owner-reported 2026-07-25: an su

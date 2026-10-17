@@ -30,7 +30,7 @@ afterAll(async () => {
 });
 
 describe('lexical latency budgets (R-2, R-3)', () => {
-  it('times every canary query on the work-item index', async () => {
+  it('times every canary through the guarded top-k path on the work-item index', async () => {
     const latency = await measureBm25Latency(sql);
     expect(latency?.corpusIndex).toBe('work_items_bm25');
     expect(latency?.samplesMs).toHaveLength(BM25_LATENCY_CANARY_QUERIES.length);

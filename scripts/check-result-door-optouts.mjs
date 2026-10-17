@@ -128,6 +128,7 @@ const BASELINE = new Set([
   'packages/operator-core/lib/agent-tools/fleet_registry/status.ts',
   'packages/operator-core/lib/agent-tools/locks/queue.ts',
   'packages/operator-core/lib/agent-tools/loop/status.ts',
+  'packages/operator-core/lib/agent-tools/plans/get-spec-evidence.ts',
   'packages/operator-core/lib/agent-tools/rubrics/get.ts',
   'packages/operator-core/lib/agent-tools/scheduler/running.ts',
 ]);

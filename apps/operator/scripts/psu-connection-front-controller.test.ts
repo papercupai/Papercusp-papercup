@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +15,7 @@ import {
   loadPsuConnectionStore,
   normalizeAwsSsmProfile,
   normalizeGcpIapProfile,
+  normalizeSshProfile,
   normalizeHostedPortalOrigin,
   normalizeHostedProfile,
   parsePsuConnectionArgs,
@@ -152,6 +153,162 @@ describe("psu connection transport argv", () => {
       sshUser: "alice_example_com",
     });
     expect(parsed.forwardedArgv).toEqual(["--account=default"]);
+  });
+});
+
+describe("personal computer connections", () => {
+  it("saves a personal SSH alias and removes its access from this picker", async () => {
+    const home = tempHome();
+    const output = vi.fn();
+    await runPsuConnectionFrontController([
+      "--connect-add-ssh=laptop", "--connect-host=laptop.private", "--connect-user=avi",
+    ], { home, interactive: false, output });
+    expect(loadPsuConnectionStore(defaultPsuConnectionStorePath(home)).profiles).toEqual([
+      expect.objectContaining({ kind: "ssh", target: "avi@laptop.private", remoteOperatorPort: 3070 }),
+    ]);
+    await runPsuConnectionFrontController(["--connect-remove=laptop"], { home, output });
+    await expect(runPsuConnectionFrontController(["--connect=laptop"], { home, interactive: false }))
+      .rejects.toThrow("Unknown psu connection profile");
+  });
+
+  it.each(["-oProxyCommand=evil", "host;touch /tmp/evil", "user@host", "https://host", "host\nother"])(
+    "refuses a shell-shaped personal machine address %j before saving", async (host) => {
+      const home = tempHome();
+      await expect(runPsuConnectionFrontController([
+        "--connect-add-ssh=laptop", `--connect-host=${host}`,
+      ], { home, interactive: false })).rejects.toThrow(/invalid/);
+      expect(loadPsuConnectionStore(defaultPsuConnectionStorePath(home)).profiles).toEqual([]);
+    },
+  );
+
+  it("uses SSH config for identity and preserves remote launch arguments without a cloud relay", async () => {
+    const home = tempHome();
+    const profile = normalizeSshProfile({ name: "laptop", host: "my-laptop" });
+    savedStore(home, [profile]);
+    const commands: string[][] = [];
+    const runInteractive = vi.fn(async (_command: string, args: string[]) => {
+      expect(args.at(-1)).toContain("'PAPERCUSP_PSU_CONNECTION_FORWARDED=1' 'psu' '--resume=session 1'");
+      return { code: 0 };
+    });
+    const fetch = vi.fn();
+    const result = await runPsuConnectionFrontController(["--connect=laptop", "--resume=session 1"], {
+      home, interactive: false, commandAvailable: () => true, fetch, notice: vi.fn(),
+      reservePort: async () => ({ port: 45123, release: async () => {} }),
+      probeOperator: async () => {}, runInteractive,
+      runCommand: async (_command: string, args: string[]) => {
+        commands.push(args); return { code: args.includes("check") ? 1 : 0 };
+      },
+    });
+    expect(result.exitCode).toBe(0);
+    const master = commands.find((args) => args.includes("ControlMaster=yes"))!;
+    expect(master.at(-1)).toBe("my-laptop");
+    expect(master).toContain("127.0.0.1:45123:127.0.0.1:3070");
+    expect(master.join(" ")).not.toMatch(/ProxyCommand|StrictHostKeyChecking=no|accept-new|ForwardAgent=yes/);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(runInteractive).toHaveBeenCalledOnce();
+    expect(commands.at(-1)).toContain("cancel");
+  });
+
+  it("opens the browser only after the private GUI tunnel passes health and cancels it on close", async () => {
+    const home = tempHome();
+    savedStore(home, [normalizeSshProfile({ name: "desktop", host: "desktop.private" })]);
+    const steps: string[] = [];
+    const runInteractive = vi.fn();
+    await runPsuConnectionFrontController(["--connect=desktop", "--connect-gui"], {
+      home, interactive: true, commandAvailable: () => true, notice: vi.fn(), runInteractive,
+      reservePort: async () => ({ port: 45124, release: async () => {} }),
+      probeOperator: async (url: string) => { steps.push(`probe:${url}`); },
+      openBrowser: (url: string) => { steps.push(`open:${url}`); },
+      waitForGuiClose: async () => { steps.push("closed"); },
+      runCommand: async (_command: string, args: string[]) => {
+        if (args.includes("cancel")) steps.push("cancel");
+        return { code: args.includes("check") ? 1 : 0 };
+      },
+    });
+    expect(steps).toEqual(["probe:http://127.0.0.1:45124", "open:http://127.0.0.1:45124", "closed", "cancel"]);
+    expect(runInteractive).not.toHaveBeenCalled();
+  });
+
+  it("never silently launches local psu when the GUI picker chooses this computer", async () => {
+    await expect(runPsuConnectionFrontController(["--connect-gui"], {
+      home: tempHome(), interactive: true, pickConnection: async () => "local",
+    })).rejects.toThrow("needs a saved SSH machine");
+  });
+
+  it("cancels the private forward when the remote operator health check fails", async () => {
+    const home = tempHome();
+    savedStore(home, [normalizeSshProfile({ name: "desktop", host: "desktop.private" })]);
+    const openBrowser = vi.fn();
+    const commands: string[][] = [];
+    await expect(runPsuConnectionFrontController(["--connect=desktop", "--connect-gui"], {
+      home, interactive: true, commandAvailable: () => true, notice: vi.fn(), openBrowser,
+      reservePort: async () => ({ port: 45124, release: async () => {} }),
+      probeOperator: async () => { throw new Error("remote operator offline"); },
+      runCommand: async (_command: string, args: string[]) => {
+        commands.push(args); return { code: args.includes("check") ? 1 : 0 };
+      },
+    })).rejects.toThrow("remote operator offline");
+    expect(commands.at(-1)).toContain("cancel");
+    expect(openBrowser).not.toHaveBeenCalled();
+  });
+
+  it("refuses an offline or unauthorized SSH host before opening a browser or remote program", async () => {
+    const home = tempHome();
+    savedStore(home, [normalizeSshProfile({ name: "desktop", host: "desktop.private" })]);
+    const openBrowser = vi.fn();
+    const runInteractive = vi.fn();
+    await expect(runPsuConnectionFrontController(["--connect=desktop", "--connect-gui"], {
+      home, interactive: true, commandAvailable: () => true, notice: vi.fn(), openBrowser, runInteractive,
+      reservePort: async () => ({ port: 45124, release: async () => {} }),
+      runCommand: async () => ({ code: 255 }),
+    })).rejects.toThrow(/OpenSSH host-key and authentication policy/);
+    expect(openBrowser).not.toHaveBeenCalled();
+    expect(runInteractive).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["--connect-host=host"],
+    ["--connect-add-ssh=laptop", "--connect-host=host", "--connect-region=us-east-2"],
+    ["--connect-add-ssh=laptop", "--connect-host=host", "--connect-add-gcp-iap=cloud"],
+    ["--connect=desktop", "--connect-gui", "--resume=session"],
+  ])("rejects mixed or silently ignored personal connection options %j", async (...argv) => {
+    await expect(runPsuConnectionFrontController(argv, { home: tempHome(), interactive: true }))
+      .rejects.toThrow();
+  });
+});
+
+describe.skipIf(process.platform === "win32")("native SSH prerequisite detection", () => {
+  it.each([0, 1])("checks OpenSSH's supported version flag and respects exit status %s", async (status) => {
+    const home = tempHome();
+    const bin = join(home, "bin");
+    mkdirSync(bin);
+    // Match OpenSSH: an unsupported version argument must fail even though
+    // the executable is on PATH. Do not inject commandAvailable here.
+    writeFileSync(join(bin, "ssh"), `#!/bin/sh\n[ "$#" = 1 ] && [ "$1" = -V ] || exit 255\nexit ${status}\n`, { mode: 0o700 });
+    const storePath = savedStore(home, [normalizeSshProfile({ name: "desktop", host: "private-computer" })]);
+    const runCommand = vi.fn(async (_command: string, args: string[]) => ({
+      code: args.includes("check") ? 1 : 0, signal: null,
+    }));
+    const runInteractive = vi.fn(async () => ({ code: 0, signal: null }));
+    vi.stubEnv("PATH", bin);
+    try {
+      const result = runPsuConnectionFrontController(["--connect=desktop"], {
+        home, storePath, interactive: false, notice: vi.fn(),
+        runCommand, runInteractive,
+        async reservePort() { return { port: 45124, async release() {} }; },
+        async probeOperator() {},
+      });
+      if (status === 0) {
+        await expect(result).resolves.toMatchObject({ handled: true, exitCode: 0 });
+        expect(runInteractive).toHaveBeenCalledOnce();
+      } else {
+        await expect(result).rejects.toThrow("requires 'ssh' on the local PATH");
+        expect(runCommand).not.toHaveBeenCalled();
+        expect(runInteractive).not.toHaveBeenCalled();
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

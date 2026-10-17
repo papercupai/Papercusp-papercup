@@ -395,6 +395,7 @@ export function preGradingBlockedRefusal(
 }
 
 export interface PlanAcceptanceGateOpts {
+  readCurrentCritique?: import('./acceptance-rubric-vetting').AcceptanceRubricVettingDeps['readCurrentCritique'];
   /** Subject harness, distinct from the acceptance rubric's storage harness. */
   harnessSlug?: string;
   /** Freshly measured fingerprints for the original requirements' bound proof. */
@@ -420,6 +421,8 @@ export interface PlanAcceptanceGateOpts {
    * Missing/stale audit evidence fails toward the ordinary unfinished-item refusal.
    */
   gradingRecruitment?: boolean;
+  /** Review-only selection; final ship lifecycle always evaluates the original proof. */
+  pendingDeliveryBarKeys?: string[];
   /**
    * EI-22181490624100467 — resolve the DEPLOYMENT POSITION of the code/test
    * citations this plan's code-truth audit rests on, returned as report-only
@@ -930,6 +933,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           expectedApplicable: true,
           ...(planHarnessSlug ? { harnessSlug: planHarnessSlug } : {}),
           ...(opts.current ? { current: opts.current } : {}),
+          ...(opts.pendingDeliveryBarKeys ? { pendingDeliveryBarKeys: opts.pendingDeliveryBarKeys } : {}),
         });
         // P-038: the pre-grading verdict IS the explanation of this refusal — the ship-phase
         // codes include grading/author-verdict obligations nobody can work yet. Return it
@@ -1483,6 +1487,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         getRubric: async () => metaRubric,
         getRubricPlanRevision: async () => currentRevision,
         listScorecards,
+        readCurrentCritique: opts.readCurrentCritique,
         ...(opts.readGradingAuditDispatchSuppression
           ? { readGradingAuditDispatchSuppression: opts.readGradingAuditDispatchSuppression }
           : {}),
@@ -1507,11 +1512,7 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
           unboundIds.length > 0
             ? ` A subject-less meta-scorecard exists in history (${unboundIds.join(', ')}${
                 unboundMetaCards.length > unboundIds.length ? ', …' : ''
-              }), but it names no acceptance rubric and cannot satisfy this gate; re-emit with ` +
-              `subject:{ kind:'rubric', ref:'${rubric.rubricId}' }` +
-              (stale
-                ? ` and a current vetting linkage.`
-                : ` plus vettingConsult:'<consult conversation_id>' (or vettingWorkItem:'<review WI-/EI- id>').`)
+              }), but it names no acceptance rubric and cannot establish current critique.`
             : '';
         const candidateDiagnostic = vettingStatus.diagnosis
           ? ` Candidate diagnostics: ${vettingStatus.diagnosis}.`
@@ -1525,26 +1526,24 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
               `revision ${vettedRevisions.join('/') || '(unrecorded)'} but the rubric identity now in force is ` +
               `revision ${currentRevision ?? '(unrecorded)'}, criteriaHash ${rubric.criteriaHash ?? '(unrecorded)'}. ` +
               `The graded criteria or method changed after vetting, or the recorded/live identity is incomplete; ` +
-              `the attestation does not establish the current rubric. ` +
-              `Re-emit the meta-scorecard against the current revision: scorecards:emit ` +
-              `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
-              `vettingConsult:'<consult conversation_id>', ratings:{ <every meta criterion> } }. Citing the SAME ` +
-              `consult is fine when the revision IS the improvement its critique asked for.${candidateDiagnostic}`
+              `Obtain independent critique of '${rubric.rubricId}' naming current criteriaHash ` +
+              `'${rubric.criteriaHash ?? '(unrecorded)'}' or revision ${currentRevision ?? '(unrecorded)'}. ` +
+              `The consult or review work-item records satisfy vetting directly.${candidateDiagnostic}`
             : `plan '${planSlug}' cannot be marked shipped: its acceptance rubric '${rubric.rubricId}' has not ` +
               `been VETTED against the meta-rubric (consult-min-max-and-rubric-vetting-2026-08-17). The rubric ` +
               `AUTHOR vets it BEFORE a non-implementer grades the work: (1) consult:get_feedback for external ` +
-              `critique of the rubric — ${rubricVettingConsultHint()}, (2) improve the rubric ` +
-              `from the critique (rubrics:propose), (3) attest: scorecards:emit ` +
-              `{ rubricRef:'${META_ACCEPTANCE_RUBRIC_ID}', subject:{ kind:'rubric', ref:'${rubric.rubricId}' }, ` +
-              `vettingConsult:'<the consult conversation_id>', ratings:{ <every meta criterion, with evidence> } }. ` +
+              `critique of the rubric — ${rubricVettingConsultHint()}. Name '${rubric.rubricId}' and current ` +
+              `criteriaHash '${rubric.criteriaHash ?? '(unrecorded)'}' or revision ${currentRevision ?? '(unrecorded)'} ` +
+              `in the opening request; (2) improve the rubric from the critique as needed. ` +
+              `Current independent critique is read directly; no attestation card or attestation audit is required. ` +
               `${unboundDiagnostic ? unboundDiagnostic.slice(1) : ''}` +
-              `Pass is your judgment per criterion — no mechanical score floor (D-001 §3).${candidateDiagnostic}`),
+              `${candidateDiagnostic}`),
           ...(vettingStatus.gradingAuditDispatchSuppressed
             ? { gradingAuditDispatchSuppressed: vettingStatus.gradingAuditDispatchSuppressed }
             : {}),
         })) return collectedRefusal();
-      } else if (vettingStatus.required && current) {
-        vettingAttestedAt = current.createdAt;
+      } else if (vettingStatus.required && (current || vettingStatus.critique)) {
+        vettingAttestedAt = vettingStatus.critique?.createdAt ?? current?.createdAt;
         if (vettingStatus.vettedUnderWaiver) vettedUnderWaiver = vettingStatus.vettedUnderWaiver;
       }
     }
@@ -1921,8 +1920,9 @@ async function evaluatePlanAcceptanceGateWithoutBuildProvenance(
         `plan '${planSlug}' has a complete independent grading by '${independent.createdBy ?? 'unknown'}', but ` +
         `its implementer${implementer ? ` ('${implementer}')` : ''} has not recorded the post-grading acceptance ` +
         `call. After reading that grading, the rubric author must run scorecards:emit ` +
-        `{ rubricRef:'${rubric.rubricId}', ratings:{ <every criterion key> }, ` +
+        `{ rubricRef:'${rubric.rubricId}', acceptanceOf:'${independent.issueId}', ` +
         `acceptance:{ verdict:'accept'|'accept-pending-delivery'|'reject', reasoning:'<why this grading is acceptable or not>' } }. ` +
+        `The referenced independent grade supplies the ratings; record only the verdict and reason. ` +
         `Use 'accept-pending-delivery' when the grading is accepted and the ONLY outstanding obligation is evidence on a ` +
         `delivery plane you cannot reach (a deployed/live BAR behind a gate, or a deploy another agent owns): 'accept' ` +
         `would overclaim delivery and 'reject' would be false. It does not block this gate, and it does not waive the ` +

@@ -24,9 +24,9 @@ import { defineTool } from '@papercusp/agent-mcp';
 export default defineTool({
   name: 'pot_git:integration_requests',
   profile: 'engineer',
-  // Writes/reads via the admin handle (listIntegrationRequests/ratifyIntegrationRequest
-  // default to getOrgPg().sql when no tx is passed), scoping itself by the resolved
-  // workspace id — same rationale as trust:comms.
+  // Reads/writes via the admin handle (listIntegrationRequests/ratifyIntegrationRequest
+  // default to getOrgPg().sql when no tx is passed). Scoped calls self-confine to the
+  // principal workspace below, which allows the reviewed scoped-safe transport path.
   crossWorkspace: true,
   description:
     'Owner: the multi-owner integration-requests queue — below-steer-tier member heads the integrator queued instead of auto-merging (the code-plane twin of the coord quarantine). Actions: list {potSlug?, repoKey?, devicePubkey?, state?, limit?} (default state omitted = all) | ratify {potSlug, repoKey, devicePubkey, headSha} — the ONE call that marks a queued head ratified so the NEXT integrator pass merges it. Ratification is PER-SHA (a newer head from the same below-tier device queues again — you ratify the code you saw, not the author\'s future pushes). Local-only, never federated: this is the receiving owner\'s own trust judgment about the sender, not a peer-influenced decision.',
@@ -48,7 +48,7 @@ export default defineTool({
       workspaceId: z
         .string()
         .optional()
-        .describe('Workspace id. Defaults to the active workspace when omitted.'),
+        .describe('Workspace id for unscoped calls. Scoped sessions are pinned to their principal workspace and reject a different value; defaults to the active workspace when omitted.'),
       potSlug: z.string().optional().describe("The Pot's home slug. Required for action:'ratify'."),
       repoKey: z
         .string()
@@ -83,7 +83,17 @@ export default defineTool({
       '../../sync/pot-git/integration-requests'
     );
     const principalWs = ctx?.principal?.workspaceId;
-    const ws = args.workspaceId ?? (principalWs && principalWs !== '*' ? principalWs : activeWorkspaceId());
+    const scopedWs = principalWs && principalWs !== '*' ? principalWs : null;
+    if (scopedWs && args.workspaceId && args.workspaceId !== scopedWs) {
+      return {
+        isError: true,
+        content: [{
+          type: 'text' as const,
+          text: `workspace_forbidden: this session is scoped to workspace "${scopedWs}" and cannot target "${args.workspaceId}". Omit workspaceId to act on your own workspace, or use an unscoped (--all-workspaces) superuser session to target another.`,
+        }],
+      };
+    }
+    const ws = scopedWs ?? args.workspaceId ?? activeWorkspaceId();
     let payload: Record<string, unknown>;
     if (args.action === 'list') {
       const requests = await listIntegrationRequests({

@@ -13,7 +13,7 @@
  * Usage: npm run test:file -- path/to/a.test.ts [path/to/b.test.ts] [<vitest args>]
  * Vitest args may follow the file list directly or after an explicit `--` separator.
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { readVerifierSourceReceiptSync } from '@papercusp/test-config/verifier-source';
 import { spawn, spawnSync } from 'node:child_process';
@@ -691,6 +691,18 @@ export function vitestRunFailed({ status, output }) {
 }
 
 /**
+ * A green assertion summary does not mean the Vitest child shut down cleanly.
+ * Fork-pool termination warnings are emitted after `testfileFinished` and Vitest
+ * can still exit 0, so preserve them as a runner finalization error.
+ */
+export function hasVitestWorkerTerminationWarning(output) {
+  const plain = stripVitestAnsi(output ?? '');
+  return plain.split(/\r?\n/).some((line) =>
+    /^\[vitest-pool\]: (?:Timeout terminating|Failed to terminate) .*\bworker\b/.test(line.trim()),
+  );
+}
+
+/**
  * Combine every GROUP's outcome (one per owning cwd/config — a multi-workspace request produces
  * >1) into a single honest final verdict, isolated from I/O so it is unit-testable (EI-13535).
  *
@@ -707,8 +719,8 @@ export function vitestRunFailed({ status, output }) {
  * every group that could run, a mismatch in one group never hides another group's files, and the
  * final status is decided from the true combined outcome.
  *
- * @param {{ requested: number, matched: number, executed: number, unmatchedCount: number, failed: boolean, launchError: boolean, timedOut?: boolean }[]} groupResults
- * @returns {{ ok: boolean, requested: number, matched: number, executed: number, anyUnmatched: boolean, anyFailed: boolean, launchError: boolean, anyTimedOut: boolean }}
+ * @param {{ requested: number, matched: number, executed: number, unmatchedCount: number, failed: boolean, launchError: boolean, finalizationError?: boolean, timedOut?: boolean }[]} groupResults
+ * @returns {{ ok: boolean, requested: number, matched: number, executed: number, anyUnmatched: boolean, anyFailed: boolean, launchError: boolean, anyFinalizationError: boolean, anyTimedOut: boolean }}
  */
 /**
  * EI-18099113673609528: Vitest 4's default (and verbose) reporter silently drops ALL per-suite
@@ -2589,14 +2601,15 @@ function printTestFinalizationError(result) {
   );
 }
 
-/** Capture bounded identities before a collection watchdog destroys its evidence.
- * This is an identity snapshot, not a measurement of progress or a causal verdict.
+/** Capture bounded evidence before a collection watchdog destroys its evidence.
+ * This is a single snapshot, not a measurement of progress or a causal verdict.
  * Reuse the governed tree walker, with a bounded children reader that never falls
  * back to a host-wide proc scan. Do not retain argv or environment credentials.
  */
 export function readTestChildDiagnostic(rootPid, {
   readFileImpl = readFileSync,
   readdirImpl = readdirSync,
+  readlinkImpl = readlinkSync,
   platform = process.platform,
 } = {}) {
   if (platform !== 'linux' || !Number.isInteger(rootPid) || rootPid <= 0) {
@@ -2604,11 +2617,65 @@ export function readTestChildDiagnostic(rootPid, {
   }
   const maxProcesses = 16;
   const maxTasksPerProcess = 32;
+  const maxBlockedDetails = 4;
+  let blockedDetails = 0;
   const admitted = new Set([rootPid]);
   let unreadableFields = 0;
   let truncated = false;
   const read = (path) => {
     try { return readFileImpl(path, 'utf8'); } catch { unreadableFields += 1; return null; }
+  };
+  const readBlockedIo = (pid) => {
+    if (blockedDetails++ >= maxBlockedDetails) {
+      truncated = true;
+      return { status: 'unavailable', reason: 'blocked-detail-cap', scope: 'single-snapshot' };
+    }
+    const unavailable = [];
+    let detailTruncated = false;
+    const ioText = read(`/proc/${pid}/io`);
+    const io = {};
+    for (const key of ['rchar', 'wchar', 'syscr', 'syscw', 'read_bytes', 'write_bytes']) {
+      // Keep counters as decimal strings: procfs values can exceed JS integer precision.
+      io[key] = ioText?.match(new RegExp(`^${key}:\\s*(\\d+)$`, 'm'))?.[1] ?? null;
+    }
+    if (Object.values(io).some(value => value === null)) unavailable.push('io');
+    const syscallText = read(`/proc/${pid}/syscall`);
+    const tokens = syscallText?.trim().split(/\s+/) ?? [];
+    let syscall = null;
+    if (syscallText?.trim() === 'running') syscall = { state: 'running' };
+    else if ((tokens.length === 3 || tokens.length === 9)
+      && /^-?\d+$/.test(tokens[0]) && tokens.slice(1).every(token => /^(?:0x[\da-f]+|\d+)$/i.test(token))) {
+      syscall = { number: Number(tokens[0]), arguments: tokens.slice(1, -2),
+        stackPointer: tokens.at(-2), instructionPointer: tokens.at(-1) };
+    }
+    if (syscall === null) unavailable.push('syscall');
+    const stackText = read(`/proc/${pid}/stack`);
+    const frames = (stackText?.split('\n') ?? []).flatMap(line => {
+      const symbol = line.match(/^\[<[^>]+>\]\s+([\w.$]+)(?:\+|\s|$)/)?.[1];
+      return symbol ? [symbol.slice(0, 64)] : [];
+    });
+    if (frames.length > 8) detailTruncated = true;
+    const kernelStack = frames.length ? frames.slice(0, 8) : null;
+    if (kernelStack === null) unavailable.push('kernelStack');
+    let files = null;
+    try {
+      const entries = readdirImpl(`/proc/${pid}/fd`).filter(fd => /^\d+$/.test(fd))
+        .sort((a, b) => Number(a) - Number(b));
+      if (entries.length > 8) detailTruncated = true;
+      files = entries.slice(0, 8).map(fd => {
+        let target = null;
+        try { target = readlinkImpl(`/proc/${pid}/fd/${fd}`); }
+        catch { unreadableFields += 1; unavailable.push(`fd:${fd}`); }
+        // Read the link only, never the descriptor contents, argv or environment.
+        const path = target?.startsWith('/') ? boundedDiagnosticText(target, 160) : null;
+        if (target?.length > 160) detailTruncated = true;
+        return { fd: Number(fd), path, kind: path ? 'path' : target?.startsWith('pipe:') ? 'pipe'
+          : target?.startsWith('socket:') ? 'socket' : target == null ? 'unavailable' : 'other' };
+      });
+    } catch { unreadableFields += 1; unavailable.push('files'); }
+    if (detailTruncated) truncated = true;
+    return { status: unavailable.length ? 'partial' : 'measured', scope: 'single-snapshot',
+      io, syscall, kernelStack, files, unavailable, truncated: detailTruncated };
   };
   const tree = resolveGovernedProcessTree(rootPid, {
     pidCap: maxProcesses,
@@ -2636,15 +2703,18 @@ export function readTestChildDiagnostic(rootPid, {
     const status = read(`/proc/${pid}/status`);
     const parent = status?.match(/^PPid:\s*(\d+)/m)?.[1];
     const waitChannel = read(`/proc/${pid}/wchan`);
+    const state = status?.match(/^State:\s*(\w)/m)?.[1] ?? null;
     return {
       pid,
       parentPid: parent == null ? null : Number(parent),
       name: boundedDiagnosticText(status?.match(/^Name:\s*(.*)/m)?.[1], 48) || null,
-      state: status?.match(/^State:\s*(\w)/m)?.[1] ?? null,
+      state,
       waitChannel: waitChannel?.trim() === '0' ? null : boundedDiagnosticText(waitChannel, 64) || null,
+      ...(state === 'D' ? { blockedIo: readBlockedIo(pid) } : {}),
     };
   });
-  return { status: unreadableFields > 0 ? 'partial' : 'measured', rootPid, truncated, unreadableFields, processes };
+  return { status: unreadableFields > 0 || processes.some(row => row.blockedIo && row.blockedIo.status !== 'measured')
+    ? 'partial' : 'measured', rootPid, truncated, unreadableFields, processes };
 }
 
 /**
@@ -3165,6 +3235,13 @@ export async function preflightPrivateIntegrationPg() {
   await loadGovernedExecutionModule();
   const { getTestPg } = await import('../libs/test-config/src/pg-container.ts');
   await getTestPg();
+  // The immutable verifier tree intentionally excludes apps/operator/.env.local.
+  // Preserve the caller's governed-admission target before that freeze; otherwise
+  // getOrgPg() in the frozen child falls through to a stale discovery file and
+  // can authenticate against the wrong cluster. This URL is only for the
+  // runner's control-plane admission; the private proof still owns its own PG.
+  const { getHarnessAdminUrlWithSource } = await import('../packages/operator-core/lib/embedded-pg-discovery.ts');
+  return getHarnessAdminUrlWithSource();
 }
 
 export async function main(
@@ -3316,11 +3393,25 @@ export async function main(
   }
 
   const groups = groupRoutes(routes);
+  // Admit in the caller checkout before freezing a private proof. The frozen
+  // checkout deliberately excludes local operator config, so its census cannot
+  // discover the caller's disclosure ledger. Only a real admission is inherited
+  // by the same requested file set; unknown or held states refuse before copying.
+  if (!dry) {
+    const restrictedHold = restrictedHoldPreflightImpl({ repoRoot, files: routes.map((route) => route.absolute) });
+    if (restrictedHold.verdict === 'refuse') {
+      console.error(formatRestrictedHoldRefusal(restrictedHold));
+      return TEST_FILE_EXIT_NOT_MEASURED;
+    }
+    if (restrictedHold.verdict === 'admit') {
+      process.env[RESTRICTED_HOLD_PREFLIGHT_ENV] = RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER;
+    }
+  }
   if (!dry) {
     try {
       const inputs = privateIntegrationVerifierInputs(repoRoot, testFiles);
       if (inputs) {
-        await preflightPrivateIntegrationPgImpl();
+        const privatePg = await preflightPrivateIntegrationPgImpl();
         const head = run('git', ['rev-parse', '--verify', 'HEAD'], { cwd: repoRoot });
         const ref = head?.stdout?.trim();
         if (head?.error || head?.status !== 0 || !/^[a-f0-9]{40}$/.test(ref ?? ''))
@@ -3334,6 +3425,7 @@ export async function main(
             // The frozen router takes over this same logical invocation's
             // barriers; ordinary test children still never inherit them.
             env: { ...process.env,
+              ...(privatePg?.url ? { HARNESS_ADMIN_DATABASE_URL: privatePg.url } : {}),
               ...(preemptMarkerPaths.readyFile ? { PC_HEAVY_PREEMPT_READY_FILE: preemptMarkerPaths.readyFile } : {}),
               ...(preemptMarkerPaths.finalizationFile ? { PC_HEAVY_PSI_FINALIZATION_FILE: preemptMarkerPaths.finalizationFile } : {}) },
             command: [process.execPath, '--import', 'tsx', 'scripts/test-files.mjs',
@@ -3366,23 +3458,6 @@ export async function main(
   // Diagnostic only: one stderr line, never a verdict input (see scripts/lib/mutation-probe-window.mjs).
   const probeWindowBefore = readMutationProbeWindow(repoRoot);
   if (probeWindowBefore) console.error(formatMutationProbeWindow(probeWindowBefore, repoRoot));
-  // WI-10005713 (D-012 / R-11): a session holding an active personal disclosure has no network,
-  // but a test or source it WROTE would run here with the network. Refuse before ANY test process
-  // starts — the same restrictedHoldRefusal testing:run applies in-process (it marks the child env
-  // so this does not run twice). Fail-closed: an unreadable census refuses too.
-  if (!dry) {
-    const restrictedHold = restrictedHoldPreflightImpl({ repoRoot, files: routes.map((route) => route.absolute) });
-    if (restrictedHold.verdict === 'refuse') {
-      console.error(formatRestrictedHoldRefusal(restrictedHold));
-      return TEST_FILE_EXIT_NOT_MEASURED;
-    }
-    // WI-10005724: every vitest this router starts inherits process.env, and its root preflight
-    // (libs/test-config host-preflight globalSetup) would otherwise repeat the same ~2s census.
-    // Only a real admit marks it; a skip means an enclosing root already set (or owns) the marker.
-    if (restrictedHold.verdict === 'admit') {
-      process.env[RESTRICTED_HOLD_PREFLIGHT_ENV] = RESTRICTED_HOLD_PREFLIGHT_ADMITTED_BY_ROUTER;
-    }
-  }
   // Clone only after admission: receipt-consuming children must inherit the
   // same real preflight result instead of repeating the disclosure-ledger read.
   const receiptChildEnv = receiptFile
@@ -3782,6 +3857,14 @@ export async function main(
       continue;
     }
     const runOutput = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+    const workerTerminationWarning = hasVitestWorkerTerminationWarning(runOutput);
+    if (workerTerminationWarning) {
+      console.error(
+        'TEST_FILE_WORKER_TERMINATION_FINALIZATION_ERROR — Vitest reported a worker that did not ' +
+          'terminate within teardownTimeout. Assertions may have passed, but this test process did ' +
+          'not finish cleanly; refusing an overall green result.',
+      );
+    }
     // EI-21902345477441137: a watchdog reap kills the child via signal, so `result.status` is
     // typically `null` — `null !== 0` would make vitestRunFailed() report a false FAILED verdict
     // for a run that produced no verdict at all. A reaped group is NOT MEASURED, never `failed`;
@@ -3901,7 +3984,7 @@ export async function main(
       unmatchedCount: 0,
       failed: groupFailed,
       launchError: false,
-      finalizationError: Boolean(result.governedFinalizationError),
+      finalizationError: Boolean(result.governedFinalizationError || workerTerminationWarning),
       // EI-21902345477441137: distinct from `failed` — a reaped run produced no verdict at all,
       // so it must never contribute to `anyFailed` (that would be the exact bug this fixes) nor
       // silently read as a clean pass (that would hide a genuine resource-limit problem).

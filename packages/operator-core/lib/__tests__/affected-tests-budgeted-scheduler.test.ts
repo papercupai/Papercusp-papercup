@@ -260,7 +260,7 @@ describe('R12 immutable full-gate comparison preparation', () => {
         wallMs: executionWallMs + 30, acquiredWaitsMs: [10, 20], executionWallMs,
         memory: { pairedSamples: 3, maxAnonPerAllocatedWorkerMb: 300, oomKills: 0 },
         stats: { memoryReadings: 2, lastMemAvailableMb: 40000, observedMaxWorkers: 8,
-          observedMaxTasks: 2, observedMaxMemoryMb: 32768 },
+          observedMaxTasks: side === 'baseline' ? 1 : 2, observedMaxMemoryMb: 32768 },
         children: manifest.tasks.map(task => ({ task: task.id, lane: 'primary' as const, files: [...task.files],
           code: 0, signal: null, childWallMs: 20,
           resultLine: 'TEST_FILE_RESULT status=passed requested=1 executed=1 matched=1 skippedTests=0 childSubstituted=0',
@@ -3038,6 +3038,7 @@ describe('shared test-process admission queue (WI-1490656)', () => {
     const context = {
       observedCompletedTasks: 0,
       foldSettledTaskCoverage: () => countsSeenByCoverage.push(context.observedCompletedTasks),
+      persistPartialResumeCheckpoint: () => {},
       persistCleanFirstPassTaskVerdict: () => {},
       taskKey: (task: { key: string }) => task.key,
       executedMapResultFiles: new Map([['settled-task', '/results/settled-task.json']]),

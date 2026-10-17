@@ -136,7 +136,7 @@ describe('PTY host event classification for Blender', () => {
       'resume-finalization-callback-failed', 'startup-turn-dropped',
       'kickoff-refusal-unreported-terminating',
       'session-port-delivery-ack-failed', 'managed-kickoff-failed',
-      'gated-delivery-pipeline-error', 'control-socket-error',
+      'gated-delivery-pipeline-error', 'gated-delivery-refused', 'control-socket-error',
       'control-socket-rebind-failed', 'session-scope-cleanup-partial',
       'session-scope-cleanup-failed', 'session-port-failure-ack-failed',
     ]) {
@@ -271,7 +271,8 @@ describe('PTY host event classification for Blender', () => {
     const kinds = emittedHostKinds(hostSource);
     expect(kinds.length).toBeGreaterThan(0);
     expect(kinds).toContain('pty-spawned');
-    expect(kinds.filter((kind) => classifyPtyHostEvent(kind) === 'unclassified')).toEqual([]);
+    const unclassified = kinds.filter((kind) => classifyPtyHostEvent(kind) === 'unclassified');
+    expect(unclassified, `unclassified PTY host event kinds: ${unclassified.join(', ')}`).toEqual([]);
     expect(classifyPtyHostEvent('pty-spawned')).toBe('routine');
     expect(classifyPtyHostEvent('inject-mutex-force-released')).toBe('recovered');
     expect(classifyPtyHostEvent('mcp-reconnect-completed')).toBe('recovered');
@@ -281,6 +282,7 @@ describe('PTY host event classification for Blender', () => {
     expect(classifyPtyHostEvent('hooks-observation-result')).toBe('routine');
     expect(classifyPtyHostEvent('kickoff-waiting-for-codex-startup')).toBe('routine');
     expect(classifyPtyHostEvent('launch-kickoff-quota-rejected')).toBe('failure');
+    expect(classifyPtyHostEvent('launch-kickoff-model-capacity-rejected')).toBe('failure');
     expect(classifyPtyHostEvent('quota-recovery-resumed')).toBe('recovered');
     expect(classifyPtyHostEvent('respawn-predecessor-stop-pending')).toBe('failure');
     expect(classifyPtyHostEvent('session-port-delivery-ack-pending')).toBe('failure');

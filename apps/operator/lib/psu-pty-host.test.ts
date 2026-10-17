@@ -5,9 +5,116 @@
  * (spawn → socket-inject → cleanup) lives in psu-pty-host.integration.test.ts.
  */
 import { describe, it, expect, vi, afterAll } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as realHost from '../scripts/psu-pty-host.mjs';
 import { resolvePtoolOperatorBase } from '../scripts/ptool.mjs';
+
+describe('shared carry-drill ledger pruning', () => {
+  it('retains each drill’s latest terminal outcome within the size bound', () => {
+    const root = mkdtempSync(join(tmpdir(), 'carry-drill-ledger-'));
+    const oldTerminal = JSON.stringify({
+      ts: '2026-10-15T10:49:36.110Z',
+      kind: 'carry-drill-carry-dropped',
+      ownerId: 'su-old',
+      drillId: 'drill-retained-terminal',
+      sessionClass: 'claude-su',
+      reason: 'superseded',
+    });
+    const previousTerminal = JSON.stringify({
+      ts: '2026-10-16T00:01:00.000Z',
+      kind: 'carry-drill-carry-delivered',
+      ownerId: 'su-previous',
+      drillId: 'drill-latest-terminal',
+      sessionClass: 'claude-su',
+    });
+    const latestTerminal = JSON.stringify({
+      ts: '2026-10-16T00:02:00.000Z',
+      kind: 'carry-drill-carry-dropped',
+      ownerId: 'su-latest',
+      drillId: 'drill-latest-terminal',
+      sessionClass: 'claude-su',
+      reason: 'provider-quota-rejected',
+    });
+    const filler = Array.from({ length: 20_000 }, (_, index) => JSON.stringify({
+      ts: `2026-10-16T01:${String(index % 60).padStart(2, '0')}:00.000Z`,
+      kind: 'carry-drill-requested',
+      ownerId: `su-${index}`,
+      drillId: `drill-${index}`,
+      sessionClass: 'claude-su',
+    }));
+    const body = [oldTerminal, previousTerminal, latestTerminal, ...filler].join('\n') + '\n';
+    expect(Buffer.byteLength(body)).toBeGreaterThan(1024 * 1024);
+    const pruned = realHost.pruneSharedDrillLedger(body);
+    expect(pruned).toContain(oldTerminal);
+    expect(pruned).toContain(latestTerminal);
+    expect(pruned).not.toContain(previousTerminal);
+    expect(Buffer.byteLength(pruned)).toBeLessThanOrEqual(1024 * 1024);
+
+    try {
+      // The writer's pruning path is exercised with a real oversized file.
+      const ledgerPath = join(root, 'carry-drills.events.jsonl');
+      writeFileSync(ledgerPath, body);
+      expect(realHost.appendSharedDrillLedgerEvent('su-new', 'carry-drill-carry-delivered', {
+        drillId: 'drill-new-terminal',
+        sessionClass: 'claude-su',
+      }, root)).toBe(true);
+      const written = readFileSync(ledgerPath, 'utf8');
+      expect(written).toContain(oldTerminal);
+      expect(written).toContain(latestTerminal);
+      expect(written).not.toContain(previousTerminal);
+      expect(Buffer.byteLength(written)).toBeLessThanOrEqual(1024 * 1024 + 512);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Codex configured composer readiness (EI-26141756824840354)', () => {
+  const dims = { rows: 30, cols: 120 };
+  // Layout captured from no-forwarding native 0.162.1 and 0.163.0 boots.
+  // The footer appears only after the initial loading frame is replaced.
+  const frame = (composer = '› Ask Codex to do anything', footer = 'gpt-6-luna default · /tmp/pcv/codex-native-catalog-fixture') =>
+    '\x1b[1;1H\x1b[J\x1b[2;1H  >_ OpenAI Codex (v0.163.0)' +
+    `\x1b[3;1H     /tmp/pcv/codex-native-catalog-fixture\x1b[15;1H${composer}\x1b[17;1H  ${footer}`;
+
+  it.each(['›', '› Ask Codex to do anything'])('recognizes the configured model footer with empty composer %s', composer => {
+    const output = '\x1b[6n' + frame(composer) + '\x1b[17;95H⚠ 2 warnings · f2 to view';
+    expect(realHost.codexFooterStateFromOutput(output, dims)).toBe('ready');
+    expect(realHost.startupOutputReady('codex', output, dims)).toBe(true);
+    expect(realHost.codexSessionFrameObserved(output, { dims })).toBe(true);
+  });
+
+  it('requires a post-probe paint, retaining the bounded-buffer probe contract', () => {
+    expect(realHost.codexSessionFrameObserved(frame(), { dims })).toBe(false);
+    expect(realHost.codexSessionFrameObserved(frame(), { dims, probeAlreadySeen: true })).toBe(true);
+    expect(realHost.codexSessionFrameObserved(frame() + '\x1b[6n', { dims })).toBe(false);
+  });
+
+  it.each([
+    ['plain prose', '› Ask Codex to do anything\r\n\r\n  gpt-6-luna default · /tmp/work'],
+    ['incomplete paint', '\x1b[15;1H› Ask Codex to do anything\x1b[17;1H  gpt-6-luna default · /tmp/work'],
+    ['loading model', frame('›', 'loading default · /tmp/work')],
+    ['incomplete footer', frame('›', 'gpt-6-luna default ·')],
+    ['missing effort', frame('›', 'gpt-6-luna · /tmp/work')],
+    ['nonempty composer', frame('› /hooks')],
+    ['menu choice', frame('› 1. Use this model')],
+    ['missing composer', frame('')],
+    ['active startup', frame() + '\x1b[18;1HStarting · GPT-6-Luna max · Context 100% left'],
+  ])('does not accept %s as configured composer readiness', (_name, output) => {
+    expect(realHost.startupOutputReady('codex', output, dims)).toBe(false);
+    expect(realHost.codexSessionFrameObserved('\x1b[6n' + output, { dims })).toBe(false);
+  });
+
+  it('reads current cells after loading, clearing, and menu repaints', () => {
+    const loading = frame('›', 'loading default · /tmp/work');
+    const ready = loading + '\x1b[17;1H\x1b[2K  gpt-6-luna default · /tmp/work';
+    expect(realHost.codexFooterStateFromOutput(ready, dims)).toBe('ready');
+    expect(realHost.codexFooterStateFromOutput(ready + '\x1b[15;1H› /hooks', dims)).toBeNull();
+    expect(realHost.codexFooterStateFromOutput(ready + '\x1b[2J\x1b[HStarting MCP servers', dims)).toBeNull();
+  });
+});
 
 describe('Codex hook observation transaction', () => {
   it('keeps visible cells on ED3 and rejects partial scrollback-erasure paint', () => {
@@ -72,6 +179,7 @@ describe('Codex hook observation transaction', () => {
     const result = await realHost.runCodexHooksObservation(f.options);
     expect(result).toMatchObject({ ok: true, inputReleased: true, identity: custody,
       coverage: { complete: false, scope: 'fresh-hook-browser-viewport' } });
+    if (!('coverage' in result) || !result.coverage) throw new Error('expected an observed hooks viewport');
     expect(result.visibleRows).toContain('PreToolUse: configured hook');
     expect(f.writes).toEqual(['/hooks', '\r', '\x1b']);
     expect(result.coverage.notMeasured).toContain('nested-dispatch');
@@ -401,6 +509,7 @@ const {
   unwrapWholePaste,
   observeKickoffModelTurnStart,
   carryTurnProofRequiresNativeId,
+  launchKickoffRequiresPreSubmissionNativeBinding,
   carryExhaustionDefersToNativeProof,
   shouldRetryCarryOnFreshEpoch,
   shouldRetryLaunchKickoffOnFreshChild,
@@ -480,6 +589,7 @@ const {
   shutdownRefusalReason,
   mcpDialogShowsServerDetail,
   headlessRoleMcpVerifyWorstCaseMs,
+  headlessRoleMcpKickoffBudgetMs,
   unreportedKickoffRefusalStrandsHost,
 } = host;
 import * as nodeFs from 'node:fs';
@@ -4263,6 +4373,28 @@ describe('verifyNativeTurnStartWithRetry (EI-216539 execution-backed kickoff)', 
     expect(waitForMarker).toHaveBeenCalledWith(expect.objectContaining({ nativeId: null }));
   });
 
+  it('does not wait for a pre-submission writer lock on a fresh Codex kickoff', () => {
+    expect(launchKickoffRequiresPreSubmissionNativeBinding({
+      agent: 'codex', isResume: false, hasResolver: true,
+    })).toBe(false);
+    expect(launchKickoffRequiresPreSubmissionNativeBinding({
+      agent: 'codex', isResume: true, hasResolver: true,
+    })).toBe(true);
+    expect(launchKickoffRequiresPreSubmissionNativeBinding({
+      agent: 'claude', isResume: false, hasResolver: true,
+    })).toBe(true);
+  });
+
+  it('pins launch proof and binding receipt to the child that accepted kickoff', () => {
+    const src = readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
+    const kickoff = src.indexOf('const injectLaunchKickoff = () => {');
+    const proof = src.indexOf('const proofNativeId = currentNativeSessionId(kickoffChild.pid', kickoff);
+    const binding = src.indexOf('isCurrent: () => child === kickoffChild &&', proof);
+    expect(kickoff).toBeGreaterThan(0);
+    expect(proof).toBeGreaterThan(kickoff);
+    expect(binding).toBeGreaterThan(proof);
+  });
+
   it('retries one raw CR and accepts only the second native proof', async () => {
     const waitForMarker = vi
       .fn()
@@ -4403,9 +4535,11 @@ describe('carryExhaustionDefersToNativeProof (WI-6554700010009740)', () => {
     expect(carryExhaustionDefersToNativeProof(exhausted)).toBe(true);
   });
 
+  it('hands a submitted tagged drill carry to the same native turn-start proof', () => {
+    expect(carryExhaustionDefersToNativeProof({ ...exhausted, drillId: 'drill-1' })).toBe(true);
+  });
+
   it('keeps every other verdict', () => {
-    // Drills keep their PTY-level contract and never run the native proof.
-    expect(carryExhaustionDefersToNativeProof({ ...exhausted, drillId: 'drill-1' })).toBe(false);
     // No CR reached this child, or the turn is not native-verifiable.
     expect(carryExhaustionDefersToNativeProof({ ...exhausted, nativeSubmitted: false })).toBe(false);
     // Human input and quota walls are not missing-proof timeouts.
@@ -6122,6 +6256,16 @@ describe('mcp-reconnect macro (mcp-transport-resilience P-003, 2026-07-13)', () 
       expect(KICKOFF_PROOF_WINDOW_MS).toBeGreaterThan(worst);
     });
 
+    it('allocates a longer role kickoff budget than the 20s Claude startup window', () => {
+      const worst = headlessRoleMcpVerifyWorstCaseMs();
+      const budget = headlessRoleMcpKickoffBudgetMs();
+      expect(budget).toBeGreaterThan(worst);
+      expect(budget).toBeGreaterThan(HEADLESS_CLAUDE_KICKOFF_READY_TIMEOUT_MS);
+      // Native transcript proof runs after the kickoff write; preserve its
+      // 30s settlement margin inside the parent's 120s proof rendezvous.
+      expect(KICKOFF_PROOF_WINDOW_MS - budget).toBeGreaterThanOrEqual(30_000);
+    });
+
     it('a refused headless kickoff whose receipt could not be published strands the host', () => {
       const failed = { published: false, reason: 'kickoff-proof-write-failed', errorCode: 'ENOENT' };
       expect(unreportedKickoffRefusalStrandsHost({ delivered: false, headless: true, receipt: failed })).toBe(true);
@@ -6567,6 +6711,18 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
     sessionClass: 'gateway-claude-headless',
   };
 
+  // Typed explicitly: an untyped `{ …destructure… } = {}` param infers its shape from
+  // the DEFAULTED bindings only, so every new knob (maxDrillAttempts, a prompt
+  // result's quietMs/verifier) silently became a fresh TS2339/TS2353 at its callers.
+  type RearmHarnessOptions = {
+    promptResults?: Array<{ deferred: boolean; quietMs?: number; verifier?: string }>;
+    recycleError?: Error | null;
+    waitIdle?: boolean;
+    maxProductionAttempts?: number;
+    maxDrillAttempts?: number;
+    readWakeMode?: () => Promise<string>;
+    waitWakeModeRetry?: (delayMs: number) => Promise<unknown>;
+  };
   function makeHarness({
     promptResults = [{ deferred: false }],
     recycleError = null,
@@ -6575,7 +6731,7 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
     maxDrillAttempts,
     readWakeMode,
     waitWakeModeRetry,
-  } = {}) {
+  }: RearmHarnessOptions = {}) {
     const events = [];
     const recycles = [];
     const order = [];
@@ -6989,7 +7145,9 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
   it('settles a queued production carry when the host ends, clears wake suppression, and ignores a late gate release', async () => {
     const events: Array<{ kind: string; [key: string]: unknown }> = [];
     const settlements: Array<{ ids: string[]; outcome: unknown }> = [];
-    let releasePrompt: ((result: { deferred: boolean }) => void) | null = null;
+    // `as`, not an annotation: the closure below assigns it, which control-flow
+    // analysis cannot see, so an annotated `= null` narrows to `null` at the call.
+    let releasePrompt = null as ((result: { deferred: boolean }) => void) | null;
     const controller = makeCarryRearmController({
       acquireInject: async () => () => {},
       waitAtPrompt: () => new Promise<{ deferred: boolean }>((resolve) => {
@@ -6999,7 +7157,7 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
         throw new Error('a disposed host must not recycle its dead child');
       },
       emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
-      onSettlement: (messages, outcome) => settlements.push({
+      onSettlement: (messages: Array<{ deliveryId?: unknown }>, outcome: unknown) => settlements.push({
         ids: messages.map((message) => String(message.deliveryId)),
         outcome,
       }),
@@ -7045,7 +7203,7 @@ describe('makeCarryRearmController (bounded safe-boundary re-poll for busy-gate-
       waitAtPrompt: async () => ({ deferred: true }),
       recycle: async () => {},
       emitEvent: (kind: string, extra: Record<string, unknown>) => events.push({ kind, ...extra }),
-      onSettlement: (messages, outcome) => settlements.push({
+      onSettlement: (messages: Array<{ deliveryId?: unknown }>, outcome: unknown) => settlements.push({
         ids: messages.map((message) => String(message.deliveryId)),
         outcome,
       }),
@@ -7760,6 +7918,19 @@ describe('host-code ADOPTION handshake (WI-38292 increment 2)', () => {
     expect(shouldAdoptHostCode({ ...base, allowInteractive: true })).toBe(true);
   });
 
+  it('keeps adoption in-process while this host owns a pending loop delivery', () => {
+    const pendingTurn = {
+      onReexec: () => {},
+      reexecCode: 87,
+      bridgeTty: false,
+      pendingTurnDelivery: true,
+    };
+    const noPendingTurn = { ...pendingTurn, pendingTurnDelivery: false };
+
+    expect(shouldAdoptHostCode(pendingTurn)).toBe(false);
+    expect(shouldAdoptHostCode(noPendingTurn)).toBe(true);
+  });
+
   it('cannot opt INTO adoption without a re-exec loop (the hard-exit configuration)', () => {
     // The whole hazard warnMissingReexecLoop exists to flag: with no loop, an adoption
     // is a hard exit that destroys the screen. The opt-in must not be able to reach it,
@@ -8155,7 +8326,7 @@ describe('makeCarryRearmController — R-1 deferral→outcome join key (rubric r
 
   function harness({
     promptResults = [{ deferred: false }] as Array<{ deferred: boolean }>,
-    deliver = async (): Promise<{ delivered: boolean; reason?: string }> => ({ delivered: true }),
+    deliver = async (): Promise<{ delivered: boolean; reason?: string; retryable?: boolean }> => ({ delivered: true }),
     waitWakeModeRetry = async () => {},
   } = {}) {
     const events: Ev[] = [];
@@ -8229,6 +8400,38 @@ describe('makeCarryRearmController — R-1 deferral→outcome join key (rubric r
     expect(h.events.filter((e) => e.kind === 'wake-rearm-dropped')).toEqual([]);
     expect(h.events.filter((e) => e.kind === 'wake-rearm-delivered')).toEqual([
       expect.objectContaining({ deliveryIds: ['d-carry-order'] }),
+    ]);
+    expect(unjoined(h.events)).toEqual([]);
+    expect(h.controller.pendingCount()).toBe(0);
+  });
+
+  it('retries a pre-write quota refusal once and does not retry the same verdict after a write', async () => {
+    const quotaRefusal = {
+      delivered: false,
+      reason: 'submit-verification-aborted-quota-blocked',
+    };
+    expect(realHost.rearmWakeTurnOutcome(quotaRefusal)).toEqual({ ...quotaRefusal, retryable: true });
+    expect(realHost.rearmWakeTurnOutcome(quotaRefusal, { submittedToCurrentChild: true })).toBe(quotaRefusal);
+    const nativeUnverified = { delivered: false, reason: 'native-turn-start-unverified' };
+    expect(realHost.rearmWakeTurnOutcome(nativeUnverified, { submittedToCurrentChild: true })).toBe(nativeUnverified);
+
+    let deliveries = 0;
+    const h = harness({
+      waitWakeModeRetry: async () => {},
+      deliver: async () => {
+        deliveries += 1;
+        return deliveries === 1
+          ? realHost.rearmWakeTurnOutcome(quotaRefusal)
+          : { delivered: true, reason: 'delivered' };
+      },
+    });
+    expect(h.controller.schedule({ mode: 'turn', data: 'loop wake', deliveryId: 'd-quota-prewrite' })).toBe('queued');
+    await h.drain();
+
+    expect(deliveries).toBe(2);
+    expect(h.events.filter((e) => e.kind === 'wake-rearm-dropped')).toEqual([]);
+    expect(h.events.filter((e) => e.kind === 'wake-rearm-delivered')).toEqual([
+      expect.objectContaining({ deliveryIds: ['d-quota-prewrite'] }),
     ]);
     expect(unjoined(h.events)).toEqual([]);
     expect(h.controller.pendingCount()).toBe(0);

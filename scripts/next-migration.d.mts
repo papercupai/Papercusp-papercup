@@ -74,6 +74,15 @@ export function buildAllocationResult({ next, filename, reservedBy, dryRun, cano
     arm_command: string;
     reserved_by: string;
 };
+/**
+ * Run the CLI. `armImpl` is an in-process test seam so the mode guard can be
+ * verified without spawning a child that may resolve the committed script
+ * instead of the working copy.
+ *
+ * @param {string[]} [argv]
+ * @param {typeof armMigration} [armImpl]
+ */
+export function main(argv?: string[], armImpl?: typeof armMigration): Promise<void>;
 export { ALLOC_ADVISORY_KEY };
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 import { ALLOC_ADVISORY_KEY } from './lib/migration-allocation.mjs';

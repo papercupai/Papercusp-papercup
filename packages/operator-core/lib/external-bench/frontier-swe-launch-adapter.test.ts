@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { materializeDockerExecWrapper } from './container-exec-target';
 import { currentNativeCostFixture } from './reproducibility/_protocol-test-fixture';
 import type { CurrentBenchTaskRequestCensus } from './run-launcher';
 import type { PapercuspUnifiedToolContext } from '../agent-tools/_tool-context';
@@ -12,7 +17,7 @@ import { makeFrontierSweCloneGradeSeam } from './frontier-swe-seam';
 import { runTopology } from './run-topology';
 import { resolveCoordinationSpec } from './coordination-topology';
 import type { BenchHarnessRun } from './types';
-import { startFrontierSweLaunchAdapter, type FrontierSweLaunchAdapterPorts,
+import { frontierSweDockerTarget, startFrontierSweLaunchAdapter, type FrontierSweLaunchAdapterPorts,
   type FrontierSweLaunchAdapterConfig, type FrontierSweNativeAssignment } from './frontier-swe-launch-adapter';
 
 vi.mock('./frontier-swe-seam', () => ({ makeFrontierSweCloneGradeSeam: vi.fn(config => ({ modality: 'in-container', config })) }));
@@ -63,6 +68,28 @@ function fixture() {
 }
 
 describe('FSWE-P006-ADAPTER maintained native launch composition', () => {
+  it.each(['localhost', '[::1]'])('runs the generated wrapper when the private MCP config spells loopback as %s', hostname => {
+    const f = fixture(), root = mkdtempSync(join(tmpdir(), 'fswe-origin-'));
+    try {
+      const homes = join(root, 'homes'), home = join(homes, 'session-1');
+      mkdirSync(home, { recursive: true });
+      f.input.handle.inContainerCodex!.roots = [{ hostRoot: homes, perTaskDir: join(root, 'task-homes') }];
+      const config = `model_provider = "fixture"\n[model_providers.fixture]\nbase_url = "http://127.0.0.1:32002/v1"\n[mcp_servers.papercusp-su]\nurl = "http://${hostname}:9071/api/mcp?client=su-fixture"\n`;
+      writeFileSync(join(home, 'config.toml'), config);
+      const docker = join(root, 'docker');
+      writeFileSync(docker, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      const target = frontierSweDockerTarget(f.input.handle, f.bridge, f.egress,
+        f.observations.nativeGateway!.baseURL, f.config.mcpOrigin);
+      const { wrapperPath } = materializeDockerExecWrapper(target, { dir: root, dockerBin: docker });
+      const result = spawnSync(wrapperPath, [], { encoding: 'utf8', env: { ...process.env, CODEX_HOME: home } });
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      expect(readFileSync(join(home, 'config.toml'), 'utf8')).toBe(config
+        .replace('http://127.0.0.1:32002', 'http://papercusp-egress:8788')
+        .replace(`http://${hostname}:9071`, 'http://papercusp-egress:9071'));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   function repeatedFixture() {
     const f = fixture(); f.options.armId = 'baseline'; f.input.arm = 'baseline';
     f.assignment.repeatedSession = { treatmentCostUsd: 0.4, maxSessions: 4 };
@@ -166,7 +193,11 @@ describe('FSWE-P006-ADAPTER maintained native launch composition', () => {
       const target = vi.mocked(f.ports.createDriver).mock.calls[0][2].containerExec!;
       expect(target).toMatchObject({ containerId: f.input.handle.containerId, workdir: '/app',
         sessionRelocation: { roots: f.input.handle.inContainerCodex!.roots },
-        originRewrites: [{ from: 'http://127.0.0.1:32002', to: 'http://papercusp-egress:8788' }] });
+        originRewrites: [
+          { from: 'http://127.0.0.1:32002', to: 'http://papercusp-egress:8788' },
+          { from: 'http://localhost:32002', to: 'http://papercusp-egress:8788' },
+          { from: 'http://[::1]:32002', to: 'http://papercusp-egress:8788' },
+        ] });
       expect(target.hookBridge).toBeUndefined();
       expect(f.assignment.readModelCalls).toHaveBeenCalledOnce();
     } finally { await adapter.stop(); }
@@ -226,7 +257,11 @@ describe('FSWE-P006-ADAPTER maintained native launch composition', () => {
       hookBridge: { url: 'http://papercusp-egress:9081', recordDir: '/tmp/private-hook-records' },
       originRewrites: [
         { from: 'http://127.0.0.1:32002', to: 'http://papercusp-egress:8788' },
+        { from: 'http://localhost:32002', to: 'http://papercusp-egress:8788' },
+        { from: 'http://[::1]:32002', to: 'http://papercusp-egress:8788' },
         { from: 'http://127.0.0.1:9071', to: 'http://papercusp-egress:9071' },
+        { from: 'http://localhost:9071', to: 'http://papercusp-egress:9071' },
+        { from: 'http://[::1]:9071', to: 'http://papercusp-egress:9071' },
       ],
     } }));
     expect(f.spinRunAndCost).toHaveBeenCalledWith({ blueprintId: 'su', task: f.input.task, checkout: f.assignment.checkout,

@@ -324,9 +324,20 @@ const RHETORICAL_ABSENCE_SUBJECT = /^(?:(?:[a-z-]+\s+)?(?:excuse|reason)\s+(?:fo
 const LIVE_STATE_ABSENCE_SUBJECT =
   /^(?:(?:current|live|active|remaining|new|runtime|process|observed|visible)\s+)*(?:stall|blocker|failure|error|regression|issue|problem|incident)(?:\s+(?:left\s+)?to\s+(?:remediate|fix|clear|resolve|investigate|handle))?$/i;
 
+/**
+ * A bounded inbox census is another live-state result, not a missing durable
+ * surface. Keep this narrow: a claim about a reader/handler still has an
+ * artifact noun after the message phrase and must reach the absence guard.
+ */
+const LIVE_INBOX_ABSENCE_SUBJECT = /^(?:unanswered|unread)\s+(?:direct\s+)?messages?$/i;
+
 function isNonSurfaceAbsenceSubject(subject: string): boolean {
   const normalized = subject.trim();
-  return RHETORICAL_ABSENCE_SUBJECT.test(normalized) || LIVE_STATE_ABSENCE_SUBJECT.test(normalized);
+  return (
+    RHETORICAL_ABSENCE_SUBJECT.test(normalized) ||
+    LIVE_STATE_ABSENCE_SUBJECT.test(normalized) ||
+    LIVE_INBOX_ABSENCE_SUBJECT.test(normalized)
+  );
 }
 
 /**

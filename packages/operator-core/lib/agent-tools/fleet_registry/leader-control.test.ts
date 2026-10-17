@@ -321,6 +321,25 @@ describe('ensureFleetLeaderControl', () => {
     );
   });
 
+  it.each(['work', 'monitor'] as const)('preserves an explicitly ended %s loop while keeping push watches', async (mode) => {
+    getLoopStatus.mockResolvedValue({
+      active: false,
+      explicitlyEnded: true,
+      harnessSlug: 'papercusp',
+      intervalSec: 600,
+      mode,
+    });
+    listActiveAwaits.mockResolvedValue(activeWatches());
+
+    const out = await ensureFleetLeaderControl(input);
+
+    expect(materializeLoop).not.toHaveBeenCalled();
+    expect(out.loop).toMatchObject({ healthy: true, changed: false, standdown: 'explicit_loop_end' });
+    expect(out.watches.active).toEqual(standardEventKeys());
+    expect(armInboxWake).toHaveBeenCalled();
+    expect(cancelAwait).not.toHaveBeenCalled();
+  });
+
   it('preserves an inactive loop control payload and pending watches during recovery', async () => {
     const priorGoal = 'lead the fleet at the widened fallback cadence';
     const priorMonitor = {

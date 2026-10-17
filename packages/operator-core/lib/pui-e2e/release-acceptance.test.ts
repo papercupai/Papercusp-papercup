@@ -256,8 +256,10 @@ process.exit(result.status ?? 1);
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let output = '';
-    child.stdout.on('data', chunk => { output += String(chunk); });
-    child.stderr.on('data', chunk => { output += String(chunk); });
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => { output += chunk; });
+    child.stderr.on('data', (chunk: string) => { output += chunk; });
     const exit = new Promise<number | null>((resolve, reject) => {
       child.once('error', reject);
       child.once('exit', resolve);

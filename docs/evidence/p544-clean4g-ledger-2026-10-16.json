@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P544 GCP2vCPU4GiB native50 profile D075 acceptance",
+  "framework": "operational",
+  "command": [
+    "python3",
+    "scripts/agent-capacity/vm/swap-tier.py",
+    "run",
+    "--out",
+    "/var/tmp/p544-native50-clean4g",
+    "--server-cgroup",
+    "/sys/fs/cgroup/user.slice/user-1003.slice/user@1003.service/app.slice/papercusp-server.service",
+    "--agents",
+    "50",
+    "--warm",
+    "1",
+    "--warm-concurrency",
+    "5",
+    "--single",
+    "0",
+    "--active",
+    "1",
+    "--active",
+    "5",
+    "--active",
+    "10",
+    "--active-rounds",
+    "3",
+    "--ram-gb",
+    "4",
+    "--arm",
+    "zram:lz4",
+    "--cli",
+    "codex",
+    "--model",
+    "gpt-6-luna",
+    "--effort",
+    "low",
+    "--gateway-url",
+    "http://127.0.0.1:18794/v1",
+    "--owner",
+    "su-c817144f-b276-410c-9685-7baad6e5f9ee"
+  ],
+  "commandSource": "Reconstructed driver argv from immutable run-start metadata, clean-run launch receipt and recorded server population; this records the completed native experiment and does not re-run it.",
+  "exitCode": 0,
+  "startedAt": "2026-10-16T20:50:28.157668+00:00",
+  "finishedAt": "2026-10-16T21:03:45.516589+00:00",
+  "summary": "Driver execution completed exit0 and98nativehash tasks verified, but D075 UX acceptance FAILS active1wall, active10echo and50burst thresholds.8GiB/AWS/coldwake latency not measured by this result.",
+  "assertions": [
+    {
+      "id": "native-file-hash-tasks",
+      "passed": true,
+      "evidence": "98 measured native tasks verified;50 assigned,1/5/10active across3rounds plus50unbatchedburst. docs/evidence/p544-clean4g-profile-2026-10-16.json"
+    },
+    {
+      "id": "no-oom-clean-boot",
+      "passed": true,
+      "evidence": "Clean boot688ace48 has final kernel oom_kill0; prior invalidboot not combined. docs/evidence/p544-clean4g-profile-2026-10-16.json"
+    },
+    {
+      "id": "active-1",
+      "passed": false,
+      "evidence": "1active,3tasks,p95echo0.703s,p95fullwall36.893s,p95hostexec3.71ms; thresholds1s/30s/100ms (D075)."
+    },
+    {
+      "id": "active-5",
+      "passed": true,
+      "evidence": "5active,15tasks,p95echo0.295s,p95fullwall19.068s,p95hostexec5.63ms; thresholds1s/30s/100ms (D075)."
+    },
+    {
+      "id": "active-10",
+      "passed": false,
+      "evidence": "10active,30tasks,p95echo1.498s,p95fullwall18.218s,p95hostexec9.88ms; thresholds1s/30s/100ms (D075)."
+    },
+    {
+      "id": "burst-50",
+      "passed": false,
+      "evidence": "50uniqueactive50tasks,p95echo31.977s,allDone187.271s; D075 thresholds3s/120s."
+    },
+    {
+      "id": "deadline-teardown",
+      "passed": true,
+      "evidence": "VM deleted21:07:52Z before21:19:07Z; instance/disk/snapshot/address census empty. docs/evidence/p544-clean4g-profile-2026-10-16.json"
+    }
+  ],
+  "details": {
+    "profileEvidence": "docs/evidence/p544-clean4g-profile-2026-10-16.json",
+    "rawEvidence": {
+      "archive": "/tmp/p544-native-evidence/p544-native50-clean4g.tgz",
+      "bytes": 60679466,
+      "sha256": "191870492ddc6daef6003c4b9d0ab581aacc1416afd55f30e4d14419b616e737",
+      "guestHashMatches": true,
+      "members": 6014,
+      "symlinksRetainedInArchive": 150,
+      "extractedRoot": "/tmp/p544-native-evidence/clean4g",
+      "resultsSha256": "f5e10c96b694b4d99dd77502a3e3dcfc46ae7befd8fca84f1028e5264447131c",
+      "summarySha256": "02cbeb1ed97f51f7d0d716a5729501da5458bd8536045e19aff58619faf910b0",
+      "cleanRunTask": "0mvbfz10xb1cr9r15ho",
+      "archiveVerification": "/tmp/p544-clean4g-archive-verified.json",
+      "contains": "raw CLI histories, hash work files, driver, workload, server footprint and cold durability witnesses"
+    },
+    "sourceHashes": {
+      "scripts/agent-capacity/vm/swap-tier.py": "7b58ce85af6434d953c07b6406103b79cf8e21e0ce4e23f647188bc53947fb3c",
+      "scripts/agent-capacity/vm/swap-tier.test.ts": "6335c3428b50a3c4235566e60e94dfdd3cf19e47cabedf1097c0af7af484aa72",
+      "scripts/agent-capacity/vm/install-server.sh": "b73322da9a04062238f702d132d1e6dee64710ee02987c91ed6ed617ddba8ebe",
+      "scripts/agent-capacity/vm/install-server.test.ts": "5fd45ea74fbfca00c5d053eb6133518d80f34c5cf60d055d8c720db6a978d628"
+    },
+    "actualRunTask": "0mvbfz10xb1cr9r15ho",
+    "actualJobFinishedAt": "2026-10-16T21:03:59.235Z",
+    "coldWakeLatency": "unmeasured; not counted as a passed assertion",
+    "sampleCaveat": "active1 has3samples; no robust population claim from that sparse tail alone"
+  }
+}

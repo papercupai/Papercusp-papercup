@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
@@ -22,6 +22,7 @@ import { getModes } from '../lib/modes/store';
 import { readSessionConfinement } from '../lib/capability-envelope/session-confinement-store';
 import { emptyPool, registerAccount } from '../lib/deployment/account-pool';
 import { loadAccountPool, updateAccountPool } from '../lib/deployment/account-pool-store';
+import { installClaudeHooks, installInjectionHooks } from '../lib/desktop-install/papercusp-files';
 
 /** Seed only the disposable private pool before its operator boots. The
  * credential is deliberately invalid; inference still terminates at the local
@@ -29,6 +30,17 @@ import { loadAccountPool, updateAccountPool } from '../lib/deployment/account-po
 export async function prepareCurrentSuNativeScenario(workspace: string) {
   assert.match(workspace, /^test-runtime-/);
   assert.equal(process.env.PAPERCUSP_WORKSPACE_ID, workspace);
+  // The normal desktop bootstrap installs these executable assets. The
+  // disposable runtime starts with an empty HOME, so install the same pinned
+  // sources there before the native launcher writes its per-session hooks.
+  const privateHome = process.env.HOME!;
+  assert.equal(process.env.PAPERCUSP_HOME, join(privateHome, '.papercusp'));
+  const hookSources = resolve(import.meta.dirname, '../../../apps/operator/scripts/hooks');
+  const ccHooks = await installClaudeHooks(privateHome, join(hookSources, 'cc'));
+  const injectionHooks = await installInjectionHooks(privateHome, join(hookSources, 'inject'));
+  for (const name of ['pretooluse-locks-acquire.sh', 'posttooluse-locks-release.sh', 'lifecycle-report.sh'])
+    assert.ok(ccHooks.installed.includes(name), 'private native hook installation missing ' + name);
+  assert.ok(injectionHooks.includes(join('inject', 'index.mjs')), 'private native injection dispatcher missing');
   // ports.launch executes in this worker, independently of the private HTTP
   // host's environment. The installed psu shim otherwise chooses release.
   const launcher = resolve(import.meta.dirname, '../../../apps/operator/scripts/psu-launcher.mjs');
@@ -182,7 +194,20 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
     assert.match(row.session_id, /^[0-9a-f-]{36}$/i);
     assert.ok(row.ended_at && row.task_ended_at, diagnostic);
     const home = codexHomeForSessionKey(row.id);
-    const toml = readFileSync(join(home, 'config.toml'), 'utf8');
+    const configPath = join(home, 'config.toml');
+    const beforeHandback = statSync(configPath);
+    progress('session-files-before-handback', { uid: beforeHandback.uid, gid: beforeHandback.gid,
+      mode: beforeHandback.mode & 0o777, hostUid: process.getuid?.(), hostGid: process.getgid?.() });
+    // The native CLI may atomically replace a private config as the container
+    // user. The seam owns returning those files to the host before inspection.
+    await adapter.seam.teardown(handle);
+    handle = undefined;
+    const afterHandback = statSync(configPath);
+    progress('session-files-after-handback', { uid: afterHandback.uid, gid: afterHandback.gid,
+      mode: afterHandback.mode & 0o777 });
+    assert.equal(afterHandback.uid, process.getuid?.(), 'native config was not handed back to the host');
+    assert.equal(afterHandback.mode & 0o777, beforeHandback.mode & 0o777, 'handback changed private config permissions');
+    const toml = readFileSync(configPath, 'utf8');
     const hooks = readFileSync(join(home, 'hooks.json'), 'utf8');
     const instructions = readFileSync(join(home, 'AGENTS.md'), 'utf8');
     assert.ok(toml.includes(adapter.egress.originFor('gw')) && toml.includes(adapter.egress.originFor('mcp')), toml);

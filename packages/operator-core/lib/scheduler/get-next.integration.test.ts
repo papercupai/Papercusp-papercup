@@ -1049,6 +1049,47 @@ describe('get_next — fallback ladder (WI-1407): widenPastKind (tier 2) + issue
     }
   });
 
+  it('retries the issue-family claim after one transient PostgreSQL contention error', async () => {
+    setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
+    await seedIssue('EI-scheduler-contention-retry', { state: 'open' });
+
+    const originalSql = h.sql;
+    let injectedFailures = 0;
+    const interceptSql = (client: typeof originalSql): typeof originalSql => new Proxy(client, {
+      apply(target, thisArg, args) {
+        const strings = args[0];
+        const statement = Array.isArray(strings) ? strings.join('').replace(/\s+/g, ' ') : '';
+        if (statement.includes('UPDATE harness_shared.work_items AS target') && injectedFailures === 0) {
+          injectedFailures += 1;
+          throw Object.assign(new Error('canceling statement due to lock timeout'), { code: '55P03' });
+        }
+        return Reflect.apply(target, thisArg, args);
+      },
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (property !== 'begin') return value;
+        return (...args: unknown[]) => {
+          const callback = args.at(-1);
+          if (typeof callback === 'function') {
+            args[args.length - 1] = (transaction: postgres.TransactionSql) =>
+              callback(interceptSql(transaction as unknown as typeof originalSql));
+          }
+          return Reflect.apply(value, target, args);
+        };
+      },
+    });
+    h.sql = interceptSql(originalSql);
+
+    try {
+      const result = await getNextWorkItem(DEFAULT_CLAIM_SPEC, BEE, { harness: H });
+      expect(result?.workItem.id).toBe('EI-scheduler-contention-retry');
+    } finally {
+      h.sql = originalSql;
+    }
+
+    expect(injectedFailures).toBe(1);
+  });
+
   it('tier 3: an issue-kind spec narrows issue fallback instead of claiming an older task', async () => {
     setFlagOverridesForTest({ [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true });
     await seedIssue('WI-task-owner-reserved', { state: 'open', createdTs: 10, kind: 'task' });

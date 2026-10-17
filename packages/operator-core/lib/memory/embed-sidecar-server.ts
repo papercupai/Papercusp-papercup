@@ -88,6 +88,7 @@ import {
   FAST_RERANKER_MODEL,
   LOCAL_RERANKER_MODEL,
   activeExecutionTarget,
+  getScorerGateState,
   getRerankWorkerState,
   loadCrossEncoder,
   rerankExecutionHealth,
@@ -1437,6 +1438,10 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
           embedder: workerStates.embedder(),
           reranker: workerStates.reranker(),
         },
+        // The worker's pending count does not expose calls waiting at the
+        // serialized scorer gate. Keep its queue and measured per-pair cost
+        // beside the worker state for timeout diagnosis.
+        rerankScorerGate: getScorerGateState(),
         cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size },
         // `null` means no local capacity ceiling. A finite value comes from the
         // explicit PG-free test seam or the production environment window; in

@@ -1,0 +1,316 @@
+{
+  "schemaVersion": 1,
+  "kind": "private-same-item-http-append-contention",
+  "workItem": "WI-6554700010016690",
+  "parent": "WI-10000407",
+  "spec": {
+    "id": "AUTO-BAR-R-003-P-009",
+    "revision": 10,
+    "contentHash": "04f2454f3f43200e2610afccc9292e38a6b28e1755f75f62ac3dbc2f3b698145"
+  },
+  "originRunId": "152f5b59-51ee-44f7-b6c0-b4d27fe0eedb",
+  "outerRunId": "01967a8f-57aa-46b3-a0af-7aeff36ca256",
+  "outerTaskId": "0mvbtmb9glteiqaz8by",
+  "outerStatus": "pass",
+  "outerExitCode": 0,
+  "testRunId": 21300131,
+  "innerRunId": "20261017T031249Z-1780856",
+  "sourceCommit": "6b2da2f254bb24888bd4dc764a51dc09a1dae862",
+  "sourceFiles": [
+    {
+      "path": "apps/operator/bin/hono-host.ts",
+      "sha256": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580",
+      "gitSha256": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580",
+      "currentSha256": "e530cb599658689b7eaabeb2f3c55fd84b8151a1ae9a22e9489d99954a703580"
+    },
+    {
+      "path": "apps/operator/bin/host-handler.ts",
+      "sha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0",
+      "gitSha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0",
+      "currentSha256": "a061e03351351de1668eaa36ded125109de0d4a8959a69030ce9777a3b3f45b0"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/private-unrelated-write-http.integration.test.ts",
+      "sha256": "9429158f308c92b60f784254332b4b7e9502d25679bbfd1a72d8ff2eca975e04",
+      "gitSha256": "49cb3944b3bb337ba79f50f2501509726e351071b6df082c0d77ea768e625f75",
+      "currentSha256": "9429158f308c92b60f784254332b4b7e9502d25679bbfd1a72d8ff2eca975e04"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/work_items/checkpoint.ts",
+      "sha256": "9d12d1718cb0e6886db95a1c30825dbedabbb7367de46540b8ab5d8aded8608f",
+      "gitSha256": "9d12d1718cb0e6886db95a1c30825dbedabbb7367de46540b8ab5d8aded8608f",
+      "currentSha256": "9d12d1718cb0e6886db95a1c30825dbedabbb7367de46540b8ab5d8aded8608f"
+    },
+    {
+      "path": "packages/operator-core/lib/carry-note.ts",
+      "sha256": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72",
+      "gitSha256": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72",
+      "currentSha256": "4739fd65fa58c330d2cf8915f77cd5a4e32cc3643296348055ea8d52ef999a72"
+    },
+    {
+      "path": "packages/operator-core/lib/endpoint-route/routes/agent-mcp/run-tool.ts",
+      "sha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4",
+      "gitSha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4",
+      "currentSha256": "7378f76ff071bdd67638e3c223bea6602425e9d2f0558c318e1a728e3e27d0e4"
+    },
+    {
+      "path": "packages/operator-core/lib/work-item-checkpoint.ts",
+      "sha256": "b4c3714645a473e20f9375a82996615fbb04dc8c4c7fab7fbd7ed6c784bdafe1",
+      "gitSha256": "b4c3714645a473e20f9375a82996615fbb04dc8c4c7fab7fbd7ed6c784bdafe1",
+      "currentSha256": "b4c3714645a473e20f9375a82996615fbb04dc8c4c7fab7fbd7ed6c784bdafe1"
+    },
+    {
+      "path": "packages/operator-core/lib/work-items.ts",
+      "sha256": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d",
+      "gitSha256": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d",
+      "currentSha256": "555ed2b65f29a2926cacc1f1f8c15afb6b585ab7d6109270f368fdf03a02175d"
+    },
+    {
+      "path": "packages/operator-core/test/isolated-integration-proof.ts",
+      "sha256": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d",
+      "gitSha256": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d",
+      "currentSha256": "8cca54d7e0c9b363078fce8303cf11a08059c33e9bcea7cc45dba7b64011801d"
+    },
+    {
+      "path": "packages/operator-core/test/private-unrelated-write-http-scenario.ts",
+      "sha256": "a6e94194ec89dd362229f8dac4b3049ec9841ca7cb64097c89e3b6cc7c0c84cd",
+      "gitSha256": "843fe7855b4bf58fa2788a8095c8e003d9f8f41bb2af3d1fb8774e66abde7768",
+      "currentSha256": "a6e94194ec89dd362229f8dac4b3049ec9841ca7cb64097c89e3b6cc7c0c84cd"
+    },
+    {
+      "path": "packages/operator-core/test/staging-first-http-fixture.ts",
+      "sha256": "9929424232de9543202acba87ec23b43a4d1627ca7318e9aba1e26f86a9f97a0",
+      "gitSha256": "b3b8b61b478024c8435b42aadc7b3adb30eac7e38df8b978fb21fd0850595455",
+      "currentSha256": "9929424232de9543202acba87ec23b43a4d1627ca7318e9aba1e26f86a9f97a0"
+    },
+    {
+      "path": "scripts/lib/isolated-runtime-start.mjs",
+      "sha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d",
+      "gitSha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d",
+      "currentSha256": "f604dc115a6f22e3d84a1b9ad332d89f615d418f751ef20d3bcbc021ea32033d"
+    },
+    {
+      "path": "scripts/with-test-pg.mjs",
+      "sha256": "50e73fa41c584d233c856297406bc897cef88ab9b83dbf4489fc617f6d0a7fbc",
+      "gitSha256": "50e73fa41c584d233c856297406bc897cef88ab9b83dbf4489fc617f6d0a7fbc",
+      "currentSha256": "50e73fa41c584d233c856297406bc897cef88ab9b83dbf4489fc617f6d0a7fbc"
+    },
+    {
+      "path": "scripts/lib/with-test-pg-cleanup.mjs",
+      "sha256": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61",
+      "gitSha256": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61",
+      "currentSha256": "37effd76e07e992646bd8192b93ead3ee7e865712de89d9eb733bdc1a8713b61"
+    }
+  ],
+  "currentInputHashMismatches": [],
+  "resultPath": "isolated-integration/20261017T031249Z-1780856/result.json",
+  "sourcePath": "isolated-integration/20261017T031249Z-1780856/phases/prepare/source.json",
+  "observationPath": "isolated-integration/20261017T031249Z-1780856/phases/execute/same-item-observation.json",
+  "lifecyclePath": "isolated-integration/20261017T031249Z-1780856/phases/execute/lifecycle.json",
+  "phases": [
+    {
+      "phase": "prepare",
+      "evidenceDir": "isolated-integration/20261017T031249Z-1780856/phases/prepare",
+      "startedAt": "2026-10-17T03:12:49.038Z",
+      "endedAt": "2026-10-17T03:13:02.264Z",
+      "elapsedMs": 13226,
+      "status": "passed",
+      "step": null,
+      "reasonCode": null
+    },
+    {
+      "phase": "execute",
+      "evidenceDir": "isolated-integration/20261017T031249Z-1780856/phases/execute",
+      "startedAt": "2026-10-17T03:13:02.265Z",
+      "endedAt": "2026-10-17T03:15:03.985Z",
+      "elapsedMs": 121720,
+      "status": "passed",
+      "step": null,
+      "reasonCode": null
+    },
+    {
+      "phase": "teardown",
+      "evidenceDir": "isolated-integration/20261017T031249Z-1780856/phases/teardown",
+      "startedAt": "2026-10-17T03:15:03.999Z",
+      "endedAt": "2026-10-17T03:15:04.000Z",
+      "elapsedMs": 1,
+      "status": "passed",
+      "step": null,
+      "reasonCode": null
+    }
+  ],
+  "verdict": "pass",
+  "measurement": {
+    "workspace": "test-runtime-2da19676-031",
+    "harness": "test-runtime-2da19676-031-guard",
+    "itemId": "WI-1",
+    "expectedSha": "6b2da2f254",
+    "healthBefore": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "6b2da2f254",
+      "version": "0.0.1",
+      "claimSpec": {
+        "specVersion": "1.0",
+        "revisionAdoption": [
+          "first"
+        ]
+      },
+      "ts": "2026-10-17T03:14:58.362Z"
+    },
+    "healthAfter": {
+      "ok": true,
+      "service": "papercusp-operator",
+      "sha": "6b2da2f254",
+      "version": "0.0.1",
+      "claimSpec": {
+        "specVersion": "1.0",
+        "revisionAdoption": [
+          "first"
+        ]
+      },
+      "ts": "2026-10-17T03:14:58.565Z"
+    },
+    "holderPid": 1898282,
+    "firstWait": {
+      "pid": 1927766,
+      "backendStart": "2026-10-16 23:14:57.165122-04",
+      "queryStart": "2026-10-16 23:14:58.455097-04",
+      "state": "active",
+      "waitEventType": "Lock",
+      "query": "\n      SELECT journal, note, deps, updated_ts FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 FOR UPDATE",
+      "blockingPids": [
+        1898282
+      ]
+    },
+    "secondWait": {
+      "pid": 1927774,
+      "backendStart": "2026-10-16 23:14:57.172083-04",
+      "queryStart": "2026-10-16 23:14:58.482252-04",
+      "state": "active",
+      "waitEventType": "Lock",
+      "query": "\n      SELECT journal, note, deps, updated_ts FROM harness_shared.carry_notes\n       WHERE workspace_id = $1 AND scope = $2 FOR UPDATE",
+      "blockingPids": [
+        1927766
+      ]
+    },
+    "releasedAtMs": 93936.169851,
+    "completedAtMs": 94008.099595,
+    "receipts": [
+      {
+        "ok": false,
+        "id": "WI-1",
+        "error": "checkpoint_verify_failed — the write did not read back via the reader path (stored 126 chars, read back 190 chars). The write committed, but its visibility is not verified. Do NOT retry this write: append:true could duplicate the submitted update. Use recovery.verify to inspect the committed checkpoint.",
+        "errorCode": "checkpoint_verify_failed",
+        "retryable": false,
+        "writeCommitted": true,
+        "storedLength": 126,
+        "storedContentHash": "0be3b83a2c8e",
+        "readBackContentHash": "0f5b9d89c6d0",
+        "recovery": {
+          "verify": {
+            "tool": "work_items:get",
+            "args": {
+              "id": "WI-1",
+              "harness": "test-runtime-2da19676-031-guard",
+              "detail": true,
+              "threadLimit": 0
+            },
+            "expectedContentHash": "0be3b83a2c8e",
+            "description": "Read the already-committed checkpoint without replaying this write, then compare checkpointContentHash with expectedContentHash."
+          }
+        }
+      },
+      {
+        "ok": true,
+        "id": "WI-1",
+        "harness": "test-runtime-2da19676-031-guard",
+        "cleared": false,
+        "length": 190,
+        "contentHash": "0f5b9d89c6d0",
+        "verified": true,
+        "storedHead": "private same-item baseline 0b326ef8-49b7-4068-bdc6-b6725032b7a9\n\n---\nprivate fir",
+        "checks": 0,
+        "by": "loopback/private-same-item-test-runtime-2da19676-031-1",
+        "rowsMode": "merge"
+      }
+    ],
+    "baseline": "private same-item baseline 0b326ef8-49b7-4068-bdc6-b6725032b7a9",
+    "additions": [
+      "private first append 0b326ef8-49b7-4068-bdc6-b6725032b7a9",
+      "private second append 0b326ef8-49b7-4068-bdc6-b6725032b7a9"
+    ],
+    "readback": "private same-item baseline 0b326ef8-49b7-4068-bdc6-b6725032b7a9\n\n---\nprivate first append 0b326ef8-49b7-4068-bdc6-b6725032b7a9\n\n---\nprivate second append 0b326ef8-49b7-4068-bdc6-b6725032b7a9",
+    "readbackContentHash": "0f5b9d89c6d0",
+    "hostStopped": false
+  },
+  "lifecycle": {
+    "schemaVersion": 1,
+    "runId": "20261017T031249Z-1780856",
+    "host": "isolated-test-host",
+    "observedAt": "2026-10-17T03:13:24.609Z",
+    "observer": {
+      "pid": 1780856,
+      "identity": "redacted-runtime-identity",
+      "parentPid": 1770354
+    },
+    "supervisor": {
+      "pid": 1800720,
+      "identity": "redacted-runtime-identity",
+      "parentPid": 1780856
+    },
+    "worker": {
+      "pid": 1819563,
+      "identity": "redacted-runtime-identity",
+      "parentPid": 1800720
+    },
+    "database": {
+      "pid": 1803716,
+      "identity": "redacted-runtime-identity",
+      "parentPid": 1800720
+    },
+    "argv": [
+      "node",
+      "--import",
+      "scripts/lib/isolated-runtime-start.mjs",
+      "--import",
+      "tsx",
+      "packages/operator-core/test/staging-first-http-fixture.ts"
+    ],
+    "cwd": "repository-root",
+    "workspace": "test-runtime-2da19676-031",
+    "runtimeRoot": "isolated-runtime",
+    "dataDir": "isolated-test-pg",
+    "pgPort": 46785,
+    "ended": {
+      "kind": "isolated-runtime-end",
+      "childPid": 1819563,
+      "exitCode": 0,
+      "signal": null,
+      "runtimeRemoved": true,
+      "pgDataRemoved": true,
+      "observedAt": "2026-10-17T03:15:03.908Z"
+    }
+  },
+  "typecheck": {
+    "command": "npm run lint:tsc -- --files=packages/operator-core/test/private-unrelated-write-http-scenario.ts,packages/operator-core/test/staging-first-http-fixture.ts,packages/operator-core/lib/agent-tools/plans/private-unrelated-write-http.integration.test.ts",
+    "exitCode": 0,
+    "scope": "three named files and one resolved importer",
+    "errors": 0
+  },
+  "limits": [
+    "One current-source private operator-api scenario; not shared proxy qualification or full live R003 acceptance.",
+    "The pre-existing unrelated-write test was intentionally filtered out, not rerun.",
+    "Evidence binding remains review-required; no full P009, R006, provider/native, soak, customer-acceptance or shipment claim."
+  ],
+  "testLedger": {
+    "id": 21300131,
+    "status": "pass",
+    "source": "admin-ui",
+    "harness": "papercusp",
+    "runGroupId": "01967a8f-57aa-46b3-a0af-7aeff36ca256",
+    "worktreeDirty": true,
+    "startedAt": "2026-10-17T03:12:48.939Z",
+    "finishedAt": "2026-10-17T03:15:04.085Z"
+  }
+}

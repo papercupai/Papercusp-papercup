@@ -8,8 +8,8 @@
 #
 #   bash time-restart.sh [--user pcsrv] [--port 18640] [--sample-sec 420] [--out /tmp/fp-restart.jsonl]
 #
-# Prints RESTART_TIMING restart_s=<systemctl restart returned> healthy_s=<first 200 from
-# /api/health>, both measured from just before the restart command.
+# Prints RESTART_TIMING restart_s=<systemctl restart returned> healthy_s=<first valid
+# operator /api/health JSON>, both measured from just before the restart command.
 set -euo pipefail
 SERVER_USER=pcsrv
 PORT=18640
@@ -38,7 +38,10 @@ sudo -u "$SERVER_USER" XDG_RUNTIME_DIR=/run/user/$uid systemctl --user restart p
 t1=$(date +%s.%N)
 healthy=""
 for _ in $(seq 1 1200); do
-  if curl -sf -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/api/health"; then healthy=$(date +%s.%N); break; fi
+  if body=$(curl -fsS --max-time 2 "http://127.0.0.1:$PORT/api/health" 2>/dev/null) &&
+    python3 -c 'import json,sys; h=json.load(sys.stdin); sys.exit(0 if isinstance(h,dict) and h.get("ok") is True and h.get("service")=="papercusp-operator" else 1)' <<<"$body" 2>/dev/null; then
+    healthy=$(date +%s.%N); break
+  fi
   sleep 0.5
 done
 restart_s=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.1f", b-a}')
@@ -48,5 +51,5 @@ else
   healthy_s=never
 fi
 echo "RESTART_TIMING t0=$(date -u -d @"${t0%.*}" +%FT%TZ) restart_s=$restart_s healthy_s=$healthy_s"
-curl -s --max-time 5 "http://127.0.0.1:$PORT/api/health" || true
-echo
+[ -n "$healthy" ] || exit 6
+echo "$body"

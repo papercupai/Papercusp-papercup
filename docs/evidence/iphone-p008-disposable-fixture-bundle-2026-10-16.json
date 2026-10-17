@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "workItem": "EI-26100319109449178",
+  "parentWorkItem": "WI-10004735",
+  "recordedAt": "2026-10-16T04:40:49Z",
+  "result": "selected-local-regression-passed",
+  "scope": "Disposable operator fixture startup and advertised-route identity; full P-008 remains open.",
+  "change": {
+    "reused": "apps/operator/bin/bundle-host.sh and scripts/lib/committed-source-loader.mjs",
+    "behavior": "Build the Hono host with the maintained bundle producer and run plain Node with the committed-source loader as the child preload.",
+    "rootCause": "The disposable test host used tsx on a CommonJS checkout module. The inherited transform changed clean source before the committed-source guard, which correctly refused execution.",
+    "preserved": "Committed-source enforcement remains enabled."
+  },
+  "verification": {
+    "fixtureUnit": {
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/native-device-fixture.test.ts -- --maxWorkers=1 --no-file-parallelism",
+      "passed": 22,
+      "failed": 0,
+      "skipped": 0,
+      "exitCode": 0,
+      "limitation": "The clock-probe child substituted committed fixture source; this unit result alone does not verify the then-dirty host launch change."
+    },
+    "advertisedRoute": {
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp node --import ./scripts/lib/committed-source-loader.mjs scripts/with-test-pg.mjs -- npm run test:file -- packages/operator-core/lib/device-operator-api-profile.integration.test.ts -- -t 'proves advertised-route pairing' --maxWorkers=1 --no-file-parallelism",
+      "passed": 1,
+      "failed": 0,
+      "filteredOut": 2,
+      "exitCode": 0,
+      "transport": "real-private-http-with-mapped-public-url",
+      "database": "disposable-migrated-postgres",
+      "workspaceId": "test-runtime-8e916429-adc",
+      "privatePairVerified": true,
+      "activeDevicesAfterCleanup": 0,
+      "protectedIngress": {
+        "/api/device/desktop/mint-pair-token": 404,
+        "/api/device/desktop/devices": 404,
+        "/api/device/heartbeat": 401
+      },
+      "privateRuntimeRemoved": true,
+      "privatePostgresDataRemoved": true,
+      "sourceProvenance": "LOCAL PASS. HEAD moved from d3e21290f3 to 79712ec918 during execution; the full imported graph was not measured. This result is not attributed to an exact commit."
+    }
+  },
+  "retainedEvidence": {
+    "base": "current-user-home",
+    "root": ".papercusp/evidence/EI-26100319109449178-bundle-20261016T0440Z",
+    "inventory": "inventory.json",
+    "artifacts": [
+      {
+        "path": "integration.log",
+        "size": 1681940,
+        "sha256": "505ee768963c5ea29dfeb6a180652e7f4e0379e6afa3ddc1076d9c1ceaa455a0"
+      },
+      {
+        "path": "native-device-fixture.ts",
+        "size": 38375,
+        "sha256": "92ed17506e4f78e9c473e46d605c7ce32692a455eeb50a66ab107ea21c913d94"
+      },
+      {
+        "path": "device-operator-api-profile.integration.test.ts",
+        "size": 26488,
+        "sha256": "15c423848f4af1118936982b969a8a064771df01405880940d29b601f1dcb36e"
+      }
+    ]
+  },
+  "acceptanceLimits": [
+    "No native simulator execution in this regression run.",
+    "No real public DNS/TLS provider route was changed or accepted.",
+    "The two filtered integration cases produced no evidence in this run.",
+    "Full P-008 production-hostname and hosted/account acceptance remain open."
+  ]
+}

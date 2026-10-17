@@ -63,6 +63,7 @@
  * unshaped-payload escape hatch.
  */
 import { createHash, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { readFile, statfs } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -70,9 +71,16 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PSU_REQUEST_TIMEOUT_MS } from '../lib/mcp-proxy/budgets.mjs';
 import { AGENT_LAUNCH_CLIENT_TIMEOUT_MS } from '../../../packages/operator-core/lib/agent-kickoff/launch-budgets.mjs';
-import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase } from './operator-discovery.mjs';
+import { discoverOperatorUrl, rebaseUrl, resolveOperatorBase, validLocalPort } from './operator-discovery.mjs';
 
 /** @typedef {Record<string, string | undefined>} EnvironmentMap */
+// psu-launcher marks inherited operator URLs as managed handoffs rather than
+// caller pins. Their original Hono port is intentionally removed from child
+// environments; recover the same-host route from the paired proxy target when
+// ptool starts in that child.
+export const OPERATOR_URL_PROVENANCE_ENV = 'PAPERCUSP_OPERATOR_URL_PROVENANCE';
+export const LAUNCHER_OPERATOR_URL_PROVENANCE = 'psu-launcher';
+
 /**
  * @typedef {{
  *   name: string,
@@ -93,48 +101,99 @@ export function resolvePtoolOperatorBase(env = process.env) {
   const resolvedBase = typeof env.PAPERCUSP_OPERATOR_BASE === 'string'
     ? env.PAPERCUSP_OPERATOR_BASE.trim()
     : '';
+  const managedTargetPort = !resolvedBase &&
+      !validLocalPort(env.PAPERCUSP_HONO_PORT) &&
+      env[OPERATOR_URL_PROVENANCE_ENV] === LAUNCHER_OPERATOR_URL_PROVENANCE
+    ? validLocalPort(env.PAPERCUSP_MCP_PROXY_TARGET_PORT)
+    : null;
+  const resolutionEnv = managedTargetPort
+    ? { ...env, PAPERCUSP_HONO_PORT: managedTargetPort }
+    : env;
   const base = resolvedBase
     ? resolveOperatorBase({ operatorUrl: resolvedBase }, env)
-    : resolveOperatorBase({}, env, { preferSelfPort: true });
-  return routeStagingOperatorThroughProxy(base, env);
+    : resolveOperatorBase({}, resolutionEnv, { preferSelfPort: true });
+  return routeOperatorThroughProxy(base, env);
 }
 
 /**
- * Keep ptool on the selected staging runtime while avoiding the :3170 listener
- * that is restarted by staging sync. The configured :9171 proxy is dedicated
- * to :3170, so this is a same-vintage route change, not a fallback to green.
- * Honor the proxy opt-outs and leave every other explicit endpoint untouched.
+ * Keep ptool on the selected runtime while avoiding listeners that are
+ * restarted by staging sync or background-host recovery. The configured
+ * same-vintage proxies front the exact selected runtime, so this is a route
+ * change within the same build, not a fallback to green. Honor the proxy
+ * opt-outs and leave every other explicit endpoint untouched.
  * @param {string} operatorUrl
  * @param {EnvironmentMap} env
  */
-function routeStagingOperatorThroughProxy(operatorUrl, env) {
-  if (env.PAPERCUSP_MCP_PROXY === '0' || env.PAPERCUSP_MCP_STAGING_PROXY === '0') return operatorUrl;
+function routeOperatorThroughProxy(operatorUrl, env) {
+  if (env.PAPERCUSP_MCP_PROXY === '0') return operatorUrl;
+  const stagingProxyEnabled = env.PAPERCUSP_MCP_STAGING_PROXY !== '0';
   const rawProxyPort = typeof env.PAPERCUSP_MCP_STAGING_PROXY_PORT === 'string'
     ? env.PAPERCUSP_MCP_STAGING_PROXY_PORT.trim()
     : '';
   const proxyPort = Number(rawProxyPort);
-  if (
-    !/^[0-9]+$/.test(rawProxyPort) ||
-    !Number.isInteger(proxyPort) ||
-    proxyPort < 1 ||
-    proxyPort > 65535 ||
-    String(proxyPort) !== rawProxyPort ||
-    proxyPort === 3170
-  ) return operatorUrl;
+  const validStagingProxy =
+    stagingProxyEnabled &&
+    /^[0-9]+$/.test(rawProxyPort) &&
+    Number.isInteger(proxyPort) &&
+    proxyPort > 0 &&
+    proxyPort <= 65535 &&
+    String(proxyPort) === rawProxyPort &&
+    proxyPort !== 3170;
 
-  try {
-    const url = new URL(operatorUrl);
-    if (
-      url.protocol !== 'http:' ||
-      !['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname.toLowerCase()) ||
-      url.port !== '3170'
-    ) return operatorUrl;
-    url.hostname = '127.0.0.1';
-    url.port = String(proxyPort);
-    return url.toString().replace(/\/$/, '');
-  } catch {
-    return operatorUrl;
+  if (validStagingProxy) {
+    try {
+      const url = new URL(operatorUrl);
+      if (
+        url.protocol === 'http:' &&
+        ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname.toLowerCase()) &&
+        url.port === '3170'
+      ) {
+        url.hostname = '127.0.0.1';
+        url.port = String(proxyPort);
+        return url.toString().replace(/\/$/, '');
+      }
+    } catch {
+      // Leave malformed URLs for the connection layer's normal diagnostic.
+    }
   }
+
+  // EI-26138586847950442: the request-only operator directs mutating calls to
+  // the background host at :3271. When the host is restarting, a direct ptool
+  // pin spends its entire 20s local retry budget waiting for a listener that
+  // the paired :9271 same-vintage proxy can hold across the restart. Derive
+  // that proxy only when its configured target is exactly :3271; never route
+  // current-build traffic through the live :9071 proxy.
+  const backgroundProxyBase = typeof env.PAPERCUSP_MCP_PROXY_BASE === 'string'
+    ? env.PAPERCUSP_MCP_PROXY_BASE.trim()
+    : '';
+  if (backgroundProxyBase && String(env.PAPERCUSP_MCP_PROXY_TARGET_PORT || '').trim() === '3271') {
+    try {
+      const url = new URL(operatorUrl);
+      const parsedProxy = new URL(backgroundProxyBase);
+      const localHost = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname.toLowerCase());
+      const proxyHost = ['localhost', '127.0.0.1', '::1', '[::1]'].includes(parsedProxy.hostname.toLowerCase());
+      const proxyPortNumber = Number(parsedProxy.port);
+      const validProxy =
+        parsedProxy.protocol === 'http:' &&
+        proxyHost &&
+        !parsedProxy.username &&
+        !parsedProxy.password &&
+        parsedProxy.pathname === '/' &&
+        !parsedProxy.search &&
+        !parsedProxy.hash &&
+        parsedProxy.port.length > 0 &&
+        Number.isInteger(proxyPortNumber) &&
+        proxyPortNumber > 0 &&
+        proxyPortNumber <= 65535 &&
+        proxyPortNumber !== 3271;
+      if (url.protocol === 'http:' && localHost && url.port === '3271' && validProxy) {
+        return parsedProxy.origin;
+      }
+    } catch {
+      // An invalid proxy base cannot safely replace the explicit operator pin.
+    }
+  }
+  return operatorUrl;
 }
 
 /**
@@ -151,7 +210,7 @@ function routeStagingOperatorThroughProxy(operatorUrl, env) {
  */
 export function resolvePtoolOperatorCandidates(env = process.env, explicitUrl = null) {
   const explicit = typeof explicitUrl === 'string' ? explicitUrl.trim() : '';
-  if (explicit) return [routeStagingOperatorThroughProxy(explicit, env)];
+  if (explicit) return [routeOperatorThroughProxy(explicit, env)];
 
   const primary = resolvePtoolOperatorBase(env);
   const selfPort = typeof env.PAPERCUSP_HONO_PORT === 'string'
@@ -199,9 +258,6 @@ const OPERATOR_URL = resolvePtoolOperatorBase(process.env);
 // caller pin: a wake-respawn must be allowed to rediscover operator.json when
 // the desktop operator has moved to a new port. The launcher stamps this value
 // only on managed exports; a bare PAPERCUSP_OPERATOR_URL remains authoritative.
-export const OPERATOR_URL_PROVENANCE_ENV = 'PAPERCUSP_OPERATOR_URL_PROVENANCE';
-export const LAUNCHER_OPERATOR_URL_PROVENANCE = 'psu-launcher';
-
 /**
  * Whether the operator URL came from implicit local discovery and may follow a
  * packaged operator that restarts onto a different port. Explicit CLI/env
@@ -229,7 +285,7 @@ export function ptoolConnectionRetryOptions(args = {}, env = process.env) {
   let pinnedUrl = '';
   try {
     pinnedUrl = typeof args.url === 'string' && args.url.trim()
-      ? routeStagingOperatorThroughProxy(args.url.trim(), env)
+      ? routeOperatorThroughProxy(args.url.trim(), env)
       : resolvePtoolOperatorBase(env);
     if (ptoolConnectAttemptTimeoutMs(pinnedUrl, env) < PTOOL_CONNECT_TIMEOUT_MS) {
       return {
@@ -1434,7 +1490,15 @@ export function buildCallToolParams(toolName, callArgs, { outputSchema, idempote
   };
 }
 
-/** Require a catalog generation before dispatching a call through ptool. */
+/**
+ * Require a catalog generation before dispatching a call through ptool.
+ *
+ * `tools:find` is the catalog recovery tool itself. Keep it callable when a
+ * legacy `tools/list` response omits the generation marker so callers can
+ * discover whether the connected operator has the current contract. Every
+ * other named call remains blocked until its catalog entry supplies a
+ * generation that the operator can enforce.
+ */
 export function requireServingGeneration(tool) {
   const servingGeneration = tool?._meta?.['papercusp/servingGeneration'];
   if (typeof servingGeneration === 'string' && servingGeneration.trim()) {
@@ -1442,11 +1506,15 @@ export function requireServingGeneration(tool) {
   }
 
   const toolName = typeof tool?.name === 'string' && tool.name.trim() ? tool.name.trim() : 'the requested tool';
-  throw new Error(
+  if (toolName === 'tools:find') return undefined;
+
+  const error = new Error(
     `serving_generation_missing: ${toolName} was not dispatched because tools/list did not advertise a Papercusp ` +
       'serving generation. The connected operator may be an incompatible legacy release; reconnect to a current ' +
       'operator and re-read tools/list.',
   );
+  error.code = 'serving_generation_missing';
+  throw error;
 }
 
 // `tools/list` is a recovery prerequisite for every named ptool call, but it
@@ -1521,16 +1589,13 @@ export const PTOOL_CONNECT_MAX_ATTEMPTS = Math.ceil(
   PTOOL_CONNECT_TIMEOUT_MS / PTOOL_CONNECT_RETRY_DELAY_MS,
 ) + 1;
 
-// Explicit/local direct URLs remain pinned, but a hard operator restart can
-// briefly refuse connections. Give those pins one short recovery window: one
-// direct-handshake timeout plus five paced retry intervals (20s with the
-// current budgets), bounded independently from the managed/proxy 120s window.
-// Proxy pins keep their longer initialize contract and are excluded above by
-// ptoolConnectAttemptTimeoutMs.
-export const PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS = Math.min(
-  PTOOL_CONNECT_TIMEOUT_MS,
-  PTOOL_DIRECT_CONNECT_ATTEMPT_TIMEOUT_MS + (5 * PTOOL_CONNECT_RETRY_DELAY_MS),
-);
+// Explicit/local direct URLs remain pinned, but a coordinated operator restart
+// can leave the listener unavailable for longer than one direct handshake. Give
+// those pins the same bounded recovery window as the managed/proxy route. Each
+// direct attempt still has its 15s per-attempt ceiling; this total budget lets
+// ptool survive the staging sync's migration/build/restart sequence without
+// silently switching to a different operator.
+export const PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS = PTOOL_CONNECT_TIMEOUT_MS;
 export const PTOOL_PINNED_LOCAL_CONNECT_MAX_ATTEMPTS = Math.ceil(
   PTOOL_PINNED_LOCAL_CONNECT_TOTAL_TIMEOUT_MS / PTOOL_CONNECT_RETRY_DELAY_MS,
 ) + 1;
@@ -1681,6 +1746,25 @@ export const PTOOL_SCORECARD_REPAIR_TIMEOUT_MS = 915_000;
 // cutoff — instead of pre-empting both.
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
+// EI-26161087677172506: capability:git-evidence has a 30s handler budget,
+// and an oversized historical blob can spend another 30s in the result-door
+// scratch-spill wait before the pending cursor is returned. Keep the client
+// beyond that combined 65s MCP path so a read-only result-door timeout remains
+// observable instead of becoming an upstream-died/outcome-unknown failure at
+// ptool's flat 30s deadline.
+export const PTOOL_GIT_EVIDENCE_TIMEOUT_MS = 70_000;
+
+// EI-26107428212758754: release:cut reclaim previews declare a 120s handler budget
+// because their authored-work scan can exceed the flat MCP transport floor under host
+// pressure. Keep ptool beyond the 125s effective MCP deadline (+5s settlement) so the
+// structured dry-run result wins instead of an upstream-died/outcome-unknown transport error.
+export const PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS = 130_000;
+
+// dev:pg_hot_queries accepts a 600s sample and declares a 660s handler budget;
+// MCP adds 5s for settlement. Keep ptool past that deadline on direct and
+// tools:invoke-wrapped calls so its ordinary 30s cutoff cannot hide the result.
+export const PTOOL_PG_HOT_QUERIES_TIMEOUT_MS = 670_000;
+
 // EI-25882027630574649: plans:start declares timeoutSec=120, making the MCP
 // deadline 125s with its settlement buffer. A successful call took 77.763s,
 // longer than the old 60s ptool budget; leave room for the complete server
@@ -1817,6 +1901,15 @@ export const PTOOL_SCORECARDS_GET_TIMEOUT_MS = PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
 // still-running heartbeat batch before its per-lock results are returned.
 export const PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS = 60_000;
 
+// EI-25384303042233581: locks:list is a compound, read-only inventory. It
+// retries transient PostgreSQL connection setup and fans out across every live
+// lock domain plus the file-lock summary. A measured successful call took
+// 72.441s on the background host, so the ordinary 30s client cutoff can discard
+// a valid result (or hide the server's structured timeout) before MCP settles.
+// Keep the client beyond that observed path; the server-side deadline remains
+// authoritative when a call cannot complete.
+export const PTOOL_LOCKS_LIST_TIMEOUT_MS = 90_000;
+
 const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // EI-25679147891530264: graph:query permits a 60s compiler worker plus
   // a bounded runtime-source join inside its declared 90s handler budget.
@@ -1838,6 +1931,13 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['fleet:launch-on-plan', PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS],
   ['fleet:respawn-member', PTOOL_RESPAWN_MEMBER_TIMEOUT_MS],
   ['fleet:require-checkpoint', PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS],
+  // EI-26141314393026733: fleet:leader-brief composes roster, liveness,
+  // diagnostics, and projection work for a large fleet. Its 25s server
+  // backstop leaves too little room for MCP serialization under load, so the
+  // ordinary 30s client cutoff can surface a post-connect ECONNRESET before
+  // the structured degraded brief arrives. Keep direct and tools:invoke
+  // routes outside the transport cap, like fleet:assignments.
+  ['fleet:leader-brief', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['dev:restart', PTOOL_DEV_RESTART_TIMEOUT_MS],
   // EI-22701666730811258: dev:pg_query bounds SQL execution, but the request
   // can still spend time in proxy admission/queueing before that bound starts.
@@ -1845,6 +1945,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // tools:invoke-wrapped calls so the server's typed result wins over the
   // ordinary 30s client cutoff.
   ['dev:pg_query', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['dev:pg_hot_queries', PTOOL_PG_HOT_QUERIES_TIMEOUT_MS],
   // EI-23079930157206205: dev:service_health fans out across fixed service
   // endpoints and systemd state. Its valid read can outlive ptool's ordinary
   // 30s client cutoff, so keep direct and tools:invoke-wrapped calls outside
@@ -1904,6 +2005,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['build:typecheck', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['capability:bash', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['capability:inspect', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['capability:git-evidence', PTOOL_GIT_EVIDENCE_TIMEOUT_MS],
   // EI-22780156976598155 (building on EI-21314560074357302): capability:launch-agent
   // resolves the target/profile and may run headless boot, kickoff-proof, and
   // fresh-launch verification before returning. Keep the client outside the
@@ -2119,6 +2221,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // Observe the bounded dispatch receipt before the client deadline, including
   // through tools:invoke, using the existing foreground transport allowance.
   ['plans:bind-spec-evidence', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-25924578200401207: a successful spec-test adequacy evaluation took
+  // 30.906s server-side, beyond ptool's ordinary 30s client cutoff. Keep both
+  // direct and tools:invoke routes on the foreground allowance so the typed
+  // evaluator result wins instead of surfacing an outcome-unknown timeout.
+  ['plans:evaluate-spec-test-adequacy', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-25882027630574649: the claim handler declares timeoutSec=120, giving
   // MCP a 125s deadline with settlement buffer. A successful claim took
   // 69.467s, beyond ptool's old 60s budget; cover direct and wrapped calls.
@@ -2169,6 +2276,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // cutoff so a completed release is not surfaced as outcome-unknown.
   ['locks:release', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['locks:heartbeat_resource', PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS],
+  ['locks:list', PTOOL_LOCKS_LIST_TIMEOUT_MS],
 ]);
 
 /**
@@ -2191,17 +2299,16 @@ export function timeoutForTool(toolName, callArgs) {
   if (effectiveToolName === 'work_items:list' && effectiveArgs?.prDeliveryAudit) {
     return PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
   }
-  // EI-25376635449301072: an unconfirmed release:cut reclaim is a read-only
-  // preview. A measured preview took 46.7s on the server, so ptool's flat 30s
-  // deadline discarded a valid result before the bounded MCP request finished.
-  // Keep direct and tools:invoke routes above the transport cap; confirmed
+  // EI-25376635449301072 / EI-26107428212758754: an unconfirmed release:cut reclaim is a
+  // read-only preview. Its handler declares 120s because the authored-work scan can exceed
+  // the transport floor; keep the client beyond the effective 125s server deadline. Confirmed
   // reclamation and unrelated release:cut operations retain the normal limit.
   if (
     effectiveToolName === 'release:cut' &&
     effectiveArgs?.op === 'reclaim' &&
     effectiveArgs?.confirm !== true
   ) {
-    return PTOOL_FOREGROUND_TOOL_TIMEOUT_MS;
+    return PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS;
   }
   if (
     effectiveToolName === 'release:repair-queue' &&
@@ -2531,6 +2638,111 @@ export function formatToolCatalogFailure(requestedToolName, error) {
 }
 
 /**
+ * The SDK import is deliberately protected by the install:safe reader lease,
+ * but a long writer drain must not strand a scripted coordination call before
+ * it reaches the operator. The Node-only mcp-call helper is the sanctioned
+ * recovery transport for this exact pre-dispatch condition.
+ * Pure — exported for focused recovery tests.
+ */
+export function isSdkBootstrapInstallWait(error) {
+  const detail = errorDetail(error);
+  return /SDK bootstrap timed out waiting for install:safe|waiting for fs-mutex writer .*npm-install-|waiting for install:safe to finish before importing/i.test(detail);
+}
+
+/** Resolve the source-tree recovery helper. Packaged sidecars may not carry it. */
+export function resolveMcpCallRecoveryPath() {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+  const helper = join(repoRoot, 'scripts/mcp-call.mjs');
+  return existsSync(helper) ? helper : null;
+}
+
+/**
+ * Build a Node-only recovery invocation without changing the selected
+ * endpoint, session identity, scope, payload, or idempotency key.
+ * Pure — exported for focused recovery tests.
+ * @param {{ helperPath?: string | null, toolName?: string, callArgs?: Record<string, unknown>,
+ * inputKind?: string | null, operatorUrl?: string, workspace?: string, harness?: string,
+ * clientId?: string, idempotencyKey?: string, raw?: boolean, projection?: string | null }} [options]
+ */
+export function buildMcpCallRecoveryInvocation({
+  helperPath,
+  toolName,
+  callArgs = {},
+  inputKind,
+  operatorUrl,
+  workspace,
+  harness,
+  clientId,
+  idempotencyKey,
+  raw = false,
+  projection = null,
+} = {}) {
+  if (
+    typeof helperPath !== 'string' || !helperPath ||
+    !canDispatchWithoutCatalog(toolName, inputKind) ||
+    projection != null
+  ) return null;
+  let parsed;
+  try { parsed = new URL(operatorUrl); } catch { return null; }
+  const localHost = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(parsed.hostname.toLowerCase());
+  const port = parsed.port || (parsed.protocol === 'https:' ? '443' : parsed.protocol === 'http:' ? '80' : '');
+  if (!localHost || !/^\d+$/.test(port) || Number(port) < 1 || Number(port) > 65535) return null;
+
+  const args = [helperPath, toolName, '--json', '-', '--port', port];
+  if (workspace === '*') args.push('--all-workspaces');
+  else if (typeof workspace === 'string' && workspace) args.push('--workspace', workspace);
+  if (typeof harness === 'string' && harness) args.push('--harness', harness);
+  if (typeof clientId === 'string' && clientId) args.push('--client', clientId);
+  if (typeof idempotencyKey === 'string' && idempotencyKey) args.push('--idempotency-key', idempotencyKey);
+  if (raw) args.push('--raw');
+  return { command: process.execPath, args, payload: callArgs, port };
+}
+
+/**
+ * Run the Node-only recovery helper. Its stdout/stderr are inherited so the
+ * caller receives the same result stream and diagnostic channel as ptool.
+ * `spawnImpl` is injectable for the focused lifecycle test.
+ * @param {{ invocation?: ReturnType<typeof buildMcpCallRecoveryInvocation>, env?: NodeJS.ProcessEnv,
+ * spawnImpl?: (command: string, args: string[], options: import('node:child_process').SpawnOptions) =>
+ * Pick<import('node:events').EventEmitter, 'once'> & { stdin: { end: (payload: string) => unknown } } }} [options]
+ */
+export async function runMcpCallRecovery({
+  invocation,
+  env = process.env,
+  spawnImpl = spawn,
+} = {}) {
+  if (!invocation) return { handled: false };
+  return await new Promise((resolveResult) => {
+    let settled = false;
+    const settle = (result) => {
+      if (settled) return;
+      settled = true;
+      resolveResult(result);
+    };
+    let child;
+    try {
+      child = spawnImpl(invocation.command, invocation.args, {
+        env: { ...env },
+        stdio: ['pipe', 'inherit', 'inherit'],
+      });
+    } catch (error) {
+      console.error(`ptool: mcp-call recovery could not start: ${errorDetail(error)}`);
+      settle({ handled: true, exitCode: 1, started: false, error });
+      return;
+    }
+    child.once('error', (error) => {
+      console.error(`ptool: mcp-call recovery could not start: ${errorDetail(error)}`);
+      settle({ handled: true, exitCode: 1, started: false, error });
+    });
+    child.once('close', (code, signal) => {
+      if (signal) console.error(`ptool: mcp-call recovery ended by ${signal}`);
+      settle({ handled: true, exitCode: Number.isInteger(code) ? code : 1, started: true, signal: signal ?? null });
+    });
+    child.stdin.end(JSON.stringify(invocation.payload));
+  });
+}
+
+/**
  * A scripted named call already has the only input ptool needs to dispatch:
  * the target name and its JSON arguments. If read-only catalog discovery is
  * unavailable, bypassing it keeps tools/list from becoming a prerequisite for
@@ -2539,6 +2751,34 @@ export function formatToolCatalogFailure(requestedToolName, error) {
  */
 export function canDispatchWithoutCatalog(toolName, inputKind) {
   return typeof toolName === 'string' && toolName.trim().length > 0 && inputKind != null;
+}
+
+/**
+ * A complete legacy tools/list can still omit the serving-generation marker.
+ * Scripted calls already carry their exact arguments, so they can use the
+ * same catalog-independent dispatch path as a tools/list transport failure.
+ * Interactive calls must retain the catalog gate because ptool still needs
+ * the input schema to collect arguments.
+ */
+export function canBypassMissingServingGeneration(toolName, inputKind, error) {
+  return error?.code === 'serving_generation_missing' &&
+    canDispatchWithoutCatalog(toolName, inputKind);
+}
+
+/**
+ * A named interactive call already has its input schema from tools/list. When
+ * only the serving-generation marker is absent, keep that schema for prompting
+ * and use the protocol-only request path after the user supplies the args.
+ * This is the interactive counterpart to canBypassMissingServingGeneration:
+ * it does not guess an argument object or bypass an unknown tool.
+ */
+export function canUseListedToolWithoutServingGeneration(tool, error) {
+  return Boolean(error?.code === 'serving_generation_missing' &&
+    typeof tool?.name === 'string' &&
+    tool.name.trim().length > 0 &&
+    tool.inputSchema &&
+    typeof tool.inputSchema === 'object' &&
+    !Array.isArray(tool.inputSchema));
 }
 
 /** Explain the catalog-independent fallback on stderr without contaminating
@@ -2561,6 +2801,7 @@ export async function callToolWithPressureRetry(
     retryDelayMs = 1_000,
     timeoutMs = PTOOL_CALL_TOOL_TIMEOUT_MS,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    schemaNeutral = false,
   } = {},
 ) {
   let lastError;
@@ -2575,16 +2816,19 @@ export async function callToolWithPressureRetry(
         !Array.isArray(params.arguments) &&
         Object.hasOwn(params.arguments, 'projection'),
       );
-      if (projected) {
+      if (projected || schemaNeutral) {
         // EI-20335329169958057: Client.callTool() performs a SECOND semantic
         // validation using the outputSchema cached from tools/list. A
         // dispatch projection intentionally removes structuredContent (the
         // complete, unprojected payload), so that validator throws
         // "has an output schema but did not return structured content" after
-        // the server already returned a valid reduced result. Use the SDK's
-        // ordinary request primitive with the protocol CallToolResult schema:
-        // wire-shape validation remains, while the incompatible cached
-        // full-output-schema check is correctly skipped for this partial view.
+        // the server already returned a valid reduced result. EI-26145438867981679
+        // has the same shape when tools/list is a legacy catalog without a
+        // serving-generation marker: the cached outputSchema is known to the
+        // SDK, but the catalog-bypass request cannot negotiate structuredContent.
+        // Use the SDK's ordinary request primitive with the protocol
+        // CallToolResult schema: wire-shape validation remains, while the
+        // incompatible cached full-output-schema check is skipped.
         const { CallToolResultSchema } = await importSdkModuleWithInstallAwareness('@modelcontextprotocol/sdk/types.js');
         return await client.request(
           { method: 'tools/call', params },
@@ -2735,7 +2979,7 @@ async function closeClientQuietly(client) {
  * session. A failed replay client is closed before the error is surfaced.
  * @param {any} client
  * @param {any} params
- * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown, onStaleToolContract?: (context: {client: any, params: any, error: unknown}) => Promise<any>}} [options]
+ * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number, replayProof?: unknown, schemaNeutral?: boolean, onStaleToolContract?: (context: {client: any, params: any, error: unknown}) => Promise<any>}} [options]
  */
 export async function callToolWithReplayRecovery(
   client,
@@ -2745,6 +2989,7 @@ export async function callToolWithReplayRecovery(
     maxAttempts = PTOOL_POST_CONNECT_RETRIES,
     timeoutMs = PTOOL_CALL_TOOL_TIMEOUT_MS,
     replayProof,
+    schemaNeutral = false,
     onStaleToolContract,
   } = {},
 ) {
@@ -2762,7 +3007,7 @@ export async function callToolWithReplayRecovery(
   let preConnectRetriesUsed = 0;
   while (true) {
     try {
-      const result = await callToolWithPressureRetry(activeClient, activeParams, { timeoutMs });
+      const result = await callToolWithPressureRetry(activeClient, activeParams, { timeoutMs, schemaNeutral });
       return { client: activeClient, result };
     } catch (error) {
       if (
@@ -2880,6 +3125,7 @@ export async function dispatchScriptedToolWithoutCatalog(
     {
       timeoutMs: timeoutMs ?? timeoutForTool(toolName, callArgs),
       reconnect,
+      schemaNeutral: true,
     },
   );
 }
@@ -4232,7 +4478,43 @@ async function main() {
     activeTokenFile = ptoolTokenPathByClient.get(connected.client) ?? tokenFile ?? activeTokenFile;
     return connected.client;
   };
-  let client = await connectOperator();
+  let client;
+  try {
+    client = await connectOperator();
+  } catch (error) {
+    // The SDK reader lease protects mutable node_modules, but a scripted call
+    // can still make progress through the immutable Node-only recovery helper
+    // while install:safe drains. This branch is pre-dispatch: no MCP request
+    // has been sent and the same idempotency key is safe to carry forward.
+    const recoveryKey = args.idempotencyKey || randomUUID();
+    const recoveryInvocation = isSdkBootstrapInstallWait(error)
+      ? buildMcpCallRecoveryInvocation({
+          helperPath: resolveMcpCallRecoveryPath(),
+          toolName: args.tool,
+          callArgs: inputArgs ?? {},
+          inputKind,
+          operatorUrl,
+          workspace,
+          harness,
+          clientId: process.env.PAPERCUSP_SID,
+          idempotencyKey: recoveryKey,
+          raw: args.raw,
+          projection: args.projection,
+        })
+      : null;
+    if (recoveryInvocation) {
+      console.error(
+        'ptool: SDK bootstrap is waiting for install:safe; using the Node-only mcp-call recovery ' +
+        `transport on ${operatorUrl} with the same client identity before dispatch (${args.tool}).`,
+      );
+      const recovered = await runMcpCallRecovery({ invocation: recoveryInvocation });
+      if (recovered.handled) {
+        process.exitCode = recovered.exitCode;
+        return;
+      }
+    }
+    throw error;
+  }
   try {
     let projection;
     if (args.projection != null) {
@@ -4329,12 +4611,62 @@ async function main() {
       console.error(`ptool: no tool named "${toolName}". Try \`ptool --list ${serviceOf(toolName)}\`.`);
       process.exit(1);
     }
+    let catalogBypass = false;
     try {
       // The old release handler cannot enforce a generation it does not know
       // about. Refuse before dispatch when the selected listing lacks the
       // marker, even if the old handler would otherwise accept the arguments.
       requireServingGeneration(tool);
     } catch (error) {
+      if (inputKind == null && canUseListedToolWithoutServingGeneration(tool, error)) {
+        if (operatorFallbackUsed) {
+          console.error(
+            `ptool: refusing to dispatch ${toolName} on fallback operator ${operatorFallbackUrl} ` +
+              'because its read-only metadata could not be verified. Pass --url=<intended operator> to pin the call.',
+          );
+          process.exitCode = 1;
+          return;
+        }
+        console.error(
+          `ptool: ${toolName} is listed without a serving-generation marker; ` +
+            'using its listed input schema and protocol-only dispatch after prompting for arguments.',
+        );
+        catalogBypass = true;
+      } else if (canBypassMissingServingGeneration(args.tool, inputKind, error)) {
+        if (operatorFallbackUsed) {
+          console.error(
+            `ptool: refusing to dispatch ${toolName} on fallback operator ${operatorFallbackUrl} ` +
+              'because its read-only metadata could not be verified. Pass --url=<intended operator> to pin the call.',
+          );
+          process.exitCode = 1;
+          return;
+        }
+        const callArgs = mergeDispatchProjection(inputArgs, projection);
+        const idempotencyKey = args.idempotencyKey || randomUUID();
+        console.error(formatToolCatalogBypass(toolName, error));
+        try {
+          const recovered = await dispatchScriptedToolWithoutCatalogWithTokenFallback(
+            client,
+            toolName,
+            callArgs,
+            {
+              idempotencyKey,
+              tokenPaths,
+              initialTokenPath: ptoolTokenPathByClient.get(client),
+              reconnectWithTokenPath: (tokenFile) => connectOperator({ tokenFile }),
+            },
+          );
+          client = recovered.client;
+          const code = await printResult(recovered.result, {
+            raw: shouldPrintRawResult(inputKind, args.raw),
+          });
+          if (code !== 0) process.exitCode = code;
+        } catch (callError) {
+          console.error(formatToolCallFailure(toolName, callError, { idempotencyKey }));
+          process.exitCode = 1;
+        }
+        return;
+      }
       console.error(`ptool: ${error instanceof Error ? error.message : String(error)}`);
       process.exitCode = 1;
       return;
@@ -4397,21 +4729,40 @@ async function main() {
       currentTool = refreshed.tool;
       return refreshed.params;
     };
-    const currentCallParams = () => buildCallToolParams(toolName, callArgs, {
-      outputSchema: currentTool.outputSchema,
-      servingGeneration: requireServingGeneration(currentTool),
-      idempotencyKey,
-    });
+    const currentCallParams = () => catalogBypass
+      ? buildCallToolParams(toolName, callArgs, { idempotencyKey })
+      : buildCallToolParams(toolName, callArgs, {
+        outputSchema: currentTool.outputSchema,
+        servingGeneration: requireServingGeneration(currentTool),
+        idempotencyKey,
+      });
     try {
-      let recovered = await callToolWithReplayRecovery(
-        client,
-        currentCallParams(),
-        {
-          timeoutMs: timeoutForTool(toolName, callArgs),
-          reconnect: () => connectOperator(),
-          onStaleToolContract,
-        },
-      );
+      let recovered;
+      if (catalogBypass) {
+        recovered = await dispatchScriptedToolWithoutCatalogWithTokenFallback(
+          client,
+          toolName,
+          callArgs,
+          {
+            idempotencyKey,
+            tokenPaths,
+            initialTokenPath: ptoolTokenPathByClient.get(client),
+            reconnectWithTokenPath: (tokenFile) => connectOperator({ tokenFile }),
+            timeoutMs: timeoutForTool(toolName, callArgs),
+          },
+        );
+      } else {
+        recovered = await callToolWithReplayRecovery(
+          client,
+          currentCallParams(),
+          {
+            timeoutMs: timeoutForTool(toolName, callArgs),
+            reconnect: () => connectOperator(),
+            onStaleToolContract,
+            schemaNeutral: catalogBypass,
+          },
+        );
+      }
       if (isRecoverableAuthorityDenial(recovered.result) && !args.url && operatorCandidates.length > 1) {
         console.error(
           `ptool: ${operatorUrl} rejected the session authority before dispatch; ` +
@@ -4425,6 +4776,7 @@ async function main() {
             timeoutMs: timeoutForTool(toolName, callArgs),
             reconnect: () => connectOperator(),
             onStaleToolContract,
+            schemaNeutral: catalogBypass,
           },
         );
       }

@@ -1089,6 +1089,27 @@ describe('loop surface round-trip (real PG)', () => {
     expect((await rawRow(OWNER))!.payload_template).toMatchObject({ kickoff: 'new lifecycle' });
   });
 
+  it('preserves an explicit end through inactive recovery and permits a later explicit arm', async () => {
+    const input = { workspaceId: WS, harnessSlug: HARNESS, ownerId: OWNER, intervalSec: 600, kickoff: 'owned work', sql };
+    await materializeLoop(input);
+    expect(await deactivateLoop(OWNER, { sql })).toBe(true);
+
+    const repaired = await materializeLoop({ ...input, kickoff: 'stale recovery', onlyIfInactive: true });
+
+    expect(repaired.changed).toBe(false);
+    expect(await getLoopStatus(OWNER, { sql })).toMatchObject({ active: false, explicitlyEnded: true });
+
+    await materializeLoop({ ...input, kickoff: 'new explicit work' });
+    expect(await getLoopStatus(OWNER, { sql })).toMatchObject({ active: true, explicitlyEnded: false });
+
+    // The new deliberate arm supersedes its old end marker. A later accidental
+    // inactive row must remain recoverable rather than inheriting the old stop.
+    await sql`UPDATE harness_shared.routines SET active = FALSE
+      WHERE workspace_id = ${WS} AND target_owner_id = ${OWNER}`;
+    expect(await getLoopStatus(OWNER, { sql })).toMatchObject({ active: false, explicitlyEnded: false });
+    expect((await materializeLoop({ ...input, onlyIfInactive: true })).changed).toBe(true);
+  });
+
   it('EI-21207093794475760: an inactive-only repair cannot clobber an explicit active 1200-second arm', async () => {
     const explicitGoal = 'continue the fleet monitor at the widened fallback cadence';
     await materializeLoop({
@@ -1618,10 +1639,8 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
     expect(await getLoopStatus('su-unplanned-member-test', { sql })).toBeNull();
   });
 
-  it("re-arming a DIFFERENT member's own existing loop after loop:end (inactive) re-activates it, not merely already-armed", async () => {
-    // First arm normally, then end it (mirrors a member self-retuning: loop:end + re-arm) —
-    // autoArmFleetMemberLoop should treat an INACTIVE existing loop as armable, not as a
-    // live clobber target (only an ACTIVE loop short-circuits).
+  it("preserves a member's explicit end until a deliberate re-arm", async () => {
+    // Recovery preserves an explicit end; a later direct arm can retune the loop.
     const OTHER = 'su-fleet-member-reended-test';
     await autoArmFleetMemberLoop({
       workspaceId: WS,
@@ -1644,8 +1663,8 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
       fleetRole: 'member',
       sql,
     });
-    expect(res.armed).toBe(true);
-    expect((await getLoopStatus(OTHER, { sql }))!.active).toBe(true);
+    expect(res).toMatchObject({ armed: false, reason: 'explicit-loop-end' });
+    expect(await getLoopStatus(OTHER, { sql })).toMatchObject({ active: false, explicitlyEnded: true });
 
     const expectedGoal = `Drive plan \`${PLAN_SLUG}\` per your member role in fleet \`${FLEET_SLUG}\` (coord:orient to pull your lane).`;
     expect((await rawRow(OTHER))!.payload_template!.goal).toBe(expectedGoal);
@@ -1730,7 +1749,9 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
       monitor: priorMonitor,
       sql,
     });
-    await deactivateLoop(OTHER, { sql });
+    // An accidental inactive row is recoverable, unlike an explicit loop:end.
+    await sql`UPDATE harness_shared.routines SET active = FALSE
+      WHERE workspace_id = ${WS} AND target_owner_id = ${OTHER}`;
 
     expect(await getLoopStatus(OTHER, { sql })).toMatchObject({
       active: false,

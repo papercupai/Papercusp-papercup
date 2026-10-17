@@ -245,7 +245,7 @@ export function renderRoutingBlock(pairs: SubstitutionPair[]): string {
     '> [bash vs tool routing](/internal/docs/agent-insights/bash-vs-tool-routing).',
     '>',
     '> ⚠ ToolSearch finding NOTHING for a `use` tool does not mean it is unavailable to you — a',
-    '> trimmed surface (su) exposes only a seed of the ~550-tool catalog, so `select:` and a',
+    '> trimmed surface (su) exposes only a seed of the full tool catalog, so `select:` and a',
     '> keyword search can both come back empty for a tool that exists. `tools:invoke { name:',
     '> "<server:verb>", args: {…} }` dispatches ANY catalog tool server-side, gated identically',
     '> to a direct call (verified for `testing:run`) — reach for that before falling back to the',

@@ -12,9 +12,6 @@
  * idle CPU + IO priority with a hard timeout.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { getWorkItem } from '../work-items';
-import { getMessageById, sendMessage } from '../agent-tools/coordination/messages';
-import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import { idlePriorityArgv } from './sync-batch-delta-check';
 import {
   buildSyncBatchDeltaDeps,
@@ -34,49 +31,19 @@ export const SYNC_LINT_GUARDS_FILED_BY = 'system:sync-batch-lint-guards';
 export const SYNC_LINT_GUARD_TIMEOUT_MS = 10 * 60_000;
 
 export function buildSyncLintGuardDeps(cfg: Omit<SyncBatchDeltaDepsConfig, 'filedBy'>): SyncLintGuardDeps {
-  const base = buildSyncBatchDeltaDeps({ ...cfg, filedBy: SYNC_LINT_GUARDS_FILED_BY });
+  const base = buildSyncBatchDeltaDeps({
+    ...cfg,
+    filedBy: SYNC_LINT_GUARDS_FILED_BY,
+    notificationPrefix: 'sync-lint-red',
+    notificationLogLabel: 'sync-lint-guards',
+  });
   const exec = cfg.exec ?? runBoundedArgv;
   return {
     hostLoad: () => base.hostLoad(),
     greenCheckpointRunning: () => base.greenCheckpointRunning(),
     headSha: () => base.headSha(),
     listBatches: (sinceSha) => base.listBatches(sinceSha),
-    async fileRed(finding) {
-      const result = await base.fileRed(finding);
-      if (!result.ok || !result.id || !finding.assignee) return result;
-      // Keep the filed/assigned red on a delivery miss. The pure tick holds this
-      // offender out of its baseline and retries the SAME condition next tick.
-      // An adopted item may have another holder: wake the actual owner only.
-      let filedAssignee: string | null | undefined;
-      try {
-        const item = await getWorkItem(result.id, cfg.installSlug);
-        filedAssignee = item?.assignee ?? null;
-        if (!filedAssignee) throw new Error('filed red has no readable assignee');
-        const target = filedAssignee;
-        const msgId = `sync-lint-red:${cfg.workspaceId}:${result.id}`;
-        const summary = `${result.id}: ${finding.title}`;
-        if (!await getMessageById(msgId)) {
-          await sendMessage({ ownerId: SYNC_LINT_GUARDS_FILED_BY, ownerLabel: SYNC_LINT_GUARDS_FILED_BY,
-            source: 'principal', workspaceId: cfg.workspaceId, userId: null }, {
-            to: [target], msgId, summary, body: finding.body,
-            files: finding.paths, harnessSlug: cfg.installSlug,
-            extra: { expects: 'action', workItemId: result.id },
-          });
-        }
-        const wake = await wakeRecipients([target], {
-          summary, payload: { workItemId: result.id, conditionKey: finding.conditionKey, msg_id: msgId },
-          source: SYNC_LINT_GUARDS_FILED_BY, workspaceId: cfg.workspaceId, requiredWake: true,
-        });
-        if ((wake.queued ?? wake.woken) < 1) {
-          throw new Error(`wake not queued for ${target} (staged=${wake.staged}, timedOut=${wake.timedOutTargets.length})`);
-        }
-        return { ...result, assignee: filedAssignee };
-      } catch (error) {
-        const notificationError = error instanceof Error ? error.message : String(error);
-        base.log(`[sync-lint-guards] ${result.id} remains filed; notification pending: ${notificationError}`);
-        return { ...result, ...(filedAssignee === undefined ? {} : { assignee: filedAssignee }), notificationError };
-      }
-    },
+    fileRed: (finding) => base.fileRed(finding),
     lookupEditors: (files, sinceMs) => base.lookupEditors!(files, sinceMs),
     now: () => base.now(),
     log: (message) => base.log(message),

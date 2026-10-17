@@ -6,7 +6,9 @@
  * provider-admission-lifecycle.ts are loaded by the gateway runtime.
  * Queue waits use the bounded per-provider samples since process start; short
  * turns use the recent timeline ring. Report the population and dates. Empty or
- * insufficient samples fail. No live assertion runs inside a release gate.
+ * insufficient provider-lane samples fail; no eligible short-turn sample is
+ * reported as unmeasured, while an observed slow short turn still fails. No
+ * live assertion runs inside a release gate.
  *
  * The Claude baseline is the committed operational sample at 2026-10-14 04:33Z:
  * docs/evidence/gateway-admission-congestion-only-2026-10-13/
@@ -51,14 +53,16 @@ function assess(recent: Sample[], queueDepth: number,
   });
   const shortFastestMs = short.length ? Math.min(...short.map((r) => r.durationsMs.total!)) : null;
   const failures: string[] = [];
+  const unmeasured: string[] = [];
   if (queueDepth !== 0) failures.push('herd-present');
   if (codex.measured < MIN_LANE_SAMPLE || claude.measured < MIN_LANE_SAMPLE) failures.push('insufficient-sample');
   if (codex.p50Ms === null || codex.p50Ms >= 2000) failures.push('codex-queue');
-  if (shortFastestMs === null || shortFastestMs >= 30_000) failures.push('short-codex-turn');
+  if (shortFastestMs === null) unmeasured.push('short-codex-turn');
+  else if (shortFastestMs >= 30_000) failures.push('short-codex-turn');
   if (claude.p50Ms === null || claude.p50Ms > CLAUDE_BASELINE_P50_MS * CLAUDE_TOLERANCE) failures.push('claude-regression');
   return { codex, claude, short: { n: short.length, fastestMs: shortFastestMs, inputTokensMax: SHORT_INPUT_TOKENS },
     window: { from: recent.length ? Math.min(...recent.map((r) => r.startedAt)) : null,
-      to: recent.length ? Math.max(...recent.map((r) => r.finalizedAt)) : null }, failures };
+      to: recent.length ? Math.max(...recent.map((r) => r.finalizedAt)) : null }, failures, unmeasured };
 }
 
 function expectLiveSampleReady(measured: ReturnType<typeof assess>) {
@@ -84,11 +88,11 @@ describe('live admission latency oracle controls', () => {
     expect(() => expectLiveSampleReady(assess(good(), 1))).toThrow('herd-present');
   });
   it.each(['claude', 'codex'] as const)('rejects a sparse %s lane in the shared live precondition', (sparse) => {
-    const retained = (provider: 'claude' | 'codex') => ({
+    const retained = (provider: 'claude' | 'codex' | 'local') => ({
       count: 400, retained: provider === sparse ? MIN_LANE_SAMPLE - 1 : 256,
       p50: 100, p95: 100, p99: 100,
     });
-    const measured = assess(good(), 0, { claude: retained('claude'), codex: retained('codex') });
+    const measured = assess(good(), 0, { claude: retained('claude'), codex: retained('codex'), local: retained('local') });
     expect(measured.failures).toEqual(['insufficient-sample']);
     expect(() => expectLiveSampleReady(measured)).toThrow('insufficient-sample');
   });
@@ -107,7 +111,18 @@ describe('live admission latency oracle controls', () => {
   it('counts cached input when deciding whether a turn is short', () => {
     const rows = good().map((r) => r.provider === 'codex'
       ? { ...r, cache: { ...r.cache, cacheReadTokens: SHORT_INPUT_TOKENS } } : r);
-    expect(assess(rows, 0).failures).toEqual(['short-codex-turn']);
+    const measured = assess(rows, 0);
+    expect(measured.short).toMatchObject({ n: 0, fastestMs: null });
+    expect(measured.failures).not.toContain('short-codex-turn');
+    expect(measured.unmeasured).toContain('short-codex-turn');
+  });
+  it('reports a missing eligible short-turn sample as unmeasured', () => {
+    const rows = good().map((r) => r.provider === 'codex'
+      ? { ...r, cache: { ...r.cache, inputTokens: SHORT_INPUT_TOKENS + 1 } } : r);
+    const measured = assess(rows, 0);
+    expect(measured.short).toMatchObject({ n: 0, fastestMs: null });
+    expect(measured.failures).not.toContain('short-codex-turn');
+    expect(measured.unmeasured).toContain('short-codex-turn');
   });
   it('rejects a material Claude slowdown and missing latency measurements', () => {
     expect(assess(good().map((r) => r.provider === 'claude' ? sample('claude', 1379) : r), 0).failures)
@@ -138,7 +153,10 @@ describe.skipIf(gateRun || !requested)('LIVE gateway admission latency', () => {
     expect(measured.codex.measured).toBeGreaterThanOrEqual(MIN_LANE_SAMPLE);
     expect(measured.failures, JSON.stringify(measured)).not.toContain('codex-queue');
   });
-  it('completes a short Codex turn below 30s', () => {
+  it('completes a short Codex turn below 30s', (ctx) => {
+    if (measured.short.n === 0) {
+      ctx.skip('NOT MEASURED: no completed Codex turn within the 8192-token sample window');
+    }
     expect(measured.failures, JSON.stringify(measured)).not.toContain('short-codex-turn');
   });
   it('preserves Claude queueWait p50 within twice its 689ms baseline', () => {

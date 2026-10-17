@@ -30,6 +30,18 @@ const FILE_OVERWRITE_MATCHER = 'Write|mcp__.*__capability_write';
 const MDX_NUDGE_MATCHER = 'Edit|Write|MultiEdit|docs:author|mcp__.*__docs[_:-]author';
 
 describe('mergeClaudeHookSettings — full install into empty settings', () => {
+  it('retires old standalone strand delivery entries during upgrade and preserves foreign hooks', () => {
+    const foreign = { matcher: 'Edit', hooks: [{ type: 'command', command: '/custom/check.sh' }] };
+    const cfg: any = { hooks: { PostToolUse: [foreign, ...[
+      'posttooluse-required-field-strand-nudge.mjs', 'posttooluse-behavioural-strand-nudge.mjs',
+    ].map(name => ({ matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: `${DEST}/${name}` }] }))] } };
+    const opts = { present: new Set<string>(), isClaudeSettings: true };
+    mergeClaudeHookSettings(cfg, DEST, opts);
+    expect(cfg.hooks.PostToolUse).toEqual([foreign]);
+    mergeClaudeHookSettings(cfg, DEST, opts);
+    expect(cfg.hooks.PostToolUse).toEqual([foreign]);
+  });
+
   it('registers every CC hook on its correct event(s) + the statusline', () => {
     const cfg = mergeClaudeHookSettings({}, DEST, { isClaudeSettings: true });
 
@@ -158,8 +170,6 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/posttooluse-write-byte-integrity-guard.mjs`,
       `${DEST}/posttooluse-su-instance-override-reseed.mjs`,
       `${DEST}/workitem-verify-nudge.sh`,
-      `${DEST}/posttooluse-required-field-strand-nudge.mjs`,
-      `${DEST}/posttooluse-behavioural-strand-nudge.mjs`,
       `${DEST}/posttooluse-ts-parse-nudge.mjs`,
       `${DEST}/posttooluse-mdx-nudge.mjs`,
       `${DEST}/posttooluse-launch-prose-budget-nudge.mjs`,
@@ -196,11 +206,10 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // hook, so the strand nudge itself had no assertion at all. Both happen to carry the same
     // matcher, which is why the mislabel stayed green — the by-name form makes the gap visible.
     expect(postMatcherOf('workitem-verify-nudge.sh')).toBe('Edit|Write|MultiEdit');
-    expect(postMatcherOf('posttooluse-required-field-strand-nudge.mjs')).toBe('Edit|Write|MultiEdit');
-    // EI-20022235111425919 — the behavioural sibling. It shipped in hooks/cc unregistered,
-    // so packaged installs copied an inert file; this assertion is what a re-orphaning would
-    // have to get past, alongside orphaned-cc-hooks.test.ts's list sweep.
-    expect(postMatcherOf('posttooluse-behavioural-strand-nudge.mjs')).toBe('Edit|Write|MultiEdit');
+    // P-037 delivers both analyses through the shared injector. Assert absence
+    // directly; the matcher helper deliberately throws for an absent hook.
+    expect(commandsFor(cfg, 'PostToolUse')).not.toContain(`${DEST}/posttooluse-required-field-strand-nudge.mjs`);
+    expect(commandsFor(cfg, 'PostToolUse')).not.toContain(`${DEST}/posttooluse-behavioural-strand-nudge.mjs`);
     expect(postMatcherOf('posttooluse-ts-parse-nudge.mjs')).toBe('Edit|Write|MultiEdit');
     expect(postMatcherOf('posttooluse-mdx-nudge.mjs')).toBe(MDX_NUDGE_MATCHER);
     const launchProseMatcher = new RegExp(postMatcherOf('posttooluse-launch-prose-budget-nudge.mjs')!);

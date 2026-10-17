@@ -209,6 +209,19 @@ describe('runFleetTransitionSweep', () => {
     expect(fired).toBe(2);
   });
 
+  it('shares the leader-recovery pass with the sweep without requiring a member pull', async () => {
+    const recoverObservedLeaders = vi.fn().mockResolvedValue(1);
+    const observations = [member({ sessionState: 'ended' })];
+    const fired = await runFleetTransitionSweep({
+      gather: async () => observations,
+      emit: vi.fn(),
+      recoverObservedLeaders,
+    });
+
+    expect(recoverObservedLeaders).toHaveBeenCalledWith(observations);
+    expect(fired).toBe(1);
+  });
+
   it('revalidates a context-critical edge against the current writer before delivery', async () => {
     await runFleetTransitionSweep({
       gather: async () => [member({ contextPressure: 'high' })],

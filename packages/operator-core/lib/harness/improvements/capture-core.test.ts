@@ -2019,7 +2019,7 @@ describe('captureImprovement — search-first dedup (D-001)', () => {
       created: false,
       reason: 'check-only',
       possibleDuplicates: [],
-      dedupCoverage: { lexical: 'skipped', semantic: 'skipped', degraded: false },
+      dedupCoverage: { lexical: 'skipped', semantic: 'skipped', degraded: true },
     });
     expect(res.hint).toContain('Observation-lane captures intentionally skip duplicate search');
     expect(res.hint).toContain('`possibleDuplicates: []` is not a duplicate verdict');

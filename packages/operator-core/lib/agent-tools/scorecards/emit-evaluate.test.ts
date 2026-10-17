@@ -365,6 +365,32 @@ describe('emitScorecard', () => {
     });
   });
 
+  // EI-25880885804871835: plans:evaluate-spec-quality returns a terminal draft
+  // without identity fields; scorecards:emit must stamp the reviewed rubric
+  // revision/hash before persistence so scorecards:get can classify currentness.
+  it('stamps rubric identity on evaluator-produced spec-quality cards', async () => {
+    const criteriaHash = 'a'.repeat(64);
+    getRubricM.mockResolvedValue({ ...RUBRIC, rubricId: 'spec-quality' });
+    getRubricPlanRevisionM.mockResolvedValue(5);
+    getRubricCriteriaHashM.mockResolvedValue(criteriaHash);
+
+    const r = await emitScorecard({
+      rubricRef: 'spec-quality',
+      subject: { kind: 'plan', ref: 'quality-plan:plan-class-feature-ship:spec-set' },
+      ratings: RATINGS,
+      terminal: true,
+    }, { createdBy: 'su-evaluator' });
+
+    expect(r).toMatchObject({ ok: true, created: true });
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: { observation: {
+        rubricRef: 'spec-quality',
+        rubricRevision: 5,
+        criteriaHash,
+      } },
+    });
+  });
+
   it('stamps a graded subject rubric separately from the scoring rubric', async () => {
     getRubricM.mockImplementation(async (ref) => ref === 'subject-rubric'
       ? { ...RUBRIC, rubricId: ref, revision: 4, criteriaHash: 'subject-hash' }
@@ -1744,6 +1770,77 @@ describe('emitScorecard', () => {
 });
 
 describe('evaluateScorecard', () => {
+  const deliveryRubric = (): Rubric => ({
+    ...BAR_ACCEPTANCE_RUBRIC,
+    ratingScale: ['pass', 'partial', 'fail', 'unknown'],
+    criteria: [{ ...RUBRIC.criteria[0], barKey: 'R-15', evidencePlane: 'deployed',
+      check: { kind: 'instrument', instrumentKey: 'none' } }, RUBRIC.criteria[1]],
+  });
+  const deliveryRatings = {
+    ...RATINGS, 'crit-a': { rating: 'unknown', evidence: 'No public artifact exists before publication; verify the public URL install after exact candidate approval.',
+      unknownReason: 'not-assessed' as const, nextEvidenceAction: 'After approval and publication, download into a fresh HOME and run the installed journey.' },
+  };
+
+  it('preflights and files an independent unknown review for an explicitly pending manual delivery BAR', async () => {
+    getRubricM.mockResolvedValue(deliveryRubric());
+    listM.mockResolvedValue([vettingCard(['su-critic'])]);
+    const request = { rubricRef: 'acceptance-rubric', pendingDeliveryBarKeys: ['R-15'] };
+    expect(await evaluateScorecard(request)).toMatchObject({ ok: true,
+      skeleton: expect.arrayContaining([expect.objectContaining({ key: 'crit-a', pendingDelivery: true, requiredRating: 'unknown' })]) });
+    expect(readAndEvaluateAcceptanceBarLifecycleM).toHaveBeenLastCalledWith('bar-plan', 'pre-grading', {
+      expectedApplicable: true, pendingDeliveryBarKeys: ['R-15'],
+    });
+    const emitted = await emitScorecard({ ...request, ratings: deliveryRatings }, { createdBy: 'su-grader' });
+    expect(emitted).toMatchObject({ ok: true, created: true });
+    expect(captureM.mock.calls[0][0]).toMatchObject({ payloadExtra: { observation: { ratings: deliveryRatings } } });
+    expect(readAndEvaluateAcceptanceBarLifecycleM).toHaveBeenLastCalledWith('bar-plan', 'pre-grading', {
+      expectedApplicable: true, pendingDeliveryBarKeys: ['R-15'],
+    });
+  });
+
+  it.each(['pass', 'partial', 'fail'])('refuses a %s claim on pending delivery in both scorecard doors', async (rating) => {
+    getRubricM.mockResolvedValue(deliveryRubric());
+    const args = { rubricRef: 'acceptance-rubric', pendingDeliveryBarKeys: ['R-15'],
+      ratings: { ...RATINGS, 'crit-a': { rating, evidence: 'No published artifact.' } } };
+    expect(await evaluateScorecard(args)).toMatchObject({ ok: false, code: 'pending_delivery_review_invalid' });
+    expect(await emitScorecard(args, { createdBy: 'su-grader' }))
+      .toMatchObject({ ok: false, code: 'pending_delivery_review_invalid' });
+    expect(readAndEvaluateAcceptanceBarLifecycleM).not.toHaveBeenCalled();
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it.each(['tree', 'tests', 'absent', 'duplicate', 'legacy'])('rejects an invalid %s pending-delivery review', async (invalid) => {
+    const rubric = deliveryRubric();
+    if (invalid === 'tree') rubric.criteria[0].evidencePlane = 'tree';
+    if (invalid === 'tests') rubric.criteria[0].check = { kind: 'tests', files: ['x.test.ts'] };
+    if (invalid === 'legacy') rubric.barContract = undefined;
+    getRubricM.mockResolvedValue(rubric);
+    const args = { rubricRef: 'acceptance-rubric', pendingDeliveryBarKeys: invalid === 'duplicate' ? ['R-15', 'R-15']
+      : [invalid === 'absent' ? 'R-missing' : 'R-15'], ratings: deliveryRatings };
+    expect(await evaluateScorecard(args)).toMatchObject({ ok: false, code: 'pending_delivery_review_invalid' });
+    expect(await emitScorecard(args, { createdBy: 'su-grader' }))
+      .toMatchObject({ ok: false, code: 'pending_delivery_review_invalid' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('refuses final author acceptance with pending delivery', async () => {
+    getRubricM.mockResolvedValue(deliveryRubric());
+    expect(await emitScorecard({ rubricRef: 'acceptance-rubric', pendingDeliveryBarKeys: ['R-15'],
+      ratings: deliveryRatings, acceptance: { verdict: 'accept', reasoning: 'Premature final accept.' } },
+    { createdBy: 'su-implementer' })).toMatchObject({ ok: false, code: 'pending_delivery_review_invalid' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('still requires measured runtime citations for a different deployed BAR', async () => {
+    const rubric = deliveryRubric();
+    rubric.criteria[1] = { ...rubric.criteria[1], barKey: 'R-16', evidencePlane: 'live' };
+    getRubricM.mockResolvedValue(rubric);
+    expect(await emitScorecard({ rubricRef: 'acceptance-rubric', pendingDeliveryBarKeys: ['R-15'],
+      ratings: { ...deliveryRatings, 'crit-b': { ...deliveryRatings['crit-a'] } } }, { createdBy: 'su-grader' }))
+      .toMatchObject({ ok: false, code: 'acceptance_runtime_citation_missing' });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
   it('no ratings → returns the read-only grading skeleton (never validates/dedupes)', async () => {
     const r = await evaluateScorecard({ rubricRef: 'test-rubric' });
     expect(r).toMatchObject({ ok: true, skeleton: [{ key: 'crit-a' }, { key: 'crit-b' }], latest: null });
@@ -2676,3 +2773,4 @@ describe('scorecards:emit — author acceptance by exact reference (P-003)', () 
     expect(captureM).not.toHaveBeenCalled();
   });
 });
+vi.mock('../../acceptance-rubric-critique', () => ({ readCurrentAcceptanceRubricCritique: vi.fn(async () => null) }));

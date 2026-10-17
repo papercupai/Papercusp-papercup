@@ -1207,7 +1207,15 @@ function menuSnapshot(owners: string[]) {
   return {
     candidates: owners.map((o, i) => ({ ownerId: o, score: 0.9 - i * 0.1, liveness: 'live' })),
     selection: {
-      selected: owners.map((o, i) => ({
+      selected: owners.map((o, i): {
+        ownerId: string;
+        via: 'floor';
+        score: number;
+        similarity: number;
+        liveness: string;
+        /** Set by tests whose answering fork differs from the routed expert. */
+        answeringOwnerId?: string;
+      } => ({
         ownerId: o,
         via: 'floor' as const,
         score: 0.9 - i * 0.1,

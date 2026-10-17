@@ -159,7 +159,8 @@ describe('writeRipgrepShim — the generated entry point', () => {
     );
     expect(err.stderr).toContain('ripgrep is unavailable');
     expect(err.stderr).toContain('grep -rn');
-    expect(err.stderr).toContain('gitnexus.context');
+    expect(err.stderr).toContain('lsp:query (compiler symbol lookup)');
+    expect(err.stderr).not.toContain('gitnexus');
   });
 
   it('stands aside when a real ripgrep resolves elsewhere — and writes nothing', async () => {

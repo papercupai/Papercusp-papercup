@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "P036 current-build first-touch brief delivery and session duplicate suppression",
+  "framework": "node",
+  "command": ["env", "-u", "NODE_OPTIONS", "node", "--input-type=module"],
+  "exitCode": 0,
+  "startedAt": "2026-10-16T02:03:55.214Z",
+  "finishedAt": "2026-10-16T02:04:43.574Z",
+  "summary": "The production mid-turn endpoint on the measured current build delivered a first-touch snapshot brief for an indexed source file. Native database readback corroborated the subject, snapshot, exact test call, session epoch and character charge. A second request returned an empty response. Unknown docs, spec links, live locks and runtime execution were stated explicitly; positive source-link and lock fixtures are covered by maintained tests, separately from this runtime witness.",
+  "assertions": [
+    {"id": "first-touch-delivered", "passed": true, "evidence": "HTTP200 positive response contains the first-touch heading, three exported symbols, consumer workspace, exact testing:run call and snapshot limitations. requests.first.payload.text preserves the full response."},
+    {"id": "ledger-corroborated", "passed": true, "evidence": "Native localhost5432/papercusp readback returned the same subject and suggested call at 2026-10-16T02:03:55.440961Z, epoch33 and chars1008. The ledger charges two separator chars beyond the1006-character response."},
+    {"id": "session-duplicate-suppressed", "passed": true, "evidence": "Same self identity, actual indexed path and unchanged server turn/epoch: HTTP200 returned text empty at 2026-10-16T02:04:43.574Z. No synthetic identity or server budget reset was used."}
+  ],
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "workItem": "WI-6554700010015197",
+  "scope": "P-036 current-build acceptance only. Final release shipment, global latency and whole-plan acceptance remain open.",
+  "runtime": {
+    "routeClass": "operator-api",
+    "endpoint": "http://127.0.0.1:3170/api/agent-mcp/mid-turn-context",
+    "buildSha": "bb1128e2d8",
+    "identitySource": "dev:pipeline_position at 2026-10-16T02:02Z: staging-operator containsChange true for push-channel.ts",
+    "owner": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+    "workspace": "papercusp-workspace",
+    "harness": "papercusp",
+    "client": "codex",
+    "sourcePath": "apps/operator-public/src/__tests__/fake-d1.ts",
+    "requestTool": "Read",
+    "identityBoundary": "Verified existing self identity over loopback; no arbitrary server identity, turn or epoch mutation",
+    "witnessScope": "Direct production endpoint replay of a Read call, not proof that a newly installed native Read hook emitted this call"
+  },
+  "requests": {
+    "first": {
+      "startedAt": "2026-10-16T02:03:55.214Z",
+      "finishedAt": "2026-10-16T02:03:55.510Z",
+      "status": 200,
+      "ms": 295.041783,
+      "payload": {
+        "ok": true,
+        "text": "## Code intelligence (first-touch)\nSnapshot ec311ee1563a · 2026-10-15T19:43:57.923Z\napps/operator-public/src/__tests__/fake-d1.ts: 29 static file importers in this snapshot; examples: apps/operator-public/src/__tests__/catalog-fields.test.ts, apps/operator-public/src/__tests__/commerce.test.ts.\nExports (up to 3): Row:11 >=0 static calls [workspace unknown]; mapInsertBindsByName:143 >=5 static calls [@papercusp/cupboard-worker (apps/operator-public)]; FakeStore:256 >=1 static calls [@papercusp/cupboard-worker (apps/operator-public)].\nTests with static import reach: testing:run {\"files\":[\"apps/operator-public/src/__tests__/catalog-fields.test.ts\",\"apps/operator-public/src/__tests__/commerce.test.ts\"],\"harness\":\"papercusp\"}.\nAnchored docs: unknown. Spec evidence links: unknown (currentness unknown).\nLive consumer locks/claims: unknown.\nSnapshot lower bounds only; current source hashes, unindexed exports, dynamic dispatch, untracked anchors, source completeness and runtime execution are unknown."
+      }
+    },
+    "duplicate": {
+      "startedAt": "2026-10-16T02:04:39.942Z",
+      "finishedAt": "2026-10-16T02:04:43.574Z",
+      "status": 200,
+      "ms": 3631.199075,
+      "payload": {"ok": true, "text": ""}
+    }
+  },
+  "ledgerReadback": {
+    "leg": "first-touch",
+    "subject": "apps/operator-public/src/__tests__/fake-d1.ts",
+    "chars": 1008,
+    "epoch": 33,
+    "turn": "59bebcd1-a76a-4806-a04b-f47810883544",
+    "snapshotCommit": "ec311ee1563a079bfffbc84d4bd3c1a6a389c4fa",
+    "snapshotGeneratedAt": "2026-10-15T19:43:57.923Z",
+    "suggestedCall": "testing:run {\"files\":[\"apps/operator-public/src/__tests__/catalog-fields.test.ts\",\"apps/operator-public/src/__tests__/commerce.test.ts\"],\"harness\":\"papercusp\"}",
+    "pushedAt": "2026-10-16T02:03:55.440961Z"
+  },
+  "qualification": {
+    "testLog": ".papercusp/scratch/native-p037-core-v2-tests-20261016.log",
+    "sourceMap": ".papercusp/scratch/native-p037-core-v2-source-20261016.json",
+    "suite": "packages/operator-core/lib/code-intelligence/push-channel.test.ts",
+    "passed": 17,
+    "skipped": 0,
+    "otherSuitePassed": 130,
+    "childSubstituted": 0,
+    "scope": "Named Vite original source hashes corroborated separately; router recorded changing HEAD and unknown overall provenance. No complete execution-graph claim.",
+    "earlierSourceLinkWitness": "WI-6554700010015197 checkpoint: spec-evidence-store.integration.test.ts positive real-PG source-link case passed; committed fixture hash caf36215e4301b04d2153a295012768edeb991161b9c3c383f806cb8ea696b1c",
+    "typecheck": "Existing final scoped six-file check passed exit0/clean; /tmp/native-p035-p036-final-types-v3-20261015.log. No source edit was made in this continuation."
+  },
+  "sourceHashes": {
+    "packages/operator-core/lib/code-intelligence/push-channel.ts": "e324963a756025d469545a40e176989e96dac860da40c55ac3b2b01d0b886c26",
+    "packages/operator-core/lib/code-intelligence/push-channel.test.ts": "a3a692f3d41d945bf01323ef5ad947b7153d6656f94bbf166f72d0d278628466",
+    "packages/operator-core/lib/code-intelligence/push-snapshot.ts": "9973f696b4d5c0835159355c000d0159b09439f8e8017cfedb22f90305832f44",
+    "packages/operator-core/lib/endpoint-route/routes/agent-mcp/mid-turn-context.ts": "52d55ef61904274cc378ca175854b5de40f1723f8c1d4fb73127d04a5af4bf00"
+  },
+  "limits": [
+    "Current-build endpoint replay plus ledger readback; no newly observed installed-native Read event is claimed.",
+    "The positive runtime witness has no matching docs, spec links or live consumer locks. Maintained positive fixtures establish those branches separately.",
+    "Earlier emptiness for packages/operator-core/lib/testing/fake-d1.ts used a non-indexed path and is not a delivery defect.",
+    "Valid-path empty responses before the positive request did not charge the session ledger. Their precise suppression cause remains unmeasured; do not attribute it to load, memory budget or cold parsing.",
+    "The duplicate request was slow; this one sample does not establish the latency distribution or its cause.",
+    "Final-release shipment and plan-wide acceptance are not established by this artifact."
+  ]
+}

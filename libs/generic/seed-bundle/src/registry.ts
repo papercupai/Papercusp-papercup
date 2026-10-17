@@ -24,7 +24,33 @@ export interface SeedCutContext {
 
 /** Provider-specific context for a restore (first-boot time). */
 export interface SeedRestoreContext {
+  /** Optional host logger for distinguishing a held verify from a held restore. */
+  readonly onPhase?: (event: SeedRestorePhaseEvent) => void;
+  /**
+   * Optional immutable identity carried into the process-local diagnostic
+   * snapshot.  The inspector uses these values to refuse observations from a
+   * different build or source revision.  They are diagnostic metadata only and
+   * never affect restore behaviour.
+   */
+  readonly diagnosticIdentity?: SeedRestoreDiagnosticIdentity;
   readonly [k: string]: unknown;
+}
+
+export interface SeedRestoreDiagnosticIdentity {
+  readonly processInstanceId?: string | null;
+  readonly buildSha?: string | null;
+  readonly sourceSha256?: string | null;
+  readonly script?: string | null;
+}
+
+/** A diagnostic boundary emitted while a store is being restored. */
+export type SeedRestorePhase = 'resolve' | 'verify' | 'restore';
+export type SeedRestorePhaseState = 'started' | 'succeeded' | 'failed';
+export interface SeedRestorePhaseEvent {
+  readonly kind: string;
+  readonly phase: SeedRestorePhase;
+  readonly state: SeedRestorePhaseState;
+  readonly reason?: string;
 }
 
 /** The verdict of {@link SeedProvider.verify}. */

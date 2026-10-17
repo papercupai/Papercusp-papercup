@@ -7,51 +7,83 @@
 import { lstat, readFile, readdir, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
-import { homedir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import type { ChildProcess } from 'node:child_process';
+import type { ReclaimPhaseTiming } from '../release-cut-reclaim';
 import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { openWriterPidsMany, type OpenWriterScan } from '../native-bg-task-ledger';
 import { readRegistry } from '../workspace-registry';
 import { mapWithConcurrency } from '../gym/concurrency';
 import { sampleDiskSnapshots, type DiskSnapshot } from './disk-space-alarm';
+import { RetentionAllocationCounter, type RetentionHardlink } from './disk-consumer-census';
 import {
   RETENTION_POLICY, compilePolicy, containsClassRoot, deletionClassFor,
-  retentionRootSizeCap,
+  retentionRootSizeCap, buildDirsEligible, isBuildDirName, BUILD_DIR_NAMES, CACHEDIR_TAG_SIGNATURE,
   type CompiledPolicy, type RetentionClass, type RetentionPinProtection,
 } from './retention-policy';
 
 export const DISK_RECLAIM_STEP = 'disk-retention-reclaim';
 export const DISK_RECLAIM_CRONTAB = '0 12 * * * *';
 export const DISK_HEADROOM_BYTES = 100 * 1024 ** 3;
+export const DEFAULT_RECLAIM_RUN_BUDGET_MS = 15 * 60_000;
+/** Keep later scheduled passes inside the deadline established by the first
+ * persisted receipt. The first pass uses the normal run budget. */
+export function reclaimRunBudgetForDrain(notAfterMs: number | undefined, nowMs = Date.now()): number | undefined {
+  if (notAfterMs === undefined) return undefined;
+  return Math.max(1, Math.min(DEFAULT_RECLAIM_RUN_BUDGET_MS, notAfterMs - nowMs));
+}
 const HOUR = 3_600_000;
 const EFFECT_BUDGET_SUFFIX = ': effect budget exhausted; resume with a fresh policy census';
 const effectBudgetError = (root: string) => `incomplete retention effects:${root}${EFFECT_BUDGET_SUFFIX}`;
+const sizeCapError = (root: string, overByBytes: number) => `size cap remains exceeded:${root}:${overByBytes}`;
 
 export interface RetentionEntry {
   path: string; root: string; classId: string;
   newestWriteMs: number; bytes: number; dev: number; ino: number;
+  hardlinks?: RetentionHardlink[];
+  /** Ownership is revalidated by the native regular-file lease proof. */
+  uid?: number; gid?: number;
   protectedReason?: string;
+  buildDirs?: Array<{ path: string; dev: number; ino: number }>;
+  /** Reclaim only rebuildable descendants; the source entry stays. */
+  buildOnly?: boolean;
 }
+interface BuildRemovalResult { removed: Array<{ path: string; bytes: number }>; }
+export interface RetentionFileLease { release: () => Promise<void>; }
 export interface ReclaimDelegate {
   classId: string;
-  run: (dryRun: boolean) => Promise<{ ok: boolean; detail: unknown }>;
+  run: (dryRun: boolean, onPhase?: (event: ReclaimPhaseTiming) => void, notAfterMs?: number) => Promise<{ ok: boolean; detail: unknown }>;
 }
 export interface RetentionCapReceipt {
   root: string; classId: string; maxBytes: number; beforeBytes: number;
   pinnedBytes: number; pinnedPaths: string[]; afterBytes: number;
   overByBytes: number; pinnedOverageBytes: number;
 }
+/** Offsets from one enrolled command's start, including terminal persistence.
+ * Child exit and launch bookkeeping can finish in either order. */
+export interface NativeRetentionTiming {
+  taskId: string | null;
+  totalMs: number;
+  spawnedAfterMs: number | null;
+  childClosedAfterMs: number | null;
+  launchReturnedAfterMs: number | null;
+  completedAfterMs: number | null;
+  stages: Array<{ name: string; elapsedMs: number }>;
+}
 export interface DiskReclaimReceipt {
   schemaVersion: 1; id: string; startedAt: string; finishedAt: string; dryRun: boolean;
+  /** Native machine identity; legacy hostless receipts cannot certify a host soak. */
+  host?: string;
   complete: boolean;
   /** Unknown for partial runs; a successful run drained every unprotected selected entry. */
   policyExhausted: boolean | null;
   devices: Array<{ path: string; beforeFreeBytes: number | null; afterFreeBytes: number | null; atTarget: boolean | null }>;
-  entries: Array<{ path: string; classId: string; status: 'removed' | 'would-remove' | 'protected' | 'changed' | 'failed'; bytes: number; reason?: string }>;
-  delegates: Array<{ classId: string; ok: boolean; detail: unknown }>;
+  entries: Array<{ path: string; classId: string; status: 'removed' | 'would-remove' | 'protected' | 'changed' | 'failed'; bytes: number; reason?: string; nativeCommand?: NativeRetentionTiming }>;
+  delegates: Array<{ classId: string; ok: boolean; detail: unknown; elapsedMs?: number;
+    phases?: Array<ReclaimPhaseTiming & { observedAfterMs: number }>; omittedPhases?: number }>;
   errors: string[];
   caps?: RetentionCapReceipt[];
   /** Physical roots actually enforced; aliases share identity, selection and holder evidence. */
@@ -67,6 +99,9 @@ export interface DiskReclaimReceipt {
 }
 export interface DiskReclaimOptions {
   dryRun?: boolean; home?: string; policy?: readonly RetentionClass[];
+  /** Reuse the last durable local receipt to give roots after a blocked census
+   * the first turn next time. Selection and all safety evidence remain fresh. */
+  previousReceipt?: DiskReclaimReceipt | null;
   /** Dependency seams also permit an isolated fixture tree; production uses the policy roots. */
   roots?: Array<{ path: string; classId: string }>;
   /** Inspection bounds apply independently to each policy root; an incomplete root cannot starve another. */
@@ -75,6 +110,9 @@ export interface DiskReclaimOptions {
   effectBudgetMs?: number;
   /** Whole-pass deadline, including all roots and delegates. */
   runBudgetMs?: number;
+  /** Scheduled drains checkpoint productive partial roots before inspecting
+   * another root. Standalone passes retain their independent-root fairness. */
+  yieldAfterProductiveEffects?: boolean;
   sample?: () => Promise<DiskSnapshot[]>;
   scanHolders?: (paths: readonly string[]) => Promise<OpenWriterScan>;
   registeredWorkspaces?: () => string[];
@@ -90,7 +128,11 @@ export interface DiskReclaimOptions {
   inspectTrees?: typeof import('./disk-consumer-census').inspectRetentionTrees;
   /** Production supplies an enrolled privileged remover. Only policy-selected,
    * remeasured agent children reach it, after fresh host holder evidence. */
-  removeEntry?: (entry: RetentionEntry, timeoutMs: number) => Promise<void>;
+  removeEntry?: (entry: RetentionEntry, timeoutMs: number, observeTiming?: (timing: NativeRetentionTiming) => void, dryRun?: boolean) => Promise<void | BuildRemovalResult>;
+  /** Explicit native proof for regular-file effects. The returned lease is held
+   * across the effect and released in the effect finally block. Directories
+   * never use this seam and retain their complete host holder scan. */
+  acquireRegularFileLease?: (entry: RetentionEntry, timeoutMs: number) => Promise<RetentionFileLease>;
 }
 
 /** The workflow checkpoints each callback separately. Only safe, productive
@@ -121,6 +163,14 @@ export async function drainScheduledDiskReclaim(
     notAfterMs ??= started + maxElapsedMs;
     const budgetErrors = new Set(receipt.effects?.filter((effect) => effect.stopped && effect.remaining > 0)
       .map((effect) => effectBudgetError(effect.root)));
+    // A budget-stopped capped root reports its measured remaining overage too.
+    // Resume only that exact companion error; permanent or unrelated cap
+    // failures still stop, and the original deadline and safety checks apply.
+    for (const cap of receipt.caps ?? []) {
+      if (budgetErrors.has(effectBudgetError(cap.root)) && cap.overByBytes > cap.pinnedOverageBytes) {
+        budgetErrors.add(sizeCapError(cap.root, cap.overByBytes));
+      }
+    }
     if (!receipt.errors.length || receipt.errors.some((error) => !budgetErrors.has(error)) ||
         receipt.delegates.some((delegate) => !delegate.ok) || receipt.entries.some((entry) => entry.status === 'failed')) {
       return { ...result, stop: 'error' };
@@ -136,12 +186,14 @@ export type ReclaimSql = Pick<import('postgres').Sql, 'unsafe'>;
  * Expected readbacks compare JSON values: JSONB may reorder object keys, while
  * changed values, missing records and reordered arrays must still fail closed.
  */
-export async function readReclaimReceipt(sql: ReclaimSql, workspaceId: string, id?: string, expected?: DiskReclaimReceipt): Promise<DiskReclaimReceipt | null> {
+export async function readReclaimReceipt(sql: ReclaimSql, workspaceId: string, id?: string, expected?: DiskReclaimReceipt,
+  options: { requireScan?: boolean } = {}): Promise<DiskReclaimReceipt | null> {
   const rows = await sql.unsafe(
     `SELECT details FROM harness_shared.audit_log
       WHERE workspace_id = $1 AND action = 'disk-retention:receipt'
         AND jsonb_typeof(details) = 'object' AND details->>'schemaVersion' = '1'
         AND details->>'id' = subject
+        ${options.requireScan ? "AND jsonb_typeof(details->'scan') = 'object'" : ''}
         ${id ? 'AND subject = $2' : "AND details->>'dryRun' = 'false'"}
       ORDER BY ts DESC, id DESC LIMIT 1`,
     id ? [workspaceId, id] : [workspaceId],
@@ -174,6 +226,9 @@ export async function scanRetentionHolders(paths: readonly string[], deps: {
   uid?: () => number;
   scan?: typeof openWriterPidsMany;
   privileged?: (paths: readonly string[], control: string) => Promise<OpenWriterScan>;
+  /** Reuse the isolated worker even when the host itself runs as root. */
+  isolate?: boolean;
+  includeProcessLinks?: boolean;
 } = {}): Promise<OpenWriterScan> {
   const status = await (deps.readStatus ?? (() => readFile('/proc/self/status', 'utf8')))().catch(() => '');
   const ids = /^NSpid:\s*(.+)$/m.exec(status)?.[1]?.trim().split(/\s+/);
@@ -181,11 +236,12 @@ export async function scanRetentionHolders(paths: readonly string[], deps: {
   if (!ids || ids.length !== 1) return incompleteHolders('host PID namespace control unavailable');
   const control = process.cwd();
   const wanted = [...new Set([...paths, control])];
-  const scan = (deps.uid ?? (() => process.getuid?.() ?? -1))() === 0
+  const scan = (deps.uid ?? (() => process.getuid?.() ?? -1))() === 0 && !deps.isolate
     ? await (deps.scan ?? openWriterPidsMany)(wanted, {
       descendants: true, includeCwd: true, failClosed: true, deadlineMs: RETENTION_HOLDER_SCAN_MS,
+      ...(deps.includeProcessLinks ? { includeProcessLinks: true } : {}),
     })
-    : await (deps.privileged ?? scanPrivilegedRetentionHolders)(wanted, control)
+    : await (deps.privileged ?? ((paths, control) => scanPrivilegedRetentionHolders(paths, control, deps.includeProcessLinks)))(wanted, control)
       .catch((err) => incompleteHolders(`privileged holder scan failed: ${message(err)}`));
   if (!scan.byPath.get(control)?.includes(String(process.pid))) {
     scan.complete = false;
@@ -194,8 +250,8 @@ export async function scanRetentionHolders(paths: readonly string[], deps: {
   return scan;
 }
 
-async function scanPrivilegedRetentionHolders(paths: readonly string[], control: string): Promise<OpenWriterScan> {
-  const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? process.cwd();
+async function scanPrivilegedRetentionHolders(paths: readonly string[], control: string, includeProcessLinks = false): Promise<OpenWriterScan> {
+  const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
   const require = createRequire(join(repoRoot, 'package.json'));
   // Reuse the scanner from canonical source; the elevated child only reads /proc.
   // Both namespaces and the ORIGINAL caller's PID are positive controls.
@@ -211,6 +267,7 @@ async function scanPrivilegedRetentionHolders(paths: readonly string[], control:
     const { openWriterPidsMany } = await import(process.argv[1]);
     const result = await openWriterPidsMany(paths, {
       descendants: true, includeCwd: true, failClosed: true, deadlineMs: ${RETENTION_HOLDER_SCAN_MS},
+      includeProcessLinks: ${includeProcessLinks},
       // This process is an enrolled, isolated worker, never the operator loop.
       procIo: { readdir: (path) => readdirSync(path), readlink: (path) => readlinkSync(path) },
     });
@@ -280,6 +337,7 @@ export function createRetentionHolderScanner(deps: {
   let child: ChildProcess | undefined, starting: Promise<ChildProcess> | undefined;
   let ended = false, closed = false, buffer = '', stderr = '';
   let pending: { resolve: (line: string) => void; reject: (error: Error) => void } | undefined;
+  let activeLeaseToken: string | undefined;
   let serial = Promise.resolve();
   const fail = (reason: string) => {
     ended = true;
@@ -305,7 +363,8 @@ export function createRetentionHolderScanner(deps: {
         spawned.once('error', (error) => fail(message(error)));
         spawned.once('close', () => fail('holder worker closed'));
         spawned.stdin?.on('error', (error) => fail(message(error)));
-        spawned.stderr?.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-4000); });
+        spawned.stderr?.setEncoding('utf8');
+        spawned.stderr?.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4000); });
         spawned.stdout?.setEncoding('utf8');
         spawned.stdout?.on('data', (chunk: string) => {
           buffer += chunk;
@@ -335,14 +394,7 @@ export function createRetentionHolderScanner(deps: {
     }
     const spawned = await start();
     if (ended || closed) return incompleteHolders('kernel holder worker ended');
-    const line = await new Promise<string>((resolveLine, rejectLine) => {
-      const timer = setTimeout(() => { fail('kernel holder request deadline'); spawned.kill('SIGKILL'); }, RETENTION_HOLDER_SCAN_MS);
-      pending = {
-        resolve: (value) => { clearTimeout(timer); resolveLine(value); },
-        reject: (error) => { clearTimeout(timer); rejectLine(error); },
-      };
-      spawned.stdin!.write(JSON.stringify({ path: paths[0], caller: process.pid, control }) + '\n');
-    });
+    const line = await requestWorker(spawned, { path: paths[0], caller: process.pid, control }, RETENTION_HOLDER_SCAN_MS);
     const result = JSON.parse(line), d = result?.diagnostics;
     if (result?.complete !== true || !d || d.fdEnd !== 1 || d.cwdEnd !== 1 || d.readFailures !== 0 ||
         d.identityStable !== true || ![d.callerSeen, d.descriptorsScanned, d.processesScanned].every((n) => Number.isSafeInteger(n) && n > 0) ||
@@ -361,9 +413,71 @@ export function createRetentionHolderScanner(deps: {
     return { complete: true, byPath: new Map([[control, [String(process.pid)]], ...paths.filter(() => pids.length).map((path): [string, string[]] => [path, pids])]),
       diagnostics: { elapsedMs: d.elapsedMs, readFailures: 0, descriptorsScanned: d.descriptorsScanned, processesScanned: d.processesScanned } };
   };
+  function requestWorker(spawned: ChildProcess, request: Record<string, unknown>, timeoutMs: number): Promise<string> {
+    return new Promise<string>((resolveLine, rejectLine) => {
+      const timeout = Math.max(1, Math.min(timeoutMs, RETENTION_HOLDER_SCAN_MS));
+      const timer = setTimeout(() => {
+        const error = new Error('holder worker request deadline');
+        const current = pending;
+        pending = undefined;
+        current?.reject(error);
+        fail(error.message);
+        spawned.kill('SIGKILL');
+      }, timeout);
+      pending = {
+        resolve: (value) => { clearTimeout(timer); resolveLine(value); },
+        reject: (error) => { clearTimeout(timer); rejectLine(error); },
+      };
+      try { spawned.stdin!.write(JSON.stringify(request) + '\n'); }
+      catch (error) { clearTimeout(timer); pending = undefined; rejectLine(new Error(message(error))); }
+    });
+  }
+  const acquireRegularFileLease = (entry: RetentionEntry, timeoutMs: number): Promise<RetentionFileLease> => {
+    const run = serial.then(async () => {
+      if (closed || ended) throw new Error('retention holder scanner unavailable');
+      if (activeLeaseToken) throw new Error('regular-file lease already held');
+      if (!Number.isSafeInteger(entry.dev) || !Number.isSafeInteger(entry.ino) ||
+          !Number.isSafeInteger(entry.uid) || !Number.isSafeInteger(entry.gid) ||
+          !Number.isFinite(entry.newestWriteMs)) throw new Error('regular-file lease identity incomplete');
+      const spawned = await start();
+      const line = await requestWorker(spawned, {
+        operation: 'lease-acquire', path: entry.path, caller: process.pid, control: process.cwd(),
+        dev: entry.dev, ino: entry.ino, newestWriteMs: entry.newestWriteMs, uid: entry.uid, gid: entry.gid,
+      }, timeoutMs);
+      let result: any;
+      try { result = JSON.parse(line); } catch { throw new Error('regular-file lease response was not JSON'); }
+      const token = result?.lease?.token;
+      if (result?.complete !== true || result?.lease?.type !== 'write' || typeof token !== 'string' ||
+          token.length < 16 || result?.diagnostics?.backend !== 'fcntl-file-lease' ||
+          result?.diagnostics?.identityStable !== true) {
+        throw new Error(`regular-file lease unavailable: ${result?.diagnostics?.reason ?? 'incomplete evidence'}`);
+      }
+      activeLeaseToken = token;
+      let released = false;
+      return {
+        release: async () => {
+          if (released) return;
+          released = true;
+          try {
+            const releaseLine = await requestWorker(spawned, { operation: 'lease-release', token }, RETENTION_HOLDER_SCAN_MS);
+            let releaseResult: any;
+            try { releaseResult = JSON.parse(releaseLine); } catch { throw new Error('regular-file lease release response was not JSON'); }
+            if (releaseResult?.complete !== true || releaseResult?.released !== true ||
+                releaseResult?.diagnostics?.breakRequested === true) {
+              throw new Error(`regular-file lease release incomplete: ${releaseResult?.diagnostics?.reason ?? 'lease break requested'}`);
+            }
+          } finally {
+            activeLeaseToken = undefined;
+          }
+        },
+      } satisfies RetentionFileLease;
+    });
+    serial = run.then(() => {}, () => {});
+    return run;
+  };
   const scan = (paths: readonly string[]): Promise<OpenWriterScan> => {
     const run = serial.then(async () => {
-      if (closed) return incompleteHolders('retention holder scanner closed');
+      if (closed || activeLeaseToken) return incompleteHolders('retention holder scanner unavailable while regular-file lease is held');
       return scanRetentionHolders(paths, { uid: () => 1, privileged: async (wanted, control) => {
         const candidates = wanted.filter((path) => path !== control);
         let result: OpenWriterScan;
@@ -388,7 +502,55 @@ export function createRetentionHolderScanner(deps: {
       spawned.once('close', () => { clearTimeout(timer); resolveClosed(); });
     });
   };
-  return { scan, close };
+  return { scan, acquireRegularFileLease, close };
+}
+
+/** Root usage is a union of allocations. Removing a name releases a shared
+ * allocation only after its last retained entry leaves the population. */
+class RetentionUsage {
+  bytes = 0;
+  private entries = new Map<string, RetentionEntry>();
+  private shared = new Map<string, { bytes: number; refs: number }>();
+  constructor(entries: readonly RetentionEntry[]) { for (const entry of entries) this.add(entry); }
+  private add(entry: RetentionEntry): void {
+    this.entries.set(entry.path, entry);
+    this.bytes += entry.bytes;
+    for (const link of entry.hardlinks ?? []) {
+      const key = `${link.dev}:${link.ino}`, prior = this.shared.get(key);
+      if (prior) {
+        if (prior.bytes !== link.bytes) throw new Error('inconsistent hardlink allocation census');
+        prior.refs++; this.bytes -= link.bytes;
+      } else this.shared.set(key, { bytes: link.bytes, refs: 1 });
+    }
+  }
+  remove(path: string): void {
+    const entry = this.entries.get(path);
+    if (!entry) return;
+    this.entries.delete(path); this.bytes -= entry.bytes;
+    for (const link of entry.hardlinks ?? []) {
+      const key = `${link.dev}:${link.ino}`, shared = this.shared.get(key)!;
+      if (--shared.refs) this.bytes += link.bytes;
+      else this.shared.delete(key);
+    }
+  }
+  removeBuilds(path: string, removed: BuildRemovalResult['removed']): void {
+    let entry = this.entries.get(path)!;
+    for (const target of removed) {
+      const underTarget = (value: string) => value === target.path || value.startsWith(target.path + '/');
+      let bytes = entry.bytes - target.bytes;
+      const hardlinks: RetentionHardlink[] = [];
+      for (const link of entry.hardlinks ?? []) {
+        const paths = link.paths.filter(value => !underTarget(value));
+        if (paths.length) {
+          hardlinks.push({ ...link, paths });
+          if (paths.length !== link.paths.length) bytes += link.bytes;
+        }
+      }
+      if (bytes < 0) throw new Error('invalid build allocation receipt');
+      entry = { ...entry, bytes, hardlinks };
+    }
+    this.remove(path); this.add(entry);
+  }
 }
 
 /** Select by each root's keep rule. Oldest first; do not depend on available bytes (D-005). */
@@ -419,17 +581,17 @@ export function selectRetentionEntries(entries: readonly RetentionEntry[], polic
     const maxBytes = retentionRootSizeCap(cls);
     if (maxBytes !== undefined) {
       const pinned = group.filter((entry) => !deletionClassFor(entry.path, policy, nowMs));
-      const beforeBytes = group.reduce((sum, entry) => sum + entry.bytes, 0);
-      let remaining = beforeBytes;
+      const usage = new RetentionUsage(group);
+      const beforeBytes = usage.bytes;
       // The UNION of age and cap effects is oldest-first. Do not subtract
       // planned age deletions before choosing cap victims: doing so could skip
       // an older entry while evicting a newer age-selected sibling.
       for (const entry of [...group].reverse()) {
-        if (remaining <= maxBytes) break;
+        if (usage.bytes <= maxBytes) break;
         if (entry.protectedReason || !deletionClassFor(entry.path, policy, nowMs)) continue;
-        selected.add(entry); remaining -= entry.bytes;
+        selected.add(entry); usage.remove(entry.path);
       }
-      const pinnedBytes = pinned.reduce((sum, entry) => sum + entry.bytes, 0);
+      const pinnedBytes = new RetentionUsage(pinned).bytes;
       caps?.push({ root: group[0]!.root, classId: cls.id, maxBytes, beforeBytes, pinnedBytes,
         pinnedPaths: pinned.map((entry) => entry.path), afterBytes: beforeBytes,
         overByBytes: Math.max(0, beforeBytes - maxBytes), pinnedOverageBytes: Math.max(0, pinnedBytes - maxBytes) });
@@ -515,23 +677,29 @@ interface RetentionScanBudget {
   progress: NonNullable<DiskReclaimReceipt['scan']>;
 }
 async function inspectEntry(path: string, root: string, classId: string, budget: RetentionScanBudget, retainAfterMs?: number,
-  retained?: (reason: string) => void): Promise<RetentionEntry | null> {
+  retained?: (reason: string) => void, collectBuildDirs = false, includeProtected = false): Promise<RetentionEntry | null> {
   const first = await lstat(path);
-  let newestWriteMs = 0, bytes = 0;
+  let newestWriteMs = 0;
+  const allocation = new RetentionAllocationCounter();
   const stack = [path];
+  const directories = new Map<string, { path: string; dev: number; ino: number }>();
+  const buildDirs: NonNullable<RetentionEntry['buildDirs']> = [];
+  let protectedReason: string | undefined;
   while (stack.length) {
     if (Date.now() > budget.deadline) throw new Error('incomplete tree scan');
     const current = stack.pop()!;
     const s = current === path ? first : await lstat(current);
     // A known traversal boundary conclusively protects the whole candidate.
     // Never follow it, and do not confuse that retain verdict with lost evidence.
-    if (s.isSymbolicLink() || s.dev !== first.dev) {
-      retained?.(s.isSymbolicLink() ? 'symlink boundary' : 'filesystem boundary');
-      return null;
+    const boundary = s.isSymbolicLink() ? 'symlink boundary' : s.dev !== first.dev ? 'filesystem boundary'
+      : !s.isFile() && !s.isDirectory() ? 'special filesystem entry' : undefined;
+    if (boundary) {
+      if (!protectedReason) retained?.(boundary);
+      if (!includeProtected) return null;
+      protectedReason ??= boundary;
     }
     // Unix sockets are represented as socket:[inode] in /proc, so a path-only
     // holder scan cannot prove them unused. Native/system owners retain these.
-    if (!s.isFile() && !s.isDirectory()) { retained?.('special filesystem entry'); return null; }
     newestWriteMs = Math.max(newestWriteMs, s.mtimeMs, s.ctimeMs);
     // A single recent write proves a max-age tree ineligible. Its remaining
     // descendants cannot change that verdict, so leave them unwalked. Count
@@ -544,17 +712,30 @@ async function inspectEntry(path: string, root: string, classId: string, budget:
     // Cheap, conclusive retain checks remain bounded by the shared deadline.
     if (--budget.left < 0) throw new Error('incomplete tree scan');
     budget.progress.inspectedNodes++;
-    bytes += s.blocks * 512;
-    if (s.isDirectory()) stack.push(...(await readdir(current)).map((name) => join(current, name)));
+    allocation.add(current, s, s.isFile());
+    if (!boundary && s.isDirectory()) {
+      if (collectBuildDirs) {
+        const identity = { path: current, dev: s.dev, ino: s.ino };
+        directories.set(current, identity);
+        if (current !== path && isBuildDirName(current.slice(current.lastIndexOf('/') + 1))) buildDirs.push(identity);
+      }
+      stack.push(...(await readdir(current)).map((name) => join(current, name)));
+    } else if (collectBuildDirs && current.endsWith('/CACHEDIR.TAG')) {
+      const parent = directories.get(dirname(current));
+      if (parent && parent.path !== path && !buildDirs.some(value => value.path === parent.path)) buildDirs.push(parent);
+    }
   }
-  return { path, root, classId, newestWriteMs, bytes, dev: first.dev, ino: first.ino };
+  return { path, root, classId, newestWriteMs, bytes: allocation.bytes, ...allocation.metadata(), dev: first.dev, ino: first.ino,
+    uid: first.uid, gid: first.gid,
+    ...(protectedReason ? { protectedReason } : {}),
+    ...(collectBuildDirs ? { buildDirs } : {}) };
 }
 
 export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Promise<DiskReclaimReceipt> {
   const started = options.nowMs ?? Date.now();
-  const runDeadline = Date.now() + (options.runBudgetMs ?? 15 * 60_000);
+  const runDeadline = Date.now() + (options.runBudgetMs ?? DEFAULT_RECLAIM_RUN_BUDGET_MS);
   const receipt: DiskReclaimReceipt = {
-    schemaVersion: 1, id: randomUUID(), startedAt: new Date(started).toISOString(), finishedAt: '',
+    schemaVersion: 1, id: randomUUID(), host: hostname(), startedAt: new Date(started).toISOString(), finishedAt: '',
     dryRun: options.dryRun ?? false, complete: false, policyExhausted: null, devices: [], entries: [], delegates: [], errors: [],
   };
   const home = options.home ?? homedir();
@@ -567,27 +748,79 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
   const before = await snapshots();
   try {
     await options.record?.('started', receipt);
-    await withFsMutex('papercusp-disk-retention', async (mutex) => {
-      // Pins and native cleanup share this writer lock. Yield only between
-      // operations; an admitted holder check/removal must finish before release.
-      const yieldToWaiter = async () => {
-        if (!await mutex?.hasWaiters()) return false;
-        receipt.errors.push('retention yielded to queued writer');
-        return true;
-      };
+    let mutex: { hasWaiters: () => Promise<boolean> } | undefined;
+    let protectedPaths: string[] = [];
+    const refreshProtection = async () => {
       const protection = await options.readProtection?.();
       policy.pins = protection?.pins ?? [];
+      protectedPaths = [...(options.protectedPaths ?? []), ...(protection?.paths ?? [])].map((path) => resolve(path));
+    };
+    // Keep the census/effect cursor across FIFO handoffs. Ending the whole pass
+    // here made a queued writer discard minutes of inspection on every tick.
+    const yieldToWaiter = async function* (): AsyncGenerator<void, number, void> {
+      if (!await mutex?.hasWaiters()) return 0;
+      const pausedAt = Date.now();
+      await options.record?.('progress', { phase: 'yield-to-queued-writer' });
+      yield;
+      // A pin or lease writer may have changed eligibility while we released
+      // the mutex. Never reuse that protection snapshot after reacquisition.
+      await refreshProtection();
+      return Math.max(0, Date.now() - pausedAt);
+    };
+    const reclaim = async function* (): AsyncGenerator<void, void, void> {
+      // Pins and native cleanup share this writer lock. Yield only between
+      // operations; an admitted holder check/removal must finish before release.
+      await refreshProtection();
+      // Independent owners must not wait behind a whole-root census: a large
+      // root can spend the entire pass deadline before reaching this lane.
+      // Keep their existing protection, mutex and deadline contracts intact.
+      for (const delegate of options.delegates ?? []) {
+        if (Date.now() >= runDeadline) { receipt.errors.push(`retention run budget exhausted before delegate:${delegate.classId}`); break; }
+        yield* yieldToWaiter();
+        const delegateStarted = performance.now();
+        const phases: NonNullable<DiskReclaimReceipt['delegates'][number]['phases']> = [];
+        let omittedPhases = 0, acceptingPhases = true;
+        let phaseWrites = Promise.resolve();
+        const onPhase = (event: ReclaimPhaseTiming) => {
+          if (!acceptingPhases) return;
+          if (phases.length >= 32) { omittedPhases++; return; }
+          const measured = { ...event, observedAfterMs: performance.now() - delegateStarted };
+          phases.push(measured);
+          // The existing release-cut observer is synchronous. Serialize its
+          // bounded audit writes without delaying or cancelling safety work.
+          phaseWrites = phaseWrites.then(async () => {
+            await options.record?.('progress', { ...measured, phase: 'delegate-phase', classId: delegate.classId, delegatePhase: measured.phase });
+          }).catch(err => { receipt.errors.push(`delegate phase audit:${delegate.classId}: ${message(err)}`); });
+        };
+        await options.record?.('progress', { phase: 'delegate-start', classId: delegate.classId });
+        let result: { ok: boolean; detail: unknown };
+        try { result = await delegate.run(receipt.dryRun, onPhase, runDeadline); }
+        catch (err) { result = { ok: false, detail: message(err) }; }
+        finally { acceptingPhases = false; await phaseWrites; }
+        const measured = { classId: delegate.classId, ...result, elapsedMs: performance.now() - delegateStarted,
+          ...(phases.length ? { phases } : {}), ...(omittedPhases ? { omittedPhases } : {}) };
+        receipt.delegates.push(measured);
+        await options.record?.('progress', { phase: 'delegate-finish', classId: delegate.classId,
+          ok: result.ok, elapsedMs: measured.elapsedMs });
+      }
       const censusPolicy = { ...policy, pins: [] };
       const roots = await physicalRetentionRoots(options.roots ?? await policyRoots(policy, home, receipt.errors), receipt.errors);
+      const previous = options.previousReceipt;
+      if (previous && !previous.complete && !previous.dryRun && previous.host === receipt.host) {
+        const blocked = previous.scan?.stoppedAtRoot;
+        const index = roots.findIndex(root => blocked !== null && blocked !== undefined && root.aliases.includes(blocked));
+        // Rotate the existing physical order rather than dropping the slow root.
+        // A large first root must not spend every run before its peers start.
+        if (index >= 0) roots.push(...roots.splice(0, index + 1));
+      }
       receipt.roots = roots;
       // A registered workspace's tool run dirs belong exclusively to scratch-gc.
       const workspaceIds = (options.registeredWorkspaces ?? (() => readRegistry().workspaces.map((x) => x.id)))();
-      const protectedPaths = [...(options.protectedPaths ?? []), ...(protection?.paths ?? [])].map((path) => resolve(path));
       const progress = receipt.scan = { inspectedNodes: 0, retainedRecentTrees: 0, stoppedAtRoot: null as string | null, incompleteRoots: [] as string[] };
       for (const root of roots) {
         if (Date.now() >= runDeadline) { receipt.errors.push('retention run budget exhausted'); break; }
-        if (await yieldToWaiter()) return;
-        const rootProtectedPaths = protectedPaths.flatMap((path) => root.aliases.map((alias) =>
+        yield* yieldToWaiter();
+        const rootProtectedPaths = () => protectedPaths.flatMap((path) => root.aliases.map((alias) =>
           path === alias || path.startsWith(alias + '/') ? root.path + path.slice(alias.length) : path));
         const scanRoot = (paths: readonly string[]) => scanRetentionRootHolders(root, paths, scan);
         const budget = { left: options.maxEntries ?? 100_000, deadline: Math.min(runDeadline, Date.now() + (options.budgetMs ?? 60_000)), progress };
@@ -608,26 +841,35 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         };
         if (budgetExpired()) { stopAtBudget(root.path); continue; }
         let entries: RetentionEntry[] = [];
+        let inspectionFailed = false;
         const keep = policy.classes.get(root.classId)?.keep;
         const maxBytes = retentionRootSizeCap(policy.classes.get(root.classId)!);
         const capped = maxBytes !== undefined;
-        const retainAfterMs = keep?.kind === 'max-age' ? started - keep.maxAgeHours * HOUR : undefined;
+        const collectBuildDirs = keep?.kind === 'max-age' && keep.buildDirMaxAgeHours !== undefined;
+        const retainAfterMs = keep?.kind === 'max-age'
+          ? started - Math.min(keep.maxAgeHours, keep.buildDirMaxAgeHours ?? keep.maxAgeHours) * HOUR : undefined;
         try {
           const names = await readdir(root.path);
           const excluded = names.map((name) => join(root.path, name)).filter((path) =>
-            (root.classId === 'papercusp-scratch' && workspaceIds.includes(path.slice(root.path.length + 1))) ||
-            (!capped && rootProtectedPaths.some((protectedPath) => overlap(path, protectedPath))) ||
+            (!capped && root.classId === 'papercusp-scratch' && workspaceIds.includes(path.slice(root.path.length + 1))) ||
+            (!capped && rootProtectedPaths().some((protectedPath) => overlap(path, protectedPath))) ||
             !deletionClassFor(path, capped ? censusPolicy : policy, started) || containsClassRoot(path, policy));
           if (options.inspectTrees && (retainAfterMs !== undefined || capped)) {
-            // Native find bounds the complete walk by elapsed time while streaming
-            // metadata. It avoids permanently restarting a large tree at a JS node cap.
+            // An advancing whole-root census must not restart at the ordinary
+            // per-root inspection allowance on every scheduled pass. Bound stalls
+            // by metadata progress and the complete walk by the remaining run.
+            // Cap accounting still requires a successful complete-root census.
             const census = await outsideInspectionBudget(() => options.inspectTrees!(root.path, {
-              retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped,
-              excludedPaths: excluded, timeoutMs: Math.max(1, budget.deadline - Date.now()),
+              retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped, collectBuildDirs,
+              excludedPaths: excluded, timeoutMs: Math.max(1, runDeadline - Date.now()),
+              progressTimeoutMs: options.budgetMs ?? 60_000,
             }));
             progress.inspectedNodes += census.inspectedNodes;
             progress.retainedRecentTrees += census.retainedRecentTrees;
-            receipt.entries.push(...census.retained.map((entry) => ({ ...entry, classId: root.classId, status: 'protected' as const, bytes: 0 })));
+            // Allocation graphs belong to selection below. Persist only the
+            // public outcome: spreading retained.entry duplicated potentially
+            // huge hardlink/build inventories into the terminal receipt.
+            receipt.entries.push(...census.retained.map(({ path, reason }) => ({ path, reason, classId: root.classId, status: 'protected' as const, bytes: 0 })));
             if (census.error) {
               receipt.errors.push(`inspect:${root.path}: ${census.error}`);
               progress.stoppedAtRoot ??= root.path; progress.incompleteRoots.push(root.path);
@@ -644,12 +886,12 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             const retain = (reason: string, status: 'protected' | 'changed' = 'protected') => {
               receipt.entries.push({ path, classId: root.classId, status, bytes: 0, reason });
             };
-            if (root.classId === 'papercusp-scratch' && workspaceIds.includes(name)) { retain('registered workspace scratch owner'); return null; }
-            if (!capped && rootProtectedPaths.some((protectedPath) => overlap(path, protectedPath))) { retain('live retention lease'); return null; }
+            if (!capped && root.classId === 'papercusp-scratch' && workspaceIds.includes(name)) { retain('registered workspace scratch owner'); return null; }
+            if (!capped && rootProtectedPaths().some((protectedPath) => overlap(path, protectedPath))) { retain('live retention lease'); return null; }
             // Refuse nested policy roots before walking (e.g. a scratch PG data dir).
             if (!deletionClassFor(path, capped ? censusPolicy : policy, started) || containsClassRoot(path, policy)) { retain('protected policy root'); return null; }
             try {
-              return await inspectEntry(path, root.path, root.classId, budget, capped ? undefined : retainAfterMs, retain);
+              return await inspectEntry(path, root.path, root.classId, budget, capped ? undefined : retainAfterMs, retain, collectBuildDirs, capped);
             }
             catch (err) {
               if (budgetExpired()) { stopAtBudget(root.path); return null; }
@@ -657,22 +899,36 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
               // permission/IO failures still leave eligibility unknown and fail closed.
               if (absent(err)) { retain('disappeared during inspection', 'changed'); return null; }
               receipt.errors.push(`inspect:${path}: ${message(err)}`);
+              inspectionFailed = true;
               return null;
             }
             });
             entries = inspected.filter((entry): entry is RetentionEntry => entry !== null);
           }
-        } catch (err) { if (!absent(err)) receipt.errors.push(`list:${root.path}: ${message(err)}`); }
+        } catch (err) {
+          if (!absent(err)) { receipt.errors.push(`list:${root.path}: ${message(err)}`); inspectionFailed = true; }
+        }
         // An incomplete class census cannot establish oldest-first selection.
         // Leave its entries untouched and retain the independent owner delegates.
-        if (budgetStopped) continue;
+        if (inspectionFailed) {
+          progress.stoppedAtRoot ??= root.path;
+          if (!progress.incompleteRoots.includes(root.path)) progress.incompleteRoots.push(root.path);
+        }
+        if (budgetStopped || inspectionFailed) continue;
         for (const entry of entries) {
-          if (rootProtectedPaths.some((path) => overlap(entry.path, path))) entry.protectedReason = 'live retention lease';
+          // The workspace owner controls deletion, but its retained usage still
+          // belongs in this root's cap census on both inspection routes.
+          if (root.classId === 'papercusp-scratch' && workspaceIds.includes(entry.path.slice(root.path.length + 1))) {
+            entry.protectedReason = 'registered workspace scratch owner';
+            receipt.entries.push({ path: entry.path, classId: entry.classId, status: 'protected', bytes: entry.bytes, reason: entry.protectedReason });
+          }
+          if (rootProtectedPaths().some((path) => overlap(entry.path, path))) entry.protectedReason = 'live retention lease';
         }
         const rootCaps: RetentionCapReceipt[] = [];
         const selected = selectRetentionEntries(entries, policy, started, rootCaps);
         (receipt.caps ??= []).push(...rootCaps);
         const cap = rootCaps[0];
+        const remainingUsage = cap ? new RetentionUsage(entries) : undefined;
         const ageOnlyPolicy = { ...policy, classes: new Map([...policy.classes].map(([id, cls]) => [id, { ...cls, maxBytes: undefined }])) };
         const agePaths = new Set(selectRetentionEntries(entries, ageOnlyPolicy, started).map((entry) => entry.path));
         if (cap && cap.beforeBytes > cap.maxBytes) {
@@ -683,12 +939,24 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
           selected.push(...entries.filter((entry) => !picked.has(entry.path) && !entry.protectedReason && deletionClassFor(entry.path, policy, started)));
           selected.sort((a, b) => a.newestWriteMs - b.newestWriteMs || a.path.localeCompare(b.path));
         }
+        for (const entry of entries) {
+          if (entry.protectedReason || !entry.buildDirs?.length || !keep || !buildDirsEligible(keep, entry.newestWriteMs, started) ||
+              !deletionClassFor(entry.path, policy, started) || selected.some(value => value.path === entry.path)) continue;
+          selected.push({ ...entry, buildOnly: true });
+          agePaths.add(entry.path);
+        }
+        selected.sort((a, b) => a.newestWriteMs - b.newestWriteMs || a.path.localeCompare(b.path));
         if (!selected.length) {
-          if (cap && cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(`size cap remains exceeded:${root.path}:${cap.overByBytes}`);
+          if (cap && cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(sizeCapError(root.path, cap.overByBytes));
           continue;
         }
         const effectStarted = Date.now();
-        const effectDeadline = Math.min(runDeadline, effectStarted + (options.effectBudgetMs ?? 60_000));
+        let effectDeadline = Math.min(runDeadline, effectStarted + (options.effectBudgetMs ?? 60_000));
+        const yieldEffects = async function* () {
+          const pausedMs = yield* yieldToWaiter();
+          budget.deadline += pausedMs;
+          effectDeadline = Math.min(runDeadline, effectDeadline + pausedMs);
+        };
         const timings = { initialHolderScanMs: 0, freshHolderScanMs: 0, reinspectionMs: 0, removalMs: 0, removalAuditMs: 0 };
         const effect = { root: root.path, selected: selected.length, processed: 0, remaining: selected.length,
           nextPath: selected[0]!.path as string | null, elapsedMs: 0, stopped: false, timings };
@@ -714,21 +982,32 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         };
         await recordProgress();
         if (stopEffects()) { await recordProgress(); continue; }
-        if (await yieldToWaiter()) { effect.stopped = true; await recordProgress(); return; }
-        const holders = await measureEffect('initialHolderScanMs', () => outsideInspectionBudget(() => scanRoot(selected.map((e) => e.path))));
+        yield* yieldEffects();
+        // This is only an early skip for the first candidate. Every candidate
+        // still receives a fresh holder check immediately before its effect.
+        // A bulk proc scan of hundreds of thousands of paths forced the slow
+        // fallback and could consume this root's entire effect allowance.
+        const holders = await measureEffect('initialHolderScanMs', () => outsideInspectionBudget(() => scanRoot([selected[0]!.path])));
         if (!holders.complete) {
           receipt.errors.push(`incomplete process-holder scan:${root.path}: ${JSON.stringify(holders.diagnostics ?? {})}`);
           await recordProgress(); continue;
         }
-        for (const entry of selected) {
-          if (await yieldToWaiter()) { effect.stopped = true; await recordProgress(); return; }
-          if (cap && cap.afterBytes <= cap.maxBytes && !agePaths.has(entry.path)) { effect.processed++; continue; }
+        for (let entry of selected) {
+          yield* yieldEffects();
+          if (cap && cap.afterBytes <= cap.maxBytes && !agePaths.has(entry.path)) {
+            if (keep && entry.buildDirs?.length && buildDirsEligible(keep, entry.newestWriteMs, started)) entry = { ...entry, buildOnly: true };
+            else { effect.processed++; continue; }
+          }
           if (budgetExpired()) { stopAtBudget(root.path); break; }
           if (stopEffects()) break;
           const outcome: DiskReclaimReceipt['entries'][number] = { path: entry.path, classId: entry.classId, bytes: entry.bytes, status: 'protected' };
           receipt.entries.push(outcome);
           let deferred = false;
+          let regularLease: RetentionFileLease | undefined;
           try {
+            if (!deletionClassFor(entry.path, policy, started) || rootProtectedPaths().some((path) => overlap(entry.path, path))) {
+              outcome.reason = 'live retention lease or pin'; continue;
+            }
             if (holders.byPath.has(entry.path)) { outcome.reason = 'live process'; continue; }
             // Write the intent before the last identity/holder checks, so a
             // slow database round trip cannot widen the check-to-effect window.
@@ -736,38 +1015,78 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
             // Rescan write activity + identity and process holders immediately before the effect.
             // A regular file's complete newest-write/identity census is one
-            // lstat. Preserve that check without spawning the tree inspector
-            // for every file; directories still require its complete walk.
+            // lstat, including when production supplies an enrolled remover.
+            // Preserve that check without spawning the tree inspector for every
+            // file; directories still require its complete walk.
+            let regularFile = false;
             const fresh = await measureEffect('reinspectionMs', async () => {
-              const regularFile = options.inspectTrees && !options.removeEntry && retainAfterMs !== undefined && (await lstat(entry.path)).isFile();
+              const candidateStat = await lstat(entry.path);
+              regularFile = candidateStat.isFile();
               if (options.inspectTrees && (retainAfterMs !== undefined || capped) && !regularFile) {
                 const census = await outsideInspectionBudget(() => options.inspectTrees!(entry.root, {
-                  retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped, paths: [entry.path],
+                  retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped, paths: [entry.path], collectBuildDirs,
                   timeoutMs: Math.max(1, effectDeadline - Date.now()),
                 }));
                 if (census.error) throw new Error(census.error);
                 const current = census.entries.find((candidate) => candidate.path === entry.path);
                 if (!current) outcome.reason = census.retained[0]?.reason ?? 'recent write';
-                return current ? { ...current, root: entry.root, classId: entry.classId } : null;
+                return current ? { ...current, root: entry.root, classId: entry.classId, uid: candidateStat.uid, gid: candidateStat.gid } : null;
               }
               return inspectEntry(entry.path, entry.root, entry.classId, budget, undefined,
-                (reason) => { outcome.reason = reason; });
+                (reason) => { outcome.reason = reason; }, collectBuildDirs);
             });
             if (!fresh) continue;
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
-            const freshHolders = await measureEffect('freshHolderScanMs', () => outsideInspectionBudget(() => scanRoot([entry.path])));
-            if (!freshHolders.complete || freshHolders.byPath.has(entry.path)) {
-              outcome.reason = 'process evidence unavailable or held';
-              if (!freshHolders.complete) receipt.errors.push(`incomplete process-holder scan before removal:${entry.path}: ${JSON.stringify(freshHolders.diagnostics ?? {})}`);
-              continue;
+            // A regular file can use one enrolled worker FD as the proof held
+            // across the effect. Directories retain the complete host holder
+            // census because a lease on the directory would not prove all
+            // descendants are unused. Unsupported/incomplete lease evidence
+            // falls back to the existing fresh host scan.
+            if (regularFile && !receipt.dryRun && options.acquireRegularFileLease) {
+              try {
+                regularLease = await measureEffect('freshHolderScanMs', () => outsideInspectionBudget(() =>
+                  options.acquireRegularFileLease!(fresh, Math.max(1, effectDeadline - Date.now()))));
+              } catch {
+                regularLease = undefined;
+              }
+            }
+            if (!regularLease) {
+              const freshHolders = await measureEffect('freshHolderScanMs', () => outsideInspectionBudget(() => scanRoot([entry.path])));
+              if (!freshHolders.complete || freshHolders.byPath.has(entry.path)) {
+                outcome.reason = 'process evidence unavailable or held';
+                if (!freshHolders.complete) receipt.errors.push(`incomplete process-holder scan before removal:${entry.path}: ${JSON.stringify(freshHolders.diagnostics ?? {})}`);
+                continue;
+              }
             }
             if (stopEffects()) { deferred = true; outcome.reason = 'effect budget exhausted'; break; }
-            if (fresh.dev !== entry.dev || fresh.ino !== entry.ino || fresh.newestWriteMs !== entry.newestWriteMs || fresh.bytes !== entry.bytes) { outcome.status = 'changed'; continue; }
-            if (receipt.dryRun) { outcome.status = 'would-remove'; if (cap) cap.afterBytes -= entry.bytes; continue; }
+            if (fresh.dev !== entry.dev || fresh.ino !== entry.ino || fresh.newestWriteMs !== entry.newestWriteMs || fresh.bytes !== entry.bytes ||
+                !isDeepStrictEqual(fresh.hardlinks, entry.hardlinks)) { outcome.status = 'changed'; continue; }
+            if (entry.buildOnly) {
+              if (!isDeepStrictEqual(fresh.buildDirs, entry.buildDirs)) { outcome.status = 'changed'; continue; }
+              const result = await measureEffect('removalMs', () => outsideInspectionBudget(() => (options.removeEntry ??
+                ((value, ms, observe, dryRun) => removePrivilegedRetentionEntry(value, ms, nativeRetentionCommand, observe, dryRun)))
+                (entry, Math.max(1, effectDeadline - Date.now()), (timing) => { outcome.nativeCommand = timing; }, receipt.dryRun)));
+              if (!result) throw new Error('build removal receipt unavailable');
+              outcome.bytes = 0; outcome.reason = 'source entry retained after build inspection';
+              for (const removed of result.removed) {
+                const childOutcome = { path: removed.path, classId: entry.classId, bytes: removed.bytes,
+                  status: receipt.dryRun ? 'would-remove' as const : 'removed' as const };
+                receipt.entries.push(childOutcome);
+                if (!receipt.dryRun) await measureEffect('removalAuditMs', () => outsideInspectionBudget(async () => options.record?.('removed', childOutcome)));
+              }
+              if (cap && remainingUsage) { remainingUsage.removeBuilds(entry.path, result.removed); cap.afterBytes = remainingUsage.bytes; }
+              continue;
+            }
+            if (receipt.dryRun) {
+              outcome.status = 'would-remove';
+              if (cap && remainingUsage) { remainingUsage.remove(entry.path); cap.afterBytes = remainingUsage.bytes; }
+              continue;
+            }
             await measureEffect('removalMs', () => outsideInspectionBudget(() => options.removeEntry
-              ? options.removeEntry(entry, Math.max(1, effectDeadline - Date.now())) : rm(entry.path, { recursive: true, force: false })));
+              ? options.removeEntry(entry, Math.max(1, effectDeadline - Date.now()), (timing) => { outcome.nativeCommand = timing; })
+              : rm(entry.path, { recursive: true, force: false })));
             outcome.status = 'removed';
-            if (cap) cap.afterBytes -= entry.bytes;
+            if (cap && remainingUsage) { remainingUsage.remove(entry.path); cap.afterBytes = remainingUsage.bytes; }
             await measureEffect('removalAuditMs', () => outsideInspectionBudget(async () => options.record?.('removed', outcome)));
           } catch (err) {
             if (absent(err)) { outcome.status = 'changed'; outcome.reason = 'disappeared before removal'; continue; }
@@ -775,6 +1094,14 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             if (budgetExpired()) { stopAtBudget(root.path); break; }
             receipt.errors.push(`remove:${entry.path}: ${message(err)}`);
           } finally {
+            if (regularLease) {
+              try { await regularLease.release(); }
+              catch (err) {
+                outcome.status = 'failed'; outcome.reason = `regular-file lease release: ${message(err)}`;
+                receipt.errors.push(`lease-release:${entry.path}: ${message(err)}`);
+              }
+              regularLease = undefined;
+            }
             if (!deferred) effect.processed++;
             // Do not race or cancel a running safety check or removal. Record
             // progress between effects, after the final holder-to-unlink window.
@@ -783,22 +1110,51 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
         }
         await recordProgress();
         if (cap) {
+          cap.pinnedPaths = entries.filter((entry) => !deletionClassFor(entry.path, policy, started)).map((entry) => entry.path);
+          cap.pinnedBytes = new RetentionUsage(entries.filter((entry) => cap.pinnedPaths.includes(entry.path))).bytes;
+          cap.pinnedOverageBytes = Math.max(0, cap.pinnedBytes - cap.maxBytes);
           cap.overByBytes = Math.max(0, cap.afterBytes - cap.maxBytes);
-          if (cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(`size cap remains exceeded:${root.path}:${cap.overByBytes}`);
+          if (cap.overByBytes > cap.pinnedOverageBytes) receipt.errors.push(sizeCapError(root.path, cap.overByBytes));
         }
-      }
-      for (const delegate of options.delegates ?? []) {
-        if (Date.now() >= runDeadline) { receipt.errors.push(`retention run budget exhausted before delegate:${delegate.classId}`); break; }
-        if (await yieldToWaiter()) return;
-        try { receipt.delegates.push({ classId: delegate.classId, ...await delegate.run(receipt.dryRun) }); }
-        catch (err) { receipt.delegates.push({ classId: delegate.classId, ok: false, detail: message(err) }); }
+        // A productive partial root is a durable continuation point. Do not
+        // spend the remainder of this pass starting an unrelated large root:
+        // the next scheduled batch rotates from stoppedAtRoot and rebuilds all
+        // safety evidence. This specifically prevents the first batch from
+        // consuming its full drain window before any later root can run.
+        const productiveStop = options.yieldAfterProductiveEffects === true &&
+          receipt.effects?.at(-1)?.stopped === true && selected.some(entry =>
+            receipt.entries.some(outcome => outcome.path === entry.path && outcome.status === 'removed'));
+        if (productiveStop) {
+          progress.stoppedAtRoot = root.path;
+          for (const remaining of roots.slice(roots.indexOf(root) + 1)) {
+            if (!progress.incompleteRoots.includes(remaining.path)) progress.incompleteRoots.push(remaining.path);
+          }
+          break;
+        }
       }
       for (const cls of policy.classes.values()) {
         if (cls.enforcers.some((e) => e.kind === 'standing-reclaim' && (e.via || cls.keep.kind === 'lease')) &&
             !receipt.delegates.some((e) => e.classId === cls.id)) receipt.errors.push(`missing delegate:${cls.id}`);
       }
-    }, { timeoutMs: 1_000 });
+    };
+    const cursor = reclaim();
+    try {
+      while (true) {
+        const remainingMs = runDeadline - Date.now();
+        if (remainingMs <= 0) throw new Error('retention run budget exhausted');
+        let done = false;
+        await withFsMutex('papercusp-disk-retention', async (held) => {
+          mutex = held;
+          done = (await cursor.next()).done === true;
+        }, { timeoutMs: Math.max(1, remainingMs) });
+        if (done) break;
+      }
+    } finally { await cursor.return(); }
   } catch (err) { receipt.errors.push(message(err)); }
+  // A queued writer can end the callback between effects, before the root's
+  // normal epilogue. Report retained usage after successful effects on every
+  // exit path, including a cooperative yield or a later inspection failure.
+  for (const cap of receipt.caps ?? []) cap.overByBytes = Math.max(0, cap.afterBytes - cap.maxBytes);
   const after = await snapshots();
   const paths = new Set(options.expectedDevices ?? ['/', '/mnt/data']);
   receipt.devices = [...paths].map((path) => {
@@ -819,50 +1175,201 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
  * identity change. Python's fd-based rmtree never follows swapped symlinks.
  * Reuse the existing enrolled/timeout-bounded subprocess route. */
 export async function removePrivilegedRetentionEntry(entry: RetentionEntry, timeoutMs: number,
-  execute: typeof nativeRetentionCommand = nativeRetentionCommand): Promise<void> {
+  execute: typeof nativeRetentionCommand = nativeRetentionCommand,
+  observeTiming?: (timing: NativeRetentionTiming) => void, dryRun = false): Promise<void | BuildRemovalResult> {
   if (resolve(entry.root) !== entry.root || dirname(entry.path) !== entry.root || entry.path === entry.root ||
       !Number.isSafeInteger(entry.dev) || !Number.isSafeInteger(entry.ino)) throw new Error('unsafe privileged retention target');
   const root = await lstat(entry.root);
   if (!root.isDirectory() || root.isSymbolicLink()) throw new Error('unsafe privileged retention root');
   const worker = `
-import json, os, shutil, stat, sys
+import json, os, shutil, stat, sys, time
+started = time.monotonic()
+def progress(phase, **detail):
+    # stderr remains separate from the build-removal JSON receipt. Bound scan
+    # samples below so a stalled worker cannot flood its enrolled task log.
+    print('RETENTION_WORKER ' + json.dumps(dict(phase=phase,
+          elapsedMs=round((time.monotonic() - started) * 1000), **detail)), file=sys.stderr, flush=True)
+progress('started')
 e = json.load(sys.stdin)
+progress('input-read')
 fd = os.open(e['root'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
 try:
     root = os.fstat(fd)
     if (root.st_dev, root.st_ino) != (e['rootDev'], e['rootIno']):
         raise RuntimeError('retention root identity changed')
+    progress('root-verified')
     name = os.path.basename(e['path'])
     s = os.stat(name, dir_fd=fd, follow_symlinks=False)
     if (s.st_dev, s.st_ino) != (e['dev'], e['ino']) or not (stat.S_ISDIR(s.st_mode) or stat.S_ISREG(s.st_mode)):
         raise RuntimeError('retention candidate identity changed')
-    if stat.S_ISDIR(s.st_mode):
+    progress('candidate-verified')
+    if e.get('buildOnly'):
+        parent = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+        try:
+            if (os.fstat(parent).st_dev, os.fstat(parent).st_ino) != (e['dev'], e['ino']):
+                raise RuntimeError('retention source identity changed')
+            def open_parent(path):
+                parts = path.split('/')
+                if not parts or any(p in ('', '.', '..') for p in parts):
+                    raise RuntimeError('unsafe build path')
+                current = os.dup(parent)
+                try:
+                    for part in parts[:-1]:
+                        nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+                        os.close(current)
+                        current = nxt
+                        if os.fstat(current).st_dev != e['dev']:
+                            raise RuntimeError('build filesystem boundary')
+                    return current, parts[-1]
+                except:
+                    os.close(current)
+                    raise
+            selected = []
+            for target in sorted(e.get('buildDirs', []), key=lambda t: (len(t['path']), t['path'])):
+                prefix = e['path'] + '/'
+                if not target['path'].startswith(prefix):
+                    raise RuntimeError('build target outside source')
+                if any(target['path'].startswith(t['path'] + '/') for t in selected):
+                    continue
+                pfd, leaf = open_parent(target['path'][len(prefix):])
+                try:
+                    bfd = os.open(leaf, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=pfd)
+                    try:
+                        bs = os.fstat(bfd)
+                        if (bs.st_dev, bs.st_ino) != (target['dev'], target['ino']) or bs.st_dev != e['dev']:
+                            raise RuntimeError('build target identity changed')
+                        valid = leaf in e['buildNames']
+                        if not valid:
+                            try:
+                                tag = os.open('CACHEDIR.TAG', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=bfd)
+                                try:
+                                    ts = os.fstat(tag)
+                                    valid = stat.S_ISREG(ts.st_mode) and ts.st_dev == e['dev'] and os.read(tag, 128).startswith(e['tagSignature'].encode())
+                                finally:
+                                    os.close(tag)
+                            except FileNotFoundError:
+                                pass
+                        if not valid:
+                            continue
+                        selected.append(dict(target, bytes=0))
+                    finally:
+                        os.close(bfd)
+                finally:
+                    os.close(pfd)
+            # Recheck the source after tag reads and inside the native effect.
+            # This single walk also accounts only selected build bytes, so
+            # nested targets never double-subtract from the source/root cap.
+            progress('source-scan-started', targets=len(selected))
+            newest, total, nodes, scan_samples = 0, 0, 0, 0
+            seen = set()
+            target_seen = {t['path']: set() for t in selected}
+            next_sample = time.monotonic() + 1
+            def account(path, s):
+                global newest, total, nodes, scan_samples, next_sample
+                if s.st_dev != e['dev'] or not (stat.S_ISDIR(s.st_mode) or stat.S_ISREG(s.st_mode)):
+                    raise RuntimeError('unsafe source descendant')
+                newest = max(newest, s.st_mtime_ns / 1000000, s.st_ctime_ns / 1000000)
+                size = s.st_blocks * 512
+                shared = stat.S_ISREG(s.st_mode) and s.st_nlink > 1
+                key = (s.st_dev, s.st_ino)
+                if not shared or key not in seen:
+                    total += size
+                    if shared:
+                        seen.add(key)
+                nodes += 1
+                if nodes % 1024 == 0 and scan_samples < 16 and time.monotonic() >= next_sample:
+                    progress('source-scan', nodes=nodes)
+                    scan_samples += 1
+                    next_sample = time.monotonic() + 1
+                for target in selected:
+                    if path == target['path'] or path.startswith(target['path'] + '/'):
+                        if not shared or key not in target_seen[target['path']]:
+                            target['bytes'] += size
+                            if shared:
+                                target_seen[target['path']].add(key)
+            for directory, dirs, files, dfd in os.fwalk('.', dir_fd=parent, follow_symlinks=False):
+                account(os.path.normpath(os.path.join(e['path'], directory)), os.fstat(dfd))
+                for child in dirs + files:
+                    cs = os.stat(child, dir_fd=dfd, follow_symlinks=False)
+                    if cs.st_dev != e['dev'] or not (stat.S_ISDIR(cs.st_mode) or stat.S_ISREG(cs.st_mode)):
+                        raise RuntimeError('unsafe source descendant')
+                    if child in files:
+                        account(os.path.normpath(os.path.join(e['path'], directory, child)), cs)
+            # Allow only floating-point rounding of the same nanosecond value
+            # between Python and JS (less than 0.001 ms at current epochs).
+            if abs(newest - e['newestWriteMs']) > 0.001 or total != e['bytes']:
+                raise RuntimeError('retention source changed before build removal')
+            current = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (e['dev'], e['ino']):
+                raise RuntimeError('retention source identity changed')
+            progress('source-scan-verified', nodes=nodes)
+            # Validate the whole batch before the first effect. Reopen each
+            # parent from the original source descriptor immediately at unlink.
+            if not shutil.rmtree.avoids_symlink_attacks:
+                raise RuntimeError('fd-safe retention removal unavailable')
+            progress('effect-started', targets=len(selected), dryRun=e['dryRun'])
+            for target in selected:
+                pfd, leaf = open_parent(target['path'][len(e['path']) + 1:])
+                try:
+                    bs = os.stat(leaf, dir_fd=pfd, follow_symlinks=False)
+                    if (bs.st_dev, bs.st_ino) != (target['dev'], target['ino']) or not stat.S_ISDIR(bs.st_mode):
+                        raise RuntimeError('build target identity changed')
+                    if not e['dryRun']:
+                        shutil.rmtree(leaf, dir_fd=pfd)
+                finally:
+                    os.close(pfd)
+            progress('effect-completed', targets=len(selected), dryRun=e['dryRun'])
+            print(json.dumps({'removed': [{'path': t['path'], 'bytes': t['bytes']} for t in selected]}))
+        finally:
+            os.close(parent)
+    elif stat.S_ISDIR(s.st_mode):
         if not shutil.rmtree.avoids_symlink_attacks:
             raise RuntimeError('fd-safe retention removal unavailable')
+        progress('effect-started')
         shutil.rmtree(name, dir_fd=fd)
+        progress('effect-completed')
     else:
+        progress('effect-started')
         os.unlink(name, dir_fd=fd)
+        progress('effect-completed')
 finally:
     os.close(fd)
 `;
   const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
   const result = await execute(repoRoot, '/usr/bin/sudo', ['-n', '/usr/bin/python3', '-c', worker], {
-    stdin: JSON.stringify({ ...entry, rootDev: root.dev, rootIno: root.ino }), timeoutMs,
+    stdin: JSON.stringify({ ...entry, rootDev: root.dev, rootIno: root.ino, dryRun,
+      buildNames: BUILD_DIR_NAMES, tagSignature: CACHEDIR_TAG_SIGNATURE }), timeoutMs, observeTiming,
+    stdoutOnly: entry.buildOnly, outputLimit: entry.buildOnly ? Math.max(4000, JSON.stringify(entry.buildDirs).length * 2) : undefined,
   });
   if (!result.ok) throw new Error(`privileged retention removal failed:${JSON.stringify(result.detail)}`);
+  if (entry.buildOnly) {
+    const value = JSON.parse((result.detail as { output: string }).output) as BuildRemovalResult;
+    if (!Array.isArray(value.removed) || value.removed.some(target => !entry.buildDirs?.some(candidate => candidate.path === target.path) ||
+        !Number.isSafeInteger(target.bytes) || target.bytes < 0)) throw new Error('invalid build removal receipt');
+    return value;
+  }
 }
 
 /** Bounded, enrolled execution of an existing native cleaner. */
 export async function nativeRetentionCommand(repoRoot: string, command: string, args: string[], options: {
   /** Candidate lists can exceed the kernel's per-argument limit; keep them off argv. */
   stdin?: string;
+  /** Per-invocation context for a native owner, without mutating process.env. */
+  env?: NodeJS.ProcessEnv;
   stdoutOnly?: boolean; outputLimit?: number; timeoutMs?: number;
+  /** Receipts reuse managedSpawn's existing tracer; no extra subprocess or audit write. */
+  observeTiming?: (timing: NativeRetentionTiming) => void;
 } = {}) {
   const { managedSpawn } = await import('../task-manager/managed-spawn');
+  const { killTask } = await import('../task-manager/control');
+  const started = Date.now();
+  const elapsed = () => Math.max(0, Date.now() - started);
+  const timing: NativeRetentionTiming = { taskId: null, totalMs: 0, spawnedAfterMs: null,
+    childClosedAfterMs: null, launchReturnedAfterMs: null, completedAfterMs: null, stages: [] };
   let finish!: (result: { ok: boolean; detail: unknown }) => void;
   const observed = new Promise<{ ok: boolean; detail: unknown }>((resolve) => { finish = resolve; });
   let output = '', stderr = '', taskId: string | null = null, settled = false;
-  let outputTruncated = false;
+  let outputTruncated = false, needsTermination = false;
   const timeoutMs = options.timeoutMs ?? 120_000;
   const outputLimit = options.outputLimit ?? 4000;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -872,57 +1379,86 @@ export async function nativeRetentionCommand(repoRoot: string, command: string, 
     finish({ ok, detail: options.stdoutOnly && detail && typeof detail === 'object'
       ? { ...detail, stderr, outputTruncated } : detail });
   };
+  const abort = (error: string) => {
+    if (settled) return;
+    needsTermination = true;
+    done(false, { error, taskId, output });
+  };
   try {
     const spawned = await managedSpawn(command, args, {
       class: 'other', title: 'scheduled disk retention delegate', argv: [command, ...args],
       launchedBy: 'system:disk-retention', planSlug: 'disk-headroom-standing-reclaim-2026-10-12',
       runtimeMaxSec: Math.ceil(timeoutMs / 1000), detail: { subsystem: 'storage', operation: 'retention-delegate' },
     }, {
-      spawnOptions: { cwd: repoRoot, stdio: [options.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] },
+      spawnOptions: { cwd: repoRoot, env: options.env, stdio: [options.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] },
+      ...(options.observeTiming ? { stage: (name: string) => {
+        if (timing.stages.length < 32) timing.stages.push({ name, elapsedMs: elapsed() });
+      } } : {}),
       onSpawn: (child, id) => {
         taskId = id;
-        timer = setTimeout(() => {
-          done(false, { error: 'delegate timeout', taskId, output });
-          child.kill('SIGKILL');
-        }, timeoutMs);
+        timing.taskId = id; timing.spawnedAfterMs = elapsed();
+        timer = setTimeout(() => abort('delegate timeout'), timeoutMs);
         timer.unref();
-        const append = (chunk: Buffer) => {
-          const combined = output + chunk.toString();
+        child.stdout?.setEncoding('utf8');
+        child.stderr?.setEncoding('utf8');
+        const append = (chunk: string) => {
+          const combined = output + chunk;
           outputTruncated ||= combined.length > outputLimit;
           output = combined.slice(-outputLimit);
         };
         child.stdout?.on('data', append);
         if (!options.stdoutOnly) child.stderr?.on('data', append);
-        else child.stderr?.on('data', (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-4000); });
+        else child.stderr?.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4000); });
         child.once('error', (error) => done(false, { error: message(error), taskId, output }));
-        child.once('close', (code, signal) => done(code === 0 && !(options.stdoutOnly && outputTruncated), { code, signal, taskId, output }));
+        child.once('close', (code, signal) => {
+          timing.childClosedAfterMs = elapsed();
+          done(code === 0 && !(options.stdoutOnly && outputTruncated), { code, signal, taskId, output });
+        });
         if (options.stdin !== undefined) {
           if (!child.stdin) {
-            done(false, { error: 'delegate input pipe unavailable', taskId, output });
-            child.kill('SIGKILL');
+            abort('delegate input pipe unavailable');
           } else {
             child.stdin.once('error', (error) => {
-              done(false, { error: `delegate input:${message(error)}`, taskId, output });
-              child.kill('SIGKILL');
+              abort(`delegate input:${message(error)}`);
             });
             child.stdin.end(options.stdin);
           }
         }
       },
     });
+    timing.launchReturnedAfterMs = elapsed();
     const result = await observed;
+    if (needsTermination) {
+      // The handle belongs to systemd-run, whose death can leave its payload
+      // live. Wait for enrollment above, then reap and verify the owned task
+      // through its existing scope/identity control before returning a receipt.
+      const cleanup = await killTask(spawned.taskId, { signal: 'SIGKILL', reapTerminalResidue: true })
+        .catch((error: unknown) => ({ ok: false as const, error: message(error) }));
+      if (!cleanup.ok && cleanup.error !== 'already_gone') {
+        return { ok: false, detail: { ...result.detail as Record<string, unknown>, cleanup } };
+      }
+    }
     await spawned.waitForCompletion();
+    timing.completedAfterMs = elapsed();
     return result;
   } catch (error) { done(false, { error: message(error), taskId, output }); }
+  finally {
+    timing.totalMs = elapsed();
+    options.observeTiming?.(timing);
+  }
   return observed;
 }
 
 /** Runtime delegates preserve the owning program's leases and its original receipts. */
-export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 'dryRun'> = {}): Promise<DiskReclaimReceipt> {
+export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 'dryRun' | 'runBudgetMs'> = {}): Promise<DiskReclaimReceipt> {
   const repoRoot = process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
   const { getOrgPg } = await import('@papercusp/db-org');
   const { activeWorkspaceId } = await import('../workspace-registry');
   const { readRetentionLeases, isLeaseLive, defaultRetentionDir } = await import('../release-cut-reclaim');
+  // Admission failures contain no cursor. They still remain the latest visible
+  // outcome, but must not erase an earlier interrupted census's continuation.
+  const previousReceipt = await readReclaimReceipt(getOrgPg().sql as unknown as ReclaimSql, activeWorkspaceId(),
+    undefined, undefined, { requireScan: true });
   let isPinnedPath: (path: string) => boolean = () => { throw new Error('retention protection has not been read'); };
   const readProtection = async () => {
     const dir = defaultRetentionDir();
@@ -948,12 +1484,18 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
     } },
     { classId: 'cargo-target-slots', run: (dryRun) => nativeRetentionCommand(repoRoot, '/bin/bash', [
       join(repoRoot, 'papercusp-desktop/bin/reap-private-target-slots.sh'), ...(dryRun ? ['--dry-run'] : []),
-    ]) },
-    { classId: 'release-cut-worktrees', run: async (dryRun) => {
-      const { gatherCutReclaimPlan, executeCutReclaim } = await import('../release-cut-reclaim');
+    ], {
+      // runDiskReclaimOnce invokes delegates while holding the pin mutex. The
+      // shell's public entrypoints otherwise acquire it themselves. Keep this
+      // internal reuse context scoped to this one enrolled child.
+      env: { ...process.env, PAPERCUSP_DISK_RETENTION_MUTEX_HELD: '1' },
+    }) },
+    { classId: 'release-cut-worktrees', run: async (dryRun, onPhase, notAfterMs) => {
+      const { gatherCutReclaimPlan, reclaimCutWorktrees } = await import('../release-cut-reclaim');
       const { isAutoManagedCutWorktree, RELEASE_RESUME_VERSION_PATHS } = await import('../agent-tools/release/cut');
       const plan = await gatherCutReclaimPlan({
         repoPath: repoRoot, isAutoManaged: isAutoManagedCutWorktree, releaseVersionPaths: RELEASE_RESUME_VERSION_PATHS,
+        onPhase,
         loadReleases: async () => {
           const { sql } = getOrgPg();
           const rows = await sql<Array<{ version: string; git_sha: string | null; cut_at: Date; published_at: Date | null }>>`
@@ -961,10 +1503,8 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
           return rows.map((row) => ({ version: row.version, gitSha: row.git_sha, cutAtMs: new Date(row.cut_at).getTime(), publishedAtMs: row.published_at ? new Date(row.published_at).getTime() : null }));
         },
       });
-      const targets = plan.verdicts.filter((v) => v.disposition === 'reclaimable').map((v) => v.path);
-      if (dryRun || targets.length === 0) return { ok: plan.failClosed.length === 0, detail: { dryRun, targets, failClosed: plan.failClosed } };
-      const detail = await executeCutReclaim(plan, targets);
-      return { ok: detail.ok && detail.results.every((r) => r.removed), detail };
+      const detail = await reclaimCutWorktrees(plan, { dryRun, notAfterMs }, { retentionMutexHeld: true });
+      return { ok: detail.ok, detail };
     } },
     { classId: 'unregistered-workspaces', run: async () => {
       // Whole-workspace deletion cannot be inferred from absence in the registry:
@@ -983,17 +1523,16 @@ export async function runScheduledDiskReclaim(options: Pick<DiskReclaimOptions, 
     } },
   ];
   let runId = '';
-  const { inspectRetentionTrees, resolveCensusSudo } = await import('./disk-consumer-census');
+  const { inspectRetentionTrees } = await import('./disk-consumer-census');
   // No unprivileged fallback: permission loss must be a visible incomplete
-  // receipt, rather than silently retaining every foreign-owned agent tree.
-  const sudo = await resolveCensusSudo();
-  const inspectTrees: typeof inspectRetentionTrees = (root, options) => {
-    if (!sudo && process.getuid?.() !== 0) throw new Error('privileged retention census unavailable');
-    return inspectRetentionTrees(root, { ...options, sudo });
-  };
+  // receipt from the actual bounded operation, not a cached preflight result.
+  const inspectTrees: typeof inspectRetentionTrees = (root, options) =>
+    inspectRetentionTrees(root, { ...options, requirePrivilege: true });
   const holders = createRetentionHolderScanner();
-  try { return await runDiskReclaimOnce({ ...options, delegates, readProtection, inspectTrees,
-    removeEntry: removePrivilegedRetentionEntry, scanHolders: holders.scan, record: async (phase, detail) => {
+  try { return await runDiskReclaimOnce({ ...options, yieldAfterProductiveEffects: true, previousReceipt, delegates, readProtection, inspectTrees,
+    removeEntry: (entry, timeoutMs, observeTiming) => removePrivilegedRetentionEntry(entry, timeoutMs, nativeRetentionCommand, observeTiming),
+    scanHolders: holders.scan, acquireRegularFileLease: holders.acquireRegularFileLease,
+    record: async (phase, detail) => {
     if (phase === 'started') runId = (detail as DiskReclaimReceipt).id;
     await writeReclaimAudit(getOrgPg().sql as unknown as ReclaimSql, activeWorkspaceId(), runId, phase, detail);
   } }); } finally { await holders.close(); }

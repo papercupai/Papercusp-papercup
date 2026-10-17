@@ -119,6 +119,10 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
       budgetMs: WORK_ITEMS_GET_BUDGET_MS,
     });
     expect(out.data.results[0]).not.toMatchObject({ error: expect.stringContaining('not found') });
+    expect(out.data).toMatchObject({ counts: { ok: 0, failed: 1 }, read: {
+      schemaVersion: 'work-items-get-read-v1', requested: 1, available: 0, absent: 0, unavailable: 1,
+      outerStageAttribution: expect.any(String),
+    } });
     expect(out.data.read.baseReadDiagnostics).toEqual([
       expect.objectContaining({
         id: 'WI-timeout',
@@ -145,6 +149,12 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     const out = await pending;
     expect(out.data.results).toHaveLength(ids.length);
     expect(out.data.results.every((row) => row.availability === 'unavailable')).toBe(true);
+    expect(out.data.results.map((row) => row.id)).toEqual(ids);
+    expect(out.data.results.every((row) => row.ok === false && row.retryable === true && row.error === 'timeout')).toBe(true);
+    expect(out.data).toMatchObject({ counts: { ok: 0, failed: ids.length }, read: {
+      schemaVersion: 'work-items-get-read-v1', mode: 'projected', requested: ids.length,
+      available: 0, absent: 0, unavailable: ids.length, outerStageAttribution: expect.any(String),
+    } });
     expect(out.data.read.baseReadDiagnostics).toEqual(expect.arrayContaining(
       ids.map((id) => expect.objectContaining({
         id,
@@ -350,11 +360,17 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     const out = (await get.handler(
       { ids: ['WI-one', 'WI-twin', 'WI-missing'], detail: true, threadLimit: 0 } as never,
       { ...ctx, sourceProjection: { pick: ['results[].id', 'read'] } } as never,
-    )) as Out;
+    )) as Out & { data: { receipt: Array<Record<string, unknown>>; read: Record<string, unknown> } };
     const byId = new Map(out.data.results.map((r) => [r.id, r]));
     expect(byId.get('WI-one')).toMatchObject({ ok: true, availability: 'available' });
     expect(byId.get('WI-twin')).toMatchObject({ ok: false, availability: 'ambiguous', candidates: ['a', 'b'] });
     expect(byId.get('WI-missing')).toMatchObject({ ok: false, availability: 'absent' });
+    expect(out.data.receipt).toEqual([
+      { id: 'WI-one', delivered: true },
+      { id: 'WI-twin', delivered: true },
+      { id: 'WI-missing', delivered: true },
+    ]);
+    expect(out.data.read.receiptComplete).toBe(true);
   });
 
   it('uses one set-based read for projected multi-id completion evidence', async () => {
@@ -590,6 +606,69 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
     });
   });
 
+  it.each([
+    { name: 'single summary', args: { id: 'WI-pre-cancelled' }, projected: true },
+    { name: 'batch summary', args: { ids: ['WI-pre-cancelled', 'WI-pre-cancelled-missing'] }, projected: true },
+    { name: 'full detail', args: { id: 'WI-pre-cancelled', detail: true }, projected: false },
+    { name: 'resume', args: { id: 'WI-pre-cancelled', resume: true }, projected: false },
+    { name: 'checkpoint checks', args: { id: 'WI-pre-cancelled', checksOnly: true }, projected: false },
+  ])('does not start storage for an already-cancelled $name request', async ({ args, projected }) => {
+    getWorkItem.mockImplementation(() => new Promise(() => {}));
+    getWorkItemsByIds.mockImplementation(() => new Promise(() => {}));
+    const controller = new AbortController();
+    controller.abort();
+    const ids = 'ids' in args ? args.ids! : [args.id!];
+    const out = await get.handler(args as never, {
+      ...ctx,
+      signal: controller.signal,
+      ...(projected ? { sourceProjection: { pick: ['results[].id', 'results[].availability',
+        'results[].error', 'results[].retryable', 'counts', 'read'] } } : {}),
+    } as never) as Out;
+
+    expect(out.data).toMatchObject({ ok: false, counts: { ok: 0, failed: ids.length },
+      results: ids.map(id => ({ id, ok: false, availability: 'unavailable', error: 'cancelled', retryable: true })),
+      read: { requested: ids.length, available: 0, absent: 0, unavailable: ids.length } });
+    expect(getWorkItem).not.toHaveBeenCalled();
+    expect(getWorkItemsByIds).not.toHaveBeenCalled();
+    expect(getWorkItemDetail).not.toHaveBeenCalled();
+    expect(getWorkItemCheckpointWithMeta).not.toHaveBeenCalled();
+    expect(getWorkItemThreadWindow).not.toHaveBeenCalled();
+  });
+
+  it('does not start queued item reads after cancellation drains the active workers', async () => {
+    getWorkItem.mockImplementation(() => new Promise(() => {}));
+    const ids = Array.from({ length: WORK_ITEMS_GET_MAX_CONCURRENCY + 2 }, (_, index) => `WI-queued-cancel-${index}`);
+    const controller = new AbortController();
+    const pending = get.handler({ ids } as never, { ...ctx, signal: controller.signal } as never) as Promise<Out>;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getWorkItem).toHaveBeenCalledTimes(WORK_ITEMS_GET_MAX_CONCURRENCY);
+
+    controller.abort();
+    const out = await pending;
+    expect(out.data.results).toEqual(ids.map(id => expect.objectContaining({
+      id, ok: false, availability: 'unavailable', error: 'cancelled', retryable: true,
+    })));
+    expect(getWorkItem).toHaveBeenCalledTimes(WORK_ITEMS_GET_MAX_CONCURRENCY);
+    expect(getWorkItemCheckpointWithMeta).not.toHaveBeenCalled();
+  });
+
+  it('keeps in-flight projected batch cancellation distinct from a timeout', async () => {
+    getWorkItemsByIds.mockImplementation(() => new Promise(() => {}));
+    const ids = ['WI-batch-cancelled', 'WI-batch-cancelled-missing'];
+    const controller = new AbortController();
+    const pending = get.handler({ ids } as never, { ...ctx, signal: controller.signal,
+      sourceProjection: { pick: ['results[].id', 'results[].availability', 'read'] },
+    } as never) as Promise<Out>;
+    expect(getWorkItemsByIds).toHaveBeenCalledTimes(1);
+
+    controller.abort();
+    const out = await pending;
+    expect(out.data).toMatchObject({ counts: { ok: 0, failed: ids.length },
+      results: ids.map(id => ({ id, ok: false, availability: 'unavailable', error: 'cancelled', retryable: true })),
+      read: { requested: ids.length, available: 0, absent: 0, unavailable: ids.length } });
+    expect(getWorkItem).not.toHaveBeenCalled();
+  });
+
   it('returns cancelled as unavailable and consumes a late storage rejection', async () => {
     let rejectRead!: (error: Error) => void;
     getWorkItem.mockImplementation(() => new Promise((_resolve, reject) => { rejectRead = reject; }));
@@ -612,6 +691,10 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
       retryable: true,
       phase: 'read',
     });
+    expect(out.data).toMatchObject({ counts: { ok: 0, failed: 1 }, read: {
+      schemaVersion: 'work-items-get-read-v1', mode: 'projected', requested: 1,
+      available: 0, absent: 0, unavailable: 1, outerStageAttribution: expect.any(String),
+    } });
 
     rejectRead(new Error('late storage failure'));
     await Promise.resolve();
@@ -623,7 +706,10 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
   ])('maps %s to a retryable unavailable result instead of a generic bulk error', async (_label, makeError, pgCode) => {
     getWorkItem.mockRejectedValueOnce(makeError());
 
-    const out = (await get.handler({ id: 'WI-contention' } as never, ctx as never)) as Out;
+    const out = (await get.handler({ id: 'WI-contention' } as never, {
+      ...ctx, sourceProjection: { pick: ['results[].id', 'results[].workItem.state',
+        'results[].availability', 'results[].error', 'results[].retryable', 'results[].pgCode', 'counts', 'read'] },
+    } as never)) as Out;
     expect(out.data.results[0]).toMatchObject({
       ok: false,
       id: 'WI-contention',
@@ -634,6 +720,10 @@ describe('work_items:get bounded read deadline (EI-22462490203993359)', () => {
       pgCode,
     });
     expect(out.data.results[0].message).toContain('retry shortly');
+    expect(out.data).toMatchObject({ counts: { ok: 0, failed: 1 }, read: {
+      schemaVersion: 'work-items-get-read-v1', mode: 'projected', requested: 1, available: 0, absent: 0, unavailable: 1,
+      outerStageAttribution: expect.any(String),
+    } });
   });
 
   it('maps a pool acquisition deadline to the same retryable unavailable contract without inventing a PG code', async () => {

@@ -1,0 +1,51 @@
+{
+  "recordedAt": "2026-10-16T15:23:35.728843+00:00",
+  "plane": "local-current-source",
+  "shipment": "unverified",
+  "workItem": "EI-26147826829365662",
+  "status": "source-qualified",
+  "scope": "declare-intent pivot eligibility and post-deadline work only",
+  "verification": {
+    "map": "/tmp/native-p039-completion-source-20261016.json",
+    "mapSha256": "0924347db4775a6dde7b397a2df8b43ee81e937601b7ae0e45723baf58174ca5",
+    "testFile": "packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.test.ts",
+    "state": "passed",
+    "passed": 41,
+    "failed": 0,
+    "skipped": 0,
+    "sourceStatus": "stable",
+    "sources": [
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.ts",
+        "sha256": "aa5f4c31015afb11a791729a6e715d1e0276f05a9646741ea2844851b1962b60",
+        "captureBasis": "vite-pre-transform"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/coordination/tools/declare-intent.test.ts",
+        "sha256": "d961b4b9a898621dbf11c6f914feb3bca12a063048ed8e2d67801446288bd5d1",
+        "captureBasis": "vite-pre-transform"
+      }
+    ]
+  },
+  "containingBattery": {
+    "passed": false,
+    "reason": "Three separate task-brief feature failures; declare-intent itself passed 41 cases."
+  },
+  "logs": [
+    "/tmp/native-p039-coordination-tests-20261016.log",
+    "/tmp/native-p039-coordination-v2-tests-20261016.log",
+    "/tmp/native-p039-pivot-guards-tests-20261016.log",
+    "/tmp/native-p039-completion-tests-20261016.log"
+  ],
+  "rootCause": "The caller started detached embedding warm-up before the comparator rejected short or unchanged intents; delayed imports could finish after the optional leg deadline. Reusing comparator eligibility before warm-up and checking its abort signal before and after lazy imports prevents that work.",
+  "alternative": "The cold-sidecar branch itself disregarded its acquisition gate.",
+  "observations": [
+    "The original failing case observed an earlier call input, rather than its own input.",
+    "The cold-sidecar case passed alone before the fix.",
+    "The short/unchanged guard cases and full 41-case declare-intent file pass after the fix."
+  ],
+  "limits": [
+    "The first standalone 41-case run had no source capture and is not used for source identity.",
+    "No final-release shipment or whole-plan completion claim."
+  ]
+}

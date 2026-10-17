@@ -61,6 +61,73 @@ function seedDir(root: string, name: string, ageMs: number): string {
   return p;
 }
 
+describe('session root caps', () => {
+  it.each(['foreign ownership boundary', 'filesystem boundary'])('reports unknown cap usage for a %s', async (reason) => {
+    const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
+    const census = await import('./storage/disk-consumer-census');
+    const inspect = vi.spyOn(census, 'inspectRetentionTrees').mockResolvedValue({ entries: [],
+      retained: [{ path: join(root, 'unknown'), reason }], inspectedNodes: 1, retainedRecentTrees: 0 });
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', join(parent, 'leases'));
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(parent, 'mutex'));
+    try {
+      const result = await runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture' }],
+        protectedIdentity: empty, archiveGuard: false });
+      expect(result.caps![0]).toMatchObject({ beforeBytes: null, afterBytes: null, pinnedBytes: null, overByBytes: null });
+      expect(result.errors[0]!.error).toContain(reason);
+      expect(inspect).toHaveBeenCalledWith(root, expect.objectContaining({ sudo: null }));
+    } finally { inspect.mockRestore(); vi.unstubAllEnvs(); }
+  });
+
+  it('orders collectible directories by their last content write, preserving archive and pin guards', () => {
+    const root = tmpRoot();
+    const a = seedDir(root, 'a', DEFAULT_RETENTION_MS * 3);
+    const z = seedDir(root, 'z', DEFAULT_RETENTION_MS * 2);
+    const unarchived = seedDir(root, 'unarchived', DEFAULT_RETENTION_MS * 4);
+    const result = sweepStaleSessionDirs({ roots: [{ root, keyKind: 'owner', label: 'fixture' }],
+      protectedIdentity: empty, nowMs: NOW, retentionPins: [], unarchivedPaths: new Set([unarchived]),
+      newestWrites: new Map([[a, 2], [z, 1]]) });
+    expect(result.removed).toEqual([z, a]);
+    expect(result.keptUnarchived).toBe(1);
+    expect(existsSync(unarchived)).toBe(true);
+  });
+
+  it.each([false, true])('measures retained bytes and pinned overage without following mirrors (dryRun=%s)', async (dryRun) => {
+    const parent = tmpRoot(); const root = join(parent, 'homes'); mkdirSync(root);
+    const old = seedDir(root, 'old', DEFAULT_RETENTION_MS * 3);
+    const pinned = seedDir(root, 'pinned', DEFAULT_RETENTION_MS * 3);
+    const live = seedDir(root, 'live', DEFAULT_RETENTION_MS * 3);
+    for (const path of [old, pinned, live]) {
+      writeFileSync(join(path, 'data'), Buffer.alloc(64 * 1024));
+      utimesSync(path, 1, 1);
+    }
+    const fresh = seedDir(root, 'fresh', 0); utimesSync(fresh, new Date(), new Date());
+    const owner = join(parent, 'owner'); mkdirSync(owner); writeFileSync(join(owner, 'data'), Buffer.alloc(1024 * 1024));
+    symlinkSync(owner, join(pinned, 'mirror'));
+    utimesSync(pinned, 1, 1);
+    const leases = join(parent, 'leases');
+    createRetentionPin({ path: pinned, owner: 'fixture', reason: 'cap exemption',
+      expiresAt: new Date(Date.now() + 60_000).toISOString() }, { dir: leases });
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', leases);
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', join(parent, 'mutex'));
+    try {
+      const result = await runSessionDirGc({ roots: [{ root, keyKind: 'owner', label: 'fixture', maxBytes: 1 }],
+        protectedIdentity: { ownerIds: new Set(['live']), sessionKeys: new Set() }, archiveGuard: false, dryRun });
+      expect(result.errors).toEqual([]);
+      expect(result.removed).toEqual([old]);
+      expect(existsSync(old)).toBe(dryRun);
+      for (const path of [pinned, live, fresh, join(owner, 'data')]) expect(existsSync(path)).toBe(true);
+      const cap = result.caps![0]!;
+      expect(cap.beforeBytes).toBeGreaterThanOrEqual(3 * 64 * 1024);
+      expect(cap.afterBytes).toBeGreaterThanOrEqual(2 * 64 * 1024);
+      expect(cap.afterBytes).toBeLessThan(1024 * 1024);
+      expect(cap.pinnedBytes).toBeGreaterThanOrEqual(64 * 1024);
+      expect(cap.overByBytes).toBe(cap.afterBytes! - 1);
+      if (dryRun) expect(cap.afterBytes).toBe(cap.beforeBytes);
+      else expect(cap.afterBytes).toBeLessThan(cap.beforeBytes!);
+    } finally { vi.unstubAllEnvs(); }
+  });
+});
+
 describe('sessionDirKey', () => {
   it('a retention pin protects an expired session directory until expiry', () => {
     const root = tmpRoot();

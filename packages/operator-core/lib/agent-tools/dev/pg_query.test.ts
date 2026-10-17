@@ -103,6 +103,28 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(full.advisory).toBe(advisory);
   });
 
+  it('adds a first-response correction for an ungrouped scalar in a PostgreSQL 42803 aggregate error', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(
+        new Error('column s.payload must appear in the GROUP BY clause or be used in an aggregate function'),
+        { code: '42803' },
+      ),
+    );
+
+    const payload = payloadOf(await pgQueryTool.handler({
+      sql: 'SELECT s.payload, bool_or(s.ok) FROM probe s',
+      allowUnscoped: true,
+    } as never, {} as never) as never);
+
+    expect(payload).toMatchObject({
+      error: 'column s.payload must appear in the GROUP BY clause or be used in an aggregate function',
+      code: '42803',
+      hint: expect.stringContaining('move the aggregate into a subquery/CTE'),
+    });
+    expect(String(payload.hint)).toContain('GROUP BY');
+    expect(String(payload.hint)).toContain('scalar payload fields outside the aggregate');
+  });
+
   // EI-21924434989535557: an acceptance-rubric grader launches as role `judge` and
   // needs this READ-ONLY query surface (read-only txn, row cap, statement timeout —
   // no write path) to RE-MEASURE a criterion instead of quoting the implementer's

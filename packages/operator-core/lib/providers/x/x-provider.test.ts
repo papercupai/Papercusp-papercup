@@ -166,6 +166,18 @@ describe('X provider package (P-023)', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
+  it('uses the stored post id even when payload ids disagree and rejects invalid handles before fetching', async () => {
+    const world = fake();
+    await adapter.invoke({ source: 's', config, capability: 'social.reply', args: { text: 'reply',
+      target: { platform: 'x-twitter', externalId: '1001', payload: { objectId: '999', replyToId: '999' } } } }, world);
+    expect(JSON.parse(world.calls[0].request.body!).reply).toEqual({ in_reply_to_tweet_id: '1001' });
+    let calls = 0;
+    const host = { fetch: async () => { calls++; return jsonResponse(200, {}); } };
+    for (const target of [{ platform: 'x-twitter', externalId: '../other', payload: {} }, { platform: 'facebook-pages', externalId: '1001', payload: {} }]) {
+      await expect(adapter.invoke({ source: 's', config, capability: 'social.reply', args: { text: 'reply', target } }, host)).rejects.toThrow();
+    }
+    expect(calls).toBe(0);
+  });
   it('refuses wrong destinations, unsupported media and forged reply ids before writes', async () => {
     const fetch = vi.fn(async () => jsonResponse(201, { data: { id: '55' } }));
     for (const args of [{ destination: '99', text: 'x' }, { destination: '42', text: 'x', media: ['photo'] }, { destination: '42', text: ' ' }]) {

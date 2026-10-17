@@ -46,12 +46,73 @@ import {
   resolveCitation,
   repoCitationDeps,
   validatePersistedAuditEntries,
+  deadActivationAuditTargets,
+  describeActivationAuditPlanTargetProblems,
+  validateActivationAuditPlanTargets,
   type AuditCitation,
   type ActivationAuditPayload,
   type CitationDeps,
   type CitationFailureReason,
   type CitationResolution,
 } from './plan-audits';
+
+// WI-6554700010015337: an older build could not parse a VALID Requirements
+// section, emptied the bar set, and reported every R-N target as "no exact
+// record" — 38 false refusals that read as a broken plan. A parse failure must
+// be named as one; a genuinely absent bar must still be unknown_acceptance_bar.
+describe('validateActivationAuditPlanTargets — Requirements parse failure is not "missing"', () => {
+  const activationTargeting = (...planTargets: string[]): ActivationAuditPayload => ({
+    sourceRanges: [],
+    mappings: [{
+      id: 'M-001',
+      sourceRefs: ['session_turn:claude:s:1'],
+      requirement: 'the queue drains',
+      planTargets,
+      disposition: 'covered',
+    }],
+    repairedOmissions: [],
+    rejectedOrSuperseded: [],
+    unresolvedBlockers: [],
+  });
+  const parseable = '# Plan\n\n## Requirements\n\n**R-1 — Queue drains.** The idle repair queue drains within one round.\n';
+  const unparseable = `${parseable}\n**R-2 — Broken record.**\n\n\`\`\`requirement\n{ not json\n\`\`\`\n`;
+
+  it('positive control: a present bar resolves and an absent one is unknown_acceptance_bar', () => {
+    expect(validateActivationAuditPlanTargets(activationTargeting('R-1'), parseable)).toEqual([]);
+    const problems = validateActivationAuditPlanTargets(activationTargeting('R-9'), parseable);
+    expect(problems.map((p) => [p.target, p.code])).toEqual([['R-9', 'unknown_acceptance_bar']]);
+  });
+
+  it('reports requirements_unparseable, naming the failing record, for every R-N target', () => {
+    const problems = validateActivationAuditPlanTargets(activationTargeting('R-1', 'R-2'), unparseable);
+    expect(problems.map((p) => [p.target, p.code])).toEqual([
+      ['R-1', 'requirements_unparseable'],
+      ['R-2', 'requirements_unparseable'],
+    ]);
+    for (const problem of problems) {
+      expect(problem.detail).toContain('R-2');
+      expect(problem.detail).not.toContain('no exact record');
+    }
+  });
+
+  it('a re-audit retires a genuinely absent target but never an unparseable one', () => {
+    const absent = validateActivationAuditPlanTargets(activationTargeting('R-9'), parseable);
+    expect(deadActivationAuditTargets(absent)).toEqual([{ mappingId: 'M-001', target: 'R-9' }]);
+    const unreadable = validateActivationAuditPlanTargets(activationTargeting('R-1', 'R-2'), unparseable);
+    expect(unreadable).toHaveLength(2);
+    expect(deadActivationAuditTargets(unreadable)).toEqual([]);
+  });
+
+  it('never summarises an unparseable target as "do not exist"', () => {
+    const problems = validateActivationAuditPlanTargets(activationTargeting('R-1', 'P-404'), unparseable);
+    const message = describeActivationAuditPlanTargetProblems(problems, 'no writes were performed.');
+    expect(message).toBe(
+      '1 mapping target(s) do not exist in the current plan revision; '
+        + '1 acceptance-bar target(s) could not be resolved because this build could not parse ## Requirements '
+        + '(see problems[].detail); no writes were performed.',
+    );
+  });
+});
 
 describe('activation audit accumulated source coverage', () => {
   const payload = (count: number, start = 0): ActivationAuditPayload => ({

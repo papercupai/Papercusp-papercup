@@ -2,7 +2,7 @@ import type { ChildProcess } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { linuxPgrpFromProcStat, linuxPpidFromProcStat, linuxProcStateFromStat,
-  linuxStartTicksFromProcStat } from '../process-identity.ts';
+  linuxStartTicksFromProcStat } from '@papercusp/operator-core/lib/process-identity';
 
 /** A failed signal-zero fence needs member evidence, not a guessed cause. */
 function groupExitEvidence(group: number) {

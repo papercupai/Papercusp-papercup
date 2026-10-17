@@ -31,13 +31,13 @@ import {
   sourceTokenHarness,
   type OwnedExternalTriggerSourceRow,
 } from '../external-triggers/source-store';
-import { readyProviderRegistry, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
+import { readyProviderRegistry, verifiedProviderForCapability, type ProviderRegistry, type RegisteredProvider } from '../integrations/provider-registry';
 import { createSourceHostFetch } from '../integrations/source-host-fetch';
 import { resolveProviderServices } from '../integrations/service-credentials';
 import { string, type OutboundContext } from './resolve';
 
 /** Canonical datatypes the shared outbound verbs write. */
-export type OutboundDatatype = 'email-message' | 'calendar-event' | 'ticket' | 'chat-message' | 'social-post';
+export type OutboundDatatype = 'email-message' | 'calendar-event' | 'ticket' | 'chat-message' | 'social-post' | 'blog-post';
 
 /**
  * The outbound capability vocabulary (D-014.2). Each is passed to `invoke` as
@@ -60,6 +60,7 @@ export const OUTBOUND_CAPABILITIES = {
   socialPost: PROVIDER_SOCIAL_POST_CAPABILITY,
   socialReply: PROVIDER_SOCIAL_REPLY_CAPABILITY,
   socialDelete: PROVIDER_SOCIAL_DELETE_CAPABILITY,
+  blogPost: 'blog.post',
 } as const;
 
 /**
@@ -236,6 +237,12 @@ export async function invokeOutboundProvider(
   if (!provider.entry.descriptor.capabilities.includes(capability)) {
     throw new ProviderCapabilityUnsupported(provider.id, capability);
   }
+  const services = await resolveProviderServices(provider.entry.descriptor.serviceCredentials);
+  if (target.datatype === 'social-post' || target.datatype === 'blog-post') {
+    const registry = deps.registry ?? await readyProviderRegistry();
+    const current = verifiedProviderForCapability(registry, provider.id, capability);
+    if (current !== provider.entry) throw new Error(`provider_changed:${provider.id}: resolve the source again`);
+  }
   const fetch =
     deps.hostFetchFor?.(sql, target) ??
     createSourceHostFetch(sql, {
@@ -246,7 +253,6 @@ export async function invokeOutboundProvider(
       fetchImpl: deps.hostFetchImpl,
       sourceIds: [target.source.id],
     });
-  const services = await resolveProviderServices(provider.entry.descriptor.serviceCredentials);
   const result = await provider.entry.adapter.invoke(
     { source: target.source.id, capability, args, config: target.source.config, ...(services ? { services } : {}) },
     { fetch },

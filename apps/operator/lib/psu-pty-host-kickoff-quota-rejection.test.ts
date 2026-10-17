@@ -141,3 +141,16 @@ describe('kickoffQuotaLeverNote (EI-25925116860039557)', () => {
     expect(kickoffQuotaLeverNote(reason)).toBe('');
   });
 });
+
+describe('capacity refusal during kickoff admission (EI-26025268928325126)', () => {
+  it('waits for a delayed capacity refusal before publishing success', async () => {
+    const clock = virtualClock(0);
+    const capacity = { retryAfterMs: 90_000, matchedExcerpt: 'Selected model is at capacity' };
+    const result = await awaitKickoffQuotaRejection({
+      isQuotaBlocked: () => false, deliveredAtMs: 0, now: clock.now, sleep: clock.sleep,
+      readModelCapacity: () => clock.now() >= 2_500 ? capacity : null,
+    });
+    expect(result).toEqual({ rejected: true, waitedMs: 2_500, stopped: false, modelCapacity: capacity });
+    expect(clock.sleeps.reduce((sum, ms) => sum + ms, 0)).toBe(2_500);
+  });
+});

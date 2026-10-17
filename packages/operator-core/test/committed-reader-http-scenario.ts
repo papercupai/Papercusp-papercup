@@ -185,7 +185,7 @@ export async function prepareCommittedReaderScenario(o: Options) {
   const handoffs: Array<Record<string, unknown>> = [];
   let fault = false;
   server = runSpawnerSidecarServer({ executeProcess: async (params, deps) => {
-    if (params.command !== 'git' || !params.args.includes('--batch')) return execProcess(params, deps);
+    if (params.command !== 'git' || !params.args?.includes('--batch')) return execProcess(params, deps);
     const stdin = await readFile(params.stdinPath!, 'utf8');
     const target = targets.find(file => stdin === `${file.blob}\n`);
     assert.ok(target, 'sidecar request must name one exact private blob');

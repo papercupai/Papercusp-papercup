@@ -43,6 +43,7 @@ import { assertInstalledPuiStore, HARNESS_TAG, nativeApprovalFollowupDecline, na
 import { p005PuiLaunchArgs, reviewBlockingReason } from './p005-codex-readiness';
 import { puiQuitBounds } from './pui-quit-bounds';
 import { throwIfProviderRefused } from '../su-session-attached-live-rate-limit';
+import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { isClaudeConfigDirLaunchReady, sessionProcessHolder, sessionTranscriptFile } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 
 // A [sync-slow] line (resolve-observability.ts, 2s default) is a perf signal
@@ -187,6 +188,21 @@ vi.mock('../su-session-claude-engine', async (original) => {
           strictMcp: sdkOptions.strictMcpConfig === true,
           hooksOff: typeof sdkOptions.settings === 'object' && sdkOptions.settings?.disableAllHooks === true,
         });
+        // This peer stands in for an already configured native installation.
+        // Its private HOME has no user .claude.json for bootstrap to mirror;
+        // leave the same ready configuration that seeded sessions provide so
+        // the real resume guard can validate it. Never replace an existing
+        // config (including a dangling link) or write outside this fixture.
+        const configDir = sdkOptions.env?.CLAUDE_CONFIG_DIR;
+        if (!configDir) throw new Error('Scripted Claude requires a private configuration directory');
+        const relativeConfig = path.relative(home, configDir);
+        expect(path.isAbsolute(relativeConfig) || relativeConfig.startsWith('..'),
+          'scripted Claude configuration escaped the fixture').toBe(false);
+        const configFile = path.join(configDir, '.claude.json');
+        if (!existsSync(configFile)) {
+          writeFileSync(configFile, JSON.stringify({ mcpServers: {} }), { flag: 'wx' });
+        }
+        expect(isClaudeConfigDirLaunchReady(configDir), 'scripted native configuration is resumable').toBe(true);
         // The real SDK launches the native CLI through this hook, and it is the
         // ONLY place the engine learns its pid (su-session-claude-engine.ts
         // `spawnClaudeCodeProcess`). Resume readiness refuses a null pid
@@ -210,7 +226,6 @@ vi.mock('../su-session-claude-engine', async (original) => {
         // Real Claude appends every native line to its per-session JSONL as it
         // goes, and exact resume (su-session-resume.ts) requires that file. An
         // engine that never received the prompt leaves none.
-        const configDir = sdkOptions.env?.CLAUDE_CONFIG_DIR;
         const persist = (line: Record<string, unknown>) => {
           if (!configDir || !nativeId) return;
           mkdirSync(path.join(configDir, 'projects', 'pui-e2e'), { recursive: true });
@@ -1317,7 +1332,7 @@ async function persistedChats(db: OrgTestDb): Promise<PersistedChat[]> {
 type SeedAgentChat = {
   id: string;
   title: string;
-  transcript: Array<Record<string, unknown>>;
+  transcript: Array<{ role: string; content: string; ts: string; [key: string]: unknown }>;
   role?: string;
   featureId?: string | null;
   runtimeClass?: 'su-session' | 'legacy-owned-loop' | null;
@@ -1331,6 +1346,15 @@ type SeedAgentChat = {
 
 /** Seed a real Agent Chat row in this fixture's migrated Postgres database. */
 async function seedAgentChat(input: SeedAgentChat): Promise<void> {
+  // The installed Rust client's AgentChatTranscriptTurn requires all three
+  // strings. Reject malformed seeds here, before a missing timestamp becomes
+  // a slow, misleading "No messages yet" PTY failure (EI-26244280525107325).
+  for (const [index, turn] of input.transcript.entries()) {
+    expect(turn, `seeded ${input.id} turn ${index} wire contract`).toMatchObject({
+      role: expect.any(String), content: expect.any(String), ts: expect.any(String),
+    });
+    expect(Number.isFinite(Date.parse(turn.ts)), `seeded ${input.id} turn ${index} timestamp`).toBe(true);
+  }
   const now = input.updatedAt ?? Date.now();
   await db.adminSql`
     INSERT INTO harness_shared.agent_chats_consolidated
@@ -1841,6 +1865,7 @@ beforeAll(async () => {
     'PAPERCUSP_WORKSPACES_ROOT',
     'PAPERCUSP_SERVE_UI',
     'PAPERCUSP_HONO_PORT',
+    'OPERATOR_DEV_PORT',
     'PAPERCUSP_OPERATOR_URL',
     'PAPERCUSP_MCP_PROXY_BASE',
     'PAPERCUSP_LAUNCH_CONTEXT_DIR',
@@ -2256,11 +2281,17 @@ beforeAll(async () => {
   // Native lifecycle hooks and MCP must rendezvous with this isolated host,
   // never the developer's inherited live/staging endpoint or shared proxy.
   process.env.PAPERCUSP_HONO_PORT = String(operatorPort);
+  // with-test-pg supplies a closed runtime port here. The production spawn
+  // resolver gives it precedence over HONO_PORT, including on resume's
+  // configuration and archive calls, so rebind both host identities.
+  process.env.OPERATOR_DEV_PORT = String(operatorPort);
   process.env.PAPERCUSP_OPERATOR_URL = `http://127.0.0.1:${operatorPort}`;
   process.env.PAPERCUSP_MCP_PROXY_BASE = `http://127.0.0.1:${operatorPort}`;
   // Fail at the actual rendezvous boundary instead of spending every PTY
   // timeout on a fixture operator that the installed client cannot identify.
-  const identityResponse = await fetch(`http://127.0.0.1:${operatorPort}/api/tui/identity`);
+  const spawnHostUrl = resolveSpawnHostOperatorBaseUrl();
+  expect(new URL(spawnHostUrl).port, 'native lifecycle calls use the fixture operator').toBe(String(operatorPort));
+  const identityResponse = await fetch(`${spawnHostUrl}/api/tui/identity`);
   const identity = await identityResponse.json();
   expect(identityResponse.status, JSON.stringify(identity)).toBe(200);
   expect(identity).toMatchObject({
@@ -2833,6 +2864,122 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-008 sessions and context 
       await pane.stop().catch(() => {});
     }
   }, 180_000);
+
+  test('AUTO-BAR-R-07-P-002: the 80x24 Surface B frame preserves the conversation through its keyboard journey', async ({ onTestFailed }) => {
+    const tag = randomUUID().slice(0, 8);
+    const chatId = `pui-r07-compact-${tag}`;
+    const answer = `R07 compact answer ${tag}`;
+    const task = `R07 compact task ${tag}`;
+    const now = Date.now();
+    const transcript = [
+      { role: 'user', content: 'compact question', ts: new Date(now - 1_000).toISOString() },
+      { role: 'assistant', content: answer, ts: new Date(now).toISOString() },
+    ];
+    await seedAgentChat({ id: chatId, title: `R07 compact ${tag}`, runtimeClass: 'su-session',
+      transcript, createdAt: now + 300_000, updatedAt: now + 300_000 });
+    await seedBoundSuSession({ agentChatId: chatId, transcript });
+    const snapshot = await fetch(`http://127.0.0.1:${operatorPort}/api/harness/${HARNESS}/agent-chats/${chatId}/su-session`);
+    expect(snapshot.status, 'compact journey canonical inventory preflight').toBe(200);
+    expect(await snapshot.json()).toMatchObject({ launchCwd: realpathSync(REPO_ROOT) });
+    const chat = await fetch(`http://127.0.0.1:${operatorPort}/api/harness/${HARNESS}/agent-chats/${chatId}`);
+    expect(chat.status, 'compact journey transcript preflight').toBe(200);
+    expect(await chat.json()).toMatchObject({ id: chatId, transcript });
+    await db.adminSql`
+      INSERT INTO harness_shared.session_tasks
+        (workspace_id, session_id, task_id, position, content, active_form, status, created_at, updated_at)
+      VALUES (${WORKSPACE}, ${chatId}, 'compact-task', 0, ${task}, ${task}, 'in_progress', now(), now())`;
+    await db.adminSql`DELETE FROM harness_shared.tui_view_state WHERE owner_id = ${OWNER}`;
+    const pane = new PuiPane(bin, operatorPort, home, { cols: 80, rows: 24 });
+    const frames: Record<string, string> = {};
+    let stage = 'open';
+    onTestFailed(() => console.info('PUI_R07_COMPACT_FAILURE', JSON.stringify({ stage, frames, ...pane.failureEvidence() })));
+    try {
+      // PUBLIC_RELEASE_UX.md's validated 80x24 journey, against the real
+      // operator and installed artifact. Keep each rendered frame as evidence.
+      await pane.waitFor('· pui ·', { timeoutMs: 40_000 });
+      await pane.waitFor(answer, { timeoutMs: 40_000 });
+      if (!isSendReady(pane.screen())) pane.write('i');
+      await pane.waitForSendReady();
+      stage = 'destination-return';
+      pane.escape();
+      pane.write('3');
+      await pane.waitFor('Plans (', { timeoutMs: 40_000 });
+      pane.write('o');
+      await pane.waitFor('┌ Agent Chat');
+      await pane.waitFor(answer, { timeoutMs: 40_000 });
+      if (!isSendReady(pane.screen())) pane.write('i');
+      await pane.waitForSendReady();
+      expect(pane.screen()).not.toContain('Context · Ctrl-T');
+      frames.conversation = pane.screen();
+
+      stage = 'unicode-multiline';
+      const first = `compact café ${tag}`;
+      const second = `second line ${tag}`;
+      pane.write(first);
+      pane.write('\u001b\r');
+      pane.write(second);
+      await pane.waitFor(first);
+      await pane.waitFor(second);
+      frames.draft = pane.screen();
+      expect(scriptedEngine.requests).toEqual([]);
+      scriptedEngine.mode = 'stream';
+      pane.enter();
+      await pane.waitFor('STREAM-A1', { timeoutMs: 60_000 });
+      // The compact contract names the key, while the installed HUD spells
+      // the same control chord Ctrl+X. Require the advertised cancel action.
+      expect(pane.screen()).toMatch(/Running · Ctrl[+-]X cancel/);
+      frames.running = pane.screen();
+      await pane.waitFor('STREAM-E5', { timeoutMs: 15_000 });
+      await pane.waitForSendReady();
+      expect(scriptedEngine.requests).toEqual([`${first}\n${second}`]);
+
+      stage = 'context-and-switcher';
+      const draft = `keep draft ${tag}`;
+      pane.write(draft);
+      await pane.waitFor(draft);
+      pane.write('\u0014');
+      await pane.waitFor('Esc/o Agent Chat');
+      await pane.waitFor(task);
+      frames.context = pane.screen();
+      pane.write('o');
+      await pane.waitFor('┌ Agent Chat');
+      await pane.waitFor(draft);
+      await pane.waitFor('STREAM-E5');
+      pane.write('\u0013');
+      await pane.waitFor('Sessions · Ctrl-S');
+      frames.switcher = pane.screen();
+      pane.escape();
+      await pane.waitForGone('Sessions · Ctrl-S');
+      await pane.waitFor(draft);
+
+      stage = 'blocking-approval';
+      pane.write('\u007f'.repeat(draft.length));
+      scriptedEngine.mode = 'approval';
+      scriptedEngine.successText = `R07 decision reply ${tag}`;
+      scriptedEngine.approvalRequests = [{ tag, input: { command: `printf 'compact-${tag}'` } }];
+      const prompt = `approval ${tag}`;
+      pane.write(prompt);
+      pane.enter();
+      await pane.waitFor('Do you want to run this command?', { timeoutMs: 60_000 });
+      expect(pane.screen()).toContain('STREAM-E5');
+      frames.approval = pane.screen();
+      pane.write('2');
+      await pane.waitFor(scriptedEngine.successText, { timeoutMs: 60_000 });
+      await pane.waitForSendReady();
+      expect(scriptedEngine.approvalExecuted).toEqual([]);
+      expect(scriptedEngine.requests).toEqual([`${first}\n${second}`, prompt]);
+      const saved = await waitForSavedTurn(prompt);
+      expect(saved.id).toBe(chatId);
+      expect(saved.transcript.filter((turn) => turn.role === 'user' && turn.content === `${first}\n${second}`)).toHaveLength(1);
+      frames.recovered = pane.screen();
+      console.info('PUI_R07_COMPACT_ACCEPTANCE', JSON.stringify({
+        binary: bin, binarySha256, size: '80x24', reference: 'apps/tui/PUBLIC_RELEASE_UX.md#validated-8024-frame-and-journey',
+        chatId, task, frames,
+      }));
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  }, 240_000);
 
   test('PUI-COMMANDS: help and the command palette discover and execute a harmless extension', async ({ onTestFailed }) => {
     await putViewState('Plans');
@@ -7248,6 +7395,7 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
   test('P-013: 80x24, 120x40 and 200x60 keep a streamed reply whole across resizes', { timeout: 240_000 }, async () => {
     const prompt = `P13 stream ${randomUUID().slice(0, 8)}`;
     const pane = new PuiPane(bin, operatorPort, home, { cols: 120, rows: 40 });
+    const frames: Record<string, string> = {};
     try {
       await openComposer(pane);
       scriptedEngine.mode = 'stream';
@@ -7273,9 +7421,10 @@ describe.skipIf(scriptedEngine.real).sequential('PUI P-013 terminal compatibilit
           expect(at.every((index, i) => index >= 0 && (i === 0 || index > at[i - 1])), screen).toBe(true);
           expect(chunks.every((chunk) => screen.split(chunk).length === 2), screen).toBe(true);
         }, { timeout: 10_000, interval: 100 });
+        frames[`${cols}x${rows}`] = pane.screen();
       }
       expect(scriptedEngine.requests).toEqual([prompt]);
-      console.info('PUI_P013_RESIZE_STREAM_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, prompt, frame: pane.screen() }));
+      console.info('PUI_P013_RESIZE_STREAM_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, prompt, frames, frame: pane.screen() }));
     } finally {
       await pane.stop().catch(() => {});
     }

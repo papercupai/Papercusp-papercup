@@ -15,6 +15,7 @@ import '../../agent-tools/dev/pg_query';
 import { projectedToolToCapability } from '../../capabilities/from-tooldef';
 import { paletteInvokeGuard, type dispatchPaletteTarget } from '../../capabilities/invoke';
 import { RESCORE_CONFIRMED_PROBE_TOOLS, rescoreProbeDispatcher } from './rubric-rescore-action';
+import { currentRequestWorkspaceId, runWithWorkspace } from '../../workspace-als';
 
 type DispatchOpts = Parameters<typeof dispatchPaletteTarget>[0];
 type DispatchResult = Awaited<ReturnType<typeof dispatchPaletteTarget>>;
@@ -38,6 +39,46 @@ function recordingDispatch(calls: DispatchOpts[]): typeof dispatchPaletteTarget 
 }
 
 describe('rubric re-score: default probe dispatcher', () => {
+  it('uses the delivery workspace across async dispatch without changing the ambient workspace', async () => {
+    const observations: Array<string | undefined> = [];
+    const dispatch: typeof dispatchPaletteTarget = async () => {
+      await Promise.resolve();
+      const workspace = currentRequestWorkspaceId();
+      observations.push(workspace);
+      return workspace === 'delivery-workspace'
+        ? { content: [{ type: 'text', text: '{"body":"green"}' }] }
+        : { isError: true, content: [{ type: 'text', text: 'harness_not_found' }] };
+    };
+    await runWithWorkspace('another-workspace', async () => {
+      const ambient = await rescoreProbeDispatcher('papercusp', dispatch)('facts:list', {});
+      expect(ambient.isError).toBe(true);
+      const delivered = await rescoreProbeDispatcher('papercusp', dispatch, 'delivery-workspace')('facts:list', {});
+      expect(delivered.isError).not.toBe(true);
+      expect(delivered.content).toEqual([{ type: 'text', text: '{"body":"green"}' }]);
+      expect(currentRequestWorkspaceId()).toBe('another-workspace');
+    });
+    expect(observations).toEqual(['another-workspace', 'delivery-workspace']);
+  });
+
+  it('keeps simultaneous background probe dispatches in their own workspace', async () => {
+    const seen: Array<string | undefined> = [];
+    const dispatch: typeof dispatchPaletteTarget = async () => {
+      const before = currentRequestWorkspaceId();
+      await Promise.resolve();
+      expect(currentRequestWorkspaceId()).toBe(before);
+      seen.push(before);
+      return { content: [] };
+    };
+    await runWithWorkspace('ambient-workspace', async () => {
+      await Promise.all([
+        rescoreProbeDispatcher('h-a', dispatch, 'workspace-a')('facts:list', {}),
+        rescoreProbeDispatcher('h-b', dispatch, 'workspace-b')('facts:list', {}),
+      ]);
+      expect(currentRequestWorkspaceId()).toBe('ambient-workspace');
+    });
+    expect(seen).toEqual(['workspace-a', 'workspace-b']);
+  });
+
   it('the palette chokepoint refuses an unconfirmed dev:pg_query (the failure this guards)', () => {
     expect(guardFor('dev:pg_query', false)).toMatchObject({ allow: false, code: 'confirmation_required' });
   });

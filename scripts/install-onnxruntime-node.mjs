@@ -230,7 +230,10 @@ export function installCudaProvider({
     stdio: 'inherit',
     env: {
       ...env,
-      ONNXRUNTIME_NODE_INSTALL: 'cuda12',
+      // ORT 1.24.3's parseInstallFlag drops string values such as cuda12.
+      // Boolean force bypasses its local-install no-op and installs the same
+      // linux/x64 requirements (cuda12) declared by its own metadata.
+      ONNXRUNTIME_NODE_INSTALL: '1',
       NODE_OPTIONS: withNetworkAttemptTimeout(env.NODE_OPTIONS),
     },
   });

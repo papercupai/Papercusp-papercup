@@ -65,6 +65,43 @@ export type NativeSessionHandle =
   | CodexNativeSessionHandle
   | OmpNativeSessionHandle;
 
+/** Native failure evidence carried by a launch, including pre-handle Codex receipts. */
+export interface NativeTranscriptLaunchReceipt {
+  tasks?: Array<{
+    ownerId?: unknown;
+    nativeSession?: { backend?: unknown; ownerId?: unknown; sessionId?: unknown; rolloutId?: unknown } | null;
+    kickoffProof?: { nativeRef?: unknown } | null;
+  }>;
+  freshVerdict?: { sessions?: Array<{ ownerId?: unknown; sessionId?: unknown }> };
+}
+
+/** Reuse the launch's exact owner/session binding; never infer identity from a filename. */
+export function nativeTranscriptProofFromLaunchReceipt(
+  receipt: NativeTranscriptLaunchReceipt | undefined,
+  requestedBackend: 'claude' | 'codex',
+): { nativeTranscriptPath: string; nativeSessionId: string; nativeBackend: 'claude' | 'codex' } | undefined {
+  const task = receipt?.tasks?.[0];
+  const path = task?.kickoffProof?.nativeRef;
+  if (typeof path !== 'string' || !path.trim()) return undefined;
+  const handle = task?.nativeSession;
+  if (handle?.ownerId && handle.ownerId !== task?.ownerId) return undefined;
+  if (handle?.backend === 'claude' && typeof handle.sessionId === 'string' && handle.sessionId.trim()) {
+    return { nativeTranscriptPath: path, nativeSessionId: handle.sessionId, nativeBackend: 'claude' };
+  }
+  if (typeof task?.ownerId !== 'string' || !task.ownerId.trim()) return undefined;
+  if (handle?.backend === 'codex' && handle.ownerId === task.ownerId &&
+      typeof handle.rolloutId === 'string' && handle.rolloutId.trim()) {
+    return { nativeTranscriptPath: path, nativeSessionId: handle.rolloutId, nativeBackend: 'codex' };
+  }
+  // Stored idempotency receipts written before Codex handle projection still
+  // carry the verifier's owner-bound native id. Do not replace or guess it.
+  if (handle != null || requestedBackend !== 'codex') return undefined;
+  const sessions = receipt?.freshVerdict?.sessions;
+  const bindings = Array.isArray(sessions) ? sessions.filter(session => session?.ownerId === task.ownerId) : [];
+  if (bindings.length !== 1 || typeof bindings[0].sessionId !== 'string' || !bindings[0].sessionId.trim()) return undefined;
+  return { nativeTranscriptPath: path, nativeSessionId: bindings[0].sessionId, nativeBackend: 'codex' };
+}
+
 export interface NativeSessionDeps {
   codexHomeForSessionKey?: (sessionKey: string | number) => string;
   findCodexRolloutId?: (codexHome: string) => string | null;

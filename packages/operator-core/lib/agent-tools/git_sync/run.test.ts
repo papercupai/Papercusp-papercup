@@ -156,6 +156,9 @@ describe('git-sync:run', () => {
       ['rev-parse', 'HEAD'],
       ['status', '--porcelain=v1', '-z', '-uall'],
     ]);
+    expect(execFileMock.mock.calls[1]?.[2]).toMatchObject({
+      env: expect.objectContaining({ GIT_OPTIONAL_LOCKS: '0' }),
+    });
   });
 
   it('returns an honest no-repository preview without spawning git or firing git-sync', async () => {
@@ -571,9 +574,40 @@ describe('git-sync:run', () => {
     });
   });
 
-  // POSITIVE CONTROL for the case above: the fix must be scoped to `held_exclusive`
-  // ONLY. Every other refusal class still reaches the live emitter, so removing the
-  // continuation wholesale would be a regression, not a fix.
+  it('uses the exact release event for an exclusive_pending restart barrier', async () => {
+    const outcome = {
+      status: 'skipped' as const,
+      reason: 'exclusive_pending',
+      blockedOn: 'git-sync',
+      // A queued dev:restart exclusive may have no current exclusive holder;
+      // the resource release event still fires when the barrier is cleared.
+      holders: [],
+    };
+    const result = await mockSkippedFire(outcome);
+
+    expect(result).toMatchObject({
+      ok: true,
+      fired: true,
+      status: 'skipped',
+      outcome,
+      continuation: {
+        completion_event: {
+          key: 'resource:released:git-sync',
+          payload_fields: ['resource', 'workspaceId', 'releasedAtMs'],
+        },
+        await_tool: 'events:await',
+        progress_ref: {
+          surface: 'locks:list',
+          args: { resource: 'git-sync' },
+        },
+      },
+    });
+    expect(result.note).toMatch(/exact resource release event/);
+    expect(result.note).not.toMatch(/git-sync:lock-retry/);
+  });
+
+  // POSITIVE CONTROL for the cases above: only resource-backed refusal classes use
+  // the exact release event. A DB contention skip still uses the live retry signal.
   it('still returns the lock-retry continuation for a non-held_exclusive skip, whose emitter does fire', async () => {
     const outcome = {
       status: 'skipped' as const,

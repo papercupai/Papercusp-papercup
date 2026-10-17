@@ -66,6 +66,23 @@ describe('owner directive verbatim argument schemas', () => {
     );
   });
 
+  it('accepts and forwards complete long directives through both paths', async () => {
+    const verbatim = 'x'.repeat(15_999) + '🚀\nPreserve the final requirement.\n' + 'é'.repeat(5_000);
+    const recordArgs = recordTool.args.parse({ verbatim });
+    await recordTool.handler(recordArgs, ctx);
+    const captureArgs = captureTool.args.parse({ verbatim, sourceTurnRef: 'session:long-turn' });
+    await captureTool.handler(captureArgs, {
+      workspaceId: 'ws-1',
+      requestOrigin: { query: { superuser: '1', origin: 'hook' } },
+    } as never);
+
+    expect(mocks.recordOwnerDirective).toHaveBeenNthCalledWith(1, expect.objectContaining({ verbatimText: verbatim }));
+    expect(mocks.recordOwnerDirective).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ verbatimText: verbatim, sourceTurnRef: 'session:long-turn', capturedByHook: true }),
+    );
+  });
+
   it('continues rejecting empty directive text', () => {
     expect(recordTool.args.safeParse({ verbatim: '' }).success).toBe(false);
     expect(captureTool.args.safeParse({ verbatim: '', sourceTurnRef: 'turn-1' }).success).toBe(false);

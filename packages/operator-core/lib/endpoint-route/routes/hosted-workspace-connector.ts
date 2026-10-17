@@ -1,6 +1,7 @@
 /** Explicit D-143 HTTP surface for hosted reverse connectors and session exchange. */
 import { defineTool, type RouteContext } from '@papercusp/agent-mcp';
 import { isHostedPrincipal, type HostedPrincipal } from '../../auth/hosted-principal';
+import { createHostedPoolAgentReservations } from '../../workspace-host/hosted-agent-admission';
 import {
   HostedWorkspaceConnectorGateway,
   readHostedConnectorBearer,
@@ -19,6 +20,7 @@ export const HOSTED_WORKSPACE_CONNECTOR_ROUTES = [
   { method: 'POST', path: '/hosted/connectors/heartbeat', access: 'public' },
   { method: 'GET', path: '/hosted/connectors/events', access: 'public' },
   { method: 'GET', path: '/hosted/connectors/socket', access: 'public' },
+  { method: 'POST', path: '/hosted/connectors/agent-admission', access: 'public' },
 ] as const;
 
 const HOSTED_OPERATE_AUTH = {
@@ -125,5 +127,27 @@ export function createHostedWorkspaceConnectorRoutes(gateway: HostedWorkspaceCon
   const heartbeat = defineTool({method:'POST',path:HOSTED_WORKSPACE_CONNECTOR_ROUTES[5].path,auth:'public',async handler(req){const bearer=readHostedConnectorBearer(req.headers);const parsed=await body(req);const selected=transport(parsed?.transport);if(!bearer||!selected)return jsonError('connector_credential_required',401);const binding=await gateway.heartbeat(bearer,selected);return binding?Response.json({ok:true,binding}):jsonError('connector_credential_invalid',401);} });
   const events = defineTool({method:'GET',path:HOSTED_WORKSPACE_CONNECTOR_ROUTES[6].path,auth:'public',async handler(req){const binding=await authenticateHostedConnectorTransport(gateway,req,'sse');if(!binding)return jsonError('connector_transport_unauthorized',401);const encoder=new TextEncoder();let untrack=()=>{};const stream=new ReadableStream<Uint8Array>({start(controller){controller.enqueue(encoder.encode(`event: bound\ndata: ${JSON.stringify(binding)}\n\n`));untrack=gateway.track(binding,(reason)=>{untrack();controller.enqueue(encoder.encode(`event: close\ndata: ${JSON.stringify({reason})}\n\n`));controller.close();});},cancel(){untrack();}});return new Response(stream,{headers:{'content-type':'text/event-stream','cache-control':'no-store','x-accel-buffering':'no'}});} });
   const socket = defineTool({method:'GET',path:HOSTED_WORKSPACE_CONNECTOR_ROUTES[7].path,auth:'public',handler(){return jsonError('websocket_upgrade_required',426);} });
-  return [enroll,rotate,revoke,sessionTicket,register,heartbeat,events,socket] as const;
+  const agentAdmission = defineTool({ method: 'POST', path: HOSTED_WORKSPACE_CONNECTOR_ROUTES[8].path, auth: 'public',
+    async handler(req) {
+      const bearer = readHostedConnectorBearer(req.headers);
+      const binding = bearer ? await gateway.authenticate(bearer) : null;
+      if (!binding || !connectorHostMatches(req, binding)) return jsonError('connector_credential_invalid', 401);
+      let value: unknown;
+      try { value = await req.json(); } catch { return jsonError('invalid_json', 400); }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return jsonError('invalid_request', 400);
+      const input = value as Record<string, unknown>;
+      if (!['reserve', 'start', 'finish'].includes(String(input.action)) ||
+          typeof input.processKey !== 'string' || !input.processKey || input.processKey.length > 200 ||
+          /[\x00-\x1f]/.test(input.processKey) || Object.keys(input).some(key => !['action', 'processKey'].includes(key))) {
+        return jsonError('invalid_request', 400);
+      }
+      try {
+        const result = await createHostedPoolAgentReservations(binding)(input.action as 'reserve' | 'start' | 'finish', input.processKey);
+        return Response.json({ ok: true, ...result }, { headers: { 'cache-control': 'no-store' } });
+      } catch {
+        // Database exceptions can contain customer identifiers or credentials.
+        return jsonError('hosted_pool_agent_admission_refused', 409);
+      }
+    } });
+  return [enroll,rotate,revoke,sessionTicket,register,heartbeat,events,socket,agentAdmission] as const;
 }

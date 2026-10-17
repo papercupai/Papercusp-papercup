@@ -1109,6 +1109,33 @@ describe('evaluateCriterionTestChecks (grading time)', () => {
     }
   });
 
+  it('preserves no-report diagnostics and full router log paths through a scorecard refusal', async () => {
+    const diagnostics = {
+      routerExit: 1,
+      reportDirEntries: [],
+      markerSeen: true,
+      summarySeen: 'none' as const,
+      routerLogPaths: ['/tmp/scorecard-setup-stdout.log', '/tmp/scorecard-setup-stderr.log'],
+    };
+    const runner: CriterionCheckRunner = async () => ({
+      ok: false, runId: 'setup-refused-42', root, error: 'no_report', diagnostics,
+      routerOutput: `${'later router progress\n'.repeat(300)}Error: TEST SUBSTRATE STORAGE LOW`,
+    });
+    const res = await evaluateCriterionTestChecks({
+      criteria: CRITERIA,
+      ratings: { det: { rating: 'healthy' } },
+      root,
+      runner,
+    });
+    expect(res.ok).toBe(false);
+    if (res.ok || res.error !== 'check_run_failed') throw new Error('expected a failed check run');
+    expect(res.runner).toMatchObject({
+      runId: 'setup-refused-42', error: 'no_report', diagnostics,
+    });
+    expect(res.runner?.routerOutput).toHaveLength(2_000);
+    expect(res.runner?.routerOutput).toContain('Error: TEST SUBSTRATE STORAGE LOW');
+  });
+
   it('REFUSES an exit-zero file whose entire suite is skipped as unjudged, never passed', async () => {
     const runner: CriterionCheckRunner = async ({ files }) => {
       const byFile = Object.fromEntries(

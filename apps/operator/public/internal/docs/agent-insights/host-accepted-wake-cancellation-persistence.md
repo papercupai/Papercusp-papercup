@@ -1,0 +1,32 @@
+# Host-accepted wake ownership must survive cancellation parks
+URL: /internal/docs/agent-insights/host-accepted-wake-cancellation-persistence
+
+Why persisted cancellation park reasons must retain host ownership, and why only an exact pre-write receipt permits suppression.
+
+A host acceptance ACK transfers custody of a queued wake to the PTY host. It does not prove that the backend started a turn, and a cancellation-request ACK does not prove that the queued bytes were cancelled.
+
+## Persist ownership across parks
+
+The pump persists a park's reason in the delivery row's `lastError`. The outcome's transient `hostCommitPending` flag does not survive that round trip. A subsequent pump must therefore recognize host ownership from the persisted reason before deciding whether a shown, non-actionable inbox message can be suppressed.
+
+WI-6554700010015883 exposed a mismatch: the cancellation and fail-open paths returned `hostCommitPending: true` with reasons outside the old two-prefix checks. On the next retry the engine could retire the durable row without asking the host to cancel its accepted write. The executor used the same incomplete check for terminal host-ending recovery.
+
+`isAcceptedPsuHostDelivery` in `packages/operator-core/lib/events/await/types.ts` is the shared predicate for both consumers. It recognizes `psu-host accepted:`, `psu-host pending-delivery-id:`, `psu-host coalesced-into-pending-turn:`, and the three incumbent cancellation/fail-open reason prefixes. New producer reasons retain the `psu-host accepted:` marker. Supporting incumbent reasons matters: changing only the producers leaves already parked rows exposed.
+
+## Cancellation is a two-stage handshake
+
+For an exact shown non-actionable inbox group, the engine forwards the delivery IDs and handled message IDs through `hostCancellation`. The executor keeps the row parked when the host says `cancel-requested`, still owns the accepted delivery, or accepts a fail-open retry. A read watermark or a request ACK alone cannot settle that row.
+
+The host's `makeDeliveryDedup.requestCancel` records intent. The atomic `beginWrite` boundary cancels only when the complete coalesced group is eligible before its first PTY byte. Partial requests fail open; writing or completed deliveries refuse cancellation. The terminal `cancelled-before-write` receipt is the evidence for suppression. A cancelled tombstone prevents both later cancellation retries and delayed original injections from resurrecting the write; the latter also returns `cancelled-before-write`.
+
+## Maintained verification
+
+The engine regression retries persisted incumbent reasons across multiple pumps and requires cancellation metadata until the exact receipt. The executor regression checks terminal host-ending recovery for those same incumbent reasons. The old policy failed eight distinguishing cases; the shared predicate passed the focused engine and executor suites (434 tests, zero skipped, local working-tree evidence recorded on WI5883).
+
+The real socket/PTY case in `apps/operator/lib/psu-pty-host-turn.integration.test.ts`, “keeps repeated host cancellation requests pending until the real zero-byte receipt (WI5883),” holds an isolated child behind an unsubmitted owner line. Two request ACKs must precede any terminal receipt; releasing the gate must report exact delivery/message IDs and zero bytes written. No native transcript or loop-origin proof is manufactured by that fixture.
+
+## Limits of the evidence
+
+These source regressions establish the persistence defect class and cancellation contract. They do not prove that a particular historical delivery encountered that defect or that a live leader loop recovered. WI5883 keeps delivery 845120's exact historical attribution and real loop-origin restoration separate. Presence activity, ordinary tool calls, a host acceptance ACK and a self-compaction turn are insufficient substitutes for per-fire strict prompt-start/lifecycle evidence.
+
+Use the existing operation's authorized restoration route. Preserve the native-turn and in-flight guards; do not synthesize proof or create a second loop to make an acceptance check pass.

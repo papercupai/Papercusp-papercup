@@ -292,6 +292,29 @@ HOST_EXTERNALS+=(
   --external:@pdf-lib/fontkit
   # 0.19 MB; provider-router.ts dynamic-imports it for an openrouter selection.
   --external:@openrouter/ai-sdk-provider
+  # EI-26045992788438631: these compiled root dependencies otherwise add
+  # build-tool, parser and SDK source to every development host. Their
+  # reachable package instances resolve to the same root node_modules used
+  # beside staging/release bundles. Package-local SDK versions stay bundled.
+  # bundle-host-banner-defines.test.ts exercises the actual flags and plain
+  # Node imports; the unchanged full host-size guard remains the final check.
+  --external:vite
+  --external:rollup
+  --external:zod
+  --external:@workos-inc/node
+  --external:@redis/client
+  --external:encoding-japanese
+  --external:@anthropic-ai/sdk
+  # Keep @xterm/headless bundled: pty-bridge consumes its namespace.Terminal,
+  # which Node's native CJS namespace does not expose (only default.Terminal).
+  --external:jiti
+  --external:drizzle-orm
+  --external:@aws-sdk/client-iam
+  --external:luxon
+  --external:yaml
+  --external:google-auth-library
+  --external:@scure/bip39
+  --external:ajv
 )
 
 if ! VIEM_ALIAS_OUTPUT="$(bundle_host_viem_aliases "${COMMITTED_NODE[0]}" "$REPO_ROOT")"; then

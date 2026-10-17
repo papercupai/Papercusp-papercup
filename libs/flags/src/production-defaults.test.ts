@@ -50,6 +50,9 @@ const VALID_DARK_CASES: ReadonlySet<DarkCase> = new Set<DarkCase>([
  * fails loudly if the derivation ever silently flips a flag.
  */
 const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
+  // P-010 / EI-26074325417052646: destructive PG-payload cutover waits for
+  // a successful backup and compatible readers on the shared database.
+  "papercusp-session-archive-cold-migration",
   // papercusp-capability-exec-sandbox: EI-16635 BUG-FIX correction (EI-7230-class —
   // own comment always said "OFF by default until validated end-to-end on a
   // bwrap-capable host", never actually added to DARK_FLAGS, so P-011 derived it
@@ -818,7 +821,8 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // (enterprise-data-sources-2026-10-01 D-029) and the owner approved it (#1417).
     // case was 'owner-authority', so the parking subset and DARK_FLAGS_HIGH_WATERMARK
     // both stay 12. Count 36 → 35.
-    expect(offCount).toBe(36);
+    // P-010 adds a destructive-migration cutover interlock. Count 36 → 37.
+    expect(offCount).toBe(37);
   });
 
   it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {

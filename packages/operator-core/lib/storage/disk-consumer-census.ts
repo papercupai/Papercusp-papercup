@@ -33,7 +33,9 @@ import { hostname } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
-import { watchedPaths } from './disk-space-alarm';
+import { alarmWatchedPaths } from './disk-space-alarm';
+import { getBuildInfo } from '../build-info';
+import { anotherRoutinesTickInFlight, ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS } from '../dbos/routine-tick-overlap-guard';
 import {
   attributeOwnFiles,
   CENSUS_COVERAGE_GAP_BYTES,
@@ -69,6 +71,29 @@ export interface CensusSql {
   begin<T>(fn: (tx: CensusSql) => Promise<T>): Promise<T>;
 }
 
+/** Hourly schedules must not multiply a slow, restart-recoverable census pass.
+ * Prefer the oldest queued/running pass. Reuse the scheduler's bounded probe;
+ * a terminal or stale workflow cannot indefinitely suppress new measurements. */
+export async function diskCensusPassInFlight(
+  sql: CensusSql, workflowId: string, deviceCount: number, now = Date.now(),
+): Promise<boolean> {
+  const staleMs = Math.max(1, deviceCount) * CENSUS_DU_TIMEOUT_MS + 30 * 60_000;
+  return anotherRoutinesTickInFlight(workflowId, {
+    now: () => now,
+    queryInFlight: (selfId, cutoff) => sql.begin(async tx => {
+      await tx`SELECT set_config('statement_timeout', ${String(ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS)}, true)`;
+      return tx<{ workflow_uuid: string }>`
+        SELECT older.workflow_uuid FROM dbos.workflow_status older
+        JOIN dbos.workflow_status current ON current.workflow_uuid = ${selfId}
+        WHERE older.name = 'diskConsumerCensus'
+          AND older.status IN ('PENDING', 'ENQUEUED')
+          AND COALESCE(older.started_at_epoch_ms, older.created_at) > ${cutoff}
+          AND (older.created_at, older.workflow_uuid) < (current.created_at, current.workflow_uuid)
+        LIMIT 1`;
+    }),
+  }, staleMs);
+}
+
 export interface CensusDevice {
   /** Mount point that shows the whole filesystem. */
   device: string;
@@ -102,7 +127,7 @@ async function walkUpMountPoint(path: string, dev: number): Promise<string> {
 }
 
 /** The watched devices (one per st_dev) with their whole-filesystem mount root and statfs numbers. */
-export async function resolveCensusDevices(paths: readonly string[] = watchedPaths()): Promise<CensusDevice[]> {
+export async function resolveCensusDevices(paths: readonly string[] = alarmWatchedPaths()): Promise<CensusDevice[]> {
   const mounts = parseMountInfo(await readMountInfo());
   const out: CensusDevice[] = [];
   const seen = new Set<string>();
@@ -324,8 +349,35 @@ export type CensusSpawn = (cmd: string, args: string[]) => ChildProcessByStdio<n
 
 const defaultCensusSpawn: CensusSpawn = (cmd, args) => spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
 
+/** Only multiply linked regular files need per-inode storage. Ordinary files
+ * remain streaming totals even in very large trees. Paths support partial build effects. */
+export interface RetentionHardlink { dev: number; ino: number; bytes: number; paths: string[]; }
+export class RetentionAllocationCounter {
+  bytes = 0;
+  private shared = new Map<string, RetentionHardlink>();
+  add(path: string, stat: { dev: number; ino: number; blocks: number; nlink: number }, regular: boolean): void {
+    const bytes = stat.blocks * 512;
+    if (regular && stat.nlink > 1) {
+      const key = `${stat.dev}:${stat.ino}`;
+      const prior = this.shared.get(key);
+      if (prior) {
+        if (prior.bytes !== bytes) throw new Error('hardlink allocation changed during census');
+        prior.paths.push(path); return;
+      }
+      this.shared.set(key, { dev: stat.dev, ino: stat.ino, bytes, paths: [path] });
+    }
+    this.bytes += bytes;
+  }
+  metadata(): { hardlinks?: RetentionHardlink[] } {
+    return this.shared.size ? { hardlinks: [...this.shared.values()]
+      .sort((a, b) => a.dev - b.dev || a.ino - b.ino).map(value => ({ ...value, paths: [...value.paths].sort() })) } : {};
+  }
+}
+
 export interface RetentionTreeCensus {
-  entries: Array<{ path: string; newestWriteMs: number; bytes: number; dev: number; ino: number }>;
+  entries: Array<{ path: string; newestWriteMs: number; bytes: number; dev: number; ino: number;
+    hardlinks?: RetentionHardlink[];
+    buildDirs?: Array<{ path: string; dev: number; ino: number }> }>;
   retained: Array<{ path: string; reason: string; entry?: RetentionTreeCensus['entries'][number] }>;
   inspectedNodes: number;
   retainedRecentTrees: number;
@@ -346,6 +398,47 @@ function findTimestampMs(value: string): number | undefined {
   return seconds * 1000 + nanoseconds / 1e6;
 }
 
+// Run beside find, inside sudo, so the progress observer can kill and reap its
+// own child. The outer native timeout also bounds the whole process group if
+// the observer itself stops responding. Reuse find's existing metadata stream;
+// partial records and noise do not renew the inactivity deadline.
+const RETENTION_CENSUS_PROGRESS_WORKER = `
+import os, re, selectors, subprocess, sys, time
+idle = float(sys.argv[1]) / 1000
+prefix = os.fsencode(sys.argv[2]) + b'/'
+child = subprocess.Popen(sys.argv[3:], stdout=subprocess.PIPE)
+pending = b''
+fields = []
+deadline = time.monotonic() + idle
+try:
+    with selectors.DefaultSelector() as selector:
+        selector.register(child.stdout, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(remaining):
+                child.kill()
+                child.wait()
+                sys.exit(137)
+            chunk = os.read(child.stdout.fileno(), 65536)
+            if not chunk:
+                sys.exit(child.wait())
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+            records = (pending + chunk).split(b'\\0')
+            pending = records.pop()
+            for value in records:
+                fields.append(value)
+                if len(fields) == 9:
+                    kind, dev, ino, mtime, ctime, blocks, owner, nlink, path = fields
+                    if kind in [b'f', b'd', b'l', b'b', b'c', b's', b'p'] and path.startswith(prefix) and all(v.isdigit() for v in [dev, ino, blocks, owner, nlink]) and all(re.fullmatch(rb'-?\\d+(?:\\.\\d{1,9}0*)?', v) for v in [mtime, ctime]):
+                        deadline = time.monotonic() + idle
+                    fields = []
+finally:
+    if child.poll() is None:
+        child.kill()
+    child.wait()
+`;
+
 /** Full max-age census through the same read-only native find as own-files.
  * Stream metadata, aggregate direct children, and prune proven recent/protected
  * subtrees. A time cap or unreadable node invalidates the entire candidate set.
@@ -356,6 +449,13 @@ export async function inspectRetentionTrees(root: string, opts: {
   /** Caps need recent trees too. Elevation is explicit and scoped by the caller
    * to a policy-authorized agent root; never silently fall back on denial. */
   includeRecent?: boolean; sudo?: string | null;
+  /** Discover build candidates during the existing walk. Tags are validated
+   * through directory descriptors by the effect, never followed here. */
+  collectBuildDirs?: boolean;
+  /** Execute the bounded census through sudo itself. A separate `sudo true`
+   * probe cannot establish whether this operation will succeed, and must not
+   * suppress the real command or discard its error. */
+  requirePrivilege?: boolean;
 }): Promise<RetentionTreeCensus> {
   root = resolve(root);
   const result: RetentionTreeCensus = { entries: [], retained: [], inspectedNodes: 0, retainedRecentTrees: 0 };
@@ -367,30 +467,52 @@ export async function inspectRetentionTrees(root: string, opts: {
   const excluded = (opts.excludedPaths ?? []).map((path) => resolve(path)).filter((path) => path.startsWith(root + '/'));
   const prune = excluded.flatMap((path, index) => [...(index ? ['-o'] : []), '-path', literal(path)]);
   const uid = process.getuid?.();
-  const privileged = Boolean(opts.sudo) || uid === 0;
+  const sudo = opts.sudo ?? (opts.requirePrivilege && uid !== 0 ? await resolveBin('sudo') : null);
+  if (opts.requirePrivilege && !sudo && uid !== 0) {
+    return { ...result, error: 'sudo executable unavailable for required privileged retention census' };
+  }
+  const privileged = Boolean(sudo) || uid === 0;
   const foreignOwner = uid === undefined || privileged ? [] : ['!', '-uid', String(uid)];
-  const format = '%y\\0%D\\0%i\\0%T@\\0%C@\\0%b\\0%U\\0%p\\0';
+  const format = '%y\\0%D\\0%i\\0%T@\\0%C@\\0%b\\0%U\\0%n\\0%p\\0';
   const recent = opts.includeRecent ? ['-false'] : ['(', '-newermt', `@${opts.retainAfterMs / 1000}`, '-o', '-newerct', `@${opts.retainAfterMs / 1000}`, ')'];
   // A concurrent unlink after find read the containing directory is an absent
   // candidate, not unknown eligibility. GNU find still fails on other IO errors.
   const args = [...(opts.paths ?? [root]), '-ignore_readdir_race', '-xdev', '-mindepth', opts.paths ? '0' : '1', '(', ...prune, ...(prune.length ? ['-o'] : []),
     ...foreignOwner, ...(foreignOwner.length ? ['-o'] : []), ...recent,
     ')', '-printf', format, '-prune', '-o', '-printf', format];
-  const [command, argv] = censusCommand('find', args, { sudo: opts.sudo ?? null, ionice: await resolveBin('ionice'), nice: await resolveBin('nice') });
+  const [nativeCommand, nativeArgs] = censusCommand('find', args, { sudo: null, ionice: await resolveBin('ionice'), nice: await resolveBin('nice') });
+  // sudo may exec with every UID set to root. The caller then cannot signal
+  // it (EPERM), and killing a sudo monitor can leave find holding its pipes.
+  // Put deadline enforcement INSIDE elevation. A progress-supervised walk has
+  // a child process, so timeout owns a separate process group and kills the
+  // whole group at its absolute ceiling. Direct find needs no process group.
+  const timeout = sudo ? await resolveBin('timeout') : null;
+  if (sudo && !timeout) return { ...result, error: 'timeout executable unavailable for privileged retention census' };
+  const progressSupervised = Boolean(sudo) && opts.progressTimeoutMs !== undefined;
+  const python = progressSupervised ? await resolveBin('python3') : null;
+  if (progressSupervised && !python) return { ...result, error: 'python3 executable unavailable for privileged retention progress supervision' };
+  const command = sudo ?? nativeCommand;
+  const argv = !sudo ? nativeArgs : progressSupervised
+    ? ['-n', '--', timeout!, '--signal=KILL', `${Math.max(1, opts.timeoutMs ?? 15 * 60_000) / 1000}s`,
+      python!, '-I', '-c', RETENTION_CENSUS_PROGRESS_WORKER, String(Math.max(1, opts.progressTimeoutMs!)), root, nativeCommand, ...nativeArgs]
+    : ['-n', '--', timeout!, '--foreground', '--signal=KILL',
+      `${Math.max(1, opts.timeoutMs ?? 60_000) / 1000}s`, nativeCommand, ...nativeArgs];
   return new Promise<RetentionTreeCensus>((done) => {
-    const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; reason?: string }>();
-    let pending = '', fields: string[] = [], stderr = '', malformed = false, timedOut = false, settled = false;
+    const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; allocation: RetentionAllocationCounter; reason?: string }>();
+    const ancestors = new Map<string, { path: string; dev: number; ino: number }>();
+    let pending = '', fields: string[] = [], stderr = '', stderrOverflow = false, malformed = false, timedOut = false, settled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let absoluteTimer: ReturnType<typeof setTimeout> | undefined;
     let child: ReturnType<CensusSpawn>;
     const armProgressDeadline = () => {
       clearTimeout(timer);
       timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, opts.progressTimeoutMs ?? 60_000);
     };
     const take = (row: string[]) => {
-      const [type, dev, ino, mtime, ctime, blocks, owner, path] = row;
+      const [type, dev, ino, mtime, ctime, blocks, owner, nlink, path] = row;
       const modifiedMs = findTimestampMs(mtime!), changedMs = findTimestampMs(ctime!);
       if (!path?.startsWith(root + '/') || !/^[fdlbcsp]$/.test(type!) ||
-          ![dev, ino, blocks, owner].every((v) => /^\d+$/.test(v!)) || modifiedMs === undefined || changedMs === undefined) {
+          ![dev, ino, blocks, owner, nlink].every((v) => /^\d+$/.test(v!)) || modifiedMs === undefined || changedMs === undefined) {
         malformed = true; return;
       }
       result.inspectedNodes++;
@@ -399,12 +521,25 @@ export async function inspectRetentionTrees(root: string, opts: {
       let group = groups.get(child);
       if (!group) {
         if (!direct) { malformed = true; return; }
-        group = { entry: { path: child, newestWriteMs: Number.NEGATIVE_INFINITY, bytes: 0, dev: Number(dev), ino: Number(ino) } };
+        group = { entry: { path: child, newestWriteMs: Number.NEGATIVE_INFINITY, bytes: 0, dev: Number(dev), ino: Number(ino) }, allocation: new RetentionAllocationCounter() };
         groups.set(child, group);
       }
       const newest = Math.max(modifiedMs, changedMs);
+      if (opts.collectBuildDirs) {
+        // GNU find visits directories before their children. Keep only the
+        // current ancestry, rather than retaining every directory in the tree.
+        for (const ancestor of ancestors.keys()) if (!path.startsWith(ancestor + '/')) ancestors.delete(ancestor);
+        if (type === 'd') ancestors.set(path, { path, dev: Number(dev), ino: Number(ino) });
+        const candidate = type === 'd' && path.endsWith('/node_modules') ? ancestors.get(path)
+          : type === 'f' && path.endsWith('/CACHEDIR.TAG') ? ancestors.get(dirname(path)) : undefined;
+        if (candidate && candidate.path !== child) {
+          const builds = group.entry.buildDirs ??= [];
+          if (!builds.some(value => value.path === candidate.path)) builds.push(candidate);
+        }
+      }
       group.entry.newestWriteMs = Math.max(group.entry.newestWriteMs, newest);
-      group.entry.bytes += Number(blocks) * 512;
+      try { group.allocation.add(path, { dev: Number(dev), ino: Number(ino), blocks: Number(blocks), nlink: Number(nlink) }, type === 'f'); }
+      catch { malformed = true; }
       if (excluded.includes(path)) group.reason = 'protected policy root';
       else if (type === 'l') group.reason = 'symlink boundary';
       else if (type !== 'f' && type !== 'd') group.reason = 'special filesystem entry';
@@ -414,8 +549,10 @@ export async function inspectRetentionTrees(root: string, opts: {
     };
     const finish = (error?: string) => {
       if (settled) return;
-      settled = true; clearTimeout(timer);
-      for (const { entry, reason } of groups.values()) {
+      settled = true; clearTimeout(timer); clearTimeout(absoluteTimer);
+      for (const { entry, allocation, reason } of groups.values()) {
+        entry.bytes = allocation.bytes;
+        Object.assign(entry, allocation.metadata());
         if (reason === 'recent write') result.retainedRecentTrees++;
         else if (reason) result.retained.push({ path: entry.path, reason, ...(opts.includeRecent ? { entry } : {}) });
         else result.entries.push(entry);
@@ -425,24 +562,56 @@ export async function inspectRetentionTrees(root: string, opts: {
     };
     try { child = (opts.spawn ?? defaultCensusSpawn)(command, argv); }
     catch (error) { finish(`find failed: ${String(error)}`); return; }
-    // Explicit caller deadlines stay absolute. Production's liveness bound is
-    // lack of valid metadata progress, so a large ADVANCING walk can complete.
-    if (opts.timeoutMs !== undefined) timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, opts.timeoutMs);
-    else armProgressDeadline();
+    // Ordinary-owner scans can use metadata progress rather than an absolute
+    // bound. Elevated scans are supervised by their native timeout above.
+    if (!sudo) {
+      if (opts.timeoutMs !== undefined) absoluteTimer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, opts.timeoutMs);
+      if (opts.timeoutMs === undefined || opts.progressTimeoutMs !== undefined) armProgressDeadline();
+    }
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
       const before = result.inspectedNodes;
       const records = (pending + chunk).split('\0'); pending = records.pop() ?? '';
-      for (const value of records) { fields.push(value); if (fields.length === 8) { take(fields); fields = []; } }
+      for (const value of records) { fields.push(value); if (fields.length === 9) { take(fields); fields = []; } }
       // Noise, partial records and malformed data cannot keep a wedged scan alive.
-      if (opts.timeoutMs === undefined && !malformed && result.inspectedNodes > before) armProgressDeadline();
+      if (!sudo && (opts.timeoutMs === undefined || opts.progressTimeoutMs !== undefined) && !malformed && result.inspectedNodes > before) armProgressDeadline();
     });
     child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4096); });
+    child.stderr.on('data', (chunk: string) => {
+      stderrOverflow ||= stderr.length + chunk.length > 4096;
+      stderr = (stderr + chunk).slice(-4096);
+    });
     child.once('error', (error) => finish(`find failed: ${String(error)}`));
-    child.once('close', (code) => finish(timedOut ? 'retention native census timed out' :
-      code !== 0 ? `find exited ${code}: ${stderr.trim()}` :
-      malformed || pending.length || fields.length ? 'incomplete retention metadata records' : undefined));
+    // A process-group SIGKILL also kills timeout itself, so Node reports a
+    // signal with a null exit code rather than the direct-child status 137.
+    child.once('close', async (code, signal) => {
+      if (timedOut || (sudo && (code === 137 || (progressSupervised && signal === 'SIGKILL')))) {
+        finish('retention native census timed out'); return;
+      }
+      // GNU find's ignore_readdir_race covers a failed stat, but not a
+      // directory removed after its metadata was emitted and before descent.
+      // Accept only that same absent-object case, proven again after find exits.
+      // Unknown diagnostics, truncated stderr, replacements and permission errors
+      // still invalidate the complete candidate set. This remains planning
+      // evidence: reclaim rechecks each candidate before any removal.
+      const disappearedOnly = async () => {
+        if (code !== 1 || signal || stderrOverflow || !stderr.trim()) return false;
+        const currentRoot = await fsp.lstat(root);
+        if (currentRoot.dev !== rootStat.dev || currentRoot.ino !== rootStat.ino) return false;
+        for (const line of stderr.trimEnd().split('\n')) {
+          const match = /^(?:[^:]*\/)?find: (?:‘(.+)’|'(.+)'): No such file or directory$/.exec(line);
+          const path = match?.[1] ?? match?.[2];
+          if (!path || !path.startsWith(root + '/') || resolve(path) !== path) return false;
+          try { await fsp.lstat(path); return false; }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false; }
+        }
+        return true;
+      };
+      if (code !== 0 && !await disappearedOnly().catch(() => false)) {
+        finish(`find exited ${code}: ${stderr.trim()}`); return;
+      }
+      finish(malformed || pending.length || fields.length ? 'incomplete retention metadata records' : undefined);
+    });
   });
 }
 
@@ -873,17 +1042,23 @@ export async function writeCensusRun(
     complete: boolean;
     note: string | null;
     consumers: readonly CensusConsumer[];
+    /** Loaded producer identity; null preserves explicitly identity-less/legacy fixtures. */
+    producerBuildSha?: string | null;
   },
 ): Promise<void> {
   // One row per consumer key: du never repeats a path, but keep the PK safe regardless.
   const unique = [...new Map(run.consumers.map((c) => [c.consumer, c])).values()];
+  // Extend the existing run metadata instead of introducing a parallel ledger or
+  // attributing historical rows to whatever build happens to grade them later.
+  const build = run.producerBuildSha === undefined ? getBuildInfo().sha : run.producerBuildSha;
+  const note = build ? `census-producer:${encodeURIComponent(build)}; ${run.note ?? ''}` : run.note;
   await sql.begin(async (tx) => {
     await tx`
       INSERT INTO harness_shared.disk_census_runs
         (run_id, host, device, started_at, finished_at, size_bytes, used_bytes, avail_bytes, attributed_bytes, complete, note)
       VALUES (${run.runId}, ${run.host}, ${run.device.device}, ${run.startedAt}, ${run.finishedAt},
               ${run.device.sizeBytes}, ${run.device.usedBytes}, ${run.device.availBytes},
-              ${run.attributedBytes}, ${run.complete}, ${run.note})`;
+              ${run.attributedBytes}, ${run.complete}, ${note})`;
     for (let i = 0; i < unique.length; i += 500) {
       const batch = unique.slice(i, i + 500);
       await tx`
@@ -906,6 +1081,12 @@ export async function pruneDiskCensus(sql: CensusSql, now: Date = new Date()): P
 
 export interface CensusDeviceView {
   device: string;
+  /** Saved identities, retained for native alarm evidence (never inferred from time). */
+  host?: string;
+  runId?: string;
+  baselineRunId?: string | null;
+  producerBuildSha?: string | null;
+  baselineProducerBuildSha?: string | null;
   /** No census run has ever been written for this watched device on this host. */
   missing?: true;
   sampledAt?: string;
@@ -922,6 +1103,9 @@ export interface CensusDeviceView {
   coverageGap?: boolean;
   /** The run the 24h growth is measured against (18–30h before the latest); null when none. */
   baselineAt?: string | null;
+  /** Same visible filesystem, from the comparable baseline run (not a sum of directories). */
+  baselineAvailBytes?: number | null;
+  baselineSizeBytes?: number | null;
   consumers?: CensusGrowthRow[];
   consumersTotal?: number;
   truncatedByLimit?: boolean;
@@ -955,6 +1139,11 @@ function censusVisibility(note: string | null): 'root' | 'unprivileged' | 'legac
   return 'legacy';
 }
 
+function censusProducerBuild(note: string | null): string | null {
+  const encoded = note?.match(/^census-producer:([^;]+); /)?.[1];
+  try { return encoded ? decodeURIComponent(encoded) : null; } catch { return null; }
+}
+
 /** The census read: per device, each consumer's size and its growth over the last ~24h. */
 export async function readDiskConsumerCensus(
   sql: CensusSql,
@@ -965,6 +1154,8 @@ export async function readDiskConsumerCensus(
     limit?: number;
     /** Watched devices expected to have rows; one with none is reported `missing`. */
     expectedDevices?: readonly string[];
+    /** Historical selection ceiling, separate from the staleness clock. */
+    asOf?: Date;
     now?: Date;
   } = {},
 ): Promise<{ host: string; devices: CensusDeviceView[] }> {
@@ -975,16 +1166,17 @@ export async function readDiskConsumerCensus(
     SELECT DISTINCT ON (device) run_id, device, finished_at, size_bytes, used_bytes, avail_bytes, attributed_bytes, complete, note
       FROM harness_shared.disk_census_runs
      WHERE host = ${host} ${opts.device ? sql`AND device = ${opts.device}` : sql``}
-     ORDER BY device, finished_at DESC`;
+       ${opts.asOf ? sql`AND finished_at <= ${opts.asOf}` : sql``}
+     ORDER BY device, finished_at DESC, run_id`;
   const devices: CensusDeviceView[] = [];
   for (const run of latest) {
     const finishedAt = new Date(run.finished_at);
     const target = new Date(finishedAt.getTime() - 24 * 3600_000);
-    const candidates = await sql<{ run_id: string; finished_at: Date; note: string | null }>`
-      SELECT run_id, finished_at, note FROM harness_shared.disk_census_runs
+    const candidates = await sql<{ run_id: string; finished_at: Date; note: string | null; avail_bytes: string | number; size_bytes: string | number }>`
+      SELECT run_id, finished_at, note, avail_bytes, size_bytes FROM harness_shared.disk_census_runs
        WHERE host = ${host} AND device = ${run.device} AND complete
          AND finished_at BETWEEN ${new Date(finishedAt.getTime() - 30 * 3600_000)} AND ${new Date(finishedAt.getTime() - 18 * 3600_000)}
-       ORDER BY abs(extract(epoch FROM (finished_at - ${target}::timestamptz)))
+       ORDER BY abs(extract(epoch FROM (finished_at - ${target}::timestamptz))), run_id
        LIMIT 100`;
     // Changed visibility is not changed consumption. Prefer a comparable clean
     // baseline; otherwise growth stays unknown instead of inventing a spike.
@@ -998,6 +1190,11 @@ export async function readDiskConsumerCensus(
     const unattributed = Math.max(0, used - attributed);
     devices.push({
       device: run.device,
+      host,
+      runId: run.run_id,
+      baselineRunId: base?.run_id ?? null,
+      producerBuildSha: censusProducerBuild(run.note),
+      baselineProducerBuildSha: censusProducerBuild(base?.note ?? null),
       sampledAt: finishedAt.toISOString(),
       stale: now.getTime() - finishedAt.getTime() > CENSUS_STALE_MS,
       complete: run.complete && censusCoverageReadable(run.note),
@@ -1009,6 +1206,8 @@ export async function readDiskConsumerCensus(
       unattributedBytes: unattributed,
       coverageGap: unattributed >= CENSUS_COVERAGE_GAP_BYTES,
       baselineAt: base ? new Date(base.finished_at).toISOString() : null,
+      baselineAvailBytes: base ? Number(base.avail_bytes) : null,
+      baselineSizeBytes: base ? Number(base.size_bytes) : null,
       consumers: sorted.slice(0, limit),
       consumersTotal: sorted.length,
       truncatedByLimit: sorted.length > limit,

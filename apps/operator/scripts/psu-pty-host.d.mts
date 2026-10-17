@@ -162,13 +162,14 @@ export function warnMissingReexecLoop({ diagnosis, interactive, write, }?: {
  * configuration that `warnMissingReexecLoop` exists to warn about.
  *
  * @param {{ onReexec?: unknown, reexecCode?: unknown, bridgeTty?: unknown,
- *           allowInteractive?: boolean }} args
+ *           allowInteractive?: boolean, pendingTurnDelivery?: boolean }} args
  */
-export function shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty, allowInteractive }: {
+export function shouldAdoptHostCode({ onReexec, reexecCode, bridgeTty, allowInteractive, pendingTurnDelivery, }: {
     onReexec?: unknown;
     reexecCode?: unknown;
     bridgeTty?: unknown;
     allowInteractive?: boolean;
+    pendingTurnDelivery?: boolean;
 }): boolean;
 /**
  * The operator opt-in behind {@link shouldAdoptHostCode}'s `allowInteractive`.
@@ -729,13 +730,15 @@ export function retainRunningNativeExecution(previous: {
     pendingTools: number;
 };
 /** Read only this child's isolated current transcript. Missing/partial proof is unknown.
- * @param {{agent?: string, env?: EnvironmentMap, receivedAtMs?: number, nowMs?: number}} options
+ * @param {{agent?: string, env?: EnvironmentMap, receivedAtMs?: number, nowMs?: number,
+ *   nativeSessionId?: string|null}} options
  */
-export function nativeLatestExecution({ agent, env, receivedAtMs, nowMs }: {
+export function nativeLatestExecution({ agent, env, receivedAtMs, nowMs, nativeSessionId }: {
     agent?: string;
     env?: EnvironmentMap;
     receivedAtMs?: number;
     nowMs?: number;
+    nativeSessionId?: string | null;
 }): {
     observedAt: number;
     phase: string;
@@ -783,10 +786,11 @@ export function currentNativeSessionId(childPid: number | null | undefined, reso
  * completion after any newer owner/machine submit, so a mid-turn wake cannot
  * use stale history to bypass the anti-wedge gate. Missing/partial proof stays
  * false and falls back to the existing output-silence gate. */
-export function codexLatestTurnCompleted({ agent, env, completedAtOrAfterMs, }: {
+export function codexLatestTurnCompleted({ agent, env, completedAtOrAfterMs, nativeSessionId, }: {
     agent: any;
     env: any;
     completedAtOrAfterMs?: number | undefined;
+    nativeSessionId: any;
 }): boolean;
 /**
  * P-001: the backend-agnostic form of the probe above — an ordinary warm wake
@@ -800,14 +804,15 @@ export function codexLatestTurnCompleted({ agent, env, completedAtOrAfterMs, }: 
  * 180s cap against an agent that was in fact idle at its prompt.
  *
  * @param {{agent?: string, env?: EnvironmentMap, completedAtOrAfterMs?: number,
- *   home?: string, nowMs?: number}} options
+ *   home?: string, nowMs?: number, nativeSessionId?: string|null}} options
  */
-export function nativeLatestTurnCompleted({ agent, env, completedAtOrAfterMs, home, nowMs, }: {
+export function nativeLatestTurnCompleted({ agent, env, completedAtOrAfterMs, home, nowMs, nativeSessionId, }: {
     agent?: string;
     env?: EnvironmentMap;
     completedAtOrAfterMs?: number;
     home?: string;
     nowMs?: number;
+    nativeSessionId?: string | null;
 }): boolean;
 /**
  * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number,
@@ -916,6 +921,20 @@ export function observeKickoffModelTurnStart({ lastOutputAt, wait, pollMs, polls
  * the post-respawn mtime floor is the strongest available native proof. Unknown
  * backends stay fail-closed. */
 export function carryTurnProofRequiresNativeId(agent: any): boolean;
+/** A fresh Codex thread has no rollout/writer lock until its first tagged
+ * kickoff is submitted. Requiring the startup flock before that write creates a
+ * deadlock: catalog discovery can complete while the host waits forever for an
+ * id that only the kickoff can mint. Fresh Codex still gets the stronger native
+ * transcript proof after submission; resumed/carry threads retain the binding
+ * gate because they already have an authoritative native identity.
+ * @param {{ agent?: string | null, isResume?: boolean, hasResolver?: boolean }} [options]
+ *   Typed explicitly: inferred from `= {}` the declaration dropped `agent`, so every
+ *   caller passing it was a TS2353. */
+export function launchKickoffRequiresPreSubmissionNativeBinding({ agent, isResume, hasResolver, }?: {
+    agent?: string | null;
+    isResume?: boolean;
+    hasResolver?: boolean;
+}): boolean;
 /** WI-6554700010009740: does the native turn-start proof, not the generic
  * submit verifier, own this carry's delivery verdict? Since c727419b0a the
  * verifier requires native confirmation for a tagged turn and reports
@@ -923,16 +942,16 @@ export function carryTurnProofRequiresNativeId(agent: any): boolean;
  * deadline. A production carry already runs the stronger proof
  * (verifyNativeTurnStartWithRetry: one CR, then a fresh epoch), so treating
  * that exhaustion as a terminal drop skipped the EI-21561923024113260 retries.
- * Only the exhaustion of a submitted, native-verifiable, non-drill carry
- * defers; human input, quota and every other reason keep their verdict. Pure.
+ * Only the exhaustion of a submitted, native-verifiable carry defers; human
+ * input, quota and every other reason keep their verdict. Drills use the same
+ * tagged native proof as production carries so a late native row can settle
+ * the exact successor instead of becoming a false terminal drop. Pure.
  * @param {object} [opts]
- * @param {string} [opts.drillId]
  * @param {boolean} [opts.delivered]
  * @param {string} [opts.reason]
  * @param {boolean} [opts.nativeSubmitted] the tagged carry's CR reached this child
  */
-export function carryExhaustionDefersToNativeProof({ drillId, delivered, reason, nativeSubmitted, }?: {
-    drillId?: string | undefined;
+export function carryExhaustionDefersToNativeProof({ delivered, reason, nativeSubmitted, }?: {
     delivered?: boolean | undefined;
     reason?: string | undefined;
     nativeSubmitted?: boolean | undefined;
@@ -1046,8 +1065,10 @@ export function shouldRedeliverLaunchKickoffAfterRespawn({ reason, managedKickof
     maxRedeliveries?: number | undefined;
 }): boolean;
 /** Hold a persisted kickoff's success receipt until `deliveredAtMs + graceMs`,
- *  and stop early when the quota detector latches. `rejected:true` means the
- *  provider answered the kickoff with a usage-limit wall. Polling is used
+ *  and stop early when the quota detector latches or the caller observes a
+ *  capacity refusal for this submission. A native user row is only submission
+ *  proof; either provider refusal must prevent a successful launch receipt.
+ *  Polling is used
  *  because the detector exposes only a level, not an edge. Pure apart from the
  *  injected clock and sleep; exported for tests.
  * @param {object} opts
@@ -1058,9 +1079,10 @@ export function shouldRedeliverLaunchKickoffAfterRespawn({ reason, managedKickof
  * @param {() => number} [opts.now]
  * @param {(ms: number) => Promise<void>} [opts.sleep]
  * @param {() => boolean} [opts.shouldStop]
- * @returns {Promise<{ rejected: boolean, waitedMs: number, stopped: boolean }>}
+ * @param {() => ({ retryAfterMs: number, matchedExcerpt: string } | null)} [opts.readModelCapacity]
+ * @returns {Promise<{ rejected: boolean, waitedMs: number, stopped: boolean, modelCapacity?: { retryAfterMs: number, matchedExcerpt: string } }>}
  */
-export function awaitKickoffQuotaRejection({ isQuotaBlocked, deliveredAtMs, graceMs, pollMs, now, sleep, shouldStop, }?: {
+export function awaitKickoffQuotaRejection({ isQuotaBlocked, deliveredAtMs, graceMs, pollMs, now, sleep, shouldStop, readModelCapacity, }?: {
     isQuotaBlocked: () => boolean;
     deliveredAtMs: number;
     graceMs?: number | undefined;
@@ -1068,10 +1090,18 @@ export function awaitKickoffQuotaRejection({ isQuotaBlocked, deliveredAtMs, grac
     now?: (() => number) | undefined;
     sleep?: ((ms: number) => Promise<void>) | undefined;
     shouldStop?: (() => boolean) | undefined;
+    readModelCapacity?: (() => ({
+        retryAfterMs: number;
+        matchedExcerpt: string;
+    } | null)) | undefined;
 }): Promise<{
     rejected: boolean;
     waitedMs: number;
     stopped: boolean;
+    modelCapacity?: {
+        retryAfterMs: number;
+        matchedExcerpt: string;
+    };
 }>;
 /** WI-10004943: the Codex `Starting` options for one launch-kickoff attempt. While a
  *  fresh-child retry remains, give up early on a child still at `Starting` after
@@ -1301,6 +1331,15 @@ export function hostErrorEvidence(error: any): {
     errorName: string;
 };
 export function sharedDrillLedgerPath(dir?: string): string;
+/**
+ * Prune the bounded roll-up without losing the terminal history needed to
+ * resolve a one-shot carry-drill alarm. The old half-file cut could evict the
+ * only delivered/dropped row for a drill while its condition stayed open;
+ * prioritize the newest terminal row for each drill, retaining as many as fit
+ * within the cap, then fill the remaining budget with the recent tail. The
+ * ledger remains bounded even when many drills are active.
+ */
+export function pruneSharedDrillLedger(body: any): string;
 /** EI-12655 (fix b): mirror a carry-drill lifecycle event into the SHARED drill
  *  ledger. The tool side records only requested/queued there; every HOST-side
  *  outcome (respawned / respawn-failed / carry-delivered / carry-dropped)
@@ -1979,7 +2018,7 @@ export function makeAgentBusyGate({ lastOutputAt, quietMs, capMs, now, nativeExe
         started: boolean;
     }>;
 };
-export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, maxDrillAttempts, yieldAfterDefer, onSettlement, isStale, isSuperseded, readWakeMode, wakeModeRetryMs, waitWakeModeRetry, }: {
+export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOwnerInput, waitForOwnerInputClear, waitAtPrompt, recycle, performDelivery, emitEvent, capMs, maxProductionAttempts, maxDrillAttempts, yieldAfterDefer, onSettlement, isStale, isSuperseded, readWakeMode, wakeModeRetryMs, nativeBindingRetryMs, waitWakeModeRetry, }: {
     acquireInject: any;
     waitIdle?: (() => Promise<{
         deferred: boolean;
@@ -2003,6 +2042,7 @@ export function makeCarryRearmController({ acquireInject, waitIdle, hasPendingOw
     isSuperseded?: ((_msg: any) => boolean) | undefined;
     readWakeMode?: (() => Promise<string>) | undefined;
     wakeModeRetryMs?: number | undefined;
+    nativeBindingRetryMs?: number | undefined;
     waitWakeModeRetry?: ((delayMs: any) => Promise<any>) | undefined;
 }): {
     /** Live count of accepted first attempts and re-armed retries.
@@ -2427,6 +2467,13 @@ export function encodeControl({ mode, data, ...extra }: {
     mode: any;
     data: any;
 }): string;
+/** Content identity survives a sender accidentally rebuilding the wrong envelope. */
+export function continuationIdentityRefusal(message: any, ownerId: any): {
+    ok: boolean;
+    reason: string;
+    expected: any;
+    got: string;
+} | null;
 /** Parse `{ ownerId }` off a raw envelope object, or `{}` when absent/malformed
  *  (EI-153: the sender's addressed-recipient assertion — see injectIntoHost's
  *  `ownerId` doc in psu-pty-discovery.ts). Absent on any pre-EI-153 sender or a
@@ -4489,8 +4536,13 @@ export function startupOutputReady(agent: any, output: any, dims?: {
  * request is the earliest byte that is unambiguously the Codex TUI rather than
  * the psu launcher's own banner. Pure and exported for tests. */
 export function codexTuiStartObserved(output: any): boolean;
-export function codexSessionFrameObserved(output: any, { probeAlreadySeen, dims }?: {
-    probeAlreadySeen?: boolean | undefined;
+/** @param {string} output @param {{ probeAlreadySeen?: boolean, dims?: { cols: number, rows: number } }} [options] */
+export function codexSessionFrameObserved(output: string, { probeAlreadySeen, dims }?: {
+    probeAlreadySeen?: boolean;
+    dims?: {
+        cols: number;
+        rows: number;
+    };
 }): boolean;
 /** Has the startup-ready fallback window elapsed? For most backends it is
  * measured from the child's first output byte. For Codex it is measured from
@@ -4615,6 +4667,16 @@ export function mcpReconnectMacroWorstCaseMs(overrides?: Partial<McpReconnectMac
  *  parent's KICKOFF_PROOF_WINDOW_MS must exceed it, or the parent gives up and
  *  deletes the receipt before the host can report a refusal. */
 export function headlessRoleMcpVerifyWorstCaseMs(): number;
+/**
+ * Bound the fresh headless role kickoff long enough for its required MCP
+ * reconnect and the prompt to settle afterward. The ordinary Claude startup
+ * budget is 20s, while two worst-case reconnect attempts are ~71s; using the
+ * ordinary budget for a role kickoff made every slow-but-healthy `/mcp`
+ * preparation fail as `prewrite-agent-busy` before the task turn was written.
+ * Keep this below the 120s parent proof window so a successful native proof
+ * still has room to settle.
+ */
+export function headlessRoleMcpKickoffBudgetMs(): number;
 /** WI-10006598: the host refused a headless kickoff, but its negative receipt
  *  never reached the detached caller (the caller timed out and removed the
  *  request, so publication failed). Nobody will reap this process and it can
@@ -4780,6 +4842,10 @@ export function makeDeliveryDedup({ ttlMs, now }?: {
     markAccepted(id: any): void;
     size(): number;
 };
+/** A re-armed wake can retry a known pre-write refusal, never an uncertain write. */
+export function rearmWakeTurnOutcome(outcome: any, { submittedToCurrentChild }?: {
+    submittedToCurrentChild?: boolean | undefined;
+}): any;
 /** Decide how the detached host pipeline settles one delivery ID.
  * A busy-gate deferral remains pending only when the re-arm controller still
  * owns that exact delivery; folded IDs that the re-arm does not own stay

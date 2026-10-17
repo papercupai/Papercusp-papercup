@@ -1,11 +1,13 @@
 /** plans:set-specs — optimistic-CAS append of canonical plan spec revisions. */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from '@papercusp/tooldef';
 import { RECORDED_TEST_LAYERS } from '@papercusp/test-config/execution-details';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { refineEvenWithShapeIssues } from '../_refine-with-shape-issues';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { asRecord, completedResultPayload } from '../abort-completion-payload';
 import { bulkContent, runBulk } from '../_bulk';
 import { ADHOC_WORK_ITEM_SPEC_SCOPE } from './adhoc-spec-scope';
 import {
@@ -98,8 +100,8 @@ const argsSchema = refineEvenWithShapeIssues(
       .min(1)
       .optional()
       .describe(
-        'Plan slug owning every supplied clause. Omit for ad-hoc work-items that belong to no plan; ' +
-          'their clauses are authored into the harness-wide ad-hoc spec scope instead.',
+        'Plan slug owning every supplied clause. Omit only for a single ad-hoc work-item clause; ' +
+          'bulk `items` calls must name their plan so they cannot fall back to the harness-wide ad-hoc scope.',
       ),
     spec: specWriteSchema.optional().describe('Single-clause shorthand (n=1 of the bulk call).'),
     // P-007's dual-arity seam, spelled the way every sibling bulk verb spells it
@@ -118,12 +120,96 @@ const argsSchema = refineEvenWithShapeIssues(
       .describe('Append several clause revisions at once — each a full spec write.'),
   }),
   (args, ctx) => {
-    if (Boolean(args.spec) !== Boolean(args.items)) return;
-    ctx.addIssue({ code: 'custom', path: [], message: 'pass exactly one of `spec` or `items`' });
+    if (Boolean(args.spec) === Boolean(args.items)) {
+      ctx.addIssue({ code: 'custom', path: [], message: 'pass exactly one of `spec` or `items`' });
+      return;
+    }
+    if (args.items && !args.slug) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['slug'],
+        message: 'bulk `items` requires `slug`; omit `slug` only for a single ad-hoc `spec`',
+      });
+    }
   },
 );
 
 const OK = new Set(['created', 'revised', 'unchanged']);
+
+/**
+ * Clause identities are independent, so a bulk write may use a small worker pool. Four
+ * matches the other bounded plan reads/writes and keeps the per-item transactions finite;
+ * clause amendment propagation sorts its row locks before any worker can overlap them.
+ */
+export const SET_SPECS_MAX_CONCURRENCY = 4;
+
+/**
+ * A late plans:set-specs return may have committed one or more independent clause revisions
+ * before dispatch noticed its deadline. Name every successful revision from the returned
+ * envelope so the caller can reconcile the attempt instead of replaying it blindly.
+ */
+export function setSpecsAbortCompletionReceipt(
+  _args: unknown,
+  result: ToolResult,
+  context: AbortCompletionContext,
+): AbortCompletionReceipt {
+  if (context.toolName !== 'plans:set-specs' || !context.callId.trim()) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'plans:set-specs receipt did not receive the dispatch attempt identity',
+      failures: ['missing-attempt-identity'],
+    };
+  }
+
+  const payload = completedResultPayload(result);
+  const rows = Array.isArray(payload?.results) ? payload.results : null;
+  if (!payload || !rows) {
+    return {
+      status: 'recovery-incomplete',
+      reason: 'plans:set-specs result did not contain a parseable bulk completion payload',
+      failures: ['missing-bulk-result'],
+    };
+  }
+
+  const revisions = rows.flatMap((value) => {
+    const row = asRecord(value);
+    const specId = typeof row?.specId === 'string' ? row.specId.trim() : '';
+    const revision = row?.revision;
+    const status = typeof row?.status === 'string' ? row.status : '';
+    return row?.ok === true && specId && Number.isSafeInteger(revision) && Number(revision) > 0 && OK.has(status)
+      ? [{ specId, revision: Number(revision), status }]
+      : [];
+  });
+  if (revisions.length > 0) {
+    const ordered = [...revisions].sort((a, b) => a.specId.localeCompare(b.specId) || a.revision - b.revision);
+    return {
+      status: 'recorded',
+      effectRef: `plans-set-specs:${context.callId}:revisions:${ordered.map((row) => `${row.specId}@${row.revision}`).join(',')}`,
+      diagnostics: { revisions: ordered },
+    };
+  }
+
+  const counts = asRecord(payload.counts);
+  if (
+    payload.ok === false &&
+    counts &&
+    counts.ok === 0 &&
+    Number.isSafeInteger(counts.failed) &&
+    Number(counts.failed) === rows.length
+  ) {
+    return {
+      status: 'not-recorded',
+      reason: 'plans:set-specs completed without a successful clause revision',
+      diagnostics: { counts },
+    };
+  }
+
+  return {
+    status: 'recovery-incomplete',
+    reason: 'plans:set-specs result did not prove a durable clause revision',
+    failures: ['missing-landed-spec-revision'],
+  };
+}
 
 export default defineTool({
   name: 'plans:set-specs',
@@ -140,6 +226,7 @@ export default defineTool({
   requirePrincipal: false,
   skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
+  abortCompletionReceipt: setSpecsAbortCompletionReceipt,
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
@@ -191,7 +278,10 @@ export default defineTool({
           ? { ok: true as const, slug: reportedSlug, ...result }
           : { ok: false as const, slug: reportedSlug, error: result.status, ...result };
       },
-      { keyOf: (spec) => ({ slug: reportedSlug, specId: spec.specId }) },
+      {
+        keyOf: (spec) => ({ slug: reportedSlug, specId: spec.specId }),
+        maxConcurrency: SET_SPECS_MAX_CONCURRENCY,
+      },
     );
     return bulkContent(env);
   },

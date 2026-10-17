@@ -4,6 +4,7 @@ import type { SystemActionCtx } from './system-actions';
 const h = vi.hoisted(() => ({
   handlers: new Map<string, (ctx: SystemActionCtx) => Promise<unknown>>(),
   reconcile: vi.fn(), runSweep: vi.fn(),
+  pinSweep: vi.fn(),
   resolveGrader: vi.fn(),
 }));
 vi.mock('./system-actions', () => ({
@@ -26,6 +27,7 @@ vi.mock('../../acceptance-grading-sweep-run', () => ({
   acceptanceGradingEscalationBody: vi.fn(), acceptanceGradingStallConditionKey: vi.fn(), runAcceptanceGradingSweep: h.runSweep,
 }));
 vi.mock('../../acceptance-grading-sweep-observe', () => ({ observeAcceptanceGrader: vi.fn() }));
+vi.mock('../../acceptance-bar-pin-sweep', () => ({ runAcceptanceBarPinSweep: h.pinSweep }));
 import './acceptance-grading-sweep-action';
 
 beforeEach(() => {
@@ -33,9 +35,44 @@ beforeEach(() => {
     { issueId: 'EI-audit', state: 'routed', conversationId: 'audit-conversation' },
   ] });
   h.runSweep.mockReset().mockResolvedValue(undefined);
+  h.pinSweep.mockReset().mockResolvedValue({ scanned: 0, reconciled: 0, held: {}, scopeSkipped: 0, errors: [], nextCursor: null });
 });
 
 describe('registered acceptance sweep audit entrypoint', () => {
+  it('repairs subject pins before grading and retains its bounded scan cursor', async () => {
+    const cursor = { workspaceId: 'ws', harnessSlug: 'papercusp', planSlug: 'last-plan' };
+    const order: string[] = [];
+    h.pinSweep.mockImplementationOnce(async () => {
+      order.push('pins');
+      return { scanned: 50, reconciled: 1, held: {}, scopeSkipped: 0, errors: [], nextCursor: cursor };
+    });
+    h.runSweep.mockImplementation(async () => { order.push('grading'); });
+    const handler = h.handlers.get('acceptance-grading-sweep')!;
+    expect(await handler({ workspaceId: 'ws-sweep' } as SystemActionCtx)).toMatchObject({
+      diagnostics: { subjectPins: { reconciled: 1 } },
+    });
+    expect(order).toEqual(['pins', 'grading']);
+    await handler({ workspaceId: 'ws-sweep' } as SystemActionCtx);
+    expect(h.pinSweep).toHaveBeenLastCalledWith({ after: cursor });
+  });
+
+  it('keeps grading running and records routine health when the pin scan fails', async () => {
+    h.pinSweep.mockRejectedValue(new Error('pin scan unavailable'));
+    const result = await h.handlers.get('acceptance-grading-sweep')!({ workspaceId: 'ws-sweep' } as SystemActionCtx);
+    expect(result).toMatchObject({ softError: expect.stringContaining('pin scan unavailable') });
+    expect(h.reconcile).toHaveBeenCalledOnce();
+    expect(h.runSweep).toHaveBeenCalledOnce();
+  });
+
+  it('records per-target pin errors without hiding the successful portion of the scan', async () => {
+    h.pinSweep.mockResolvedValue({ scanned: 2, reconciled: 1, errors: [{ error: 'pin read failed' }], nextCursor: null });
+    expect(await h.handlers.get('acceptance-grading-sweep')!({ workspaceId: 'ws-sweep' } as SystemActionCtx)).toMatchObject({
+      softError: 'subject-pin reconciliation failed for 1 plan(s)',
+      diagnostics: { subjectPins: { scanned: 2, reconciled: 1 } },
+    });
+    expect(h.runSweep).toHaveBeenCalledOnce();
+  });
+
   it('carries the routine model pin through both audit repairs and eligible plan grading', async () => {
     const profile = { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' };
     h.resolveGrader.mockResolvedValue({ state: 'launched' });

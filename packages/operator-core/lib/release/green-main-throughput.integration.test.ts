@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { prepareBudgetedTaskComparison, readBudgetedTaskComparisonArtifacts,
-  type BudgetedTaskComparisonArtifactPins } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
+  type BudgetedTaskComparisonArtifactPins, type BudgetedTaskComparisonCohort } from '../../../../scripts/lib/budgeted-task-scheduler.mjs';
 import type { RecordOperationalRunDeps } from '../agent-tools/testing/record-run';
 import { executeGreenMainThroughputComparison } from './green-main-slo';
 
@@ -89,7 +89,7 @@ describe('native throughput wrapper artifact-to-executor integration', () => {
         wallMs: executionWallMs + 30, acquiredWaitsMs: [10, 20], executionWallMs,
         memory: { pairedSamples: 3, maxAnonPerAllocatedWorkerMb: 300, oomKills: 0 },
         stats: { memoryReadings: 2, lastMemAvailableMb: 40000,
-          observedMaxWorkers: 8, observedMaxTasks: 2, observedMaxMemoryMb: 32768 },
+          observedMaxWorkers: 8, observedMaxTasks: side === 'baseline' ? 1 : 2, observedMaxMemoryMb: 32768 },
         children,
       });
     });
@@ -165,5 +165,68 @@ describe('native throughput wrapper artifact-to-executor integration', () => {
       failedCaseTitles: ['native-check-exception'] });
     expect(receipt.rows[0]!.outputTail).toContain('Original artifact hash mismatch: child-1-long.json');
     expect(receipt.rows[0]!.outputTail).not.toContain('original_population_sha256=');
+  });
+
+  function repinCohort(args: ReturnType<typeof fixture>, index: number,
+    change: (cohort: BudgetedTaskComparisonCohort) => void) {
+    const pin = args.pins.cohorts[index]!;
+    const cohort = JSON.parse(readFileSync(join(root, pin.ref), 'utf8')) as BudgetedTaskComparisonCohort;
+    change(cohort);
+    // Re-pin both levels: a rejected cohort must reach policy qualification, rather than
+    // accidentally exercising the unrelated original-byte mismatch guard.
+    for (const child of cohort.children) {
+      const { originalRef, originalSha256: _oldHash, ...fields } = child;
+      const bytes = JSON.stringify(fields);
+      writeFileSync(join(root, originalRef), bytes);
+      child.originalSha256 = createHash('sha256').update(bytes).digest('hex');
+    }
+    const bytes = JSON.stringify(cohort);
+    writeFileSync(join(root, pin.ref), bytes);
+    args.pins.cohorts[index] = { ref: pin.ref, sha256: createHash('sha256').update(bytes).digest('hex') };
+  }
+
+  async function expectUnqualified(args: ReturnType<typeof fixture>) {
+    const original = await readBudgetedTaskComparisonArtifacts(args.evidenceRoot, args.pins);
+    expect(original.originalArtifactsResolved).toBe(true);
+    expect(original.cohorts[1]!.executionWallMs / original.cohorts[0]!.executionWallMs).toBe(0.5);
+    expect(await executeGreenMainThroughputComparison(args)).toMatchObject({ ok: true, status: 'fail' });
+    const receipt = boundary.persist.mock.calls[0]![0];
+    expect(receipt.rows[0]!.execution).toMatchObject({ passed: 2, failed: 2, skipped: 0,
+      failedCaseTitles: ['unchanged-contained-no-skip-paired-headroom-longest-first-cohorts',
+        'full-identical-file-set-at-most-half-baseline-wall'] });
+    expect(receipt.rows[0]!.outputTail).toContain(`original_population_sha256=${original.populationSha256}`);
+  }
+
+  it.each([1, 2])('rejects candidate repeat at cohort %i without measured concurrency growth', async index => {
+    const args = fixture();
+    repinCohort(args, index, cohort => { cohort.stats.observedMaxTasks = 1; });
+    await expectUnqualified(args);
+  });
+
+  it('rejects a persisted candidate policy that falls back to the baseline task ceiling', async () => {
+    const args = fixture();
+    repinCohort(args, 1, cohort => { cohort.policy.maxConcurrentTasks = 2; });
+    await expectUnqualified(args);
+  });
+
+  it('rejects shortest-first candidate scheduling even when the wall ratio passes', async () => {
+    const args = fixture();
+    repinCohort(args, 1, cohort => { cohort.children.reverse(); });
+    await expectUnqualified(args);
+  });
+
+  it('rejects raised concurrency beyond the measured memory budget', async () => {
+    const args = fixture();
+    repinCohort(args, 1, cohort => { cohort.stats.observedMaxMemoryMb = 32769; });
+    await expectUnqualified(args);
+  });
+
+  it('rejects a raised-concurrency cohort with a memory-admission refusal', async () => {
+    const args = fixture();
+    repinCohort(args, 1, cohort => {
+      cohort.children[0]!.code = 75;
+      cohort.children[0]!.resultLine = 'TASK_BUDGET_REFUSAL kind=memory requested=32768 available=16384';
+    });
+    await expectUnqualified(args);
   });
 });

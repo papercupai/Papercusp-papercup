@@ -83,6 +83,39 @@ describe('wellKnownBackendBin — PATH-independent backend detection (WI-37920)'
 });
 
 describe('packaged backend launchers cannot recursively launch psu', () => {
+  it.each(['inherited', 'envelope'])(
+    'keeps launcher inspector publication out of the native child (%s NODE_OPTIONS)', (source) => {
+      const root = mkdtempSync(join(tmpdir(), 'psu-native-inspector-'));
+      try {
+        const nativeDir = join(root, 'native');
+        mkdirSync(nativeDir);
+        writeFileSync(join(nativeDir, 'claude'),
+          '#!/bin/sh\nprintf "NATIVE_OPTIONS:%s\\n" "$NODE_OPTIONS"\n', { mode: 0o755 });
+        const launcherUrl = process.env.PROBE_SUBJECT
+          ? pathToFileURL(process.env.PROBE_SUBJECT).href
+          : new URL('./psu-launcher.mjs', import.meta.url).href;
+        const options = '--max-old-space-size=4096 --inspect-publish-uid=http --expose-gc';
+        const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+          import { runWrapper } from ${JSON.stringify(launcherUrl)};
+          process.stdout.write('LAUNCHER_OPTIONS:' + process.env.NODE_OPTIONS + '\\n');
+          runWrapper({ wrapperBin: 'claude', args: [], cwd: ${JSON.stringify(root)}, preserveCwd: true,
+            envelopeEnv: { PAPERCUSP_AGENT: 'claude', PAPERCUSP_PSU_NO_PTY: '1',
+              ${source === 'envelope' ? `NODE_OPTIONS: ${JSON.stringify(options)},` : ''} },
+            reportSessionEndedImpl: async () => {},
+          });
+        `], { encoding: 'utf8', timeout: 15_000,
+          env: { HOME: root, NODE_ENV: 'test', PATH: [nativeDir, process.env.PATH].join(':'),
+            NODE_OPTIONS: options, PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', PAPERCUSP_MCP_PROXY: '0' },
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toBe(`LAUNCHER_OPTIONS:${options}\nNATIVE_OPTIONS:--max-old-space-size=4096 --expose-gc\n`);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it.each([
     { args: ['--resume', '11111111-1111-4111-8111-111111111111', '--fork-session', '--session-id', '22222222-2222-4222-8222-222222222222'], expected: '22222222-2222-4222-8222-222222222222' },
     { args: ['--resume', '11111111-1111-4111-8111-111111111111', '--fork-session'], expected: '' },

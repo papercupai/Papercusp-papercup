@@ -26,6 +26,305 @@ function py(module: string, expr: string, input: unknown): any {
 
 const plan = (messages: unknown[]) => py(STUB, 'list(m.plan_reply({"messages": inp}, ["/f0.py", "/f1.py"]))', messages);
 
+describe('operator readiness across cold lifecycle', () => {
+  function healthScenario(valid: boolean) {
+    const code = [
+      'import importlib.util,json,socketserver,threading,subprocess,sys',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s);s.loader.exec_module(m)',
+      'class Handler(socketserver.BaseRequestHandler):',
+      ' def handle(self):',
+      '  self.request.recv(4096)',
+      '  self.request.sendall(self.server.payload)',
+      'servers=[]',
+      'def serve(payload):',
+      ' server=socketserver.TCPServer(("127.0.0.1",0),Handler);server.payload=payload;servers.append(server)',
+      ' threading.Thread(target=server.serve_forever,daemon=True).start();return server.server_address[1]',
+      'def http(body):return b"HTTP/1.0 200 OK\\r\\nContent-Length: "+str(len(body)).encode()+b"\\r\\n\\r\\n"+body',
+      'ports=[serve(b"SSH-2.0-OpenSSH_9.6\\r\\n"),serve(http(b"<html>SPA</html>")),serve(http(b"[]")),serve(http(b\'{"ok":1,"service":"papercusp-operator","sha":"candidate"}\')),serve(http(b\'{"ok":true,"service":"other","sha":"candidate"}\')),serve(http(b\'{"ok":true,"service":"papercusp-operator","sha":"wrong"}\'))]',
+      ...(valid ? ['ports.append(serve(http(b\'{"ok":true,"service":"papercusp-operator","sha":"candidate"}\')))'] : []),
+      'out=m.wait_for_operator_health(ports,timeout=.15,interval=.01,expected_sha="candidate")',
+      `r=subprocess.run([sys.executable,${JSON.stringify(DRIVER)},"wait-health",*sum((["--port",str(p)] for p in ports),[]),"--timeout",".15","--expected-sha","candidate"],capture_output=True,text=True)`,
+      'print(json.dumps({"result":out,"cli":json.loads(r.stdout),"exitCode":r.returncode,"expectedPort":ports[-1]}))',
+      'for server in servers:server.server_close()',
+    ].join('\n');
+    const r = spawnSync('python3', ['-c', code], { encoding: 'utf8', timeout: 5000 });
+    expect(r.status, r.stderr).toBe(0);
+    return JSON.parse(r.stdout);
+  }
+
+  it('passes a valid candidate API after SSH, HTML, wrong schema and wrong candidate sockets', () => {
+    const out = healthScenario(true);
+    expect(out.result).toMatchObject({ ready: true, port: out.expectedPort, attempts: 7 });
+    expect(out.cli).toMatchObject({ ready: true, port: out.expectedPort });
+    expect(out.exitCode).toBe(0);
+  });
+
+  it('times out without accepting HTTP availability or another artifact', () => {
+    const out = healthScenario(false);
+    expect(out.result.ready).toBe(false);
+    expect(out.cli.ready).toBe(false);
+    expect(out.exitCode).toBe(1);
+  });
+});
+
+describe('retained file and SQL durability witness', () => {
+  function witnessScenario(change: string, expectedFailure = false, cli = false) {
+    const fakePsql = String.raw`#!/usr/bin/env python3
+import os,sys,json,pathlib,re
+sql=sys.argv[-1]; db=pathlib.Path(os.environ['WITNESS_DB']); log=pathlib.Path(os.environ['WITNESS_LOG'])
+with log.open('a') as f:
+ f.write(json.dumps({'sql':sql,'options':os.environ['PGOPTIONS'],'passwordCorrect':os.environ['PGPASSWORD']=='p@ssword','argsContainSecret':'p@ssword' in str(sys.argv)})+'\n')
+if os.environ.get('WITNESS_SQL_FAILURE'):
+ print('error includes p@ssword',file=sys.stderr); sys.exit(17)
+if sql.startswith('BEGIN;'):
+ if db.exists(): sys.exit(1)
+ db.write_text(re.findall(r'[a-f0-9]{64}',sql)[0])
+elif sql.startswith('SELECT current_setting'):
+ if db.exists(): print(('off' if os.environ.get('WITNESS_WRITABLE') else 'on')+'\t'+db.read_text())
+else: sys.exit(9)
+`;
+    const code = [
+      'import importlib.util,json,pathlib,tempfile,os,sys,shutil,subprocess',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'root=pathlib.Path(tempfile.mkdtemp()); data=root/"retained.bin"; data.write_bytes(b"retained-data")',
+      'config=root/"embedded-pg.json"; config.write_text(json.dumps({"url":"postgresql://user:p%40ssword@127.0.0.1:5432/test"}))',
+      'db=root/"db"; log=root/"sql.log"; psql=root/"psql"',
+      `psql.write_text(${JSON.stringify(fakePsql)}); psql.chmod(0o755)`,
+      'os.environ.update(WITNESS_DB=str(db),WITNESS_LOG=str(log))',
+      'manifest=root/"manifest.json"',
+      'receipt=m.create_durability_witness(str(manifest),[str(data)],str(config),str(psql),"p544-test")',
+      'before=manifest.read_bytes(); error=None; verified=None',
+      change,
+      'try: verified=m.verify_durability_witness(str(manifest),receipt["manifestSha256"],str(config),str(psql))',
+      'except (RuntimeError,ValueError,OSError) as e: error=str(e)',
+      'cli=None',
+      ...(cli ? [
+        `result=subprocess.run([sys.executable,${JSON.stringify(DRIVER)},"witness-verify","--manifest",str(manifest),"--manifest-sha256",receipt["manifestSha256"],"--pg-config",str(config),"--psql",str(psql)],capture_output=True,text=True)`,
+        'assert result.returncode==0,result.stderr; cli=json.loads(result.stdout)',
+      ] : []),
+      'rows=[json.loads(line) for line in log.read_text().splitlines()]',
+      'print(json.dumps({"receipt":receipt,"verified":verified,"error":error,"cli":cli,"sql":rows,"manifestUnchanged":before==manifest.read_bytes(),"dbExists":db.exists()}))',
+      'shutil.rmtree(root)',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const out = JSON.parse(result.stdout);
+    expect(out.error !== null).toBe(expectedFailure);
+    expect(out.sql.filter((row: any) => row.sql.startsWith('BEGIN;'))).toHaveLength(1);
+    for (const row of out.sql.slice(1)) {
+      expect(row.sql).toMatch(/^SELECT current_setting\('transaction_read_only'\), value FROM/);
+      expect(row.sql).not.toMatch(/CREATE|INSERT|UPDATE|DELETE|CONFLICT/i);
+      expect(row.options).toContain('default_transaction_read_only=on');
+      expect(row.passwordCorrect).toBe(true);
+      expect(row.argsContainSecret).toBe(false);
+    }
+    return out;
+  }
+
+  it('compares the pre-event manifest and forces read-only SQL verification', () => {
+    const out = witnessScenario('pass', false, true);
+    expect(out.verified).toMatchObject({ verified: true, files: 1, sqlReadOnly: true });
+    expect(out.cli).toEqual(out.verified);
+    expect(out.manifestUnchanged).toBe(true);
+    expect(out.sql).toHaveLength(3);
+  });
+
+  it.each([
+    ['db.unlink()', 'missing, changed or not read-only'],
+    ['db.write_text("changed")', 'missing, changed or not read-only'],
+    ['os.environ["WITNESS_WRITABLE"]="1"', 'missing, changed or not read-only'],
+    ['os.environ["WITNESS_SQL_FAILURE"]="1"', 'SQL failed'],
+    ['data.write_bytes(b"lost-and-recreated")', 'file changed'],
+    ['data.unlink()', 'retained.bin'],
+    ['manifest.write_bytes(before+b" ")', 'manifest hash mismatch'],
+  ])('fails without repairing evidence after %s', (change, message) => {
+    const out = witnessScenario(change, true);
+    expect(out.error).toContain(message);
+    if (change === 'db.unlink()') expect(out.dbExists).toBe(false);
+  });
+
+  it('refuses initialization over the same manifest before another SQL write', () => {
+    const out = witnessScenario([
+      'try: m.create_durability_witness(str(manifest),[str(data)],str(config),str(psql),"p544-test")',
+      'except ValueError as e: assert "already exists" in str(e)',
+      'else: raise AssertionError("reinitialized existing witness")',
+    ].join('\n'));
+    expect(out.verified.verified).toBe(true);
+    expect(out.manifestUnchanged).toBe(true);
+  });
+});
+
+describe('native evidence survives guest teardown', () => {
+  function archiveScenario(change: string, afterArchive = 'pass') {
+    const code = [
+      'import importlib.util,json,pathlib,tempfile,tarfile,io,subprocess,sys,hashlib,shutil',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'root=pathlib.Path(tempfile.mkdtemp()); out=root/"run"; out.mkdir()',
+      'start=1792190000; stamp="2026-10-16T22:33:25Z"',
+      'rows=[{"kind":"run-start","t":start,"cli":"codex","agents":2,"warm":1}]',
+      'sessions={}',
+      'def record(payload, type="response_item"): return {"timestamp":stamp,"type":type,"payload":payload}',
+      'for name in ["a1","a2"]:',
+      ' data=root/(name+".txt"); data.write_bytes((name+" dummy").encode()); digest=hashlib.sha256(data.read_bytes()).hexdigest()',
+      ' history=[]',
+      ' for marker in ["WARM-"+name+"-0", "WAKE-test"+name]:',
+      '  history.extend([record({"role":"user","content":[{"text":marker}]}),record({"type":"function_call_output","output":digest}),record({"role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"DONE-"+marker}]}),record({"type":"task_complete"},"event_msg")])',
+      ' path=root/(name+".jsonl"); path.write_text("".join(json.dumps(r)+"\\n" for r in history))',
+      ' sessions[name]={"file":str(path),"data":str(data)}',
+      ' rows.append({"kind":"wake","t":start+10,"agent":name,"tDone":start+9,"error":None,"nativeToolVerified":False})',
+      'rows.append({"kind":"run-end","t":start+20})',
+      change,
+      '(out/"results.jsonl").write_text("".join(json.dumps(r)+"\\n" for r in rows))',
+      'error=None; receipt=None; cli=None',
+      'try: receipt=m.archive_native_evidence(str(out),sessions)',
+      'except (RuntimeError,ValueError) as e: error=str(e)',
+      'archive=out/"native-evidence.tar.gz"',
+      afterArchive,
+      'if archive.exists():',
+      ' copied=root/"local-copy.tar.gz"; shutil.copyfile(archive,copied)',
+      ' for entry in sessions.values():',
+      '  for key in ["file","data"]:',
+      '   p=pathlib.Path(entry[key]); p.unlink(missing_ok=True)',
+      ` r=subprocess.run([sys.executable,${JSON.stringify(DRIVER)},"verify-archive","--archive",str(copied),"--results",str(out/"results.jsonl")],capture_output=True,text=True)`,
+      ' cli={"exit":r.returncode,"stdout":r.stdout,"stderr":r.stderr}',
+      ' with tarfile.open(copied) as t: manifest=json.load(t.extractfile("native-manifest.json"))',
+      'else: manifest=None',
+      'print(json.dumps({"receipt":receipt,"error":error,"cli":cli,"manifest":manifest}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    return JSON.parse(result.stdout);
+  }
+
+  it('verifies a locally copied complete population after original histories are deleted', () => {
+    const result = archiveScenario('pass');
+    expect(result.error).toBeNull();
+    expect(result.receipt).toMatchObject({ verified: true, assignedAgents: 2 });
+    expect(result.receipt.archiveSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.cli.exit).toBe(0);
+    expect(JSON.parse(result.cli.stdout)).toEqual(result.receipt);
+    expect(result.manifest.agents.map((a: any) => a.agent)).toEqual(['a1', 'a2']);
+    expect(result.manifest.problems).toEqual([]);
+  });
+
+  it.each([
+    ['sessions.pop("a2")', 'population mismatch'],
+    ['pathlib.Path(sessions["a2"]["file"]).unlink()', 'population mismatch'],
+    ['rows.pop()', 'run did not complete'],
+    ['rows[1]["error"]="task failed"', 'task coverage incomplete'],
+    ['pathlib.Path(sessions["a2"]["file"]).write_text(pathlib.Path(sessions["a2"]["file"]).read_text().replace("2026-10-16T22:33:25Z","2026-10-16T22:00:00Z"))', 'task coverage incomplete'],
+    ['pathlib.Path(sessions["a2"]["file"]).write_text(pathlib.Path(sessions["a2"]["file"]).read_text().replace("2026-10-16T22:33:25Z","2026-10-16T23:00:00Z"))', 'task coverage incomplete'],
+    ['p=pathlib.Path(sessions["a2"]["file"]); p.write_text("".join(line+"\\n" for line in p.read_text().splitlines() if json.loads(line).get("type")!="event_msg"))', 'task coverage incomplete'],
+    ['pathlib.Path(sessions["a2"]["data"]).write_text("changed task data")', 'task coverage incomplete'],
+  ])('preserves a rejected partial archive for %s', (change, message) => {
+    const result = archiveScenario(change);
+    expect(result.receipt).toBeNull();
+    expect(result.error).toContain(message);
+    expect(result.manifest.problems.join(';')).toContain(message);
+    expect(result.cli.exit).not.toBe(0);
+  });
+
+  it('rejects the original results-only archive shape and changed raw bytes', () => {
+    const code = [
+      'import importlib.util,tempfile,pathlib,tarfile,io,json',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'path=pathlib.Path(tempfile.mkdtemp())/"results-only.tgz"',
+      'with tarfile.open(path,"w:gz") as t:',
+      ' member=tarfile.TarInfo("results.jsonl"); member.size=3; t.addfile(member,io.BytesIO(b"{}\\n"))',
+      'error=None',
+      'try: m.verify_native_archive(str(path),str(path.parent/"results.jsonl"))',
+      'except RuntimeError as e:error=str(e)',
+      'print(json.dumps({"error":error,"changed":m.native_archive_problems({"schemaVersion":"swap-tier-native-archive-v1","resultsSha256":"wrong"},{"results.jsonl":b"changed"})}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({ error: 'native archive missing required population manifest', changed: ['results hash mismatch'] });
+  });
+
+  it('rejects an older complete archive when the caller supplies newer run results', () => {
+    const result = archiveScenario('pass', '(out/"results.jsonl").write_text((out/"results.jsonl").read_text()+"{}\\n")');
+    expect(result.receipt.verified).toBe(true);
+    expect(result.cli.exit).not.toBe(0);
+    expect(result.cli.stderr).toContain('belongs to different run results');
+  });
+
+  it.each(['session.jsonl', 'dummy-data.txt'])('rejects changed archived %s bytes', (suffix) => {
+    const result = archiveScenario('pass', [
+      'with tarfile.open(archive) as t: files={m.name:t.extractfile(m).read() for m in t.getmembers()}',
+      `files["native/a1/${suffix}"]+=b"changed"`,
+      'with tarfile.open(archive,"w:gz") as t:',
+      ' for name,content in files.items():',
+      '  member=tarfile.TarInfo(name); member.size=len(content); t.addfile(member,io.BytesIO(content))',
+    ].join('\n'));
+    expect(result.cli.exit).not.toBe(0);
+    expect(result.cli.stderr).toContain('missing or changed');
+  });
+});
+
+describe('capacity Server population preflight', () => {
+  it('requests a bounded full-file digest with enough native output for any poll', () => {
+    const prompt = py(DRIVER, 'm.native_hash_prompt(inp)', 'WARM-a17-3');
+    expect(prompt).toContain('`sha256sum dummy-data.txt`');
+    expect(prompt).toContain('max_output_tokens=512 for execution and any polling');
+    expect(prompt).not.toContain('cat dummy-data.txt');
+    expect(prompt).toContain('DONE-WARM-a17-3');
+  });
+
+  function population(users: number[], expected = 1003, nested = false) {
+    const code = [
+      'import importlib.util,json,pathlib,tempfile,types',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'root=pathlib.Path(tempfile.mkdtemp())',
+      'def service(uid): return root / f"user.slice/user-{uid}.slice/user@{uid}.service/app.slice/papercusp-server.service"',
+      `for uid in ${JSON.stringify(users)}:`,
+      ` p=service(uid)${nested ? ' / "child"' : ''}; p.mkdir(parents=True); (p/"cgroup.procs").write_text("123\\n")`,
+      'result=None; error=None',
+      `try: result=m.server_population(str(service(${expected})), str(root))`,
+      'except RuntimeError as e: error=str(e)',
+      'print(json.dumps({"result":result,"error":error}))',
+    ].join('\n');
+    const r = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+    return JSON.parse(r.stdout);
+  }
+
+  it('accepts exactly the intended live service, including a child-only process', () => {
+    for (const nested of [false, true]) {
+      expect(population([1003], 1003, nested)).toMatchObject({ result: { count: 1 }, error: null });
+    }
+  });
+
+  it.each([{ users: [] }, { users: [1001] }, { users: [1001, 1003] }])('rejects missing, wrong or extra services: %j', ({ users }) => {
+    const result = population(users);
+    expect(result.result).toBeNull();
+    expect(result.error).toContain('server population mismatch');
+  });
+
+  it('runs the population check before creating probes or launching native agents', () => {
+    const code = [
+      'import importlib.util,json,tempfile,types',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'calls=[]',
+      'm.Recorder=lambda *args: calls.append("recorder")',
+      'm.subprocess.Popen=lambda *args, **kw: calls.append("probe")',
+      'm.stop_agents=lambda: calls.append("stop")',
+      'error=None',
+      'try: m.run(types.SimpleNamespace(server_cgroup="/missing"))',
+      'except RuntimeError as e: error=str(e)',
+      'print(json.dumps({"calls":calls,"error":error}))',
+    ].join('\n');
+    const r = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual({ calls: [], error: expect.stringContaining('server population mismatch') });
+  });
+});
+
 describe('real Luna load and swap tuning', () => {
   it.each([[200, true], [429, true], [503, false]])('checks HTTP %s with catalog=%s', (status, catalog) => {
     const code = [
@@ -58,24 +357,62 @@ describe('real Luna load and swap tuning', () => {
     expect(receipt.error === null).toBe(success);
   });
 
-  it('refuses another prompt batch after a previously healthy tunnel disappears', () => {
+  it('records a native route failure without substituting a monitoring request', () => {
     const code = [
-      'import importlib.util, json, socket, types',
+      'import importlib.util, json',
       `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
       'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
-      'server=socket.socket(); server.bind(("127.0.0.1",0)); port=server.getsockname()[1]; server.close()',
-      'rows=[]; typed=[]',
-      'm.GATEWAY_CHECK=lambda: m.gateway_preflight(f"http://127.0.0.1:{port}/v1","benchmark-owner",types.SimpleNamespace(rec=lambda kind, **kw: rows.append({"kind":kind, **kw})))',
-      'm.type_text=lambda *args: typed.append(args)',
-      'try: m.prompt_all(["a1"],lambda n:"MARKER",lambda n:"dummy",1)',
-      'except RuntimeError as e: print(json.dumps({"error":str(e),"rows":rows,"typed":typed}))',
+      'clock=[0]; typed=[]; m.REAL_MODEL=True; m.CODEX_SESSIONS={"a1":{}}',
+      'm.time.time=lambda:clock[0]; m.time.sleep=lambda *a:clock.__setitem__(0,clock[0]+1)',
+      'm.type_text=lambda *args: typed.append(args); m.press_enter=lambda *a:None; m.pane=lambda *a:"MARKER"',
+      'def failed(*a): raise m.NativeTaskError("native model route disconnected")',
+      'm.codex_completed=failed',
+      'state=m.prompt_all(["a1"],lambda n:"MARKER",lambda n:"dummy",10)',
+      'print(json.dumps({"state":state,"typed":typed}))',
     ].join('\n');
     const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
     expect(result.status, result.stderr).toBe(0);
     const receipt = JSON.parse(result.stdout);
-    expect(receipt.error).toContain('refusing a batch');
-    expect(receipt.typed).toEqual([]);
-    expect(receipt.rows).toEqual([{ kind: 'gateway-preflight', success: false, status: null, error: 'URLError', catalog: true }]);
+    expect(receipt.state.a1.error).toBe('native model route disconnected');
+    expect(receipt.state.a1.tDone).toBeNull();
+    expect(receipt.typed).toEqual([['a1', 'dummy']]);
+  });
+
+  it.each(['native-complete', 'native-error', 'stub'])('avoids unused terminal captures after submission: %s', (mode) => {
+    const code = [
+      'import importlib.util, json',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      `mode=${JSON.stringify(mode)}`,
+      'clock=[0]; submitted=set(); captures=[]; polls=[]; typed=[]',
+      'm.REAL_MODEL=mode!="stub"; m.CODEX_SESSIONS={"a1":{}}',
+      'm.time.time=lambda:clock[0]; m.time.sleep=lambda *a:clock.__setitem__(0,clock[0]+1)',
+      'm.type_text=lambda *a:typed.append(a); m.press_enter=lambda n:submitted.add(n)',
+      'def pane(n):',
+      ' captures.append({"agent":n,"submitted":n in submitted})',
+      ' return "MARKER DONE-MARKER"',
+      'def completed(n, marker):',
+      ' polls.append([n,marker])',
+      ' if mode=="native-error": raise m.NativeTaskError("native failure")',
+      ' return len(polls)>=2',
+      'm.pane=pane; m.codex_completed=completed',
+      'state=m.prompt_all(["a1"],lambda n:"MARKER",lambda n:"dummy",10)',
+      'print(json.dumps({"state":state,"captures":captures,"polls":polls,"typed":typed}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const receipt = JSON.parse(result.stdout);
+    expect(receipt.typed).toEqual([['a1', 'dummy']]);
+    expect(receipt.captures).toEqual(mode === 'stub'
+      ? [{ agent: 'a1', submitted: false }, { agent: 'a1', submitted: true }]
+      : [{ agent: 'a1', submitted: false }]);
+    if (mode === 'native-error') {
+      expect(receipt.state.a1).toMatchObject({ tDone: null, error: 'native failure' });
+      expect(receipt.polls).toHaveLength(1);
+    } else {
+      expect(receipt.state.a1).toMatchObject({ tDone: mode === 'stub' ? 1 : 2, error: null });
+      expect(receipt.polls).toHaveLength(mode === 'stub' ? 0 : 2);
+    }
   });
 
   it('keeps each native runtime in its measured scope without requiring a daemon socket', () => {
@@ -108,7 +445,7 @@ describe('real Luna load and swap tuning', () => {
     }
   });
 
-  it('lets submitted native tasks settle without an interrupting health request', () => {
+  it('lets a native batch complete when an auxiliary health request would time out', () => {
     const code = [
       'import importlib.util, json',
       `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
@@ -116,7 +453,7 @@ describe('real Luna load and swap tuning', () => {
       'checks=[]; clock=[0]',
       'def check():',
       ' checks.append(1)',
-      ' if len(checks)>1: raise RuntimeError("health endpoint timed out while native task was completing")',
+      ' raise RuntimeError("health endpoint timed out while native task was completing")',
       'def tick(*a): clock[0]+=20',
       'm.GATEWAY_CHECK=check; m.time.time=lambda:clock[0]; m.time.monotonic=lambda:clock[0]; m.time.sleep=tick',
       'm.type_text=lambda *a:None; m.press_enter=lambda *a:None; m.pane=lambda *a:"MARKER DONE-MARKER"',
@@ -126,7 +463,7 @@ describe('real Luna load and swap tuning', () => {
     const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
     expect(result.status, result.stderr).toBe(0);
     const receipt = JSON.parse(result.stdout);
-    expect(receipt.checks).toBe(1);
+    expect(receipt.checks).toBe(0);
     expect(receipt.state.a1).toMatchObject({ tDone: 20, error: null });
   });
 
@@ -172,14 +509,50 @@ describe('real Luna load and swap tuning', () => {
       'rows=[]',
       'm.sh=lambda *a, **kw: types.SimpleNamespace(returncode=0, stdout="1 101", stderr="")',
       'm.pane=lambda n: "native runtime failed to create a worker"',
-      'try: m.check_codex_terminal("a4", types.SimpleNamespace(rec=lambda kind, **kw: rows.append({"kind":kind, **kw})))',
-      'except RuntimeError as e: print(json.dumps({"error":str(e),"rows":rows}))',
+      'evidence=m.check_codex_terminal("a4", types.SimpleNamespace(rec=lambda kind, **kw: rows.append({"kind":kind, **kw})))',
+      'print(json.dumps({"evidence":evidence,"rows":rows}))',
     ].join('\n');
     const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
     expect(result.status).toBe(0);
     const receipt = JSON.parse(result.stdout);
-    expect(receipt.rows).toEqual([{ kind: 'startup-failed', agent: 'a4', state: '1 101', stderr: '', pane: 'native runtime failed to create a worker' }]);
-    expect(receipt.error).toContain('exited before readiness');
+    expect(receipt.rows).toEqual([{ kind: 'startup-failed', agent: 'a4', state: '1 101', stderr: '', pane: 'native runtime failed to create a worker', dead: true, inspectionFailed: false }]);
+    expect(receipt.evidence).toMatchObject({ agent: 'a4', dead: true, inspectionFailed: false, state: '1 101', pane: 'native runtime failed to create a worker' });
+  });
+
+  it('captures every failed pane plus remaining cohort evidence before aborting startup', () => {
+    const code = [
+      'import importlib.util, types, json, io',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'clock=[100.0]; rows=[]',
+      'm.os.makedirs=lambda *a, **kw: None',
+      'm.open=lambda p, mode="r", **kw: io.BytesIO(b"fixture") if "b" in mode else io.StringIO()',
+      'm.sh=lambda argv, **kw: (types.SimpleNamespace(returncode=0, stdout="1 101", stderr="") if "display-message" in argv and argv[argv.index("-t")+1] in ("a1","a2") else types.SimpleNamespace(returncode=0, stdout="0 0", stderr=""))',
+      'm.time.sleep=lambda seconds: clock.__setitem__(0, clock[0]+seconds)',
+      'm.time.time=lambda: clock[0]',
+      'm.LAUNCH_DELAY_SEC=0',
+      'm.pane=lambda name: "native worker creation failed" if name in ("a1","a2") else ("still booting" if name=="a3" else "READY")',
+      'm.codex_ready=lambda text, model: text=="READY"',
+      'm.sh=lambda argv, **kw: (commands.append(argv) or (types.SimpleNamespace(returncode=0, stdout="1 101", stderr="") if "display-message" in argv and argv[argv.index("-t")+1] in ("a1","a2") else types.SimpleNamespace(returncode=0, stdout="0 0", stderr="")))',
+      'commands=[]',
+      'try: m.start_codex_agents(4,"agent",types.SimpleNamespace(rec=lambda kind, **kw: rows.append({"kind":kind, **kw})),"gpt-6-luna","low","http://127.0.0.1:18788/v1","test-owner")',
+      'except RuntimeError as e: print(json.dumps({"error":str(e),"rows":rows,"clock":clock[0]}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const receipt = JSON.parse(result.stdout);
+    expect(receipt.error).toContain('2 terminal(s) exited');
+    expect(receipt.error).toContain('Per-terminal status and pane evidence recorded');
+    expect(receipt.clock).toBeLessThan(110);
+    expect(receipt.rows.filter((row: any) => row.kind === 'startup-failed')).toEqual([
+      expect.objectContaining({ agent: 'a1', state: '1 101', pane: 'native worker creation failed', dead: true }),
+      expect.objectContaining({ agent: 'a2', state: '1 101', pane: 'native worker creation failed', dead: true }),
+    ]);
+    expect(receipt.rows).toContainEqual(expect.objectContaining({
+      kind: 'startup-aborted', agent: 'a3', state: '0 0', pane: 'still booting',
+      reason: 'sibling-terminal-failed-before-cohort-readiness',
+    }));
+    expect(receipt.rows.some((row: any) => row.kind === 'agents-started')).toBe(false);
   });
 
   const nativeOutcome = (rows: unknown[]) => py(DRIVER,
@@ -347,6 +720,163 @@ const user = (text: string) => ({ role: 'user', content: [{ type: 'text', text }
 const toolResult = { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'file body' }] };
 const toolUse = { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Read', input: {} }] };
 
+describe('minimum-resource active cohorts', () => {
+  it('runs bounded native tool cohorts while retaining fifty assigned agents and a separate fifty-agent burst', () => {
+    const code = [
+      'import importlib.util, types, json',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'calls=[]; rows=[]; m.REAL_MODEL=True',
+      'm.host_stats=lambda: {}; m.agent_stats=lambda n: {}',
+      'm.time.sleep=lambda *a: None; m.reclaim=lambda n: 0; m.write=lambda *a: None',
+      'def forbidden(*a): raise RuntimeError("swap must stay enabled around a live low-RAM cohort")',
+      'm.swap_off=forbidden; m.swap_on=forbidden',
+      'def prompt(names, marker, task, *a, **kw):',
+      ' calls.append({"names":list(names),"markers":[marker(n) for n in names],"tasks":[task(n) for n in names]})',
+      ' return {n:{"t0":1,"tEcho":2,"tEnter":2,"tDone":3,"error":None} for n in names}',
+      'm.prompt_all=prompt; m.stub_request_times=lambda *a: None',
+      'm.run_arm({"name":"zram","kind":"zram"},[f"a{i}" for i in range(50)],0,4,types.SimpleNamespace(rec=lambda k,**kw:rows.append({"kind":k,**kw})),"absent",active=[1,5,10],active_rounds=2,swap_ready=True,keep_swap=True)',
+      'print(json.dumps({"calls":calls,"phases":[r["phase"] for r in rows if r["kind"]=="phase" and r["edge"]=="start"]}))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const receipt = JSON.parse(result.stdout);
+    expect(receipt.calls.map((c: any) => c.names.length)).toEqual([1, 1, 5, 5, 10, 10, 50]);
+    expect(receipt.calls.at(-1).names).toHaveLength(50);
+    const activeCalls = receipt.calls.slice(0, -1);
+    const markers = activeCalls.flatMap((c: any) => c.markers);
+    expect(new Set(markers).size).toBe(markers.length);
+    for (const call of activeCalls) {
+      expect(call.markers.every((m: string) => m.startsWith('WARM-'))).toBe(true);
+      expect(call.tasks.every((t: string) => t.includes('sha256sum dummy-data.txt'))).toBe(true);
+    }
+    expect(receipt.calls.at(-1).tasks.every((t: string) => t.includes('sha256sum dummy-data.txt'))).toBe(true);
+    expect(receipt.phases).toEqual(['reclaim', 'idle', 'active-1', 'active-1', 'active-5', 'active-5', 'active-10', 'active-10', 'storm']);
+  });
+
+  it.each([
+    ['--active', '0'], ['--active', '51'], ['--active', '1', '--active-rounds', '0'],
+    ['--active', '1', '--arm', 'none'], ['--active', '1', '--single', '1'],
+    ['--active', '1', '--cli', 'claude'], ['--active', '1', '--warm', '0'],
+    ['--active', '1', '--active', '1'],
+    ['--active', '1', '--arm', 'pd-balanced-batch5=/dev/test'],
+  ])('refuses invalid active-cohort options before launching: %j', (...extra) => {
+    const code = [
+      'import importlib.util',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'm.run=lambda a: (_ for _ in ()).throw(RuntimeError("UNSAFE_LAUNCH"))',
+      `m.main(${JSON.stringify(['run', '--out', '/unused', '--agents', '50', '--single', '0', '--cli', 'codex', '--arm', 'zram', ...extra])})`,
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('active cohort');
+    expect(result.stderr).not.toContain('UNSAFE_LAUNCH');
+  });
+
+  it.each([false, true])('preserves provisioned swap on active startup and cleanup, including failure=%s', (fail) => {
+    const code = [
+      'import importlib.util, types, json',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'events=[]; m.Recorder=lambda *a: types.SimpleNamespace(rec=lambda *a, **kw: None)',
+      'm.subprocess.Popen=lambda *a, **kw: types.SimpleNamespace(terminate=lambda:None)',
+      'm.time.sleep=lambda *a:None; m.host_stats=lambda:{}; m.report=lambda *a:None',
+      'm.stop_agents=lambda:events.append("stop"); m.swap_off=lambda:events.append("swapoff")',
+      'm.archive_native_evidence=lambda *a: events.append("archive") or {"verified":True}',
+      'm.swap_on=lambda *a:events.append("swapon")',
+      'm.active_swap=lambda *a:events.append("validate-swap") or {"device":"/dev/zram0","devices":[]}',
+      'm.gateway_preflight=lambda *a, **kw:None; m.codex_sandbox_preflight=lambda *a:None',
+      'm.start_agents=lambda *a:events.append("start") or ["a1"]',
+      fail ? 'm.warm=lambda *a: (_ for _ in ()).throw(RuntimeError("warm failed"))' : 'm.warm=lambda *a:events.append("warm")',
+      'm.run_arm=lambda *a, **kw:events.append({"arm":kw})',
+      'try: m.main(["run","--out","/unused","--agents","50","--single","0","--arm","zram","--cli","codex","--active","1"])',
+      'except RuntimeError: pass',
+      'print("EVENTS="+json.dumps(events))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const events = JSON.parse(result.stdout.split('EVENTS=')[1]);
+    expect(events).toEqual(fail ? ['validate-swap', 'stop', 'start', 'stop', 'archive'] : ['validate-swap', 'stop', 'start', 'warm', {
+      arm: { active: [1], active_rounds: 3, swap_ready: true, keep_swap: true },
+    }, 'stop', 'archive']);
+  });
+
+  it.each([
+    { devices: [], arm: 'zram:lz4', algorithm: '[lz4] zstd', ok: false },
+    { devices: [{ name: '/dev/zram0', size: 4 * 2 ** 30 - 4096 }], arm: 'zram:lz4', algorithm: '[lz4] zstd', ok: true },
+    { devices: [{ name: '/dev/zram0', size: 2 * 2 ** 30 }], arm: 'zram:lz4', algorithm: '[lz4] zstd', ok: false },
+    { devices: [{ name: '/dev/zram0', size: 4 * 2 ** 30 }], arm: 'zram:lz4', algorithm: 'lz4 [zstd]', ok: false },
+    { devices: [{ name: '/dev/zram0', size: 4 * 2 ** 30 }, { name: '/swapfile', size: 8 * 2 ** 30 }], arm: 'zram:lz4', algorithm: '[lz4] zstd', ok: true },
+    { devices: [{ name: '/swapfile', size: 8 * 2 ** 30 }], arm: 'none', algorithm: '', ok: false },
+    { devices: [], arm: 'none', algorithm: '', ok: true },
+    { devices: [{ name: '/swapfile', size: 8 * 2 ** 30 }], arm: 'overflow=/swapfile', algorithm: '', ok: true },
+    { devices: [{ name: '/swapfile', size: 8 * 2 ** 30 }], arm: 'overflow=/other', algorithm: '', ok: false },
+  ])('validates provisioned active swap without mutation: $arm $ok $devices', ({ devices, arm, algorithm, ok }) => {
+    const code = [
+      'import importlib.util,types,json,io',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      `devices=json.loads(${JSON.stringify(JSON.stringify(devices))})`,
+      'm.configured_swap_devices=lambda:devices',
+      'm.sh=lambda *a: (_ for _ in ()).throw(AssertionError("unexpected swap command"))',
+      `m.open=lambda *a:io.StringIO(${JSON.stringify(algorithm)})`,
+      `try: result=m.active_swap(m.parse_arm(${JSON.stringify(arm)}),4); print(json.dumps({"ok":True,"result":result}))`,
+      'except RuntimeError as e: print(json.dumps({"ok":False,"error":str(e)}))',
+    ].join('\n');
+    const r = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout).ok).toBe(ok);
+  });
+
+  it('refuses absent configured swap before opening output, probes, or touching agents', () => {
+    const code = [
+      'import importlib.util,types',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      'def forbidden(*a, **kw): raise AssertionError("unexpected mutation")',
+      'm.Recorder=forbidden; m.stop_agents=forbidden; m.subprocess.Popen=forbidden',
+      'm.configured_swap_devices=lambda:[]',
+      'try: m.main(["run","--out","/unused","--agents","50","--single","0","--arm","zram","--cli","codex","--active","1"])',
+      'except RuntimeError as e: print(str(e))',
+    ].join('\n');
+    const r = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain('must be configured before');
+  });
+
+  it('reads kernel swap sizes in bytes and escaped paths without a swapon subprocess', () => {
+    const fixture = 'Filename\tType\tSize\tUsed\tPriority\n/dev/zram0 partition 4194300 0 100\n/swap\\040file file 8388608 12 -2\n';
+    const code = [
+      'import importlib.util,io,json',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      `m.open=lambda path:io.StringIO(${JSON.stringify(fixture)})`,
+      'm.sh=lambda *a: (_ for _ in ()).throw(AssertionError("swapon JSON unsupported"))',
+      'print(json.dumps(m.configured_swap_devices()))',
+    ].join('\n');
+    const r = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual([
+      { name: '/dev/zram0', size: 4 * 2 ** 30 - 4096, prio: 100 },
+      { name: '/swap file', size: 8 * 2 ** 30, prio: -2 },
+    ]);
+  });
+
+  it.each(['', 'Filename Type Size Used Priority\ninvalid\n'])('fails closed on an unreadable kernel swap inventory: %j', (fixture) => {
+    const code = [
+      'import importlib.util,io',
+      `s=importlib.util.spec_from_file_location("m", ${JSON.stringify(DRIVER)})`,
+      'm=importlib.util.module_from_spec(s); s.loader.exec_module(m)',
+      `m.open=lambda path:io.StringIO(${JSON.stringify(fixture)})`,
+      'm.configured_swap_devices()',
+    ].join('\n');
+    const r = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('invalid kernel swap inventory');
+  });
+});
+
 describe('stub reply plan', () => {
   it('answers a WARM prompt with a Read of warm file k, then a DONE text once the tool ran', () => {
     expect(plan([user('Please do step WARM-a3-1 now')])).toEqual(['warm-tool', 'WARM-a3-1', ['tool', '/f1.py']]);
@@ -450,6 +980,21 @@ describe('report reduction', () => {
     const [a] = py(DRIVER, 'm.summarize(inp, [])', lost);
     expect(a.storm.failed).toBe(1);
     expect(a.storm.allDoneSec).toBeNull();
+  });
+
+  it('reduces repeated active windows together without counting repeated tasks as distinct agents', () => {
+    const active = [
+      { t: 1, kind: 'arm-start', arm: 'zram' },
+      { t: 10, kind: 'phase', arm: 'zram', phase: 'active-1', edge: 'start' },
+      { t: 12, kind: 'phase', arm: 'zram', phase: 'active-1', edge: 'end' },
+      { t: 13, kind: 'wake', arm: 'zram', phase: 'active-1', agent: 'a1', t0: 10, tEcho: 10.5, tEnter: 10.5, tDone: 11, pre: st(0, 0), post: st(0, 0) },
+      { t: 20, kind: 'phase', arm: 'zram', phase: 'active-1', edge: 'start' },
+      { t: 22, kind: 'phase', arm: 'zram', phase: 'active-1', edge: 'end' },
+      { t: 23, kind: 'wake', arm: 'zram', phase: 'active-1', agent: 'a1', t0: 20, tEcho: 21, tEnter: 21, tDone: null, pre: st(0, 0), post: st(0, 0) },
+    ];
+    const [summary] = py(DRIVER, 'm.summarize(inp["rows"], inp["probe"])', { rows: active, probe: [[11, 100, 0], [15, 999, 0], [21, 2, 0]] });
+    expect(summary['active-1']).toMatchObject({ agents: 1, tasks: 2, failed: 1,
+      totalSec: { p95: 1 }, echoSec: { p95: 1 }, probeExecMs: { samples: 2, max: 100 } });
   });
 });
 

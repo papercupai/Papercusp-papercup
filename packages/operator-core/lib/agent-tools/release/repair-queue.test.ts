@@ -80,6 +80,7 @@ const mocks = vi.hoisted(() => ({
   population: vi.fn(),
   admissionJobOptions: vi.fn(),
   admissionGit: vi.fn(),
+  lineage: vi.fn(),
   retract: vi.fn(),
   containment: vi.fn(),
   presence: vi.fn(),
@@ -128,12 +129,7 @@ vi.mock('../../harness/routines/hive-release-env', () => ({
     extraEnv: { PAPERCUSP_INTEGRATION_ROOT: '/drill' }, clearEnv: [] })),
 }));
 vi.mock('../../release/frozen-lineage-ledger-reconcile', () => ({
-  reconcileFrozenRepairQueueWithLineageRef: (current: unknown) => ({
-    status: 'in-sync',
-    queue: current,
-    detail: 'fixture lineage is in sync',
-    reconciled: [],
-  }),
+  reconcileFrozenRepairQueueWithLineageRef: (current: unknown) => mocks.lineage(current),
 }));
 vi.mock('../../release/admission-fix-precheck', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../release/admission-fix-precheck')>()),
@@ -387,11 +383,20 @@ beforeEach(() => {
   mocks.retire.mockResolvedValue({ retired: true, current: null });
   mocks.audit.mockResolvedValue([]);
   mocks.write.mockResolvedValue(undefined);
-  mocks.transition.mockImplementation(async (_target, transition) => ({
-    status: 'written',
-    queue: transition((mocks.write.mock.calls.at(-1)?.[1] ?? queue) as typeof queue),
-    fresh: (mocks.write.mock.calls.at(-1)?.[1] ?? queue) as typeof queue,
-    retries: 0,
+  mocks.transition.mockImplementation(async (_target, transition) => {
+    const fresh = (mocks.write.mock.calls.at(-1)?.[1] ?? queue) as typeof queue;
+    return {
+      status: 'written',
+      queue: await transition(fresh),
+      fresh,
+      retries: 0,
+    };
+  });
+  mocks.lineage.mockImplementation((current: unknown) => ({
+    status: 'in-sync',
+    queue: current,
+    detail: 'fixture lineage is in sync',
+    reconciled: [],
   }));
   mocks.presence.mockResolvedValue(undefined);
   mocks.retract.mockReturnValue(true);
@@ -432,6 +437,10 @@ beforeEach(() => {
 });
 
 describe('release:repair-queue', () => {
+  it('allows the four-minute admission preview to finish before the MCP deadline', () => {
+    expect((tool as unknown as { timeoutSec?: number }).timeoutSec).toBe(295);
+  });
+
   it('refuses a queue mutation by a nonowner while a live gate fixer holds the condition', async () => {
     mocks.gateOwnership.mockResolvedValue({
       assessment: 'held-live', claimState: 'held', workItem: 'WI-38026', takenBy: 'su-live-peer',
@@ -518,6 +527,23 @@ describe('release:repair-queue', () => {
       status: 'not-applicable',
       authorized: null,
     });
+  });
+
+  it('runs both lineage probes through the admission worker, including the fresh CAS reducer', async () => {
+    mocks.lineage.mockImplementation((current: typeof queue) => ({
+      status: 'reconciled',
+      queue: { ...current, updatedAtMs: current.updatedAtMs + 1 },
+      refHead: NEW_HEAD,
+      detail: 'fixture lineage was rebuilt',
+      reconciled: [],
+    }));
+    await tool.handler({ op: 'get' } as never, { role: 'su' } as never);
+    expect(mocks.admissionJobOptions).toHaveBeenCalledTimes(2);
+    for (const [job, options] of mocks.admissionJobOptions.mock.calls) {
+      expect(job).toMatchObject({ kind: 'reconcile-lineage', root: '/repo' });
+      expect(options).toMatchObject({ timeoutMs: 120_000, stepName: 'lineage-reconcile' });
+    }
+    expect(mocks.lineage).toHaveBeenCalledTimes(2);
   });
 
   it('keeps delegated-fixer authorization visible when a large queue diagnostic is bounded', () => {
@@ -1077,15 +1103,50 @@ describe('release:repair-queue', () => {
     expect(settled.queue.admissions[0]!.atMs).not.toBe(946_684_800_000);
   });
 
-  it('a queue-row write failure whose fresh re-read ALSO fails RETRACTS the published lineage ref so ref and row cannot disagree', async () => {
+  it('WI-6554700010009332: a CAS miss whose fresh row already records the admission is persisted, never retracted', async () => {
     mocks.admit.mockReturnValue(admissionOf(true));
-    mocks.write.mockRejectedValue(new Error('pg down'));
-    mocks.transition.mockRejectedValue(new Error('pg down'));
+    mocks.write.mockRejectedValueOnce(new Error('frozen repair queue write conflict: updatedAtMs moved'));
+    const door = admissionOf(true).entry;
+    const recordedRow = {
+      ...queue,
+      repairHead: NEW_HEAD,
+      admissions: [door],
+      updatedAtMs: queue.updatedAtMs + 1,
+    };
+    mocks.transition.mockImplementationOnce(async (_target, transition) => ({
+      status: 'unchanged',
+      queue: transition(recordedRow as typeof queue),
+      fresh: recordedRow as typeof queue,
+      retries: 0,
+    }));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = body(
       await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
     );
-    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/settle-failed: pg down → persisted=false/));
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/recorded.*persisted=true/));
+    warn.mockRestore();
+    expect(mocks.retract).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      ok: true,
+      admitted: true,
+      persisted: true,
+      judgedSha: NEW_HEAD,
+      persistSettlement: 'recorded',
+    });
+  });
+
+  it('WI-6554700010009332: a settle failure retracts only after a fresh row proves the admission parent', async () => {
+    mocks.admit.mockReturnValue(admissionOf(true));
+    mocks.write.mockRejectedValueOnce(new Error('queue CAS moved'));
+    mocks.transition.mockRejectedValueOnce(new Error('settle read timed out'));
+    // The first read is inspectQueue; the second is the guard's fresh re-read.
+    mocks.readState.mockResolvedValueOnce({ status: 'value', queue });
+    mocks.readState.mockResolvedValueOnce({ status: 'value', queue });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = body(
+      await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/settle-failed: settle read timed out → persisted=false/));
     warn.mockRestore();
     expect(mocks.retract).toHaveBeenCalledWith({
       root: '/repo',
@@ -1100,8 +1161,36 @@ describe('release:repair-queue', () => {
       reason: 'persist_failed',
       persisted: false,
       judgedSha: queue.repairHead,
+      retractionProof: 'parent',
     });
     expect(result.note).toMatch(/retracted/);
+  });
+
+  it('WI-6554700010009332: a settle failure with an unknown fresh re-read preserves the lineage ref', async () => {
+    mocks.admit.mockReturnValue(admissionOf(true));
+    mocks.write.mockRejectedValueOnce(new Error('pg down'));
+    mocks.transition.mockRejectedValueOnce(new Error('pg down'));
+    // The first read is inspectQueue; the second cannot establish the row state.
+    mocks.readState.mockResolvedValueOnce({ status: 'value', queue });
+    mocks.readState.mockResolvedValueOnce({ status: 'unreadable', reason: 'invalid-shape', schemaVersion: null });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = body(
+      await tool.handler({ op: 'admit', paths: ['lib/red.test.ts'], confirm: true } as never, { role: 'su' } as never),
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/settle-failed: pg down → persisted=false/));
+    warn.mockRestore();
+    expect(mocks.retract).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      ok: false,
+      admitted: false,
+      refused: true,
+      reason: 'persist_failed',
+      persisted: false,
+      judgedSha: queue.repairHead,
+      retractionProof: 'unknown',
+      retractionDetail: expect.stringMatching(/unreadable|unknown/),
+    });
+    expect(result.note).toMatch(/inconclusive|preserved/);
   });
 
   it('a primitive refusal (stray-paths) is surfaced verbatim and nothing is written', async () => {
@@ -2628,8 +2717,8 @@ describe('release:repair-queue', () => {
       expect(mocks.write).not.toHaveBeenCalled();
       mocks.admit.mockReturnValue(admissionOf(true));
       mocks.write.mockRejectedValueOnce(new Error('queue CAS moved'));
-      // WI-10006866: a CAS miss retracts only when the FRESH row genuinely lacks the admission —
-      // here it moved to an unrelated head, so the settlement is `diverged`.
+      // WI-10006866 / WI-6554700010009332: a CAS miss retracts only when the FRESH row proves
+      // the admission parent. Here it moved to an unrelated head, so the ref is preserved.
       mocks.transition.mockImplementationOnce(async (_target, transition) => {
         const diverged = { ...queue, repairHead: '9'.repeat(40) };
         return { status: 'unchanged', queue: transition(diverged as typeof queue), fresh: diverged, retries: 0 };
@@ -2640,12 +2729,11 @@ describe('release:repair-queue', () => {
         admitted: false,
         reason: 'persist_failed',
         persistSettlement: expect.stringMatching(/^diverged: /),
+        retractionProof: 'head-moved',
       });
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(/settled against the fresh row as diverged/));
       warn.mockRestore();
-      expect(mocks.retract).toHaveBeenCalledWith(
-        expect.objectContaining({ published: NEW_HEAD, previousRepairHead: queue.repairHead }),
-      );
+      expect(mocks.retract).not.toHaveBeenCalled();
     });
 
     it('DEFAULT: reads the ledger for the named paths, builds the hunk-exact source for the CALLER, admits FROM that commit, and the ledger entry + audit carry mode + hunks', async () => {

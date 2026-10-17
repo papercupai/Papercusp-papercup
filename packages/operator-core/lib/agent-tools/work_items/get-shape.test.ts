@@ -1773,17 +1773,13 @@ describe("checkpointRetractions survives the shaper (EI-19454477695046958)", () 
 });
 
 /**
- * EI-20106094931898818 / EI-20190481053365787 — the SAME whitelist-drop class as
- * the block above, one whitelist over: `projectWorkItem`, not `projectRow`.
- *
- * `detail:true` folds the coord substrate onto the workItem (work-items.ts:1156
- * returns `{ ...wi, topics, posts, links }`) and all three were dropped with
- * nothing added to `dropped` — so a detail read whose ONLY loss was the comment
- * thread emitted no `_shapeNote` at all. A caller who explicitly asked for
- * comments and got neither comments nor a marker reads "this item has none".
- * That has already produced a false report here.
+ * EI-26070715751470427 — exact `detail:true` reads must keep the bounded coord
+ * substrate that the handler already fetched. The old whitelist dropped
+ * `{ topics, posts, links }` even though `getWorkItemDetail` had limited the
+ * thread, forcing a reviewer onto the unshaped spill path. Bulk reads still
+ * disclose counts instead of multiplying detail bodies across every row.
  */
-describe("detail:true — content out, evidence-of-content IN", () => {
+describe("detail:true — bounded exact detail, bulk evidence-of-content", () => {
   const detailRow = (id = "WI-1", posts = 7) => ({
     ok: true,
     id,
@@ -1805,25 +1801,25 @@ describe("detail:true — content out, evidence-of-content IN", () => {
   });
   const wi = (e: Envelope, i = 0) => e.results[i].workItem as Record<string, unknown>;
 
-  it("discloses the COUNT of every dropped detail array, per row and in _shapeNote", () => {
+  it("keeps bounded posts/topics/links on an exact read and discloses any remainder", () => {
     const out = shapeWorkItemsGet(envelope([detailRow()]), "trimmed") as Envelope;
 
-    // The content is still dropped — that shaping decision stands.
-    expect(wi(out).posts).toBeUndefined();
-    expect(wi(out).topics).toBeUndefined();
-    expect(wi(out).links).toBeUndefined();
-    // But nobody can now conclude "this item has no comments" from the shape.
-    expect(wi(out).detailOmitted).toEqual({ posts: 7, topics: 2, links: 1 });
+    expect(wi(out).posts).toHaveLength(5);
+    expect((wi(out).posts as Array<{ post_id: number }>).map((post) => post.post_id)).toEqual([2, 3, 4, 5, 6]);
+    expect(wi(out).topics).toEqual(["coord-dx", "git-sync"]);
+    expect(wi(out).links).toEqual([{ rel: "blocks", dst: { kind: "work_item", ref: "WI-2" } }]);
+    expect(wi(out).detailOmitted).toBeUndefined();
+    expect(wi(out).detailTruncated).toEqual({ posts: { shown: 5, total: 7 } });
     expect(out._shapeNote?.dropped).toEqual(
-      expect.arrayContaining(["workItem.posts", "workItem.topics", "workItem.links"]),
+      expect.arrayContaining(["workItem.posts"]),
     );
   });
 
-  it("EMPTY arrays are a real answer — no marker, and no _shapeNote at all", () => {
-    // THE PROPERTY THAT MAKES THE MARKER WORTH ANYTHING: its absence is a
-    // positive claim of completeness. A marker on `posts: []` would report
-    // "comments were withheld" about an item that genuinely has none.
+  it("keeps EMPTY arrays as a real answer — no marker, and no _shapeNote", () => {
     const out = shapeWorkItemsGet(envelope([emptyDetail()]), "trimmed") as Envelope;
+    expect(wi(out).posts).toEqual([]);
+    expect(wi(out).topics).toEqual([]);
+    expect(wi(out).links).toEqual([]);
     expect(wi(out).detailOmitted).toBeUndefined();
     expect(out._shapeNote).toBeUndefined();
   });
@@ -1836,13 +1832,29 @@ describe("detail:true — content out, evidence-of-content IN", () => {
     expect(wi(out).detailOmitted).toBeUndefined();
   });
 
-  it("attributes the counts to the RIGHT row — payload-level _shapeNote cannot", () => {
+  it("attributes bounded detail to the RIGHT row — payload-level _shapeNote cannot", () => {
     const out = shapeWorkItemsGet(
       envelope([emptyDetail(), detailRow("WI-loud", 3)]),
       "trimmed",
     ) as Envelope;
     expect(wi(out, 0).detailOmitted).toBeUndefined();
+    expect(wi(out, 0).posts).toBeUndefined();
     expect(wi(out, 1).detailOmitted).toMatchObject({ posts: 3 });
+    expect(wi(out, 1).posts).toBeUndefined();
+  });
+
+  it("uses the bounded detail reader's same-snapshot post total", () => {
+    const out = shapeWorkItemsGet(
+      envelope([{
+        ...detailRow("WI-bounded", 2),
+        workItem: { ...detailRow("WI-bounded", 2).workItem, postsTotal: 137 },
+      }]),
+      "trimmed",
+    ) as Envelope;
+
+    expect(wi(out).posts).toHaveLength(2);
+    expect(wi(out).postsTotal).toBe(137);
+    expect(wi(out).detailTruncated).toMatchObject({ posts: { shown: 2, total: 137 } });
   });
 
   it("stays under the hard ceiling on a 100-row detail read, with ONE label per field", () => {
@@ -1859,13 +1871,10 @@ describe("detail:true — content out, evidence-of-content IN", () => {
     expect(out._shapeNote?.dropped.filter((d) => d === "workItem.posts")).toHaveLength(1);
   });
 
-  it("CONTROL: a DEFENSIVE always-emit implementation fails the completeness property", () => {
-    // Kept PERMANENTLY. `noteDroppedDetail` is valuable only because it stays
-    // silent on an empty array. If someone later "hardens" it to always emit,
-    // this suite must go red rather than quietly accept a marker that means
-    // nothing. Modelling the wrong implementation here proves the assertion in
-    // the empty-array test is the one that catches it, and that the passing
-    // tests above are not passing vacuously.
+  it("CONTROL: a DEFENSIVE always-emit implementation fails the empty-detail property", () => {
+    // Kept PERMANENTLY. Empty detail arrays are a measured answer, not an
+    // omission. Modelling the wrong implementation here proves the exact read
+    // retains that answer and the bulk omission marker remains meaningful.
     const defensive = (w: Record<string, unknown>) => {
       const omitted: Record<string, number> = {};
       for (const f of ["posts", "topics", "links"] as const) {
@@ -1876,13 +1885,16 @@ describe("detail:true — content out, evidence-of-content IN", () => {
 
     const empty = emptyDetail();
     expect(defensive(empty.workItem)).toEqual({ posts: 0, topics: 0, links: 0 });
-    // The REAL implementation says nothing on that same input.
+    // The REAL implementation keeps the empty arrays on that same input.
     const out = shapeWorkItemsGet(envelope([empty]), "trimmed") as Envelope;
     expect(wi(out).detailOmitted).toBeUndefined();
-    // Calibration: and it DOES speak when there is something to disclose, so
-    // "says nothing" is not simply broken.
+    expect(wi(out).posts).toEqual([]);
+    // Calibration: a bulk read DOES speak when detail content is omitted, so
+    // the omission disclosure is not simply broken.
     const loud = shapeWorkItemsGet(envelope([detailRow()]), "trimmed") as Envelope;
-    expect(wi(loud).detailOmitted).toMatchObject({ posts: 7 });
+    const bulk = shapeWorkItemsGet(envelope([detailRow("WI-1"), detailRow("WI-2")]), "trimmed") as Envelope;
+    expect(wi(loud).posts).toHaveLength(5);
+    expect(wi(bulk, 0).detailOmitted).toMatchObject({ posts: 7 });
   });
 });
 

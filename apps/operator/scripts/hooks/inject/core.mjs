@@ -20,6 +20,9 @@
  */
 
 import { PORTS, killSwitchState, specFor } from './ports.mjs';
+import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { codeIntelDelivery } from './delivery-ledger.mjs';
 
 /**
  * @typedef {import('./ports.mjs').InjectionPort} InjectionPort
@@ -186,15 +189,25 @@ export async function postInjection(port, body, opts = {}) {
   const { off, mode } = killSwitchState(port, env);
   if (off && mode === 'suppress') return null;
 
+  if (port === 'turn-start' || port === 'compaction') codeIntelDelivery(body.owner, env, () => null, port);
+  const finish = (text = '', deliveryToken = null) => {
+    if (port !== 'mid-turn') return text.trim() ? { text, deliveryToken } : null;
+    const merged = mergeCodeIntel(body, text, env);
+    return merged?.trim() ? { text: merged, deliveryToken } : null;
+  };
+
   // AbortSignal.timeout is the hard wall (invariant 2). It bounds the whole
   // exchange including body read, which a per-socket timeout would not.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), spec.timeoutMs);
   try {
-    if (typeof fetchImpl !== 'function') return null;
     // wallMs: this hook's own wall, so the operator spends only what is left of
     // it (the Jev memory filter's wait, WI-10004485). Derived from the spec, never
     // a second copy of the number on the server.
+    // Collect locally, where the edited file and its owning repo exist. Never run
+    // the parser/compiler on the shared operator's 250ms snapshot push path.
+    if (port === 'mid-turn') await collectInterfaceEdits(body, undefined, env);
+    if (controller.signal.aborted || typeof fetchImpl !== 'function') return finish();
     const payloadBody = JSON.stringify({ ...body, wallMs: spec.timeoutMs });
     let res = null;
     // WI-10005007: the next base is tried ONLY when the previous one could not be
@@ -215,19 +228,105 @@ export async function postInjection(port, body, opts = {}) {
         if (controller.signal.aborted) throw err;
       }
     }
-    if (!res || !res.ok) return null;
+    if (!res || !res.ok) return finish();
     const payload = await res.json();
-    if (!payload || typeof payload !== 'object') return null;
+    if (!payload || typeof payload !== 'object') return finish();
     const { text, deliveryToken } = payload;
-    if (typeof text !== 'string' || !text.trim()) return null;
-    return { text, deliveryToken: typeof deliveryToken === 'string' && deliveryToken ? deliveryToken : null };
+    return finish(typeof text === 'string' ? text : '', typeof deliveryToken === 'string' && deliveryToken ? deliveryToken : null);
   } catch {
     // Timeout, connection refused, malformed JSON, operator restarting mid-call.
     // All of it is "inject nothing" — never an error the turn can see.
-    return null;
+    return finish();
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Resolve native relative edit paths from the requesting session, including a
+ * hook installed outside that checkout. Keep one bounded collection per batch. */
+export async function collectInterfaceEdits(body, collect = async path => {
+  const { consequenceFor } = await import('../cc/posttooluse-required-field-strand-nudge.mjs');
+  return consequenceFor(path, { includeSourceChanges: true });
+}, env = process.env) {
+  let remaining = 2;
+  const seen = new Set();
+  const measured = [];
+  for (const call of body.toolCalls ?? []) {
+    for (const path of call.editedPaths ?? (call.editedPath ? [call.editedPath] : [])) {
+      if (typeof path !== 'string') continue;
+      const abs = resolve(body.cwd || process.cwd(), path);
+      if (seen.has(abs) || remaining <= 0) continue;
+      seen.add(abs); remaining--;
+      try {
+        const edit = await collect(abs);
+        if (edit) (call.interfaceEdits ??= []).push(edit);
+        if (edit?.sourceChange) measured.push({ ...edit.sourceChange,
+          workspace: body.workspace, harness: body.harness, agentId: body.owner });
+      } catch { /* an unreadable local repo cannot disturb the tool */ }
+    }
+  }
+  const hasIncidentCall = (body.toolCalls ?? []).some(call =>
+    /(?:^|[:_/.])(?:testing[:_]run|test[:_]file|run-tests)(?:$|[:_/.])/.test(call?.tool ?? ''));
+  // Ordinary tool batches must stay on the existing fast path. The ledger read
+  // is needed only when an observed test failure can consume retained edits, or
+  // when this batch actually measured a new edit.
+  if (!measured.length && !hasIncidentCall) return;
+  // Retain measured comparisons across fresh hooks in the existing fenced
+  // delivery ledger. This records observations, never inferred authorship.
+  const recent = codeIntelDelivery(body.owner, env, state => {
+    const rows = [...(Array.isArray(state.recentEdits) ? state.recentEdits : []), ...measured]
+      .filter(row => row && Number.isFinite(row.at) && row.at <= Date.now() && Date.now() - row.at < 86_400_000);
+    state.recentEdits = [...new Map(rows.map(row => [`${row.workspace}:${row.harness}:${row.root}:${row.path}`, row])).values()].slice(-8);
+    return state.recentEdits.filter(row => row.workspace === body.workspace && row.harness === body.harness);
+  });
+  if (recent?.length) body.incidentAttribution = { status: 'measured', recentEdits: recent };
+}
+
+function mergeCodeIntel(body, delivered, env) {
+  const edits = [...new Map((body.toolCalls ?? []).flatMap(call => call.interfaceEdits ?? [])
+    .filter(edit => edit && typeof edit.path === 'string' && Array.isArray(edit.changes)
+      && edit.changes.every(value => typeof value === 'string') && Array.isArray(edit.checks)
+      && edit.checks.every(value => typeof value === 'string'))
+    .map(edit => [edit.path, edit])).values()];
+  const blocks = delivered.split(/(?=^## )/m);
+  const ordinary = blocks.filter(block => !block.startsWith('## Code intelligence')).join('').trim();
+  const optional = blocks.filter(block => block.startsWith('## Code intelligence')).map(block => block.trim());
+  if (!optional.length && !edits.length) return delivered;
+  const reserved = codeIntelDelivery(body.owner, env, state => {
+    const out = [];
+    const subject = edit => `interface:${edit.path}:${edit.changes.join('|')}`;
+    const take = (text, keys) => {
+      if (keys.some(key => state.subjects.includes(key)) || state.chars + text.length + 2 + ordinary.length > 1500) return;
+      out.push(text); state.chars += text.length + 2; state.subjects.push(...keys);
+    };
+    for (const block of optional) {
+      const matches = block.startsWith('## Code intelligence (interface)') ? edits.filter(edit => block.includes(`${edit.path}:`)) : [];
+      take(block, matches.length ? matches.map(subject) : [createHash('sha256').update(block).digest('hex')]);
+    }
+    for (const edit of edits) {
+      if (!Array.isArray(edit.changes) || !Array.isArray(edit.checks)) continue;
+      take(`## Code intelligence (interface)\nLocal comparison base ${edit.base || 'unknown'}\n${edit.path}: ${edit.changes.join('; ')}.\n${edit.checks.join('\n')}\nSnapshot consequences unavailable; consumer and test reach unknown.`, [subject(edit)]);
+    }
+    return out.join('\n\n');
+  });
+  return [ordinary, reserved].filter(Boolean).join('\n\n');
+}
+
+/** Keep native patch headers outside the lossy recall digest, including multi-file patches. */
+export function editedPathsFor(tool, input) {
+  // `write` is also a generic MCP tool name (for example coord/tool writes),
+  // so only recognize the client-native file edit spellings here. Treating a
+  // generic write as a file edit leaks arbitrary tool arguments into the
+  // interface-consequence advisory and changes the digest contract.
+  if (/^(?:Edit|Write|MultiEdit|edit)$|(?:^|[_:.])capability[_:.](?:edit|write)$/.test(tool ?? '')) {
+    const path = input?.file_path ?? input?.path;
+    return typeof path === 'string' && path.length <= 1000 ? [path] : [];
+  }
+  if (!/(?:^|_|:|\.)(?:apply_patch)$/.test(tool ?? '')) return [];
+  const patch = typeof input === 'string' ? input : input?.patch ?? input?.input;
+  if (typeof patch !== 'string' || patch.length > 2_000_000) return [];
+  return [...new Set([...patch.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)].map(match => match[1]))]
+    .filter(path => path.length <= 1000).slice(0, 12);
 }
 
 /**
@@ -262,7 +361,8 @@ function safeStringify(value) {
  * contract clamps. Shared by every adapter so the three clients cannot drift
  * into shipping different volumes of context for the same batch.
  * @param {Array<{ tool?: unknown, toolInput?: unknown, toolResponse?: unknown }>} calls
- * @returns {Array<{ tool: string, toolInput: string, toolResponse: string }>}
+ * @returns {Array<{ tool: string, toolInput: string, toolResponse: string,
+ * incidentResult?: ReturnType<typeof incidentResultFor>, editedPaths?: string[], editedPath?: string }>}
  */
 export function buildDigest(calls) {
   const spec = PORTS['mid-turn'];
@@ -274,9 +374,44 @@ export function buildDigest(calls) {
       tool: typeof call.tool === 'string' ? call.tool : '',
       toolInput: clampField(call.toolInput, spec.fieldClamp),
       toolResponse: clampField(call.toolResponse, spec.fieldClamp),
+      ...(incidentResultFor(call.tool, call.toolResponse) ? { incidentResult: incidentResultFor(call.tool, call.toolResponse) } : {}),
+      // Preserve the path independently of the 400-char recall digest. Edits often
+      // exceed it, and a truncated JSON input cannot safely recover this field.
+      ...(editedPathsFor(call.tool, call.toolInput).length
+        ? { editedPaths: editedPathsFor(call.tool, call.toolInput), editedPath: editedPathsFor(call.tool, call.toolInput)[0] } : {}),
     });
   }
   return digest;
+}
+
+/** Preserve observed failing-file identities outside the lossy recall prefix.
+ * Requested files, refusals and passing rows are never failure evidence. */
+export function incidentResultFor(tool, response, depth = 0) {
+  if (!/(?:^|[:_/.])(?:testing[:_]run|test[:_]file|run-tests)(?:$|[:_/.])/.test(tool ?? '') || depth > 5) return null;
+  if (typeof response === 'string') {
+    if (response.length > 512_000) return null;
+    try { return incidentResultFor(tool, JSON.parse(response), depth + 1); } catch { return null; }
+  }
+  if (!response || typeof response !== 'object') return null;
+  if (response.structuredContent) return incidentResultFor(tool, response.structuredContent, depth + 1);
+  for (const block of (Array.isArray(response.content) ? response.content.slice(0, 8) : [])) {
+    if (block?.type !== 'text') continue;
+    const found = incidentResultFor(tool, block.text, depth + 1);
+    if (found) return found;
+  }
+  const byFile = {};
+  const rows = response.byFile && typeof response.byFile === 'object' ? Object.entries(response.byFile) : [];
+  for (const value of (Array.isArray(response.files) ? response.files.slice(0, 64) : [])) {
+    if (value && typeof value === 'object') rows.push([value.path ?? value.file ?? value.filePath, value]);
+  }
+  for (const [path, row] of rows.slice(0, 64)) {
+    if (typeof path !== 'string' || path.length > 4096 || !row || typeof row !== 'object') continue;
+    if (row.status !== 'fail' && row.status !== 'error' && !(row.failed > 0) && row.collectionFailed !== true) continue;
+    byFile[path] = { status: 'fail', failed: 1,
+      ...(Number.isSafeInteger(row.runId) && row.runId > 0 ? { runId: row.runId } : {}) };
+    if (Object.keys(byFile).length >= 4) break;
+  }
+  return Object.keys(byFile).length ? { byFile } : null;
 }
 
 /**

@@ -685,6 +685,34 @@ export async function upsertInboxWakeAwait(input: {
   return mapAwait(rows[0]);
 }
 
+/**
+ * A successful explicit work declaration ends an earlier deliberate inbox park.
+ * Automatic SessionStart re-arms still preserve that park; resuming work must
+ * clear it without cancelling the standing wake channel or its queued deliveries.
+ */
+export async function clearExplicitInboxWakePark(subscriberId: string): Promise<boolean> {
+  const ws = eventsWs();
+  const rows = await boundedOrgTxn((tx) => tx`
+    UPDATE harness_shared.event_awaits
+       SET note = 'always-armed inbox-wake (resumed work declaration)'
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ${subscriberId}
+       AND event_key = ${INBOX_WAKE_KEY_PREFIX + subscriberId}
+       AND policy = 'wake' AND once = false
+       AND fired_at IS NULL AND cancelled_at IS NULL
+       AND note LIKE ${EXPLICIT_PARK_NOTE_MARKER + '%'}
+     RETURNING id
+  `, {
+    acquireTimeoutMs: 1_500,
+    acquireRetries: 0,
+    connectionSetupRetries: 0,
+    statementTimeoutMs: 1_500,
+    lockTimeoutMs: 500,
+    phase: 'declare-intent:clear-inbox-park',
+  });
+  return rows.length > 0;
+}
+
 /** Cancel an agent's standing inbox-wake await(s) — SessionEnd hygiene
  *  (turn-lifecycle-control D-003). Returns how many rows were cancelled. */
 export async function cancelInboxWakeAwaits(subscriberId: string): Promise<number> {
@@ -1875,6 +1903,45 @@ export async function findMatchingActiveStandingWatch(input: {
   `,
   );
   return rows.length > 0 ? mapAwait(rows[0]) : null;
+}
+
+/**
+ * Refresh the value-derived filter on a member's standing claimable watch after
+ * scheduler:set_claim_spec advances the lane revision (EI-25851070245349413).
+ *
+ * The scheduler payload_filter is a conservative snapshot of the claim spec. A
+ * standing watch survives each fire, so leaving that snapshot in place after a
+ * spec replacement can permanently suppress newly admitted ids. Only filtered
+ * rows are touched: an explicitly unscoped watch is a caller-owned broad
+ * subscription and already observes every claimable emit.
+ */
+export async function refreshStandingClaimableAwaitPayloadFilters(input: {
+  subscriberIds: readonly string[];
+  payloadFilter: unknown;
+}): Promise<AwaitRow[]> {
+  const subscriberIds = [...new Set(input.subscriberIds.filter((id) => typeof id === 'string' && id.length > 0))];
+  if (subscriberIds.length === 0 || input.payloadFilter == null) return [];
+
+  const ws = eventsWs();
+  const payloadFilter = JSON.stringify(input.payloadFilter);
+  const rows = await boundedOrgTxn((tx) => tx`
+    UPDATE harness_shared.event_awaits
+       SET payload_filter = ${payloadFilter}::text::jsonb
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ANY(${tx.array(subscriberIds)}::text[])
+       AND event_key = 'work-item:claimable'
+       AND policy = 'wake'
+       AND once = false
+       AND root_id IS NULL
+       AND fired_at IS NULL
+       AND cancelled_at IS NULL
+       AND superseded_at IS NULL
+       AND (expires_ts IS NULL OR expires_ts > now())
+       AND payload_filter IS NOT NULL
+       AND payload_filter IS DISTINCT FROM ${payloadFilter}::text::jsonb
+     RETURNING *
+  `);
+  return rows.map(mapAwait);
 }
 
 /** Active awaits matching an event key — peek without firing (sources may use
@@ -3463,6 +3530,74 @@ export async function findAnnouncementsForKey(
     AWAIT_PRE_REGISTRATION_TXN_OPTIONS,
   );
   return rows.map(mapAwait);
+}
+
+/**
+ * Announced gates that would be stranded by a terminal work-item close.
+ *
+ * A gate declaration is intentionally durable after its owner disappears, so
+ * normal lifecycle-binding retirement must not cancel it. A terminal close is
+ * different: if the declaration names the item (in its lifecycle binding,
+ * logical key, or note), or the closing owner declared it, closing the item is
+ * only safe after every live waiter has been given a real fire or an explicit
+ * retirement. Keep this read in the await store so the close path can inspect
+ * declaration and waiter rows from one authoritative surface.
+ */
+export interface PendingAnnouncementForTerminalClose {
+  announcement: AwaitRow;
+  liveWaiters: number;
+}
+
+export async function findPendingAnnouncementsForTerminalClose(input: {
+  ownerId?: string | null;
+  workItemId?: string | null;
+  limit?: number;
+}): Promise<PendingAnnouncementForTerminalClose[]> {
+  const ownerId = input.ownerId?.trim() || null;
+  const workItemId = input.workItemId?.trim() || null;
+  if (!ownerId && !workItemId) return [];
+
+  const limit = Math.max(1, Math.min(Math.floor(input.limit ?? 20), 100));
+  const ws = eventsWs();
+  const rows = await boundedOrgTxn(
+    (tx) => tx`
+      SELECT a.*,
+             (
+               SELECT count(*)::int
+                 FROM harness_shared.event_awaits waiter
+                WHERE waiter.workspace_id = a.workspace_id
+                  AND waiter.event_key = a.event_key
+                  AND waiter.policy <> 'announce'
+                  AND waiter.fired_at IS NULL
+                  AND waiter.cancelled_at IS NULL
+                  AND waiter.superseded_at IS NULL
+             ) AS live_waiters
+        FROM harness_shared.event_awaits a
+       WHERE a.workspace_id = ${ws}
+         AND a.policy = 'announce'
+         AND a.fired_at IS NULL
+         AND a.cancelled_at IS NULL
+         AND a.superseded_at IS NULL
+         AND (
+           (${ownerId !== null}::boolean AND a.subscriber_id = ${ownerId ?? ''})
+           OR (${workItemId !== null}::boolean AND (
+             (a.bound_to->>'kind' = 'work-item' AND a.bound_to->>'ref' = ${workItemId ?? ''})
+             OR a.logical_gate_key = ${workItemId ?? ''}
+             OR position(${workItemId ?? ''} in coalesce(a.note, '')) > 0
+           ))
+         )
+       ORDER BY a.created_at DESC
+       LIMIT ${limit}
+    `,
+    AWAIT_PRE_REGISTRATION_TXN_OPTIONS,
+  );
+
+  return rows
+    .map((row: any) => ({
+      announcement: mapAwait(row),
+      liveWaiters: Number(row.live_waiters) || 0,
+    }))
+    .filter((entry) => entry.liveWaiters > 0);
 }
 
 /** A key that nearly matches one being emitted/awaited — the advisory

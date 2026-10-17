@@ -38,6 +38,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import ts from 'typescript';
+import { bundledSocialProviderDescriptors } from '../capability-verbs/social-provider.fixture';
 
 const REPO_ROOT =
   process.env.PROVIDER_CENSUS_ROOT ??
@@ -101,11 +103,10 @@ const EXCLUDED_TOKENS: Record<string, string> = {
   github: 'platform source-hosting identity, not an integration provider',
 };
 
-type CensusGroup = 'social' | 'google-workspace' | 'discord';
+type CensusGroup = 'google-workspace' | 'discord';
 
 /** Where each group's migration is owned. */
 export const MIGRATION_OWNERS: Record<CensusGroup, string> = {
-  social: 'provider-adapters-to-packages-2026-10-11',
   'google-workspace': 'provider-adapters-to-packages-2026-10-11',
   discord: 'provider-adapters-to-packages-2026-10-11',
 };
@@ -124,40 +125,6 @@ export const CENSUS: readonly CensusEntry[] = [
   // Slack has no entries: cupboard-distributable-integrations-2026-10-10 P-008, P-020 and P-021
   // moved every Slack module into the slack and bug-triage packages (D-019, D-024..D-026).
 
-  // Social platforms: nine platform adapters plus the app-side verbs and tools over them.
-  p('packages/operator-core/lib/agent-tools/social/delete.ts', 'social'),
-  p('packages/operator-core/lib/agent-tools/social/post.ts', 'social'),
-  p('packages/operator-core/lib/agent-tools/social/read.ts', 'social'),
-  p('packages/operator-core/lib/agent-tools/social/reply.ts', 'social'),
-  p('packages/operator-core/lib/agent-tools/social/search.ts', 'social'),
-  p('packages/operator-core/lib/capability-verbs/social-delete.ts', 'social'),
-  p('packages/operator-core/lib/capability-verbs/social-read.ts', 'social'),
-  p('packages/operator-core/lib/capability-verbs/social.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/adapter-contract.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/bluesky-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/bluesky-write-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/conformance.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/cursor-freshness.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/linkedin-common.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/linkedin-write-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/mastodon-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/mastodon-write-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/platform-registry.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/reddit-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/reddit-write-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/social-egress.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/social-watermark.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/storm-policy.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/threads-common.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/threads-conversation-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/threads-write-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/tiktok-common.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/tiktok-videos-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/youtube-activities-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/youtube-comments-adapter.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/youtube-common.ts', 'social'),
-  p('packages/operator-core/lib/external-triggers/social/youtube-write-adapter.ts', 'social'),
-
   // Google Workspace leftovers (Gmail and Calendar already ship as packages).
   p('packages/operator-core/lib/external-triggers/google-workspace.ts', 'google-workspace'),
 
@@ -168,13 +135,43 @@ export const CENSUS: readonly CensusEntry[] = [
 ];
 
 /** Lowered by every migration that removes an entry. Raising it needs owner sign-off. */
-export const CENSUS_HIGH_WATERMARK = 36;
+export const CENSUS_HIGH_WATERMARK = 4;
 
 /**
  * Paths that contain a provider word but are not provider-specific, each with its reason.
  * Keep this short; a provider module does not belong here.
  */
-const NOT_PROVIDER_SPECIFIC: Record<string, string> = {};
+const SOCIAL_DOMAIN_SEAMS = [
+  'packages/operator-core/lib/agent-tools/social/delete.ts',
+  'packages/operator-core/lib/agent-tools/social/post.ts',
+  'packages/operator-core/lib/agent-tools/social/read.ts',
+  'packages/operator-core/lib/agent-tools/social/reply.ts',
+  'packages/operator-core/lib/agent-tools/social/search.ts',
+  'packages/operator-core/lib/capability-verbs/social-delete.ts',
+  'packages/operator-core/lib/capability-verbs/social-read.ts',
+  'packages/operator-core/lib/capability-verbs/social.ts',
+] as const;
+const NOT_PROVIDER_SPECIFIC: Record<string, string> = Object.fromEntries(SOCIAL_DOMAIN_SEAMS.map((path) => [
+  path, 'Provider-neutral social datatype/authorization/dispatch seam; installed descriptors own vendor selectors, coordinates, capabilities and HTTP. Guarded by the no-social-census test below.',
+]));
+
+/** Exact vendor selectors and package egress literals cannot return to a retained domain seam. */
+function socialVendorLiterals(source: string): string[] {
+  const descriptors = bundledSocialProviderDescriptors();
+  const selectors = new Set(descriptors.map((descriptor) => descriptor.id));
+  const hosts = descriptors.flatMap((descriptor) => descriptor.egressHosts);
+  const found: string[] = [];
+  const file = ts.createSourceFile('domain.ts', source, ts.ScriptTarget.Latest, true);
+  function visit(node: ts.Node): void {
+    if (ts.isStringLiteralLike(node)) {
+      const value = node.text;
+      if (selectors.has(value) || hosts.some((host) => value === host || value.includes(`://${host}`))) found.push(value);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  return found;
+}
 
 const SOURCE_EXT = /\.(ts|tsx|mts|cts|js|mjs|cjs)$/;
 const TEST_FILE = /\.(test|spec|integration\.test)\.(ts|tsx|mts|js|mjs)$|\.fixture\.ts$/;
@@ -498,7 +495,6 @@ describe('provider-specific code census (shrink-only)', () => {
   });
 
   it('Facebook Pages and Personal Vault stay package-owned', () => {
-    expect(CENSUS.filter((e) => e.group === 'social' && /facebook/i.test(e.path))).toEqual([]);
     expect(Object.keys(MIGRATION_OWNERS)).not.toContain('facebook-vault');
     expect(CENSUS.filter((e) => /facebook/i.test(e.path))).toEqual([]);
     const root = fixtureRoot({
@@ -511,6 +507,19 @@ describe('provider-specific code census (shrink-only)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('the census holds no social group or entry', () => {
+    expect(Object.keys(MIGRATION_OWNERS)).not.toContain('social');
+    expect(CENSUS.filter((entry) => providerWordsIn(entry.path).includes('social'))).toEqual([]);
+    for (const path of SOCIAL_DOMAIN_SEAMS) {
+      expect(existsSync(join(REPO_ROOT, path)), path).toBe(true);
+      expect(socialVendorLiterals(readFileSync(join(REPO_ROOT, path), 'utf8')), path).toEqual([]);
+    }
+    expect(socialVendorLiterals("if (platform === 'reddit') fetch('https://oauth.reddit.com/api');"))
+      .toEqual(['reddit', 'https://oauth.reddit.com/api']);
+    expect(socialVendorLiterals("registry.get(platform).adapter.invoke(request); // reddit is documentation"))
+      .toEqual([]);
   });
 });
 

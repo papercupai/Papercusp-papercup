@@ -83,7 +83,9 @@ export class SpawnerIpcClient {
   }>();
   /** Per-request push-notification callbacks, keyed by request id. */
   private callbacks = new Map<number, { onPid?: (pid: number) => void; onOutputActivity?: () => void }>();
-  private buffer = '';
+  // Keep incomplete lines as decoded chunks. Rebuilding and scanning the whole
+  // prefix on every socket event makes a fragmented large response quadratic.
+  private bufferParts: string[] = [];
   /**
    * Decodes socket chunks across boundaries. The server side got the same
    * treatment for inbound requests; this is the RESPONSE/notification leg —
@@ -163,7 +165,7 @@ export class SpawnerIpcClient {
     // Drop any partial line AND any partial multi-byte sequence: carrying
     // either across a reconnect would prepend garbage to the next connection's
     // first line (same reason close() resets them).
-    this.buffer = '';
+    this.bufferParts = [];
     this.decoder = new StringDecoder('utf8');
     // Reject all pending requests + drop their callbacks.
     for (const [id, { reject: rej }] of this.pending) {
@@ -392,12 +394,15 @@ export class SpawnerIpcClient {
    * the per-request push callbacks via `params.requestId`).
    */
   private handleData(chunk: Buffer): void {
-    this.buffer += this.decoder.write(chunk);
-
-    let newlineIndex;
-    while ((newlineIndex = this.buffer.indexOf('\n')) !== -1) {
-      const line = this.buffer.slice(0, newlineIndex).trim();
-      this.buffer = this.buffer.slice(newlineIndex + 1);
+    const text = this.decoder.write(chunk);
+    const socket = this.socket;
+    let offset = 0;
+    let newlineIndex: number;
+    while (this.socket === socket && (newlineIndex = text.indexOf('\n', offset)) !== -1) {
+      this.bufferParts.push(text.slice(offset, newlineIndex));
+      const line = this.bufferParts.join('').trim();
+      this.bufferParts = [];
+      offset = newlineIndex + 1;
 
       if (!line) continue;
       let msg: {
@@ -451,6 +456,7 @@ export class SpawnerIpcClient {
         pending.resolve(msg.result);
       }
     }
+    if (this.socket === socket && offset < text.length) this.bufferParts.push(text.slice(offset));
   }
 
   /**
@@ -468,7 +474,7 @@ export class SpawnerIpcClient {
     // Drop any partial line AND any partial multi-byte sequence held by the
     // decoder: this client reconnects, and carrying either across a reconnect
     // would prepend garbage to the first line of the next connection.
-    this.buffer = '';
+    this.bufferParts = [];
     this.decoder = new StringDecoder('utf8');
   }
 }

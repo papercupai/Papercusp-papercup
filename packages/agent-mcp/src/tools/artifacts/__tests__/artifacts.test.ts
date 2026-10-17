@@ -277,6 +277,22 @@ describe('artifacts:save', () => {
     expect(item.slug).toBe('test');
   });
 
+  it('reports UTF-8 bytes for non-ASCII content', async () => {
+    const tool = lookupByMcpName('artifacts:save')!;
+    const content = 'café → 🦄';
+    const r = await dispatchProjectedTool(
+      tool,
+      'artifacts:save',
+      { slug: 'test', rel_path: 'unicode.md', content },
+      MAKE_CTX(),
+      {},
+    );
+    expect(r.ok).toBe(true);
+    const item = envelopeOf(r).results[0];
+    expect(item.bytes).toBe(Buffer.byteLength(content, 'utf8'));
+    expect(item.bytes).toBeGreaterThan(content.length);
+  });
+
   it('saves MANY via items:[…]', async () => {
     const tool = lookupByMcpName('artifacts:save')!;
     const r = await dispatchProjectedTool(

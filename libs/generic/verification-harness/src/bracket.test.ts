@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readlinkSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -13,7 +14,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_FOREIGN_MAX_AGE_HOURS,
   DEFAULT_KEEP_RUNS,
@@ -44,6 +45,20 @@ import {
 const vh = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../bin/vh.sh');
 const tmp = () => mkdtempSync(path.join(tmpdir(), 'vh-bracket-'));
 
+// Explicit retention tests, including spawned vh.sh processes, use real locks
+// and pin parsing without joining the production retention queue.
+let privateRetention: string;
+beforeEach(() => {
+  privateRetention = tmp();
+  vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', path.join(privateRetention, 'mutex'));
+  vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', path.join(privateRetention, 'pins'));
+  vi.stubEnv('PAPERCUSP_DISABLE_FS_MUTEX', '0');
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(privateRetention, { recursive: true, force: true });
+});
+
 function run(body: string, env: Record<string, string> = {}, args: string[] = []) {
   const root = tmp();
   const file = path.join(root, 'h.sh');
@@ -72,6 +87,48 @@ vh_bracket_trap
 `;
 
 describe('vh.sh bracket mode', () => {
+  it('retains declared original phase receipts before pruning a completed shell run', async () => {
+    const r = run(`
+vh_phase prepare ""
+vh_init receipt-proof "$ROOT/ev" --retain-artifact phases/prepare/source.json --retain-artifact phases/prepare/runtime.json
+vh_begin prepare
+printf '%s\\n' '{"source":"original source bytes"}' > "$VH_PHASE_DIR/source.json"
+printf '%s\\n' '{"runtime":"original runtime bytes"}' > "$VH_PHASE_DIR/runtime.json"
+vh_end
+vh_finish
+`);
+    try {
+      expect(r.code).toBe(0);
+      expect(r.result.verdict).toBe('pass');
+      const files = ['source.json', 'runtime.json'];
+      const originals = files.map(file => readFileSync(path.join(r.result.evidenceDir, 'phases/prepare', file)));
+      await runHarness({ contract: { name: 'receipt-proof', phases: [{ id: 'prepare' }] },
+        evidenceRoot: path.join(r.root, 'ev'), runId: '20990101T000000Z-2',
+        runPhase: async () => ({ ok: true }) });
+      await pruneRuns(path.join(r.root, 'ev'), 1);
+      expect(existsSync(r.result.evidenceDir)).toBe(false);
+      files.forEach((file, i) => expect(readFileSync(path.join(r.root, 'ev', 'retained', r.result.runId,
+        'phases/prepare', file))).toEqual(originals[i]));
+      expect(JSON.parse(readFileSync(path.join(r.root, 'ev', 'retained', r.result.runId, 'result.json'), 'utf8')))
+        .toEqual(r.result);
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
+
+  it('refuses shell completion when a declared original receipt is missing', () => {
+    const r = run(`
+vh_phase prepare ""
+vh_init receipt-proof "$ROOT/ev" --retain-artifact phases/prepare/source.json
+vh_begin prepare
+vh_end
+vh_finish
+`);
+    try {
+      expect(r.code).not.toBe(0);
+      expect(r.stdout).not.toMatch(/HARNESS_RESULT .*verdict=pass/);
+      expect(existsSync(path.join(r.root, 'ev', 'retained'))).toBe(false);
+    } finally { rmSync(r.root, { recursive: true, force: true }); }
+  });
+
   it('an abort under set -e fails the open phase at its last step and blocks the rest; the exit code is kept', () => {
     const r = run(`${chain}
 vh_begin prep
@@ -267,6 +324,24 @@ exit 0
     expect(open.code).toBe(0);
     expect(open.stdout).toMatch(/ran/);
     expect(open.stderr).toMatch(/VH_DISABLED harness=linear reason=plan-incomplete:no-action-for-prep/);
+  });
+
+  it('retention mutex refusal stops initialization before creating a run or entering expensive phases', () => {
+    const r = run(`
+_vh_cli() {
+  echo 'Timed out waiting for fs-mutex papercusp-disk-retention; holder: running' >&2
+  return 2
+}
+vh_phase prep ""
+vh_init linear "$ROOT/ev"
+echo EXPENSIVE_RIG_STARTED
+`);
+    expect(r.code).toBe(2);
+    expect(r.stderr).toContain('papercusp-disk-retention; holder: running');
+    expect(r.stderr).toContain('vh_init: retention-command-failed');
+    expect(r.stdout).not.toContain('EXPENSIVE_RIG_STARTED');
+    expect(readdirSync(path.join(r.root, 'ev'))).toEqual([]);
+    expect(r.result).toBeNull();
   });
 
   it('without VH_FAIL_OPEN a contract that cannot start is fatal', () => {

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 540" role="img" aria-labelledby="title desc" data-mouth="rest" data-expression="warm" data-blink="false" data-gesture="idle">
+  <title id="title">PaperCup, the speaking Papercusp guide</title>
+  <desc id="desc">An expressive cream paper cup with eyes, eyebrows, a mouth and small arms.</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%"><feGaussianBlur stdDeviation="8"/></filter>
+    <linearGradient id="cup-paint" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff9ed"/><stop offset="1" stop-color="#f2d8b2"/></linearGradient>
+    <linearGradient id="coffee" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#8a5a2b"/><stop offset="1" stop-color="#4b2c13"/></linearGradient>
+    <style>
+      .ink{stroke:#3a2418;stroke-linecap:round;stroke-linejoin:round}
+      .mouth-open,.mouth-round,.mouth-closed,.mouth-narrow,.mouth-teeth,.eye-closed{display:none}
+      svg:not([data-mouth="rest"]) .mouth-rest{display:none}
+      svg[data-mouth="open"] .mouth-open,svg[data-mouth="round"] .mouth-round,svg[data-mouth="closed"] .mouth-closed,svg[data-mouth="narrow"] .mouth-narrow,svg[data-mouth="teeth"] .mouth-teeth{display:block}
+      svg[data-blink="true"] .eye-open{display:none} svg[data-blink="true"] .eye-closed{display:block}
+      svg[data-expression="happy"] .brow{transform:translateY(-2px)}
+      svg[data-expression="thoughtful"] .brow.left{transform:rotate(-8deg);transform-origin:417px 235px}
+      svg[data-expression="thoughtful"] .brow.right{transform:rotate(8deg);transform-origin:543px 235px}
+      svg[data-gesture="wave"] .right-arm{transform:rotate(-18deg);transform-origin:657px 357px}
+      svg[data-gesture="point"] .right-arm{transform:rotate(-32deg);transform-origin:657px 357px}
+      svg[data-gesture="wave"] .hand{transform:translate(-4px,-8px)}
+    </style>
+  </defs>
+  <path d="M480 24 C480 58 447 62 430 91 M480 24 C480 58 513 62 530 91" fill="none" class="ink" stroke-width="7"/>
+  <ellipse cx="480" cy="476" rx="195" ry="28" fill="#3a2418" opacity=".16" filter="url(#shadow)"/>
+  <g class="left-arm"><path d="M303 357 Q235 390 214 435" fill="none" stroke="#3a2418" stroke-width="14" class="ink"/><circle cx="211" cy="438" r="16" fill="#fff5e1" class="ink" stroke-width="5"/></g>
+  <g class="right-arm"><path d="M657 357 Q725 388 746 430" fill="none" stroke="#3a2418" stroke-width="14" class="ink"/><circle class="hand" cx="750" cy="435" r="16" fill="#fff5e1" stroke="#3a2418" stroke-width="5"/></g>
+  <g id="cup" transform="translate(0 5)">
+    <path d="M292 155 L330 405 Q335 445 480 449 Q625 445 630 405 L668 155 Z" fill="url(#cup-paint)" class="ink" stroke-width="8"/>
+    <ellipse cx="480" cy="155" rx="188" ry="42" fill="#fff9ed" class="ink" stroke-width="8"/><ellipse cx="480" cy="157" rx="158" ry="30" fill="url(#coffee)"/>
+    <path d="M318 260 Q480 230 642 260 M343 310 Q480 288 617 310" fill="none" stroke="#d4a373" stroke-width="5" opacity=".65"/>
+    <g class="brow left"><path d="M375 235 Q415 202 451 233" fill="none" class="ink" stroke-width="9"/></g><g class="brow right"><path d="M509 233 Q545 202 585 235" fill="none" class="ink" stroke-width="9"/></g>
+    <g class="eye-open"><ellipse cx="417" cy="277" rx="32" ry="39" fill="#fff" class="ink" stroke-width="6"/><ellipse cx="543" cy="277" rx="32" ry="39" fill="#fff" class="ink" stroke-width="6"/><g class="pupil"><circle cx="422" cy="273" r="13" fill="#3a2418"/><circle cx="427" cy="268" r="4" fill="#fff"/></g><g class="pupil"><circle cx="548" cy="273" r="13" fill="#3a2418"/><circle cx="553" cy="268" r="4" fill="#fff"/></g></g>
+    <g class="eye-closed"><path d="M390 278 Q417 299 444 278 M516 278 Q543 299 570 278" fill="none" class="ink" stroke-width="7"/></g>
+    <path class="mouth-rest ink" d="M451 353 Q480 374 509 353" fill="none" stroke-width="7"/>
+    <path class="mouth-open" d="M442 346 Q480 331 518 346 Q514 397 480 401 Q446 397 442 346Z" fill="#3a2418"/><ellipse class="mouth-open" cx="480" cy="377" rx="21" ry="8" fill="#ee8d78"/>
+    <ellipse class="mouth-round" cx="480" cy="359" rx="23" ry="31" fill="#3a2418"/>
+    <path class="mouth-closed ink" d="M444 357 Q480 364 516 357" fill="none" stroke-width="8"/>
+    <path class="mouth-narrow" d="M437 344 Q480 338 523 344 Q514 378 480 381 Q446 378 437 344Z" fill="#3a2418"/><path class="mouth-narrow" d="M448 347 Q480 344 512 347 L508 356 L452 356Z" fill="#fff9ed"/>
+    <path class="mouth-teeth" d="M444 346 Q480 339 516 346 Q508 374 480 375 Q452 374 444 346Z" fill="#3a2418"/><path class="mouth-teeth" d="M453 347 L507 347 L501 360 L459 360Z" fill="#fff9ed"/>
+  </g>
+</svg>

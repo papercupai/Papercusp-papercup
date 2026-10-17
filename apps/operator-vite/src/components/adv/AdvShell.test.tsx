@@ -334,7 +334,7 @@ describe('AdvShell — strip + header', () => {
     // D-001 (owner decision, 2026-07-26): only the PRIMARY_ADV_TAB_IDS set
     // renders as real Tabs.Trigger elements — Overview + HUD + Automations,
     // plus Work and Learning promoted out of the More menu.
-    expect(screen.getAllByRole('tab')).toHaveLength(5);
+    expect(screen.getAllByRole('tab')).toHaveLength(6);
     expect(screen.queryByRole('tab', { name: 'overwatch' })).toBeNull();
     // Tab-strip overflow affordance (owner ask 2026-06-15 #1): the scroll
     // chevrons are wired into the strip (CSS reveals them only when clipped, so
@@ -344,6 +344,7 @@ describe('AdvShell — strip + header', () => {
     // labels render lowercased in the trigger span
     expect(screen.getByRole('tab', { name: 'hud' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: 'workflows' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: 'enterprise' })).toBeTruthy();
     // 'harnesses' is the Work tab and sits right of HUD on the strip (owner ask
     // 2026-07-26); its old "working" label is gone.
     expect(screen.getByRole('tab', { name: 'work' })).toBeTruthy();
@@ -385,7 +386,7 @@ describe('AdvShell — strip + header', () => {
     const tabs = screen.getAllByRole('tab').map((t) => t.textContent?.trim());
     // Automations, Work, and Learning are workspace-level, so they survive
     // the All-Pots filter alongside Overview + HUD.
-    expect(tabs).toEqual(['overview', 'hud', 'workflows', 'work', 'learning']);
+    expect(tabs).toEqual(['overview', 'enterprise', 'hud', 'workflows', 'work', 'learning']);
   });
 
   it('keeps a per-pot tab pinned (no snap to Overview) under All scope — reachable via More, and the trigger reads active', async () => {
@@ -569,9 +570,8 @@ describe('AdvShell — Discord-parity shortcuts', () => {
   it('goto.nextTab / goto.prevTab cycle the visible strip with wrap-around', async () => {
     await renderShell();
     act(() => shortcutHandlers.get('goto.nextTab')!());
-    // next tab after overview is 'hud' — the session board took the first slot
-    // right of Overview (owner ask 2026-07-25); 'plans' follows it.
-    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('hud'));
+    // Enterprise is the canonical departmental journey entry beside Overview.
+    await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('enterprise'));
     act(() => shortcutHandlers.get('goto.prevTab')!());
     // from overview (idx 0) backwards wraps to the last tab
     await waitFor(() => expect(nuqsSetters.tab).toHaveBeenCalledWith('settings'));
@@ -871,7 +871,7 @@ describe('AdvShell — tab fullscreen', () => {
   it('keeps the tab strip usable while maximized', async () => {
     nuqsState.max = 'window';
     await renderShell();
-    expect(screen.getAllByRole('tab')).toHaveLength(5);
+    expect(screen.getAllByRole('tab')).toHaveLength(6);
     // mouseDown, not click: Radix Tabs activates a trigger on pointer-down, so a
     // bare fireEvent.click never reaches onValueChange.
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'learning' }));

@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "item": "P-544",
+  "recordedAt": "2026-10-16T21:20:22.240030+00:00",
+  "classification": "Conservative programme allocation, not invoice or verified remaining credit",
+  "programmeCapUsd": 200,
+  "actualBilledSpendUsd": null,
+  "historicalBasis": "docs/evidence/p544-budget-admission-2026-10-16.json",
+  "historicalRoundedReservationUsd": 160,
+  "prior4GiBReservationUsd": 1,
+  "priorSameVMFallbackReservationUsd": 0.5,
+  "priorFallbackUsed": false,
+  "priorReservationsReleased": false,
+  "newProfile": {
+    "runId": "p544-8g-1016",
+    "name": "cap-p544-8g-1016",
+    "provider": "gcp",
+    "project": "pc-agent-capacity-0930",
+    "zone": "us-central1-a",
+    "machineType": "e2-custom-2-8192",
+    "provisioning": "STANDARD",
+    "maximumHours": 2,
+    "bootDiskGb": 32,
+    "dataDiskGb": 10,
+    "overflowDiskGb": 10,
+    "disks": "pd-balanced auto-delete",
+    "additionalAllInReservationUsd": 2,
+    "computeAndDisksTwoHourEstimateUsd": 0.14826941534246577,
+    "paddedIpv4Usd": 0.02,
+    "reusedPackageBytes": 2214311846,
+    "transferReserveBasis": "Reserve1.25USD for up to5GiB of additional transfers at padded0.25USD/GiB; other uncertainty retained in historical25USD reserve",
+    "remainingConservativeProgrammeHeadroomUsd": 36.5
+  },
+  "livePreflight": {
+    "census": {
+      "instances": [],
+      "orphanDisks": [],
+      "staticAddresses": [],
+      "buckets": [
+        "pc-agent-capacity-0930-artifacts"
+      ],
+      "committedWorstCaseCents": 0
+    },
+    "disks": [],
+    "snapshots": [],
+    "package": {
+      "generation": "1792177863414251",
+      "name": "p544/929e234978a7e92c44769f9e2fdc5e97e22077ca0c7053c2e3eeb477009e5b1f.deb",
+      "size": 2214311846
+    },
+    "previousCleanupEvidence": "docs/evidence/p544-clean4g-profile-2026-10-16.json"
+  },
+  "conditions": [
+    "Qualified4GiB profile failed frozen D075 thresholds; use same maintained driver, nativeCLI0.163.0, modelgpt-6-luna/low,50assigned and1/5/10active3rounds plus separate50burst",
+    "Create through maintained gcp-rails.ts and assert provider DELETE2h deadline from actual creation; preserve exact absolute deadline through coldstop/start",
+    "Swap must be configured before any Server/native workload; driver retains externallyconfiguredzram anddiskoverflow throughcleanup",
+    "Exact same existing TESTARTIFACT package/hash; no package rebuild or release claim",
+    "Archive results before destructive VM cleanup; manual teardown plus fresh instance/disk/snapshot/address census before deadline",
+    "This edition admits only one separate2vCPU8GiB trial; refresh admission before any further billed profile",
+    "Exact actual bill/credit balance remains unknown; no customer price or minimumprofile promise follows"
+  ]
+}

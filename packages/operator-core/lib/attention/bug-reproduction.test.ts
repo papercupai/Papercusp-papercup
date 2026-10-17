@@ -20,7 +20,12 @@ const BUILD = 'abcdef1234567890abcdef1234567890abcdef12';
 
 function fakeLedger(rows: {
   testRuns?: Record<number, { status: string | null; commitSha: string | null; worktreeDirty: boolean | null }>;
-  invocations?: Record<number, { status: string | null; servingBuildSha: string | null }>;
+  invocations?: Record<number, {
+    status: string | null;
+    servingBuildSha: string | null;
+    resultOutcome?: string | null;
+    softFailureReason?: string | null;
+  }>;
   throws?: boolean;
 }): ReproductionLedgerDeps {
   return {
@@ -180,12 +185,34 @@ describe('verifyBugReproductionReceipt (D-024 §5)', () => {
         8: { status: 'ok', servingBuildSha: BUILD },
         9: { status: 'error', servingBuildSha: 'fedcba9876' },
         10: { status: null, servingBuildSha: BUILD },
+        11: {
+          status: 'ok',
+          servingBuildSha: BUILD,
+          resultOutcome: 'soft-failure',
+          softFailureReason: 'not_found',
+        },
+        12: {
+          status: 'ok',
+          servingBuildSha: BUILD,
+          resultOutcome: 'soft-failure',
+          softFailureReason: '  ',
+        },
+        13: { status: 'ok', servingBuildSha: BUILD, resultOutcome: 'unknown' },
       },
     });
     expect((await verifyBugReproductionReceipt(receipt('tool_invocations:7'), deps)).status).toBe('verified');
     expect((await verifyBugReproductionReceipt(receipt('tool_invocations:8'), deps)).status).toBe('refuted');
     expect((await verifyBugReproductionReceipt(receipt('tool_invocations:9'), deps)).status).toBe('refuted');
     expect((await verifyBugReproductionReceipt(receipt('tool_invocations:10'), deps)).status).toBe('refuted');
+    expect(await verifyBugReproductionReceipt(receipt('tool_invocations:11'), deps)).toMatchObject({
+      status: 'verified',
+      detail: expect.stringContaining('soft failure (not_found)'),
+      observed: { status: 'ok', resultOutcome: 'soft-failure', softFailureReason: 'not_found' },
+    });
+    // Unknown or incomplete effect markers must not turn a transport success into
+    // accepted failure evidence.
+    expect((await verifyBugReproductionReceipt(receipt('tool_invocations:12'), deps)).status).toBe('refuted');
+    expect((await verifyBugReproductionReceipt(receipt('tool_invocations:13'), deps)).status).toBe('refuted');
   });
 
   it('is unresolved when the row is missing or the ledger cannot be read, and attested for free text', async () => {

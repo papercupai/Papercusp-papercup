@@ -102,7 +102,10 @@ describe('assembleHostedControlPlane', () => {
       upstreamSessionId: 'session_test_001', expiresAt: new Date(NOW.getTime() + 60_000),
     });
     let active = true;
-    const runTenant = vi.fn(async (_context: VerifiedTenantServerContext) => null as never);
+    // The account-progress handler returns its transaction result as
+    // `{ record, reviews }`; this composition test only exercises mounting,
+    // so keep the tenant runner hermetic instead of attempting a real SQL read.
+    const runTenant = vi.fn(async (_context: VerifiedTenantServerContext) => ({ record: null, reviews: [] }) as never);
     const recordTransportFallback = vi.fn(() => true);
     const browser = createHostedBrowserRoutes({
       publicOrigin: ORIGIN, controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE_ID,

@@ -22,6 +22,7 @@
  * the drift this tool has already demonstrated once.
  */
 import { describe, expect, it } from 'vitest';
+import { invalidInputCorrections, unknownArgHint } from '@papercusp/tooldef/define-tool';
 import tool from './await';
 
 type ArgRedirect = string | { tool: string; args?: Record<string, unknown>; note?: string };
@@ -64,6 +65,33 @@ describe('events:await argRedirects', () => {
 
   it('declares redirects at all (positive control)', () => {
     expect(Object.keys(argRedirects()).length).toBeGreaterThan(0);
+  });
+
+  it('redirects a rejected `reason` key to the declared `note` field', () => {
+    const redirect = argRedirects().reason;
+    expect(redirect).toBe('note');
+
+    const input = { event: 'resource:released:git-sync:papercusp', reason: 'wait for release' };
+    const rejected = tool.args.safeParse(input);
+    expect(rejected.success).toBe(false);
+    if (rejected.success) throw new Error('reason must remain an unrecognized key');
+
+    const corrections = invalidInputCorrections(
+      rejected.error.issues,
+      tool.args,
+      tool.guidance?.argRedirects,
+      input,
+    );
+    expect(corrections).toMatchObject([{ rejectedArg: 'reason', target: 'note', kind: 'authored-redirect' }]);
+
+    const hint = unknownArgHint(
+      rejected.error.issues,
+      tool.args,
+      tool.guidance?.argRedirects,
+      input,
+      'events:await',
+    );
+    expect(hint).toContain('note');
   });
 
   it('never redirects a key the schema actually declares', () => {

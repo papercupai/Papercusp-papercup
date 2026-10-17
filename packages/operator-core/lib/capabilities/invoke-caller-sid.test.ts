@@ -62,6 +62,39 @@ beforeEach(() => {
   scope.registry.mockReset().mockResolvedValue({ projects: [{ slug: 'desktop-pot' }] });
 });
 
+describe('invokeServerCapability — request cancellation', () => {
+  it('keeps the caller signal live in a direct tool context', async () => {
+    const controller = new AbortController();
+    await invokeServerCapability({ name: 't:x', ...{ signal: controller.signal } });
+    const signal = capturedCtx?.signal;
+    expect(signal).toBe(controller.signal);
+    controller.abort(new Error('private caller cancelled'));
+    expect(signal?.aborted).toBe(true);
+    expect(signal?.reason).toBe(controller.signal.reason);
+  });
+
+  it('preserves a caller already cancelled before dispatch', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('cancelled before capability invocation'));
+    await invokeServerCapability({ name: 't:x', ...{ signal: controller.signal } });
+    expect(capturedCtx?.signal).toBe(controller.signal);
+    expect(capturedCtx?.signal.aborted).toBe(true);
+  });
+
+  it('keeps the caller signal through nested tools:invoke target dispatch', async () => {
+    const controller = new AbortController();
+    await invokeServerCapability({ name: 'tools:invoke', ...{ signal: controller.signal } });
+    const dispatch = capturedCtx?.dispatchTool;
+    expect(dispatch).toBeTypeOf('function');
+    await dispatch!('t:x', {});
+    const signal = capturedCtx?.signal;
+    expect(signal).toBe(controller.signal);
+    controller.abort(new Error('private nested caller cancelled'));
+    expect(signal?.aborted).toBe(true);
+    expect(signal?.reason).toBe(controller.signal.reason);
+  });
+});
+
 describe('invokeServerCapability — EI-1751 callerSid attribution', () => {
   const employee = { kind: 'user' as const, slug: 'employee-id', workspaceId: 'ws1',
     authMethod: 'cookie-session' as const, trust: 'verified' as const, capabilities: new Set(['blueprint:submit']) };

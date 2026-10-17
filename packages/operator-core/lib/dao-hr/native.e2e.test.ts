@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { nativeChildEnvironment } from '../../../../scripts/tauri-surface-verify-reports.mts';
 import { readNativeHostHealth, selectIdentityFixtureActor } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
 import { sign } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
-import { workbenchTextField, openWorkbenchSelect, chooseWorkbenchOption } from '../../../../scripts/lib/dao-workbench-controls.mts';
+import { workbenchTextField, openWorkbenchSelect, chooseWorkbenchOption, captureWorkbenchResponses, workbenchVerifiedWallet } from '../../../../scripts/lib/dao-workbench-controls.mts';
 import { insertHiveIfAbsent } from '../hive-store';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../harness-registry';
 import { upsertHiveMember } from '../hive-membership-store';
@@ -47,12 +47,17 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       wait("!!document.querySelector('[data-testid=dao-workspace]')");
     };
     const response = (op: string) => {
-      wait('window.__DAO_HR_RESPONSE__?.op===' + JSON.stringify(op));
-      const result = value("window.__DAO_HR_RESPONSE__");
+      const expression = 'window.__DAO_HR_CAPTURE__?.responses[' + JSON.stringify(op) + ']';
+      try { wait('!!' + expression); }
+      catch (error) {
+        writeFileSync(config.resultPath + '.response-failure.json', JSON.stringify(value('({responses:window.__DAO_HR_CAPTURE__?.responses,alerts:[...document.querySelectorAll(\'[role=alert]\')].map(e=>e.textContent),text:document.body.innerText})')));
+        throw error;
+      }
+      const result = value(expression);
       expect(result.status, 'Product response for ' + op).toBe(200);
       expect(result.body.ok, 'Product result for ' + op).toBe(true); return result.body;
     };
-    const captureResponses = () => ev("(()=>{window.__DAO_HR_RESPONSE__=null;const original=window.fetch;window.fetch=async(...args)=>{const r=await original(...args);if(args[1]?.method==='POST'&&String(args[0]).includes('/api/pot/')){const request=JSON.parse(args[1].body);window.__DAO_HR_RESPONSE__={op:request.action||request.op,status:r.status,body:await r.clone().json()}}return r};return true})()");
+    const captureResponses = () => ev(captureWorkbenchResponses());
     const rpc = async (method: string, params: unknown[] = []) => {
       const r = await fetch(config.rpc, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
       const result = await r.json(); if (result.error) throw new Error('Test wallet RPC: ' + result.error.message); return result.result;
@@ -84,7 +89,12 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
       field('Wallet address', account); field('Wallet chain ID', '1'); click('Request wallet signing challenge');
       const challenge = response('wallet-challenge').value;
       const signature = await rpc('personal_sign', [stringToHex(challenge.message), account]);
-      field('Wallet signature', signature); click('Verify wallet signature'); response('wallet-verify'); textHas(account);
+      field('Wallet signature', signature); click('Verify wallet signature'); response('wallet-verify');
+      try { wait(workbenchVerifiedWallet(account, 1)); }
+      catch (cause) {
+        writeFileSync(config.resultPath + '.wallet-render-failure.json', JSON.stringify(value('({body:document.body.innerText,responses:window.__DAO_HR_CAPTURE__?.responses})'), null, 2));
+        throw cause;
+      }
     };
     const prepareGovernor = async (name: string, args: unknown[]) => {
       navigate({ daoSection: 'ownership' }); textHas('Equity deployment & holder records'); captureResponses();

@@ -1281,7 +1281,8 @@ export async function seedAcceptanceBarsInTransaction(
       plan: { cohort: input.cohort, adoptionEpoch: input.adoptionEpoch },
       bars: criteria.map((criterion) => ({
         barKey: criterion.barKey ?? criterion.key, criterionKey: criterion.key, barHash: criterion.barHash ?? null,
-        model: criterion.model ?? '', method: criterion.method ?? '', falsifier: criterion.driftMarkers ?? '',
+        model: criterion.model ?? '', method: criterion.method ?? '', replication: criterion.replication ?? null,
+        falsifier: criterion.driftMarkers ?? '',
         check: criterion.check ?? null, requirement: requirementSections(criterion),
         role: criterion.role ?? null, mandatory: criterion.mandatory ?? null,
         requiredScope: criterion.requiredScope ?? [], evidencePlane: criterion.evidencePlane ?? null,

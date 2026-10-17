@@ -1,0 +1,466 @@
+{
+  "scope": "Approved canonical BAR expansion applied; this is not plan acceptance or shipment evidence",
+  "planRevision": 217,
+  "previewPlanRevision": 216,
+  "appliedReadback": {
+    "approvalRef": "thread-post:1185516",
+    "idempotencyKey": "hybrid-bars-185-216-20261017-apply-v2",
+    "requestHash": "4dc1696675303aa08a0c974401d1611dbbd4a0f3e11ae432934ed109c19d4813",
+    "rubricRef": "acceptance-agent-capacity-and-cost-gcp-2026-09-30",
+    "rubricRevision": 2,
+    "barSetHash": "d2e693e208a8a4ebe59719305ed21daf399871929e1378bb761447a8003746b3",
+    "barKeys": ["R-1", "R-2", "R-3", "R-4", "R-5", "R-6", "R-7", "R-8", "R-9", "R-10", "R-11", "R-12", "R-13"],
+    "subjectPlanRevision": 217,
+    "subjectPlanContentHash": "9855f89e3f612d8580d7ef8e4444a46ab098b6bdf5fbc403e44275c1150098e6",
+    "decisionRef": "agent-capacity-and-cost-gcp-2026-09-30#D-078",
+    "applyReceiptSource": "/tmp/p537-amend-apply-result.json",
+    "canonicalReadbackSource": "/tmp/p537-successor-rubric-full.json",
+    "remainingGate": "P-544 / D-076 still requires a measured usable trial configuration under $20/month including compute, disks, backups, network, control plane and inference."
+  },
+  "previewPostRef": "thread-post:1185506",
+  "conversationId": "conv-mvbrv678-0000-3bb6ffe28e1b4eff84334c40bec8bbc0",
+  "receiptKey": "review-bb54e8d048018f0a17c67fe5ad9b65fc779779f3483a5ef4139a5ae9b3122da9",
+  "amendment": {
+    "rubricRef": "acceptance-agent-capacity-and-cost-gcp-2026-09-30",
+    "criteria": [
+      {
+        "key": "r-1",
+        "title": "Agent counts come from measurement on real GCP machines",
+        "intent": {
+          "request": "Tell users how many Claude/Codex agents each machine size supports, measured on real GCP instances rather than guessed.",
+          "sourceRefs": [
+            "owner:Avi 2026-09-30 (session claude:9a73e70d turns 8/11)",
+            "D-004"
+          ]
+        },
+        "model": "Every agent count in the published size guide cites a recorded run on a real GCP VM of that machine type in which that many agents ran the stated workload with zero out-of-memory kills.",
+        "bar": "Every agent count in the published size guide cites a recorded run on a real GCP VM of that machine type in which that many agents ran the stated workload with zero out-of-memory kills.",
+        "barKey": "R-1",
+        "barHash": "9e23fa6951ed9d3a2fbe1fa30b99171cf12b3221d86337e12f2333c667c180f7",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-30T17:58:35.197Z",
+          "declaredBy": "su-9dfd3ffc-fb7b-40bf-b625-d93dbab9f002"
+        },
+        "method": "For each size-guide row, open the cited run record from the benchmark results and check machine type, agent count, workload profile and the out-of-memory kill counter.",
+        "driftMarkers": "A size-guide agent count has no recorded GCP run behind it, or its cited run shows an out-of-memory kill.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "none"
+        }
+      },
+      {
+        "key": "r-2",
+        "title": "The cost model answers the 10x question",
+        "intent": {
+          "request": "Find a way to cut the cost of 50 agents by 10x, measured against the customer price.",
+          "sourceRefs": [
+            "owner:Avi 2026-09-30 (session claude:9a73e70d turns 13/16)",
+            "D-003"
+          ]
+        },
+        "model": "The cost model states, for each tested lever combination, the measured Google cost per month for 50 agents and whether it is at or below the D-003 target of about $80/month.",
+        "bar": "The cost model states, for each tested lever combination, the measured Google cost per month for 50 agents and whether it is at or below the D-003 target of about $80/month.",
+        "barKey": "R-2",
+        "barHash": "43d61458e25f31799f9709bbc9229f259f7462bba8b36de3e8eb27320c93ea04",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-30T17:58:35.197Z",
+          "declaredBy": "su-9dfd3ffc-fb7b-40bf-b625-d93dbab9f002"
+        },
+        "method": "Read the P-012 cost model and trace each combination's figure to its capacity run and the GCP list price used.",
+        "driftMarkers": "A tested lever combination has no monthly cost figure for 50 agents, or its figure is not derived from a measured capacity run.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "none"
+        }
+      },
+      {
+        "key": "r-3",
+        "title": "The memory ideas are each measured",
+        "intent": {
+          "request": "Test whether swap, compressed memory or parking lets agents use less real RAM without raising cost, since agents are RAM-heavy and CPU-light.",
+          "sourceRefs": [
+            "owner:Avi 2026-09-30 (session claude:9a73e70d turn 14)"
+          ]
+        },
+        "model": "Disk swap, zram and process-free parking each have a recorded run reporting agents per GB of RAM and the wake delay when agents resume.",
+        "bar": "Disk swap, zram and process-free parking each have a recorded run reporting agents per GB of RAM and the wake delay when agents resume.",
+        "barKey": "R-3",
+        "barHash": "c1c03cfc18c6f16815cd552aabca1600e784321f9dc4d13b5880617021985c7b",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-30T17:58:35.197Z",
+          "declaredBy": "su-9dfd3ffc-fb7b-40bf-b625-d93dbab9f002"
+        },
+        "method": "Check the P-014, P-015 and P-009 run records for both measurements.",
+        "driftMarkers": "Any of disk swap, zram or process-free parking has no recorded run with both agents-per-GB and wake delay.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "none"
+        }
+      },
+      {
+        "key": "r-4",
+        "title": "Light and heavy users get a sizing and billing answer",
+        "intent": {
+          "request": "Decide whether to scale the machine automatically with usage and how to bill a 1-agent user versus a 50-agent user.",
+          "sourceRefs": [
+            "owner:Avi 2026-09-30 (session claude:9a73e70d turn 8)"
+          ]
+        },
+        "model": "The P-012 recommendation states whether machines resize automatically and gives the monthly price for a 1-agent user and for a 50-agent user, each backed by measured cost.",
+        "bar": "The P-012 recommendation states whether machines resize automatically and gives the monthly price for a 1-agent user and for a 50-agent user, each backed by measured cost.",
+        "barKey": "R-4",
+        "barHash": "41b6b4eeb8e39194cf75d76b912b0afd16fbc299a0e27ba5606569453443c309",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-30T17:58:35.197Z",
+          "declaredBy": "su-9dfd3ffc-fb7b-40bf-b625-d93dbab9f002"
+        },
+        "method": "Read the P-012 recommendation for the resize decision and both prices with their source runs.",
+        "driftMarkers": "The recommendation omits the resize decision or either user's monthly price.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "none"
+        }
+      },
+      {
+        "key": "r-5",
+        "title": "Test spending stays under $200 and no machine is left running",
+        "intent": {
+          "request": "Keep total Google Cloud spend for the tests at or under $200.",
+          "sourceRefs": [
+            "owner:Avi 2026-09-30 (session claude:9a73e70d turn 16)",
+            "D-002"
+          ]
+        },
+        "model": "Billed spend on the test project for this plan is at or below $200, and after the last run no VM labelled for this plan exists.",
+        "bar": "Billed spend on the test project for this plan is at or below $200, and after the last run no VM labelled for this plan exists.",
+        "barKey": "R-5",
+        "barHash": "3b040ba4d24262f59276d5cd3e7249a55f66ea6c90c832d1ec20754c5163a147",
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "passRatings": [
+          "healthy"
+        ],
+        "barProvenance": {
+          "lifecycle": "pre-implementation",
+          "declaredAt": "2026-09-30T17:58:35.197Z",
+          "declaredBy": "su-9dfd3ffc-fb7b-40bf-b625-d93dbab9f002"
+        },
+        "method": "Read the project's billing report for the plan label and list compute instances with that label after the final run.",
+        "driftMarkers": "Billed spend exceeds $200, or a VM labelled for this plan still exists after the final run.",
+        "check": {
+          "kind": "instrument",
+          "instrumentKey": "none"
+        }
+      },
+      {
+        "key": "r-6",
+        "barKey": "R-6",
+        "title": "Real-VM placement preserves exclusive tenant assignment",
+        "intent": {
+          "request": "Real-VM placement preserves exclusive tenant assignment",
+          "sourceRefs": [
+            "session_turn:codex:01a1426c-5986-7d82-8be8-65a23da4eb88:12",
+            "D-064"
+          ]
+        },
+        "acceptance": {
+          "condition": "Each initial placement or returning-workspace wake atomically reserves one eligible, compatible, clean and exclusively tenant-owned ordinary GCP/AWS VM or returns an explicit queued/refused result.",
+          "falsifier": "A stale, draining, incompatible or foreign-owned VM is selected, or two active customer leases share a VM."
+        },
+        "verification": {
+          "method": "Run the pool selector and isolated database reservation concurrency/RLS tests, including duplicate wakes and stale generation conflicts.",
+          "check": {
+            "kind": "instrument",
+            "instrumentKey": "none"
+          }
+        },
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "passRatings": [
+          "healthy"
+        ]
+      },
+      {
+        "key": "r-7",
+        "barKey": "R-7",
+        "title": "Reconnect uses the same durable customer data",
+        "intent": {
+          "request": "Reconnect uses the same durable customer data",
+          "sourceRefs": [
+            "session_turn:codex:01a1426c-5986-7d82-8be8-65a23da4eb88:12",
+            "D-064"
+          ]
+        },
+        "acceptance": {
+          "condition": "A workspace is published ready after idle wake or same-zone replacement only after exclusive writer fencing and confirmation of stable workspace identity, the expected encrypted data volume, correct tenant marker, acknowledged data hashes and connector readiness.",
+          "falsifier": "A blank/wrong-tenant volume mounts, the old writer remains unfenced, or ready is reported before data validation."
+        },
+        "verification": {
+          "method": "Run real provider stop/start and replacement drills with hashes written before shutdown and read after reconnect; inject detach/attach timeouts.",
+          "check": {
+            "kind": "instrument",
+            "instrumentKey": "none"
+          }
+        },
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "passRatings": [
+          "healthy"
+        ]
+      },
+      {
+        "key": "r-8",
+        "barKey": "R-8",
+        "title": "Tenant boundaries and clean host reuse hold",
+        "intent": {
+          "request": "Tenant boundaries and clean host reuse hold",
+          "sourceRefs": [
+            "session_turn:codex:01a1426c-5986-7d82-8be8-65a23da4eb88:12",
+            "D-064"
+          ]
+        },
+        "acceptance": {
+          "condition": "A caller can operate on a workspace host and its storage only while holding the current exclusive tenant authority for a cleanly provisioned or provably reimaged host with prior credentials and connector authority revoked.",
+          "falsifier": "A cross-tenant operation succeeds or a previously assigned unclean VM is admitted to another customer."
+        },
+        "verification": {
+          "method": "Run isolated-DB RLS, cross-tenant route, credential-revocation and clean-host eligibility tests plus an internal canary.",
+          "check": {
+            "kind": "instrument",
+            "instrumentKey": "none"
+          }
+        },
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "passRatings": [
+          "healthy"
+        ]
+      },
+      {
+        "key": "r-9",
+        "barKey": "R-9",
+        "title": "Trial and paid policy controls resources",
+        "intent": {
+          "request": "Trial and paid policy controls resources",
+          "sourceRefs": [
+            "session_turn:codex:01a1426c-5986-7d82-8be8-65a23da4eb88:12",
+            "D-064"
+          ]
+        },
+        "acceptance": {
+          "condition": "Each hosted lifecycle action is admitted only when it satisfies canonical server-owned concurrency, storage, idle, paid-reservation and spend policy together with active-work, viewer and in-flight-operation safety holds.",
+          "falsifier": "Caller labels raise entitlements, active work is stopped, or pending reservations escape limits."
+        },
+        "verification": {
+          "method": "Run policy, duplicate admission, budget, viewer, overload/fairness and upgrade/downgrade tests using existing lifecycle surfaces.",
+          "check": {
+            "kind": "instrument",
+            "instrumentKey": "none"
+          }
+        },
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "passRatings": [
+          "healthy"
+        ]
+      },
+      {
+        "key": "r-10",
+        "barKey": "R-10",
+        "title": "Pool cost allocation reconciles",
+        "intent": {
+          "request": "Pool cost allocation reconciles",
+          "sourceRefs": [
+            "session_turn:codex:01a1426c-5986-7d82-8be8-65a23da4eb88:12",
+            "D-064"
+          ]
+        },
+        "acceptance": {
+          "condition": "For each infrastructure billing period, tenant charges plus explicit shared overhead and unresolved-rate allocations reconcile exactly to the input total across compute, retained storage, provisioned performance, backup, network, control-plane and warm capacity using achieved agent capacity.",
+          "falsifier": "Allocated tenant cost plus explicit overhead differs from the input bill, a missing rate becomes zero, or nominal slots replace achieved capacity."
+        },
+        "verification": {
+          "method": "Run cost-model tests for 1/50 agents, zero activity, warm overhead, mixed providers, credits, currency mismatch and unknown rates. Verify the report separately presents working base-plus-agent and busy-hours alternatives and identifies inference costs separately, without treating unknown rates as zero.",
+          "check": {
+            "kind": "instrument",
+            "instrumentKey": "none"
+          }
+        },
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "passRatings": [
+          "healthy"
+        ]
+      },
+      {
+        "key": "r-11",
+        "barKey": "R-11",
+        "title": "Autoscaling is bounded and observable",
+        "intent": {
+          "request": "Autoscaling is bounded and observable",
+          "sourceRefs": [
+            "session_turn:codex:01a1426c-5986-7d82-8be8-65a23da4eb88:12",
+            "D-064"
+          ]
+        },
+        "acceptance": {
+          "condition": "Each queued-demand reconciliation makes at most one budgeted, generation-fenced capacity change through the existing durable workflows after counting pending hosts and checking cooldown, fresh observations, safe drain and demonstrated reclaim recovery before spot use.",
+          "falsifier": "A second scheduler is introduced, duplicate provision occurs, an active host is retired or an unknown observation silently permits action."
+        },
+        "verification": {
+          "method": "Run replay, reservation contention, cooldown, quota, failed-provision cleanup and lifecycle integration tests.",
+          "check": {
+            "kind": "instrument",
+            "instrumentKey": "none"
+          }
+        },
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "tree"
+        ],
+        "evidencePlane": "tree",
+        "passRatings": [
+          "healthy"
+        ]
+      },
+      {
+        "key": "r-12",
+        "barKey": "R-12",
+        "title": "Recovery and cleanup are proved",
+        "intent": {
+          "request": "Recovery and cleanup are proved",
+          "sourceRefs": [
+            "session_turn:codex:01a1426c-5986-7d82-8be8-65a23da4eb88:12",
+            "D-064"
+          ]
+        },
+        "acceptance": {
+          "condition": "Internal canaries demonstrate database-consistent backup/restore, retained-data recovery and provider-confirmed cleanup under a bounded budget before external customer enrollment.",
+          "falsifier": "Backup is claimed from an unconfirmed snapshot, recovery loses acknowledged canary data or a billable canary resource remains unaccounted."
+        },
+        "verification": {
+          "method": "Use existing snapshot/restore and resource-obligation ledgers; record backup recovery, before/after markers and final provider inventory.",
+          "check": {
+            "kind": "instrument",
+            "instrumentKey": "none"
+          }
+        },
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "live"
+        ],
+        "evidencePlane": "live",
+        "passRatings": [
+          "healthy"
+        ]
+      },
+      {
+        "key": "r-13",
+        "barKey": "R-13",
+        "title": "Shipment is tied to the deployed artifact",
+        "intent": {
+          "request": "Shipment is tied to the deployed artifact",
+          "sourceRefs": [
+            "session_turn:codex:01a1426c-5986-7d82-8be8-65a23da4eb88:12",
+            "D-064"
+          ]
+        },
+        "acceptance": {
+          "condition": "The real-VM hybrid-pool customer journey passes on the exact shipped green artifact with recorded runtime identity, wake/reconnect evidence, policy/isolation assertions and rollback path.",
+          "falsifier": "Only shaping, unit tests, staging source or a deployment request is cited as proof of shipment."
+        },
+        "verification": {
+          "method": "Read pipeline/artifact identity and exercise the shipped customer journey; preserve the deployment, canary, cost and teardown receipts.",
+          "check": {
+            "kind": "instrument",
+            "instrumentKey": "none"
+          }
+        },
+        "role": "outcome",
+        "mandatory": true,
+        "requiredScope": [
+          "deployed"
+        ],
+        "evidencePlane": "deployed",
+        "passRatings": [
+          "healthy"
+        ]
+      }
+    ],
+    "dryRun": true,
+    "requestReview": {
+      "workItemId": "WI-6554700010015799",
+      "harness": "papercusp"
+    },
+    "expectedRubricRevision": 1,
+    "expectedSubjectPlanRevision": 216,
+    "idempotencyKey": "hybrid-bars-185-216-20261017-v2",
+    "reason": "Reconcile revision185 R1–R5 with owner-authorized hybrid plan216. Preserve original five BARs verbatim. New R6–R13 retain all authored guarantees and Design evidence planes; R6–R11 now express a single observable admit/ready/authority/conservation/reconciliation behavior with explicit preconditions, complying with the canonical atomicity guard. No acceptance or shipment claim; P544 D076 all-in usable under-$20 remains open."
+  }
+}

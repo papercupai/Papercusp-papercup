@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "workItem": "EI-26181361607817938",
+  "planItem": "P-537",
+  "scope": "current-build hosted authentication composition; shipment and full customer journey remain open",
+  "committedFocusedReadback": {
+    "verifiedAt": "2026-10-17T02:24:06.697965+00:00",
+    "head": "8fdb7d20436896addb05b9055e306907eaa29d7e",
+    "scope": "Focused committed source only; no full import-graph, origin-egress or deployed-artifact claim",
+    "files": {
+      "packages/operator-core/lib/endpoint-route/hosted-runtime.ts": {
+        "testedSha256": "cda2c9aab4fd3255b32d08c1fc6920cf1457fd429b47751929696ca5865c6119",
+        "currentSha256": "cda2c9aab4fd3255b32d08c1fc6920cf1457fd429b47751929696ca5865c6119",
+        "committedSha256": "cda2c9aab4fd3255b32d08c1fc6920cf1457fd429b47751929696ca5865c6119"
+      },
+      "packages/operator-core/lib/endpoint-route/hosted-control-plane.ts": {
+        "testedSha256": "9d879eaccf9a11b04670982e60c668173742fc5a74609207c276e763ecb3d8fc",
+        "currentSha256": "9d879eaccf9a11b04670982e60c668173742fc5a74609207c276e763ecb3d8fc",
+        "committedSha256": "9d879eaccf9a11b04670982e60c668173742fc5a74609207c276e763ecb3d8fc"
+      },
+      "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts": {
+        "testedSha256": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8",
+        "currentSha256": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8",
+        "committedSha256": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8"
+      },
+      "packages/operator-core/lib/endpoint-route/hosted-runtime.test.ts": {
+        "testedSha256": "d97980e55888c167ade17898d90a6fe4288abd36ca96828d75fe174374448218",
+        "currentSha256": "d97980e55888c167ade17898d90a6fe4288abd36ca96828d75fe174374448218",
+        "committedSha256": "d97980e55888c167ade17898d90a6fe4288abd36ca96828d75fe174374448218"
+      }
+    },
+    "integrationEvidence": "docs/evidence/p537-native-idle-2026-10-17.json",
+    "integrationVerdict": {
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0
+    },
+    "historicalIntegrationHashSuperseded": true
+  },
+  "rootCause": "The full hosted runtime omitted the existing server-owned trial policy parser, canonical signup admission and established-session backfill that the narrow auth runtime already used.",
+  "fix": "Extend HostedRuntimeConfiguration and HostedControlPlaneConfig and pass the existing signup/backfill dependencies to the production auth routes.",
+  "before": {
+    "log": "/tmp/p537-production-auth-before-tests.log",
+    "integrationPassed": 3,
+    "integrationFailed": 1,
+    "distinguishingObservation": "Auth-only callback granted revision 1; full-control-plane callback retained revision 0."
+  },
+  "after": {
+    "log": "/tmp/p537-production-auth-after-tests.log",
+    "sourceMap": "/tmp/p537-production-auth-after-sources.json",
+    "passed": 6,
+    "failed": 0,
+    "skipped": 0,
+    "nativeRunFinishedAtMs": 1792194820240,
+    "headAtExecution": "29f7455343460ff413a4863edaabb47785df247f",
+    "dirtyAtExecution": true,
+    "coverage": ["auth-only and full-control-plane callbacks over private HTTP and real PostgreSQL", "original grant expiry, nonrenewing sign-in and signup replay", "authority revocation is not revived", "absent policy and invalid callback grant no authority"],
+    "capturedSourceCount": 5905,
+    "sourceEvidenceStatus": "changed",
+    "sourceEvidenceResidue": ["packages/operator-core/lib/agent-tools/coordination/tools/orient.ts changed during collection; this result does not establish exact full-import-graph equivalence"],
+    "changedFilesMatchCapturedHashes": true,
+    "changedFilesCommittedAtReadback": false
+  },
+  "unitRecovery": {
+    "runId": "e3852b16-8ada-4dca-ae93-10f1477bf00e",
+    "taskId": "0mvbm9n6juxyhu315ec",
+    "status": "pass",
+    "exitCode": 0,
+    "paths": ["packages/operator-core/lib/endpoint-route/hosted-runtime.test.ts", "packages/operator-core/lib/endpoint-route/hosted-control-plane.test.ts"]
+  },
+  "sha256": {
+    "packages/operator-core/lib/endpoint-route/hosted-runtime.ts": "cda2c9aab4fd3255b32d08c1fc6920cf1457fd429b47751929696ca5865c6119",
+    "packages/operator-core/lib/endpoint-route/hosted-control-plane.ts": "9d879eaccf9a11b04670982e60c668173742fc5a74609207c276e763ecb3d8fc",
+    "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts": "141ff8ed1d8f1e25543c5dfde70b2081b450bd1f0a8a90a9ee2791c9dcdd72e8",
+    "packages/operator-core/lib/endpoint-route/hosted-runtime.test.ts": "d97980e55888c167ade17898d90a6fe4288abd36ca96828d75fe174374448218"
+  },
+  "remaining": ["committed-source verification before focused bug closure", "configured trial and paid pool admission, native-agent and idle customer journeys", "exact deployed artifact proof for final shipment", "P-544 measured all-in monthly cost under $20 with usable capacity and durability"]
+}

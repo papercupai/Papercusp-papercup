@@ -14,6 +14,7 @@ import { pinModuleState } from '@papercusp/module-singleton';
 import { withBoundedTimeout } from '../bounded-timeout';
 import {
   isProviderAdapter,
+  providerCapabilityVerificationIssue,
   validateProviderDescriptor,
   type ProviderAdapter,
   type ProviderDescriptor,
@@ -61,6 +62,35 @@ export interface ProviderRegistry {
   /** Providers producing `datatype` (optionally also offering `capability`). */
   forDatatype(datatype: string, capability?: string): RegisteredProvider[];
   clear(): void;
+}
+
+export class ProviderVerificationError extends Error {
+  constructor(readonly providerId: string, readonly capability: string,
+    readonly reason: 'not-installed' | NonNullable<ReturnType<typeof providerCapabilityVerificationIssue>>,
+    detail?: string) {
+    super(`provider_verification_refused:${providerId}:${capability}:${reason}${detail ? `: ${detail}` : ''}`);
+    this.name = 'ProviderVerificationError';
+  }
+}
+
+/** An explicit owner wall applies to every host request, including OAuth and identity.
+ * Providers without contract attestations retain their existing connection behavior. */
+export function assertProviderOwnerUnblocked(
+  descriptor: Pick<ProviderDescriptor, 'verification'> & Partial<Pick<ProviderDescriptor, 'id'>>,
+  operation: string,
+): void {
+  const blockedOn = descriptor.verification?.blockedOn;
+  if (blockedOn) throw new ProviderVerificationError(descriptor.id ?? operation, operation, 'owner-blocked', blockedOn);
+}
+
+/** Resolve evidence from the installed descriptor on EVERY call. Unload/reinstall cannot
+ * leave a built-in row or cached attestation authorizing a capability the package lacks. */
+export function verifiedProviderForCapability(registry: ProviderRegistry, providerId: string, capability?: string): RegisteredProvider {
+  const entry = registry.get(providerId);
+  if (!entry) throw new ProviderVerificationError(providerId, capability ?? 'syncPage', 'not-installed');
+  const reason = providerCapabilityVerificationIssue(entry.descriptor, capability);
+  if (reason) throw new ProviderVerificationError(providerId, capability ?? 'syncPage', reason, entry.descriptor.verification?.blockedOn);
+  return entry;
 }
 
 export function createProviderRegistry(): ProviderRegistry {

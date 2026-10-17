@@ -6,7 +6,7 @@
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { platform, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
 
@@ -211,10 +211,31 @@ async function localRepositoryRoot(path: string, ctx: ScratchCloneContext, label
 async function createOwnedScratchDestination(source: string, ctx: ScratchCloneContext, requested?: string):
 Promise<{ path: string; inSourceScratch: boolean }> {
   const tempRoot = await realpath(tmpdir());
-  if (!requested) return { path: await mkdtemp(join(tempRoot, 'papercusp-git-scratch-')), inSourceScratch: false };
+  const linux = platform() === 'linux';
+  const rootDevice = linux ? (await stat('/')).dev : undefined;
+  if (!requested) {
+    let parent = tempRoot;
+    if (linux) {
+      // A missing/unmounted data volume must not silently send a repository
+      // materialisation back to root. Check before creating even the parent.
+      const data = await realpath('/mnt/data');
+      const device = (await stat(data)).dev;
+      if (device === rootDevice) throw new Error('scratchClone requires a separate /mnt/data filesystem.');
+      parent = join(data, 'tmp');
+      await mkdir(parent, { recursive: true });
+      parent = await realpath(parent);
+      if ((await stat(parent)).dev !== device) {
+        throw new Error('scratchClone data scratch resolves outside the /mnt/data filesystem.');
+      }
+    }
+    return { path: await mkdtemp(join(parent, 'papercusp-git-scratch-')), inSourceScratch: false };
+  }
   if (!isAbsolute(requested)) throw new Error('scratchClone.destination must be absolute.');
 
   const parent = await realpath(dirname(requested));
+  if (linux && (await stat(parent)).dev === rootDevice) {
+    throw new Error('scratchClone refuses repository materialisation on the root filesystem; choose /mnt/data/tmp.');
+  }
   const destination = resolve(parent, basename(requested));
   // Hardlink dependency snapshots need a checkout on the donor's filesystem.
   // Admit only the repository's canonical, ignored scratch subtree, never an
@@ -222,7 +243,8 @@ Promise<{ path: string; inSourceScratch: boolean }> {
   const scratchRoot = join(source, '.papercusp', 'scratch');
   const canonicalScratch = await realpath(scratchRoot).catch(() => undefined);
   const inSourceScratch = canonicalScratch === scratchRoot && strictlyWithin(scratchRoot, destination);
-  if (!strictlyWithin(tempRoot, destination) && !inSourceScratch) {
+  const dataTemp = linux ? await realpath('/mnt/data/tmp').catch(() => undefined) : undefined;
+  if (!strictlyWithin(tempRoot, destination) && !(dataTemp && strictlyWithin(dataTemp, destination)) && !inSourceScratch) {
     throw new Error(`scratchClone.destination must be below the OS temp directory (${tempRoot}) or the source repository's ignored .papercusp/scratch directory.`);
   }
   if (inSourceScratch) {

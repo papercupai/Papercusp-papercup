@@ -65,6 +65,12 @@ const ERRORISH_RE =
   /\b(error|errors|fail|failed|failure|failing|refus(?:ed|al|es)|fatal|panic|assert(?:ion)?|traceback|exception|timed? ?out|timeout|denied|not found|cannot|unable|aborted?|mismatch)\b|✗|❌/i;
 /** Lines that mention failure only to report that there was none. */
 const ZERO_FAILURE_RE = /\b(fail(?:ed|ures?|ing)?|errors?)\s*[=:]\s*0\b|\b0\s+(failed|failures?|errors?)\b|\bno (errors?|failures?)\b/i;
+/**
+ * Test-runner success lines can contain failure-shaped words in their test names
+ * (for example, `✔ the mac leg cannot finish ...`). They report a passing test,
+ * never the reason an attempt failed, so keep them out of the error-line fallback.
+ */
+const PASSING_TEST_LINE_RE = /^(?:✔|ok\s+\d+\b)/i;
 
 /**
  * Prefix of the lines the capability:bash runner itself appends to a job log
@@ -146,7 +152,7 @@ export function failureFingerprint(input: FailureFingerprintInput): FailureFinge
 
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]!;
-    if (!ERRORISH_RE.test(line) || ZERO_FAILURE_RE.test(line)) continue;
+    if (PASSING_TEST_LINE_RE.test(line) || !ERRORISH_RE.test(line) || ZERO_FAILURE_RE.test(line)) continue;
     const label = normalizeFailureText(line);
     if (label) return { fingerprint: hashKey('log', label), label, source: 'log', structured: null };
   }

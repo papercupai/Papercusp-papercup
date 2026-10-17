@@ -18,7 +18,7 @@ const flowAssertion = (flow: string, evidence: string): OperationalEvidenceArtif
 });
 
 function call(name: string, args: Record<string, unknown>, origin: string) {
-  const env = { ...process.env, PAPERCUSP_CONTEXT_TIER: 'full' };
+  const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_CONTEXT_TIER: 'full' };
   delete env.PAPERCUSP_SCRATCH_ROOT;
   const result = spawnSync(process.execPath, [resolve(root, 'apps/operator/scripts/ptool.mjs'),
     'tools:invoke', `--url=${origin}`, '--json', '-'], {

@@ -12,12 +12,15 @@ import type { PrHost } from '../pr-host/types';
 import { STANDING_PR_BRANCH } from '../harness/git-sync/decide-standing-pr';
 import { normalizeRemote } from '../pr-host/pr-poll-routine';
 import { mapWithConcurrency } from '../gym/concurrency';
+import { resolveIssuePhysicalSlug, WorkItemIdAmbiguousError } from '../work-items-physical-row';
 
 export const PR_DELIVERY_AUDIT_MAX = 100;
 const HISTORY_MAX = 100;
 const UPSTREAM_HEADS_MAX = 100;
 const terminal = new Set(['done', 'resolved', 'closed']);
-const exec = promisify(execFile);
+let execMemo: typeof execFile.__promisify__ | null = null;
+const exec = ((...args: unknown[]) =>
+  Reflect.apply((execMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 const sha = /^[0-9a-f]{40}$/;
 
 export const prDeliveryAuditScopeSchema = z.object({
@@ -73,8 +76,29 @@ export async function loadPrDeliveryAuditPopulation(
        AND w.feature_id = a.work_item_id AND w.harness_slug = a.harness_slug
      WHERE a.workspace_id = ${workspaceId} AND a.rule_id = ANY(${ruleIds}::uuid[])
      ORDER BY a.created_at, a.id LIMIT ${PR_DELIVERY_AUDIT_MAX}`;
+  // Admissions retain the member repo used for Git inspection; issue intake can
+  // store the item at its pot home. Resolve that physical row through the same
+  // by-id policy as work_items:get, without changing the admission's Git route.
+  const resolved = await mapWithConcurrency(rows, 4, async row => {
+    if (row.state != null) return row;
+    let physical: string | null;
+    try {
+      physical = await resolveIssuePhysicalSlug(sql, workspaceId, row.id, row.harness);
+    } catch (error) {
+      if (error instanceof WorkItemIdAmbiguousError) return row;
+      throw error;
+    }
+    if (!physical) return row;
+    const [item] = await sql<{
+      state: string; authority: string | null; payload: Record<string, unknown>;
+    }[]>`
+      SELECT status AS state, authority, payload FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId} AND feature_id = ${row.id}
+         AND harness_slug = ${physical}`;
+    return item ? { ...row, ...item } : row;
+  });
   return { missingRuleIds: ruleIds.filter(id => !found.has(id)), total: Number(rows[0]?.total ?? 0),
-    rows: rows.map(r => ({ id: r.id, harness: r.harness, ruleId: r.rule_id,
+    rows: resolved.map(r => ({ id: r.id, harness: r.harness, ruleId: r.rule_id,
       state: r.state, authority: r.authority, payload: r.payload })) };
 }
 

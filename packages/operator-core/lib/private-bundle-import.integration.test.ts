@@ -54,12 +54,14 @@ it.skipIf(!candidate)('compares plain Node and tsx loading of the identical reta
       });
       let output = '';
       let loaded: unknown;
-      child.stdout.on('data', chunk => {
-        output += String(chunk);
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', (chunk: string) => {
+        output += chunk;
         const receipt = output.match(/^PRIVATE_IMPORT_LOADED (.+)$/m)?.[1];
         if (receipt && !loaded) { loaded = JSON.parse(receipt); child.kill('SIGTERM'); }
       });
-      child.stderr.on('data', chunk => { output += String(chunk); });
+      child.stderr.on('data', (chunk: string) => { output += chunk; });
       const timer = setTimeout(() => child.kill('SIGKILL'), 100_000);
       const terminal = await new Promise<{ code: number | null; signal: string | null }>((done, reject) => {
         child.once('error', reject);

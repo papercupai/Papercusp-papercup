@@ -19,8 +19,11 @@ import {
   parseSessionSelector,
   parseTurnRef,
   refreshTargetSessionBeforeRead,
+  SESSION_READ_REFRESH_TIMEOUT_MS,
 } from './_shared';
 import { SESSION_TURN_TEXT_CAP } from '../../search/session-ingest';
+import type { SelfSession } from '../../search/self-session';
+import { withBoundedTimeout } from '../../bounded-timeout';
 import { DisclosureRefused, disclosureRefusalData } from '../../personal-vault/disclosure-ledger';
 import { emptyTally, withheldReceipt, withholdRestrictedTurns } from '../../personal-vault/transcript-exclusion';
 
@@ -216,6 +219,7 @@ export default defineTool({
     let querySessionId: string | undefined = sessionId;
     let selfNote: string | undefined;
     const selfSession = sessionId === 'self';
+    let liveSelfSession: SelfSession | null = null;
     let ownerIds: string[] | undefined;
     if (selfSession) {
       // Keep `session:'self'` aligned with sessions:search: a cold carry-respawn
@@ -232,6 +236,7 @@ export default defineTool({
         { workspaceId },
       );
       const self = resolved.selfSession;
+      liveSelfSession = self ?? null;
       // `resolveSearchFilters` intentionally fails soft when the live
       // transcript cannot be pinned (for example, during a carry-respawn or
       // resolver timeout). Its owner filter still scopes the read across the
@@ -334,7 +339,76 @@ export default defineTool({
     // explicitly unknown while preserving the index chunk and its pagination.
     const cappedRows = rows.filter((row) => row.text_full_chars >= SESSION_TURN_TEXT_CAP);
     for (const row of cappedRows) row.source_completeness = 'unknown';
-    const archiveBackedRows = cappedRows.filter((row) =>
+
+    // A cap-length index row already contains every character in the requested
+    // chunk while its offset stays below the cap. Do not decompress and parse
+    // the entire archived transcript just to rediscover that bounded prefix:
+    // `sessions:read { tail: 15 }` is a common read shape, and that recovery
+    // made a small indexed read scale with the whole archive (EI-26185536694007565).
+    // Recover only when the requested chunk reaches beyond the indexed cap;
+    // the response remains explicitly `source_completeness:'unknown'` until
+    // that caller asks for the uncapped continuation.
+    const needsFullSourceRecovery = (row: (typeof cappedRows)[number]) => {
+      const offset = row.text_offset ?? textOffset;
+      return offset >= SESSION_TURN_TEXT_CAP || textLimit > SESSION_TURN_TEXT_CAP - offset;
+    };
+    const recoverableCappedRows = cappedRows.filter(needsFullSourceRecovery);
+
+    // A live self transcript is still on disk even though it has not reached
+    // the permanent archive yet. Recover capped rows from that source before
+    // falling through to the ended-session archive reader.
+    const applyRecoveredTurns = (
+      candidates: typeof cappedRows,
+      recovered: { turns: Array<{ turn_idx: number; speaker: string; ts: string | null; text: string }> },
+    ) => {
+      const recoveredTurns = new Map(recovered.turns.map((turn) => [turn.turn_idx, turn]));
+      for (const row of candidates) {
+        const turn = recoveredTurns.get(row.turn_idx);
+        const offset = row.text_offset ?? textOffset;
+        const sameTimestamp = row.ts == null && turn?.ts == null ||
+          row.ts != null && turn?.ts != null && Date.parse(row.ts) === Date.parse(turn.ts);
+        const indexedChunkMatches = turn != null &&
+          turn.speaker === row.speaker && sameTimestamp &&
+          turn.text.slice(offset, offset + row.text.length) === row.text;
+        if (turn && indexedChunkMatches) {
+          row.text = turn.text;
+          row.text_full_chars = turn.text.length;
+          row.text_offset = undefined;
+          row.source_completeness = 'complete';
+        }
+      }
+    };
+    if (selfSession && liveSelfSession) {
+      const liveRows = recoverableCappedRows.filter((row) =>
+        row.source_kind === liveSelfSession!.sourceKind && row.session_id === liveSelfSession!.sessionId,
+      );
+      if (liveRows.length) {
+        try {
+          const { readLiveSessionTurns } = await import('../../session-archive-read');
+          const liveResult = await withBoundedTimeout(
+            () => readLiveSessionTurns(
+              liveSelfSession!.filePath,
+              liveSelfSession!.sourceKind,
+              ownerIds?.[0] ?? null,
+              { fullSource: true, turnIndices: liveRows.map((row) => row.turn_idx) },
+            ),
+            {
+              fallback: null,
+              timeoutMs: SESSION_READ_REFRESH_TIMEOUT_MS,
+              label: 'sessions:read live source recovery',
+            },
+          );
+          if (!liveResult.degraded && liveResult.value?.errors.length === 0) {
+            applyRecoveredTurns(liveRows, liveResult.value);
+          }
+        } catch (error) {
+          console.warn(`[sessions:read] live source recovery failed: ${(error as Error)?.message ?? error}`);
+        }
+      }
+    }
+
+    const archiveBackedRows = recoverableCappedRows.filter((row) =>
+      row.source_completeness !== 'complete' &&
       typeof row.session_id === 'string' && row.session_id.length > 0 &&
       (row.source_kind === 'claude' || row.source_kind === 'codex' || row.source_kind === 'omp'),
     );
@@ -366,24 +440,7 @@ export default defineTool({
           } catch (error) {
             console.warn(`[sessions:read] capped-turn archive recovery failed: ${(error as Error)?.message ?? error}`);
           }
-          const archiveTurns = new Map((archived?.errors.length === 0 ? archived.turns : []).map((turn) => [turn.turn_idx, turn]));
-          for (const row of group) {
-            const turn = archiveTurns.get(row.turn_idx);
-            const offset = row.text_offset ?? textOffset;
-            const sameTimestamp = row.ts == null && turn?.ts == null ||
-              row.ts != null && turn?.ts != null && Date.parse(row.ts) === Date.parse(turn.ts);
-            const indexedChunkMatches = turn != null &&
-              turn.speaker === row.speaker && sameTimestamp &&
-              turn.text.slice(offset, offset + row.text.length) === row.text;
-            if (turn && indexedChunkMatches) {
-              row.text = turn.text;
-              row.text_full_chars = turn.text.length;
-              row.text_offset = undefined;
-              row.source_completeness = 'complete';
-            } else {
-              row.source_completeness = 'unknown';
-            }
-          }
+          if (archived?.errors.length === 0) applyRecoveredTurns(group, archived);
         }
       }
     }
@@ -517,7 +574,16 @@ export default defineTool({
               : r.text.slice(0, textLimit);
             const fullChars = typeof r.text_full_chars === 'number' ? r.text_full_chars : r.text.length;
             const nextOffset = offset + text.length;
-            const textTruncated = fullChars > nextOffset;
+            // An index-capped row reports only the known prefix length. When
+            // this chunk reaches that cap, the source may continue even though
+            // `fullChars === nextOffset`; keep the continuation pointer so the
+            // caller can explicitly request the recovery path.
+            const sourceMayContinuePastCap =
+              r.source_completeness === 'unknown' &&
+              fullChars === SESSION_TURN_TEXT_CAP &&
+              offset < SESSION_TURN_TEXT_CAP &&
+              nextOffset >= SESSION_TURN_TEXT_CAP;
+            const textTruncated = fullChars > nextOffset || sourceMayContinuePastCap;
             // The indexed query always returns session_id; retain the requested
             // session as a defensive fallback for archive/test-shaped rows.
             const ref = formatSessionTurnRef(r.source_kind, r.session_id ?? sessionId, r.turn_idx);

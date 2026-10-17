@@ -3,6 +3,32 @@ export const PRODUCT_TUTORIAL_VERSION = 3 as const;
 export type ProductTutorialPolicy = 'navigation' | 'workspace' | 'connected' | 'help' | 'voice';
 export interface ProductTutorialLesson { id: string; title: string; introduction: string; help: string }
 export interface ProductTutorialTarget { id: string; module: string; route: string; teaches: string; policy: ProductTutorialPolicy }
+/** Video chapters reuse the account guide's destinations and learning scope.
+ * Playback is advisory; only the domain lesson can verify completed work. */
+export interface ProductTutorialChapter {
+  id: string; title: string; lessonId: string; destination: string; prompt: string | null;
+}
+export const PRODUCT_TUTORIAL_CHAPTERS: readonly ProductTutorialChapter[] = [
+  { id: 'meet-papercup', title: 'Meet PaperCup', lessonId: 'welcome', destination: '/?app=workspaces', prompt: null },
+  { id: 'create-project', title: 'Create one useful project', lessonId: 'cloud-first-agent', destination: '/?app=home&chatPane=true', prompt: 'Create a project called Workshop Planner in this cloud workspace.\n\nI want a small browser app for organizing workshop tasks. Let me add a task with a title, owner and due date, mark it complete, and keep the tasks after a page reload.\n\nKeep the data in the browser. Start from an available maintained Papercusp web-app template. Show me the template choice and plan before implementation. Keep the app private for this tutorial.' },
+  { id: 'follow-work', title: 'Follow Plans, HUD and Work', lessonId: 'work', destination: '/?app=plans', prompt: null },
+  { id: 'inspect-preview', title: 'Inspect the first version', lessonId: 'work', destination: '/?app=work', prompt: null },
+  { id: 'grade-project', title: 'Create a rubric and grade', lessonId: 'operations', destination: '/?app=home&chatPane=true', prompt: 'Create a reusable Workshop Planner rubric from this project’s requirements.\n\nCover adding tasks, owners and due dates, completion, persistence after reload, understandable empty/error states, and keyboard usability.\n\nBind repeatable checks where possible and say what still needs human review. Enter grade mode and grade the current app against this rubric. Show the resulting scorecard and evidence. Keep this grade pass to assessment; leave implementation of findings for our next approved step.' },
+  { id: 'read-scorecard', title: 'Read the scorecard', lessonId: 'operations', destination: '/?app=evals', prompt: null },
+  { id: 'git-sync', title: 'Follow a change into Git', lessonId: 'operations', destination: '/?app=git', prompt: null },
+  { id: 'project-knowledge', title: 'Inspect project knowledge', lessonId: 'knowledge', destination: '/?app=docs', prompt: 'Retain the verified project decisions as project memories. Document the tested procedure for running this project’s checks and verifying task persistence. Link the procedure to the code and evidence it describes.' },
+  { id: 'connect-psu', title: 'Connect psu to the same cloud', lessonId: 'cloud-first-agent', destination: '/?app=cloud', prompt: 'Continue Workshop Planner in this cloud workspace. Read the current plan and work-item state. Propose the next steps for the remaining rubric findings, plus owner/status filters and a CSV export of the visible tasks. Show the proposed work before starting it.' },
+  { id: 'visible-fleet', title: 'Continue with a visible fleet', lessonId: 'work', destination: '/?app=desktops', prompt: 'Approve this continuation. Lead a visible desktop fleet on this same cloud instance and project. Split genuinely independent work into separate lanes, choose the member count to fit the plan, and use the available model/account choices we review. Verify the changes and report the results. Keep the app private.' },
+  { id: 'automatic-context', title: 'See context arrive during work', lessonId: 'knowledge', destination: '/?app=hud', prompt: null },
+  { id: 'verify-return', title: 'Verify and return later', lessonId: 'operations', destination: '/?app=evals', prompt: 'Grade the updated Workshop Planner against the same rubric. Compare the new scorecard with the previous one, show the evidence for the changes, and tell me what still needs work.' },
+];
+export interface ProductTutorialVideoMedia {
+  id: string; src: string; captionsSrc: string; transcriptHref: string;
+  /** Measured offsets from the delivered artifact, never script estimates. */
+  chapters: readonly { id: string; startSeconds: number; transcript: string }[];
+}
+export interface ProductTutorialVideoPosition { mediaId: string; chapterId: string; positionSeconds: number }
+export const productTutorialChapterIds = new Set(PRODUCT_TUTORIAL_CHAPTERS.map(chapter => chapter.id));
 export const PRODUCT_TUTORIAL_LESSONS: readonly ProductTutorialLesson[] = [
   {
     "id": "welcome",

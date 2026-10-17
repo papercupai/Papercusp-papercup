@@ -22,6 +22,7 @@ import type {
   AcceptanceMatrixFile, Candidate, EvidenceRow, Exclusion, Verdict,
 } from './release-acceptance';
 import { runChildWithLiveLog, runReleaseAcceptance } from './release-acceptance-run';
+import { assertPackageBuildDependencies, loadPinnedPackageCandidate, readPackageBuildLock } from './public-package-candidate';
 
 // Mutation-probe seam (copy-out tier): PUI_RELEASE_ACCEPTANCE_SUBJECT substitutes a mutated
 // copy of release-acceptance.ts for EVERY importer — this suite and release-acceptance-run.ts,
@@ -219,13 +220,25 @@ describe.sequential('P-012 release stage over a real candidate (package → inst
   });
 
   test('AUTO-BAR-R-12-P-012: release acceptance drives user input through the installed PUI binary and the production operator', { timeout: 90 * 60_000 }, async () => {
-    const head = execFileSync('git', ['-C', REPO_ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-    const packaged = spawnSync(path.join(REPO_ROOT, 'apps/tui/scripts/package-release.sh'),
-      ['--target', TARGET, '--sha', head, '--out', path.join(WORK, 'dist')],
-      { cwd: REPO_ROOT, encoding: 'utf8', timeout: BUILD_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024 });
-    const line = packaged.stdout?.split('\n').find((entry) => entry.startsWith('PUI_PACKAGE_RESULT '));
-    expect(packaged.status, `${packaged.stdout}\n${packaged.stderr}`.slice(-8_000)).toBe(0);
-    const pkg = JSON.parse(line!.slice('PUI_PACKAGE_RESULT '.length)) as { archive: string; name: string; sourceSha: string };
+    const harnessSha = execFileSync('git', ['-C', REPO_ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    // The same checked candidate input as the package lifecycle suite: updating
+    // either harness must not silently replace an accepted release with HEAD.
+    const pinned = loadPinnedPackageCandidate(process.env, path.join(WORK, 'dist'), TARGET);
+    const head = pinned?.sourceSha ?? harnessSha;
+    expect(execFileSync('git', ['-C', REPO_ROOT, 'rev-parse', '--verify', `${head}^{commit}`], { encoding: 'utf8' }).trim()).toBe(head);
+    let pkg: { archive: string; name: string; sourceSha: string };
+    if (pinned) {
+      pkg = pinned;
+      console.log(`PUI_RELEASE_STAGE_CANDIDATE ${JSON.stringify({ harnessSha, ...pinned })}`);
+    } else {
+      assertPackageBuildDependencies(REPO_ROOT, readPackageBuildLock(REPO_ROOT, head));
+      const packaged = spawnSync(path.join(REPO_ROOT, 'apps/tui/scripts/package-release.sh'),
+        ['--target', TARGET, '--sha', head, '--out', path.join(WORK, 'dist')],
+        { cwd: REPO_ROOT, encoding: 'utf8', timeout: BUILD_TIMEOUT_MS, maxBuffer: 256 * 1024 * 1024 });
+      const line = packaged.stdout?.split('\n').find((entry) => entry.startsWith('PUI_PACKAGE_RESULT '));
+      expect(packaged.status, `${packaged.stdout}\n${packaged.stderr}`.slice(-8_000)).toBe(0);
+      pkg = JSON.parse(line!.slice('PUI_PACKAGE_RESULT '.length)) as typeof pkg;
+    }
     expect(pkg.sourceSha).toBe(head);
 
     const result = await runReleaseAcceptance({

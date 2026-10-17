@@ -10,7 +10,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { supersedeConversation } from '../conversations';
-import { runBulk, bulkContent } from '../../_bulk';
+import { runBulk, bulkContent, bulkEnvelopeSchema } from '../../_bulk';
 import { hardText } from '../../limits';
 
 const replacementSpec = z.object({
@@ -63,6 +63,7 @@ export default defineTool({
       (a) => (a.items?.length ?? 0) > 0 || Boolean(a.id) || Boolean(a.conversation_id),
       { message: 'pass { id, replacement } for one, or items:[{ id, replacement }] for many' },
     ),
+  result: bulkEnvelopeSchema(),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const list = args.items?.length

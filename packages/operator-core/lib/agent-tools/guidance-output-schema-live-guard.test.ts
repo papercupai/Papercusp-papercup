@@ -297,6 +297,36 @@ describe('guidance return shapes resolve through registered output schemas', () 
     expect(returnSchemaViolations([computer])).toEqual([]);
   });
 
+  it.each([
+    { name: 'consult:get_feedback', fields: ['request_key', 'state', 'pending'] },
+    { name: 'dev:service_health', fields: ['dhtUniverse'] },
+    { name: 'work_items:get', fields: ['receipt'] },
+  ])('publishes $name fields promised by its return guidance', ({ name, fields }) => {
+    const tool = namedTool(name);
+    expect(returnSchemaViolations([tool])).toEqual([]);
+    const properties = { ...((tool.outputJsonSchema!.properties ?? {}) as JsonSchema) };
+    for (const field of fields) {
+      expect(properties).toHaveProperty(field);
+      delete properties[field];
+    }
+    const mutated = { ...tool, outputJsonSchema: { ...tool.outputJsonSchema!, properties } };
+    expect(returnSchemaViolations([mutated])).toContainEqual({
+      tool: name,
+      kind: 'promised-field-missing',
+      fields,
+    });
+  });
+
+  it('describes the work-item envelope before its nested receipt example', () => {
+    const tool = namedTool('work_items:get');
+    expect(structuralReturnFields(tool.guidance!.returns!)).toEqual(['ok', 'results', 'counts', 'read', 'receipt']);
+    const receipt = (tool.outputJsonSchema!.properties as JsonSchema).receipt as JsonSchema;
+    expect(receipt).toMatchObject({
+      type: 'array',
+      items: { properties: { id: { type: 'string' }, delivered: { type: 'boolean' }, reason: { type: 'string' } } },
+    });
+  });
+
   it('every authored returns contract is backed by a registered, resolvable schema', () => {
     const violations = returnSchemaViolations(listAllProjectedTools() as readonly CatalogTool[]);
     expect(

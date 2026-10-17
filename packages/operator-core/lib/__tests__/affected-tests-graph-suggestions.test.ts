@@ -23,10 +23,12 @@ import { fileURLToPath } from 'node:url';
 
 import {
   GRAPH_SNAPSHOT_SCHEMA,
+  MAX_CONCURRENT_SOURCE_READS,
   MAX_VISITED_FILES,
   MAX_DEPENDENCY_PATH_DEPTH,
   buildSnapshot,
   computeGraphSuggestions,
+  computeGraphSuggestionsAsync,
   extractSpecifiers,
   formatSnapshotAge,
   formatSuggestionLine,
@@ -309,6 +311,53 @@ describe('graph-dependency-suggestions — pure module', () => {
     });
     expect(built.stats.kept).toBe(2);
     expect(reads.filter((p) => p === 'libs/core/package.json')).toHaveLength(1);
+  });
+
+  it('preloads reachable importer sources with bounded concurrency and preserves exact edge results', async () => {
+    const sources: Record<string, string> = {
+      'libs/core/package.json': '{"name":"@scope/api"}',
+    };
+    const edges = Array.from({ length: 32 }, (_, index) => {
+      const importer = `apps/fixture/importer-${index}.ts`;
+      sources[importer] = `import { client } from '@scope/api/client'; export const value = client;`;
+      return { importer, imported: 'libs/core/src/client.ts' };
+    });
+    const readSource = (path: string) => sources[path] ?? null;
+    const { snapshot } = buildSnapshot({ edges, index: INDEX, readSource, now: NOW });
+    const sync = computeGraphSuggestions({
+      changed: ['libs/core/src/client.ts'],
+      snapshotPath: '/fixture/snapshot.json',
+      readFile: () => JSON.stringify(snapshot),
+      readSource,
+      ownerOfPath: (file) => file.startsWith('apps/fixture/') ? ['@papercusp/backup'] : [],
+      now: NOW,
+    });
+
+    let active = 0;
+    let maxActive = 0;
+    const readCounts = new Map<string, number>();
+    const asyncReport = await computeGraphSuggestionsAsync({
+      changed: ['libs/core/src/client.ts'],
+      snapshotPath: '/fixture/snapshot.json',
+      readFile: () => JSON.stringify(snapshot),
+      readSource: async (path: string) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        readCounts.set(path, (readCounts.get(path) ?? 0) + 1);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        active -= 1;
+        return sources[path] ?? null;
+      },
+      ownerOfPath: (file) => file.startsWith('apps/fixture/') ? ['@papercusp/backup'] : [],
+      now: NOW,
+    });
+
+    expect(asyncReport).toEqual(sync);
+    expect(asyncReport.workspaces).toEqual(['@papercusp/backup']);
+    expect(maxActive).toBeGreaterThan(1);
+    expect(maxActive).toBeLessThanOrEqual(MAX_CONCURRENT_SOURCE_READS);
+    for (const edge of edges) expect(readCounts.get(edge.importer)).toBe(1);
+    expect(readCounts.get('libs/core/package.json')).toBe(1);
   });
 
   it('walks verified importers transitively and records every rejection', () => {

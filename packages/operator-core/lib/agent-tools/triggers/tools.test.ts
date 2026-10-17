@@ -149,6 +149,19 @@ describe('triggers:* tool surface', () => {
     );
   });
 
+  it('accepts and forwards explicit coalescing mode and refuses an unknown mode', async () => {
+    const input = {
+      sourceId: '00000000-0000-4000-8000-000000000002', harness: 'papercusp', plan: 'thread',
+      eventPattern: 'ext:slack:mention', stormPolicy: { mode: 'coalesce-with-cap' },
+    };
+    const parsed = bindTool.args.parse(input);
+    await bindTool.handler(parsed, ctx);
+    expect(createBinding).toHaveBeenCalledWith(expect.anything(), 'ws-1', expect.objectContaining({
+      stormPolicy: { mode: 'coalesce-with-cap' },
+    }));
+    expect(() => bindTool.args.parse({ ...input, stormPolicy: { mode: 'invented' } })).toThrow();
+  });
+
   it('maps the standard operation target and literal input through the shared bind seam', async () => {
     await bindTool.handler({
       sourceId: '00000000-0000-4000-8000-000000000002',

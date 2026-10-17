@@ -214,6 +214,28 @@ describe('derivePlanLifecycleForRead — composition', () => {
     expect(r.derived.verdict).toBe('implementation-complete');
   });
 
+  it('keeps the full lifecycle census but narrows per-item enrichment readers', async () => {
+    const iterationItemIds: string[][] = [];
+    const grindingItemIds: string[][] = [];
+    const r = await derivePlanLifecycleForRead({
+      items: [item('P-001', 'done'), item('P-002', 'todo'), item('P-003', 'done')],
+      storedStatus: 'active',
+      signals: signals(),
+      enrichmentItemIds: ['P-002'],
+      readIterations: async ({ itemIds }) => {
+        iterationItemIds.push([...itemIds]);
+        return null;
+      },
+      readGrinding: async ({ itemIds }) => {
+        grindingItemIds.push([...itemIds]);
+        return null;
+      },
+    });
+    expect(iterationItemIds).toEqual([['P-002']]);
+    expect(grindingItemIds).toEqual([['P-002']]);
+    expect(r.derived.counts).toMatchObject({ total: 3, done: 2, dropped: 0, nonTerminal: 1 });
+  });
+
   // EI-22078741539479611: an acceptance rubric retires WITH its shipped plan, so a
   // shipped plan's "no active rubric" is a validation that CLOSED. The retired read
   // exists to say so — and runs ONLY where it can change the answer.

@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { createFreshPgDb, applyMigrationForTest, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import type { ScorecardRow, ScorecardGradingAuditCurrentness } from './scorecards';
+import type { Rubric } from './rubrics';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, url: '' }));
 vi.mock('@papercusp/db-org', async (original) => ({
@@ -18,13 +19,16 @@ vi.mock('./embedded-pg-discovery', async (original) => ({
 
 import {
   confirmPendingGradingAuditReservation,
+  dispatchPendingGradingAudits,
   GRADING_AUDIT_DISPATCH_ACTOR,
   reconcilePendingGradingAudits,
   releasePendingGradingAudit,
   reservePendingGradingAudit,
+  type DispatchPendingGradingAuditsDeps,
+  type DispatchPendingGradingAuditsInput,
 } from './grading-integrity';
 import { _closeGradingAuditSubjectMutexForTests, isCurrentSourceAuditResponder } from './scorecards';
-import { closeTask, getTask, listTasks, registerTask } from './task-manager/store';
+import { closeTask, getTask, listTasks, markSpawned, registerTask } from './task-manager/store';
 
 const workspaceId = 'default';
 const taskLedgerMigration = fileURLToPath(new URL('../../../libs/papercusp/libs/db/sql/696-task-ledger.sql', import.meta.url));
@@ -42,6 +46,16 @@ const replacementId = 'EI-25100000000000006';
 const now = new Date('2026-10-06T08:00:00.000Z');
 const reservation = { key: `grading-audit:${issueId}`, reservedAt: now.toISOString() };
 const prior = { key: reservation.key, reservedAt: '2026-10-06T07:00:00.000Z' };
+type LaunchHandler = NonNullable<DispatchPendingGradingAuditsDeps['launch']>;
+type LaunchResult = Awaited<ReturnType<LaunchHandler>>;
+function launchResult(data: unknown): LaunchResult {
+  return { data } as LaunchResult;
+}
+
+function standardRubric(): Rubric {
+  return { kind: 'standard' } as Rubric;
+}
+
 const backoff = {
   until: '2026-10-06T09:00:00.000Z', source: 'retry-window' as const,
   code: 'launch_failed', recordedAt: now.toISOString(), reason: 'fixture launch failed',
@@ -50,7 +64,14 @@ let db: FreshPgDb;
 let prepared: postgres.Sql;
 
 async function seed(id = issueId, gradingAudit: Record<string, unknown> = { state: 'pending' }) {
-  const payload = JSON.stringify({ observation: { gradingAudit } });
+  const payload = JSON.stringify({
+    _ei: { created_by: 'fixture-evaluator' },
+    observation: {
+      rubricRef: 'standard-rubric',
+      evidenceFingerprint: 'fixture-evidence',
+      gradingAudit,
+    },
+  });
   await db.sql`
     INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, item_kind, payload)
     VALUES (${workspaceId}, 'papercusp', ${id}, 'change', ${payload}::text::jsonb)`;
@@ -193,4 +214,134 @@ it('retires cancelled missions from real private ledgers and preserves a pending
   expect((await getTask(tasks[1].taskId, db.sql))?.state).toBe('killed');
   expect((await getTask(tasks[2].taskId, db.sql))?.state).toBe('pending');
   expect(launch).not.toHaveBeenCalled();
+});
+
+it('rebinds a live null-session auditor to its paced 429 transcript before launching an independent replacement', async () => {
+  const ownerId = 'su-retained-auditor';
+  const sessionId = 'native-retained-session';
+  const taskLogPath = '/tmp/grading-retained-native.log';
+  const nativeTranscriptPath = '/tmp/grading-retained-native.jsonl';
+  const nativeTranscript = JSON.stringify({
+    type: 'assistant',
+    sessionId,
+    isSidechain: false,
+    isApiErrorMessage: true,
+    apiErrorStatus: 429,
+    message: { role: 'assistant', stop_reason: 'stop_sequence', content: [{ type: 'text', text: 'API error' }] },
+  });
+  const pacedLog =
+    "API Error: Request rejected (429) · inference-gateway: account 'aviynw4' paced/paused; retry after 60s";
+
+  await seed(issueId, { state: 'pending', stampedAt: prior.reservedAt });
+  const liveTask = await registerTask({
+    class: 'agent-session',
+    title: 'live independent grading auditor',
+    argv: [],
+    logPath: taskLogPath,
+    launchedBy: GRADING_AUDIT_DISPATCH_ACTOR,
+    harnessSlug: 'papercusp',
+    detail: { label: reservation.key, coordOwnerId: ownerId },
+  }, { workspaceId }, db.sql);
+  await markSpawned(liveTask.taskId, {}, db.sql);
+  expect((await getTask(liveTask.taskId, db.sql))?.sessionId).toBeNull();
+
+  const bindTaskNativeSession = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['bindTaskNativeSession']>>()
+    .mockResolvedValue(sessionId);
+  const listNativeSessions = vi.fn<
+    NonNullable<DispatchPendingGradingAuditsDeps['listNativeSessionsByTranscriptHandles']>
+  >().mockResolvedValue([{ sessionId, coordOwnerId: ownerId, agent: 'claude' }]);
+  const resolveTranscript = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['findSessionTranscript']>>()
+    .mockResolvedValue(nativeTranscriptPath);
+  const killTask = vi.fn(async (taskId: string) => {
+    await closeTask(taskId, { state: 'killed', exitReason: 'paced gateway 429 fixture' }, db.sql, {
+      emitTerminal: async () => {},
+    });
+    return { ok: true as const, taskId, action: 'kill' as const };
+  });
+  const launchCalls: Array<Parameters<LaunchHandler>> = [];
+  const launch: LaunchHandler = async (...args) => {
+    launchCalls.push(args);
+    return launchResult({
+      deduped: false,
+      launch: { opened: 1, tasks: [{ taskId: 'task-retained-fallback', logPath: '/tmp/grading-retained-fallback.log' }] },
+      agentStarted: true,
+    });
+  };
+
+  const result = await dispatchPendingGradingAudits(
+    {
+      targetIds: [issueId],
+      ctx: { workspaceId, harnessSlug: 'papercusp' } as DispatchPendingGradingAuditsInput['ctx'],
+      harness: 'papercusp',
+    },
+    {
+      listScorecards: async (filter) => {
+        const rows = await db.sql`
+          SELECT feature_id, payload->'observation'->'gradingAudit' AS audit
+            FROM harness_shared.work_items
+           WHERE workspace_id = ${workspaceId}
+             AND feature_id = ANY(${filter?.issueIds ?? [issueId]}::text[])`;
+        return rows.map((row): ScorecardRow => ({
+          issueId: row.feature_id,
+          createdAt: now.toISOString(),
+          createdBy: 'fixture-evaluator',
+          rubricRef: 'standard-rubric',
+          ratings: {},
+          nKeys: 0,
+          missingKeys: [],
+          extraKeys: [],
+          rubricResolved: true,
+          synthesized: false,
+          score10: null,
+          linkedItems: [],
+          evidenceFingerprint: 'fixture-evidence',
+          gradingAudit: row.audit,
+        }));
+      },
+      getRubric: async () => standardRubric(),
+      route: async () => ({ state: 'fallback', reason: 'fixture preserves the independent launch path' }),
+      listTasks: (filter) => listTasks(filter, db.sql),
+      bindTaskNativeSession,
+      listNativeSessionsByTranscriptHandles: listNativeSessions,
+      findSessionTranscript: resolveTranscript,
+      killTask,
+      launch,
+      isCurrentSourceAuditResponder: async () => true,
+      providerCanServe: async () => true,
+      listWorkspaceWideLoopStanddownOwners: async () => new Set(),
+      readLogTail: (path) => path === nativeTranscriptPath
+        ? nativeTranscript
+        : path === taskLogPath ? pacedLog : 'healthy fallback boot',
+      readLogMtimeMs: () => Date.now(),
+      terminalLogRecheckDelayMs: 0,
+      terminalLogMaxRechecks: 0,
+      now: () => Date.now(),
+    },
+  );
+
+  expect(bindTaskNativeSession).toHaveBeenCalledExactlyOnceWith(liveTask.taskId);
+  expect(listNativeSessions).toHaveBeenCalledExactlyOnceWith([sessionId]);
+  expect(resolveTranscript).toHaveBeenCalledExactlyOnceWith(sessionId, { owner: ownerId });
+  expect(killTask).toHaveBeenCalledExactlyOnceWith(liveTask.taskId, {
+    includeSubtree: true,
+    escalateAfterMs: 5_000,
+  });
+  expect((await getTask(liveTask.taskId, db.sql))?.state).toBe('killed');
+  expect(result.receipts[0]).toMatchObject({
+    issueId,
+    state: 'launched',
+    terminalRecovery: {
+      retiredTaskIds: [liveTask.taskId],
+      codes: ['inference_gateway_error'],
+    },
+  });
+  expect(launchCalls).toHaveLength(1);
+  expect(launchCalls[0]?.[1]).toMatchObject({
+    ownerId: GRADING_AUDIT_DISPATCH_ACTOR,
+    principal: { kind: 'system', slug: GRADING_AUDIT_DISPATCH_ACTOR, workspaceId },
+  });
+  expect(await readAudit()).toMatchObject({
+    state: 'pending',
+    dispatchReservation: { key: reservation.key },
+  });
 });

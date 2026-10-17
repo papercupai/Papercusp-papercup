@@ -265,12 +265,30 @@ describe('restoreHiveSeed — restore-before-join orchestration', () => {
     const { seedDir, keyHex } = await cutFixtureSeed();
     const targetRepoDir = join(tmpDir('rhs-r3-'), 'repo');
     const targetStoreDir = join(tmpDir('rhs-s3-'), 'hyperbee');
+    const logs: string[] = [];
 
-    const res = await restoreHiveSeed({ seedDir, targetRepoDir, targetStoreDir });
+    const res = await restoreHiveSeed({
+      seedDir,
+      targetRepoDir,
+      targetStoreDir,
+      log: (msg) => logs.push(msg),
+    });
     expect(res.ran).toBe(true);
     expect(res.deferred).toEqual([]);
     expect(res.outcomes.every((o) => o.ok)).toBe(true);
     expect(res.outcomes.map((o) => o.kind).sort()).toEqual(['corestore', 'git']);
+    expect(logs).toEqual(
+      expect.arrayContaining([
+        '[seed] git verify started',
+        '[seed] git verify succeeded',
+        '[seed] git restore started',
+        '[seed] git restore succeeded',
+        '[seed] corestore verify started',
+        '[seed] corestore verify succeeded',
+        '[seed] corestore restore started',
+        '[seed] corestore restore succeeded',
+      ]),
+    );
     // Git checkout + corestore blocks both pre-positioned.
     expect(readFileSync(join(targetRepoDir, 'code.txt'), 'utf8')).toBe('the repo');
     expect(await corestoreSeededLength(targetStoreDir, keyHex)).toBe(3);

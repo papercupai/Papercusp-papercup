@@ -4295,6 +4295,7 @@ async function unstagePreStagedProtectedPaths(
   repoPath: string,
   excludePaths: readonly string[],
   log: (message: string) => void,
+  preserveStagedDeletions: ReadonlySet<string> = new Set(),
 ): Promise<{ ok: true; paths: string[] } | { ok: false; error: string }> {
   const normalizedExcludes = [
     ...new Set(excludePaths.map((path) => path.trim().replace(/^\.\/+|\/+$/g, '')).filter(Boolean)),
@@ -4308,11 +4309,25 @@ async function unstagePreStagedProtectedPaths(
       error: `could not inspect pre-staged protected paths: ${gitFailureDetail(staged)}`,
     };
   }
+  const stagedDeletions = new Set<string>();
+  if (preserveStagedDeletions.size > 0) {
+    const deletions = await runGit(
+      ['diff', '--cached', '--name-only', '--no-renames', '--diff-filter=D', '-z'],
+      repoPath,
+    );
+    if (deletions.code !== 0) {
+      return { ok: false, error: 'could not inspect pre-staged deletions: ' + gitFailureDetail(deletions) };
+    }
+    for (const path of deletions.stdout.split('\0').filter(Boolean)) {
+      if (preserveStagedDeletions.has(path)) stagedDeletions.add(path);
+    }
+  }
   const protectedStaged = [
     ...new Set(
       staged.stdout
         .split('\0')
         .filter(Boolean)
+        .filter((path) => !stagedDeletions.has(path))
         .filter((path) => normalizedExcludes.some((exclude) => gitSyncPathsOverlap(path, exclude))),
     ),
   ];
@@ -4401,6 +4416,8 @@ export async function guardStagedIndexBeforeCommit(opts: {
   readText: (relPath: string) => Promise<string | null>;
   /** Paths excluded before staging (content/deletion/size guards, explicit exclusions, and package closures). */
   excludedDependencies?: readonly string[];
+  /** Cumulative-limit paths with no overlapping exclusion; only exact staged deletions may bypass this exclusion. */
+  preserveCumulativeUntracking?: ReadonlySet<string>;
   /** WI-6554700010008496: why each `excludedDependencies` path is excluded, keyed by path. */
   excludedDependencyReasons?: ReadonlyMap<string, string>;
   /** Live-lock/cohort paths remain infectious even when an older copy exists in HEAD. */
@@ -4649,7 +4666,28 @@ export async function guardStagedIndexBeforeCommit(opts: {
   for (const offender of providerOffenders) {
     if (stagedSet.has(offender.file)) log(`[git-sync] ${scope}: post-stage guard: ${offender.file} ${offender.error}`);
   }
-  const pathsToUnstage = [...new Set([...excludedDependencies, ...importers, ...heldProviders])]
+  // A cumulative-size exclusion can be the reason an already-staged generated-file deletion
+  // was removed from the shared index. Preserve only that exact deletion. The pre-stage set
+  // has already excluded paths with another exclusion; the post-stage checks here keep late
+  // locks, drift, content/gitlink/package/provider conditions authoritative. Importers and
+  // staged providers are appended separately below, so this exception cannot erase their holds.
+  const cumulativeDeletionExemptions = new Set(
+    stagedDeletions.filter(
+      (path) =>
+        opts.preserveCumulativeUntracking?.has(path) &&
+        !lateLocked.has(path) &&
+        !drifted.has(path) &&
+        !contentHeld.has(path) &&
+        !gitlinkGuard.paths.includes(path) &&
+        !packageClosure.paths.includes(path) &&
+        !changedTrackedModulesOutsideIndex.has(path),
+    ),
+  );
+  const pathsToUnstage = [...new Set([
+    ...excludedDependencies.filter((path) => !cumulativeDeletionExemptions.has(path)),
+    ...importers,
+    ...heldProviders,
+  ])]
     .filter((path) => stagedSet.has(path));
   let unstagedPaths: string[] = [];
   if (pathsToUnstage.length > 0) {
@@ -4887,8 +4925,9 @@ const CARRY_UPDATE_INDEX_BATCH = 200;
  * from HEAD, and a `git add -f` of an ignored file would never be committed. So entries the
  * shared index ADDED or DELETED relative to the base tree are copied over as they are; the
  * caller's `add -A` then brings each carried entry up to the working tree, and the
- * post-stage guard inspects the result like any other staged path. Excluded paths are never
- * carried. Read before the guard, so a later peer write to the shared index cannot reach it.
+ * post-stage guard inspects the result like any other staged path. Excluded additions are never
+ * carried; only explicitly preserved cumulative-size untracking deletions cross that filter.
+ * Read before the guard, so a later peer write to the shared index cannot reach it.
  */
 async function carrySharedIndexMembership(
   runGit: RunGit,
@@ -4896,6 +4935,7 @@ async function carrySharedIndexMembership(
   repoPath: string,
   baseTree: string,
   isExcluded: (path: string) => boolean,
+  carryExcludedDeletions: ReadonlySet<string> = new Set(),
 ): Promise<{ ok: true; added: number; removed: number } | { ok: false; error: string }> {
   const diff = await runGit(['diff-index', '--cached', '-z', '--no-renames', '--diff-filter=AD', baseTree, '--'], repoPath);
   if (diff.code !== 0) {
@@ -4908,10 +4948,11 @@ async function carrySharedIndexMembership(
   for (let i = 0; i + 1 < fields.length; i += 2) {
     const meta = fields[i].trim();
     const path = fields[i + 1];
-    if (!meta.startsWith(':') || !path || isExcluded(path)) continue;
+    if (!meta.startsWith(':') || !path) continue;
     const [, dstMode, , dstSha, status] = meta.slice(1).split(' ');
-    if (status === 'A' && dstMode && dstSha) additions.push('--cacheinfo', dstMode, dstSha, path);
-    else if (status === 'D') removals.push(path);
+    const excluded = isExcluded(path);
+    if (status === 'A' && dstMode && dstSha && !excluded) additions.push('--cacheinfo', dstMode, dstSha, path);
+    else if (status === 'D' && (!excluded || carryExcludedDeletions.has(path))) removals.push(path);
   }
   for (let i = 0; i < removals.length; i += CARRY_UPDATE_INDEX_BATCH) {
     const batch = removals.slice(i, i + CARRY_UPDATE_INDEX_BATCH);
@@ -6095,7 +6136,29 @@ async function commitOneRepoWithScratch(
       );
     }
     const excludePaths = [...new Set([...packageSafeBaseExcludePaths, ...manifestClosure.paths])];
-    const preStagedProtected = await unstagePreStagedProtectedPaths(runGit, repoPath, excludePaths, o.log);
+    const cumulativeExcludedPaths = oversized
+      .filter((file) => file.exclusionReason === 'cumulative-limit')
+      .map((file) => file.path);
+    const nonCumulativeExcludePaths = [
+      ...effectiveExcludePaths,
+      ...atomicExclusions.paths,
+      ...oversized.filter((file) => file.exclusionReason !== 'cumulative-limit').map((file) => file.path),
+      ...contentErrors.map((error) => error.file),
+      ...cargoPackageClosure.paths,
+      ...manifestClosure.paths,
+    ];
+    const preserveCumulativeUntracking = new Set(
+      cumulativeExcludedPaths.filter(
+        (path) => !nonCumulativeExcludePaths.some((excluded) => gitSyncPathsOverlap(path, excluded)),
+      ),
+    );
+    const preStagedProtected = await unstagePreStagedProtectedPaths(
+      runGit,
+      repoPath,
+      excludePaths,
+      o.log,
+      preserveCumulativeUntracking,
+    );
     noteSlowPhase('protected path unstage');
     if (!preStagedProtected.ok) {
       return {
@@ -6153,6 +6216,7 @@ async function commitOneRepoWithScratch(
         refreshLiveLockHoldings: o.refreshLiveLockHoldings,
         readText: (rel) => o.readText(repoPath, rel),
         excludedDependencies: excludePaths,
+        preserveCumulativeUntracking,
         excludedDependencyReasons: exclusionReasons,
         generatedDeclarationPaths: o.forceCatchAllPaths,
         alwaysInfectiousDependencies: [
@@ -6252,8 +6316,15 @@ async function commitOneRepoWithScratch(
         stageGit = privateGit;
         catchAllPrivate = { base: seeded.base, baseTree: seeded.baseTree, gitDir: catchAllSite.site.gitDir };
         const carryExcludes = [...stagingExcludePaths, ...migrationQuarantinedPaths];
-        const carried = await carrySharedIndexMembership(runGit, privateGit, repoPath, seeded.baseTree, (path) =>
-          carryExcludes.some((ex) => path === ex || path.startsWith(`${ex}/`)),
+        const isCarryExcluded = (path: string): boolean =>
+          carryExcludes.some((ex) => path === ex || path.startsWith(ex + '/'));
+        const carried = await carrySharedIndexMembership(
+          runGit,
+          privateGit,
+          repoPath,
+          seeded.baseTree,
+          isCarryExcluded,
+          preserveCumulativeUntracking,
         );
         if (!carried.ok) {
           // Only IGNORED paths' membership depends on the carry; the rest of the tree still
@@ -6833,7 +6904,11 @@ async function reconcileAndPushOneRepo(
     };
   }
   const tempPacksBeforeFetch = await listTempPackFiles(runGit, repoPath);
-  const fetch = await runNetworkGitWithGitHubHttpsFallback(runGit, ['fetch', remote, branch], repoPath, o.log);
+  // A single-branch clone can exclude this branch from remote.<name>.fetch.
+  // A name-only fetch then writes only FETCH_HEAD: reconciliation cannot find
+  // the tracking ref, and later ticks download the same unreferenced history.
+  const fetchArgs = ['fetch', remote, `+refs/heads/${branch}:refs/remotes/${remote}/${branch}`];
+  const fetch = await runNetworkGitWithGitHubHttpsFallback(runGit, fetchArgs, repoPath, o.log);
   if (fetch.code !== 0) {
     const reclaimed = await pruneFailedFetchTempPacks(runGit, repoPath, tempPacksBeforeFetch, o.log);
     const cleanupNote =
@@ -7015,7 +7090,7 @@ async function reconcileAndPushOneRepo(
       );
       if (push.code !== 0 && rejectedNonFastForward(push)) {
         // A peer pushed between our fetch and push — re-fetch + re-merge once.
-        await runNetworkGitWithGitHubHttpsFallback(runGit, ['fetch', remote, branch], repoPath, o.log);
+        await runNetworkGitWithGitHubHttpsFallback(runGit, fetchArgs, repoPath, o.log);
         const m2 = await recoverIndexLockContention(
           await runGit(mergeArgs, repoPath),
           () => runGit(mergeArgs, repoPath),

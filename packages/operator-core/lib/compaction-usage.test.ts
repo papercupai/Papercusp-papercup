@@ -19,6 +19,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 }));
 import {
   codexContextSnapshotFromRollout,
+  codexContextSnapshotFromText,
   codexRolloutSessionId,
   estimateContextTokens,
   estimateContextWindowForOwner,
@@ -276,6 +277,38 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
       tokens: 40_321,
       modelContextWindow: 258_400,
     });
+  });
+
+  it('finds a valid token_count displaced beyond the initial tail by one large rollout record', async () => {
+    const tokenEvent = JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: { last_token_usage: { total_tokens: 123_456 }, model_context_window: 258_400 },
+      },
+    });
+    const largeRecord = JSON.stringify({
+      type: 'response_item',
+      payload: { type: 'function_call_output', output: 'x'.repeat(1_100 * 1024) },
+    });
+    const contents = `${tokenEvent}\n${largeRecord}\n`;
+    writeFileSync(rollout, contents);
+
+    // This is the exact old failure shape: the 1 MiB suffix contains only the
+    // tail of the large record, so parsing it alone cannot see the valid event.
+    expect(codexContextSnapshotFromText(contents.slice(-(1024 * 1024)))).toBeNull();
+
+    expect(await codexContextSnapshotFromRollout(rollout)).toEqual({
+      tokens: 123_456,
+      modelContextWindow: 258_400,
+    });
+    expect(
+      await estimateContextTokens(
+        { agent: 'codex', sessionId: 'rollout-id', sessionKey: 14795 },
+        null,
+        { findCodexRollout: async () => rollout },
+      ),
+    ).toBe(123_456);
   });
 
   // WI-10005305: the sweep asks for the same rollout twice per pass (tokens, then
@@ -854,6 +887,52 @@ describe('resolveCodexRolloutPathForRef (WI-42507 — row/home identity mismatch
         statMtimeMs: sameMtime,
       }),
     ).resolves.toBe(keyed);
+  });
+
+  it('adopts one fresh parseable sibling home when the newest adv row points at a stale parked home', async () => {
+    const staleKeyed = namedRollout(OTHER_SID, 90 * 60_000);
+    const freshSibling = siblingRollout('active-row', 5_000);
+    const tokenEvent = JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: { last_token_usage: { total_tokens: 42_000 }, model_context_window: 258_400 },
+      },
+    });
+    writeFileSync(freshSibling, `${tokenEvent}\n`);
+
+    await expect(
+      resolveCodexRolloutPathForRef(ref, 'su-duplicate-rows', {
+        findCodexRollout: async () => staleKeyed,
+        codexSiblingSessionKeys: async () => [19993],
+        findCodexRolloutByUuid: async () => null,
+        findCodexRolloutForSessionKey: async () => freshSibling,
+      }),
+    ).resolves.toBe(freshSibling);
+  });
+
+  it('keeps the keyed home when two sibling homes are fresh and parseable', async () => {
+    const staleKeyed = namedRollout(OTHER_SID, 90 * 60_000);
+    const freshA = siblingRollout('active-a', 5_000);
+    const freshB = siblingRollout('active-b', 5_000);
+    const tokenEvent = JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        info: { last_token_usage: { total_tokens: 42_000 }, model_context_window: 258_400 },
+      },
+    });
+    writeFileSync(freshA, `${tokenEvent}\n`);
+    writeFileSync(freshB, `${tokenEvent}\n`);
+
+    await expect(
+      resolveCodexRolloutPathForRef(ref, 'su-ambiguous-rows', {
+        findCodexRollout: async () => staleKeyed,
+        codexSiblingSessionKeys: async () => [19993, 20001],
+        findCodexRolloutByUuid: async () => null,
+        findCodexRolloutForSessionKey: async (key) => key === 19993 ? freshA : freshB,
+      }),
+    ).resolves.toBe(staleKeyed);
   });
 
   it('adopts a sibling rollout when the keyed home has NOTHING — but only a fresh one', async () => {

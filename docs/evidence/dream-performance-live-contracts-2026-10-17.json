@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Dream R-1 and R-2 live acceptance contracts",
+  "framework": "operational",
+  "command": ["node", "scripts/mcp-call.mjs", "code:run", "--port", "3170", "--client", "su-e41f796d-eaeb-458d-8e7b-f957a79a2445", "--workspace", "papercusp-workspace", "--json", "-"],
+  "exitCode": 0,
+  "startedAt": "2026-10-17T10:39:56.145Z",
+  "finishedAt": "2026-10-17T10:39:56.564Z",
+  "summary": "All eight authored R-1/R-2 probes passed on staging: scoped enablement and feature flags, then the active performance rubric's exact revision/hash/eight-criterion/distinct-author-and-ratifier identity. This receipt records live state; it does not certify independent fixture absence or automatic downstream usefulness.",
+  "rubricRef": "acceptance-dream-performance-grading-papercusp-2026-10-07",
+  "rubricRevision": 7,
+  "plan": "dream-performance-grading-papercusp-2026-10-07",
+  "workItems": ["WI-6554700010014250", "WI-6554700010014271"],
+  "environment": "postgres:5432",
+  "executedScript": "const startedAt=new Date().toISOString();const rr=await tools.rubrics.get({rubricRef:'acceptance-dream-performance-grading-papercusp-2026-10-07',detail:'full'});const rubric=rr.results[0].rubric;const assertions=[];for(const c of rubric.criteria.filter(c=>['r-1','r-2'].includes(c.key))){let i=0;for(const p of c.check.all){const r=p.kind==='sql'?await tools.tools.invoke({name:'dev:pg_query',args:{sql:p.sql,allowUnscoped:p.allowUnscoped,maxRows:p.maxRows}}):await tools.tools.invoke({name:p.tool,args:p.args});const raw=r.result??r;let v=raw;for(const part of p.expect.path.replace(/^\\$\\./,'').split('.')){const m=part.match(/^([^[]+)(?:\\[(\\d+)\\])?$/);v=m?v?.[m[1]]:undefined;if(m?.[2])v=v?.[Number(m[2])];}assertions.push({id:c.barKey+'-'+(++i),passed:v===p.expect.value,evidence:JSON.stringify({path:p.expect.path,expected:p.expect.value,actual:v})});}}return {startedAt,finishedAt:new Date().toISOString(),rubricRevision:rubric.revision,assertions};",
+  "replication": "Run executedScript through code:run on the identified staging runtime. The original execution read current rubric revision 7; to reproduce its immutable check definition after a later amendment, add revision:7 to rubrics:get. Compare every assertion and the rubric revision; do not reuse this historical receipt as a new observation.",
+  "assertions": [
+    {"id": "R-1-1", "passed": true, "evidence": "$.rows[0].scoped_enabled expected true; observed true."},
+    {"id": "R-1-2", "passed": true, "evidence": "$.rows[0].flags_enabled expected true; observed true."},
+    {"id": "R-2-1", "passed": true, "evidence": "$.results[0].rubric.status expected active; observed active."},
+    {"id": "R-2-2", "passed": true, "evidence": "$.results[0].rubric.revision expected 2; observed 2."},
+    {"id": "R-2-3", "passed": true, "evidence": "$.results[0].rubric.criteriaHash expected and observed 54dfcd550bc3b4b9d632966dd2c54b9f7568d8869eeb087affb3f3f3969fb9e7."},
+    {"id": "R-2-4", "passed": true, "evidence": "$.results[0].rubric.criteria.length expected 8; observed 8."},
+    {"id": "R-2-5", "passed": true, "evidence": "$.results[0].rubric.ratifiedBy expected and observed su-c30b7c30-e853-49ac-a782-48e5a4eccf45."},
+    {"id": "R-2-6", "passed": true, "evidence": "$.results[0].rubric.createdBy expected and observed su-9d472d4b-a9aa-46ea-9bd8-a40d0c3a7d2c; distinct from ratifier."}
+  ]
+}

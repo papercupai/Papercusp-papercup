@@ -799,8 +799,8 @@ export function clampToBudget(block: string, budget: number = MID_TURN_BUDGET_CH
  * composition here, at the shared delivery seam, rather than teaching the
  * memory pipeline about failure-loop state or identity rules.
  */
-export function composeMidTurnContextText(memoryBlock: string, failureHint: string, ruleContext: string): string {
-  const parts = [failureHint.trim(), ruleContext.trim(), clampToBudget(memoryBlock).trim()].filter(Boolean);
+export function composeMidTurnContextText(memoryBlock: string, failureHint: string, ruleContext: string, codeIntel = ''): string {
+  const parts = [failureHint.trim(), ruleContext.trim(), codeIntel.trim(), clampToBudget(memoryBlock).trim()].filter(Boolean);
   return parts.join('\n\n');
 }
 
@@ -862,6 +862,8 @@ export interface BatchCall {
   tool?: string;
   toolInput?: unknown;
   toolResponse?: unknown;
+  editedPaths?: string[];
+  interfaceEdits?: unknown[];
 }
 
 /**
@@ -1040,6 +1042,8 @@ const midTurnContext = defineTool({
       client?: string;
       /** Native hook response wall, shared with both retrieval legs. */
       wallMs?: number;
+      /** Bounded, caller-measured P-018 attribution; never inferred here. */
+      incidentAttribution?: import('../../../code-intelligence/push-channel').IncidentAttribution;
     };
     try {
       body = (await req.json()) as typeof body;
@@ -1085,9 +1089,15 @@ const midTurnContext = defineTool({
     const ruleContextText = postToolRuleContextText(owner, workspaceIdResolved, batchTools);
     const respond = async (memoryBlock = ''): Promise<Response> => {
       const [failureHint, ruleContext] = await Promise.all([failureHintText, ruleContextText]);
+      const { codeIntelPushText } = await import('../../../code-intelligence/push-channel');
+      const codeIntel = await codeIntelPushText({ owner, workspace: await workspaceIdResolved,
+        harness: body.harness, client: body.client,
+        incidentAttribution: body.incidentAttribution,
+        calls: Array.isArray(body.toolCalls) && body.toolCalls.length ? body.toolCalls : [{ tool: body.tool, toolInput: body.toolInput }],
+      }, clampToBudget(memoryBlock).length).catch(() => '');
       return Response.json({
         ok: true,
-        text: composeMidTurnContextText(memoryBlock, failureHint, ruleContext),
+        text: composeMidTurnContextText(memoryBlock, failureHint, ruleContext, codeIntel),
       });
     };
 

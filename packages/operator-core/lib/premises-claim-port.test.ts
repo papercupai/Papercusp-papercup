@@ -134,6 +134,11 @@ describe('detectAbsencePremises', () => {
     expect(derive('The current leg is visibly progressing, so there is no stall to remediate.')).toEqual([]);
     expect(derive('The task is advancing and there is no live blocker to clear.')).toEqual([]);
 
+    // A bounded coord:inbox census reports current state; it does not prove that
+    // an inbox reader or handler is absent from the repository.
+    expect(derive('The bounded inbox read reports there are no unanswered direct messages.')).toEqual([]);
+    expect(derive('There is no reader for unanswered direct messages.')).toHaveLength(1);
+
     expect(derive('There is no stall detector for affected tasks.')).toHaveLength(1);
   });
 

@@ -502,13 +502,16 @@ export interface WorkItemCheckpointWithMeta {
 
 /** Read a work-item's checkpoint WITH its write instant. Same scope-canonicalization
  *  as {@link getWorkItemCheckpoint}; one query. */
-export async function getWorkItemCheckpointWithMeta(ref: WorkItemCheckpointRef): Promise<WorkItemCheckpointWithMeta> {
+export async function getWorkItemCheckpointWithMeta(
+  ref: WorkItemCheckpointRef,
+  opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<WorkItemCheckpointWithMeta> {
   const ws = resolveConcreteWorkspaceId(ref.workspaceId); // EI-9013 — see getWorkItemCheckpoint
   if (!ws || !ref.workItemId) return { checkpoint: null, updatedAtMs: null };
   const scope = workItemScope(checkpointScopeHarness(ref.harness), ref.workItemId);
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{
+    const read = (client: typeof sql) => client<{
       note: string | null;
       updated_ts: string | number | null;
       latest_update?: unknown;
@@ -519,6 +522,17 @@ export async function getWorkItemCheckpointWithMeta(ref: WorkItemCheckpointRef):
              journal -> -1 -> 'subjectFingerprint' AS subject_fingerprint
         FROM harness_shared.carry_notes
        WHERE workspace_id = ${ws} AND scope = ${scope} LIMIT 1`;
+    // A caller-side race can return cancellation while this SELECT still owns
+    // a backend. Reuse the existing query.cancel bridge on a call-owned READ
+    // ONLY transaction; shared cached reads and other callers stay independent.
+    const rows = opts.signal
+      ? await boundedOrgTxn(read, {
+        readOnly: true,
+        signal: opts.signal,
+        statementTimeoutMs: opts.timeoutMs,
+        lockTimeoutMs: opts.timeoutMs,
+      })
+      : await read(sql);
     const note = (rows[0]?.note ?? '').trim();
     const subjectFingerprint = normalizeWorkItemSubjectFingerprint(rows[0]?.subject_fingerprint);
     const subjectMetadata = subjectFingerprint ? { subjectFingerprint } : {};

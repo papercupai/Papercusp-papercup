@@ -27,6 +27,18 @@ function stampedWs(spy: ReturnType<typeof vi.fn>): string | null {
 }
 
 describe('installWorkspaceHeaderFetch', () => {
+  it('carries the selected machine on portal fetch without overriding signed workspace authority', async () => {
+    const spy = stubWindow('control-plane');
+    window.location.href = 'http://127.0.0.1:3070/?desktopHost=machine-b';
+    installWorkspaceHeaderFetch({ workspace: false });
+    await window.fetch('/api/agent-sessions');
+    const headers = new Headers(spy.mock.calls[0]?.[1]?.headers);
+    expect(headers.get('x-papercusp-machine')).toBe('machine-b');
+    expect(headers.get('x-papercusp-workspace')).toBeNull();
+    await window.fetch('https://external.test/api/sessions');
+    expect(new Headers(spy.mock.calls[1]?.[1]?.headers).has('x-papercusp-machine')).toBe(false);
+  });
+
   it('stamps the workspace header on same-origin /api/* requests', async () => {
     const spy = stubWindow('ws-7');
     installWorkspaceHeaderFetch();

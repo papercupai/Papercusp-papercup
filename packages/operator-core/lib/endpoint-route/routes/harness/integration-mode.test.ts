@@ -121,6 +121,8 @@ describe('PUT /harness/:slug/integration-mode', () => {
       greenCmd: 'npm test',
       forkRemote: 'https://github.com/bot/web',
       upstreamRemote: 'git@github.com:acme/web.git',
+      hasSubmodules: undefined,
+      checkoutPath: null,
     });
   });
 

@@ -1157,6 +1157,15 @@ const retainFeedArgsSchema = z
   .optional();
 
 const REGISTRY: Record<string, QueryEntry<unknown>> = {
+  'cupboard.myListings': {
+    backingTables: [],
+    argsSchema: z.object({ limit: z.number().int().min(1).max(200).optional(),
+      cursor: z.string().regex(/^\d+$/).max(20).optional() }).strict(),
+    resolve: async (raw) => {
+      const { readMyCupboardListings } = await import('../cupboard/my-listings');
+      return [await readMyCupboardListings(raw as { limit?: number; cursor?: string })];
+    },
+  },
   // D-077: explicit refresh, because grading includes file/source currentness
   // outside PG notifications. One bounded read for the visible listing page;
   // authority is the server workspace, never a browser principal/work-item.

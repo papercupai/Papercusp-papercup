@@ -33,6 +33,7 @@ import {
   __resetLiveDefinitionsCache,
 } from '../targets/su-compact-catalog';
 import { buildCatalog } from '../targets/su-catalog';
+import { summaryGuidanceDescription } from '@papercusp/tooldef';
 
 /** A registry row shaped the way `listAllProjectedTools()` returns them. */
 function liveRow(name: string, description: string, inputSchema: unknown) {
@@ -86,7 +87,11 @@ describe('projectCatalogToCompactTier', () => {
     const tool = result.catalog.tools[0]!;
     // The curated text must be GONE — its presence is exactly the D-012 defect.
     expect(tool.description).not.toContain('CURATED-STAND-IN-DESCRIPTION');
-    expect(tool.description).toContain('Read a documentation page by slug from the live registry');
+    // The compact lead cap is measured separately from this instrument. Follow
+    // the shipping projection's current cap instead of assuming the whole lead
+    // sentence fits; the live-registry phrase must still survive the projection.
+    expect(tool.description).toBe(summaryGuidanceDescription(LIVE_DESCRIPTION));
+    expect(tool.description).toContain('Read a documentation page by slug');
     // ...and the schema must come from the live row too.
     expect(Object.keys((tool.input_schema as { properties: object }).properties)).toEqual([
       'slug',

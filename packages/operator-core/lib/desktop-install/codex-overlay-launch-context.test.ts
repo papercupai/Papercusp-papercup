@@ -122,6 +122,16 @@ describe('codex overlay reaches live launch context (P-010)', () => {
     expect(text).toContain(phrase);
   });
 
+  it('keeps one-agent implementation routing separate from platform-routed acceptance', async () => {
+    const [codex, claude] = await Promise.all([render('codex'), render('claude')]);
+    const guidance = 'A one-agent route limits implementation fan-out; it does not disable platform-routed independent acceptance checks.';
+    expect(codex.baseSource).toBe(LIVE_BASE_SOURCE);
+    expect(claude.baseSource).toBe(LIVE_BASE_SOURCE);
+    // The shared base is projected into both clients through the compact default-posture summary.
+    expect(codex.text).toContain(guidance);
+    expect(claude.text).toContain(guidance);
+  });
+
   it('drains a nested exec session through every yielded poll', async () => {
     const { text } = await render('codex');
     expect(text).toContain('while ("session_id" in result && !("exit_code" in result))');

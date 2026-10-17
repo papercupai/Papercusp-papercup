@@ -1170,6 +1170,62 @@ describe("ProductionWorkspaceHostRemoteInitializerHost cloned-repository observa
  * it — the portal's "add a pot" answered "path does not exist" on a live hosted host.
  */
 describe("ProductionWorkspaceHostRemoteInitializerHost workspace directory (WI-10004594)", () => {
+  it("observes retained data and native session home without creating or re-owning either", async () => {
+    const system = new RecordingSystem();
+    const { host } = createProductionWorkspaceHostRemoteInitializerDeps({ system, workspaceRoot: "/workspaces", now: () => NOW });
+    await expect(host.verifyRetainedWorkspace!({ workspaceId: "ws-1", hostId: "host-1", tenantIdentity: "a".repeat(64) }))
+      .resolves.toMatchObject({ retained: true, nativeSessionHomeRetained: true });
+    expect(system.directoryForms.size).toBe(0);
+    expect(system.commands).toHaveLength(1);
+    expect(system.commands[0].command).toBe("/bin/bash");
+    expect(system.commands[0].args.slice(-5)).toEqual(["a".repeat(64), "/workspaces", "/workspaces/ws-1", "/home/papercusp-workspace", "papercusp-workspace"]);
+  });
+
+  it("executes the retained probe against real files and rejects missing, foreign, unsafe and unmounted state", async () => {
+    const root = await mkdtemp(join(tmpdir(), "retained-workspace-"));
+    try {
+      const data = join(root, "data");
+      const workspaceRoot = join(data, "workspaces");
+      const home = join(data, "home", "papercusp-workspace");
+      const directory = join(workspaceRoot, "ws-1");
+      const bin = join(root, "bin");
+      await mkdir(directory, { recursive: true });
+      await mkdir(home, { recursive: true });
+      await mkdir(bin);
+      const session = join(home, "native-session.jsonl");
+      await writeFile(session, '{"checkpoint":"kept"}\n');
+      const marker = join(data, ".papercusp-tenant");
+      const expected = `papercusp-tenant-v1:${"a".repeat(64)}:fs-1\n`;
+      await writeFile(marker, expected, { mode: 0o600 });
+      await writeFile(join(bin, "findmnt"), '#!/bin/sh\nprintf "%s\\n" "${TEST_MOUNT:-fs-1 ext4 /}"\n', { mode: 0o755 });
+      // Model the root-owned marker without requiring the test runner to be root; every other
+      // stat, including the two inode-identity checks, observes the real fixture filesystem.
+      await writeFile(join(bin, "stat"), '#!/bin/sh\nif [ "$2" = "%u:%a" ]; then printf "%s\\n" "0:${TEST_MODE:-600}"; else exec /usr/bin/stat "$@"; fi\n', { mode: 0o755 });
+      const system = new RecordingSystem();
+      const { host } = createProductionWorkspaceHostRemoteInitializerDeps({ system, workspaceRoot, workspaceHome: home });
+      await host.verifyRetainedWorkspace!({ workspaceId: "ws-1", hostId: "host-1", tenantIdentity: "a".repeat(64) });
+      const command = system.commands[0];
+      const args = [...command.args];
+      args[1] = args[1].replace('data_mount=/var/lib/papercusp', `data_mount='${data}'`);
+      const run = (overrides: Record<string, string> = {}) => spawnSync(command.command, args, {
+        encoding: "utf8", env: { ...process.env, PATH: `${bin}:/usr/bin:/bin`, ...overrides },
+      }).status;
+      expect(run()).toBe(0);
+      expect(run({ TEST_MOUNT: "wrong-fs ext4 /" })).not.toBe(0);
+      expect(run({ TEST_MOUNT: "fs-1 ext4 /subtree" })).not.toBe(0);
+      expect(run({ TEST_MODE: "666" })).not.toBe(0);
+      await writeFile(marker, expected.replace("a".repeat(64), "b".repeat(64)));
+      expect(run()).not.toBe(0);
+      await rm(marker);
+      expect(run()).not.toBe(0);
+      await writeFile(marker, expected);
+      await rm(directory, { recursive: true });
+      expect(run()).not.toBe(0);
+      expect(await readFile(session, "utf8")).toBe('{"checkpoint":"kept"}\n');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   class OwnershipRecordingSystem extends RecordingSystem {
     readonly ownership = new Map<string, string>();
     async setOwnership(path: string, owner: string, group: string) {

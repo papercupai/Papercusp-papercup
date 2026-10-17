@@ -38,6 +38,7 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { readOperatorState } from '../../../operator-state-pg';
+import { ManagedUpdatePolicyError } from '../../../managed-update-policy';
 import { releaseHostBase, resolveGithubToken } from './updates-github';
 import {
   classifyChannel,
@@ -279,7 +280,15 @@ export default defineTool({
     const limit = Math.min(Math.max(Number(params.get('limit')) || 20, 1), 50);
 
     const stored = await readOperatorState<{ update_channel?: string }>('setup_wizard_state');
-    const channel = resolveChannel(params, stored?.update_channel);
+    let channel: Channel;
+    try {
+      channel = resolveChannel(params, stored?.update_channel);
+    } catch (error) {
+      if (error instanceof ManagedUpdatePolicyError) {
+        return Response.json({ error: error.code, message: error.message }, { status: error.status });
+      }
+      throw error;
+    }
 
     const base = { channel, product, current_version: currentVersion };
     const opts = { channel, target, arch, product, currentVersion, limit };

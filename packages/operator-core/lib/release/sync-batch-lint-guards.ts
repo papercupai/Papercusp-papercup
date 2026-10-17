@@ -144,16 +144,43 @@ export function classifyGuardRun(run: GuardRun, script?: SyncLintGuardScript): G
     !run.output.split(/\r?\n/).some((line) => line.startsWith('TEST_FILE_ASSERTION_FAILURE file='))) {
     return 'undetermined';
   }
-  if (STACK_FRAME_RE.test(run.output) || ENVIRONMENT_FAILURE_RE.test(run.output)) return 'undetermined';
+  if (
+    STACK_FRAME_RE.test(run.output) ||
+    structuredAssertionHasStackFrame(run.output) ||
+    ENVIRONMENT_FAILURE_RE.test(run.output)
+  ) return 'undetermined';
   return 'fail';
 }
 
 /** A repo-relative file path token: at least one directory and an extension. */
 const PATH_TOKEN_RE = /(?:^|[\s'"`(,=])((?:\/[^\s'"`()]+?)|(?:[A-Za-z0-9_@.+\-[\]]+(?:\/[A-Za-z0-9_@.+\-[\]]+)+))\.([A-Za-z0-9]{1,8})(?=$|[\s'"`):,;])/gm;
+/** `check-no-identity-literals` prints one machine-readable-ish file header per hit. */
+const IDENTITY_LITERAL_DIAGNOSTIC_RE = /^\s{2}(.+?\.[A-Za-z0-9]{1,8}):\d+\s+\[[^\]]+\]\s*$/;
+/** `check-no-box-identity` prints `path:line (user "…")` before the matched source line. */
+const BOX_IDENTITY_DIAGNOSTIC_RE = /^  (.+):\d+  \(user "[^"]+"\)\s*$/;
+/** The owner-name-tag checker prints the matched path before its rendered finding. */
+const OWNER_NAME_TAG_DIAGNOSTIC_RE =
+  /^\s{2}(.+?\.[A-Za-z0-9]{1,8}):\d+\s+(?:\[owner:[^\]]+\]|OWNER … \([^)]+\))\s*$/;
 
 /** Structured paths emitted by scripts/test-files.mjs for measured assertion failures. */
 const TEST_FILE_ASSERTION_FAILURE_FILE_RE = /^TEST_FILE_ASSERTION_FAILURE file=("(?:\\.|[^"\\])*")(?:\s|$)/;
 const TEST_FILE_ASSERTION_FAILURE_MESSAGE_RE = /\smessage=("(?:\\.|[^"\\])*")(?:\s|$)/;
+
+/** The test-file runner JSON-escapes assertion messages, so runner stack frames in
+ * `message=` are not visible to STACK_FRAME_RE until that field is decoded. */
+function structuredAssertionHasStackFrame(output: string): boolean {
+  for (const line of output.split(/\r?\n/)) {
+    const match = TEST_FILE_ASSERTION_FAILURE_MESSAGE_RE.exec(line);
+    if (!match) continue;
+    try {
+      const message: unknown = JSON.parse(match[1]!);
+      if (typeof message === 'string' && STACK_FRAME_RE.test(message)) return true;
+    } catch {
+      // A malformed assertion record is not evidence of a source violation here.
+    }
+  }
+  return false;
+}
 
 /** Design lint's writer lists source paths relative to apps/, while file= names its test. */
 function designLintMessageOffenders(line: string): string[] {
@@ -206,7 +233,29 @@ export function parseGuardOffenders(output: string, repoRoot: string, script?: S
     .split(/\r?\n/)
     .filter((line) => line.startsWith('TEST_FILE_ASSERTION_FAILURE file='));
   const candidates: string[] = [];
-  if (assertionFailureLines.length > 0) {
+  if (script === 'lint:no-owner-name-tags') {
+    // Its explanation names audit-release-bundle.py, and its source excerpts may
+    // contain paths too. Only the path:line + renderLeak header is an offender.
+    for (const line of output.split(/\r?\n/)) {
+      const match = OWNER_NAME_TAG_DIAGNOSTIC_RE.exec(line);
+      if (match) candidates.push(match[1]!);
+    }
+  } else if (script === 'lint:no-identity-literals') {
+    // The finding's source excerpt can itself contain paths (for example a JSON `scope`
+    // field naming a declaration file). Only the checker’s `path:line [key]` header
+    // identifies the file that actually matched the build-box identity.
+    for (const line of output.split(/\r?\n/)) {
+      const match = IDENTITY_LITERAL_DIAGNOSTIC_RE.exec(line);
+      if (match) candidates.push(match[1]!);
+    }
+  } else if (script === 'lint:no-box-identity') {
+    // The following source excerpt can contain paths unrelated to the finding (for example
+    // a JSON field naming a declaration file). Only the checker's diagnostic header counts.
+    for (const line of output.split(/\r?\n/)) {
+      const match = BOX_IDENTITY_DIAGNOSTIC_RE.exec(line);
+      if (match) candidates.push(match[1]!);
+    }
+  } else if (assertionFailureLines.length > 0) {
     for (const line of assertionFailureLines) {
       if (script === 'lint:design-primitives') {
         candidates.push(...designLintMessageOffenders(line));

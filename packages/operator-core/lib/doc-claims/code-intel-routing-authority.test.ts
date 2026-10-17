@@ -32,6 +32,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const GUIDANCE_FILES = [
   'CLAUDE.md',
   'AGENTS.md',
+  // Deferred parts remain retrievable guidance even when no client projects them.
+  'packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md',
   'apps/operator/prompts/papercusp-su-engineer.tools.md',
   'apps/operator/prompts/papercusp-su-power.tools.md',
 ] as const;
@@ -120,7 +122,7 @@ describe('D-001 code-intelligence routing authority', () => {
   describe('false-positive controls (correct guidance must NOT be flagged)', () => {
     it('does not flag a banned tool named in the "not" column — that IS the fix', () => {
       const verdict = judgeCodeIntelRouting(
-        '| call chains | `gitnexus.context` / `gitnexus.impact` | `gitnexus.query` — unavailable; may SIGSEGV the shared MCP process (D-065) |',
+        '| call chains | `graph:query` | `gitnexus.query` — unavailable; may SIGSEGV the shared MCP process (D-065) |',
       );
       expect(verdict.violations).toEqual([]);
       expect(verdict.positionsChecked).toBeGreaterThan(0);
@@ -139,13 +141,46 @@ describe('D-001 code-intelligence routing authority', () => {
           '| the question | the authority |',
           '|---|---|',
           '| definition, references, type truth | `lsp:query` |',
-          '| call chains, impact radius | `gitnexus.context` / `gitnexus.impact` |',
+          '| call chains, impact radius | `graph:query` |',
           '| a syntax pattern or codemod | `code:structural` |',
           '| packaging evidence for a reader | `code:pack` |',
         ].join('\n'),
       );
       expect(verdict.ok).toBe(true);
       expect(verdict.positionsChecked).toBe(4);
+    });
+  });
+
+  describe('query outcome vintage (EI-26178649957036371)', () => {
+    it('catches the stale absolute outcome even in the permitted not column', () => {
+      const verdict = judgeCodeIntelRouting(
+        '| topology | `graph:query` | `gitnexus.query` — UNRANKED NOISE, not empty (D-021) |',
+      );
+      expect(verdict.violations).toEqual([expect.objectContaining({
+        tool: 'gitnexus.query', position: 'status-claim', line: 1,
+      })]);
+    });
+
+    it('catches a multiline prose claim without misclassifying it as a recommendation', () => {
+      const verdict = judgeCodeIntelRouting(
+        'Do not use `gitnexus.query`; it returns\nunranked noise, not empty results.',
+      );
+      expect(verdict.violations).toEqual([expect.objectContaining({ position: 'status-claim' })]);
+    });
+
+    it('accepts dated history alongside the current fail-closed contract', () => {
+      const verdict = judgeCodeIntelRouting(
+        '| topology | `graph:query` | `gitnexus.query` fails closed before dispatch (D-065); historical builds returned unranked noise (D-021) |',
+      );
+      expect(verdict.ok).toBe(true);
+    });
+
+    it('does not treat a historical measurement or fenced reproduction as a current claim', () => {
+      const verdict = judgeCodeIntelRouting([
+        'Do not use `gitnexus.query`: historical builds returned unranked noise (D-021).',
+        '', '```md', '`gitnexus.query` — UNRANKED NOISE, not empty', '```',
+      ].join('\n'));
+      expect(verdict.ok).toBe(true);
     });
   });
 
@@ -212,8 +247,7 @@ describe('D-001 code-intelligence routing authority', () => {
     it('catches the exact debugger.tools.md sentence that pitched gitnexus.context for definitions', () => {
       const verdict = judgeCodeIntelRouting(PRE_R2_DEBUGGER_LINE);
       expect(verdict.ok).toBe(false);
-      expect(verdict.violations).toHaveLength(1);
-      expect(verdict.violations[0]!).toMatchObject({ tool: 'gitnexus.context', position: 'prose-recommendation', instead: 'lsp:query' });
+      expect(verdict.violations).toContainEqual(expect.objectContaining({ tool: 'gitnexus.context', position: 'prose-recommendation', instead: 'lsp:query' }));
     });
 
     it('catches gitnexus.context as the authority of a definition row', () => {
@@ -222,11 +256,32 @@ describe('D-001 code-intelligence routing authority', () => {
       expect(verdict.violations[0]!).toMatchObject({ tool: 'gitnexus.context', position: 'authority-cell' });
     });
 
-    it('does NOT flag gitnexus.context for topology, in a row or in the su playbook sentence', () => {
+    it('catches the deferred corpus definition recommendation across a hard wrap', () => {
+      const verdict = judgeCodeIntelRouting([
+        'For "where is this symbol defined" use',
+        '`gitnexus.context { name }` (no path argument to get wrong); for "does this TOOL',
+        'exist", `tools:find`.',
+      ].join('\n'));
+      expect(verdict.violations).toContainEqual(expect.objectContaining({
+        tool: 'gitnexus.context', instead: 'lsp:query', position: 'prose-recommendation',
+      }));
+    });
+
+    it('preserves a fenced historical recommendation with its current replacement', () => {
+      const verdict = judgeCodeIntelRouting([
+        'Current definition lookups use `lsp:query`; the historical recommendation below is superseded.',
+        '', '```md',
+        'For "where is this symbol defined" use `gitnexus.context { name }`.',
+        '```',
+      ].join('\n'));
+      expect(verdict.ok, formatRoutingViolations('historical corpus fixture', verdict.violations)).toBe(true);
+    });
+
+    it('preserves optional internal comparisons while routing default topology to the native surface', () => {
       const source = [
-        '| call chains, impact radius, topology | `gitnexus.context` / `gitnexus.impact` | `gitnexus.query` |',
+        '| call chains, impact radius, topology | `graph:query` | `gitnexus.query` |',
         '',
-        'Use `gitnexus.context` for a known symbol, `graph:query` for topology, or `rg` for keywords.',
+        'Optional internal `gitnexus.context` / `gitnexus.impact` comparisons retain index freshness and D-005 authority.',
       ].join('\n');
       const verdict = judgeCodeIntelRouting(source);
       expect(verdict.ok, formatRoutingViolations('fixture', verdict.violations)).toBe(true);
@@ -238,12 +293,86 @@ describe('D-001 code-intelligence routing authority', () => {
       expect(verdict.ok, formatRoutingViolations('fixture', verdict.violations)).toBe(true);
     });
 
-    it('does NOT flag the corrected debugger line: definitions and gitnexus.context sit in different sentences', () => {
+    it('catches the former debugger topology default even when its definition route is correct', () => {
       const verdict = judgeCodeIntelRouting(
         '- Then code: find where a symbol is defined with `lsp:query` (compiler semantics). When the gitnexus-bridge plugin is installed, `gitnexus.context` (callers/callees of a known symbol) and `gitnexus.impact` (downstream radius) are the fastest way to find call sites + impact.',
       );
-      expect(verdict.ok, formatRoutingViolations('fixture', verdict.violations)).toBe(true);
+      expect(verdict.ok).toBe(false);
+      expect(verdict.violations).toContainEqual(expect.objectContaining({
+        tool: 'gitnexus.context', instead: 'graph:query (bounded first-party topology)',
+      }));
       expect(verdict.positionsChecked).toBeGreaterThan(0);
+    });
+
+    it('catches the former topology table and an unqualified scoper recommendation', () => {
+      for (const source of [
+        '| call chains, impact radius, subsystem/route topology | `gitnexus.context` / `gitnexus.impact` |',
+        '- The gitnexus-bridge plugin exposes code-graph queries (`gitnexus.context`, `gitnexus.impact`).',
+      ]) {
+        const verdict = judgeCodeIntelRouting(source);
+        expect(verdict.ok).toBe(false);
+        expect(verdict.violations.map(v => v.tool)).toEqual(['gitnexus.context', 'gitnexus.impact']);
+      }
+    });
+
+    it('does not let a later optional sentence excuse a default topology recommendation', () => {
+      const verdict = judgeCodeIntelRouting('Use `gitnexus.context` for call sites. Optional internal comparisons remain authorized.');
+      expect(verdict.violations).toContainEqual(expect.objectContaining({ tool: 'gitnexus.context' }));
+    });
+
+    it('preserves the wrong-direction warning and its native replacement', () => {
+      const verdict = judgeCodeIntelRouting('Failure modes include `gitnexus.impact` silently answering CALLEES on an out-of-enum direction — ask `graph:query` for callers.');
+      expect(verdict.ok, formatRoutingViolations('fixture', verdict.violations)).toBe(true);
+    });
+  });
+
+  describe('API-impact defaults (EI-26184007961589078)', () => {
+    const ORIGINAL_ARCHITECT_STEP =
+      '3. When the gitnexus-bridge plugin is installed, `gitnexus.api_impact` shows the API-surface blast radius of the proposed change.';
+
+    it('catches the exact architect workflow step, including a hard wrap', () => {
+      for (const source of [ORIGINAL_ARCHITECT_STEP, ORIGINAL_ARCHITECT_STEP.replace('shows the ', 'shows the\n')]) {
+        const verdict = judgeCodeIntelRouting(source);
+        expect(verdict.violations).toEqual([expect.objectContaining({
+          tool: 'gitnexus.api_impact', position: 'prose-recommendation',
+          instead: 'graph:query (bounded first-party topology)',
+        })]);
+        expect(verdict.positionsChecked).toBeGreaterThan(0);
+      }
+    });
+
+    it('catches API-surface and blast-radius authority cells without relying on the tool name', () => {
+      for (const question of ['API surface', 'blast-radius']) {
+        const verdict = judgeCodeIntelRouting(`| ${question} | \`gitnexus.api_impact\` |`);
+        expect(verdict.violations).toEqual([expect.objectContaining({
+          tool: 'gitnexus.api_impact', position: 'authority-cell',
+        })]);
+      }
+    });
+
+    it('permits explicitly optional internal comparisons in prose and authority cells', () => {
+      for (const source of [
+        'Use `graph:query` for bounded first-party topology; `gitnexus.api_impact` is an optional internal comparison of API-surface blast radius.',
+        '| API surface | `graph:query`; optional internal `gitnexus.api_impact` comparison |',
+      ]) {
+        const verdict = judgeCodeIntelRouting(source);
+        expect(verdict.ok, formatRoutingViolations('optional API comparison', verdict.violations)).toBe(true);
+        expect(verdict.positionsChecked).toBeGreaterThan(0);
+      }
+    });
+
+    it('preserves a negative warning and fenced historical evidence', () => {
+      const verdict = judgeCodeIntelRouting([
+        'Do not use `gitnexus.api_impact` as the default API-surface route; use `graph:query` for bounded topology.',
+        '', '```md', ORIGINAL_ARCHITECT_STEP, '```',
+      ].join('\n'));
+      expect(verdict.ok, formatRoutingViolations('historical API recommendation', verdict.violations)).toBe(true);
+      expect(verdict.positionsChecked).toBeGreaterThan(0);
+    });
+
+    it('does not let a later optional sentence excuse a default API recommendation', () => {
+      const verdict = judgeCodeIntelRouting(`${ORIGINAL_ARCHITECT_STEP} Optional internal comparisons remain available.`);
+      expect(verdict.violations).toEqual([expect.objectContaining({ tool: 'gitnexus.api_impact' })]);
     });
   });
 

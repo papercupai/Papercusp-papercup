@@ -767,11 +767,12 @@ export default defineTool({
         // with its fix already committed, and it is not a one-off — 47 of the ~449 open,
         // unheld items holding a checkpoint cite a background job.
         //
-        // WARN, never refuse. detectBgJobCheckpointClaim is deliberately BROAD ("a false
-        // positive only prompts a verification the reader should do anyway"), so gating a
-        // release on it would block legitimate ones on a low-precision signal. The releasing
-        // agent is also the ONE reader who can cheaply settle it — they still have the pid and
-        // the shell. Fail-soft: a checkpoint-read hiccup must never fail the release itself.
+        // WARN, never refuse. The classifier only treats active detached-execution claims or
+        // pending handles as evidence; historical task IDs and explicit terminal/no-live
+        // statements are not claims that work is still running. It still cannot establish that
+        // a referenced process is live or owned by this reader, so the warning must direct the
+        // caller to verify rather than assert liveness. Fail-soft: a checkpoint-read hiccup
+        // must never fail the release itself.
         const checkpointMeta =
           wasHeld || claimHold === true
             ? await getWorkItemCheckpointWithMeta({
@@ -815,15 +816,13 @@ export default defineTool({
           releaseCheckpoint && detectBgJobCheckpointClaim(releaseCheckpoint).detected
             ? {
                 strandedCheckpointWarning:
-                  `You are releasing '${it.id}' while its checkpoint cites a BACKGROUND JOB as the evidence it is waiting on. ` +
-                  `That job's bookkeeping lives in YOUR process/shell and does not survive your session (EI-16611) — the next ` +
-                  `reader gets a checkpoint promising a result that can never arrive, and the item sits open as if unstarted ` +
-                  `(WI-5895 sat 17 days that way with its fix already committed). You are the last reader who can settle this ` +
-                  `cheaply, while you still have the pid and the log. Before walking away, do ONE of: (a) verify the job now ` +
-                  `(check the referenced pid is alive AND the log reached the runner's OWN completion marker — a log that just ` +
-                  `stopped growing is ambiguous, not proof) and work_items:complete it; (b) re-checkpoint replacing the bg-job ` +
-                  `reference with a re-runnable command a successor can execute from scratch; or (c) work_items:set_state ` +
-                  `{ state:'blocked' } with the reason, so it lands somewhere that gets re-read instead of looking claimable.`,
+                  `You are releasing '${it.id}' while its checkpoint appears to cite a BACKGROUND JOB as evidence that work is pending. ` +
+                  `A native shell/task handle can be session-local and disappear on teardown (EI-16611), but checkpoint text alone cannot prove ` +
+                  `that the job is still live or owned by this session. Before walking away, check the referenced process/task with ` +
+                  `the status source that created it and inspect the runner's own completion marker if available. If it is complete, ` +
+                  `record the result and work_items:complete; if it is still active or the handle is unavailable, do not leave the ` +
+                  `item claimable with a pending result — retain/reclaim ownership with a durable recheck, or replace the handle with ` +
+                  `a re-runnable command or work_items:set_state { state:'blocked' } with the exact wait condition.`,
               }
             : {};
         // EI-20744001855099113: a completion assertion from the holder is a second,

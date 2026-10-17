@@ -15,7 +15,7 @@
  * browser — symmetric to `installWorkspaceHeaderFetch`. Only operator API URLs
  * are stamped (same-origin/loopback); external URLs pass through untouched.
  */
-import { getBrowserWorkspaceId } from '../browser-workspace';
+import { getBrowserMachineId, getBrowserWorkspaceId } from '../browser-workspace';
 import { isOperatorApiUrl, withWorkspaceParam } from './workspace-api-target';
 
 const WRAPPED_MARK = '__pcWorkspaceParamWrapped__';
@@ -24,7 +24,7 @@ const WRAPPED_MARK = '__pcWorkspaceParamWrapped__';
  * Idempotently wrap `window.EventSource` so operator SSE connects carry the
  * window's workspace as `?ws=`. No-op when already wrapped or outside a browser.
  */
-export function installWorkspaceParamEventSource(): void {
+export function installWorkspaceParamEventSource(options: { workspace?: boolean } = {}): void {
   if (typeof window === 'undefined') return;
   const Current = window.EventSource as
     | (typeof EventSource & { [WRAPPED_MARK]?: boolean })
@@ -35,7 +35,16 @@ export function installWorkspaceParamEventSource(): void {
     let finalUrl: string | URL = url;
     try {
       const raw = typeof url === 'string' ? url : url.href;
-      if (isOperatorApiUrl(raw)) finalUrl = withWorkspaceParam(raw, getBrowserWorkspaceId());
+      if (isOperatorApiUrl(raw)) {
+        finalUrl = options.workspace === false ? raw : withWorkspaceParam(raw, getBrowserWorkspaceId());
+        const machineId = getBrowserMachineId();
+        if (machineId) {
+          const parsed = new URL(finalUrl, window.location.href);
+          if (!parsed.searchParams.has('desktopHost')) parsed.searchParams.set('desktopHost', machineId);
+          finalUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || raw.startsWith('//')
+            ? parsed.href : parsed.pathname + parsed.search + parsed.hash;
+        }
+      }
     } catch {
       /* fall through with the original url */
     }

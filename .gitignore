@@ -13,6 +13,14 @@ node_modules.old*/
 **/__pycache__/
 *.pyc
 
+# Hook edits use atomic temporary siblings before rename.  Git-sync must never
+# sweep those transient files into the source tree while a rename is in flight.
+apps/operator/scripts/hooks/cc/*.tmp*
+
+# Runtime mirrors stage atomic asset replacements at the caller's package root.
+# Git-sync must not enumerate these files while the producer renames them away.
+.mirror-tree.tmp.*
+
 .next/
 .next-prod/
 .next-build-cache/
@@ -196,6 +204,9 @@ apps/operator/docs/plans/**/*.md
 # slash-anchored patterns miss the .papercusp dirs that appear inside packages/apps.
 .papercusp/dependency-generations/
 **/.papercusp/dependency-generations/
+# Exact-ref materialization inputs and writer markers are temporary runtime state too.
+.papercusp/dependency-exact-ref/
+**/.papercusp/dependency-exact-ref/
 # The env-named generation store recorded for env-less callers (WI-10005159).
 **/.papercusp/dependency-generation-root
 
@@ -367,7 +378,7 @@ apps/operator/public/internal/docs/llms-small.txt
 # WI-3336: esbuild-bundled host entry (bundle-host.sh) — built per bg-host restart
 apps/operator/dist-host/
 # Private proof hosts use named siblings of the default generated bundle.
-apps/operator/dist-host-*/
+**/apps/operator/dist-host-*/
 apps/operator/dist-hosted-control-plane/
 # Per-run bundle written by scripts/verify-tauri-headless.sh. Swept into 79e67ad983 (228 files,
 # ~2M lines) because it was missing here, which reds the VAL census on bundled code.

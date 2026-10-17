@@ -1,5 +1,5 @@
 /**
- * tools:invoke — call ANY tool in the ~550-tool catalog by name, without it
+ * tools:invoke — call ANY tool in the full tool catalog by name, without it
  * being in your loaded tool list (dynamic-tool-surface-2026-07-01, D-003).
  *
  * The universal reachability escape hatch that complements `tools:find`. On a
@@ -274,7 +274,7 @@ export default defineTool({
   // (EI-9242).
   timeoutSec: 1080,
   description:
-    'Call ANY tool in the full ~550-tool catalog by name, even one not in your loaded tool list. ' +
+    'Call ANY tool in the full tool catalog by name, even one not in your loaded tool list. ' +
     // ⚠ THIS SENTENCE IS DELIBERATELY A HARD RAIL, AND MUST STAY ONE (D-047).
     // `summaryGuidanceDescription` keeps "one lead sentence plus every hard rail",
     // and `isSafetyClause` recognises a rail ONLY by a ⛔/🚨/⚠ glyph or an ALL-CAPS

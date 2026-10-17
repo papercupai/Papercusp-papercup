@@ -877,6 +877,19 @@ describe('installPapercuspFiles', () => {
 });
 
 describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
+  it.each(['engineer', 'power', 'generic'])('renders native topology guidance from the real %s source', async (profile) => {
+    const operatorAppRoot = fileURLToPath(new URL('../../../../../apps/operator/', import.meta.url));
+    const rendered = await renderSuPlaybook({ agent: 'claude', profile, operatorAppRoot });
+    expect(rendered.baseSource).toBe(path.join(operatorAppRoot, 'prompts',
+      `papercusp-su-${profile === 'generic' ? 'engineer' : profile}.tools.md`));
+    const row = rendered.text.split('\n').find(line => line.startsWith('  | call chains,'));
+    expect(row).toContain('`graph:query`');
+    expect(row).toContain('bounded `paths`');
+    expect(row).not.toContain('gitnexus');
+    expect(rendered.text).toContain('Optional internal `gitnexus.context` / `gitnexus.impact`');
+    expect(rendered.text).toContain('D-004 excludes GitNexus from public/installer distribution');
+  });
+
   const MARKER = '<!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->';
 
   beforeEach(async () => {
@@ -1181,7 +1194,7 @@ describe('renderSuPlaybook project-guide splice (psu-isolation P-001 / D-002)', 
  * immediately while operator-core waits for a deploy, so a base edit that only the NEW code
  * understands would leak a raw marker into every live render during the window between them.
  */
-describe('shared base notes reach the LIVE blueprint base (recurrence guard)', () => {
+describe('shared base notes retain blueprint reference contracts (recurrence guard)', () => {
   const blueprintBase = new URL(
     '../../../../../libs/papercusp/packages/harness/blueprints/base/prompts/su.md',
     import.meta.url,
@@ -1227,13 +1240,14 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
       binding: suSessionBinding({ fleetRole: 'member' }),
     }).text;
     const [full, fleet, member] = await Promise.all([
-      renderSuPlaybook({ agent: 'claude', baseSource: fileURLToPath(blueprintBase) }),
-      renderSuPlaybook({ agent: 'claude', baseSource: fileURLToPath(blueprintBase), tier: 'fleet' }),
+      renderSuPlaybook({ agent: 'claude', baseSource: fileURLToPath(blueprintBase), referenceMode: 'inline' }),
+      renderSuPlaybook({ agent: 'claude', baseSource: fileURLToPath(blueprintBase), tier: 'fleet', referenceMode: 'inline' }),
       renderSuPlaybook({
         agent: 'claude',
         baseSource: fileURLToPath(blueprintBase),
         baseText: memberBase,
         tier: 'fleet',
+        referenceMode: 'inline',
       }),
     ]);
 
@@ -1241,7 +1255,7 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
   });
 
   it('P-005 copy-out mutants fail when any mechanical-dedup clause is removed', async () => {
-    const { text } = await renderSuPlaybook({ agent: 'claude', baseSource: fileURLToPath(blueprintBase) });
+    const { text } = await renderSuPlaybook({ agent: 'claude', baseSource: fileURLToPath(blueprintBase), referenceMode: 'inline' });
     for (const clause of mechanicalDedupClauses) {
       expect(text, `positive control must contain ${clause}`).toContain(clause);
       expect(() => expectMechanicalDedupContract(text.replace(clause, ''))).toThrow();
@@ -1252,6 +1266,7 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
     const { text } = await renderSuPlaybook({
       agent: 'claude',
       baseSource: fileURLToPath(blueprintBase),
+      referenceMode: 'inline',
     });
     // One assertion per note, named, so a future drop says WHICH clause went missing rather
     // than "the bundle changed".
@@ -1268,6 +1283,21 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
     expect(text, 'gateway Artifact capability guard').toContain('empty client-rendered shell');
     // No internal marker may ever reach a rendered prompt (psu-prompt-isolation).
     expect(text).not.toContain('PAPERCUSP-SU:SHARED-BASE-NOTES');
+  });
+
+  it('the default render keeps deferred procedures discoverable before use', async () => {
+    // Full-reference guards above exercise inline content explicitly. The default
+    // launch contract must still direct agents to the canonical procedures.
+    const { text } = await renderSuPlaybook({
+      agent: 'claude',
+      baseSource: fileURLToPath(blueprintBase),
+    });
+    expect(text).toContain('Fleet members claim their assigned lane, honor governing decisions and locks, and checkpoint before yielding.');
+    expect(text).toContain('fetch the artifact/channel procedure before publishing');
+    expect(text).toContain('Fetch the relevant source with capability:read before executing its procedure; search the named heading.');
+    expect(text).toContain('Working as a fleet MEMBER');
+    expect(text).toContain('Delivery discipline');
+    expect(text).toContain(fileURLToPath(blueprintBase));
   });
 
   it('renders the complete activation-audit workflow with runtime materiality parity', async () => {

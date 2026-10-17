@@ -72,7 +72,7 @@ import {
 } from '../../carry-note';
 import { filterTrackedRelativeScratchPaths } from '../checkpoint-relative-scratch';
 import { getOrgPg } from '@papercusp/db-org';
-import { getLoopStatus } from '../../harness/routines/loop';
+import { getLoopStatus, readActiveLoopFacts } from '../../harness/routines/loop';
 import { getSessionBrief } from '../../session-brief';
 import { HARVESTED_FIRST_LINE_RULE } from '../../harness/improvements/observation-title-guidance';
 import { modeImpliesAutonomy } from '../../modes/registry';
@@ -106,6 +106,7 @@ import { listVerifiedWaitTakeoversForSubscribers } from '../../events/await/stor
 import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
 import { continuityPredicateSchema, continuityProbeSchema } from '../../continuity-probes';
 import { postLearnedAtLevel } from '../../effort-thread';
+import { hasPotentialActionClaim, readSuccessfulActionInvocations } from '../../carry-surface-action-proof';
 import { LIMITS } from '../limits';
 import {
   evaluateFrozenLineageCarryText,
@@ -782,6 +783,18 @@ export default defineTool({
         ),
     })
     .refine(
+      (args) => {
+        const hasPostgresNul = (value: unknown, seen = new Set<object>()): boolean => {
+          if (typeof value === 'string') return value.includes('\u0000');
+          if (value === null || typeof value !== 'object' || seen.has(value)) return false;
+          seen.add(value);
+          return Object.values(value).some((nested) => hasPostgresNul(nested, seen));
+        };
+        return !hasPostgresNul(args);
+      },
+      { message: 'U+0000 is not supported in PostgreSQL-backed loop checkpoint input.' },
+    )
+    .refine(
       (a) => {
         // EI-21719647580242620: the carry-content fields are `.nullish()`, and for them an
         // explicit null means OMITTED. A bare `!== undefined` would therefore count
@@ -823,7 +836,7 @@ export default defineTool({
     const ownerId = resolveSelfLiteral(args.ownerId, identity.ownerId) ?? identity.ownerId;
     // WI-2148: the carry-note scope key MUST match what the cold-wake READER resolves —
     // and the reader gets `harness` from the ColdLoopMarker the FIRE stamped on the wake
-    // payload, which is the ARMED ROUTINE's fixed `install_slug` (loop.ts's getLoopStatus),
+    // payload, which is the ARMED ROUTINE's fixed `install_slug` (the routine facts reader),
     // NOT the checkpointing session's own ctx.harnessSlug. Those two can legitimately
     // differ wake-to-wake for the SAME loop (observed live: wakes 1-3 wrote
     // 'loop:*:<owner>', wake-4 wrote 'loop:papercusp:<owner>' because ctx.harnessSlug
@@ -862,7 +875,7 @@ export default defineTool({
     // EI-211835's wildcard transport behavior by consulting the durable session
     // scope before the normal session-context/home fallback.
     // EI-22166372050218668: WI-2148's fail-open contract (below) is deliberate and stays
-    // untouched — a checkpoint write must never block on a getLoopStatus hiccup. But
+    // untouched — a checkpoint write must never block on a routine-read hiccup. But
     // fail-open was previously SILENT: a caller whose probe failed got byte-identical
     // `ok:true` whether or not the resolved scope actually matched the armed routine, so
     // a session whose loop lived under a DIFFERENT harness than its current ctx.harnessSlug
@@ -872,7 +885,12 @@ export default defineTool({
     // well-formed but frozen note. Track whether the probe itself failed (vs. genuinely
     // resolved "no active routine") so the response below can say so out loud.
     let routineProbeFailed = false;
-    const routineProbe = await withBoundedTimeout(() => getLoopStatus(ownerId), {
+    // Scope is a property of the routine row, not of its derived wake/turn
+    // diagnostics. Reuse the arm-time facts reader so an unrelated telemetry
+    // query cannot make a healthy routine look absent and strand this note in
+    // the session's fallback harness (EI-25721153056316145). Full status remains
+    // appropriate for the advisory continuation reads below.
+    const routineProbe = await withBoundedTimeout(() => readActiveLoopFacts(ownerId), {
       fallback: null,
       timeoutMs: CONTINUATION_READ_BUDGET_MS,
       label: 'loop:checkpoint armed-routine scope probe',
@@ -884,7 +902,7 @@ export default defineTool({
       routineProbeFailed = true;
       const reason = routineProbe.errorMessage ?? routineProbe.reason ?? 'unknown bounded-read failure';
       console.warn(
-        '[loop:checkpoint] getLoopStatus probe failed while resolving carry-note scope (fail-open, WI-2148):',
+        '[loop:checkpoint] routine facts probe failed while resolving carry-note scope (fail-open, WI-2148):',
         routineProbe.error ?? new Error(reason),
       );
     }
@@ -1124,7 +1142,10 @@ export default defineTool({
                 ? {
                     routineProbeFailed: {
                       resolvedTo: harness,
-                      why: 'The armed-loop scope probe (getLoopStatus) failed, so this harness could not be confirmed against the actually-armed routine and was resolved from session/context fallback instead. If a cold wake reads a stale-looking note, re-check with loop:status and pass an explicit `harness` here to be sure.',
+                      reason: routineProbe.reason ?? 'error',
+                      elapsedMs: routineProbe.elapsedMs,
+                      ...(routineProbe.errorMessage ? { errorMessage: routineProbe.errorMessage } : {}),
+                      why: 'The armed-loop routine facts probe failed, so this harness could not be confirmed against the actually-armed routine and was resolved from session/context fallback instead. If a cold wake reads a stale-looking note, re-check with loop:status and pass an explicit `harness` here to be sure.',
                     },
                   }
                 : {}),
@@ -1367,23 +1388,55 @@ export default defineTool({
     //   A walls-only write likewise carries the prior note body forward.
     // A rescued blob's own rows slot in where the explicit arg would have gone — an
     // EXPLICIT `walls`/`checks` arg still wins outright (including its `[]` clear).
-    const effectiveWalls = capRows(args.walls ?? rescued?.walls, 'walls');
-    const effectiveChecks = capRows(args.checks ?? rescued?.checks, 'checks');
+    let effectiveWalls = capRows(args.walls ?? rescued?.walls, 'walls');
+    let effectiveChecks = capRows(args.checks ?? rescued?.checks, 'checks');
     const hasNoteWrite = hasStructured || rawNote !== undefined;
     // P-014: lint only what this call supplied as current provenance. Rows and
     // narrative inherited by mergeCarryRows remain in the stored note, but are
     // reported separately as retainedProvenance rather than as fresh activity.
     // EI-19425644478222007: resolve `[turn:self]` / `[turn:current]` into this write's
-    // REAL anchor before anything reads the text. Order is load-bearing: expanding
-    // BEFORE stampCarrySurfaceProvenance means the lint sees a verifiable ref (rather
-    // than flagging the sentinel as an unanchored action claim) and verifyTurnRefs
-    // resolves it against the transcript, so the note is STORED with an anchor that
-    // actually resolves. Gated on a cheap substring test — a write carrying no sentinel
-    // pays no extra transcript read. Fail-soft: an unresolvable current turn leaves the
-    // sentinel verbatim, which the lint still flags (an honest miss, never a fake ref).
-    const sentinelTurn = hasCurrentTurnSentinel(baseNote)
+    // REAL anchor before anything reads the text. Structured check/wall rows are composed
+    // into the current provenance text after the narrative base, so inspect and expand
+    // their provenance-bearing strings too; expanding only `baseNote` leaves row claims
+    // literal, which the lint flags and the store preserves. Order is load-bearing:
+    // expansion BEFORE stampCarrySurfaceProvenance lets lint see a verifiable ref rather
+    // than an unanchored sentinel. Gated on a cheap substring test across only this write's
+    // supplied fields; a write carrying no sentinel pays no extra transcript read.
+    // Fail-soft: an unresolvable current turn leaves the sentinel verbatim, which the lint
+    // still flags (an honest miss, never a fake ref).
+    type CarryRowText = {
+      claim: string;
+      recheck?: string;
+      falsifier?: string;
+      verified?: string;
+      observed?: string;
+      contested?: string;
+    };
+    const carryRowTextFields = ['claim', 'recheck', 'falsifier', 'verified', 'observed', 'contested'] as const;
+    const rowsHaveCurrentTurnSentinel = (rows: CarryRowText[] | undefined): boolean =>
+      rows?.some((row) => carryRowTextFields.some((field) => hasCurrentTurnSentinel(row[field]))) ?? false;
+    const currentTurnSentinelSupplied =
+      hasCurrentTurnSentinel(baseNote) ||
+      rowsHaveCurrentTurnSentinel(effectiveChecks) ||
+      rowsHaveCurrentTurnSentinel(effectiveWalls);
+    const sentinelTurn = currentTurnSentinelSupplied
       ? await resolveCurrentTurnStamp(ownerId).catch(() => null)
       : null;
+    if (sentinelTurn) {
+      const expandRowText = <T extends CarryRowText>(rows: T[] | undefined): T[] | undefined =>
+        rows?.map((row) => {
+          const expanded = { ...row } as CarryRowText;
+          for (const field of carryRowTextFields) {
+            const value = expanded[field];
+            if (typeof value === 'string') {
+              expanded[field] = expandCurrentTurnSentinel(value, sentinelTurn) ?? value;
+            }
+          }
+          return expanded as T;
+        });
+      effectiveChecks = expandRowText(effectiveChecks);
+      effectiveWalls = expandRowText(effectiveWalls);
+    }
     const anchoredBaseNote = expandCurrentTurnSentinel(baseNote, sentinelTurn);
     let currentProvenanceText = (() => {
       let text = anchoredBaseNote ?? '';
@@ -1397,7 +1450,20 @@ export default defineTool({
     })();
     // P-016 / EI-212678: persist owner-attribution caveats in the carry note so
     // a later cold wake cannot mistake the response-only lint for authority.
+    // Same-turn coordination receipts are stronger evidence than the prose-only
+    // action lint.  A loop checkpoint is itself a carry surface, so it needs the
+    // same bounded successful-action lookup as work_items:checkpoint; otherwise a
+    // valid `coord:send`/`events:await` immediately followed by this write still
+    // returns provenanceLint until the caller invents a turn ref (EI-25298018130887432).
+    const successfulActions = hasPotentialActionClaim(currentProvenanceText)
+      ? await readSuccessfulActionInvocations({
+          workspaceId,
+          spawnId: ctx.spawnId,
+          coordOwnerId: ownerId,
+        })
+      : undefined;
     const preWriteStamp = await stampCarrySurfaceProvenance(currentProvenanceText, ownerId, {
+      successfulActions,
       currentTurnStamp: sentinelTurn ?? undefined,
     });
     const ownerEnforcement = ownerAttributionEnforcement(currentProvenanceText, preWriteStamp);
@@ -1441,7 +1507,10 @@ export default defineTool({
     // a second merge against a staler prior that could disagree with it.
     const captured: {
       merged?: ReturnType<typeof mergeCarryRows>;
-      mergeRefused?: { droppedWalls: string[]; droppedChecks: string[] };
+      mergeRefused?: Pick<
+        ReturnType<typeof mergeCarryRows>,
+        'droppedWalls' | 'droppedChecks' | 'droppedWallRows' | 'droppedCheckRows'
+      >;
     } = {};
     // A legacy note may already carry more checks than today's cap. The
     // transform records that fact from its authoritative locked prior so the
@@ -1530,6 +1599,8 @@ export default defineTool({
                 captured.mergeRefused = {
                   droppedWalls: merged.droppedWalls,
                   droppedChecks: merged.droppedChecks,
+                  droppedWallRows: merged.droppedWallRows,
+                  droppedCheckRows: merged.droppedCheckRows,
                 };
                 // Reverse the composition order mergeCarryRows uses on the way out
                 // (withCarryNoteWalls(withCarryNoteChecks(body, checks), walls)) so the
@@ -1623,6 +1694,8 @@ export default defineTool({
                 currentHash: stored === null ? null : shortCarryHash(stored),
                 wallsDropped: captured.mergeRefused.droppedWalls,
                 checksDropped: captured.mergeRefused.droppedChecks,
+                wallsDroppedRows: captured.mergeRefused.droppedWallRows,
+                checksDroppedRows: captured.mergeRefused.droppedCheckRows,
                 message:
                   'YOUR NARRATIVE WAS SAVED; only the ROW write was refused. ' +
                   "rowsMode:'merge' would exceed the durable row cap and evict the carried rows named above, so the " +
@@ -1630,9 +1703,10 @@ export default defineTool({
                   'did/left/insight/next note DID commit, so a cold successor reads this turn, not a stale one. ' +
                   'confirmRetire:true cannot authorize cap eviction. ' +
                   "If you were RE-WORDING a carried row, retry with that row only plus `replaces: '<its [#id] or " +
-                  "exact old claim>'` — an edit is not an addition. To make room for a genuinely new row, retry " +
-                  "with `retireIds: ['<stable row id>']` for the row(s) you no longer need. Neither needs a " +
-                  'full resend.',
+                  "exact old claim>'` — an edit is not an addition. Use the returned `checksDroppedRows`/" +
+                  '`wallsDroppedRows` IDs for `replaces` or `retireIds`; the claims are only human-readable labels. ' +
+                  'To record new plan-placement evidence while the check cap is full, keep it in the narrative ' +
+                  '(`did`/`insight`/`next`) instead of adding a new check row. Neither retry needs a full resend.',
               }),
             },
           ],
@@ -1805,9 +1879,13 @@ export default defineTool({
       checks,
       narrativeBody,
       droppedWalls,
+      droppedWallRows,
       droppedChecks,
+      droppedCheckRows,
       overflowWalls,
+      overflowWallRows,
       overflowChecks,
+      overflowCheckRows,
       retiredWalls,
       retiredChecks,
       unmatchedRowRefs,
@@ -2168,9 +2246,10 @@ export default defineTool({
     // only to derive inherited lines; current lint receives submitted bytes.
     const provenanceFields =
       stored !== null
-            ? await carryProvenanceFields(currentProvenanceText, ownerId, {
-                retainedText: retainedProvenanceText(stored, currentProvenanceText),
-                precomputedStamp: preWriteStamp,
+        ? await carryProvenanceFields(currentProvenanceText, ownerId, {
+            retainedText: retainedProvenanceText(stored, currentProvenanceText),
+            precomputedStamp: preWriteStamp,
+            successfulActions,
           })
         : {};
     // P-017: the durable half of this private note, posted to the effort thread in the
@@ -2254,7 +2333,10 @@ export default defineTool({
               ? {
                   routineProbeFailed: {
                     wroteTo: harness,
-                    why: 'The armed-loop scope probe (getLoopStatus) failed, so this write could NOT confirm which harness the loop is actually armed under and fell back to session/context scope instead (fail-open, per WI-2148 — a checkpoint write is never blocked by this). If the loop is really armed elsewhere, this note is stranded: call loop:status to check loop.harnessSlug, and if it disagrees with `harness` above, re-checkpoint with an explicit `harness` matching it.',
+                    reason: routineProbe.reason ?? 'error',
+                    elapsedMs: routineProbe.elapsedMs,
+                    ...(routineProbe.errorMessage ? { errorMessage: routineProbe.errorMessage } : {}),
+                    why: 'The armed-loop routine facts probe failed, so this write could NOT confirm which harness the loop is actually armed under and fell back to session/context scope instead (fail-open, per WI-2148 — a checkpoint write is never blocked by this). If the loop is really armed elsewhere, this note is stranded: call loop:status to check loop.harnessSlug, and if it disagrees with `harness` above, re-checkpoint with an explicit `harness` matching it.',
                   },
                 }
               : {}),
@@ -2306,6 +2388,7 @@ export default defineTool({
             ...(droppedChecks.length
               ? {
                   checksDropped: droppedChecks.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
+                  checksDroppedRows: droppedCheckRows,
                   checksDroppedNote:
                     rowsMode === 'merge'
                       ? legacyOverCapNormalization.checks > 0
@@ -2346,6 +2429,7 @@ export default defineTool({
             ...(droppedWalls.length
               ? {
                   wallsDropped: droppedWalls.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
+                  wallsDroppedRows: droppedWallRows,
                   wallsDroppedNote:
                     rowsMode === 'merge'
                       ? `The proposed rowsMode:'merge' composition UNIONED your ` +
@@ -2367,10 +2451,16 @@ export default defineTool({
             ...(overflowChecks.length || overflowWalls.length
               ? {
                   ...(overflowChecks.length
-                    ? { checksOverflowed: overflowChecks.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)) }
+                    ? {
+                        checksOverflowed: overflowChecks.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
+                        checksOverflowedRows: overflowCheckRows,
+                      }
                     : {}),
                   ...(overflowWalls.length
-                    ? { wallsOverflowed: overflowWalls.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)) }
+                    ? {
+                        wallsOverflowed: overflowWalls.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
+                        wallsOverflowedRows: overflowWallRows,
+                      }
                     : {}),
                   overflowNote:
                     `the row cap (${CARRY_NOTE_MAX_CHECKS} checks / ${CARRY_NOTE_MAX_WALLS} walls) cut ` +

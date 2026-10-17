@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
-import { judgeTestsFromLedger } from './conformance-run-deps';
+import { judgeTestsFromLedger, productionConformanceDeps } from './conformance-run-deps';
+import * as ledger from '../check-results-ledger';
 
 describe('conformance test-ledger evidence population', () => {
   let db: FreshPgDb;
@@ -50,5 +51,15 @@ describe('conformance test-ledger evidence population', () => {
     await record('ci', 'pass', 1, null);
     await record('local', 'fail', 2, 'another-workspace');
     expect(await judgeTestsFromLedger(input, db.sql)).toMatchObject({ verdict: 'pass', value: 1 });
+  });
+
+  it('forwards canonical workspace and harness into executable platform checks', async () => {
+    const run = vi.spyOn(ledger, 'runInstrumentChecks').mockResolvedValue([]);
+    try {
+      const deps = productionConformanceDeps({ workspaceId: 'workspace', harnessSlug: 'harness', planSlug: 'plan' });
+      await deps.evaluateCheck({ barKey: 'R-1', role: 'falsifier', checkId: 'R-1:mounts',
+        check: { kind: 'instrument', instrumentKey: 'storage:cold-mounts-reboot' } });
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'workspace', harnessSlug: 'harness' }));
+    } finally { run.mockRestore(); }
   });
 });

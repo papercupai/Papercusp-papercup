@@ -602,7 +602,11 @@ describe('Codex carry first turn on a continuously repainting fresh composer', (
           // scenario asserts the proof requirement, not scheduler timing.
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: scenario === 'not-ready' ? '600' : '60',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '250',
-          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '650',
+          // Initial launch starts its clock before Node boots; the other
+          // scenarios inject only after OLD-READY. Budget that bootstrap
+          // separately from the 650ms delivery window for this fixture.
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: scenario === 'launch-ready'
+            ? String(CHILD_START_OUTPUT_TIMEOUT_MS + 650) : '650',
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS: '10',
           PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '200',
           PAPERCUSP_PSU_PTY_CODEX_SUBMIT_CR_MS: '10',
@@ -1209,10 +1213,10 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
     const root = mkdtempSync(join(tmpdir(), 'codex-unbindable-pending-'));
     const sessions = join(root, 'sessions');
     mkdirSync(sessions);
-    const transcript = join(sessions, 'rollout-pending.jsonl');
+    const nativeId = '12345678-1234-4234-8234-123456789abd';
+    const transcript = join(sessions, `rollout-${nativeId}.jsonl`);
     const ownerId = uniqueOwner('UNBINDABLE-PENDING');
     const sock = socketPathFor(ownerId);
-    const nativeId = '12345678-1234-4234-8234-123456789abd';
     const { captured, io } = fakeIo();
     let resolvedNativeId: string | null = null;
     // Native work, rather than repaint timer punctuality, holds the busy gate.
@@ -1266,7 +1270,8 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
       expect(await waitForEvent((event) => event.kind === 'respawn-binding-unconfirmed')).toBe(true);
       expect(await injectIntoHost(sock, { mode: 'raw', data: '\x01', ownerId })).toBeTruthy();
       expect(await waitForOutput(captured, 'NATIVE_RUNNING')).toBe(true);
-      expect(nativeLatestExecution({ agent: 'codex', env: { CODEX_HOME: root }, receivedAtMs: hostStartedAt }))
+      expect(nativeLatestExecution({ agent: 'codex', env: { CODEX_HOME: root }, nativeSessionId: nativeId,
+        receivedAtMs: hostStartedAt }), 'fixture must expose the exact native rollout before exercising pending binding')
         .toMatchObject({ phase: 'running' });
 
       // (2) Admitted inside the window. childStartedAt >= hostStartedAt, so this
@@ -1309,8 +1314,10 @@ describe('unbound Codex successor is replaced or refused, never stranded (P-005 
       // retry keeps its idempotent duplicate answer.
       resolvedNativeId = nativeId;
       expect(await injectIntoHost(sock, { mode: 'raw', data: '\x02', ownerId })).toBeTruthy();
-      expect(await waitForOutput(captured, 'INPUT:pending x', 6_000)).toBe(true);
-      expect(await waitForEvent((event) => event.kind === 'wake-rearm-delivered', 6_000)).toBe(true);
+      expect(await waitForOutput(captured, 'INPUT:pending x', 6_000),
+        JSON.stringify({ events: readEvents(ownerId).slice(-20), output: captured().slice(-1000) })).toBe(true);
+      expect(await waitForEvent((event) => event.kind === 'wake-rearm-delivered', 6_000),
+        JSON.stringify(readEvents(ownerId).slice(-20))).toBe(true);
       expect(await injectIntoHostWithConfirmation(sock, wake))
         .toMatchObject({ ok: true, reason: 'duplicate-delivery-id' });
       await sleep(200);
@@ -2396,6 +2403,74 @@ describe('psu-pty-host mode:turn CR-submit via the real discovery handshake (C2)
     30_000,
   );
 });
+
+it('keeps repeated host cancellation requests pending until the real zero-byte receipt (WI5883)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'pty-cancel-retry-'));
+  const ownerId = uniqueOwner('CANCEL-RETRY');
+  const sock = socketPathFor(ownerId);
+  const log = eventLogPathForOwner(ownerId);
+  const signalSource = new EventEmitter();
+  const { captured, type, io } = bridgedIo();
+  const writes: string[] = [];
+  const payload = 'MUST_NOT_REACH_THE_CHILD';
+  const done = hostThroughPty({
+    command: execPath, args: ['-e', silentChildCode(15_000)], cwd: root,
+    ownerId, io, bridgeTty: true, signalSource, onExit: () => {},
+    env: hermeticEnv({
+      PAPERCUSP_SID: ownerId, PAPERCUSP_AGENT: 'claude', CLAUDE_CONFIG_DIR: root,
+      PAPERCUSP_PSU_PTY_IDLE_MS: '20',
+      PAPERCUSP_PSU_PTY_IDLE_CAP_MS: '10000',
+      PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '20',
+    }),
+    spawnPty: (file, args, options, realSpawn) => {
+      const child = realSpawn(file, args, options);
+      const write = child.write.bind(child);
+      child.write = (data: string) => { writes.push(data); write(data); };
+      return child;
+    },
+  });
+  const events = () => existsSync(log)
+    ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    : [];
+  const envelope = { mode: 'turn' as const, ownerId, data: payload, deliveryId: 'cancel-retry-1' };
+  const cancellation = { ...envelope, cancelDeliveryIds: [envelope.deliveryId], handledMsgIds: ['m-handled'] };
+  try {
+    expect(await waitForOutput(captured, 'RAW_READY', CHILD_START_OUTPUT_TIMEOUT_MS)).toBe(true);
+    // An unsubmitted owner line holds the real host gate until we clear it.
+    // No native transcript or loop-origin proof is manufactured by this fixture.
+    type('owner draft');
+    expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({
+      ok: true, confirmation: 'acked', reason: 'accepted',
+    });
+    for (let retry = 0; retry < 2; retry++) {
+      expect(await injectIntoHostWithConfirmation(sock, cancellation)).toMatchObject({
+        ok: true, confirmation: 'acked', reason: 'cancel-requested',
+      });
+      expect(events().some((event) => event.kind === 'delivery-cancelled-before-write')).toBe(false);
+      expect(writes.join('')).not.toContain(payload);
+    }
+    type('\x15');
+    await expect.poll(() => events().find((event) => event.kind === 'delivery-cancelled-before-write'), {
+      timeout: 3000,
+    }).toMatchObject({ deliveryIds: [envelope.deliveryId], handledMsgIds: ['m-handled'], bytesWritten: 0 });
+    expect(await injectIntoHostWithConfirmation(sock, cancellation)).toMatchObject({
+      ok: true, confirmation: 'acked', reason: 'cancelled-before-write',
+    });
+    // A delayed original retry must hit the cancelled tombstone too.
+    expect(await injectIntoHostWithConfirmation(sock, envelope)).toMatchObject({
+      ok: true, confirmation: 'acked', reason: 'cancelled-before-write',
+    });
+    expect(events()).toContainEqual(expect.objectContaining({
+      kind: 'duplicate-cancelled-delivery-id', deliveryId: envelope.deliveryId,
+    }));
+    expect(writes.join('')).not.toContain(payload);
+  } finally {
+    signalSource.emit('SIGTERM');
+    await done;
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 20_000);
 
 // EI-19311270129974785: "a single wake delivery is re-attempted 4x and injects 3
 // duplicate agent turns". Root cause: the client's ack-wait can time out (or the

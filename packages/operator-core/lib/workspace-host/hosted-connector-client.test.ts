@@ -143,6 +143,17 @@ describe('readBoundBinding', () => {
 });
 
 describe('HostedWorkspaceConnectorClient', () => {
+  it('reuses its live heartbeat for workload sampling and stops sampling after disconnect', async () => {
+    const heartbeat = vi.fn();
+    const { client, sockets } = harness({ onHeartbeat: heartbeat, pingIntervalMs: 1000 });
+    client.start(); sockets[0]!.emitOpen();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(heartbeat).toHaveBeenCalledTimes(1);
+    client.stop();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(heartbeat).toHaveBeenCalledTimes(1);
+  });
+
   it('dials the configured url with the bearer in an Authorization header', () => {
     const { client, sockets } = harness();
     client.start();

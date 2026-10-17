@@ -25,6 +25,7 @@ import {
   RESULT_DOOR_TOKENS,
   type DoorableResult,
 } from './result-door';
+import readTool from './agent-tools/capability/read';
 import * as scratchGc from './scratch-gc';
 import { _resetScratchUsageForTests, _setScratchUsageForTests, refreshScratchUsage, WORKSPACE_QUOTA_BYTES, writeWithScratchQuota } from './scratch-gc';
 import * as scratchReference from './scratch-reference';
@@ -282,8 +283,13 @@ describe('result-door deferred spill (WI-10004533)', () => {
         kind: 'pending-spill',
         path: meta?.spillPath,
         uri: meta?.spillUri,
-        args: { file_path: meta?.spillPath },
+        args: {
+          uri: meta?.spillUri,
+          byte_offset: 0,
+          byte_limit: 3_072,
+        },
       });
+      expect(meta?.recoveryCursor?.args).not.toHaveProperty('file_path');
       expect(Object.keys(meta ?? {})).not.toContain('fallbackUri');
       const bodyItem = result.content.find((item) => item.type === 'text');
       if (typeof bodyItem?.text !== 'string') throw new Error('result has no text recovery envelope');
@@ -315,6 +321,15 @@ describe('result-door deferred spill (WI-10004533)', () => {
         aggregateOutputEscape: false,
       });
       expect(spillFiles('tools:invoke')).toHaveLength(1);
+
+      // The pending cursor must remain directly executable after settlement. Using
+      // its URI avoids the long absolute scratch path that can make a file_path
+      // byte-page envelope itself exceed the result-door budget.
+      const pageResult = await readTool.handler(meta!.recoveryCursor!.args as never, {
+        projectDir: sandbox,
+        workspaceId: 'ws-1',
+      } as never) as { content: Array<{ type: 'text'; text: string }> };
+      expect(JSON.parse(pageResult.content[0].text)).toMatchObject({ ok: true, eof: false });
     } finally {
       releaseWrite();
       await resultPromise?.catch(() => undefined);
@@ -385,6 +400,215 @@ describe('result-door deferred spill (WI-10004533)', () => {
       expect(text).toContain('exact workspace-scoped durable copy');
       expect(text).not.toContain('papercusp://scratch-memory/');
       expect(persistedFallbackText).toContain(original.content[0].text);
+    } finally {
+      rejectWrite(new Error('test cleanup'));
+      await resultPromise?.catch(() => undefined);
+      writer.mockRestore();
+      durablePersist.mockRestore();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps a structural scorecards:get fallback when the primary spill times out', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    let releaseWrite!: () => void;
+    let signalStarted!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const stalledWrite = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
+      signalStarted();
+      return stalledWrite.then(() => write(async (_phase, _subphase, operation) => operation()));
+    });
+    const durablePersist = vi.spyOn(
+      scratchReference,
+      'persistVolatileScratchReference',
+    ).mockRejectedValue(new Error('test spool unavailable'));
+    const evidence = 'e'.repeat(BUDGET_CHARS * 2);
+    const originalText = JSON.stringify({
+      ok: true,
+      scorecard: {
+        issueId: 'EI-structural-timeout',
+        criteria: [{ key: 'traceability', rating: 'pass', evidence }],
+      },
+      evidenceRead: { complete: true, scope: 'selected-criterion', offset: 0, totalChars: evidence.length },
+    });
+    let resultPromise: Promise<DoorableResult> | undefined;
+
+    try {
+      resultPromise = applyResultDoorAsync(
+        { content: [{ type: 'text' as const, text: originalText }], _meta: { explicitFullRequest: true } },
+        {
+          ...OPTS,
+          toolName: 'tools:invoke',
+          nestedTargetToolName: 'scorecards:get',
+          ownerId: 'su-1',
+        },
+      );
+      await writeStarted;
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await resultPromise;
+      const cursor = volatileCursorFrom(result);
+      const text = (result.content.find((item) => item.type === 'text') as { text: string }).text;
+      const body = JSON.parse(text) as { _projection?: { cursor?: Record<string, unknown> } };
+      const meta = result._meta?.resultDoor as {
+        spillPending?: boolean;
+        spillFailed?: boolean;
+        pendingSpill?: { cursor?: Record<string, unknown> };
+      };
+
+      // Before fallbackRecoveryCursor(), the old code returned pendingResult here because
+      // scorecards:get stores its recovery cursor in the model-facing _projection.
+      expect(cursor).toMatchObject({ kind: 'volatile-scratch-page', tool: 'capability:read' });
+      expect(body._projection?.cursor).toMatchObject({ kind: 'volatile-scratch-page' });
+      expect(meta).toMatchObject({
+        spillPending: true,
+        spillFailed: false,
+        pendingSpill: { cursor: { kind: 'pending-spill', errorCode: 'ETIMEDOUT' } },
+      });
+      expect(readVolatileText(cursor, 'ws-1', 'su-1')).toContain(evidence);
+      expect(durablePersist).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseWrite();
+      await resultPromise?.catch(() => undefined);
+      writer.mockRestore();
+      durablePersist.mockRestore();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
+  it('attaches the pending spill cursor to a durable reference-envelope fallback', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    let rejectWrite!: (error: Error) => void;
+    let signalStarted!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const stalledWrite = new Promise<void>((_resolve, reject) => { rejectWrite = reject; });
+    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
+      signalStarted();
+      return stalledWrite.then(() => write(async (_phase, _subphase, operation) => operation()));
+    });
+    const durableUri = scratchReference.DURABLE_SCRATCH_REFERENCE_SCHEME + '/' + 'b'.repeat(64);
+    const durablePersist = vi.spyOn(
+      scratchReference,
+      'persistVolatileScratchReference',
+    ).mockImplementation(async (uri, caller) => ({
+      uri: durableUri,
+      manifest: readVolatileScratchReference(uri, caller).manifest,
+    }));
+    const original: DoorableResult = {
+      content: [{ type: 'image', mimeType: 'image/png', data: 'A'.repeat(BUDGET_CHARS * 3) }],
+    };
+    let resultPromise: Promise<DoorableResult> | undefined;
+
+    try {
+      resultPromise = applyResultDoorAsync(original, { ...OPTS, ownerId: 'su-1' });
+      await writeStarted;
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await resultPromise;
+      const meta = result._meta?.resultDoor as {
+        durableFallbackUri?: string;
+        pendingSpill?: { cursor?: Record<string, unknown> };
+        recoveryCursor?: Record<string, unknown>;
+        spillFailed?: boolean;
+        spillPending?: boolean;
+      };
+      const envelope = JSON.parse((result.content.find((item) => item.type === 'text') as { text: string }).text);
+
+      expect(durablePersist).toHaveBeenCalledTimes(1);
+      expect(meta).toMatchObject({
+        durableFallbackUri: durableUri,
+        spillFailed: false,
+        spillPending: true,
+        recoveryCursor: {
+          kind: 'durable-scratch-page',
+          tool: 'capability:read',
+          uri: durableUri,
+          args: { uri: durableUri, byte_offset: 0, byte_limit: 3_072 },
+        },
+        pendingSpill: { cursor: { kind: 'pending-spill', errorCode: 'ETIMEDOUT' } },
+      });
+      expect(envelope.content).toContainEqual(expect.objectContaining({ kind: 'reference', uri: durableUri }));
+      expect(JSON.stringify(envelope)).not.toContain('papercusp://scratch-memory/');
+    } finally {
+      rejectWrite(new Error('test cleanup'));
+      await resultPromise?.catch(() => undefined);
+      writer.mockRestore();
+      durablePersist.mockRestore();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps a durable fallback on an under-budget partial conversations:get envelope after spill timeout', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    let rejectWrite!: (error: Error) => void;
+    let signalStarted!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const stalledWrite = new Promise<void>((_resolve, reject) => { rejectWrite = reject; });
+    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
+      signalStarted();
+      return stalledWrite.then(() => write(async (_phase, _subphase, operation) => operation()));
+    });
+    const durableUri = scratchReference.DURABLE_SCRATCH_REFERENCE_SCHEME + '/' + 'c'.repeat(64);
+    let persistedFallbackText: string | undefined;
+    const durablePersist = vi.spyOn(
+      scratchReference,
+      'persistVolatileScratchReference',
+    ).mockImplementation(async (uri, caller) => {
+      persistedFallbackText = readVolatileText({ uri }, caller.workspaceId ?? 'ws-1', caller.ownerId ?? undefined);
+      return { uri: durableUri, manifest: readVolatileScratchReference(uri, caller).manifest };
+    });
+    const sourceText = JSON.stringify({ results: [{ id: 'thread-post:1182706', post: { body: 'review evidence' } }] });
+    const original: DoorableResult = {
+      content: [{ type: 'text', text: sourceText }],
+      _meta: { payloadProjection: { truncated: true, originalChars: 4_000, returnedChars: sourceText.length, omittedCount: 1 } },
+    };
+    expect(Buffer.byteLength(sourceText, 'utf8')).toBeLessThan(BUDGET_CHARS);
+    let resultPromise: Promise<DoorableResult> | undefined;
+
+    try {
+      resultPromise = applyResultDoorAsync(original, {
+        ...OPTS,
+        toolName: 'tools:invoke',
+        nestedTargetToolName: 'conversations:get',
+        effect: 'read',
+        ownerId: 'su-1',
+      });
+      await writeStarted;
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await resultPromise;
+      const envelope = JSON.parse((result.content.find((item) => item.type === 'text') as { text: string }).text) as {
+        state: string;
+        content: Array<{ uri?: string }>;
+        incomplete: { reason: string; recoverable: boolean; note: string };
+      };
+      const meta = result._meta?.resultDoor as {
+        spillUri?: string;
+        durableFallbackUri?: string;
+        recoveryCursor?: Record<string, unknown>;
+        pendingSpill?: { uri?: string; cursor?: Record<string, unknown> };
+      };
+      const referenceUris = envelope.content.map((item) => item.uri).filter((uri): uri is string => Boolean(uri));
+
+      expect(envelope).toMatchObject({
+        state: 'incomplete',
+        incomplete: { reason: 'under-budget-partial-result', recoverable: false },
+      });
+      expect(envelope.incomplete.note).toContain('exact workspace-scoped durable copy');
+      expect(durablePersist).toHaveBeenCalledTimes(1);
+      expect(meta).toMatchObject({
+        durableFallbackUri: durableUri,
+        recoveryCursor: { kind: 'durable-scratch-page', uri: durableUri },
+        pendingSpill: { cursor: { kind: 'pending-spill', errorCode: 'ETIMEDOUT' } },
+      });
+      expect(referenceUris).toContain(durableUri);
+      expect(referenceUris).not.toContain(meta.spillUri);
+      expect(meta.pendingSpill?.uri).toBe(meta.spillUri);
+      expect(persistedFallbackText).toContain(sourceText);
     } finally {
       rejectWrite(new Error('test cleanup'));
       await resultPromise?.catch(() => undefined);

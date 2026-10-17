@@ -44,10 +44,11 @@
  * value the caller can vary independently.
  */
 import type postgres from 'postgres';
+import { readyProviderRegistry } from '../integrations/provider-registry';
 import { providerSocialDeleteResultIssue } from '@papercusp/plugin-sdk';
-import type { SocialPlatformId } from '../external-triggers/social/platform-registry';
 import { invokeOutboundProvider, type OutboundDispatchDeps } from './provider-dispatch';
 import {
+  type SocialPlatformId,
   formatSocialPostRef,
   parseSocialPostRef,
   resolveSocialPost,
@@ -204,13 +205,14 @@ export async function deleteCanonicalSocialPost(
   },
   deps: OutboundDispatchDeps = {},
 ): Promise<SocialDeleteResult> {
-  const ref = typeof params.postId === 'string' ? parseSocialPostRef(params.postId) : params.postId;
+  const registry = deps.registry ?? await readyProviderRegistry();
+  const ref = typeof params.postId === 'string' ? parseSocialPostRef(params.postId, registry) : params.postId;
 
   const resolved = await resolveSocialPost(sql, {
     workspaceId: params.workspaceId,
     userId: params.userId,
     ref,
-  });
+  }, { registry });
 
   assertDeleteConfirmed(resolved.doc, resolved.ref, params.confirmToken);
 
@@ -224,7 +226,7 @@ export async function deleteCanonicalSocialPost(
   // platform-native handle for the post that replying to it does, and a second
   // derivation would be a second copy of per-platform knowledge that could
   // drift into deleting the wrong object.
-  const coordinates = resolveSocialReplyCoordinates(resolved.doc);
+  const coordinates = resolveSocialReplyCoordinates(resolved.doc, registry);
 
   const idempotencyKey = socialDeleteIdempotencyKey(resolved.ref);
   const echo: SocialDeleteEcho = {

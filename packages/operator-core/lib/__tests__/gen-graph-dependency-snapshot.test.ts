@@ -634,18 +634,52 @@ describe('first-party snapshot producer', () => {
     expect(parseArgs(['--first-party', '--edges-file', 'e.json', '--index-commit', 'abc']).error).toMatch(/--first-party excludes/);
   });
 
+  it('real CLI reports unenumerated submodules and filters index-lagged deletions', () => {
+    const src = tmp();
+    write(src, {
+      'src/importer.ts': "import './shared';\n",
+      'src/shared.ts': 'export const shared = 1;\n',
+      'src/deleted.ts': "import './shared';\n",
+    });
+    const git = (...args: string[]) =>
+      spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', ...args], { cwd: src, encoding: 'utf8' });
+    expect(git('init', '-q').status).toBe(0);
+    expect(git('add', 'src').status).toBe(0);
+    expect(git('commit', '-qm', 'fixture').status).toBe(0);
+    const moduleHead = git('rev-parse', 'HEAD').stdout.trim();
+    write(src, {
+      '.gitmodules': '[submodule "archived"]\n\tpath = libs/archived\n\turl = ./archived\n',
+      'libs/archived/hidden.ts': "import '../../src/shared';\n",
+    });
+    expect(git('add', '.gitmodules').status).toBe(0);
+    expect(git('update-index', '--add', '--cacheinfo', `160000,${moduleHead},libs/archived`).status).toBe(0);
+    expect(git('commit', '-qm', 'archive-shaped submodule').status).toBe(0);
+    // The file remains in the index; the submodule has source but no .git to recurse into.
+    rmSync(join(src, 'src/deleted.ts'));
+    const out = join(tmp(), 'coverage.json');
+    const r = spawnSync(process.execPath, [CLI, '--first-party', '--source-root', src, '--out', out], { encoding: 'utf8', cwd: REPO_ROOT, timeout: 60_000 });
+    expect(r.status, r.stderr).toBe(0);
+    expect.soft(r.stderr).toMatch(/GRAPH_SNAPSHOT_DERIVE importers=2 unreadable=0 /);
+    expect.soft(r.stderr).toMatch(/coverage 0\/1 declared submodule\(s\) enumerated/);
+    expect.soft(r.stderr).toContain('present on disk but NOT git-enumerable');
+    expect.soft(r.stderr).toContain('libs/archived');
+    const parsed = parseSnapshot(readFileSync(out, 'utf8'));
+    expect(parsed.snapshot?.edges.map((e: { importer: string }) => e.importer)).toEqual(['src/importer.ts']);
+  });
+
   it('real CLI --first-party on a git repo: derives from tracked files, binds HEAD, writes only where told', () => {
     const src = tmp();
     write(src, {
       'packages/core/package.json': JSON.stringify({ name: '@fx/core' }),
-      'packages/core/lib/util.ts': 'export const u = 1;\n',
+      'packages/core/lib/util.ts': 'export function u() { return 1; }\n',
       'packages/core/lib/index.ts': "export * from './util';\n",
       'apps/web/tsconfig.json': JSON.stringify({
         compilerOptions: { paths: { '@/*': ['./*'], '@fx/core': ['../../packages/core/lib/index.ts'], '@fx/core/*': ['../../packages/core/*'] } },
       }),
-      'apps/web/page.ts': "import { u } from '@fx/core/lib/util';\nimport { h } from '@/lib/helper';\n",
+      'apps/web/package.json': JSON.stringify({ name: '@fx/web' }),
+      'apps/web/page.ts': "import { u } from '@fx/core/lib/util';\nimport { h } from '@/lib/helper';\nu();\n",
       'apps/web/lib/helper.ts': 'export const h = 1;\n',
-      'apps/other/x.ts': "import { u } from '@fx/core/lib/util';\n",
+      'apps/other/x.ts': "import { u as alias } from '@fx/core/lib/util';\nalias();\n",
       'untracked/y.ts': "import '../packages/core/lib/util';\n",
     });
     const git = (...args: string[]) =>
@@ -662,6 +696,12 @@ describe('first-party snapshot producer', () => {
     expect(r.stderr).toMatch(/GRAPH_SNAPSHOT status=written edges=4 /);
     const parsed = parseSnapshot(readFileSync(out, 'utf8'));
     expect(parsed.snapshot?.index).toMatchObject({ lastCommit: head, backend: FIRST_PARTY_BACKEND });
+    const raw = JSON.parse(readFileSync(out, 'utf8'));
+    expect(raw.symbols.schema).toBe('code-intel-symbol-snapshot-v1');
+    const symbol = raw.symbols.symbols.find((row: { name: string }) => row.name === 'u');
+    expect(symbol.callers.map((site: { spelling: string }) => site.spelling).sort()).toEqual(['alias', 'u']);
+    expect(symbol.callers.find((site: { path: string }) => site.path === 'apps/web/page.ts').workspace).toBe('@fx/web (apps/web)');
+    expect(symbol.sources.map((site: { path: string }) => site.path)).toContain('apps/web/package.json');
     expect(parsed.snapshot?.edges.map((e: { importer: string; imported: string }) => `${e.importer} -> ${e.imported}`).sort()).toEqual([
       'apps/other/x.ts -> packages/core/lib/util.ts',
       'apps/web/page.ts -> apps/web/lib/helper.ts',

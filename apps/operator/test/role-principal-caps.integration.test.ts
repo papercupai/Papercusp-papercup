@@ -6,10 +6,9 @@
  * called by a signed role-scoped (non-superuser) MCP agent (found in
  * harness_shared.tool_invocations, 2026-05-31).
  *
- * Contract: a role-scoped caller is granted exactly the capabilities its
- * provisioned system principal holds — operator/oracle have rows; pipeline
- * roles do not and get an empty set (capability-gated built-ins stay denied);
- * and the lookup is workspace-isolated.
+ * Contract: provisioned grants compose with the role baseline, tool discovery,
+ * native-tool replacements and derived read grants. Provisioned capabilities
+ * remain workspace-isolated; an unprovisioned worker gets no workflow grants.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
@@ -33,7 +32,14 @@ const SEEDED_OPERATOR = ['harness:read', 'audit:read', 'chat:write'];
 // pipeline-role persona instructs calling `agent_tools:list { asRole }`. See the
 // grant in role-principal-caps.ts (loadRoleCapabilities).
 const UNIVERSAL_CAPS = ['agent_tools:read'];
-const EXPECTED_DEFAULT_OPERATOR = [...new Set([...SEEDED_OPERATOR, ...OP_BASELINE, ...UNIVERSAL_CAPS])].sort();
+// Independent oracle for the signed-principal half of the native-tool cutover.
+// Keep exact membership checks: an extra workflow/administrative grant must fail.
+const NATIVE_REPLACEMENT_CAPS = ['capability:bash', 'capability:fs-read', 'capability:fs-write', 'capability:git', 'capability:net'];
+const EXPECTED_WORKER = [...UNIVERSAL_CAPS, ...NATIVE_REPLACEMENT_CAPS].sort();
+const EXPECTED_DEFAULT_OPERATOR = [...new Set([
+  ...SEEDED_OPERATOR, ...OP_BASELINE, ...UNIVERSAL_CAPS, ...NATIVE_REPLACEMENT_CAPS,
+  'memory:search:read', // Derived from the operator baseline's memory:read.
+])].sort();
 
 let sql: postgres.Sql;
 let dbName: string;
@@ -84,12 +90,14 @@ describe('loadRoleCapabilities (least-privilege)', () => {
     expect([...caps].sort()).toEqual(EXPECTED_DEFAULT_OPERATOR);
   });
 
-  it('returns ONLY the universal tool-discovery cap for a pipeline role with no system principal (worker)', async () => {
+  it('returns exactly discovery and native-tool replacement caps for an unprovisioned worker', async () => {
     const caps = await loadRoleCapabilities(sql, 'default', 'worker');
-    // Pre-change this was the empty set. Now every role-scoped caller gets the
-    // read-only agent_tools:read introspection cap — and NOTHING else for a bare
-    // pipeline role (workflow-gated built-ins still correctly denied).
-    expect([...caps].sort()).toEqual([...UNIVERSAL_CAPS].sort());
+    expect([...caps].sort()).toEqual(EXPECTED_WORKER);
+  });
+
+  it('does not grant native replacements to an unknown role', async () => {
+    const caps = await loadRoleCapabilities(sql, 'default', 'unprovisioned-unknown');
+    expect([...caps].sort()).toEqual(UNIVERSAL_CAPS);
   });
 
   it('is workspace-isolated — the PROVISIONED delta does not leak across workspaces', async () => {
@@ -132,10 +140,10 @@ describe('synthesizeDispatchPrincipal', () => {
     expect([...p.capabilities].sort()).toEqual(EXPECTED_DEFAULT_OPERATOR);
   });
 
-  it('a pipeline role (no system principal) gets ONLY the universal tool-discovery cap — workflow built-ins stay denied', async () => {
+  it('an unprovisioned worker gets exactly discovery and native replacements without workflow grants', async () => {
     const p = await synthesizeDispatchPrincipal(sql, { workspaceId: 'default', role: 'worker', isSuperuser: false });
     expect(p.slug).toBe('system:worker');
-    expect([...p.capabilities].sort()).toEqual([...UNIVERSAL_CAPS].sort());
+    expect([...p.capabilities].sort()).toEqual(EXPECTED_WORKER);
   });
 
   it('superuser keeps an empty cap-set (it relies on gateBypass.capability, not loaded caps)', async () => {

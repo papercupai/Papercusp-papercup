@@ -121,6 +121,16 @@ describe('a pasted credential names its account', () => {
 });
 
 describe('fetchProviderIdentity', () => {
+  it('requires host-supplied app identification when declared and sends it with the host-held token', async () => {
+    const d = { ...descriptor, oauth: { ...descriptor.oauth!, userAgentRequired: true as const } };
+    const fetchImpl = identityEndpoint();
+    await expect(fetchProviderIdentity(d, TOKEN, 'p', fetchImpl)).rejects.toThrow('p_user_agent_required');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await fetchProviderIdentity(d, TOKEN, 'p', fetchImpl, 'desktop:fixture:1.0');
+    const init = (fetchImpl.mock.calls[0] as unknown as [URL, RequestInit])[1];
+    expect(new Headers(init.headers).get('user-agent')).toBe('desktop:fixture:1.0');
+    expect(new Headers(init.headers).get('authorization')).toBe(`Bearer ${TOKEN}`);
+  });
   it('reads the id and display name the package declares', async () => {
     await expect(fetchProviderIdentity(descriptor, TOKEN, 'p', identityEndpoint())).resolves.toEqual({ providerAccountId: '583231', displayName: 'octocat' });
   });

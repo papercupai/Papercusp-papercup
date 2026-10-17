@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Vinci Nimish maintained external prep verifier",
+  "framework": "playwright",
+  "command": [
+    "/home/builduser/interview-prep/run-verify.sh",
+    "vinci-nimish-patil-technical.html",
+    "vinci-nimish-patil-technical-standalone.html"
+  ],
+  "startedAt": "2026-10-16T15:18:14.297661+00:00",
+  "finishedAt": "2026-10-16T15:19:14.760075+00:00",
+  "exitCode": 0,
+  "summary": "The maintained external verifier exited 0: 9 publisher regression tests passed; the Playwright verifier reported PASS, 122 pages, 7442 navigation links, 36 answer panels, desktop/mobile/light/dark coverage and usable no-JavaScript answers. This records executed external checks; it does not claim Papercusp runner test-layer admission or complete plan acceptance.",
+  "assertions": [
+    {
+      "id": "maintained-publisher-regressions",
+      "passed": true,
+      "evidence": "Python unittest: Ran 9 tests in 1.695s; OK. These are the project's maintained tests/test_publish_public.py tests invoked by run-verify.sh."
+    },
+    {
+      "id": "maintained-playwright-verifier",
+      "passed": true,
+      "evidence": "verify-prep.cjs returned result PASS; pagesChecked=122, navigationLinksChecked=7442, answerPanelsChecked=36; normal/standalone, 1280px/390px, light/dark and no-JavaScript assertions passed."
+    },
+    {
+      "id": "nimish-source-and-schedule",
+      "passed": true,
+      "evidence": "The maintained Vinci block verifies both page variants, source links, explicit inference labels, nine closed-by-default questions, keyboard behavior, mobile layout and no-JavaScript schedule/Answer Bank exit."
+    }
+  ],
+  "planSlug": "vinci-nimish-interview-prep-2026-10-07",
+  "workItemId": "WI-6554700010014285",
+  "verifierSha256": "dc82de21a9e8ff7c8000df68f9a5a6a58b8b504f1511df7be690d7e14e8a4b80",
+  "stdoutSha256": "125acbc9cbb0425f952a4b710cf4266a9dfea4be5ae3204557dc86ce6bdf556a",
+  "sourceSha256": "84afe427edbd540818b58677285cb6926b62e84fffbff617850c983fff71f94d",
+  "standaloneSha256": "931bc097ef3a298eb47fdf745ec9644ab14112f86a6ed7f005b898e116279289",
+  "publicDelivery": {
+    "measuredAt": "2026-10-16T15:17:43.419Z",
+    "url": "https://papercupai.github.io/interview-prep/vinci-nimish-patil-technical-standalone.html",
+    "finalUrl": "https://papercupai.github.io/interview-prep/vinci-nimish-patil-technical-standalone.html",
+    "httpStatus": 200,
+    "sourceMatches": true,
+    "publicSourceSha256": "931bc097ef3a298eb47fdf745ec9644ab14112f86a6ed7f005b898e116279289",
+    "scheduleVerified": true,
+    "balajiCollectionLink": true,
+    "answerBankCollectionRoundTrip": true,
+    "attributeCount": 103,
+    "negativePrivacyChecks": {
+      "meetingJoin": true,
+      "cancelReschedule": true,
+      "meetingCredentials": true
+    },
+    "scope": "Fresh Playwright rendered-page observation plus exact live HTML/source digest and href/src inspection. Navigation uses collection links; the rotating Current Interview featured list is outside this claim."
+  },
+  "publisherScan": {
+    "command": ["python3", "/home/builduser/interview-prep/publish-public.py", "--dry-run"],
+    "exitCode": 0,
+    "publisherSha256": "203f5977644bffc981ac4bc3e96987f93f1d03c18403c0e3480a04b4af37d23c",
+    "output": "61 pages, 39 linked files; redacted 7 meeting join links; unwrapped 19 private/local links; dry run: nothing committed",
+    "credentialScanPassed": true,
+    "published": false
+  },
+  "researchReview": {
+    "verdict": "unknown",
+    "reviewedAt": "2026-10-16T15:14:00.521Z",
+    "claimEvidence": [
+      {
+        "pageLocation": "#research: official role",
+        "claim": "Role includes Python/gRPC around C++ engines, PostgreSQL, React/TypeScript and hybrid Palo Alto location.",
+        "classification": "primary fact",
+        "url": "https://jobs.ashbyhq.com/vinci/7585965e-6910-48d5-8cfc-900d930630e8",
+        "retrievedAt": "2026-10-16T15:13:59.727Z",
+        "httpStatus": 200,
+        "bodySha256": "13c4ac364ce4ae4c3843943a2886dfd4582e383535e4284ce0b9ce9cf2447e43",
+        "verdict": "supported by current primary role text"
+      },
+      {
+        "pageLocation": "#research: anonymous historical report",
+        "claim": "August 14, 2025 Founding Engineer report describes a previous-work discussion and quoted question.",
+        "classification": "reported",
+        "url": "https://www.glassdoor.com/Interview/vinci4d-Interview-Questions-E10658905.htm",
+        "retrievedAt": "2026-10-16T15:13:59.456Z",
+        "httpStatus": 401,
+        "bodySha256": "df73ef2c87b10bc1162014b636901e6f7c067e441feb2d8cc2ef868a2e190d3a",
+        "verdict": "unknown: redirected to login with reason=bot-detection; no challenge or credential boundary bypassed"
+      },
+      {
+        "pageLocation": "#nimish: paper co-authorship",
+        "claim": "Nimish Patil co-authored Vinci's December 5, 2025 3D IC thermal sensitivity paper.",
+        "classification": "primary fact",
+        "url": "https://www.getvinci.ai/research/thermal-sensitivity-analysis-of-3d-ic-face-to-back-stacking-using-foundation-models-for-physics/",
+        "retrievedAt": "2026-10-16T15:14:00.196Z",
+        "httpStatus": 200,
+        "bodySha256": "2eb8ebfc5efb40dcc0ab757a072216d2e707f39fa8fd2a0545793dd1cc949564",
+        "verdict": "co-authorship/date supported; the exact Engineer, Vinci label was not established by this excerpt"
+      },
+      {
+        "pageLocation": "#nimish: public profile signal",
+        "claim": "Vinci-affiliated profile reposted visualization hiring material about nanometer-to-centimeter detail.",
+        "classification": "primary public profile signal, explicitly not interview evidence",
+        "url": "https://www.linkedin.com/in/npatil1",
+        "retrievedAt": "2026-10-16T15:14:00.521Z",
+        "httpStatus": 200,
+        "bodySha256": "1f46aacca85f890042872ca704d5b7e82e638a4b08c0777e061f9c73bc248ae1",
+        "verdict": "supported by current public rendered text"
+      },
+      {
+        "pageLocation": "#nimish: company context",
+        "claim": "Vinci builds physics/simulation infrastructure used on production engineering programs.",
+        "classification": "primary fact",
+        "url": "https://www.getvinci.ai/careers/",
+        "retrievedAt": "2026-10-16T15:14:00.181Z",
+        "httpStatus": 200,
+        "bodySha256": "2208d7b9bdf913c15f4b6fff3f3f7358f086d4b017c06c9467b86cf1aec3e24f",
+        "verdict": "supported by current primary text"
+      }
+    ],
+    "answerOutlineReview": [
+      {"question": 1, "topic": "Owned production system", "verdict": "Relevant structure and concrete follow-ups; explicitly rejects unverified metrics or unowned credit."},
+      {"question": 2, "topic": "Expensive simulation service", "verdict": "Relevant original practice; validation, durable job identity, tenant boundaries, compute/result separation are actionable."},
+      {"question": 3, "topic": "Crashed or stale worker", "verdict": "Relevant original practice; lease/fencing timeline and stale-completion test are actionable."},
+      {"question": 4, "topic": "Idempotent concurrent submission", "verdict": "Relevant original practice; tenant key, input fingerprint, atomic uniqueness and outbox gap are concrete."},
+      {"question": 5, "topic": "Python/native concurrency", "verdict": "Relevant original practice; names GIL/native thread-safety/ownership limits without asserting candidate history."},
+      {"question": 6, "topic": "gRPC deadline and continuing compute", "verdict": "Relevant original practice; distinguishes stopped waiting, durable cancellation, late results and retry identity."},
+      {"question": 7, "topic": "React stale response", "verdict": "Relevant original practice; gives explicit A/B out-of-order response test."},
+      {"question": 8, "topic": "PostgreSQL latency", "verdict": "Relevant original practice; distinguishes pool/lock/execution/network waits and queue locking limits."},
+      {"question": 9, "topic": "Cross-stack delivery/testing", "verdict": "Relevant original practice; contract and failure behavior precede test layers and deployment."}
+    ],
+    "limitations": [
+      "This is a partial material-claim review, not a complete healthy R-2 grade: historical report text remains unverified.",
+      "The prior research report rpt_c490a001-b672-44cd-ad68-44b0716f12bf returned not_found to this session. The reader also returns not_found for invisible reports, so this does not establish deletion or absence; the original publication receipt remains evidence of its prior existence.",
+      "The original author's indexed transcript attests having read the historical report, but it is not an independently retained copy of that report.",
+      "A later 2026-10-16T15:21:58Z source pass confirmed Python GIL/to_thread, gRPC application cleanup responsibility, React stale-response cleanup, and PostgreSQL SKIP LOCKED queue guidance. pybind11 returned HTTP 429; Scoutify returned 200 and candidate-reported wording, but the explicit inferred disclosure was not established by the measured excerpt."
+    ],
+    "additionalSources": [
+      {"name":"Python asyncio","url":"https://docs.python.org/3/library/asyncio-task.html","httpStatus":200,"retrievedAt":"2026-10-16T15:21:58.647Z","bodySha256":"7f4881f321837fa1ee2b61c0709450ef567c9c475aeb618f94344f4e6489a44b","observation":"GIL limits to_thread CPU parallelism; extensions that release the GIL are an explicit exception."},
+      {"name":"gRPC deadlines","url":"https://grpc.io/docs/guides/deadlines/","httpStatus":200,"retrievedAt":"2026-10-16T15:21:59.075Z","bodySha256":"aff237722e911059d37ce9cf8ac647579af145b3fd77da87ccd6f68597bbb488","observation":"The server application is responsible for stopping activity it spawned for an RPC."},
+      {"name":"React useEffect","url":"https://react.dev/reference/react/useEffect","httpStatus":200,"retrievedAt":"2026-10-16T15:21:58.726Z","bodySha256":"856e620b2f54fa1a8932ac3b7a0d35ed874a8010b983d72802fb207e5cea0bad","observation":"Effect cleanup with an ignore flag prevents out-of-order network response races."},
+      {"name":"PostgreSQL SELECT","url":"https://www.postgresql.org/docs/current/sql-select.html","httpStatus":200,"retrievedAt":"2026-10-16T15:21:58.627Z","bodySha256":"4cc56ef8dacafe12c91686843f03c701d16cb5e2ec36d75fb766d777c3960634","observation":"SKIP LOCKED yields an inconsistent view and is suitable for queue-like consumers rather than general-purpose correctness."},
+      {"name":"pybind11","url":"https://pybind11.readthedocs.io/en/stable/advanced/misc.html","httpStatus":429,"retrievedAt":"2026-10-16T15:21:58.076Z","verdict":"unavailable; no challenge or rate-limit bypass attempted"},
+      {"name":"Scoutify","url":"https://scoutify.com/companies/vinci4d/","httpStatus":200,"retrievedAt":"2026-10-16T15:22:01.932Z","bodySha256":"4ba7bf6db49603a065ec41386dcfe617962b9fce10794e6123a08516483209a2","observation":"Candidate-reported questions wording found; explicit inferred disclosure not established by this excerpt."}
+    ]
+  },
+  "acceptanceStatus": "Not accepted: rubric-vetting EI-26149289058083124 awaits independent integrity audit; no proof binding, independent product grade or author acceptance has been claimed."
+}

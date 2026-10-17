@@ -388,6 +388,32 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(scriptDescription).toContain('yield_control()');
     expect(scriptDescription).toContain('store(key, value)');
     expect(scriptDescription).toContain('never hidden session memory');
+    expect(scriptDescription).toContain('200 keys and 65,536 UTF-8 bytes (64 KiB)');
+    expect(scriptDescription).toContain('state_limit_exceeded');
+    expect(scriptDescription).toContain('reduce large tool reads at the source');
+    expect(scriptDescription).toContain('projection.pick');
+    expect(scriptDescription).toContain("payloadTier:'full'");
+    expect(scriptDescription).toContain('summaryNotice.rawSummaryCursor');
+    expect(scriptDescription).toContain('capability:read');
+    expect(scriptDescription).toContain('bounded slices');
+  });
+
+  it('accepts explicit replay inputs and seeds the stateless sandbox', async () => {
+    const tool = listAllProjectedTools().find((candidate) => candidate.expose.mcp?.name === 'code:run');
+    if (!tool) throw new Error('code:run not registered');
+    const args = { script: 'return { cursor: inputs.cursor, label: inputs.label };', inputs: { cursor: 7, label: 'resume' } };
+    expect(codeRunTool.args.safeParse(args).success).toBe(true);
+    const res = await tool.fn(args, {
+      log: () => {},
+      workspaceId: 'ws-test',
+      harnessSlug: 'alpha',
+      role: 'su',
+      isSuperuser: true,
+      uiClientId: 'su-test',
+    } as never);
+    const payload = JSON.parse(String((res as { content: { text: string }[] }).content[0].text));
+    expect(payload.ok).toBe(true);
+    expect(payload.summary).toEqual({ cursor: 7, label: 'resume' });
   });
 });
 
@@ -612,7 +638,7 @@ describe('code:run → recipe capture (P-003)', () => {
     expect(captureRecipeMock).toHaveBeenCalledTimes(1);
     const [, input] = captureRecipeMock.mock.calls[0] as unknown as [
       unknown,
-      { script: string; workspaceId: string; title?: string; executionTrace?: unknown },
+      { script: string; workspaceId: string; title?: string; executionTrace?: unknown; recommendationContext?: unknown },
     ];
     expect(input.script).toBe('return 1 + 1;');
     expect(input.workspaceId).toBe('ws-test');
@@ -1145,6 +1171,33 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
 
     expect(shaped.summary.pending).toContain('1047-spawn-governor-observation.sql');
     expect(shaped.summaryNotice.truncated).toBe(true);
+  });
+
+  it('retains a bounded nested object when its first projection exceeds the remaining budget', () => {
+    // Each B1 record is deliberately wide enough to force the last-resort
+    // object projection. The old top-level admission treated `b` atomically
+    // and returned only `head`/`nLines`, losing every nested key.
+    const summary = {
+      head: 'h'.repeat(1_200),
+      nLines: 10,
+      b: Object.fromEntries(
+        Array.from({ length: 8 }, (_, index) => [
+          `B1_${index}`,
+          Object.fromEntries(
+            Array.from({ length: 30 }, (_, field) => [`f${field}`, `value-${field}-${'x'.repeat(300)}`]),
+          ),
+        ]),
+      ),
+    };
+    const shaped = shapeCodeRunSummary({ summary }) as {
+      summary: { b: Record<string, unknown> };
+      summaryNotice: { truncated: true; returnedChars: number };
+    };
+
+    const nestedKeys = Object.keys(shaped.summary.b).filter((key) => key.startsWith('B1_'));
+    expect(nestedKeys.length).toBeGreaterThan(0);
+    expect(JSON.stringify(shaped.summary).length).toBeLessThanOrEqual(CODE_RUN_SUMMARY_CHAR_BUDGET);
+    expect(shaped.summaryNotice.returnedChars).toBe(JSON.stringify(shaped.summary).length);
   });
 
   it('uses spare summary budget for long nested evidence in the minimal code:run result', async () => {
@@ -1980,10 +2033,11 @@ describe('code:run → per-inner-call workspace/identity rebinding (WI-1411)', (
  * session), so a large nested field on an intermediate result (rubrics:get's
  * `criteria[]`) got shaped/truncated by applyPayloadTier with no error signal —
  * indistinguishable from a genuinely small result to the script's own `.length` /
- * `.filter()` read. bindInnerDispatch now strips `contextTier` off every inner
- * call's ctx so it defaults to 'full' (a script can still opt into a narrower
- * tier for one call via that call's own `payloadTier` arg — resolved
- * independently downstream, unaffected by this ctx-level default).
+ * `.filter()` read. bindInnerDispatch now forces `contextTier:'full'` and
+ * `payloadTierOverride:'full'` on every inner call so it receives the same
+ * lossless materialization as a direct tools:invoke call (a script can still
+ * opt into a narrower tier for one call via that call's own `payloadTier` arg —
+ * resolved independently downstream).
  */
 describe('code:run → inner calls default to full payload tier (EI-18699443874201617)', () => {
   const readTool = {
@@ -2005,7 +2059,7 @@ describe('code:run → inner calls default to full payload tier (EI-186994438742
     runWithWorkspaceIfConcreteMock.mockClear();
   });
 
-  it('fast path: strips a trimmed outer contextTier before dispatching the inner call', async () => {
+  it('fast path: forces full contextTier over a trimmed outer tier', async () => {
     const outerCtx = {
       workspaceId: 'ws-bee',
       role: 'cup',
@@ -2018,7 +2072,7 @@ describe('code:run → inner calls default to full payload tier (EI-186994438742
       contextTier?: string;
     };
     expect(result).not.toBe(outerCtx); // a new ctx object — the tier was overridden
-    expect(result.contextTier).toBeUndefined();
+    expect(result.contextTier).toBe('full');
   });
 
   it('fast path: a ctx with no contextTier at all still dispatches under the same binding (no needless rebind)', async () => {
@@ -2034,7 +2088,7 @@ describe('code:run → inner calls default to full payload tier (EI-186994438742
       contextTier?: string;
     };
     expect(result.workspaceId).toBe('ws-bee');
-    expect(result.contextTier).toBeUndefined();
+    expect(result.contextTier).toBe('full');
     expect(withWorkspaceMock).not.toHaveBeenCalled();
     expect(synthesizeDispatchPrincipalMock).not.toHaveBeenCalled();
   });
@@ -2049,7 +2103,7 @@ describe('code:run → inner calls default to full payload tier (EI-186994438742
       echoNext,
     )) as { contextTier?: string; workspaceId: string };
     expect(result.workspaceId).toBe('ws-target');
-    expect(result.contextTier).toBeUndefined();
+    expect(result.contextTier).toBe('full');
   });
 
   it('crossWorkspace path: strips contextTier on the admin-tx ctx too', async () => {
@@ -2061,7 +2115,7 @@ describe('code:run → inner calls default to full payload tier (EI-186994438742
       outerCtx as never,
       echoNext,
     )) as { contextTier?: string };
-    expect(result.contextTier).toBeUndefined();
+    expect(result.contextTier).toBe('full');
   });
 });
 

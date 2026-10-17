@@ -13,6 +13,7 @@ import {
   isDiskGiBValid,
   isStepId,
   lifecycleActionPlan,
+  preferredDesktopWorkspace,
   railModel,
   readinessChecks,
   resolveActiveStep,
@@ -72,6 +73,18 @@ const workspace = (
   recoverability: { kind: "snapshot", label: "snap-0827" },
   capabilities: { start: false, stop: true, repair: true, snapshot: true, destroy: true },
   ...overrides,
+});
+
+describe("default machine target", () => {
+  it("prefers a running connector over a stopped connector or an unconnected running machine", () => {
+    const connector = { hostedConnector: { routeLabel: "saved-route", transport: "websocket" } };
+    const stopped = workspace({ id: "stopped", observedState: "stopped", tunnel: connector });
+    const disconnected = workspace({ id: "disconnected" });
+    const connected = workspace({ id: "connected", tunnel: connector });
+    expect(preferredDesktopWorkspace([stopped, disconnected, connected])?.id).toBe("connected");
+    expect(preferredDesktopWorkspace([stopped, disconnected])?.id).toBe("disconnected");
+    expect(preferredDesktopWorkspace([stopped])?.id).toBe("stopped");
+  });
 });
 
 describe("step resolution", () => {

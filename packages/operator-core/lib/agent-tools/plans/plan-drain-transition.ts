@@ -212,6 +212,10 @@ export async function applyPlanDrainTransition(
       intent: 'plan-drain-transition: reconcile plan status against a drained item graph',
       ...(harnessSlug ? { harnessSlug } : {}),
       ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+      // Restoring an awaiting-acceptance plan to ready is lifecycle repair for
+      // a reopened item graph, not a fresh activation. Keep the ordinary
+      // conversation-audit gate for every other plan write.
+      allowAwaitingAcceptanceRestore: true,
       inTransaction: async (tx, writtenBody, scope, value) => {
         if (value.applied && value.to === 'awaiting-acceptance' &&
             parsePlan(writtenBody).frontmatter.template !== 'rubric') {

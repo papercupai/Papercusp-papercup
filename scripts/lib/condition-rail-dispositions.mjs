@@ -98,6 +98,12 @@ export const DISPOSITIONS = Object.freeze({
   'log-only-fallback|apps/operator/scripts/onboard-launcher.mjs': NA_CLI,
   'log-only-fallback|apps/operator/scripts/psu-launcher.mjs': NA_CLI,
   'log-only-fallback|apps/operator/scripts/ptool.mjs': NA_CLI,
+  'log-only-fallback|apps/operator/scripts/ptool.mjs|main|3': na(
+    'explicit safety refusal: rejects a write on an alternate operator and exits with failure before dispatch; no fallback decision is performed at this site',
+  ),
+  'log-only-fallback|packages/operator-core/lib/harness/routines/project-history-refresh-action.ts|runProjectHistoryRefreshAction|1': na(
+    'explicit missing-CLI precondition refusal: records failed project history health and returns without running an ambient PATH lookup; no fallback is performed',
+  ),
   'log-only-fallback|apps/operator/scripts/rotate-spawn-signing-key.mjs': NA_CLI,
   'log-only-fallback|libs/papercusp/libs/db/scripts/pull-schema.mjs': NA_CLI,
   // Exact original row independently reviewed in thread-post:1175978; D-048.

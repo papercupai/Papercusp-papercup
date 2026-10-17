@@ -24,9 +24,11 @@ import {
   keyBelongsToPrefix,
   planDegradationActions,
   registerDegradationMechanism,
+  resolveObservationWorkspaceId,
   runDegradationSweepOnce,
   type DegradationMechanism,
 } from './degradation-watchdog';
+import { runWithWorkspace } from '../workspace-als';
 
 const M = 'test-mechanism';
 
@@ -230,6 +232,149 @@ describe('runDegradationSweepOnce — one alarm per episode against a durable op
     expect(open.size).toBe(0);
   });
 
+  it('resolves owner-scoped degradation only after positive ended-session evidence', async () => {
+    const scoped: DegradationMechanism = {
+      mechanism: 'compaction-force-respawn', description: 'x', scopeKeyed: true, scopeIsSessionOwner: true,
+      thresholds: { minEligible: 1 },
+    };
+    const owner = 'su-ended-owner';
+    const key = degradationConditionKey(scoped.mechanism, owner, 'force-unavailable');
+    open.add(key);
+    const r = await runDegradationSweepOnce({
+      ...deps(),
+      mechanisms: () => [scoped],
+      readWindows: async () => [],
+      readEndedSessionOwners: async (owners) => {
+        expect(owners).toEqual([owner]);
+        return new Set([owner]);
+      },
+    });
+
+    expect(r.resolved).toEqual([key]);
+    expect(resolutions[0]).toMatchObject({
+      conditionKey: key,
+      summary: 'Superseded: compaction-force-respawn (su-ended-owner) owner session ended; scope is no longer applicable.',
+    });
+    expect(broadcasts).toHaveLength(0);
+    expect(open.has(key)).toBe(false);
+  });
+
+  it('does not re-open an ended owner condition from a stale collapsed window', async () => {
+    const scoped: DegradationMechanism = {
+      mechanism: 'compaction-force-respawn', description: 'x', scopeKeyed: true, scopeIsSessionOwner: true,
+      thresholds: { minEligible: 1 },
+    };
+    const owner = 'su-ended-owner';
+    const key = degradationConditionKey(scoped.mechanism, owner, 'force-unavailable');
+    open.add(key);
+    const r = await runDegradationSweepOnce({
+      ...deps(),
+      mechanisms: () => [scoped],
+      readWindows: async () => [{ scope: owner, window: windowOf(1, 0) }],
+      readEndedSessionOwners: async () => new Set([owner]),
+    });
+
+    expect(r.resolved).toEqual([key]);
+    expect(r.opened).toEqual([]);
+    expect(broadcasts).toHaveLength(0);
+    expect(open.has(key)).toBe(false);
+  });
+
+  it('explains owner-end recovery for session-scoped degradation alarms', async () => {
+    const scoped: DegradationMechanism = {
+      mechanism: 'compaction-force-respawn', description: 'x', scopeKeyed: true, scopeIsSessionOwner: true,
+      thresholds: { minEligible: 1 },
+    };
+    const result = await runDegradationSweepOnce({
+      ...deps(),
+      mechanisms: () => [scoped],
+      readWindows: async () => [{ scope: 'su-current-owner', window: windowOf(1, 0) }],
+      readOpenConditionKeys: async () => [],
+    });
+    expect(broadcasts[0]?.body).toContain('resolves itself once the rate reaches 0.5 or the scoped owner session ends.');
+    expect(result.opened).toEqual(['degraded:compaction-force-respawn:su-current-owner:otherRunner']);
+  });
+
+  it('keeps owner-scoped conditions open when liveness is live, unknown, or unreadable', async () => {
+    const scoped: DegradationMechanism = {
+      mechanism: 'compaction-force-respawn', description: 'x', scopeKeyed: true, scopeIsSessionOwner: true,
+    };
+    const owner = 'su-live-owner';
+    const key = degradationConditionKey(scoped.mechanism, owner, 'force-unavailable');
+    open.add(key);
+    const r = await runDegradationSweepOnce({
+      ...deps(),
+      mechanisms: () => [scoped],
+      readWindows: async () => [],
+      readEndedSessionOwners: async () => new Set(),
+    });
+    expect(r.resolved).toEqual([]);
+    expect(resolutions).toHaveLength(0);
+    expect(open.has(key)).toBe(true);
+
+    const failed = await runDegradationSweepOnce({
+      ...deps(),
+      mechanisms: () => [scoped],
+      readWindows: async () => [],
+      readEndedSessionOwners: async () => { throw new Error('liveness unavailable'); },
+    });
+    expect(failed.errors).toContain('compaction-force-respawn ended-session liveness: liveness unavailable');
+    expect(resolutions).toHaveLength(0);
+    expect(open.has(key)).toBe(true);
+  });
+
+  it('resolves an owner-scoped condition from a predecessor after owner-id reuse', async () => {
+    const scoped: DegradationMechanism = {
+      mechanism: 'compaction-force-respawn', description: 'x', scopeKeyed: true, scopeIsSessionOwner: true,
+    };
+    const owner = 'su-reused-owner';
+    const key = degradationConditionKey(scoped.mechanism, owner, 'force-unavailable');
+    open.add(key);
+    const predecessorConditionAt = Date.parse('2026-10-16T13:35:43.146Z');
+    const successorStartedAt = Date.parse('2026-10-16T20:27:43.004Z');
+    const r = await runDegradationSweepOnce({
+      ...deps(),
+      mechanisms: () => [scoped],
+      readWindows: async () => [],
+      readOpenConditionEpisodes: async () => [{ conditionKey: key, openedAtMs: predecessorConditionAt }],
+      readSessionStartedAt: async (owners) => {
+        expect(owners).toEqual([owner]);
+        return new Map([[owner, successorStartedAt]]);
+      },
+      readEndedSessionOwners: async () => new Set(),
+    });
+
+    expect(r.resolved).toEqual([key]);
+    expect(resolutions[0]).toMatchObject({
+      conditionKey: key,
+      summary: 'Superseded: compaction-force-respawn (su-reused-owner) condition predates the current session incarnation.',
+    });
+    expect(open.has(key)).toBe(false);
+  });
+
+  it('keeps an owner condition when it opened during the current incarnation', async () => {
+    const scoped: DegradationMechanism = {
+      mechanism: 'compaction-force-respawn', description: 'x', scopeKeyed: true, scopeIsSessionOwner: true,
+    };
+    const owner = 'su-current-owner';
+    const key = degradationConditionKey(scoped.mechanism, owner, 'force-unavailable');
+    open.add(key);
+    const currentStartedAt = Date.parse('2026-10-16T20:27:43.004Z');
+    const currentConditionAt = currentStartedAt + 1_000;
+    const r = await runDegradationSweepOnce({
+      ...deps(),
+      mechanisms: () => [scoped],
+      readWindows: async () => [],
+      readOpenConditionEpisodes: async () => [{ conditionKey: key, openedAtMs: currentConditionAt }],
+      readSessionStartedAt: async () => new Map([[owner, currentStartedAt]]),
+      readEndedSessionOwners: async () => new Set(),
+    });
+
+    expect(r.resolved).toEqual([]);
+    expect(resolutions).toHaveLength(0);
+    expect(open.has(key)).toBe(true);
+  });
+
   it('a failed open-key read makes no rail writes', async () => {
     const r = await runDegradationSweepOnce({
       ...deps(),
@@ -306,6 +451,14 @@ describe('mechanism registry', () => {
     expect(getDegradationMechanism('unit-test-only')).toBeDefined();
     _unregisterDegradationMechanismForTests('unit-test-only');
     expect(getDegradationMechanism('unit-test-only')).toBeUndefined();
+  });
+
+  it('uses the ambient workspace for unpinned readers while preserving an explicit pin', () => {
+    runWithWorkspace('workspace-from-context', () => {
+      expect(resolveObservationWorkspaceId({})).toBe('workspace-from-context');
+      expect(resolveObservationWorkspaceId({ observationWorkspaceId: 'explicit-workspace' }))
+        .toBe('explicit-workspace');
+    });
   });
 });
 

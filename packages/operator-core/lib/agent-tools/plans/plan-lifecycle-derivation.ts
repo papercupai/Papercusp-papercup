@@ -312,16 +312,26 @@ export async function derivePlanLifecycleForRead(input: {
     /** Item text by id — carries each item's declared `attempt-cost:` / `iteration-budget:`. */
     itemTexts: Readonly<Record<string, string>>;
   }) => Promise<IterationMetric[] | null>;
+  /**
+   * Optional response selection for per-item enrichment. The lifecycle verdict
+   * still uses the COMPLETE item graph, but expensive attempt/grinding readers
+   * and their per-item arrays only need the caller-selected records.
+   */
+  enrichmentItemIds?: readonly string[];
 }): Promise<PlanLifecycleReconciliation & { grinding?: GrindingMark[] | null; iterations?: IterationMetric[] | null }> {
   const reconciled = await deriveReconciledLifecycle(input);
+  const selectedEnrichmentIds = input.enrichmentItemIds ? new Set(input.enrichmentItemIds) : null;
+  const enrichmentItems = selectedEnrichmentIds
+    ? input.items.filter((it) => selectedEnrichmentIds.has(it.id))
+    : input.items;
   let iterations: IterationMetric[] | null | undefined;
   if (input.readIterations) {
     try {
       iterations = await input.readIterations({
         workspaceId: input.signals.workspaceId,
         planSlug: input.signals.planSlug,
-        itemIds: input.items.map((it) => it.id),
-        itemTexts: Object.fromEntries(input.items.map((it) => [it.id, it.text])),
+        itemIds: enrichmentItems.map((it) => it.id),
+        itemTexts: Object.fromEntries(enrichmentItems.map((it) => [it.id, it.text])),
       });
     } catch {
       iterations = null;
@@ -329,7 +339,7 @@ export async function derivePlanLifecycleForRead(input: {
   }
   const withIterations = iterations !== undefined ? { ...reconciled, iterations } : reconciled;
   if (!input.readGrinding) return withIterations;
-  const open = input.items
+  const open = enrichmentItems
     .filter((it) => it.storedStatus !== 'done' && it.storedStatus !== 'dropped')
     .map((it) => it.id);
   let grinding: GrindingMark[] | null = null;

@@ -1,7 +1,9 @@
 /** Shared receipts: status polls may land on any operator worker. */
+import { hostname } from 'node:os';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { TERMINAL_TASK_STATES } from '../../task-manager/types';
+import { readProcessIdentity } from '../../process-identity';
 
 export type AmendReceiptState = 'running' | 'committed' | 'previewed' | 'failed';
 
@@ -14,6 +16,10 @@ export interface AmendReceiptEntry {
   /** The exact JSON payload the synchronous call would have returned. */
   result?: Record<string, unknown>;
   error?: string;
+  /** Executor identity is internal metadata used to detect a dead worker. */
+  executorHost?: string;
+  executorPid?: number;
+  executorProcessId?: string;
 }
 
 export const AMEND_RECEIPT_RETENTION_MS = 60 * 60 * 1000;
@@ -27,6 +33,31 @@ interface ReceiptRow {
   finished_at: Date | string | null;
   result_json: Record<string, unknown> | null;
   error: string | null;
+  executor_host: string | null;
+  executor_pid: number | null;
+  executor_process_id: string | null;
+}
+
+interface CurrentExecutorIdentity {
+  host: string | null;
+  pid: number;
+  processId: string | null;
+}
+
+function currentExecutorIdentity(): CurrentExecutorIdentity {
+  let host: string | null = null;
+  try {
+    host = hostname() || null;
+  } catch {
+    // Hostname is diagnostic only; a missing value must not block an amend.
+  }
+  let processId: string | null = null;
+  try {
+    processId = readProcessIdentity(process.pid);
+  } catch {
+    // Process identity is best effort; legacy lease reclaim remains the fallback.
+  }
+  return { host, pid: process.pid, processId };
 }
 
 function asEntry(row: ReceiptRow): AmendReceiptEntry {
@@ -38,7 +69,35 @@ function asEntry(row: ReceiptRow): AmendReceiptEntry {
     ...(row.finished_at ? { finishedAt: new Date(row.finished_at).getTime() } : {}),
     ...(row.result_json ? { result: row.result_json } : {}),
     ...(row.error ? { error: row.error } : {}),
+    ...(row.executor_host ? { executorHost: row.executor_host } : {}),
+    ...(row.executor_pid ? { executorPid: row.executor_pid } : {}),
+    ...(row.executor_process_id ? { executorProcessId: row.executor_process_id } : {}),
   };
+}
+
+/**
+ * A running receipt is immediately reclaimable when its recorded executor no
+ * longer exists on the same host. The process identity pairs PID with the
+ * kernel boot id and start ticks, so PID reuse cannot steal a live receipt.
+ * Unknown or remote executors stay on the existing lease path.
+ */
+export function isRunningReceiptOrphaned(entry: AmendReceiptEntry): boolean {
+  if (entry.state !== 'running' || !entry.executorHost || !entry.executorPid || !entry.executorProcessId) return false;
+  let host: string;
+  try {
+    host = hostname();
+  } catch {
+    return false;
+  }
+  if (host !== entry.executorHost) return false;
+  const observed = readProcessIdentity(entry.executorPid);
+  if (observed) return observed !== entry.executorProcessId;
+  try {
+    process.kill(entry.executorPid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH';
+  }
 }
 
 /** A valid preview is not a completed review request when nobody could start. */
@@ -78,6 +137,7 @@ export async function trackAmendRun(
 ): Promise<Record<string, unknown>> {
   const { sql } = getOrgPg();
   const workspaceId = activeWorkspaceId();
+  const executor = currentExecutorIdentity();
   // Finished previews/failures have no Decision fallback. Retain them for one
   // hour, then bound the shared table opportunistically on the next amend.
   await sql`
@@ -87,8 +147,8 @@ export async function trackAmendRun(
   `;
   const inserted = await sql<Array<{ idempotency_key: string }>>`
     INSERT INTO harness_shared.rubric_amend_receipts
-      (workspace_id, rubric_ref, idempotency_key, state)
-    VALUES (${workspaceId}, ${rubricRef}, ${idempotencyKey}, 'running')
+      (workspace_id, rubric_ref, idempotency_key, state, executor_host, executor_pid, executor_process_id)
+    VALUES (${workspaceId}, ${rubricRef}, ${idempotencyKey}, 'running', ${executor.host}, ${executor.pid}, ${executor.processId})
     ON CONFLICT (workspace_id, rubric_ref, idempotency_key) DO NOTHING
     RETURNING idempotency_key
   `;
@@ -97,7 +157,25 @@ export async function trackAmendRun(
   // deterministic per request, so without this reclaim every same-key retry would
   // answer `pending` forever (WI-10006937).
   const leaseSeconds = Math.round(AMEND_RECEIPT_RUNNING_LEASE_MS / 1000);
-  const reclaimed = inserted.length > 0 ? [] : await sql<Array<{ idempotency_key: string }>>`
+  const existing = inserted.length === 0 ? await getAmendReceipt(rubricRef, idempotencyKey) : undefined;
+  const orphaned = existing?.state === 'running' && isRunningReceiptOrphaned(existing) ? existing : undefined;
+  let reclaimed: Array<{ idempotency_key: string }>;
+  if (inserted.length > 0) {
+    reclaimed = [];
+  } else if (orphaned) {
+    reclaimed = await sql<Array<{ idempotency_key: string }>>`
+      UPDATE harness_shared.rubric_amend_receipts
+         SET state = 'running', result_json = NULL, error = NULL, started_at = now(), finished_at = NULL,
+             executor_host = ${executor.host}, executor_pid = ${executor.pid}, executor_process_id = ${executor.processId}
+       WHERE workspace_id = ${workspaceId} AND rubric_ref = ${rubricRef}
+         AND idempotency_key = ${idempotencyKey} AND state = 'running'
+         AND executor_host = ${orphaned.executorHost!}
+         AND executor_pid = ${orphaned.executorPid!}
+         AND executor_process_id = ${orphaned.executorProcessId!}
+      RETURNING idempotency_key
+    `;
+  } else {
+    reclaimed = await sql<Array<{ idempotency_key: string }>>`
     UPDATE harness_shared.rubric_amend_receipts
        SET state = 'running', result_json = NULL, error = NULL, started_at = now(), finished_at = NULL
      WHERE workspace_id = ${workspaceId} AND rubric_ref = ${rubricRef}
@@ -125,13 +203,14 @@ export async function trackAmendRun(
                 AND pv.id = substring(result_json #>> '{review,previewPostRef}' from '^thread-post:([0-9]+)$')::bigint))
          OR (state = 'running' AND started_at < now() - make_interval(secs => ${leaseSeconds})))
     RETURNING idempotency_key
-  `;
+    `;
+  }
   if (inserted.length === 0 && reclaimed.length === 0) {
-    const existing = await getAmendReceipt(rubricRef, idempotencyKey);
-    if (!existing) throw new Error('rubric amend receipt disappeared during same-key retry');
+    const current = existing ?? await getAmendReceipt(rubricRef, idempotencyKey);
+    if (!current) throw new Error('rubric amend receipt disappeared during same-key retry');
     options.onRegistered?.();
-    if (existing.result) return existing.result;
-    if (existing.state === 'failed') throw new Error(existing.error ?? 'previous rubric amendment failed');
+    if (current.result) return current.result;
+    if (current.state === 'failed') throw new Error(current.error ?? 'previous rubric amendment failed');
     return { ok: true, pending: true, idempotencyKey, receipt: { rubricRef, idempotencyKey } };
   }
   options.onRegistered?.();
@@ -168,7 +247,8 @@ export async function trackAmendRun(
 export async function getAmendReceipt(rubricRef: string, idempotencyKey: string): Promise<AmendReceiptEntry | undefined> {
   const { sql } = getOrgPg();
   const rows = await sql<ReceiptRow[]>`
-    SELECT idempotency_key, rubric_ref, state, started_at, finished_at, result_json, error
+    SELECT idempotency_key, rubric_ref, state, started_at, finished_at, result_json, error,
+           executor_host, executor_pid, executor_process_id
       FROM harness_shared.rubric_amend_receipts
      WHERE workspace_id = ${activeWorkspaceId()}
        AND rubric_ref = ${rubricRef}

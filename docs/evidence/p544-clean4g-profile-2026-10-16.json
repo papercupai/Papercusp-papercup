@@ -1,0 +1,323 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "item": "P-544",
+  "recordedAt": "2026-10-16T21:13:30.778519+00:00",
+  "scope": "Qualified GCP candidate-only single-workspace experiment; no minimum viable profile, AWS result or shipment claim",
+  "profile": {
+    "provider": "gcp",
+    "project": "pc-agent-capacity-0930",
+    "zone": "us-central1-a",
+    "vm": "cap-p544-min-1016",
+    "machine": "e2-custom-2-4096",
+    "vCPU": 2,
+    "memoryGiB": 4,
+    "swap": "4GiB zram lz4 priority100 plus10GiB persistent disk overflow priority10",
+    "assignedNativeCodexSessions": 50,
+    "activeRoundsPerCohort": 3,
+    "candidatePackageEvidence": "docs/evidence/p544-candidate-package-2026-10-16.json",
+    "candidateSource": "dd83ee5514342f8433569539767e015f01429410",
+    "exactServerPopulation": 1
+  },
+  "metricSemantics": {
+    "writer": "scripts/agent-capacity/vm/swap-tier.py:summarize",
+    "totalSec": "tDone-t0 including model and native CLI, not isolated shell time",
+    "echoSec": "tEcho-t0",
+    "submitToReplySec": "tDone-tEnter",
+    "agents": "unique native agent identifiers in phase",
+    "tasks": "phase wake-row count",
+    "probeExecMs": "host fork/exec samples within phase windows",
+    "nativeVerification": "Every one of98 measured wake rows has nativeToolVerified=true and no error; separate warmup verified50 native sessions"
+  },
+  "acceptance": {
+    "authority": "agent-capacity-and-cost-gcp-2026-09-30#D-075",
+    "thresholds": {
+      "oomKills": 0,
+      "nativeTaskFailures": 0,
+      "moderateP95EchoSec": 1,
+      "moderateP95HostExecMs": 100,
+      "moderateP95FullTaskSec": 30,
+      "burstP95EchoSec": 3,
+      "burstAllSettledSec": 120,
+      "coldWakeSec": 120
+    },
+    "verdict": "fail",
+    "failedChecks": [
+      "active-1 full task p95=36.893s >30s (3 samples)",
+      "active-10 echo p95=1.498s >1s (30 tasks across10 agents)",
+      "burst echo p95=31.977s >3s",
+      "burst allDone=187.271s >120s"
+    ],
+    "passedChecks": [
+      "98 measured native hash tasks verified with0failures",
+      "0 OOM kills during this clean boot",
+      "active-5 cohort meets frozen echo, task-wall and host-exec thresholds"
+    ],
+    "coldWakeLatency": "unmeasured; data preservation passed, but first health read was not a timed <=120s probe",
+    "minimumProfile": "not established",
+    "eightGiB": "unmeasured; original lifetime left insufficient room for setup, full run, archive and teardown; deadline never extended",
+    "resourceCausation": "not established by this profile alone; raw swap-in/major-fault and probe counters retained without asserting sole cause"
+  },
+  "summary": {
+    "arms": [
+      {
+        "arm": "zram-lz4",
+        "device": "/dev/zram0",
+        "assignedAgents": 50,
+        "reclaim": {
+          "agents": 50,
+          "beforeMiBPerAgent": 16.3,
+          "swappedMiBPerAgent": 49.0,
+          "residentAfterMiBPerAgent": 3.2,
+          "seconds": 24.6,
+          "swapOutMiBps": 99.5
+        },
+        "idleRegainedMiB": 152.4,
+        "zram": {
+          "origMiB": 4029.0,
+          "comprMiB": 2089.9,
+          "usedMiB": 2137.1,
+          "ratio": 1.89
+        },
+        "storm": {
+          "agents": 50,
+          "tasks": 50,
+          "failed": 0,
+          "totalSec": {
+            "p50": 176.359,
+            "p90": 181.515,
+            "p95": 181.903,
+            "max": 186.407
+          },
+          "echoSec": {
+            "p50": 31.442,
+            "p95": 31.977,
+            "max": 32.004
+          },
+          "submitToReplySec": {
+            "p50": 149.993,
+            "p95": 180.482,
+            "max": 180.905
+          },
+          "regainedMiBPerAgent": 10.9,
+          "majfltPerAgent": 5608,
+          "allDoneSec": 187.271,
+          "probeExecMs": {
+            "p50": 3.05,
+            "p95": 1793.05,
+            "p99": 10441.01,
+            "max": 25294.04,
+            "samples": 335
+          }
+        },
+        "active-1": {
+          "agents": 1,
+          "tasks": 3,
+          "failed": 0,
+          "totalSec": {
+            "p50": 9.121,
+            "p90": 36.893,
+            "p95": 36.893,
+            "max": 36.893
+          },
+          "echoSec": {
+            "p50": 0.073,
+            "p95": 0.703,
+            "max": 0.703
+          },
+          "submitToReplySec": {
+            "p50": 9.041,
+            "p95": 36.181,
+            "max": 36.181
+          },
+          "regainedMiBPerAgent": 6.4,
+          "majfltPerAgent": 2287,
+          "probeExecMs": {
+            "p50": 1.65,
+            "p95": 3.71,
+            "p99": 6.62,
+            "max": 23.75,
+            "samples": 509
+          }
+        },
+        "active-5": {
+          "agents": 5,
+          "tasks": 15,
+          "failed": 0,
+          "totalSec": {
+            "p50": 12.815,
+            "p90": 15.2,
+            "p95": 19.068,
+            "max": 19.068
+          },
+          "echoSec": {
+            "p50": 0.166,
+            "p95": 0.295,
+            "max": 0.295
+          },
+          "submitToReplySec": {
+            "p50": 12.639,
+            "p95": 18.81,
+            "max": 18.81
+          },
+          "regainedMiBPerAgent": 6.3,
+          "majfltPerAgent": 1249,
+          "probeExecMs": {
+            "p50": 1.9,
+            "p95": 5.63,
+            "p99": 18.78,
+            "max": 99.32,
+            "samples": 433
+          }
+        },
+        "active-10": {
+          "agents": 10,
+          "tasks": 30,
+          "failed": 0,
+          "totalSec": {
+            "p50": 14.48,
+            "p90": 17.231,
+            "p95": 18.218,
+            "max": 18.223
+          },
+          "echoSec": {
+            "p50": 0.246,
+            "p95": 1.498,
+            "max": 1.605
+          },
+          "submitToReplySec": {
+            "p50": 14.241,
+            "p95": 16.613,
+            "max": 16.714
+          },
+          "regainedMiBPerAgent": 4.7,
+          "majfltPerAgent": 886,
+          "probeExecMs": {
+            "p50": 2.4,
+            "p95": 9.88,
+            "p99": 26.24,
+            "max": 66.37,
+            "samples": 493
+          }
+        },
+        "swapAfterStormMiB": 2347.4,
+        "residentAfterStormMiB": 528.6
+      }
+    ],
+    "fio": []
+  },
+  "finalState": {
+    "capturedAt": 1792184665.3821197,
+    "bootId": "688ace48-2e9e-4794-9856-ed5015d43857",
+    "oomKill": 0,
+    "vmstat": {
+      "pswpin": 4051576,
+      "pswpout": 4650429,
+      "pgmajfault": 4148337,
+      "oom_kill": 0
+    },
+    "serverPopulation": [
+      "/sys/fs/cgroup/user.slice/user-1003.slice/user@1003.service/app.slice/papercusp-server.service"
+    ],
+    "swaps": "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/dev/sdc                                partition\t10485756\t930932\t\t10\n/dev/zram0                              partition\t4194300\t\t2978632\t\t100\n"
+  },
+  "coldDurability": {
+    "capturedAt": "2026-10-16T20:46:59.307689+00:00",
+    "bootId": "688ace48-2e9e-4794-9856-ed5015d43857",
+    "corpus": {
+      "root": "/mnt/p544-data/corpus/excalidraw",
+      "files": 1332,
+      "bytes": 92202712,
+      "sha256": "b1cc6d9aac4dd9a336471dc4e2730b31e059024cf6a07121ab369791550fb405"
+    },
+    "nativeHistories": {
+      "root": "/home/agent/codex-homes",
+      "files": 200,
+      "bytes": 13918140,
+      "sha256": "d85627df410e45891ae6f40ccd673c02f9cedddc60ca34a051fbe2cec1e62012"
+    },
+    "nativeFiles": {
+      "root": "/home/agent/work",
+      "files": 50,
+      "bytes": 1664000,
+      "sha256": "afbf118d0934cc21c0239a250be8acd140deab1c42c5dbf27b9acb8bffeb59f8"
+    },
+    "health": {
+      "status": 200,
+      "body": {
+        "ok": true,
+        "service": "papercusp-operator",
+        "sha": "dd83ee5514",
+        "version": "0.0.26",
+        "claimSpec": {
+          "specVersion": "1.0",
+          "revisionAdoption": [
+            "first"
+          ]
+        },
+        "ts": "2026-10-16T20:47:03.580Z"
+      }
+    }
+  },
+  "rawEvidence": {
+    "archive": "/tmp/p544-native-evidence/p544-native50-clean4g.tgz",
+    "bytes": 60679466,
+    "sha256": "191870492ddc6daef6003c4b9d0ab581aacc1416afd55f30e4d14419b616e737",
+    "guestHashMatches": true,
+    "members": 6014,
+    "symlinksRetainedInArchive": 150,
+    "extractedRoot": "/tmp/p544-native-evidence/clean4g",
+    "resultsSha256": "f5e10c96b694b4d99dd77502a3e3dcfc46ae7befd8fca84f1028e5264447131c",
+    "summarySha256": "02cbeb1ed97f51f7d0d716a5729501da5458bd8536045e19aff58619faf910b0",
+    "cleanRunTask": "0mvbfz10xb1cr9r15ho",
+    "archiveVerification": "/tmp/p544-clean4g-archive-verified.json",
+    "contains": "raw CLI histories, hash work files, driver, workload, server footprint and cold durability witnesses"
+  },
+  "teardown": {
+    "task": "0mvbgkayj1xugafq1hc",
+    "exitCode": 0,
+    "originalProviderDeleteDeadline": "2026-10-16T21:19:07Z",
+    "finishedAt": "2026-10-16T21:07:52Z",
+    "receipt": {
+      "runId": "p544-min-1016",
+      "deleted": [
+        "cap-p544-min-1016"
+      ],
+      "remainingInstances": [],
+      "orphanDisks": [],
+      "verified": true
+    },
+    "census": {
+      "instances": [],
+      "orphanDisks": [],
+      "staticAddresses": [],
+      "buckets": [
+        "pc-agent-capacity-0930-artifacts"
+      ],
+      "committedWorstCaseCents": 0
+    },
+    "disks": [],
+    "snapshots": [],
+    "addresses": []
+  },
+  "regressionEvidence": [
+    "docs/evidence/p544-single-server-harness-2026-10-16.json",
+    "docs/evidence/p544-kernel-swap-preflight-2026-10-16.json"
+  ],
+  "sourceHashes": {
+    "scripts/agent-capacity/vm/swap-tier.py": "7b58ce85af6434d953c07b6406103b79cf8e21e0ce4e23f647188bc53947fb3c",
+    "scripts/agent-capacity/vm/swap-tier.test.ts": "6335c3428b50a3c4235566e60e94dfdd3cf19e47cabedf1097c0af7af484aa72",
+    "scripts/agent-capacity/vm/install-server.sh": "b73322da9a04062238f702d132d1e6dee64710ee02987c91ed6ed617ddba8ebe",
+    "scripts/agent-capacity/vm/install-server.test.ts": "5fd45ea74fbfca00c5d053eb6133518d80f34c5cf60d055d8c720db6a978d628"
+  },
+  "remaining": [
+    "2vCPU/8GiB and fallback minimum passing profile",
+    "AWS comparison",
+    "timed cold wake <=120s",
+    "dynamic resize/replacement and disk-growth durability acceptance",
+    "60/120/240 active-hour and near-idle costs including storage/control overhead",
+    "IaC and serverless fit analysis",
+    "P537 exact shipment and P538-P542 rollout gates"
+  ]
+}

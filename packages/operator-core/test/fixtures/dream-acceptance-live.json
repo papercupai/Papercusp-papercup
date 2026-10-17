@@ -1,0 +1,6 @@
+{
+  "origin": "http://127.0.0.1:3170",
+  "runtimeUnits": ["postgres:5432"],
+  "rubricRef": "acceptance-dream-performance-grading-papercusp-2026-10-07",
+  "rubricRevision": 7
+}

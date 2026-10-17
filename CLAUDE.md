@@ -258,12 +258,13 @@ never a prose message that scrolls away — and carry it forward in every status
 report.
 
 **Before burning hours re-deriving something a PEER may already know, ask the
-router: `consult:get_feedback { question }`.** It searches every agent's real
-transcript history (yours excluded), wakes the best-qualified peer with
-why-they-were-chosen evidence, and answers instantly from the archive when a
-closed consult already settled the question. Honest by design: below the
-relevance floor it says "no one knows more than you do — proceed", never a
-costumed expert. Reach for it at exactly the moments you'd otherwise
+router: `consult:get_feedback { question }`.** It answers instantly from the archive when a
+closed consult already settled the question; otherwise it ranks every agent's
+real transcript history (yours excluded) and launches an ISOLATED answer
+session from the best-qualified peer's transcript, with why-they-were-chosen
+evidence — the expert's own live session is never woken. Honest by design: a
+below-floor responder is labelled `via:'minimum'`, and `min_agents: 0` returns
+"no one knows more than you do — proceed", never a costumed expert. Reach for it at exactly the moments you'd otherwise
 deep-dive an unfamiliar subsystem, re-debug a failure someone else already
 fixed, or guess at another lane's design intent. (It is who-knows DISCOVERY —
 for a KNOWN agent use `coord:send`; for live state, query it; for an owner
@@ -651,8 +652,10 @@ mirror with file primary". Helpers: `packages/operator-core/lib/operator-state-p
 | pickable plan items across plans | `plans:items { actionable: true }` | unnesting the items jsonb |
 | prose / full-text | exact phrase → `search:fulltext`; paraphrased concept → `search:semantic` | `ILIKE '%…%'` |
 | definition, references, type truth | `lsp:query` (compiler semantics) | `grep` for a declaration — cannot resolve shadowing or re-exports |
-| call chains, impact radius, topology | `gitnexus.context` / `gitnexus.impact` (dot, not colon) | `gitnexus.query` — UNRANKED NOISE, not empty: a wrong answer looks like a confident one (D-021) |
+| call chains, impact radius, topology | `graph:query` with `op:'context'`, `op:'impact'` or `op:'trace'` and bounded `paths`; first-party JS/TS syntax/compiler evidence, with coverage limits and no runtime-execution claim | `gitnexus.query` fails closed before dispatch (D-065); unranked noise was a historical result (D-021) |
 | who CALLS this symbol | `graph:query { op:'callers', name }` — `line1` call sites, no definition; index may be stale. **Empty is not proof of no callers**: measured needs-widening, held at observe, deferred to WI-10006543. | `gitnexus.impact { direction:'callers' }` — unsupported (only `upstream`/`downstream`/`both`); returns callees as `epistemic:"exact"`. |
+
+Optional internal `gitnexus.context` / `gitnexus.impact` remain under `gitnexus-deterministic-integration-2026-10-05#D-005`; they are not the native default. D-004 still excludes GitNexus from shipped dependencies and installers.
 
 ⚠ **If `gate.greenCheckpoint.candidateFailures` is unavailable, the ONLY query that answers it is scoped to one population — and the blob check is half the answer:**
 
@@ -722,7 +725,7 @@ row says so and bash remains correct.
 > [bash vs tool routing](/internal/docs/agent-insights/bash-vs-tool-routing).
 >
 > ⚠ ToolSearch finding NOTHING for a `use` tool does not mean it is unavailable to you — a
-> trimmed surface (su) exposes only a seed of the ~550-tool catalog, so `select:` and a
+> trimmed surface (su) exposes only a seed of the full tool catalog, so `select:` and a
 > keyword search can both come back empty for a tool that exists. `tools:invoke { name:
 > "<server:verb>", args: {…} }` dispatches ANY catalog tool server-side, gated identically
 > to a direct call (verified for `testing:run`) — reach for that before falling back to the

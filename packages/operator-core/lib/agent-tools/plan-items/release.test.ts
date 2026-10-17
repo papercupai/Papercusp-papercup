@@ -34,6 +34,9 @@ vi.mock('../../plan-items/claims', () => ({
   releaseClaim: vi.fn(),
   forceReleaseClaim: vi.fn(),
 }));
+vi.mock('../../plan-items/claim-discipline', () => ({
+  releaseLinkedWorkItemForPlanItem: vi.fn(async () => false),
+}));
 vi.mock('../../plan-items/assignments', () => ({
   planItemEffectiveStatuses: vi.fn(),
 }));
@@ -52,11 +55,13 @@ vi.mock('../coordination/dispatch-handle', () => ({
 }));
 
 import { getClaim, releaseClaim } from '../../plan-items/claims';
+import { releaseLinkedWorkItemForPlanItem } from '../../plan-items/claim-discipline';
 import { planItemEffectiveStatuses } from '../../plan-items/assignments';
 import { buildDispatchHandle } from '../coordination/dispatch-handle';
 
 const getClaimM = vi.mocked(getClaim);
 const releaseClaimM = vi.mocked(releaseClaim);
+const releaseLinkedWorkItemM = vi.mocked(releaseLinkedWorkItemForPlanItem);
 const statusesM = vi.mocked(planItemEffectiveStatuses);
 const buildM = vi.mocked(buildDispatchHandle);
 
@@ -126,6 +131,14 @@ describe('plan_items:release — never offers a TERMINAL lane for pickup (EI-220
     await call({ plan: 'live-plan', item: 'P-010' });
 
     expect(offeredItems()).toEqual(['P-010']);
+  });
+
+  it('releases a linked work item with the same owner as the plan claim', async () => {
+    statuses({ 'P-010': 'wip' });
+
+    await call({ plan: 'live-plan', item: 'P-010' });
+
+    expect(releaseLinkedWorkItemM).toHaveBeenCalledWith('live-plan', 'P-010', 'me');
   });
 
   it('a MIXED batch offers ONLY the non-terminal items', async () => {

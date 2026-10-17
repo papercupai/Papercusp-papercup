@@ -32,6 +32,8 @@ describe('isActionableConditionKey', () => {
       // P-005: emitted by trackGateStall (harness/routines/release-actions.ts).
       'gate-red-streak:papercusp',
       'github-bridge-agent-actionable:papercusp',
+      'frozen-repair-convergence:papercusp',
+      'frozen-repair-leg:papercusp:lint:tsc',
     ]) {
       expect(isActionableConditionKey(key)).toBe(true);
     }
@@ -62,7 +64,17 @@ describe('isActionableConditionKey', () => {
     // A condition that flaps within a tick would otherwise mint and immediately
     // close an item on every flap — strictly worse than the duplicate filing
     // this plan exists to fix.
-    for (const key of ['scorecard-emission-wedge', 'embed-space-desync', 'kettle-invalid-model-config']) {
+    for (const key of [
+      'scorecard-emission-wedge',
+      'embed-space-desync',
+      'kettle-invalid-model-config',
+      // Broad attention alarms are not an admission identity. They may still
+      // broadcast through the condition rail, but only explicit durable
+      // condition families can mint owning scheduler work.
+      'alarm:resource-health:papercusp',
+      'alarm:loop-dead-man:rt_papercusp_loop_fixture',
+      'alarm:release-gate-no-verdict:papercusp',
+    ]) {
       expect(isActionableConditionKey(key)).toBe(false);
     }
   });

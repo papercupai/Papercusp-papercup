@@ -196,7 +196,13 @@ type FakeChild = EventEmitter & {
   stdin: { end: (s?: string) => void };
   pid: number | undefined;
 };
-function fakeSpawn(script: { stdout?: string; stderr?: string; code?: number | null; neverClose?: boolean }) {
+function fakeSpawn(script: {
+  stdout?: string;
+  stdoutChunks?: Buffer[];
+  stderr?: string;
+  code?: number | null;
+  neverClose?: boolean;
+}) {
   const calls: { bin: string; argv: string[]; opts: Record<string, unknown>; stdinBody?: string }[] = [];
   const spawnFn = ((bin: string, argv: string[], opts: Record<string, unknown>) => {
     const child = new EventEmitter() as FakeChild;
@@ -212,7 +218,9 @@ function fakeSpawn(script: { stdout?: string; stderr?: string; code?: number | n
     calls.push(call);
     if (!script.neverClose) {
       process.nextTick(() => {
-        if (script.stdout) child.stdout.emit('data', Buffer.from(script.stdout));
+        if (script.stdoutChunks) {
+          for (const chunk of script.stdoutChunks) child.stdout.emit('data', chunk);
+        } else if (script.stdout) child.stdout.emit('data', Buffer.from(script.stdout));
         if (script.stderr) child.stderr.emit('data', Buffer.from(script.stderr));
         child.emit('close', script.code ?? 0);
       });
@@ -256,6 +264,27 @@ describe('runCodexCliCompletion', () => {
     expect(c.argv[c.argv.length - 1]).toBe('-'); // prompt via stdin
     expect(c.stdinBody).toBe('say hi');
     expect((c.opts.env as Record<string, string>).CODEX_HOME).toBe('/tmp/sub-home');
+  });
+
+  it('preserves UTF-8 when stdout splits a JSONL message across chunks', async () => {
+    const line = Buffer.from(
+      '{"type":"item.completed","item":{"type":"agent_message","text":"☃"}}\n',
+    );
+    const split = line.indexOf(Buffer.from('☃')) + 1;
+    const { spawnFn } = fakeSpawn({
+      stdoutChunks: [line.subarray(0, split), line.subarray(split)],
+      code: 0,
+    });
+    const result = await runCodexCliCompletion({
+      home: '/tmp/sub-home',
+      model: 'gpt-5.4',
+      effort: 'medium',
+      prompt: 'say hi',
+      timeoutMs: 5_000,
+      spawnFn,
+      codexBin: 'codex',
+    });
+    expect(result.text).toBe('☃');
   });
 
   it('resolves the binary through the shared resolver when no codexBin is passed (WI-39538)', async () => {

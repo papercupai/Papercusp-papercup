@@ -556,7 +556,7 @@ describe('run-operator-e2e-isolated.sh', () => {
     const res = spawnSync('bash', ['-c', [
       'set -eu',
       'verify_assertion_input_integrity() { return 0; }',
-      'vh_begin() { :; }',
+      'verifier_begin_phase() { :; }',
       'log() { :; }',
       'ISOLATED_DB=0',
       'OPERATOR_SOURCE_ROOT="$1"',
@@ -579,7 +579,7 @@ describe('run-operator-e2e-isolated.sh', () => {
     const res = spawnSync('bash', ['-c', [
       'set -eu',
       'verify_assertion_input_integrity() { return 0; }',
-      'vh_begin() { VH_PHASE_DIR="$E2E_FIXTURE_ASSERT_DIR"; }',
+      'verifier_begin_phase() { VH_PHASE_DIR="$E2E_FIXTURE_ASSERT_DIR"; }',
       'log() { :; }',
       'ISOLATED_DB=0',
       'OPERATOR_SOURCE_ROOT=/unused/frozen/source',

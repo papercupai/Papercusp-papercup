@@ -25,9 +25,30 @@ export function boundRowField<T extends object>(
     const v = (r as Record<string, unknown>)[field];
     const full = typeof v === 'string' ? v : '';
     if (full.length <= cap) return r;
+    // The sibling flags below are useful on a normal object read, but a caller
+    // can project only the value (for example `decisions[].body`). Keep the
+    // value self-describing so that projection cannot turn a bounded excerpt
+    // into plausible-looking complete text.
+    const marker = `…[TRUNCATED +${full.length} chars]`;
+    const compactMarker = `…[TRUNCATED +${full.length}]`;
+    let clipped: string;
+    if (cap <= 0) {
+      clipped = '';
+    } else if (marker.length <= cap) {
+      const keep = cap - marker.length;
+      clipped = `${full.slice(0, keep)}${marker}`;
+    } else if (compactMarker.length <= cap) {
+      const keep = cap - compactMarker.length;
+      clipped = `${full.slice(0, keep)}${compactMarker}`;
+    } else if (cap >= 'TRUNCATED'.length) {
+      clipped = 'TRUNCATED' + ' '.repeat(cap - 'TRUNCATED'.length);
+    } else {
+      // No marker can fit below this floor; preserve the established cap.
+      clipped = full.slice(0, cap);
+    }
     return {
       ...r,
-      [field]: full.slice(0, cap),
+      [field]: clipped,
       [`${field}_truncated`]: true,
       [`${field}_full_chars`]: full.length,
     } as T;

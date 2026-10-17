@@ -124,6 +124,9 @@ export function llmScenarioLedgerRow(report: RunReport, ledger: LlmScenarioLedge
       testNamePattern: null,
       scenarioId: report.scenarioId,
       testLayer: 'llm',
+      // Scenarios are imported before their per-scenario snapshot. Reuse the
+      // process boundary so proof binding also catches edits after those imports.
+      runStartedAt: PROCESS_BOOT_TIME,
       // An errored run measured nothing it could pass; count it against the file.
       passed,
       failed: failed + errored,

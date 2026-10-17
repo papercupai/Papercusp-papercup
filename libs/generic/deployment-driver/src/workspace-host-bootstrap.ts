@@ -274,6 +274,8 @@ export const WORKSPACE_HOST_BOOTSTRAP_SYSTEM_APT_PACKAGES = [
   "bubblewrap",
   "ca-certificates",
   "curl",
+  // Durable ext4 project quotas are configured before the durable disk is touched.
+  "e2fsprogs",
   // The release's content bootstrap shallow-clones the first-party bundle with git
   // (offline-content-bundle-install-io.ts gitCloneShallow). Stock Ubuntu images ship git, so
   // this was never named, and the bootc image (Stream 9) booted without it (WI-10005779).
@@ -281,9 +283,11 @@ export const WORKSPACE_HOST_BOOTSTRAP_SYSTEM_APT_PACKAGES = [
   "jq",
   "minisign",
   "openssh-server",
+  "quota",
   "sudo",
   "ufw",
   "unattended-upgrades",
+  "util-linux",
 ] as const;
 
 /** Packages required by the external SONAME providers above. */

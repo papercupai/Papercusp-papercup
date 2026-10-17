@@ -1125,6 +1125,30 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(upgraded[0]?.verified).toContain('all audit states are done');
     expect(upgraded[0]).not.toHaveProperty('observed');
   });
+
+  it('keeps verified evidence when both verified and observed are supplied', () => {
+    const now = Date.parse('2026-10-17T01:17:20.974Z');
+    const [row] = normalizeCheckEntries(
+      [
+        {
+          claim: 'the checkpoint evidence survives persistence',
+          recheck: 'read loop:checkpoint after write',
+          verified: 'verified evidence',
+          observed: 'incidental context',
+        },
+      ],
+      [],
+      now,
+    );
+
+    expect(row).toMatchObject({
+      claim: 'the checkpoint evidence survives persistence',
+      verified: `verified evidence @${new Date(now).toISOString()}`,
+    });
+    expect(row).not.toHaveProperty('observed');
+    expect(renderCheckLine(row!)).toContain('- ✓ ');
+    expect(parseCheckLine(renderCheckLine(row!))).toEqual(row);
+  });
 });
 
 describe('normalizeFlattenedContinuityProbeRow — the nested-probe discriminator (EI-21674755057848047)', () => {

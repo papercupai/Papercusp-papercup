@@ -37,6 +37,7 @@
  */
 import * as proxyModule from '../lib/mcp-proxy/proxy';
 import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
+import { reportRuntimeVintageOnBoot } from '@papercusp/operator-core/lib/runtime-vintage';
 
 // Node/tsx can expose this .ts module as CommonJS while the .mjs budget
 // import makes this entry ESM. Match the service-entry normalization used by
@@ -47,9 +48,25 @@ const { readOperatorJsonTarget, resolveDefaultMcpProxyTargets, startMcpProxy } =
 const dynamicTarget = process.env.PAPERCUSP_MCP_PROXY_DYNAMIC_TARGET === '1';
 const targetHost = process.env.PAPERCUSP_MCP_PROXY_TARGET_HOST ?? '127.0.0.1';
 const targetPort = Number(process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT ?? process.env.PAPERCUSP_HONO_PORT ?? 3070);
+const listenPort = Number(process.env.PAPERCUSP_MCP_PROXY_PORT ?? 9071);
+
+// WI-6554700010015225: :9071 is a separate process, so it must publish its own
+// loaded-code identity instead of relying on the operator host's boot report.
+try {
+  reportRuntimeVintageOnBoot('mcp-proxy-code', {
+    port: listenPort,
+    targetHost,
+    targetPort,
+    dynamicTarget,
+    platform: process.platform,
+    arch: process.arch,
+  });
+} catch (e) {
+  console.warn('[runtime-vintage] MCP proxy boot self-report wiring failed (non-fatal):', (e as Error)?.message ?? e);
+}
 
 startMcpProxy({
-  listenPort: Number(process.env.PAPERCUSP_MCP_PROXY_PORT ?? 9071),
+  listenPort,
   ...(dynamicTarget
     ? { resolveTarget: () => readOperatorJsonTarget() ?? { host: targetHost, port: targetPort, source: 'fallback' } }
     : { resolveTargets: () => resolveDefaultMcpProxyTargets() }),

@@ -80,7 +80,7 @@ export function resolveOperatorBase(args = {}, env = process.env, opts = {}) {
  * and out-of-range values are likewise ignored so the normal discovery chain
  * remains authoritative.
  */
-function validLocalPort(raw) {
+export function validLocalPort(raw) {
   const value = typeof raw === 'string' ? raw.trim() : '';
   if (!/^\d+$/.test(value)) return null;
   const port = Number(value);

@@ -483,6 +483,36 @@ if (existsSync('/usr/bin/diodon')) {
   }
 }
 
+// GNOME 3.52 restores its saved STARTUP soft limit in the atfork child, before
+// VTE opens the PTY peer. A high live /proc limit does not prove this is safe.
+// Check the loaded startup policy too: the old 1024 value failed at 1029 FDs.
+if (existsSync('/usr/libexec/gnome-terminal-server')) {
+  const terminal = showUnits(
+    ['gnome-terminal-server.service'],
+    ['LoadState', 'LimitNOFILESoft'],
+    ['LoadState', 'LimitNOFILESoft'],
+  );
+  if (terminal.error) {
+    unverified = true;
+    console.error(`\n⚠ GNOME terminal startup FD limit NOT VERIFIED: ${terminal.error}`);
+  } else {
+    const props = terminal.units.get('gnome-terminal-server.service');
+    const soft = props.LimitNOFILESoft;
+    if (props.LoadState !== 'not-found') {
+      if (soft !== 'infinity' && !/^\d+$/.test(soft)) {
+        unverified = true;
+        console.error(`\n⚠ GNOME terminal startup FD limit NOT VERIFIED: invalid LimitNOFILESoft=${soft}`);
+      } else if (soft !== 'infinity' && Number(soft) < 65536) {
+        drift = true;
+        console.error(
+          `\n❌ GNOME terminal startup LimitNOFILESoft=${soft} is unsafe for a shared terminal server. ` +
+          'Load 60-file-descriptor-limit.conf; changing only the running process limit does not repair its saved child limit.',
+        );
+      }
+    }
+  }
+}
+
 if (drift) process.exit(1);
 if (unverified) {
   console.error(

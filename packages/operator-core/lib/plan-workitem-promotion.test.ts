@@ -13,6 +13,13 @@ const items: OpenPlanItem[] = [
 
 describe('plan→work-item promotion (unified-work-item-ledger P-003)', () => {
   describe('computePromotions', () => {
+    it('defers acceptance promotion even when every open build lane already has a work-item', () => {
+      const base = { planSlug: 'p', harness: 'h', existingPromotedItemIds: ['P-001'] };
+      const grading = { id: 'P-002', text: 'Independent acceptance grading', phase: 'Acceptance' };
+      expect(computePromotions({ ...base, openItems: [items[0], grading] })).toEqual([]);
+      expect(computePromotions({ ...base, openItems: [grading] }).map(x => x.sourcePlanItemIds[0])).toEqual(['P-002']);
+    });
+
     it('promotes every open item when none exist yet', () => {
       const specs = computePromotions({
         planSlug: 'my-plan',

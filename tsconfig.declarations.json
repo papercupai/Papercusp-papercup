@@ -88,6 +88,8 @@
     "scripts/lib/fs-mutex.mjs",
     "scripts/npm-install-safe.mjs",
     "scripts/lib/not-checked.mjs",
+    // EI-26127632055157746: the native bootstrap imports the process-tree guard.
+    "scripts/lib/batch-watchdog.mjs",
     "scripts/lib/git-index-fault.mjs",
     "scripts/lib/git-optional-locks.mjs",
     "scripts/lib/task-exit-class.mjs",
@@ -133,6 +135,7 @@
     // P-008 — the out-of-band producer for that snapshot (the only code that reads the graph
     // backend; fails closed). Imported directly by gen-graph-dependency-snapshot.test.ts.
     "scripts/gen-graph-dependency-snapshot.mjs",
+    "scripts/lib/code-intel-symbol-snapshot.mjs",
     // gate-test-reuse-yield-2026-10-01 P-007 (D-010) — per-table generated-schema drift. Imported
     // by test-pass-reuse.mjs and directly by schema-symbol-drift.test.ts.
     "scripts/lib/schema-symbol-drift.mjs",
@@ -362,6 +365,15 @@
     // Imported by stop-owner-directive-check.test.ts for `evaluateStop`
     // (owner-directive-delivery-redesign-2026-09-22 P-007).
     "apps/operator/scripts/hooks/cc/stop-owner-directive-check.mjs",
+    // WI-6554700010015321 — imported directly by
+    // pretooluse-unreserved-migration-db-target.test.ts for `reservationDatabaseRoot`.
+    // Unregistered it was a fresh TS7016 on the apps/operator gate leg.
+    "apps/operator/scripts/hooks/cc/pretooluse-unreserved-migration-guard.mjs",
+    // WI-6554700010015321 — measure-tool-output.test.ts loads this module through a
+    // runtime path (so mutation probes can swap it) and types the result as
+    // `typeof import('./measure-tool-output.mjs')`. Without a declaration that type
+    // is `any` (TS7016) and every downstream callback param became an implicit any.
+    "scripts/measure-tool-output.mjs",
     // Imported by `scripts/set-doc-part.ts`. Enrolling rather than `@ts-ignore`-ing
     // it because the module is a shared exit-safety helper with full JSDoc, so the
     // emit is genuinely typed rather than a suppression.
@@ -460,6 +472,11 @@
     "scripts/reviewer-operator-assert.mjs",
     // WI-6554700010009433: the cross-leg per-file typecheck primitive, imported by
     // packages/operator-core/lib/tsc-cross-leg-check.test.ts.
-    "scripts/lib/tsc-cross-leg-check.mjs"
+    "scripts/lib/tsc-cross-leg-check.mjs",
+    "apps/operator/scripts/tutorial-character-model.mjs",
+    "apps/operator/scripts/tutorial-video-contract.mjs",
+    "apps/operator/scripts/hooks/inject/core.mjs",
+    "scripts/lib/partial-task-resume.mjs",
+    "scripts/with-documenso-sandbox.mjs"
   ]
 }

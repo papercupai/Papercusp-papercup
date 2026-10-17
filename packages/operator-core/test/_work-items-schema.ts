@@ -1457,7 +1457,8 @@ export const FALLBACK_OBSERVATIONS_MIN_DDL = `
     CONSTRAINT fallback_observations_reason_nonempty CHECK (length(btrim(reason)) > 0)
   );
   ALTER TABLE harness_shared.fallback_observations ADD COLUMN IF NOT EXISTS correlation_id uuid;
-  ALTER TABLE harness_shared.fallback_observations ADD COLUMN IF NOT EXISTS samples integer NOT NULL DEFAULT 1`;
+  ALTER TABLE harness_shared.fallback_observations ADD COLUMN IF NOT EXISTS samples integer NOT NULL DEFAULT 1;
+  ALTER TABLE harness_shared.fallback_observations ADD COLUMN IF NOT EXISTS population_known boolean`;
 
 export const CLAIM_PATH_READ_DEPS_DDL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS harness_shared.goals (

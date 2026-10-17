@@ -2,6 +2,7 @@
 
 import { Hono } from "hono";
 import { withHostedServiceContext, withWorkspace, withTenantContext } from "@papercusp/db-org";
+import { recordHostedPoolActivity } from "@papercusp/operator-core/lib/workspace-host/hosted-lifecycle-store";
 import { readCloudTelemetryConsent } from "@papercusp/operator-core/lib/cloud-telemetry";
 import { tenantContext } from "@papercusp/operator-core/lib/endpoint-route/hosted-browser-context";
 import {
@@ -234,6 +235,11 @@ export function createHostedHandler(
             '[hosted-relay] desktop audit write failed:',
             'desktop_audit_write_failed',
           ),
+      });
+    },
+    onConnectorActivity: (binding, activity, at) => {
+      void recordHostedPoolActivity(binding, activity, at).catch(() => {
+        console.warn('[hosted-relay] workload observation write failed:', 'workload_write_failed');
       });
     },
     onConnectorLiveness: (binding, alive) => {

@@ -216,7 +216,7 @@ describe('hosted auth route contract', () => {
 
   it('consumes the callback once, binds membership, and issues only a signed opaque session id', async () => {
     const s = setup();
-    const started = await begin(s, '/workspaces/ws-1?tab=activity');
+    const started = await begin(s, '/workspaces/ws-1?tab=activity&utilityWelcome=1');
     const response = await invoke(
       s.route('GET', '/hosted/auth/callback'),
       new Request(`${ORIGIN}${HOSTED_AUTH_CALLBACK_PATH}?code=code-1&state=${started.state}`, {
@@ -314,7 +314,7 @@ describe('hosted auth route contract', () => {
     );
 
     expect(response.status).toBe(303);
-    expect(response.headers.get('location')).toBe(`${ORIGIN}/`);
+    expect(response.headers.get('location')).toBe(`${ORIGIN}/?utilityWelcome=1`);
     expect(bindIdentity).not.toHaveBeenCalled();
     expect(complete).toHaveBeenCalledWith(expect.objectContaining({
       attemptId: started.state,
@@ -388,7 +388,7 @@ describe('hosted auth route contract', () => {
       retryable: false,
     }));
     const s = setup(createFakeHostedIdentityProvider(), bindIdentity, { complete });
-    const started = await beginWithIntent(s, 'sign-up', '/workspaces/ws-1');
+    const started = await beginWithIntent(s, 'sign-up', '/workspaces/ws-1?utilityWelcome=1');
     const response = await invoke(
       s.route('GET', '/hosted/auth/callback'),
       new Request(`${ORIGIN}${HOSTED_AUTH_CALLBACK_PATH}?code=code-1&state=${started.state}`, {

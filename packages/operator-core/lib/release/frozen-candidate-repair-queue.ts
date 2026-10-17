@@ -1035,9 +1035,9 @@ export function parseAdmissionPrecheckRecord(
 }
 
 /**
- * One observed red for a single frozen-candidate convergence cycle. Deliberately a COUNT and
- * not the failing set: the full set already lives in `failingTests` for the current round,
- * and persisting N copies of a 50-entry list is how a metadata blob becomes unbounded.
+ * One observed red for a single frozen-candidate convergence cycle. Both the number of
+ * rounds and each failing set are capped, so history can retain the identities needed to
+ * distinguish a repaired failure from an equal-size replacement without growing unbounded.
  */
 export interface FrozenRepairConvergenceRound {
   /** 1-based position within this queue's cycle. Stable across cap-trimming (see below). */
@@ -1046,6 +1046,8 @@ export interface FrozenRepairConvergenceRound {
   head: string;
   /** Size of the failing set observed at this round. */
   failingCount: number;
+  /** Exact bounded signature at this round. Legacy/malformed history gains no invented list. */
+  failingTests?: string[];
   atMs: number;
   /** WI-10007489: the radius this round executed. Absent on legacy rows and on reds whose
    *  runner did not report it, which is "not recorded", never "nothing ran". */
@@ -2092,10 +2094,18 @@ function parseConvergenceRounds(value: unknown): FrozenRepairConvergenceRound[] 
     if (!validTimestamp(row.atMs)) continue;
     const executed = normalizeRoundExecution(row.executed);
     const attributions = parseRedAttributions(row.attributions);
+    // Read even invalid lists so trackEntryReads cannot carry rejected evidence back in.
+    const rawFailures = row.failingTests;
+    const failingTests = Array.isArray(rawFailures) && rawFailures.length === row.failingCount &&
+      rawFailures.length <= MAX_PERSISTED_FAILURES &&
+      rawFailures.every((id) => nonBlank(id) && id.length <= MAX_PERSISTED_FAILURE_CHARS) &&
+      new Set(rawFailures).size === rawFailures.length
+      ? [...rawFailures] as string[] : undefined;
     const parsed: FrozenRepairConvergenceRound = {
       round: row.round as number,
       head: row.head as string,
       failingCount: row.failingCount as number,
+      ...(failingTests ? { failingTests } : {}),
       atMs: row.atMs as number,
       ...(executed ? { executed } : {}),
       ...(attributions ? { attributions } : {}),
@@ -2137,12 +2147,14 @@ function appendConvergenceRound(
   const highest = existing.reduce((max, entry) => (entry.round > max ? entry.round : max), 0);
   const executed = normalizeRoundExecution(input.executed);
   const attributions = (input.attributions ?? []).slice(0, FROZEN_REPAIR_ROUND_ATTRIBUTION_CAP);
+  const failingTests = boundedFailures(input.failingTests);
   return capConvergenceRounds([
     ...existing,
     {
       round: highest + 1,
       head: input.head,
-      failingCount: boundedFailures(input.failingTests).length,
+      failingCount: failingTests.length,
+      failingTests,
       atMs: input.nowMs,
       ...(executed ? { executed } : {}),
       ...(attributions.length > 0 ? { attributions: [...attributions] } : {}),
@@ -3345,6 +3357,7 @@ export function markFrozenRepairVerificationRed(
     !losslessFailureFrontier({ failingTests, signature });
   const usableCoverage = !selectiveCoverageBlocked && selectFrozenRepairAdmissionPaths(queue).coverageComplete
     ? coverage : undefined;
+  const legs = verificationLegMeasurements(queue, input, signature, input.repairHead, round);
   return {
     ...queue,
     phase: 'awaiting-fixer',
@@ -3361,6 +3374,7 @@ export function markFrozenRepairVerificationRed(
     }),
     failingTests: boundedFailures(failingTests),
     signature,
+    ...(legs.length > 0 ? { legs } : {}),
     selectiveCoverage: selectiveCoverageBlocked ? undefined : usableCoverage ?? queue.selectiveCoverage,
     ...(selectiveCoverageBlocked ? { selectiveCoverageBlocked: true as const } : {}),
   };
@@ -3410,6 +3424,7 @@ export function recordFrozenRepairSupersededRed(
   const selectiveCoverageBlocked = queue.selectiveCoverageBlocked === true ||
     !losslessFailureFrontier(queue) || !losslessFailureFrontier(input) ||
     !losslessFailureFrontier({ failingTests, signature });
+  const legs = verificationLegMeasurements(queue, input, signature, input.measuredHead, round);
   return {
     ...queue,
     updatedAtMs: input.nowMs,
@@ -3422,6 +3437,7 @@ export function recordFrozenRepairSupersededRed(
     }),
     failingTests: boundedFailures(failingTests),
     signature,
+    ...(legs.length > 0 ? { legs } : {}),
     ...(selectiveCoverageBlocked
       ? { selectiveCoverage: undefined, selectiveCoverageBlocked: true as const } : {}),
   };
@@ -3430,10 +3446,9 @@ export function recordFrozenRepairSupersededRed(
 /**
  * P-002 — fold one tick's NON-TEST leg measurements into the queue.
  *
- * A SEPARATE seam from the red/green markers on purpose. Those take a flat `failingTests`
- * list, which cannot say which entry is a leg or whether a leg passed; a leg's lifecycle is
- * moved only by that leg's own measured result (D-005). Keeping it separate also means no
- * existing caller signature changes, so nothing is stranded by adding legs.
+ * Explicit tick measurements use this seam; verification markers also fold their typed
+ * signature/measurement coverage into the same lifecycle. Neither path infers that a leg
+ * passed when its kind was not measured (D-005).
  *
  * The round is read from the convergence history so leg rounds and convergence rounds are
  * the SAME rounds — two shrink series over one cycle, never two clocks.
@@ -3538,6 +3553,36 @@ export {
   type RepairSignaturePartition,
 } from './repair-leg-lifecycle';
 
+/** Fold verification evidence into the existing lifecycle without changing unmeasured legs. */
+function verificationLegMeasurements(
+  queue: FrozenCandidateRepairQueue,
+  input: RepairSignatureRedInput & { nowMs: number },
+  signature: readonly RepairSignatureEntry[],
+  head: string,
+  round: number,
+): FrozenRepairLegState[] {
+  const entries = new Map([
+    // Fixed legs absent from this verification's signature were not rerun: retain their
+    // original measurement instead of restamping them as freshly passing at this head.
+    ...queue.signature,
+    ...signature,
+  ].map((entry) => [entry.id, entry] as const));
+  const measured = new Set(input.measuredKinds ?? REPAIR_SIGNATURE_KINDS);
+  const failed = new Set([
+    ...(input.failingTests ?? []), ...(input.signature ?? []).map((entry) => entry.id),
+  ].map((id) => id.trim()));
+  const measurements: RepairLegMeasurement[] = [];
+  for (const entry of entries.values()) {
+    if (entry.kind === 'test-file') continue;
+    if (failed.has(entry.id)) measurements.push({ id: entry.id, status: 'fail' });
+    else if (measured.has(entry.kind)) measurements.push({ id: entry.id, status: 'pass' });
+  }
+  return applyRepairLegMeasurements(queue.legs, {
+    measurements, head, round, nowMs: input.nowMs,
+    signatureIds: queue.signature.map((entry) => entry.id),
+  });
+}
+
 /** A green verification makes only the exact tested head promotable. The separate staging-patch
  * decision remains mandatory before the caller can advance main. */
 export function markFrozenRepairVerificationGreen(
@@ -3547,6 +3592,7 @@ export function markFrozenRepairVerificationGreen(
   requirePhase(queue, 'ready-to-verify', 'green repair verification');
   requireCurrentHead(queue, input.repairHead);
   assertTimestamp(input.nowMs, 'nowMs');
+  const legs = verificationLegMeasurements(queue, input, [], input.repairHead, nextConvergenceRound(queue));
   return {
     ...queue,
     phase: 'ready-to-promote',
@@ -3554,6 +3600,7 @@ export function markFrozenRepairVerificationGreen(
     lastVerdictAtMs: input.nowMs,
     failingTests: [],
     signature: [],
+    ...(legs.length > 0 ? { legs } : {}),
   };
 }
 
@@ -3582,8 +3629,8 @@ export interface FrozenRepairConvergenceSummary {
   /** Per-round size and the delta from the previous round (negative = shrank). */
   shrinkPerRound: readonly { round: number; failingCount: number; delta: number | null }[];
   /**
-   * True only when every recorded round is <= the one before it AND the set actually got
-   * smaller overall. Null when fewer than two rounds are recorded — deliberately NOT false,
+   * True only when every recorded repair round strictly reduces the failing set. A plateau
+   * requires diagnosis even after earlier improvement. Null with fewer than two rounds,
    * because "not yet knowable" and "not converging" are different answers and a reader that
    * conflates them will call a healthy new cycle a treadmill.
    */
@@ -3602,7 +3649,7 @@ export function summarizeFrozenRepairConvergence(
     failingCount: entry.failingCount,
     delta: index === 0 ? null : entry.failingCount - (rounds[index - 1] as FrozenRepairConvergenceRound).failingCount,
   }));
-  const monotonic = shrinkPerRound.every((entry) => entry.delta === null || entry.delta <= 0);
+  const monotonic = shrinkPerRound.every((entry) => entry.delta === null || entry.delta < 0);
   const shrinkTotal = failingFirst === null ? null : failingFirst - failingNow;
   return {
     openedAtMs: queue.openedAtMs,
@@ -3797,7 +3844,7 @@ export type FrozenRepairConvergenceCode =
   | 'no-attempts'
   /** Fewer than two recorded rounds: there is no trend yet. Not a verdict of failure. */
   | 'not-yet-knowable'
-  /** Every round is <= the one before AND the set actually shrank. */
+  /** Every recorded repair round strictly reduced the failing set. */
   | 'converging'
   /** Rounds recorded, but the failing set is not shrinking. This is the treadmill. */
   | 'not-converging';

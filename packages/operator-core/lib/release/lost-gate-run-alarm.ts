@@ -280,9 +280,11 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
     // WI-6554700010009616: a live runner parked in `finalizing` keeps a fresh heartbeat (its interval
     // fires through an awaited hang), so runnerHealth reads `progressing`. Only the phase clock sees it.
     const postVerdictHang = !!transaction && transaction.phase !== 'terminal' && isPostVerdictHang(runner, liveness, nowMs);
+    const currentRunnerProgressing = qualification?.runnerHealth.state === 'progressing' && !postVerdictHang;
     // Read routines even after their marker disappears: otherwise recovery is invisible.
-    // Malformed markers and unknown liveness are not evidence of recovery.
-    if (row.alarmed_key && (row.marker == null ||
+    // A malformed marker or unknown marker PID alone is not evidence of recovery; a healthy
+    // current qualification runner is independent evidence that the old marker is stale.
+    if (row.alarmed_key && (row.marker == null || currentRunnerProgressing ||
         (markerDecision.action === 'silent' && ['pid-alive', 'own-run'].includes(markerDecision.reason)))) {
       await resolveAlarm(`green-checkpoint-lost-run:${row.install_slug}`, 'lost-gate-run-alarm', deps.attention);
     }
@@ -299,7 +301,9 @@ export async function sweepLostGateRuns(sql: Sql, deps: LostRunSweepDeps = {}): 
       : null;
     // Prefer the current runner, retaining separate stamps on the same routine metadata so
     // recovery of its heartbeat cannot make an old death alarm look new again.
-    const decision = progressKey ? { action: 'silent', reason: 'qualification-progress' } as const : markerDecision;
+    const decision = progressKey || currentRunnerProgressing
+      ? { action: 'silent', reason: 'qualification-progress' } as const
+      : markerDecision;
     if (decision.action === 'silent') {
       if (decision.reason === 'already-alarmed') out.deduped.push(row.install_slug);
       if (!progressKey) continue;

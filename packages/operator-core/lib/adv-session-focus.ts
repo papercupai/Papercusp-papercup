@@ -11,9 +11,10 @@ import {
   focusWindowId,
   resolveWindowIdForPid,
   resolveWindowIdForTitleFragment,
+  type FocusWindowOptions,
 } from './adv-session-windows';
 
-export interface SessionWindowControlInput {
+export interface SessionWindowControlInput extends FocusWindowOptions {
   id?: number;
   pid?: number;
   windowId?: string | null;
@@ -87,14 +88,17 @@ export async function focusSessionWindow(
   }
 
   try {
-    const focused = await (deps.focus ?? focusWindowId)(windowId);
+    if (body.workspace !== undefined && body.workspace !== 'current' && body.workspace !== 'window') {
+      return { focused: false, windowId, code: 'focus_failed', reason: 'workspace must be current or window' };
+    }
+    const focused = await (deps.focus ?? focusWindowId)(windowId, { workspace: body.workspace });
     return focused
       ? { focused: true, windowId }
       : {
           focused: false,
           windowId,
           code: 'focus_failed',
-          reason: 'the desktop did not report the target window as active',
+          reason: 'could not verify the target as active and visible on the current workspace; check desktop permissions and platform workspace support (Linux: current/window, Windows: current, macOS: window)',
         };
   } catch (error) {
     return {

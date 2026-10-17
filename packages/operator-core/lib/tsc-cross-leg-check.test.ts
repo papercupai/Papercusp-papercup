@@ -12,7 +12,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { legFileDiagnostics, projectFromTscCommand } from '../../../scripts/lib/tsc-cross-leg-check.mjs';
 import {
@@ -94,6 +94,18 @@ describe('legFileDiagnostics', () => {
     const result = legFileDiagnostics({ root, tscCommand: LEG_B, files: ['a/src/shim.d.ts', 'a/src/f.ts'] });
     expect(result.nonMembers).toEqual(['a/src/shim.d.ts']);
     expect(result.members).toEqual(['a/src/f.ts']);
+  });
+
+  it('reports program construction and per-file diagnostics as distinct phases', () => {
+    const progress: Array<{ phase: string; file?: string; sourceFiles?: number }> = [];
+    const result = legFileDiagnostics({ root, tscCommand: LEG_B, files: ['a/src/f.ts', 'missing.ts'],
+      onProgress: (event) => progress.push(event) });
+    expect(result.members).toEqual(['a/src/f.ts']);
+    expect(progress.map(event => event.phase)).toEqual([
+      'config-start', 'program-start', 'program-ready', 'diagnostics-start', 'diagnostics-ready',
+    ]);
+    expect(progress[2]?.sourceFiles).toBeGreaterThan(0);
+    expect(progress[3]?.file).toBe('a/src/f.ts');
   });
 });
 
@@ -236,6 +248,43 @@ describe('runCrossLegConsumer', () => {
     const { code, marker } = await consume({ tscCommand: LEG_A, baselineFile: EMPTY_BASELINE });
     expect(code).toBe(0);
     expect(marker).toBe(`${CROSS_LEG_MARKER} leg=leg status=clean members=1 nonMembers=0 regressed=0`);
+  });
+
+  it('uses the shared typecheck service response instead of constructing a cold consumer program', async () => {
+    let serviceArgs: { project: string; files: string[]; scope?: string } | undefined;
+    const lines: string[] = [];
+    const warnings: string[] = [];
+    const code = await runCrossLegConsumer({
+      root,
+      label: 'leg',
+      files: ['a/src/f.ts'],
+      tscCommand: LEG_B,
+      baselineFile: EMPTY_BASELINE,
+      diagnose: () => {
+        throw new Error('cold consumer program should not be constructed');
+      },
+      serviceCheck: async (args: { project: string; files: string[]; scope?: string }) => {
+        serviceArgs = { project: args.project, files: args.files, scope: args.scope };
+        return {
+          ok: true as const,
+          output: "a/src/f.ts(1,25): error TS2307: Cannot find module 'virtual-mod' or its corresponding type declarations.\n",
+          errorCount: 1,
+          checked: ['a/src/f.ts'],
+          counts: { named: 1, typeReferencing: 0, importers: 0 },
+          namedNotInProgram: [],
+          snapshotAgeMs: 0,
+          queuedMs: 0,
+          checkMs: 1,
+        };
+      },
+      log: (line: string) => lines.push(line),
+      warn: (line: string) => warnings.push(line),
+    });
+    const marker = lines.at(-1);
+    expect(serviceArgs).toEqual({ project: resolve(root, 'b/tsconfig.json'), files: ['a/src/f.ts'], scope: 'named' });
+    expect(code).toBe(1);
+    expect(marker).toBe(`${CROSS_LEG_MARKER} leg=leg status=regressed members=1 nonMembers=0 regressed=1`);
+    expect(warnings.join('\n')).toMatch(/error TS2307: Cannot find module 'virtual-mod'/);
   });
 
   it('accepts an error the owning package baseline already records', async () => {
@@ -415,6 +464,18 @@ describe('runCrossLegChecks', () => {
     expect(report.undetermined).toEqual([
       { npmScript: 'lint:tsc:stuck', reason: 'timed out after 50ms' },
     ]);
+  });
+
+  it('retains the last compiler phase and diagnostic when the consumer times out', async () => {
+    writeFileSync(join(root, 'progress-stuck-leg.mjs'),
+      "console.log('LINT_TSC_CROSS_LEG_PROGRESS leg=slow phase=program-start elapsedMs=1');\n" +
+      "console.error('compiler diagnostic before stall');\nsetInterval(() => {}, 60_000);\n");
+    const report = await runCrossLegChecks({ root, childTimeoutMs: 1500,
+      plans: [{ npmScript: 'lint:tsc:slow', scriptPath: 'progress-stuck-leg.mjs', files: ['a/src/f.ts'] }] });
+    expect(report.clean).toEqual([]);
+    expect(report.red).toEqual([]);
+    expect(report.undetermined[0]?.reason).toContain('phase=program-start');
+    expect(report.undetermined[0]?.reason).toContain('compiler diagnostic before stall');
   });
 });
 

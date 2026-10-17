@@ -4,12 +4,12 @@
 # branches (same combined-script shape as workitem-verify-nudge.sh), each
 # registered as its own settings.json entry:
 #
-#   • PreToolUse  (matcher "AskUserQuestion|ExitPlanMode") — the dialog is
-#     about to open: mirror question+options into the client-agnostic
-#     blocked-session tracker (sessions:ingest-gate-event, P-002) so the
-#     Inbox sees "this session is waiting on you" the moment the tool
-#     dispatches, tagged with the asking session + owner. refId = the
-#     native tool_use_id, so PostToolUse can close the SAME row.
+#   • PreToolUse  (matcher "AskUserQuestion|ExitPlanMode") — in a visible
+#     session, mirror question+options into the client-agnostic blocked-session
+#     tracker (sessions:ingest-gate-event, P-002) so the Inbox sees "this session
+#     is waiting on you" as the dialog opens. In a headless session, DENY the
+#     native dialog before it can park without a human-visible surface; point
+#     the agent to coord:ask-owner / coord:escalate instead.
 #   • PostToolUse (same matcher) — the dialog closed (Claude only reaches
 #     PostToolUse once it has a tool_result): auto-resolve the mirror
 #     (kind:'cleared', same refId). Content of the answer is irrelevant here
@@ -36,8 +36,8 @@
 #          line, ≤300 chars, ends in "?", not a code fence / quote line) →
 #          BOUNCE: print `{"decision":"block","reason":…}` teaching the
 #          agent to re-emit its ending through the NATIVE AskUserQuestion tool
-#          (preferred — a real terminal dialog that this hook's PreToolUse
-#          branch already mirrors to the Inbox) or coord:escalate, and NOT as a
+#          for a visible terminal dialog, or coord:ask-owner / coord:escalate
+#          for a headless session, and NOT as a
 #          raw <ask> text tag (which a TUI renders as unreadable XML — owner
 #          flag 2026-07-19, inbox-pane-active-scope-dates-filters). NARROW (see
 #          question_shaped_ending)
@@ -820,6 +820,20 @@ if name == 'PreToolUse':
     question, options, text = build_ask_question(tool_name, tool_input)
     if not question:
         sys.exit(0)
+    if os.environ.get('PAPERCUSP_PSU_HEADLESS') == '1':
+        reason = (
+            f"Native {tool_name} is denied in a headless psu session because no human-visible "
+            "dialog surface exists. Do not retry the native dialog. If this decision genuinely "
+            "requires the owner, use coord:ask-owner (an Inbox-backed request that waits for "
+            "the answer) or coord:escalate. Otherwise choose the best safe path and disclose "
+            "your assumption."
+        )
+        print(json.dumps({'hookSpecificOutput': {
+            'hookEventName': 'PreToolUse',
+            'permissionDecision': 'deny',
+            'permissionDecisionReason': reason,
+        }}))
+        sys.exit(0)
     args = {
         'sessionId': session_id or (owner + ':' + tool_name),
         'client': 'claude',
@@ -924,24 +938,30 @@ if deferred:
     sys.exit(0)
 
 if question_shaped_ending(scan_text):
-    # inbox-pane-active-scope-dates-filters-2026-07-19 P-401 (D-2/b): steer the
-    # re-emit to the NATIVE AskUserQuestion tool, NOT a raw `<ask>` text tag. The
-    # tag is a GUI wire-format that a TERMINAL (TUI) session renders as literal,
-    # unreadable XML — the owner explicitly flagged that (2026-07-19). The native
-    # tool renders a proper interactive dialog in the terminal AND is already
-    # mirrored into the owner's Inbox by this hook's own PreToolUse branch, so it
-    # keeps the durability the convention wants without the raw-XML regression.
-    reason = (
-        "This turn ended with what reads as a question to the owner, but with no "
-        "structured mirror. Per papercusp convention (owner-inbox-single-pane-2026-07-17 "
-        "D-001 / D-004), an owner-directed question must ride a durable, renderable "
-        "channel — re-emit it through ONE of:\n"
-        "  • the native AskUserQuestion tool (preferred: renders a real interactive "
-        "dialog in the terminal AND registers in the owner's Inbox), or\n"
-        "  • coord:escalate (a durable card, answerable from the Inbox).\n"
-        "Do NOT emit a raw <ask>{...}</ask> text block — it renders as unreadable XML "
-        "in a terminal session. Re-emit through one of the above, then stop."
-    )
+    if os.environ.get('PAPERCUSP_PSU_HEADLESS') == '1':
+        reason = (
+            "This headless turn ended with a question to the owner, but no structured mirror. "
+            "This session has no human-visible dialog surface. Per papercusp convention, "
+            "re-emit an owner-dependent question through coord:ask-owner (an Inbox-backed "
+            "request that waits for the answer) or coord:escalate. If the owner need not decide, "
+            "choose the best safe path and disclose your assumption. Do NOT emit a raw "
+            "<ask>{...}</ask> text block. Re-emit through a durable channel, then stop."
+        )
+    else:
+        # Visible terminal sessions can use the native tool: it renders a dialog
+        # and this hook mirrors it into the owner's Inbox. Raw <ask> text remains
+        # unsuitable for a TUI because it renders as literal XML.
+        reason = (
+            "This turn ended with what reads as a question to the owner, but with no "
+            "structured mirror. Per papercusp convention (owner-inbox-single-pane-2026-07-17 "
+            "D-001 / D-004), an owner-directed question must ride a durable, renderable "
+            "channel — re-emit it through ONE of:\n"
+            "  • the native AskUserQuestion tool (preferred: renders a real interactive "
+            "dialog in the terminal AND registers in the owner's Inbox), or\n"
+            "  • coord:escalate (a durable card, answerable from the Inbox).\n"
+            "Do NOT emit a raw <ask>{...}</ask> text block — it renders as unreadable XML "
+            "in a terminal session. Re-emit through one of the above, then stop."
+        )
     print(json.dumps({'decision': 'block', 'reason': reason}))
     sys.exit(0)
 

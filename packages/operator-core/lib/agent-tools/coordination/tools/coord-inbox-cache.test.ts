@@ -17,8 +17,10 @@ const M = vi.hoisted(() => ({
     messages_shown_ts: "9999-01-01T00:00:00Z",
     snapshot_rebootstrap_pending: false,
   })),
-  unanswered: vi.fn(async (recipientIds: string[] = []) => new Map(
-    recipientIds.map((recipientId) => [recipientId, { newest: [{ msgId: "ask" }] }] as const),
+  // Explicit value type: an `as const` default would pin every later
+  // mockImplementation to the literal msgId "ask".
+  unanswered: vi.fn(async (recipientIds: string[] = []) => new Map<string, { newest: Array<{ msgId: string }> }>(
+    recipientIds.map((recipientId) => [recipientId, { newest: [{ msgId: "ask" }] }]),
   )),
   assemblePresenceSnapshot: vi.fn(async (
     _resolved: unknown,
@@ -149,8 +151,8 @@ beforeEach(async () => {
   M.heartbeatPresence.mockClear();
   M.drain.mockClear();
   M.readWatermark.mockClear();
-  M.unanswered.mockReset().mockImplementation(async (recipientIds: string[] = []) => new Map(
-    recipientIds.map((recipientId) => [recipientId, { newest: [{ msgId: "ask" }] }] as const),
+  M.unanswered.mockReset().mockImplementation(async (recipientIds: string[] = []) => new Map<string, { newest: Array<{ msgId: string }> }>(
+    recipientIds.map((recipientId) => [recipientId, { newest: [{ msgId: "ask" }] }]),
   ));
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
   await _refreshCacheLayerForTests();

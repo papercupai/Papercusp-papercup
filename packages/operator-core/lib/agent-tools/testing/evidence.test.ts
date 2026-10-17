@@ -58,6 +58,7 @@ const deps = () => ({
       retracted_by: options.actorId,
       retraction_reason: options.reason,
     },
+    cancelledAuditIssueIds: [],
   })),
 });
 

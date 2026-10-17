@@ -5,10 +5,12 @@
  *   1. Explicit env (HARNESS_ADMIN_DATABASE_URL > DATABASE_URL > PAPERCUSP_PG_URL)
  *      — operator inside the desktop sidecar always hits this path because
  *      Tauri main injects HARNESS_ADMIN_DATABASE_URL with the embedded port.
- *   2. Discovery file at ~/.papercusp/embedded-pg.json — written by the
+ *   2. The canonical operator env-file pin, shared with getOrgPg, unless an
+ *      explicit or isolated-process configuration selects another target.
+ *   3. Discovery file at ~/.papercusp/embedded-pg.json — written by the
  *      desktop's Rust main when embedded-pg comes up. Lets a `npm run dev`
  *      operator share state with a running desktop.
- *   3. Fallback: native PG on PAPERCUSP_PG_PORT (when set) or :5432 with the
+ *   4. Fallback: native PG on PAPERCUSP_PG_PORT (when set) or :5432 with the
  *      standard harness_admin creds. Preserves zero-config dev for users who
  *      don't run the desktop while keeping isolated workers on their own PG.
  *
@@ -17,6 +19,7 @@
  * papercusp-systems-abstraction-2026-05-29) plus the in-process cache.
  */
 import { resolvePgUrl } from '@papercusp/embedded-pg-discovery';
+import { readOperatorDbEnvLocal } from '@papercusp/db-org/operator-db-env';
 import { join } from 'node:path';
 
 const NATIVE_FALLBACK = 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
@@ -74,6 +77,20 @@ export function getHarnessAdminUrlWithSource(): { url: string; source: string } 
   // is cheap and mirrors connection.ts adminUrl()'s "discovery can change — re-read
   // every call" contract.
   if (cached && cached.source === 'env') return cached;
+
+  // EI-26126932331699256: dedicated pools used this generic discovery chain
+  // while getOrgPg already honored the operator's .env.local. A healthy foreign
+  // desktop cluster then accepted writes despite the primary pool's correct
+  // target banner. Reuse the canonical resolver's file parsing/precedence;
+  // preserve every explicit pin and the existing isolated home/PG behavior.
+  const explicitOrIsolated = ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL',
+    'PAPERCUSP_PG_PORT', 'PAPERCUSP_HOME'].some(key => Boolean(process.env[key]))
+    || process.env.PAPERCUSP_SKIP_PG_DISCOVERY === '1';
+  if (!explicitOrIsolated) {
+    const operatorEnv = readOperatorDbEnvLocal();
+    const url = operatorEnv.HARNESS_ADMIN_DATABASE_URL || operatorEnv.DATABASE_URL;
+    if (url) return { url, source: 'operator-env-file' };
+  }
 
   const { url, source } = resolvePgUrl({
     envVars: ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL'],

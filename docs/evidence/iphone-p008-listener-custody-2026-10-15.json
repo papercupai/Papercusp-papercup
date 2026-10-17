@@ -1,0 +1,202 @@
+{
+  "schemaVersion": 1,
+  "workItem": "EI-26083644504454454",
+  "parent": "WI-10004735",
+  "publicRouteIssue": "EI-25946131547854574",
+  "plan": "iphone-public-release-2026-08-11#P-008",
+  "result": "source-regression-and-live-restart-custody-passed",
+  "scope": "Server listener ownership across unsuccessful health probes; desktop port recovery retained.",
+  "rootCause": {
+    "writer": "packages/operator-core/lib/own-tunnel/service.ts reconcileOnce",
+    "mechanism": "A background singleton that serves HTTP could rewrite another server operator's configured port after an unsuccessful health probe. Connector ownership was incorrectly sufficient authority for listener adoption.",
+    "historicalBoundary": "The retained restart observation records operatorPort 3271 and EADDRINUSE on ingress 41179. The exact unsuccessful health response at that earlier adoption was not captured.",
+    "detectorGap": "Prior adoption tests did not distinguish a desktop movable port from a server operator's explicit custody."
+  },
+  "socketObservation": {
+    "background": {
+      "pid": 3868175,
+      "listeningPorts": [3271, 41179],
+      "cwdKind": "canonical-checkout/apps/operator",
+      "backgroundWorkers": "1",
+      "healthSha": "02b32de35a"
+    },
+    "staging": {
+      "pid": 3147568,
+      "listeningPorts": [3170],
+      "cwdKind": "staging-candidate-checkout/apps/operator",
+      "backgroundWorkers": "0",
+      "healthSha": "d5b292ed83"
+    },
+    "method": "Correlate LISTEN socket inodes with process file descriptors; read only allowlisted environment keys, cwd and selected health fields."
+  },
+  "fix": {
+    "reused": "Existing own-tunnel reconciler, persisted operatorPort and PAPERCUSP_DESKTOP installation identity.",
+    "behavior": "Only desktop launches can automatically adopt a moved operator port. Server reconciliations preserve the configured owner through health and restart gaps.",
+    "newDurableSurfaces": []
+  },
+  "sourceAtVerification": [
+    {
+      "path": "packages/operator-core/lib/own-tunnel/service.ts",
+      "sha256": "a2de74b38d2eece4f40d1aa97c702c1de646111c929a20f8b01cb5dbd81cbfdb"
+    },
+    {
+      "path": "packages/operator-core/lib/own-tunnel/service.test.ts",
+      "sha256": "d662a82eeba5972e79d197b4a2cf01810dd27155fc3b27514840bf750a2edefb"
+    }
+  ],
+  "verification": {
+    "beforeFix": {
+      "command": "npm run test:file -- packages/operator-core/lib/own-tunnel/service.test.ts",
+      "exitCode": 1,
+      "passed": 21,
+      "failed": 2,
+      "observedFailure": "Both manual and Cloudflare server-health-gap regressions adopted 3271 instead of preserving 3170."
+    },
+    "afterFix": {
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/own-tunnel/service.test.ts packages/operator-core/lib/own-tunnel/own-tunnel.test.ts",
+      "exitCode": 0,
+      "passed": 49,
+      "failed": 0,
+      "skipped": 0,
+      "serviceTests": 23,
+      "configurationAndProvisioningTests": 26,
+      "finishedAt": "2026-10-15T22:06:06.598Z",
+      "runnerHead": "bb05c47daf",
+      "runnerProvenance": "Working-tree verification; the router reported one dirty named test path. The source hashes above identify the implementation and regression bytes, independently of checkout HEAD.",
+      "unixSession": 74464
+    },
+    "recurrenceGuard": "Registered service.test.ts covers both server tunnel modes during a health gap and verifies original-owner recovery; desktop missing-owner adoption and responsive-owner preservation also pass.",
+    "diffCheck": "git diff --check passed for the two changed source/test paths."
+  },
+  "liveVerification": {
+    "status": "passed-for-listener-custody",
+    "runtimeRoute": "operator-api currentBuildTestRoute: staging operator on 3170, containing committed source required; the background host also must load the adoption fix.",
+    "hostRepair": {
+      "workItem": "WI-6554700010015345",
+      "status": "done",
+      "verification": "The assigned source owner reported six selected native PTY cases passing in registered run 21264325; the retained log independently shows six passes and 118 selector skips. The run includes dirty fixture bytes and does not establish deployment.",
+      "handoff": "coord-send-8b26a2bc4c3f461931cc1a235e1f46de7fd7a6056455c7311bc1be0dff43b292"
+    },
+    "backgroundRestart": {
+      "method": "dev:restart target bg-host, confirm and authorize, git_sync_drain_sec 45; no collision overrides",
+      "oldPid": 3868175,
+      "newPid": 2196630,
+      "startedAt": "2026-10-15T22:38:45Z",
+      "healthSha": "3355796413",
+      "buildChecks": "The maintained bundle completed and its free-reference checks passed.",
+      "sourceLimit": "This build label contains the committed listener fix. The PTY repair was still uncommitted at the last comparison; this is not a clean whole-candidate provenance claim."
+    },
+    "explicitOwnerRecovery": {
+      "verifiedAt": "2026-10-15T22:42:48Z",
+      "method": "The current row matched the owned manual hostname and port. Disable on the owning background operator closed its listener; the maintained manual setup route on staging then recovered port 41179 with operatorPort 3170.",
+      "operatorPort": 3170,
+      "ingressPort": 41179,
+      "servedByThisOperator": true,
+      "listening": true,
+      "health": "up",
+      "socketOwnerPid": 3147568,
+      "socketObservation": "Structured listener inspection correlated both 3170 and 41179 with PID 3147568; 3271 belongs to background PID 2196630.",
+      "limit": "Preparation on staging d5b292ed83; containing-build restart and health-gap acceptance remain pending."
+    },
+    "containingRestart": {
+      "source": "Maintained staging-sync journal and live health, physical source and socket inspection.",
+      "verifiedAt": "2026-10-15T23:17:28Z",
+      "oldPid": 3147568,
+      "newPid": 3708098,
+      "healthSha": "3355796413",
+      "loadedServiceSha256": "a2de74b38d2eece4f40d1aa97c702c1de646111c929a20f8b01cb5dbd81cbfdb",
+      "readyJournalAt": "2026-10-15T23:07:59Z",
+      "configuredOperatorPort": 3170,
+      "stagingListeningPorts": [3170, 41179],
+      "backgroundPid": 2196630,
+      "backgroundListeningPorts": [3271],
+      "status": "manual listener up, no lastError; staging serves it and background does not",
+      "limit": "The automatic restart is observed before/after. A health gap was not sampled during that restart."
+    },
+    "boundedObserver": {
+      "shellSession": 28214,
+      "finishedAt": "2026-10-15T23:41:04.942724Z",
+      "durationSeconds": 156.59,
+      "probeTimeoutSeconds": 2,
+      "successfulBackgroundStatusSamples": 285,
+      "unhealthySamplesWithBackgroundStatus": 38,
+      "stoppedProcessGapSamples": 32,
+      "everWrongOwner": false,
+      "recoveredAfterGap": true,
+      "restartAttempt": "dev:restart initially returned an opaque cross-domain resource-lease conflict. A later actual staging stop and restart was independently observed; this receipt does not attribute that lifecycle to the rejected call.",
+      "limit": "Background status remained configured3170/listeningfalse/servedByThisOperatorfalse during 32 samples where the original process was gone and health failed, followed by successful staging health and a 12-second recovery window. This verifies listener custody through the observed restart; it does not establish broader P-008 or public provider acceptance."
+    },
+    "recoveredSocketCustody": {
+      "source": "Maintained staging unit MainPID, selected LISTEN socket owners and physical serving source hash after observer completion.",
+      "oldStagingPid": 881398,
+      "stagingPid": 1048953,
+      "stagingHealthSha": "53e73accbf",
+      "loadedServiceSha256": "a2de74b38d2eece4f40d1aa97c702c1de646111c929a20f8b01cb5dbd81cbfdb",
+      "stagingListeningPorts": [3170, 41179],
+      "backgroundPid": 2196630,
+      "backgroundListeningPorts": [3271]
+    },
+    "localSecurity": {
+      "startedAt": "2026-10-15T23:15:02.288444Z",
+      "finishedAt": "2026-10-15T23:15:02.530076Z",
+      "healthShaBeforeAndAfter": "3355796413",
+      "passedChecks": 33,
+      "probeErrors": 1,
+      "verified": "Both exact public Host and localhost on ingress41179 reject eight admin routes, reject missing JWTs, accept a private paired JWT for heartbeat/runtime-config, and reject a revoked JWT. Invalid JWT and pairing-token replay are rejected. Desktop mint advertises the protected public hostname.",
+      "temporaryDeviceId": "bb6aeac4-beb0-44e6-ade6-84363b1f72d8",
+      "cleanupVerified": true,
+      "probeCorrection": "The original unknown-workspace probe used x-workspace-id, which is not the middleware header. Current middleware reads x-papercusp-workspace; the corrected probe below returned400 unknown_workspace and cleaned up its temporary device.",
+      "correctedWorkspaceProbe": {
+        "startedAt": "2026-10-15T23:27:36.962887Z",
+        "finishedAt": "2026-10-15T23:27:37.140988Z",
+        "header": "x-papercusp-workspace",
+        "status": 400,
+        "error": "unknown_workspace",
+        "passed": true,
+        "temporaryDeviceId": "120ff4ef-d33e-4ed0-93b9-08a7114b65b6",
+        "cleanupVerified": true,
+        "scope": "Authenticated request through the local protected ingress with the exact public Host; no provider or native acceptance claim."
+      },
+      "limit": "Local socket proof; no public provider or native acceptance is implied."
+    },
+    "rawProviderRead": {
+      "verifiedAt": "2026-10-15T23:16:58.846Z",
+      "method": "Maintained Cloudflare API getTunnelConfig client using the existing certificate, read only.",
+      "version": 18,
+      "configSha256": "751b6ceb81b7bde25d2998e7fb37495eadcb873653e61da9b807b0288d6f246b",
+      "originalRollbackHashMatches": true,
+      "deviceRule": { "hostname": "api.papercuspai.com", "path": "^/api/device", "service": "http://localhost:3070", "originRequest": {} },
+      "providerMutation": false
+    },
+    "blocker": null,
+    "blockerEvidence": "Observed process-loss health gap and subsequent physical socket custody passed. The separate opaque restart-tool refusal is retained as tool friction; no claim of successful tool dispatch is made.",
+    "remaining": [
+      "Recheck current custody and provider state before any public route correction; full P-008 remains open."
+    ],
+    "ownedFollowUp": "EI-26087030423583632 source fix passes55 registered tests; completion reattested with committed authority after source/test hashes matched committed bytes. This is not a deployed-fix claim."
+  },
+  "manualErrorRecoverySourceFix": {
+    "workItem": "EI-26087030423583632",
+    "beforeFix": { "passed": 28, "failed": 1, "observed": "The recovered manual listener was listeningtrue but healthdown with historical EADDRINUSE." },
+    "afterFix": { "passed": 55, "failed": 0, "skipped": 0, "shellSession": 62917, "exitCode": 0 },
+    "behavior": "Clear the previous manual error only after an error-free listener=open result; preserve other-operator, disabled, non-serving, static-listener and Cloudflare warm-up error state.",
+    "serviceSha256": "177b78ddb27da9f945ba7f99b58b90986b7d05912a4eb022eef89b144885f8b5",
+    "testSha256": "827f2184301d65ae5927fcfcd9cc7e68a1710ff63fad023cd6ecb24d9255105c",
+    "committedContentVerification": {
+      "head": "05ef1d2954f4c0697b621a3cbefeb97040032e0d",
+      "sourceAndTestMatchRetainedHashes": true,
+      "completionAuthority": "committed",
+      "testsRerunForReattestation": false
+    },
+    "originalSourceMap": "~/.papercusp/evidence/EI-26087030423583632-source-map-20261015T2309Z.json",
+    "originalSourceMapSha256": "9ea7fbc822a459048b0990de1ff8ab246e8be8583e231fa964eec68bfd121627",
+    "provenance": "Vite original-source evidence is stable and matches the changed source/test hashes. The shared checkout was dirty and moved; external/config capture is incomplete. No whole-candidate or deployment claim.",
+    "teardown": "Vitest reported a10-second close timeout after the passing tests; the shell returned0. Captured separately as an observation without assigning a cause."
+  },
+  "limits": [
+    "These tests exercise the reconciler with injected dependencies; they are not live restart or native simulator acceptance.",
+    "The recovery continuation restarted the background host and restored the manual listener owner. It performed no provider configuration mutation or native job.",
+    "The prior route-correction receipt retains the verified v18 rollback. It does not establish that the correction is currently applied.",
+    "Full P-008 acceptance and final shipment remain open."
+  ]
+}

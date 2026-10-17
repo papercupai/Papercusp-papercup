@@ -34,20 +34,29 @@
  *      failovers by ROUTE KEY (as the bearer lane legitimately does) silently
  *      inflates this lane's count on every sibling retry. D-011.
  */
-import { test, afterEach, vi } from 'vitest';
+import { test, beforeEach, afterEach, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { createInferenceGateway, ACCOUNT_HEADER, ACCOUNT_PIN_HEADER, ROUTED_ACCOUNT_HEADER } from './gateway';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { RateLimitGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
+import {
+  configureGatewayRequestOutcomeStore,
+  InMemoryGatewayRequestOutcomeStore,
+  resetGatewayRequestOutcomeStore,
+} from './gateway-request-outcome-store';
 
 let gw: ReturnType<typeof createInferenceGateway> | undefined;
 let port = 0;
 const ask = (path: string, init?: RequestInit) => fetch(`http://127.0.0.1:${port}${path}`, init);
 
+// Owner reports include durable outcomes; unit fixtures must not query PostgreSQL.
+beforeEach(() => configureGatewayRequestOutcomeStore(new InMemoryGatewayRequestOutcomeStore()));
+
 afterEach(async () => {
   await gw?.close();
   gw = undefined;
   resetGovernorRegistry();
+  resetGatewayRequestOutcomeStore();
 });
 
 /** A BARE burst 429: rate_limit_error with NO anthropic-ratelimit-* / retry-after headers. */

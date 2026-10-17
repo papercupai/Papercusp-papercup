@@ -1,0 +1,130 @@
+{
+  "workItem": "EI-26183307448564200",
+  "plan": "agent-capacity-and-cost-gcp-2026-09-30",
+  "scope": "Stable focused worker-source functional verification; not committed-source, full native/configuration closure or shipment acceptance",
+  "committedFocusedReadback": {
+    "verifiedAt": "2026-10-17T02:24:06.697965+00:00",
+    "head": "8fdb7d20436896addb05b9055e306907eaa29d7e",
+    "scope": "Focused committed source only; no full import-graph, origin-egress or deployed-artifact claim",
+    "files": {
+      "packages/operator-core/lib/auth/hosted/first-workspace.ts": {
+        "testedSha256": "a660c23d3bd1956e936a432764f3e705c4f3f6e36306929cd9669f89e7fd99fb",
+        "currentSha256": "a660c23d3bd1956e936a432764f3e705c4f3f6e36306929cd9669f89e7fd99fb",
+        "committedSha256": "a660c23d3bd1956e936a432764f3e705c4f3f6e36306929cd9669f89e7fd99fb"
+      },
+      "packages/operator-core/lib/auth/hosted/first-workspace.test.ts": {
+        "testedSha256": "55fe52f33ebd7f13ba9ce3440d3b5cb9b629ed022469327108b6b76bf8b8d590",
+        "currentSha256": "55fe52f33ebd7f13ba9ce3440d3b5cb9b629ed022469327108b6b76bf8b8d590",
+        "committedSha256": "55fe52f33ebd7f13ba9ce3440d3b5cb9b629ed022469327108b6b76bf8b8d590"
+      },
+      "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts": {
+        "testedSha256": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8",
+        "currentSha256": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8",
+        "committedSha256": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8"
+      }
+    },
+    "integrationEvidence": "docs/evidence/p537-native-idle-2026-10-17.json",
+    "integrationVerdict": {
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0
+    },
+    "historicalIntegrationHashSuperseded": true
+  },
+  "rootCause": "Funded GCP and AWS first-workspace desired specs omitted the explicit DB/workspace allocation required by pooled storage admission.",
+  "fix": "Reuse existing desired-spec data.allocation: new funded disks start at 10GiB, split 8GiB DB and 2GiB workspace under D-077. BYOC defaults and retained-disk allocations are preserved.",
+  "before": {
+    "unitLog": "/tmp/p537-first-workspace-unit-before.log",
+    "unitObservation": "Both funded provider storage allocation guards fail",
+    "httpLog": "/tmp/p537-first-workspace-before-v2.log",
+    "httpObservation": "First-workspace returns workspace_admission_failed before enqueue; six existing authentication cases pass"
+  },
+  "after": {
+    "initialLog": "/tmp/p537-first-workspace-after.log",
+    "finalLog": "/tmp/p537-first-workspace-final.log",
+    "integrationPassed": 7,
+    "unitPassed": 46,
+    "failed": 0,
+    "skipped": 0,
+    "wrapperExitCode": 0,
+    "childSubstituted": 0,
+    "privatePostgresShutdownVerified": true,
+    "observation": "HTTP 201; canonical resource admission receipt is visible on a separate connection before provisioning enqueue; stored host carries the 8+2 allocation",
+    "limitations": [
+      "Final wrapper reports provenance=drifted and uncommittedPaths=2/2",
+      "Requested source-map output file was not produced; no exact import-graph equivalence claim",
+      "Fixture received an optional-input type correction during the final run; current fixture is compiler-verified, but a stable source-fingerprinted functional run remains required"
+    ]
+  },
+  "typecheck": {
+    "tool": "build:typecheck",
+    "project": "packages/operator-core",
+    "scopeToFiles": true,
+    "requestedFiles": 3,
+    "requestedErrors": 0,
+    "scopedVerdict": "requested-files-clean",
+    "scopedVerdictIncomplete": false,
+    "semanticCheckIncomplete": false,
+    "otherImportGraphErrors": 35,
+    "exitCode": 0
+  },
+  "stableRun": {
+    "log": "/tmp/p537-first-workspace-stable.log",
+    "startedAt": "2026-10-17T00:42:04.350Z",
+    "integrationPassed": 7,
+    "unitPassed": 46,
+    "failed": 0,
+    "skipped": 0,
+    "wrapperExitCode": 0,
+    "childSubstituted": 0,
+    "namedPathProvenance": "stamped; two named test paths remained uncommitted",
+    "privatePostgresShutdownVerifiedAt": "2026-10-17T00:48:49.291Z",
+    "captureSettings": {
+      "PC_EXECUTED_SOURCE_MAP_WORKSPACE": "@papercusp/operator-core",
+      "PC_EXECUTED_SOURCE_MAP_OUT": "/tmp/p537-first-workspace-stable-sources.json",
+      "PC_EXECUTED_SOURCE_MAP_NO_PERSIST": "1"
+    },
+    "workerSourceCaptures": [
+      {
+        "path": "/tmp/p537-first-workspace-stable-sources.json",
+        "sha256": "1fd12d90053495a27d0d559723e6fbb7228f63eb2cc52ede8898470396c4e861",
+        "testFile": "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts",
+        "status": "stable",
+        "sources": 5898,
+        "reasons": []
+      },
+      {
+        "path": "/tmp/p537-first-workspace-stable-sources.1.json",
+        "sha256": "5d5c93e777e00ad565e54881f4bb70ec40cd9103b640830661b51d69a2c6d188",
+        "testFile": "packages/operator-core/lib/auth/hosted/first-workspace.test.ts",
+        "status": "stable",
+        "sources": 1167,
+        "reasons": []
+      }
+    ],
+    "testedSourceSha256": {
+      "packages/operator-core/lib/auth/hosted/first-workspace.ts": "a660c23d3bd1956e936a432764f3e705c4f3f6e36306929cd9669f89e7fd99fb",
+      "packages/operator-core/lib/auth/hosted/first-workspace.test.ts": "55fe52f33ebd7f13ba9ce3440d3b5cb9b629ed022469327108b6b76bf8b8d590",
+      "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts": "50b767fe0db9488ddb0f0db22575c5c17493d65755c74b14a3105c219b199c45"
+    },
+    "limitations": [
+      "Both capture files report configSources, configLoadedSources and mainProcessLoadedSources as unknown; no full native/configuration closure claim",
+      "Source equivalence to a committed or shipped artifact remains unverified"
+    ]
+  },
+  "currentSourceAtReadback": {
+    "head": "fadbd35203407cd855384e131e49dbc7e8b76316",
+    "committed": false,
+    "sha256": {
+      "packages/operator-core/lib/auth/hosted/first-workspace.ts": "a660c23d3bd1956e936a432764f3e705c4f3f6e36306929cd9669f89e7fd99fb",
+      "packages/operator-core/lib/auth/hosted/first-workspace.test.ts": "55fe52f33ebd7f13ba9ce3440d3b5cb9b629ed022469327108b6b76bf8b8d590",
+      "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts": "50b767fe0db9488ddb0f0db22575c5c17493d65755c74b14a3105c219b199c45"
+    }
+  },
+  "remaining": [
+    "Committed-source verification before focused bug closure; stable focused worker-source verification is saved above",
+    "P-537 configured paid, native-agent, idle and final shipment acceptance",
+    "P-544 measured usable under-$20 all-in monthly trial configuration, durability and teardown evidence",
+    "Plan BAR amendment remains pending between subject revisions 185 and 216 after activation audit 15"
+  ]
+}

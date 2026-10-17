@@ -147,6 +147,61 @@ describe('remote runtime units', () => {
   });
 });
 
+describe('Cloudflare Pages production deployment identity (WI-6554700010015755)', () => {
+  const account = 'f896982ea2f6d507e4f29eeecbd26e94';
+  const unit = `cloudflare-pages:${account}/papercusp-com`;
+  const deployment = (over: Record<string, unknown> = {}) => ({ id: 'dep-1', created_on: '2026-10-16T05:33:33Z',
+    environment: 'production', commit_hash: '1072f004', stage: 'deploy', status: 'success', ...over });
+  const doc = (over: Record<string, unknown> = {}, dep: Record<string, unknown> = {}) => ({ id: 'project-uuid',
+    name: 'papercusp-com', created_on: '2026-07-12T15:47:22Z', deployment: deployment(dep), ...over });
+
+  it('is a remote unit and measures a stable identity that a new production deployment invalidates', async () => {
+    expect(isRemoteRuntimeUnit(unit)).toBe(true);
+    const identity = await measureRemoteRuntimeIdentity(unit, describing(doc()));
+    expect(identity).toMatch(/^[a-f0-9]{64}$/);
+    expect(await measureRemoteRuntimeIdentity(unit, describing(doc()))).toBe(identity);
+    for (const changed of [doc({}, { id: 'dep-2' }), doc({}, { created_on: '2026-10-17T00:00:00Z' }),
+      doc({}, { commit_hash: 'ffffffff' }), doc({ id: 'recreated-project' }), doc({ created_on: '2026-10-01T00:00:00Z' })]) {
+      expect(await measureRemoteRuntimeIdentity(unit, describing(changed))).not.toBe(identity);
+    }
+  });
+
+  it.each([null, {}, doc({ name: 'another-project' }), doc({}, { environment: 'preview' }),
+    doc({}, { status: 'failure' }), doc({}, { stage: 'build' }), doc({}, { id: null }), doc({ created_on: null })])
+    ('fails closed for an unavailable, foreign or not-yet-serving deployment %j', async (d) => {
+      expect(await measureRemoteRuntimeIdentity(unit, describing(d))).toBeNull();
+    });
+
+  it('rejects malformed selectors before calling any reader', async () => {
+    const d = describing(doc());
+    for (const invalid of ['cloudflare-pages:not-hex/papercusp-com', `cloudflare-pages:${account}/-bad`,
+      `cloudflare-pages:${account}/a/../b`, `cloudflare-pages:${account}/papercusp-com?x=1`, `cloudflare-pages:${account}`]) {
+      expect(await measureRemoteRuntimeIdentity(invalid, d)).toBeNull();
+    }
+    expect(d.calls).toEqual([]);
+  });
+
+  it('reads the project API with the server-side token and keeps it out of the identity document', async () => {
+    vi.stubEnv('CLOUDFLARE_API_TOKEN', 'cf-server-secret');
+    try {
+      const api = { success: true, result: { id: 'project-uuid', name: 'papercusp-com', created_on: '2026-07-12T15:47:22Z',
+        canonical_deployment: { id: 'dep-1', created_on: '2026-10-16T05:33:33Z', environment: 'production',
+          deployment_trigger: { metadata: { commit_hash: '1072f004', commit_message: 'secret-ish message' } },
+          latest_stage: { name: 'deploy', status: 'success', ended_on: '2026-10-16T05:33:35Z' } } } };
+      const fetcher = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => Response.json(api));
+      vi.stubGlobal('fetch', fetcher);
+      const live = await measureRemoteRuntimeIdentity(unit);
+      expect(live).toBe(await measureRemoteRuntimeIdentity(unit, describing(doc())));
+      expect(String(fetcher.mock.calls[0]![0])).toBe(`https://api.cloudflare.com/client/v4/accounts/${account}/pages/projects/papercusp-com`);
+      expect(new Headers(fetcher.mock.calls[0]![1]!.headers).get('authorization')).toBe('Bearer cf-server-secret');
+      fetcher.mockImplementation(async () => Response.json({ success: false, errors: [{ code: 9106 }] }, { status: 403 }));
+      expect(await measureRemoteRuntimeIdentity(unit)).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
 describe('measureRuntimeEnvironment', () => {
   const selfIdentity = readProcessIdentity(process.pid);
   const localRow: RuntimeVintageRow = {

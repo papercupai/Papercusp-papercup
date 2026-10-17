@@ -29,7 +29,10 @@ async function postPresence(clientId: string, signal: AbortSignal): Promise<void
         client_id: clientId,
         url: window.location.href,
         title: document.title,
-        viewport: { w: window.innerWidth, h: window.innerHeight },
+        viewport: {
+          w: window.innerWidth, h: window.innerHeight,
+          nativeDesktop: Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__),
+        },
       }),
       keepalive: true,
       signal,

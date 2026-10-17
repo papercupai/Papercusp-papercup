@@ -1276,7 +1276,7 @@ export function issueClaimCandidateSubquery(
     filterPushdown,
     projection = 'full',
   } = args;
-  const baseColumns =
+  const claimabilitySnapshotSourceColumns =
     projection === 'claimability-snapshot'
       ? sql`
           wi.workspace_id,
@@ -1333,6 +1333,90 @@ export function issueClaimCandidateSubquery(
         `
       : sql`wi.*`;
 
+  // Keep only the payload keys read after candidate materialization. The source CTE above
+  // still carries the full body long enough for filters and floors to run; the persisted
+  // temp snapshot does not. EI-26222272533945207 measured an unfiltered population of 8,284
+  // candidates with 16,961,799 payload bytes + 7,633,911 summary bytes against 8MB
+  // temp_buffers. The recorded SQLSTATE 53000 surfaced while the later exclusion aggregate
+  // scanned that snapshot. Whitelisting downstream rank/sample/count fields prevents large
+  // evidence and prose fields from multiplying across the temp relation.
+  const claimabilitySnapshotPayload = sql`
+    jsonb_strip_nulls(jsonb_build_object(
+      'paths', wi.payload->'paths',
+      'tags', wi.payload->'tags',
+      'severity', wi.payload->'severity',
+      '_ei', jsonb_strip_nulls(jsonb_build_object(
+        'severity', wi.payload->'_ei'->'severity'
+      )),
+      'clusterPriority', wi.payload->'clusterPriority',
+      'plan_item', jsonb_strip_nulls(jsonb_build_object(
+        'plan_slug', wi.payload->'plan_item'->'plan_slug',
+        'slug', wi.payload->'plan_item'->'slug',
+        'item_id', wi.payload->'plan_item'->'item_id',
+        'itemId', wi.payload->'plan_item'->'itemId',
+        'item', wi.payload->'plan_item'->'item'
+      )),
+      'planItem', jsonb_strip_nulls(jsonb_build_object(
+        'plan_slug', wi.payload->'planItem'->'plan_slug',
+        'slug', wi.payload->'planItem'->'slug',
+        'item_id', wi.payload->'planItem'->'item_id',
+        'itemId', wi.payload->'planItem'->'itemId',
+        'item', wi.payload->'planItem'->'item'
+      )),
+      'source_plan_slug', wi.payload->'source_plan_slug',
+      'source_plan_item_ids', wi.payload->'source_plan_item_ids',
+      'held_open_by', wi.payload->'held_open_by',
+      'held_open_at', wi.payload->'held_open_at',
+      'held_open_reason', wi.payload->'held_open_reason',
+      'claim_hold_by', wi.payload->'claim_hold_by',
+      'claim_hold_at', wi.payload->'claim_hold_at',
+      'claim_hold_reason', wi.payload->'claim_hold_reason',
+      'claim_hold_release', jsonb_strip_nulls(jsonb_build_object(
+        'condition', wi.payload->'claim_hold_release'->'condition',
+        'owner', wi.payload->'claim_hold_release'->'owner',
+        'trigger', wi.payload->'claim_hold_release'->'trigger',
+        'reachability', wi.payload->'claim_hold_release'->'reachability',
+        'evidence', wi.payload->'claim_hold_release'->'evidence'
+      )),
+      'agentReview', jsonb_strip_nulls(jsonb_build_object(
+        'status', wi.payload->'agentReview'->'status',
+        'submittedBy', wi.payload->'agentReview'->'submittedBy',
+        'ledgerIdeaId', wi.payload->'agentReview'->'ledgerIdeaId',
+        'round', wi.payload->'agentReview'->'round',
+        'revisionKind', wi.payload->'agentReview'->'revisionKind',
+        'timing', jsonb_strip_nulls(jsonb_build_object(
+          'round', wi.payload->'agentReview'->'timing'->'round',
+          'enteredAt', wi.payload->'agentReview'->'timing'->'enteredAt',
+          'decidedAt', wi.payload->'agentReview'->'timing'->'decidedAt'
+        ))
+      ))
+    ))
+  `;
+  const baseColumns =
+    projection === 'claimability-snapshot'
+      ? sql`
+          wi.workspace_id,
+          wi.harness_slug,
+          wi.feature_id,
+          wi.title,
+          wi.status,
+          wi.kind,
+          wi.item_kind,
+          wi.created_ts,
+          wi.updated_ts,
+          wi.taken_by,
+          wi.taken_at,
+          wi.source_plan_slug,
+          wi.source_plan_item_ids,
+          wi.feature_order,
+          wi.origin,
+          ${claimabilitySnapshotPayload} AS payload,
+          wi.expected_cost_cents,
+          wi.tags,
+          wi.redundancy
+        `
+      : claimabilitySnapshotSourceColumns;
+
   // A pushed-down filter is an execution-order contract, not just a logical
   // simplification. Without a materialization barrier PostgreSQL is free to
   // inline the filtered relation and evaluate the correlated claim-floor
@@ -1356,7 +1440,7 @@ export function issueClaimCandidateSubquery(
   const pushedSource = filterPushdown
     ? sql`
         WITH filtered_claim_candidates AS MATERIALIZED (
-          SELECT ${baseColumns}
+          SELECT ${projection === 'claimability-snapshot' ? claimabilitySnapshotSourceColumns : baseColumns}
           FROM harness_shared.work_items wi
           WHERE ${baseWhere}
             AND (${filterPushdown})

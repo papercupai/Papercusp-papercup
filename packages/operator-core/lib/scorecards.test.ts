@@ -7,7 +7,7 @@
  * excluded as unassessable.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { cancelStaleEvidencePendingGradingAuditAtomically, cancelSupersededPendingGradingAuditAtomically, classifyGradingAuditCurrentness, classifyScorecardGenerationFreshness, classifySubjectRubricCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isCurrentSourceAuditResponder, isIdleUnknown, markGradingAuditAwaitingReemit, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
+import { cancelPendingGradingAuditsForBindingInTransaction, cancelStaleEvidencePendingGradingAuditAtomically, cancelSupersededPendingGradingAuditAtomically, classifyGradingAuditCurrentness, classifyScorecardGenerationFreshness, classifySubjectRubricCurrentness, computeTrendDirection, computeRubricStaleness, compressSeries, evaluateScorecardInstrumentContract, evaluateScorecardReleaseGateBinding, isCurrentSourceAuditResponder, isIdleUnknown, markGradingAuditAwaitingReemit, parseCriterionInstrumentKey, parseGradedGeneration, ratingScore10, recordGradingAudit, scorecardEvidenceFingerprint, scorecardScore10, scoreOverridesForScale, settlePendingGradingAuditAtomically } from './scorecards';
 import type { Rubric } from './rubrics';
 import { effectiveCriterionInstrumentKey } from './rubrics';
 import type { CriterionTrend, ScorecardReleaseGateSnapshot } from './scorecards';
@@ -114,6 +114,37 @@ describe('cancelling a pending audit after its exact evidence binding goes stale
       { workspaceId: 'ws-test', transact },
     )).resolves.toBe(false);
     expect(transact).not.toHaveBeenCalled();
+  });
+});
+
+describe('cancelling pending audits during an evidence retraction', () => {
+  it('fences every pending audit citing the retracted binding on the supplied transaction', async () => {
+    const statements: Array<{ text: string; values: unknown[] }> = [];
+    const tx = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      statements.push({ text, values });
+      return [{ feature_id: 'EI-TARGET' }];
+    }) as never;
+
+    await expect(cancelPendingGradingAuditsForBindingInTransaction(tx, 'ws-test', 30308))
+      .resolves.toEqual(['EI-TARGET']);
+
+    const write = statements[0]!;
+    expect(write.text).toContain('UPDATE harness_shared.work_items');
+    expect(write.text).toContain("gradingAudit'->>'state' = 'pending'");
+    expect(write.text).toContain("jsonb_typeof(target.payload->'observation'->'rerunRecipe'->'selection'->'bindingIds') = 'array'");
+    expect(write.text).toContain('jsonb_array_elements_text');
+    expect(write.text).toContain("cited.binding_id = ?");
+    expect(write.text).toContain("jsonb_build_object('state', 'cancelled')");
+    expect(write.text).toContain("#- '{dispatchReservation}'");
+    expect(write.text).toContain("#- '{dispatchBackoff}'");
+    expect(write.values).toEqual(expect.arrayContaining(['ws-test', '30308']));
+  });
+
+  it('rejects an invalid binding id before opening a transaction', async () => {
+    const tx = vi.fn() as never;
+    await expect(cancelPendingGradingAuditsForBindingInTransaction(tx, 'ws-test', 0)).resolves.toEqual([]);
+    expect(tx).not.toHaveBeenCalled();
   });
 });
 

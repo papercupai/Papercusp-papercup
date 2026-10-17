@@ -93,6 +93,14 @@ export const MANDATE_SEED_EXEMPT: ReadonlyMap<string, string> = new Map([
     'dev:listening_ports',
     '9 reaches/8 callers, 924 B, 10.0 reach/KB. Below the 22/11 admit precedent.',
   ],
+  [
+    'graph:query',
+    '9 reaches/4 callers, 1,479 B compact, 6.1 reach/KB. The callers route is withheld until its paths support is live on :3070 (WI-10006543); tools:find/tools:invoke keep this low-demand mandate reachable without spending a floor seat.',
+  ],
+  [
+    'lsp:query',
+    '5 reaches/2 callers, 698 B compact, 7.2 reach/KB. Its definition-lookup route is a low-volume long tail below the 22/11 admit precedent, so deferred delivery preserves the budget while tools:find/tools:invoke retain access.',
+  ],
   // NOTE: `dev:processes` is deliberately ABSENT. It appears in the registry's
   // toolName field but the routing table never PROMOTES it, so exempting it was dead
   // weight — caught by staleExemptions() on this guard's very first run, because the

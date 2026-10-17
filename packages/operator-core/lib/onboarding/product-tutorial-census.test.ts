@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
-import { PRODUCT_TUTORIAL_LESSONS, PRODUCT_TUTORIAL_TARGETS, productTutorialTargetAvailability } from './product-tutorial-lesson';
+import { PRODUCT_TUTORIAL_CHAPTERS, PRODUCT_TUTORIAL_LESSONS, PRODUCT_TUTORIAL_TARGETS, productTutorialTargetAvailability } from './product-tutorial-lesson';
 
 interface CensusEntry { id: string; operatorKind?: string; module: string; route: string; teaches: string; policy: string }
 interface SourceCensus {
@@ -30,6 +30,24 @@ function registeredSurfaceKinds(source: string): string[] {
 }
 
 describe('account-first tutorial source census', () => {
+  it('keeps the video practice in maintained destinations and preserves approved project and assessment boundaries', () => {
+    const destinations = new Set(PRODUCT_TUTORIAL_TARGETS.map(target => target.id));
+    for (const chapter of PRODUCT_TUTORIAL_CHAPTERS) {
+      expect(PRODUCT_TUTORIAL_LESSONS.some(lesson => lesson.id === chapter.lessonId), chapter.id).toBe(true);
+      const url = new URL(chapter.destination, 'https://app.papercusp.com');
+      expect(destinations.has(url.searchParams.get('app')!), chapter.id).toBe(true);
+    }
+    const create = PRODUCT_TUTORIAL_CHAPTERS.find(chapter => chapter.id === 'create-project')!.prompt!;
+    expect(create).toContain('title, owner and due date');
+    expect(create).toContain('mark it complete');
+    expect(create).toContain('Keep the data in the browser');
+    expect(create).toContain('Keep the app private');
+    const grade = PRODUCT_TUTORIAL_CHAPTERS.find(chapter => chapter.id === 'grade-project')!.prompt!;
+    expect(grade).toContain('Keep this grade pass to assessment');
+    expect(grade).toContain('leave implementation of findings for our next approved step');
+    expect(PRODUCT_TUTORIAL_CHAPTERS.find(chapter => chapter.id === 'connect-psu')!.prompt).toContain('owner/status filters and a CSV export');
+    expect(PRODUCT_TUTORIAL_CHAPTERS.find(chapter => chapter.id === 'visible-fleet')!.prompt).toContain('same cloud instance and project');
+  });
   it('implements the source census in maintained lessons and permission-aware destinations', () => {
     const ids = PRODUCT_TUTORIAL_TARGETS.map(target => target.id).sort();
     expect(ids).toEqual([...census.rail, ...census.nonRail].map(entry => entry.id).sort());

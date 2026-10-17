@@ -27,7 +27,9 @@ import { execFile } from 'node:child_process';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
 
-const execFileAsync = promisify(execFile);
+let execFileAsyncMemo: typeof execFile.__promisify__ | null = null;
+const execFileAsync = ((...args: unknown[]) =>
+  Reflect.apply((execFileAsyncMemo ??= promisify(execFile)), undefined, args)) as typeof execFile.__promisify__;
 
 /** Returns the git work tree containing `dir`, or null when `dir` is not inside one. */
 export type EnclosingWorkTreeProbe = (dir: string) => string | null | Promise<string | null>;

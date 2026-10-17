@@ -1,11 +1,11 @@
 // @vitest-environment node
-import { mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { decideLoopExecutionRecovery, type ExecutionRecoveryInput } from '@papercusp/operator-core/lib/harness/routines/loop-execution-recovery';
 import { makeAgentBusyGate, nativeExecutionBlocksInjection, nativeExecutionFromRows, nativeTurnVerifierSupport,
-  nativeLatestExecution, retainRunningNativeExecution } from '../scripts/psu-pty-host.mjs';
+  nativeLatestExecution, nativeLatestTurnCompleted, retainRunningNativeExecution } from '../scripts/psu-pty-host.mjs';
 
 const timestamp = new Date(1000).toISOString();
 const ctx = { receivedAtMs: 900, nowMs: 2000 };
@@ -71,6 +71,33 @@ describe('native execution observations', () => {
     expect(retainRunningNativeExecution(previous, evicted)).toEqual({
       phase: 'running', turnStartedAt: 1000, lastProgressAt: 1500, pendingTools: 0,
     });
+  });
+
+  it.each(['running', 'settled'])('observes the bound Codex writer when a newer sibling is %s', siblingPhase => {
+    const root = mkdtempSync(join(tmpdir(), 'codex-native-execution-sibling-'));
+    const sessionDir = join(root, 'sessions', '2026', '10', '17');
+    const nativeSessionId = '01a147e0-dfd7-7d83-95a1-fe2c0250ebd2';
+    const siblingId = '01a147fc-3632-7b62-a7d1-9a476a968e0f';
+    const boundPhase = siblingPhase === 'running' ? 'settled' : 'running';
+    try {
+      mkdirSync(sessionDir, { recursive: true });
+      for (const [id, phase, mtime] of [[nativeSessionId, boundPhase, 1], [siblingId, siblingPhase, 2]] as const) {
+        const path = join(sessionDir, `rollout-2026-10-17-${id}.jsonl`);
+        writeFileSync(path, JSON.stringify({ type: 'event_msg', timestamp,
+          payload: { type: phase === 'running' ? 'task_started' : 'task_complete', turn_id: 'fixture-turn' } }) + '\n');
+        utimesSync(path, mtime, mtime);
+      }
+      const options = { agent: 'codex', env: { CODEX_HOME: root }, nativeSessionId, ...ctx };
+      expect(nativeLatestExecution(options)).toMatchObject({ phase: boundPhase });
+      expect(nativeLatestTurnCompleted({ ...options, completedAtOrAfterMs: ctx.receivedAtMs }))
+        .toBe(boundPhase === 'settled');
+      for (const unavailableId of [null, '01a147e0-4039-71e1-ac86-108b32273db5', '../' + siblingId]) {
+        expect(nativeLatestExecution({ ...options, nativeSessionId: unavailableId }).phase).toBe('unknown');
+        expect(nativeLatestTurnCompleted({ ...options, nativeSessionId: unavailableId })).toBe(false);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('lets terminal native evidence replace a retained running state', () => {

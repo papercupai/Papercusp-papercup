@@ -1060,10 +1060,10 @@ export function judgeCrossLegMembers({ members, errors, baselineByFile, foreignB
  * files are foreign by construction), no full compile, no ratchet. A baseline or program failure
  * prints `status=undetermined` and a non-1 code, so the parent can never read it as clean or red.
  *
- * @param {{root: string, tscCommand: string, baselineFile: string, foreignBaselines?: {prefix: string, baselineFile: string}[], label: string, files: string[], diagnose?: (args: {root: string, tscCommand: string, files: string[]}) => {members: string[], nonMembers: string[], output: string}, log?: (line: string) => void, warn?: (line: string) => void}} opts
+ * @param {{root: string, tscCommand: string, baselineFile: string, foreignBaselines?: {prefix: string, baselineFile: string}[], label: string, files: string[], diagnose?: (args: {root: string, tscCommand: string, files: string[]}) => {members: string[], nonMembers: string[], output: string}, serviceCheck?: typeof typecheckViaService, log?: (line: string) => void, warn?: (line: string) => void}} opts
  * @returns {Promise<number>} The exit code: 0 clean, 1 regressed, 66/70 undetermined.
  */
-export function runCrossLegConsumer({ root, tscCommand, baselineFile, foreignBaselines, label, files, diagnose, log, warn, }: {
+export function runCrossLegConsumer({ root, tscCommand, baselineFile, foreignBaselines, label, files, diagnose, serviceCheck, log, warn, }: {
     root: string;
     tscCommand: string;
     baselineFile: string;
@@ -1082,6 +1082,7 @@ export function runCrossLegConsumer({ root, tscCommand, baselineFile, foreignBas
         nonMembers: string[];
         output: string;
     };
+    serviceCheck?: typeof typecheckViaService;
     log?: (line: string) => void;
     warn?: (line: string) => void;
 }): Promise<number>;
@@ -1732,3 +1733,4 @@ export type MissingModuleDiagnostic = {
     code: "TS7016" | "TS2307";
     module: string;
 };
+import { typecheckViaService } from './tsc-service.mjs';

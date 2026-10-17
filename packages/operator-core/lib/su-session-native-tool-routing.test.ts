@@ -118,8 +118,10 @@ describe('D-063 whole native MCP dispatch owner routing', () => {
     expect(await serveForwardedSuSessionOp({ ...payload, nonce: 'recycled' })).toEqual({ status: 'not_owner' });
     expect(await serveForwardedSuSessionOp({ ...payload, address: { ...address, ownerId: 'foreign' } })).toEqual({ status: 'absent' });
     expect(dispatch).not.toHaveBeenCalled();
-    expect(await serveForwardedSuSessionOp(payload)).toEqual({ status: 'ok', result: { content: [{ type: 'text', text: 'owner-result' }] } });
-    expect(dispatch).toHaveBeenCalledWith(request, address);
+    const progress = vi.fn();
+    expect(await serveForwardedSuSessionOp(payload, { fromPid: 1234, progress }))
+      .toEqual({ status: 'ok', result: { content: [{ type: 'text', text: 'owner-result' }] } });
+    expect(dispatch).toHaveBeenCalledWith(request, address, { fromPid: 1234, progress });
     expect(rpc.call).not.toHaveBeenCalled();
   });
 

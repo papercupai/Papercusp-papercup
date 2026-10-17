@@ -51,6 +51,15 @@ export interface McpRequestTraceEvent {
   outcome?: 'success' | 'tool_error' | 'rejected';
   /** HTTP status when the proxy has finished flushing the response; not client receipt. */
   httpStatus?: number;
+  /** Bounded local evidence captured when the proxy observed an incomplete upstream response. */
+  upstreamResponseLifecycle?: {
+    responseComplete: boolean;
+    responseAborted: boolean;
+    responseDestroyed: boolean;
+    socketDestroyed: boolean | null;
+    responseErrorCode: string | null;
+    socketErrorCode: string | null;
+  };
   afterDeadline?: boolean;
   /** Await durations from request entry through the inner-dispatch boundary. */
   preDispatchPhaseTimingsMs?: McpPreDispatchPhaseTimingsMs;

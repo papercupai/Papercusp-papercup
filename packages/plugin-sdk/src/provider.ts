@@ -28,6 +28,10 @@ export const PROVIDER_CAPABILITY_PATTERN = /^[a-z][a-z0-9]*\.[a-z][a-z0-9-]*$/;
 export const PROVIDER_EGRESS_HOST_PATTERN = /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
 export interface ProviderOAuthDescriptor {
+  /** Each connection selects its own HTTPS origin. Endpoints are absolute-path references;
+   * the host binds them to its saved registration, never to a provider-supplied request URL.
+   * The source carries that bound origin as connection-owned config.connectionOrigin. */
+  instance?: true;
   authorizeUrl: string;
   tokenUrl: string;
   scopes: string[];
@@ -36,6 +40,14 @@ export interface ProviderOAuthDescriptor {
    * documents `scope=read,write`).
    */
   scopeSeparator?: ' ' | ',';
+  /** Form/query key for the host-held client id. TikTok uses client_key. */
+  clientIdParameter?: 'client_id' | 'client_key';
+  /** How the host authenticates exchange and refresh at the token endpoint (RFC 6749).
+   * Defaults to client_secret_post. Client credentials always remain host-held. */
+  tokenEndpointAuthMethod?: 'client_secret_post' | 'client_secret_basic';
+  /** Require an owner-supplied User-Agent in the host-held OAuth app registration.
+   * The host sends it on token, identity and API requests; packages cannot override it. */
+  userAgentRequired?: true;
   /** Expiring grants normally require a refresh token. Opt into owner reauthorization
    * for APIs that issue none; the host still expires the grant and blocks the source. */
   refreshPolicy?: 'refresh-token' | 'reauthorize';
@@ -103,8 +115,17 @@ export interface ProviderDescriptor {
   displayName?: string;
   /** Canonical datatypes this provider's `syncPage` produces. */
   datatypes: string[];
+  /** Whether inbound sync is supported. Omitted means true for existing
+   * providers; false declares a write-only package that the host does not poll. */
+  sync?: boolean;
   /** Capability subset `invoke` accepts. */
   capabilities: string[];
+  /** Dated API-contract evidence shipped with this package. This is neither account consent
+   * nor live-account acceptance. Capability declarations alone do not verify a write contract. */
+  verification?: ProviderVerificationDescriptor;
+  /** Declared vendor budgets, with their own dated evidence. These are inputs to
+   * host admission policy, never permission to perform an undeclared capability. */
+  rateBudget?: ProviderRateBudget;
   /** OAuth connection descriptor; omitted for providers that need no account grant. */
   oauth?: ProviderOAuthDescriptor;
   /** Hosts `host.fetch` may reach for this provider. Everything else is refused. */
@@ -156,6 +177,141 @@ export interface ProviderDescriptor {
    * Provider code never sees the credential or the socket.
    */
   ingress?: ProviderIngressDescriptor;
+}
+
+export interface ProviderQuotaBucket {
+  appliesTo: string;
+  perDay: number;
+  unit: 'calls' | 'units';
+  /** Content operations drawing on this non-fungible bucket (e.g. read, reply). */
+  verbs?: string[];
+  notes?: string;
+}
+
+export interface ProviderRateBudget {
+  verifiedAt: string | null;
+  sources: string[];
+  requestsPerMinute?: number;
+  quotaUnitsPerDay?: number;
+  budgetHeaders?: string[];
+  buckets?: Record<string, ProviderQuotaBucket>;
+  dynamicQuota?: {
+    formula: string;
+    driver: string;
+    usageHeader?: string;
+    assumedDailyFloor: number;
+    throttleCodes?: number[];
+    retryExtendsBlock?: boolean;
+  };
+  notes?: string;
+}
+
+function providerRateBudgetIssues(value: unknown): string[] {
+  const prefix = 'provider.rateBudget';
+  const object = (v: unknown): v is Record<string, unknown> => Boolean(v && typeof v === 'object' && !Array.isArray(v));
+  if (!object(value)) return [`${prefix} must be an object`];
+  const issues: string[] = [];
+  const keys = (v: Record<string, unknown>, allowed: string[], path: string) => {
+    for (const key of Object.keys(v)) if (!allowed.includes(key)) issues.push(`${path}.${key} is not supported`);
+  };
+  const positive = (v: unknown, path: string) => {
+    if (typeof v !== 'number' || !Number.isFinite(v) || v <= 0) issues.push(`${path} must be a finite positive number`);
+  };
+  const text = (v: unknown, path: string) => { if (!isNonEmptyString(v)) issues.push(`${path} must be a nonempty string`); };
+  keys(value, ['verifiedAt', 'sources', 'requestsPerMinute', 'quotaUnitsPerDay', 'budgetHeaders', 'buckets', 'dynamicQuota', 'notes'], prefix);
+  issues.push(...providerVerificationIssues({ verifiedAt: value.verifiedAt, sources: value.sources }, []).map((issue) => issue.replace('provider.verification', prefix)));
+  for (const key of ['requestsPerMinute', 'quotaUnitsPerDay']) if (value[key] !== undefined) positive(value[key], `${prefix}.${key}`);
+  if (value.notes !== undefined) text(value.notes, `${prefix}.notes`);
+  if (value.budgetHeaders !== undefined && (!Array.isArray(value.budgetHeaders) || value.budgetHeaders.some((header) => typeof header !== 'string' || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(header)))) issues.push(`${prefix}.budgetHeaders must contain HTTP header names`);
+  if (value.buckets !== undefined) {
+    if (!object(value.buckets) || Object.keys(value.buckets).length === 0) issues.push(`${prefix}.buckets must be a nonempty object`);
+    else for (const [name, bucket] of Object.entries(value.buckets)) {
+      const path = `${prefix}.buckets.${name}`;
+      if (!isNonEmptyString(name) || !object(bucket)) { issues.push(`${path} must be a named quota bucket`); continue; }
+      keys(bucket, ['appliesTo', 'perDay', 'unit', 'verbs', 'notes'], path);
+      text(bucket.appliesTo, `${path}.appliesTo`);
+      positive(bucket.perDay, `${path}.perDay`);
+      if (!['calls', 'units'].includes(String(bucket.unit))) issues.push(`${path}.unit must be calls or units`);
+      if (bucket.verbs !== undefined && (!Array.isArray(bucket.verbs) || bucket.verbs.some((verb) => !isNonEmptyString(verb)) || new Set(bucket.verbs).size !== bucket.verbs.length)) issues.push(`${path}.verbs must contain distinct nonempty operations`);
+      if (bucket.notes !== undefined) text(bucket.notes, `${path}.notes`);
+    }
+  }
+  if (value.dynamicQuota !== undefined) {
+    const path = `${prefix}.dynamicQuota`;
+    const dynamic = value.dynamicQuota;
+    if (!object(dynamic)) issues.push(`${path} must be an object`);
+    else {
+      keys(dynamic, ['formula', 'driver', 'usageHeader', 'assumedDailyFloor', 'throttleCodes', 'retryExtendsBlock'], path);
+      text(dynamic.formula, `${path}.formula`);
+      text(dynamic.driver, `${path}.driver`);
+      positive(dynamic.assumedDailyFloor, `${path}.assumedDailyFloor`);
+      if (dynamic.usageHeader !== undefined && (typeof dynamic.usageHeader !== 'string' || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(dynamic.usageHeader))) issues.push(`${path}.usageHeader must be an HTTP header name`);
+      if (dynamic.retryExtendsBlock !== undefined && typeof dynamic.retryExtendsBlock !== 'boolean') issues.push(`${path}.retryExtendsBlock must be a boolean`);
+      if (dynamic.throttleCodes !== undefined && (!Array.isArray(dynamic.throttleCodes) || dynamic.throttleCodes.some((code) => !Number.isSafeInteger(code) || code < 0))) issues.push(`${path}.throttleCodes must contain nonnegative integer codes`);
+    }
+  }
+  return issues;
+}
+
+export interface ProviderVerificationDescriptor {
+  verifiedAt: string | null;
+  sources: string[];
+  /** Only declared capabilities may be attested. Missing/null means unverified. */
+  capabilities?: Record<string, string | null>;
+  /** A contract-level wall; connection credentials and consent remain host-owned. */
+  blockedOn?: string;
+}
+
+function isVerificationDate(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function providerVerificationIssues(value: unknown, capabilities: readonly string[]): string[] {
+  const prefix = 'provider.verification';
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [`${prefix} must be an object`];
+  const v = value as Record<string, unknown>;
+  const issues: string[] = [];
+  for (const key of Object.keys(v)) {
+    if (!['verifiedAt', 'sources', 'capabilities', 'blockedOn'].includes(key)) issues.push(`${prefix}.${key} is not supported`);
+  }
+  if (v.verifiedAt !== null && !isVerificationDate(v.verifiedAt)) issues.push(`${prefix}.verifiedAt must be an ISO calendar date or null`);
+  if (!Array.isArray(v.sources)) issues.push(`${prefix}.sources must be a list of HTTPS source URLs`);
+  else {
+    if (v.verifiedAt !== null && v.sources.length === 0) issues.push(`${prefix}.sources must cite the verified contract`);
+    for (const source of v.sources) {
+      let valid = false;
+      try {
+        const url = new URL(source);
+        valid = typeof source === 'string' && url.protocol === 'https:' && !url.username && !url.password;
+      } catch { /* invalid source is reported below */ }
+      if (!valid) issues.push(`${prefix}.sources must contain only HTTPS source URLs without credentials`);
+    }
+  }
+  if (v.blockedOn !== undefined && !isNonEmptyString(v.blockedOn)) issues.push(`${prefix}.blockedOn must explain the contract wall`);
+  if (v.capabilities !== undefined) {
+    if (!v.capabilities || typeof v.capabilities !== 'object' || Array.isArray(v.capabilities)) issues.push(`${prefix}.capabilities must map declared capabilities to dates or null`);
+    else for (const [capability, date] of Object.entries(v.capabilities)) {
+      if (!capabilities.includes(capability)) issues.push(`${prefix}.capabilities.${capability} is not a declared capability`);
+      if (date !== null && !isVerificationDate(date)) issues.push(`${prefix}.capabilities.${capability} must be an ISO calendar date or null`);
+      if (date !== null && !isVerificationDate(v.verifiedAt)) issues.push(`${prefix}.capabilities.${capability} requires a verified contract`);
+    }
+  }
+  return issues;
+}
+
+/** Fail closed for absent or malformed contract evidence, even before registration. */
+export function providerCapabilityVerificationIssue(
+  descriptor: ProviderDescriptor,
+  capability?: string,
+): 'capability-unsupported' | 'unverified' | 'owner-blocked' | 'capability-unverified' | null {
+  if (capability !== undefined && !descriptor.capabilities.includes(capability)) return 'capability-unsupported';
+  const verification = descriptor.verification;
+  if (!verification || providerVerificationIssues(verification, descriptor.capabilities).length || !verification.verifiedAt) return 'unverified';
+  if (verification.blockedOn) return 'owner-blocked';
+  if (capability !== undefined && !verification.capabilities?.[capability]) return 'capability-unverified';
+  return null;
 }
 
 /** Inbound channels a provider declares (P-003). */
@@ -241,8 +397,26 @@ export const PROVIDER_INGRESS_PATH_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,63}(?:\.[
 export interface ProviderSetupDescriptor {
   /** Secrets the owner pastes (e.g. a bot token). Shown as masked fields; never readable back. */
   credentials?: ProviderCredentialField[];
+  /** Host-held session obtained from the pasted credentials; never exposed through host.fetch. */
+  session?: ProviderCredentialSessionDescriptor;
   /** The vendor app the owner creates first, when the vendor needs one (P-002). */
   appRegistration?: ProviderAppRegistration;
+}
+
+/** JSON session login and bearer refresh, using the existing protected credential store. */
+export interface ProviderCredentialSessionDescriptor {
+  url: string;
+  refreshUrl: string;
+  /** JSON request parameter -> setup.credentials key. No literal values. */
+  parameters: Record<string, string>;
+  hosts: string[];
+  accessTokenField: string;
+  refreshTokenField: string;
+  /** Optional boolean response field. Explicit false refuses an inactive account. */
+  activeField?: string;
+  /** Conservative upper bound; a JWT's earlier exp is also respected. */
+  maxAgeSeconds: number;
+  identity: { idField: string; displayNameField?: string; /** Pasted public account identifier, excluded from secret redaction. */ credentialKey?: string };
 }
 
 /**
@@ -253,7 +427,8 @@ export interface ProviderSetupDescriptor {
  */
 export interface ProviderAppRegistration {
   /**
-   * https page in the vendor's console where the app is created. May contain the placeholder
+   * HTTPS page in the vendor's console where the app is created. Instance OAuth descriptors
+   * may use an absolute-path reference, bound by the host to the selected instance. May contain the placeholder
    * {@link PROVIDER_APP_DEFINITION_PLACEHOLDER}, which the host replaces with the URL-encoded JSON
    * of `definition` (e.g. `https://api.slack.com/apps?new_app=1&manifest_json={definition}`).
    */
@@ -334,6 +509,9 @@ export interface ProviderCredentialField {
    * only host-held ingress uses.
    */
   hosts?: string[];
+  /** Host-owned authentication for these hosts; omitted preserves Authorization: Bearer.
+   * Only authentication headers are accepted, never arbitrary HTTP header injection. */
+  auth?: { header: 'authorization' | 'api-key' | 'x-api-key'; scheme: 'bearer' | 'raw' };
   /**
    * Each person stores their own value (e.g. a Slack user token), instead of the owner storing one
    * for the source (D-026). The host injects it only into `host.fetch` calls made on that person's
@@ -988,6 +1166,62 @@ export function providerEgressAllows(egressHosts: readonly string[], host: strin
  * Semantic validation of a provider descriptor. Returns a list of issues (empty = valid).
  * The JSON schema enforces shape; this enforces identity, version and value rules.
  */
+export function normalizeProviderInstanceOrigin(value: unknown): string | null {
+  if (typeof value !== 'string' || value !== value.trim() || /[\\\s]/.test(value)) return null;
+  let url: URL;
+  try { url = new URL(value); } catch { return null; }
+  const host = url.hostname;
+  if (url.protocol !== 'https:' || url.username || url.password || url.port || url.pathname !== '/' || url.search || url.hash ||
+    host.length > 253 || !PROVIDER_EGRESS_HOST_PATTERN.test(host) || host.startsWith('*.') ||
+    /(?:^|\.)(?:localhost|local|internal|test|invalid|example|onion)$/.test(host)) return null;
+  return url.origin;
+}
+
+/** An instance endpoint cannot name a second origin, scheme or fragment. */
+export function providerInstanceEndpointIssue(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || /[\\\s#]/.test(value)) {
+    return 'must be an absolute-path reference without a host, whitespace, backslash or fragment';
+  }
+  return null;
+}
+
+/** A descriptor bound by the host to one saved instance registration. The original stays pure data. */
+export function bindProviderInstance(descriptor: ProviderDescriptor, value: unknown): ProviderDescriptor {
+  if (!descriptor.oauth?.instance) return descriptor;
+  const origin = normalizeProviderInstanceOrigin(value);
+  if (!origin) throw new Error('provider_instance_origin_invalid');
+  const { instance: _instance, ...oauth } = descriptor.oauth;
+  const endpoint = (path: string): string => {
+    if (providerInstanceEndpointIssue(path)) throw new Error('provider_instance_endpoint_invalid');
+    const url = new URL(path, origin);
+    if (url.origin !== origin) throw new Error('provider_instance_endpoint_invalid');
+    return url.href;
+  };
+  if (descriptor.egressHosts.length || oauth.resourceToken) throw new Error('provider_instance_static_egress_refused');
+  return {
+    ...descriptor,
+    egressHosts: [new URL(origin).hostname],
+    ...(descriptor.setup?.appRegistration?.createUrl.startsWith('/') ? { setup: { ...descriptor.setup,
+      appRegistration: { ...descriptor.setup.appRegistration, createUrl: endpoint(descriptor.setup.appRegistration.createUrl) },
+    } } : {}),
+    oauth: { ...oauth, authorizeUrl: endpoint(oauth.authorizeUrl), tokenUrl: endpoint(oauth.tokenUrl),
+      ...(oauth.identity ? { identity: { ...oauth.identity, url: endpoint(oauth.identity.url) } } : {}),
+    },
+  };
+}
+
+/** The source's persisted connection origin is the whole egress budget for an instance grant. */
+export function providerSourceEgressAllows(
+  descriptor: Pick<ProviderDescriptor, 'oauth' | 'egressHosts'>,
+  url: URL,
+  config?: Record<string, unknown>,
+): boolean {
+  if (url.protocol !== 'https:' || url.username || url.password) return false;
+  if (!descriptor.oauth?.instance) return providerEgressAllows(descriptor.egressHosts, url.hostname);
+  const origin = normalizeProviderInstanceOrigin(config?.connectionOrigin);
+  return origin !== null && url.origin === origin;
+}
+
 export function validateProviderDescriptor(descriptor: unknown): string[] {
   const issues: string[] = [];
   if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
@@ -1010,6 +1244,7 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     }
   }
   for (const dup of duplicates(datatypes.filter(isNonEmptyString))) issues.push(`provider.datatypes repeats "${dup}"`);
+  if (d.sync !== undefined && typeof d.sync !== 'boolean') issues.push('provider.sync must be a boolean');
   const capabilities = Array.isArray(d.capabilities) ? d.capabilities : [];
   for (const capability of capabilities) {
     if (!isNonEmptyString(capability) || !PROVIDER_CAPABILITY_PATTERN.test(capability)) {
@@ -1017,8 +1252,11 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     }
   }
   for (const dup of duplicates(capabilities.filter(isNonEmptyString))) issues.push(`provider.capabilities repeats "${dup}"`);
+  if (d.verification !== undefined) issues.push(...providerVerificationIssues(d.verification, capabilities));
+  if (d.rateBudget !== undefined) issues.push(...providerRateBudgetIssues(d.rateBudget));
   const egress = Array.isArray(d.egressHosts) ? d.egressHosts : [];
-  if (egress.length === 0) issues.push('provider.egressHosts must declare at least one host');
+  if (egress.length === 0 && d.oauth?.instance !== true) issues.push('provider.egressHosts must declare at least one host');
+  if (d.oauth?.instance === true && egress.length !== 0) issues.push('provider.egressHosts must be empty for an instance-scoped OAuth grant');
   for (const host of egress) {
     if (!isNonEmptyString(host) || !PROVIDER_EGRESS_HOST_PATTERN.test(host.toLowerCase())) {
       issues.push(`provider.egressHosts entry "${String(host)}" must be a hostname or *.domain`);
@@ -1026,13 +1264,25 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
   }
   if (d.oauth !== undefined) {
     const oauth = d.oauth as Partial<ProviderOAuthDescriptor>;
-    if (!isHttpsUrl(oauth.authorizeUrl)) issues.push('provider.oauth.authorizeUrl must be an https URL');
-    if (!isHttpsUrl(oauth.tokenUrl)) issues.push('provider.oauth.tokenUrl must be an https URL');
+    if (oauth.userAgentRequired !== undefined && oauth.userAgentRequired !== true) issues.push('provider.oauth.userAgentRequired must be true when present');
+    if (oauth.instance !== undefined && oauth.instance !== true) issues.push('provider.oauth.instance must be true when present');
+    const endpointIssue = (url: unknown) => oauth.instance === true ? providerInstanceEndpointIssue(url) : isHttpsUrl(url) ? null : 'must be an https URL';
+    for (const key of ['authorizeUrl', 'tokenUrl'] as const) {
+      const issue = endpointIssue(oauth[key]);
+      if (issue) issues.push(`provider.oauth.${key} ${issue}`);
+    }
+    if (oauth.instance && oauth.resourceToken) issues.push('provider.oauth.resourceToken is not supported with instance-scoped OAuth');
     if (!Array.isArray(oauth.scopes) || !oauth.scopes.every(isNonEmptyString)) {
       issues.push('provider.oauth.scopes must be a list of scope strings');
     }
     if (oauth.scopeSeparator !== undefined && oauth.scopeSeparator !== ' ' && oauth.scopeSeparator !== ',') {
       issues.push('provider.oauth.scopeSeparator must be " " or ","');
+    }
+    if (oauth.clientIdParameter !== undefined && oauth.clientIdParameter !== 'client_id' && oauth.clientIdParameter !== 'client_key') {
+      issues.push('provider.oauth.clientIdParameter must be client_id or client_key');
+    }
+    if (oauth.tokenEndpointAuthMethod !== undefined && !['client_secret_post', 'client_secret_basic'].includes(oauth.tokenEndpointAuthMethod)) {
+      issues.push('provider.oauth.tokenEndpointAuthMethod must be client_secret_post or client_secret_basic');
     }
     if (oauth.refreshPolicy !== undefined && oauth.refreshPolicy !== 'refresh-token' && oauth.refreshPolicy !== 'reauthorize') {
       issues.push('provider.oauth.refreshPolicy must be refresh-token or reauthorize');
@@ -1042,7 +1292,8 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     }
     if (oauth.identity !== undefined) {
       const identity = oauth.identity as Partial<ProviderOAuthIdentity>;
-      if (!isHttpsUrl(identity.url)) issues.push('provider.oauth.identity.url must be an https URL');
+      const issue = endpointIssue(identity.url);
+      if (issue) issues.push(`provider.oauth.identity.url ${issue}`);
       if (!isNonEmptyString(identity.idField)) issues.push('provider.oauth.identity.idField must name the account id field');
       if (identity.method !== undefined && identity.method !== 'GET' && identity.method !== 'POST') {
         issues.push('provider.oauth.identity.method must be GET or POST');
@@ -1151,7 +1402,7 @@ export function validateProviderDescriptor(descriptor: unknown): string[] {
     const serviceHosts = (Array.isArray(d.serviceCredentials) ? d.serviceCredentials : []).flatMap((c) =>
       Array.isArray(c?.hosts) ? c.hosts.filter(isNonEmptyString) : [],
     );
-    issues.push(...setupDescriptorIssues(d.setup, egress.filter(isNonEmptyString), serviceHosts));
+    issues.push(...setupDescriptorIssues(d.setup, egress.filter(isNonEmptyString), serviceHosts, d.oauth?.instance === true));
   }
   if (d.ingress !== undefined) {
     const fields = (Array.isArray(d.setup?.credentials) ? d.setup.credentials : [])
@@ -1294,16 +1545,74 @@ function ingressDescriptorIssues(
   return issues;
 }
 
-function setupDescriptorIssues(setup: unknown, egress: string[], serviceHosts: string[]): string[] {
+function setupDescriptorIssues(setup: unknown, egress: string[], serviceHosts: string[], instance = false): string[] {
   if (!setup || typeof setup !== 'object' || Array.isArray(setup)) return ['provider.setup must be an object'];
   const s = setup as Partial<ProviderSetupDescriptor>;
   return [
-    ...(s.appRegistration === undefined ? [] : appRegistrationIssues(s.appRegistration)),
+    ...(s.appRegistration === undefined ? [] : appRegistrationIssues(s.appRegistration, instance)),
     ...(s.credentials === undefined ? [] : credentialFieldIssues(s.credentials, egress, serviceHosts)),
+    ...(s.session === undefined ? [] : credentialSessionIssues(s.session, s.credentials, egress, serviceHosts)),
   ];
 }
 
-function appRegistrationIssues(registration: unknown): string[] {
+function credentialSessionIssues(raw: unknown, fields: unknown, egress: string[], serviceHosts: string[]): string[] {
+  const at = 'provider.setup.session';
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [`${at} must be an object`];
+  const s = raw as Partial<ProviderCredentialSessionDescriptor>;
+  const issues: string[] = [];
+  const path = (v: unknown): v is string => typeof v === 'string' && PROVIDER_INGRESS_PATH_PATTERN.test(v) &&
+    !v.split('.').some((part) => ['__proto__', 'prototype', 'constructor'].includes(part));
+  const credentials = (Array.isArray(fields) ? fields : []).filter((f): f is ProviderCredentialField => !!f && typeof f === 'object');
+  const hosts = Array.isArray(s.hosts) ? s.hosts : [];
+  if (!hosts.length) issues.push(`${at}.hosts must list at least one host`);
+  for (const host of hosts) {
+    if (typeof host !== 'string' || host.startsWith('*.') || !PROVIDER_EGRESS_HOST_PATTERN.test(host) || !providerEgressAllows(egress, host)) {
+      issues.push(`${at}.hosts must be exact hosts in provider.egressHosts`);
+    }
+    if (serviceHosts.includes(host) || credentials.some((f) => f.hosts?.includes(host))) {
+      issues.push(`${at}.hosts cannot overlap another credential`);
+    }
+  }
+  for (const key of ['url', 'refreshUrl'] as const) {
+    if (!isHttpsUrl(s[key])) { issues.push(`${at}.${key} must be an https URL`); continue; }
+    const url = new URL(s[key]!);
+    if (url.username || url.password || url.port || url.search || url.hash || !hosts.includes(url.hostname)) {
+      issues.push(`${at}.${key} must be a credential-free endpoint on a session host`);
+    }
+  }
+  if (isHttpsUrl(s.url) && isHttpsUrl(s.refreshUrl) && new URL(s.url!).origin !== new URL(s.refreshUrl!).origin) {
+    issues.push(`${at}.refreshUrl must use the login origin`);
+  }
+  const parameters = s.parameters;
+  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters) || !Object.keys(parameters).length) {
+    issues.push(`${at}.parameters must map request parameters to credential keys`);
+  } else for (const [parameter, key] of Object.entries(parameters)) {
+    if (!path(parameter) || parameter.includes('.') || !credentials.some((f) => f.key === key && !f.perPrincipal)) {
+      issues.push(`${at}.parameters must reference declared source credential keys`);
+    }
+  }
+  for (const key of ['accessTokenField', 'refreshTokenField'] as const) {
+    if (!path(s[key])) issues.push(`${at}.${key} must be a safe JSON field path`);
+  }
+  if (s.activeField !== undefined && !path(s.activeField)) issues.push(`${at}.activeField must be a safe JSON field path`);
+  if (s.accessTokenField === s.refreshTokenField) issues.push(`${at} access and refresh fields must differ`);
+  if (!Number.isInteger(s.maxAgeSeconds) || s.maxAgeSeconds! < 60 || s.maxAgeSeconds! > 86400) {
+    issues.push(`${at}.maxAgeSeconds must be an integer from 60 to 86400`);
+  }
+  if (!s.identity || !path(s.identity.idField) || (s.identity.displayNameField !== undefined && !path(s.identity.displayNameField))) {
+    issues.push(`${at}.identity must name safe public identity fields`);
+  }
+  const secretPaths = [s.accessTokenField, s.refreshTokenField];
+  if (s.identity?.credentialKey !== undefined && !credentials.some((f) => f.key === s.identity!.credentialKey && !f.perPrincipal)) {
+    issues.push(`${at}.identity.credentialKey must name a declared source credential`);
+  }
+  if (secretPaths.includes(s.identity?.idField) || (s.identity?.displayNameField && secretPaths.includes(s.identity.displayNameField))) {
+    issues.push(`${at}.identity cannot expose a token field`);
+  }
+  return issues;
+}
+
+function appRegistrationIssues(registration: unknown, instance = false): string[] {
   const at = 'provider.setup.appRegistration';
   if (!registration || typeof registration !== 'object' || Array.isArray(registration)) return [`${at} must be an object`];
   const r = registration as Partial<ProviderAppRegistration> & Record<string, unknown>;
@@ -1312,7 +1621,8 @@ function appRegistrationIssues(registration: unknown): string[] {
     if (forbidden in r) issues.push(`${at}.${forbidden} is not allowed: a descriptor never carries a credential value`);
   }
   const createUrl = r.createUrl;
-  if (typeof createUrl !== 'string' || !isHttpsUrl(createUrl)) {
+  const relative = instance && typeof createUrl === 'string' && createUrl.startsWith('/') && providerInstanceEndpointIssue(createUrl) === null;
+  if (typeof createUrl !== 'string' || (!isHttpsUrl(createUrl) && !relative)) {
     issues.push(`${at}.createUrl must be an https URL`);
   } else {
     const placeholders: string[] = createUrl.match(/\{[^}]*\}/g) ?? [];
@@ -1390,6 +1700,16 @@ function credentialFieldIssues(credentials: unknown, egress: string[], serviceHo
     if (field.helpUrl !== undefined && !isHttpsUrl(field.helpUrl)) issues.push(`${at}.helpUrl must be an https URL`);
     if (field.perPrincipal !== undefined && typeof field.perPrincipal !== 'boolean') {
       issues.push(`${at}.perPrincipal must be true or false`);
+    }
+    if (field.auth !== undefined) {
+      const auth = field.auth;
+      if (!auth || typeof auth !== 'object' || Array.isArray(auth) ||
+        !['authorization', 'api-key', 'x-api-key'].includes(auth.header) ||
+        !['bearer', 'raw'].includes(auth.scheme) ||
+        Object.keys(auth).some((key) => !['header', 'scheme'].includes(key))) {
+        issues.push(`${at}.auth must declare an authentication header and bearer or raw scheme`);
+      }
+      if (!Array.isArray(field.hosts) || field.hosts.length === 0) issues.push(`${at}.auth requires hosts`);
     }
     const perPrincipal = field.perPrincipal === true;
     if (perPrincipal && field.hosts === undefined) {

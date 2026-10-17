@@ -82,11 +82,15 @@ function callFrom(
   from: FixtureWorker,
   targetPid: number,
   payload: unknown,
-  opts: { kind?: string; timeoutMs?: number } = {},
+  opts: { kind?: string; timeoutMs?: number; onProgress?: (progress: unknown) => void } = {},
 ): Promise<OwnerRpcOutcome> {
   const seq = ++callSeq;
   return new Promise((resolve) => {
     const onMessage = (m: any) => {
+      if (m?.type === 'fixture:progress' && m.seq === seq) {
+        opts.onProgress?.(m.progress);
+        return;
+      }
       if (m?.type === 'fixture:result' && m.seq === seq) {
         from.child.off('message', onMessage);
         resolve(m.out);
@@ -158,6 +162,15 @@ describe('cluster owner rpc across real worker processes', () => {
       ok: false,
       code: 'timeout',
     });
+  });
+
+  it('relays progress notifications from the owner before returning the terminal result', async () => {
+    const progress = [{ method: 'notifications/progress', params: { progressToken: 'call-1', progress: 1 } }];
+    const received: unknown[] = [];
+    const out = await callFrom(b, a.pid, { op: 'progress', progress }, { timeoutMs: 5_000, onProgress: item => received.push(item) });
+    expect(out).toMatchObject({ ok: true, result: { servedBy: a.pid } });
+    expect((out as { ok: true; result: { progress: unknown[] } }).result.progress).toEqual(progress);
+    expect(received).toEqual(progress);
   });
 
   it('distinguishes an absent owner mapping from a recorded owner with no live worker', async () => {

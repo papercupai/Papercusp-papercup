@@ -77,6 +77,7 @@ beforeEach(async () => {
   mocks.getUser.mockResolvedValue({ id: 'user-1' });
   mocks.invalidate.mockResolvedValue(undefined);
   mocks.descriptors = [
+    { id: 'fixture-agent', displayName: 'Fixture Agent', oauth: { ...oauth, userAgentRequired: true } },
     { id: 'fixture-tickets', displayName: 'Fixture Tickets', oauth: { ...oauth, clientRegistrationRef: 'fixture-app' } },
     { id: 'fixture-pkce', displayName: 'Fixture PKCE', oauth: { ...oauth, pkce: true } },
     { id: 'fixture-chat', displayName: 'Fixture Chat', setup: { credentials: [{ key: 'botToken', label: 'Bot token' }] } },
@@ -124,6 +125,20 @@ describe('provider OAuth client routes', () => {
     expect(JSON.parse(text)).toMatchObject({ ok: false, error: 'invalid-client-id' });
     await expect(fs.stat(join(home, 'oauth-apps.json'))).rejects.toMatchObject({ code: 'ENOENT' });
     expect(mocks.invalidate).not.toHaveBeenCalled();
+  });
+
+  it('requires app identification when declared, refuses unsafe text and returns the saved public value', async () => {
+    const base = { clientId: 'fixture-client', clientSecret: SECRET };
+    expect(await (await put('fixture-agent', base)).json()).toMatchObject({ error: 'user-agent-required' });
+    const refused = await put('fixture-agent', { ...base, userAgent: 'bad\r\ninjected: value' });
+    expect(refused.status).toBe(422);
+    expect(await refused.text()).not.toContain('injected');
+    const userAgent = 'desktop:fixture:1.0 (by /u/fixture-contact)';
+    const res = await put('fixture-agent', { ...base, userAgent });
+    expect(res.status).toBe(200);
+    expect((await res.json()).oauthClient.userAgent).toBe(userAgent);
+    expect((await (await get('fixture-agent')).json()).oauthClient.userAgent).toBe(userAgent);
+    expect((await registrations())['fixture-agent'].userAgent).toBe(userAgent);
   });
 
   it('PUT needs a secret unless the provider uses PKCE', async () => {

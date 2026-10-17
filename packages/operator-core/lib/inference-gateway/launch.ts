@@ -255,14 +255,15 @@ function defaultObservePool(_accountId: string, ws: string | undefined, log: Gat
 function makeWindowProjector(
   ws: string | undefined,
   log: (level: 'info' | 'warn' | 'error', msg: string) => void,
-): (headers: Record<string, string | undefined>, status: number, model: string, accountId: string) => void {
+): (headers: Record<string, string | undefined>, _status: number, model: string, accountId: string) => void {
   const WRITE_MIN_MS = 30_000;
   const last = new Map<string, { util: number; resetAt: number; util7d: number; resetAt7d: number; at: number; usageCreditsAvailable?: boolean }>();
-  return (headers, status, model, accountId) => {
+  return (headers, _status, model, accountId) => {
     const parsedCredits = parseCodexRateLimitHeaders(headers);
     const observedCredits = parsedCredits.usageCreditsAvailable;
     const creditBalance = parsedCredits.creditBalance;
-    const usageCreditsAvailable = status === 429 ? false : observedCredits;
+    // HTTP status is transport metadata; only explicit Codex credit headers determine availability.
+    const usageCreditsAvailable = observedCredits;
     let w = parseUnifiedWindow(headers);
     let w7 = parseUnified7dWindow(headers);
     if (

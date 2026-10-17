@@ -24,7 +24,70 @@
  * want the automatic signal call THIS; consumers that want the declared one read presence.
  */
 
-import { ensureBootstrap, getTxPool, readQueue } from './su-lock-store';
+import { ensureBootstrap, getTxPool, readQueue, type ReadQueuePhaseEvent } from './su-lock-store';
+
+export type LiveLockPathPhase = 'ensureBootstrap' | 'pool-lookup' | ReadQueuePhaseEvent['phase'];
+
+export interface LiveLockPathPhaseEvent {
+  phase: LiveLockPathPhase;
+  state: 'start' | 'end';
+  durationMs?: number;
+}
+
+export interface LiveLockPathReadOptions {
+  /** Optional bounded phase diagnostics for callers with an outer timeout. */
+  onPhase?: (event: LiveLockPathPhaseEvent) => void;
+}
+
+function reportLiveLockPathPhase(
+  observer: LiveLockPathReadOptions['onPhase'],
+  event: LiveLockPathPhaseEvent,
+): void {
+  if (!observer) return;
+  try {
+    observer(event);
+  } catch {
+    // Diagnostics must not change lock-read behavior.
+  }
+}
+
+async function observeAsyncPhase<T>(
+  observer: LiveLockPathReadOptions['onPhase'],
+  phase: LiveLockPathPhase,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (!observer) return operation();
+  const startedAt = Date.now();
+  reportLiveLockPathPhase(observer, { phase, state: 'start' });
+  try {
+    return await operation();
+  } finally {
+    reportLiveLockPathPhase(observer, {
+      phase,
+      state: 'end',
+      durationMs: Math.max(0, Date.now() - startedAt),
+    });
+  }
+}
+
+function observeSyncPhase<T>(
+  observer: LiveLockPathReadOptions['onPhase'],
+  phase: LiveLockPathPhase,
+  operation: () => T,
+): T {
+  if (!observer) return operation();
+  const startedAt = Date.now();
+  reportLiveLockPathPhase(observer, { phase, state: 'start' });
+  try {
+    return operation();
+  } finally {
+    reportLiveLockPathPhase(observer, {
+      phase,
+      state: 'end',
+      durationMs: Math.max(0, Date.now() - startedAt),
+    });
+  }
+}
 
 export interface LiveLockHolding {
   path: string;
@@ -51,11 +114,14 @@ export interface LiveLockHolding {
  * stage a peer's in-flight (including temporarily truncated) file. Those
  * callers use this strict seam and must fail closed when it throws.
  */
-export async function liveLockHoldingsStrict(): Promise<LiveLockHolding[]> {
-  await ensureBootstrap();
+export async function liveLockHoldingsStrict(options: LiveLockPathReadOptions = {}): Promise<LiveLockHolding[]> {
+  await observeAsyncPhase(options.onPhase, 'ensureBootstrap', () => ensureBootstrap());
   // readQueue already filters holders to expires_ts > clock_timestamp(), so the set is
   // live by construction. No `paths`/`owner` filter ⇒ the whole active set.
-  const queue = await readQueue(getTxPool(), { coordinationDomain: null });
+  const pool = observeSyncPhase(options.onPhase, 'pool-lookup', () => getTxPool());
+  const queue = options.onPhase
+    ? await readQueue(pool, { coordinationDomain: null }, { onPhase: options.onPhase })
+    : await readQueue(pool, { coordinationDomain: null });
   return queue.active_locks.map((l) => ({
     path: l.path,
     owner: l.owner,
@@ -80,17 +146,19 @@ export async function liveLockHoldingsStrict(): Promise<LiveLockHolding[]> {
  * Fail-soft: any error (locks unconfigured, side-DB unreachable) returns [] so the caller
  * degrades to exactly its pre-existing behaviour rather than breaking.
  */
-export async function liveLockHoldings(): Promise<LiveLockHolding[]> {
+export async function liveLockHoldings(options: LiveLockPathReadOptions = {}): Promise<LiveLockHolding[]> {
   try {
-    return await liveLockHoldingsStrict();
+    return await liveLockHoldingsStrict(options);
   } catch {
     return [];
   }
 }
 
 /** The distinct held paths, optionally excluding one agent's own holdings. */
-export async function liveLockedPaths(opts: { excludeOwner?: string } = {}): Promise<string[]> {
-  const holdings = await liveLockHoldings();
+export async function liveLockedPaths(
+  opts: { excludeOwner?: string; onPhase?: LiveLockPathReadOptions['onPhase'] } = {},
+): Promise<string[]> {
+  const holdings = await liveLockHoldings({ onPhase: opts.onPhase });
   const seen = new Set<string>();
   for (const h of holdings) {
     if (opts.excludeOwner && h.owner === opts.excludeOwner) continue;

@@ -134,6 +134,7 @@ describe('isCanonicalClosureGateCall', () => {
     expect(isCanonicalClosureGateCall({ current: [] })).toBe(true);
     expect(isCanonicalClosureGateCall({ force: { reason: 'x' } })).toBe(false);
     expect(isCanonicalClosureGateCall({ gradingRecruitment: true })).toBe(false);
+    expect(isCanonicalClosureGateCall({ pendingDeliveryBarKeys: ['R-15'] })).toBe(false);
     expect(isCanonicalClosureGateCall({ current: [{} as never] })).toBe(false);
   });
 });

@@ -1,7 +1,7 @@
 /** Offline native account/read contract: no real credentials or model calls. */
 import { spawn, execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { codexGatewayConfigToml, codexManagedFeaturesToml } from '@papercusp/orchestrator/codex-gateway-config';
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { isCodexWorkspaceDiscoveryTimeout } from './psu-launch-log.mjs';
+import { codexSessionFrameObserved } from '../../../apps/operator/scripts/psu-pty-host.mjs';
 
 // Use the maintained per-user install precedence. The test worker's PATH can
 // prefer a broken system wrapper over the Codex PSU actually launches.
@@ -90,6 +91,45 @@ async function readNativeAccount(home: string): Promise<{ result?: unknown; erro
 }
 
 describe('native gateway account bootstrap', () => {
+  it.runIf(Boolean(codex) && process.platform === 'linux').each([400, 200])(
+    'keeps a fresh TUI alive without a pre-submission rollout after local catalog status %s', async status => {
+      const home = mkdtempSync(join(tmpdir(), 'codex-native-catalog-'));
+      const requests: string[] = [];
+      const server = createServer((req, res) => {
+        requests.push(req.url ?? '');
+        res.writeHead(req.url?.includes('/models') ? status : 400, { 'content-type': 'application/json' });
+        res.end(status === 200 && req.url?.includes('/models') ? '{"models":[]}'
+          : '{"error":{"type":"invalid_request_error","message":"Private no-forwarding fixture."}}');
+      });
+      await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+      const baseURL = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+      const gateway = codexGatewayConfigToml(null, { gateway: { baseURL, token: 'a'.repeat(64) } });
+      const INVALID_ACCESS_TOKEN_FOR_TEST = 'never-emit-me';
+      writeFileSync(join(home, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt',
+        tokens: { access_token: INVALID_ACCESS_TOKEN_FOR_TEST, account_id: 'private-current-su' } }));
+      writeFileSync(join(home, 'config.toml'), ['model = "gpt-6-luna"', ...gateway.root,
+        ...codexManagedFeaturesToml({ headless: true }), ...gateway.tables].join('\n'));
+      try {
+        const result = await readNativeTui(home, 10_000);
+        const sessions = (() => { try { return readdirSync(join(home, 'sessions'), { recursive: true }); } catch { return []; } })();
+        const diagnostic = JSON.stringify({ status, requests, sessions, ...result });
+        console.info('PRIVATE_NATIVE_CATALOG_PROBE ' + diagnostic);
+        expect(requests.some(path => path.includes('/models')), diagnostic).toBe(true);
+        expect(requests.some(path => path.includes('/responses')), diagnostic).toBe(false);
+        // A fresh Codex thread creates its rollout only after the first prompt.
+        // Both catalog outcomes must leave it alive: waiting for this rollout
+        // before submitting kickoff is the launcher deadlock this guards.
+        expect(result.exitedBeforeBudget, diagnostic).toBe(false);
+        expect(sessions.some(path => String(path).endsWith('.jsonl')), diagnostic).toBe(false);
+        expect(codexSessionFrameObserved(result.output, { dims: { cols: 120, rows: 30 } }),
+          'The maintained launcher must recognize the real configured composer: ' + diagnostic).toBe(true);
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>(done => server.close(() => done()));
+        rmSync(home, { recursive: true, force: true });
+      }
+    }, 15_000);
+
   it.runIf(Boolean(codex) && process.platform === 'linux')('boots the native TUI without the workspace endpoint that reproduces the exact default-auth timeout', async () => {
     const home = mkdtempSync(join(tmpdir(), 'codex-native-tui-account-'));
     const controlHome = mkdtempSync(join(tmpdir(), 'codex-native-tui-control-'));

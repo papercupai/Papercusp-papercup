@@ -9,12 +9,13 @@
  * advertised. Rules are a reviewed kind — every publish lands PENDING.
  */
 import { z } from 'zod';
+import { withSubmissionReceipt } from '../../cupboard/submission-receipt';
 import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 /** Canonical `{ data }` envelope — the framework owns wire encoding (auto-TOON on the MCP transport). */
-const ok = (payload: Record<string, unknown>) => ({ data: payload });
+const ok = (payload: Record<string, unknown>) => ({ data: withSubmissionReceipt(payload) });
 
 export default defineTool({
   name: 'cupboard:publish-rule',
@@ -34,6 +35,9 @@ export default defineTool({
   },
   crossWorkspace: true,
   args: z.object({
+    source: z.enum(['package', 'local']).default('package').describe('local exports a Postgres-authored rules:create row; package keeps the existing installed-package path.'),
+    scope: z.enum(['pot', 'workspace']).default('pot'),
+    exportOnly: z.boolean().optional().describe('Export rule.json + listing.json without contacting GitHub or submitting a listing.'),
     ref: z
       .string()
       .min(1)
@@ -54,18 +58,34 @@ export default defineTool({
     void (args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId());
 
     const { publishRuleToCupboard } = await import('../../cupboard/publish-rule-core');
+    let localRule;
+    if (args.source === 'local') {
+      const [{ withWorkspace }, { getLocalRule }, { resolveAgentIdentity }, { resolvePotSlugsForHarnesses }] = await Promise.all([
+        import('@papercusp/db-org'), import('../../events/local-rule-store'), import('../coordination/identity'), import('../../memory/hive-scope'),
+      ]);
+      const workspaceId = resolveAgentIdentity(ctx).workspaceId;
+      if (!workspaceId) return ok({ ok: false, error: 'no_workspace' });
+      const harness = ctx.harnessSlug;
+      const potSlug = args.scope === 'workspace' ? null : harness && harness !== '*' ? (await resolvePotSlugsForHarnesses(workspaceId, [harness]))[0] : null;
+      if (args.scope !== 'workspace' && !potSlug) return ok({ ok: false, error: 'rule_pot_scope_unresolved' });
+      const row = await withWorkspace(workspaceId, sql => getLocalRule({ workspaceId, potSlug }, args.ref, sql));
+      if (!row) return ok({ ok: false, error: 'local_rule_not_found' });
+      localRule = row.definition;
+    }
     const result = await publishRuleToCupboard({
+      exportOnly: args.exportOnly,
       ref: args.ref,
       github_url: args.githubUrl,
       ...(args.listingRef ? { listing_ref: args.listingRef } : {}),
       ...(args.projectRef ? { project_ref: args.projectRef } : {}),
       ...(args.title ? { title: args.title } : {}),
       ...(args.description ? { description: args.description } : {}),
-    });
+    }, { localRule });
 
     if (!result.ok) {
       return ok({ ok: false, error: result.error, detail: result.detail, status: result.status });
     }
+    if (result.exportedOnly) return ok({ ok: true, exportedOnly: true, export: result.export, hint: 'Push the exported directory to the mirror before submitting this rule.' });
     const data = result.listing as { id?: string; review_status?: string; pending_review?: boolean };
     return ok({
       ok: true,

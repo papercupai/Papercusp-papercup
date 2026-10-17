@@ -3,12 +3,12 @@
  * (pure ladder: ./enforcement-gate.ts; seams: session:request-compaction,
  * coord:handoff).
  *
- * Contract, in one sentence: the gate can only ever ADD a bounded, single-bounce
+ * Advisory contract: the gate can only ever ADD a bounded, single-bounce
  * refusal — it is bounded (FLUSH_GATE_BUDGET_MS), fail-OPEN (any error ⇒ `clear`),
  * env-disable-able (PAPERCUSP_FLUSH_GATE=off), and its `mechanical-fallback` verdict
  * always PROCEEDS after writing state. No path permanently blocks a compaction or a
- * handoff, so it cannot reintroduce the strand session:request-compaction's
- * warn-only design was avoiding.
+ * handoff. A host-snapshot is mandatory persistence instead: it must settle
+ * before the caller may queue a cut, and a failed save leaves the session intact.
  */
 import { withBoundedTimeout } from './bounded-timeout';
 import {
@@ -36,6 +36,13 @@ export { REFUSAL_MARKER_TTL_MS, wasRecentlyRefused, markRefused, clearRefused, _
 /** Total budget for the whole gate (detect + fallback writes) — advisory work
  *  riding a seam that must not slow down or fail because of it. */
 export const FLUSH_GATE_BUDGET_MS = 4_000;
+
+/** Matches the structured refusal emitted by the host checkpoint writer. Keep
+ * this local structural check deliberately independent of the turn-end module:
+ * tests and the bundled sidecar mock that module at this seam, and an error
+ * crossing a dynamic-import boundary must remain diagnosable by its wire shape.
+ */
+const CHECKPOINT_WRITE_BLOCKED_CODE = 'checkpoint-write-blocked' as const;
 
 /** The effective bounded-timeout budget. Defaults to {@link FLUSH_GATE_BUDGET_MS};
  *  PAPERCUSP_FLUSH_GATE_BUDGET_MS (a positive integer ms) overrides it without a
@@ -91,6 +98,7 @@ export async function writeFlushFallback(input: {
   tripwires: ReadonlyArray<FlushTripwire>;
   brief: CarryBrief | null;
   nowMs?: number;
+  snapshotAllHeld?: boolean;
 }): Promise<FlushFallbackResult> {
   const nowMs = input.nowMs ?? Date.now();
   const result: FlushFallbackResult = { checkpointedItems: [] };
@@ -98,7 +106,7 @@ export async function writeFlushFallback(input: {
   const hasHeldTripwire = input.tripwires.some(
     (t) => t.kind === 'missing-checkpoint' || t.kind === 'stale-checkpoint',
   );
-  if (hasHeldTripwire) {
+  if (hasHeldTripwire || input.snapshotAllHeld) {
     try {
       const { autoCheckpointStaleHeldItems } = await import('./turn-end-tracking-io');
       const written = await autoCheckpointStaleHeldItems({
@@ -108,9 +116,15 @@ export async function writeFlushFallback(input: {
         sinceIso: input.sinceIso,
         journalNote: input.journalNote,
         nowMs,
+        ...(input.snapshotAllHeld ? { mode: 'respawn' as const } : {}),
+        // The advisory gate already built this carry snapshot to detect its
+        // tripwires. Reuse its held rows; a mandatory respawn deliberately omits
+        // this preview so autoCheckpointStaleHeldItems reads every held item.
+        ...(!input.snapshotAllHeld && input.brief ? { heldItems: input.brief.heldItems } : {}),
       });
       result.checkpointedItems = written.map((w) => w.id);
-    } catch {
+    } catch (error) {
+      if (input.snapshotAllHeld) throw error;
       /* fail-soft: the loop fallback + the refusal already gave the agent a chance */
     }
   }
@@ -128,7 +142,8 @@ export async function writeFlushFallback(input: {
         `⟦auto-checkpoint mechanical @${atIso}⟧ — the system wrote this because the loop was armed with no carry-note at a flush boundary; replace it with a real loop:checkpoint.\n\n${note}`,
       );
       result.loopCarryNoteWritten = input.brief.loop.harness;
-    } catch {
+    } catch (error) {
+      if (input.snapshotAllHeld) throw error;
       /* fail-soft */
     }
   }
@@ -150,6 +165,19 @@ export interface FlushGateOutcome {
   refusalText?: string;
   /** Present on `mechanical-fallback` — what the system wrote. */
   fallback?: FlushFallbackResult;
+  /** Safe diagnostics for a failed mandatory save; never includes storage URLs or messages. */
+  snapshotFailure?: {
+    phase: 'checkpoint-write';
+    /** A stable refusal code or a safe underlying storage code. */
+    code: string;
+    elapsedMs: number;
+    /** Present for a locked-store refusal or an attributed item-write failure. */
+    workItemId?: string;
+    blockedReason?: string;
+    checkpointStage?: 'load-writer' | 'read-held-items' | 'write-item';
+    errorFingerprint?: string;
+    completedWorkItemIds?: string[];
+  };
 }
 
 /**
@@ -159,7 +187,7 @@ export interface FlushGateOutcome {
  * session and wait for another model turn. It writes the bounded mechanical
  * fallback on the first tripwire encounter and then proceeds.
  */
-export type FlushGateMode = 'deliberate' | 'forced';
+export type FlushGateMode = 'deliberate' | 'forced' | 'host-snapshot';
 
 /** Test/host seam for {@link resolveAgentToolCallsSinceNote} — mirrors the real
  *  `countAgentToolCallsInWindow`'s call shape so a unit test never opens a real
@@ -215,7 +243,7 @@ async function resolveAgentToolCallsSinceNote(
  *   - clear  → proceed (also when the gate is env-disabled or errors — fail-open);
  *   - refuse → the caller must NOT perform the operation; marks the refusal marker;
  *   - mechanical-fallback → writes durable state, clears the marker, caller proceeds.
- * Never throws; fail-open to `clear` on any error.
+ * Never throws. Advisory modes fail open; a failed mandatory host save refuses.
  */
 export async function runFlushGate(input: {
   boundary: GateBoundary;
@@ -236,6 +264,61 @@ export async function runFlushGate(input: {
   countAgentToolCallsFn?: CountAgentToolCallsFn;
 }): Promise<FlushGateOutcome> {
   const clear: FlushGateOutcome = { verdict: 'clear', tripwires: [] };
+  // A requested respawn is a host-owned save, including fresh items beyond the
+  // carry preview. A failed save leaves the process intact; no model paperwork
+  // or refuse-once dance can repair an unavailable host writer.
+  if (input.mode === 'host-snapshot') {
+    const startedAt = Date.now();
+    try {
+      // This is the cut's prerequisite, not an advisory sweep. Racing a running
+      // save against the advisory timer returned a refusal while writes kept
+      // going, and a retry started the same all-held save again. Await its real
+      // receipt under the request's existing operation deadline instead.
+      const fallback = await writeFlushFallback({ ...input, snapshotAllHeld: true,
+        brief: input.brief ?? null, journalNote: input.journalNote ?? null,
+        tripwires: detectFlushTripwires(input.brief ?? null, input.nowMs ?? Date.now(), null, input.boundary) });
+      await clearRefused(input.boundary, input.ownerId);
+      return { verdict: 'mechanical-fallback', tripwires: [], fallback };
+    } catch (error) {
+      const diagnostic = error && typeof error === 'object' ? error as {
+        checkpointStage?: unknown; workItemId?: unknown; errorFingerprint?: unknown; completedWorkItemIds?: unknown;
+      } : null;
+      const attributed = diagnostic && ['load-writer', 'read-held-items', 'write-item'].includes(String(diagnostic.checkpointStage)) &&
+        typeof diagnostic.errorFingerprint === 'string' && /^[a-f0-9]{16}$/.test(diagnostic.errorFingerprint) &&
+        Array.isArray(diagnostic.completedWorkItemIds) && diagnostic.completedWorkItemIds.every((id) => typeof id === 'string')
+        ? { checkpointStage: diagnostic.checkpointStage as 'load-writer' | 'read-held-items' | 'write-item',
+            errorFingerprint: diagnostic.errorFingerprint, completedWorkItemIds: diagnostic.completedWorkItemIds as string[],
+            ...(typeof diagnostic.workItemId === 'string' ? { workItemId: diagnostic.workItemId } : {}) }
+        : null;
+      const structured = error && typeof error === 'object' &&
+        (error as { code?: unknown }).code === CHECKPOINT_WRITE_BLOCKED_CODE &&
+        typeof (error as { workItemId?: unknown }).workItemId === 'string' &&
+        typeof (error as { blockedReason?: unknown }).blockedReason === 'string'
+        ? {
+            workItemId: (error as { workItemId: string }).workItemId,
+            blockedReason: (error as { blockedReason: string }).blockedReason,
+          }
+        : null;
+      const rawCode = error && typeof error === 'object' && 'code' in error ? error.code : null;
+      const code = structured
+        ? CHECKPOINT_WRITE_BLOCKED_CODE
+        : typeof rawCode === 'string' && /^[A-Z0-9_]{1,64}$/.test(rawCode)
+          ? rawCode : 'checkpoint-write-failed';
+      const snapshotFailure = {
+        phase: 'checkpoint-write' as const,
+        code,
+        elapsedMs: Date.now() - startedAt,
+        ...(attributed ?? {}),
+        ...(structured ?? {}),
+      };
+      const refusalText = structured
+        ? `The host checkpoint write was blocked for ${structured.workItemId} (${structured.blockedReason}). The session remains intact; inspect the concurrent checkpoint update before retrying.`
+        : `The host checkpoint write failed (${code})${attributed ? ` at ${attributed.checkpointStage}${attributed.workItemId ? ` for ${attributed.workItemId}` : ''}; diagnostic ${attributed.errorFingerprint}` : ''}. The session remains intact; inspect host persistence before retrying.`;
+      return { verdict: 'refuse', tripwires: [],
+        refusalText,
+        snapshotFailure };
+    }
+  }
   if (!flushGateEnabled()) return clear;
   const { value } = await withBoundedTimeout(runFlushGateInner(input), {
     fallback: clear,

@@ -88,6 +88,7 @@ describe('corsFor middleware', () => {
     expect(res.headers.get('access-control-allow-origin')).toBe('http://localhost:3000');
     expect(res.headers.get('access-control-allow-methods')).toContain('POST');
     expect((res.headers.get('access-control-allow-headers') ?? '').toLowerCase()).toContain('x-papercusp-workspace');
+    expect((res.headers.get('access-control-allow-headers') ?? '').toLowerCase()).toContain('x-papercusp-machine');
   });
 
   it('explicit origins list: exact-match only, foreign refused', async () => {

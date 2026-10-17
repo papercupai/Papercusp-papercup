@@ -104,7 +104,7 @@ const adequacyBindingDetailsSchema = z
     provisionalProofBase: z.boolean().optional(),
     disclosedGap: z.union([z.string(), z.array(z.string())]).optional(),
   })
-  .passthrough();
+  .strict();
 // Keep the evaluator's adequacy vocabulary out of the free-form details
 // namespace. `spec-test-adequacy` reads these keys only below
 // `details.adequacy`; accepting them at the top level creates a successful,
@@ -218,7 +218,9 @@ export const bindingSchema = z
     testFingerprint: fingerprint.nullable().optional(),
     fixtureFingerprint: fingerprint.nullable().optional(),
     rubricFingerprint: fingerprint.nullable().optional(),
-    environmentFingerprint: fingerprint.nullable().optional(),
+    environmentFingerprint: fingerprint.nullable().optional().describe(
+      "Fingerprint the runtime/environment observed by live or deployed evidence. For details.evidencePlane 'live' or 'deployed', omitting this leaves environment currentness unknown unless details.currentMeasurement is a validated ledger-only measurement with no runtimeUnits.",
+    ),
     coverageEvidenceRef: z.number().int().positive().nullable().optional(),
     testRunId: z.number().int().positive().nullable().optional(),
     measurement: evidenceMeasurementSchema
@@ -226,7 +228,9 @@ export const bindingSchema = z
       .describe(
         "Server-measured basis, discriminated on `kind`: 'repo-files' hashes bounded source/test files; 'work-items' hashes a bounded work-item id set, which is how a NON-CODE outcome reaches source=current. Stores the recipe, so later reads recompute it and a reopened row goes stale.",
       ),
-    details: bindingDetailsSchema.optional(),
+    details: bindingDetailsSchema.optional().describe(
+      "For a clause declaring requiredEvidence, set details.evidencePlane to a matching plane (for example { evidencePlane: 'live' }); details.adequacy.evidencePlane is accepted as a fallback. A matching live/deployed label alone is not enough for currentness: provide environmentFingerprint above.",
+    ),
     observedAt: z.string().datetime({ offset: true }).optional(),
     verifiesBindingId: z
       .number()
@@ -392,6 +396,8 @@ type ResolvedBinding =
       ok: true;
       binding: z.infer<typeof bindingSchema>;
       derived?: Record<string, unknown>;
+      /** Original small request item for a concise target correction. */
+      correctionInput?: TestRunBindingInput;
       /** A clean commit-stamped run: measure its binding at the commit that ran (D-001 (b)). */
       asCommitted?: { commitSha: string; repoPrefix: string | null };
     }
@@ -633,6 +639,7 @@ export async function mutationTargetingRefusal(
   binding: z.infer<typeof bindingSchema>,
   scope: { planSlug: string; harnessSlug: string | undefined; slugArg?: string; harnessArg?: string },
   loadClauses: typeof listSpecClauses = listSpecClauses,
+  correctionInput?: TestRunBindingInput,
 ): Promise<MutationTargetRefusal | null> {
   if ((binding.evidenceKind !== 'mutation' && binding.evidenceKind !== 'counterexample') || !binding.specId) return null;
   const [clause] = await loadClauses({
@@ -652,6 +659,39 @@ export async function mutationTargetingRefusal(
   const label = `${clause.specId}@${clause.revision}`;
   const given =
     adequacy.targeted === undefined ? 'no adequacy.targeted' : `adequacy.targeted = ${JSON.stringify(adequacy.targeted)}`;
+  const correctedCall = correctionInput
+    ? (() => {
+        const priorAdequacy = correctionInput.details?.adequacy;
+        const correctionAdequacy =
+          priorAdequacy && typeof priorAdequacy === 'object' && !Array.isArray(priorAdequacy)
+            ? (priorAdequacy as Record<string, unknown>)
+            : {};
+        return {
+          tool: 'plans:bind-spec-evidence' as const,
+          args: {
+            ...(scope.harnessArg ? { harness: scope.harnessArg } : {}),
+            ...(scope.slugArg ? { slug: scope.slugArg } : {}),
+            items: [{
+              ...correctionInput,
+              details: {
+                ...(correctionInput.details ?? {}),
+                adequacy: { ...correctionAdequacy, targeted: acceptedTargets[0] },
+              },
+            }],
+          },
+        };
+      })()
+    : {
+        tool: 'plans:bind-spec-evidence' as const,
+        args: {
+          ...(scope.harnessArg ? { harness: scope.harnessArg } : {}),
+          ...(scope.slugArg ? { slug: scope.slugArg } : {}),
+          binding: {
+            ...binding,
+            details: { ...(binding.details ?? {}), adequacy: { ...adequacy, targeted: acceptedTargets[0] } },
+          },
+        },
+      };
   return {
     clause: label,
     targeted: adequacy.targeted ?? null,
@@ -660,17 +700,7 @@ export async function mutationTargetingRefusal(
       `${label}: this ${binding.evidenceKind} binding carries ${given}, which plans:evaluate-spec-test-adequacy ` +
       `would reject for falsifiability — it requires ${requirement}; a boolean or sibling-case target never ` +
       `qualifies. Accepted: ${acceptedTargets.join(', ')}.`,
-    correctedCall: {
-      tool: 'plans:bind-spec-evidence',
-      args: {
-        ...(scope.harnessArg ? { harness: scope.harnessArg } : {}),
-        ...(scope.slugArg ? { slug: scope.slugArg } : {}),
-        binding: {
-          ...binding,
-          details: { ...(binding.details ?? {}), adequacy: { ...adequacy, targeted: acceptedTargets[0] } },
-        },
-      },
-    },
+    correctedCall,
   };
 }
 
@@ -993,7 +1023,62 @@ export default defineTool({
         );
         return bulkContent({ ...retractions, ...(lost ? { advisories: [lost] } : {}) });
       }
-      const requested = args.items ?? [args.binding!];
+      return bulkContent(
+        await bindSpecEvidenceItems(
+          {
+            harnessSlug,
+            actorId,
+            workspaceId: resolveAgentIdentity(ctx).workspaceId ?? undefined,
+            items: args.items ?? [args.binding!],
+            ...(args.slug ? { slug: args.slug } : {}),
+            ...(args.harness ? { harnessArg: args.harness } : {}),
+            ...(args.dependencies ? { dependencies: args.dependencies } : {}),
+            ...(args.supersedeAtRevision ? { supersedeAtRevision: true } : {}),
+          },
+          timing,
+        ),
+      );
+    } finally {
+      timing.emit();
+    }
+  },
+});
+
+type BindSpecEvidenceArgs = z.infer<typeof argsSchema>;
+
+export interface BindSpecEvidenceItemsInput {
+  harnessSlug: string;
+  /** Who the binding is attributed to — an agent owner id, or a `system:` actor for a sweep. */
+  actorId: string;
+  /** The caller's concrete workspace, used only for the vet-before-proof advisory. */
+  workspaceId?: string;
+  items: NonNullable<BindSpecEvidenceArgs['items']>;
+  slug?: string;
+  /** The caller's literal `harness` argument, echoed into targeting refusals. */
+  harnessArg?: string;
+  dependencies?: BindSpecEvidenceArgs['dependencies'];
+  supersedeAtRevision?: boolean;
+}
+
+/**
+ * The binding pipeline behind `plans:bind-spec-evidence` (everything except `retract`), callable
+ * without a tool context so a server-side sweep binds through EXACTLY the checks an agent call
+ * runs: run expansion, mutation targeting, declared configuration, instrument provenance,
+ * measurement and the supersession of replaced rows (agent-paperwork-and-restart-tax-reduction-
+ * 2026-10-15 P-002 — the evidence autobind sweep is its first non-tool caller).
+ */
+export async function bindSpecEvidenceItems(
+  input: BindSpecEvidenceItemsInput,
+  timing: ReturnType<typeof bindingStageDiagnostics> = bindingStageDiagnostics(() => {}),
+) {
+      const { harnessSlug, actorId } = input;
+      const args = {
+        slug: input.slug,
+        harness: input.harnessArg,
+        dependencies: input.dependencies,
+        supersedeAtRevision: input.supersedeAtRevision,
+      };
+      const requested = input.items;
       // P-044: expand every `{ fromTestRun }` item into an ordinary binding FIRST, then re-validate
       // it through bindingSchema, so a derived binding meets exactly the contract a hand-built one
       // does (including the P-043 targeting check below). A failed expansion stays index-aligned
@@ -1013,6 +1098,7 @@ export default defineTool({
             return {
               ok: true,
               binding: parsed.binding,
+              correctionInput: item,
               ...(asCommitted ? { asCommitted } : {}),
               derived: {
                 testRunId: expansion.binding.testRunId,
@@ -1078,7 +1164,7 @@ export default defineTool({
                 harnessSlug,
                 ...(args.slug ? { slugArg: args.slug } : {}),
                 ...(args.harness ? { harnessArg: args.harness } : {}),
-              }),
+              }, undefined, entry.correctionInput),
             );
             if (targetingRefusal) {
               return {
@@ -1168,7 +1254,7 @@ export default defineTool({
       // lands on a rubric revision nobody has vetted yet. Computed only for bindings that
       // actually succeeded, so a refused binding never triggers it.
       const boundSpecIds = env.results.flatMap((result, index) => (result.ok ? [bindings[index]?.specId] : []));
-      const workspaceId = resolveAgentIdentity(ctx).workspaceId ?? undefined;
+      const workspaceId = input.workspaceId;
       const advisory = await timing.phase('vettingAdvisory', () =>
         runWithWorkspaceIfConcrete(workspaceId, () =>
           unvettedRubricBindAdvisory(
@@ -1216,13 +1302,9 @@ export default defineTool({
           )
         : undefined;
       const advisories = [advisory, gap].filter(Boolean);
-      return bulkContent({
+      return {
         ...env,
         ...(advisories.length > 0 ? { advisories } : {}),
         ...(supersession ? { supersession } : {}),
-      });
-    } finally {
-      timing.emit();
-    }
-  },
-});
+      };
+}

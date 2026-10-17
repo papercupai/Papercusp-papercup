@@ -144,6 +144,7 @@ describe('source preflight and persisted dispatch attempts', () => {
             agent: 'claude', cwd: dir, model: null, modelSource: null,
             endedAt: null, endedBy: null, live: true, advSessionId: 7,
             role: kind === 'non-plain' ? 'reviewer' : null, feature: null, account: null,
+            workspaceId: WS, harnessSlug: null,
             binding: { coordOwnerId: sourceOwnerId, sessionId: sourceSessionId,
               startedAt: '2026-09-22T00:00:00Z' } }),
           checkResumeTranscript: async () => ({ available: true, detail: 'exact fixture source', transcriptPath: path }),

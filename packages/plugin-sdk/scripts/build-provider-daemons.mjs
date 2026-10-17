@@ -4,7 +4,7 @@
  * --check verifies committed launchers without writing them.
  */
 import { build } from 'esbuild';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, access } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -33,6 +33,18 @@ for (const dir of dirs) {
   const plugin = resolve(dir);
   const manifest = JSON.parse(await readFile(join(plugin, 'papercusp.json'), 'utf8'));
   if (!manifest.provider || manifest.runtime?.kind !== 'daemon') throw new Error(`${dir}: expected a daemon provider`);
+  // Cupboard installs bytes, not npm dependencies. Bundle an optional TS entry
+  // so packages can reuse existing maintained helpers without runtime imports.
+  const entry = join(plugin, 'adapter.ts');
+  if (await access(entry).then(() => true, () => false)) {
+    if (manifest.main !== './index.cjs') throw new Error(`${dir}: bundled adapter requires main ./index.cjs`);
+    const adapter = await build({ entryPoints: [entry], bundle: true, platform: 'node', format: 'cjs', target: 'node18', write: false,
+      banner: { js: '// Generated from adapter.ts by @papercusp/plugin-sdk/scripts/build-provider-daemons.mjs. Do not edit.' } });
+    const main = join(plugin, 'index.cjs');
+    if (check) {
+      if (!Buffer.from(await readFile(main)).equals(Buffer.from(adapter.outputFiles[0].contents))) throw new Error(`${dir}: rebuild stale index.cjs`);
+    } else await writeFile(main, adapter.outputFiles[0].contents);
+  }
   const target = join(plugin, 'daemon.cjs');
   if (check) {
     if (!Buffer.from(await readFile(target)).equals(Buffer.from(bytes))) throw new Error(`${dir}: rebuild stale daemon.cjs`);

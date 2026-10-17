@@ -1135,6 +1135,13 @@ export function validateFactLifetime(input: FactLifetimeInput): string | null {
   }
 
   if (hasTtl) return null;
+  // A measured snapshot already declares its bounded lifetime: the resolver stores
+  // it with FACT_VOLATILE_MAX_TTL_SEC (15 minutes). The timestamp is validated before
+  // this lifetime check, and subjectVolatile:true without measuredAt is still refused
+  // by the explicit measurement guard above, so this branch cannot create an unmeasured
+  // volatile fact. Keeping this here makes the store contract match facts:assert's
+  // published measuredAt inference instead of requiring callers to redundantly pass ttlSec.
+  if (input.subjectVolatile === true) return null;
   if (input.kind === 'convention') return null;
   // The typed safety slots declare durability by construction; isFactCapExempt with a
   // null kind is exactly the "is this a wall:/dead-end:/guard-rail: key" question.

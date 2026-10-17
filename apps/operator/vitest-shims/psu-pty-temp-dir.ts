@@ -24,6 +24,10 @@ export function hermeticEnv(
     'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_SESSION_ID',
     'PI_CONFIG_DIR', 'PI_CODING_AGENT_DIR',
     'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
+    // These children execute inline fixture programs. A caller's Node preload
+    // would run unrelated code before their readiness banner and spend the
+    // fixture's startup deadline. Explicit fixture overrides still win below.
+    'NODE_OPTIONS', 'NODE_PATH',
   ]);
   const rest = Object.fromEntries(Object.entries(source).filter(([key]) =>
     !key.startsWith('PAPERCUSP_') && !nativeOrCredentialKeys.has(key)));

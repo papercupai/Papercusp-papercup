@@ -39,6 +39,7 @@ import {
   expireLapsedAwaits,
   fireAwaitsForKey,
   listActiveAwaitsForKey,
+  refreshStandingClaimableAwaitPayloadFilters,
   keyFireId,
   recordKeyFire,
   stampAnnouncementsFired,
@@ -78,7 +79,7 @@ import {
   inboxWakeGroupHandled,
   inboxWakeMessageComponents,
 } from './inbox-wake-actionability';
-import { wakeChannelInvokesTurn, type AwaitRow, type DeliveryWork, type WakeChannel } from './types';
+import { isAcceptedPsuHostDelivery, wakeChannelInvokesTurn, type AwaitRow, type DeliveryWork, type WakeChannel } from './types';
 import {
   payloadIsTimeout,
   recordTimeoutFires,
@@ -217,6 +218,8 @@ export interface EmitAwaitedEventOpts {
    *  queues (a human message, an escalation, a hard deadline). */
   urgent?: boolean;
   workspaceId?: string;
+  harnessSlug?: string;
+  cause?: import('../types').ReactionCause;
   /** EI-12457: exact event key(s) that are the MUTUALLY-EXCLUSIVE opposite outcome of
    *  this one (e.g. emitting `release:green:<pipeline>` names
    *  `green-checkpoint:red:<pipeline>` here). For every subscriber this emit actually
@@ -278,6 +281,8 @@ export async function wakeClaimableAwaitersForSubscribers(input: {
   subscriberIds: readonly string[];
   specId?: string | null;
   revision?: number | null;
+  /** New value-derived filter from the replacement claim spec. */
+  payloadFilter?: unknown;
 }): Promise<number> {
   const subscribers = new Set(input.subscriberIds.filter((id) => typeof id === 'string' && id.length > 0));
   if (subscribers.size === 0) return 0;
@@ -286,18 +291,29 @@ export async function wakeClaimableAwaitersForSubscribers(input: {
   const candidateIds = active
     .filter((row) => row.policy === 'wake' && row.once && subscribers.has(row.subscriberId))
     .map((row) => row.id);
-  if (candidateIds.length === 0) return 0;
+  const refreshedStanding = input.payloadFilter !== undefined
+    ? await refreshStandingClaimableAwaitPayloadFilters({
+        subscriberIds: [...subscribers],
+        payloadFilter: input.payloadFilter,
+      })
+    : [];
+  if (candidateIds.length === 0 && refreshedStanding.length === 0) return 0;
 
   // The row-level claim is atomic, so a real claimable emit racing this control
-  // wake wins one row and the other path simply sees no pending await.
-  const fired = await claimSpecificOnceAwaits(candidateIds, 'claim-spec-revision');
-  if (fired.length === 0) return 0;
+  // wake wins one row and the other path simply sees no pending await. Standing
+  // rows remain active, but their value-derived filter has been refreshed before
+  // this control delivery is queued.
+  const fired = candidateIds.length > 0
+    ? await claimSpecificOnceAwaits(candidateIds, 'claim-spec-revision')
+    : [];
+  const deliveries = [...fired, ...refreshedStanding];
+  if (deliveries.length === 0) return 0;
 
   const ref = input.specId
     ? `${input.specId}${input.revision == null ? '' : `@${input.revision}`}`
     : 'the updated claim spec';
   await insertDeliveries({
-    awaits: fired,
+    awaits: deliveries,
     payload: {
       reason: 'claim-spec-revision',
       ...(input.specId ? { specId: input.specId } : {}),
@@ -314,11 +330,15 @@ export async function wakeClaimableAwaitersForSubscribers(input: {
     const ws = activeWorkspaceId();
     void pumpWakeDeliveries(ws).catch((e) => log(`claim-spec wake pump failed: ${e instanceof Error ? e.message : e}`));
   }
-  return fired.length;
+  return deliveries.length;
 }
 
 export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<EmitResult> {
   const ws = opts.workspaceId ?? activeWorkspaceId();
+  // Both code- and agent-emitted fires use this seam; declarations never call it.
+  const { emitSystemEvent } = await import('../engine');
+  emitSystemEvent({ tool: 'event:' + opts.key, args: { key: opts.key, payload: opts.payload },
+    workspaceId: ws, harnessSlug: opts.harnessSlug, cause: opts.cause });
 
   // EI-13705: record the fire on the UNCONDITIONAL per-key latch BEFORE claiming
   // await rows. The bridge can start an event between an awaiter's pre-registration
@@ -1045,11 +1065,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
       // suppressing the parked retry then would leave the host's old pre-rendered
       // text queued indefinitely. Retry the same delivery so the host can refresh
       // its pending payload from this delivery-time render and report commitment.
-      const hasUnconfirmedPsuHostAcceptance = group.some(
-        (d) =>
-          d.lastError?.startsWith('psu-host accepted:') ||
-          d.lastError?.startsWith('psu-host pending-delivery-id:'),
-      );
+      const hasUnconfirmedPsuHostAcceptance = group.some(isAcceptedPsuHostDelivery);
       const allInboxWakeNoUrgent = group.every(
         (d) =>
           !deliveryContainsLoopMarker(d.payload) &&
@@ -1081,10 +1097,7 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
             )) {
               hostCancellation = {
                 deliveryIds: group
-                  .filter((d) =>
-                    d.lastError?.startsWith('psu-host accepted:') ||
-                    d.lastError?.startsWith('psu-host pending-delivery-id:'),
-                  )
+                  .filter(isAcceptedPsuHostDelivery)
                   .map((d) => String(d.id)),
                 handledMsgIds: [...new Set(msgIds)],
               };

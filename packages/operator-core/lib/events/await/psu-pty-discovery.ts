@@ -20,6 +20,7 @@
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import {
   readFileSync,
   existsSync,
@@ -250,6 +251,7 @@ export function sanitizeKey(ownerId: string): string {
  *  The host appends one small JSON line per lifecycle event, so a few KB covers
  *  many respawns; bounded so a long-lived owner's log is never fully read. */
 const RESPAWN_SCAN_TAIL_BYTES = 64 * 1024;
+const MAX_COMPLETE_HOST_EVENT_ROW_BYTES = 1024 * 1024;
 
 /**
  * One parsed line of a host's `<owner>.events.jsonl` lifecycle ledger.
@@ -338,6 +340,16 @@ function parseHostEventTail(text: string): PtyHostEvent[] {
   return out;
 }
 
+function parseCompleteHostEventRow(line: string): PtyHostEvent {
+  const row: unknown = JSON.parse(line);
+  if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error('Invalid host event ledger row');
+  const event = row as PtyHostEvent;
+  if (typeof event.kind !== 'string' || typeof event.ts !== 'string' || !Number.isFinite(Date.parse(event.ts))) {
+    throw new Error('Invalid host event kind or timestamp');
+  }
+  return event;
+}
+
 /**
  * {@link readHostEventTail} without blocking the event loop (WI-10004559).
  *
@@ -349,25 +361,58 @@ function parseHostEventTail(text: string): PtyHostEvent[] {
  * every in-flight MCP request. Periodic sweeps must use this variant: the wait lands on
  * a libuv worker thread and the event loop keeps serving.
  *
- * Same contract as the sync form: a missing or unreadable ledger yields `[]`.
+ * Same best-effort contract as the sync form: a missing or unreadable ledger
+ * yields `[]`. With `requireComplete`, maxBytes is the bounded read-page size;
+ * the complete file is scanned from byte zero, so a larger file is not silently
+ * truncated or rejected just for exceeding one page.
  */
 export async function readHostEventTailAsync(
   ownerId: string,
   dir: string = PSU_PTY_DIR,
   maxBytes: number = RESPAWN_SCAN_TAIL_BYTES,
-  opts: { requireComplete?: boolean } = {},
+  opts: { requireComplete?: boolean; filterEvent?: (event: PtyHostEvent) => boolean } = {},
 ): Promise<PtyHostEvent[]> {
-  let text: string;
+  let text = '';
+  let completeEvents: PtyHostEvent[] | undefined;
   try {
     const fh = await fsp.open(join(dir, `${sanitizeKey(ownerId)}.events.jsonl`), 'r');
     try {
       const { size } = await fh.stat();
-      if (opts.requireComplete && size > maxBytes) throw new Error('Host event ledger exceeds complete-read bound');
-      const start = Math.max(0, size - maxBytes);
-      const buf = Buffer.alloc(size - start);
-      const { bytesRead } = await fh.read(buf, 0, buf.length, start);
-      if (opts.requireComplete && bytesRead !== buf.length) throw new Error('Host event ledger read was incomplete');
-      text = buf.toString('utf8');
+      if (opts.requireComplete) {
+        const pageBytes = Math.max(1, Math.floor(Number.isFinite(maxBytes) ? maxBytes : RESPAWN_SCAN_TAIL_BYTES));
+        const decoder = new StringDecoder('utf8');
+        const events: PtyHostEvent[] = [];
+        let pending = '';
+        const acceptLine = (line: string) => {
+          if (!line.trim()) return;
+          const event = parseCompleteHostEventRow(line);
+          if (!opts.filterEvent || opts.filterEvent(event)) events.push(event);
+        };
+
+        for (let offset = 0; offset < size;) {
+          const length = Math.min(pageBytes, size - offset);
+          const buf = Buffer.alloc(length);
+          const { bytesRead } = await fh.read(buf, 0, length, offset);
+          if (bytesRead !== length) throw new Error('Host event ledger read was incomplete');
+          offset += bytesRead;
+
+          const lines = (pending + decoder.write(buf)).split('\n');
+          pending = lines.pop() ?? '';
+          for (const line of lines) acceptLine(line);
+          if (Buffer.byteLength(pending, 'utf8') > MAX_COMPLETE_HOST_EVENT_ROW_BYTES) {
+            throw new Error('Host event ledger row exceeds complete-read bound');
+          }
+        }
+
+        pending += decoder.end();
+        if (pending) throw new Error('Host event ledger has an incomplete final row');
+        completeEvents = events;
+      } else {
+        const start = Math.max(0, size - maxBytes);
+        const buf = Buffer.alloc(size - start);
+        await fh.read(buf, 0, buf.length, start);
+        text = buf.toString('utf8');
+      }
     } finally {
       await fh.close();
     }
@@ -375,20 +420,9 @@ export async function readHostEventTailAsync(
     if (opts.requireComplete) throw error;
     return [];
   }
-  if (opts.requireComplete) {
-    // Health recovery needs a complete readable census; the legacy best-effort
-    // reader deliberately drops malformed/partially appended rows.
-    if (text && !text.endsWith('\n')) throw new Error('Host event ledger has an incomplete final row');
-    for (const line of text.split('\n').filter((line) => line.trim())) {
-      const row: unknown = JSON.parse(line);
-      if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error('Invalid host event ledger row');
-      const event = row as PtyHostEvent;
-      if (typeof event.kind !== 'string' || typeof event.ts !== 'string' || !Number.isFinite(Date.parse(event.ts))) {
-        throw new Error('Invalid host event kind or timestamp');
-      }
-    }
-  }
-  return parseHostEventTail(text);
+  if (opts.requireComplete) return completeEvents ?? [];
+  const events = parseHostEventTail(text);
+  return opts.filterEvent ? events.filter(opts.filterEvent) : events;
 }
 
 /**
@@ -1788,7 +1822,13 @@ export type BoundShutdownViaPtyResult = ShutdownViaPtyResult | 'refused-stale-ho
  */
 export async function shutdownViaPty(
   ownerId: string,
-  opts: { reason?: string; force?: boolean; verifyIdentity?: VerifyPidIdentity; expectedHost?: { startedAt: number; advSessionId: string } } = {},
+  opts: {
+    reason?: string;
+    force?: boolean;
+    // Only ever forwarded to findLiveHostAsync, which accepts an async check.
+    verifyIdentity?: VerifyPidIdentity | VerifyPidIdentityAsync;
+    expectedHost?: { startedAt: number; advSessionId: string };
+  } = {},
 ): Promise<BoundShutdownViaPtyResult> {
   const host = await findLiveHostAsync(ownerId, PSU_PTY_DIR, { verifyIdentity: opts.verifyIdentity });
   if (!host) return 'no-host';

@@ -1,10 +1,12 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import { type HarnessContract, HarnessContractError, validateContract } from './contract.js';
-import { formatSummaryLine, loadRunResult, parseSummaryLine, pruneRuns, pruneRunsWithReport, runHarness, writeRunResult } from './runner.js';
+import { formatSummaryLine, loadRunResult, parseSummaryLine, pruneEvidenceRoot, pruneRuns, pruneRunsWithReport, runHarness, writeRunResult } from './runner.js';
 import { symlinkSync } from 'node:fs';
 import { retainRunsCommand } from './cli.js';
 import { parseSelectionArgs, planSelection } from './select.js';
@@ -20,6 +22,54 @@ const contract: HarnessContract = {
 };
 
 const tmp = () => mkdtempSync(path.join(tmpdir(), 'vh-'));
+
+let privateRetention: string;
+beforeEach(() => {
+  privateRetention = tmp();
+  vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', path.join(privateRetention, 'mutex'));
+  vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', path.join(privateRetention, 'pins'));
+  vi.stubEnv('PAPERCUSP_DISABLE_FS_MUTEX', '0');
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(privateRetention, { recursive: true, force: true });
+});
+
+describe('harness retention admission', () => {
+  it.each([true, false])('defers busy GC before and after phases while preserving the original %s verdict', async passes => {
+    const root = tmp(), mutexRoot = tmp(), pins = tmp();
+    vi.stubEnv('PAPERCUSP_FS_MUTEX_LOCK_DIR', mutexRoot);
+    vi.stubEnv('PAPERCUSP_DISABLE_FS_MUTEX', '0');
+    vi.stubEnv('PAPERCUSP_RELEASE_RETENTION_ROOT', pins);
+    vi.stubEnv('VH_KEEP_RUNS', '1');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const old = '20200101T000000Z-1';
+    mkdirSync(path.join(root, old));
+    writeFileSync(path.join(root, old, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: old,
+      endedAt: '2020-01-01T00:00:00.000Z', verdict: 'pass' }));
+    try {
+      await withFsMutex('papercusp-disk-retention', async () => {
+        const result = await runHarness({
+          contract: { name: 'busy-retention', phases: [{ id: 'proof' }] }, evidenceRoot: root,
+          runPhase: async () => passes ? { ok: true } : { ok: false, reasonCode: 'original-failure' },
+        });
+        expect(result.verdict).toBe(passes ? 'pass' : 'fail');
+        expect(await loadRunResult(result.evidenceDir)).toEqual(result);
+        expect(readlinkSync(path.join(root, 'latest'))).toBe(result.runId);
+        expect(existsSync(path.join(root, old))).toBe(true);
+        const output = stderr.mock.calls.map(([text]) => String(text)).join('');
+        for (const stage of ['before', 'after'])
+          expect(output).toContain(`VH_RETENTION_DEFERRED stage=${stage} reason=retention-mutex-busy`);
+        // Cancelled admissions leave neither FIFO tickets nor reader entries.
+        expect(readdirSync(path.join(mutexRoot, 'papercusp-disk-retention.queue'))).toHaveLength(0);
+      });
+      expect((await pruneEvidenceRoot(root)).runs).toEqual([old]);
+    } finally {
+      stderr.mockRestore(); vi.unstubAllEnvs();
+      for (const dir of [root, mutexRoot, pins]) rmSync(dir, { recursive: true, force: true });
+    }
+  }, 5000);
+});
 
 describe('read-only retention preview', () => {
   const now = Date.now();
@@ -90,8 +140,8 @@ describe('evidence root byte ceiling', () => {
         mkdirSync(path.join(root, name));
         writeFileSync(path.join(root, name, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: name, endedAt: new Date().toISOString(), verdict: 'pass' }));
         writeFileSync(path.join(root, name, 'bulk'), Buffer.alloc(64 * 1024, 1));
-        const time = new Date(Date.now() - (3 - i) * 3600e3);
-        const { utimesSync } = await import('node:fs');
+        // Reverse name order: the actual newest write decides cap eviction.
+        const time = new Date(Date.now() - (i + 1) * 3600e3);
         for (const file of [path.join(root, name), path.join(root, name, 'bulk'), path.join(root, name, 'result.json')]) utimesSync(file, time, time);
       }
       const options = { maxBytes: 100 * 1024, measureDisk: async () => ({ totalBytes: 1000, availableBytes: 900 }), reserveBytes: () => 100 };
@@ -99,12 +149,12 @@ describe('evidence root byte ceiling', () => {
       expect(preview.preview?.candidates.map(c => c.reason)).toEqual(['size-cap', 'size-cap', 'size-cap']);
       expect(names.every(name => existsSync(path.join(root, name)))).toBe(true);
       const report = await pruneRunsWithReport(root, 30, Date.now(), options);
-      expect(report.removed).toEqual(names.slice(0, 2));
+      expect(report.removed).toEqual([names[2], names[1]]);
       expect(report.cap?.afterBytes).toBeLessThanOrEqual(options.maxBytes);
-      expect(existsSync(path.join(root, names[2]))).toBe(true);
+      expect(existsSync(path.join(root, names[0]))).toBe(true);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
-  it('reports pins above cap and keeps latest while continuing past protected older runs', async () => {
+  it('keeps latest and reports the remaining overage while continuing past protected older runs', async () => {
     const root = tmp();
     const names = ['20200101T000000Z-1', '20200102T000000Z-1'];
     try {
@@ -119,6 +169,31 @@ describe('evidence root byte ceiling', () => {
       expect(report.cap?.overByBytes).toBeGreaterThan(0);
       expect(existsSync(path.join(root, names[0]))).toBe(true);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('counts and reports finite descendant pins above cap; expiry restores eviction', async () => {
+    const root = tmp();
+    const leases = tmp();
+    const names = ['20200101T000000Z-1', '20200102T000000Z-1'];
+    const now = Date.now();
+    try {
+      for (const name of names) {
+        mkdirSync(path.join(root, name));
+        writeFileSync(path.join(root, name, 'result.json'), JSON.stringify({ schemaVersion: 1, runId: name, endedAt: new Date(now).toISOString(), verdict: 'pass' }));
+        writeFileSync(path.join(root, name, 'bulk'), Buffer.alloc(64 * 1024, 1));
+      }
+      const id = randomUUID();
+      const tag = 'agent-pin-' + Buffer.from(JSON.stringify({ version: 1, id, owner: 'test', reason: 'cap-test', createdAt: new Date(now).toISOString() })).toString('base64url');
+      writeFileSync(path.join(leases, `lease-agent-pin-${id}.tsv`), `schema=papercusp-release-retention/v1\ntag=${tag}\nexpires_ns=${BigInt(now + 3600e3) * 1000000n}\npath=${path.join(root, names[0], 'bulk')}\n`);
+      const options = { env: { ...process.env, PAPERCUSP_RELEASE_RETENTION_ROOT: leases }, maxBytes: 1, measureDisk: async () => null };
+      const report = await pruneRunsWithReport(root, 30, now, options);
+      expect(report.removed).toEqual([names[1]]);
+      expect(report.cap?.pinnedPaths).toEqual([path.join(root, names[0])]);
+      expect(report.cap?.pinnedBytes).toBeGreaterThanOrEqual(64 * 1024);
+      expect(report.cap?.pinnedOverageBytes).toBeGreaterThan(0);
+      const expired = await pruneRunsWithReport(root, 30, now + 2 * 3600e3, options);
+      expect(expired.removed).toEqual([names[0]]);
+      expect(expired.cap?.pinnedBytes).toBe(0);
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(leases, { recursive: true, force: true }); }
   });
 });
 

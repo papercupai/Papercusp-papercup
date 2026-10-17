@@ -15,6 +15,7 @@ import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
 import { HostCheckBanner } from './HostCheckBanner';
 import { DesktopSupervisorBanner } from './DesktopSupervisorBanner';
 import WorkspaceSwitcher from './WorkspaceSwitcher';
+import MachineSwitcher from '../cloud-workspaces/MachineSwitcher';
 import ThemeSelector from './ThemeSelector';
 import BrandSwitcher from './BrandSwitcher';
 import UserPicker from './UserPicker';
@@ -416,6 +417,7 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
               surface — public release ships the Pot lexicon with no toggle, to
               avoid brand confusion between users. restore-pot-lexicon P-004. */}
           {testingFlag ? <BrandSwitcher /> : null}
+          <MachineSwitcher />
           <WorkspaceSwitcher />
           <UserPicker />
         </nav>

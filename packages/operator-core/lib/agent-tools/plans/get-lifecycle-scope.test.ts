@@ -211,6 +211,26 @@ describe("plans:get — lifecycle signals are scoped to the plan row's workspace
     expect(M.getLatestPlanAudit).not.toHaveBeenCalled();
   });
 
+  it('passes item selectors to per-item lifecycle enrichment without narrowing the plan census', async () => {
+    const fixture = M.planFixture("narrow-selection") as any;
+    fixture.parsed.items = [
+      { id: "P-001", text: "selected", storedStatus: "todo", importance: "normal", blockedBy: [], decisionRefs: [], phase: null },
+      { id: "P-002", text: "unselected", storedStatus: "done", importance: "normal", blockedBy: [], decisionRefs: [], phase: null },
+    ];
+    M.readPlanBySlug.mockImplementationOnce(async () => fixture);
+    const result = await run({ slug: "narrow-selection", items: ["P-001"] });
+    const calls = M.derivePlanLifecycleForRead.mock.calls as unknown as Array<[
+      { items: Array<{ id: string }>; enrichmentItemIds?: readonly string[] }
+    ]>;
+    expect(calls.at(-1)?.[0]).toMatchObject({ enrichmentItemIds: ["P-001"] });
+    expect(calls.at(-1)?.[0].items.map((item) => item.id)).toEqual(["P-001", "P-002"]);
+    expect(result.results[0]).toMatchObject({
+      counts: { items: 2 },
+      itemSelection: { requested: ["P-001"], matched: ["P-001"], missing: [] },
+      items: [{ id: "P-001" }],
+    });
+  });
+
   it("starts independent reads while issue blocks are pending and joins their results before lifecycle", async () => {
     const started: string[] = [];
     let release!: () => void;

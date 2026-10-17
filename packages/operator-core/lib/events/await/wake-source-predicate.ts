@@ -267,14 +267,19 @@ export interface BoundedAwaitTemplate {
 }
 
 /**
- * A bounded `events:await` keyed to the blocker a held item STATES, or null when none states one.
- * Pure. Preference: an active typed `event` blocker (its ref is the key, and its `recheckAt`
- * bounds the wait), then a `blocked` item's own `work-item:unblocked:<id>`. Never
- * `work-item:done:<held id>` — that is the self-deadlock D-008 (1) excludes.
+ * A bounded `events:await` keyed to an active typed event blocker a held item STATES, or null
+ * when none states one. Lifecycle status alone does not prove a dependency edge, so this helper
+ * must not invent `work-item:unblocked:<id>` for every blocked item. Typed lifecycle events on
+ * the held item itself are also unsatisfiable waits and are skipped here; this keeps loop:end's
+ * recovery advice from producing the same self-await deadlock that events:await rejects.
  */
 export function boundedAwaitTemplateFor(held: readonly HeldWorkItem[], nowMs: number): BoundedAwaitTemplate | null {
+  const heldIds = new Set(held.map((item) => item.id));
   for (const item of held) {
-    const blocker = item.eventBlockers[0];
+    const blocker = item.eventBlockers.find((candidate) => {
+      const lifecycleTarget = /^(?:work-item:(?:status|done)|claim:released):([^:]+)$/.exec(candidate.ref)?.[1];
+      return lifecycleTarget === undefined || !heldIds.has(lifecycleTarget);
+    });
     if (!blocker) continue;
     return {
       itemId: item.id,
@@ -286,17 +291,7 @@ export function boundedAwaitTemplateFor(held: readonly HeldWorkItem[], nowMs: nu
       },
     };
   }
-  const blocked = held.find((i) => i.status === 'blocked');
-  if (!blocked) return null;
-  return {
-    itemId: blocked.id,
-    args: {
-      event: `work-item:unblocked:${blocked.id}`,
-      timeout_sec: BOUNDED_AWAIT_DEFAULT_TIMEOUT_SEC,
-      on_timeout: 'wake',
-      note: `P-009 bounded wake for ${blocked.id}: resume when it is unblocked, or recheck on timeout`,
-    },
-  };
+  return null;
 }
 
 function boundedTimeoutSec(recheckAt: string | null, nowMs: number): number {

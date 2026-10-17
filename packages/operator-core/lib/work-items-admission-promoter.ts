@@ -1845,15 +1845,37 @@ export function planPromoterDispositions(
     const nodes = [...ids].map((id) => itemById.get(id)!).filter(Boolean);
     const admitted = nodes.filter((item) => item.admission !== 'pending');
     const pool = admitted.length > 0 ? admitted : nodes;
-    const anchor = pool.slice().sort((a, b) => a.createdAtMs - b.createdAtMs || a.id.localeCompare(b.id))[0]!;
+    // A terminal row is safe as the canonical only when its stable title identity
+    // exactly matches a live endpoint.  A high-similarity pair can still be a
+    // different symptom (for example, two grading findings about the same
+    // evaluator), and electing the closed row would hide the live defect behind a
+    // misleading duplicate close.  Use the oldest live endpoint as the identity
+    // anchor when one exists; keep the historical terminal preference for exact
+    // identity matches so genuine repeats still converge on their completed row.
+    const liveNodes = nodes.filter((item) => !isTerminal(item));
+    const livePool = pool.filter((item) => !isTerminal(item));
+    const anchor = (livePool.length > 0 ? livePool : liveNodes.length > 0 ? liveNodes : pool)
+      .slice()
+      .sort((a, b) => a.createdAtMs - b.createdAtMs || a.id.localeCompare(b.id))[0]!;
+    const anchorIdentity = admissionIdentity(anchor.title, anchor.conditionKey ?? undefined);
+    const candidatePool = pool.some((item) => item.id === anchor.id) ? pool : [...pool, anchor];
     const selected = selectCanonicalIssue(
-      admissionIdentity(anchor.title, anchor.conditionKey ?? undefined),
-      pool.map((item) => ({
+      anchorIdentity,
+      candidatePool.map((item) => ({
         id: item.id,
         title: item.title,
         eligible: true,
-        // Stable preference: existing terminal/admitted history first, then age.
-        similarity: (isTerminal(item) ? 2 : item.admission !== 'pending' ? 1 : 0) - item.createdAtMs / 1e18,
+        // Stable preference: existing admitted history first, then age. A
+        // non-exact terminal candidate is deliberately below a live endpoint;
+        // otherwise semantic near-neighbours can close a still-distinct issue.
+        similarity:
+          (isTerminal(item)
+            ? admissionIdentity(item.title).titleKey === anchorIdentity.titleKey
+              ? 2
+              : -1
+            : item.admission !== 'pending'
+              ? 1
+              : 0) - item.createdAtMs / 1e18,
       })),
     );
     const canonical = selected?.id ?? anchor.id;
@@ -5933,9 +5955,14 @@ export async function runWorkItemAdmissionFailOpen(opts: {
     // Admission and the held census share one eligibility floor. Terminal rows can
     // retain admission='pending' after cleanup, but must not be reopened or reported
     // as live work needing re-homing. Preserve legacy NULL statuses as nonterminal.
+    // Rows carrying a duplicate candidate or degraded dedup coverage are unresolved
+    // review work. They must remain pending until the resolver adjudicates them; the
+    // fail-open liveness backstop must never turn that uncertainty into scheduler work.
     const pendingEligibility = sql`admission = 'pending'
       AND (status IS NULL OR NOT harness_shared.work_item_status_is_terminal(status))
-      AND created_ts < ${cutoffMs}`;
+      AND created_ts < ${cutoffMs}
+      AND (payload -> 'dedupCandidates') IS NULL
+      AND lower(COALESCE(payload #>> '{dedupCoverage,degraded}', 'false')) <> 'true'`;
     // Keep the pending predicate, workspace key, and (for harness scope) harness key on the
     // candidate read so it can use wi_admission_pending_idx. Oldest-first plus a hard cap keeps
     // this must-never-starve action quick when a workspace has a large pending backlog.

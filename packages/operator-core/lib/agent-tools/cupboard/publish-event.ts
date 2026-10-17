@@ -15,10 +15,11 @@
  * registers anything; seeding a row is the install seam's job.
  */
 import { z } from 'zod';
+import { withSubmissionReceipt } from '../../cupboard/submission-receipt';
 import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 
-const ok = (payload: Record<string, unknown>) => ({ data: payload });
+const ok = (payload: Record<string, unknown>) => ({ data: withSubmissionReceipt(payload) });
 
 export default defineTool({
   name: 'cupboard:publish-event',
@@ -52,14 +53,13 @@ export default defineTool({
   async handler(args, ctx) {
     const workspaceId = args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     if (!workspaceId) return ok({ ok: false, status: 400, error: 'no_workspace', detail: 'no workspace in the request context' });
-    const [{ publishEventToCupboard }, { writeEventPackageDir }, { fetchGithubRepoMeta }, { publishListingToCupboard }, { getOrgPg }, { listEventKeys }] =
+    const [{ publishEventToCupboard }, { writeEventPackageDir }, { fetchGithubRepoMeta }, { publishListingToCupboard }, { getOrgPg }] =
       await Promise.all([
         import('../../cupboard/publish-event-core'),
         import('../../cupboard/event-store'),
         import('../../cupboard/resolve-repo-coords'),
         import('../../cupboard/publish-listing'),
         import('@papercusp/db-org'),
-        import('../../event-key-registry-store'),
       ]);
     const result = await publishEventToCupboard(
       {
@@ -75,7 +75,13 @@ export default defineTool({
       {
         // Resolution stays with the registry (D-010) — the publisher reads the row it
         // already has rather than re-deriving the definition from a scan.
-        listEventKeys: () => listEventKeys(getOrgPg().sql, workspaceId),
+        listEventKeys: async () => {
+          // D-058: exact lookup, then export the curated contract, never lifecycle or derived measurements.
+          const { getEventKey } = await import('../../event-key-registry-store');
+          const row = await getEventKey(getOrgPg().sql, workspaceId, args.eventKey);
+          return row ? [{ eventKey: row.eventKey, title: row.title, description: row.description,
+            keyPattern: row.keyPattern, tags: row.tags, payloadSchema: row.payloadSchema }] : [];
+        },
         writePackage: writeEventPackageDir,
         fetchRepo: fetchGithubRepoMeta,
         publish: publishListingToCupboard,

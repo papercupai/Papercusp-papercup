@@ -141,6 +141,15 @@ function excerptAt(text: string, index: number): string {
   return text.slice(start, end === -1 ? text.length : end).trim().slice(0, 200);
 }
 
+/** A documented no-expert result is API semantics, not a prescribed policy bound. */
+function describesZeroMinimumResult(text: string, match: RegExpExecArray): boolean {
+  if (!/^min_agents\s*:\s*0$/.test(match[0])) return false;
+  const before = text.slice(Math.max(0, text.lastIndexOf('\n\n', match.index) + 2), match.index);
+  if (/\b(?:use|pass|set|request)\s+`?$/i.test(before)) return false;
+  return /^`?\s+returns\s+["“]no one knows more than you do\s*[—-]\s*proceed["”]/i
+    .test(text.slice(match.index + match[0].length));
+}
+
 export function judgeSelectionPolicyProse(
   subjects: readonly ProseSubject[],
   options: JudgeOptions = {},
@@ -182,7 +191,7 @@ export function judgeSelectionPolicyProse(
       re.lastIndex = 0;
       let match: RegExpExecArray | null = re.exec(subject.text);
       while (match !== null) {
-        violations.push({
+        if (!describesZeroMinimumResult(subject.text, match)) violations.push({
           subject: subject.label,
           line: lineOf(subject.text, match.index),
           excerpt: excerptAt(subject.text, match.index),
@@ -295,7 +304,7 @@ export function censusHandTypedBoundSites(options: CensusOptions): BoundSiteCens
       re.lastIndex = 0;
       let match: RegExpExecArray | null = re.exec(text);
       while (match !== null) {
-        sites.push({
+        if (!describesZeroMinimumResult(text, match)) sites.push({
           path,
           line: lineOf(text, match.index),
           excerpt: excerptAt(text, match.index),

@@ -168,7 +168,14 @@ export function submoduleRevisionAt(base, prefix) {
     { allowFail: true },
   );
   const normalized = revision?.trim();
-  return normalized || null;
+  if (normalized) return normalized;
+  // The local edit collector already pins the OWNING repository's full commit.
+  // Accept that immutable pin directly when it is not a superproject revision;
+  // never substitute the submodule's moving HEAD for the requested comparison.
+  if (!/^[a-f0-9]{40,64}$/.test(base)) return null;
+  return git(['rev-parse', '--verify', '--end-of-options', `${base}^{commit}`], {
+    cwd: resolve(ROOT, prefix), allowFail: true, suppressStderr: true,
+  })?.trim() || null;
 }
 
 /**
@@ -509,6 +516,31 @@ const isInaccessible = (member) =>
     ),
   ) || Boolean(member.name && ts.isPrivateIdentifier(member.name));
 
+/** Syntax-only change measurement, including bodies. A file edit alone does not
+ * prove every export changed. Compare printed declarations without comments. */
+export function diffExportedSymbolText(beforeText, afterText, fileName = 'f.ts') {
+  const printer = ts.createPrinter({ removeComments: true });
+  const collect = text => {
+    const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
+    if (sf.parseDiagnostics.length) return null;
+    const rows = new Map();
+    for (const statement of sf.statements) {
+      if (!isExported(statement)) continue;
+      const nodes = ts.isVariableStatement(statement) ? statement.declarationList.declarations : [statement];
+      for (const node of nodes) {
+        if (!node.name || !ts.isIdentifier(node.name)) continue;
+        rows.set(node.name.text, { text: printer.printNode(ts.EmitHint.Unspecified, node, sf),
+          line: sf.getLineAndCharacterOfPosition(node.name.getStart(sf)).line + 1 });
+      }
+    }
+    return rows;
+  };
+  const before = collect(beforeText), after = collect(afterText);
+  if (!before || !after) return [];
+  return [...new Set([...before.keys(), ...after.keys()])].flatMap(name =>
+    before.get(name)?.text === after.get(name)?.text ? [] : [{ name, line: (after.get(name) ?? before.get(name)).line }]);
+}
+
 export function collectExportedSignatures(sourceText, fileName = 'f.ts') {
   const sf = ts.createSourceFile(fileName, sourceText, ts.ScriptTarget.Latest, true);
   const sigs = new Map(); // key -> { typeParams, params: [{ name, optional, rest, type }], ret }
@@ -753,6 +785,74 @@ export function diffSignatureBreaks(beforeText, afterText, fileName = 'f.ts') {
   }
 
   return breaks;
+}
+
+/** P-037: syntax-only interface change trigger, sharing this detector's TS parser.
+ * This is advisory: neither an object shape nor a registration proves runtime reach.
+ */
+export function diffInterfaceConsequences(beforeText, afterText, fileName = 'f.ts') {
+  const changes = diffRequiredAdditions(beforeText, afterText, fileName).map(x => `required ${x.path}`);
+  const beforeSignatures = collectExportedSignatures(beforeText, fileName);
+  const afterSignatures = collectExportedSignatures(afterText, fileName);
+  for (const name of new Set([...beforeSignatures.keys(), ...afterSignatures.keys()])) {
+    if (JSON.stringify(beforeSignatures.get(name)) !== JSON.stringify(afterSignatures.get(name))) changes.push(`signature ${name}`);
+  }
+  const surfaces = text => {
+    const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true);
+    const found = new Map();
+    const compact = node => ts.createPrinter({ removeComments: true }).printNode(ts.EmitHint.Unspecified, node, sf).replace(/\s+/g, ' ').trim();
+    const unwrap = node => {
+      while (node && (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node))) node = node.expression;
+      return node;
+    };
+    const recordReturn = (expression, name) => {
+      const value = unwrap(expression);
+      if (!value || !ts.isObjectLiteralExpression(value)) return;
+      const values = found.get(`returned fields ${name}`) ?? [];
+      // Field names/initializers matter, while formatting and comments do not.
+      values.push(compact(value));
+      found.set(`returned fields ${name}`, values);
+    };
+    const visitReturns = (node, name) => {
+      if (ts.isReturnStatement(node)) recordReturn(node.expression, name);
+      // An inner callback's return is not the exported callable's return.
+      ts.forEachChild(node, child => { if (!ts.isFunctionLike(child)) visitReturns(child, name); });
+    };
+    const visit = node => {
+      if (ts.isCallExpression(node) && /(?:^|\.)(?:defineTool|registerTool)$/.test(node.expression.getText(sf))) {
+        const config = node.arguments.find(ts.isObjectLiteralExpression);
+        if (config) {
+          const name = config.properties.find(p => p.name?.getText(sf) === 'name');
+          const shape = config.properties.filter(p => p.name && /^(?:argSchema|parameters|inputSchema|input|args|returns|output|outputSchema|result|schema)$/.test(p.name.getText(sf).replace(/^['"]|['"]$/g, '')));
+          if (name) found.set(`registered tool ${compact(name)}`, shape.map(compact));
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    for (const stmt of sf.statements) {
+      if (!isExported(stmt)) continue;
+      if (ts.isFunctionDeclaration(stmt) && stmt.name && stmt.body) visitReturns(stmt.body, stmt.name.text);
+      if (ts.isClassDeclaration(stmt) && stmt.name) for (const member of stmt.members) {
+        if (!member.name || !member.body || member.name.getText(sf).startsWith('#')
+          || member.modifiers?.some(m => m.kind === ts.SyntaxKind.PrivateKeyword || m.kind === ts.SyntaxKind.ProtectedKeyword)) continue;
+        if (ts.isMethodDeclaration(member) || ts.isGetAccessorDeclaration(member))
+          visitReturns(member.body, `${stmt.name.text}.${member.name.getText(sf)}`);
+      }
+      if (ts.isVariableStatement(stmt)) for (const d of stmt.declarationList.declarations) {
+        if (d.initializer && (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))) {
+          const body = d.initializer.body;
+          if (ts.isBlock(body)) visitReturns(body, d.name.getText(sf));
+          else recordReturn(body, d.name.getText(sf));
+        }
+      }
+    }
+    visit(sf);
+    return found;
+  };
+  const before = surfaces(beforeText), after = surfaces(afterText);
+  for (const key of new Set([...before.keys(), ...after.keys()]))
+    if (JSON.stringify(before.get(key)) !== JSON.stringify(after.get(key))) changes.push(key);
+  return [...new Set(changes)];
 }
 
 function workspaceFor(file) {

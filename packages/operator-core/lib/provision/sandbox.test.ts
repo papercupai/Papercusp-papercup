@@ -208,7 +208,7 @@ describe('buildSandbox — active macOS sandbox-exec profile', () => {
 });
 
 describe('buildSandbox — unsupported platform', () => {
-  it('returns an inactive none driver (no sandboxer) on win32, env passed through', () => {
+  it('returns an inactive none driver (no sandboxer) on win32, env passed through', async () => {
     delete process.env.PAPERCUSP_DISABLE_SANDBOX;
     setPlatform('win32');
     const r = buildSandbox({
@@ -218,7 +218,7 @@ describe('buildSandbox — unsupported platform', () => {
     expect(r.driver).toBe('none');
     expect(r.argv).toEqual([]);
     expect(r.env).toEqual({ X: '1' });
-    expect(() => prepareSandboxCommand(r, ['/bin/true'], '/srt')).toThrow(/unsupported/);
+    await expect(prepareSandboxCommand(r, ['/bin/true'], '/srt')).rejects.toThrow(/unsupported/);
   });
 });
 
@@ -229,34 +229,35 @@ describe('final provision command composition', () => {
       policy: { pluginDir: '/plugin', scratchDir: '/scratch', projectDir: '/project', allowedHosts } };
   }
 
-  it('uses assigned hosts and ports and protects per-run settings', () => {
+  it('uses the floor-enforcing proxy and protects per-run settings', async () => {
     const sandbox = active(['vendor.example', '127.0.0.1:32001', '**.multi.example']);
-    const prepared = prepareSandboxCommand(sandbox, ['/bin/bash', '/plugin/a b.sh'], '/srt');
+    const prepared = await prepareSandboxCommand(sandbox, ['/bin/bash', '/plugin/a b.sh'], '/srt');
     try {
       expect(prepared.argv.slice(0, 3)).toEqual(['/srt', '-s', prepared.settingsPath]);
       expect(prepared.argv[4]).toContain("exec '/bwrap'");
       expect(prepared.argv[4]).not.toContain('--clearenv');
       expect(prepared.argv[4]).toContain("'/plugin/a b.sh'");
       const settings = JSON.parse(readFileSync(prepared.settingsPath!, 'utf8'));
-      expect(settings.network).toEqual({ allowedDomains: ['vendor.example:80', 'vendor.example:443',
-        '127.0.0.1:32001', '*.multi.example:80', '*.multi.example:443'], deniedDomains: [], strictAllowlist: true });
+      expect(settings.network).toEqual({ allowedDomains: [], deniedDomains: ['*'],
+        strictAllowlist: true, httpProxyPort: expect.any(Number) });
+      expect(settings.network.httpProxyPort).toBeGreaterThan(0);
       expect(settings.filesystem.allowWrite).toEqual(['/scratch', '/project']);
       expect(settings.filesystem.denyWrite).toHaveLength(1);
       expect(prepared.settingsPath!.startsWith(settings.filesystem.denyWrite[0] + '/')).toBe(true);
-    } finally { prepared.cleanup(); }
+    } finally { await prepared.cleanup(); }
     expect(existsSync(prepared.settingsPath!)).toBe(false);
   });
 
-  it('refuses missing SRT and unrepresentable single-label wildcards before spawn', () => {
-    expect(() => prepareSandboxCommand(active(), ['/bin/true'], null)).toThrow(/unavailable/);
-    expect(() => prepareSandboxCommand(active(['*.vendor.example']), ['/bin/true'], '/srt'))
-      .toThrow(/cannot enforce single-label wildcard/);
+  it('refuses missing SRT and malformed destination rules before spawn', async () => {
+    await expect(prepareSandboxCommand(active(), ['/bin/true'], null)).rejects.toThrow(/unavailable/);
+    await expect(prepareSandboxCommand(active(['vendor.example/path']), ['/bin/true'], '/srt'))
+      .rejects.toThrow(/Invalid provision host rule/);
   });
 
-  it('retains deny-all when no hosts were assigned', () => {
-    const prepared = prepareSandboxCommand(active([]), ['/bin/true'], '/srt');
+  it('retains deny-all when no hosts were assigned', async () => {
+    const prepared = await prepareSandboxCommand(active([]), ['/bin/true'], '/srt');
     try {
       expect(JSON.parse(readFileSync(prepared.settingsPath!, 'utf8')).network.allowedDomains).toEqual([]);
-    } finally { prepared.cleanup(); }
+    } finally { await prepared.cleanup(); }
   });
 });

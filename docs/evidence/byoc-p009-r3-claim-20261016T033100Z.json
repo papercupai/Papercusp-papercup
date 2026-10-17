@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "BYOC P009 R003 controlled stall with authoritative owned checkpoint writes",
+  "framework": "node",
+  "command": [
+    "npx",
+    "tsx",
+    "scripts/bench-work-item-continuations.ts",
+    "--held=WI-10000407",
+    "--unrelated=WI-6554700010014738",
+    "--output=/tmp/byoc-p009-r3-claim-20261016T033100Z.json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-16T03:30:37.826Z",
+  "finishedAt": "2026-10-16T03:30:46.717Z",
+  "summary": "Isolated current-source proxy and controlled relay; real owned checkpoint/claim writes with authoritative readbacks on staging3170. Timings include readback.",
+  "assertions": [
+    {
+      "id": "unrelated-write-within-20s",
+      "passed": true,
+      "evidence": "wallMs=698.94227; authoritative hash=93277b94796f"
+    },
+    {
+      "id": "unrelated-claim-within-20s",
+      "passed": true,
+      "evidence": "wallMs=4611.7434379999995; takenAt=2026-10-16T03:30:39.363Z; verified=true"
+    },
+    {
+      "id": "same-item-order",
+      "passed": true,
+      "evidence": "reached=held,unrelated,claim,ordered,unknown; queued=2; unknown=outcome_unknown"
+    },
+    {
+      "id": "cancelled-request-not-applied",
+      "passed": true,
+      "evidence": "reached=held,unrelated,claim,ordered,unknown; queued=2; unknown=outcome_unknown"
+    },
+    {
+      "id": "queue-rejection-not-forwarded",
+      "passed": true,
+      "evidence": "reached=held,unrelated,claim,ordered,unknown; queued=2; unknown=outcome_unknown"
+    },
+    {
+      "id": "lost-ack-outcome-unknown-readback",
+      "passed": true,
+      "evidence": "reached=held,unrelated,claim,ordered,unknown; queued=2; unknown=outcome_unknown"
+    },
+    {
+      "id": "source-stable",
+      "passed": true,
+      "evidence": "reached=held,unrelated,claim,ordered,unknown; queued=2; unknown=outcome_unknown"
+    }
+  ],
+  "sourceHashes": {
+    "apps/operator/lib/mcp-proxy/proxy.ts": "e10b51c37e3cf3f71a3bfaa168551f8d027db75199c076d7ff83874ccde59d22",
+    "apps/operator/lib/mcp-proxy/budgets.mjs": "00159976718185c38d56870d3b2b2b9a8e30a221b2c345baabe8848e6e39483a",
+    "packages/operator-core/lib/agent-tools/work_items/checkpoint.ts": "e736a46cf49edbce64195e6742a212feb11231c83f5ee3f98d51f9f5379df2ea",
+    "packages/operator-core/lib/agent-tools/work_items/claim.ts": "faa9a93673c2743e1a50ff1732ba8897fb6b4a731f1f5be085227792db0b1a86",
+    "packages/operator-core/lib/work-items.ts": "1f7ad8cc278969925261311cddd0b27e24bdb0afb1b7ec3b53fdc91e9b4389b7",
+    "scripts/mcp-call.mjs": "937de488ec9599b55fb87fe5baa5d4e7f1956b5aeb4ddb65a6bc4d164e1ab007",
+    "scripts/bench-work-item-continuations.ts": "5ea6a45793364b8b51ac475b24f3464a10a8aa8e4242f696d24f9cab69771e51"
+  },
+  "wallMs": 698.94227,
+  "claimWallMs": 4611.7434379999995,
+  "claimProof": {
+    "id": "WI-6554700010014738",
+    "responseOk": true,
+    "itemOk": true,
+    "receiptId": "WI-6554700010014738",
+    "assignee": "su-d1b5c7b0-e972-4d63-9a21-0fcf79225e95",
+    "takenAt": "2026-10-16T03:30:39.363Z",
+    "readBackId": "WI-6554700010014738",
+    "readBackAssignee": "su-d1b5c7b0-e972-4d63-9a21-0fcf79225e95",
+    "readBackTakenAt": "2026-10-16T03:30:39.363Z",
+    "verified": true
+  },
+  "claimHeldAtReadback": true,
+  "claimMethod": "Renew already-owned claim; receipt and storage must agree on exact item, owner and a fresh takenAt. No release or third-party takeover.",
+  "items": {
+    "held": "WI-10000407",
+    "unrelated": "WI-6554700010014738"
+  },
+  "nonce": "0d50261d-b0ec-4419-b9e5-03324e264b8e",
+  "sameItemOrder": {
+    "blockedBeforeRelease": true,
+    "heldSucceeded": true,
+    "orderedVerified": true,
+    "reachedInOrder": true
+  },
+  "checkpointProofs": {
+    "held": {
+      "id": "WI-10000407",
+      "responseOk": true,
+      "itemOk": true,
+      "verified": true,
+      "errorCode": null,
+      "writeCommitted": null,
+      "contentHash": "91410b2256ad",
+      "readBackContentHash": null
+    },
+    "ordered": {
+      "id": "WI-10000407",
+      "responseOk": true,
+      "itemOk": true,
+      "verified": true,
+      "errorCode": null,
+      "writeCommitted": null,
+      "contentHash": "72276f857485",
+      "readBackContentHash": "72276f857485"
+    },
+    "unrelated": {
+      "id": "WI-6554700010014738",
+      "responseOk": true,
+      "itemOk": true,
+      "verified": true,
+      "errorCode": null,
+      "writeCommitted": null,
+      "contentHash": "93277b94796f",
+      "readBackContentHash": "93277b94796f"
+    },
+    "unknown": {
+      "id": "WI-6554700010014738",
+      "responseOk": true,
+      "itemOk": true,
+      "verified": true,
+      "errorCode": null,
+      "writeCommitted": null,
+      "contentHash": "452948f82262",
+      "readBackContentHash": "452948f82262"
+    }
+  },
+  "checkpointHashes": {
+    "unrelated": "93277b94796f",
+    "ordered": "72276f857485",
+    "unknown": "452948f82262"
+  },
+  "receipts": {
+    "overflow": "not_forwarded",
+    "unknown": "outcome_unknown"
+  },
+  "scope": "Current-source isolated proxy on real staging writes; not the deployed shared proxy or R006 shipment.",
+  "notExercised": [
+    "shared deployed proxy",
+    "all unavailable evidence paths",
+    "deployed R006 acceptance"
+  ]
+}

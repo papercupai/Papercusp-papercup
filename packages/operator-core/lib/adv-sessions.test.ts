@@ -65,6 +65,7 @@ import {
   isDeadTerminalLaunch,
   isFailedTerminalLaunch,
   acquireAdvSessionResume,
+  claimAdvSessionResume,
   classifyOwnerNativeSession,
   fallbackCodexLaunchSpecFromAdvSession,
   hasAdvSessionTerminalEvidence,
@@ -114,6 +115,22 @@ describe('deliberate retirement resume fence (WI-6554700010010429)', () => {
       expect(write).not.toContain('retired_at =');
     },
   );
+
+  it('returns retired for a retired row on the legacy no-key claim path', async () => {
+    advSessionRowsMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ retired_at: new Date() }]);
+
+    await expect(claimAdvSessionResume(42)).resolves.toBe('retired');
+
+    const statements = (advSessionRowsMock.mock.calls as unknown[][]).map(([template]) =>
+      (template as readonly string[]).join(' '),
+    );
+    expect(statements).toHaveLength(2);
+    expect(statements[0]).toContain('UPDATE harness_shared.adv_sessions');
+    expect(statements[0]).toContain('retired_at IS NULL');
+    expect(statements[1]).toContain('SELECT retired_at FROM harness_shared.adv_sessions');
+  });
 
   it('refuses a retired row even for a replayed lease and positive absence witness', async () => {
     const tx = vi.fn(async (strings: TemplateStringsArray) => {

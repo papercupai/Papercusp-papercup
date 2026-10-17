@@ -26,18 +26,30 @@ import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
   readWorkspaceHostConnection,
+  readWorkspaceHostDestroyTarget,
   upsertWorkspaceHost,
+  type StoredWorkspaceHostConnection,
 } from '../../workspace-host/observability-store';
 import { workspaceHostSpecColumns } from '../../workspace-host/desired-spec-host-row';
 import type { WorkspaceHostBringUp } from '../../workspace-host/hosted-bring-up';
 import {
   startWorkspaceHostProvisioningWorkflow,
+  startWorkspaceHostLifecycleWorkflow,
   type StartWorkspaceHostProvisioningInput,
+  type StartWorkspaceHostLifecycleInput,
 } from '../../dbos/workspace-host-provision-workflow';
+import { resolveControllerWorkspaceHostBootstrap } from '../../workspace-host/provisioning-runner';
+import { createConfiguredGcpWorkspaceHostProvider } from '../../workspace-host/gcp-provider';
+import { resolveHostedGcpAuth } from '../../workspace-host/hosted-gcp-auth';
+import { createConfiguredAwsWorkspaceHostProvider } from '../../workspace-host/aws-configured-provider';
+import { resolveOrganizationExternalIdRef } from '../../workspace-host/hosted-aws-identity';
+import { admitHostedLifecycleJob, readHostedLifecycleAdmission, completeHostedPoolReuse, refreshHostedStoppedOwnerObservation,
+  type AdmitHostedLifecycleJobInput } from '../../workspace-host/hosted-lifecycle-store';
 import {
   HostedWorkspaceAdmissionError,
   type HostedWorkspaceAdmissionDependencies,
   type HostedWorkspaceBinding,
+  type HostedWorkspaceProvisioningRequest,
 } from './workspace-admission';
 
 /** Migration 1200: at most one live customer workspace per organization (D-397). */
@@ -76,11 +88,64 @@ export interface DefaultHostedWorkspaceAdmissionOptions {
    * (`dbos/workspace-host-provision-client.ts`).
    */
   startWorkflow?: (input: StartWorkspaceHostProvisioningInput) => Promise<unknown>;
+  startLifecycleWorkflow?: (input: StartWorkspaceHostLifecycleInput) => Promise<unknown>;
+  /** Platform-funded signup uses the VM pool; BYOC keeps its customer-cloud provision route. */
+  pooled?: boolean;
+  /** Server-only catalog seam. No request parser accepts cost, capacity, runtime or pool fields. */
+  resolvePoolAdmission?: typeof resolveHostedPoolAdmission;
   /**
    * D-401: set the machine up once it is built. Only the Papercusp-hosted first-workspace door
    * passes this; without it provisioning ends at the machine, as every other caller expects.
    */
   bringUp?: Pick<WorkspaceHostBringUp, 'requestedAgents'>;
+}
+
+/** Resolve measured requirements and a provider quote. Unknown prices are never zero-cost admissions. */
+export async function resolveHostedPoolAdmission(
+  input: HostedWorkspaceProvisioningRequest,
+  stored: Pick<StoredWorkspaceHostConnection, 'connection'>,
+): Promise<Pick<AdmitHostedLifecycleJobInput, 'pool' | 'estimate'>> {
+  const desired = input.desiredSpec;
+  // The request-only hosted process does not start DBOS or populate its provider registry.
+  // Reuse the configured providers' credential seams for these read-only catalog calls.
+  const provider = stored.connection.target === 'gcp'
+    ? createConfiguredGcpWorkspaceHostProvider(stored.connection, { resolveHostedAuth: resolveHostedGcpAuth })
+    : stored.connection.target === 'aws'
+      ? createConfiguredAwsWorkspaceHostProvider(stored.connection, { resolveExternalId: resolveOrganizationExternalIdRef })
+      : null;
+  if (!provider) throw new HostedWorkspaceAdmissionError('pool provider is unsupported', 'lifecycle_admission_unavailable');
+  const context = { workspaceId: input.controlPlaneWorkspaceId, requestId: input.operationId,
+    connection: { ...stored.connection, scope: desired.scope }, actorId: input.actorId };
+  const query = { scope: desired.scope, region: desired.region };
+  const [sizes, images, price, bootstrap, target] = await Promise.all([
+    provider.listSizes(query, context), provider.listImages(query, context), provider.estimatePrice(desired, context),
+    resolveControllerWorkspaceHostBootstrap(desired.hostId),
+    readWorkspaceHostDestroyTarget(input.controlPlaneWorkspaceId, input.hostId),
+  ]);
+  const size = sizes.find(value => value.id === desired.size && value.available);
+  const image = images.find(value => value.id === desired.image.id && !value.deprecated);
+  const monthly = price.monthlyAmount ?? price.hourlyAmount * 730;
+  if (!desired.zone || !size || !image?.architecture || price.confidence === 'unknown' ||
+      !Number.isFinite(monthly) || monthly < 0 || !Number.isSafeInteger(Math.ceil(monthly * 100)) ||
+      (size.architectures && !size.architectures.includes(image.architecture))) {
+    throw new HostedWorkspaceAdmissionError('provider capacity, architecture, zone or pricing is unavailable', 'lifecycle_admission_unavailable');
+  }
+  const disks = target?.resources.filter(value => value.resource.kind === 'disk') ?? [];
+  if (disks.length > 1) throw new HostedWorkspaceAdmissionError('durable data volume identity is ambiguous', 'lifecycle_admission_unavailable');
+  if (target?.observedState === 'stopped') {
+    await refreshHostedStoppedOwnerObservation({ workspaceId: input.controlPlaneWorkspaceId,
+      customerWorkspaceId: input.customerWorkspaceId, hostId: target.id, requestId: input.operationId },
+    { resolveProvider: () => provider });
+  }
+  return {
+    pool: { scope: desired.scope, region: desired.region, zone: desired.zone,
+      architecture: image.architecture, runtimeBundleSha256: bootstrap.runtimeRelease.bundleSha256,
+      minimum: { cpuCount: size.cpuCount, memoryMiB: size.memoryMiB }, maxObservationAgeMs: 20 * 60_000,
+      dataVolumeId: disks[0]?.resource.providerId ?? `unprovisioned:${input.customerWorkspaceId}` },
+    estimate: { cents: Math.ceil(monthly * 100), currency: price.currency, source: `${desired.target}-provider-catalog`,
+      evidenceRef: `${desired.target}://catalog/${encodeURIComponent(desired.scope.id)}/${encodeURIComponent(desired.region)}/${encodeURIComponent(desired.size)}`,
+      estimatedAt: price.observedAt },
+  };
 }
 
 export function createDefaultHostedWorkspaceAdmissionDependencies(
@@ -99,6 +164,43 @@ export function createDefaultHostedWorkspaceAdmissionDependencies(
 
   return {
     controlPlaneWorkspaceId: activeWorkspaceId,
+    ...(options.pooled ? { async admitAndStart(input: HostedWorkspaceProvisioningRequest) {
+      const request = { connectionId: input.connectionId, name: input.name, desired: input.desiredSpec };
+      const replay = await readHostedLifecycleAdmission({ workspaceId: input.controlPlaneWorkspaceId,
+        operationId: input.operationId, customerWorkspaceId: input.customerWorkspaceId, actorId: input.actorId, request });
+      const stored = await readWorkspaceHostConnection(input.controlPlaneWorkspaceId, input.connectionId);
+      if (!stored) throw new HostedWorkspaceAdmissionError('provider connection disappeared', 'connection_not_found');
+      const receipt = replay ?? await admitHostedLifecycleJob({
+        workspaceId: input.controlPlaneWorkspaceId, customerWorkspaceId: input.customerWorkspaceId,
+        hostId: input.hostId, providerTarget: input.desiredSpec.target, action: 'provision',
+        operationId: input.operationId, actorId: input.actorId, request,
+        riskTier: 'moderate', approvalStatus: 'not-required',
+        billingOwner: { kind: 'platform', id: input.controlPlaneWorkspaceId },
+        ...await (options.resolvePoolAdmission ?? resolveHostedPoolAdmission)(input, stored),
+      });
+      // Re-enqueue on replay too: admission may have committed just before a process died.
+      // The existing DBOS workflow id and dedup key bind this to the SAME operation.
+      if (receipt.placement?.kind === 'reuse') {
+        await completeHostedPoolReuse(input.controlPlaneWorkspaceId, receipt);
+      } else if (receipt.placement?.kind === 'provision') {
+        await startWorkflow({ workspaceId: input.controlPlaneWorkspaceId, connectionId: input.connectionId,
+          name: input.name, desired: input.desiredSpec, connection: stored.connection,
+          operationId: receipt.operationId, actorId: input.actorId, hostedCustomerWorkspaceId: input.customerWorkspaceId,
+          ...(options.bringUp ? { bringUp: { ...options.bringUp, customerWorkspaceId: input.customerWorkspaceId } } : {}) });
+      } else if (receipt.placement && 'hostId' in receipt.placement) {
+        const target = await readWorkspaceHostDestroyTarget(input.controlPlaneWorkspaceId, receipt.hostId);
+        if (!target) throw new Error('hosted_pool_reserved_host_missing');
+        const selectedConnection = await readWorkspaceHostConnection(input.controlPlaneWorkspaceId, target.connectionId);
+        if (!selectedConnection) throw new Error('hosted_pool_reserved_connection_missing');
+        await (options.startLifecycleWorkflow ?? startWorkspaceHostLifecycleWorkflow)({
+          workspaceId: input.controlPlaneWorkspaceId, hostId: receipt.hostId, action: 'start',
+          connection: { ...selectedConnection.connection, scope: target.desired.scope },
+          operationId: receipt.operationId, actorId: input.actorId, hostedCustomerWorkspaceId: input.customerWorkspaceId,
+          ...(receipt.placement.kind === 'assign-warm' && options.bringUp
+            ? { bringUp: { ...options.bringUp, customerWorkspaceId: input.customerWorkspaceId } } : {}),
+        });
+      } else throw new Error('hosted_pool_placement_required');
+    } } : {}),
 
     async readConnection(controlPlaneWorkspaceId, connectionId) {
       const stored = await readWorkspaceHostConnection(controlPlaneWorkspaceId, connectionId);

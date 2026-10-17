@@ -14,6 +14,7 @@
  * null/false on any failure (no wmctrl, no DISPLAY, pid not yet windowed).
  */
 import { focusWindowByTitle, isWindowsDesktopHost, listWindowsByTitle } from './windows-desktop-windows';
+import { focusMacWindow, resolveMacWindow } from './macos-desktop-windows';
 
 /** Keep a refused X11 focus request from blocking the operator request loop. */
 const X11_FOCUS_TIMEOUT_MS = 2_000;
@@ -33,9 +34,15 @@ interface FocusCommandResult {
 /** A sync result is accepted for injected test seams; the real runner is async. */
 type X11CommandRunner = (command: string, args: string[]) => FocusCommandResult | Promise<FocusCommandResult>;
 
-interface FocusWindowIdDeps {
+export interface FocusWindowOptions {
+  /** Omitted: bring here on Linux/Windows; switch Spaces on macOS. */
+  workspace?: 'current' | 'window';
+}
+
+interface FocusWindowIdDeps extends FocusWindowOptions {
   runCommand?: X11CommandRunner;
   settle?: (ms: number) => Promise<void>;
+  platform?: NodeJS.Platform;
 }
 
 /**
@@ -68,20 +75,38 @@ export function sameX11WindowId(left: string, right: string): boolean {
   return a !== null && b !== null && a === b;
 }
 
-async function activeX11WindowMatches(targetWindowId: string, runCommand: X11CommandRunner): Promise<boolean> {
-  const active = await runCommand('xdotool', ['getactivewindow']);
-  return active.status === 0 && sameX11WindowId(active.stdout, targetWindowId);
+async function activeX11WindowMatches(targetWindowId: string, runCommand: X11CommandRunner, expectedDesktop: number): Promise<boolean> {
+  const [active, desktops, map] = await Promise.all([
+    runCommand('xdotool', ['getactivewindow']),
+    readX11Desktops(targetWindowId, runCommand),
+    runCommand('xwininfo', ['-id', targetWindowId]),
+  ]);
+  return active.status === 0 && sameX11WindowId(active.stdout, targetWindowId)
+    && desktops !== null && desktops.current === expectedDesktop && (desktops.target === 0xffffffff || desktops.target === desktops.current)
+    && !desktops.hidden && map.status === 0 && /Map State:\s*IsViewable\b/.test(map.stdout);
+}
+
+async function readX11Desktops(windowId: string, runCommand: X11CommandRunner) {
+  const [root, window] = await Promise.all([
+    runCommand('xprop', ['-root', '_NET_CURRENT_DESKTOP']),
+    runCommand('xprop', ['-id', windowId, '_NET_WM_DESKTOP', '_NET_WM_STATE']),
+  ]);
+  const current = root.stdout.match(/_NET_CURRENT_DESKTOP\(CARDINAL\)\s*=\s*(\d+)/);
+  const target = window.stdout.match(/_NET_WM_DESKTOP\(CARDINAL\)\s*=\s*(\d+)/);
+  if (root.status !== 0 || window.status !== 0 || !current || !target) return null;
+  return { current: Number(current[1]), target: Number(target[1]), hidden: /_NET_WM_STATE_HIDDEN\b/.test(window.stdout) };
 }
 
 async function waitForActiveX11Window(
   targetWindowId: string,
   runCommand: X11CommandRunner,
   settle: (ms: number) => Promise<void>,
+  expectedDesktop: number,
 ): Promise<boolean> {
-  if (await activeX11WindowMatches(targetWindowId, runCommand)) return true;
+  if (await activeX11WindowMatches(targetWindowId, runCommand, expectedDesktop)) return true;
   for (let attempt = 0; attempt < X11_FOCUS_SETTLE_ATTEMPTS; attempt += 1) {
     await settle(X11_FOCUS_SETTLE_INTERVAL_MS);
-    if (await activeX11WindowMatches(targetWindowId, runCommand)) return true;
+    if (await activeX11WindowMatches(targetWindowId, runCommand, expectedDesktop)) return true;
   }
   return false;
 }
@@ -93,6 +118,7 @@ async function waitForActiveX11Window(
  * message rather than crashing.
  */
 export async function resolveWindowIdForPid(pid: number): Promise<string | null> {
+  if (process.platform === 'darwin') return resolveMacWindow({ pid });
   try {
     const r = await runX11Command('wmctrl', ['-lp']);
     if (r.status !== 0) return null;
@@ -130,6 +156,7 @@ export function matchWindowIdInWmctrlOutput(stdout: string, fragment: string): s
 export async function resolveWindowIdForTitleFragment(fragment: string): Promise<string | null> {
   const wanted = fragment.trim();
   if (!wanted) return null;
+  if (process.platform === 'darwin') return resolveMacWindow({ fragment: wanted });
   if (isWindowsDesktopHost()) {
     // windows-desktop-feature-parity-2026-07-02 P-010: there is no
     // pid→window mapping across the WSL↔Windows boundary (see
@@ -183,20 +210,49 @@ export async function focusWindowId(
 ): Promise<boolean> {
   if (isWindowsDesktopHost()) {
     try {
+      // Windows' public desktop API supports moving an existing window here,
+      // not selecting an arbitrary virtual desktop. Never silently change mode.
+      if (deps.workspace === 'window') return false;
       return await focusWindowByTitle(windowId);
     } catch {
       return false;
     }
   }
+  const platform = deps.platform ?? process.platform;
+  if (platform === 'darwin') return deps.workspace !== 'current' && focusMacWindow(windowId);
+  if (platform !== 'linux' || parseX11WindowId(windowId) === null) return false;
   try {
     const runCommand: X11CommandRunner = deps.runCommand ?? runX11Command;
     const settle = deps.settle ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+
+    const desktops = await readX11Desktops(windowId, runCommand);
+    if (!desktops) return false;
+    const expectedDesktop = deps.workspace === 'window' && desktops.target !== 0xffffffff ? desktops.target : desktops.current;
+    if (desktops.target !== 0xffffffff && desktops.target !== desktops.current) {
+      const moved = deps.workspace === 'window'
+        ? await runCommand('wmctrl', ['-s', String(desktops.target)])
+        : await runCommand('wmctrl', ['-ir', windowId, '-t', String(desktops.current)]);
+      if (moved.status !== 0) return false;
+    }
+    // Do not send direct input focus to a still-hidden workspace when the WM
+    // ignored the placement request. Wait for placement before activating.
+    let prepared = false;
+    for (let attempt = 0; attempt <= X11_FOCUS_SETTLE_ATTEMPTS; attempt += 1) {
+      const state = await readX11Desktops(windowId, runCommand);
+      if (state && state.current === expectedDesktop && (state.target === 0xffffffff || state.target === expectedDesktop)) { prepared = true; break; }
+      if (attempt < X11_FOCUS_SETTLE_ATTEMPTS) await settle(X11_FOCUS_SETTLE_INTERVAL_MS);
+    }
+    if (!prepared) return false;
+    // Activation can focus an unmapped/iconified client. Restore it explicitly,
+    // then require a visible mapping AND current workspace at every success exit.
+    const mapped = await runCommand('xdotool', ['windowmap', windowId]);
+    if (mapped.status !== 0) return false;
 
     // GNOME can accept wmctrl's _NET_ACTIVE_WINDOW request (exit 0) while
     // refusing to activate the window. Observe the active window before
     // reporting success; an exit code alone is not evidence of activation.
     const wmctrl = await runCommand('wmctrl', ['-ia', windowId]);
-    if (wmctrl.status === 0 && (await activeX11WindowMatches(windowId, runCommand))) {
+    if (wmctrl.status === 0 && (await activeX11WindowMatches(windowId, runCommand, expectedDesktop))) {
       return true;
     }
 
@@ -204,7 +260,7 @@ export async function focusWindowId(
     // where wmctrl is a false positive. It is bounded by the runner timeout,
     // and still must pass the same observed-active-window check.
     const xdotool = await runCommand('xdotool', ['windowactivate', '--sync', windowId]);
-    if (xdotool.status === 0 && (await waitForActiveX11Window(windowId, runCommand, settle))) {
+    if (xdotool.status === 0 && (await waitForActiveX11Window(windowId, runCommand, settle, expectedDesktop))) {
       return true;
     }
 
@@ -218,7 +274,7 @@ export async function focusWindowId(
     if (raised.status !== 0) return false;
     const directlyFocused = await runCommand('xdotool', ['windowfocus', '--sync', windowId]);
     if (directlyFocused.status !== 0) return false;
-    return await waitForActiveX11Window(windowId, runCommand, settle);
+    return await waitForActiveX11Window(windowId, runCommand, settle, expectedDesktop);
   } catch {
     return false;
   }

@@ -166,20 +166,18 @@ export async function unresolvedRefsInBody(
   }
 
   // `known` ids are already resolved by the caller (for example, the item whose
-  // checkpoint is being written), so include exact known refs found in this body
-  // in the prefix fence too. Otherwise a body containing the known full id and a
-  // human-readable shorthand probes only the shorthand and falsely warns about it.
-  const knownResolvedIds = refs
-    .filter((r): r is Extract<HydratableRef, { kind: 'work-item' }> => r.kind === 'work-item')
-    .map((r) => r.id)
-    .filter((id) => known.has(id.toUpperCase()))
-    .map((id) => id.toUpperCase());
+  // checkpoint is being written). They also establish a prefix fence when the body
+  // uses only that item's shortened id; requiring the full id to appear in the body
+  // makes a valid self-reference look phantom. Keep the fence to the same WI/EI
+  // families detected in prose, and preserve ambiguity when multiple known ids share
+  // a prefix.
+  const knownResolvedIds = [...known].filter((id) => /^(?:WI|EI)-\d+$/.test(id));
   const resolvedIds = [
     ...knownResolvedIds,
     ...verdicts
       .filter((v) => v.judged && v.resolved)
       .map((v) => v.id.toUpperCase()),
-  ];
+  ].filter((id, index, all) => all.indexOf(id) === index);
   const missing = verdicts
     .filter((v) => v.judged && !v.resolved)
     .map((v) => v.id)

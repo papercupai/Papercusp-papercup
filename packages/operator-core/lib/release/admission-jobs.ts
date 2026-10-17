@@ -22,6 +22,8 @@ import {
   type AdmissionOutcome,
   type AdmitPathsInput,
 } from './repair-head-admission';
+import { reconcileFrozenRepairQueueWithLineageRef } from './frozen-lineage-ledger-reconcile';
+import type { FrozenCandidateRepairQueue } from './frozen-candidate-repair-queue';
 import {
   buildCommittedPatchSource,
   buildHunkExactSource,
@@ -417,6 +419,7 @@ export function immutablePrecheckPopulation(input: ImmutablePrecheckInput):
 
 export type AdmissionJob =
   | { kind: 'git'; argv: string[]; cwd: string }
+  | { kind: 'reconcile-lineage'; queue: FrozenCandidateRepairQueue; root: string }
   | { kind: 'precheck-population'; input: ImmutablePrecheckInput }
   | { kind: 'containment'; paths: string[]; judgedSha: string; root: string; branch: string }
   | { kind: 'committed-patch'; input: CommittedPatchInput }
@@ -430,6 +433,7 @@ export type AdmissionJob =
 
 export interface AdmissionJobResults {
   git: AdmissionGitResult;
+  'reconcile-lineage': ReturnType<typeof reconcileFrozenRepairQueueWithLineageRef>;
   'precheck-population': ReturnType<typeof immutablePrecheckPopulation>;
   containment: ReturnType<typeof containmentForPaths>;
   'committed-patch': ReturnType<typeof buildCommittedPatchSource>;
@@ -462,6 +466,8 @@ export function executeAdmissionJob(job: AdmissionJob): AdmissionJobResults[Admi
   switch (job.kind) {
     case 'git':
       return realAdmissionGit(job.argv, { cwd: job.cwd });
+    case 'reconcile-lineage':
+      return reconcileFrozenRepairQueueWithLineageRef(job.queue, { root: job.root });
     case 'precheck-population':
       return immutablePrecheckPopulation(job.input);
     case 'containment':

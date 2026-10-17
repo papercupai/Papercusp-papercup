@@ -5,7 +5,7 @@
  * guard); concurrent different-part ops merge into the recomposed content; a
  * malformed wire row is rejected.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type postgres from 'postgres';
 import { InMemoryPlanPartsStore } from '../../../plan-parts/store';
 import {
@@ -122,6 +122,71 @@ describe('harness-plan-parts projection', () => {
     expect(update.text).toContain('FORCED_PAST');
     expect(update.values).toContain(JSON.stringify(expected));
   });
+
+  it.each(['shipped', 'superseded'] as const)(
+    'rejects a federated %s transition when the plan still has an unfinished item',
+    async (terminalStatus) => {
+      const content = [
+        '---',
+        'slug: p1',
+        'status: active',
+        '---',
+        '',
+        '# Plan',
+        '',
+        '## Phase 1',
+        '',
+        '- **P-001** \x60todo\x60 unfinished item',
+        '',
+      ].join('\n');
+      const statements: string[] = [];
+      const sql = ((strings: TemplateStringsArray) => {
+        const statement = strings.join(' ').replace(/\s+/g, ' ').trim();
+        statements.push(statement);
+        if (statement.startsWith('SELECT p.content')) {
+          return Promise.resolve([{ content, status: 'active', op_status: null }]);
+        }
+        return Promise.resolve([]);
+      }) as unknown as postgres.Sql;
+      const store = new InMemoryPlanPartsStore();
+      const proj = buildHarnessPlanPartsProjection({
+        workspaceId: 'ws',
+        harnessSlug: 'h',
+        store,
+        sql,
+        isFlagOn: async () => true,
+        readLocalContent: async () => content,
+      });
+
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await proj.writeToPg(
+          part(
+            'p1',
+            'frontmatter',
+            '---\nslug: p1\nstatus: ' + terminalStatus + '\n---',
+            { kind: 'frontmatter' },
+          ),
+          { authorPubkey: 'A', origin: 'remote', ts: 200 },
+        );
+
+        expect(warning).toHaveBeenCalledWith(
+          expect.stringContaining(
+            "[plan-write-admission] rejected federated part recompose for 'p1': " +
+              "Refused terminal plan transition to '" +
+              terminalStatus +
+              "' with unfinished item(s) P-001",
+          ),
+        );
+        expect(statements.some((statement) => statement.startsWith('SELECT p.content'))).toBe(true);
+        expect(
+          statements.some((statement) => statement.startsWith('UPDATE harness_shared.harness_plans')),
+        ).toBe(false);
+      } finally {
+        warning.mockRestore();
+      }
+    },
+  );
 
   it('composeKey == plan_slug/part_key (matches part_fed_key)', () => {
     expect(_testing.composeKey(part('p1', 'item:P-001', 'x'))).toBe('p1/item:P-001');

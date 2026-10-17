@@ -268,6 +268,30 @@ describe('claimAdvSessionResume (single-winner Channel 2 resume claim)', () => {
       .toContain(row.coord_owner_id);
   });
 
+  it.each(['legacy unkeyed', 'legacy keyed'] as const)('refuses a retired row for %s resume', async (path) => {
+    const id = await seedRow('90 minutes', true);
+    await admin`
+      UPDATE harness_shared.adv_sessions
+         SET retired_at = now(), retired_by = 'fleet:kill:test', retired_reason = 'resume regression test'
+       WHERE id = ${id}
+    `;
+    const [before] = await admin`
+      SELECT session_id, started_at, ended_at, exit_code, ended_by, ended_signal,
+             retired_at, retired_by, retired_reason, resume_claim_key, resume_claimed_at
+        FROM harness_shared.adv_sessions WHERE id = ${id}
+    `;
+
+    const key = path === 'legacy keyed' ? `retired-resume-${id}` : null;
+    await expect(claimAdvSessionResume(id, key)).resolves.toBe('retired');
+
+    const [after] = await admin`
+      SELECT session_id, started_at, ended_at, exit_code, ended_by, ended_signal,
+             retired_at, retired_by, retired_reason, resume_claim_key, resume_claimed_at
+        FROM harness_shared.adv_sessions WHERE id = ${id}
+    `;
+    expect(after).toEqual(before);
+  });
+
   it('claims a row that was NEVER marked ended (process died without recording its exit)', async () => {
     // The regression: this row is indistinguishable from a live one by ended_at
     // alone, but its process is long gone. It must be resumable.
@@ -514,6 +538,32 @@ describe('explicit resume reservation lifecycle (lossless handoff)', () => {
 });
 
 describe('reactivateAdvSessionByOwner (non-exclusive genuine-activity repair)', () => {
+  it('does not reactivate a fleet-retired row', async () => {
+    const owner = `s-owner-retired-${WS}`;
+    await seedAdv({ coordOwnerId: owner, ended: true });
+    await admin`
+      UPDATE harness_shared.adv_sessions
+         SET retired_at = now(), retired_by = 'fleet:kill:test', retired_reason = 'activity regression test'
+       WHERE workspace_id = ${WS} AND coord_owner_id = ${owner}
+    `;
+    const [before] = await admin`
+      SELECT session_id, started_at, ended_at, exit_code, ended_by, ended_signal,
+             retired_at, retired_by, retired_reason
+        FROM harness_shared.adv_sessions
+       WHERE workspace_id = ${WS} AND coord_owner_id = ${owner}
+    `;
+
+    await expect(reactivateAdvSessionByOwner(owner)).resolves.toBe(false);
+
+    const [after] = await admin`
+      SELECT session_id, started_at, ended_at, exit_code, ended_by, ended_signal,
+             retired_at, retired_by, retired_reason
+        FROM harness_shared.adv_sessions
+       WHERE workspace_id = ${WS} AND coord_owner_id = ${owner}
+    `;
+    expect(after).toEqual(before);
+  });
+
   it.each(['claude', 'omp', 'codex'])('%s startup activity preserves a keyed resume reservation', async (agent) => {
     const owner = `s-owner-reserved-${agent}`;
     await seedAdv({ coordOwnerId: owner, agent, ended: true });

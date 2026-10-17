@@ -84,6 +84,22 @@ describe('member baseline stay-alive rule (P-008)', () => {
   });
 });
 
+describe('member baseline implementation route scope', () => {
+  it('does not treat a no-additional-agent route as a veto on platform acceptance', () => {
+    const rule = MEMBER_BASELINE_RULES.find((item) => item.head === 'One-agent route scopes implementation fan-out');
+    expect(rule?.body).toContain('launch no additional agents');
+    expect(rule?.body).toContain('platform-routed independent reviews, graders, or validators required for acceptance');
+    const context = composeMemberLaunchContext({
+      fleetSlug: 'single-agent-fleet',
+      plan: 'single-agent-plan',
+      count: 1,
+      customBriefText: 'One agent on this plan; launch no additional agents.',
+    });
+    expect(context).toContain(rule?.head);
+    expect(context).toContain(rule?.body);
+  });
+});
+
 describe('member baseline causal-evidence contract', () => {
   it('names every v2 field required by successful defect closes', () => {
     const completionRule = MEMBER_BASELINE_RULES.find((rule) => rule.head === 'Completion evidence is mandatory');

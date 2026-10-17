@@ -4,6 +4,7 @@ import {
   acceptanceGraderLabelPrefix,
   answeringOwnerAtCursor,
   buildAssignedAcceptanceGraderBrief,
+  carriedAcceptanceReviewBrief,
   carriedStaleGradingCardIds,
   classifyAcceptanceGraderStartupStall,
   classifyAcceptanceGraderNoFirstTurnStall,
@@ -31,6 +32,20 @@ import {
   GRADING_CASCADE_ANSWER_GRACE_MS,
 } from './acceptance-grader';
 import { ACCEPTANCE_GRADING_BAR_SCOPE_GUIDANCE } from './consult/grading-cascade';
+import { mockResolvedTyped } from './testing/typed-mock';
+
+describe('pre-publication review brief', () => {
+  it('carries the exact unknown-only selection alongside independent verification', () => {
+    const brief = carriedAcceptanceReviewBrief({ acceptancePendingDeliveryBarKeys: ['R-15'],
+      acceptanceIndependentVerificationBrief: 'Re-observe the installed candidate independently.' });
+    expect(brief).toContain('Re-observe the installed candidate independently.');
+    expect(brief).toContain('pendingDeliveryBarKeys:["R-15"]');
+    expect(brief).toContain('must rate unknown');
+    expect(brief).toContain('BOTH scorecards:evaluate and scorecards:emit');
+    expect(brief).toContain('Do not claim delivery');
+    expect(carriedAcceptanceReviewBrief({})).toBe('');
+  });
+});
 
 describe('native terminal API-error provenance', () => {
   const sessionId = 'native-fixture-session';
@@ -127,7 +142,27 @@ describe('native terminal API-error provenance', () => {
 
 describe('readOpenGradingAnswererTerminalFailure (EI-25855370514874242)', () => {
   const input = { workspaceId: 'grader-ws', conversationId: 'grader-conv', answeringOwnerId: 'su-answerer' };
-  const target = { ok: true, ownerId: input.answeringOwnerId, agent: 'claude', sessionId: 'native-answerer' };
+  const target = {
+    ok: true,
+    ownerId: input.answeringOwnerId,
+    agent: 'claude',
+    sessionId: 'native-answerer',
+    ompThreadId: null,
+    resumeId: 'native-answerer',
+    workspaceId: input.workspaceId,
+    harnessSlug: 'papercusp',
+    role: null,
+    feature: null,
+    cwd: null,
+    model: null,
+    modelSource: null,
+    account: null,
+    endedAt: null,
+    endedBy: null,
+    live: false,
+    advSessionId: 72,
+    binding: null,
+  } as const;
   const native = JSON.stringify({ type: 'assistant', sessionId: target.sessionId,
     isApiErrorMessage: true, apiErrorStatus: 429, message: { role: 'assistant', stop_reason: 'end_turn' } });
   const log = '●API Error: Request rejected (429) · inference-gateway: all accounts throttled; retry after 60s\n❯';
@@ -159,6 +194,21 @@ describe('readOpenGradingAnswererTerminalFailure (EI-25855370514874242)', () => 
     deps.listTasks.mockResolvedValue([{ taskId: 'new-task', sessionId: 'new-native', logPath: 'new.log' }] as Awaited<ReturnType<typeof import('./task-manager/store').listTasks>>);
     expect(await readOpenGradingAnswererTerminalFailure(input, deps)).toBeNull();
     expect(deps.killTask).not.toHaveBeenCalled();
+  });
+
+  it('recovers the current Codex answerer from owner-bound native capacity evidence', async () => {
+    const d = dependencies();
+    mockResolvedTyped(d.resolveTarget, { ...target, agent: 'codex', advSessionId: 73 });
+    d.readLogTail.mockImplementation(path => path === 'answerer.jsonl'
+      ? JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete',
+          error: { codex_error_info: 'server_overloaded', message: 'Selected model is at capacity.' } } })
+      : 'Working · GPT-6.1-Sol high');
+    const findCodexTranscript = vi.fn(async () => 'answerer.jsonl');
+    const failure = await readOpenGradingAnswererTerminalFailure(input, { ...d, findCodexTranscript } as never);
+    expect(failure).toMatchObject({ code: 'inference_gateway_error' });
+    expect(findCodexTranscript).toHaveBeenCalledWith(target.sessionId, { homeOverride: expect.stringContaining('session-73') });
+    expect(await failure?.retire?.()).toBe(true);
+    expect(d.killTask).toHaveBeenCalledWith('exact-task', { includeSubtree: true, escalateAfterMs: 5_000 });
   });
 
   it.each([
@@ -591,6 +641,16 @@ const plan = {
   },
 } as never;
 
+/** A plan whose build item is still open — recruitment must refuse before reading the rubric. */
+const planWithOpenBuildItems = {
+  row: {
+    items: [
+      { id: 'P-001', text: 'Implement the thing', status: 'blocked' },
+      { id: 'P-002', text: 'Independent acceptance grading', status: 'todo' },
+    ],
+  },
+} as never;
+
 const rubric = {
   rubricId: 'acceptance-ship-the-thing',
   revision: 3,
@@ -971,6 +1031,17 @@ function deps(launch: ReturnType<typeof vi.fn>) {
 }
 
 describe('launchAcceptanceGrader', () => {
+  it.each([launchAcceptanceGrader, resolveAcceptanceGrader])('refuses recruitment before reading the rubric or launching while build work is open', async recruit => {
+    const launch = vi.fn();
+    const d = deps(launch);
+    d.readPlan.mockResolvedValue(planWithOpenBuildItems);
+    const result = await recruit('ship-the-thing', {} as never, d);
+    expect(result).toMatchObject({ state: 'failed', openBuildItems: ['P-001'] });
+    expect(result.error).toContain('build_items_open');
+    expect(d.getRubric).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+  });
+
   it('pins routine-scoped fresh and retry launches to the requested gateway model', async () => {
     const launch = vi.fn().mockResolvedValueOnce({
       data: { launch: { tasks: [{ taskId: 'pinned-quota', logPath: '/tmp/pinned-quota.log' }] } },
@@ -1415,6 +1486,53 @@ describe('launchAcceptanceGrader', () => {
     });
     expect(quoted).toHaveBeenCalledTimes(1);
     expect(quotedKill).not.toHaveBeenCalled();
+  });
+
+  it.each(['handle', 'legacy-receipt'] as const)('recovers a Codex capacity failure through the %s launch receipt', async (shape) => {
+    const ownerId = 'su-capacity-judge';
+    const sessionId = 'native-capacity-judge';
+    const launch = vi.fn().mockResolvedValueOnce({ data: { deduped: true, launch: {
+      agentStarted: true,
+      freshVerdict: { sessions: [{ ownerId, sessionId }] },
+      tasks: [{ taskId: 'task-capacity', ownerId, logPath: '/tmp/capacity.log',
+        kickoffProof: { persisted: true, nativeRef: '/tmp/capacity.jsonl' },
+        nativeSession: shape === 'handle' ? { backend: 'codex', ownerId, rolloutId: sessionId } : null }],
+    } } }).mockResolvedValue({ data: { launch: { tasks: [{ taskId: 'task-recovered' }] } } });
+    const kill = vi.fn(async () => ({ ok: true }));
+    const native = [
+      JSON.stringify({ type: 'session_meta', payload: { id: sessionId } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete',
+        error: { codex_error_info: 'server_overloaded', message: 'Selected model is at capacity.' } } }),
+    ].join('\n');
+    const result = await launchAcceptanceGrader('ship-the-thing', {
+      ...baseCtx, gradingLaunch: { agent: 'codex', model: 'gpt-6.1-sol', effort: 'xhigh', account: 'auto' },
+    } as never, { ...deps(launch), killTask: kill as never, terminalLogMaxRechecks: 0,
+      readLogTail: path => path.endsWith('.jsonl') ? native : 'Working · GPT-6.1-Sol high' });
+    expect(kill).toHaveBeenCalledWith('task-capacity', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ state: 'launched', terminalRecovery: {
+      retiredTaskIds: ['task-capacity'], codes: ['inference_gateway_error'],
+    } });
+  });
+
+  it.each(['resumed', 'successful', 'foreign-session'] as const)('keeps a Codex launch alive after %s native evidence', async (state) => {
+    const ownerId = 'su-current-codex';
+    const sessionId = 'current-rollout';
+    const launch = vi.fn().mockResolvedValue({ data: { launch: {
+      tasks: [{ taskId: 'keep-this-task', ownerId, logPath: 'current.log',
+        kickoffProof: { nativeRef: 'current.jsonl' }, nativeSession: { backend: 'codex', ownerId, rolloutId: sessionId } }],
+    } } });
+    const native = [
+      JSON.stringify({ type: 'session_meta', payload: { id: state === 'foreign-session' ? 'foreign' : sessionId } }),
+      JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', error: { codex_error_info: 'server_overloaded' } } }),
+      ...(state === 'resumed' ? [JSON.stringify({ type: 'event_msg', payload: { type: 'task_started' } })] : []),
+      ...(state === 'successful' ? [JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete' } })] : []),
+    ].join('\n');
+    const kill = vi.fn();
+    await launchAcceptanceGrader('ship-the-thing', ctx, { ...deps(launch), killTask: kill as never,
+      terminalLogMaxRechecks: 0, readLogTail: path => path.endsWith('.jsonl') ? native : 'Working · GPT-6.1-Sol high' });
+    expect(kill).not.toHaveBeenCalled();
+    expect(launch).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a terminal fallback when exact task retirement fails', async () => {

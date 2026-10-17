@@ -61,7 +61,7 @@ const readStoredQualification = vi.hoisted(() =>
   vi.fn(
     async (
       ..._a: unknown[]
-    ): Promise<{ status: string; transaction?: { phase: string; attemptId: string; currentPhysicalRunner?: unknown; outcome?: unknown } }> => ({ status: 'none' }),
+    ): Promise<{ status: string; transaction?: { phase: string; attemptId: string; currentPhysicalRunner?: unknown; outcome?: unknown; requiredAncestorSha?: string | null } }> => ({ status: 'none' }),
   ),
 );
 const beginStoredQualification = vi.hoisted(() => vi.fn());
@@ -3786,6 +3786,18 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
   // answerable. If the retry accounting stops at the broadcast, /admin/git and every gate
   // history reader still cannot tell a retry-absorbed green from a clean one — which IS the
   // defect, merely moved one layer down.
+  it('P036: persists structured failing paths independently from bounded output tails', () => {
+    const paths = ['packages/core/first.ts', 'packages/core/second.ts'];
+    const detail = buildCheckpointDetail({ reason: 'not-green', green: false,
+      postSuiteLegs: [{ id: 'lint:tsc', status: 'failed', durationMs: 1, subjectPaths: paths }],
+      repairTickLegs: { head: 'a'.repeat(40), atMs: 1, ok: false, failingSignatures: ['lint:tsc'],
+        legs: [{ id: 'lint:tsc', status: 'fail', durationMs: 1, subjectPaths: paths, outputTail: 'first/file.ts ' + 'x'.repeat(2000) }],
+      },
+    });
+    expect(detail.postSuiteLegs).toEqual([expect.objectContaining({ subjectPaths: paths })]);
+    expect(detail.repairTickLegs).toMatchObject({ legs: [expect.objectContaining({ subjectPaths: paths, outputTail: expect.stringMatching(/^first\/file.ts/) })] });
+  });
+
   it('EI-18685042025868279: buildCheckpointDetail persists cleanGreen:FALSE — the one value a truthiness check would silently drop', () => {
     const d = buildCheckpointDetail({
       reason: 'advanced',
@@ -4061,7 +4073,7 @@ describe('P-303: signed gate-verdict producer', () => {
     expect(logs).toEqual(['signed gate shard publication skipped (no time budget)']);
   });
 
-  function deps(overrides: Partial<import('./release-actions').SignedGateVerdictPublishDeps> = {}) {
+  function signedVerdictDeps(overrides: Partial<import('./release-actions').SignedGateVerdictPublishDeps> = {}) {
     const inserted: Array<{ target: typeof target; hiveHomeSlug: string | null; signed: import('../../sync/pot-git/gate/verdicts').GateVerdict; verdictId: string }> = [];
     const base: import('./release-actions').SignedGateVerdictPublishDeps = {
       loadHarnessRegistry: async () => ({
@@ -4106,14 +4118,14 @@ describe('P-303: signed gate-verdict producer', () => {
   }
 
   it('fails closed before any dependency work when run identity is incomplete', async () => {
-    const { base, inserted } = deps();
+    const { base, inserted } = signedVerdictDeps();
     const result = await publishSignedGateVerdicts(target, { reason: 'up-to-date', candidate: 'short', runId: 'run-1' }, base);
     expect(result).toEqual({ published: 0, skipped: 0, reason: 'missing-run-identity' });
     expect(inserted).toHaveLength(0);
   });
 
   it('publishes one signed fact per evidenced shard with measured outcome and duration', async () => {
-    const { base, inserted } = deps();
+    const { base, inserted } = signedVerdictDeps();
     const result = await publishSignedGateVerdicts(
       target,
       { reason: 'up-to-date', green: true, candidate, runId: 'run-1' },
@@ -4136,7 +4148,7 @@ describe('P-303: signed gate-verdict producer', () => {
     const attemptedIds: string[] = [];
     const attemptedTimestamps: number[] = [];
     const persistedIds = new Set<string>();
-    const { base } = deps({
+    const { base } = signedVerdictDeps({
       insertGateVerdict: async (row) => {
         attemptedIds.push(row.verdictId);
         attemptedTimestamps.push(row.signed.ts);
@@ -4162,7 +4174,7 @@ describe('P-303: signed gate-verdict producer', () => {
   });
 
   it('uses the final attempt per file so a later pass supersedes a historical failure', async () => {
-    const { base, inserted } = deps({
+    const { base, inserted } = signedVerdictDeps({
       readTestRuns: async () => [
         {
           id: 41,
@@ -4197,7 +4209,7 @@ describe('P-303: signed gate-verdict producer', () => {
   });
 
   it('does not turn skipped or cancelled rows into a signed pass', async () => {
-    const { base, inserted } = deps({
+    const { base, inserted } = signedVerdictDeps({
       readTestRuns: async () => [{
         file_path: 'packages/core/src/core.test.ts',
         status: 'skip',
@@ -4211,7 +4223,7 @@ describe('P-303: signed gate-verdict producer', () => {
   });
 
   it('fails closed rather than substituting a wall-clock timestamp for incomplete evidence', async () => {
-    const { base, inserted } = deps({
+    const { base, inserted } = signedVerdictDeps({
       readTestRuns: async () => [{ file_path: 'packages/core/src/core.test.ts', status: 'pass', duration_ms: 12 }],
     });
     const result = await publishSignedGateVerdicts(target, { reason: 'up-to-date', candidate, runId: 'run-1' }, base);
@@ -4236,6 +4248,24 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     failingTests: ['lib/broken.test.ts'],
     signature: [],
   };
+
+  it.each(['current', 'foreign', 'missing'] as const)('P036: writer admits only %s-head lint path evidence', async (kind) => {
+    const lintQueue = { ...queue, failingTests: ['lint:tsc'], signature: [{ id: 'lint:tsc', kind: 'lint-leg' as const,
+      recipe: 'npm run lint:tsc', admittedRound: 1, measuredHead: queue.repairHead }] };
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ legs: {
+      ...(kind === 'missing' ? {} : { head: kind === 'current' ? queue.repairHead.slice(0, 12) : 'f'.repeat(12) }),
+      legs: [{ id: 'lint:tsc', status: 'fail', subjectPaths: ['packages/core/violating.ts'], outputTail: 'generic trailer' }],
+    } }])).mockResolvedValueOnce(sqlRows([{ written: true }]));
+    await writeFrozenCandidateRepairQueue(target, lintQueue, { expectedUpdatedAtMs: lintQueue.updatedAtMs });
+    const write = fakeSql.unsafe.mock.calls.find(([query]) => /metadata = jsonb_set/.test(String(query)));
+    expect(write).toBeDefined();
+    const params = write?.[1];
+    if (!Array.isArray(params)) throw new Error('queue write must carry positional SQL parameters');
+    const persisted = JSON.parse(String(params[2])).repair_queue;
+    const row = persisted.manifest.rows.find((entry: { legId: string }) => entry.legId === 'lint:tsc');
+    expect(row.subjectPaths).toEqual(kind === 'current' ? ['packages/core/violating.ts'] : []);
+    expect(row.admitCommand !== null).toBe(kind === 'current');
+  });
 
   it('P-025: returns explicit unreadable state and makes the legacy reader throw on schema skew', async () => {
     const newer = {
@@ -4460,13 +4490,19 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       // The caller's snapshot (`queue`, repairHead c…, updatedAtMs 2) is NOT what the reducer
       // sees: it is applied to the row as it stands (repairHead d…, updatedAtMs 10). The reducer
       // does not move the version, so the writer bumps it; the first CAS misses and is re-read.
-      const outcome = await applyFrozenCandidateRepairQueueTransition(target, (row) => ({
-        ...row,
-        phase: 'ready-to-verify' as const,
-      }));
+      let reductions = 0;
+      const outcome = await applyFrozenCandidateRepairQueueTransition(target, async (row) => {
+        reductions += 1;
+        await Promise.resolve();
+        return {
+          ...row,
+          phase: 'ready-to-verify' as const,
+        };
+      });
       expect(outcome).toMatchObject({ status: 'written', retries: 1 });
       expect(outcome.queue).toMatchObject({ repairHead: 'd'.repeat(40), phase: 'ready-to-verify', updatedAtMs: 11 });
       expect(updates).toHaveLength(2);
+      expect(reductions).toBe(2);
       for (const u of updates) expect(u.params[4]).toBe('10');
       expect((rowNow as { repairHead: string; updatedAtMs: number }).repairHead).toBe('d'.repeat(40));
       expect((rowNow as { updatedAtMs: number }).updatedAtMs).toBe(11);
@@ -4863,6 +4899,32 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     fakeSql.unsafe.mockClear();
     fireLaunchBlueprintForEvent.mockClear();
     fireLaunchBlueprintForEvent.mockResolvedValue(null);
+  });
+
+  it.each([
+    { measured: 'false', hasSnapshot: true, code: 'no-measured-failures', retryable: false, reason: 'no measured failing tests' },
+    { measured: 'true', hasSnapshot: false, code: 'snapshot-mismatch', retryable: true, reason: 'no fresh candidate snapshot' },
+  ])('reports the exact typed refusal without spawning: $code', async ({ measured, hasSnapshot, code, retryable, reason }) => {
+    const candidate = 'a'.repeat(40);
+    const repairQueue: FrozenCandidateRepairQueue = {
+      schemaVersion: 1, phase: 'awaiting-fixer', candidate, base: 'b'.repeat(40), repairHead: candidate,
+      affectedTestProofGroup: 'proof-1', attempts: 0, openedAtMs: 1, updatedAtMs: 2,
+      fixerSpawnId: null, failingTests: ['lib/red.test.ts'], signature: [],
+    };
+    const snapshot = buildCandidateSnapshot({ candidate, failingTests: repairQueue.failingTests, repairQueue }, Date.now());
+    expect(snapshot).not.toBeNull();
+    fakeSql.unsafe.mockResolvedValueOnce(sqlRows([{ lf: null, ftm: measured, cs: hasSnapshot ? snapshot : null }]));
+    const onSkip = vi.fn();
+
+    const result = await dispatchReleaseFixer(
+      { workspaceId: 'ws-42', installSlug: 'my-harness' }, candidate, repairQueue.failingTests, repairQueue, undefined,
+      { checkCandidate: async () => ({ candidateExists: true, candidatePromoted: false }), onSkip },
+    );
+
+    expect(result).toBeNull();
+    expect(onSkip).toHaveBeenCalledExactlyOnceWith({ code, retryable, reason: expect.stringContaining(reason) });
+    expect(fireLaunchBlueprintForEvent).not.toHaveBeenCalled();
+    expect(fakeSql.unsafe.mock.calls.some(([query]) => String(query).includes('UPDATE'))).toBe(false);
   });
 
   it('does not announce or suppress retries when the launch target returns no spawn', async () => {

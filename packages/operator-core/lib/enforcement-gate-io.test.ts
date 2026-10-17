@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { CarryBrief } from './carry-brief';
 const refusalMarks = vi.hoisted(() => new Map<string, number>());
+const autoCheckpointStaleHeldItems = vi.hoisted(() => vi.fn(async () => [] as Array<{ id: string; mechanical: true }>));
+vi.mock('./turn-end-tracking-io', () => ({ autoCheckpointStaleHeldItems }));
+const setLoopCarryNote = vi.hoisted(() => vi.fn());
+vi.mock('./carry-note', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./carry-note')>()),
+  setLoopCarryNote,
+}));
 vi.mock('./flush-refusal-marker', () => ({
   REFUSAL_MARKER_TTL_MS: 10 * 60_000,
   wasRecentlyRefused: async (boundary: string, ownerId: string, nowMs = Date.now()) =>
@@ -50,6 +57,8 @@ function unflushedBrief(): CarryBrief {
 
 beforeEach(async () => {
   await __resetRefusalMarkers();
+  autoCheckpointStaleHeldItems.mockReset().mockResolvedValue([]);
+  setLoopCarryNote.mockReset().mockResolvedValue(undefined);
   // Hermetic against host load (WI-5582): runFlushGate races the inner work against
   // a bounded-timeout budget (default 4s). On an event-loop-starved green-checkpoint
   // host that 4s wall clock once beat the instant mocked inner work, degrading the
@@ -59,6 +68,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await __resetRefusalMarkers();
+  vi.useRealTimers();
   delete process.env.PAPERCUSP_FLUSH_GATE;
   delete process.env.PAPERCUSP_FLUSH_GATE_BUDGET_MS;
 });
@@ -137,6 +147,9 @@ describe('runFlushGate ladder', () => {
     // the fallback write fails soft with no DB in the unit env — checkpointedItems is
     // an array either way, and the verdict/marker transition is what matters here.
     expect(Array.isArray(second.fallback?.checkpointedItems)).toBe(true);
+    expect(autoCheckpointStaleHeldItems).toHaveBeenCalledWith(
+      expect.objectContaining({ heldItems: args.brief?.heldItems }),
+    );
     // the marker is retired after the fallback fires
     expect(await wasRecentlyRefused('compaction', 'su-d', NOW)).toBe(false);
   });
@@ -189,6 +202,49 @@ describe('runFlushGate ladder', () => {
     });
     expect(out.verdict).toBe('clear');
     expect(out.tripwires).toEqual([]);
+  });
+});
+
+describe('mandatory host snapshot', () => {
+  it('refuses a failed mandatory loop checkpoint instead of reporting a successful save', async () => {
+    setLoopCarryNote.mockRejectedValueOnce(Object.assign(new Error('storage unavailable'), { code: '08006' }));
+    const out = await runFlushGate({
+      boundary: 'compaction', mode: 'host-snapshot', ownerId: 'su-snapshot',
+      workspaceId: '*', sessionId: 'su-snapshot', sinceIso: new Date(NOW).toISOString(),
+      brief: brief({ loop: { harness: 'papercusp', active: true, intervalSec: 60,
+        carry: 'cold', goal: null, carryNote: null, carryNoteUpdatedAtMs: null } }),
+      nowMs: NOW,
+    });
+    expect(setLoopCarryNote).toHaveBeenCalledOnce();
+    expect(out).toMatchObject({ verdict: 'refuse',
+      snapshotFailure: { phase: 'checkpoint-write', code: '08006' } });
+    expect(out.fallback).toBeUndefined();
+  });
+
+  it('waits for every checkpoint beyond the advisory deadline before returning its receipt', async () => {
+    vi.useFakeTimers();
+    process.env.PAPERCUSP_FLUSH_GATE_BUDGET_MS = '4000';
+    let finishSave!: (items: Array<{ id: string; mechanical: true }>) => void;
+    const save = new Promise<Array<{ id: string; mechanical: true }>>(resolve => { finishSave = resolve; });
+    autoCheckpointStaleHeldItems.mockReturnValueOnce(save);
+    let settled = false;
+    const pending = runFlushGate({
+      boundary: 'compaction', mode: 'host-snapshot', ownerId: 'su-snapshot',
+      workspaceId: '*', sessionId: 'su-snapshot', sinceIso: new Date(NOW).toISOString(),
+      brief: brief(), nowMs: NOW,
+    }).then(value => { settled = true; return value; });
+    try {
+      await vi.waitFor(() => expect(autoCheckpointStaleHeldItems).toHaveBeenCalledOnce());
+      await vi.advanceTimersByTimeAsync(4001);
+      expect(settled).toBe(false);
+      finishSave([{ id: 'WI-1', mechanical: true }, { id: 'WI-12', mechanical: true }]);
+      await expect(pending).resolves.toMatchObject({
+        verdict: 'mechanical-fallback', fallback: { checkpointedItems: ['WI-1', 'WI-12'] },
+      });
+    } finally {
+      finishSave([]);
+      await pending;
+    }
   });
 });
 

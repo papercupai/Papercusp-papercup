@@ -36,6 +36,7 @@ import {
   matchKnownExternalToolFailure,
   KNOWN_EXTERNAL_TOOL_FAILURE_CLASSES,
   type ToolErrorClass,
+  type SuspectedToolFailure,
 } from './tool-error-classifier';
 import { TOOL_ERROR_CORPUS } from './tool-error-corpus.fixture';
 import { metadataToolFailure } from '../../agent-tools/plans/coordination-metadata-fixtures';
@@ -120,6 +121,20 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
     )).toBe('transient');
   });
 
+  it('classifies the release admission worker busy refusal as transient, while retaining structural fallback', () => {
+    const message = 'an admission job is already running in this process; retry after it settles';
+    expect(classifyToolError('handler_error', 'error', message)).toBe('transient');
+    expect(classifyToolError('ADMISSION_OFFTHREAD_BUSY', 'error', 'busy')).toBe('transient');
+    expect(classifyToolError('handler_error', 'error', 'admission failed with an unrelated error')).toBe('structural');
+
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'release:repair-queue',
+      errorCode: 'handler_error',
+      status: 'error',
+      message,
+    })).toMatchObject({ class: 'transient', direct: false });
+  });
+
   it('D-010: the filing signature ignores schema/runtime churn but keeps tool, family, error code and field', () => {
     const original = normalizeSuspectedToolFailure(metadataToolFailure);
     const signature = toolFailureSignatureKey(metadataToolFailure, original.class);
@@ -186,6 +201,12 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
         message: 'The capability is present in tools:find, but tools.mcp__papercusp_su__logs_read is not callable in this Codex session; calling it raised TypeError before dispatch. Switching to ptool logs:read via the sanctioned CLI fallback.',
       },
       {
+        toolName: 'coord:read',
+        errorCode: 'client_wrapper_unavailable',
+        status: 'not_dispatched',
+        message: 'The normalized direct wrapper tools.mcp__papercusp_su__coord_read was not callable (TypeError) before dispatch. The tool is present in the registry; reading the directed message must use the sanctioned ptool route.',
+      },
+      {
         toolName: 'docs:outline',
         errorCode: 'wrapper-unavailable',
         status: 'client_surface_gap',
@@ -218,7 +239,7 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
 
     for (const report of reports) {
       expect(classifyToolError(report.errorCode, report.status, report.message)).toBe('caller');
-      expect(normalizeSuspectedToolFailure({ ...report, reproduced: true })).toMatchObject({
+      expect(normalizeSuspectedToolFailure({ ...report, reproduced: true } as SuspectedToolFailure)).toMatchObject({
         class: 'caller',
         direct: false,
       });
@@ -245,7 +266,7 @@ describe('P-001 R-7 frozen friction correlation controls', () => {
 
     for (const report of reports) {
       expect(classifyToolError(report.errorCode, report.status, report.message)).toBe('caller');
-      expect(normalizeSuspectedToolFailure({ ...report, reproduced: true })).toMatchObject({
+      expect(normalizeSuspectedToolFailure({ ...report, reproduced: true } as SuspectedToolFailure)).toMatchObject({
         class: 'caller',
         direct: false,
       });
@@ -378,6 +399,24 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     expect(classifyToolError('handler_error', 'error', 'Cannot read properties of undefined')).toBe('structural');
   });
 
+  it('classifies stale tools:invoke serving-generation refusals as caller state', () => {
+    const message =
+      'stale_tool_contract: schema was discovered from serving-generation-v1:old, but this operator serves ' +
+      'serving-generation-v1:current; refresh tools:find on this operator';
+    expect(classifyToolError('handler_error', 'error', message)).toBe('caller');
+    expect(classifyToolError('stale_tool_contract', 'error', 'generation mismatch before dispatch')).toBe('caller');
+    expect(classifyToolError('handler_error', 'error', JSON.stringify({ error: message }))).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'tools:invoke',
+      errorCode: 'handler_error',
+      status: 'error',
+      message,
+      reproduced: true,
+    })).toMatchObject({ class: 'caller', direct: false });
+    // A generic handler failure that merely mentions an MCP generation remains structural.
+    expect(classifyToolError('handler_error', 'error', 'serving generation lookup failed in the database')).toBe('structural');
+  });
+
   it('classifies the claim-spec self-sentinel refusal as caller misuse, not a structural tool defect', () => {
     const message =
       'cupId must be a concrete session/owner ID, not the literal "self". To read your own claim spec, use { cupId: \'su-owner-id\' } for this session.';
@@ -439,6 +478,66 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     )).toBe('structural');
   });
 
+  it('keeps an nsenter process-namespace permission refusal out of the structural lane, even with direct evidence', () => {
+    const message = 'nsenter: cannot open /proc/1/ns/pid: Permission denied';
+    expect(classifyToolError('child_failed', 'failed', message)).toBe('caller');
+    expect(classifyToolError('child_failed', 'failed', 'cat: cannot open /root/private: Permission denied'))
+      .toBe('structural');
+
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'capability:bash',
+      errorCode: 'child_failed',
+      status: 'failed',
+      message,
+      reproduced: true,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'host namespace process inspection emits owner',
+        actual: 'namespace transition denied before command',
+      },
+    })).toMatchObject({ class: 'caller', direct: false });
+
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'capability:bash',
+      errorCode: 'child_failed',
+      status: 'failed',
+      message: 'python: SyntaxError: invalid syntax',
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'the documented command executes',
+        actual: 'the child reports a syntax error',
+      },
+    })).toMatchObject({ class: 'structural', direct: true });
+  });
+
+  it.each([
+    [
+      'blocked_command',
+      'The shell command was refused before execution by the PreToolUse guard: the command contains rm -f style cleanup, which is not permitted.',
+    ],
+    [
+      'PreToolUseCommandRejected',
+      'A path-free diagnostic was rejected because the guard said rm -f style commands are not permitted.',
+    ],
+    [
+      null,
+      'The shell command was refused before execution: rm -f style commands are not permitted.',
+    ],
+  ] as const)('classifies the expected native rm cleanup refusal as caller and denies direct promotion (%s)', (errorCode, message) => {
+    expect(classifyToolError(errorCode, 'denied', message)).toBe('caller');
+    expect(normalizeSuspectedToolFailure({
+      toolName: 'exec_command',
+      errorCode,
+      status: 'denied',
+      message,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'A focused test command with bounded output handling can execute through exec_command.',
+        actual: message,
+      },
+    })).toMatchObject({ class: 'caller', direct: false });
+  });
+
   it('classifies stopped or reassigned resolver-run refusals as expected caller control flow', () => {
     const errorCode = 'resolver_owner_mismatch_or_not_executing';
     const message = 'The bulk-resolve run is stopped and no report was written.';
@@ -466,7 +565,7 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
     }
   });
 
-  it('keeps a caller-authored pg_query 42703 refusal out of the structural wrapper lane', () => {
+  it('keeps raw and paraphrased caller-authored pg_query 42703 refusals out of the structural lane', () => {
     const wrappedPgQueryRefusal = 'column "passed" does not exist: ' + JSON.stringify({
       error: 'column "passed" does not exist',
       code: '42703',
@@ -474,9 +573,34 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
       jsonbPath: '⚠ `passed` is NOT a column',
     });
     expect(classifyToolError('handler_error', 'error', wrappedPgQueryRefusal)).toBe('caller');
+    const capturedPgQueryReport: SuspectedToolFailure = {
+      toolName: 'dev:pg_query',
+      errorCode: '42703',
+      status: 'error',
+      fieldPath: 'ORDER BY updated_at',
+      message: 'Read-only work_items query used updated_at, but the live relation exposes updated_ts ' +
+        '(and many other generated columns). Server returned knownColumns and no rows; no mutation occurred. ' +
+        'Corrected query should use updated_ts.',
+      reproduced: true,
+      directEvidence: {
+        kind: 'valid-input-reproduction',
+        expected: 'Filtered read over known work_items columns succeeds with updated_ts.',
+        actual: 'PostgreSQL rejected unknown column updated_at and named updated_ts.',
+      },
+    };
+    expect(classifyToolError(
+      capturedPgQueryReport.errorCode,
+      capturedPgQueryReport.status,
+      capturedPgQueryReport.message,
+    )).toBe('caller');
+    expect(normalizeSuspectedToolFailure(capturedPgQueryReport)).toMatchObject({
+      class: 'caller',
+      direct: false,
+    });
     // A plain missing-column handler failure has no pg_query correction envelope
     // and must continue to reach the structural repair lane.
     expect(classifyToolError('handler_error', 'error', 'column "initiative" does not exist')).toBe('structural');
+    expect(classifyToolError('42703', 'error', 'column "updated_at" does not exist')).toBe('structural');
   });
 
   it('does not mistake the timeoutSec argument name for a runtime timeout', () => {
@@ -560,6 +684,20 @@ describe('classifyToolError — real-corpus regression (P-011)', () => {
       'error',
       'structured_result_shape: tool returned an invalid structured result',
     )).toBe('structural');
+  });
+
+  it.each(['toon', 'csv', 'tsv'])('classifies JSON.parse of tagged %s MCP text as caller misuse', (format) => {
+    const message =
+      `The nested call returned text beginning \`format: ${format}\`; ` +
+      'a script assumed content[0].text was JSON and JSON.parse threw SyntaxError, ' +
+      'discarding the raw event-status payload.';
+
+    expect(classifyToolError(null, 'parse-error', message)).toBe('caller');
+    // A JSON-tagged response parse failure may indicate malformed tool output, so it remains structural.
+    expect(classifyToolError(null, 'parse-error', message.replace(`format: ${format}`, 'format: json')))
+      .toBe('structural');
+    expect(classifyToolError(null, 'parse-error', 'JSON.parse failed before a tool response was decoded.'))
+      .toBe('structural');
   });
 
   it('lets the primary error code outrank unrelated secondary failure text', () => {

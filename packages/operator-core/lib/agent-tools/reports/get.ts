@@ -48,8 +48,8 @@ function hasExactReportCitation(criteria: readonly ScorecardEvidenceCriterion[],
 export default defineTool({
   name: 'reports:get',
   description:
-    'Fetch one OR many published reports by id — including the full markdown body. Pass `id` for one or ' +
-    '`ids` for several. A RETIRED report still resolves (retirement is soft, so a citation to a report id ' +
+    'Fetch one OR many published reports by id — including the full markdown body. Pass `id` (or the ' +
+    'publish receipt alias `report_id`) for one or `ids` for several. A RETIRED report still resolves (retirement is soft, so a citation to a report id ' +
     'never breaks); its `retired_at` is set. Pass `lineage:true` to also get the full supersede history ' +
     'behind each report, newest first. Read-only. Reports you may not see come back as `not_found`.',
   guidance: {
@@ -81,6 +81,7 @@ export default defineTool({
   args: z
     .object({
       id: z.string().min(1).optional().describe('a single report id (n=1 shorthand for ids:[id])'),
+      report_id: z.string().min(1).optional().describe('compatibility alias for the single `id` returned by reports:publish'),
       ids: z.array(z.string().min(1)).min(1).max(50).optional().describe('report ids to fetch (1–50)'),
       lineage: z
         .boolean()
@@ -93,8 +94,11 @@ export default defineTool({
         .optional()
         .describe('judge-only scope: the scorecard issue id whose criteria cite this single id; do not combine with ids or lineage'),
     })
-    .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
-      message: 'pass `id` (one) or `ids` (many)',
+    .refine((a) => Boolean(a.id || a.report_id) || (a.ids?.length ?? 0) > 0, {
+      message: 'pass `id` or `report_id` (one) or `ids` (many)',
+    })
+    .refine((a) => a.id === undefined || a.report_id === undefined || a.id === a.report_id, {
+      message: '`id` and `report_id` may only be combined when they name the same report',
     }),
   async handler(args, ctx) {
     const disabled = await reportsLibraryDisabled();
@@ -102,24 +106,25 @@ export default defineTool({
     const sql = getOrgPg().sql;
     const workspaceId = resolveWorkspaceId(ctx);
     const viewer = resolveViewer(ctx);
-    const ids = mergeIds(args.id, args.ids);
+    const singleId = args.id ?? args.report_id;
+    const ids = mergeIds(singleId, args.ids);
     let citationScope: ReportCitationReadScope | undefined;
     let citationError: string | undefined;
 
     if (args.scorecardIssueId !== undefined) {
       if (ctx.role !== 'judge') {
         citationError = 'not_found';
-      } else if (args.id === undefined || args.ids !== undefined || args.lineage === true) {
+      } else if (singleId === undefined || args.ids !== undefined || args.lineage === true) {
         citationError = 'invalid_evidence_scope';
       } else {
         const evidence = await readScorecardEvidence(args.scorecardIssueId);
         if (
           evidence.kind !== 'found' ||
-          !hasExactReportCitation(evidence.scorecard.criteria, args.id)
+          !hasExactReportCitation(evidence.scorecard.criteria, singleId)
         ) {
           citationError = 'not_found';
         } else {
-          citationScope = { kind: 'scorecard-citation', reportId: args.id };
+          citationScope = { kind: 'scorecard-citation', reportId: singleId };
         }
       }
     }

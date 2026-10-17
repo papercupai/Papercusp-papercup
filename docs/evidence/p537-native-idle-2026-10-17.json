@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "planItem": "P-537",
+  "workItem": "WI-6554700010015799",
+  "fixtureBug": "EI-26190762598631458",
+  "scope": "Local current-build assembled production HTTP and PostgreSQL journey; shipment remains open",
+  "committedFocusedReadback": {
+    "verifiedAt": "2026-10-17T02:24:06.697965+00:00",
+    "head": "8fdb7d20436896addb05b9055e306907eaa29d7e",
+    "scope": "Focused committed source only; no full import-graph, origin-egress or deployed-artifact claim",
+    "files": {
+      "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts": {
+        "testedSha256": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8",
+        "currentSha256": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8",
+        "committedSha256": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8"
+      },
+      "packages/operator-core/lib/auth/hosted/first-workspace.ts": {
+        "testedSha256": "a660c23d3bd1956e936a432764f3e705c4f3f6e36306929cd9669f89e7fd99fb",
+        "currentSha256": "a660c23d3bd1956e936a432764f3e705c4f3f6e36306929cd9669f89e7fd99fb",
+        "committedSha256": "a660c23d3bd1956e936a432764f3e705c4f3f6e36306929cd9669f89e7fd99fb"
+      },
+      "packages/operator-core/lib/endpoint-route/hosted-runtime.ts": {
+        "testedSha256": "cda2c9aab4fd3255b32d08c1fc6920cf1457fd429b47751929696ca5865c6119",
+        "currentSha256": "cda2c9aab4fd3255b32d08c1fc6920cf1457fd429b47751929696ca5865c6119",
+        "committedSha256": "cda2c9aab4fd3255b32d08c1fc6920cf1457fd429b47751929696ca5865c6119"
+      },
+      "packages/operator-core/lib/endpoint-route/hosted-control-plane.ts": {
+        "testedSha256": "9d879eaccf9a11b04670982e60c668173742fc5a74609207c276e763ecb3d8fc",
+        "currentSha256": "9d879eaccf9a11b04670982e60c668173742fc5a74609207c276e763ecb3d8fc",
+        "committedSha256": "9d879eaccf9a11b04670982e60c668173742fc5a74609207c276e763ecb3d8fc"
+      },
+      "packages/operator-core/lib/workspace-host/hosted-agent-admission.ts": {
+        "testedSha256": "408f0b91c95aa34fa36d521b35094a4b5cd51fd238bda243ea6067dff584e6ec",
+        "currentSha256": "408f0b91c95aa34fa36d521b35094a4b5cd51fd238bda243ea6067dff584e6ec",
+        "committedSha256": "408f0b91c95aa34fa36d521b35094a4b5cd51fd238bda243ea6067dff584e6ec"
+      }
+    },
+    "integrationEvidence": "docs/evidence/p537-native-idle-2026-10-17.json",
+    "integrationVerdict": {
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0
+    },
+    "historicalIntegrationHashSuperseded": false
+  },
+  "rootCause": "Node v25.9.0 native fetch replaced the loopback fixture Host header with 127.0.0.1:port. Direct connector authentication succeeded, but the actual HTTP request failed hostname authentication before the reservation ledger ran.",
+  "distinguishingProbe": {
+    "sameOwnedHonoSocket": true,
+    "nativeFetch": { "hostname": "127.0.0.1", "bearerRetained": true },
+    "nodeHttp": { "hostname": "app.papercusp.com", "bearerRetained": true },
+    "beforeLog": "/tmp/p537-native-idle-v3.log",
+    "before": { "passed": 8, "failed": 1, "firstNativeReserveStatus": 401, "reservationCallbackCalls": 0 }
+  },
+  "fix": "Use built-in node:http for the owned loopback fixture; assert the public hostname at the server boundary. Keep production authentication, quotas, ledger and public error redaction intact. Add prerequisite checks and test-only HTTP/forwarded-error diagnostics.",
+  "after": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PC_EXECUTED_SOURCE_MAP_WORKSPACE=@papercusp/operator-core PC_EXECUTED_SOURCE_MAP_OUT=/tmp/p537-native-idle-v4-sources.json node scripts/with-test-pg.mjs -- npm run test:file -- packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts",
+    "log": "/tmp/p537-native-idle-v4.log",
+    "sourceMap": "/tmp/p537-native-idle-v4-sources.json",
+    "exitCode": 0,
+    "passed": 9,
+    "failed": 0,
+    "skipped": 0,
+    "nativeFinishedAtMs": 1792203241001,
+    "unhandledErrors": 0,
+    "privatePostgresShutdownVerified": true,
+    "coverage": [
+      "Configured trial callback through first-workspace HTTP and committed admission before enqueue",
+      "Actual native Node child holds a canonical running receipt; quota refusal occurs before second spawn",
+      "Running receipt prevents idle stop despite a fresh zero-work connector report",
+      "Native child exit releases its receipt; attached viewer still prevents idle stop",
+      "Stale workload fails closed; fresh zero-work permits idle stop and fences later starts",
+      "Signed configured billing upgrade, replay, cancellation and retained-state preservation",
+      "Auth-only and full-runtime trial backfill, nonrenewal and unauthenticated/absent-policy refusal"
+    ]
+  },
+  "sourceEvidence": {
+    "headAtExecution": "62994650ca1e2d173a85bb198dc07ca6d2c8f3ca",
+    "dirtyAtExecution": true,
+    "capturedViteOriginalSources": 5899,
+    "fullGraphStatus": "changed",
+    "currentMismatchPaths": [
+      "packages/operator-core/lib/agent-tools/orchestration/current-caller-dispatch.ts",
+      "packages/operator-core/lib/storage/retention-interval-evidence.ts"
+    ],
+    "caveat": "The listed focused source hashes match captured Vite original-source bytes. Two unrelated imported sources changed, so this is not exact full-import-graph or shipped-artifact proof.",
+    "focusedSha256": {
+      "packages/operator-core/lib/endpoint-route/hosted-auth-runtime.integration.test.ts": "796cd08644d3dfc6191dd50c6bdb5396f0f4dd56042745f41718599d1f1627c8",
+      "packages/operator-core/lib/auth/hosted/first-workspace.ts": "a660c23d3bd1956e936a432764f3e705c4f3f6e36306929cd9669f89e7fd99fb",
+      "packages/operator-core/lib/endpoint-route/hosted-runtime.ts": "cda2c9aab4fd3255b32d08c1fc6920cf1457fd429b47751929696ca5865c6119",
+      "packages/operator-core/lib/endpoint-route/hosted-control-plane.ts": "9d879eaccf9a11b04670982e60c668173742fc5a74609207c276e763ecb3d8fc",
+      "packages/operator-core/lib/workspace-host/hosted-agent-admission.ts": "408f0b91c95aa34fa36d521b35094a4b5cd51fd238bda243ea6067dff584e6ec"
+    }
+  },
+  "typecheck": {
+    "scope": "hosted-auth-runtime.integration.test.ts only",
+    "engine": "tsc-service",
+    "requestedErrors": 0,
+    "compilerExitCode": 0,
+    "durationMs": 8194,
+    "projectWideClaim": false
+  },
+  "remaining": [
+    "Focused fixture bug closure needs committed test-source readback",
+    "P-537 remaining acceptance census and exact shipment",
+    "P-544 usable measured all-in monthly cost under $20, including inference and durability",
+    "Canonical acceptance-bar comparison from prior revision 185 to current plan revision 216"
+  ]
+}

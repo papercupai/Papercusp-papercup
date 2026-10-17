@@ -568,7 +568,10 @@ export async function armTargetedTaskReuse({ root, workspace, script, expectedSh
         label,
         summary,
         ` scope=${scope} rows=${loaded.rows} sha=${head.slice(0, 12)}` +
-          (proofFormat === REUSE_PROOF_FORMAT ? "" : ` proofFormat=${proofFormat}(legacy)`) + laneNote,
+          (proofFormat === REUSE_PROOF_FORMAT ? "" : ` proofFormat=${proofFormat}(legacy)`) +
+          ` auditRate=${testReuseAuditRate(out)}` + laneNote,
+        { version: 1, judgedSha: head, runnerIdentity, runContext,
+          runGroupId: runGroupId ?? null, dirty: false },
       ),
   );
   await record({ summary });

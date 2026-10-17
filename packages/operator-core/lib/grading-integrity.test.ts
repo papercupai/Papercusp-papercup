@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { readRealPgRailBlocks } from '@papercusp/test-config/silenced-console-census';
+import { DEFAULT_SCRIPT_TIMEOUT_MS } from '@papercusp/tooldef';
 
 // Producer observations are asserted by the original-row coverage matrix.
 // These dispatch fixtures must not flush diagnostics into real PostgreSQL.
@@ -12,6 +13,9 @@ import type { ScorecardEvidenceRow, ScorecardRow } from './scorecards';
 import type { TaskRow } from './task-manager/types';
 import type { CoordEnvelope } from '@papercusp/coordination';
 import type { OrgSql } from './work-items';
+import { runWithWorkspace } from './workspace-als';
+import { activeWorkspaceId } from './workspace-registry';
+import { FOREGROUND_TIMEOUT_CEILING_MS } from './agent-tools/capability/foreground-transport-cap';
 import {
   dispatchPendingGradingAudits,
   confirmPendingGradingAuditReservation,
@@ -266,10 +270,21 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
       workspaceId: 'ws-test', reservedAt: f.input.reservation.reservedAt, expectedCard: f.input.card, tx: f.db,
     });
     const [query, ...bindings] = f.tx.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
+    expect(query.join('?').replace(/\s+/g, ' ')).toContain(
+      "UPDATE harness_shared.task_ledger SET detail = COALESCE(detail, '{}'::jsonb) || ?::text::jsonb",
+    );
+    expect(query.join('?')).toContain('RETURNING task_id');
     expect(query.join('?')).toContain("detail->>'coordOwnerId' = ? AND detail->>'label' = ?");
     expect(query.join('?')).toContain("state IN ('pending', 'running')");
-    expect(query.join('?')).toContain('FOR SHARE');
-    expect(bindings).toEqual(['ws-test', 'task-retained', 'su-independent', 'grading-audit:EI-renew:relay-route', 'EI-renew']);
+    expect(query.join('?')).not.toContain('FOR SHARE');
+    expect(bindings).toEqual([
+      JSON.stringify({ gradingAudit: {
+        issueId: 'EI-renew',
+        evidenceFingerprint: 'exact-fingerprint',
+        reservation: f.input.reservation,
+      } }),
+      'ws-test', 'task-retained', 'su-independent', 'grading-audit:EI-renew:relay-route', 'EI-renew',
+    ]);
     expect(f.d.wake).toHaveBeenCalledTimes(1);
     expect(f.stored.size).toBe(1);
   });
@@ -356,15 +371,15 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
   });
 
   it('confirms fingerprint, author, rubric and lease on the same supplied transaction', async () => {
-    const tx = vi.fn(async () => []);
+    const tx = vi.fn((_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([]));
     const current = await confirmPendingGradingAuditReservation('EI-renew', 'grading-audit:EI-renew', {
       workspaceId: 'ws-test', reservedAt: 'renewed-at', tx: tx as unknown as OrgSql,
       expectedCard: card('EI-renew', { createdBy: 'su-author', evidenceFingerprint: 'exact-fingerprint' }),
     });
     expect(current).toBe(false);
-    const [query, ...bindings] = tx.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
-    for (const clause of ["'state' = 'pending'", "'reservedAt' = ?", "'evidenceFingerprint' = ?",
-      "scorecard.payload->'_ei'->>'created_by' = ?", "'rubricRef' = ?", "'retracted' IS NULL", 'NOT EXISTS', 'FOR UPDATE']) {
+    const [query, ...bindings] = tx.mock.calls.find(([strings]) => strings.join('').includes('SELECT scorecard.feature_id')) as unknown as [TemplateStringsArray, ...unknown[]];
+    for (const clause of ["'state' = 'pending'", "'reservedAt' = ?", "'evidenceFingerprint' IS NOT DISTINCT FROM ?",
+      "scorecard.payload->'_ei'->>'created_by' IS NOT DISTINCT FROM ?", "'rubricRef' IS NOT DISTINCT FROM ?", "'retracted' IS NULL", 'NOT EXISTS', 'FOR UPDATE']) {
       expect(query.join('?')).toContain(clause);
     }
     expect(bindings).toEqual(expect.arrayContaining(['EI-renew', 'grading-audit:EI-renew', 'renewed-at', 'exact-fingerprint', 'su-author', 'standard-rubric']));
@@ -372,6 +387,20 @@ describe('retained grading auditor lease delivery (EI-25289706163098558)', () =>
 });
 
 describe('dispatchPendingGradingAudits', () => {
+  it('pins internal scorecard reads to the dispatch workspace instead of ambient ALS (EI-26052688889546507)', async () => {
+    const d = deps();
+    d.listScorecards.mockImplementation(async () => {
+      expect(activeWorkspaceId()).toBe('ws-test');
+      return [card('EI-workspace-scoped')];
+    });
+
+    await runWithWorkspace('ambient-other', () =>
+      dispatchPendingGradingAudits({ targetIds: ['EI-workspace-scoped'], ctx }, d),
+    );
+
+    expect(d.launch).toHaveBeenCalledOnce();
+  });
+
   it('cancels the pending lease and retires its live auditor when the target was superseded', async () => {
     const d = deps();
     const issueId = 'EI-superseded-audit';
@@ -420,12 +449,14 @@ describe('dispatchPendingGradingAudits', () => {
     expect(result.receipts).toEqual([]);
   });
 
-  it('cancels a pending lease and retires its auditor when an exact cited binding is stale', async () => {
+  it.each([undefined, { sha: 'recorded-evaluator-sha', version: '1.2.2' }])(
+    'cancels a pending lease for an exact stale binding across evaluator builds (%j)', async (evaluatorBuild) => {
     const d = deps();
     const issueId = 'EI-stale-binding-audit';
     const rerunRecipe = {
       args: { harness: 'papercusp' },
       selection: { bindingIds: [30308, 30309] },
+      ...(evaluatorBuild ? { evaluatorBuild } : {}),
     } as NonNullable<ScorecardEvidenceRow['rerunRecipe']>;
     const target = card(issueId, {
       evidenceFingerprint: 'scorecard-evidence-v1',
@@ -494,7 +525,91 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.route).not.toHaveBeenCalled();
     expect(d.launch).not.toHaveBeenCalled();
     expect(result.receipts).toEqual([
-      expect.objectContaining({ issueId, state: 'skipped' }),
+      expect.objectContaining({ issueId, state: 'skipped', reason: expect.stringContaining('no longer a current pending') }),
+    ]);
+  });
+
+  it('does not dispatch a legacy current[] snapshot card after its evidence cohort is rebound', async () => {
+    const d = deps();
+    const issueId = 'EI-legacy-rebound-evidence-audit';
+    const snapshot = {
+      planSlug: 'plan-a',
+      specId: 'SPEC-001',
+      specRevision: 1,
+      specFingerprint: 'sha256:spec-001',
+      evidenceKind: 'test',
+      evidenceRef: 'test-run:old-binding',
+      sourceFingerprint: 'sha256:old-source',
+      testFingerprint: 'sha256:old-test',
+      fixtureFingerprint: null,
+      rubricFingerprint: null,
+      environmentFingerprint: null,
+    };
+    const rerunRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      classRef: 'plan-class-feature-ship',
+      args: {
+        harness: 'papercusp',
+        slug: 'plan-a',
+        classRef: 'plan-class-feature-ship',
+        specIds: ['SPEC-001'],
+        includeDraft: true,
+        current: [snapshot],
+      },
+      selection: {
+        planSlug: 'plan-a', specId: 'SPEC-001', specRevision: 1,
+        specFingerprint: 'sha256:spec-001',
+        evidence: [{ evidenceKind: 'test', evidenceRef: 'test-run:old-binding' }],
+      },
+      current: { supplied: true, fingerprints: [snapshot] },
+      derivation: {
+        kind: 'listSpecEvidence.currentness',
+        classifier: 'classifySpecEvidenceCurrentness',
+        unknownWhenMissing: true,
+      },
+    } as NonNullable<ScorecardRow['rerunRecipe']>;
+    const target = card(issueId, {
+      evidenceFingerprint: 'legacy-snapshot-evidence-v1',
+      rerunRecipe,
+    });
+    d.listScorecards.mockResolvedValue([target]);
+    const staleCurrentness = {
+      state: 'stale' as const,
+      reason: 'cited-binding-retracted' as const,
+      citedBindingCount: 1,
+      retractedBindingIds: ['30309'],
+      unavailableBindingIds: [],
+    };
+    d.readEvidence.mockResolvedValue({
+      kind: 'found',
+      scorecard: evidenceCard(issueId, {
+        evidenceFingerprint: target.evidenceFingerprint,
+        rerunRecipe,
+        gradingAudit: target.gradingAudit,
+        evidenceBindingCurrentness: staleCurrentness,
+        auditTarget: {
+          current: false,
+          superseded: false,
+          supersededBy: null,
+          retracted: false,
+          subjectRubricCurrentness: null,
+          evidenceBindingCurrentness: staleCurrentness,
+        },
+      }),
+    });
+
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, d);
+
+    expect(d.readEvidence).toHaveBeenCalledWith(issueId);
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(result.receipts).toEqual([
+      expect.objectContaining({
+        issueId,
+        state: 'skipped',
+        reason: expect.stringContaining('no longer a current pending'),
+      }),
     ]);
   });
 
@@ -532,15 +647,54 @@ describe('dispatchPendingGradingAudits', () => {
     ]);
     const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
 
+    d.readEvidence.mockResolvedValue({ kind: 'found', scorecard: evidenceCard(issueId, {
+      evidenceFingerprint: target.evidenceFingerprint,
+      rerunRecipe,
+      gradingAudit: target.gradingAudit,
+    }) });
+    const cancelStaleEvidence = vi.fn(async () => true);
+
     const result = await dispatchPendingGradingAudits(
       { targetIds: [issueId], ctx },
-      { ...d, killTask },
+      { ...d, cancelStaleEvidence, killTask },
     );
 
     expect(d.listTasks).not.toHaveBeenCalled();
     expect(killTask).not.toHaveBeenCalled();
     expect(target.gradingAudit).toMatchObject({ state: 'pending', dispatchReservation: reservation });
-    expect(d.readEvidence).not.toHaveBeenCalled();
+    expect(d.readEvidence).toHaveBeenCalledWith(issueId);
+    expect(cancelStaleEvidence).not.toHaveBeenCalled();
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(result.receipts).toEqual([
+      expect.objectContaining({
+        issueId,
+        state: 'skipped',
+        reason: expect.stringContaining('requires a dispatcher running the recorded evaluator build'),
+      }),
+    ]);
+  });
+
+  it('defers a foreign evaluator build pinned only in executable recipe args', async () => {
+    const d = deps();
+    const issueId = 'EI-evaluator-build-drift-args-only';
+    const rerunRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      args: {
+        harness: 'papercusp',
+        evaluatorBuild: { sha: 'recorded-evaluator-sha', version: '1.2.2' },
+      },
+      selection: { bindingIds: [30308] },
+    } as NonNullable<ScorecardRow['rerunRecipe']>;
+    d.listScorecards.mockResolvedValue([card(issueId, {
+      evidenceFingerprint: 'scorecard-evidence-v1',
+      rerunRecipe,
+    })]);
+
+    const result = await dispatchPendingGradingAudits({ targetIds: [issueId], ctx }, d);
+
     expect(d.reserve).not.toHaveBeenCalled();
     expect(d.route).not.toHaveBeenCalled();
     expect(d.launch).not.toHaveBeenCalled();
@@ -941,6 +1095,9 @@ describe('dispatchPendingGradingAudits', () => {
     );
     const brief = d.route.mock.calls[0]?.[0].brief ?? '';
     expect(brief).toContain("capability:git-evidence { op:'readFileAtCommit'");
+    expect(brief).toContain(`code:run uses a default script budget of ${DEFAULT_SCRIPT_TIMEOUT_MS.toLocaleString('en-US')} ms`);
+    expect(brief).toContain(`explicit timeoutSec can raise it to the ${FOREGROUND_TIMEOUT_CEILING_MS.toLocaleString('en-US')} ms`);
+    expect(brief).not.toContain('code:run has a 45-second foreground timeout ceiling');
     expect(brief).toContain('Do not fan out byte-page chains for multiple large blobs in one call');
     expect(brief).toContain("If a single blob's full chain might approach the ceiling, read a bounded page segment");
     expect(brief).toContain('continue its exact next_cursor in a separate call, or issue the page reads directly');
@@ -985,6 +1142,9 @@ describe('dispatchPendingGradingAudits', () => {
     expect(brief).toContain('read the cited binding\'s full details with plans:get-spec-evidence');
     expect(brief).toContain('inspect measurementPin.files and measurementPin.repos');
     expect(brief).toContain('repos[].repo may name a submodule inside it');
+    expect(brief).toContain('strip that repository prefix from the file path and pass it as repositoryPath');
+    expect(brief).toContain("path:'<child-relative path>', repositoryPath:'<repo>'");
+    expect(brief).toContain('when rootHarnessSlug is absent, keep the plan harness as the resolved root');
     expect(brief).toContain('Do not send a submodule\'s commit to the parent repository');
     expect(brief).toContain('Use only a supported exact-blob route for the recorded repository');
     expect(brief).toContain('report the exact unsupported locator');
@@ -1344,6 +1504,25 @@ describe('dispatchPendingGradingAudits', () => {
     }
   });
 
+  it('records the failing dispatcher phase when reservation throws CONNECT_TIMEOUT (EI-26081368846958374)', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-phase-receipt')]);
+    const timeout = Object.assign(new Error('write CONNECT_TIMEOUT localhost:5432'), { code: 'CONNECT_TIMEOUT' });
+    d.reserve.mockRejectedValue(timeout);
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await dispatchPendingGradingAudits({ targetIds: ['EI-phase-receipt'], ctx }, d);
+      expect(result.receipts[0]).toMatchObject({
+        issueId: 'EI-phase-receipt',
+        state: 'failed',
+        reason: timeout.message,
+        phase: 'reservation',
+      });
+    } finally {
+      warning.mockRestore();
+    }
+  });
+
   it('serializes concurrent routed dispatches through the existing card reservation', async () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-race')]);
@@ -1382,7 +1561,12 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.confirmReservation).toHaveBeenCalledWith(
       'EI-settled-after-reservation',
       'grading-audit:EI-settled-after-reservation',
-      { workspaceId: 'ws-test', reservedAt: '2026-09-08T00:00:00.000Z' },
+      expect.objectContaining({
+        workspaceId: 'ws-test',
+        reservedAt: '2026-09-08T00:00:00.000Z',
+        snapshot: expect.any(Object),
+        expectedCard: expect.objectContaining({ createdBy: 'evaluator', rubricRef: 'standard-rubric' }),
+      }),
     );
     expect(d.release).toHaveBeenCalledWith('EI-settled-after-reservation', 'grading-audit:EI-settled-after-reservation', {
       workspaceId: 'ws-test',
@@ -1751,14 +1935,20 @@ describe('dispatchPendingGradingAudits', () => {
   });
 
   it.each(['live', 'suspect', 'ended', 'unknown', 'unavailable'])
-  ('does not resume an existing lease when auditor liveness is %s', async (state) => {
+  ('delivers the retained lease notice when auditor liveness is %s', async (state) => {
     const f = parkedAuditorFixture();
     if (state === 'unavailable') f.resolveOwnerLiveness.mockRejectedValue(new Error('oracle unavailable'));
     else f.resolveOwnerLiveness.mockResolvedValue(state === 'unknown' ? null
       : { sessionState: state as 'live' | 'suspect' | 'ended' });
     const result = await dispatchPendingGradingAudits({ targetIds: ['EI-parked'], ctx }, { ...f.d, ...f });
     expect(result.receipts[0]).toMatchObject({ state: 'deduped', dispatchReservation: f.prior });
-    expect(f.d.notifyRetainedAuditor).not.toHaveBeenCalled();
+    expect(result.receipts[0]).toMatchObject({ renewalNotification: { state: 'delivered' } });
+    const notice = f.d.notifyRetainedAuditor.mock.calls[0]?.[0];
+    expect(notice).toEqual(expect.objectContaining({
+      reservation: f.prior,
+      task: expect.objectContaining({ taskId: 'retained' }),
+    }));
+    expect(notice).not.toHaveProperty('resumeParked');
     expect(f.d.launch).not.toHaveBeenCalled();
     expect(f.killTask).not.toHaveBeenCalled();
   });
@@ -2310,10 +2500,11 @@ describe('dispatchPendingGradingAudits', () => {
     const result = await dispatchPendingGradingAudits({ targetIds: ['EI-stale-settled'], ctx }, d);
 
     expect(result.receipts).toEqual([expect.objectContaining({ issueId: 'EI-stale-settled', state: 'launched' })]);
-    expect(d.reserve).toHaveBeenCalledWith('EI-stale-settled', 'grading-audit:EI-stale-settled', {
+    expect(d.reserve).toHaveBeenCalledWith('EI-stale-settled', 'grading-audit:EI-stale-settled', expect.objectContaining({
       workspaceId: 'ws-test',
       currentness,
-    });
+      snapshot: expect.any(Object),
+    }));
   });
 
   it('never reopens a cancelled audit stamp even when its recorded audit identity is stale', async () => {
@@ -2374,10 +2565,11 @@ describe('dispatchPendingGradingAudits', () => {
     const result = await dispatchPendingGradingAudits({ targetIds: ['EI-legacy-settled'], ctx }, d);
 
     expect(result.receipts).toEqual([expect.objectContaining({ issueId: 'EI-legacy-settled', state: 'launched' })]);
-    expect(d.reserve).toHaveBeenCalledWith('EI-legacy-settled', 'grading-audit:EI-legacy-settled', {
+    expect(d.reserve).toHaveBeenCalledWith('EI-legacy-settled', 'grading-audit:EI-legacy-settled', expect.objectContaining({
       workspaceId: 'ws-test',
       currentness,
-    });
+      snapshot: expect.any(Object),
+    }));
   });
 
   it.each(['passed', 'failed'] as const)(
@@ -3633,6 +3825,28 @@ describe('dispatchPendingGradingAudits', () => {
     expect(d.launch).toHaveBeenLastCalledWith(expect.objectContaining({ agent: 'codex', account: 'auto' }), auditorCtx);
     expect(result.receipts[0]).toMatchObject({ state: 'launched',
       terminalRecovery: { retiredTaskIds: ['task-native-api-refusal'], codes: ['inference_gateway_error'] } });
+  });
+
+  it('recovers a fresh Codex auditor from its exact terminal capacity error', async () => {
+    const d = deps();
+    d.listScorecards.mockResolvedValue([card('EI-codex-capacity')]);
+    d.launch.mockResolvedValueOnce(launchResult({ deduped: false, launch: {
+      agentStarted: true, tasks: [{ taskId: 'task-codex-capacity', ownerId: 'su-codex-auditor',
+        logPath: '/tmp/codex-capacity.log', kickoffProof: { persisted: true, nativeRef: '/tmp/codex-capacity.jsonl' },
+        nativeSession: { backend: 'codex', ownerId: 'su-codex-auditor', rolloutId: 'exact-codex-rollout' } }],
+    } })).mockResolvedValueOnce(launchResult({ deduped: false, launch: { agentStarted: true,
+      tasks: [{ taskId: 'task-capacity-replacement', logPath: '/tmp/healthy.log' }] } }));
+    const native = JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete',
+      error: { codex_error_info: 'server_overloaded', message: 'Selected model is at capacity.' } } });
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' }));
+    const result = await dispatchPendingGradingAudits({ targetIds: ['EI-codex-capacity'], ctx, harness: 'papercusp' }, {
+      ...d, killTask, sleep: async () => undefined, terminalLogMaxRechecks: 0,
+      readLogTail: path => path.endsWith('.jsonl') ? native : 'Working · GPT-6.1-Sol high',
+    });
+    expect(killTask).toHaveBeenCalledWith('task-codex-capacity', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(result.receipts[0]).toMatchObject({ terminalRecovery: {
+      retiredTaskIds: ['task-codex-capacity'], codes: ['inference_gateway_error'],
+    } });
   });
 
   it('keeps a judge whose native kickoff marker arrived late but whose turn was observed', async () => {

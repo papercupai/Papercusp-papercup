@@ -2127,6 +2127,61 @@ describe('reconcileLoopRoutines — bounded consecutive zero-tool escalation (WI
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("provider kill ('usage_limit')"));
   });
 
+  it.each([
+    {
+      code: 'server_overloaded',
+      rawCode: 'server_overloaded',
+      message: 'Selected model is at capacity. Please try a different model.',
+    },
+    {
+      code: 'provider_error',
+      rawCode: 'provider_error',
+      message: 'upstream provider admission failed (401)',
+    },
+  ])('routes native Codex $code through lifecycle recovery instead of a healthy settle', async ({ code, rawCode, message }) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const recordFire = vi.fn(async () => {});
+    const escalateLifecycleDeath = vi.fn(async () => {});
+    const error = {
+      source: 'event_msg:task_complete' as const,
+      code,
+      rawCode,
+      message,
+      retryAt: null,
+      account: null,
+      timestamp: '2026-09-30T00:00:00Z',
+      turnKey: 'turn-native-provider',
+    };
+    const res = await reconcileLoopRoutines({
+      sql: fakeSql([settledRow({ codex_adv_session_id: 30858 })], updates),
+      nowMs: T0 + 10_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      countAgentToolCallsInWindow: vi.fn(async () => 0),
+      readCodexProviderErrorAfter: vi.fn(async () => error),
+      recordZeroToolFireObservation: vi.fn(async () => ({
+        counted: true,
+        streak: 1,
+        toolCalls: 0,
+        fireToken: new Date(T0).toISOString(),
+        threshold: 3,
+        atThreshold: false,
+      })),
+      escalateLifecycleDeath,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-zero-tool', via: 'lifecycle' });
+    expect(recordFire).toHaveBeenCalledWith('papercusp', 'loop-su-zero-tool', 'loop-lifecycle-death:model_error', 'error');
+    expect(escalateLifecycleDeath).toHaveBeenCalledWith(expect.objectContaining({
+      verdict: expect.objectContaining({
+        reason: 'model_error',
+        evidence: expect.stringContaining(`code=${code}`),
+      }),
+    }));
+  });
+
   it('includes the native Codex usage-limit code in the existing R4 pause alert', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const updates: unknown[][] = [];

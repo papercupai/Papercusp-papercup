@@ -28,7 +28,7 @@ async function fixture(replies: Array<unknown | Response>, config: Record<string
     const reply = replies.shift();
     if (reply === undefined) throw new Error('unexpected network call');
     return reply instanceof Response ? reply : Response.json(reply);
-  }) as unknown as typeof fetch;
+  }) as unknown as typeof globalThis.fetch; // the local `fetch` below shadows the global name
   const fetch = createHostFetch(descriptor.id, { registry,
     resolveSource: async (id) => id === 'source' ? { sourceId: id, providerId: descriptor.id, config } : null,
     accessToken: async () => 'account-private-token', fetchImpl });

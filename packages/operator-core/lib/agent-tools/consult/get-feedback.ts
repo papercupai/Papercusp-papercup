@@ -93,7 +93,7 @@ export default defineTool({
       .min(1)
       .max(8)
       .optional()
-      .describe(`Cap on the selected cascade menu (default ${DEFAULT_MAX_RESPONDERS}). Delivery stays single-wake: the top selectee is woken, the rest are the menu (remaining_candidates).`),
+      .describe(`Cap on the selected cascade menu (default ${DEFAULT_MAX_RESPONDERS}). Delivery stays single-dispatch: only the top selectee gets an isolated answer session, the rest are the menu (remaining_candidates).`),
     min_agents: z
       .number()
       .int()
@@ -137,6 +137,9 @@ export default defineTool({
       verdict: z.unknown().optional(),
       conversation_id: z.unknown().optional(),
       thread_id: z.unknown().optional(),
+      request_key: z.string().optional(),
+      state: z.string().optional(),
+      pending: z.boolean().optional(),
       responder: z.unknown().optional(),
       responder_via: z.unknown().optional(),
       floor: z.unknown().optional(),

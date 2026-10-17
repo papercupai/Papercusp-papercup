@@ -969,7 +969,7 @@ interface RootSpec {
 interface FileAdapter {
   sourceKind: Exclude<SourceKind, 'agent_chat'>;
   roots: () => RootSpec[];
-  parseLine: (line: string) => ParsedTurn | null;
+  parseLine: (line: string, options?: TurnTextParseOptions) => ParsedTurn | null;
   /** EI-9970: classifies EVERY line for prompt/response/tool-call
    *  counting — a superset of parseLine's TEXT-TURNS-ONLY scope. */
   classifyLine: (line: string) => LineSignal | null;
@@ -1545,12 +1545,13 @@ async function indexedClaudeOwner(sessionId: string): Promise<string | null> {
 export async function readNewLines(
   filePath: string,
   offset: number,
-  parseLine: (l: string) => ParsedTurn | null,
+  parseLine: (l: string, options?: TurnTextParseOptions) => ParsedTurn | null,
   classifyLine: (l: string) => LineSignal | null,
   lastInferenceId: string | null,
   usageOf?: (l: string) => LineUsage,
   substitutionRows: SubstitutionRow[] = [],
   parseParts?: (l: string) => ParsedPart[],
+  parseOptions: TurnTextParseOptions = {},
 ): Promise<{
   turns: ParsedTurn[];
   /** P-001 faithful parts — empty when the adapter has no `parseParts`. */
@@ -1632,7 +1633,7 @@ export async function readNewLines(
     let yielded = 0;
     for (const line of usable.split('\n')) {
       if (line.trim()) {
-        const t = parseLine(line);
+        const t = parseLine(line, parseOptions);
         if (t) turns.push(t);
         if (parseParts) {
           // P-001. Same pass as parseLine/classifyLine — the per-line

@@ -124,6 +124,20 @@ describe('CupboardClient — WI-3259 tab switching and loading state', () => {
     expect(screen.queryByText('Harness listing')).toBeNull();
   });
 
+  it('selects My submissions through nuqs and uses the private sync query instead of public browse', async () => {
+    outcomeSync.read.mockImplementation((args) => ({ data: args.queryName === 'cupboard.myListings'
+      ? [{ ok: true, listings: [], drafts: [], nextCursor: null }] : [], loading: false, fetching: false,
+      error: null, invalidate: outcomeSync.invalidate }));
+    withTooltips(<CupboardClient />);
+    await waitFor(() => expect(screen.getByText('Plugin listing')).toBeTruthy());
+    const before = fetchMock.mock.calls.length;
+    fireEvent.click(screen.getByTestId('cupboard-kind-tab-my-submissions'));
+    await waitFor(() => expect(screen.getByRole('region', { name: 'My submissions' })).toBeTruthy());
+    expect(screen.getByText(/No submissions yet/)).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(before);
+    expect(outcomeSync.read).toHaveBeenCalledWith(expect.objectContaining({ queryName: 'cupboard.myListings' }));
+  });
+
   it('reads one exact SKU batch for the storefront, hides pending evidence and changes the read key on refresh', async () => {
     const releaseRef = 'identity-release:reviewer@1.0.0';
     fetchMock.mockImplementation(async () => new Response(JSON.stringify({ listings: [

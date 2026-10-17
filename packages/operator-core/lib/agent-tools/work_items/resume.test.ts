@@ -108,7 +108,7 @@ describe('bounded work-item resume', () => {
     expect(result.evidence.hasMore).toBe(true);
     expect(result.evidence.rows.length + result.evidence.omittedFromWindow!).toBe(9);
     expect(result.checks.rows.length + result.checks.omitted).toBe(12);
-    expect(result.checkpoint.readRef.args).toMatchObject({ id: item.id, harness: 'h1' });
+    expect(result.checkpoint.readRef.args).toEqual({ id: item.id, harness: 'h1', resume: true });
     expect(result.nextAction.text).toBe(next);
   });
 

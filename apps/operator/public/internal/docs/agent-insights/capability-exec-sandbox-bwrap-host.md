@@ -1,7 +1,7 @@
 # Capability exec sandbox (CAPABILITY_EXEC_SANDBOX) — the bwrap host setup, fail-open design, and the fail-closed mask bug
 URL: /internal/docs/agent-insights/capability-exec-sandbox-bwrap-host
 
->-
+The OPERATOR-SIDE re-containment for capability:bash / capability:git (B-18 cutover moves exec out of the per-spawn agent sandbox into the unsandboxed operator). How to make bwrap work on Ubuntu 24.04 (AppArmor userns restriction → the /etc/apparmor.d/bwrap profile), why it is FAIL-OPEN, the srt-preferred vs bwrap-fallback modes, how to validate it (real-exec integration test + a live :3170 capability:bash), and the fail-CLOSED mountpoint bug a missing ~/.config/gcloud used to cause.
 
 ## What it is
 
@@ -15,8 +15,7 @@ that operator-side exec path.
 
 Source of truth: `buildCapabilitySandboxCommand()` in
 `packages/operator-core/lib/agent-tools/capability/exec-sandbox.ts` (pure, decides
-binary+argv); spawned by `spawnShell()` in `bash-jobs.ts`. Default-ON as of
-2026-06-23 (WI-608) after end-to-end validation; the plan is
+binary+argv); spawned by `spawnShell()` in `bash-jobs.ts`. Default-OFF. `CAPABILITY_EXEC_SANDBOX` remains in `DARK_FLAGS`, and `FLAG_DEFAULTS` derives the compiled default as `false`. End-to-end validation on a bwrap-capable host and owner/leader activation remain outstanding; the plan is
 `agent-capability-confinement-2026-06-13` (P-022 / D-008 / P-033).
 
 Three modes, picked at spawn time, all **FAIL-OPEN**:

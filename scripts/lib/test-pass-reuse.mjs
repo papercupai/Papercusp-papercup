@@ -27,6 +27,8 @@ const GENERATED_SCHEMA_FILE_SET = new Set(GENERATED_SCHEMA_FILES);
 export const TEST_REUSE_ENV = "AFFECTED_TEST_REUSE";
 /** The channel that carries the skip list to vitest-config (a JSON array of repo-relative paths). */
 export const TEST_REUSE_SKIP_LIST_ENV = "PC_TEST_REUSE_SKIP_LIST";
+/** The explicit partial-integration resume skip-list channel consumed by vitest-config. */
+export const PC_TEST_PARTIAL_SKIP_LIST_ENV = "PC_TEST_PARTIAL_SKIP_LIST";
 /** Maximum proof age; default 24h. */
 export const TEST_REUSE_MAX_AGE_ENV = "AFFECTED_TEST_REUSE_MAX_AGE_HOURS";
 export const TEST_REUSE_MAX_AGE_MS_DEFAULT = 24 * 3600 * 1000;
@@ -910,10 +912,11 @@ export function reuseCandidates({ wsRel, relatedFiles, proofFiles }) {
  * Counters such as inertGlobal and expiredClean overlap outcomes and are not denominators.
  * @param {string} task
  * @param {{ summary?: Record<string, number>, offReason?: string, eligible?: number }} decision
- * @returns {Array<{ eligible: number, applied: number, reason: string, scope: string }>}
+ * @returns {Array<{ eligible: number, applied: number, populationKnown: boolean, reason: string, scope: string }>}
  */
 export function gateReuseObservations(task, decision) {
   const positiveCount = (n) => Number.isSafeInteger(n) && n > 0 ? n : 0;
+  const knownCount = (n) => Number.isSafeInteger(n) && n >= 0;
   if (decision.offReason) return [{
     // An off-path decision without a measured candidate population is an
     // opportunity with UNKNOWN cardinality.  Do not synthesize one eligible
@@ -921,22 +924,23 @@ export function gateReuseObservations(task, decision) {
     // and a fabricated 1 contaminates the file-level hit rate.
     eligible: positiveCount(decision.eligible),
     applied: 0,
+    populationKnown: knownCount(decision.eligible),
     reason: decision.offReason.split('(')[0].trim() || 'unavailable',
     scope: task,
   }];
   const summary = decision.summary ?? {};
   const eligible = positiveCount(summary.candidates);
   // Zero candidates is a measured empty population, not one failed file.
-  if (!eligible) return [{ eligible: 0, applied: 0, reason: 'no-candidates', scope: task }];
+  if (!eligible) return [{ eligible: 0, applied: 0, populationKnown: knownCount(summary.candidates), reason: knownCount(summary.candidates) ? 'no-candidates' : 'unavailable', scope: task }];
   const rows = [];
   let remaining = eligible;
   const reused = Math.min(remaining, positiveCount(summary.reused));
-  if (reused) { rows.push({ eligible: reused, applied: reused, reason: 'applied', scope: task }); remaining -= reused; }
+  if (reused) { rows.push({ eligible: reused, applied: reused, populationKnown: true, reason: 'applied', scope: task }); remaining -= reused; }
   for (const reason of ['noProof', 'otherContext', 'otherRunner', 'legacyFormatDrift', 'expired', 'notCaptured', 'opaque', 'unknownDrift', 'globalInput', 'inputChanged', 'audited']) {
     const count = Math.min(remaining, positiveCount(summary[reason]));
-    if (count) { rows.push({ eligible: count, applied: 0, reason, scope: task }); remaining -= count; }
+    if (count) { rows.push({ eligible: count, applied: 0, populationKnown: true, reason, scope: task }); remaining -= count; }
   }
-  if (remaining) rows.push({ eligible: remaining, applied: 0, reason: 'unclassified', scope: task });
+  if (remaining) rows.push({ eligible: remaining, applied: 0, populationKnown: true, reason: 'unclassified', scope: task });
   return rows;
 }
 

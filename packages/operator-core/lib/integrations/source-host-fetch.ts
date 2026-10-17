@@ -10,12 +10,14 @@
  * mints provider credentials for a provider call.
  */
 import type postgres from 'postgres';
-import type { HostFetch } from '@papercusp/plugin-sdk';
-import { getExternalTriggerSource } from '../external-triggers/source-store';
+import { normalizeProviderInstanceOrigin, type HostFetch } from '@papercusp/plugin-sdk';
+import { getExternalTriggerSource, sourceTokenHarness } from '../external-triggers/source-store';
 import { ensureBuiltinConnectionAdapters } from './builtin-connection-adapters';
-import { connectionAccessToken } from './connection-lifecycle';
+import { connectionAccessToken, descriptorOAuthPlugin } from './connection-lifecycle';
 import { createHostFetch, HostFetchError } from './host-fetch';
+import { providerOAuthUserAgent } from './oauth-client-registration';
 import {
+  providerCredentialSession,
   providerSetupStoreKey,
   readProviderCredentialValue,
   readProviderPrincipalCredentialValue,
@@ -59,6 +61,23 @@ export function createSourceHostFetch(sql: postgres.Sql, opts: SourceHostFetchOp
   return createHostFetch(opts.providerId, {
     registry,
     fetchImpl: opts.fetchImpl,
+    async credentialSession(source) {
+      const entry = registry.get(source.providerId);
+      if (!entry || source.ownCredential) throw new HostFetchError('credential-unavailable', 'host.fetch: source does not own the pasted session');
+      const row = await getExternalTriggerSource(sql, opts.workspaceId, source.sourceId);
+      if (!row || row.credentialRef !== providerSetupStoreKey(source.providerId)) {
+        throw new HostFetchError('credential-unavailable', 'host.fetch: source does not own the pasted session');
+      }
+      const session = await providerCredentialSession(entry.descriptor, sourceTokenHarness(row.config, opts.harness), { fetchImpl: opts.fetchImpl });
+      if (source.config?.accountId !== session.identity.providerAccountId) {
+        throw new HostFetchError('credential-unavailable', 'host.fetch: reconnect source to its current session account');
+      }
+      return session;
+    },
+    async userAgent(source) {
+      const descriptor = registry.get(source.providerId)?.descriptor;
+      return descriptor ? providerOAuthUserAgent(descriptor, registry.list().map((entry) => entry.descriptor), descriptor.oauth?.instance ? source.config?.connectionOrigin : undefined) : null;
+    },
     // Owner-pasted setup credentials live in the same install's token store (P-001).
     async pastedCredential(key) {
       const registered = registry.get(opts.providerId);
@@ -78,6 +97,13 @@ export function createSourceHostFetch(sql: postgres.Sql, opts: SourceHostFetchOp
       if (allowed && !allowed.has(sourceId)) return null;
       const row = await getExternalTriggerSource(sql, opts.workspaceId, sourceId);
       if (!row) return null;
+      const descriptor = registry.get(row.kind)?.descriptor;
+      if (descriptor?.oauth?.instance) {
+        const origin = normalizeProviderInstanceOrigin(row.config?.connectionOrigin);
+        if (!origin || !row.credentialRef?.startsWith(`${descriptorOAuthPlugin(descriptor, origin)}:`)) {
+          throw new HostFetchError('token-unavailable', 'host.fetch: instance origin does not match the source credential');
+        }
+      }
       // A source whose credential ref is not the install's pasted-credential store holds its own
       // account credential (an OAuth connection), which host.fetch prefers (WI-6554700010008555).
       const ownCredential = row.credentialRef != null && row.credentialRef !== providerSetupStoreKey(row.kind);

@@ -92,6 +92,17 @@ export function recordRouteInvocation(exec: RouteExecution): void {
     resolvedPath = null;
   }
 
+  // Correlate only the launcher's Codex-home repair request. Never persist
+  // arbitrary headers: randomUUID() emits UUIDv4, so reject every other shape
+  // (including combined duplicate values) before copying it into metadata.
+  const repairAttempt = exec.def.method === 'POST' && exec.def.path === '/adv/sessions/ensure-codex-home'
+    ? exec.req.headers.get('x-papercusp-repair-attempt')
+    : null;
+  const metadataJson = repairAttempt?.length === 36
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(repairAttempt)
+    ? JSON.stringify({ codexHomeRepairAttemptId: repairAttempt.toLowerCase() })
+    : null;
+
   // Snapshot everything off `exec` synchronously — `exec` is mutable and
   // the caller's `finally` may clear timers etc. right after this returns.
   const row = {
@@ -99,6 +110,7 @@ export function recordRouteInvocation(exec: RouteExecution): void {
     path: exec.def.path,
     resolvedPath,
     responseBytes: exec.responseBytes,
+    metadataJson,
     status: exec.status,
     durationMs: Date.now() - exec.startedAt,
     principalKind: exec.principal?.kind ?? null,
@@ -117,8 +129,8 @@ export function recordRouteInvocation(exec: RouteExecution): void {
           `INSERT INTO harness_shared.route_invocations
              (workspace_id, method, path, status, duration_ms,
               principal_kind, principal_auth_method, principal_trust, error_message,
-              resolved_path, response_bytes)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+              resolved_path, response_bytes, metadata_json)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::text::jsonb)`,
           [
             workspaceId,
             row.method,
@@ -131,6 +143,7 @@ export function recordRouteInvocation(exec: RouteExecution): void {
             row.errorMessage,
             row.resolvedPath,
             row.responseBytes,
+            row.metadataJson,
           ],
         );
       });

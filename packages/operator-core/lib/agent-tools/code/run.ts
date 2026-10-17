@@ -19,6 +19,7 @@ import {
 import {
   CODE_RUN_REPLAY_PROOF_META_KEY,
   DEFAULT_SCRIPT_TIMEOUT_MS,
+  type OrchestrationInputs,
   type AbortCompletionContext,
   type AbortCompletionReceipt,
   type FieldMiss,
@@ -273,7 +274,11 @@ export default defineTool({
       'Opt into a live JavaScript worker/VM: open creates an owner/workspace/harness-scoped id, run executes a cell, status inspects it, close cancels and cleans it up. ' +
       'Use globalThis for cross-cell objects/functions/binary state; lexical locals remain cell-local. Each cell dispatches with CURRENT caller authority. ' +
       'No Python kernel, implicit lexical-declaration persistence, or process-restart recovery is claimed. Timeout/cancel loses state; idle expires after 5 minutes. ' +
+      'Persistent kernels are refused on volatile staging :3170 because its process is recycled frequently. For restart-safe work, call store(key,value), persist the returned state, and pass it back through inputs on the next stateless or kernel call. ' +
       'Dry-run kernel operations are refused because VM state mutations cannot be previewed safely.',
+    ),
+    inputs: z.record(z.string().max(200), z.unknown()).optional().describe(
+      'Explicit JSON-only replay state for the sandbox inputs object. Use with store/load: a successful run returns state when store/load was used; persist that state outside the process and pass it here after an operator restart. Inputs never restore arbitrary globalThis objects or functions.',
     ),
     script: z
       .string()
@@ -299,6 +304,9 @@ export default defineTool({
           'Compatibility helpers are ambient: `notify(value)` and `yield_control()` stream through the current transport; ' +
           '`generatedImage({ image_url: "data:image/...;base64,...", output_hint? })` appends a validated image; ' +
           '`store(key, value)` / `load(key)` use explicit replay state seeded from bindings/inputs and returned with the result -- never hidden session memory. ' +
+          'Replay state is capped at 200 keys and 65,536 UTF-8 bytes (64 KiB); `store` rejects larger state with `state_limit_exceeded` instead of truncating it. ' +
+          'Keep replay state to compact cursors, IDs, and bounded summaries: reduce large tool reads at the source with `projection.pick`, `limit`, or checkpoint pages, and use `payloadTier:\'full\'` only with a narrow projection. ' +
+          'For exact oversized returns, follow `summaryNotice.rawSummaryCursor` with `capability:read`; split recovery into bounded slices instead of storing the whole envelope, then pass the compact state through `inputs`. ' +
           'No setTimeout or setInterval usage -- neither is ambient in this sandbox -- use `await sleep(ms)` for a ' +
           'short bounded delay (e.g. write-then-reverify) instead. sleep() caps at 10s and returns the ' +
           'actual ms waited -- use that (not ms) when measuring a window, e.g. a rate over a delta. ' +
@@ -543,7 +551,14 @@ export default defineTool({
       wrapDispatch: bindCurrentCallerDispatch,
       // A cell can mutate live VM state even with zero nested write tools. It is not replay-safe.
       ...(args.kernel ? {} : { requestHash }),
-      ...(contract ? { inputs: contract.inputs } : {}),
+      // The zod boundary intentionally accepts unknown values so the runtime can return its
+      // stable `inputs_not_serializable` error. `runOrchestrationScript` performs that validation
+      // before constructing the worker; carry the validated runtime type across this boundary.
+      ...(contract
+        ? { inputs: contract.inputs }
+        : args.inputs
+          ? { inputs: args.inputs as OrchestrationInputs }
+          : {}),
     });
 
     // EI-21570021207351896 / EI-21569537333182760: DISCLOSE the clamp on the envelope the caller
@@ -1988,10 +2003,21 @@ function minimalCodeRunSummaryProjection(
       projected[key] = candidate;
       retainedEntries.push({ key, value: entry, stats: scratch });
     } else {
-      mergeCodeRunSummaryArrayLengths(stats, scratch);
-      stats.valuesTruncated++;
-      stats.omittedItems++;
-      noteCodeRunSummaryPath(stats, `summary.${key}`);
+      // A large nested record must not disappear just because its first bounded
+      // projection is wider than the remaining top-level budget. Re-project it
+      // with a fair share of the remaining bytes, retaining child keys and
+      // scalar leaves recursively before declaring the whole field omitted.
+      const remainingBudget = Math.max(1, budget - codeRunSummarySerializedChars(projected));
+      const bounded = projectCodeRunSummaryValueWithinBudget(entry, `summary.${key}`, remainingBudget);
+      if (bounded !== undefined && codeRunSummarySerializedChars({ ...projected, [key]: bounded.value }) <= budget) {
+        projected[key] = bounded.value;
+        retainedEntries.push({ key, value: entry, stats: bounded.stats });
+      } else {
+        mergeCodeRunSummaryArrayLengths(stats, scratch);
+        stats.valuesTruncated++;
+        stats.omittedItems++;
+        noteCodeRunSummaryPath(stats, `summary.${key}`);
+      }
     }
   }
   // Preserve the minimal projection's field selection and ordering, then grow strings only in
@@ -2061,6 +2087,161 @@ function mergeCodeRunSummaryStats(
   target.valuesTruncated += source.valuesTruncated;
   target.omittedItems += source.omittedItems;
   for (const path of source.paths) noteCodeRunSummaryPath(target, path);
+}
+
+/**
+ * Keep a nested value when the last-resort object projection cannot fit the
+ * value produced by the ordinary ladder as one unit. The old fallback admitted
+ * each top-level non-scalar field atomically; a wide nested record therefore
+ * consumed more than the remaining budget and disappeared wholesale. This
+ * bounded projector shares the remaining bytes across child fields and recurses
+ * until scalar leaves can be clipped, so the parent shape remains useful.
+ */
+function projectCodeRunSummaryValueWithinBudget(
+  value: unknown,
+  path: string,
+  budget: number,
+): { value: unknown; stats: CodeRunSummaryProjectionStats } | undefined {
+  if (budget <= 0) return undefined;
+
+  if (typeof value === 'string') {
+    let low = 0;
+    let high = value.length;
+    let best: { value: string; stats: CodeRunSummaryProjectionStats } | undefined;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const candidateStats = newCodeRunSummaryProjectionStats();
+      const candidate = clipCodeRunSummaryString(value, path, mid, candidateStats);
+      if (codeRunSummarySerializedChars(candidate) <= budget) {
+        best = { value: candidate, stats: candidateStats };
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return best;
+  }
+
+  if (isCodeRunSummaryScalar(value)) {
+    return codeRunSummarySerializedChars(value) <= budget
+      ? { value, stats: newCodeRunSummaryProjectionStats() }
+      : undefined;
+  }
+
+  if (Array.isArray(value)) {
+    const stats = newCodeRunSummaryProjectionStats();
+    const indices = value.length > 0 ? [0] : [];
+    const projected: unknown[] = [];
+    for (const index of indices) {
+      const remaining = Math.max(1, budget - codeRunSummarySerializedChars(projected));
+      const child = projectCodeRunSummaryValueWithinBudget(value[index], `${path}[${index}]`, remaining);
+      if (child === undefined) {
+        stats.valuesTruncated++;
+        stats.omittedItems++;
+        noteCodeRunSummaryPath(stats, `${path}[${index}]`);
+        continue;
+      }
+      projected.push(child.value);
+      mergeCodeRunSummaryStats(stats, child.stats);
+    }
+    const bounded = projectCodeRunSummaryArray(
+      value.length,
+      path,
+      indices.slice(0, projected.length),
+      projected,
+      stats,
+      true,
+    );
+    if (codeRunSummarySerializedChars(bounded) <= budget) {
+      return { value: bounded, stats };
+    }
+    return value.length === 0 && budget >= 2
+      ? { value: [], stats }
+      : undefined;
+  }
+
+  if (!isCodeRunSummaryRecord(value)) {
+    const stringValue = String(value);
+    return projectCodeRunSummaryValueWithinBudget(stringValue, path, budget);
+  }
+
+  const projected: Record<string, unknown> = {};
+  const stats = newCodeRunSummaryProjectionStats();
+  const entries = Object.entries(value);
+  const scalarEntries = entries.filter(([, entry]) => isCodeRunSummaryScalar(entry));
+  const nestedEntries = entries.filter(([, entry]) => !isCodeRunSummaryScalar(entry));
+
+  const addScalar = (key: string, entry: unknown): boolean => {
+    if (typeof entry !== 'string') {
+      const candidate = { ...projected, [key]: entry };
+      if (codeRunSummarySerializedChars(candidate) <= budget) {
+        projected[key] = entry;
+        return true;
+      }
+      return false;
+    }
+
+    let low = 0;
+    let high = Math.min(entry.length, CODE_RUN_SUMMARY_FALLBACK_STRING_CHARS);
+    let best: { value: string; stats: CodeRunSummaryProjectionStats } | undefined;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const candidateStats = newCodeRunSummaryProjectionStats();
+      const clipped = clipCodeRunSummaryString(entry, `${path}.${key}`, mid, candidateStats);
+      if (codeRunSummarySerializedChars({ ...projected, [key]: clipped }) <= budget) {
+        best = { value: clipped, stats: candidateStats };
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    if (best === undefined) return false;
+    projected[key] = best.value;
+    mergeCodeRunSummaryStats(stats, best.stats);
+    return true;
+  };
+
+  for (const [key, entry] of scalarEntries) {
+    if (!addScalar(key, entry)) {
+      stats.valuesTruncated++;
+      stats.omittedItems++;
+      noteCodeRunSummaryPath(stats, `${path}.${key}`);
+    }
+  }
+
+  for (let index = 0; index < nestedEntries.length; index += 1) {
+    const [key, entry] = nestedEntries[index];
+    const remainingFields = nestedEntries.length - index;
+    const remainingBudget = Math.max(1, budget - codeRunSummarySerializedChars(projected));
+    const childBudget = Math.max(1, Math.floor(remainingBudget / remainingFields));
+    let child = projectCodeRunSummaryValueWithinBudget(entry, `${path}.${key}`, childBudget);
+    if (child !== undefined && codeRunSummarySerializedChars({ ...projected, [key]: child.value }) > budget) {
+      child = projectCodeRunSummaryValueWithinBudget(
+        entry,
+        `${path}.${key}`,
+        Math.max(1, budget - codeRunSummarySerializedChars(projected)),
+      );
+    }
+    if (child !== undefined && codeRunSummarySerializedChars({ ...projected, [key]: child.value }) <= budget) {
+      projected[key] = child.value;
+      mergeCodeRunSummaryStats(stats, child.stats);
+      continue;
+    }
+    stats.valuesTruncated++;
+    stats.omittedItems++;
+    noteCodeRunSummaryPath(stats, `${path}.${key}`);
+  }
+
+  if (stats.valuesTruncated > 0) {
+    const marker = '__truncated';
+    const markerValue = 'nested value omitted; see summaryNotice.paths';
+    if (!(marker in projected) && codeRunSummarySerializedChars({ ...projected, [marker]: markerValue }) <= budget) {
+      projected[marker] = markerValue;
+    }
+  }
+
+  if (Object.keys(projected).length === 0 && Object.keys(value).length > 0) return undefined;
+  return { value: projected, stats };
 }
 
 /**
@@ -2793,6 +2974,7 @@ async function maybeCaptureRecipe(
     const { resolveProseProfileSelection } = await import('../../search/prose-vector-dims');
     const { potHomeSlugForHarness } = await import('../../hive-federation');
     const { resolveAgentIdentity } = await import('../coordination/identity');
+    const concreteHarnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
 
     let ownerId: string | null = null;
     try {
@@ -2809,7 +2991,7 @@ async function maybeCaptureRecipe(
     // that still permits genuinely generic recipes while filtering bound ones.
     let recommendationContext: RecipeAuthorityContext = {
       workspace: workspaceId,
-      ...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),
+      ...(concreteHarnessSlug ? { harness: concreteHarnessSlug } : {}),
     };
     try {
       const identity = readIdentity(ctx);
@@ -2829,7 +3011,7 @@ async function maybeCaptureRecipe(
         ...recipeAuthorityContextFromRefs(liveRefs),
         workspace: workspaceId,
         ...(liveFleet ? { fleet: liveFleet } : {}),
-        ...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),
+        ...(concreteHarnessSlug ? { harness: concreteHarnessSlug } : {}),
       };
     } catch (err) {
       ctx.log(`code:run live recipe authority read failed (bound recommendations filtered): ${(err as Error)?.message ?? String(err)}`);

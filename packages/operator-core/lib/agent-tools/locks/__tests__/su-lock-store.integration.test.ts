@@ -1805,6 +1805,80 @@ describe('plan §10.1 + file-locking #4 — background janitor', () => {
   });
 });
 
+describe('file-lock overlap query scaling (WI-6554700010015099)', () => {
+  it('acquires a 50-path batch while the same owner holds a full source-import census', async () => {
+    const ws = nextWs();
+    const sql = getTxPool();
+    const lockId = randomUUID();
+    const owner = 'large-source-import';
+    const held = Array.from({ length: 14_924 }, (_, i) => `libs/held/file-${i}.ts`);
+    await sql`
+      INSERT INTO agent_file_locks
+        (coordination_domain, path, owner, owner_label, intent, lock_id, expires_ts)
+      SELECT ${ws}, path, ${owner}, 'Source importer', 'existing source census',
+             ${lockId}::uuid, clock_timestamp() + interval '1 hour'
+        FROM unnest(${held}::text[]) AS held(path)
+    `;
+    // Include an existing claim as well as new paths: its lock handle must
+    // remain reusable, and unrelated held paths must remain untouched.
+    const fresh = Array.from({ length: 49 }, (_, i) => `libs/incoming/file-${i}.ts`);
+    const paths = [held[0], ...fresh];
+    const result = await inWorkspaceTxn(ws, owner, (tx) => tryAcquire(tx, {
+      coordinationDomain: ws, owner, ownerLabel: 'Source importer', paths,
+      intent: 'next source batch', ttlSec: 300,
+    }), { paths });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(`source batch refused: ${JSON.stringify(result)}`);
+    expect(result.lock_id).toBe(lockId);
+    expect(result.held).toEqual(paths);
+    expect(result.newly_held).toEqual(fresh);
+    const untouched = await sql<Array<{ intent: string }>>`
+      SELECT intent FROM agent_file_locks
+       WHERE coordination_domain = ${ws} AND path = ${held[1]}
+    `;
+    expect(untouched).toEqual([{ intent: 'existing source census' }]);
+  }, LOAD_STRESS_TIMEOUT_MS);
+
+  it('keeps recursive overlap literal and boundary-safe for queue and expiry reads', async () => {
+    const ws = nextWs();
+    const sql = getTxPool();
+    const stored = [
+      'src', 'src/file.ts', 'src-old/file.ts', 'src/file.ts/child',
+      'literal%_/file[1].ts', 'literalXX/file1.ts',
+      '日本語/é.ts', '日本語/é.ts/child', '日本語/é.ts-old',
+    ];
+    await sql`
+      INSERT INTO agent_file_locks
+        (coordination_domain, path, owner, intent, expires_ts)
+      SELECT ${ws}, path, 'literal-overlap-owner', 'overlap fixture',
+             clock_timestamp() + interval '1 hour'
+        FROM unnest(${stored}::text[]) AS stored(path)
+    `;
+    for (const requested of [['src/file.ts'], ['literal%_/file[1].ts'], ['日本語/é.ts'], []]) {
+      const expected = stored.filter((held) => requested.some((path) =>
+        held === path || held.startsWith(`${path}/`) || path.startsWith(`${held}/`),
+      )).sort();
+      const queue = await readQueue(sql, { coordinationDomain: ws, paths: requested });
+      expect(queue.active_locks.map((row) => row.path).sort()).toEqual(expected);
+    }
+    await sql`
+      UPDATE agent_file_locks SET expires_ts = clock_timestamp() - interval '1 second'
+       WHERE coordination_domain = ${ws}
+    `;
+    await inWorkspaceTxn(ws, 'sweeper', (tx) =>
+      sweepPathsExpired(tx, ws, ['literal%_/file[1].ts']),
+      { paths: ['literal%_/file[1].ts'] },
+    );
+    const remaining = await sql<Array<{ path: string }>>`
+      SELECT path FROM agent_file_locks WHERE coordination_domain = ${ws}
+    `;
+    expect(remaining.map((row) => row.path).sort()).toEqual(
+      stored.filter((path) => path !== 'literal%_/file[1].ts').sort(),
+    );
+  }, LOAD_STRESS_TIMEOUT_MS);
+});
+
 describe('file-locking #4 — acquire under concurrent load (plan §4 stress)', () => {
   it('100 concurrent acquires on one workspace all succeed, none time out', async () => {
     // Plan §4's flake was the janitor running INSIDE every acquire,

@@ -589,15 +589,47 @@ describe('the P-009 claim-holder guard (D-008 (1), D-009)', () => {
     expect(got.recovery.steps[2].args).toEqual({ reason: 'stopping', acknowledgeWakeLessAutonomy: true });
   });
 
-  it("offers a bounded events:await keyed to a blocked item's own unblocked event, never the acknowledgement", async () => {
+  it('recovers a lifecycle-only blocked claim by release instead of recommending an unfirable await', async () => {
     predicateH.readHeldWorkItems.mockResolvedValue([held({ status: 'blocked' })]);
+
+    const got = await run({ reason: 'stopping', acknowledgeWakeLessAutonomy: true });
+
+    expect(got.error).toBe('wake_less_claim_holder_refused');
+    expect(got.recovery.action).toBe('release-claims-then-retry');
+    expect(got.recovery.steps.map((s: { tool: string }) => s.tool)).toEqual([
+      'work_items:checkpoint', 'work_items:release', 'loop:end',
+    ]);
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['work-item:done', 'work-item:status', 'claim:released'])(
+    'does not recommend a typed %s await on its own held claim',
+    async (prefix) => {
+      predicateH.readHeldWorkItems.mockResolvedValue([held({
+        status: 'blocked',
+        eventBlockers: [{ ref: `${prefix}:WI-1`, summary: 'self-held lifecycle', recheckAt: null }],
+      })]);
+
+      const got = await run({ reason: 'stopping' });
+
+      expect(got.error).toBe('wake_less_claim_holder_refused');
+      expect(got.recovery.action).toBe('release-claims-then-retry');
+      expect(deactivateLoopMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('offers a bounded events:await for a stated external blocker, never the acknowledgement', async () => {
+    predicateH.readHeldWorkItems.mockResolvedValue([held({
+      status: 'blocked',
+      eventBlockers: [{ ref: 'release:green', summary: 'peer publication', recheckAt: null }],
+    })]);
 
     const got = await run({ reason: 'stopping', acknowledgeWakeLessAutonomy: true });
 
     expect(got.recovery.action).toBe('register-bounded-await-then-retry');
     expect(got.recovery.steps[0]).toEqual({
       tool: 'events:await',
-      args: expect.objectContaining({ event: 'work-item:unblocked:WI-1', timeout_sec: 3600, on_timeout: 'wake' }),
+      args: expect.objectContaining({ event: 'release:green', timeout_sec: 3600, on_timeout: 'wake' }),
     });
     expect(got.recovery.steps[1]).toEqual({ tool: 'loop:end', args: { reason: 'stopping' } });
     expect(JSON.stringify(got.recovery)).not.toContain('acknowledgeWakeLessAutonomy');

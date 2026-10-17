@@ -5,6 +5,7 @@ import { WebSocket } from "ws";
 import { EventEmitter } from "node:events";
 import { DrizzleQueryError } from "drizzle-orm/errors";
 import * as desktopAudit from "@papercusp/operator-core/lib/desktop/desktop-audit";
+import * as hostedLifecycle from "@papercusp/operator-core/lib/workspace-host/hosted-lifecycle-store";
 import { createTextCollector } from "@papercusp/operator-core/lib/child-output";
 import { BYOC_SEALED_PROTOCOL } from "@papercusp/operator-core/lib/workspace-host/byoc-sealed-channel";
 import type { AssembledHostedControlPlane } from "@papercusp/operator-core/lib/endpoint-route/hosted-control-plane";
@@ -119,6 +120,7 @@ describe("hosted handler", () => {
     const gateway = { recordLiveness: vi.fn<HostedWorkspaceConnectorGateway['recordLiveness']>(async (_binding, _alive, onError) => { onError?.(databaseError); }) } as unknown as HostedWorkspaceConnectorGateway;
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const audit = vi.spyOn(desktopAudit, 'recordDesktopAudit').mockImplementation((_event, deps) => { deps!.onError!(databaseError); });
+    const activity = vi.spyOn(hostedLifecycle, 'recordHostedPoolActivity').mockRejectedValue(databaseError);
     const hosted = fixture(gateway);
     const host = Object.assign(new EventEmitter(), { OPEN: 1, readyState: 1, frames: [] as Record<string, unknown>[],
       send(data: string | Buffer) { this.frames.push(JSON.parse(data.toString())); },
@@ -129,6 +131,14 @@ describe("hosted handler", () => {
       hostId: 'host-1', routeLabel: 'alpha', generation: 1, state: 'active' as const, transport: 'websocket' as const, hosting };
     try {
       hosted.relay.attachConnector(binding, host);
+      host.emit('message', Buffer.from(JSON.stringify({ type: 'activity.report',
+        activity: { activeCommands: 1, attachedViewers: 0 } })), false);
+      await Promise.resolve(); await Promise.resolve();
+      if (hosting === 'byoc') expect(activity).not.toHaveBeenCalled();
+      else {
+        expect(activity).toHaveBeenCalledWith(binding, { activeCommands: 1, attachedViewers: 0 }, expect.any(Date));
+        expect(warning).toHaveBeenCalledWith('[hosted-relay] workload observation write failed:', 'workload_write_failed');
+      }
       hosted.relay.attachBrowser({ ...binding, kind: 'session', audience: 'workspace-operator', userId: 'user-1',
         hostedSessionId: 'session-1', expiresAt: new Date(Date.now() + 60_000) }, browser,
       { kind: 'desktop', desktopSessionId: marker, desktopMode: 'watch' });
@@ -153,7 +163,7 @@ describe("hosted handler", () => {
       expect(JSON.stringify(warning.mock.calls)).not.toContain('insert into');
       expect(JSON.stringify(warning.mock.calls)).not.toContain(hostPayload);
     } finally {
-      browser.close(); host.close(); hosted.relay.dispose(); audit.mockRestore(); warning.mockRestore();
+      browser.close(); host.close(); hosted.relay.dispose(); audit.mockRestore(); activity.mockRestore(); warning.mockRestore();
     }
   });
 

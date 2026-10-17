@@ -1,0 +1,177 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "papercusp.com/cupboard — site suite, live deployment and mutants (plan papercusp-com-cupboard-page-2026-10-15)",
+  "framework": "node",
+  "command": [
+    "/home/builduser/papercupai-workspace/papercusp/scripts/pc-heavy.sh",
+    "bash",
+    "-c",
+    "cd /tmp/su81314-cup-head-8b3ea90cfb && npx vitest run tests/cupboard-page.test.js --reporter=json --outputFile=/tmp/su81314-cupboard-vitest.json"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-17T14:31:43.310Z",
+  "finishedAt": "2026-10-17T14:32:04.570Z",
+  "summary": "Public-site suite tests/cupboard-page.test.js 16/16 passed at site commit 8b3ea90cfb97010c927d3522fd10c0ee1c0c5fb6 (git-archive copy-out of that commit); live papercusp-com.pages.dev/cupboard probed (bare path 308 -> /cupboard/ 200; Cloudflare Pages deployment b0acb02f-4082-4865-9037-27cf407c5a09 from site commit cf9c3004825e705e912be2cc65bbe35ebb86d6d7) and compared byte-for-byte with out/cupboard/index.html built at that commit and at site HEAD; 0 copy-out mutants checked.",
+  "assertions": [
+    {
+      "id": "site-test: build emits out/cupboard/index.html with its canonical URL and hero",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=2 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "site-test: build reuses the site stylesheet verbatim, so tokens cannot drift from the home page",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=1 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "site-test: R-1 — the page teaches making and sharing carries the shared site header and footer",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=1163 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "site-test: R-1 — the page teaches making and sharing has one card per kind, each saying how to make it locally and how to share it",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=113 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "site-test: R-1 — the page teaches making and sharing has a sharing section covering publish, review, versions and delisting",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=129 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "site-test: R-1 — the page teaches making and sharing every in-page anchor and every site link resolves",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=104 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "site-test: R-2 — nothing that is not live is presented as live every [data-soon] element shows a visible \"coming soon\" badge",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=511 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "site-test: R-2 — nothing that is not live is presented as live each not-live feature is labelled where the page talks about it",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=141 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "site-test: R-2 — nothing that is not live is presented as live no text outside [data-soon] describes a not-live feature",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=152 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "site-test: R-2 — nothing that is not live is presented as live rules and events never say an agent can author them today",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=182 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "site-test: R-3 — reachable and holds its layout the home page and /architecture link to /cupboard",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=8 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "site-test: R-3 — reachable and holds its layout renders without overflow or page errors at 320px",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=116 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "site-test: R-3 — reachable and holds its layout renders without overflow or page errors at 390px",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=115 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "site-test: R-3 — reachable and holds its layout renders without overflow or page errors at 768px",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=122 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "site-test: R-3 — reachable and holds its layout renders without overflow or page errors at 1024px",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=138 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "site-test: R-3 — reachable and holds its layout renders without overflow or page errors at 1440px",
+      "passed": true,
+      "evidence": "vitest status=passed durationMs=107 file=papercusp-public-site/tests/cupboard-page.test.js"
+    },
+    {
+      "id": "live: bare /cupboard redirects (308) to /cupboard/",
+      "passed": true,
+      "evidence": "GET https://papercusp-com.pages.dev/cupboard (redirect: manual) status=308 location=/cupboard/"
+    },
+    {
+      "id": "live: /cupboard/ resolves 200 on papercusp-com.pages.dev",
+      "passed": true,
+      "evidence": "status=200 finalUrl=https://papercusp-com.pages.dev/cupboard/"
+    },
+    {
+      "id": "live: deployed /cupboard/ carries one card for each of the twelve D-002 kinds",
+      "passed": true,
+      "evidence": "live data-kind set=apps,datatypes,events,identities,plans,plugins,recipes,rubrics,rules,templates,themes,tools"
+    },
+    {
+      "id": "live: production deployment identified (wrangler pages deployment list)",
+      "passed": true,
+      "evidence": "deployment id=b0acb02f-4082-4865-9037-27cf407c5a09 source=cf9c300 (commit cf9c3004825e705e912be2cc65bbe35ebb86d6d7) branch=main url=https://b0acb02f.papercusp-com.pages.dev age=1 day ago"
+    },
+    {
+      "id": "live: deployed /cupboard/ body equals out/cupboard/index.html built at the deployment source commit",
+      "passed": true,
+      "evidence": "live sha256=ea60623c96e9e2ad518fd53b7520d571eeff25d93b63a1125a5f9ec43110bb1e deployment-url sha256=ea60623c96e9e2ad518fd53b7520d571eeff25d93b63a1125a5f9ec43110bb1e built-at-cf9c3004825e705e912be2cc65bbe35ebb86d6d7 sha256=ea60623c96e9e2ad518fd53b7520d571eeff25d93b63a1125a5f9ec43110bb1e"
+    },
+    {
+      "id": "live: deployed /cupboard/ HTML is byte-identical to the tested build output (site HEAD)",
+      "passed": true,
+      "evidence": "live sha256=ea60623c96e9e2ad518fd53b7520d571eeff25d93b63a1125a5f9ec43110bb1e built out/cupboard/index.html sha256=ea60623c96e9e2ad518fd53b7520d571eeff25d93b63a1125a5f9ec43110bb1e"
+    },
+    {
+      "id": "live: deployed page keeps every coming-soon marker of the build",
+      "passed": true,
+      "evidence": "data-soon live=12 built=12"
+    },
+    {
+      "id": "live: home page links to /cupboard",
+      "passed": true,
+      "evidence": "status=200 hasLink=true"
+    },
+    {
+      "id": "live: /architecture links to /cupboard",
+      "passed": true,
+      "evidence": "status=200 hasLink=true"
+    }
+  ],
+  "sourceHashes": {
+    "papercusp-public-site/src/cupboard.html": "52f14dbc11ac44ca0ebaa42c98e9c021ee9e96add8db04fe0bd2bd22de83fecb",
+    "papercusp-public-site/src/page.html": "984c254dd975aee238883544d14238c4bb61de9bcc2aad42ddd837784feda7d8",
+    "papercusp-public-site/src/architecture.html": "3aeb694d61658ae4f8c918104582bdc5c22a92b2b187f2f575196a19b51e51db",
+    "papercusp-public-site/build.py": "6abb9d74aa4cb4e0dc80ef417c096856acacdeeb6d38d651bd332fb61cc8753f",
+    "papercusp-public-site/build.sh": "9cc40174e968f33ec8b85786d699dd9bc63e0a5978484ce2548e5a51000929da",
+    "papercusp-public-site/tests/cupboard-page.test.js": "06bafa2500ddab40a30004dbc18f0cf3ab40747c9cf6e4e2966ce417a0be4d8e"
+  },
+  "siteRepo": "papercusp-public-site",
+  "siteCommit": "8b3ea90cfb97010c927d3522fd10c0ee1c0c5fb6",
+  "siteTreeClean": true,
+  "siteDirtyPaths": [],
+  "testedTree": "git archive copy-out of site commit 8b3ea90cfb97010c927d3522fd10c0ee1c0c5fb6",
+  "cloneDirtyPathsExcluded": [],
+  "deployment": {
+    "id": "b0acb02f-4082-4865-9037-27cf407c5a09",
+    "environment": "Production",
+    "branch": "main",
+    "source": "cf9c300",
+    "sourceCommit": "cf9c3004825e705e912be2cc65bbe35ebb86d6d7",
+    "url": "https://b0acb02f.papercusp-com.pages.dev"
+  },
+  "redirect": {
+    "url": "https://papercusp-com.pages.dev/cupboard",
+    "status": 308,
+    "location": "/cupboard/"
+  },
+  "vitestExit": 0,
+  "mutants": [],
+  "scope": "Static site build + Cloudflare Pages deployment of papercusp.com/cupboard. Mutants were copy-out (never in the shared tree).",
+  "notExercised": [
+    "Visual design review by a human",
+    "Cupboard Worker submission flow (the page links to it; it does not exercise it)"
+  ]
+}

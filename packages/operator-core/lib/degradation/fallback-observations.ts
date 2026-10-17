@@ -39,6 +39,8 @@ export interface FallbackDecision {
   eligible: number;
   /** Units that actually took it. `eligible - applied` units fell back. */
   applied: number;
+  /** False when cardinality is unmeasured; such batches carry zero counts. Defaults to true. */
+  populationKnown?: boolean;
   /** Why the batch went the way it did (e.g. `applied`, `proofs-unavailable`). */
   reason: string;
   /** Optional sub-scope (a gate run id, a pool name) for drill-down. */
@@ -64,9 +66,12 @@ export interface FallbackReasonAggregate {
   samples: number;
   eligible: number;
   applied: number;
+  /** Unknown-cardinality decision batches, never eligible file units. */
+  unknownSamples?: number;
 }
 
 export interface FallbackReasonSummary extends FallbackReasonAggregate {
+  unknownSamples: number;
   /** Units that fell back under this reason (`eligible - applied`). */
   fellBack: number;
 }
@@ -78,7 +83,13 @@ export interface FallbackWindow {
   samples: number;
   eligible: number;
   applied: number;
-  /** `applied / eligible`; null when nothing was eligible (no evidence either way). */
+  /** Fraction over measured units only, even when other batches are unknown. */
+  knownAppliedRate: number | null;
+  /** Unknown-cardinality batches, including ambiguous historical zero-count gate rows. */
+  unknownSamples: number;
+  /** A nonempty measured file population without unknown-cardinality batches. */
+  populationComplete: boolean;
+  /** Overall qualified fraction; null for empty or incompletely measured windows. */
   appliedRate: number | null;
   /** Sorted by fallen-back units, then samples, then reason. */
   reasons: FallbackReasonSummary[];
@@ -110,6 +121,7 @@ interface PendingRow {
   mechanism: string;
   eligible: number;
   applied: number;
+  population_known: boolean;
   reason: string;
   scope: string | null;
   process_tag: string | null;
@@ -202,6 +214,8 @@ export function fallbackDecisionProblem(mechanism: unknown, d: Partial<FallbackD
   if (!isCount(d.eligible)) return 'eligible must be a non-negative integer';
   if (!isCount(d.applied)) return 'applied must be a non-negative integer';
   if (d.applied > d.eligible) return `applied (${d.applied}) exceeds eligible (${d.eligible})`;
+  if (d.populationKnown !== undefined && typeof d.populationKnown !== 'boolean') return 'populationKnown must be a boolean';
+  if (d.populationKnown === false && (d.eligible !== 0 || d.applied !== 0)) return 'unknown population must carry zero eligible/applied counts';
   if (!cleanName(d.reason)) return `reason must be a non-empty string of at most ${FALLBACK_NAME_MAX_CHARS} chars`;
   if (d.scope != null && (typeof d.scope !== 'string' || d.scope.length > FALLBACK_SCOPE_MAX_CHARS)) {
     return `scope must be a string of at most ${FALLBACK_SCOPE_MAX_CHARS} chars`;
@@ -261,6 +275,7 @@ export function observeFallback(mechanism: string, decision: FallbackDecision, o
     mechanism: mechanism.trim(),
     eligible: decision.eligible,
     applied: decision.applied,
+    population_known: decision.populationKnown ?? true,
     reason: decision.reason.trim(),
     scope: decision.scope ?? null,
     process_tag: opts.processTag ?? null,
@@ -287,7 +302,7 @@ export function observeFallback(mechanism: string, decision: FallbackDecision, o
 /** Coalesce key, or null when the row must stay its own row (an exact join key). */
 function coalesceKey(row: PendingRow): string | null {
   if (row.correlation_id != null) return null;
-  return JSON.stringify([row.workspace_id, row.mechanism, row.reason, row.scope, row.process_tag]);
+  return JSON.stringify([row.workspace_id, row.mechanism, row.reason, row.scope, row.process_tag, row.population_known]);
 }
 
 /** Fold `row` into an identical unflushed row; false when there is none to fold into. */
@@ -327,7 +342,7 @@ async function writeBatch(sql: Sql, rows: PendingRow[]): Promise<void> {
   const values = rows.map(({ sql: _ignored, ...r }) => r);
   await sql`
     INSERT INTO harness_shared.fallback_observations
-      ${sql(values, 'workspace_id', 'mechanism', 'eligible', 'applied', 'reason', 'scope', 'process_tag', 'correlation_id', 'observed_at', 'samples')}
+      ${sql(values, 'workspace_id', 'mechanism', 'eligible', 'applied', 'reason', 'scope', 'process_tag', 'correlation_id', 'observed_at', 'samples', 'population_known')}
   `;
 }
 
@@ -410,15 +425,16 @@ export function summarizeFallbackWindow(
   windowMs: number,
   aggregates: readonly FallbackReasonAggregate[],
 ): FallbackWindow {
-  const byReason = new Map<string, FallbackReasonAggregate>();
+  const byReason = new Map<string, Required<FallbackReasonAggregate>>();
   for (const a of aggregates) {
     const prev = byReason.get(a.reason);
     if (prev) {
       prev.samples += a.samples;
       prev.eligible += a.eligible;
       prev.applied += a.applied;
+      prev.unknownSamples += a.unknownSamples ?? 0;
     } else {
-      byReason.set(a.reason, { reason: a.reason, samples: a.samples, eligible: a.eligible, applied: a.applied });
+      byReason.set(a.reason, { reason: a.reason, samples: a.samples, eligible: a.eligible, applied: a.applied, unknownSamples: a.unknownSamples ?? 0 });
     }
   }
   const reasons: FallbackReasonSummary[] = [...byReason.values()]
@@ -428,20 +444,27 @@ export function summarizeFallbackWindow(
   let eligible = 0;
   let applied = 0;
   let fellBack = 0;
+  let unknownSamples = 0;
   for (const r of reasons) {
     samples += r.samples;
     eligible += r.eligible;
     applied += r.applied;
     fellBack += r.fellBack;
+    unknownSamples += r.unknownSamples;
   }
   const top = fellBack > 0 ? reasons[0] : undefined;
+  const knownAppliedRate = eligible > 0 ? applied / eligible : null;
+  const populationComplete = eligible > 0 && unknownSamples === 0;
   return {
     mechanism,
     windowMs,
     samples,
     eligible,
     applied,
-    appliedRate: eligible > 0 ? applied / eligible : null,
+    knownAppliedRate,
+    unknownSamples,
+    populationComplete,
+    appliedRate: populationComplete ? knownAppliedRate : null,
     reasons,
     dominantReason: top ? top.reason : null,
     dominantShare: top ? top.fellBack / fellBack : null,
@@ -461,11 +484,14 @@ export async function readFallbackWindow(
   const since = new Date((opts.now ?? new Date()).getTime() - windowMs);
   const ws = opts.workspaceId ?? null;
   const processTag = opts.processTag ?? null;
-  const rows = await sql<Array<{ reason: string; samples: number | string; eligible: number | string; applied: number | string }>>`
+  const rows = await sql<Array<{ reason: string; samples: number | string; eligible: number | string; applied: number | string; unknown_samples: number | string }>>`
     SELECT reason,
            sum(samples)::bigint  AS samples,
            sum(eligible)::bigint AS eligible,
-           sum(applied)::bigint  AS applied
+           sum(applied)::bigint  AS applied,
+           sum(CASE WHEN population_known IS FALSE OR
+             (population_known IS NULL AND mechanism = 'gate-pass-reuse' AND eligible = 0)
+             THEN samples ELSE 0 END)::bigint AS unknown_samples
       FROM harness_shared.fallback_observations
      WHERE mechanism = ${mechanism.trim()}
        AND observed_at >= ${since}
@@ -476,7 +502,7 @@ export async function readFallbackWindow(
   return summarizeFallbackWindow(
     mechanism.trim(),
     windowMs,
-    rows.map((r) => ({ reason: r.reason, samples: Number(r.samples), eligible: Number(r.eligible), applied: Number(r.applied) })),
+    rows.map((r) => ({ reason: r.reason, samples: Number(r.samples), eligible: Number(r.eligible), applied: Number(r.applied), unknownSamples: Number(r.unknown_samples) })),
   );
 }
 
@@ -506,12 +532,15 @@ export async function readFallbackWindowsByScope(
   const ws = opts.workspaceId ?? null;
   const processTag = opts.processTag ?? null;
   const name = mechanism.trim();
-  const rows = await sql<Array<{ scope: string | null; reason: string; samples: number | string; eligible: number | string; applied: number | string }>>`
+  const rows = await sql<Array<{ scope: string | null; reason: string; samples: number | string; eligible: number | string; applied: number | string; unknown_samples: number | string }>>`
     SELECT scope,
            reason,
            sum(samples)::bigint  AS samples,
            sum(eligible)::bigint AS eligible,
-           sum(applied)::bigint  AS applied
+           sum(applied)::bigint  AS applied,
+           sum(CASE WHEN population_known IS FALSE OR
+             (population_known IS NULL AND mechanism = 'gate-pass-reuse' AND eligible = 0)
+             THEN samples ELSE 0 END)::bigint AS unknown_samples
       FROM harness_shared.fallback_observations
      WHERE mechanism = ${name}
        AND observed_at >= ${since}
@@ -523,7 +552,7 @@ export async function readFallbackWindowsByScope(
   const byScope = new Map<string | null, FallbackReasonAggregate[]>();
   for (const r of rows) {
     const key = r.scope ?? null;
-    const agg = { reason: r.reason, samples: Number(r.samples), eligible: Number(r.eligible), applied: Number(r.applied) };
+    const agg = { reason: r.reason, samples: Number(r.samples), eligible: Number(r.eligible), applied: Number(r.applied), unknownSamples: Number(r.unknown_samples) };
     const list = byScope.get(key);
     if (list) list.push(agg);
     else byScope.set(key, [agg]);

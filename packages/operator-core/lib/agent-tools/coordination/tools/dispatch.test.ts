@@ -476,11 +476,11 @@ describe('coord:dispatch phase instrumentation', () => {
 });
 
 describe('composeDispatch', () => {
-  it('caps the required note and optional body at coord:send\'s inbox limit', () => {
+  it('accepts over-cap notes and bodies for coord:send chunking', () => {
     const base = { to: 'su-target', note: 'take the assigned lane' };
     expect(dispatch.args.safeParse({ ...base, body: 'x'.repeat(600) }).success).toBe(true);
-    expect(dispatch.args.safeParse({ ...base, body: 'x'.repeat(601) }).success).toBe(false);
-    expect(dispatch.args.safeParse({ ...base, note: 'x'.repeat(601) }).success).toBe(false);
+    expect(dispatch.args.safeParse({ ...base, body: 'x'.repeat(731) }).success).toBe(true);
+    expect(dispatch.args.safeParse({ ...base, note: 'x'.repeat(731) }).success).toBe(true);
   });
 
   it('skips the optional presence read for an exact owner id so delivery cannot wait on alias resolution', async () => {

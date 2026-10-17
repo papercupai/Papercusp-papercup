@@ -1,8 +1,10 @@
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCache } from '@papercusp/cache';
+import { createConcurrencyGate } from '@papercusp/sync';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { HarnessRegistry } from '../../harness-registry';
 import * as gitTools from './git';
@@ -89,7 +91,12 @@ describe('capability:git-evidence', () => {
       { repositoryDir: root, signal: never },
     );
 
-    expect(result).toMatchObject({ ok: true, op: 'readFileAtCommit', content: 'pinned contents\n' });
+    expect(result).toMatchObject({
+      ok: true,
+      op: 'readFileAtCommit',
+      content: 'pinned contents\n',
+      contentSha256: createHash('sha256').update('pinned contents\n').digest('hex'),
+    });
   });
 
   it('reads repository-root-relative paths when the capability base is nested', async () => {
@@ -254,6 +261,37 @@ describe('capability:git-evidence', () => {
     }
   });
 
+  it('bounds Git command admission across concurrent historical reads', async () => {
+    const commitSha = 'a'.repeat(40);
+    const paths = ['one.txt', 'two.txt', 'three.txt', 'four.txt'];
+    const gate = createConcurrencyGate(2);
+    let active = 0;
+    let peak = 0;
+    const runner = async (argv: string[]) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      active -= 1;
+      if (argv[0] === 'rev-parse' && argv[1] === '--show-toplevel') return { code: 0, output: '/repo\n' };
+      if (argv[0] === 'rev-parse' && argv[1] === '--verify') return { code: 0, output: `${commitSha}\n` };
+      if (argv[0] === 'ls-tree') {
+        const path = argv.at(-1)!;
+        return { code: 0, output: `100644 blob ${'b'.repeat(40)}\t${path}\0` };
+      }
+      if (argv[0] === 'cat-file' && argv[1] === '-s') return { code: 0, output: '1\n' };
+      if (argv[0] === 'cat-file' && argv[1] === 'blob') return { code: 0, output: 'x' };
+      throw new Error(`Unexpected Git invocation: ${argv.join(' ')}`);
+    };
+
+    const results = await Promise.all(paths.map((path) => runJudgeGitEvidence(
+      { op: 'readFileAtCommit', commitSha, path },
+      { repositoryDir: '/repo', signal: never, runner, commandGate: gate },
+    )));
+
+    expect(results.every((result) => result.ok)).toBe(true);
+    expect(peak).toBe(2);
+  });
+
   it('keeps interrupted or ambiguous repository probes out of the not-repository verdict', async () => {
     const args = {
       op: 'readFileAtCommit' as const,
@@ -357,6 +395,32 @@ describe('capability:git-evidence', () => {
     }
   });
 
+  it('classifies a nonzero runner exit after cancellation as interrupted', async () => {
+    const root = repository();
+    const commitSha = git(root, ['rev-parse', 'HEAD']);
+    const controller = new AbortController();
+    const runner: typeof runGit = async (...args) => {
+      const result = await runGit(...args);
+      const [argv] = args;
+      if (argv[0] === 'cat-file' && argv[1] === 'blob') {
+        controller.abort();
+        return { code: 137, output: result.output };
+      }
+      return result;
+    };
+
+    const result = await runJudgeGitEvidence(
+      { op: 'readFileAtCommit', commitSha, path: 'evidence.txt' },
+      { repositoryDir: root, signal: controller.signal, runner },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'git_command_interrupted',
+      message: expect.not.stringContaining('pinned contents'),
+    });
+  });
+
   it('reads external evidence from the registered workspace repository without substituting HEAD', async () => {
     const activeRoot = repository();
     const externalRoot = repository();
@@ -428,13 +492,22 @@ describe('capability:git-evidence', () => {
     if (!result.ok || result.op !== 'readFileAtCommit' || !('content' in result)) {
       throw new Error(`Expected one inline pinned blob read, got ${JSON.stringify(result)}`);
     }
-    expect(result).toMatchObject({ ok: true, commitSha, path, bytes: 94_304 });
+    expect(result).toMatchObject({
+      ok: true,
+      commitSha,
+      path,
+      bytes: 94_304,
+      contentSha256: createHash('sha256').update(committedContent).digest('hex'),
+    });
     expect(result.content).toBe(committedContent);
   });
 
   it('pages oversized pinned UTF-8 blobs as exact bounded bytes', async () => {
     const root = repository();
-    const largeContent = '€'.repeat(Math.ceil((MAX_GIT_EVIDENCE_INLINE_BYTES + 1) / 3));
+    // Exercise the upper page-chain cache bound. Before the cache floor was
+    // raised, this size was evicted after every page and each cursor repeated
+    // all repository discovery and blob reads.
+    const largeContent = '€'.repeat(Math.ceil((1024 * 1024 + 1) / 3));
     const expectedBytes = Buffer.from(largeContent, 'utf8');
     writeFileSync(join(root, 'large.txt'), largeContent);
     git(root, ['add', 'large.txt']);
@@ -459,6 +532,7 @@ describe('capability:git-evidence', () => {
       readOptions,
     );
     const pages: Buffer[] = [];
+    const expectedSha256 = createHash('sha256').update(expectedBytes).digest('hex');
     let totalRead = 0;
     let pageCount = 0;
     while (true) {
@@ -470,6 +544,7 @@ describe('capability:git-evidence', () => {
       expect(result.byte_length).toBe(page.length);
       expect(result.byte_length).toBeLessThanOrEqual(MAX_GIT_EVIDENCE_PAGE_BYTES);
       expect(result.total_bytes).toBe(expectedBytes.length);
+      expect(result.contentSha256).toBe(expectedSha256);
       expect(result.eof).toBe(result.next_cursor === null);
       pages.push(page);
       totalRead += page.length;

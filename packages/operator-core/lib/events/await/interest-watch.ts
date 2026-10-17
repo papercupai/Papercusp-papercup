@@ -481,16 +481,51 @@ export async function pollDueInterestWatches(
 
 /* ── Prod binding ──────────────────────────────────────────────────────────── */
 
-type Globals = typeof globalThis & { __papercuspInterestWatchSweeperStarted?: boolean };
+type Globals = typeof globalThis & {
+  __papercuspInterestWatchSweeperStarted?: boolean;
+  __papercuspInterestWatchSweeperGeneration?: number;
+  __papercuspInterestWatchSweepDrain?: InterestWatchSweepDrain;
+  __papercuspInterestWatchSweeperStartup?: Promise<void>;
+};
+
+/** The host lifecycle owns every sweep started by the managed interval. */
+export interface InterestWatchSweepDrain {
+  track(sweep: Promise<unknown>): Promise<void>;
+  drain(): Promise<void>;
+}
+
+/** Track overlapping ticks so shutdown can await the whole in-flight set. */
+export function createInterestWatchSweepDrain(): InterestWatchSweepDrain {
+  const active = new Set<Promise<void>>();
+  return {
+    track(sweep) {
+      const tracked = Promise.resolve(sweep).then(
+        () => undefined,
+        () => undefined,
+      );
+      active.add(tracked);
+      void tracked.then(() => active.delete(tracked));
+      return tracked;
+    },
+    async drain() {
+      while (active.size > 0) {
+        await Promise.all([...active]);
+      }
+    },
+  };
+}
 
 /** Idempotent lazy start (mirrors startPredicateWatchPoller) — called at
  *  registration and from the agent-tools boot path so active rows survive a
  *  host restart. Deps are imported lazily so this module stays import-cheap. */
-export function startInterestWatchSweeper(): void {
+export function startInterestWatchSweeper(): Promise<void> {
   const g = globalThis as Globals;
-  if (g.__papercuspInterestWatchSweeperStarted) return;
+  if (g.__papercuspInterestWatchSweeperStarted) return g.__papercuspInterestWatchSweeperStartup ?? Promise.resolve();
   g.__papercuspInterestWatchSweeperStarted = true;
-  void (async () => {
+  const generation = (g.__papercuspInterestWatchSweeperGeneration ?? 0) + 1;
+  g.__papercuspInterestWatchSweeperGeneration = generation;
+  const drain = g.__papercuspInterestWatchSweepDrain ??= createInterestWatchSweepDrain();
+  const startup = (async () => {
     const [{ managedSetInterval }, { getOrgPg }, { DEFAULT_COORD_WORKSPACE }, { emitAwaitedEvent }] =
       await Promise.all([
         import('@papercusp/scheduled-registry'),
@@ -498,6 +533,10 @@ export function startInterestWatchSweeper(): void {
         import('@papercusp/coordination/event-log'),
         import('./engine'),
       ]);
+    // A short-lived host (including the private integration worker) can begin
+    // teardown while the lazy boot imports are still resolving. Do not arm a
+    // new interval after that lifecycle has already been cancelled.
+    if (generation !== g.__papercuspInterestWatchSweeperGeneration) return;
     const deps: InterestSweepDeps = {
       getSql: () => getOrgPg().sql,
       emit: (opts) =>
@@ -513,9 +552,11 @@ export function startInterestWatchSweeper(): void {
       'interest-watch-sweeper',
       INTEREST_SWEEP_TICK_MS,
       () => {
-        void pollDueInterestWatches(deps, DEFAULT_COORD_WORKSPACE).catch((e) =>
-          log(`sweep tick failed: ${e instanceof Error ? e.message : e}`),
-        );
+        if (generation !== g.__papercuspInterestWatchSweeperGeneration) return;
+        const sweep = pollDueInterestWatches(deps, DEFAULT_COORD_WORKSPACE).catch((e) => {
+          log(`sweep tick failed: ${e instanceof Error ? e.message : e}`);
+        });
+        return drain.track(sweep);
       },
       // D-004 must-sample: the trigger is a session_turn becoming EMBEDDED, and
       // nothing emits a change event when text_embedding lands — so the frontier
@@ -523,7 +564,27 @@ export function startInterestWatchSweeper(): void {
       { category: 'global-sweep', classification: 'must-sample' },
     );
   })().catch((e) => {
-    (globalThis as Globals).__papercuspInterestWatchSweeperStarted = false;
+    if (generation === g.__papercuspInterestWatchSweeperGeneration) g.__papercuspInterestWatchSweeperStarted = false;
     log(`sweeper start failed: ${e instanceof Error ? e.message : e}`);
   });
+  g.__papercuspInterestWatchSweeperStartup = startup;
+  return startup;
+}
+
+/**
+ * Stop the host-owned sweeper before its database is retired. This is used by
+ * disposable operator workers and is safe to call repeatedly: invalidating the
+ * generation closes the lazy-start race, while stopManaged clears an interval
+ * that has already been armed. Production hosts may call it during orderly
+ * shutdown; normal operation remains unchanged.
+ */
+export async function stopInterestWatchSweeper(): Promise<boolean> {
+  const g = globalThis as Globals;
+  g.__papercuspInterestWatchSweeperStarted = false;
+  g.__papercuspInterestWatchSweeperGeneration = (g.__papercuspInterestWatchSweeperGeneration ?? 0) + 1;
+  const { stopManaged } = await import('@papercusp/scheduled-registry');
+  const timerStopped = stopManaged('interest-watch-sweeper');
+  await g.__papercuspInterestWatchSweeperStartup;
+  await g.__papercuspInterestWatchSweepDrain?.drain();
+  return timerStopped;
 }

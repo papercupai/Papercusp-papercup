@@ -88,6 +88,33 @@ test('detects generated Papercusp temp files and caches', () => {
   assert.equal(isTrackedScratchPath('apps/operator/.papercusp/tsx-1000/output.js'), true);
 });
 
+test('detects generated operator host output even when a relative outfile nests the app path', () => {
+  const outputs = [
+    'apps/operator/dist-host/hono-host.mjs',
+    'apps/operator/dist-host-native-fixture-debug-2001983/hono-host.mjs',
+    'apps/operator/apps/operator/dist-host-native-fixture-debug-2047298/hono-host.mjs',
+    'apps/operator/apps/operator/dist-host-native-fixture-debug-2047298/sql/schema.sql',
+  ];
+
+  assert.deepEqual(findTrackedScratchPaths(outputs), [...outputs].sort());
+  assert.equal(isTrackedScratchPath('packages/operator-core/lib/dist-host-fixture.ts'), false);
+  assert.equal(isTrackedScratchPath('apps/operator/lib/dist-host-fixture.ts'), false);
+});
+
+test('the maintained ignore rule covers nested operator host output', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'check-tracked-ignored-'));
+  const output = 'apps/operator/apps/operator/dist-host-native-fixture-debug-2047298/hono-host.mjs';
+  try {
+    execFileSync('git', ['init', '--quiet'], { cwd: repo });
+    execFileSync('git', ['config', 'core.excludesFile', '/dev/null'], { cwd: repo });
+    writeFileSync(join(repo, '.gitignore'), readFileSync(new URL('../.gitignore', import.meta.url)));
+    assert.equal(execFileSync('git', ['check-ignore', '--no-index', '--', output],
+      { cwd: repo, encoding: 'utf8' }).trim(), output);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test('does not flag nested product scratch paths or durable Papercusp state', () => {
   const tracked = [
     'packages/operator-core/src/scratch/parser.ts',

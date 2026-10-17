@@ -24,6 +24,7 @@ import { inject } from 'vitest';
 import postgres from 'postgres';
 import { assertPgReachable } from '@papercusp/test-config/pg';
 import { _resetForTests } from '@papercusp/db-org';
+import { createOrgTestDb } from '../../../../test/_org-test-db';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes
 import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db/src/connection';
 // eslint-disable-next-line import/no-relative-packages -- mirror the canonical client's jsonb serializer (see restoreRawJsonbSerializer's doc)
@@ -47,10 +48,13 @@ function withUser(dsn: string, user: string, password: string): string {
 
 /**
  * Wire the plan tools at the injected baseline DB and hand back an admin client
- * for direct seed/cleanup. Call once in `beforeAll`.
+ * for direct seed/cleanup. Writable composition suites can request a private,
+ * migrated database; the reusable baseline is not a disposable data fixture.
+ * Call once in `beforeAll` and dispose before opening another fixture.
  */
-export async function setupPlanPgFixture(): Promise<PlanPgFixture> {
-  const dsn = inject('baselineSchemaDsn');
+export async function setupPlanPgFixture(options: { isolated?: boolean } = {}): Promise<PlanPgFixture> {
+  const privateDb = options.isolated ? await createOrgTestDb() : undefined;
+  const dsn = privateDb?.adminDsn ?? inject('baselineSchemaDsn');
 
   // EI-2627: globalSetup's own health check (EI-2433) ran once, potentially
   // minutes before this beforeAll — long enough on a heavily-loaded fleet box
@@ -59,7 +63,12 @@ export async function setupPlanPgFixture(): Promise<PlanPgFixture> {
   // before repointing env vars, so a genuine failure surfaces as an actionable
   // "this is known local-environment churn" error instead of a cryptic raw
   // "no such database: papercusp_it" deep inside a later query.
-  await assertPgReachable(dsn, 'setupPlanPgFixture');
+  try {
+    await assertPgReachable(dsn, 'setupPlanPgFixture');
+  } catch (error) {
+    await privateDb?.cleanup();
+    throw error;
+  }
 
   // Re-point the tools' app + admin connections (resolved from env) at the
   // baseline DB, then drop any cached pool + memoized URL so the next
@@ -72,6 +81,8 @@ export async function setupPlanPgFixture(): Promise<PlanPgFixture> {
   // skip PG discovery so getOrgPg honours the env DSN verbatim (mirrors _baseline-coord-fixture).
   const prevPgb = process.env.PAPERCUSP_PGBOUNCER;
   const prevSkipDisc = process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
+  const prevAppUrl = process.env.HARNESS_DATABASE_URL;
+  const prevAdminUrl = process.env.HARNESS_ADMIN_DATABASE_URL;
   process.env.PAPERCUSP_PGBOUNCER = '0';
   process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
   process.env.HARNESS_DATABASE_URL = withUser(dsn, 'harness_app', 'harness_app_pwd');
@@ -91,14 +102,17 @@ export async function setupPlanPgFixture(): Promise<PlanPgFixture> {
 
   const dispose = async () => {
     await admin.end({ timeout: 5 }).catch(() => {});
-    delete process.env.HARNESS_DATABASE_URL;
-    delete process.env.HARNESS_ADMIN_DATABASE_URL;
+    if (prevAppUrl === undefined) delete process.env.HARNESS_DATABASE_URL;
+    else process.env.HARNESS_DATABASE_URL = prevAppUrl;
+    if (prevAdminUrl === undefined) delete process.env.HARNESS_ADMIN_DATABASE_URL;
+    else process.env.HARNESS_ADMIN_DATABASE_URL = prevAdminUrl;
     if (prevPgb === undefined) delete process.env.PAPERCUSP_PGBOUNCER;
     else process.env.PAPERCUSP_PGBOUNCER = prevPgb;
     if (prevSkipDisc === undefined) delete process.env.PAPERCUSP_SKIP_PG_DISCOVERY;
     else process.env.PAPERCUSP_SKIP_PG_DISCOVERY = prevSkipDisc;
     _resetUrlCacheForTests();
     await _resetForTests();
+    await privateDb?.cleanup();
   };
 
   return { admin, workspaceId: 'default', dispose };

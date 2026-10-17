@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { Socket } from 'node:net';
 import { getOrgPg, getOrgPgApp, getOrgPgListener, _resetForTests } from '@papercusp/db-org';
@@ -11,6 +11,7 @@ import { readProcessIdentity } from '../lib/process-identity';
 import { resolvePlanScope } from '../lib/agent-tools/plans/source';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, waitForPrivateOperator, stopPrivateOperatorHost, qualifyCommittedReaderSource, resolvePreparedCommittedReaderSource, resolvePreparedPrivateApiBundle } from './private-http-workspace-preflight';
 import { retainIsolatedWorkerProgress } from './isolated-integration-proof';
+import { measurePrivateUnrelatedCheckpointScenario } from './private-unrelated-write-http-scenario';
 
 let host: ChildProcess | undefined;
 let hostIdentity: ReturnType<typeof readProcessIdentity>;
@@ -69,12 +70,19 @@ async function main() {
   const headers = { 'content-type': 'application/json', origin: base, 'x-papercusp-workspace': workspace };
   const { sql } = getOrgPg();
   if (e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-pool-cleanup') ||
+      e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-hub-cleanup') ||
       e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-launch-cleanup') ||
       e.STAGING_FIRST_HTTP_SCENARIO?.startsWith('current-su-native-spawn-cleanup')) {
     // Native launch readers use pools besides the org query client. Exercise
     // the idle LISTEN connection too: ending only sql cannot release it.
     await getOrgPgApp().sql`SELECT 1`;
     await getOrgPgListener().sql.listen('private_native_cleanup', () => {});
+    if (e.STAGING_FIRST_HTTP_SCENARIO.startsWith('current-su-native-hub-cleanup')) {
+      // The native wake buses own a separate pool, outside db-org's reset.
+      // Leave this subscription active to exercise process-owner teardown.
+      const { hubListen } = await import('../lib/pg-listen-hub');
+      await hubListen('private_native_hub_cleanup', () => {});
+    }
     if (!e.STAGING_FIRST_HTTP_SCENARIO.startsWith('current-su-native-pool-cleanup')) {
       // Exercise the native launch module and its standing-wake callback without
       // spawning a CLI, container, provider request or private API build.
@@ -102,11 +110,25 @@ async function main() {
     return;
   }
   if (e.STAGING_FIRST_HTTP_SCENARIO === 'current-su-native-setup') {
-    await (await import('./current-su-native-http-scenario')).prepareCurrentSuNativeScenario(workspace);
+    // Exercise the real writer before paying for an API build/container/native
+    // launch. A fresh isolated HOME has no installed hook scripts by default.
+    const probeHome = join(evidenceDir, 'codex-hook-preflight');
+    mkdirSync(probeHome);
+    let nativeHookPreflight;
+    try {
+      const { writeCodexLockHooks } = await import('../lib/role-codex-home');
+      const beforeInstall = writeCodexLockHooks(probeHome);
+      await (await import('./current-su-native-http-scenario')).prepareCurrentSuNativeScenario(workspace);
+      const configured = writeCodexLockHooks(probeHome, { lockSid: 'su-private-hook-preflight',
+        activitySid: 'su-private-hook-preflight', injectSid: 'su-private-hook-preflight' });
+      const hooks = configured ? JSON.parse(readFileSync(join(probeHome, 'hooks.json'), 'utf8')).hooks : {};
+      nativeHookPreflight = { beforeInstall, configured, events: Object.keys(hooks),
+        privateHookRoot: configured && JSON.stringify(hooks).includes(join(e.HOME!, '.papercusp', 'hooks')) };
+    } finally { rmSync(probeHome, { recursive: true, force: true }); }
     console.log('CURRENT_SU_NATIVE_SETUP_RECEIPT ' + JSON.stringify({ workspace,
       accountId: 'private-current-su', provider: 'codex', providerForwarding: false,
       launcherPath: process.env.PAPERCUSP_PSU_LAUNCHER ?? null,
-      nodeOptions: e.NODE_OPTIONS ?? '' }));
+      nodeOptions: e.NODE_OPTIONS ?? '', nativeHookPreflight }));
     return;
   }
   if (['committed-reader-setup', 'committed-reader-setup-exception'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '')) {
@@ -272,6 +294,61 @@ async function main() {
       hostStopped: true, bundleSha256, health }));
     return;
   }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'private-read-pg-error') {
+    const receipt = await (await import('./private-read-pg-error-http-scenario')).measurePrivateReadPgErrorScenario({
+      workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
+    });
+    await stopHost();
+    await sql.end();
+    console.log('PRIVATE_READ_PG_ERROR_HTTP_RECEIPT ' + JSON.stringify({
+      ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
+    }));
+    return;
+  }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'private-read-cancellation') {
+    const receipt = await (await import('./private-read-cancellation-http-scenario')).measurePrivateReadCancellationScenario({
+      workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
+    });
+    await stopHost();
+    await sql.end();
+    console.log('PRIVATE_READ_CANCELLATION_HTTP_RECEIPT ' + JSON.stringify({
+      ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
+    }));
+    return;
+  }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'private-read-deadline') {
+    const receipt = await (await import('./private-read-deadline-http-scenario')).measurePrivateReadDeadlineScenario({
+      workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
+    });
+    await stopHost();
+    await sql.end();
+    console.log('PRIVATE_READ_DEADLINE_HTTP_RECEIPT ' + JSON.stringify({
+      ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
+    }));
+    return;
+  }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'private-same-item-write') {
+    const receipt = await (await import('./private-unrelated-write-http-scenario')).measurePrivateSameItemCheckpointScenario({
+      workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
+    });
+    await stopHost();
+    await sql.end();
+    console.log('PRIVATE_SAME_ITEM_WRITE_HTTP_RECEIPT ' + JSON.stringify({
+      ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
+    }));
+    return;
+  }
+  if (e.STAGING_FIRST_HTTP_SCENARIO === 'private-unrelated-write') {
+    const receipt = await measurePrivateUnrelatedCheckpointScenario({
+      workspace, harness, base, headers, evidenceDir, expectedSha: health.sha,
+    });
+    await stopHost();
+    await sql.end();
+    console.log('PRIVATE_UNRELATED_WRITE_HTTP_RECEIPT ' + JSON.stringify({
+      ...receipt, hostPid: host.pid, hostStopped: true, bundleSha256, health,
+    }));
+    return;
+  }
   if (committedReader) {
     const readerReceipt = await committedReader.execute(host.pid!);
     await stopHost();
@@ -372,12 +449,21 @@ catch (error) {
     // listen() completion cannot reopen the retired socket.
     const { _stopInvalidationListenerForTests } = await import('@papercusp/agent-mcp/auth');
     await _stopInvalidationListenerForTests();
+    // Capture the census while the fixture-owned pools are still live. In the
+    // hub scenario this is the only point where the shared listen-hub client
+    // can be observed; stopping it first made the canonical cleanup assertion
+    // contradict the fixture's own setup.
     const { sql } = getOrgPg();
     const pgConnections = await sql`SELECT client_port, application_name, state
       FROM pg_stat_activity WHERE datname = current_database() AND client_port IS NOT NULL`
       .catch(error => { retainIsolatedWorkerProgress(evidenceDir, 'fixture-pg-census-unavailable',
         { error: String(error) }); return []; });
     retainIsolatedWorkerProgress(evidenceDir, 'fixture-pools-closing', { pgConnections });
+    // pg-listen-hub owns a direct postgres-js connection outside db-org's
+    // reset registry. Close it after the census, before resetting disposable
+    // pools, or its referenced socket keeps the worker alive after a failure.
+    const { _stopHubForTests } = await import('../lib/pg-listen-hub');
+    await _stopHubForTests();
     await _resetForTests();
     // libuv completes socket close callbacks on the next loop turn. Record
     // after that boundary so an already-closing handle is not called a leak.

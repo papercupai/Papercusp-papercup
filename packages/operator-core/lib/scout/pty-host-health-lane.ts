@@ -149,6 +149,9 @@ export function classifyPtyHostEvent(kind: string): PtyHostEventClass {
     kind === 'model-capacity-detected' ||
     kind === 'turn-deferred-quota-blocked' ||
     kind === 'launch-kickoff-model-turn-absent' ||
+    // The provider capacity gate can reject the initial kickoff before a turn
+    // starts; keep that terminal outcome classified alongside quota rejection.
+    kind === 'launch-kickoff-model-capacity-rejected' ||
     kind === 'launch-role-mcp-unavailable' ||
     // The submitted kickoff was rejected by a provider quota wall.
     kind === 'launch-kickoff-quota-rejected' ||

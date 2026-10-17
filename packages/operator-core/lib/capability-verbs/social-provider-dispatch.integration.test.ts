@@ -87,7 +87,9 @@ const SOCIAL_CAPABILITIES = [
 ];
 
 function descriptor(id: string, host: string): ProviderDescriptor {
-  return { id, contractVersion: 1, datatypes: ['social-post'], capabilities: [...SOCIAL_CAPABILITIES], egressHosts: [host] };
+  return { id, contractVersion: 1, datatypes: ['social-post'], capabilities: [...SOCIAL_CAPABILITIES], egressHosts: [host],
+    verification: id === 'tiktok' ? { verifiedAt: null, sources: [] }
+      : { verifiedAt: '2026-10-16', sources: ['https://example.test/contract'], capabilities: Object.fromEntries(SOCIAL_CAPABILITIES.map((capability) => [capability, '2026-10-16'])) } };
 }
 
 /** A social package that reaches its platform only through `host.fetch`, as an installed Cupboard package must. */
@@ -222,7 +224,7 @@ describe('R-2 (1): each social write is executed by the installed package for it
     expect(result.inReplyTo).toBe(`reddit:${PARENT_ID}`);
     expect(invokes.map((i) => [i.provider, i.request.capability])).toEqual([['reddit', PROVIDER_SOCIAL_REPLY_CAPABILITY]]);
     // Server-derived, never caller-supplied: the target came from the Vault row.
-    expect(invokes[0]!.request.args.target).toMatchObject({ platform: 'reddit', parentFullname: PARENT_ID, subreddit: 'rust' });
+    expect(invokes[0]!.request.args.target).toMatchObject({ platform: 'reddit', externalId: PARENT_ID, payload: { fullname: PARENT_ID, subreddit: 'rust' } });
     expect(requests.map((r) => [r.host, r.path])).toEqual([[REDDIT_HOST, `/${PROVIDER_SOCIAL_REPLY_CAPABILITY}`]]);
   });
 
@@ -295,7 +297,7 @@ describe('R-2 (2): every host rail refuses before the package is called', () => 
       deps(),
     );
 
-    await expect(attempt).rejects.toThrow(/outbound_source_not_connected:social-post:bluesky — no installed provider package serves bluesky/);
+    await expect(attempt).rejects.toThrow(/social_platform_unusable:bluesky:unknown-platform.*no installed/);
     expect(invokes).toEqual([]);
     expect(requests).toEqual([]);
   });

@@ -204,6 +204,13 @@ export interface LivenessVerdict {
 /** Read-time actionability for owner-facing queues. */
 export type ReadActionability = 'actionable' | 'non-actionable' | 'unknown';
 
+export type LivenessTimingOutcome = 'ok' | 'error';
+export type LivenessTimingCallback = (
+  leg: string,
+  durationMs: number,
+  outcome: LivenessTimingOutcome,
+) => void;
+
 /**
  * PURE: classify whether a read-side owner gate can still be acted on.
  * Missing liveness is deliberately unknown, never actionable.
@@ -219,6 +226,9 @@ export function classifyReadActionability(
 
 export interface ResolveSessionStatesOpts {
   nowMs?: number;
+  /** Optional request-scoped observer for async liveness I/O legs. The caller
+   *  supplies any correlation identity in its closure; observer errors are ignored. */
+  onTiming?: LivenessTimingCallback;
   /** Fill missing heartbeat/stale/host/pid/source from each subject's own
    *  coord_presence row (one point-read per hydrated subject — for the small-N
    *  bare-id callers like the send-miss path, never for whole rosters). */
@@ -622,9 +632,13 @@ export async function resolveSessionStates(
     const needsHydration = subjects.filter((s) => s.heartbeatAt == null && s.stale == null);
     if (needsHydration.length > 0) {
       try {
-        const rows = await (opts.listPresenceFn ?? listPresence)({
-          ownerIds: needsHydration.map((s) => s.ownerId),
-        });
+        const rows = await timeLivenessLeg(
+          'presence_hydration',
+          () => (opts.listPresenceFn ?? listPresence)({
+            ownerIds: needsHydration.map((s) => s.ownerId),
+          }),
+          opts.onTiming,
+        );
         const byOwner = new Map(rows.map((row) => [row.ownerId, row]));
         hydrated = subjects.map((s) => {
           if (s.heartbeatAt != null || s.stale != null) return s;
@@ -650,42 +664,50 @@ export async function resolveSessionStates(
     }
   } else if (opts.hydratePerId) {
     const getPresenceFn = opts.getPresenceFn ?? getPresence;
-    hydrated = await Promise.all(
-      subjects.map(async (s) => {
-        if (s.heartbeatAt != null || s.stale != null) return s;
-        try {
-          const p = await getPresenceFn(s.ownerId);
-          if (!p) {
-            absentPresence.add(s.ownerId);
-            return s;
+    hydrated = await timeLivenessLeg(
+      'presence_hydration',
+      () => Promise.all(
+        subjects.map(async (s) => {
+          if (s.heartbeatAt != null || s.stale != null) return s;
+          try {
+            const p = await getPresenceFn(s.ownerId);
+            if (!p) {
+              absentPresence.add(s.ownerId);
+              return s;
+            }
+            return {
+              ...s,
+              heartbeatAt: p.heartbeatAt,
+              stale: p.stale,
+              host: s.host ?? p.host,
+              pid: s.pid ?? p.pid,
+              source: s.source ?? p.source,
+              // EI-22177969873560474: was missing — every hydratePerId caller
+              // that also enables psuHostAuthority/psuHostPositiveAuthority
+              // (readGateOwnership, fleet/respawn-member's readMemberSessionState)
+              // had the leg silently disabled, since deriveVerdict's
+              // `psuHostKnownRole` requires a non-null agentRole and a bare-id
+              // subject never carried one through hydration.
+              agentRole: s.agentRole ?? p.agentRole,
+            };
+          } catch {
+            return s; // hydration is best-effort — a store hiccup never blocks the verdict
           }
-          return {
-            ...s,
-            heartbeatAt: p.heartbeatAt,
-            stale: p.stale,
-            host: s.host ?? p.host,
-            pid: s.pid ?? p.pid,
-            source: s.source ?? p.source,
-            // EI-22177969873560474: was missing — every hydratePerId caller
-            // that also enables psuHostAuthority/psuHostPositiveAuthority
-            // (readGateOwnership, fleet/respawn-member's readMemberSessionState)
-            // had the leg silently disabled, since deriveVerdict's
-            // `psuHostKnownRole` requires a non-null agentRole and a bare-id
-            // subject never carried one through hydration.
-            agentRole: s.agentRole ?? p.agentRole,
-          };
-        } catch {
-          return s; // hydration is best-effort — a store hiccup never blocks the verdict
-        }
-      }),
+        }),
+      ),
+      opts.onTiming,
     );
   }
 
   if (absentPresence.size > 0) {
     try {
       const missingIds = [...absentPresence];
-      const recorded = await (opts.fetchRecordedSessionsFn ??
-        ((ids: string[]) => advSessionsByCoordOwner(ids.length, ids)))(missingIds);
+      const recorded = await timeLivenessLeg(
+        'absent_presence_fallback',
+        () => (opts.fetchRecordedSessionsFn ??
+          ((ids: string[]) => advSessionsByCoordOwner(ids.length, ids)))(missingIds),
+        opts.onTiming,
+      );
       hydrated = hydrated.map((s) => {
         if (!absentPresence.has(s.ownerId)) return s;
         const r = recorded.get(s.ownerId);
@@ -719,19 +741,22 @@ export async function resolveSessionStates(
   const ids = hydrated.map((s) => s.ownerId);
   const fetchSelf = opts.fetchSelfWakeFn ?? fetchSelfWake;
   const [wakeability, recordedLive, recordedEnded, selfWake] = await Promise.all([
-    fetchWake(ids),
+    timeLivenessLeg('fetchWakeability', () => fetchWake(ids), opts.onTiming),
     // Recorded-session authority is an ENRICHMENT leg — best-effort by design
     // (adv_sessions may lag/miss); a failure degrades to "no recorded rescue",
     // never fails the verdict batch.
-    fetchRecorded(ids).catch(() => new Set<string>()),
+    timeLivenessLeg('recordedLiveOwnerIds', () => fetchRecorded(ids), opts.onTiming)
+      .catch(() => new Set<string>()),
     // Positive ended-session evidence closes the warm-heartbeat / stale-await
     // gap. A read failure degrades to the older oracle, never to a death claim.
-    fetchEnded(ids).catch(() => new Set<string>()),
+    timeLivenessLeg('endedRecordedOwnerIds', () => fetchEnded(ids), opts.onTiming)
+      .catch(() => new Set<string>()),
     // Self-wake is likewise an ENRICHMENT leg: a failure degrades every subject
     // to "self-wake unknown" (the fields are simply absent) and never fails the
     // batch — a supervisor losing one column must not cost it the whole roster.
     opts.selfWake === true
-      ? fetchSelf(ids).catch(() => new Map<string, SelfWakeSignals>())
+      ? timeLivenessLeg('fetchSelfWake', () => fetchSelf(ids), opts.onTiming)
+        .catch(() => new Map<string, SelfWakeSignals>())
       : Promise.resolve(new Map<string, SelfWakeSignals>()),
   ]);
   const pidProbeByOwner = new Map<string, boolean | null>();
@@ -818,6 +843,28 @@ export async function resolveSessionStates(
     });
   }
   return out;
+}
+
+async function timeLivenessLeg<T>(
+  leg: string,
+  action: () => Promise<T>,
+  onTiming?: LivenessTimingCallback,
+): Promise<T> {
+  if (!onTiming) return action();
+  const startedAt = performance.now();
+  let outcome: LivenessTimingOutcome = 'ok';
+  try {
+    return await action();
+  } catch (error) {
+    outcome = 'error';
+    throw error;
+  } finally {
+    try {
+      onTiming(leg, Math.max(0, Math.round(performance.now() - startedAt)), outcome);
+    } catch {
+      // Diagnostics must never change a liveness verdict.
+    }
+  }
 }
 
 /** Dependencies of {@link applyHostConditionLeg}. */

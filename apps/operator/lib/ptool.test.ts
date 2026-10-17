@@ -40,6 +40,8 @@ import {
   PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   PTOOL_SCORECARD_REPAIR_TIMEOUT_MS,
+  PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS,
+  PTOOL_LOCKS_LIST_TIMEOUT_MS,
   timeoutForTool,
   isLoopPressureShed,
   callToolWithPressureRetry,
@@ -835,6 +837,35 @@ describe('ptool timeoutForTool — foreground-capable tools outlive the MCP tran
   });
 });
 
+describe('ptool timeoutForTool — release:cut reclaim budget (EI-26107428212758754)', () => {
+  it('keeps dry-run reclaim beyond the declared 120s handler deadline', () => {
+    expect(timeoutForTool('release:cut', { op: 'reclaim' })).toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', { name: 'release:cut', args: { op: 'reclaim' } }))
+      .toBe(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS);
+    expect(PTOOL_RELEASE_CUT_RECLAIM_TIMEOUT_MS).toBeGreaterThan(125_000);
+  });
+
+  it('does not widen confirmed reclaim writes', () => {
+    expect(timeoutForTool('release:cut', { op: 'reclaim', confirm: true })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+});
+
+describe('ptool timeoutForTool — locks:list compound inventory read (EI-25384303042233581)', () => {
+  it('keeps the client deadline beyond the measured slow success path', () => {
+    expect(timeoutForTool('locks:list', { resource: 'git-sync:papercusp' }))
+      .toBe(PTOOL_LOCKS_LIST_TIMEOUT_MS);
+    expect(PTOOL_LOCKS_LIST_TIMEOUT_MS).toBeGreaterThan(72_441);
+    expect(PTOOL_LOCKS_LIST_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('applies the same budget through the sanctioned tools:invoke fallback', () => {
+    expect(timeoutForTool('tools:invoke', {
+      name: 'locks:list',
+      args: { resource: 'git-sync:papercusp' },
+    })).toBe(PTOOL_LOCKS_LIST_TIMEOUT_MS);
+  });
+});
+
 describe('ptool timeoutForTool — code:tools signature reads outlive the MCP cap (EI-25679450978085524)', () => {
   it.each([
     ['direct', 'code:tools', {}],
@@ -1012,6 +1043,26 @@ describe('ptool timeoutForTool — fleet:assignments outlives BYOC live-recheck 
   it('keeps the same long-read budget through the deferred tools:invoke transport', () => {
     expect(timeoutForTool('tools:invoke', { name: 'fleet:assignments' }))
       .toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+  });
+});
+
+describe('ptool timeoutForTool — fleet:leader-brief outlives projection and MCP settlement (EI-26141314393026733)', () => {
+  it('keeps direct leader briefs beyond the flat client and transport deadlines', () => {
+    const timeout = timeoutForTool('fleet:leader-brief', {
+      fleet: 'nonp2p-bug-drain-luna-max-0930',
+      harness: 'papercusp',
+      workspace: 'papercusp-workspace',
+    });
+    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+  });
+
+  it('applies the same leader-brief budget through tools:invoke', () => {
+    expect(timeoutForTool('tools:invoke', {
+      name: 'fleet:leader-brief',
+      args: { fleet: 'nonp2p-bug-drain-luna-max-0930' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
   });
 });
 

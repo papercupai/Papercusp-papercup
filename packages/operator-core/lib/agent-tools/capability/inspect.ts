@@ -148,10 +148,10 @@ const TEST_PATH_CONFLICT_GUIDANCE =
   '`path` and `onlyPaths` cannot be supplied together for check:"test". Use `path` for one test file or directory, ' +
   'or use `onlyPaths` for an exact multi-file run.';
 
-// The default package Vitest config excludes these files. Keep the resolver on
-// the repository test router for the same owning-config selection that
-// `npm run test:file` and the config's own startup guard enforce.
-const LAYERED_TEST_FILE = /\.(integration|browser)\.test\.[cm]?[jt]sx?$/i;
+// These files carry an explicit test layer. Keep the resolver on the repository
+// test router so `npm run test:file` can select the owning config and enforce its
+// collection/skip verdict before capability:inspect reports evidence.
+const LAYERED_TEST_FILE = /\.(integration|browser|e2e)\.test\.[cm]?[jt]sx?$/i;
 
 const TSCONFIG_BASENAME = /^tsconfig(\.[\w-]+)?\.json$/;
 const NODE_TEST_FILE = /\.[cm]?js$/i;
@@ -285,7 +285,7 @@ export function resolveInspectCommand(
   if (pathArg && LAYERED_TEST_FILE.test(pathArg)) {
     // `test:file` owns config discovery and must run from the repository root.
     // Convert the package-relative path back to a root-relative spelling so
-    // the router can select the integration/browser Vitest project.
+    // the router can select the integration/browser/e2e Vitest project.
     const repoRelativePath = relative(baseDir, resolve(cwd, pathArg));
     return { ok: true, command: `npm run test:file -- ${repoRelativePath}`, cwd: baseDir };
   }
@@ -605,7 +605,7 @@ export default defineTool({
   args: z.object({
     check: z
       .enum(['typecheck', 'test'])
-      .describe('typecheck = `npx tsc --noEmit` in the package; test = the package suite (`npx vitest run`), the repository `npm run test:file -- <path…>` router for exact one- or multi-file runs, or, with no package and no paths, the repo `npm run test:affected`.'),
+      .describe('typecheck = `npx tsc --noEmit` in the package; test = the package suite (`npx vitest run`), the repository `npm run test:file -- <path…>` router for exact one- or multi-file runs (including `.integration.test.*`, `.browser.test.*`, and `.e2e.test.*`), or, with no package and no paths, the repo `npm run test:affected`.'),
     package: z
       .string()
       .optional()
@@ -619,7 +619,7 @@ export default defineTool({
       .optional()
       .describe(
         'test only: one test file/dir to narrow the run (e.g. "lib/foo.test.ts"). When `package` is supplied, ' +
-          'the path is package-relative; when omitted, it is repo-relative. Layered `.integration.test.*`/`.browser.test.*` ' +
+          'the path is package-relative; when omitted, it is repo-relative. Layered `.integration.test.*`/`.browser.test.*`/`.e2e.test.*` ' +
           'files are routed through the repository `test:file` command automatically. For multiple exact files, use `onlyPaths` instead; do not pass both fields.',
       ),
     onlyPaths: z

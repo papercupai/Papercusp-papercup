@@ -108,6 +108,8 @@ export interface HostedConnectorClientOptions {
   onBound: (binding: HostedConnectorBinding) => void;
   /** Called when the socket drops, so the caller can tear down the adapter it built. */
   onDisconnect?: (reason: string) => void;
+  /** Reuse the live socket cadence for content-free hosted workload reports. */
+  onHeartbeat?: () => void;
   /** Called when the client will make no further attempts. */
   onTerminal?: (reason: HostedConnectorTerminalReason, detail: string) => void;
   createSocket?: (url: string, headers: Record<string, string>) => HostedConnectorClientSocket;
@@ -331,6 +333,7 @@ export class HostedWorkspaceConnectorClient {
       return;
     }
     if (socket.readyState !== socket.OPEN) return;
+    this.options.onHeartbeat?.();
     try {
       socket.ping?.();
     } catch {
