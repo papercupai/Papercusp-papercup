@@ -28,6 +28,7 @@ import {
   type HostedWorkspaceUploadLimits,
 } from "./hosted-workspace-session-protocol";
 import { planChunks } from "@papercusp/sync";
+import { normalizeBrowserSession, normalizeHostedConnectorStatus } from "../settings/remote-access/connection-inventory";
 import {
   parseHostedDesktopProtocolMessage,
   type HostedDesktopRosterEntry,
@@ -99,6 +100,8 @@ type SessionMeta = {
   channelId?: string;
   generation?: number;
   resumed?: boolean;
+  hostedSessionId?: string;
+  workspaceId?: string;
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -540,6 +543,8 @@ export function HostedWorkspaceSession({
           ...current,
           channelId: event.channelId,
           generation: event.generation,
+          hostedSessionId: event.hostedSessionId,
+          workspaceId: ticketWorkspaceRef.current ?? undefined,
         }));
         setNotice(`Bound to connector generation ${event.generation}`);
         return;
@@ -949,6 +954,22 @@ export function HostedWorkspaceSession({
   const controller = live && role === "controller";
   const statusTone =
     status === "live" ? "good" : status === "error" ? "bad" : "neutral";
+  // Saved route configuration proves identity, never connector liveness. This
+  // browser has no authoritative connector heartbeat, so keep that health unknown.
+  const connectorInventory = normalizeHostedConnectorStatus({
+    id: hostId, routeLabel, transport: "websocket", state: "unknown",
+    sourceRef: `workspace-host:${hostId}`,
+  });
+  // Only the authenticated session.bound receipt identifies this browser session;
+  // a successful sign-in, ticket, or PTY output alone cannot invent that binding.
+  const browserInventory = meta.hostedSessionId && meta.workspaceId
+    ? normalizeBrowserSession({
+        id: meta.hostedSessionId, scope: meta.workspaceId,
+        state: live ? "active" : "unknown",
+        health: live ? "healthy" : status === "closed" || status === "error" ? "offline" : "unknown",
+        sourceRef: `hosted-session:${meta.hostedSessionId}`,
+      })
+    : null;
 
   return (
     <section
@@ -961,6 +982,10 @@ export function HostedWorkspaceSession({
           <small>
             <TerminalSquare size={12} aria-hidden="true" /> outbound relay ·{" "}
             {routeLabel}
+          </small>
+          <small data-testid="hosted-connector-inventory" data-connection-class={connectorInventory.class}
+            data-connection-health={connectorInventory.health}>
+            {connectorInventory.authoritySummary} · Scope: {connectorInventory.scope} · Transport: {connectorInventory.transport.toUpperCase()} · Liveness unknown
           </small>
         </div>
         <div className={styles.headerActions}>
@@ -1013,6 +1038,12 @@ export function HostedWorkspaceSession({
             ) : null}
             {error ? <span className={styles.error}>· {error}</span> : null}
           </div>
+          {browserInventory && (
+            <p data-testid="browser-session-inventory" data-connection-class={browserInventory.class}
+              data-connection-state={browserInventory.state} data-connection-health={browserInventory.health}>
+              {browserInventory.authoritySummary} · Scope: {browserInventory.scope} · Transport: {browserInventory.transport.toUpperCase()} · {browserInventory.health === "healthy" ? "Connected" : browserInventory.health === "offline" ? "Disconnected" : "Waiting for session"}
+            </p>
+          )}
           <div className={styles.terminal} ref={terminalContainerRef}>
             {!live ? (
               <div className={styles.terminalPlaceholder}>

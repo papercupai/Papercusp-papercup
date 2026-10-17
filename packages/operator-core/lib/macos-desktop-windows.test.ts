@@ -3,24 +3,35 @@ import { runInNewContext } from 'node:vm';
 import { focusMacWindow, MAC_WINDOW_SCRIPT, resolveMacWindow } from './macos-desktop-windows';
 
 describe('macOS exact-window focus', () => {
-  function nativeScript(options: { permission?: boolean; duplicate?: boolean; revealAfter?: number; wrongFocusedWindow?: boolean; raiseUnavailableFor?: number } = {}) {
+  function nativeScript(options: { permission?: boolean; duplicate?: boolean; cgDuplicate?: boolean; offSpace?: boolean; menuCount?: number; menuRefuses?: boolean; unrelatedDenied?: boolean; revealAfter?: number; wrongFocusedWindow?: boolean; raiseUnavailableFor?: number } = {}) {
     const minimized = { value: true };
+    let revealed = !options.offSpace;
     let raiseAttempts = 0;
-    const raise = vi.fn(() => { if (raiseAttempts++ < (options.raiseUnavailableFor ?? 0)) throw new Error("Can't get object"); });
+    const raise = vi.fn(() => { if (!revealed || raiseAttempts++ < (options.raiseUnavailableFor ?? 0)) throw new Error("Can't get object"); });
     const window = { name: () => 'Agent', attributes: { byName: () => minimized }, actions: { byName: () => ({ perform: raise }) } };
-    const windows = Object.assign(() => options.duplicate ? [window, window] : [window], { byName: () => window });
-    const process = { unixId: () => 42, windows, frontmost: false, attributes: { byName: () => ({ value: () => options.wrongFocusedWindow ? { name: () => 'Other' } : window }) } };
-    const processes = Object.assign(() => [process], { whose: (query: { unixId?: number }) => () => query.unixId === 42 || process.frontmost ? [process] : [] });
+    const windows = Object.assign(() => !revealed ? [] : options.duplicate ? [window, window] : [window], { byName: () => window });
+    const press = vi.fn(() => { if (!options.menuRefuses) revealed = true; });
+    const menuEntry = { name: () => 'Agent', enabled: () => true, actions: { byName: () => ({ perform: press }) } };
+    const menuItems = Object.assign(() => Array(options.menuCount ?? 1).fill(menuEntry), { whose: () => () => Array(options.menuCount ?? 1).fill(menuEntry) });
+    const process = { name: () => 'Terminal', unixId: () => 42, windows, frontmost: false,
+      menuBars: () => [{ menuBarItems: () => [{ menus: () => [{ menuItems }] }] }],
+      attributes: { byName: () => ({ value: () => options.wrongFocusedWindow ? { name: () => 'Other' } : window }) } };
+    const denied = { unixId: () => 7, windows: () => { throw new Error('unrelated process denies AX'); } };
+    const processes = Object.assign(() => options.unrelatedDenied ? [denied, process] : [process], { byName: () => process, whose: (query: { unixId?: number }) => () => query.unixId === 42 || process.frontmost ? [process] : [] });
     let observations = 0;
     const delay = vi.fn();
     const bindFunction = vi.fn();
     const evaluate = runInNewContext(`${MAC_WINDOW_SCRIPT}; run`, {
       ObjC: { import: () => {}, bindFunction, deepUnwrap: (value: unknown) => value },
       Application: () => ({ uiElementsEnabled: () => options.permission !== false, applicationProcesses: processes }),
-      $: { CGWindowListCopyWindowInfo: () => observations++ >= (options.revealAfter ?? 0) ? [{ kCGWindowOwnerPID: 42, kCGWindowName: 'Agent', kCGWindowLayer: 0 }] : [] },
+      $: { CGWindowListCopyWindowInfo: (mode: number) => {
+        const info = { kCGWindowOwnerPID: 42, kCGWindowName: 'Agent', kCGWindowLayer: 0 };
+        if (mode === 0) return options.cgDuplicate ? [info, info] : [info];
+        return revealed && observations++ >= (options.revealAfter ?? 0) ? [info] : [];
+      } },
       delay,
     });
-    return { evaluate: (query: object) => JSON.parse(evaluate([JSON.stringify(query)])), minimized, raise, delay, bindFunction };
+    return { evaluate: (query: object) => JSON.parse(evaluate([JSON.stringify(query)])), minimized, raise, press, delay, bindFunction };
   }
 
   it('executes the shipped script to restore/raise the exact window and wait for Space visibility', () => {
@@ -35,6 +46,26 @@ describe('macOS exact-window focus', () => {
   it('rejects AX focus alone on an invisible Space and a different focused window', () => {
     expect(nativeScript({ revealAfter: 100 }).evaluate({ pid: 42, title: 'Agent', action: 'focus' })).toEqual({ focused: false });
     expect(nativeScript({ wrongFocusedWindow: true }).evaluate({ pid: 42, title: 'Agent', action: 'focus' })).toEqual({ focused: false });
+  });
+
+  it('resolves an off-Space fullscreen window through CoreGraphics and reveals its exact Window-menu entry', () => {
+    const script = nativeScript({ offSpace: true, unrelatedDenied: true });
+    expect(script.evaluate({ fragment: 'Agent' })).toEqual({ pid: 42, title: 'Agent' });
+    expect(script.press).not.toHaveBeenCalled();
+    expect(script.evaluate({ pid: 42, title: 'Agent', action: 'focus' })).toEqual({ focused: true });
+    expect(script.press).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses duplicate off-Space identities and ambiguous or missing menu entries', () => {
+    const duplicate = nativeScript({ cgDuplicate: true });
+    expect(duplicate.evaluate({ pid: 42, title: 'Agent', action: 'focus' })).toBeNull();
+    expect(duplicate.raise).not.toHaveBeenCalled();
+    for (const menuCount of [0, 2]) {
+      const script = nativeScript({ offSpace: true, menuCount });
+      expect(script.evaluate({ pid: 42, title: 'Agent', action: 'focus' })).toEqual({ focused: false });
+      expect(script.press).not.toHaveBeenCalled();
+    }
+    expect(nativeScript({ offSpace: true, menuRefuses: true }).evaluate({ pid: 42, title: 'Agent', action: 'focus' })).toEqual({ focused: false });
   });
 
   it('waits for a restored window to reappear in AX and fails closed if it stays absent', () => {
@@ -60,12 +91,12 @@ describe('macOS exact-window focus', () => {
       byName: (title: string) => specifier(() => order.find(window => window.title === title)!),
     });
     const process = {
-      unixId: () => 42, windows,
+      name: () => 'Terminal', unixId: () => 42, windows,
       get frontmost() { return frontmost; },
       set frontmost(value: boolean) { frontmost = value; order.reverse(); },
       attributes: { byName: () => ({ value: () => ({ name: () => focused.title }) }) },
     };
-    const processes = Object.assign(() => [process], { whose: (query: { unixId?: number }) => () => query.unixId === 42 || frontmost ? [process] : [] });
+    const processes = Object.assign(() => [process], { byName: () => process, whose: (query: { unixId?: number }) => () => query.unixId === 42 || frontmost ? [process] : [] });
     const run = runInNewContext(`${MAC_WINDOW_SCRIPT}; run`, {
       ObjC: { import: () => {}, bindFunction: () => {}, deepUnwrap: (value: unknown) => value },
       Application: () => ({ uiElementsEnabled: () => true, applicationProcesses: processes }),

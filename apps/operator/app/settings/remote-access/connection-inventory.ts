@@ -14,6 +14,8 @@ export const CONNECTION_CLASSES = [
   'hosted-connector',
   'browser-session',
   'mobile-device',
+  'app-key',
+  'service-key',
 ] as const;
 export type ConnectionClass = (typeof CONNECTION_CLASSES)[number];
 
@@ -355,9 +357,8 @@ export function normalizeMobileDevice(source: MobileDeviceConnectionSource, opti
 
 /**
  * Adapt the existing connected_apps row without exposing its scopes, key
- * material, IP address or client-auth details. App/service keys use the
- * browser-session class in the shared inventory because they are remote
- * application sessions; their authority summary still names the key class.
+ * material, IP address or client-auth details. App/service keys retain their
+ * own classes: a long-lived key is not an authenticated browser session.
  */
 export function normalizeRemoteAccessEntry(source: RemoteAccessEntryConnectionSource, options: ConnectionInventoryOptions = {}): ConnectionInventoryEntry {
   if (source.kind === 'mobile') {
@@ -382,7 +383,7 @@ export function normalizeRemoteAccessEntry(source: RemoteAccessEntryConnectionSo
       : 'active';
   return base({
     id: source.id,
-    class: 'browser-session',
+    class: source.kind === 'service' ? 'service-key' : 'app-key',
     label: text(source.label, source.kind === 'service' ? `Service key · ${source.id}` : `App key · ${source.id}`),
     scope: 'Current workspace',
     transport: 'https',
@@ -390,7 +391,7 @@ export function normalizeRemoteAccessEntry(source: RemoteAccessEntryConnectionSo
     health: state === 'expired' ? 'offline' : state === 'paused' ? 'degraded' : health(undefined, lastSeen, now, options.staleAfterMs ?? DEFAULT_STALE_AFTER_MS),
     authoritySummary: source.kind === 'service' ? 'Workspace service key access' : 'User app key access',
     actions: ['revoke-session'],
-    sourceRef: sourceRef(source.sourceRef, 'browser-session', source.id),
+    sourceRef: text(source.sourceRef, `connected_apps:${source.id}`),
     lastSeen,
   });
 }

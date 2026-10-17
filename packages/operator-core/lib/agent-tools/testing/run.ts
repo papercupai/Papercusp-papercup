@@ -3152,6 +3152,14 @@ export function parseRouterNotMeasuredMarker(output: string): RouterNotMeasuredM
 }
 
 const VITEST_LAYER_CONFIGS = {
+  e2e: [
+    'vitest.e2e.config.ts',
+    'vitest.e2e.config.mts',
+    'vitest.e2e.config.cts',
+    'vitest.e2e.config.js',
+    'vitest.e2e.config.mjs',
+    'vitest.e2e.config.cjs',
+  ],
   integration: [
     'vitest.integration.config.ts',
     'vitest.integration.config.mts',
@@ -3175,7 +3183,9 @@ function directVitestLayerConfig(file: string, workspaceRoot: string, checkoutRo
     ? 'browser'
     : /\.integration\.test\.[cm]?[jt]sx?$/i.test(file)
       ? 'integration'
-      : null;
+      : /\.e2e\.test\.[cm]?[jt]sx?$/i.test(file)
+        ? 'e2e'
+        : null;
   if (layer === null) return undefined;
 
   let dir = workspaceRoot;
@@ -3199,7 +3209,7 @@ function directVitestLayerConfig(file: string, workspaceRoot: string, checkoutRo
  * Vitest config that eagerly loads every child config, one explicit layered filename then
  * poisons unrelated unit configs before the owning workspace can run it (EI-21414388102126733).
  * Running from the nearest declared workspace preserves its Vite environment and confines
- * config discovery; an available integration/browser config is selected explicitly.
+ * config discovery; an available integration/browser/e2e config is selected explicitly.
  */
 export function groupDirectVitestRoutes(
   files: string[],

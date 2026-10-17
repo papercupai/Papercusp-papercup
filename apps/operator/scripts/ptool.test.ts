@@ -40,8 +40,6 @@ import {
   resolvePtoolOperatorCandidates,
   resolvePtoolInvocationCandidates,
   canDispatchOnFallbackOperator,
-  canBypassMissingServingGeneration,
-  canUseListedToolWithoutServingGeneration,
   shouldRediscoverOperatorUrl,
   resolveTokenPath,
   resolveTokenPaths,
@@ -1607,44 +1605,24 @@ describe('ptool tools/call failure diagnostics', () => {
 });
 
 describe('ptool catalog-independent scripted dispatch', () => {
-  it('only bypasses catalog discovery for a named scripted call', () => {
-    expect(canDispatchWithoutCatalog('rubrics:get', 'stdin')).toBe(true);
-    expect(canDispatchWithoutCatalog('rubrics:get', 'file')).toBe(true);
-    expect(canDispatchWithoutCatalog('rubrics:get', null)).toBe(false);
-    expect(canDispatchWithoutCatalog(null, 'stdin')).toBe(false);
-    expect(canDispatchWithoutCatalog('', 'stdin')).toBe(false);
+  it('only bypasses a failed tools/list transport for a named scripted call', () => {
+    const transportFailure = new Error('tools/list transport unavailable');
+
+    expect(canDispatchWithoutCatalog('rubrics:get', 'stdin', transportFailure)).toBe(true);
+    expect(canDispatchWithoutCatalog('rubrics:get', 'file', transportFailure)).toBe(true);
+    expect(canDispatchWithoutCatalog('rubrics:get', null, transportFailure)).toBe(false);
+    expect(canDispatchWithoutCatalog(null, 'stdin', transportFailure)).toBe(false);
+    expect(canDispatchWithoutCatalog('', 'stdin', transportFailure)).toBe(false);
   });
 
-  it('bypasses a missing serving-generation marker only for scripted calls', () => {
+  it('refuses direct dispatch when tools/list lacks the serving-generation marker', () => {
     const missingGeneration = Object.assign(new Error('legacy tools/list'), {
       code: 'serving_generation_missing',
     });
 
-    expect(canBypassMissingServingGeneration('rubrics:get', 'stdin', missingGeneration)).toBe(true);
-    expect(canBypassMissingServingGeneration('rubrics:get', 'file', missingGeneration)).toBe(true);
-    expect(canBypassMissingServingGeneration('rubrics:get', null, missingGeneration)).toBe(false);
-    expect(canBypassMissingServingGeneration('rubrics:get', 'stdin', new Error('other catalog error'))).toBe(false);
-  });
-
-  it('keeps an interactive listed tool usable when only serving generation is missing', () => {
-    const missingGeneration = Object.assign(new Error('legacy tools/list'), {
-      code: 'serving_generation_missing',
-    });
-    const listedTool = {
-      name: 'fleet:take-leadership',
-      inputSchema: {
-        type: 'object',
-        properties: { fleet: { type: 'string' } },
-        required: ['fleet'],
-      },
-    };
-
-    expect(canUseListedToolWithoutServingGeneration(listedTool, missingGeneration)).toBe(true);
-    expect(canUseListedToolWithoutServingGeneration(
-      { name: 'fleet:take-leadership' },
-      missingGeneration,
-    )).toBe(false);
-    expect(canUseListedToolWithoutServingGeneration(listedTool, new Error('other catalog error'))).toBe(false);
+    expect(canDispatchWithoutCatalog('rubrics:get', 'stdin', missingGeneration)).toBe(false);
+    expect(canDispatchWithoutCatalog('rubrics:get', 'file', missingGeneration)).toBe(false);
+    expect(canDispatchWithoutCatalog('fleet:take-leadership', null, missingGeneration)).toBe(false);
   });
 
   it('dispatches supplied arguments with protocol-only validation when the catalog is bypassed', async () => {

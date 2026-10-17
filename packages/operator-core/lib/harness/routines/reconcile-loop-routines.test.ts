@@ -3356,6 +3356,77 @@ describe('reconcileLoopRoutines — gate-backoff leg leaves a DISPATCHED in-flig
     expect(res.loops[0].via).toBe('gate-backoff');
     expect(recordFire).not.toHaveBeenCalled();
   });
+
+  it.each(['running', 'settled'] as const)(
+    'rescues a withheld claim while an unrelated native turn is %s (EI-26238295261550737)',
+    async phase => {
+      const recordFire = vi.fn(async () => {});
+      const recoverExpectedExecution = vi.fn(async () => ({ handled: true as const }));
+      const res = await reconcile({
+        sql: fakeSql([dispatchedRow({
+          fire_state_last_fired_at: pgString(T0 - 9_000),
+          fire_state_last_withheld_at: pgString(T0 + 2_000),
+          last_wake_at: pgString(T0 - 9_000),
+          last_wake_created_at: pgString(T0 - 10_000),
+          last_wake_status: 'delivered',
+          last_wake_channel: 'inbox',
+          last_loop_turn_at: null,
+          presence_last_active_at: pgString(T0 + 25_000),
+          lifecycle_completed_at: phase === 'settled' ? pgString(T0 + 24_000) : null,
+        })], []),
+        nowMs: T0 + 26_000,
+        recordFire,
+        recoverExpectedExecution,
+        readFireState: vi.fn(async () => ({ lastFiredAt: new Date(T0 - 9_000), consecutiveErrors: 10 })),
+        checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+      });
+      expect(recoverExpectedExecution).not.toHaveBeenCalled();
+      expect(res.rearmed).toBe(1);
+      expect(res.loops[0].via).toBe('gate-backoff');
+      expect(res.loops[0].nextFireAt).toBeGreaterThan(T0 + 26_000);
+      // Neither the unrelated activity nor its completion is a successful loop fire.
+      expect(recordFire).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['new dispatch', { fire_state_last_fired_at: pgString(T0 + 2_000) }],
+    ['older withhold', { fire_state_last_withheld_at: pgString(T0 - 1) }],
+    ['new wake', { last_wake_created_at: pgString(T0 + 3_000) }],
+    ['missing dispatch clock', { fire_state_last_fired_at: undefined }],
+  ])('preserves execution protection with %s evidence', async (_name, clocks) => {
+    const recoverExpectedExecution = vi.fn(async () => ({ handled: true as const }));
+    const row: Record<string, unknown> = dispatchedRow({
+      fire_state_last_fired_at: pgString(T0 - 9_000),
+      fire_state_last_withheld_at: pgString(T0 + 2_000),
+      last_wake_created_at: pgString(T0 - 10_000),
+      last_wake_at: pgString(T0 - 9_000),
+      last_wake_status: 'delivered', last_wake_channel: 'psu-socket-inject',
+      last_loop_turn_at: null, presence_last_active_at: pgString(T0 + 25_000),
+      ...clocks,
+    });
+    if (row.fire_state_last_fired_at === undefined) delete row.fire_state_last_fired_at;
+    const result = await reconcile({ sql: fakeSql([row], []), nowMs: T0 + 26_000,
+      recoverExpectedExecution, checkUnreachableTerminalGuard: NEVER_BREACH_GUARD });
+    expect(recoverExpectedExecution).toHaveBeenCalledOnce();
+    expect(result.rearmed).toBe(0);
+  });
+
+  it.each([null, { lastFiredAt: new Date(T0 + 10_000), consecutiveErrors: 10 }])(
+    'leaves a withheld claim parked when the reread is unavailable or proves a later dispatch: %j',
+    async currentState => {
+      const recordFire = vi.fn(async () => {});
+      const result = await reconcile({ sql: fakeSql([dispatchedRow({
+        fire_state_last_fired_at: pgString(T0 - 9_000),
+        fire_state_last_withheld_at: pgString(T0 + 2_000),
+        last_wake_at: pgString(T0 - 9_000),
+        presence_last_active_at: pgString(T0 + 25_000),
+      })], []), nowMs: T0 + 26_000, recordFire,
+      readFireState: vi.fn(async () => currentState), checkUnreachableTerminalGuard: NEVER_BREACH_GUARD });
+      expect(result.rearmed).toBe(0);
+      expect(recordFire).not.toHaveBeenCalled();
+    },
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

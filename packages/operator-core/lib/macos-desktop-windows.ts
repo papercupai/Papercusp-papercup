@@ -22,30 +22,78 @@ function run(argv) {
   const se = Application('System Events');
   if (!se.uiElementsEnabled()) throw new Error('Accessibility permission is required');
   const matches = [];
-  const processes = se.applicationProcesses();
+  function wanted(pid, title) {
+    return (!request.pid || pid === request.pid) && typeof title === 'string' && title.length > 0 &&
+      (request.title !== undefined ? title === request.title : !request.fragment || title.indexOf(request.fragment) >= 0);
+  }
+  // AXWindows omits fullscreen windows on other Spaces. CoreGraphics can still
+  // identify them without activating anything; retain duplicate counts from
+  // either source rather than counting the same window twice.
+  const allWindows = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(0, 0));
+  if (!allWindows) return JSON.stringify(null);
+  const cgMatches = allWindows.filter(function(info) {
+    return info.kCGWindowLayer === 0 && wanted(info.kCGWindowOwnerPID, info.kCGWindowName);
+  }).map(function(info) { return {pid: info.kCGWindowOwnerPID, title: info.kCGWindowName}; });
+  const candidatePids = request.pid ? [request.pid] : [];
+  if (!request.pid) cgMatches.forEach(function(match) {
+    if (candidatePids.indexOf(match.pid) < 0) candidatePids.push(match.pid);
+  });
+  let processes = [];
+  if (candidatePids.length) candidatePids.forEach(function(pid) {
+    processes = processes.concat(se.applicationProcesses.whose({unixId: pid})());
+  }); else processes = se.applicationProcesses();
   for (let i = 0; i < processes.length; i++) {
     const p = processes[i];
     const pid = p.unixId();
     if (request.pid && pid !== request.pid) continue;
-    const windows = p.windows();
+    let windows;
+    try { windows = p.windows(); } catch (_) { continue; }
     for (let j = 0; j < windows.length; j++) {
       const w = windows[j];
       const title = w.name();
-      if (request.title !== undefined ? title !== request.title : request.fragment && title.indexOf(request.fragment) < 0) continue;
-      matches.push({pid: pid, title: title, process: p});
+      if (wanted(pid, title)) matches.push({pid: pid, title: title});
     }
   }
+  const axCounts = {};
+  matches.forEach(function(match) {
+    const key = JSON.stringify([match.pid, match.title]);
+    axCounts[key] = (axCounts[key] || 0) + 1;
+  });
+  cgMatches.forEach(function(match) {
+    const key = JSON.stringify([match.pid, match.title]);
+    if (axCounts[key]) axCounts[key]--; else matches.push(match);
+  });
   // Refuse ambiguous title/pid matches instead of activating an unrelated tab.
   if (matches.length !== 1) return JSON.stringify(null);
   const match = matches[0];
   if (request.action !== 'focus') return JSON.stringify({pid: match.pid, title: match.title});
   // AX index specifiers follow window order, which restoration/activation changes.
   // The uniqueness guard above makes an exact-name specifier safe to keep instead.
-  const process = se.applicationProcesses.whose({unixId: match.pid})()[0];
-  if (!process) return JSON.stringify({focused: false});
+  const candidate = se.applicationProcesses.whose({unixId: match.pid})()[0];
+  if (!candidate) return JSON.stringify({focused: false});
+  // Materialized process indexes can also change when an app activates.
+  const process = se.applicationProcesses.byName(candidate.name());
+  if (process.unixId() !== match.pid) return JSON.stringify({focused: false});
+  const missingFromAX = !process.windows().some(function(window) { return window.name() === match.title; });
   const w = process.windows.byName(match.title);
   try { w.attributes.byName('AXMinimized').value = false; } catch (_) {}
   process.frontmost = true;
+  if (missingFromAX) {
+    // The standard Window menu can select an off-Space fullscreen window even
+    // while AXWindows omits it. Use public Accessibility actions and exact title
+    // uniqueness, including across menus; no locale-specific menu name or keys.
+    const menuMatches = [];
+    const bars = process.menuBars();
+    if (bars.length === 1) bars[0].menuBarItems().forEach(function(item) {
+      item.menus().forEach(function(menu) {
+        menu.menuItems.whose({name: match.title})().forEach(function(entry) {
+          if (entry.name() === match.title && entry.enabled()) menuMatches.push(entry);
+        });
+      });
+    });
+    if (menuMatches.length !== 1) return JSON.stringify({focused: false});
+    menuMatches[0].actions.byName('AXPress').perform();
+  }
   // Space changes and AXRaise settle asynchronously. Observe convergence,
   // including on-screen membership, instead of inferring it from AX focus.
   let raised = false;

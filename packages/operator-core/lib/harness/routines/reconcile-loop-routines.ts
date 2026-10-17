@@ -1832,7 +1832,20 @@ export async function reconcileLoopRoutines(
         droppedWakeAtMs != null &&
         droppedWakeAtMs >= lastFiredMs &&
         loopTurnAtMs == null;
-      const executionRecovery = nonTurnWakeStillNeedsLoopTurn || droppedWakeForThisFire
+      // EI-26238295261550737: a withheld claim dispatched no loop turn. Unrelated
+      // native activity must neither protect it forever nor settle it as 'ok'.
+      // Require affirmative withholding evidence and exclude a newer dispatch;
+      // missing clocks retain the existing execution/settle path.
+      const actionFiredAtMs = tsMs(row.fire_state_last_fired_at);
+      const actionWithheldAtMs = tsMs(row.fire_state_last_withheld_at);
+      const wakeDispatchAtMs = tsMs(row.last_wake_created_at ?? row.last_wake_at);
+      const withheldFireHasNoTurn = !row.is_cron && row.parked && loopTurnAtMs == null &&
+        Object.prototype.hasOwnProperty.call(row, 'fire_state_last_fired_at') &&
+        Object.prototype.hasOwnProperty.call(row, 'last_wake_at') &&
+        actionWithheldAtMs != null && actionWithheldAtMs >= lastFiredMs &&
+        (actionFiredAtMs == null || actionFiredAtMs < lastFiredMs) &&
+        (wakeDispatchAtMs == null || wakeDispatchAtMs < lastFiredMs);
+      const executionRecovery = nonTurnWakeStillNeedsLoopTurn || droppedWakeForThisFire || withheldFireHasNoTurn
         ? { handled: false as const }
         : await (opts.recoverExpectedExecution ?? recoverExpectedLoopExecution)({
             sql: db,
@@ -1974,7 +1987,19 @@ export async function reconcileLoopRoutines(
       // Like presence-quiescence, it is a turn-completion clock, not a real-work signal, so the
       // reply text decides; note-refresh stays excluded for the reason above.
       let turnDeath: LoopLifecycleDeathVerdict | null = null;
-      if (signal) {
+      if (withheldFireHasNoTurn) {
+        const currentFireState = await runWithWorkspace(row.routine_workspace_id, () =>
+          readFireState(row.install_slug, row.name),
+        ).catch(() => null);
+        // Do not turn an unavailable read or a concurrent dispatch into a retry.
+        if (!currentFireState || (tsMs(currentFireState.lastFiredAt) ?? -Infinity) >= lastFiredMs) continue;
+        const gate = evaluateFireGate(currentFireState, new Date(nowMs));
+        if (!gate.allow && (!gate.retryAfterSec || gate.retryAfterSec <= 0)) continue;
+        completedAt = nowMs;
+        via = 'gate-backoff';
+        gateRetryMs = gate.allow ? intervalMs : gate.retryAfterSec! * 1000;
+        gateBackoffErrors = currentFireState.consecutiveErrors;
+      } else if (signal) {
         completedAt = signal.completedAt;
         via = signal.via;
         if (
@@ -2455,6 +2480,8 @@ export async function reconcileLoopRoutines(
            SET next_fire_at = LEAST(next_fire_at, ${reArmIso}::timestamptz), updated_at = now()
          WHERE id = ${row.id}
            AND reschedule_interval_sec IS NOT NULL
+           AND ( ${!withheldFireHasNoTurn}
+                 OR (active = TRUE AND last_fired_at = ${row.last_fired_at}::timestamptz) )
            AND ( next_fire_at = 'infinity'::timestamptz
                  OR next_fire_at > ${reArmIso}::timestamptz )
            -- EI-21122026530854360: the SELECT above is intentionally unlocked, so a pure

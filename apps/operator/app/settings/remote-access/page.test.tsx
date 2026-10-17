@@ -157,7 +157,7 @@ describe('Remote access screen', () => {
   it('projects class-specific authority, status and revoke copy into each row', () => {
     render(<RemoteAccessSettingsPage />);
     const items = screen.getAllByTestId('remote-access-entry');
-    expect(items.map((li) => li.dataset.connectionClass)).toEqual(['mobile-device', 'browser-session', 'browser-session']);
+    expect(items.map((li) => li.dataset.connectionClass)).toEqual(['mobile-device', 'app-key', 'service-key']);
     expect(within(items[0]!).getByTestId('remote-access-entry-route').textContent)
       .toBe('Scope: Current workspace · Transport: Device HTTP');
     expect(within(items[1]!).getByTestId('remote-access-entry-route').textContent)

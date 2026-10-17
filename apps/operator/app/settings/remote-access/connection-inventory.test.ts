@@ -16,6 +16,19 @@ import {
 const NOW = Date.parse('2026-10-16T12:00:00.000Z');
 
 describe('connection inventory normalization', () => {
+  it('never represents app or service keys as authenticated browser sessions', () => {
+    const app = normalizeRemoteAccessEntry({ id: 'app-1', kind: 'app' }, { now: NOW });
+    const service = normalizeRemoteAccessEntry({ id: 'service-1', kind: 'service' }, { now: NOW });
+    const browser = normalizeBrowserSession({ id: 'session-1', state: 'active' }, { now: NOW });
+    expect([app.class, service.class, browser.class]).toEqual(['app-key', 'service-key', 'browser-session']);
+    expect([app.sourceRef, service.sourceRef, browser.sourceRef]).toEqual([
+      'connected_apps:app-1', 'connected_apps:service-1', 'browser-session:session-1',
+    ]);
+    expect([app.authoritySummary, service.authoritySummary, browser.authoritySummary]).toEqual([
+      'User app key access', 'Workspace service key access', 'Authenticated browser session',
+    ]);
+  });
+
   it('normalizes every supported class with safe source references and class actions', () => {
     const entries = normalizeConnectionInventory({
       sshProfiles: [{ id: 'laptop', host: 'laptop.example', state: 'active' }],

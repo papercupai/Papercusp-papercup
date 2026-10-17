@@ -240,6 +240,33 @@ async function ready(
 }
 
 describe("HostedWorkspaceSession", () => {
+  it("projects real browser binding separately from saved connector configuration and clears liveness on close", async () => {
+    render(<HostedWorkspaceSession hostId="host-1" routeLabel="saved-route" workspaceName="Workspace" />);
+    const connector = screen.getByTestId("hosted-connector-inventory");
+    expect(connector.dataset.connectionClass).toBe("hosted-connector");
+    expect(connector.dataset.connectionHealth).toBe("unknown");
+    expect(connector.textContent).toContain("Scope: Hosted workspace · Transport: WEBSOCKET · Liveness unknown");
+    expect(screen.queryByTestId("browser-session-inventory")).toBeNull();
+    const socket = await connected();
+    await ready(socket);
+    expect(screen.queryByTestId("browser-session-inventory")).toBeNull();
+    act(() => socket.emit("message", { data: JSON.stringify({
+      type: "session.bound", protocol: "papercusp-hosted-workspace.v1", channelId: "channel-1",
+      role: "controller", binding: { generation: 1, hostedSessionId: "session-1" },
+    }) }));
+    const browser = screen.getByTestId("browser-session-inventory");
+    expect(browser.dataset.connectionClass).toBe("browser-session");
+    expect(browser.dataset.connectionHealth).toBe("healthy");
+    expect(browser.textContent).toContain("Authenticated browser session · Scope: ws-1 · Transport: WEBSOCKET · Connected");
+    expect(connector.dataset.connectionHealth).toBe("unknown");
+    act(() => socket.emit("close", { code: 1000, reason: "connector disconnected" }));
+    expect(browser.dataset.connectionHealth).toBe("offline");
+    expect(browser.dataset.connectionState).toBe("unknown");
+    expect(browser.textContent).toContain("Disconnected");
+    expect(connector.dataset.connectionHealth).toBe("unknown");
+    expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
+  });
+
   it("surfaces relay send failures instead of claiming downloads or uploads started", async () => {
     render(
       <HostedWorkspaceSession

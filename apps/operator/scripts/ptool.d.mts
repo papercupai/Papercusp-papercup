@@ -529,29 +529,13 @@ export function runMcpCallRecovery({ invocation, env, spawnImpl, }?: {
     };
 }): Promise<any>;
 /**
- * A scripted named call already has the only input ptool needs to dispatch:
- * the target name and its JSON arguments. If read-only catalog discovery is
- * unavailable, bypassing it keeps tools/list from becoming a prerequisite for
- * an exact tools/call. Interactive calls cannot use this path because their
- * arguments still need the catalog's input schema.
+ * A scripted call can use protocol-only dispatch after a tools/list transport
+ * failure because its exact arguments are already available. A successful
+ * listing without serving-generation metadata is a different failure: keep
+ * the compatibility guard and require tools:find to recover a current
+ * generation before dispatching any named tool.
  */
-export function canDispatchWithoutCatalog(toolName: any, inputKind: any): boolean;
-/**
- * A complete legacy tools/list can still omit the serving-generation marker.
- * Scripted calls already carry their exact arguments, so they can use the
- * same catalog-independent dispatch path as a tools/list transport failure.
- * Interactive calls must retain the catalog gate because ptool still needs
- * the input schema to collect arguments.
- */
-export function canBypassMissingServingGeneration(toolName: any, inputKind: any, error: any): boolean;
-/**
- * A named interactive call already has its input schema from tools/list. When
- * only the serving-generation marker is absent, keep that schema for prompting
- * and use the protocol-only request path after the user supplies the args.
- * This is the interactive counterpart to canBypassMissingServingGeneration:
- * it does not guess an argument object or bypass an unknown tool.
- */
-export function canUseListedToolWithoutServingGeneration(tool: any, error: any): boolean;
+export function canDispatchWithoutCatalog(toolName: any, inputKind: any, error: any): boolean;
 /** Explain the catalog-independent fallback on stderr without contaminating
  * scripted JSON output. The target tool still validates its own arguments. */
 export function formatToolCatalogBypass(requestedToolName: any, error: any): string;
