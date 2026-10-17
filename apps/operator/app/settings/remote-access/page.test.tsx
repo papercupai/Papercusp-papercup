@@ -158,6 +158,10 @@ describe('Remote access screen', () => {
     render(<RemoteAccessSettingsPage />);
     const items = screen.getAllByTestId('remote-access-entry');
     expect(items.map((li) => li.dataset.connectionClass)).toEqual(['mobile-device', 'browser-session', 'browser-session']);
+    expect(within(items[0]!).getByTestId('remote-access-entry-route').textContent)
+      .toBe('Scope: Current workspace · Transport: Device HTTP');
+    expect(within(items[1]!).getByTestId('remote-access-entry-route').textContent)
+      .toBe('Scope: Current workspace · Transport: HTTPS');
     expect(within(items[0]!).getByTestId('remote-access-entry-authority').textContent).toContain('Paired mobile device · Connected');
     expect(within(items[0]!).getByRole('button', { name: 'Unpair phone' })).toBeTruthy();
     expect(within(items[1]!).getByTestId('remote-access-entry-authority').textContent).toContain('User app key access · Connected');
@@ -252,6 +256,25 @@ function withRelay(r: PortalRelayStatusView | null, portalRelayError: string | n
 }
 
 describe('Papercusp relay card (P-008)', () => {
+  it.each([
+    ['up', 'healthy', 'Connected'],
+    ['down', 'offline', 'Not connected'],
+    ['starting', 'degraded', 'Connecting…'],
+  ] as const)('renders authoritative relay metadata and %s liveness through the inventory adapter', (health, normalizedHealth, label) => {
+    const card = withRelay(relay({
+      state: 'linked', health,
+      linked: { appBaseUrl: null, mcpUrl: null, linkedAt: '2026-09-30T10:05:00Z' },
+    }))!;
+    expect(card.dataset.connectionClass).toBe('portal-relay');
+    expect(card.dataset.connectionState).toBe('active');
+    expect(card.dataset.connectionHealth).toBe(normalizedHealth);
+    expect(within(card).getByTestId('portal-relay-authority').textContent).toBe(
+      'Portal relay · Portal relay app channels · Scope: ws1 · Transport: WEBSOCKET',
+    );
+    expect(within(card).getByTestId('portal-relay-health').textContent).toBe(label);
+    expect(within(card).getByTestId('portal-relay-disconnect').textContent).toContain('Disconnect');
+  });
+
   it('shows the notice and offers no Connect until it is agreed to (R-20)', async () => {
     const card = withRelay(relay({}))!;
     expect(card.dataset.state).toBe('off');

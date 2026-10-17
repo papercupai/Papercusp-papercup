@@ -1,6 +1,11 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parsePsuConnectionArgs } from '../../../../apps/operator/scripts/psu-connection-front-controller.mjs';
+import {
+  parsePsuConnectionArgs,
+  runPsuConnectionFrontController,
+} from '../../../../apps/operator/scripts/psu-connection-front-controller.mjs';
 
 const root = new URL('../../../../', import.meta.url);
 const guide = readFileSync(
@@ -41,6 +46,43 @@ describe('machine-first remote access guide', () => {
     const actualMs = Number(configured![1]) * Number(configured![2]!.replaceAll('_', ''));
     expect(Number(documented![1]) * 60_000).toBe(actualMs);
     expect(actualMs).toBeGreaterThan(0);
+  });
+
+  it('attributes commands and context to the selected remote machine and sends the documented command there', async () => {
+    expect(guide).toContain('Context and tool calls belong to the selected remote workspace');
+    expect(guide).toContain('the laptop terminal runs the local front controller');
+    expect(guide).toContain('the remote tmux session runs psu');
+    const home = mkdtempSync(join(tmpdir(), 'pc-guide-execution-'));
+    const notices: string[] = [];
+    const sessions: Array<{ command: string; args: string[] }> = [];
+    const commands = [...guide.matchAll(/`(psu --[^`\n]+)`/g)].map(match => match[1]!);
+    const setup = commands.find(command => command.includes('--connect-add-ssh='))!;
+    const terminal = commands.find(command => command === 'psu --connect=my-computer')!;
+    try {
+      await runPsuConnectionFrontController(setup.split(/\s+/).slice(1), {
+        home, interactive: false, output: () => {},
+      });
+      const result = await runPsuConnectionFrontController(terminal.split(/\s+/).slice(1), {
+        home, interactive: false, commandAvailable: () => true,
+        notice: (message: string) => notices.push(message),
+        reservePort: async () => ({ port: 45125, release: async () => {} }),
+        probeOperator: async () => {},
+        runCommand: async (_command: string, args: string[]) => ({ code: args.includes('check') ? 1 : 0 }),
+        runInteractive: async (command: string, args: string[]) => {
+          sessions.push({ command, args });
+          return { code: 0 };
+        },
+      });
+      expect(result).toMatchObject({ handled: true, exitCode: 0 });
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]!.command).toBe('ssh');
+      expect(sessions[0]!.args.at(-2)).toBe('my-computer');
+      expect(sessions[0]!.args.at(-1)).toContain("'tmux' 'new-session'");
+      expect(sessions[0]!.args.at(-1)).toContain("'env' 'PAPERCUSP_PSU_CONNECTION_FORWARDED=1' 'psu'");
+      expect(notices.join('\n')).toContain('my-computer');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('keeps personal SSH access separate from app keys, public ingress and key revocation', () => {

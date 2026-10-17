@@ -61,10 +61,16 @@ it.runIf(process.platform === 'linux')(
         observe(child);
         let resolveReady!: (value: SeedObserverFixtureEvent) => void;
         let resolveHeld!: (value: SeedObserverFixtureEvent) => void;
+        let resolveEndpoint!: (value: string) => void;
         const readyPromise = new Promise<SeedObserverFixtureEvent>(resolve => { resolveReady = resolve; });
         const heldPromise = new Promise<SeedObserverFixtureEvent>(resolve => { resolveHeld = resolve; });
+        const endpointPromise = new Promise<string>(resolve => { resolveEndpoint = resolve; });
         let stdout = '', stderr = '';
-        child.stderr!.on('data', chunk => { stderr += String(chunk); });
+        child.stderr!.on('data', chunk => {
+          stderr += String(chunk);
+          const endpoint = stderr.match(/ws:\/\/127\.0\.0\.1:\d+\/[^\s]+(?=\s)/)?.[0];
+          if (endpoint) resolveEndpoint(endpoint);
+        });
         child.stdout!.on('data', chunk => {
           stdout += String(chunk);
           const lines = stdout.split('\n');
@@ -103,8 +109,10 @@ it.runIf(process.platform === 'linux')(
           const lifecycle = JSON.parse(readFileSync(join(evidenceDir, 'lifecycle-observation.json'), 'utf8')).lifecycle;
           expect(ready).toMatchObject({ phase, pid: lifecycle.worker.pid, entry,
             sourceSha256: inputs!.entrySha256, buildSha: inputs!.buildSha, files: inputs!.files });
-          const endpoint = stderr.match(/ws:\/\/127\.0\.0\.1:\d+\/[^\s]+/)?.[0];
-          assert.ok(endpoint, 'original child must expose its loopback ephemeral inspector');
+          // stdout readiness and stderr inspector publication have independent
+          // delivery order. Await a complete URL from its own stream, bounded
+          // by the original observation deadline and original worker lifetime.
+          const endpoint = await within(() => Promise.race([endpointPromise, exitedBefore]));
           inspectorPort = Number(new URL(endpoint).port);
           const processPin = readInspectorProcessIdentity({ pid: ready.pid, port: inspectorPort,
             expectedEntry: entry, expectedArg: phase });

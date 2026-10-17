@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { renderCarryNote } from '../../carry-note';
+import { readCarryLatestUpdate, renderCarryNote, shortCarryHash } from '../../carry-note';
 import { shapeWorkItemsGet } from './get-shape';
 import { buildWorkItemResume, readWorkItemResume, RESUME_PACKET_BUDGET } from './resume';
 import type { TaskBrief } from '../../code-intelligence/task-brief';
@@ -46,14 +46,38 @@ describe('bounded work-item resume', () => {
     expect(packet.nextAction.text).toBe('The wiring is complete. Review the saved acceptance evidence.');
   });
 
-  it('keeps the checkpoint next action when the latest update only records an insight', () => {
+  it('does not assert a historical next action is current after an insight-only update', () => {
     const previousNext = 'Resume the review after the independent reproduction receipt arrives.';
     const previous = renderCarryNote({ next: previousNext });
     const latest = renderCarryNote({ insight: 'Recorded an evidence attestation for the prior review.' });
     const text = `${previous}\n\n---\n${latest}`;
     const packet = build({ checkpoint: { checkpoint: text, updatedAtMs: 1,
       latestUpdate: { status: 'available', text: latest } } as any });
-    expect(packet.nextAction).toEqual({ status: 'available', text: previousNext, source: 'checkpoint' });
+    expect(packet.nextAction).toEqual({ status: 'unknown', text: null });
+  });
+
+  it.each(['append', 'refresh'])('does not resurrect a completed detector replay from %s history', order => {
+    // WI-6554700010016661: the latest hash-bound update preserved passing proof
+    // and prohibited replay, but did not contain a canonical Next action heading.
+    const previous = renderCarryNote({
+      next: 'Managed compaction NOW. Successor: rerun the maintained 18-case detector suite.',
+    });
+    const latest = '## Committed-pin detector verification 2026-10-17T08:55Z\n'
+      + 'Suite 18 PASS/0 fail/0 skip. Original timeout root cause is STILL UNKNOWN.\n'
+      + 'Do not rerun passing focused/routing suites without relevant change; '
+      + 'next diagnosis requires a genuine recurrence or new retained evidence.';
+    const text = order === 'append' ? `${previous}\n\n---\n${latest}` : `${latest}\n\n---\n${previous}`;
+    const latestUpdate = readCarryLatestUpdate(text, {
+      noteHash: shortCarryHash(text), offset: text.indexOf(latest), length: latest.length,
+    });
+    expect(latestUpdate?.status).toBe('available');
+    const packet = build({ checkpoint: { checkpoint: text, updatedAtMs: 1, latestUpdate } });
+    for (const tier of ['standard', 'trimmed'] as const) {
+      const result = shapeWorkItemsGet({ ok: true, __resumeOnly: true,
+        results: [{ ok: true, id: item.id, resume: packet }], counts: { ok: 1, failed: 0 } }, tier) as any;
+      expect(result.results[0].resume.nextAction).toEqual({ status: 'unknown', text: null });
+      expect(result.results[0].resume.checkpoint.readRef.args.resume).toBe(true);
+    }
   });
 
   it('does not promote latest-update prose to an action when neither update has a next field', () => {

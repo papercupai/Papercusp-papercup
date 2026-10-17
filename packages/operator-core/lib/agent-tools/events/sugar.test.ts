@@ -915,6 +915,10 @@ describe("git-sync:await harness/workspace scoping (EI-20366619311636764)", () =
   const gitSyncTool = definedTools.find((tool) => tool.name === "git-sync:await");
   if (!gitSyncTool) throw new Error("git-sync:await tool was not registered");
 
+  it("admits the release-fixer to await its scoped source commit", () => {
+    expect((gitSyncTool as { agentRoles?: readonly string[] }).agentRoles).toContain("release-fixer");
+  });
+
   it("retries a transient statement timeout while registering the named wait (EI-23197998119991408)", async () => {
     vi.useFakeTimers();
     try {

@@ -52,6 +52,10 @@ const call = async (args: Record<string, unknown>, callCtx = ctx) => {
 beforeEach(() => vi.clearAllMocks());
 
 describe('events:emit envelope', () => {
+  it('admits the release-fixer to emit its parent readiness gate', () => {
+    expect(emit.agentRoles).toContain('release-fixer');
+  });
+
   it('saves the final scoped declaration key without firing it', async () => {
     const out = await call({ event: 'ready', announce: true, announceScope: 'harness', announceScopeRef: 'demo', save: true });
     expect(out).toMatchObject({ announced: true, saved: true, event: 'harness:demo:ready' });

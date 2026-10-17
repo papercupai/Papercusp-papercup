@@ -32,12 +32,15 @@ export function buildWorkItemResume(input: {
   const plan = planOf(item);
   const fields = checkpoint.readFailed || checkpoint.checkpoint === null ? {} : parseCarryNote(checkpoint.checkpoint);
   const latest = checkpoint.latestUpdate;
-  const ambiguous = latest?.status === 'unknown'
-    || (!latest && /^---\s*$/m.test(checkpoint.checkpoint ?? ''));
   const latestFields = latest?.text ? parseCarryNote(latest.text) : fields;
   const latestNext = latest?.status === 'available' ? latestFields.next?.trim() || null : null;
   const checkpointNext = fields.next?.split(/\n\n---(?:\n|$)/)[0].trim() || null;
-  const next = ambiguous ? null : latestNext ?? checkpointNext;
+  // A newer progress/insight update can supersede the historical action without
+  // naming another one. Its hash-bound provenance does not renew an older Next.
+  const ambiguous = latest?.status === 'unknown'
+    || (!latest && /^---\s*$/m.test(checkpoint.checkpoint ?? ''))
+    || (latest?.status === 'available' && latestNext === null && checkpointNext !== null);
+  const next = ambiguous ? null : latest?.status === 'available' ? latestNext : checkpointNext;
   const resume = {
     schemaVersion: 'work-item-resume-v1',
     taskBrief: undefined as TaskBrief | { status: 'omitted'; recover: TaskBrief['recover'] } | undefined,
@@ -47,7 +50,7 @@ export function buildWorkItemResume(input: {
       status: checkpoint.readFailed || ambiguous ? 'unknown' : next === null ? 'missing' : 'available',
       text: next,
       ...(latest?.status === 'available' && next !== null
-        ? { source: latestNext ? 'next-action' : 'checkpoint' }
+        ? { source: 'next-action' }
         : {}),
     },
     checkpoint: {

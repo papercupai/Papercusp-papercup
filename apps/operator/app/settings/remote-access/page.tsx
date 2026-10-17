@@ -29,7 +29,7 @@ import { ConfirmModal } from '@/app/harness/ConfirmModal';
 import { RadioGroup } from '@/app/harness/RadioGroup';
 import { Select } from '@/app/harness/Select';
 import { StepOwnTunnel, type OwnTunnelStatusView } from '@/app/_components/SetupWizard/StepOwnTunnel';
-import { connectionConfirmationCopy, connectionStatusCopy, normalizeRemoteAccessEntry } from './connection-inventory';
+import { connectionConfirmationCopy, connectionStatusCopy, normalizePortalRelayStatus, normalizeRemoteAccessEntry } from './connection-inventory';
 
 export type EntryKind = 'mobile' | 'app' | 'service';
 
@@ -367,7 +367,7 @@ export default function RemoteAccessSettingsPage() {
           </div>
         )}
         {row?.portalRelayError && <p className="pc-settings-note">Relay status unavailable: {row.portalRelayError}</p>}
-        {row?.portalRelay && <PortalRelayCard relay={row.portalRelay} busy={busy !== null} run={run} />}
+        {row?.portalRelay && <PortalRelayCard workspaceId={row.workspaceId} relay={row.portalRelay} busy={busy !== null} run={run} />}
       </section>
 
       <section className="pc-settings-section" data-testid="remote-access-list">
@@ -403,6 +403,9 @@ export default function RemoteAccessSettingsPage() {
                   </div>
                   <div className="pc-settings-hint" data-testid="remote-access-entry-authority" style={{ marginTop: 2 }}>
                     {inventory.authoritySummary} · {statusCopy.status}
+                  </div>
+                  <div className="pc-settings-hint" data-testid="remote-access-entry-route" style={{ marginTop: 2 }}>
+                    Scope: {inventory.scope} · Transport: {inventory.transport === 'device-http' ? 'Device HTTP' : inventory.transport.toUpperCase()}
                   </div>
                   <div className="pc-settings-hint" style={{ marginTop: 2 }}>
                     Added by {e.creator} on {when(e.pairedAt)} · last used {when(e.lastSeen)}
@@ -514,11 +517,13 @@ const entryStyle = {
  * code and the address to approve it on the portal, and the reconciler finishes the link.
  */
 export function PortalRelayCard(props: {
+  workspaceId: string;
   relay: PortalRelayStatusView;
   busy: boolean;
   run: (what: string, fn: () => Promise<void>) => Promise<void>;
 }) {
-  const { relay, busy, run } = props;
+  const { workspaceId, relay, busy, run } = props;
+  const inventory = normalizePortalRelayStatus({ ...relay, workspaceId });
   // A mid-edit choice, not user-meaningful state: it resets when the notice is accepted.
   const [understood, setUnderstood] = useState(false);
   if (!relay.available) {
@@ -530,8 +535,13 @@ export function PortalRelayCard(props: {
     );
   }
   return (
-    <div data-testid="portal-relay" data-state={relay.state} style={{ marginTop: 16 }}>
+    <div data-testid="portal-relay" data-state={relay.state}
+      data-connection-class={inventory.class} data-connection-state={inventory.state}
+      data-connection-health={inventory.health} style={{ marginTop: 16 }}>
       <h3 style={{ margin: 0 }}>Papercusp relay</h3>
+      <p className="pc-settings-hint" data-testid="portal-relay-authority">
+        Portal relay · {inventory.authoritySummary} · Scope: {inventory.scope} · Transport: {inventory.transport.toUpperCase()}
+      </p>
       <p className="pc-settings-hint">
         Instead of your own tunnel, this computer can keep a connection to Papercusp so outside apps reach it with no router changes.
       </p>
