@@ -8,9 +8,10 @@
  * step), filed in the SEPARATE observation lane. This pane is BROWSE-ONLY:
  * observations never enter the work/triage queue (that is the whole point), so
  * there is deliberately NO triage / dispatch / claim affordance here. Data is
- * the `learning.observations` sync resolver (newest first); the only path from
- * an observation to actual work is Scout clustering a RECURRING one and
- * promoting it to a real idea — never from this surface.
+ * the `learning.observations` sync resolver (newest first). An observation
+ * reaches actual work only by Scout clustering a RECURRING one into a routed
+ * idea, or by a reviewed intake decision (packages/operator-core/lib/attention/
+ * intake-promotion.ts) minting a separate item — never from this surface.
  *
  * P-005: a paired learning.observations.summary query supplies exact corpus
  * totals plus drill-down facets; row payloads stay on 200-row keyset pages.

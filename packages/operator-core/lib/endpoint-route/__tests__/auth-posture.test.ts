@@ -19,10 +19,10 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ALL_ROUTES } from '../routes';
+import type { RouteAuth } from '@papercusp/agent-mcp';
 
 const attentionBulkResolveSrc = readFileSync(join(__dirname, '../routes/admin/attention-bulk-resolve.ts'), 'utf8');
 
-type RouteAuth = 'public' | 'loopback' | { trust?: readonly string[] };
 const VT = { trust: ['verified', 'trusted'] } as const;
 // VT + bare loopback. The D3 rationale above assumed the desktop webview
 // holds a verified session from /api/auth/me's auto-login — in practice the
@@ -157,6 +157,10 @@ const RULES: ReadonlyArray<{
     prefix: '/admin/',
     expect: VT,
     exceptions: [
+      // Customer-data support additionally requires a verified user and the
+      // exact operation capability; the handler also verifies staff membership.
+      { method: 'POST', path: '/admin/customer-data/export', auth: { kind: ['user'], trust: ['verified'], capabilities: ['customer-data:export'] } },
+      { method: 'POST', path: '/admin/customer-data/deletion/recover', auth: { kind: ['user'], trust: ['verified'], capabilities: ['customer-data:deletion:recover'] } },
       // Pre-existing tier — faithful ports of routes that already required SU.
       { method: 'POST', path: '/admin/backup-orphan-cleanup', auth: T_ONLY },
       { method: 'POST', path: '/admin/embed-backfill', auth: T_ONLY },

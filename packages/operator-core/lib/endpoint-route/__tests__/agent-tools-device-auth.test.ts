@@ -44,6 +44,7 @@ import {
 import catchall from '../routes/agent-tools/catchall';
 import type { RouteContext } from '../define-route';
 import { signDeviceToken, __resetDeviceJwtForTest } from '../../device-jwt';
+import { setKernelEnforcementResolver } from '../../projected-tool-deps';
 
 // A durable MOBILE_JWT_SECRET for the whole file: without one, the first
 // signDeviceToken() lazily emits the "ephemeral secret" console.warn
@@ -104,9 +105,14 @@ function makePrincipalEchoTool(): ProjectedTool {
 
 beforeEach(() => {
   _resetProjectionRegistryForTests();
+  // This unit fixture has no session-control rows in its mocked database.
+  // Supply that independent policy input while exercising real JWT resolution
+  // and dispatch; the denial case below keeps the kernel boundary covered.
+  setKernelEnforcementResolver(async () => ({ decision: 'allow' }));
 });
 afterEach(() => {
   _resetProjectionRegistryForTests();
+  setKernelEnforcementResolver(null);
 });
 afterAll(() => {
   if (PRIOR_MOBILE_JWT_SECRET === undefined) delete process.env.MOBILE_JWT_SECRET;
@@ -134,7 +140,7 @@ describe('agent-tools catch-all — mobile JWT auth (E2)', () => {
       body: '{}',
     });
     const res = await POST(req);
-    expect(res.status).toBe(200);
+    expect(res.status, await res.clone().text()).toBe(200);
 
     const body = (await res.json()) as { content: Array<{ type: string; text: string }> };
     const echoed = JSON.parse(body.content[0].text) as {
@@ -164,5 +170,22 @@ describe('agent-tools catch-all — mobile JWT auth (E2)', () => {
     const body = (await res.json()) as { content: Array<{ type: string; text: string }> };
     const echoed = JSON.parse(body.content[0].text) as { principalSlug: string | null };
     expect(echoed.principalSlug).toBeNull();
+  });
+
+  it('does not let a valid device JWT bypass a kernel denial', async () => {
+    const tool = makePrincipalEchoTool();
+    const handler = vi.fn(tool.fn);
+    registerProjectedTool({ ...tool, fn: handler });
+    setKernelEnforcementResolver(async () => ({ decision: 'deny', code: 'revoked', reason: 'fixture policy revoked' }));
+    const jwt = signDeviceToken({ sub: 'device-e2e-test', workspace_id: 'ws-e2e', device_kind: 'mobile' });
+    const res = await POST(new Request('http://x.test/api/agent-tools/fix/whoami', {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+      body: '{}',
+    }));
+    expect(res.status, await res.clone().text()).toBe(403);
+    const body = await res.json();
+    expect(body.error.meta.kernelCode).toBe('revoked');
+    expect(handler).not.toHaveBeenCalled();
   });
 });
