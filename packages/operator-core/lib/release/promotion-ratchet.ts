@@ -137,6 +137,33 @@ export function decidePromotionRatchet(input: PromotionRatchetInput): PromotionR
   };
 }
 
+/**
+ * The downgrade evidence the frozen repair-head verification needs, as plain data: it is
+ * recorded with the decision's inputs for replay, so it cannot be a closure.
+ */
+export interface RepairDowngradeCoverage {
+  downgrades: RatchetDowngrade[];
+  /** npm workspace name → repo-relative directory (`@papercusp/ui` → `packages/ui`). */
+  dirByWorkspace: Record<string, string>;
+}
+
+/**
+ * Whether a failing file at the repair head is non-blocking under the same rule as
+ * `decidePromotionRatchet`: an active, acknowledged-if-critical, file-level downgrade on its
+ * repo path. Absent coverage, or a workspace with no known directory, covers nothing.
+ */
+export function makeDowngradeCoverage(
+  coverage: RepairDowngradeCoverage | null | undefined,
+): (file: RatchetFailingFile) => boolean {
+  if (!coverage || coverage.downgrades.length === 0) return () => false;
+  const { usable } = usableDowngrades(coverage.downgrades);
+  return (file) => {
+    const dir = coverage.dirByWorkspace[file.workspace];
+    if (!dir) return false;
+    return !isTestBlocking(usable, `${dir.replace(/\/+$/, '')}/${file.file}`, '');
+  };
+}
+
 /** What the gate records in gate_health.promotionRatchet (R-3). */
 export interface PromotionRatchetHealth {
   /** False when the downgrade read failed: the red verdict was kept (fail closed). */

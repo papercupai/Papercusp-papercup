@@ -47,6 +47,7 @@ import { isAdmissionSyntheticCommitDate } from '../../release/admission-commit-d
 import type { FreezeAndConvergeDisposition } from '../../release/freeze-disposition';
 import type { FreezeCutRecord, RedLegsAtR1 } from '../../release/known-good-freeze';
 import { parseTestPassReuseHealth, type TestPassReuseHealth } from '../../release/test-pass-reuse-report';
+import { parsePromotionRatchetHealth, type PromotionRatchetHealth } from '../../release/promotion-ratchet';
 import { parseGateRoundPhases, type GateRoundPhases } from '../../release/gate-round-phases';
 import { releaseCheckpointConfig, readQualificationAdmission } from '../../release-checkpoint-config';
 import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '../../release/green-checkpoint-schedule';
@@ -1465,6 +1466,10 @@ export interface CheckpointVerdict {
    *  this verdict. Re-validated with parseTestPassReuseHealth before it is stored, because the
    *  version-skew fallback reads it back out of JSON. ABSENT ⇒ not reported this round. */
   testPassReuse?: TestPassReuseHealth;
+  /** green-main-ratchet-convergence-2026-10-17 P-004 (R-3): structural mirror of
+   *  CheckpointResult.promotionRatchet — blocking-failure and downgraded-failing counts.
+   *  Re-validated with parsePromotionRatchetHealth before it is stored. */
+  promotionRatchet?: PromotionRatchetHealth;
   suiteVerdictReplay?: GateSuiteVerdictReplay;
   suiteReplayCanary?: { status: 'passed' | 'bootstrap' | 'mismatch' | 'unreadable'; detail: string };
   /** P-013: structural mirror of CheckpointResult.roundPhases — where this round's time went.
@@ -2513,6 +2518,7 @@ export async function recordCheckpointVerdict(
       postSuiteMeasured: verdict.postSuiteMeasured,
       postSuiteLegs: verdict.postSuiteLegs,
       testPassReuse: verdict.testPassReuse,
+      promotionRatchet: verdict.promotionRatchet,
       roundPhases: verdict.roundPhases,
       repairQueue: verdict.repairQueue,
       repairTickLegs: verdict.repairTickLegs,
@@ -2596,6 +2602,7 @@ export async function recordPendingCheckpointVerdict(
       postSuiteMeasured: verdict.postSuiteMeasured,
       postSuiteLegs: verdict.postSuiteLegs,
       testPassReuse: verdict.testPassReuse,
+      promotionRatchet: verdict.promotionRatchet,
       roundPhases: verdict.roundPhases,
       repairQueue: verdict.repairQueue,
     },
@@ -3191,6 +3198,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
         postSuiteMeasured: parsed?.postSuiteMeasured,
         postSuiteLegs: parsed?.postSuiteLegs,
         testPassReuse: parsed?.testPassReuse,
+        promotionRatchet: parsed?.promotionRatchet,
         roundPhases: parsed?.roundPhases,
         repairQueue: parsed?.repairQueue,
         repairTickLegs: parsed?.repairTickLegs,
@@ -4393,6 +4401,8 @@ export async function trackGateStall(
     /** P-013: the verdict's per-file reuse record. `unknown` on purpose — it is shape-checked
      *  here, so a malformed or pre-emitter value is dropped instead of stored. */
     testPassReuse?: unknown;
+    /** P-004: the round's promotion-ratchet counts; shape-checked here like testPassReuse. */
+    promotionRatchet?: unknown;
     /** P-013: the round's phase breakdown; shape-checked here like testPassReuse. */
     roundPhases?: unknown;
     alarm?: import('../../alarm-attention').AlarmAttentionDeps;
@@ -5027,6 +5037,10 @@ export async function trackGateStall(
   // MERGES, so a round that reported nothing leaves the previous record in place — labelled with
   // its own judgedSha — rather than overwriting it with a zero nobody measured.
   const testPassReuseRecord = parseTestPassReuseHealth(options.testPassReuse);
+  // P-004 (R-3): this round's blocking / downgraded counts. Like roundPhases it describes the
+  // round beside `observedCandidate`, so an unreported round CLEARS it (explicit null) rather
+  // than leaving an older round's counts next to a newer candidate.
+  const promotionRatchetRecord = parsePromotionRatchetHealth(options.promotionRatchet);
   // P-013: unlike testPassReuse, the phase breakdown carries no sha of its own — it describes the
   // round beside `observedCandidate` — so an unmeasured round CLEARS it (explicit null) instead of
   // leaving an older round's phases next to a newer candidate.
@@ -5116,6 +5130,7 @@ export async function trackGateStall(
           observedAt: Date.now(),
           observedCandidate: candidate?.slice(0, 12) ?? null,
           ...(testPassReuseRecord ? { testPassReuse: testPassReuseRecord } : {}),
+          promotionRatchet: promotionRatchetRecord,
           roundPhases: roundPhasesRecord,
           candidateSnapshot: verdictCandidateSnapshot,
           retriageStaleTip: null,
@@ -5159,6 +5174,7 @@ export async function trackGateStall(
           observedAt: Date.now(),
           observedCandidate: candidate?.slice(0, 12) ?? null,
           ...(testPassReuseRecord ? { testPassReuse: testPassReuseRecord } : {}),
+          promotionRatchet: promotionRatchetRecord,
           roundPhases: roundPhasesRecord,
           retriageStaleTip: retriageBlocked ? (retriage!.tip?.slice(0, 12) ?? null) : null,
           retriageDetail: retriageBlocked ? retriage!.detail : null,
@@ -5613,6 +5629,7 @@ export async function trackGateStall(
       observedAt: Date.now(),
       observedCandidate: candidate?.slice(0, 12) ?? null,
       ...(testPassReuseRecord ? { testPassReuse: testPassReuseRecord } : {}),
+      promotionRatchet: promotionRatchetRecord,
       roundPhases: roundPhasesRecord,
       candidateSnapshot: verdictCandidateSnapshot,
       retriageStaleTip: retriageBlocked ? (retriage!.tip?.slice(0, 12) ?? null) : null,

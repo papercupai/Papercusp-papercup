@@ -5819,8 +5819,15 @@ export async function resolveAcceptanceBarApproverScreen(input: {
   const rubricId = input.rubricId.trim();
   const applierId = input.applierId?.trim();
   if (!rubricId) throw new Error('acceptance_bar_approver_check_invalid_identity');
-  const rubric = await getRubric(rubricId);
-  if (!rubric) throw new Error('acceptance_bar_approver_check_rubric_unreadable_or_missing');
+  const rubricRead = await readRubricWithoutSeeding(rubricId);
+  if (rubricRead.kind === 'ambiguous') throw rubricRead.error;
+  if (rubricRead.kind === 'missing') {
+    throw new Error('acceptance_bar_approver_check_rubric_missing');
+  }
+  if (rubricRead.kind === 'read-failed') {
+    throw new Error('acceptance_bar_approver_check_rubric_read_failed');
+  }
+  const rubric = rubricRead.rubric;
   if (rubric.kind !== 'acceptance' || !rubric.barContract || !rubric.barSetHash || !rubric.subjectPlan) {
     throw new Error('acceptance_bar_approver_check_requires_started_plan_acceptance_rubric');
   }

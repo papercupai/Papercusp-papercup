@@ -62,6 +62,15 @@ import { pipelineRef } from "@papercusp/operator-core/lib/release/pipeline-name"
 import { redactSensitiveText } from "@papercusp/operator-core/lib/sensitive-text";
 import { extractSubjectPathsFromLegOutput, REPAIR_MANIFEST_SUBJECT_PATH_CAP, withMeasuredLegSubjects } from "@papercusp/operator-core/lib/release/repair-manifest";
 import { npmWorkspaceDirsByName } from "@papercusp/operator-core/lib/release/npm-workspace-dirs";
+import {
+  decidePromotionRatchet,
+  makeDowngradeCoverage,
+  promotionRatchetHealth,
+  readActiveTestDowngradesForGate,
+  unmeasuredPromotionRatchetHealth,
+  type PromotionRatchetHealth,
+  type RepairDowngradeCoverage,
+} from "@papercusp/operator-core/lib/release/promotion-ratchet";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
 import {
   buildRedLegsAtR1,
@@ -819,6 +828,10 @@ export interface CheckpointDeps {
      *  suite ran at. ABSENT ⇒ the round reported nothing (a candidate predating the emitter, an
      *  early abort, a stub dep) — never read as "nothing was reused". */
     testPassReuse?: TestPassReuseHealth;
+    /** green-main-ratchet-convergence-2026-10-17 P-004 (R-3): the blocking-failure and
+     *  downgraded-failing counts of a red suite. ABSENT ⇒ the rule did not run (a green suite,
+     *  a build failure, no gate target, a stub dep) — never read as "nothing was downgraded". */
+    promotionRatchet?: PromotionRatchetHealth;
   }>;
   /** Fast-forward `ready` to `candidate` (advanceReady). */
   advance(candidate: string): Promise<AdvanceResult>;
@@ -862,6 +875,11 @@ export interface CheckpointDeps {
     ref: string,
     files: FailingFile[],
   ): Promise<TargetedFileResult>;
+  /** green-main-ratchet-convergence-2026-10-17 P-004 (R-3): the active test downgrades and the
+   *  workspace → directory map, so the frozen repair-head verification treats a downgraded
+   *  failing file as non-blocking exactly as the full suite's promotion rule does. Optional:
+   *  absent (stubs, a target with no gate identity) or null ⇒ nothing is downgraded. */
+  testDowngradeCoverage?(): Promise<RepairDowngradeCoverage | null>;
   /** EI-18759362119598634: the LINT/TYPECHECK sibling of `runTestsAtRef` — re-run
    *  EXACTLY these non-test GATE signatures (see {@link NON_TEST_GATE_SCRIPTS}) at
    *  `ref`, for a red whose `failingTests` are entirely gate ids and therefore never
@@ -1775,6 +1793,10 @@ export interface CheckpointResult {
    *  none, so a missing site shows the prior round's numbers as this one's. ABSENT ⇒ the suite
    *  did not run this round (or the runner reported nothing). */
   testPassReuse?: TestPassReuseHealth;
+  /** green-main-ratchet-convergence-2026-10-17 P-004 (R-3): carried from `runGreen`; the recorder
+   *  persists it as `gate_health.promotionRatchet` (blocking-failure count, downgraded-failing
+   *  count, whether the red was promoted because every failure was downgraded). */
+  promotionRatchet?: PromotionRatchetHealth;
   /** P-014: exact inputs/decision for the suite interpretation replay canary. */
   suiteVerdictReplay?: GateSuiteVerdictReplay;
   suiteReplayCanary?: { status: 'passed' | 'bootstrap' | 'mismatch' | 'unreadable'; detail: string };
@@ -4194,6 +4216,22 @@ export function checkpointResultMarkerPayload(
       omitted.push("repairTickLegs(outputTails, signature caps)");
     }
   }
+  // P-004: the counts are what gate_health needs; the per-file samples (up to 20 repo paths
+  // each) would push the marker past PIPE_BUF. The full record stays in the stderr result.
+  if (result.promotionRatchet) {
+    const r = result.promotionRatchet;
+    const cap = (xs: readonly string[]) => xs.slice(0, 3).map((s) => s.slice(0, 128));
+    const compact = {
+      ...r,
+      blocking: cap(r.blocking),
+      downgraded: cap(r.downgraded),
+      ignoredDowngrades: cap(r.ignoredDowngrades),
+    };
+    if (JSON.stringify(compact) !== JSON.stringify(r)) {
+      out.promotionRatchet = compact;
+      omitted.push("promotionRatchet(samples)");
+    }
+  }
   const maxPayloadBytes =
     CHECKPOINT_RESULT_MARKER_ATOMIC_BYTES -
     Buffer.byteLength(GREEN_CHECKPOINT_RESULT_MARKER + " \n");
@@ -6137,7 +6175,7 @@ export type RepairHeadVerification =
  *  explicit `ref`, and every call below passes `queue.repairHead`. */
 export type RepairHeadVerificationDeps = Pick<
   CheckpointDeps,
-  "runTestsAtRef" | "runGateAtRef" | "affectedTestsAtRef" | "decisionTrace"
+  "runTestsAtRef" | "runGateAtRef" | "affectedTestsAtRef" | "decisionTrace" | "testDowngradeCoverage"
 > & {
   /** WI-10000288: pairs a workspace-less `test-file` signature entry with the one workspace
    *  directory that contains it (`makeTestWorkspaceResolver(cfg.integrationRoot)` in
@@ -7071,8 +7109,15 @@ export async function verifyRepairHead(
     };
   }
   const gateRun = gateSettled?.value;
+  // P-004 (R-3): read only when a test file actually failed — a downgrade can cover nothing
+  // else. A failed read covers nothing (fail closed): the red stands.
+  let downgradeCoverage: RepairDowngradeCoverage | null = null;
+  if (fileRun && !fileRun.pass && deps.testDowngradeCoverage) {
+    downgradeCoverage = await deps.testDowngradeCoverage().catch(() => null);
+  }
   return recordedGateDecision('repair-measurements', interpretRepairHeadMeasurements, [{
     queue, fileList, gateList, fileRun, gateRun, selection, radiusCoverageComplete, radiusNote, executed,
+    ...(downgradeCoverage ? { downgradeCoverage } : {}),
   }], deps.decisionTrace ?? []);
 }
 
@@ -7087,8 +7132,17 @@ export function interpretRepairHeadMeasurements(input: {
   radiusCoverageComplete: boolean;
   radiusNote: string;
   executed: FrozenRepairRoundExecution;
+  /** P-004 (R-3): active downgrades; a failing file they cover leaves the fresh signature. */
+  downgradeCoverage?: RepairDowngradeCoverage | null;
 }): RepairHeadVerification {
   const { queue, fileList, gateList, fileRun, gateRun, selection, radiusCoverageComplete, radiusNote, executed } = input;
+  const covered = makeDowngradeCoverage(input.downgradeCoverage);
+  const downgradedAtHead: string[] = [];
+  const blocks = (f: FailingFile): boolean => {
+    if (!covered(f)) return true;
+    downgradedAtHead.push(failingFileKey(f));
+    return false;
+  };
   const head = queue.repairHead, at = head.slice(0, 8);
   // An optional detailed result is evidence only for this exact requested set/head.
   // Aggregate-only older runners remain conservative; malformed detail must never erase
@@ -7161,6 +7215,7 @@ export function interpretRepairHeadMeasurements(input: {
         .flatMap((entry) => entry.files.map((file) => ({ workspace: entry.workspace, file })))
       : fileList;
     for (const f of unresolvedFiles) {
+      if (!blocks(f)) continue;
       emit({
         kind: "test-file",
         id: f.file,
@@ -7190,6 +7245,7 @@ export function interpretRepairHeadMeasurements(input: {
       const narrowed = soundNarrowedFiles(outcomeById.get(id));
       if (narrowed) {
         for (const f of narrowed) {
+          if (!blocks(f)) continue;
           emit({ kind: "test-file", id: f.file, recipe: `npm run test:file -- ${f.file}`, workspace: f.workspace });
           emit({ kind: "workspace-task", id: f.workspace, recipe: `npm run test -w ${f.workspace}`, workspace: f.workspace });
         }
@@ -7210,6 +7266,10 @@ export function interpretRepairHeadMeasurements(input: {
       );
     }
   }
+  const downgradedNote = downgradedAtHead.length
+    ? `${downgradedAtHead.length} failing file(s) downgraded (non-blocking): ` +
+      `${[...new Set(downgradedAtHead)].slice(0, 5).join(", ")}${downgradedAtHead.length > 5 ? ", …" : ""}`
+    : null;
   if (fresh.size > 0) {
     return {
       kind: "red",
@@ -7219,17 +7279,20 @@ export function interpretRepairHeadMeasurements(input: {
       executed: roundExecution,
       summary:
         `still red at repair head ${at}: ` +
-        [fileRun?.summary, gateRun?.summary, radiusNote].filter(Boolean).join("; "),
+        [fileRun?.summary, gateRun?.summary, radiusNote, downgradedNote].filter(Boolean).join("; "),
     };
   }
   return {
     kind: "green",
     ...(selectiveCoverage ? { selectiveCoverage } : {}),
     executed: roundExecution,
-    summary:
-      `every selective leg passed at repair head ${at} ` +
-      `(${fileList.length} file(s), ${gateList.length} gate(s); ${radiusNote}); ` +
-      `the full gate at ${at} is the promotion proof`,
+    summary: downgradedNote
+      ? `every blocking selective leg passed at repair head ${at} ` +
+        `(${fileList.length} file(s), ${gateList.length} gate(s); ${radiusNote}; ${downgradedNote}); ` +
+        `the full gate at ${at} is the promotion proof`
+      : `every selective leg passed at repair head ${at} ` +
+        `(${fileList.length} file(s), ${gateList.length} gate(s); ${radiusNote}); ` +
+        `the full gate at ${at} is the promotion proof`,
   };
 }
 
@@ -14288,6 +14351,7 @@ async function runGreenCheckpointInner(
     postSuiteLegs,
     infraFault,
     testPassReuse,
+    promotionRatchet,
   } = candidateSuiteResult;
   // P-013: what this round observed about itself, attached once to every result that carries
   // the suite's verdict. `roundPhaseStamps` is a carrier only: runGreenCheckpoint turns it into
@@ -14298,9 +14362,10 @@ async function runGreenCheckpointInner(
     : null;
   const roundObservations: Pick<
     CheckpointResult,
-    "testPassReuse" | "roundPhaseStamps" | "suiteVerdictReplay" | "freezeCut" | "redLegsAtR1"
+    "testPassReuse" | "roundPhaseStamps" | "suiteVerdictReplay" | "freezeCut" | "redLegsAtR1" | "promotionRatchet"
   > = {
     ...(testPassReuse ? { testPassReuse } : {}),
+    ...(promotionRatchet ? { promotionRatchet } : {}),
     roundPhaseStamps: [...setupStretch.stamps],
     ...(freezeCut ? { freezeCut } : {}),
     ...(redLegsAtR1 ? { redLegsAtR1 } : {}),
@@ -22461,6 +22526,9 @@ export function realCheckpointDeps(
           );
         }
       }
+      // `workspace::file` labels quarantine removed; the promotion ratchet below must not count
+      // them (the parsed per-file pairs still carry them).
+      const quarantinedFileLabels = new Set<string>();
       if (!green && buildOk && failingTests.length) {
         try {
           const quarantinePath = path.join(treeDir, "quarantine.txt");
@@ -22469,6 +22537,7 @@ export function realCheckpointDeps(
             : [];
           const q = applyTestQuarantine(fullOutput, failingTests, quarantine);
           if (q.quarantined.length) {
+            for (const label of q.quarantined) quarantinedFileLabels.add(label);
             failingTests = q.failingTests;
             const note = `\n\nQuarantined out of v1 gate verdict: ${q.quarantined.join(", ")}`;
             summary = `${summary}${note}`.slice(-2000);
@@ -22481,6 +22550,47 @@ export function realCheckpointDeps(
           log(
             `quarantine read failed; preserving red verdict: ${e instanceof Error ? e.message : String(e)}`,
           );
+        }
+      }
+      // green-main-ratchet-convergence-2026-10-17 P-004 (R-3, D-002/D-005/D-006): every failing
+      // test blocks main unless an ACTIVE downgrade record covers exactly its file. Promote only
+      // when every remaining failure is covered; otherwise drop the covered ones from the hold
+      // set and keep the red. Fails closed: no gate target, or a failed read, keeps the red.
+      let promotionRatchet: PromotionRatchetHealth | undefined;
+      if (!green && buildOk && failingTests.length) {
+        const ratchetTarget = gateVerdictTargetFromEnv();
+        if (ratchetTarget) {
+          try {
+            const downgrades = await readActiveTestDowngradesForGate(ratchetTarget);
+            const dirByName = npmWorkspaceDirsByName(treeDir);
+            const verdict = decidePromotionRatchet({
+              failingTests,
+              failingFiles: inferFailingFilesFromEntries(
+                failingTests,
+                parseFailingFilesByWorkspace(signatureOutput),
+              ).filter((f) => !quarantinedFileLabels.has(`${f.workspace}::${f.file}`)),
+              downgrades,
+              repoPathOf: (f) => {
+                const dir = dirByName[f.workspace];
+                return dir ? path.posix.join(dir, f.file) : null;
+              },
+            });
+            promotionRatchet = promotionRatchetHealth(verdict);
+            log(
+              `PROMOTION_RATCHET blocking=${verdict.blocking.length} downgraded=${verdict.downgraded.length} ` +
+                `ignored=${verdict.ignoredDowngrades.length} promote=${verdict.allFailuresDowngraded}`,
+            );
+            if (verdict.downgraded.length) {
+              failingTests = verdict.blockingFailingTests;
+              const note = `\n\nDowngraded (non-blocking) failing tests: ${verdict.downgraded.join(", ")}`;
+              summary = `${summary}${note}`.slice(-2000);
+            }
+            if (verdict.allFailuresDowngraded) green = true;
+          } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            promotionRatchet = unmeasuredPromotionRatchetHealth(message, failingTests);
+            log(`test downgrade read failed; preserving red verdict: ${message}`);
+          }
         }
       }
       // Workspace-mapped failures for the stale-candidate re-triage (which file, and the
@@ -22571,6 +22681,7 @@ export function realCheckpointDeps(
         ...(green ? { cleanGreen: !retriedTests?.length } : {}),
         ...(infraFault ? { infraFault } : {}),
         ...(testPassReuse ? { testPassReuse } : {}),
+        ...(promotionRatchet ? { promotionRatchet } : {}),
       };
     },
     advance: (candidate) =>
@@ -22593,6 +22704,16 @@ export function realCheckpointDeps(
         { allowNonZero: true },
       );
       return r.code === 0 ? r.stdout.trim() || null : null;
+    },
+    // P-004 (R-3): the repair-head verification's view of the active downgrades. No gate
+    // identity ⇒ null (nothing downgraded); a read failure rejects and the caller fails closed.
+    async testDowngradeCoverage() {
+      const target = gateVerdictTargetFromEnv();
+      if (!target) return null;
+      return {
+        downgrades: await readActiveTestDowngradesForGate(target),
+        dirByWorkspace: { ...npmWorkspaceDirsByName(cfg.integrationRoot) },
+      };
     },
     async runTestsAtRef(ref, files) {
       // Re-run EXACTLY the originally-failing files, at `ref`, in a throwaway checkout —

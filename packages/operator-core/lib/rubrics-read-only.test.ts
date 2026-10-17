@@ -18,9 +18,14 @@ vi.mock('./pg-read-query', async (importOriginal) => {
   };
 });
 
-const { getRubricWithoutSeeding, readRubric, readRubricWithoutSeeding } = await import('./rubrics');
+const {
+  checkAcceptanceBarApproverEligibility,
+  getRubricWithoutSeeding,
+  readRubric,
+  readRubricWithoutSeeding,
+} = await import('./rubrics');
 
-describe('getRubricWithoutSeeding', () => {
+describe('rubric read-only lookups', () => {
   beforeEach(() => {
     h.sql.mockReset();
     h.boundedPgReadTxn.mockReset();
@@ -84,5 +89,25 @@ describe('getRubricWithoutSeeding', () => {
 
     await expect(readRubric('absent-rubric')).resolves.toEqual({ kind: 'missing' });
     expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an approver-screen backing read failure separately from a missing rubric', async () => {
+    h.sql.mockRejectedValueOnce(new Error('connection reset'));
+
+    await expect(
+      checkAcceptanceBarApproverEligibility({ rubricId: 'active-rubric', ownerId: 'reviewer' }),
+    ).rejects.toThrow('acceptance_bar_approver_check_rubric_read_failed');
+    expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
+    expect(h.sql).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an authoritative missing rubric separately from a backing read failure', async () => {
+    h.sql.mockResolvedValueOnce([]);
+
+    await expect(
+      checkAcceptanceBarApproverEligibility({ rubricId: 'absent-rubric', ownerId: 'reviewer' }),
+    ).rejects.toThrow('acceptance_bar_approver_check_rubric_missing');
+    expect(h.boundedPgReadTxn).toHaveBeenCalledTimes(1);
+    expect(h.sql).toHaveBeenCalledTimes(1);
   });
 });
