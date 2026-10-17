@@ -1,0 +1,600 @@
+{
+  "schemaVersion": "native-author-clause-activation-v1",
+  "date": "2026-10-17",
+  "ownerId": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+  "workItem": "WI-6554700010012117",
+  "plan": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+  "authority": "D-017 AUTO/self; D-021 additive P041 clauses; current3170 author-repair instruction",
+  "route": "installed ptool --url=http://127.0.0.1:3170",
+  "change": "Lifecycle-only promotion of five mapped draft clauses to active. No requirement, falsifier, evidence plane, test layer, mutation obligation, sourceBar or acceptanceRef changed.",
+  "before": [
+    {
+      "planSlug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+      "specId": "AUTO-BAR-R-30-P-033",
+      "sourceValId": null,
+      "currentRevision": 2,
+      "revision": 2,
+      "planItemId": "P-033",
+      "behavior": "A scheduled rubric check reports native code-intelligence adoption from the deployed operator's ledgers.",
+      "behaviorClass": "happy-path",
+      "requiredEvidence": [
+        "deployed"
+      ],
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "draft",
+      "supersedes": null,
+      "exemption": null,
+      "falsifier": {
+        "observation": "BROKEN if any one: no scheduled code-intel:native-adoption-measured rescore result is recorded from the deployed release-operator ledgers; its evidence lacks the serving /api/health SHA or uses a non-release ledger; a still-open subject window rates pass rather than unknown; a declared per-operation volume, agent reach, failure-class, follow-through or substitutable raw-text dimension is absent; the result omits what the instrument cannot observe."
+      },
+      "contentHash": "f5bcc88acf1e885ba55c4733b97c9d3ec2cd2521463e7acabe00795812432ecf",
+      "createdBy": "su-a92ec1b4-ca99-4f52-b6ec-6195ba4d4e3a",
+      "createdAt": "2026-10-14T16:42:35.890Z",
+      "acceptedBy": null,
+      "acceptedAt": null,
+      "acceptanceRef": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09@11:R-30",
+      "sourceBar": {
+        "barKey": "R-30",
+        "barHash": "8a30bb5a5bfe484117e818011eecaa894dde115c877a285e70342803726940d3",
+        "barSetHash": "730e4b5fd8c4da6ba577f8ccc5414c8a23fe1348562f7d0972f7f995f768de5b",
+        "rubricSlug": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09",
+        "rubricRevision": 11,
+        "evidencePlane": "deployed"
+      }
+    },
+    {
+      "planSlug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+      "specId": "AUTO-BAR-R-31-P-033",
+      "sourceValId": null,
+      "currentRevision": 2,
+      "revision": 2,
+      "planItemId": "P-033",
+      "behavior": "Post-intervention native code-intelligence adoption meets D-011's frozen target.",
+      "behaviorClass": "happy-path",
+      "requiredEvidence": [
+        "deployed"
+      ],
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "draft",
+      "supersedes": null,
+      "exemption": null,
+      "falsifier": {
+        "observation": "BROKEN if any one: the post window misses a D-011 bound (agentAdoptionRate < 0.12, nativeCallShare < 0.14, or refusalRate > 0.088); the post window is shorter than 72 hours or begins before interventions are verified serving on the deployed release operator; any D-011 baseline, bound or derivation rule differs from the decision; a window below 464 lookups rates anything but unknown, or a bound miss is reported as anything but fail."
+      },
+      "contentHash": "6bfb1708c6d4acfde6526b5e19b4e6e8a9081dfeb076b947fa4b6cd9c0c911e4",
+      "createdBy": "su-a92ec1b4-ca99-4f52-b6ec-6195ba4d4e3a",
+      "createdAt": "2026-10-14T16:42:35.890Z",
+      "acceptedBy": null,
+      "acceptedAt": null,
+      "acceptanceRef": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09@11:R-31",
+      "sourceBar": {
+        "barKey": "R-31",
+        "barHash": "188a9b82590c4b84c044e7645898b667705946f3be832a8c007e029288c1bd0f",
+        "barSetHash": "730e4b5fd8c4da6ba577f8ccc5414c8a23fe1348562f7d0972f7f995f768de5b",
+        "rubricSlug": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09",
+        "rubricRevision": 11,
+        "evidencePlane": "deployed"
+      }
+    },
+    {
+      "planSlug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+      "specId": "AUTO-BAR-R-32-P-041",
+      "sourceValId": null,
+      "currentRevision": 1,
+      "revision": 1,
+      "planItemId": "P-041",
+      "behavior": "The registered native-push-issued-measured instrument reports per-leg server-issued push counts for an exact completed native workspace window.",
+      "behaviorClass": "happy-path",
+      "requiredEvidence": [
+        "live"
+      ],
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "draft",
+      "supersedes": null,
+      "exemption": null,
+      "falsifier": {
+        "observation": "BROKEN if the instrument or required evidence is missing, an unobserved denominator is treated as zero, an incomplete or ambiguous native window passes, issuance is represented as confirmed client receipt, or measurement availability is represented as usefulness."
+      },
+      "contentHash": "9f98851c4c5e6b03fc44a17376117c7d2f5ac517cc2cb5c9d482a9bedb4e0329",
+      "createdBy": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+      "createdAt": "2026-10-16T18:57:09.505Z",
+      "acceptedBy": null,
+      "acceptedAt": null,
+      "acceptanceRef": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09@13:R-32",
+      "sourceBar": {
+        "barKey": "R-32",
+        "barHash": "0db3cfcaaadae6e3dab2ab7b916e5ded79177daef778b327113968ce6efeabb3",
+        "barSetHash": "d9cf1e62f959317a38d8ceed683f2a17b0afb42cefb3a25e5e8c57b52bcdd3ca",
+        "rubricSlug": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09",
+        "rubricRevision": 13,
+        "evidencePlane": "live"
+      }
+    },
+    {
+      "planSlug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+      "specId": "AUTO-BAR-R-33-P-041",
+      "sourceValId": null,
+      "currentRevision": 1,
+      "revision": 1,
+      "planItemId": "P-041",
+      "behavior": "The registered native-push-acted-on-measured instrument reports per-observed-leg cited-action follow-through positive counts, measured denominators and rates for an exact completed native workspace window.",
+      "behaviorClass": "happy-path",
+      "requiredEvidence": [
+        "live"
+      ],
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "draft",
+      "supersedes": null,
+      "exemption": null,
+      "falsifier": {
+        "observation": "BROKEN if the instrument or required evidence is missing, an unobserved denominator is treated as zero, an incomplete or ambiguous native window passes, issuance is represented as confirmed client receipt, or measurement availability is represented as usefulness."
+      },
+      "contentHash": "e9a8d63e751543af0ae6fd848feccbaecd3e0f5271abc58ba31720ab1a1b298e",
+      "createdBy": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+      "createdAt": "2026-10-16T18:57:09.505Z",
+      "acceptedBy": null,
+      "acceptedAt": null,
+      "acceptanceRef": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09@13:R-33",
+      "sourceBar": {
+        "barKey": "R-33",
+        "barHash": "fb34c0398568ed6c54786f5772bd6aed95d84b77229ff5b71c0c86f30d482e0d",
+        "barSetHash": "d9cf1e62f959317a38d8ceed683f2a17b0afb42cefb3a25e5e8c57b52bcdd3ca",
+        "rubricSlug": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09",
+        "rubricRevision": 13,
+        "evidencePlane": "live"
+      }
+    },
+    {
+      "planSlug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+      "specId": "AUTO-BAR-R-34-P-041",
+      "sourceValId": null,
+      "currentRevision": 1,
+      "revision": 1,
+      "planItemId": "P-041",
+      "behavior": "The registered native-push-grep-after-measured instrument reports same-symbol grep positive counts, measured denominator and rate for eligible grep-leg pushes in an exact completed native workspace window.",
+      "behaviorClass": "happy-path",
+      "requiredEvidence": [
+        "live"
+      ],
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "draft",
+      "supersedes": null,
+      "exemption": null,
+      "falsifier": {
+        "observation": "BROKEN if the instrument or required evidence is missing, an unobserved denominator is treated as zero, an incomplete or ambiguous native window passes, issuance is represented as confirmed client receipt, or measurement availability is represented as usefulness."
+      },
+      "contentHash": "ea9b8ee6496ae3e869dd7fd307b42bce29ba136490fd163d336d2b9624cdd2ef",
+      "createdBy": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+      "createdAt": "2026-10-16T18:57:09.505Z",
+      "acceptedBy": null,
+      "acceptedAt": null,
+      "acceptanceRef": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09@13:R-34",
+      "sourceBar": {
+        "barKey": "R-34",
+        "barHash": "0278d6011dbe841589fb46204143b699153c3caa1f62a72024b0d79b70154a68",
+        "barSetHash": "d9cf1e62f959317a38d8ceed683f2a17b0afb42cefb3a25e5e8c57b52bcdd3ca",
+        "rubricSlug": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09",
+        "rubricRevision": 13,
+        "evidencePlane": "live"
+      }
+    }
+  ],
+  "after": [
+    {
+      "planSlug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+      "specId": "AUTO-BAR-R-30-P-033",
+      "sourceValId": null,
+      "currentRevision": 3,
+      "revision": 3,
+      "planItemId": "P-033",
+      "behavior": "A scheduled rubric check reports native code-intelligence adoption from the deployed operator's ledgers.",
+      "behaviorClass": "happy-path",
+      "requiredEvidence": [
+        "deployed"
+      ],
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "supersedes": null,
+      "exemption": null,
+      "falsifier": {
+        "observation": "BROKEN if any one: no scheduled code-intel:native-adoption-measured rescore result is recorded from the deployed release-operator ledgers; its evidence lacks the serving /api/health SHA or uses a non-release ledger; a still-open subject window rates pass rather than unknown; a declared per-operation volume, agent reach, failure-class, follow-through or substitutable raw-text dimension is absent; the result omits what the instrument cannot observe."
+      },
+      "contentHash": "61e38a7d3b45a9bd6054a003c5437c989ebea10990f71d24478fa24e5f3b3218",
+      "createdBy": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+      "createdAt": "2026-10-17T17:23:47.398Z",
+      "acceptedBy": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+      "acceptedAt": "2026-10-17T17:23:47.481Z",
+      "acceptanceRef": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09@11:R-30",
+      "sourceBar": {
+        "barKey": "R-30",
+        "barHash": "8a30bb5a5bfe484117e818011eecaa894dde115c877a285e70342803726940d3",
+        "barSetHash": "730e4b5fd8c4da6ba577f8ccc5414c8a23fe1348562f7d0972f7f995f768de5b",
+        "rubricSlug": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09",
+        "rubricRevision": 11,
+        "evidencePlane": "deployed"
+      }
+    },
+    {
+      "planSlug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+      "specId": "AUTO-BAR-R-31-P-033",
+      "sourceValId": null,
+      "currentRevision": 3,
+      "revision": 3,
+      "planItemId": "P-033",
+      "behavior": "Post-intervention native code-intelligence adoption meets D-011's frozen target.",
+      "behaviorClass": "happy-path",
+      "requiredEvidence": [
+        "deployed"
+      ],
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "supersedes": null,
+      "exemption": null,
+      "falsifier": {
+        "observation": "BROKEN if any one: the post window misses a D-011 bound (agentAdoptionRate < 0.12, nativeCallShare < 0.14, or refusalRate > 0.088); the post window is shorter than 72 hours or begins before interventions are verified serving on the deployed release operator; any D-011 baseline, bound or derivation rule differs from the decision; a window below 464 lookups rates anything but unknown, or a bound miss is reported as anything but fail."
+      },
+      "contentHash": "ea2957427c87346b4d20d04c57c88b4d5f035e95809ca7db20c8ff6afee4630d",
+      "createdBy": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+      "createdAt": "2026-10-17T17:24:47.367Z",
+      "acceptedBy": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+      "acceptedAt": "2026-10-17T17:24:47.405Z",
+      "acceptanceRef": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09@11:R-31",
+      "sourceBar": {
+        "barKey": "R-31",
+        "barHash": "188a9b82590c4b84c044e7645898b667705946f3be832a8c007e029288c1bd0f",
+        "barSetHash": "730e4b5fd8c4da6ba577f8ccc5414c8a23fe1348562f7d0972f7f995f768de5b",
+        "rubricSlug": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09",
+        "rubricRevision": 11,
+        "evidencePlane": "deployed"
+      }
+    },
+    {
+      "planSlug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+      "specId": "AUTO-BAR-R-32-P-041",
+      "sourceValId": null,
+      "currentRevision": 2,
+      "revision": 2,
+      "planItemId": "P-041",
+      "behavior": "The registered native-push-issued-measured instrument reports per-leg server-issued push counts for an exact completed native workspace window.",
+      "behaviorClass": "happy-path",
+      "requiredEvidence": [
+        "live"
+      ],
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "supersedes": null,
+      "exemption": null,
+      "falsifier": {
+        "observation": "BROKEN if the instrument or required evidence is missing, an unobserved denominator is treated as zero, an incomplete or ambiguous native window passes, issuance is represented as confirmed client receipt, or measurement availability is represented as usefulness."
+      },
+      "contentHash": "f670b59be835af73deaeeee2d6077de8be48b5286e21ee7bc4850d7c6a78f343",
+      "createdBy": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+      "createdAt": "2026-10-17T17:24:53.025Z",
+      "acceptedBy": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+      "acceptedAt": "2026-10-17T17:24:53.050Z",
+      "acceptanceRef": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09@13:R-32",
+      "sourceBar": {
+        "barKey": "R-32",
+        "barHash": "0db3cfcaaadae6e3dab2ab7b916e5ded79177daef778b327113968ce6efeabb3",
+        "barSetHash": "d9cf1e62f959317a38d8ceed683f2a17b0afb42cefb3a25e5e8c57b52bcdd3ca",
+        "rubricSlug": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09",
+        "rubricRevision": 13,
+        "evidencePlane": "live"
+      }
+    },
+    {
+      "planSlug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+      "specId": "AUTO-BAR-R-33-P-041",
+      "sourceValId": null,
+      "currentRevision": 2,
+      "revision": 2,
+      "planItemId": "P-041",
+      "behavior": "The registered native-push-acted-on-measured instrument reports per-observed-leg cited-action follow-through positive counts, measured denominators and rates for an exact completed native workspace window.",
+      "behaviorClass": "happy-path",
+      "requiredEvidence": [
+        "live"
+      ],
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "supersedes": null,
+      "exemption": null,
+      "falsifier": {
+        "observation": "BROKEN if the instrument or required evidence is missing, an unobserved denominator is treated as zero, an incomplete or ambiguous native window passes, issuance is represented as confirmed client receipt, or measurement availability is represented as usefulness."
+      },
+      "contentHash": "52a703c1f1b622387d738ffadc93d9e0ea6435392290c3021b4832f5780a0873",
+      "createdBy": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+      "createdAt": "2026-10-17T17:23:47.398Z",
+      "acceptedBy": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+      "acceptedAt": "2026-10-17T17:23:47.481Z",
+      "acceptanceRef": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09@13:R-33",
+      "sourceBar": {
+        "barKey": "R-33",
+        "barHash": "fb34c0398568ed6c54786f5772bd6aed95d84b77229ff5b71c0c86f30d482e0d",
+        "barSetHash": "d9cf1e62f959317a38d8ceed683f2a17b0afb42cefb3a25e5e8c57b52bcdd3ca",
+        "rubricSlug": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09",
+        "rubricRevision": 13,
+        "evidencePlane": "live"
+      }
+    },
+    {
+      "planSlug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+      "specId": "AUTO-BAR-R-34-P-041",
+      "sourceValId": null,
+      "currentRevision": 2,
+      "revision": 2,
+      "planItemId": "P-041",
+      "behavior": "The registered native-push-grep-after-measured instrument reports same-symbol grep positive counts, measured denominator and rate for eligible grep-leg pushes in an exact completed native workspace window.",
+      "behaviorClass": "happy-path",
+      "requiredEvidence": [
+        "live"
+      ],
+      "requiredTestLayers": [
+        "integration",
+        "unit"
+      ],
+      "mutationRequired": false,
+      "lifecycleStatus": "active",
+      "supersedes": null,
+      "exemption": null,
+      "falsifier": {
+        "observation": "BROKEN if the instrument or required evidence is missing, an unobserved denominator is treated as zero, an incomplete or ambiguous native window passes, issuance is represented as confirmed client receipt, or measurement availability is represented as usefulness."
+      },
+      "contentHash": "0ef08e173ca1ad5bfcef7762f8f0fbc218da5fdd58a9d7a5f9acfa9a553e1994",
+      "createdBy": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+      "createdAt": "2026-10-17T17:23:51.675Z",
+      "acceptedBy": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+      "acceptedAt": "2026-10-17T17:23:51.686Z",
+      "acceptanceRef": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09@13:R-34",
+      "sourceBar": {
+        "barKey": "R-34",
+        "barHash": "0278d6011dbe841589fb46204143b699153c3caa1f62a72024b0d79b70154a68",
+        "barSetHash": "d9cf1e62f959317a38d8ceed683f2a17b0afb42cefb3a25e5e8c57b52bcdd3ca",
+        "rubricSlug": "acceptance-native-code-intelligence-ecosystem-and-dream-2026-10-09",
+        "rubricRevision": 13,
+        "evidencePlane": "live"
+      }
+    }
+  ],
+  "mutationReceipts": [
+    {
+      "path": "/tmp/native-clause-r30-r34-promote-20261017.json",
+      "sha256": "d6feea0bfc21e116c7a7126ed1451e27bdf284e4443bc0f83910f8a7e4eb0aa2",
+      "receipt": {
+        "ok": false,
+        "results": [
+          {
+            "ok": true,
+            "slug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+            "status": "revised",
+            "specId": "AUTO-BAR-R-30-P-033",
+            "revision": 3,
+            "contentHash": "61e38a7d3b45a9bd6054a003c5437c989ebea10990f71d24478fa24e5f3b3218",
+            "evidenceCarriedForward": 0
+          },
+          {
+            "ok": false,
+            "slug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+            "specId": "AUTO-BAR-R-31-P-033",
+            "error": "deadlock detected"
+          },
+          {
+            "ok": false,
+            "slug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+            "specId": "AUTO-BAR-R-32-P-041",
+            "error": "deadlock detected"
+          },
+          {
+            "ok": true,
+            "slug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+            "status": "revised",
+            "specId": "AUTO-BAR-R-33-P-041",
+            "revision": 2,
+            "contentHash": "52a703c1f1b622387d738ffadc93d9e0ea6435392290c3021b4832f5780a0873",
+            "evidenceCarriedForward": 2
+          },
+          {
+            "ok": true,
+            "slug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+            "status": "revised",
+            "specId": "AUTO-BAR-R-34-P-041",
+            "revision": 2,
+            "contentHash": "0ef08e173ca1ad5bfcef7762f8f0fbc218da5fdd58a9d7a5f9acfa9a553e1994",
+            "evidenceCarriedForward": 2
+          }
+        ],
+        "counts": {
+          "ok": 3,
+          "failed": 2
+        }
+      }
+    },
+    {
+      "path": "/tmp/native-clause-r-31-sequential-20261017.json",
+      "sha256": "7b0585338898f7d6a660af2f5ada664ff9022b0eeb71750b3c3ad0a8fe463fb2",
+      "receipt": {
+        "ok": true,
+        "results": [
+          {
+            "ok": true,
+            "slug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+            "status": "revised",
+            "specId": "AUTO-BAR-R-31-P-033",
+            "revision": 3,
+            "contentHash": "ea2957427c87346b4d20d04c57c88b4d5f035e95809ca7db20c8ff6afee4630d",
+            "evidenceCarriedForward": 0
+          }
+        ],
+        "counts": {
+          "ok": 1,
+          "failed": 0
+        }
+      }
+    },
+    {
+      "path": "/tmp/native-clause-r-32-sequential-20261017.json",
+      "sha256": "965c5fa656d84dcc145b296ab540fb75e524b81d7fa03586e93cec59fb923747",
+      "receipt": {
+        "ok": true,
+        "results": [
+          {
+            "ok": true,
+            "slug": "native-code-intelligence-ecosystem-and-dream-2026-10-09",
+            "status": "revised",
+            "specId": "AUTO-BAR-R-32-P-041",
+            "revision": 2,
+            "contentHash": "f670b59be835af73deaeeee2d6077de8be48b5286e21ee7bc4850d7c6a78f343",
+            "evidenceCarriedForward": 2
+          }
+        ],
+        "counts": {
+          "ok": 1,
+          "failed": 0
+        }
+      }
+    }
+  ],
+  "verification": {
+    "procedure": "Read exact five current clauses after writes; compare every field against the retained pre-write records. Read current3170 plans:get shipReadiness after mutation.",
+    "clausesChecked": 5,
+    "unexpectedMeaningOrPinChanges": [],
+    "existingProofCarriedForward": {
+      "R-30": 0,
+      "R-31": 0,
+      "R-32": 2,
+      "R-33": 2,
+      "R-34": 2
+    },
+    "scope": "Clause acceptance state and proof/contract carry only; no new passing test, live outcome, final-release, elapsed-window or shipment claim."
+  },
+  "acceptanceReads": {
+    "before": {
+      "buildProvenance": {
+        "sha": "453c8d3ff9",
+        "version": "0.0.0"
+      },
+      "planRevision": 117,
+      "satisfied": false,
+      "code": "acceptance_bar_contract_not_ready",
+      "completeness": {
+        "complete": true,
+        "truncated": false,
+        "problems": []
+      },
+      "readiness": {
+        "state": "blocked",
+        "codes": [
+          "bar_snapshot_proof_stale",
+          "bar_snapshot_proof_inadequate",
+          "bar_snapshot_grading_missing",
+          "bar_snapshot_evidence_plane_unmet",
+          "bar_snapshot_clause_not_accepted",
+          "bar_snapshot_proof_missing"
+        ],
+        "nextRepair": {
+          "code": "bar_snapshot_clause_not_accepted",
+          "barKey": "R-30",
+          "action": "Accept the mapped clause: plans:get-specs, then plans:set-specs with lifecycleStatus:\"active\", expectedRevision set to its current revision, and every other field unchanged (keep the sourceBar pin and acceptanceRef; omitting either rides the prior value forward). That provenance-only promotion carries the bound proof and work-item contracts forward: confirm the result reports evidenceCarriedForward > 0 on a clause that had proof. If it is absent, another field changed and the proof must be re-bound at the new revision. Do NOT re-prove or amend the rubric on this code: the proof is not stale, the clause was never accepted."
+        }
+      },
+      "snapshotContentHash": "8e391110c864b1b975e83c8af6c7fc2fb144d019b74644cb4779be16c9b5c24b"
+    },
+    "after": {
+      "buildProvenance": {
+        "sha": "08a21ad62d",
+        "version": "0.0.0"
+      },
+      "planRevision": 117,
+      "satisfied": false,
+      "code": "acceptance_bar_contract_not_ready",
+      "completeness": {
+        "complete": true,
+        "truncated": false,
+        "problems": []
+      },
+      "readiness": {
+        "state": "blocked",
+        "codes": [
+          "bar_snapshot_proof_stale",
+          "bar_snapshot_proof_inadequate",
+          "bar_snapshot_grading_missing",
+          "bar_snapshot_evidence_plane_unmet",
+          "bar_snapshot_proof_missing"
+        ],
+        "nextRepair": {
+          "code": "bar_snapshot_proof_missing",
+          "barKey": "R-30",
+          "action": "Bind evidence at the current spec revision on the declared evidence plane."
+        }
+      },
+      "snapshotContentHash": "304c12f450fd7ca7b05d3dc4075affe114d7d1e024c16bbfd7ee5455dc330f43"
+    }
+  },
+  "remaining": {
+    "nextAuthorRepair": {
+      "code": "bar_snapshot_proof_missing",
+      "barKey": "R-30",
+      "action": "Bind evidence at the current spec revision on the declared evidence plane."
+    },
+    "pendingOwnerScope": "P040/P041 conversation conv-mvbhj8rf-0000-7d6b7f1cf3fc4d6395989725d9eb63a9 remains pending; no inferred answer.",
+    "pendingMutationScope": "Existing P025 local-regression clarification remains pending; no mutation run.",
+    "p033Window": "D011 requires at least72h beginning only after exact deployed instrument/resolver and intervention receipts; do not backdate.",
+    "p042Window": "Requires genuine complete48h sequence starting from first actual2026-10-17T01:35Z reading; earliest endpoint2026-10-19T01:35Z, subject to complete sequence."
+  },
+  "openDefect": {
+    "id": "EI-26248236265625483",
+    "assignee": "su-8b8dac44-8614-451c-9726-3dc0228248b2",
+    "state": "open",
+    "symptom": "Same-plan five-clause bulk call committed three revisions and deadlocked two. Readback confirmed the failed clauses unchanged before sequential recovery.",
+    "rootCause": "Confirmed by an isolated real-Postgres concurrent regression: proof-edge foreign-key inserts retain KEY SHARE on the same work item. Both clause transactions then requested FOR UPDATE in amendment propagation, deadlocking while upgrading against each other's KEY SHARE, even with one shared row and stable row ordering.",
+    "recovery": "Initial temporary execution mitigation retried only the two proven unchanged drafts sequentially. Durable fix now changes propagation to FOR NO KEY UPDATE, preserving payload-write serialization and compatibility with FK checks. The integration fixture now includes the production FK; its new barrier-based concurrent test fails with old source (40P01) and passes after the fix.",
+    "verification": {
+      "redLog": "/tmp/native-clause-fk-deadlock-red-20261017.log",
+      "redLogSha256": "2fa8919eaac0737d8b3f2fc2cb854f2c381306b52701f5c48765c23adc5c087f",
+      "redResult": "One selected regression failed with PostgreSQL40P01 while locking work_items; six unrelated cases excluded by the explicit selector.",
+      "greenLog": "/tmp/native-clause-fk-deadlock-green-20261017.log",
+      "greenLogSha256": "b82b328577e52b811e9cb9cf72f7c8f6ab73c47408c778fcb4c1e9763ceaf02e",
+      "greenResult": "Full maintained integration file:7passed,0skipped,childSubstituted0; native50286 terminalexit0. Focused current working-tree proof only; no full-suite or final-release claim.",
+      "sourceHashes": {
+        "packages/operator-core/lib/agent-tools/plans/clause-amendment-propagation.ts": "2828f7d9609a78c592f80ca2cb752dc444129fd12cdabce33aa4e8ae9ebcba89",
+        "packages/operator-core/lib/agent-tools/plans/clause-amendment-propagation.integration.test.ts": "5fd94fc938fa8248f4ba9b11f035abcfd8c3f75c7f9ed45454f32f9a70f1d03f"
+      },
+      "detectorFailure": "The old propagation integration fixture omitted the production FK and its regression asserted stable lock ordering only, so it could not expose the single-row FK lock-upgrade cycle."
+    }
+  }
+}

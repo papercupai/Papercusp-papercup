@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+import { describe, expect, it, vi } from 'vitest';
 import { PRODUCT_TUTORIAL_CHAPTERS } from '../../../../packages/operator-core/lib/onboarding/product-tutorial-lesson';
-import { captionCues, validateManifest, vttTimestamp, webVtt } from '../tutorial-video-contract.mjs';
+import { captionCues, validateManifest, verifyPublishedTutorial, vttTimestamp, webVtt } from '../tutorial-video-contract.mjs';
 
 const manifest = () => ({ project: { workspaceId: 'same-cloud', projectSlug: 'workshop-planner', portalOrigin: 'https://app.papercusp.com' },
   chapters: PRODUCT_TUTORIAL_CHAPTERS.map(chapter => ({ id: chapter.id, text: 'Actual narration.', recordingPath: '/recorded/portal.webm', recordingStartSeconds: 0, recordingDurationSeconds: 5,
@@ -36,5 +37,77 @@ describe('real-footage tutorial production contract', () => {
     expect(() => captionCues({ characters: ['a', 'b'], character_start_times_seconds: [0, .5], character_end_times_seconds: [1, 2] })).toThrow('timing');
     expect(() => captionCues({ characters: ['a'], character_start_times_seconds: [NaN], character_end_times_seconds: [1] })).toThrow('timing');
     expect(vttTimestamp(3599.9996)).toBe('01:00:00.000');
+  });
+});
+
+describe('published tutorial object verification', () => {
+  const video = Buffer.from(Array.from({ length: 4096 }, (_, i) => i % 251));
+  const captions = webVtt([{ start: 0, end: 1, text: 'Real captions.' }]);
+  const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
+  const publication = () => ({ videoUrl: 'https://clips.papercusp.com/tutorial-v1.mp4', captionsUrl: 'https://clips.papercusp.com/tutorial-v1.vtt',
+    videoBytes: video.length, videoSha256: hash(video), captionsSha256: hash(captions) });
+  const served = (url: string, init?: RequestInit) => {
+    if (url.endsWith('.vtt')) return new Response(captions, { headers: { 'content-type': 'text/vtt' } });
+    const range = new Headers(init?.headers).get('Range');
+    if (range) {
+      const [, start, end] = /^bytes=(\d+)-(\d+)$/.exec(range)!;
+      return new Response(video.subarray(Number(start), Number(end) + 1), { status: 206,
+        headers: { 'content-range': `bytes ${start}-${end}/${video.length}` } });
+    }
+    return new Response(init?.method === 'HEAD' ? null : video, { headers: { 'content-type': 'video/mp4', 'content-length': String(video.length) } });
+  };
+  it('checks exact video/caption identities and both initial and tail seek ranges', async () => {
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => served(String(input), init));
+    const checked = await verifyPublishedTutorial(publication(), { fetcher });
+    expect(checked.videoSha256).toBe(hash(video));
+    expect(checked.captionsSha256).toBe(hash(captions));
+    expect(checked.ranges).toEqual([{ start: 0, end: 1023, total: 4096 }, { start: 3072, end: 4095, total: 4096 }]);
+    expect(fetcher.mock.calls.map(([, init]) => new Headers(init?.headers).get('Range'))).toEqual([null, null, 'bytes=0-1023', 'bytes=3072-4095', null]);
+    expect(fetcher.mock.calls.every(([, init]) => init?.redirect === 'error')).toBe(true);
+  });
+  it('uses actual range totals when HEAD omits Content-Length', async () => {
+    const fetcher: typeof fetch = async (input, init) => {
+      const result = served(String(input), init);
+      if (init?.method === 'HEAD') result.headers.delete('content-length');
+      return result;
+    };
+    expect((await verifyPublishedTutorial(publication(), { fetcher })).ranges[1].total).toBe(video.length);
+  });
+  it.each(['ignored', 'wrong-total', 'truncated', 'wrong-bytes', 'wrong-seek'])('rejects a %s range response even when the complete object is correct', async fault => {
+    const fetcher: typeof fetch = async (input, init) => {
+      const range = new Headers(init?.headers).get('Range');
+      if (!range) return served(String(input), init);
+      if (fault === 'ignored') return new Response(video);
+      const result = served(String(input), init);
+      if (fault === 'wrong-total') result.headers.set('content-range', 'bytes 0-1023/9999');
+      if (fault === 'truncated') return new Response(video.subarray(0, 10), { status: 206, headers: result.headers });
+      if (fault === 'wrong-bytes') return new Response(Buffer.alloc(1024), { status: 206, headers: result.headers });
+      if (fault === 'wrong-seek' && range.startsWith('bytes=3072')) return new Response(video.subarray(0, 1024), { status: 206, headers: result.headers });
+      return result;
+    };
+    await expect(verifyPublishedTutorial(publication(), { fetcher })).rejects.toThrow(/range/);
+  });
+  it.each(['stale-video', 'wrong-head-size', 'stale-captions', 'caption-error'])('rejects %s with successful responses on the other paths', async fault => {
+    const fetcher: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (fault === 'stale-video' && url.endsWith('.mp4') && init?.method !== 'HEAD') return new Response(Buffer.alloc(video.length));
+      if (fault === 'wrong-head-size' && init?.method === 'HEAD') return new Response(null, { headers: { 'content-type': 'video/mp4', 'content-length': '1' } });
+      if (fault === 'stale-captions' && url.endsWith('.vtt')) return new Response(captions.replace('Real', 'Old'), { headers: { 'content-type': 'text/vtt' } });
+      if (fault === 'caption-error' && url.endsWith('.vtt')) return new Response('Unavailable', { status: 404 });
+      return served(url, init);
+    };
+    await expect(verifyPublishedTutorial(publication(), { fetcher })).rejects.toThrow(/Published/);
+  });
+  it('rejects invalid origin and missing immutable identity before making a request', async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    await expect(verifyPublishedTutorial({ ...publication(), videoUrl: 'https://other.example/video.mp4' }, { fetcher })).rejects.toThrow('public R2');
+    await expect(verifyPublishedTutorial({ ...publication(), captionsSha256: '' }, { fetcher })).rejects.toThrow('identity');
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+  it('rejects a correctly hashed non-caption response instead of accepting an HTML error page', async () => {
+    const text = '<!doctype html>Not a caption';
+    const fetcher: typeof fetch = async (input, init) => String(input).endsWith('.vtt')
+      ? new Response(text, { headers: { 'content-type': 'text/vtt' } }) : served(String(input), init);
+    await expect(verifyPublishedTutorial({ ...publication(), captionsSha256: hash(text) }, { fetcher })).rejects.toThrow('no cues');
   });
 });

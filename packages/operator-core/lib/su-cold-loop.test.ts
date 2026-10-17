@@ -327,6 +327,18 @@ describe('renderColdWakeInjection — the cold-wake injected text (P-002 produce
       expect(out).toContain('fresh exec');
     });
 
+    it('routes long-running commands to the existing durable tracked-task surface', () => {
+      const note = '## Next action\npoll write_stdin on test suite session_id 93939 after carry';
+      const out = renderColdWakeInjection(note);
+
+      expect(out).toContain('capability:bash tracked-task flow');
+      expect(out).toContain('run_in_background');
+      expect(out).toContain('require_task_confinement');
+      expect(out).toContain('task_id and log pointer');
+      expect(out).toContain('capability:bash_output');
+      expect(out).toContain('bounded rerun');
+    });
+
     it('warns for a Markdown-wrapped command session even when the checkpoint omits the tool name', () => {
       const note = '## Next action\npoll the operator-core typecheck session `11400` for the verdict';
       const out = renderColdWakeInjection(note);

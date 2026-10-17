@@ -41,7 +41,10 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // EI-26220351173478503: the signed release-fixer's parent requires an emitted,
+  // verified readiness signal. It already holds coord:write; this adds only the
+  // independent role-allowlist half for this event seam.
+  agentRoles: [...SU_ROLES, 'release-fixer'],
   args: z.object({
     event: z.string().min(1).max(200).describe('Exact event key to fire.'),
     save: z.boolean().optional().describe('Persist the event type in the existing registry. With announce:true, declare without firing; otherwise save then fire. Only its contributor can update it.'),

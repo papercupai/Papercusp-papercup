@@ -1471,6 +1471,52 @@ describe('expandTestRunBinding: registered sibling checkout (WI-10006610)', () =
     });
   });
 
+  it('accepts a sibling row attributed to the exact registered sibling harness', async () => {
+    const { load } = registry();
+    const out = await expandTestRunBinding(input(), SCOPE, deps(siblingRow({ harness_slug: 'email' }), load));
+    expect(out).toMatchObject({
+      ok: true,
+      attribution: 'run',
+      binding: {
+        evidenceKind: 'mutation',
+        measurement: { rootHarnessSlug: 'email', testPaths: [SIB_TEST], sourcePaths: [SIB_SUBJECT] },
+        details: { testRun: { recordedRoot: sib, rootHarnessSlug: 'email' } },
+      },
+    });
+  });
+
+  it('refuses a sibling root when its recorded harness slug names a different harness', async () => {
+    const { load } = registry();
+    const out = await expandTestRunBinding(input(), SCOPE, deps(siblingRow({ harness_slug: 'other-harness' }), load));
+    expect(out).toMatchObject({ ok: false, error: 'test_run_out_of_scope' });
+    if (!out.ok) expect(out.message).toContain("PAPERCUSP_TEST_RUN_HARNESS='web'");
+  });
+
+  it('accepts causal controls attributed to the same registered sibling harness', async () => {
+    const { load } = registry();
+    const controls = { baselineTestRunId: 10, copyBaselineTestRunId: 11, mutantTestRunId: 42 };
+    const rows = new Map<number, TestRunEvidenceRow>([
+      [42, siblingRow({ id: 42, harness_slug: 'email', status: 'fail', execution_details: { mutationPhase: 'mutant' } })],
+      [10, siblingRow({ id: 10, harness_slug: 'email', execution_details: { mutationPhase: 'baseline' } })],
+      [11, siblingRow({ id: 11, harness_slug: 'email', execution_details: { mutationPhase: 'copy-baseline' } })],
+    ]);
+    const out = await expandTestRunBinding(input({ details: { causalControls: controls } }), SCOPE, {
+      loadRun: async (_scope, id) => rows.get(Number(id)) ?? null,
+      adoptRun: async () => true,
+      resolveRoot: async () => root,
+      resolveSiblingRoot: (scope, harnessRoot, recordedRoot) =>
+        registeredSiblingCheckout(scope, harnessRoot, recordedRoot, load),
+    });
+    expect(out).toMatchObject({
+      ok: true,
+      binding: {
+        evidenceKind: 'mutation',
+        measurement: { rootHarnessSlug: 'email' },
+        details: { causalControls: controls },
+      },
+    });
+  });
+
   it('keeps an in-harness run on the plan harness root, with no rootHarnessSlug', async () => {
     const { load } = registry();
     const out = await expandTestRunBinding(input(), SCOPE, deps(run(), load));

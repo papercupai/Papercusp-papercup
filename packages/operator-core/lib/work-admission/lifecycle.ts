@@ -50,6 +50,12 @@ import { lifecycleKeysByAdmission } from './write-back-ledger';
 import { resolveAdmissionLifecycle, type AdmissionLifecycle } from './lifecycle-config';
 import { CompletionSettlementManifestSchema, TERMINAL_COMPLETION_EVIDENCE_KEY } from '../coord-lifecycle/records';
 import { completionHeadBlobMap } from '../agent-tools/work_items/completion-freshness';
+import type { ProjectEntry } from '../harness-registry';
+import type { PrHost } from '../pr-host/types';
+import type { AuditGit } from './pr-delivery-audit';
+import { resolveIssuePhysicalSlug } from '../work-items-physical-row';
+import { githubRepoOf } from '../harness/git-sync/standing-pr';
+import { STANDING_PR_BRANCH } from '../harness/git-sync/decide-standing-pr';
 
 /** Who the lifecycle rules act as, in work-item history and coord messages. */
 export const ADMISSION_LIFECYCLE_ACTOR = 'system:work-admission';
@@ -87,6 +93,8 @@ type AdmissionStandingPr = {
   number: number;
   testedSha: string;
   targetSha: string;
+  /** Recovered from a verified historical merge, without claiming a new test run. */
+  mergedSha?: string;
 };
 
 function standingPrOf(payload: unknown): AdmissionStandingPr | null {
@@ -97,7 +105,8 @@ function standingPrOf(payload: unknown): AdmissionStandingPr | null {
   return pr.schemaVersion === 'admission-standing-pr-v1'
     && /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9]\d*$/.test(pr.url)
     && Number.isSafeInteger(pr.number) && pr.number > 0
-    && /^[0-9a-f]{40}$/.test(pr.testedSha) && /^[0-9a-f]{40}$/.test(pr.targetSha) ? pr : null;
+    && /^[0-9a-f]{40}$/.test(pr.testedSha) && /^[0-9a-f]{40}$/.test(pr.targetSha)
+    && (pr.mergedSha === undefined || /^[0-9a-f]{40}$/.test(pr.mergedSha)) ? pr : null;
 }
 
 /**
@@ -110,20 +119,27 @@ export async function correlateAdmissionStandingPr(
   input: {
     workspaceId: string; harnesses: string[]; repositoryRoot: string;
     testedSha: string; targetSha: string; url: string; number: number;
+    mergedSha?: string;
+    /** Late reconciliation keeps the admission's repo route separate from its physical item. */
+    workItemId?: string; workItemHarness?: string; expectedPayload?: Record<string, JSONValue>;
   },
   deps: { headBlobs?: typeof completionHeadBlobMap } = {},
 ): Promise<{ linked: string[]; failed: Array<{ workItemId: string; error: string }> }> {
   const pr: AdmissionStandingPr = {
     schemaVersion: 'admission-standing-pr-v1', url: input.url, number: input.number,
     testedSha: input.testedSha, targetSha: input.targetSha,
+    ...(input.mergedSha ? { mergedSha: input.mergedSha } : {}),
   };
   if (!standingPrOf({ standingPr: pr })) throw new Error('invalid tested standing PR correlation');
   const rows = await sql<{ feature_id: string; harness_slug: string; payload: Record<string, JSONValue> }[]>`
     SELECT DISTINCT w.feature_id, w.harness_slug, w.payload
       FROM harness_shared.work_admissions a
       JOIN harness_shared.work_items w ON w.workspace_id = a.workspace_id
-       AND w.feature_id = a.work_item_id AND w.harness_slug = a.harness_slug
+       AND w.feature_id = a.work_item_id AND w.harness_slug = COALESCE(${input.workItemHarness ?? null}, a.harness_slug)
      WHERE a.workspace_id = ${input.workspaceId} AND a.harness_slug = ANY(${input.harnesses}::text[])
+       AND (${input.workItemId ?? null}::text IS NULL OR w.feature_id = ${input.workItemId ?? null})
+       AND (${input.expectedPayload ? sql.json(input.expectedPayload) : null}::jsonb IS NULL
+         OR w.payload IS NOT DISTINCT FROM ${input.expectedPayload ? sql.json(input.expectedPayload) : null}::jsonb)
        AND w.item_kind = 'bug' AND w.status = ANY(${[...COMPLETED_STATES]}::text[])
        AND w.authority = 'committed'
      ORDER BY w.feature_id LIMIT ${LIFECYCLE_RECONCILE_MAX}`;
@@ -182,6 +198,82 @@ export async function correlateAdmissionStandingPr(
   return result;
 }
 
+type StandingPrReconcileDeps = {
+  projects?: (workspaceId: string) => Promise<ProjectEntry[]>;
+  host?: Pick<PrHost, 'listPrs' | 'getPr'> | null;
+  git?: AuditGit;
+};
+
+/**
+ * Publication can precede completion. Revisit merged standing PRs on the existing
+ * source-sync lifecycle pass, using the same delivery auditor as acceptance.
+ * Its full first-parent check prevents a genuine direct push being relabeled a PR fix.
+ */
+function lateStandingPrReconciler(sql: AdmissionDb, workspaceId: string, deps: StandingPrReconcileDeps) {
+  let projects: Promise<ProjectEntry[]> | undefined;
+  let host: Promise<StandingPrReconcileDeps['host']> | undefined;
+  const listings = new Map<string, ReturnType<NonNullable<PrHost['listPrs']>>>();
+  return async (workItemId: string, harness: string, item: LifecycleWorkItem): Promise<boolean> => {
+    if (!COMPLETED_STATES.has(item.state) || standingPrOf(item.payload)) return false;
+    const evidence = (item.payload as Record<string, unknown> | null)?.[TERMINAL_COMPLETION_EVIDENCE_KEY];
+    const parsed = CompletionSettlementManifestSchema.safeParse((evidence as Record<string, unknown> | undefined)?.settlementManifest);
+    if (!parsed.success) return false;
+    projects ??= deps.projects ? deps.projects(workspaceId)
+      : import('../harness-registry').then(async m => (await m.loadHarnessRegistry(workspaceId)).projects);
+    const project = (await projects).find(p => p.slug === harness);
+    if (!project?.path || project.path !== parsed.data.repositoryRoot || !project.github_remote) return false;
+    const fork = githubRepoOf(project.fork_remote);
+    const upstream = githubRepoOf(project.github_remote);
+    if (!fork || !upstream) return false;
+    const physical = await resolveIssuePhysicalSlug(sql, workspaceId, workItemId, harness);
+    if (!physical) return false;
+    const [row] = await sql<{ status: string; authority: string; payload: Record<string, JSONValue> }[]>`
+      SELECT status, authority, payload FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId} AND feature_id = ${workItemId} AND harness_slug = ${physical}
+         AND item_kind = 'bug' AND authority = 'committed' AND status = ANY(${[...COMPLETED_STATES]}::text[])`;
+    if (!row || standingPrOf(row.payload)) return false;
+    host ??= deps.host !== undefined ? Promise.resolve(deps.host)
+      : import('../pr-host/github').then(m => m.createGitHubPrHost());
+    const reader = await host;
+    if (!reader?.listPrs) throw new Error('PR host cannot reconcile historical standing PRs');
+    const remote = `github.com/${upstream}`;
+    if (!listings.has(remote)) listings.set(remote, reader.listPrs({ remote, state: 'closed', per_page: 100 }));
+    const listed = await listings.get(remote)!;
+    if (!listed.ok) throw new Error(listed.error.message);
+    const candidates = listed.data.filter(pr => pr.state === 'merged' && !pr.is_draft
+      && pr.head_ref === STANDING_PR_BRANCH && pr.head_repo?.toLowerCase() === fork.toLowerCase()
+      && (!project.github_default_branch || pr.base_ref === project.github_default_branch));
+    if (candidates.length > 100) throw new Error('Historical standing PR reconciliation exceeds its bounded candidate budget');
+    const { auditGit, inspectPrDeliveryRow } = await import('./pr-delivery-audit');
+    const git = deps.git ?? auditGit;
+    for (const candidate of candidates) {
+      const current = await reader.getPr({ remote, number: candidate.ref.number });
+      if (!current.ok) throw new Error(current.error.message);
+      const pr = current.data;
+      if (pr.state !== 'merged' || pr.head_sha !== candidate.head_sha
+        || pr.url !== `https://github.com/${upstream}/pull/${pr.ref.number}`
+        || pr.ref.number !== candidate.ref.number || !/^[0-9a-f]{40}$/.test(pr.merge_commit_sha ?? '')) continue;
+      // The current base branch already includes the merge. Recover the pre-merge
+      // target from the actual two-parent commit, never from getPrDetails.targetSha.
+      const parents = await git(project.path, ['rev-list', '--parents', '-n', '1', pr.merge_commit_sha!]);
+      const [merge, target, head, ...extra] = parents.stdout.trim().split(/\s+/);
+      if (parents.code !== 0 || extra.length || merge !== pr.merge_commit_sha || head !== pr.head_sha
+        || !/^[0-9a-f]{40}$/.test(target ?? '')) continue;
+      const receipt: AdmissionStandingPr = { schemaVersion: 'admission-standing-pr-v1',
+        url: pr.url, number: pr.ref.number, testedSha: head!, targetSha: target!, mergedSha: merge };
+      const verdict = await inspectPrDeliveryRow({ id: workItemId, harness, ruleId: '', state: row.status,
+        authority: row.authority, payload: { ...row.payload, standingPr: receipt } }, project, { git, host: reader });
+      if (verdict.verdict === 'unknown') throw new Error(verdict.reason);
+      if (verdict.verdict !== 'pass' || verdict.prUrl !== receipt.url) continue;
+      const linked = await correlateAdmissionStandingPr(sql, { workspaceId, harnesses: [harness],
+        repositoryRoot: project.path, ...receipt, workItemId, workItemHarness: physical, expectedPayload: row.payload });
+      if (linked.failed.length) throw new Error(linked.failed[0]!.error);
+      if (linked.linked.includes(workItemId)) return true;
+    }
+    return false;
+  };
+}
+
 export type LifecycleWrite =
   | { key: string; action: 'comment'; text: string }
   | { key: string; action: 'transition'; toCategory: TicketStatusCategory };
@@ -231,7 +323,9 @@ export function planLifecycleWrites(
   if (pr && lifecycle.complete) {
     writes.push({
       key: `standing-pr:${shortHash(pr.url)}`, action: 'comment',
-      text: `Tested fix for ${item.id}: ${pr.url}\nPassed the pot checks at ${pr.testedSha}. Awaiting the PR merge and its exact merge-result checks.`,
+      text: pr.mergedSha
+        ? `Merged fix for ${item.id}: ${pr.url}\nVerified the recorded fix in PR head ${pr.testedSha} and merge ${pr.mergedSha}.`
+        : `Tested fix for ${item.id}: ${pr.url}\nPassed the pot checks at ${pr.testedSha}. Awaiting the PR merge and its exact merge-result checks.`,
     });
   }
   if (COMPLETED_STATES.has(item.state)) {
@@ -266,6 +360,8 @@ export function planLifecycleWrites(
 }
 
 export interface LifecycleDeps {
+  /** Existing registry/PR-host/Git seams; no new poller or receipt store. */
+  standingPr?: StandingPrReconcileDeps;
   getWorkItem?: (id: string, harness: string) => Promise<LifecycleWorkItem | null>;
   writeBack?: typeof defaultWriteBackAdmission;
   transition?: typeof defaultTransitionAdmission;
@@ -320,6 +416,7 @@ export async function reconcileAdmissionLifecycle(
   }
   const keys = await lifecycleKeysByAdmission(sql, input.workspaceId, rows.map((r) => r.id));
   const result: LifecycleReconcileResult = { workItems: byItem.size, written: [], skipped: [], failed: [] };
+  const reconcilePr = lateStandingPrReconciler(sql, input.workspaceId, deps.standingPr ?? {});
   for (const [workItemId, entry] of byItem) {
     const written = new Set(entry.admissionIds.flatMap((id) => [...(keys.get(id) ?? [])]));
     let item: LifecycleWorkItem | null;
@@ -328,6 +425,18 @@ export async function reconcileAdmissionLifecycle(
     } catch (err) {
       result.failed.push({ workItemId, error: err instanceof Error ? err.message : String(err) });
       continue;
+    }
+    if (!item) continue;
+    if (resolveAdmissionLifecycle(entry.lifecycle).complete
+      && COMPLETED_STATES.has(item.state) && !standingPrOf(item.payload)) {
+      try {
+        await reconcilePr(workItemId, entry.harness, item);
+        // Host/Git reads can overlap a reopen or a new completion. Plan provider
+        // writes from the current item even when the correlation CAS refused it.
+        item = await getItem(workItemId, entry.harness);
+      } catch (err) {
+        result.failed.push({ workItemId, error: err instanceof Error ? err.message : String(err) });
+      }
     }
     if (!item) continue;
     for (const write of planLifecycleWrites(item, resolveAdmissionLifecycle(entry.lifecycle), written)) {

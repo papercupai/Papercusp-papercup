@@ -7498,6 +7498,44 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn file_picker_keeps_refusal_reasons_visible_for_long_paths() {
+        use crate::file_picker::Refusal;
+
+        let shown = format!("/{}/other-project/AGENTS.md", "long-launch-directory/".repeat(12));
+        let root = format!("/{}/active-project", "long-workspace-directory/".repeat(12));
+        let refusals = [
+            (
+                Refusal::OutsideProject { shown: shown.clone(), root },
+                "outside this project",
+            ),
+            (
+                Refusal::Unreadable {
+                    shown: shown.clone(),
+                    reason: "permission denied".into(),
+                },
+                "unreadable: permission denied",
+            ),
+            (Refusal::NotAFile { shown: shown.clone() }, "not a regular file"),
+        ];
+
+        for (refusal, reason) in refusals {
+            for (w, h) in [(80, 20), (80, 24), (170, 44)] {
+                let mut app = App::new();
+                app.viewport = (w, h);
+                app.open_file_picker = Some(crate::app::OpenFilePicker {
+                    query: shown.clone(),
+                    entries: vec![],
+                    selected: 0,
+                    notice: Some(refusal.reason()),
+                });
+                let text = render(&app, w, h);
+                assert!(text.contains(reason), "{w}x{h} hid {reason}: {text}");
+                assert!(app.attachments.is_empty(), "a refused file must stay unattached");
+            }
+        }
+    }
+
     fn side_pane_app() -> App {
         let mut app = App::new();
         app.side_pane = true;

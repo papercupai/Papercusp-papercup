@@ -47,6 +47,11 @@ beforeAll(async () => {
     id bigserial PRIMARY KEY,workspace_id text,surface text,writer_key text,msg_id text,body jsonb,harness_slug text,ts timestamptz
   );
   CREATE UNIQUE INDEX work_items_identity ON harness_shared.work_items (workspace_id,harness_slug,feature_id);
+  -- Production proof-edge inserts take KEY SHARE on their referenced work item.
+  -- Keep that constraint here so concurrent propagation exercises its lock upgrade.
+  ALTER TABLE harness_shared.work_item_spec_revision_edges
+    ADD FOREIGN KEY (workspace_id,harness_slug,work_item_id)
+    REFERENCES harness_shared.work_items (workspace_id,harness_slug,feature_id);
   CREATE INDEX work_items_source_plan ON harness_shared.work_items (workspace_id,harness_slug,source_plan_slug);
   CREATE INDEX work_items_payload_plan ON harness_shared.work_items
     (workspace_id,harness_slug,(payload->'plan_item'->>'plan_slug'),(payload->'plan_item'->>'item_id'));
@@ -84,6 +89,36 @@ async function item(id: string, holder: string | null, opts: { linked?: boolean;
     VALUES (${ws},${holder},${opts.stale?new Date(0):new Date()})`;
 }
 describe('clause amendment propagation', () => {
+  it('retains concurrent amendments after both proof-edge foreign keys are validated', async () => {
+    await item('WI-shared','builder',{stamp:true});
+    let arrived = 0;
+    let release!: () => void;
+    const bothEdgesInserted = new Promise<void>((resolve) => { release = resolve; });
+    const results = await Promise.allSettled(['SPEC-A','SPEC-B'].map((specId) =>
+      h.sql.begin(async (tx) => {
+        // The real FK retains KEY SHARE until commit. Synchronizing AFTER both
+        // inserts makes the former FOR UPDATE upgrade deadlock deterministic,
+        // even though there is only one shared row and ordering is already stable.
+        await tx`INSERT INTO harness_shared.work_item_spec_revision_edges
+          VALUES (${WS},'h','WI-shared','plan',${specId},2)`;
+        if (++arrived === 2) release();
+        await bothEdgesInserted;
+        await propagateClauseAmendment(tx as never,{
+          workspaceId:WS,harnessSlug:'h',planSlug:'plan',specId,planItemId:'P-001',
+          oldRevision:1,newRevision:2,actorId:'author',
+        });
+      }),
+    ));
+    expect(results.map((result) => result.status), JSON.stringify(results)).toEqual(['fulfilled','fulfilled']);
+    const [row] = await h.sql`SELECT payload FROM harness_shared.work_items WHERE feature_id='WI-shared'`;
+    expect(Object.values(row.payload._specAmendments)).toEqual(expect.arrayContaining([
+      expect.objectContaining({specId:'SPEC-A',newRevision:2}),
+      expect.objectContaining({specId:'SPEC-B',newRevision:2}),
+    ]));
+    expect(Object.keys(row.payload._specAmendments)).toHaveLength(2);
+    expect(await h.sql`SELECT * FROM harness_shared.work_item_spec_revision_edges`).toHaveLength(2);
+    expect(await h.sql`SELECT * FROM harness_shared.coord_event_log`).toHaveLength(2);
+  });
   it('notifies each live linked holder once with both revisions, including plan-stamped items', async () => {
     await item('WI-edge','builder',{linked:true});
     await item('WI-stamp','builder',{stamp:true});
@@ -148,7 +183,7 @@ describe('clause amendment propagation', () => {
     const query = propagationQuery, parameters = propagationParameters;
     // Regression guard: concurrent clause amendments must acquire overlapping work-item
     // rows in a stable order before the transaction updates their amendment stamps.
-    expect(query).toMatch(/ORDER BY w\.feature_id\s+FOR UPDATE OF w/);
+    expect(query).toMatch(/ORDER BY w\.feature_id\s+FOR NO KEY UPDATE OF w/);
     const indexes = await h.sql.begin(async (tx) => {
       await tx.unsafe('SET LOCAL enable_seqscan = off');
       const explained = await tx.unsafe('EXPLAIN (FORMAT JSON) '+query, parameters as never);

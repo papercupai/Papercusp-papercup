@@ -18,4 +18,32 @@ export function captionCues(alignment: {
 }[];
 export function vttTimestamp(seconds: any): string;
 export function webVtt(cues: any): string;
+/**
+ * Check the exact published bytes and two seek ranges, without treating HTTP
+ * success as proof that a browser can decode the video or display its captions.
+ * @param {{ videoUrl: string, captionsUrl: string, videoSha256: string, captionsSha256: string, videoBytes: number }} publication
+ * @param {{ fetcher?: typeof fetch, signal?: AbortSignal }} [options]
+ */
+export function verifyPublishedTutorial(publication: {
+    videoUrl: string;
+    captionsUrl: string;
+    videoSha256: string;
+    captionsSha256: string;
+    videoBytes: number;
+}, { fetcher, signal }?: {
+    fetcher?: typeof fetch;
+    signal?: AbortSignal;
+}): Promise<{
+    videoUrl: string;
+    captionsUrl: string;
+    videoSha256: string;
+    captionsSha256: string;
+    videoBytes: number;
+    captionsBytes: number;
+    ranges: {
+        start: number;
+        end: number;
+        total: number;
+    }[];
+}>;
 export function escapeHtml(value: any): string;

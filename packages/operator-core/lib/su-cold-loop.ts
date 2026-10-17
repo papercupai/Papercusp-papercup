@@ -237,7 +237,10 @@ export function transientExecHandleWarning(note: string): string | null {
     '⚠ CARRIED TRANSIENT EXEC HANDLE: this note names a numeric session/process handle for ' +
     '`exec_command`, `write_stdin`, unified exec, or a command-like workload. It is process-local and cannot be assumed ' +
     'to survive a cold respawn. DO NOT call `write_stdin` with the carried id; use durable ' +
-    'spill/log/work-item evidence or rerun the command with a fresh exec.'
+    'spill/log/work-item evidence. For long-running work that must survive a carry, use the durable ' +
+    'capability:bash tracked-task flow with run_in_background and require_task_confinement, persist ' +
+    'the task_id and log pointer, and resume via capability:bash_output. Use a fresh exec_command only ' +
+    'for a bounded rerun after confirming no live process or durable result remains.'
   );
 }
 

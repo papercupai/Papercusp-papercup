@@ -102,7 +102,7 @@ function MachineConnectionHelp() {
     <Modal open={open} onOpenChange={setOpen} title="Connect your computer"
       contentStyle={{ maxWidth: 560, padding: 24, background: "var(--surface-1, #151922)" }}>
       <h2>Connect your computer</h2>
-      <p data-testid="machine-connection-authority"><strong>{connection.authoritySummary}</strong> — this is the SSH profile path. The portal relay and phone pairing are managed separately under Remote access.</p>
+      <p data-testid="machine-connection-authority"><strong>{connection.authoritySummary}</strong> — this is the SSH profile path. The portal relay and phone pairing are managed separately under <a href="/settings/remote-access">Remote access</a>.</p>
       <p>Use the psu utility on this computer to reach a desktop or laptop over your private network or VPN.</p>
       <ol>
         <li>On the remote computer, enable SSH and approve your SSH public key. Install Papercusp and tmux there; its operator should listen on loopback port 3070.</li>

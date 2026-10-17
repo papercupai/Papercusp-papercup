@@ -56,15 +56,15 @@ pub enum Refusal {
 }
 
 impl Refusal {
-    /// One line, suitable for the picker's error row. States the path AND the
-    /// reason: "refused" alone would leave the reader guessing which rule fired.
+    /// One line, suitable for the picker's error row. Put the reason before
+    /// paths so a narrow popup cannot truncate away the rule that refused it.
     pub fn reason(&self) -> String {
         match self {
             Refusal::OutsideProject { shown, root } => {
-                format!("{shown} is outside this project ({root}) — cross-project paths are never attached")
+                format!("File is outside this project — {shown} (project: {root}); cross-project paths are never attached")
             }
-            Refusal::Unreadable { shown, reason } => format!("{shown} is unreadable: {reason}"),
-            Refusal::NotAFile { shown } => format!("{shown} is not a regular file"),
+            Refusal::Unreadable { shown, reason } => format!("File is unreadable: {reason} — {shown}"),
+            Refusal::NotAFile { shown } => format!("File is not a regular file — {shown}"),
         }
     }
 }

@@ -8,14 +8,14 @@
  * (agent-tools/consult/get-feedback.ts) binds the prod seams.
  *
  * What this module OWNS (and the router deliberately does not):
- *  - the LIVENESS GATE (D-008 §5): the router only annotates sessionState;
- *    v1 picks the top qualified candidate that is not 'ended'/'recorded'.
- *    All-qualified-dead is an honest no_qualified_responder with
- *    reason 'no_live_responder' + the evidence refs (retrieval fallback —
- *    the requester reads the cited turns via sessions:read). When semantic
- *    embeddings are unavailable, the router may provide explicitly labeled
- *    lexical candidates; those are bounded minimum-fill manual-review picks,
- *    never floor-qualified experts.
+ *  - SELECTABILITY (D-002): the router annotates sessionState, but selection
+ *    does not gate on liveness. Dispatch reads a candidate's tracked transcript
+ *    through fork/convert/brief; only an authoritative owner pause excludes a
+ *    candidate. Source-specific dispatch failures are recorded and the
+ *    dispatcher continues through the cascade; `no_live_responder` is not a
+ *    selection verdict. When semantic embeddings are unavailable, the router
+ *    may provide explicitly labeled lexical candidates; those are bounded
+ *    minimum-fill manual-review picks, never floor-qualified experts.
  *  - SELECTION (consult-min-max-and-rubric-vetting-2026-08-17 D-001/D-005):
  *    min/max responder selection over the router's ranked pool. The per-task
  *    wake budget is REMOVED (D-005: maxResponders is the only per-consult
@@ -1380,7 +1380,7 @@ export async function getFeedbackCore(
     };
   }
 
-  // 3) D-001 §1 selection (min/max, liveness-gated per D-008 §5): every
+  // 3) D-001 §1 selection (min/max; owner-pause selectability per D-002): every
   //    selectable floor-qualified candidate best-first up to max; fewer than
   //    min ⇒ best-available fill from the full ranked pool, labeled
   //    via:'minimum' (D-002 — labeled, never silent). The selected set IS the

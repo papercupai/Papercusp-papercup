@@ -11996,7 +11996,8 @@
         "operator",
         "mug",
         "documenter",
-        "curator"
+        "curator",
+        "release-fixer"
       ],
       "guidance": {
         "when": "Announcing that the thing a peer is blocked on has happened: work is done, an artifact landed, a decision resolved. Pair with events:await — the waiter registers the key, you emit it. (To WAKE a parked AGENT, prefer the higher-level verbs: coord:wake to nudge, coord:dispatch to assign+wake, coord:send {wake:'required'} to message+wake.)",
@@ -14308,7 +14309,8 @@
         "operator",
         "mug",
         "documenter",
-        "curator"
+        "curator",
+        "release-fixer"
       ],
       "guidance": {
         "when": "You left an edit in the tree and your next step needs it COMMITTED LOCALLY — arm this and end your turn.",

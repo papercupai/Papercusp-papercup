@@ -217,6 +217,8 @@ describe('problem-specific expertise qualification', () => {
   it('anchors named tools independently of shared ownership decision words', () => {
     expect(expertiseSubject('stale desktop rows block computer:provision_desktop; use soleOwner?')).toBe('computer:provision_desktop');
     expect(expertiseSubject('inspect packages/core/lease.ts for stale leases')).toBe('packages/core/lease.ts');
+    expect(expertiseSubject('Audit acceptance-mobile-agent-sessions-2026-10-12 revision11; emit with acknowledgeExisting:true.'))
+      .toBeNull();
     expect(expertiseSubject('how should ownership work?')).toBeNull();
     expect(subjectEvidenceQuery('computer:observe')).toBeNull();
     expect(subjectEvidenceQuery('computer:observe', 'Capture a desktop screenshot.')).toContain('desktop screenshot');

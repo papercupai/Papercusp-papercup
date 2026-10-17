@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { withNuqsTestingAdapter } from "nuqs/adapters/testing";
 import { parseAsString, useQueryState } from "nuqs";
@@ -78,6 +78,8 @@ describe("persistent machine selection", () => {
     const dialog = screen.getByRole("dialog", { name: "Connect your computer" });
     expect(screen.getByTestId("machine-connection-authority").textContent).toContain("SSH machine access");
     expect(dialog.textContent).toContain("portal relay and phone pairing are managed separately");
+    expect(within(dialog).getByRole("link", { name: "Remote access" }).getAttribute("href"))
+      .toBe("/settings/remote-access");
     expect(dialog.textContent).toContain("--connect-add-ssh=my-computer");
     expect(dialog.textContent).toContain("--connect-gui");
     expect(dialog.textContent).toContain("Forgetting an entry alone does not revoke");

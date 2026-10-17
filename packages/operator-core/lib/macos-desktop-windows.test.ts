@@ -3,12 +3,14 @@ import { runInNewContext } from 'node:vm';
 import { focusMacWindow, MAC_WINDOW_SCRIPT, resolveMacWindow } from './macos-desktop-windows';
 
 describe('macOS exact-window focus', () => {
-  function nativeScript(options: { permission?: boolean; duplicate?: boolean; revealAfter?: number; wrongFocusedWindow?: boolean } = {}) {
+  function nativeScript(options: { permission?: boolean; duplicate?: boolean; revealAfter?: number; wrongFocusedWindow?: boolean; raiseUnavailableFor?: number } = {}) {
     const minimized = { value: true };
-    const raise = vi.fn();
+    let raiseAttempts = 0;
+    const raise = vi.fn(() => { if (raiseAttempts++ < (options.raiseUnavailableFor ?? 0)) throw new Error("Can't get object"); });
     const window = { name: () => 'Agent', attributes: { byName: () => minimized }, actions: { byName: () => ({ perform: raise }) } };
-    const process = { unixId: () => 42, windows: () => options.duplicate ? [window, window] : [window], frontmost: false, attributes: { byName: () => ({ value: () => options.wrongFocusedWindow ? { name: () => 'Other' } : window }) } };
-    const processes = Object.assign(() => [process], { whose: () => () => process.frontmost ? [process] : [] });
+    const windows = Object.assign(() => options.duplicate ? [window, window] : [window], { byName: () => window });
+    const process = { unixId: () => 42, windows, frontmost: false, attributes: { byName: () => ({ value: () => options.wrongFocusedWindow ? { name: () => 'Other' } : window }) } };
+    const processes = Object.assign(() => [process], { whose: (query: { unixId?: number }) => () => query.unixId === 42 || process.frontmost ? [process] : [] });
     let observations = 0;
     const delay = vi.fn();
     const bindFunction = vi.fn();
@@ -33,6 +35,47 @@ describe('macOS exact-window focus', () => {
   it('rejects AX focus alone on an invisible Space and a different focused window', () => {
     expect(nativeScript({ revealAfter: 100 }).evaluate({ pid: 42, title: 'Agent', action: 'focus' })).toEqual({ focused: false });
     expect(nativeScript({ wrongFocusedWindow: true }).evaluate({ pid: 42, title: 'Agent', action: 'focus' })).toEqual({ focused: false });
+  });
+
+  it('waits for a restored window to reappear in AX and fails closed if it stays absent', () => {
+    const script = nativeScript({ raiseUnavailableFor: 2 });
+    expect(script.evaluate({ pid: 42, title: 'Agent', action: 'focus' })).toEqual({ focused: true });
+    expect(script.raise).toHaveBeenCalledTimes(3);
+    expect(script.delay).toHaveBeenCalledTimes(2);
+    expect(nativeScript({ raiseUnavailableFor: 20 }).evaluate({ pid: 42, title: 'Agent', action: 'focus' })).toEqual({ focused: false });
+  });
+
+  it('keeps the target when activation reorders the live Accessibility window indexes', () => {
+    const target = { title: 'Agent', minimized: true, raise: vi.fn() };
+    const other = { title: 'Other', minimized: false, raise: vi.fn() };
+    const order = [target, other];
+    let focused = other;
+    let frontmost = false;
+    const specifier = (get: () => typeof target) => ({
+      name: () => get().title,
+      attributes: { byName: () => ({ get value() { return get().minimized; }, set value(value: boolean) { get().minimized = value; } }) },
+      actions: { byName: () => ({ perform: () => { focused = get(); get().raise(); } }) },
+    });
+    const windows = Object.assign(() => order.map((_, index) => specifier(() => order[index])), {
+      byName: (title: string) => specifier(() => order.find(window => window.title === title)!),
+    });
+    const process = {
+      unixId: () => 42, windows,
+      get frontmost() { return frontmost; },
+      set frontmost(value: boolean) { frontmost = value; order.reverse(); },
+      attributes: { byName: () => ({ value: () => ({ name: () => focused.title }) }) },
+    };
+    const processes = Object.assign(() => [process], { whose: (query: { unixId?: number }) => () => query.unixId === 42 || frontmost ? [process] : [] });
+    const run = runInNewContext(`${MAC_WINDOW_SCRIPT}; run`, {
+      ObjC: { import: () => {}, bindFunction: () => {}, deepUnwrap: (value: unknown) => value },
+      Application: () => ({ uiElementsEnabled: () => true, applicationProcesses: processes }),
+      $: { CGWindowListCopyWindowInfo: () => [{ kCGWindowOwnerPID: 42, kCGWindowName: 'Agent', kCGWindowLayer: 0 }] },
+      delay: () => {},
+    });
+    expect(JSON.parse(run([JSON.stringify({ pid: 42, title: 'Agent', action: 'focus' })]))).toEqual({ focused: true });
+    expect(target.minimized).toBe(false);
+    expect(target.raise).toHaveBeenCalledTimes(1);
+    expect(other.raise).not.toHaveBeenCalled();
   });
 
   it('executes permission and ambiguity guards before changing any window', () => {

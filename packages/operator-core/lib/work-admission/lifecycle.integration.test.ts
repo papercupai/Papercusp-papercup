@@ -39,7 +39,10 @@ import { claimWorkItem, getWorkItem, mergeWorkItemPayload, setWorkItemStateWithA
 import { activeExternalBlockers, applyExternalBlockerUpdate } from '../external-blockers';
 import { setAdmissionRule } from './admission-rules';
 import { writeBacksForWorkItem } from './write-back-ledger';
-import { applySourceLifecycle, sourceClosedRef, correlateAdmissionStandingPr } from './lifecycle';
+import { applySourceLifecycle, sourceClosedRef, correlateAdmissionStandingPr, reconcileAdmissionLifecycle } from './lifecycle';
+import { auditGit } from './pr-delivery-audit';
+import type { Pr, PrHost } from '../pr-host/types';
+import { STANDING_PR_BRANCH } from '../harness/git-sync/decide-standing-pr';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql, ws: 'papercusp-workspace' }));
 vi.mock('@papercusp/db-org', async (orig) => {
@@ -217,6 +220,117 @@ beforeEach(async () => {
 });
 
 describe('admission lifecycle (P-003)', () => {
+  it.each(['merged', 'merged-after-comment', 'wrong-fork', 'wrong-head', 'wrong-base', 'closed',
+    'base-already-fixed', 'merge-lacks-fix', 'reopened', 'completion-changed'])(
+    'reconciles completion after publication and merge, refusing unrelated evidence: %s', async (scenario) => {
+      const root = mkdtempSync(join(tmpdir(), 'admission-late-completion-'));
+      const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
+      try {
+        git('init', '-q', '-b', 'main');
+        git('config', 'user.name', 'Admission test');
+        git('config', 'user.email', 'admission-test@example.invalid');
+        writeFileSync(join(root, 'bug.txt'), 'broken\n');
+        git('add', '.'); git('commit', '-qm', 'broken fixture');
+        const broken = git('rev-parse', 'HEAD');
+        git('checkout', '-qb', 'fix');
+        writeFileSync(join(root, 'bug.txt'), 'fixed\n');
+        git('add', '.'); git('commit', '-qm', 'fix fixture');
+        const head = git('rev-parse', 'HEAD');
+        const blob = git('rev-parse', 'HEAD:bug.txt');
+        git('checkout', '-q', 'main');
+        writeFileSync(join(root, 'other.txt'), 'independent target change\n');
+        git('add', '.'); git('commit', '-qm', 'target fixture');
+        const target = git('rev-parse', 'HEAD');
+        git('merge', '--no-ff', '-qm', 'merged standing PR fixture', 'fix');
+        let merge = git('rev-parse', 'HEAD');
+        let prHead = head;
+        if (scenario === 'base-already-fixed') {
+          // A later PR changes another file after the fix already reached its target.
+          git('checkout', '-qb', 'later', 'fix');
+          writeFileSync(join(root, 'later.txt'), 'unrelated change\n');
+          git('add', '.'); git('commit', '-qm', 'later unrelated PR');
+          prHead = git('rev-parse', 'HEAD');
+          git('checkout', '-q', 'main');
+          git('merge', '--no-ff', '-qm', 'later merge', 'later');
+          merge = git('rev-parse', 'HEAD');
+        }
+        const source = await connect(TRACKER);
+        tickets[TRACKER]!.set('LATE-PR', ticket('LATE-PR'));
+        await sync(source);
+        const id = await admitted(source, 'LATE-PR');
+        const publication = { workspaceId: WS, harnesses: [HARNESS], repositoryRoot: root,
+          testedSha: head, targetSha: target, url: 'https://github.com/acme/widgets/pull/7', number: 7 };
+        // Publication precedes completion, so the original publication hook cannot link it.
+        expect(await correlateAdmissionStandingPr(sql, publication)).toEqual({ linked: [], failed: [] });
+        const payload = { ...(await item(id)).payload as Record<string, unknown>, _completionEvidence: {
+          summary: 'Late completion of the merged fix.',
+          settlementManifest: { version: 1, generation: 1, evidenceHash: 'd'.repeat(64), repositoryRoot: root,
+            headSha: head, normalizedPaths: ['bug.txt'],
+            contentIdentity: [{ path: 'bug.txt', workingTreeBlobSha: blob, headBlobSha: blob }], residualPaths: [] },
+        } };
+        await sql`UPDATE harness_shared.work_items SET item_kind = 'bug', status = 'done', authority = 'committed',
+          payload = ${sql.json(payload)} WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+        // Admissions retain the repository member; the physical item lives at its pot home.
+        await sql`UPDATE harness_shared.work_admissions SET harness_slug = 'repo-member'
+          WHERE workspace_id = ${WS} AND work_item_id = ${id}`;
+        const pr: Pr = { ref: { remote: 'github.com/acme/widgets', number: 7 }, state: 'merged',
+          title: 'Standing PR', body: null, head_ref: STANDING_PR_BRANCH, base_ref: 'main',
+          head_sha: prHead, head_repo: 'pot/widgets', merge_commit_sha: merge,
+          author: { github_user_id: 1, github_login: 'fixture' }, reviewers_requested: [],
+          review_decision: 'approved', checks_state: 'success', mergeable_state: 'mergeable',
+          is_draft: false, url: publication.url, updated_at: Date.now() };
+        if (scenario === 'wrong-fork') pr.head_repo = 'another/widgets';
+        if (scenario === 'wrong-head') pr.head_sha = broken;
+        if (scenario === 'wrong-base') pr.base_ref = 'another-branch';
+        if (scenario === 'closed') pr.state = 'closed';
+        if (scenario === 'merge-lacks-fix') pr.merge_commit_sha = target;
+        let changed = false;
+        const host: Pick<PrHost, 'listPrs' | 'getPr'> = {
+          listPrs: vi.fn(async () => ({ ok: true as const, data: [pr] })),
+          getPr: vi.fn(async () => {
+            if (!changed && scenario === 'reopened') {
+              changed = true;
+              await sql`UPDATE harness_shared.work_items SET status = 'open'
+                WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+            }
+            if (!changed && scenario === 'completion-changed') {
+              changed = true;
+              await sql`UPDATE harness_shared.work_items SET payload = payload || '{"newCompletion":true}'::jsonb
+                WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+            }
+            return { ok: true as const, data: pr };
+          }),
+        };
+        const deps = { standingPr: { projects: async () => [{ slug: 'repo-member', hive_slug: HARNESS, path: root,
+          github_remote: 'https://github.com/acme/widgets', fork_remote: 'https://github.com/pot/widgets',
+          github_default_branch: 'main' }], host,
+          git: async (dir: string, args: string[]) => args[0] === 'ls-remote'
+            ? { code: 0, stdout: `${merge}\trefs/heads/main` } : auditGit(dir, args),
+        } };
+        if (scenario === 'merged-after-comment') {
+          await reconcileAdmissionLifecycle(sql, { workspaceId: WS, dataSourceId: source }, {
+            standingPr: { projects: async () => [] },
+          });
+          expect((await writeBacksForWorkItem(sql, WS, id)).some(w => w.lifecycleKey?.startsWith('complete:'))).toBe(true);
+        }
+        await reconcileAdmissionLifecycle(sql, { workspaceId: WS, dataSourceId: source }, deps);
+        // A changed completion can be reconciled on its next pass, after a fresh audit.
+        if (scenario !== 'completion-changed') await reconcileAdmissionLifecycle(sql, { workspaceId: WS, dataSourceId: source }, deps);
+        const receipt = ((await item(id)).payload as Record<string, unknown>).standingPr;
+        if (scenario === 'merged' || scenario === 'merged-after-comment') {
+          expect(receipt).toMatchObject({ url: publication.url, testedSha: head, targetSha: target, mergedSha: merge });
+          const comments = callsFor('LATE-PR').filter(([capability, text]) => capability === 'ticket.comment'
+            && String(text).includes(publication.url));
+          expect(comments).toHaveLength(1);
+          expect(String(comments[0]![1])).toContain('Merged');
+          expect(String(comments[0]![1])).not.toContain('Awaiting');
+          expect(host.listPrs).toHaveBeenCalledTimes(1);
+        } else expect(receipt).toBeUndefined();
+        if (scenario === 'reopened') expect(callsFor('LATE-PR').some(([, text]) => String(text).includes('Completed'))).toBe(false);
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    },
+  );
+
   it('links an admitted fix only when its recorded content is in the tested PR diff, with one provider comment across retries', async () => {
     const root = mkdtempSync(join(tmpdir(), 'admission-standing-pr-'));
     const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();

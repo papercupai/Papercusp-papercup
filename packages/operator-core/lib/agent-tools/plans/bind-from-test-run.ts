@@ -36,7 +36,8 @@
  * read, so a binding pointing at a still-unattributed row would read `testRun: stale` forever.
  * CI and admin-ui rows are never adopted — they are harness-NULL by design and gate triage
  * scopes them by source/commit, so stamping one would move it between populations. A run
- * attributed to ANOTHER harness is refused, never re-stamped.
+ * attributed to another harness is refused unless its recorded root resolves inside that exact
+ * registered sibling checkout; the original harness attribution is preserved.
  */
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -1306,6 +1307,8 @@ export async function expandTestRunBinding(
     };
   }
   let attribution: HarnessAttribution = 'run';
+  let harnessRoot: string | undefined;
+  let sibling: SiblingCheckout | null | undefined;
   if (row.harness_slug == null) {
     if (NEVER_ADOPTED_SOURCES.has(String(row.source))) {
       return {
@@ -1331,12 +1334,28 @@ export async function expandTestRunBinding(
     row = { ...row, harness_slug: scope.harnessSlug, workspace_id: scope.workspaceId };
     attribution = 'adopted-caller-harness';
   } else if (row.harness_slug !== scope.harnessSlug) {
-    return {
-      ok: false,
-      error: 'test_run_out_of_scope',
-      testRunId,
-      message: `test-run ${testRunId} ran under harness '${row.harness_slug}'; bind it with harness '${row.harness_slug}'.`,
-    };
+    // A registered sibling run keeps its own attribution, but may be bound to a plan in this
+    // harness when its recorded root resolves to that exact sibling checkout. Resolve this
+    // before rejecting the harness mismatch; the later mapping path reuses the same root.
+    try {
+      harnessRoot = await deps.resolveRoot(scope);
+      sibling = deps.resolveSiblingRoot
+        ? await deps.resolveSiblingRoot(scope, harnessRoot, row.root ?? null)
+        : null;
+    } catch {
+      sibling = null;
+    }
+    if (!sibling || sibling.harnessSlug !== row.harness_slug) {
+      return {
+        ok: false,
+        error: 'test_run_out_of_scope',
+        testRunId,
+        message:
+          `test-run ${testRunId} is attributed to harness '${row.harness_slug}', not the plan harness '${scope.harnessSlug}', ` +
+          `and its recorded root is not that registered sibling checkout. ` +
+          `Re-record it with PAPERCUSP_TEST_RUN_HARNESS='${scope.harnessSlug}' and bind the new row.`,
+      };
+    }
   }
   const controlsRefusal = mutationCausalControlsRefusal(input, row);
   if (controlsRefusal) return controlsRefusal;
@@ -1348,20 +1367,22 @@ export async function expandTestRunBinding(
     const rows = await Promise.all(controlIds.map(id => deps.loadRun(scope, id)));
     for (const [index, control] of rows.entries()) {
       if (!control || Number(control.id) !== controlIds[index] || control.status !== 'pass'
-        || control.workspace_id !== scope.workspaceId || control.harness_slug !== scope.harnessSlug
+        || control.workspace_id !== scope.workspaceId || control.harness_slug !== (row.harness_slug ?? scope.harnessSlug)
         || !row.commit_sha || !control.commit_sha || control.commit_sha.toLowerCase() !== row.commit_sha.toLowerCase()) {
         return { ok: false, error: 'mutation_causal_controls_invalid', testRunId,
           message: `Mutation causal control test-run ${controlIds[index]} must exist, pass and match the bound mutant's workspace, harness and known commit.` };
       }
     }
   }
-  const harnessRoot = await deps.resolveRoot(scope);
+  const resolvedHarnessRoot = harnessRoot ?? await deps.resolveRoot(scope);
+  if (sibling === undefined) {
+    sibling = deps.resolveSiblingRoot
+      ? await deps.resolveSiblingRoot(scope, resolvedHarnessRoot, row.root ?? null)
+      : null;
+  }
   // WI-10006610: a run recorded in a registered sibling checkout (a hive app) maps and measures
   // at THAT checkout, and the binding names it so the store re-measures there.
-  const sibling = deps.resolveSiblingRoot
-    ? await deps.resolveSiblingRoot(scope, harnessRoot, row.root ?? null)
-    : null;
-  const root = sibling?.root ?? harnessRoot;
+  const root = sibling?.root ?? resolvedHarnessRoot;
   // WI-10006836: a cargo row names a test, not a file, so it maps only through an explicit
   // canonicalTestPath that defines that test inside the recorded crate (any source: a local run
   // and an in-tree mutation probe record the same shape).

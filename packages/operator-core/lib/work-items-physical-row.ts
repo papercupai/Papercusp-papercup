@@ -34,7 +34,7 @@
  *      a write meant for one item silently landed on its twin (R-5's falsifier).
  * A sibling row is never written.
  */
-import type { getOrgPg } from '@papercusp/db-org';
+import type { Sql, TransactionSql } from 'postgres';
 
 /**
  * A by-id lookup found more than one row for the id in one workspace and the caller did not
@@ -231,7 +231,7 @@ export function stripTwinCensus<T extends object>(
 }
 
 /** The org pool or a transaction handle (`boundedOrgTxn` passes the same type). */
-type SlugReader = ReturnType<typeof getOrgPg>['sql'];
+type SlugReader = Sql | TransactionSql;
 
 /**
  * Resolve the single issue-family physical row a write for `(workspaceId, id)` may touch.

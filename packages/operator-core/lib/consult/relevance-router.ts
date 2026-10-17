@@ -545,7 +545,9 @@ function nativeSourcePopulationSql(sql: Sql, params: ConsultRouteParams) {
 /** Name the problem's primary tool/path, independently of generic decision words.
  * A crossencoder can recognise a paraphrase without an exact identifier mention. */
 export function expertiseSubject(question: string): string | null {
-  const tool = question.match(/\b[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*\b/i)?.[0];
+  // Do not treat key:boolean/null options such as `acknowledgeExisting:true`
+  // as tool names when scanning the full question for a primary action.
+  const tool = question.match(/\b[a-z][a-z0-9_-]*:(?!true\b|false\b|null\b|undefined\b)[a-z][a-z0-9_-]*\b/i)?.[0];
   return tool ?? extractPathTokens(question, 1)[0] ?? null;
 }
 

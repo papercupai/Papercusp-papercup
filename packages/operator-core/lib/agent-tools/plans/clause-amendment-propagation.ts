@@ -44,11 +44,12 @@ export async function propagateClauseAmendment(tx: SpecClauseSql, amendment: Cla
      WHERE w.workspace_id = ${a.workspaceId} AND w.harness_slug = ${a.harnessSlug}
        AND COALESCE(w.status, '') NOT IN ('done','dropped','resolved','closed','passed','deprecated')
        AND w.feature_id IN (SELECT id FROM candidates)
-     -- Every concurrent amendment locks the shared work-item set in the same order. Without
-     -- this explicit order, two bulk workers can take overlapping candidates in opposite
-     -- orders and deadlock while each amendment is still inside its clause transaction.
+     -- Keep a stable row order and preserve KEY SHARE held by sibling proof-edge FK
+     -- checks. FOR UPDATE would make both transactions upgrade against the other's
+     -- KEY SHARE and deadlock even on one row. We only change payload, so NO KEY UPDATE
+     -- still serializes amendments without conflicting with those FK checks.
      ORDER BY w.feature_id
-     FOR UPDATE OF w`;
+     FOR NO KEY UPDATE OF w`;
   if (!rows.length) return;
   const key = createHash('sha256').update(JSON.stringify([a.planSlug, a.specId])).digest('hex');
   const holders = new Map<string, string[]>();

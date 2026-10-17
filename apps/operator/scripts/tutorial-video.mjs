@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { PRODUCT_TUTORIAL_CHAPTERS } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
 import { prepareNarration, renderPreview } from './tutorial-character-preview.mjs';
-import { captionCues, escapeHtml, validateManifest, webVtt } from './tutorial-video-contract.mjs';
+import { captionCues, escapeHtml, validateManifest, verifyPublishedTutorial, webVtt } from './tutorial-video-contract.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 
@@ -56,14 +56,30 @@ export async function renderTutorial({ manifestPath, outDir }) {
   await run('ffmpeg', ['-y', '-v', 'error', '-f', 'concat', '-safe', '0', '-i', concatPath, '-c', 'copy', '-movflags', '+faststart', output]);
   const measured = Number((await probe(output)).format.duration);
   if (Math.abs(measured - offset) > .3) throw new Error('Final media duration does not match its chapter timeline');
-  await writeFile(join(outDir, 'cloud-portal-tutorial.vtt'), webVtt(cues));
+  const captions = webVtt(cues);
+  await writeFile(join(outDir, 'cloud-portal-tutorial.vtt'), captions);
   const transcript = `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Build a project with PaperCup — transcript</title><style>body{font:18px/1.6 system-ui;max-width:75ch;margin:auto;padding:2rem}a{color:#245870}section{margin-block:3rem}</style><main><h1>Build a project with PaperCup</h1>${chapters.map(chapter => `<section id="${chapter.id}"><h2>${escapeHtml(PRODUCT_TUTORIAL_CHAPTERS.find(item => item.id === chapter.id).title)}</h2><p>${escapeHtml(chapter.transcript)}</p></section>`).join('')}</main></html>`;
   await writeFile(join(outDir, 'cloud-portal-tutorial-transcript.html'), transcript);
-  const receipt = { schemaVersion: 1, project: manifest.project, provider: 'elevenlabs', producedAt: new Date().toISOString(), durationSeconds: measured, videoSha256: digest(await readFile(output)), chapters };
+  const receipt = { schemaVersion: 1, project: manifest.project, provider: 'elevenlabs', producedAt: new Date().toISOString(), durationSeconds: measured, videoSha256: digest(await readFile(output)), videoBytes: (await stat(output)).size, captionsSha256: digest(captions), chapters };
   await writeFile(join(outDir, 'delivery-receipt.json'), JSON.stringify(receipt, null, 2));
   return { output, receipt: join(outDir, 'delivery-receipt.json'), durationSeconds: measured };
 }
+
+/** --verify-delivery publication.json --out production-dir checks existing uploads. */
+export async function verifyTutorialPublication({ publicationPath, outDir }) {
+  if (!publicationPath || !outDir) throw new Error('--verify-delivery and --out are required');
+  const publication = JSON.parse(await readFile(publicationPath, 'utf8'));
+  const checked = await verifyPublishedTutorial(publication, { signal: AbortSignal.timeout(120_000) });
+  await mkdir(resolve(outDir), { recursive: true });
+  const receipt = join(resolve(outDir), 'delivery-verification.json');
+  await writeFile(receipt, JSON.stringify({ ...checked, checkedAt: new Date().toISOString(), browserPlayback: 'not-assessed' }, null, 2));
+  return { receipt, browserPlayback: 'not-assessed' };
+}
 if (import.meta.url === `file://${process.argv[1]}`) {
   const option = key => process.argv[process.argv.indexOf(key) + 1];
-  renderTutorial({ manifestPath: process.argv.includes('--manifest') ? option('--manifest') : null, outDir: process.argv.includes('--out') ? option('--out') : null }).then(value => console.log(JSON.stringify(value))).catch(error => { console.error(error); process.exitCode = 1; });
+  const outDir = process.argv.includes('--out') ? option('--out') : null;
+  const operation = process.argv.includes('--verify-delivery')
+    ? verifyTutorialPublication({ publicationPath: option('--verify-delivery'), outDir })
+    : renderTutorial({ manifestPath: process.argv.includes('--manifest') ? option('--manifest') : null, outDir });
+  operation.then(value => console.log(JSON.stringify(value))).catch(error => { console.error(error); process.exitCode = 1; });
 }

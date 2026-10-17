@@ -32,27 +32,35 @@ function run(argv) {
       const w = windows[j];
       const title = w.name();
       if (request.title !== undefined ? title !== request.title : request.fragment && title.indexOf(request.fragment) < 0) continue;
-      matches.push({pid: pid, title: title, process: p, window: w});
+      matches.push({pid: pid, title: title, process: p});
     }
   }
   // Refuse ambiguous title/pid matches instead of activating an unrelated tab.
   if (matches.length !== 1) return JSON.stringify(null);
   const match = matches[0];
   if (request.action !== 'focus') return JSON.stringify({pid: match.pid, title: match.title});
-  const w = match.window;
+  // AX index specifiers follow window order, which restoration/activation changes.
+  // The uniqueness guard above makes an exact-name specifier safe to keep instead.
+  const process = se.applicationProcesses.whose({unixId: match.pid})()[0];
+  if (!process) return JSON.stringify({focused: false});
+  const w = process.windows.byName(match.title);
   try { w.attributes.byName('AXMinimized').value = false; } catch (_) {}
-  match.process.frontmost = true;
-  w.actions.byName('AXRaise').perform();
+  process.frontmost = true;
   // Space changes and AXRaise settle asynchronously. Observe convergence,
   // including on-screen membership, instead of inferring it from AX focus.
+  let raised = false;
   for (let attempt = 0; attempt < 20; attempt++) {
-    const front = se.applicationProcesses.whose({frontmost: true})();
-    const focused = match.process.attributes.byName('AXFocusedWindow').value();
-    const onScreen = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1, 0)) || [];
-    const visible = onScreen.some(function(info) {
-      return info.kCGWindowOwnerPID === match.pid && info.kCGWindowName === match.title && info.kCGWindowLayer === 0;
-    });
-    if (front.length === 1 && front[0].unixId() === match.pid && focused.name() === match.title && visible) return JSON.stringify({focused: true});
+    try {
+      // A restored window can be temporarily absent from AX until it settles.
+      if (!raised) { w.actions.byName('AXRaise').perform(); raised = true; }
+      const front = se.applicationProcesses.whose({frontmost: true})();
+      const focused = process.attributes.byName('AXFocusedWindow').value();
+      const onScreen = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1, 0)) || [];
+      const visible = onScreen.some(function(info) {
+        return info.kCGWindowOwnerPID === match.pid && info.kCGWindowName === match.title && info.kCGWindowLayer === 0;
+      });
+      if (front.length === 1 && front[0].unixId() === match.pid && focused.name() === match.title && visible) return JSON.stringify({focused: true});
+    } catch (_) {}
     delay(0.05);
   }
   return JSON.stringify({focused: false});

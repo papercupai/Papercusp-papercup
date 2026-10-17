@@ -194,6 +194,7 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
         severity: 'major',
         harness: input.harnessSlug,
         workspaceId: input.workspaceId,
+        sourcePlanSlug: input.planSlug,
         createdBy: SPEC_CONFORMANCE_ACTOR,
         title: filing.title,
         summary: filing.summary,
@@ -208,7 +209,8 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
         // An adopted incumbent keeps its original payload; refresh what this run measured.
         await sql()`
           UPDATE harness_shared.work_items
-             SET payload = jsonb_set(coalesce(payload, '{}'::jsonb), '{specConformance}', ${specConformance as never}::jsonb)
+             SET payload = jsonb_set(coalesce(payload, '{}'::jsonb), '{specConformance}', ${specConformance as never}::jsonb),
+                 source_plan_slug = ${input.planSlug}
            WHERE feature_id = ${res.id} AND workspace_id = ${input.workspaceId}
         `;
       }

@@ -13,8 +13,9 @@
  *    VERBATIM through jsonb;
  *  - the D-005 wake-budget aggregation over origin_task_ref against real rows;
  *  - the origin_task_ref default (most recently progressed wip work-item);
- *  - the D-008 §5 liveness gate + the honest no_qualified_responder reasons
- *    (below_floor / no_live_responder / embed_unavailable) all persist.
+ *  - D-002 owner-pause selectability and transcript-based routing for parked
+ *    or dead experts persist; below-floor and unavailable-relevance outcomes
+ *    remain distinct in the persisted routing record.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
@@ -1441,7 +1442,7 @@ describe('getFeedbackCore — routed', () => {
     expect(r.remaining_candidates.map((c) => c.ownerId)).toEqual(['agent-live']);
   });
 
-  it('liveness gate: a verified owner-paused candidate is skipped for a live fallback', async () => {
+  it('owner-pause gate: a verified paused candidate is skipped for a fallback', async () => {
     const pausedTop = cand('agent-owner-paused', { score: 0.9, liveness: 'live', ownerPaused: true });
     const liveFallback = cand('agent-live-owner-pause-fallback', {
       score: 0.2,
@@ -1483,7 +1484,7 @@ describe('getFeedbackCore — routed', () => {
     expect(candidates).toContainEqual(expect.objectContaining({ ownerId: 'agent-warm-idle', warmIdle: true }));
   });
 
-  it('liveness gate: fresh parked responders remain selectable', async () => {
+  it('parked responders remain selectable without a liveness gate', async () => {
     const freshParked = cand('agent-fresh-parked', { score: 0.9, liveness: 'parked', warmIdle: false });
     const liveFallback = cand('agent-live-fallback-2', {
       score: 0.2,
@@ -1846,7 +1847,7 @@ describe('getFeedbackCore — prior non-helpful responders on a re-ask (EI-22180
 });
 
 describe('getFeedbackCore — exclusion boundary', () => {
-  it('does not leak an explicitly excluded dead owner into no_live_responder candidates', async () => {
+  it('does not route an explicitly excluded dead owner', async () => {
     const excludedOwner = 'su-explicitly-excluded-dead';
     const remainingDeadOwner = 'su-remaining-dead';
     const routed = routeOf([
@@ -1878,7 +1879,7 @@ describe('getFeedbackCore — min/max selection (consult-min-max-and-rubric-vett
     (routing as { selection?: { min: number; max: number; selected: Array<{ ownerId: string; via: string }> } })
       .selection;
 
-  it('below-floor minimum-fill: routes best-available LIVE, labeled everywhere + honest wake body', async () => {
+  it('below-floor minimum-fill: routes the best-available candidate, labeled everywhere + honest wake body', async () => {
     const below = cand('agent-min', {
       score: 0.31,
       signals: { similarity: 0.22, verification: 0.3, authorship: 0, freshness: 1 },
@@ -1933,7 +1934,7 @@ describe('getFeedbackCore — min/max selection (consult-min-max-and-rubric-vett
     const { deps, reached } = makeDeps(routeOf([], { all: [below] }));
     const r = asOk(await getFeedbackCore({ ...baseReq, minResponders: 0 }, deps));
     expect(r.verdict).toBe('no_qualified_responder');
-    expect(r.reason).toBe('below_floor'); // NOT no_live_responder — the pool was live, just below the floor
+    expect(r.reason).toBe('below_floor'); // The candidate missed the configured floors.
     expect(reached).toHaveLength(0);
   });
 

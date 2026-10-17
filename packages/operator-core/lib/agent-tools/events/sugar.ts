@@ -950,7 +950,10 @@ export const gitSyncAwaitTool = defineTool({
     },
   },
   requirePrincipal: false,
-  agentRoles: [...SU_ROLES],
+  // EI-26220351173478503: after readiness, the release-fixer must wake on the
+  // scoped local source-settlement event before continuing its parent handoff.
+  // This is still gated by coord:write and the exact harness scope in the handler.
+  agentRoles: [...SU_ROLES, 'release-fixer'],
   args: z.object({
     // EI-22377735399722977 — the scope is REQUIRED here for a sha-less wait, and
     // nothing said so before the refusal: the shared harnessArg text reads as

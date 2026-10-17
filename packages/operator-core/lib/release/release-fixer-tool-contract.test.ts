@@ -397,6 +397,41 @@ describe('release-fixer: every verb its own prompt mandates is callable under it
     expect(named).toContain('release:repair-queue');
   });
 
+  it('grants the parent-required readiness handoff without operator routine access', async () => {
+    const caps = await loadRoleCapabilities(noRows, 'ws', ROLE);
+    const handoff = await refusalsFor(
+      [
+        { tool: 'events:emit', source: 'EI-26220351173478503 parent readiness handoff' },
+        { tool: 'git-sync:await', source: 'EI-26220351173478503 scoped source settlement' },
+      ],
+      ROLE,
+      caps,
+    );
+    expect(handoff).toEqual([]);
+
+    // `routines:list` is not required by this workflow and would also add the
+    // broader operator:read capability. Keep that least-privilege boundary pinned.
+    expect(caps.has('operator:read')).toBe(false);
+    expect(
+      await refusalsFor(
+        [{ tool: 'routines:list', source: 'not required by the release-fixer handoff' }],
+        ROLE,
+        caps,
+      ),
+    ).toEqual([
+      {
+        tool: 'routines:list',
+        source: 'not required by the release-fixer handoff',
+        reason: 'role_not_allowed — agentRoles omits "release-fixer"',
+      },
+      {
+        tool: 'routines:list',
+        source: 'not required by the release-fixer handoff',
+        reason: 'missing_capability "operator:read"',
+      },
+    ]);
+  });
+
   /* ------------------------------------------------------------------ *
    * FALSIFIABILITY CONTROLS — permanent, synthetic, never mutating the
    * shared tree (CLAUDE.md "proving a guard is falsifiable", module tier).
