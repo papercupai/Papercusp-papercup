@@ -338,10 +338,65 @@
       "nextExperimentPrecondition": "Inspect saved task commands and complete-task requirements before allocating another batch; do not repeat this route proof. Any new provider attempts need a separate maximum reservation, fresh admission and complete-header binding. P544 and P537 remain open."
     }
   },
+  "completeWorkloadFeasibility20261017": {
+    "classification": "Read-only experiment design and budget feasibility; no new provider or VM admission, monthly qualification or shipment",
+    "workItem": "WI-6554700010016277",
+    "governingDecisions": ["D-074", "D-075", "D-076", "D-081"],
+    "programmeReservedUsdUnchanged": 180.1196,
+    "programmeCapUsdUnchanged": 200,
+    "remainingConservativeHeadroomUsd": 19.8804,
+    "perProviderAttemptReserveUsdMicros": 718300,
+    "maximumAdditionalAttemptsWithinHeadroom": 27,
+    "maximumAdditionalAttemptsReserveUsd": 19.3941,
+    "headroomAfterThatArithmeticOnlyUsd": 0.4863,
+    "noNewAdmission": true,
+    "pilotCommandReview": {
+      "source": "/mnt/data/agent-capacity/corpus/p544-route-pilot-20261017T1410/codex-exc-light-2-20261017T141119/cli.jsonl",
+      "sha256": "c49226527d869c6be05a53ee5c810dc05ae5dbbac96750c97cf243f28d5c02ea",
+      "completedToolCommands": 4,
+      "observedSequence": [
+        "Search stroke-width/color definitions",
+        "Read constants and current-item state references",
+        "Read palette declarations and editor default state",
+        "Read the black color definition and working-tree status"
+      ],
+      "conclusion": "Four successful provider responses produced four tool commands but no final task answer. Repeating the four-request cap would repeat route proof rather than qualify a completed workload."
+    },
+    "historicalScale": {
+      "sourceRoot": "~/.cache/agent-capacity/corpus",
+      "writer": "record-session.ts writes meta.exchanges from record-proxy.ts proxy.count(), which counts recorded exchanges, not final provider sends or invoice dollars",
+      "selection": "Group the 21 historical Codex meta files by task ID; prefer a non-timeout exit-0 recording, then the latest startedAt. Select one recording for each of the 20 maintained task IDs.",
+      "selectedRecordings": 20,
+      "profiles": { "light": 8, "typical": 8, "heavy": 4 },
+      "recordedProxyExchanges": 318,
+      "sameCountAtCurrentPerSendReserveUsd": 228.4194,
+      "programmeTotalWithThatIllustrativeReservationUsd": 408.539,
+      "limitation": "Historical proxy exchanges are a scale comparison, not a forecast of current model attempts, task success or actual charges. Gateway retries can require more final provider attempts; a new run may require fewer or more exchanges."
+    },
+    "providerRouteReview": {
+      "accountCensus": "/tmp/p544-api-account-route.json",
+      "enrolledCodexAccounts": 8,
+      "credentialRefKinds": ["codex-cli"],
+      "bearerApiAccountFoundInThatCensus": false,
+      "shellOpenAiApiKeyPresent": false,
+      "shellOpenAiAdminKeyPresent": false,
+      "credentialScope": "Account metadata and environment-variable presence only; no credential or outgoing Authorization value was printed or persisted. This census does not establish absence of credentials elsewhere.",
+      "oauthOutputLimit": "codex-oauth-proxy.ts normalizeCodexRequest removes max_output_tokens; gateway.ts refuses required output limits for transports that do not enforce them. Preserve this refusal.",
+      "bearerAlternative": "The existing GatewayCarryTrialBinding.outputTokenLimit seam can enforce a cap on an eligible bearer transport. No such account was found in the enrolled Codex pool; no alternate account was added or credential route changed.",
+      "officialSourcesOpened": [
+        "https://developers.openai.com/api/docs/models/gpt-6-luna",
+        "https://developers.openai.com/api/docs/guides/reasoning",
+        "https://learn.chatgpt.com/docs/config-file/config-reference"
+      ],
+      "officialSourceFinding": "GPT-6 Luna documents a 1050000-token context and 128000 maximum output tokens. Responses max_output_tokens bounds generated reasoning and visible output. The fetched Codex configuration reference did not contain model_max_output_tokens. API documentation does not prove an OAuth transport cap."
+    },
+    "nextDecision": "Keep the USD200 programme ceiling and do not admit another knowingly undersized corpus pilot. A larger separately reserved experiment needs an explicit ceiling increase, or an eligible existing bearer/API account with enforceable bounds and applicable cost evidence. Neither choice alone satisfies D076's actual all-in charge requirement.",
+    "preservedAcceptance": "New pinned P537 private serving-artifact acceptance has passed; final deployed parity and qualified shared trial-policy activation remain open. D075/D076 remain open. No settled proof was replayed."
+  },
   "limitations": [
     "Billing export remains partial. Do not treat exported credits or missing lines as available programme funds.",
     "Cloud audit ingestion can lag. This bounded refresh does not prove account-wide absence of unrelated charges.",
     "No old cold/CPU guest may be resurrected; no settled lifecycle, quota, installer or private-PG proof was replayed.",
-    "P544 D075/D076 and P537 product/source-serving acceptance remain open."
+    "P544 D075/D076 remain open. P537 pinned private serving-artifact acceptance passed; final deployed parity and qualified shared trial-policy activation remain open."
   ]
 }

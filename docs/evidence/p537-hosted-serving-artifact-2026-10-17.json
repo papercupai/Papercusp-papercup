@@ -3,8 +3,8 @@
   "plan": "agent-capacity-and-cost-gcp-2026-09-30",
   "item": "P-537",
   "workItem": "WI-6554700010015799",
-  "status": "private-serving-acceptance-passed",
-  "scope": "Private actual hosted serve artifact, genuine WorkOS TEST identity; not production rollout, cloud provisioning, cost qualification or final source-to-serving parity",
+  "status": "pinned-private-serving-acceptance-passed",
+  "scope": "Private actual hosted serve artifact, genuine WorkOS TEST identity, and prospective pinned build input/output binding; production rollout, cloud provisioning, cost qualification and final deployed parity remain open",
   "artifact": {
     "path": "/tmp/p537-hosted-serving-20261017/serve.mjs",
     "sha256": "9a3fa4a5ee4ea3dc69fbe636bd235c7358f3beba1ddc0dac327395c94608c9ba",
@@ -151,8 +151,84 @@
       "scope": "Final fixture and E2E test only; not a full-project or gate verdict"
     }
   },
+  "pinnedProspectiveAcceptance": {
+    "source": "/tmp/p537-source-105c2763ae-20261017",
+    "head": "105c2763aec788a3a8fe1ef95bc1424aed0ca57b",
+    "sourceIntegrity": "Maintained object-sourced clone, 39 recursive submodules, detached clean source; 98 independently copied dependency trees from validated generation v1-96423c575cd905b2d1e4fa37feb916698d2f6fadf5d4fb82612ad29bd84d6490",
+    "artifact": {
+      "path": "/tmp/p537-pinned-serving-105c2763ae-20261017/serve.mjs",
+      "bytes": 74442831,
+      "sha256": "27aca1d9493b8c8a564d087feb1d13198c1146b410f9a0d16c11a21a608e114a",
+      "metafileSha256": "eeaef413f97c73afa07c9be5dc42c294bae1a51e12a8df9a0b9b3aabb55ad01e"
+    },
+    "build": {
+      "command": "apps/operator/bin/bundle-host.sh bin/serve.ts /tmp/p537-pinned-serving-105c2763ae-20261017/serve.mjs",
+      "cwd": "/tmp/p537-source-105c2763ae-20261017/apps/operator",
+      "exitCode": 0,
+      "log": "/tmp/p537-pinned-serving-build-20261017-run2.log",
+      "restrictedHoldGateEnabled": true,
+      "configuration": "Canonical operator database keys supplied in memory through existing parseEnvFile; no credential values recorded",
+      "firstAttempt": "Failed closed because the isolated clone lacked canonical disclosure-ledger database configuration; observation EI-26245126524557192"
+    },
+    "inputBinding": {
+      "beforeManifest": "/tmp/p537-prospective-build2-inputs-20261017.json",
+      "beforeManifestSha256": "bc5330243f9e2b1f2e70d33bfd65f265ddfc47c0c8bac36b2866ddae2ef0de17",
+      "buildBinding": "/tmp/p537-pinned-serving-build-binding-20261017.json",
+      "buildBindingSha256": "fafb3bbbde87a96638d3a0f043e20929386ee54eda87bb5cd57954ded72b60ce",
+      "actualGateCensus": "/tmp/p537-pinned-serving-105c2763ae-20261017/bundle-restricted-hold-inputs.json",
+      "actualInputPopulation": 10288,
+      "unboundInputs": [],
+      "changedInputsAfterBuild": [],
+      "changedInputsAfterAcceptance": [],
+      "trackedSourceCleanAfterAcceptance": true,
+      "scope": "Every file in the emitted build gate census, including both expanded asset directories, matched its prospectively captured hash after build and acceptance; serving and sidecar outputs/metafiles remained unchanged"
+    },
+    "test": {
+      "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp PAPERCUSP_TEST_HOSTED_SERVING_ARTIFACT=/tmp/p537-pinned-serving-105c2763ae-20261017/serve.mjs npm run test:file -- packages/operator-core/lib/endpoint-route/hosted-serving-artifact.e2e.test.ts",
+      "log": "/tmp/p537-pinned-serving-acceptance-20261017.log",
+      "logSha256": "b1a476ecd69edb838060ac43fd4fc77fddc41ae8355916c2d971e8e274ce3832",
+      "exitCode": 0,
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "runnerHead": "2a7b91a78b",
+      "childSubstituted": 0,
+      "namedTestUncommittedPaths": "0/1",
+      "fixtureAndTestMatchPinnedSourceAfterRun": true,
+      "scope": "Maintained private artifact acceptance against the exact pinned serving bytes; runner provenance covers its named test, not its complete import graph"
+    },
+    "receipt": {
+      "source": "/tmp/pcv/p537-hosted-serving-proof-8oCOvn/receipt.json",
+      "sha256": "61696be6a29a4ecb20dd625d63b864da4fa2f8d5ff6421e874d55e5a72e737e5",
+      "invalidPolicyRefused": true,
+      "missingSessionStatus": 401,
+      "authenticatedSession": true,
+      "organizationMatches": true,
+      "closedAdmissionStatus": 403,
+      "closedAdmissionError": "first_workspace_not_enabled",
+      "testUserCleaned": true,
+      "revokedSessionStatus": 401,
+      "provisionOperationsCreated": 0,
+      "hostStopped": true
+    },
+    "privateRuntimeTeardown": {
+      "source": "/tmp/pcv/p537-hosted-serving-proof-8oCOvn/lifecycle-observation.json",
+      "sha256": "cc7aa326a3edfb115711d4a66629982fb02ffbe148535b55cef7c6a1febf843b",
+      "exitCode": 0,
+      "signal": null,
+      "runtimeRemoved": true,
+      "pgDataRemoved": true,
+      "observationError": null,
+      "observedAt": "2026-10-17T16:46:37.894Z"
+    },
+    "postAcceptanceBinding": {
+      "path": "/tmp/p537-pinned-serving-post-acceptance-20261017.json",
+      "sha256": "eb3b6ce772c5bc0855bf2b35d0cd4c82bbcb54deb0a6a27967f25240311e8424"
+    },
+    "scope": "New artifact acceptance and prospective source/build binding only. Earlier RUN5 remains unchanged. No paid model calls, cloud provisioning, active shared trial policy or final shipment claim."
+  },
   "remaining": [
-    "Verify final source and artifact provenance separately from private runtime behavior",
+    "Verify final deployed artifact and qualified production policy separately from this pinned private runtime acceptance",
     "P544 D075 and D076 qualification and final shipment remain open"
   ]
 }

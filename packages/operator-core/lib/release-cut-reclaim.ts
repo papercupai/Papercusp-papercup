@@ -1250,10 +1250,18 @@ export async function executeCutReclaim(
 // Reuse the retention census's validated-record progress contract. --all exposes
 // progress even inside one large flat directory; only root rows contribute bytes.
 // Keep one du process so its inode table deduplicates hardlinks across roots.
+type CutUsageProgress = {
+  elapsedMs: number; metadataRecords: number; stdoutBytes: number; pendingBytes: number;
+  completedRoots: number; totalRoots: number; lastMetadataPath: string | null;
+  lastMetadataAgeMs: number | null;
+};
 function measureCutUsage(roots: readonly string[], notAfterMs: number): Promise<Map<string, number>> {
   return new Promise((resolve, reject) => {
     const bytes = new Map<string, number>();
     let pending = '', stderr = '', failure: string | undefined, settled = false;
+    const startedAt = performance.now();
+    let metadataRecords = 0, stdoutBytes = 0, lastMetadataAt: number | null = null;
+    let lastMetadataPath: string | null = null;
     let progressTimer: ReturnType<typeof setTimeout>;
     let deadlineTimer: ReturnType<typeof setTimeout>;
     if (!Number.isFinite(notAfterMs) || notAfterMs <= Date.now()) {
@@ -1281,6 +1289,7 @@ function measureCutUsage(roots: readonly string[], notAfterMs: number): Promise<
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
       if (failure) return;
+      stdoutBytes += Buffer.byteLength(chunk);
       const rows = (pending + chunk).split('\0'); pending = rows.pop() ?? '';
       for (const row of rows) {
         const tab = row.indexOf('\t'), value = row.slice(0, tab), p = row.slice(tab + 1), n = Number(value);
@@ -1288,6 +1297,9 @@ function measureCutUsage(roots: readonly string[], notAfterMs: number): Promise<
             path.resolve(p) !== p || !roots.some((root) => p === root || p.startsWith(`${root}/`)) || bytes.has(p)) {
           stop('invalid release-cut usage output'); return;
         }
+        metadataRecords++;
+        lastMetadataAt = performance.now();
+        lastMetadataPath = p.slice(-1024);
         if (roots.includes(p)) bytes.set(p, n);
       }
       // Bound an unterminated row, not the streamed population. Partial records
@@ -1304,7 +1316,13 @@ function measureCutUsage(roots: readonly string[], notAfterMs: number): Promise<
       if (!failure && !Number.isSafeInteger([...bytes.values()].reduce((sum, n) => sum + n, 0))) {
         failure = 'release-cut usage exceeds safe integer bytes';
       }
-      finish(failure ? Object.assign(new Error(failure), { code, signal, killed: child.killed, stderr }) : undefined);
+      const now = performance.now();
+      const usageProgress: CutUsageProgress = {
+        elapsedMs: Math.floor(now - startedAt), metadataRecords, stdoutBytes,
+        pendingBytes: Buffer.byteLength(pending), completedRoots: bytes.size, totalRoots: roots.length,
+        lastMetadataPath, lastMetadataAgeMs: lastMetadataAt === null ? null : Math.floor(now - lastMetadataAt),
+      };
+      finish(failure ? Object.assign(new Error(failure), { code, signal, killed: child.killed, stderr, usageProgress }) : undefined);
     });
   });
 }
@@ -1367,10 +1385,10 @@ export async function reclaimCutWorktrees(
   // Error.message starts with du's complete argument list. Retain the actual
   // failure before that list consumes the bounded receipt's diagnostic budget.
   const usageFailure = (error: unknown): string => {
-    const detail = error as { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown } | null;
+    const detail = error as { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown; usageProgress?: CutUsageProgress } | null;
     return JSON.stringify({ code: detail?.code ?? null, signal: detail?.signal ?? null,
       killed: detail?.killed === true,
-      stderr: String(detail?.stderr ?? '').slice(-1024), message: errText(error) });
+      stderr: String(detail?.stderr ?? '').slice(-1024), usageProgress: detail?.usageProgress, message: errText(error) });
   };
   try {
     const before = await measure();

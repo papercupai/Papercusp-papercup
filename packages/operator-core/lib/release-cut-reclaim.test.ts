@@ -759,7 +759,7 @@ setInterval(() => process.stdout.write('4096\\t' + ${JSON.stringify(tree)} + '/c
     } finally { process.env.PATH = previous; }
   });
 
-  it('does not let partial records or stderr noise renew an idle usage walk', async () => {
+  it.each([false, true])('retains measured progress when an idle usage walk refuses (initial record: %s)', async (initialRecord) => {
     const tree = path.join(tmp, 'idle-usage');
     g(repo, 'worktree', 'add', '-q', '--detach', tree);
     const plan = await gather();
@@ -767,6 +767,7 @@ setInterval(() => process.stdout.write('4096\\t' + ${JSON.stringify(tree)} + '/c
     const bin = path.join(tmp, 'idle-du');
     fs.mkdirSync(bin);
     fs.writeFileSync(path.join(bin, 'du'), `#!${process.execPath}
+${initialRecord ? `process.stdout.write('4096\\t' + ${JSON.stringify(tree)} + '/last-file\\0');` : ''}
 setInterval(() => { process.stdout.write('1'); process.stderr.write('noise'); }, 100);
 `, { mode: 0o755 });
     const previous = process.env.PATH;
@@ -775,8 +776,19 @@ setInterval(() => { process.stdout.write('1'); process.stderr.write('noise'); },
       const result = await reclaimCutWorktrees(plan);
       expect(result.ok).toBe(false);
       expect(result.errors[0]).toContain('no metadata progress for 10 seconds');
+      const failure = JSON.parse(result.errors[0]!.split('usage before reclaim: ')[1]!);
+      expect(failure.usageProgress).toMatchObject({
+        metadataRecords: initialRecord ? 1 : 0, completedRoots: 0, totalRoots: 1,
+        lastMetadataPath: initialRecord ? `${tree}/last-file` : null,
+      });
+      expect(failure.usageProgress.stdoutBytes).toBeGreaterThan(0);
+      expect(failure.usageProgress.pendingBytes).toBeGreaterThan(0);
+      expect(failure.usageProgress.elapsedMs).toBeGreaterThanOrEqual(10_000);
+      if (initialRecord) expect(failure.usageProgress.lastMetadataAgeMs).toBeGreaterThanOrEqual(10_000);
+      else expect(failure.usageProgress.lastMetadataAgeMs).toBeNull();
       expect(result.cap.beforeBytes).toBeNull();
       expect(fs.existsSync(tree)).toBe(true);
+      expect(fs.existsSync(path.join(ret, 'reclaim-archive'))).toBe(false);
     } finally { process.env.PATH = previous; }
   }, 20_000);
 

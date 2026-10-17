@@ -6,7 +6,7 @@
     "planVersion": 22,
     "planContentHash": "34a4ae65ee6a4ca17d64d9256c30243320db9371ed75276e59949dc5a939fbb6",
     "snapshotAt": "2026-10-16",
-    "note": "Verbs the D-002 content brief presents as available today (live on origin/main). Calibrate against D-002 with plans:get { slug, decisionId: 'D-002' } whenever the decision changes."
+    "note": "Verbs the D-002 content brief presents as available today (live on origin/main). Calibrate against D-002 with plans:get { slug, decisionId: 'D-002' } whenever the decision changes. cupboard:install-rule and cupboard:install-event were added 2026-10-17 for P-046 (decision D-006: the page names them), after checking both are registered on main d740fc3802."
   },
   "live": [
     "meta:define-tool",
@@ -29,7 +29,9 @@
     "meta:define-datatype",
     "cupboard:publish-datatype",
     "cupboard:publish-app",
-    "cupboard:unpublish"
+    "cupboard:unpublish",
+    "cupboard:install-rule",
+    "cupboard:install-event"
   ],
   "comingSoon": [
     "rules:create",
