@@ -80,6 +80,10 @@ export const RUNTIME_CONTENT_PROBES = Object.freeze([
   '@lydell/node-pty',
   'rocksdb-native',
   'onnxruntime-web',
+  // operator-vite's Excalidraw Mermaid integration imports Mermaid's ESM core.
+  // The package manifest can survive a partial extraction while this declared
+  // module payload is absent, so directory/version checks alone are insufficient.
+  'mermaid',
   // The SPA uses the ESM icon-set entrypoint. CommonJS and package.json can
   // survive a partial extraction while its shared lib/index.mjs is missing.
   'react-icons/ai',

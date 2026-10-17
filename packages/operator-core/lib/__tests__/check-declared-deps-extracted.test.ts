@@ -528,14 +528,14 @@ describe('runtime-content probes catch partial packages that directory checks ca
         },
       },
       extracted: {
-        '': ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native', 'onnxruntime-web', 'react-icons'],
+        '': ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native', 'onnxruntime-web', 'mermaid', 'react-icons'],
       },
     });
     writeFileSync(
       join(root, 'package-lock.json'),
       JSON.stringify({
         packages: Object.fromEntries(
-          ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native', 'onnxruntime-web', 'react-icons', 'lucide-react'].map(
+          ['@modelcontextprotocol/sdk', 'zod-to-json-schema', 'hono', '@lydell/node-pty', 'rocksdb-native', 'onnxruntime-web', 'mermaid', 'react-icons', 'lucide-react'].map(
             (name) => [`node_modules/${name}`, {}],
           ),
         ),
@@ -572,6 +572,11 @@ describe('runtime-content probes catch partial packages that directory checks ca
     );
     writePackage('rocksdb-native', { type: 'module', exports: './binding.js' });
     writePackage('onnxruntime-web', { type: 'module', exports: './dist/ort.node.min.mjs' });
+    writePackage('mermaid', {
+      name: 'mermaid', version: '11.14.0', type: 'module',
+      module: './dist/mermaid.core.mjs',
+      exports: { '.': { types: './dist/mermaid.d.ts', import: './dist/mermaid.core.mjs', default: './dist/mermaid.core.mjs' }, './*': './*' },
+    });
     writePackage('react-icons', { exports: { './ai': './ai/index.mjs' } }, {
       'ai/index.mjs': "export { IconBase } from '../lib/index.mjs';",
     });
@@ -596,6 +601,10 @@ describe('runtime-content probes catch partial packages that directory checks ca
         expect(failure.detail).toMatch(/(?:ERR_MODULE_NOT_FOUND|Cannot find package)/);
       }
     }
+    expect(failures.find((failure) => failure.specifier === 'mermaid')).toMatchObject({
+      code: 'ERR_MODULE_NOT_FOUND',
+      missingPath: join(root, 'node_modules/mermaid/dist/mermaid.core.mjs'),
+    });
     writeFileSync(join(root, 'node_modules/lucide-react/dist/lucide-react.d.ts'), 'export declare const Check: {};');
     expect(findUnusableRuntimeDeps({ repoRoot: root, probeSpecifiers: ['lucide-react'] })).toEqual([]);
   });
@@ -673,6 +682,39 @@ describe('runtime-content probes catch partial packages that directory checks ca
 });
 
 describe('install:safe post-install verification (the half the mutex cannot cover)', () => {
+  it('repairs a locked transitive mermaid payload through the default runtime probes', async () => {
+    silenceConsole();
+    const root = fixture({ packages: { 'apps/ui': {} }, extracted: { '': ['mermaid'] } });
+    const target = join(root, 'node_modules/mermaid');
+    const manifest = {
+      name: 'mermaid', version: '11.14.0', type: 'module',
+      module: './dist/mermaid.core.mjs',
+      exports: { '.': { import: './dist/mermaid.core.mjs', default: './dist/mermaid.core.mjs' } },
+    };
+    writeFileSync(join(target, 'package.json'), JSON.stringify(manifest));
+    const lock = JSON.stringify({ packages: { 'node_modules/mermaid': { version: '11.14.0' } } });
+    writeFileSync(join(root, 'package-lock.json'), lock);
+    // No workspace declares Mermaid directly: Excalidraw brings it transitively.
+    expect(findUnextractedDeps({ repoRoot: root })).toEqual([]);
+    expect(resolveRuntimeContentProbes(root)).toEqual(['mermaid']);
+    let repairs = 0;
+    const status = await verifyDepsExtracted({ repoRoot: root,
+      deps: { sleep: async () => {} }, runNpm: (args: string[]) => {
+        repairs++;
+        expect(args).toEqual(['install', '--legacy-peer-deps']);
+        expect(existsSync(target)).toBe(false);
+        expect(readFileSync(join(root, 'package-lock.json'), 'utf8')).toBe(lock);
+        mkdirSync(join(target, 'dist'), { recursive: true });
+        writeFileSync(join(target, 'package.json'), JSON.stringify(manifest));
+        writeFileSync(join(target, 'dist/mermaid.core.mjs'), 'export default {};');
+        return 0;
+      } });
+    expect(status).toBe(0);
+    expect(repairs).toBe(1);
+    expect(findUnusableRuntimeDeps({ repoRoot: root })).toEqual([]);
+    expect(readFileSync(join(root, 'package-lock.json'), 'utf8')).toBe(lock);
+  });
+
   it('re-extracts a broken hoisted runtime from its locked tarball when plain npm leaves it up to date', async () => {
     silenceConsole();
     const root = fixture({ packages: { 'apps/selected': {} }, extracted: {} });
