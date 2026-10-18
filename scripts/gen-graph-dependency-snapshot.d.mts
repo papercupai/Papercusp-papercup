@@ -52,7 +52,7 @@ export function produceSnapshotFromGraph({ runCypher, fetchIndex, readSource, no
         edges: {
             importer: any;
             imported: any;
-            importerSha256: any;
+            importerSha256: string;
         }[];
     };
     stats: {
@@ -79,7 +79,7 @@ export function produceSnapshotFromEdges({ edges, index, readSource, now }: {
         edges: {
             importer: any;
             imported: any;
-            importerSha256: any;
+            importerSha256: string;
         }[];
     };
     stats: {
@@ -204,7 +204,7 @@ export function produceSnapshotFromSource({ files, readSource, aliasesForImporte
         edges: {
             importer: any;
             imported: any;
-            importerSha256: any;
+            importerSha256: string;
         }[];
     };
     stats: {

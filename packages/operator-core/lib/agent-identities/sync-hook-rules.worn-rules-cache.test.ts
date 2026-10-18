@@ -36,7 +36,7 @@ vi.mock('../capability-envelope/identity-grants-port', () => ({
 }));
 
 import { evaluateToolGuard, readAppliedIdentityRules, readAppliedWornRules, type WornSyncRules } from './sync-hook-rules';
-import { evaluateKernelSafetyRails, KERNEL_IDENTITY_ID, KERNEL_SAFETY_RAILS } from './kernel-safety-rails';
+import { evaluateKernelSafetyRails, KERNEL_IDENTITY_ID, KERNEL_INPUT_BOUND_RULE_ID, KERNEL_SAFETY_RAILS } from './kernel-safety-rails';
 
 const ruleArtifact = {
   inputs: [{
@@ -141,12 +141,25 @@ describe('always-worn kernel safety rails (R-11)', () => {
   };
 
   const broken: WornSyncRules = { rules: [], unreadable: [{ identityId: 'broken-pack', pinRef: 'broken-pack', error: 'bad manifest' }] };
+  // A package whose guard parses but cannot evaluate (an invalid pattern).
+  const corrupted = {
+    rules: [{ identityId: 'corrupt-pack', pinRef: 'corrupt-pack',
+      rule: { id: 'corrupt', delivery: 'sync', sink: 'pre-tool', guard: { deny: { tool: { matches: '(' } }, reason: 'x' } } }],
+    unreadable: [],
+  } as unknown as WornSyncRules;
   const WORN_STATES: { name: string; read: () => Promise<WornSyncRules | null> }[] = [
     { name: 'no identity package (nothing applied)', read: async () => null },
     { name: 'the worn-rules read throws', read: async () => { throw new Error('db down'); } },
     { name: 'a broken identity package', read: async () => broken },
+    { name: 'a corrupted identity package', read: async () => corrupted },
     { name: 'an empty identity package', read: async () => ({ rules: [], unreadable: [] }) },
   ];
+
+  it('the listed rails are exactly the four shared-tree git rails, never an empty list', () => {
+    expect(KERNEL_SAFETY_RAILS.map((rail) => rail.id).sort()).toEqual([
+      'kernel:git-checkout-all', 'kernel:git-clean-force', 'kernel:git-reset-hard', 'kernel:git-stash',
+    ]);
+  });
 
   it('lists a violating call for every rail, so a new rail cannot ship untested', () => {
     expect(Object.keys(VIOLATIONS).sort()).toEqual(KERNEL_SAFETY_RAILS.map((rail) => rail.id).sort());
@@ -189,5 +202,44 @@ describe('always-worn kernel safety rails (R-11)', () => {
   it('a rail that cannot evaluate refuses (fail closed)', () => {
     const throwing = [{ id: 'kernel:bad', reason: 'x', deny: { tool: { matches: '(' } } }];
     expect(evaluateKernelSafetyRails(bash('ls'), throwing)).toMatchObject({ decision: 'deny', ruleId: 'kernel:bad' });
+  });
+
+  /*
+   * The guard input bound is a budget: over it the adapter drops the input and
+   * flags the call. No rail may be dropped by it, so a cut call to a tool a rail
+   * reads is refused rather than passed unread.
+   */
+  describe('a call over the guard input bound (the input budget is exhausted)', () => {
+    const cut = (tool: string) => ({ tool, input: null, client: 'claude', inputTruncated: true });
+    const SHELL_TOOLS = ['Bash', 'exec_command', 'shell_command', 'shell', 'capability:bash', 'mcp__papercusp-su__capability_bash'];
+
+    for (const rail of KERNEL_SAFETY_RAILS) {
+      it(`${rail.id} alone refuses a cut input to every shell tool`, () => {
+        for (const tool of SHELL_TOOLS) {
+          expect(evaluateKernelSafetyRails(cut(tool), [rail]), tool).toEqual({
+            decision: 'deny', identityId: KERNEL_IDENTITY_ID, ruleId: KERNEL_INPUT_BOUND_RULE_ID,
+            reason: expect.stringContaining(rail.id),
+          });
+        }
+      });
+    }
+
+    for (const state of WORN_STATES) {
+      it(`a cut shell input is refused with ${state.name}, before any worn read`, async () => {
+        const read = vi.fn(state.read);
+        const verdict = await evaluateToolGuard(cut('Bash'), read);
+        expect(verdict).toMatchObject({ decision: 'deny', identityId: KERNEL_IDENTITY_ID, ruleId: KERNEL_INPUT_BOUND_RULE_ID });
+        expect(read).not.toHaveBeenCalled();
+      });
+    }
+
+    it('names every rail the cut input hides from', () => {
+      const verdict = evaluateKernelSafetyRails(cut('Bash'));
+      for (const rail of KERNEL_SAFETY_RAILS) expect(verdict).toMatchObject({ reason: expect.stringContaining(rail.id) });
+    });
+
+    it('leaves a cut input to a tool no rail reads to the worn guards', () => {
+      expect(evaluateKernelSafetyRails(cut('Write'))).toEqual({ decision: 'none' });
+    });
   });
 });

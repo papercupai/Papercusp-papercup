@@ -815,7 +815,9 @@ describe('verify-tauri-headless prepare diagnostics', () => {
       'verifier-bridge-ownership',
       'freshness-check-script',
     ]) {
-      expect(prepare).toContain(`vh_run_step ${step}`);
+      // Bridge ownership keeps the generic helper; parent preparation uses admission.
+      const runner = step === 'verifier-bridge-ownership' ? 'vh_run_step' : 'verifier_run_step';
+      expect(prepare).toContain(`${runner} ${step}`);
     }
     expect(prepare).toContain('vh_step isolated-database-prepare');
   });

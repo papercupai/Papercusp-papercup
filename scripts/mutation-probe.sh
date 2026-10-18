@@ -121,6 +121,13 @@
 #       paths, pass it; it is the built-in version of the self-checking
 #       oracle this incident's reporter had to hand-roll to avoid the false
 #       verdict above.
+#       REQUIRED when a snapshot statically names its own location
+#       (EI-26316662044073002): BASH_SOURCE, dirname/readlink/realpath of $0,
+#       ${0%/*}, __dirname, __filename, import.meta.url|dirname|filename or
+#       __file__ in either the current or the historical snapshot. Without
+#       the flag such a probe refuses before any phase runs and names the two
+#       remedies (this flag, or copy-out with --relocation overlay). Subjects
+#       with no such reference keep the opt-in behaviour above.
 #
 # ⛔ DESTRUCTIVE SUBJECTS (EI-20566003853444873 — the 2026-08-15 incident)
 #   This script's original blast-radius model protected THE FILE UNDER TEST and
@@ -1175,6 +1182,40 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
     grep -Fq -- "$control" "$HISTORICAL_SNAPSHOT" \
       || die "positive control '$control' is absent from historical commit $HISTORICAL_SHA"
   done
+
+  # SELF-LOCATING SUBJECT (EI-26316662044073002). Every historical phase runs a
+  # copy of a frozen snapshot under $SCRATCH, so a subject that resolves anything
+  # relative to its OWN location is a different program there (the class in this
+  # script's header, EI-21902332137059032). --subject-must-behave detects that,
+  # but it is opt-in, and the caller most in need of it is the one who does not
+  # know the subject is location-dependent. So when either snapshot statically
+  # names its own location, require the behavioural check instead of silently
+  # scoring a relocated program. Subjects that do not reference their own
+  # location are unaffected; this never changes their verdict.
+  SELF_LOCATION_ERE='\$\{?BASH_SOURCE|dirname[[:space:]]+(--[[:space:]]+)?"?\$\{?0\b|\$\{0%/\*\}|(readlink|realpath)([[:space:]]+-[[:alpha:]]+)*[[:space:]]+"?\$\{?0\b|\b__dirname\b|\b__filename\b|\bimport\.meta\.(url|dirname|filename)\b|\b__file__\b'
+  SELF_LOCATION_SITES="$(
+    { grep -nEo "$SELF_LOCATION_ERE" "$CURRENT_SNAPSHOT" 2>/dev/null | sed 's/^/current:/' | head -3
+      grep -nEo "$SELF_LOCATION_ERE" "$HISTORICAL_SNAPSHOT" 2>/dev/null | sed 's/^/historical:/' | head -3
+    } || true
+  )"
+  if [ -n "$SELF_LOCATION_SITES" ] && [ -z "$SUBJECT_MUST_BEHAVE" ]; then
+    die "REFUSING: SELF-LOCATING SUBJECT. '$REL_FILE' references its own location, and historical mode runs every phase against a copy under $SCRATCH, not at the in-tree path. A sibling it resolves from there (a \$0-relative lib, config or helper) is missing or different, so the relocated current and historical sources can score alike for reasons unrelated to the fix.
+      Self-location references (snapshot:line:token, first 3 per side):
+$(printf '%s\n' "$SELF_LOCATION_SITES" | sed 's/^/        /')
+
+      Pick one:
+        --subject-must-behave '<command containing {}>'
+            A command that EXERCISES the subject (run it on a known input and
+            check the result, not a grep of its bytes). It runs once at the
+            in-tree path and once relocated; matching exits prove relocation
+            does not change this subject, and the probe proceeds.
+        copy-out mode with --relocation overlay
+            --mutate a reverse of the fix instead of --against-*; the overlay
+            shows the mutant at the subject's own in-tree path (needs bwrap)."
+  fi
+  if [ -n "$SELF_LOCATION_SITES" ]; then
+    log "self-locating subject: relocation checked by --subject-must-behave"
+  fi
 
   log "historical source: commit=$HISTORICAL_SHA path=$REL_FILE"
   log "frozen snapshots: current=$CURRENT_SNAPSHOT historical=$HISTORICAL_SNAPSHOT"

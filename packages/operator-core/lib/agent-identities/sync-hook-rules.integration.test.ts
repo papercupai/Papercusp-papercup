@@ -82,8 +82,10 @@ describe('pre-tool guard (real artifact + launch record + applied revision)', ()
   it('fails CLOSED, naming the rule, when a worn predicate cannot evaluate', async () => {
     await expect(guard('owner-guarded', 'fs:open', { path: '/etc/hosts' }))
       .resolves.toMatch(/^Refused by identity \S+ rule broken: guard broken failed to evaluate: /);
+    // capability:bash is a shell tool the kernel rails read, so a cut input is the
+    // kernel's refusal before any worn guard runs (R-11: no budget drops a rail).
     await expect(guard('owner-guarded', 'capability:bash', null, true))
-      .resolves.toMatch(/^Refused by identity \S+ rule no-rm: tool input exceeds \d+ bytes; guard no-rm cannot see all of it$/);
+      .resolves.toMatch(/^Refused by identity kernel rule kernel:guard-input-bound: tool input exceeds the guard input bound/);
   });
 
   it('keeps a worn guard live across a control-only activation (no receipt carries the new state revision)', async () => {

@@ -453,8 +453,8 @@ printf '%s' "$VERIFIER_SPA_DIST"
       args: ['verifier-verify', '--out', result.frozen, '--receipt', result.receipt, '--runtime-artifacts'] },
     { step: 'build' }]);
     expect(result.sourceOutputExists).toBe(false);
-    expect(source.indexOf('vh_run_step verifier-spa-build')).toBeLessThan(source.indexOf('vh_run_step verifier-host-bundle'));
-    expect(source.indexOf('vh_run_step verifier-spa-build')).toBeLessThan(source.indexOf('vh_step isolated-database-prepare'));
+    expect(source.indexOf('verifier_run_step verifier-spa-build')).toBeLessThan(source.indexOf('verifier_run_step verifier-host-bundle'));
+    expect(source.indexOf('verifier_run_step verifier-spa-build')).toBeLessThan(source.indexOf('vh_step isolated-database-prepare'));
   });
 
   it('builds on the admitted work volume when the source volume refuses output allocation', () => {

@@ -1897,6 +1897,81 @@ describe('mutation-probe.sh — historical source mode', () => {
     expect(out).toMatch(/HISTORICAL SOURCE CAUGHT/);
   });
 
+  /**
+   * EI-26316662044073002 — --subject-must-behave was opt-in, so a caller who did not know
+   * the subject resolves siblings relative to itself got a relocated program scored as
+   * the fix. A snapshot that statically names its own location now REQUIRES the
+   * behavioural check. The guard below writes a marker when it runs, so the refusal is
+   * proven to happen before any phase executes, not merely before the verdict line.
+   */
+  function makeSelfLocatingRepo(token: string): { file: string; oldSha: string } {
+    const repo = join(dir, 'self-locating-repo');
+    mkdirSync(repo);
+    const file = join(repo, 'subject.sh');
+    git(repo, ['init', '-q']);
+    git(repo, ['config', 'user.email', 'mutation-probe-test@example.invalid']);
+    git(repo, ['config', 'user.name', 'mutation-probe-test']);
+    writeFileSync(file, `# stable-control\nhere=${token}\nlegacy-path\n`);
+    git(repo, ['add', 'subject.sh']);
+    git(repo, ['commit', '-qm', 'historical source']);
+    const oldSha = git(repo, ['rev-parse', 'HEAD']);
+    writeFileSync(file, `# stable-control\nhere=${token}\nNEW_GUARD\n`);
+    return { file, oldSha };
+  }
+  const selfLocatingArgs = (file: string, oldSha: string, ran: string): string[] => [
+    '--file', file,
+    '--against-commit', oldSha,
+    '--must-be-absent', 'NEW_GUARD',
+    '--positive-control', 'stable-control',
+    '--calibration', 'grep -q "^# stable-control$" {}',
+    '--test', `printf ran >> "${ran}"; grep -q "^NEW_GUARD$" {}`,
+  ];
+
+  it.each([
+    ['a shell $0-relative sibling', '"$(dirname "$0")/lib"', 'dirname "$0'],
+    ['BASH_SOURCE', '"${BASH_SOURCE[0]%/*}"', '${BASH_SOURCE'],
+    ['node __dirname', 'require("path").join(__dirname, "lib")', '__dirname'],
+    ['ESM import.meta.url', 'new URL("./lib", import.meta.url)', 'import.meta.url'],
+  ])('refuses a self-locating subject (%s) without --subject-must-behave, before any phase runs', (_label, token, site) => {
+    const { file, oldSha } = makeSelfLocatingRepo(token);
+    const ran = join(dir, 'guard-ran');
+    const { code, out } = runProbeIO(selfLocatingArgs(file, oldSha, ran));
+    expect(code, out).toBe(2);
+    expect(out).toMatch(/REFUSING: SELF-LOCATING SUBJECT/);
+    expect(out).toContain(site);
+    expect(out).toMatch(/current:2:/);
+    expect(out).toMatch(/historical:2:/);
+    expect(out).toContain('--subject-must-behave');
+    expect(out).toContain('--relocation overlay');
+    expect(out).not.toMatch(/HISTORICAL SOURCE/);
+    expect(existsSync(ran)).toBe(false);
+  });
+
+  it('proceeds on a self-locating subject once --subject-must-behave proves relocation is harmless', () => {
+    const { file, oldSha } = makeSelfLocatingRepo('"$(dirname "$0")/lib"');
+    const ran = join(dir, 'guard-ran');
+    const { code, out } = runProbeIO([
+      ...selfLocatingArgs(file, oldSha, ran),
+      '--subject-must-behave', 'grep -q "^# stable-control$" {}',
+    ]);
+    expect(code, out).toBe(0);
+    expect(out).toMatch(/self-locating subject: relocation checked by --subject-must-behave/);
+    expect(out).toMatch(/subject-must-behave: relocation-consistent/);
+    expect(out).toMatch(/HISTORICAL SOURCE CAUGHT/);
+    expect(existsSync(ran)).toBe(true);
+  });
+
+  it('does not treat $0 outside a self-location call as self-locating', () => {
+    // awk's $0 and a bare "$0" in a usage string do not resolve a path from the
+    // script's location; the refusal must not fire on them.
+    const { file, oldSha } = makeSelfLocatingRepo(`"$(awk '{print $0}' /dev/null)"; echo "usage: $0"`);
+    const ran = join(dir, 'guard-ran');
+    const { code, out } = runProbeIO(selfLocatingArgs(file, oldSha, ran));
+    expect(code, out).toBe(0);
+    expect(out).not.toMatch(/SELF-LOCATING/);
+    expect(out).toMatch(/HISTORICAL SOURCE CAUGHT/);
+  });
+
   it('rejects --subject-must-behave outside historical mode', () => {
     const { code, out } = runProbeIO([
       '--file',

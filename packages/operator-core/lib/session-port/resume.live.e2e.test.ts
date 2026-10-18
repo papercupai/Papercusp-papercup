@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { describe, expect, it } from 'vitest';
+import { reportSessionEnded } from '../../../../apps/operator/scripts/psu-launcher.mjs';
 import { resolveAgentWorkspaceRoot } from '../agent-tools/capability/base-dir';
 import { executeOperationalRun } from '../agent-tools/testing/record-run';
 import { ompAgentHomeForSessionKey } from '../session-transcript-resolvers';
@@ -25,9 +26,13 @@ type Session = { id: string; agent: SessionBackend; coord_owner_id: string;
 
 function verifiedEmptyCleanup(name: string, args: Record<string, unknown>, status: number | null,
   value: Record<string, any> | undefined) {
-  const row = value?.results?.[0];
   return name === 'processes:kill' && args.reapTerminalResidue === true && status === 5 &&
-    value?.results?.length === 1 && row.taskId === args.taskId && row.error === 'not_live' &&
+    emptyOwnedScope(String(args.taskId), value);
+}
+
+function emptyOwnedScope(taskId: string, value: Record<string, any> | undefined) {
+  const row = value?.results?.[0];
+  return value?.results?.length === 1 && row.taskId === taskId && row.error === 'not_live' &&
     typeof row.detail === 'string' && row.detail.includes('holds no live process right now; nothing to reap');
 }
 
@@ -147,6 +152,77 @@ async function waitForLauncherObservation(observe: () => boolean | Promise<boole
     await new Promise(resolve => setTimeout(resolve, Math.min(interval, deadline - Date.now())));
   }
 }
+
+async function cleanupOwnedMatrixLauncher(taskId: string, deps: {
+  stop: () => Record<string, any>;
+  sessions: () => Session[];
+  reportEnded: (session: Session, observedAt: string, endAttemptKey: string) => Promise<{ reported: boolean }>;
+  remaining: () => Session[];
+  timeout?: number;
+  interval?: number;
+}) {
+  // A successful kill receipt can mean "termination pending". Do not end a
+  // session, or start its next pair, until the kernel confirms this scope empty.
+  // Capture the death boundary before signalling so a late report cannot end a
+  // newer incarnation of the same adv row.
+  const observedAt = new Date().toISOString();
+  const timeout = deps.timeout ?? 60_000;
+  const interval = deps.interval ?? 1000;
+  await waitForLauncherObservation(() => emptyOwnedScope(taskId, deps.stop()), timeout, interval);
+  for (const session of deps.sessions()) {
+    const receipt = await deps.reportEnded(session, observedAt, `cbp-final-cleanup:${taskId}:${session.id}`);
+    if (!receipt.reported) throw new Error(`Owned matrix session ${session.id} end was not acknowledged`);
+  }
+  await waitForLauncherObservation(() => deps.remaining().length === 0, timeout, interval);
+}
+
+describe('owned matrix lifecycle convergence', () => {
+  const session = { id: '42', agent: 'codex' as const, coord_owner_id: 'fixture-owner',
+    session_id: 'native', omp_thread_id: null, ended_at: null };
+  const empty = (taskId = 'owned-task') => ({ ok: false, results: [{ taskId, error: 'not_live',
+    detail: 'scope holds no live process right now; nothing to reap' }] });
+  it('waits through termination pending and persisted session closure before continuing', async () => {
+    const actions: string[] = [];
+    let stops = 0;
+    let reads = 0;
+    await cleanupOwnedMatrixLauncher('owned-task', {
+      stop: () => { actions.push('stop'); return ++stops === 1 ? { ok: true,
+        results: [{ taskId: 'owned-task', detail: 'termination pending' }] } : empty(); },
+      sessions: () => [session],
+      reportEnded: async (target, observedAt, key) => {
+        actions.push('report');
+        expect(target).toBe(session);
+        expect(Number.isFinite(Date.parse(observedAt))).toBe(true);
+        expect(key).toBe('cbp-final-cleanup:owned-task:42');
+        return { reported: true };
+      },
+      remaining: () => { actions.push('read'); return ++reads === 1 ? [session] : []; },
+      timeout: 1000, interval: 0,
+    });
+    expect(actions).toEqual(['stop', 'stop', 'report', 'read', 'read']);
+  });
+  it('never reports death from a terminal row or an empty receipt for another task', async () => {
+    for (const receipt of [{ ok: false, results: [{ taskId: 'owned-task', error: 'not_live',
+      detail: 'state is killed' }] }, empty('other-task')]) {
+      let reports = 0;
+      await expect(cleanupOwnedMatrixLauncher('owned-task', {
+        stop: () => receipt, sessions: () => [session],
+        reportEnded: async () => { reports++; return { reported: true }; },
+        remaining: () => [], timeout: 0, interval: 0,
+      })).rejects.toThrow('did not converge');
+      expect(reports).toBe(0);
+    }
+  });
+  it('refuses an unacknowledged lifecycle end and a still-live session row', async () => {
+    for (const acknowledged of [false, true]) {
+      await expect(cleanupOwnedMatrixLauncher('owned-task', {
+        stop: () => empty(), sessions: () => [session],
+        reportEnded: async () => ({ reported: acknowledged }), remaining: () => [session],
+        timeout: 0, interval: 0,
+      })).rejects.toThrow(acknowledged ? 'did not converge' : 'not acknowledged');
+    }
+  });
+});
 
 function assertSourceAvailable(source: Session, origin: string) {
   const active = rows(`SELECT active.id FROM harness_shared.adv_sessions active
@@ -349,9 +425,24 @@ describe.skipIf(!enabled)('final live session resume matrix', () => {
           } finally {
             // This task was created by this test; stop its managed subtree only.
             try {
-              const cleanup = call('processes:kill', { taskId: task.task_id,
-                includeSubtree: true, escalateAfterMs: 5000, reapTerminalResidue: true }, origin);
-              console.info('CBP_FINAL_RESUME_CLEANUP', JSON.stringify({ taskId: task.task_id, receipt: cleanup }));
+              const ownedSessions = () => rows(`SELECT id, agent, coord_owner_id, session_id,
+                omp_thread_id, ended_at FROM harness_shared.adv_sessions
+                WHERE workspace_id = ${literal(workspace)} AND ended_at IS NULL
+                AND coord_owner_id = ${literal(source.coord_owner_id)}
+                AND ${target ? `label = ${literal(`cbp-final-${source.agent}-${target}`)}
+                  AND started_at >= ${literal(startedAt)}::timestamptz` : `id = ${Number(source.id)}`}
+                ORDER BY id LIMIT 10`, origin) as Session[];
+              await cleanupOwnedMatrixLauncher(task.task_id, {
+                stop: () => call('processes:kill', { taskId: task.task_id,
+                  includeSubtree: true, escalateAfterMs: 5000, reapTerminalResidue: true }, origin),
+                sessions: ownedSessions,
+                reportEnded: (session, observedAt, endAttemptKey) => reportSessionEnded(session.id, null, {
+                  operatorUrl: origin, observedAt, endAttemptKey, killedBySignal: 'SIGTERM',
+                }),
+                remaining: ownedSessions,
+              });
+              console.info('CBP_FINAL_RESUME_CLEANUP', JSON.stringify({ taskId: task.task_id,
+                scopeEmpty: true, sessionsEnded: true }));
             } catch (cleanupError) {
               // A finally failure must not erase the observation that failed first.
               throw new Error(`Owned matrix cleanup failed (${task.task_id}): ${String(cleanupError)}\n` +

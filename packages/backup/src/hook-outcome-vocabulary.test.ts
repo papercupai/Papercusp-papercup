@@ -56,6 +56,8 @@ const OUTCOME_CLASSIFICATION: Readonly<Record<string, 'alarming' | 'benign'>> = 
   degraded: 'alarming',
   ok: 'benign',
   'skipped: host-covered': 'benign',
+  // A verified live host writer defers this hook; it has not failed a dump.
+  'degraded: host-backup-in-progress': 'benign',
 };
 
 /**
@@ -130,5 +132,9 @@ describe('pre-snapshot hook outcome vocabulary', () => {
     // this database, so the workspace artifact can never advance again and its age
     // carries no information about data safety.
     expect(OUTCOME_CLASSIFICATION['skipped: host-covered']).toBe('benign');
+  });
+
+  it('an active host backup defers the workspace dump without reporting a failed attempt', () => {
+    expect(OUTCOME_CLASSIFICATION['degraded: host-backup-in-progress']).toBe('benign');
   });
 });

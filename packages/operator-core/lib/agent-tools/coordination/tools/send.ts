@@ -638,7 +638,7 @@ const wakeArg = z
   })
   .optional()
   .describe(
-    "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort, SAFE ONLY when the caller has verified a durable backstop will re-dispatch a miss — and you must NAME that backstop via the `backstop` arg. WITHOUT a declared backstop an optimistic miss is now reported as loudly as a required miss (recipient_absent + the missed agents' fresh sessionState), so you can't silently hand work to a dead agent. For a one-off transfer to a specific agent, prefer 'required' (verify `queued>0`, then confirm pickup separately) or coord:handoff. The response's `queued` count is durable wake delivery queued, NOT proof that a turn executed; legacy `woken` mirrors that queue count for backward compatibility and also does NOT prove pickup. Read `wakeOutcome` ('queued'/'partial-staged'/'staged-manual-mode'/'missed'/'unknown') and `pickupConfirmed` to distinguish queueing from pickup. Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
+    "Wake sleeping addressees. Omit/false = inject only; true = 'required'. 'required' reports recipient_absent:true on a clean miss. Use 'optimistic' only with a verified durable retry named in `backstop`; without it, misses also report recipient_absent and fresh sessionState. Prefer 'required' or coord:handoff for one-off transfers. `queued` (legacy `woken`) counts durable wake delivery, never execution. Read `wakeOutcome` and `pickupConfirmed` separately: queued>0 is not pickup. Skips '*'/'human'.",
   );
 
 const wakeOnReplyArg = z
@@ -695,7 +695,7 @@ const endTurnArg = z
   .boolean()
   .optional()
   .describe(
-    "ESC each addressee's CURRENT turn (mimic pressing Escape) BEFORE delivering — the dual of wake-as-Enter. Use ONLY when a recipient's turn is STUCK (e.g. wedged on an API error so a plain wake reaches nobody / typing+Enter won't start the next turn): the ESC ends the dead turn so the CLI re-arms, then (with wake) this message starts a fresh turn. `endTurn: true` REQUIRES an explicit wake mode: `wake: true`, `wake: 'required'`, or `wake: 'optimistic'`; omitting `wake` or passing `wake: false` is refused because it could leave the recipient idle. Force-ESC is audited + storm-rate-limited; only end a turn you KNOW is stuck. Skips '*'/'human'/self. `ended` excludes any target confirmed dead by the same liveness check the wake leg uses — those land in `missed` instead, even if the ESC channel itself reported success.",
+    "Escape addressees' current turns BEFORE delivery, only when confirmed STUCK, then wake a fresh turn. `endTurn: true` REQUIRES an explicit wake mode: `wake: true`, `wake: 'required'`, or `wake: 'optimistic'`; omitted wake or `wake: false` is refused. Audited and storm-rate-limited. Skips '*'/'human'/self. `ended` excludes targets confirmed dead by the wake liveness check: they appear in `missed` even if Escape succeeded.",
   );
 
 const toArg = z

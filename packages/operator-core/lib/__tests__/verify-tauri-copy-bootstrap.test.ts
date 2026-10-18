@@ -36,11 +36,14 @@ beforeAll(() => {
 afterAll(() => { if (stage) rmSync(stage, { recursive: true, force: true }); });
 
 function probe(memory: string) {
-  const env = { ...process.env, NODE_OPTIONS: '--import=' + join(stage, 'cgroup-fixture.mjs'),
+  const env = { ...process.env, FIXTURE_PRELOAD: join(stage, 'cgroup-fixture.mjs'),
     NODE_PATH: '', STAGED_ROOT: stage, WORK: join(stage, 'work'), REPO_DIR: repo,
     VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'copy', FIXTURE_MEMORY: memory };
   return spawnSync('bash', ['-c', [
     'set -euo pipefail',
+    // Governed nested runners may normalize NODE_OPTIONS. Use Node's explicit
+    // preload argument so these measured OS/clock fixtures cannot be dropped.
+    'node() { command node --import "$FIXTURE_PRELOAD" "$@"; }',
     // Only the actual payload copy is replaced. The production Node import,
     // memory measurement, rejection and shell return path all execute.
     'bash() { echo COPY_FIXTURE_ALLOCATED; }',
@@ -74,13 +77,14 @@ function deadlineProbe({ phase = 'prepare', remainingMs = 1_800_000, history,
   if (history) writeFileSync(historyPath, history.map(row => JSON.stringify(row)).join('\n') + '\n');
   return spawnSync('bash', ['-c', [
     'set -euo pipefail',
+    'node() { command node --import "$FIXTURE_PRELOAD" "$@"; }',
     'PREPARE_ONLY=0; ASSERTION_MODE=1; BOOT_ATTEMPTS=0',
     'VERIFIER_TASK_PREPARE_STARTED_SECONDS=$SECONDS',
     guard!,
     `preflight_verifier_task_deadline ${phase}`,
     'echo NATIVE_FIXTURE_ALLOCATED',
   ].join('\n')], { cwd: stage, encoding: 'utf8', timeout: 10_000,
-    env: { ...process.env, NODE_OPTIONS: '--import=' + join(stage, 'cgroup-fixture.mjs'),
+    env: { ...process.env, FIXTURE_PRELOAD: join(stage, 'cgroup-fixture.mjs'),
       NODE_PATH: '', REPO_DIR: stage, FIXTURE_NOW: '1000',
       PAPERCUSP_TASK_DEADLINE_EPOCH_MS: remainingMs === null ? '' : String(1000 + remainingMs),
       VERIFY_TAURI_TIMEOUT: '180', VERIFY_TAURI_BUILD_TIMEOUT: '300',

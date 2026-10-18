@@ -10,11 +10,15 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { evaluateHookContextSinkMock, readAppliedWornRulesMock, turnsExistMock, turnEndHeldWorkMock } = vi.hoisted(() => ({
+const {
+  evaluateHookContextSinkMock, readAppliedWornRulesMock, turnsExistMock, turnEndHeldWorkMock, turnReadMock, turnChargeMock,
+} = vi.hoisted(() => ({
   evaluateHookContextSinkMock: vi.fn(),
   readAppliedWornRulesMock: vi.fn(),
   turnsExistMock: vi.fn(),
   turnEndHeldWorkMock: vi.fn(),
+  turnReadMock: vi.fn(),
+  turnChargeMock: vi.fn(),
 }));
 
 // The stop port's second leg (WI-6554700010015550) reads modes/claims/awaits from PG; keep it a seam.
@@ -26,7 +30,7 @@ vi.mock('../../../agent-identities/sync-hook-rules', async (importOriginal) => (
   ...(await importOriginal<typeof import('../../../agent-identities/sync-hook-rules')>()),
   evaluateHookContextSink: evaluateHookContextSinkMock,
   readAppliedWornRules: readAppliedWornRulesMock,
-  pgHookTurnStore: () => ({ exists: turnsExistMock }),
+  pgHookTurnStore: () => ({ exists: turnsExistMock, begin: turnReadMock, current: turnReadMock, charge: turnChargeMock }),
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
 
@@ -65,6 +69,9 @@ beforeEach(() => {
   readAppliedWornRulesMock.mockReset().mockResolvedValue(null);
   turnsExistMock.mockReset().mockResolvedValue(false);
   turnEndHeldWorkMock.mockReset().mockResolvedValue('');
+  // A turn that has already spent far past every sink budget.
+  turnReadMock.mockReset().mockResolvedValue({ turnId: 'turn-spent', tokensSpent: 10_000_000, msSpent: 10_000_000 });
+  turnChargeMock.mockReset().mockResolvedValue(undefined);
 });
 
 describe('guardRefusalText', () => {
@@ -90,8 +97,9 @@ describe('toolGuardText (deny-only; unreadable fails open, unevaluable fails clo
   });
 
   it('fails CLOSED when a worn guard cannot see the whole input', async () => {
+    // A tool no kernel rail reads, so the worn guard is the one that answers.
     const text = await toolGuardText(
-      { ownerId: 'o', workspaceId: 'w', call: { ...call('ls'), input: null, inputTruncated: true } },
+      { ownerId: 'o', workspaceId: 'w', call: { tool: 'Write', input: null, client: 'claude', inputTruncated: true } },
       async () => noRmRules(),
     );
     expect(text).toMatch(/^Refused by identity safe-coder rule no-rm: tool input exceeds/);
@@ -156,6 +164,29 @@ describe('POST /agent-mcp/tool-guard', () => {
       owner: 'o', workspace: 'w', tool: 'Bash', input: { command: 'ls' }, inputTruncated: true,
     });
     expect(out.text).toMatch(/tool input exceeds/);
+  });
+
+  /*
+   * R-11 (identity-system-everything-migration-2026-10-18 P-004): no budget
+   * drops a kernel safety rail. The port charges nothing to the session's hook
+   * turn, so a turn that has spent its whole sink budget still gets the rail;
+   * and a shell input over the guard input bound is refused, never passed unread.
+   */
+  it('a kernel rail refuses through the port after the hook turn has exhausted its sink budget', async () => {
+    readAppliedWornRulesMock.mockResolvedValue(noRmRules());
+    const out = await post('/agent-mcp/tool-guard', { owner: 'o', workspace: 'w', tool: 'Bash', input: { command: 'git reset --hard' } });
+    expect(out.text).toMatch(/^Refused by identity kernel rule kernel:git-reset-hard: /);
+    expect(turnReadMock).not.toHaveBeenCalled();
+    expect(turnChargeMock).not.toHaveBeenCalled();
+    expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
+  });
+
+  it('a shell input over the guard input bound is refused by the kernel with no identity package worn', async () => {
+    for (const tool of ['Bash', 'shell', 'capability:bash']) {
+      const out = await post('/agent-mcp/tool-guard', { owner: 'o', workspace: 'w', tool, input: { command: 'git reset --hard' }, inputTruncated: true });
+      expect(out.text, tool).toMatch(/^Refused by identity kernel rule kernel:guard-input-bound: tool input exceeds the guard input bound/);
+    }
+    expect(readAppliedWornRulesMock).not.toHaveBeenCalled();
   });
 });
 

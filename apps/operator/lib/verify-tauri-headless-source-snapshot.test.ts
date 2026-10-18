@@ -41,7 +41,7 @@ const sourceReexecIdx = src.indexOf(
 const assertionExecIdx = src.lastIndexOf('log "running assertion command: $*"');
 const operatorSnapshotIdx = src.indexOf("snapshot_operator_source() {");
 const dependencySnapshotSource = src.slice(src.indexOf("snapshot_verifier_pinned_deps() {"), operatorSnapshotIdx);
-const operatorSnapshotCallIdx = src.indexOf("vh_run_step operator-source-snapshot");
+const operatorSnapshotCallIdx = src.indexOf("verifier_run_step operator-source-snapshot");
 const lockCensusStartIdx = src.indexOf("verify_operator_source_lock_census() {");
 const lockCensusSource = src.slice(lockCensusStartIdx, operatorSnapshotIdx);
 const operatorSnapshotSource = src.slice(
@@ -517,7 +517,7 @@ describe("EI-25270951515189161 — verifier snapshots avoid active source edits"
 
 describe("EI-25270951515189161 — frozen host bundle import smoke runs before Tauri", () => {
   const smokeStartIdx = src.indexOf("smoke_verifier_operator_host() {");
-  const smokeEndIdx = src.indexOf("\nvh_run_step verifier-host-bundle ", smokeStartIdx);
+  const smokeEndIdx = src.indexOf("\nprepare_verifier_spa() {", smokeStartIdx);
   if (smokeStartIdx < 0 || smokeEndIdx < 0) throw new Error('Maintained host smoke function boundary was not found');
   const smokeSource = src.slice(smokeStartIdx, smokeEndIdx);
 
@@ -926,7 +926,7 @@ describe("EI-22590231221058313 — workspace runtime exports survive the snapsho
 describe("dependency snapshot root follows the selected maintained mode", () => {
   const chooserStart = src.indexOf("select_verifier_snapshot_root() {");
   const chooserEnd = src.indexOf(
-    'OPERATOR_SNAPSHOT_PARENT="$(vh_run_step verifier-snapshot-root',
+    '\nverifier_run_step verifier-snapshot-root ',
     chooserStart,
   );
 
@@ -955,7 +955,7 @@ describe("dependency snapshot root follows the selected maintained mode", () => 
         'set -euo pipefail; REPO_DIR="$TEST_DONOR"; WORK="$TEST_ROOT"',
         'VERIFY_TAURI_SOURCE_REPO_DIR="$TEST_SOURCE"; VERIFY_TAURI_SOURCE_REF="$TEST_REF"',
         'VERIFY_TAURI_SOURCE_INPUTS=source.txt',
-        'stat() { if [ "$4" = "$TMPDIR" ]; then echo 2; else echo 1; fi; }',
+        'stat() { if [ "$4" = / ]; then echo 3; elif [ "$4" = "$TMPDIR" ]; then echo 2; else echo 1; fi; }',
         src.slice(chooserStart, chooserEnd),
         'OPERATOR_SNAPSHOT_PARENT="$(select_verifier_snapshot_root)"',
         'write_run_marker() { :; }; reserve_verifier_disk() { :; }; log() { :; }',
@@ -973,6 +973,7 @@ describe("dependency snapshot root follows the selected maintained mode", () => 
       ].join('\n')], { encoding: 'utf8', timeout: 15_000, env: {
         ...process.env, TMPDIR: preferred, TEST_SOURCE: sourceRepo, TEST_DONOR: donor,
         TEST_ROOT: fixture, TEST_REF: ref, TEST_NODE: process.execPath,
+        VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'hardlink',
         TEST_CLONE_PROGRAM: cloneProgram,
         TEST_CLONE_MODULE: resolve(__dirname, '../../../packages/operator-core/lib/scratch-git-clone.ts'),
       } });
@@ -1000,7 +1001,8 @@ describe("dependency snapshot root follows the selected maintained mode", () => 
           "-c",
           [
             "stat() {",
-            '  if [ "$4" = "$REPO_DIR" ]; then printf "1\\n";',
+            '  if [ "$4" = / ]; then printf "3\\n";',
+            '  elif [ "$4" = "$REPO_DIR" ]; then printf "1\\n";',
             '  elif [ "$4" = "$TMPDIR" ]; then printf "%s\\n" "$TEST_PREFERRED_DEVICE";',
             '  else printf "%s\\n" "$TEST_FALLBACK_DEVICE"; fi',
             "}",
@@ -1245,7 +1247,7 @@ describe("independent copy memory admission precedes native preparation", () => 
       `export function readTaskCgroupMemoryMaxMb() { return ${limit}; }`);
     try {
       const result = spawnSync('bash', ['-c', [
-        'vh_run_step() { shift; "$@"; }',
+        'verifier_run_step() { shift; "$@"; }',
         src.slice(start, end),
         'echo native-capacity-started',
       ].join('\n')], { encoding: 'utf8', timeout: 10_000, env: {
@@ -1260,7 +1262,7 @@ describe("independent copy memory admission precedes native preparation", () => 
 
   it('retains the hardlink route without requiring a copy ceiling', () => {
     const result = spawnSync('bash', ['-c', [
-      'vh_run_step() { shift; "$@"; }', src.slice(start, end),
+      'verifier_run_step() { shift; "$@"; }', src.slice(start, end),
     ].join('\n')], { encoding: 'utf8', timeout: 10_000, env: {
       ...process.env, REPO_DIR: '/unused', VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE: 'hardlink',
     } });

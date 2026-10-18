@@ -8,7 +8,9 @@
  * it occupies no stack slot and falls under no contribution or restriction rule,
  * and it is not read from any artifact, so it applies when the session wears no
  * identity package, when the package is broken, and when the worn-rules read
- * fails. It is never charged to a sink budget, so it can never be budget-dropped.
+ * fails. It is never charged to a sink budget, and a call whose input is over
+ * the guard input bound is refused rather than passed unread, so no budget can
+ * drop it.
  *
  * The pre-tool guard port (`evaluateToolGuard` in sync-hook-rules.ts) checks
  * these rails BEFORE it reads anything worn.
@@ -29,6 +31,9 @@ import { evaluateDataCondition, type DataCondition } from '@papercusp/rules';
 /** The identity id every kernel refusal names. */
 export const KERNEL_IDENTITY_ID = 'kernel';
 
+/** The rule id of a refusal for a call whose input is over the guard input bound. */
+export const KERNEL_INPUT_BOUND_RULE_ID = 'kernel:guard-input-bound';
+
 export interface KernelSafetyRail {
   /** Stable rule id, named in the refusal. */
   readonly id: string;
@@ -36,6 +41,13 @@ export interface KernelSafetyRail {
   readonly reason: string;
   /** The deny condition over `{ tool, input, client }`. */
   readonly deny: DataCondition;
+  /**
+   * The tools whose input this rail reads, over `{ tool, client }`. A call to
+   * one of them whose input the adapter cut at the guard input bound is
+   * refused, because the rail cannot see the part it would match. Absent
+   * means every tool.
+   */
+  readonly appliesTo?: DataCondition;
 }
 
 /** The shell tools whose command a rail reads: Claude, Codex and the Papercusp MCP tool. */
@@ -63,6 +75,7 @@ function shellRail(id: string, reason: string, subcommand: string): KernelSafety
   return {
     id,
     reason,
+    appliesTo: { tool: { matches: SHELL_TOOL } },
     deny: {
       all: [
         { tool: { matches: SHELL_TOOL } },
@@ -100,12 +113,34 @@ export type KernelVerdict =
  * PURE, fail-closed: the first kernel rail a pending call violates. A rail
  * whose condition throws refuses too, because a rail that cannot evaluate
  * cannot prove the call is safe.
+ *
+ * A call whose input the adapter cut at the guard input bound
+ * (`inputTruncated`) is refused by the first rail that applies to its tool:
+ * the bound is a budget, and a rail must never be dropped by a budget. This is
+ * the adapter's own contract (hooks/inject/core.mjs `guardCall`: over the bound
+ * the server refuses the call for any guard that matches the tool).
  */
 export function evaluateKernelSafetyRails(
-  call: { readonly tool: string; readonly input: unknown; readonly client: string },
+  call: { readonly tool: string; readonly input: unknown; readonly client: string; readonly inputTruncated?: boolean },
   rails: readonly KernelSafetyRail[] = KERNEL_SAFETY_RAILS,
 ): KernelVerdict {
   const event = { tool: call.tool, input: call.input, client: call.client };
+  if (call.inputTruncated === true) {
+    // A rail whose tool condition throws counts as applying (fail closed).
+    const blind = rails.filter((rail) => {
+      try {
+        return rail.appliesTo === undefined || evaluateDataCondition(rail.appliesTo, event);
+      } catch {
+        return true;
+      }
+    });
+    if (blind.length === 0) return { decision: 'none' };
+    return {
+      decision: 'deny', identityId: KERNEL_IDENTITY_ID, ruleId: KERNEL_INPUT_BOUND_RULE_ID,
+      reason: `tool input exceeds the guard input bound, so kernel rail(s) ${blind.map((rail) => rail.id).join(', ')} `
+        + 'cannot see all of it. Write long content to a file with the Write tool, or split the command',
+    };
+  }
   for (const rail of rails) {
     try {
       if (evaluateDataCondition(rail.deny, event)) {

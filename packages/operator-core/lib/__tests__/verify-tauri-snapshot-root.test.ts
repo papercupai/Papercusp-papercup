@@ -7,10 +7,11 @@ import { describe, expect, it } from 'vitest';
 const repo = resolve(import.meta.dirname, '../../../..');
 const source = readFileSync(process.env.VERIFY_TAURI_SOURCE_PATH || join(repo, 'scripts/verify-tauri-headless.sh'), 'utf8');
 const selector = source.match(/^select_verifier_snapshot_root\(\) \{[\s\S]*?^\}/m)?.[0];
-const invocation = source.split('\n').find(line => line.includes('vh_run_step verifier-snapshot-root select_verifier_snapshot_root'));
+const invocation = source.split('\n').find(line => line.includes('verifier_run_step verifier-snapshot-root select_verifier_snapshot_root'));
+const nativeWrapper = source.match(/^verifier_run_step\(\) \{[\s\S]*?^\}/m)?.[0];
 const wrapperSource = readFileSync(join(repo, 'libs/generic/verification-harness/bin/vh.sh'), 'utf8');
 const wrapper = wrapperSource.match(/^vh_run_step\(\) \{[\s\S]*?^\}/m)?.[0];
-if (!selector || !invocation || !wrapper) throw new Error('Native snapshot selector/wrapper not found');
+if (!selector || !invocation || !wrapper || !nativeWrapper) throw new Error('Native snapshot selector/wrapper not found');
 
 function select(options: { donor?: string; temp?: string; data?: string; scratch?: string; mode?: string; frozen?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tauri-snapshot-root-'));
@@ -51,7 +52,10 @@ function select(options: { donor?: string; temp?: string; data?: string; scratch
       'mkdir() { :; }',
       'VH_DISABLED=1',
       'vh_step() { :; }',
-      wrapper!, selector!, invocation!,
+      // Deadline behavior is covered by verify-tauri-copy-bootstrap. This
+      // fixture measures only filesystem selection through the actual wrappers.
+      'preflight_verifier_task_deadline() { :; }',
+      wrapper!, nativeWrapper!, selector!, invocation!,
       'printf "SELECTED=%s\\nMODE=%s\\nFIXTURE_ALLOCATED\\n" "$OPERATOR_SNAPSHOT_PARENT" "${VERIFY_TAURI_DEPENDENCY_SNAPSHOT_MODE:-hardlink}"',
     ].join('\n')], { env, encoding: 'utf8', timeout: 5000 });
     return { ...result, donor, temp, data, parent: dir };
@@ -112,6 +116,6 @@ describe('native verifier snapshot filesystem admission', () => {
   });
 
   it('admits the snapshot before native capacity checks can allocate fixtures', () => {
-    expect(source.indexOf(invocation!)).toBeLessThan(source.indexOf('vh_run_step native-cargo-capacity'));
+    expect(source.indexOf(invocation!)).toBeLessThan(source.indexOf('verifier_run_step native-cargo-capacity'));
   });
 });

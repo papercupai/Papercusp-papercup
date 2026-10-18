@@ -1184,7 +1184,8 @@ describe('fleet scope assignment admission (P-016)', () => {
         },
         grade: { tool: 'blender:grade-idea' },
       });
-      expect(miss.error).toMatch(/^REVIEWABLE, NOT IDLE \(WI-10004358\): 24 spec-matched row\(s\)/);
+      expect(miss.error).toMatch(/^REVIEWABLE, NOT IDLE: 24 spec-matched row\(s\)/);
+      expect(miss.error).not.toContain('WI-10004358');
       // The floor-gated classification itself is still reported, after the review lead.
       expect(miss.error).toMatch(/POOL BLOCKED, NOT SPEC-BROKEN/);
       expect(miss.advice).toMatch(/^DO NOT STAND DOWN YET: review the 24 pending row\(s\)/);

@@ -1130,6 +1130,18 @@ if [ "${1:-}" = "--self-test" ]; then
           printf '[%s] hook done (degraded)\n' "$(date -Iseconds)"
         } >"$t/ws/hook.log"
         ;;
+      stale-in-progress-after-degraded)
+        : > "$opt"; touch -d '26 hours ago' "$opt"
+        { printf '[%s] hook done (degraded)\n' "$(date -Iseconds)"
+          printf '[%s] hook done (degraded: host-backup-in-progress)\n' "$(date -Iseconds)"
+        } >"$t/ws/hook.log"
+        ;;
+      stale-degraded-after-in-progress)
+        : > "$opt"; touch -d '26 hours ago' "$opt"
+        { printf '[%s] hook done (degraded: host-backup-in-progress)\n' "$(date -Iseconds)"
+          printf '[%s] hook done (degraded)\n' "$(date -Iseconds)"
+        } >"$t/ws/hook.log"
+        ;;
     esac
     env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
         BACKUP_DB_DATA_DIR="$t/no-db-data" \
@@ -1160,6 +1172,10 @@ if [ "${1:-}" = "--self-test" ]; then
   # ...and the over-correction guard: a degraded run AFTER a stand-down still alarms.
   check_optional "optional artifact stale + latest hook DEGRADED after skip: marker set" \
         stale-degraded-after-skipped yes
+  check_optional "optional artifact stale + active host backup after degraded: silent" \
+        stale-in-progress-after-degraded no
+  check_optional "optional artifact stale + latest hook DEGRADED after host backup: marker set" \
+        stale-degraded-after-in-progress yes
   # 8. NOT gated on existence — a box that never ran a workspace backup is silent.
   check_optional "optional artifact ABSENT: silent (never-backed-up workspace is not a fault)" \
         absent no
@@ -1276,6 +1292,13 @@ printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
 printf 'self-test-fixture %s %s %s %s %s\n' "$total_kb" "$used_kb" "$avail_kb" "$capacity" "$target"
 EOF
   chmod +x "$selftest_df_bin/df"
+  # Freeze only the arithmetic cases' clock as well as their free-space fixture.
+  # Even a few seconds between seed and sample can round 5.00 down to 4.99.
+  selftest_epoch="$(date +%s)"
+  selftest_real_date="$(command -v date)"
+  printf '#!/usr/bin/env bash\nif [[ "$*" == +%%s ]]; then echo %s; else exec %q "$@"; fi\n' \
+    "$selftest_epoch" "$selftest_real_date" >"$selftest_df_bin/date"
+  chmod +x "$selftest_df_bin/date"
   selftest_du_bin="$t/du-bin"
   mkdir -p "$selftest_du_bin"
   cat >"$selftest_du_bin/du" <<'EOF'
@@ -1288,12 +1311,10 @@ printf '%s %s\n' "${SELFTEST_DUMP_SIZE_KB:-0}" "$target"
 EOF
   chmod +x "$selftest_du_bin/du"
   selftest_avail_kb=500000000
-  # Compute each synthetic timestamp immediately before its case. A single timestamp
-  # captured here made the expected 5 GiB/h rate drift below the assertion while a
-  # concurrent test occupied the host long enough for the self-test itself to age.
+  # Both seeds and child arithmetic use the same fixed epoch.
   trend_seed() {
     local age_s="$1" delta_kb="$2" now_s
-    now_s="$(date +%s)"
+    now_s="$selftest_epoch"
     printf '%s %s' "$((now_s - age_s))" "$((selftest_avail_kb + delta_kb))"
   }
   # 13. No history at all: seeds a baseline and says so — no rate from one sample.
@@ -1484,7 +1505,7 @@ EOF
 
   backup_seed() {
     local age_s="$1" delta_kb="$2" now_s
-    now_s="$(date +%s)"
+    now_s="$selftest_epoch"
     printf '%s %s' "$((now_s - age_s))" "$((selftest_avail_kb + delta_kb))"
   }
 

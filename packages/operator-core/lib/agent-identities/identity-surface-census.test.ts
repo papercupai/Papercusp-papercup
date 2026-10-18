@@ -45,6 +45,13 @@ describe('identity-surface census — the checked-in inventory', () => {
     expect(Object.values(census.hookKinds).reduce((a, b) => a + b, 0)).toBe(census.counts['injection-hook']);
   });
 
+  // The loop above passes over an empty `counts`; this pins the population, so a
+  // discoverer that returns nothing cannot green the census (R-16).
+  it('names exactly the four surface classes and is not empty', () => {
+    expect(Object.keys(census.counts).sort()).toEqual(['flat-role-prompt', 'injection-hook', 'kernel-splice', 'prompt-constant']);
+    expect(census.entries.length).toBeGreaterThan(0);
+  });
+
   it('records the su render parity baseline as IDOP’s frozen render, not a second one (D-008)', () => {
     expect(census.suRenderParityBaseline).toBe(SU_RENDER_PARITY_BASELINE);
     expect(SU_RENDER_PARITY_BASELINE).toContain('identity-definitions-own-policy-2026-10-17#P-001');

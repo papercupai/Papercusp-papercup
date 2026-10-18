@@ -42,6 +42,7 @@ export const MAX_DEPENDENCY_PATHS = 100;
  * path fields, but callers should not have to narrow the implementation-detail union of the
  * internal object literals.
  * @typedef {{ status: string, reason?: string, suggestedFiles: string[], dependencyPaths?: any[], pathsTruncated?: boolean, accepted: any[], rejected: any[], truncated?: boolean, index?: any }} SuggestionWalkResult
+ */
 
 const RESOLVE_EXTS = ["", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"];
 const JS_TO_TS = new Map([

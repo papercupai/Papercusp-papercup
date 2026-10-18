@@ -62,7 +62,7 @@ describe('snapshot marker admission before database and native boot', () => {
       const artifact = join(dir, 'bundle.js');
       if (content !== undefined) writeFileSync(artifact, content);
       const start = src.indexOf('verify_snapshot_marker_preflight() {');
-      const end = src.indexOf('\n\nvh_run_step snapshot-containment-preflight', start);
+      const end = src.indexOf('\n\nverifier_run_step snapshot-containment-preflight', start);
       expect(start).toBeGreaterThan(-1);
       expect(end).toBeGreaterThan(start);
       return spawnSync('bash', ['-c', [
@@ -102,7 +102,7 @@ describe('snapshot marker admission before database and native boot', () => {
   });
 
   it('runs admission before database preparation and native launch', () => {
-    const preflight = src.indexOf('vh_run_step snapshot-containment-preflight verify_snapshot_marker_preflight || exit $?');
+    const preflight = src.indexOf('verifier_run_step snapshot-containment-preflight verify_snapshot_marker_preflight || exit $?');
     const database = src.indexOf('vh_step isolated-database-prepare');
     const native = src.indexOf('vh_step "launch-attempt-$BOOT_ATTEMPTS"');
     expect(preflight).toBeGreaterThan(-1);

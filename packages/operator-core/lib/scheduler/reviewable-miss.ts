@@ -126,7 +126,7 @@ export function reviewableMiss(
     `breakdownOnly:true, sampleExcluded:${REVIEWABLE_MISS_SAMPLE}, ` +
     'projection:{pick:["excludedSample.queueControl.agentReview"]} }';
   const message =
-    `REVIEWABLE, NOT IDLE (WI-10004358): ${pending} spec-matched row(s) are held by PENDING PEER REVIEW. ` +
+    `REVIEWABLE, NOT IDLE: ${pending} spec-matched row(s) are held by PENDING PEER REVIEW. ` +
     'That floor never self-clears — it clears only when a non-submitter reviews and grades the row — ' +
     'so this lane is not drained and idling on it strands the work.';
   const advice =

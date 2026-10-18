@@ -5,7 +5,7 @@
  * is pinned directly, alongside the digest flatten/render and pool rotation.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { harnessRoot } from '@papercusp/harness/paths';
@@ -83,6 +83,15 @@ describe('buildIdeatorPrompt — anti-mode-collapse + lens stance', () => {
     expect(lensForIdentityId('analogical')).toBeNull();
     expect(isLensIdentityId('scout.lens-analogical')).toBe(true);
     expect(isLensIdentityId('reframing')).toBe(false);
+  });
+
+  // The census is CREATIVE_LENSES; it must be non-empty and match the shipped lens
+  // identity documents exactly, so neither an empty list nor a hand-picked subset
+  // passes the per-lens checks above (R-8).
+  it('R-8: the lens census is non-empty and equals the shipped scout.lens-* identity documents exactly', () => {
+    expect(CREATIVE_LENSES.length).toBeGreaterThan(0);
+    const shipped = readdirSync(join(harnessRoot(), 'blueprints')).filter((name) => name.startsWith('scout.lens-')).sort();
+    expect(shipped).toEqual([...LENS_IDENTITY_ID_LIST].sort());
   });
 
   it('R-8: the lens module carries no inline lens prompt text (stances live in identity documents)', () => {

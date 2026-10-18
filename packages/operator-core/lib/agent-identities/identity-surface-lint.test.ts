@@ -53,6 +53,14 @@ describe('identity-surface lint — the live tree', () => {
     expect(policedIdentitySurfaceCounts(checkedIn.entries), 'lower IDENTITY_SURFACE_HIGH_WATER to these counts').toEqual(IDENTITY_SURFACE_HIGH_WATER);
   });
 
+  // A broken discoverer returning [] would read as a pure shrink and green the
+  // lint; the derived census must be the checked-in inventory, exactly (R-16).
+  it('the derived census is the checked-in inventory exactly, and is not empty', () => {
+    const ids = (c: IdentitySurfaceCensus) => c.entries.map((e) => e.id).sort();
+    expect(derived.entries.length).toBeGreaterThan(0);
+    expect(ids(derived)).toEqual(ids(checkedIn));
+  });
+
   it('the in-process check passes on the current tree', () => {
     expect(runIdentitySurfaceCheck(checkedIn, derived).exitCode).toBe(0);
   });
