@@ -60,6 +60,55 @@ const SCHEDULER_SRC = readFileSync(
 );
 
 describe('native affected-task parent receipt transport', () => {
+  it.each([16384, 16385, 55278])('retains bounded authenticated observations from %i artifacts including streams', count => {
+    const root = mkdtempSync(join(tmpdir(), 'native-process-population-'));
+    try {
+      const out = join(root, 'source-map.json'), source = `${out}.native-processes`;
+      mkdirSync(source);
+      const publish = (bytes: Buffer, suffix: string) => {
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        writeFileSync(join(source, `${sha256}.${suffix}`), bytes);
+        return { ref: `${sha256}.${suffix}`, sha256, byteLength: bytes.length,
+          observedByteLength: bytes.length, scope: 'node-writable-call-inputs', captureComplete: true };
+      };
+      const stdout = publish(Buffer.from('population output'), 'stream');
+      const stderr = publish(Buffer.from('population error'), 'stream');
+      for (let i = 0; i < count - 2; i++) publish(Buffer.from(JSON.stringify({
+        schemaVersion: 1, kind: 'native-node-process-event', processIdentity: 'population-fixture',
+        pid: 1234, ppid: 1, atMs: 100 + i,
+        event: i === 0 ? 'node-entry' : i === 1 ? 'node-exit' : 'module-load-return',
+        ...(i === 1 ? { exitListenersComplete: true, streams: { stdout, stderr } } : {}),
+      })), 'json');
+      const result = writeBudgetedTaskNativeExecutionReceipt(join(root, 'retained'), {
+        task: 'population-fixture', attempt: 'initial', cwd: REPO_ROOT, command: ['node', 'fixture'],
+        startedAtMs: 100, finishedAtMs: 100 + count, exitCode: 0, signal: null, error: null,
+        captureComplete: true, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0),
+        processTrace: { out, rootPid: 1234 },
+      });
+      const trace = result.observation.processTrace;
+      expect(trace.population).toMatchObject({ artifactLimit: 16384,
+        artifactsVisited: Math.min(count, 16384), complete: count === 16384,
+        truncatedBy: count === 16384 ? null : 'artifact-count' });
+      expect(trace.events.length).toBeGreaterThan(0);
+      expect(trace.events.length).toBeLessThanOrEqual(16384);
+      expect(trace.population!.eventBytesRead).toBeLessThanOrEqual(trace.population!.eventByteLimit);
+      expect(trace.gaps.some(gap => gap.startsWith('native-process-trace-unreadable:'))).toBe(false);
+      expect(trace.gaps.includes('native-process-population-truncated:artifact-count')).toBe(count > 16384);
+      if (count === 16384) {
+        expect(trace.events).toHaveLength(count - 2);
+        expect(trace.streams).toHaveLength(2);
+      }
+      for (const event of [trace.events[0]!, trace.events.at(-1)!]) {
+        const bytes = readFileSync(join(result.root, event.artifact.ref));
+        expect(createHash('sha256').update(bytes).digest('hex')).toBe(event.artifact.sha256);
+        expect(event.atMs).toBeGreaterThanOrEqual(100);
+        expect(event.atMs).toBeLessThanOrEqual(100 + count);
+      }
+      expect(result.observation.orderedChainQualified).toBe(false);
+      expect(result.observation.operationalAcceptance).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 60_000);
+
   it('binds real process-step artifacts to the native root while preserving chain/runtime refusal', () => {
     const root = mkdtempSync(join(tmpdir(), 'native-process-parent-'));
     try {

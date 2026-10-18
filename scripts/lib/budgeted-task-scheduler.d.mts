@@ -22,6 +22,9 @@ export function writeBudgetedTaskNativeExecutionReceipt(evidenceRoot: string, in
     orderedChainQualified: false; runtimeClosure: 'unmeasured'; operationalAcceptance: false;
     steps: never[]; gaps: string[];
     processTrace: { scope: string; gaps: string[];
+      /** Completeness is for the directory scan, not shell/runtime coverage. */
+      population: { artifactLimit: number; artifactsVisited: number; eventByteLimit: number;
+        eventBytesRead: number; complete: boolean; truncatedBy: 'artifact-count' | 'event-bytes' | null } | null;
       streams: Array<{ processIdentity: string; pid: number; role: string; scope: string;
         observedByteLength: number; captureComplete: boolean;
         artifact: { ref: string; sha256: string; byteLength: number } }>;
