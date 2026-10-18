@@ -126,7 +126,7 @@ export const WORK_ITEMS_COMPLETE_TIMEOUT_SEC = 120;
  * contract that can drift from runtime.
  */
 export const WORK_ITEMS_COMPLETION_CONTRACT = {
-  version: 'work-items-completion-v3',
+  version: 'work-items-completion-v4',
   requirements: [
     { key: 'assumptions', description: 'Terminal closes declare assumptions or explicitly declare none.' },
     { key: 'root-cause-verification', description: 'Successful defect closes carry complete causal evidence v2.' },
@@ -145,6 +145,10 @@ export const WORK_ITEMS_COMPLETION_CONTRACT = {
     {
       key: 'conformance-review-independence',
       description: 'A conformance-review work-item is not closed by its plan implementer.',
+    },
+    {
+      key: 'change-kind-proof',
+      description: 'A successful close carries the proof each declared change kind requires.',
     },
   ],
 } as const;
@@ -230,7 +234,12 @@ export function contentIdentityAdviceForOrigin(
     `do not re-call \`work_items:complete\` locally.`
   );
 }
-import { isBackedLiveDroveUiClaim, isBackedLiveServiceClaim, verifyLiveDroveUiArtifacts } from '../../completion-audit';
+import {
+  TEST_RUNNER_COMMAND_RE,
+  isBackedLiveDroveUiClaim,
+  isBackedLiveServiceClaim,
+  verifyLiveDroveUiArtifacts,
+} from '../../completion-audit';
 import {
   liveDriveAcceptanceGap,
   liveDriveAcceptanceMessage,
@@ -265,6 +274,8 @@ import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
 import { runBulk, bulkContent, bulkEnvelopeSchema, type BulkItemResult } from '../_bulk';
 import { changeKindsArg, changeKindReasonArg } from '../../change-kind-catalog';
+import { evaluateChangeKindGate, type ChangeKindGateResult } from '../../change-kind-proof';
+import { readChangeKinds, type ChangeKindsView } from '../../work-item-change-kinds';
 import {
   attachChangeKindDeclarations,
   completeChangeKindEligibility,
@@ -1104,8 +1115,6 @@ export function mentionsWorkItemDuplicate(text: string): boolean {
  */
 const NON_TEST_VERIFICATION_MODE_RE = /^(?:manual|live-drove-ui|live-service|already-passing)(?:\b|[(:])/i;
 const INTEGRATION_VERIFICATION_MODE_RE = /^integration(?:\b|[(:])/i;
-const TEST_RUNNER_COMMAND_RE =
-  /\b(?:npm|pnpm|yarn|bun)\s+(?:test|run\s+\S*test\b|exec\s+\S*test\b)|\b(?:npx|pnpx|bunx)\s+(?:vitest|jest|mocha|ava|pytest)\b|\b(?:vitest|jest|mocha|ava|pytest)\s+(?:run|--run)\b|\b(?:testing:run|node\s+--test|go\s+test|cargo\s+test)\b/i;
 
 /**
  * Return the skipped/todo count only for a recognizable runner summary.
@@ -4948,6 +4957,72 @@ async function completeOne(
     committedContentIdentityMissing || terminalCriteriaUnmet || unretainedLiveUiPaths.length > 0
       ? 'proposed'
       : authorityWithFindings;
+
+  // change-kind-declared-proof P-002 (R-2, R-6; D-001..D-003): a successful close must carry the
+  // proof each DECLARED change kind requires. Evaluated here — after the evidence is final and
+  // before the validateOnly boundary — so a preview reports the same contract verdict as the real
+  // close. A refusal is a stateError below (D-002: the record is kept, the item stays open), not
+  // a gateRefusals entry, which would drop the completion record.
+  const changeKindGateApplies =
+    closeIntentRequested && successfulClose && !duplicateCloseCoverageException && !isAbandonedClose;
+  let changeKindGate: ChangeKindGateResult = { applicable: false };
+  if (changeKindGateApplies) {
+    // Same resolution as the writer (attachChangeKindDeclarations in the handler): the runtime
+    // ident carries resolveAgentIdentity's workspaceId even though completeOne's type omits it.
+    const declarationWorkspace = (ident as { workspaceId?: string | null }).workspaceId ?? ctx.workspaceId ?? 'default';
+    const declarationIds = [...new Set([existing.id, it.id].filter((id): id is string => Boolean(id)))];
+    let stored: ChangeKindsView | null = null;
+    let storedReadError: string | undefined;
+    try {
+      const views = await readChangeKinds(declarationWorkspace, declarationIds);
+      stored = declarationIds.map((id) => views.get(id)).find((v) => v && v.history.length > 0) ?? views.get(declarationIds[0]!) ?? null;
+    } catch (e) {
+      storedReadError = e instanceof Error ? e.message : String(e);
+    }
+    const uiRepoRoots = registeredRepoRoots ?? [completionRoot()];
+    changeKindGate = await evaluateChangeKindGate(
+      {
+        itemId: it.id,
+        successfulClose: true,
+        declaredAtClose: it.changeKinds ?? null,
+        declaredReason: it.changeKindReason ?? null,
+        stored,
+        storedReadError,
+        claimStartedAt: existing.takenAt ?? existing.createdAt ?? null,
+        kindEvidence: it.completion.kindEvidence ?? null,
+        root: {
+          summary: it.completion.summary,
+          testsRun: completionEvidenceToPersist?.testsRun,
+          testResult: completionEvidenceToPersist?.testResult,
+          filesChanged: completionEvidenceToPersist?.filesChanged,
+          filesDeleted: completionEvidenceToPersist?.filesDeleted,
+        },
+      },
+      {
+        verifyUiArtifacts: (evidence) => verifyLiveDroveUiArtifacts(evidence),
+        unretainedUiArtifacts: async (evidence) => {
+          try {
+            const references = await completionEphemeralDeliverableReferences(evidence, evidence, {
+              repoRoots: uiRepoRoots,
+              treeStamp: completionEvidenceToPersist?.treeStamp,
+            });
+            return references.filter((r) => r.kind === 'scratch-path').map((r) => r.reference);
+          } catch {
+            return []; // fail-open, as the live-drove-ui retention check above is
+          }
+        },
+      },
+    );
+  }
+  setContractRequirement(
+    'change-kind-proof',
+    changeKindGate.applicable,
+    changeKindGate.applicable && changeKindGate.outcome === 'refuse' ? changeKindGate.error : undefined,
+  );
+  const changeKindProofError =
+    changeKindGate.applicable && changeKindGate.outcome === 'refuse' ? changeKindGate.error : undefined;
+  const changeKindWarning =
+    changeKindGate.applicable && changeKindGate.outcome === 'warn' ? changeKindGate.warning : undefined;
   // EI-23241378625604548: validateOnly must use the same read-only settlement verdict as
   // the real close. Returning above this point exposed only the contract requirements and
   // skipped the findings that can downgrade an otherwise complete evidence record (for
@@ -5083,6 +5158,9 @@ async function completeOne(
       '"<assertion>" --json` run — it exits non-zero when the assertion is false, so it is falsifiable and ' +
       'records WHAT you asserted. Otherwise re-capture, OPEN the image to confirm it rendered, and cite that ' +
       "path — or honestly set verifiedHow to 'unit'/'manual'/'integration' and re-send.";
+  } else if (changeKindProofError) {
+    // P-002 / D-002: refuse the terminal transition, keep the completion record.
+    stateError = changeKindProofError;
   } else if (effectiveState) {
     try {
       const runtimePayload = existing.payload && typeof existing.payload === 'object' && !Array.isArray(existing.payload)
@@ -5856,6 +5934,12 @@ async function completeOne(
     // signals, ahead of the bulky echo, for the EI-15982 reason above.
     ...(planeRatchetWarning && closeLanded && !stateError ? { planeRatchetWarning } : {}),
     ...(assumptionKindWarning && closeLanded && !stateError ? { assumptionKindWarning } : {}),
+    // P-002: the per-kind gaps behind a change-kind refusal, typed so a caller can repair each one.
+    ...(changeKindProofError && stateError === changeKindProofError && changeKindGate.applicable && changeKindGate.outcome === 'refuse'
+      ? { changeKindProof: { kinds: changeKindGate.kinds, missing: changeKindGate.missing, problems: changeKindGate.problems } }
+      : {}),
+    // D-003: a pre-cutover claim closed without a declaration lands, with this warning.
+    ...(changeKindWarning && closeLanded && !stateError ? { changeKindWarning } : {}),
     ...(nulBytesStripped
       ? {
           nulBytesStrippedWarning: `completion for ${it.id} contained one or more raw NUL bytes (invisible in most editors/terminals — renders as nothing or a plain space) — they were silently removed before recording, because Postgres cannot store a NUL in a text/jsonb column ("unsupported Unicode escape sequence") and an unremoved one would have failed the state write while leaving the completion recorded (EI-18764241942332131). If the NUL was meaningful (e.g. you were quoting a literal NUL byte as evidence), describe it in prose instead (e.g. "a raw NUL / 0x00 byte") rather than embedding the literal character.`,

@@ -103,6 +103,10 @@ describe('BQL receipt authority through the close handler and real persistence',
     expect(existing).not.toBeNull();
     const args = complete.args.parse({
       id: issue.id, harness: existing!.harness, state, assumptions: 'none',
+      // change-kind-declared-proof P-002: a successful close of a claim taken after the gate's
+      // cutover must declare its change kind; this fixture changes no files.
+      changeKinds: ['no-code-change'],
+      changeKindReason: 'isolated close-authority fixture; no code is changed',
       completion: {
         summary: state === 'dropped' ? 'The isolated attempt did not reproduce.' : 'The isolated verification was completed.',
         verifiedHow: 'unit', testsRun: 'isolated receipt authority fixture',

@@ -1268,6 +1268,21 @@ describe('WI-10004898: a clean run in a deleted disposable clone binds by commit
     }
   });
 
+  it.each(['timeout', 'launch failure', 'repository error'])('keeps a %s while checking committed source distinct from an absent file', async (failure) => {
+    const deps = binder(cleanRow());
+    deps.git = async (cwd, args) => {
+      const sourceRead = args[0] === 'rev-parse'
+        ? args.includes(`${superCommit}:pkg/lib/x.ts`)
+        : args[0] === 'ls-tree' && ['pkg/lib/x.ts', 'pkg/lib', 'pkg'].includes(args.at(-1) ?? '');
+      if (sourceRead) throw new Error(`git ${failure}: source probe unavailable`);
+      return localGitRunner(cwd, args);
+    };
+    const refused = await expandTestRunBinding(input(), SCOPE, deps);
+    expect(refused).toMatchObject({ ok: false, error: 'test_run_as_committed_probe_failed' });
+    expect(refused.ok ? '' : refused.message).toContain(`git ${failure}: source probe unavailable`);
+    expect(refused.ok ? '' : refused.message).not.toContain('is absent');
+  });
+
   it('still refuses an unmappable clean run, naming the commit it checked', async () => {
     const refused = await expandTestRunBinding(input(), SCOPE, binder(cleanRow({ commit_sha: 'e'.repeat(40) })));
     expect(refused).toMatchObject({ ok: false, error: 'test_run_file_outside_root' });

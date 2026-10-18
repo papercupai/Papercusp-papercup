@@ -347,6 +347,7 @@ export type TestRunBindingError =
   | 'mutation_causal_controls_invalid'
   | 'mutation_reaim_unjustified'
   | 'test_run_as_committed_content_mismatch'
+  | 'test_run_as_committed_probe_failed'
   | 'test_run_measurement_start_missing'
   | 'test_run_source_modified_after_run'
   | 'test_run_cargo_not_a_test'
@@ -611,13 +612,20 @@ async function blobAtCommit(
   rel: string,
   git: GitRunner,
   depth = 0,
+  requireSuccessfulProbe = false,
 ): Promise<{ blob: string; repo: string; rel: string } | null> {
+  let directEntry = '';
   try {
-    const blob = (await git(repo, ['rev-parse', '--verify', '--quiet', `${commit}:${rel}`])).trim();
-    if (blob) return { blob, repo, rel };
-  } catch {
-    // Absent at this commit, or inside a submodule the commit pins: look for the gitlink.
+    // Unlike rev-parse --verify, ls-tree reports a missing path with a successful,
+    // empty result. A failed probe therefore cannot masquerade as file absence.
+    directEntry = (await git(repo, ['ls-tree', commit, '--', rel])).trim();
+  } catch (error) {
+    if (requireSuccessfulProbe) throw error;
+    return null;
   }
+  const directBlob = /^[0-7]{6} blob ([0-9a-f]{40})\t/.exec(directEntry);
+  if (directBlob) return { blob: directBlob[1]!, repo, rel };
+  if (directEntry) return null;
   if (depth >= MAX_GITLINK_DEPTH) return null;
   const parts = rel.split('/');
   for (let i = parts.length - 1; i >= 1; i -= 1) {
@@ -625,11 +633,12 @@ async function blobAtCommit(
     let entry = '';
     try {
       entry = (await git(repo, ['ls-tree', commit, '--', dir])).trim();
-    } catch {
+    } catch (error) {
+      if (requireSuccessfulProbe) throw error;
       return null;
     }
     const gitlink = /^160000 commit ([0-9a-f]{40})\t/.exec(entry);
-    if (gitlink) return blobAtCommit(resolve(repo, dir), gitlink[1]!, parts.slice(i).join('/'), git, depth + 1);
+    if (gitlink) return blobAtCommit(resolve(repo, dir), gitlink[1]!, parts.slice(i).join('/'), git, depth + 1, requireSuccessfulProbe);
     if (entry) return null; // the directory is a real tree at this commit, and `rel` is not in it
   }
   return null;
@@ -647,7 +656,7 @@ async function verifyAsCommittedContent(
   mapping: AsCommittedMapping,
   paths: readonly string[],
   git: GitRunner,
-): Promise<{ ok: true } | { ok: false; path: string; reason: string }> {
+): Promise<{ ok: true } | { ok: false; path: string; reason: string; probeFailed?: boolean }> {
   const repo = mapping.repoPrefix ? resolve(root, mapping.repoPrefix) : resolve(root);
   const at = mapping.commitSha.slice(0, 12);
   for (const path of paths) {
@@ -655,7 +664,15 @@ async function verifyAsCommittedContent(
       return { ok: false, path, reason: `lies outside the run's repository ${mapping.repoPrefix}` };
     }
     const rel = mapping.repoPrefix ? path.slice(mapping.repoPrefix.length + 1) : path;
-    const committed = await blobAtCommit(repo, mapping.commitSha, rel, git);
+    let committed: Awaited<ReturnType<typeof blobAtCommit>>;
+    try {
+      committed = await blobAtCommit(repo, mapping.commitSha, rel, git, 0, true);
+    } catch (error) {
+      return {
+        ok: false, path, probeFailed: true,
+        reason: (error instanceof Error ? error.message : String(error)).split('\n')[0]!.slice(0, 500),
+      };
+    }
     if (!committed) {
       const where = mapping.repoPrefix ? `the ${mapping.repoPrefix} repository` : 'the harness repository';
       return { ok: false, path, reason: `is absent at ${at} (looked up in ${where})` };
@@ -1563,6 +1580,14 @@ export async function expandTestRunBinding(
     const measured = [...new Set([...testPaths, ...sourcePaths])].sort();
     const content = await verifyAsCommittedContent(root, asCommitted, measured, deps.git ?? defaultGitRunner);
     if (!content.ok) {
+      if (content.probeFailed) {
+        return {
+          ok: false,
+          error: 'test_run_as_committed_probe_failed',
+          testRunId,
+          message: `test-run ${testRunId} committed source could not be verified: ${content.path}: ${content.reason}. No binding was created.`,
+        };
+      }
       return {
         ok: false,
         error: 'test_run_as_committed_content_mismatch',

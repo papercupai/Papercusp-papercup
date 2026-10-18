@@ -3685,6 +3685,9 @@ export function acquireCheckpointRunLock(
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       mkdirSync(lockDir);
+      // Readers treat owner.json as the point where the lock becomes live. Publish the
+      // initial phase first so a watchdog can never observe a live owner without phase data.
+      writeCheckpointRunPhase(lockDir, "materializing");
       const startedAtMs = now();
       writeFileSync(
         path.join(lockDir, "owner.json"),
@@ -12143,6 +12146,14 @@ async function runGreenCheckpointInner(
   const runStartedAtMs = opts.runStartedAtMs ?? passStartedAtMs;
   const { candidateSource, diagnostic } = checkpointCandidateProvenance(opts);
   const diagnosticOnly = candidateSource === "pinned";
+  // The qualification runner enters `materializing` before this pass starts. Publish the
+  // matching file marker before candidate/repair preflight too, so a long pre-materialization
+  // read cannot look like a live lock with an unavailable phase to the stall watchdog.
+  const phaseLockDir = checkpointRunLockDir(
+    cfg.checkpointLogDir,
+    cfg.integrationRoot,
+  );
+  writeCheckpointRunPhase(phaseLockDir, "materializing");
   // EI-19346606967082413: `opts.runStartedAtMs` is threaded ONLY by nextRefireOpts, so it is
   // undefined exactly on the OUTERMOST pass — i.e. this is the once-per-RUN seam. Resetting the
   // transcript here (rather than per pass) is what makes it span every auto-refire instead of
@@ -13969,15 +13980,11 @@ async function runGreenCheckpointInner(
       );
     }
   }
-  // WI-40774: publish MATERIALIZING before setup starts. The checkpoint run-lock by itself
+  // WI-40774: refresh MATERIALIZING immediately before setup starts. The checkpoint run-lock by itself
   // only throttles jobs admitted after this run appeared; it cannot drain a test:affected
   // sweep that already holds a pc-heavy slot. realCheckpointDeps.setupTree wraps the copy in
   // pc-heavy's reciprocal --exclusive-all-slots mode, and this protocol-3 phase clamps new
   // callers to slot 0 while that wrapper drains the pre-existing holders.
-  const phaseLockDir = checkpointRunLockDir(
-    cfg.checkpointLogDir,
-    cfg.integrationRoot,
-  );
   writeCheckpointRunPhase(phaseLockDir, "materializing");
   deps.reportProgress?.("phase:materializing");
   const stopMaterializationHeartbeat =

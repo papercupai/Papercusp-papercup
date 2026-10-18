@@ -689,6 +689,41 @@ describe('capability:read', () => {
     expect(parse(denied).reason).toBe('forbidden_reference');
   });
 
+  it('selects content indexes from a text result-door spill using its manifest body offset', async () => {
+    const f = join(DIR, 'result-door-text-reference.spill');
+    const body = JSON.stringify({ ok: true, results: [{ id: 'EI-123', state: 'open' }] });
+    const advisory = 'See also: work_items:get (read the current item state).';
+    const prefix =
+      '# result-door advisory text item(s) moved before the JSON payload so the payload remains parseable\n' +
+      `# advisory-text-items-json: ${JSON.stringify([advisory])}\n`;
+    writeScratchReference({
+      filePath: f,
+      payload: prefix + body,
+      workspaceId: 'ws-1',
+      mediaType: 'text/plain',
+      content: [
+        { index: 0, type: 'text', byteCount: Buffer.byteLength(body) },
+        { index: 1, type: 'text', byteCount: Buffer.byteLength(advisory) },
+      ],
+      bodyOffsetInPayload: Buffer.byteLength(prefix),
+    });
+
+    const ownerCtx = { ...baseCtx, workspaceId: 'ws-1', isSuperuser: true };
+    const selected = parse((await readTool.handler!({ file_path: f, content_indexes: [0] }, ownerCtx as never)) as {
+      content: Array<{ text: string }>;
+    });
+    expect(selected).toMatchObject({
+      selected_indexes: [0],
+      total_content_items: 2,
+      content: [{ type: 'text', text: body }],
+    });
+
+    const selectedAdvisory = parse((await readTool.handler!({ file_path: f, content_indexes: [1] }, ownerCtx as never)) as {
+      content: Array<{ text: string }>;
+    });
+    expect(selectedAdvisory.content).toEqual([{ type: 'text', text: advisory }]);
+  });
+
   it('reads a signed judge session spill despite its synthesized role principal', async () => {
     const f = join(DIR, 'judge-owner-reference.spill');
     writeScratchReference({

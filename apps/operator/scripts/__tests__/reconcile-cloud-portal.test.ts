@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { reconcilePortal } from '../systemd/reconcile-cloud-portal.mjs';
+import { publicLinksSnapshot, reconcilePortal } from '../systemd/reconcile-cloud-portal.mjs';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -74,6 +74,22 @@ function immediateDeps(config: any, release: any, overrides: Record<string, unkn
 }
 
 describe('cloud portal source reconciliation', () => {
+  it('requires the utility publisher before an acceptance build and loads the maintained snapshot', async () => {
+    const { config } = fixture();
+    const required = ['NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL'];
+    await expect(publicLinksSnapshot(config.publicLinksEnv, {}, { required }))
+      .rejects.toThrow('portal_public_links_required:NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL');
+    writeFileSync(config.publicLinksEnv, 'NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL=https://releases.example/pui/index.html\n');
+    const snapshot = await publicLinksSnapshot(config.publicLinksEnv,
+      { NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL: 'https://stale.example/pui/index.html' }, { required });
+    expect(snapshot.env.NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL).toBe('https://releases.example/pui/index.html');
+    expect(snapshot.links.NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL).toBe(snapshot.env.NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL);
+    writeFileSync(config.publicLinksEnv, 'NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL=\n');
+    await expect(publicLinksSnapshot(config.publicLinksEnv,
+      { NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL: 'https://stale.example/pui/index.html' }, { required }))
+      .rejects.toThrow('portal_public_links_required:NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL');
+  });
+
   it('builds with mobile download links and rebuilds when their configuration changes', async () => {
     const { config, release } = fixture();
     const links = 'NEXT_PUBLIC_PORTAL_ANDROID_DOWNLOAD_URL=https://releases.example/android.apk\nNEXT_PUBLIC_PORTAL_IPHONE_DOWNLOAD_URL=https://releases.example/iphone\n';

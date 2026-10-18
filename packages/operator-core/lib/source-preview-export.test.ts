@@ -416,6 +416,41 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     expect(() => readVerifierPhaseMeasurements(path)).toThrow('Invalid verifier phase budget receipt');
   });
 
+  it('reserves measured launch time before selecting a caller deadline and refuses an insufficient ceiling', () => {
+    // Retained P-012 task 0mvd8yidvzw8rq9kc4z: the old 7,200,000ms
+    // envelope lost 6,802ms before admission, exceeding its 4,415ms headroom.
+    const measured = { 'source.freeze': 24_263, 'receipt.write': 553,
+      'deps.source.before': 5_885, 'deps.snapshot': 817_932,
+      'deps.source.after-snapshot': 20_713, 'deps.inputs': 3_206,
+      'deps.measure': 10_546, 'deps.source.after-preflight': 20_214,
+      'deps.census': 189_372, 'deps.receipt.write': 888,
+      'child.preflight': 26_663, 'deps.postverify': 191_638,
+      'source.postverify': 23_454, cleanup: 97_791 };
+    const options = { observedLaunchMs: 6_802 };
+    const estimate = estimateVerifierCommandBudget(measured, 3_600_000, options);
+    expect(estimate).toMatchObject({ totalMs: 7_195_585,
+      observedLaunchMs: 6_802, launchReserveMs: 30_000, requiredTimeoutMs: 7_226_000 });
+    expect(() => admitVerifierCommandBudget(estimate, { nowMs: 6_802, preparation: true,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '7200000' } })).toThrow('TASK_DEADLINE_REFUSAL');
+    expect(() => estimateVerifierCommandBudget(measured, 3_600_000,
+      { ...options, maxTimeoutMs: 7_200_000 })).toThrow('VERIFIER_LAUNCH_BUDGET_REFUSAL');
+    expect(admitVerifierCommandBudget(estimate, { nowMs: 6_802, preparation: true,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(estimate.requiredTimeoutMs) } }))
+      .toMatchObject({ knownEstimateMs: 7_195_585, cleanupReserveMs: 817_932 });
+    expect(estimateVerifierCommandBudget(measured, 3_600_000,
+      { ...options, maxTimeoutMs: estimate.requiredTimeoutMs })).toEqual(estimate);
+    const slowerLaunch = estimateVerifierCommandBudget(measured, 3_600_000,
+      { observedLaunchMs: 40_000 });
+    expect(slowerLaunch).toMatchObject({ totalMs: estimate.totalMs,
+      launchReserveMs: 50_000, requiredTimeoutMs: 7_246_000 });
+    expect(estimateVerifierCommandBudget(measured).observedLaunchMs).toBeNull();
+  });
+
+  it.each([-1, NaN, Infinity, 1.5])('rejects invalid measured launch time (%s)', observedLaunchMs => {
+    expect(() => estimateVerifierCommandBudget(budgetPhases, 60_000, { observedLaunchMs }))
+      .toThrow('Invalid verifier launch observation');
+  });
+
   it('transports a complete list beyond the argv/env limit through file and piped stdout receipts', async () => {
     const fixture = makeSuperproject(join(tmp, 'verifier-large-list-fixture'));
     const paths = Array.from({ length: 2000 }, (_, i) =>
@@ -1072,7 +1107,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       };
       const env = childEnv({ PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(deadline) });
       if (mode === 'no-deadline') delete env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
-      const listeners = [process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')];
+      const listeners = [process.listenerCount('SIGINT'), process.listenerCount('SIGTERM'), process.listenerCount('SIGHUP')];
       const result = runVerifierCommand({ repo: fixture.repo, ref, receiptPath, inputs: [provider],
         command: [process.execPath, provider], env, clock })
         .then(code => ({ code, error: null }), error => ({ code: null, error }));
@@ -1143,7 +1178,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         expect(existsSync(owned!)).toBe(mode === 'unverified');
         expect(readFileSync(join(peer, 'peer-owned'), 'utf8')).toBe('must survive');
         expect(pending.size).toBe(0);
-        expect([process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')]).toEqual(listeners);
+        expect([process.listenerCount('SIGINT'), process.listenerCount('SIGTERM'), process.listenerCount('SIGHUP')]).toEqual(listeners);
         const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
         expect(phases.find(row => row.phase === 'child.admission' && row.event === 'completed').budget)
           .toMatchObject({ cleanupReserveMs: 120_000, childCutoffEpochMs: mode === 'no-deadline' ? null : deadline - 120_000 });
@@ -1161,7 +1196,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       }
     });
 
-  it.each(['snapshot', 'census', 'child', 'sigint', 'sigkill'] as const)(
+  it.each(['snapshot', 'census', 'child', 'sigint', 'sighup', 'sigkill'] as const)(
     'retains plain CLI ownership and truthful cleanup on cancellation during %s', async phase => {
       const fixture = makeSuperproject(join(tmp, 'verifier-cli-cancel-' + phase));
       git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
@@ -1175,7 +1210,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         'if [ "$1" = trees ]; then',
         '  if [ "$VERIFIER_CANCEL_PHASE" = census ]; then printf "%s\\n" "$2" > "$VERIFIER_CANCEL_READY"; sleep 1; fi',
         '  echo node_modules; exit', 'fi',
-        'if [ "$VERIFIER_CANCEL_PHASE" = snapshot ] || [ "$VERIFIER_CANCEL_PHASE" = sigkill ]; then',
+        'if [ "$VERIFIER_CANCEL_PHASE" = snapshot ] || [ "$VERIFIER_CANCEL_PHASE" = sighup ] || [ "$VERIFIER_CANCEL_PHASE" = sigkill ]; then',
         '  printf "%s\\n" "$3" > "$VERIFIER_CANCEL_READY"; exec sleep 60', 'fi',
         'cp -al -- "$2/node_modules" "$3/node_modules"',
       ].join('\n') + '\n');
@@ -1220,8 +1255,8 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
         expect(JSON.parse(readFileSync(join(owned!, '.verifier-task.json'), 'utf8'))).toEqual(receipt);
         peer = mkdtempSync(join(dirname(owned!), 'verifier-command-'));
         writeFileSync(join(peer, 'peer-owned'), 'must survive');
-        const signal = phase === 'sigkill' ? 'SIGKILL' : phase === 'sigint' ? 'SIGINT' : 'SIGTERM';
-        process.kill(phase === 'sigkill' ? -child.pid! : child.pid!, signal);
+        const signal = phase === 'sigkill' ? 'SIGKILL' : phase === 'sigint' ? 'SIGINT' : phase === 'sighup' ? 'SIGHUP' : 'SIGTERM';
+        process.kill(phase === 'sigkill' || phase === 'sighup' ? -child.pid! : child.pid!, signal);
         const result = await closed;
         const final = JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8'));
         if (phase === 'sigkill') {
@@ -1229,7 +1264,7 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
           expect(final).toEqual(receipt); // A killed finally cannot manufacture cleanup evidence.
           expect(existsSync(owned!)).toBe(true);
         } else {
-          expect(result, output).toEqual([phase === 'sigint' ? 130 : 143, null]);
+          expect(result, output).toEqual([phase === 'sigint' ? 130 : phase === 'sighup' ? 129 : 143, null]);
           expect(final).toMatchObject({ ...receipt, cleanup: 'completed', cancellationSignal: signal });
           expect(existsSync(owned!)).toBe(false);
           const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));

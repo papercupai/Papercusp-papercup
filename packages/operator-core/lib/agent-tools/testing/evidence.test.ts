@@ -18,6 +18,7 @@ import {
 import type { TestFilesCoreResult } from './run';
 import { getRunAsync, parseVitestJsonForHarnessRows, persistHarnessTestRuns } from '../../testing-run-store';
 import type { RunSnapshot } from '../../testing-run-store';
+import { mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
 
 /**
  * The SUCCESS member of the result union. Every helper below builds a run that COMPLETED, and
@@ -168,10 +169,9 @@ describe('test-time evidence continuity', () => {
       ...request,
       bindings: [binding, { ...binding, specId: 'R-2', specRevision: 99 }],
     };
-    d.bind
-      .mockResolvedValueOnce({ status: 'created', id: 101 } as never)
-      .mockResolvedValueOnce({ status: 'spec_revision_not_found', specId: 'R-2', specRevision: 99 } as never);
-    d.list.mockResolvedValue([{
+    mockResolvedOnceTyped(d.bind, { status: 'created', id: 101 });
+    mockResolvedOnceTyped(d.bind, { status: 'spec_revision_not_found', specId: 'R-2', specRevision: 99 });
+    mockResolvedTyped(d.list, [{
       id: 101,
       withdrawal: null,
       evidenceKind: 'test',
@@ -180,7 +180,7 @@ describe('test-time evidence continuity', () => {
       evidenceRef: 'test-run-group:' + runId + ':0',
       testRunId: null,
       details: { testExecution: { schemaVersion: 1, phase: 'pending', runId, originRunId: runId } },
-    }] as never);
+    }]);
 
     await expect(prepareTestEvidence(batch, runId, [binding.testPath], scope, d))
       .rejects.toThrow('evidence_registration_failed:spec_revision_not_found');

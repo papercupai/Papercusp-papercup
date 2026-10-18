@@ -10,7 +10,7 @@
  * (the owner's "works for codex and omp" requirement) since those CLIs weren't
  * present to live-test when the fix landed.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { hostname } from 'node:os';
@@ -30,6 +30,7 @@ import {
 } from '../../adv-sessions';
 import { resolveSessionStates } from './liveness-oracle';
 import { getPresence, probeProcessLiveness } from './presence';
+import { liveAssigneeProbe, liveSettledProbe } from '../../work-items-events';
 
 let fx: BaselineCoordFixture | null = null;
 let admin: postgres.Sql;
@@ -157,6 +158,51 @@ describe('WI-10006572 — real recorded reader / absent presence / local OS PID'
     expect(out.get(ownerId)).toMatchObject({
       sessionState: null, signalMissing: true, confirmLiveness: true,
     });
+  });
+
+  it('bounds the latest session lookup used to stamp an await wake handle', async () => {
+    let unlock!: () => void;
+    let reportLockAcquired!: () => void;
+    const locked = new Promise<void>((resolve) => { reportLockAcquired = resolve; });
+    const release = new Promise<void>((resolve) => { unlock = resolve; });
+    const blocker = admin.begin(async tx => {
+      await tx`LOCK TABLE harness_shared.adv_sessions IN ACCESS EXCLUSIVE MODE`;
+      reportLockAcquired();
+      await release;
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await locked;
+    const startedAt = Date.now();
+    try {
+      await expect(latestAdvSessionByCoordOwner(`s-await-lock-${WS}`)).resolves.toBeNull();
+      expect(Date.now() - startedAt).toBeLessThan(15_000);
+    } finally {
+      unlock();
+      await blocker;
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps work-item done-key latch probes fail-soft and bounded by their read transaction', async () => {
+    let unlock!: () => void;
+    let reportLockAcquired!: () => void;
+    const locked = new Promise<void>((resolve) => { reportLockAcquired = resolve; });
+    const release = new Promise<void>((resolve) => { unlock = resolve; });
+    const blocker = admin.begin(async tx => {
+      await tx`LOCK TABLE harness_shared.engineer_issues IN ACCESS EXCLUSIVE MODE`;
+      reportLockAcquired();
+      await release;
+    });
+    await locked;
+    const startedAt = Date.now();
+    try {
+      await expect(liveSettledProbe(`EI-await-lock-${WS}`)).resolves.toEqual({ verdict: 'unknown' });
+      await expect(liveAssigneeProbe(`EI-await-lock-${WS}`)).resolves.toEqual({ verdict: 'unknown' });
+      expect(Date.now() - startedAt).toBeLessThan(15_000);
+    } finally {
+      unlock();
+      await blocker;
+    }
   });
 });
 afterAll(async () => {

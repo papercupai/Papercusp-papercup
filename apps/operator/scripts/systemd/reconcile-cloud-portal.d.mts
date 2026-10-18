@@ -9,6 +9,17 @@ export interface PortalReconcileConfig {
   env: Record<string, string>;
 }
 
+/** Load the same validated public configuration used by Portal reconciliation. */
+export function publicLinksSnapshot(
+  path: string,
+  inherited: Record<string, string | undefined>,
+  options?: { required?: string[] },
+): Promise<{
+  env: Record<string, string | undefined>;
+  links: Record<string, string>;
+  digest: string;
+}>;
+
 export function reconcilePortal(
   config: PortalReconcileConfig,
   deps?: object,

@@ -44,6 +44,7 @@ import {
   type CreateIssueInput,
 } from '../../issues-engineer';
 import { findSemanticDupes, type SemanticDupeResult } from '../../agent-tools/work_items/semantic-dupe-guard';
+import { findRecentLexicalDupes } from '../../agent-tools/work_items/recent-lexical-dupe-guard';
 import { acquireWithContentionRetry, isWorkspaceContended } from '../../agent-tools/locks/contention-retry';
 import { isRetriablePgConnectError } from '../../pg-transient-retry';
 import type { DedupCandidateStamp } from '../../agent-tools/work_items/dedup-candidates-stamp';
@@ -443,8 +444,9 @@ export interface PossibleDuplicate {
    *  the CONTAINMENT net — your (shorter) title is almost entirely covered by this one, but
    *  Jaccard scored below DUP_THRESHOLD because the stored title is much longer. `similarity`
    *  is then the containment coefficient, not titleSimilarity. ALWAYS advisory-only: a
-   *  containment hit is surfaced and never declines a capture. */
-  lexical?: 'containment';
+   *  containment hit is surfaced and never declines a capture. `recent` marks the
+   *  embedding-independent recent-work-item lexical net; it is advisory-only too. */
+  lexical?: 'containment' | 'recent';
   /** EI-20484430331973864: the candidate carries the SAME `watchdogKey` as this capture —
    *  a DEFINITIONAL duplicate, independent of any title or embedding similarity. Present
    *  only for non-observation captures that passed a `watchdogKey`. Always block-eligible
@@ -2956,6 +2958,10 @@ export async function captureImprovement(
   // the guard itself. A 'hard' hit may carry the verdict annotation; 'soft' is
   // advisory-only (surfaced, never contributes to the verdict).
   const semanticBand = new Map<string, { similarity: number; band: 'hard' | 'soft' }>();
+  // EI-26273411000203417: a freshly-created open item can be absent from the
+  // embedding index for several minutes. Keep the embedding-independent recent
+  // lexical leg separate so its advisory score is never mislabeled as cosine.
+  const recentLexicalBand = new Map<string, number>();
   // P-007: track whether the embedding leg actually produced a verdict. It fails OPEN
   // (null on timeout / embedder down / disabled), so without this the caller cannot tell
   // a checked-clean [] from a could-not-check [].
@@ -2996,6 +3002,34 @@ export async function captureImprovement(
       }
     } catch {
       /* fail-open: the lexical verdict stands */
+    }
+  }
+
+  // EI-9940 / EI-26273411000203417: embeddings are backfilled asynchronously, so a
+  // recent open item can be invisible to the semantic query even when that query
+  // reports healthy coverage. Reuse the bounded recent-work-item lexical guard; it
+  // is advisory-only and never blocks a filing. Hydrate its ids through getIssue so
+  // origin, scope, state, and resolver metadata use the same rails as every other
+  // candidate source.
+  if (!isObservation) {
+    const recent = await findRecentLexicalDupes({
+      title: input.title,
+      ...(input.body ? { summary: input.body } : {}),
+      ...(harnessFromScope(input.scope) ? { harness: harnessFromScope(input.scope)! } : {}),
+    });
+    if (recent) {
+      if (semanticLeg === 'ok' && !recent.coverage.complete) semanticLeg = 'partial';
+      const known = new Set(candidates.map((i) => i.id));
+      const fetchIssue = deps.getIssue ?? getIssue;
+      for (const candidate of recent.candidates) {
+        const issue = known.has(candidate.id) ? candidates.find((i) => i.id === candidate.id) : await fetchIssue(candidate.id).catch(() => null);
+        if (!issue || effectiveOrigin(issue.signalOrigin) !== origin) continue;
+        recentLexicalBand.set(issue.id, candidate.similarity);
+        if (!known.has(issue.id)) {
+          known.add(issue.id);
+          candidates.push(issue);
+        }
+      }
     }
   }
 
@@ -3066,6 +3100,7 @@ export async function captureImprovement(
     .map((i) => {
       const lexical = Math.round(titleSimilarity(input.title, i.title) * 100) / 100;
       const sem = semanticBand.get(i.id);
+      const recent = recentLexicalBand.get(i.id);
       // A candidate the lexical net already catches keeps its lexical score and
       // blocking behavior; the semantic flag marks ONLY net-new semantic catches.
       const semanticOnly = sem && lexical < DUP_THRESHOLD;
@@ -3074,14 +3109,22 @@ export async function captureImprovement(
       // behavior, so this can never re-label an existing hit.
       const containment = Math.round(titleContainment(input.title, i.title) * 100) / 100;
       const containmentOnly = !semanticOnly && lexical < DUP_THRESHOLD && containment >= CONTAINMENT_THRESHOLD;
+      const recentOnly = !semanticOnly && !containmentOnly && lexical < DUP_THRESHOLD && recent !== undefined;
       return {
         id: i.id,
         title: i.title,
         state: i.state,
         severity: i.severity,
-        similarity: semanticOnly ? Math.round(sem.similarity * 100) / 100 : containmentOnly ? containment : lexical,
+        similarity: semanticOnly
+          ? Math.round(sem.similarity * 100) / 100
+          : containmentOnly
+            ? containment
+            : recentOnly
+              ? Math.round(recent * 100) / 100
+              : lexical,
         ...(semanticOnly ? { semantic: sem.band } : {}),
         ...(containmentOnly ? { lexical: 'containment' as const } : {}),
+        ...(recentOnly ? { lexical: 'recent' as const } : {}),
         ...(exactKeyIds.has(i.id) ? { exactKey: true as const } : {}),
       };
     })
@@ -3285,7 +3328,9 @@ export async function captureImprovement(
     // The soft-semantic and containment carve-outs exist because those nets GUESS at
     // identity, and a wrong guess costs a lost filing. An exact key is not a guess, so
     // neither carve-out applies to it.
-    (d) => d.exactKey === true || ((softMayBlock || d.semantic !== 'soft') && d.lexical !== 'containment'),
+    (d) =>
+      d.exactKey === true ||
+      ((softMayBlock || d.semantic !== 'soft') && d.lexical !== 'containment' && d.lexical !== 'recent'),
   );
   const compatible = directEvidenceToolFailure
     ? blockEligible.filter((d) => candidateKeyOf(d.id) === input.watchdogKey)
@@ -3726,7 +3771,7 @@ export async function captureImprovement(
     // (D-001) the filer is not the consumer, the central resolver is, so the twins go
     // where the resolver reads. Non-empty only: dedupCoverage above already separates
     // "checked clean" from "could not check". Reaching this mint with candidates means
-    // they were advisory (soft/containment) or force-overridden — either way they are
+    // they were advisory (soft/containment/recent) or force-overridden — either way they are
     // exactly the resolver's evidence.
     if (possibleDuplicates.length > 0) {
       payload.dedupCandidates = possibleDuplicates.map(
@@ -3742,7 +3787,9 @@ export async function captureImprovement(
                   : 'semantic-soft'
                 : candidate.lexical === 'containment'
                   ? 'containment'
-                  : 'lexical',
+                  : candidate.lexical === 'recent'
+                    ? 'lexical-recent'
+                    : 'lexical',
         }),
       );
     }

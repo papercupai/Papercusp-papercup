@@ -227,7 +227,31 @@ dependency_generation_ref_input_records() {
 }
 
 dependency_generation_input_manifest_ref() {
+  local root="$1" ref="$2" prefix="${3:-}" extract_root="${4:-}" cache_root="${5:-}"
+  local cache_file cache_tmp manifest
+  # The prewarm search owns this cache inside its disposable scratch tree. A
+  # manifest is immutable for one commit and path prefix; extraction always
+  # re-reads and hashes the actual blobs rather than trusting cached bytes.
+  if [ -z "$cache_root" ] || [ -n "$extract_root" ]; then
+    dependency_generation_emit_input_manifest_ref "$@"
+    return $?
+  fi
+  cache_file="$cache_root/$ref/${prefix}inputs"
+  if [ -f "$cache_file" ]; then
+    cat "$cache_file"
+    return $?
+  fi
+  manifest="$(dependency_generation_emit_input_manifest_ref "$@")" || return $?
+  mkdir -p "$(dirname "$cache_file")" || return 1
+  cache_tmp="$cache_file.tmp.$$"
+  { [ -z "$manifest" ] || printf '%s\n' "$manifest"; } > "$cache_tmp" || { rm -f -- "$cache_tmp"; return 1; }
+  mv "$cache_tmp" "$cache_file" || { rm -f -- "$cache_tmp"; return 1; }
+  [ -z "$manifest" ] || printf '%s\n' "$manifest"
+}
+
+dependency_generation_emit_input_manifest_ref() {
   local root="$1" ref="$2" prefix="${3:-}" extract_root="${4:-}"
+  local cache_root="${5:-}"
   local record metadata mode type object rel digest submodule_path submodule_object
   while IFS= read -r -d '' record; do
     metadata="${record%%$'\t'*}"
@@ -271,7 +295,7 @@ dependency_generation_input_manifest_ref() {
       }
     dependency_generation_input_manifest_ref \
       "$root/$submodule_path" "$submodule_object" "${prefix}${submodule_path}/" \
-      "$extract_root" || return $?
+      "$extract_root" "$cache_root" || return $?
   done < <(
     git -C "$root" config --blob "$ref:.gitmodules" --get-regexp '\.path$' 2>/dev/null \
       | awk '{ print $2 }'
@@ -3566,21 +3590,40 @@ DEPENDENCY_GENERATION_EXACT_SOURCE_INPUT=''
 # directory names or publish a selector merely because a generation exists.
 dependency_generation_find_equivalent_prewarm() {
   local integration_root="$1" ref="$2" scratch="$3" generation_root="$4" helper="$5"
-  local revision source_ref source_input source_manifest verdict rc basis
+  local revision source_ref source_input source_manifest extracted_manifest verdict rc basis cache seen_inputs selector
+  # No historical input can help without a published selector. Do not hydrate
+  # history just to rediscover an empty store.
+  selector=''
+  for revision in "$generation_root"/.inputs/*; do
+    [ ! -f "$revision" ] || { selector="$revision"; break; }
+  done
+  [ -n "$selector" ] || return 74
   local -a history_paths=(':(glob)**/package-lock.json' ':(glob)**/npm-shrinkwrap.json' ':(glob)**/patches/*.patch' '.gitmodules')
   while IFS= read -r revision; do
     [ -n "$revision" ] && history_paths+=("$revision")
   done < <(git -C "$integration_root" config --blob "$ref:.gitmodules" --get-regexp '\.path$' 2>/dev/null | awk '{ print $2 }' || true)
   basis="$scratch/.papercusp/prewarm-inputs"
+  cache="$scratch/.papercusp/prewarm-manifests"
+  seen_inputs=$'\n'
   while IFS= read -r revision; do
     source_ref="$(git -C "$integration_root" rev-parse --verify "$revision^" 2>/dev/null)" || continue
-    mkdir -p "$basis" || return 1
-    source_manifest="$(dependency_generation_input_manifest_ref "$integration_root" "$source_ref" '' "$basis" 2>/dev/null | LC_ALL=C sort)" || { rm -rf -- "$basis"; continue; }
-    source_input="$(dependency_generation_input_fingerprint "$basis")" || return 1
+    source_manifest="$(dependency_generation_input_manifest_ref "$integration_root" "$source_ref" '' '' "$cache" 2>/dev/null | LC_ALL=C sort)" || continue
+    source_input="$(
+      { printf 'schema\t1\n'; [ -z "$source_manifest" ] || printf '%s\n' "$source_manifest"; } \
+        | dependency_generation_sha256
+    )" || return 1
+    case "$seen_inputs" in *$'\n'"$source_input"$'\n'*) continue ;; esac
+    seen_inputs+="$source_input"$'\n'
     if [ ! -f "$generation_root/.inputs/$source_input" ]; then
-      rm -rf -- "$basis"
       continue
     fi
+    mkdir -p "$basis" || return 1
+    extracted_manifest="$(dependency_generation_input_manifest_ref "$integration_root" "$source_ref" '' "$basis" 2>/dev/null | LC_ALL=C sort)" || { rm -rf -- "$basis"; continue; }
+    [ "$extracted_manifest" = "$source_manifest" ] || {
+      rm -rf -- "$basis"
+      dependency_generation_log 'FATAL: cached prewarm input manifest differs from extracted immutable inputs'
+      return 1
+    }
     printf '%s\n' "$source_manifest" > "$scratch/.basis-inputs" || return 1
     rc=0
     verdict="$("${DEPENDENCY_GENERATION_NODE:-node}" "$helper" \

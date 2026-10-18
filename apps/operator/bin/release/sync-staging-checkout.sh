@@ -111,6 +111,7 @@ finish_staging_sync() {
   local status=$?
   trap - EXIT
   cleanup_staging_candidate || true
+  staging_sync_lock_release || true
   # A timer invocation may already have started under the previous notify unit
   # when its drop-in is reloaded. Complete that inherited contract as well.
   if [[ "$status" -eq 0 && -n "${NOTIFY_SOCKET:-}" ]]; then
@@ -134,6 +135,68 @@ if ! declare -F staging_lock_log >/dev/null 2>&1; then
   staging_lock_elapsed_ms() { printf '%s' unknown; }
   staging_lock_holder_fields() { printf '%s' 'holder_pid=unknown holder_comm=unknown'; }
 fi
+
+# Keep the checkout flock in a dedicated coprocess. A shell fd opened with
+# `exec 9>...` is inherited by every child, so an unrelated child can keep the
+# staging barrier alive after this script exits (the android-ci failure mode).
+# The keeper owns fd 9 and only receives mode changes over a pipe; the main
+# workflow and all of its children never receive the lock descriptor.
+STAGING_SYNC_LOCK_KEEPER_PID=""
+STAGING_SYNC_LOCK_READ_FD=""
+STAGING_SYNC_LOCK_WRITE_FD=""
+STAGING_SYNC_LOCK_OWNER_PID="$$"
+
+staging_sync_lock_start() {
+  coproc STAGING_SYNC_LOCK_KEEPER {
+    exec 9>"$STAGING_SYNC_LOCK_PATH"
+    if ! flock -n 9; then
+      printf '%s\n' busy
+      exit 75
+    fi
+    printf '%s\n' exclusive
+    staging_lock_command=""
+    while kill -0 "$STAGING_SYNC_LOCK_OWNER_PID" 2>/dev/null; do
+      if IFS= read -r -t 1 staging_lock_command; then
+        case "$staging_lock_command" in
+          shared)
+            if flock -s 9; then printf '%s\n' shared; else printf '%s\n' shared-failed; exit 1; fi
+            ;;
+          release)
+            flock -u 9
+            printf '%s\n' released
+            exit 0
+            ;;
+        esac
+      fi
+    done
+    flock -u 9
+  }
+  STAGING_SYNC_LOCK_READ_FD="${STAGING_SYNC_LOCK_KEEPER[0]}"
+  STAGING_SYNC_LOCK_WRITE_FD="${STAGING_SYNC_LOCK_KEEPER[1]}"
+  STAGING_SYNC_LOCK_KEEPER_PID="$STAGING_SYNC_LOCK_KEEPER_PID"
+  staging_lock_state=""
+  if ! IFS= read -r staging_lock_state <&"$STAGING_SYNC_LOCK_READ_FD"; then
+    return 1
+  fi
+  if [[ "$staging_lock_state" == busy ]]; then
+    return 75
+  fi
+  [[ "$staging_lock_state" == exclusive ]] || return 1
+}
+
+staging_sync_lock_shared() {
+  printf '%s\n' shared >&"$STAGING_SYNC_LOCK_WRITE_FD" || return 1
+  staging_lock_state=""
+  IFS= read -r staging_lock_state <&"$STAGING_SYNC_LOCK_READ_FD" || return 1
+  [[ "$staging_lock_state" == shared ]]
+}
+
+staging_sync_lock_release() {
+  [[ -n "$STAGING_SYNC_LOCK_KEEPER_PID" ]] || return 0
+  printf '%s\n' release >&"$STAGING_SYNC_LOCK_WRITE_FD" 2>/dev/null || true
+  wait "$STAGING_SYNC_LOCK_KEEPER_PID" 2>/dev/null || true
+  STAGING_SYNC_LOCK_KEEPER_PID=""
+}
 
 staging_alias_bootstrap() {
   local tmp
@@ -999,8 +1062,14 @@ STAGING_SYNC_LOCK_PATH="/tmp/papercup-staging-sync.lock"
 STAGING_SYNC_ATTEMPT_ID="$(staging_lock_attempt_id)"
 STAGING_SYNC_WAIT_START_MS="$(staging_lock_now_ms)"
 staging_lock_log "event=start surface=staging-sync attempt_id=$STAGING_SYNC_ATTEMPT_ID state=wait_start lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=exclusive wait_start_ms=$STAGING_SYNC_WAIT_START_MS" || true
-exec 9>"$STAGING_SYNC_LOCK_PATH"
-if ! flock -n 9; then
+if staging_sync_lock_start; then
+  :
+else
+  staging_lock_start_status=$?
+  if [[ "$staging_lock_start_status" -ne 75 ]]; then
+    log "FATAL: could not start the staging-sync lock keeper"
+    exit 1
+  fi
   STAGING_SYNC_END_MS="$(staging_lock_now_ms)"
   STAGING_SYNC_HOLDER="$(staging_lock_holder_fields "$STAGING_SYNC_LOCK_PATH" exclusive)"
   staging_lock_log "event=end surface=staging-sync attempt_id=$STAGING_SYNC_ATTEMPT_ID state=complete lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=exclusive wait_start_ms=$STAGING_SYNC_WAIT_START_MS wait_elapsed_ms=$(staging_lock_elapsed_ms "$STAGING_SYNC_WAIT_START_MS" "$STAGING_SYNC_END_MS") acquisition_outcome=not_acquired $STAGING_SYNC_HOLDER" || true
@@ -1160,7 +1229,7 @@ fi
 # before systemd ExecStartPre takes the shared lock to verify/reuse the bundle.
 STAGING_SYNC_SHARED_WAIT_START_MS="$(staging_lock_now_ms)"
 staging_lock_log "event=transition surface=staging-sync attempt_id=$STAGING_SYNC_ATTEMPT_ID state=shared_wait_start phase=preflight-restart lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=shared wait_start_ms=$STAGING_SYNC_SHARED_WAIT_START_MS" || true
-if flock -s 9; then
+if staging_sync_lock_shared; then
   STAGING_SYNC_SHARED_END_MS="$(staging_lock_now_ms)"
   staging_lock_log "event=transition surface=staging-sync attempt_id=$STAGING_SYNC_ATTEMPT_ID state=shared_acquired phase=preflight-restart lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=shared wait_start_ms=$STAGING_SYNC_SHARED_WAIT_START_MS wait_elapsed_ms=$(staging_lock_elapsed_ms "$STAGING_SYNC_SHARED_WAIT_START_MS" "$STAGING_SYNC_SHARED_END_MS") acquisition_outcome=acquired" || true
 else
@@ -1246,7 +1315,7 @@ PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)" || {
 # excluding a new staging-sync until exact-source readiness is verified.
 STAGING_SYNC_SHARED_WAIT_START_MS="$(staging_lock_now_ms)"
 staging_lock_log "event=transition surface=staging-sync attempt_id=$STAGING_SYNC_ATTEMPT_ID state=shared_wait_start phase=final-restart lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=shared wait_start_ms=$STAGING_SYNC_SHARED_WAIT_START_MS" || true
-if flock -s 9; then
+if staging_sync_lock_shared; then
   STAGING_SYNC_SHARED_END_MS="$(staging_lock_now_ms)"
   staging_lock_log "event=transition surface=staging-sync attempt_id=$STAGING_SYNC_ATTEMPT_ID state=shared_acquired phase=final-restart lock_path=$STAGING_SYNC_LOCK_PATH lock_mode=shared wait_start_ms=$STAGING_SYNC_SHARED_WAIT_START_MS wait_elapsed_ms=$(staging_lock_elapsed_ms "$STAGING_SYNC_SHARED_WAIT_START_MS" "$STAGING_SYNC_SHARED_END_MS") acquisition_outcome=acquired" || true
 else

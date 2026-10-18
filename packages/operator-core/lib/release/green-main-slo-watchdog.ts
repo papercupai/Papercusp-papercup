@@ -33,6 +33,8 @@ import {
   type SyncBatchFleetTally,
 } from './green-main-slo';
 
+type NonVerdictReasonFiling = { id: string; assignee: string } | { skipped: 'no-live-gate-owner' };
+
 export interface GreenMainSloPassDeps {
   installSlug: string;
   workspaceId: string;
@@ -45,7 +47,7 @@ export interface GreenMainSloPassDeps {
   /** Per-fleet sync tallies; omit until the sync-batch delta check exposes them. */
   readSyncTallies?: () => Promise<readonly SyncBatchFleetTally[] | null>;
   readNonVerdictReasons?: () => Promise<GateNonVerdictReasons | null>;
-  fileNonVerdictReason?: (breach: GreenMainSloBreach) => Promise<{ id: string; assignee: string }>;
+  fileNonVerdictReason?: (breach: GreenMainSloBreach) => Promise<NonVerdictReasonFiling>;
   notifyOnce: (input: ReplaySafeAttentionNotifyInput) => Promise<AttentionNotifyResult>;
   rail?: AlarmAttentionDeps;
   readConditions?: () => Promise<readonly SloCondition[]>;
@@ -69,6 +71,8 @@ export interface GreenMainSloPassResult {
   readErrors: Array<{ input: 'lastGreenAt' | 'lastVerdictAt' | 'queue' | 'syncTallies' | 'nonVerdictReasons'; message: string }>;
   conditionErrors: string[];
   reasonItems: Array<{ reason: string; id: string; assignee: string }>;
+  /** Follow-ups intentionally skipped when no positively live gate owner can receive them. */
+  reasonFilingSkips: Array<{ reason: string; cause: 'no-live-gate-owner' }>;
 }
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
@@ -211,6 +215,7 @@ export async function runGreenMainSloPass(deps: GreenMainSloPassDeps): Promise<G
   const deliveries: GreenMainSloDelivery[] = [];
   const conditionErrors: string[] = [];
   const reasonItems: GreenMainSloPassResult['reasonItems'] = [];
+  const reasonFilingSkips: GreenMainSloPassResult['reasonFilingSkips'] = [];
   let conditions: readonly SloCondition[] | null = null;
   try {
     conditions = await (deps.readConditions ?? readSloConditions)();
@@ -223,8 +228,12 @@ export async function runGreenMainSloPass(deps: GreenMainSloPassDeps): Promise<G
       try {
         if (!deps.fileNonVerdictReason) throw new Error('owned reason filer unavailable');
         const item = await deps.fileNonVerdictReason(breach);
-        if (!item?.id || !item.assignee) throw new Error('reason filing returned no accountable holder');
-        reasonItems.push({ reason: breach.subject!, ...item });
+        if ('skipped' in item) {
+          reasonFilingSkips.push({ reason: breach.subject!, cause: item.skipped });
+        } else {
+          if (!item?.id || !item.assignee) throw new Error('reason filing returned no accountable holder');
+          reasonItems.push({ reason: breach.subject!, ...item });
+        }
       } catch (e) { conditionErrors.push(`file ${breach.subject}: ${message(e)}`); }
     }
     // A historical admission can remain in the SLO panel after a later round fixed it.
@@ -277,19 +286,22 @@ export async function runGreenMainSloPass(deps: GreenMainSloPassDeps): Promise<G
       }
     } catch (e) { conditionErrors.push(`reconcile ${condition.condition_key}: ${message(e)}`); }
   }
-  return { slo, deliveries, readErrors, conditionErrors, reasonItems };
+  return { slo, deliveries, readErrors, conditionErrors, reasonItems, reasonFilingSkips };
 }
 
 /** Reuse the condition-key create/claim seam; adoption must never report an unowned success. */
 export async function fileRecurringNonVerdictReason(
   target: { workspaceId: string; installSlug: string },
   breach: GreenMainSloBreach,
-): Promise<{ id: string; assignee: string }> {
+): Promise<NonVerdictReasonFiling> {
   const { readGateOwnership, ownershipHeldByLiveHolder } = await import('../coord/gate-ownership');
   const { createOneWorkItem } = await import('../agent-tools/work_items/_create-core');
   const { claimWorkItem, getWorkItem } = await import('../work-items');
   const owner = await readGateOwnership({ harness: target.installSlug });
-  if (!ownershipHeldByLiveHolder(owner) || !owner.takenBy) throw new Error('no verified live gate owner for reason follow-up');
+  // The breach condition and owner notification are still delivered by the pass below. This
+  // extra work-item follow-up needs a positively live assignee; its absence is a skip, not a
+  // watchdog execution failure. Read/write errors still throw and remain visible as failures.
+  if (!ownershipHeldByLiveHolder(owner) || !owner.takenBy) return { skipped: 'no-live-gate-owner' };
   const filed = await createOneWorkItem({
     kind: 'bug', title: breach.title, summary: breach.detail, harness: target.installSlug,
     workspace: target.workspaceId, assign_to: owner.takenBy, urgent: true,

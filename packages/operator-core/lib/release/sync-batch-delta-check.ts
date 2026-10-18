@@ -10,11 +10,11 @@
  *   What changed in P-001: the check no longer SKIPS under ordinary host load or
  *   while a green-checkpoint suite runs — that skip silently dropped most batches on
  *   this box, where load sits above 1.2x cores for most of the day. It now runs every
- *   heavy leg at low CPU / best-effort I/O priority (`idlePriorityArgv`) and, under load or during a
- *   gate run, with a REDUCED confirm/attribution budget (`evaluateCapacity`). It skips
- *   only above a hard ceiling or when load is unreadable, and records per-tick
- *   coverage with an alarm when coverage drops (`recordCoverageTick` /
- *   `evaluateCoverage`). P-002: a confirmed red is ROUTED to the editing agent
+ *   heavy leg in the reserved `source-checks.slice` (`reservedCapacityArgv`, P-009 of
+ *   green-main-ratchet-convergence-2026-10-17) and, under load or during a gate run,
+ *   with a REDUCED confirm/attribution budget (`evaluateCapacity`). Load never skips it
+ *   (D-017), and it records per-schedule-slot coverage with a 95%/24h alarm
+ *   (`recordCoverageOpportunities` / `evaluateCoverage`). P-002: a confirmed red is ROUTED to the editing agent
  *   (`pickRedAuthor`).
  *
  *   Wiring map (all landed):
@@ -108,15 +108,18 @@
  */
 
 import type { KnownGoodPoint } from './known-good-freeze';
+import { SCOPE_LAUNCH_FAILURE_RE, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from '../systemd-scope';
 
 // ── tunables (every default fails toward doing less work) ────────────────────
 
-/** Skip the whole run when `loadavg1 > cores * this`. 1.2 = "the box is already
- *  oversubscribed", which on this host means the gate or a fleet burst owns it. */
+/** Above `loadavg1 > cores * this` the confirm/attribution budget shrinks to
+ *  REDUCED_BUDGET. 1.2 = "the box is already oversubscribed". (The name is historical:
+ *  before P-001 this line skipped the run.) */
 export const LOAD_SKIP_FACTOR = 1.2;
 
-/** Above `cores * this` the tick SKIPS (P-001). Between LOAD_SKIP_FACTOR and this it
- *  runs with REDUCED_BUDGET at the low-priority wrapper — the old behaviour skipped there. */
+/** Above `cores * this` the reduced budget's reason names the hard ceiling. Since
+ *  green-main-ratchet-convergence-2026-10-17 P-009 (D-017) nothing skips here any more:
+ *  the reserved slice bounds the check's share of the box, not a load threshold. */
 export const HARD_LOAD_CEILING_FACTOR = 3;
 
 /** How far before the oldest batch commit the edit ledger is searched. git-sync
@@ -623,19 +626,22 @@ export interface CheckBudget {
  * `cores * LOAD_SKIP_FACTOR` and whenever a green-checkpoint suite ran. On this box
  * load sits above that line for most of the day and the gate runs for hours, so the
  * check judged almost nothing — exactly the per-commit signal it exists to provide.
- * Every heavy leg now runs at low CPU / best-effort I/O priority (`idlePriorityArgv`), which
- * keeps it from competing with the gate without placing it in the idle I/O class that
- * mq-deadline can starve under fleet load; load and the gate only shrink
- * the confirm/attribution budget. The radius caps are NOT reduced, so no batch window
- * is dropped as too wide because of load.
+ * green-main-ratchet-convergence-2026-10-17 P-009 (D-017): load NEVER skips. Every heavy
+ * leg runs in its own reserved slice (`reservedCapacityArgv`), so its share of the box is
+ * fixed by the slice weight, not by how busy everyone else is. Load and the gate only
+ * shrink the confirm/attribution budget. The radius caps are NOT reduced, so no batch
+ * window is dropped as too wide because of load.
  *
- * Skips remain for two cases only: load above the hard ceiling (the box is genuinely
- * saturated — even deprioritized children add memory and I/O pressure) and an
- * UNREADABLE load, which never runs blind.
+ * The two cases that used to skip — load above the hard ceiling and an UNREADABLE load —
+ * now run with the reduced budget and say why. The 24h measurement before this change
+ * found the lint guards skipping at load 384.91 > 384, i.e. judging nothing exactly when
+ * the fleet was busiest and commits were densest.
  */
-export type CapacityVerdict =
-  | { skip: true; reason: string }
-  | { skip: false; mode: 'full' | 'reduced'; reason?: string; budget: CheckBudget };
+export interface CapacityVerdict {
+  mode: 'full' | 'reduced';
+  reason?: string;
+  budget: CheckBudget;
+}
 
 export function evaluateCapacity(input: {
   reading: LoadReading | null;
@@ -648,25 +654,23 @@ export function evaluateCapacity(input: {
   const soft = input.softFactor ?? LOAD_SKIP_FACTOR;
   const hard = input.hardFactor ?? HARD_LOAD_CEILING_FACTOR;
   const { reading } = input;
-  if (!reading || !Number.isFinite(reading.load1) || !(reading.cores > 0)) {
-    return { skip: true, reason: 'host-load-unreadable' };
-  }
-  const hardCeiling = reading.cores * hard;
-  if (reading.load1 > hardCeiling) {
-    return {
-      skip: true,
-      reason: `host-load ${reading.load1.toFixed(2)} > hard ceiling ${hardCeiling.toFixed(2)} (cores ${reading.cores} x ${hard})`,
-    };
-  }
   const reasons: string[] = [];
-  const softCeiling = reading.cores * soft;
-  if (reading.load1 > softCeiling) {
-    reasons.push(`host-load ${reading.load1.toFixed(2)} > ${softCeiling.toFixed(2)}`);
+  if (!reading || !Number.isFinite(reading.load1) || !(reading.cores > 0)) {
+    reasons.push('host-load-unreadable');
+  } else {
+    const hardCeiling = reading.cores * hard;
+    const softCeiling = reading.cores * soft;
+    if (reading.load1 > hardCeiling) {
+      reasons.push(
+        `host-load ${reading.load1.toFixed(2)} > hard ceiling ${hardCeiling.toFixed(2)} (cores ${reading.cores} x ${hard})`,
+      );
+    } else if (reading.load1 > softCeiling) {
+      reasons.push(`host-load ${reading.load1.toFixed(2)} > ${softCeiling.toFixed(2)}`);
+    }
   }
   if (input.gateRunning === true) reasons.push('green-checkpoint-running');
-  if (reasons.length === 0) return { skip: false, mode: 'full', budget: input.fullBudget };
+  if (reasons.length === 0) return { mode: 'full', budget: input.fullBudget };
   return {
-    skip: false,
     mode: 'reduced',
     reason: reasons.join('; '),
     budget: {
@@ -676,27 +680,73 @@ export function evaluateCapacity(input: {
   };
 }
 
-/** Wrap a heavy leg so it runs at low CPU and best-effort I/O priority. `nice -n 19`
- *  yields CPU to every normal-priority process (the gate included); `ionice -c 2 -n 7`
- *  is the lowest best-effort class priority and still makes progress under mq-deadline.
- *  The idle I/O class (`-c 3`) can be starved for minutes on this host's scheduler.
- *  Both are unprivileged, and this wrapper—not a load threshold—is what bounds the check's cost. */
-export function idlePriorityArgv(cmd: string, args: readonly string[]): { cmd: string; args: string[] } {
-  return { cmd: 'nice', args: ['-n', '19', 'ionice', '-c', '2', '-n', '7', cmd, ...args] };
+/** The user-manager slice the heavy legs run in (D-017 point 2). Deliberately NOT named
+ *  `papercusp-*`: a dash nests a slice under its prefix, and `papercusp.slice` carries
+ *  CPUWeight=25, which is why nothing launched by the task manager can be reserved. A
+ *  top-level slice sits beside app.slice; weight 100 is systemd's default, so the checks
+ *  get an equal share with app.slice and can never starve the gate. */
+export const SOURCE_CHECK_SLICE = 'source-checks.slice';
+export const SOURCE_CHECK_CPU_WEIGHT = 100;
+export const SOURCE_CHECK_IO_WEIGHT = 100;
+
+/** Wrap a heavy leg so it runs in the reserved `source-checks.slice` (P-009 / D-017).
+ *  `systemd-run --scope` execs the payload itself, so cwd, environment, stdio and the
+ *  caller's timeout signal all reach the payload unchanged. When the scope cannot launch
+ *  (no user bus, no systemd-run), the binding retries the payload unwrapped and records
+ *  that in its diagnostic: `isScopeLaunchFailure`. */
+export function reservedCapacityArgv(cmd: string, args: readonly string[]): { cmd: string; args: string[] } {
+  return {
+    cmd: 'systemd-run',
+    args: [
+      '--user',
+      '--scope',
+      '--quiet',
+      ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
+      `--slice=${SOURCE_CHECK_SLICE}`,
+      `--property=CPUWeight=${SOURCE_CHECK_CPU_WEIGHT}`,
+      `--property=IOWeight=${SOURCE_CHECK_IO_WEIGHT}`,
+      '--',
+      cmd,
+      ...args,
+    ],
+  };
+}
+
+/** A scope that failed to START exits non-zero within seconds with a systemd-run error on
+ *  stderr. A payload that fails inside a healthy scope exits with its own code, usually
+ *  long after the launch window, so it never matches (the release-actions precedent). */
+export const SCOPE_LAUNCH_WINDOW_MS = 5_000;
+
+export function isScopeLaunchFailure(r: {
+  status: number | null;
+  stderr: string;
+  durationMs?: number;
+  failureKind?: string;
+}): boolean {
+  if (r.failureKind) return false;
+  if (r.status === 0 || r.status === null) return false;
+  if (r.durationMs !== undefined && r.durationMs >= SCOPE_LAUNCH_WINDOW_MS) return false;
+  return SCOPE_LAUNCH_FAILURE_RE.test(r.stderr);
 }
 
 // ── coverage (P-001 / R-2) ───────────────────────────────────────────────────
 
-/** One scheduled coverage opportunity. */
-export type CoverageTickStatus = SyncBatchDeltaStatus | 'missed-opportunity';
+/** One scheduled coverage opportunity. `measured` and `partial` come from the lint-guard
+ *  routine (`sync-batch-lint-guards.ts`), which records its slots with this same machinery:
+ *  `partial` = some guards gave no verdict, so their window is still unjudged. */
+export type CoverageTickStatus = SyncBatchDeltaStatus | 'missed-opportunity' | 'measured' | 'partial';
 
 export interface CoverageTick {
   atMs: number;
-  /** true = the scheduled opportunity judged its window (or confirmed nothing to judge). */
+  /** true = the scheduled opportunity judged its window (or confirmed nothing to judge),
+   *  or a later run judged this slot's commits within COVERAGE_JUDGE_DEADLINE_MS. */
   evaluated: boolean;
   status: CoverageTickStatus;
   /** Bounded reason/outcome for a non-evaluated tick. */
   reason?: string;
+  /** Set when a LATER run judged this slot's commits (P-009 / D-017 point 3): the epoch ms
+   *  that run finished. The slot keeps its original status, so late judgments stay visible. */
+  judgedAtMs?: number;
 }
 
 export interface SyncDeltaCoverage {
@@ -711,12 +761,55 @@ export const COVERAGE_MAX_TICKS = 400;
 /** The durable sync-delta routine fires every five minutes. Coverage fills
  *  opportunities that passed while an earlier invocation was still running. */
 export const COVERAGE_EXPECTED_INTERVAL_MS = 5 * 60_000;
-/** The alarm window, threshold and the minimum opportunities needed to judge it.
- *  At the five-minute cadence 2h is 24 opportunities; 12 avoids judging before
- *  the window has enough history while still counting slots missed by long fires. */
-export const COVERAGE_ALARM_WINDOW_MS = 2 * 60 * 60_000;
-export const COVERAGE_ALARM_THRESHOLD = 0.8;
-export const COVERAGE_ALARM_MIN_TICKS = 12;
+/** The alarm window, threshold and the minimum opportunities needed to judge it
+ *  (green-main-ratchet-convergence-2026-10-17 P-009 / D-017 point 4: at least 95% of
+ *  schedule slots over 24 hours). At the five-minute cadence 24h is 288 slots; 144 is
+ *  twelve hours of history, so a fresh history cannot alarm on a handful of samples. */
+export const COVERAGE_ALARM_WINDOW_MS = 24 * 60 * 60_000;
+export const COVERAGE_ALARM_THRESHOLD = 0.95;
+export const COVERAGE_ALARM_MIN_TICKS = 144;
+/** A slot whose own run did not judge it still counts as evaluated when a later run
+ *  judged its commits within this long (D-017 point 3). One completed run per slot caps
+ *  coverage at runs/slots whenever a single affected-tests run outlasts five minutes
+ *  (measured 104/291 = 36% before P-009), although those commits were judged minutes
+ *  later. Slots judged later than this, or never, stay not evaluated. */
+export const COVERAGE_JUDGE_DEADLINE_MS = 30 * 60_000;
+
+/** Non-evaluated statuses whose commits a later run can still judge. `skipped` and
+ *  `missed-opportunity` leave the cursor where it was; a lint-guard `partial` keeps each
+ *  unmeasured guard's older record, so the next tick re-measures it. `leg-timeout` and
+ *  `radius-too-wide` advance the cursor PAST commits nobody judged, so they are never
+ *  credited. */
+const LATE_CREDITABLE_STATUSES: ReadonlySet<CoverageTickStatus> = new Set(['skipped', 'missed-opportunity', 'partial']);
+
+/**
+ * Credit earlier slots whose commits an evaluated run judged within the deadline.
+ * `throughMs`: every commit at or before this time was judged (the run's start when it
+ * judged the whole backlog, else its newest judged commit's time). `judgedAtMs`: when
+ * that run finished. Pure; returns the input unchanged when nothing qualifies.
+ */
+export function creditLateJudgedSlots<T extends { ticks: CoverageTick[] }>(
+  coverage: T,
+  judged: { throughMs: number; judgedAtMs: number; deadlineMs?: number },
+): T {
+  const deadlineMs = judged.deadlineMs ?? COVERAGE_JUDGE_DEADLINE_MS;
+  if (!Number.isFinite(judged.throughMs) || !Number.isFinite(judged.judgedAtMs)) return coverage;
+  let changed = false;
+  const ticks = coverage.ticks.map((t) => {
+    if (
+      t.evaluated ||
+      !LATE_CREDITABLE_STATUSES.has(t.status) ||
+      t.atMs > judged.throughMs ||
+      t.atMs > judged.judgedAtMs ||
+      judged.judgedAtMs - t.atMs > deadlineMs
+    ) {
+      return t;
+    }
+    changed = true;
+    return { ...t, evaluated: true, judgedAtMs: judged.judgedAtMs };
+  });
+  return changed ? { ...coverage, ticks } : coverage;
+}
 
 /** Statuses that mean the window WAS judged. `radius-too-wide` advances the cursor
  *  without running anything, so it counts as NOT evaluated, the same as a skip. */
@@ -798,6 +891,8 @@ export interface CoverageVerdict {
   /** Ticks inside the window. */
   total: number;
   evaluated: number;
+  /** Of `evaluated`, slots credited because a later run judged them within the deadline. */
+  lateCredited: number;
   /** evaluated / total, or null when there are too few ticks to judge. */
   ratio: number | null;
   /** true = coverage is below the threshold on enough samples. */
@@ -805,7 +900,7 @@ export interface CoverageVerdict {
 }
 
 export function evaluateCoverage(
-  coverage: SyncDeltaCoverage | undefined,
+  coverage: { ticks: CoverageTick[] } | undefined,
   nowMs: number,
   opts?: { windowMs?: number; threshold?: number; minTicks?: number },
 ): CoverageVerdict {
@@ -814,16 +909,49 @@ export function evaluateCoverage(
   const minTicks = opts?.minTicks ?? COVERAGE_ALARM_MIN_TICKS;
   const inWindow = (coverage?.ticks ?? []).filter((t) => t.atMs > nowMs - windowMs && t.atMs <= nowMs);
   const evaluated = inWindow.filter((t) => t.evaluated).length;
-  if (inWindow.length < minTicks) return { total: inWindow.length, evaluated, ratio: null, low: false };
+  const lateCredited = inWindow.filter((t) => t.evaluated && t.judgedAtMs !== undefined).length;
+  if (inWindow.length < minTicks) return { total: inWindow.length, evaluated, lateCredited, ratio: null, low: false };
   const ratio = evaluated / inWindow.length;
-  return { total: inWindow.length, evaluated, ratio, low: ratio < threshold };
+  return { total: inWindow.length, evaluated, lateCredited, ratio, low: ratio < threshold };
 }
 
 /** The coverage alarm's upsert identity — one open item, refreshed in place. */
 export const COVERAGE_ALARM_CONDITION_KEY = 'sync-delta-coverage-low';
 
-export function buildCoverageAlarm(verdict: CoverageVerdict, coverage: SyncDeltaCoverage): RedFinding {
+/** Which check an alarm is about. Defaults describe the delta check; the lint-guard
+ *  routine passes its own (P-009 / D-017 point 4). */
+export interface CoverageAlarmSubject {
+  conditionKey: string;
+  /** Human name, e.g. "sync-batch delta check". */
+  label: string;
+  filedBy: string;
+  /** Where to read the coverage history. */
+  stateHint: string;
+  path: string;
+}
+
+export const DELTA_COVERAGE_ALARM_SUBJECT: CoverageAlarmSubject = {
+  conditionKey: COVERAGE_ALARM_CONDITION_KEY,
+  label: 'sync-batch delta check',
+  filedBy: 'system:sync-batch-delta-check',
+  stateHint:
+    'Read metadata.sync_delta with a workspace-scoped dev:pg_query; routines:list does not return it ' +
+    '(lastSkipReason and coverage.ticks[].reason carry bounded skip diagnostics).',
+  path: 'packages/operator-core/lib/release/sync-batch-delta-check.ts',
+};
+
+function formatWindow(ms: number): string {
+  const hours = ms / (60 * 60_000);
+  return Number.isInteger(hours) ? `${hours}h` : `${Math.round(ms / 60_000)}m`;
+}
+
+export function buildCoverageAlarm(
+  verdict: CoverageVerdict,
+  coverage: { ticks: CoverageTick[] },
+  subject: CoverageAlarmSubject = DELTA_COVERAGE_ALARM_SUBJECT,
+): RedFinding {
   const pct = verdict.ratio === null ? 'n/a' : `${Math.round(verdict.ratio * 100)}%`;
+  const windowLabel = formatWindow(COVERAGE_ALARM_WINDOW_MS);
   const reasons = new Map<string, number>();
   for (const t of coverage.ticks.slice(-verdict.total)) {
     if (!t.evaluated) {
@@ -832,24 +960,26 @@ export function buildCoverageAlarm(verdict: CoverageVerdict, coverage: SyncDelta
     }
   }
   const breakdown = [...reasons.entries()].map(([s, n]) => `${s} x${n}`).join(', ') || '(none)';
+  const deadline = formatWindow(COVERAGE_JUDGE_DEADLINE_MS);
   return {
-    conditionKey: COVERAGE_ALARM_CONDITION_KEY,
-    title: `sync-batch delta check coverage low: ${pct} of ticks evaluated over 2h`,
+    conditionKey: subject.conditionKey,
+    title: `${subject.label} coverage low: ${pct} of schedule slots judged over ${windowLabel}`,
     body: [
-      `The per-sync check judged only ${verdict.evaluated} of ${verdict.total} ticks (${pct}) in the last 2h,`,
-      `below the ${Math.round(COVERAGE_ALARM_THRESHOLD * 100)}% floor. Breakage committed to staging in that window`,
-      'is NOT being caught at commit time; it will surface at the hourly gate instead.',
+      `The ${subject.label} judged only ${verdict.evaluated} of ${verdict.total} schedule slots (${pct}) in the last ${windowLabel},`,
+      `below the ${Math.round(COVERAGE_ALARM_THRESHOLD * 100)}% target. A slot counts when its own run judged it, or when a`,
+      `later run judged its commits within ${deadline} (${verdict.lateCredited} of the judged slots were credited that way).`,
+      'Breakage committed to staging in the unjudged slots is NOT being caught at commit time; it will surface at the gate instead.',
       '',
-      `Non-evaluated opportunities by status: ${breakdown}.`,
-      'Read metadata.sync_delta with a workspace-scoped dev:pg_query; routines:list does not return it.',
-      '(lastSkipReason and coverage.ticks[].reason carry bounded skip diagnostics). A run of `skipped` with a hard-ceiling reason means the box is',
-      'saturated; `radius-too-wide` means batches exceed the radius caps; `leg-timeout` means a single',
-      'commit exhausted a leg time budget and was explicitly skipped.',
-      '`missed-opportunity` means a five-minute schedule slot passed without a completed check.',
+      `Unjudged slots by status: ${breakdown}.`,
+      subject.stateHint,
+      '`radius-too-wide` means batches exceed the radius caps; `leg-timeout` means a single commit exhausted a leg',
+      'time budget and was explicitly skipped (both advance past commits nobody judged).',
+      `\`missed-opportunity\` means a five-minute slot passed without a completed check and no later check judged it within ${deadline}.`,
+      'Load no longer skips this check (green-main-ratchet-convergence-2026-10-17#D-017): it runs in the reserved source-checks slice.',
       '',
-      `Filed by \`system:sync-batch-delta-check\` (conditionKey \`${COVERAGE_ALARM_CONDITION_KEY}\`).`,
+      `Filed by \`${subject.filedBy}\` (conditionKey \`${subject.conditionKey}\`).`,
     ].join('\n'),
-    paths: ['packages/operator-core/lib/release/sync-batch-delta-check.ts'],
+    paths: [subject.path],
     assignee: null,
     authorSource: 'none',
   };
@@ -1313,9 +1443,22 @@ export interface SyncBatchDeltaResult {
   unconfirmed: string[];
   /** Cursor after this run (null when the run deliberately did not advance it). */
   cursor: SyncDeltaCursor | null;
+  /** How far this run's judgment reached, for coverage crediting (P-009 / D-017):
+   *  `'start'` = every commit on the branch when the run started was judged; a number =
+   *  every commit at or before that commit time (epoch ms) was judged and newer backlog
+   *  remains. Absent = the run judged nothing older than the cursor it adopted. */
+  judgedThrough?: 'start' | number;
 }
 
-const emptyResult = (status: SyncBatchDeltaStatus, reason?: string): SyncBatchDeltaResult => ({
+/** What a bounded prefix judged: the whole backlog (`'start'`), or through its newest
+ *  commit's time. An unparseable commit time judges nothing creditable. */
+function judgedThroughOf(prefixCommits: readonly SyncBatch[], backlogLength: number): 'start' | number | undefined {
+  if (prefixCommits.length >= backlogLength) return 'start';
+  const newest = prefixCommits[prefixCommits.length - 1]?.committedAtMs;
+  return typeof newest === 'number' && Number.isFinite(newest) ? newest : undefined;
+}
+
+const emptyResult =(status: SyncBatchDeltaStatus, reason?: string): SyncBatchDeltaResult => ({
   status,
   ...(reason ? { reason } : {}),
   batchCount: 0,
@@ -1390,6 +1533,14 @@ async function recordCoverage(
     },
     now,
   );
+  // D-017 point 3: an evaluated run also judged the commits of earlier unjudged slots
+  // (they sat behind the cursor it consumed). Credit those it reached within the deadline.
+  if (isEvaluatedStatus(result.status) && result.judgedThrough !== undefined) {
+    coverage = creditLateJudgedSlots(coverage, {
+      throughMs: result.judgedThrough === 'start' ? startedAtMs : result.judgedThrough,
+      judgedAtMs: now,
+    });
+  }
   const verdict = evaluateCoverage(coverage, now);
   if (verdict.low && coverage.alarmOpenSinceMs === undefined) {
     const res = await deps.fileRed(buildCoverageAlarm(verdict, coverage));
@@ -1518,7 +1669,7 @@ async function runSyncBatchDeltaTick(
 ): Promise<SyncBatchDeltaResult> {
   const caps = opts?.caps ?? DEFAULT_RADIUS_CAPS;
 
-  // ── 1. capacity: deprioritized legs always; load and the gate shrink the budget ──
+  // ── 1. capacity: reserved-slice legs always; load and the gate only shrink the budget ──
   const capacity = evaluateCapacity({
     reading: deps.hostLoad(),
     gateRunning: await deps.greenCheckpointRunning(),
@@ -1527,11 +1678,6 @@ async function runSyncBatchDeltaTick(
       maxAttributionProbes: opts?.maxAttributionProbes ?? MAX_ATTRIBUTION_PROBES,
     },
   });
-  if (capacity.skip) {
-    await recordSkip(deps, capacity.reason);
-    deps.log(`[sync-batch-delta] skip: ${capacity.reason}`);
-    return emptyResult('skipped', capacity.reason);
-  }
   if (capacity.mode === 'reduced') deps.log(`[sync-batch-delta] reduced budget: ${capacity.reason}`);
   const maxConfirm = capacity.budget.maxConfirmRuns;
   const maxProbes = capacity.budget.maxAttributionProbes;
@@ -1616,7 +1762,7 @@ async function runSyncBatchDeltaTick(
   if (cursor.sha === head) {
     const next: SyncDeltaCursor = { ...cursor, sha: head, updatedAtMs: deps.now(), openReds: stillOpen };
     await deps.writeCursor(next);
-    return { ...emptyResult('up-to-date'), filed, cursor: next };
+    return { ...emptyResult('up-to-date'), filed, cursor: next, judgedThrough: 'start' };
   }
 
   // ── 4. the new batch window ────────────────────────────────────────────────
@@ -1625,7 +1771,7 @@ async function runSyncBatchDeltaTick(
   if (batches.length === 0) {
     const next: SyncDeltaCursor = { ...cursor, sha: head, updatedAtMs: deps.now(), openReds: stillOpen };
     await deps.writeCursor(next);
-    return { ...emptyResult('up-to-date'), filed, cursor: next };
+    return { ...emptyResult('up-to-date'), filed, cursor: next, judgedThrough: 'start' };
   }
 
   // A cap learned from earlier leg timeouts narrows the window below the static one.
@@ -1659,11 +1805,13 @@ async function runSyncBatchDeltaTick(
       openReds: stillOpen,
     };
     await deps.writeCursor(next);
+    const judgedThrough = judgedThroughOf(prefix.commits, batches.length);
     return {
       ...emptyResult('nothing-selected', 'no changed paths'),
       batchCount: selectedBatches.length,
       filed,
       cursor: next,
+      ...(judgedThrough !== undefined ? { judgedThrough } : {}),
     };
   }
 
@@ -1714,6 +1862,7 @@ async function runSyncBatchDeltaTick(
     };
     await deps.writeCursor(next);
     deps.log(`[sync-batch-delta] ${verdict.reason}: ${verdict.detail}`);
+    const judgedThrough = verdict.reason === 'nothing-selected' ? judgedThroughOf(prefix.commits, batches.length) : undefined;
     return {
       status: verdict.reason,
       reason: verdict.detail,
@@ -1723,6 +1872,7 @@ async function runSyncBatchDeltaTick(
       filed,
       unconfirmed: [],
       cursor: next,
+      ...(judgedThrough !== undefined ? { judgedThrough } : {}),
     };
   }
 
@@ -1920,6 +2070,7 @@ async function runSyncBatchDeltaTick(
     `[sync-batch-delta] ${selectedBatches.length} commit(s), ${union.paths.length} path(s), ` +
       `${probe.workspaces.length} workspace(s) -> ${red ? `${filed.length} red filed/refreshed` : 'green'}`,
   );
+  const judgedThrough = judgedThroughOf(prefix.commits, batches.length);
   return {
     status: red ? 'red' : 'green',
     batchCount: selectedBatches.length,
@@ -1928,17 +2079,7 @@ async function runSyncBatchDeltaTick(
     filed,
     unconfirmed,
     cursor: next,
+    ...(judgedThrough !== undefined ? { judgedThrough } : {}),
   };
 }
 
-/** Record a skip WITHOUT advancing the cursor — the window stays unjudged so the
- *  next tick picks it up, which is the whole point of skipping rather than lying. */
-async function recordSkip(deps: SyncBatchDeltaDeps, reason: string): Promise<void> {
-  try {
-    const cursor = await deps.readCursor();
-    if (!cursor?.sha) return; // nothing to annotate yet
-    await deps.writeCursor({ ...cursor, lastSkipReason: reason, lastSkipMs: deps.now() });
-  } catch {
-    // The skip note is an instrument, never a reason to fail the tick.
-  }
-}

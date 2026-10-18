@@ -575,6 +575,60 @@ describe('exact-ref dependency record filtering', () => {
     expect(publishedInputFingerprint(result.stdout)).toBe(expected);
     expect(readFileSync(traceFile, 'utf8')).toContain('filtered');
   });
+
+  it('EI-26287122280182495: reuses immutable submodule manifests and invalidates them when the gitlink changes', () => {
+    const integration = makeIntegration();
+    commitFixture(integration, 'seed repository');
+    const vendor = join(integration, 'libs/vendor');
+    mkdirSync(vendor, { recursive: true });
+    const initialLock = '{"name":"vendor","lockfileVersion":3,"packages":{}}\n';
+    writeFileSync(join(vendor, 'package-lock.json'), initialLock);
+    const vendorRef = commitAllFixture(vendor, 'first vendor inputs');
+    const oldBlob = execFileSync('git', ['rev-parse', `${vendorRef}:package-lock.json`], { cwd: vendor, encoding: 'utf8' }).trim();
+    writeFileSync(join(integration, '.gitmodules'), '[submodule "vendor"]\n\tpath = libs/vendor\n\turl = ./vendor\n');
+    execFileSync('git', ['update-index', '--add', '--cacheinfo', `160000,${vendorRef},libs/vendor`], { cwd: integration });
+    const first = commitAllFixture(integration, 'record first gitlink');
+    writeFileSync(join(integration, 'README.md'), 'source-only change\n');
+    const second = commitAllFixture(integration, 'same dependency subtree');
+    const nextLock = '{"name":"vendor-changed","lockfileVersion":3,"packages":{}}\n';
+    writeFileSync(join(vendor, 'package-lock.json'), nextLock);
+    const nextVendor = commitAllFixture(vendor, 'changed vendor inputs');
+    execFileSync('git', ['update-index', '--add', '--cacheinfo', `160000,${nextVendor},libs/vendor`], { cwd: integration });
+    const third = commitAllFixture(integration, 'record changed gitlink');
+    const shim = join(dirname(integration), 'manifest-git-bin');
+    const trace = join(dirname(integration), 'manifest-blob-reads');
+    const cache = join(dirname(integration), 'manifest-cache');
+    mkdirSync(shim);
+    const realGit = execFileSync('bash', ['-lc', 'command -v git'], { encoding: 'utf8' }).trim();
+    writeFileSync(join(shim, 'git'), `#!/bin/bash
+if [ "$1" = '-C' ] && [ "$2" = "$TEST_VENDOR" ] && [ "$3" = 'cat-file' ] && [ "$4" = 'blob' ]; then
+  printf '%s\\n' "$5" >> "$TEST_MANIFEST_TRACE"
+fi
+exec "$TEST_REAL_GIT" "$@"
+`, { mode: 0o755 });
+    const result = spawnSync('bash', ['-c', [
+      'set -euo pipefail',
+      'source "$SCRIPT"',
+      'dependency_generation_input_manifest_ref "$INTEGRATION" "$FIRST" "" "" "$CACHE" > "$OUT/first"',
+      'dependency_generation_input_manifest_ref "$INTEGRATION" "$SECOND" "" "" "$CACHE" > "$OUT/second"',
+      'dependency_generation_input_manifest_ref "$INTEGRATION" "$THIRD" "" "" "$CACHE" > "$OUT/third"',
+    ].join('\n')], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${shim}:${process.env.PATH}`, SCRIPT, INTEGRATION: integration,
+        FIRST: first, SECOND: second, THIRD: third, CACHE: cache, OUT: dirname(integration),
+        TEST_VENDOR: vendor, TEST_MANIFEST_TRACE: trace, TEST_REAL_GIT: realGit },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const before = readFileSync(join(dirname(integration), 'first'), 'utf8');
+    expect(readFileSync(join(dirname(integration), 'second'), 'utf8')).toBe(before);
+    const oldDigest = createHash('sha256').update(initialLock).digest('hex');
+    const nextDigest = createHash('sha256').update(nextLock).digest('hex');
+    expect(before).toContain(`libs/vendor/package-lock.json\t${oldDigest}`);
+    expect(readFileSync(join(dirname(integration), 'third'), 'utf8')).toContain(`libs/vendor/package-lock.json\t${nextDigest}`);
+    const reads = readFileSync(trace, 'utf8').trim().split('\n');
+    expect(reads.filter(blob => blob === oldBlob)).toHaveLength(1);
+    expect(reads).toHaveLength(2);
+  }, NATIVE_SHELL_TIMEOUT_MS);
 });
 
 describe('immutable dependency generation', () => {
@@ -1703,6 +1757,49 @@ describe('immutable dependency generation', () => {
     const leaseRoot = join(generationRoot, '.leases');
     expect(existsSync(leaseRoot) ? readdirSync(leaseRoot) : []).toEqual([]);
     expect(predictionOf(predictRef(integration, candidate).stdout).verdict).toBe('prewarmed');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('EI-26287122280182495: materializes only indexed historical inputs when no donor is equivalent', () => {
+    const integration = makeIntegration();
+    writeFileSync(join(integration, 'package-lock.json'), lockWith(PKG));
+    commitFixture(integration, 'installed baseline');
+    const baseline = publish(integration);
+    expect(baseline.status, baseline.stderr).toBe(0);
+    let candidate = '';
+    for (let revision = 0; revision < 4; revision++) {
+      const lock = JSON.parse(lockWith({
+        'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '2.0.0' },
+      }));
+      lock.packages[''].revision = revision;
+      writeFileSync(join(integration, 'package-lock.json'), `${JSON.stringify(lock)}\n`);
+      candidate = commitFixture(integration, `unpublished input ${revision}`);
+    }
+    writeFileSync(join(integration, 'package-lock.json'), lockWith({
+      'node_modules/pkg': { ...PKG['node_modules/pkg'], version: '3.0.0' },
+    }));
+    writeFileSync(join(integration, 'node_modules/pkg/package.json'), '{"name":"pkg","version":"3.0.0"}\n');
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'live-v3\n');
+    const shim = join(dirname(integration), 'prewarm-mkdir-bin');
+    const trace = join(dirname(integration), 'prewarm-materializations');
+    mkdirSync(shim);
+    const realMkdir = execFileSync('bash', ['-lc', 'command -v mkdir'], { encoding: 'utf8' }).trim();
+    writeFileSync(join(shim, 'mkdir'), `#!/bin/bash
+for arg in "$@"; do
+  case "$arg" in */prewarm-inputs) printf 'materialized\\n' >> "$TEST_PREWARM_TRACE" ;; esac
+done
+exec "$TEST_REAL_MKDIR" "$@"
+`, { mode: 0o755 });
+    const result = spawnSync('bash', [SCRIPT, '--integration', integration, '--predict-ref', candidate], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${shim}:${process.env.PATH}`, TEST_PREWARM_TRACE: trace, TEST_REAL_MKDIR: realMkdir },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(predictionOf(result.stdout).verdict).toBe('refused');
+    // One indexed baseline is checked. The three unpublished ancestors must
+    // not be written to disk before discovering that they have no selector.
+    expect(readFileSync(trace, 'utf8').trim().split('\n')).toHaveLength(1);
+    expect(readFileSync(join(integration, 'node_modules/pkg/index.js'), 'utf8')).toBe('live-v3\n');
+    expect(readdirSync(exactScratch(integration))).toEqual([]);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('WI-10004151: leases a cached donor while copying and removes only its extra workspace link', () => {

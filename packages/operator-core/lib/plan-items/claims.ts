@@ -21,6 +21,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
+import { boundedOrgTxn } from '../pg-bounded-txn';
 import { getClaimAuthority } from './claim-authority';
 import { notifyAgentOrdersChanged } from '../agent-orders-notify';
 import { clearGoalClaimedIfMatches } from '../agent-state-stamp';
@@ -668,15 +669,24 @@ export async function extendOwnerClaimsForAwait(
   targetTtlSec: number,
 ): Promise<string[]> {
   const capped = clampTtl(targetTtlSec);
-  const { sql } = getOrgPg();
-  const rows = await sql<{ item_id: string }[]>`
-    UPDATE harness_shared.plan_item_claims
-       SET expires_ts = GREATEST(expires_ts, clock_timestamp() + make_interval(secs => ${capped}))
-     WHERE (workspace_id = ${workspaceId} OR workspace_id = ${DEFAULT_WORKSPACE_ID})
-       AND owner = ${owner}
-       AND expires_ts > clock_timestamp()
-    RETURNING item_id
-  `;
+  const rows = await boundedOrgTxn(
+    (tx) => tx<{ item_id: string }[]>`
+      UPDATE harness_shared.plan_item_claims
+         SET expires_ts = GREATEST(expires_ts, clock_timestamp() + make_interval(secs => ${capped}))
+       WHERE (workspace_id = ${workspaceId} OR workspace_id = ${DEFAULT_WORKSPACE_ID})
+         AND owner = ${owner}
+         AND expires_ts > clock_timestamp()
+      RETURNING item_id
+    `,
+    {
+      acquireTimeoutMs: 1_500,
+      acquireRetries: 0,
+      connectionSetupRetries: 0,
+      statementTimeoutMs: 1_500,
+      lockTimeoutMs: 1_000,
+      phase: 'plan-item-claims:extend-for-await',
+    },
+  );
   return rows.map((r) => r.item_id);
 }
 

@@ -422,7 +422,7 @@ describe('sync-staging-checkout.sh migration restart preflight (EI-2418043703889
 describe('sync-staging-checkout.sh forward-compat review-date alarm (WI-10003599)', () => {
   it('checks review dates before checkout equality can take the no-op path', () => {
     const script = readFileSync(SCRIPT_PATH, 'utf8');
-    const lockIdx = script.indexOf('exec 9>"$STAGING_SYNC_LOCK_PATH"');
+    const lockIdx = script.indexOf('staging_sync_lock_start');
     const warningCallIdx = script.indexOf('\nforward_compat_review_warnings\n');
     const targetIdx = script.indexOf('target="$(git -C');
     expect(lockIdx).toBeGreaterThan(-1);
@@ -1797,7 +1797,7 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
 
   it('downgrades its checkout lock before the final dev:restart so the staging collision guard admits cutover', () => {
     const script = readFileSync(SCRIPT_PATH, 'utf8');
-    const downgrade = script.lastIndexOf('flock -s 9');
+    const downgrade = script.lastIndexOf('staging_sync_lock_shared');
     const restart = script.indexOf('"$PTOOL_BIN" dev:restart --url=');
     const assignment = script.lastIndexOf('PTOOL_CLIENT_SID="$(resolve_ptool_client_sid)"');
     const downgradeEnd = script.indexOf('\n# The ptool result may be lost', downgrade);
@@ -1805,6 +1805,33 @@ describe('sync-staging-checkout.sh coordinated restart identity (EI-240774465417
     expect(restart).toBeGreaterThan(downgrade);
     expect(downgradeEnd).toBeGreaterThan(downgrade);
     expect(script.slice(downgrade, downgradeEnd)).toContain('could not downgrade');
+  });
+
+  it('keeps the staging lock out of child processes', () => {
+    const script = readFileSync(SCRIPT_PATH, 'utf8');
+    const helperStart = script.indexOf('# Keep the checkout flock in a dedicated coprocess.');
+    const helperEnd = script.indexOf('staging_alias_bootstrap()', helperStart);
+    expect(helperStart).toBeGreaterThan(-1);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+    const helper = script.slice(helperStart, helperEnd);
+    const lock = join(tmpdir(), `staging-lock-keeper-${process.pid}-${Date.now()}.lock`);
+    try {
+      const r = spawnSync('bash', ['-c', [
+        'set -euo pipefail',
+        helper,
+        `STAGING_SYNC_LOCK_PATH=${JSON.stringify(lock)}`,
+        'STAGING_SYNC_LOCK_OWNER_PID="$$"',
+        'staging_sync_lock_start',
+        '(sleep 2) & child=$!',
+        'staging_sync_lock_release',
+        `if flock -n ${JSON.stringify(lock)} -c true; then echo lock_after_keeper_release=free; else echo lock_after_keeper_release=held; fi`,
+        'wait "$child"',
+      ].join('\n')], { encoding: 'utf8' });
+      expect(r.status).toBe(0);
+      expect(r.stdout).toContain('lock_after_keeper_release=free');
+    } finally {
+      rmSync(lock, { force: true });
+    }
   });
 
   it('accepts a lost self-restart receipt only after a new MainPID serves the exact target SHA', () => {

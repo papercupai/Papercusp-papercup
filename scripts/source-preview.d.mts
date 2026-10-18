@@ -330,9 +330,17 @@ export function readVerifierPhaseMeasurements(path: string): Record<string, numb
 /** Reserve both complete final censuses and cleanup, using this run's observations or an
  * explicitly selected earlier phase receipt. Estimates are prognoses, not guarantees;
  * an omitted child estimate remains explicitly unknown. No source/dependency scope changes.
+ * `totalMs` is work remaining at source admission, not a caller timeout. Use
+ * `requiredTimeoutMs` when launching: startup already spends the absolute clock.
+ * Reserve at least 30s, or 125% of an explicitly measured launch delay. This is
+ * a forecast; admission still checks the actual remaining clock independently.
  * @param {Record<string, number>} measurements @param {number} [childEstimateMs]
+ * @param {{ observedLaunchMs?: number, maxTimeoutMs?: number }} [options]
  */
-export function estimateVerifierCommandBudget(measurements: Record<string, number>, childEstimateMs?: number): {
+export function estimateVerifierCommandBudget(measurements: Record<string, number>, childEstimateMs?: number, { observedLaunchMs, maxTimeoutMs }?: {
+    observedLaunchMs?: number;
+    maxTimeoutMs?: number;
+}): {
     preparationMs: number;
     sourceCheckMs: number;
     dependencyCheckMs: number;
@@ -341,6 +349,9 @@ export function estimateVerifierCommandBudget(measurements: Record<string, numbe
     unknownChild: boolean;
     remainingMs: number;
     totalMs: number;
+    observedLaunchMs: number | null;
+    launchReserveMs: number;
+    requiredTimeoutMs: number;
 };
 /** Reuse the launcher's absolute deadline and the scheduler's attributable refusal. */
 export function admitVerifierCommandBudget(estimate: any, { env, nowMs, preparation }?: {

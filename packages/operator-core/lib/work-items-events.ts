@@ -69,6 +69,35 @@ import { parseAgenticPlanExecutionTarget, type AgenticPlanExecutionTarget } from
 import { trackDetached } from './detached-imports';
 import { activeExternalBlockers } from './external-blockers';
 import type { assignAndWakeActionableWorkItems } from './agent-tools/coordination/actionable-work-item-dispatch';
+import { boundedOrgTxn } from './pg-bounded-txn';
+
+const AWAIT_LATCH_ITEM_READ_OPTIONS = {
+  acquireTimeoutMs: 1_500,
+  acquireRetries: 0,
+  connectionSetupRetries: 0,
+  statementTimeoutMs: 1_500,
+  lockTimeoutMs: 1_000,
+  readOnly: true,
+  phase: 'work-items-events:await-latch-item-read',
+} as const;
+
+/** Event-await latches are best-effort preflight reads; a slow work-item lookup
+ * must degrade to `unknown` instead of retaining an admin-pool query after the
+ * registration has already returned its fallback. */
+async function readAwaitLatchItem(
+  id: string,
+  getItem?: typeof getWorkItem,
+): Promise<WorkItem | null> {
+  if (getItem) return getItem(id, undefined).catch(() => null);
+  try {
+    return await boundedOrgTxn(
+      (tx) => getWorkItem(id, undefined, {}, tx),
+      AWAIT_LATCH_ITEM_READ_OPTIONS,
+    );
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Errors that are EXPECTED for a best-effort, fire-and-forget notification and
@@ -1006,14 +1035,9 @@ export async function liveSettledProbe(
   id: string,
   deps: Pick<SettledEventsDeps, 'getItem'> = {},
 ): Promise<{ verdict: 'settled' | 'live' | 'unknown'; itemState?: string }> {
-  const getItem = deps.getItem ?? getWorkItem;
-  try {
-    const item = await getItem(id, undefined).catch(() => null);
-    if (!item) return { verdict: 'unknown' };
-    return { verdict: isSettledWorkItem(item) ? 'settled' : 'live', itemState: item.state };
-  } catch {
-    return { verdict: 'unknown' };
-  }
+  const item = await readAwaitLatchItem(id, deps.getItem);
+  if (!item) return { verdict: 'unknown' };
+  return { verdict: isSettledWorkItem(item) ? 'settled' : 'live', itemState: item.state };
 }
 
 /**
@@ -1034,14 +1058,9 @@ export async function liveAssigneeProbe(
   id: string,
   deps: Pick<SettledEventsDeps, 'getItem'> = {},
 ): Promise<{ verdict: 'settled' | 'live' | 'unknown'; assignee?: string | null }> {
-  const getItem = deps.getItem ?? getWorkItem;
-  try {
-    const item = await getItem(id, undefined).catch(() => null);
-    if (!item) return { verdict: 'unknown' };
-    return { verdict: isSettledWorkItem(item) ? 'settled' : 'live', assignee: item.assignee ?? null };
-  } catch {
-    return { verdict: 'unknown' };
-  }
+  const item = await readAwaitLatchItem(id, deps.getItem);
+  if (!item) return { verdict: 'unknown' };
+  return { verdict: isSettledWorkItem(item) ? 'settled' : 'live', assignee: item.assignee ?? null };
 }
 
 /**

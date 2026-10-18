@@ -29,23 +29,38 @@
  * or a missing script/database is UNDETERMINED: the guard keeps its prior record and is
  * re-measured next tick. Only an exit that looks like the guard's own verdict is a fail.
  *
+ * COVERAGE (green-main-ratchet-convergence-2026-10-17 P-009 / R-8). Every tick records its
+ * five-minute schedule slot on the state (`coverage`, the delta check's machinery): judged
+ * only when every guard gave a verdict, credited later when a following tick judges it
+ * within 30 minutes. 24h coverage below 95% files one `sync-lint-guards-coverage-low` item.
+ *
  * Pure: every IO seam is `SyncLintGuardDeps`; the binding is `sync-batch-lint-guards-deps.ts`
  * and the cadence is the `sync-batch-lint-guards` routine (its own 5-minute row, so a
  * 25-minute affected leg in the delta check can never delay a guard red).
  */
 import {
+  buildCoverageAlarm,
+  creditLateJudgedSlots,
   evaluateCapacity,
+  evaluateCoverage,
   EDITOR_LOOKBACK_MARGIN_MS,
   fileRoutedRed,
   pickRedAuthor,
+  recordCoverageOpportunities,
   SYNC_DELTA_SLA_MINUTES,
   type AuthorSource,
+  type CoverageAlarmSubject,
+  type CoverageTick,
   type EditorHit,
   type RedFinding,
   type SubprocessDiagnostic,
   type SyncBatch,
   type SyncBatchDeltaDeps,
+  type SyncDeltaCoverage,
 } from './sync-batch-delta-check';
+
+/** `filedBy` on every item this routine files (re-exported by the deps binding). */
+export const SYNC_LINT_GUARDS_FILED_BY = 'system:sync-batch-lint-guards';
 
 /**
  * The gate's low-memory repo-wide lint guards, in the gate's order. PINNED to
@@ -109,6 +124,9 @@ export interface SyncLintGuardState {
   guards: Partial<Record<SyncLintGuardScript, GuardRecord>>;
   lastSkipReason?: string;
   lastSkipMs?: number;
+  /** Per-slot coverage history + the low-coverage alarm state (P-009 / R-8), recorded by
+   *  `runSyncLintGuardTick` with the delta check's coverage machinery. */
+  coverage?: SyncDeltaCoverage;
 }
 
 export interface SyncLintGuardDeps
@@ -434,8 +452,93 @@ async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (item: T
  * One tick. Runs every guard when the tip moved since the last measuring tick, diffs each
  * against its own prior record, files at most MAX_GUARD_FILINGS_PER_TICK routed findings,
  * and stores the new records. A guard that could not be measured keeps its prior record.
+ * Then records this schedule slot's coverage and raises or clears the low-coverage alarm
+ * (P-009 / R-8). Coverage never fails the tick.
  */
 export async function runSyncLintGuardTick(
+  deps: SyncLintGuardDeps,
+  opts?: { scripts?: readonly SyncLintGuardScript[]; maxFilings?: number },
+): Promise<SyncLintGuardResult> {
+  const startedAtMs = deps.now();
+  const result = await measureSyncLintGuards(deps, opts);
+  try {
+    const annotated = await recordLintGuardCoverage(deps, result, startedAtMs, opts?.scripts ?? SYNC_LINT_GUARD_SCRIPTS);
+    if (annotated && result.state) return { ...result, state: annotated };
+  } catch (e) {
+    deps.log(`[sync-lint-guards] coverage not recorded: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return result;
+}
+
+// ── coverage (P-009 / R-8) ───────────────────────────────────────────────────
+
+/** The lint-guard routine's coverage alarm: one open item, upserted by condition key. */
+export const LINT_GUARDS_COVERAGE_ALARM_SUBJECT: CoverageAlarmSubject = {
+  conditionKey: 'sync-lint-guards-coverage-low',
+  label: 'sync-batch lint guards',
+  filedBy: SYNC_LINT_GUARDS_FILED_BY,
+  stateHint:
+    'Read metadata.sync_lint_guards with a workspace-scoped dev:pg_query; routines:list does not return it ' +
+    '(lastSkipReason and coverage.ticks[].reason carry bounded diagnostics; `partial` names the guards that gave no verdict).',
+  path: 'packages/operator-core/lib/release/sync-batch-lint-guards.ts',
+};
+
+/**
+ * The coverage slot one tick produced. A slot is judged only when every guard gave a
+ * verdict: `up-to-date` (every guard already measured this tip), or a `measured` /
+ * `bootstrapped` tick with no undetermined guard. A tick where some guard gave no verdict
+ * is `partial` and not judged; those guards keep their older records, so a later tick
+ * that measures them can credit the slot within the deadline.
+ */
+export function lintGuardCoverageTick(
+  result: Pick<SyncLintGuardResult, 'status' | 'reason' | 'verdicts'>,
+  scripts: readonly SyncLintGuardScript[],
+  atMs: number,
+): CoverageTick {
+  if (result.status === 'skipped') {
+    return { atMs, evaluated: false, status: 'skipped', ...(result.reason ? { reason: result.reason.slice(0, 500) } : {}) };
+  }
+  const undetermined = scripts.filter((s) => result.verdicts[s] === 'undetermined');
+  if (undetermined.length > 0) {
+    return { atMs, evaluated: false, status: 'partial', reason: `undetermined: ${undetermined.join(', ')}`.slice(0, 500) };
+  }
+  return { atMs, evaluated: true, status: result.status };
+}
+
+/** Append this tick's slot (plus any slots missed while no tick completed), credit
+ *  earlier unjudged slots this tick judged within the deadline, and raise the alarm on
+ *  the transition into low coverage (one item per low period) or clear it on recovery.
+ *  Returns the written state, or null when there is no state to annotate yet. */
+async function recordLintGuardCoverage(
+  deps: SyncLintGuardDeps,
+  result: SyncLintGuardResult,
+  startedAtMs: number,
+  scripts: readonly SyncLintGuardScript[],
+): Promise<SyncLintGuardState | null> {
+  const state = await deps.readGuardState();
+  if (!state) return null;
+  const now = deps.now();
+  const tick = lintGuardCoverageTick(result, scripts, startedAtMs);
+  let coverage = recordCoverageOpportunities(state.coverage, tick, now);
+  // A judged tick measured every guard at the tip it read after starting, so every
+  // commit at or before its start was judged.
+  if (tick.evaluated) coverage = creditLateJudgedSlots(coverage, { throughMs: startedAtMs, judgedAtMs: now });
+  const verdict = evaluateCoverage(coverage, now);
+  if (verdict.low && coverage.alarmOpenSinceMs === undefined) {
+    const res = await deps.fileRed(buildCoverageAlarm(verdict, coverage, LINT_GUARDS_COVERAGE_ALARM_SUBJECT));
+    if (res.ok) coverage = { ...coverage, alarmOpenSinceMs: now };
+    deps.log(`[sync-lint-guards] coverage low (${verdict.evaluated}/${verdict.total}) — alarm ${res.ok ? 'filed' : `failed: ${res.error}`}`);
+  } else if (!verdict.low && verdict.ratio !== null && coverage.alarmOpenSinceMs !== undefined) {
+    const { alarmOpenSinceMs: _cleared, ...rest } = coverage;
+    coverage = rest;
+  }
+  const next: SyncLintGuardState = { ...state, coverage };
+  await deps.writeGuardState(next);
+  return next;
+}
+
+/** The measuring half of a tick (no coverage). */
+async function measureSyncLintGuards(
   deps: SyncLintGuardDeps,
   opts?: { scripts?: readonly SyncLintGuardScript[]; maxFilings?: number },
 ): Promise<SyncLintGuardResult> {
@@ -453,7 +556,9 @@ export async function runSyncLintGuardTick(
     deps.log(`[sync-lint-guards] skip: ${reason}`);
     return empty('skipped', reason);
   };
-  if (capacity.skip) return recordSkip(capacity.reason);
+  // P-009 / D-017: load never skips the guards (they run in the reserved slice); it is
+  // only logged. The guard leg has no confirm/attribution budget for it to shrink.
+  if (capacity.mode === 'reduced') deps.log(`[sync-lint-guards] running under load: ${capacity.reason}`);
 
   const head = await deps.headSha();
   if (!head) return recordSkip('git-unreadable');
@@ -573,7 +678,8 @@ export async function runSyncLintGuardTick(
           atMs: heldBack.length > 0 && priorRecord ? priorRecord.atMs : now,
         };
   }
-  const state: SyncLintGuardState = { sha: head, atMs: now, guards };
+  // The coverage history belongs to the routine, not to this measurement: carry it over.
+  const state: SyncLintGuardState = { sha: head, atMs: now, guards, ...(prior?.coverage ? { coverage: prior.coverage } : {}) };
   await deps.writeGuardState(state);
 
   const fails = runs.filter((r) => r.verdict === 'fail').map((r) => r.script);

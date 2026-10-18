@@ -457,6 +457,29 @@ describe('extendOwnerClaimsForAwait — EI-383 (survive an events:await sleep)',
     expect(outMs).toBeLessThanOrEqual(claims.MAX_TTL_SEC * 1000 + 5000); // capped, +slack for test latency
     expect(outMs).toBeGreaterThan(claims.MAX_TTL_SEC * 1000 - 5000);
   });
+
+  it('fails the best-effort await-claim extension promptly under a real row-table lock', async () => {
+    let unlock!: () => void;
+    let reportLockAcquired!: () => void;
+    const locked = new Promise<void>((resolve) => { reportLockAcquired = resolve; });
+    const release = new Promise<void>((resolve) => { unlock = resolve; });
+    const blocker = db.sql.begin(async tx => {
+      await tx`LOCK TABLE harness_shared.plan_item_claims IN ACCESS EXCLUSIVE MODE`;
+      reportLockAcquired();
+      await release;
+    });
+    await locked;
+    const startedAt = Date.now();
+    try {
+      const error = await claims.extendOwnerClaimsForAwait(WS, 'su-alice', 3600)
+        .then(() => null, failure => failure as Error & { pgCode?: string });
+      expect(error).toMatchObject({ name: 'OrgTxnTimeoutError', pgCode: '55P03' });
+      expect(Date.now() - startedAt).toBeLessThan(15_000);
+    } finally {
+      unlock();
+      await blocker;
+    }
+  });
 });
 
 describe('reads + sweep', () => {

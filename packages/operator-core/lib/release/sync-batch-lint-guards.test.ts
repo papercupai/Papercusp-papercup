@@ -6,11 +6,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { RedFinding, SyncBatch } from './sync-batch-delta-check';
+import type { CoverageTick, RedFinding, SyncBatch } from './sync-batch-delta-check';
 import {
   classifyGuardRun,
   diffGuardViolations,
   guardExcerpt,
+  LINT_GUARDS_COVERAGE_ALARM_SUBJECT,
+  lintGuardCoverageTick,
   parseGuardOffenders,
   runSyncLintGuardTick,
   SYNC_LINT_GUARD_SCRIPTS,
@@ -213,6 +215,7 @@ function fake(opts: {
   editors?: Array<{ file: string; agent: string; tsMs: number }>;
   load1?: number;
   refuseAssignee?: string;
+  now?: () => number;
 }): Fake {
   const state = { value: opts.prior ?? null };
   const filed: RedFinding[] = [];
@@ -237,7 +240,7 @@ function fake(opts: {
       guardCalls.push(script);
       return opts.runs?.[script] ?? { exitCode: 0, output: 'clean' };
     },
-    now: () => 1_000_000,
+    now: opts.now ?? (() => 1_000_000),
     log: () => {},
   };
   return { deps, state, filed, guardCalls };
@@ -399,16 +402,30 @@ describe('runSyncLintGuardTick', () => {
     expect((await runSyncLintGuardTick(f.deps)).status).toBe('up-to-date');
   });
 
-  it('does not re-run guards when the tip has not moved, and skips above the hard load ceiling', async () => {
+  it('does not re-run guards when the tip has not moved', async () => {
     const same = fake({ head: 'h1', prior: allPass('h1') });
     expect((await runSyncLintGuardTick(same.deps)).status).toBe('up-to-date');
     expect(same.guardCalls).toEqual([]);
+  });
 
+  // green-main-ratchet-convergence-2026-10-17 P-009 / R-8 falsifier (1): load never skips
+  // the guards. The measured pre-change state was a skip at load 384.91 > 384 (cores x 3).
+  it('runs every guard above the hard load ceiling and when load is unreadable (no load skip)', async () => {
     const loaded = fake({ head: 'h2', prior: allPass('h1'), load1: 10_000 });
+    const logs: string[] = [];
+    loaded.deps.log = (m) => logs.push(m);
     const r = await runSyncLintGuardTick(loaded.deps);
-    expect(r.status).toBe('skipped');
-    expect(loaded.guardCalls).toEqual([]);
-    expect(loaded.state.value?.lastSkipReason).toMatch(/hard ceiling/);
+    expect(r.status).toBe('measured');
+    expect(loaded.guardCalls).toHaveLength(SYNC_LINT_GUARD_SCRIPTS.length);
+    expect(loaded.state.value?.sha).toBe('h2');
+    expect(loaded.state.value?.lastSkipReason).toBeUndefined();
+    expect(logs.some((m) => /running under load: .*hard ceiling/.test(m))).toBe(true);
+
+    const blind = fake({ head: 'h2', prior: allPass('h1') });
+    blind.deps.hostLoad = () => null;
+    const b = await runSyncLintGuardTick(blind.deps);
+    expect(b.status).toBe('measured');
+    expect(blind.guardCalls).toHaveLength(SYNC_LINT_GUARD_SCRIPTS.length);
   });
 
   it('caps filings per tick and files the deferred offender on the next tick', async () => {
@@ -428,5 +445,144 @@ describe('runSyncLintGuardTick', () => {
     });
     await runSyncLintGuardTick(next.deps, { maxFilings: 1 });
     expect(next.filed.map((x) => x.conditionKey)).toEqual(['sync-delta-guard:lint:no-raw-setinterval:apps/b/two.ts']);
+  });
+});
+
+// ── coverage (green-main-ratchet-convergence-2026-10-17 P-009 / R-8 falsifiers 2 and 3) ──
+
+describe('lint-guard coverage', () => {
+  const MIN = 60_000;
+  const T0 = 1_800_000_000_000;
+  /** `count` five-minute slots ending one slot before `endMs`; every `badEvery`-th unjudged. */
+  const history = (endMs: number, count: number, badEvery: number | null): CoverageTick[] =>
+    Array.from({ length: count }, (_, i) => {
+      const atMs = endMs - (count - i) * 5 * MIN;
+      const bad = badEvery !== null && i % badEvery === 0;
+      return bad
+        ? { atMs, evaluated: false, status: 'skipped' as const, reason: 'git-unreadable' }
+        : { atMs, evaluated: true, status: 'up-to-date' as const };
+    });
+  /** A clock that reads `startMs` at the tick's start and `endMs` afterwards. */
+  const clock = (startMs: number, endMs: number) => {
+    let calls = 0;
+    return () => (calls++ === 0 ? startMs : endMs);
+  };
+  const isAlarm = (f: RedFinding) => f.conditionKey === LINT_GUARDS_COVERAGE_ALARM_SUBJECT.conditionKey;
+
+  it('a fully measured tick and an up-to-date tick each record one judged slot', async () => {
+    const f = fake({ head: 'h2', prior: allPass('h1'), now: () => T0 });
+    await runSyncLintGuardTick(f.deps);
+    expect(f.state.value?.coverage?.ticks).toEqual([{ atMs: T0, evaluated: true, status: 'measured' }]);
+
+    const later = fake({ head: 'h2', prior: f.state.value, now: () => T0 + 5 * MIN });
+    expect((await runSyncLintGuardTick(later.deps)).status).toBe('up-to-date');
+    expect(later.state.value?.coverage?.ticks.map((t) => [t.status, t.evaluated])).toEqual([
+      ['measured', true],
+      ['up-to-date', true],
+    ]);
+  });
+
+  it('a measuring tick keeps the coverage history it inherited', async () => {
+    const prior = { ...allPass('h1'), coverage: { ticks: history(T0, 10, null) } };
+    const f = fake({ head: 'h2', prior, now: () => T0 });
+    await runSyncLintGuardTick(f.deps);
+    expect(f.state.value?.coverage?.ticks).toHaveLength(11);
+  });
+
+  it('a tick where a guard gave no verdict is partial (not judged), and a later full tick credits it', async () => {
+    const timedOut: GuardRun = { exitCode: null, output: 'timed out after 600000ms' };
+    const f = fake({ head: 'h2', prior: allPass('h1'), runs: { 'lint:guard-reachability': timedOut }, now: () => T0 });
+    const r = await runSyncLintGuardTick(f.deps);
+    expect(r.status).toBe('measured');
+    expect(f.state.value?.coverage?.ticks).toEqual([
+      { atMs: T0, evaluated: false, status: 'partial', reason: 'undetermined: lint:guard-reachability' },
+    ]);
+
+    // Ten minutes later the guard is measured: the partial slot was judged within 30 minutes.
+    const retry = fake({ head: 'h2', prior: f.state.value, now: () => T0 + 10 * MIN });
+    await runSyncLintGuardTick(retry.deps);
+    const ticks = retry.state.value?.coverage?.ticks ?? [];
+    expect(ticks[0]).toMatchObject({ atMs: T0, status: 'partial', evaluated: true, judgedAtMs: T0 + 10 * MIN });
+    expect(ticks.at(-1)).toMatchObject({ atMs: T0 + 10 * MIN, status: 'measured', evaluated: true });
+  });
+
+  it('slots missed during a long tick are recorded, and credited by the next tick that judges them in time', async () => {
+    const prior = { ...allPass('h1'), coverage: { ticks: history(T0, 1, null) } };
+    const f = fake({ head: 'h2', prior, now: clock(T0, T0 + 12 * MIN) });
+    await runSyncLintGuardTick(f.deps);
+    const missed = (f.state.value?.coverage?.ticks ?? []).filter((t) => t.status === 'missed-opportunity');
+    // Started at T0 and finished 12 minutes later: two five-minute slots passed meanwhile.
+    expect(missed.map((t) => t.atMs)).toEqual([T0 + 5 * MIN, T0 + 10 * MIN]);
+    // Their commits can postdate the tip this tick read at its start, so it does not credit them.
+    expect(missed.every((t) => !t.evaluated)).toBe(true);
+
+    // The next tick starts at T0+13m and measures the new tip: both slots are within 30 minutes.
+    const next = fake({ head: 'h3', prior: f.state.value, now: clock(T0 + 13 * MIN, T0 + 14 * MIN) });
+    await runSyncLintGuardTick(next.deps);
+    const credited = (next.state.value?.coverage?.ticks ?? []).filter((t) => t.status === 'missed-opportunity');
+    expect(credited.map((t) => [t.atMs, t.evaluated, t.judgedAtMs])).toEqual([
+      [T0 + 5 * MIN, true, T0 + 14 * MIN],
+      [T0 + 10 * MIN, true, T0 + 14 * MIN],
+    ]);
+  });
+
+  it('raises the alarm once when 24h coverage falls below 95%, naming the unjudged slots', async () => {
+    // 200 slots, every 10th unjudged = 90% judged.
+    const prior = { ...allPass('h1'), coverage: { ticks: history(T0, 200, 10) } };
+    const f = fake({ head: 'h1', prior, now: () => T0 });
+    await runSyncLintGuardTick(f.deps);
+    const alarms = f.filed.filter(isAlarm);
+    expect(alarms).toHaveLength(1);
+    expect(alarms[0]!.title).toMatch(/^sync-batch lint guards coverage low: 90% of schedule slots judged over 24h$/);
+    expect(alarms[0]!.body).toContain('skipped (git-unreadable) x20');
+    expect(alarms[0]!.body).toContain('system:sync-batch-lint-guards');
+    expect(alarms[0]!.paths).toEqual(['packages/operator-core/lib/release/sync-batch-lint-guards.ts']);
+    expect(f.state.value?.coverage?.alarmOpenSinceMs).toBe(T0);
+
+    // Still low on the next slot: no second item while the alarm is open.
+    const again = fake({ head: 'h1', prior: f.state.value, now: () => T0 + 5 * MIN });
+    await runSyncLintGuardTick(again.deps);
+    expect(again.filed.filter(isAlarm)).toHaveLength(0);
+    expect(again.state.value?.coverage?.alarmOpenSinceMs).toBe(T0);
+  });
+
+  it('does not alarm at or above 95%, nor on fewer than 144 slots of history', async () => {
+    const healthy = fake({ head: 'h1', prior: { ...allPass('h1'), coverage: { ticks: history(T0, 200, 25) } }, now: () => T0 });
+    await runSyncLintGuardTick(healthy.deps);
+    expect(healthy.filed.filter(isAlarm)).toHaveLength(0);
+
+    const young = fake({ head: 'h1', prior: { ...allPass('h1'), coverage: { ticks: history(T0, 100, 2) } }, now: () => T0 });
+    await runSyncLintGuardTick(young.deps);
+    expect(young.filed.filter(isAlarm)).toHaveLength(0);
+  });
+
+  it('clears the open alarm once coverage recovers', async () => {
+    const prior = { ...allPass('h1'), coverage: { ticks: history(T0, 200, null), alarmOpenSinceMs: T0 - 60 * MIN } };
+    const f = fake({ head: 'h1', prior, now: () => T0 });
+    await runSyncLintGuardTick(f.deps);
+    expect(f.filed.filter(isAlarm)).toHaveLength(0);
+    expect(f.state.value?.coverage?.alarmOpenSinceMs).toBeUndefined();
+  });
+
+  it('a coverage failure never fails the tick', async () => {
+    const prior = { ...allPass('h1'), coverage: { ticks: history(T0, 200, 10) } };
+    const f = fake({ head: 'h1', prior, now: () => T0 });
+    f.deps.fileRed = async () => {
+      throw new Error('store down');
+    };
+    const logs: string[] = [];
+    f.deps.log = (m) => logs.push(m);
+    const r = await runSyncLintGuardTick(f.deps);
+    expect(r.status).toBe('up-to-date');
+    expect(logs.some((m) => m.includes('coverage not recorded: store down'))).toBe(true);
+  });
+
+  it('lintGuardCoverageTick: a skip carries its reason and is not judged', () => {
+    expect(lintGuardCoverageTick({ status: 'skipped', reason: 'git-unreadable', verdicts: {} }, SYNC_LINT_GUARD_SCRIPTS, T0)).toEqual({
+      atMs: T0,
+      evaluated: false,
+      status: 'skipped',
+      reason: 'git-unreadable',
+    });
   });
 });

@@ -120,7 +120,9 @@ async function promoteCurrentRelease(runtimeRoot, releasePath, expectedCurrentPa
   return candidate;
 }
 
-async function publicLinksSnapshot(path, inherited) {
+// Acceptance builds use the same snapshot as reconciliation. Requiring a link
+// prevents a successful but unconfigured build from reaching a download test.
+export async function publicLinksSnapshot(path, inherited, { required = [] } = {}) {
   const keys = ['NEXT_PUBLIC_PORTAL_TUI_DOWNLOAD_URL', 'NEXT_PUBLIC_PORTAL_DESKTOP_DOWNLOAD_URL',
     'NEXT_PUBLIC_PORTAL_ANDROID_DOWNLOAD_URL', 'NEXT_PUBLIC_PORTAL_IPHONE_DOWNLOAD_URL'];
   let values = {};
@@ -132,6 +134,10 @@ async function publicLinksSnapshot(path, inherited) {
   if (Object.keys(values).some((key) => !keys.includes(key))) throw new Error('portal_public_links_unknown_key');
   const env = { ...inherited, ...values };
   const links = Object.fromEntries(keys.map((key) => [key, env[key] ?? '']));
+  for (const key of required) {
+    if (!keys.includes(key)) throw new Error('portal_public_links_unknown_key');
+    if (!links[key]) throw new Error(`portal_public_links_required:${key}`);
+  }
   for (const value of Object.values(links)) {
     if (!value) continue;
     let url;

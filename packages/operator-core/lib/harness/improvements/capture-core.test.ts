@@ -24,7 +24,16 @@ import { assessIssueAdmissionPressure, type RecordIssueOccurrenceInput } from '.
 import { metadataToolFailure, metadataWorkflowTargets } from '../../agent-tools/plans/coordination-metadata-fixtures';
 import { normalizeSuspectedToolFailure, type SuspectedToolFailure } from './tool-error-classifier';
 
+afterEach(() => {
+  vi.mocked(findRecentLexicalDupes).mockReset().mockResolvedValue(null);
+});
+
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+vi.mock('../../agent-tools/work_items/recent-lexical-dupe-guard', () => ({
+  findRecentLexicalDupes: vi.fn(async () => null),
+}));
+
+import { findRecentLexicalDupes } from '../../agent-tools/work_items/recent-lexical-dupe-guard';
 
 function existing(p: Partial<EngineerIssue> & { id: string; title: string }): EngineerIssue {
   return {
@@ -2536,6 +2545,43 @@ describe('captureImprovement — P-011 semantic candidate widening (shared-embed
     expect(d.created[0].payload).toMatchObject({ dedupVerdict: 'likely-duplicate' });
   });
 
+  it('surfaces a recent open item before async embeddings arrive, without blocking the filing', async () => {
+    const prior = existing({
+      id: 'EI-RECENT-LEXICAL',
+      title: 'grading audit judge launch blocked by evaluator SHA freshness',
+    });
+    const d = deps({ found: [] });
+    d.findSemanticDupes = async () => healthySemanticResult();
+    d.getIssue = async (id) => (id === prior.id ? prior : null);
+    vi.mocked(findRecentLexicalDupes).mockResolvedValue({
+      candidates: [{
+        id: prior.id,
+        title: prior.title,
+        state: 'open',
+        harness: 'papercusp',
+        similarity: 0.72,
+        source: 'lexical-recent',
+      }],
+      coverage: { scanned: 1, unembedded: 1, truncated: false, complete: false },
+    });
+
+    const res = await captureImprovement({
+      title: 'judge dispatch sees stale evaluator currentness',
+      body: 'The judge must refuse before grading when evaluator currentness is stale.',
+      kind: 'bug',
+      scope: 'harness:papercusp',
+    }, d);
+
+    expect(res.created).toBe(true);
+    expect(res.possibleDuplicates).toMatchObject([
+      { id: prior.id, lexical: 'recent', similarity: 0.72 },
+    ]);
+    expect(res.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'partial', degraded: true });
+    expect(d.created[0].payload?.dedupCandidates).toEqual([
+      { id: prior.id, similarity: 0.72, method: 'lexical-recent' },
+    ]);
+  });
+
   it('a SOFT semantic hit is advisory-only: surfaced in possibleDuplicates, capture still created', async () => {
     const worded = existing({ id: 'EI-51', title: 'similar-ish friction wording' });
     const d = semDeps(deps({ found: [] }), { hard: [], soft: [{ id: 'EI-51', similarity: 0.87 }] }, [worded]);
@@ -4155,7 +4201,7 @@ describe('captureImprovement — derived-identity fold for agent filings (P-013 
   // Restore normal flag resolution. `null` CLEARS the override map; `{}` does
   // not — it is a truthy map that pins every flag to FLAG_DEFAULTS for the rest
   // of the process, which would silently govern later tests in this file.
-  afterEach(() => setFlagOverridesForTest(null));
+afterEach(() => setFlagOverridesForTest(null));
 
   const PRIOR_ID = 'EI-500';
 

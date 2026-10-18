@@ -29,19 +29,20 @@ function close(overrides: Partial<ChangeKindGateInput> = {}): ChangeKindGateInpu
   };
 }
 
-function expectReasonRefusal(result: ChangeKindGateResult): void {
+function expectReasonDiagnostic(result: ChangeKindGateResult): void {
   expect(result.applicable).toBe(true);
-  if (!result.applicable || result.outcome !== 'refuse') {
-    expect.fail(`A reasonless removal must keep the item open: ${JSON.stringify(result)}`);
+  if (!result.applicable) {
+    expect.fail(`A reasonless removal must be diagnosed: ${JSON.stringify(result)}`);
   }
-  expect(result.error).toMatch(/changeKindReason/);
-  // No missing test proof can stand in for the declaration-reason requirement.
-  expect(result.missing).toEqual([]);
+  // The complete handler owns R4's proposed authority. At this boundary assert
+  // the missing-reason diagnostic, leaving the handler free to apply that grade.
+  expect(result.outcome).not.toBe('pass');
+  expect(JSON.stringify(result)).toMatch(/changeKindReason/);
 }
 
 describe('R4 reasons for narrowed change-kind declarations', () => {
-  it.each([undefined, '', '   '])('refuses removing ui with reason %j despite valid logic proof', async (reason) => {
-    expectReasonRefusal(await evaluateChangeKindGate(close({ declaredReason: reason })));
+  it.each([undefined, '', '   '])('diagnoses removing ui with reason %j despite valid logic proof', async (reason) => {
+    expectReasonDiagnostic(await evaluateChangeKindGate(close({ declaredReason: reason })));
   });
 
   it('accepts removing ui when the declaration carries an explicit reason', async () => {
@@ -56,7 +57,7 @@ describe('R4 reasons for narrowed change-kind declarations', () => {
       current: ['logic'],
       history: [CLAIM, { ...CLAIM, kinds: ['logic'], step: 'complete' }],
     };
-    expectReasonRefusal(await evaluateChangeKindGate(close({ stored, declaredAtClose: undefined })));
+    expectReasonDiagnostic(await evaluateChangeKindGate(close({ stored, declaredAtClose: undefined })));
   });
 
   it('accepts a retry when the earlier narrowing already recorded its reason', async () => {

@@ -4335,6 +4335,31 @@ describe("acquireCheckpointRunLock", () => {
     first.release();
   });
 
+  it("publishes the initial phase before the live lock owner becomes visible", () => {
+    const lockDir = join(repo, ".checkpoint-logs", ".green-checkpoint-run.lock");
+    const ownerPath = join(lockDir, "owner.json");
+    let phaseBeforeOwner: unknown;
+    let ownerWasAbsent = false;
+    const lock = acquireCheckpointRunLock(lockDir, {
+      pid: 123,
+      isPidAlive: () => true,
+      getPidIdentity: () => {
+        phaseBeforeOwner = JSON.parse(readFileSync(join(lockDir, "phase.json"), "utf8"));
+        ownerWasAbsent = !existsSync(ownerPath);
+        return "boot-a:start-1";
+      },
+    });
+
+    try {
+      expect(lock.acquired).toBe(true);
+      expect(phaseBeforeOwner).toMatchObject({ phase: "materializing" });
+      expect(ownerWasAbsent).toBe(true);
+      expect(JSON.parse(readFileSync(ownerPath, "utf8"))).toMatchObject({ pid: 123 });
+    } finally {
+      lock.release();
+    }
+  });
+
   describe("checkpointRunLockDir (per-root lock — cross-lineage starvation fix, 2026-07-02)", () => {
     it("the same root always maps to the same lock dir (cron-vs-manual still single-flights)", () => {
       const a = checkpointRunLockDir(
@@ -5379,6 +5404,26 @@ describe("runGreenCheckpoint", () => {
     expect(calls.indexOf("phase:suite")).toBeLessThan(
       calls.indexOf("runGreen"),
     );
+  });
+
+  it("publishes the materializing marker before pre-materialization source preparation", async () => {
+    const c1 = await commit("a", "1", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    await commit("a", "2", "c2");
+    const config = cfg();
+    const lockDir = checkpointRunLockDir(
+      config.checkpointLogDir,
+      config.integrationRoot,
+    );
+    mkdirSync(lockDir, { recursive: true });
+    const { deps } = stubDeps(true);
+    deps.prepareSource = async () => {
+      expect(JSON.parse(readFileSync(join(lockDir, "phase.json"), "utf8"))).toMatchObject({
+        phase: "materializing",
+      });
+    };
+
+    await runGreenCheckpoint(config, deps, { noPush: true });
   });
 
   /**

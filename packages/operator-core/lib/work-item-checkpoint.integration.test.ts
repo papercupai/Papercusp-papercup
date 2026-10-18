@@ -807,6 +807,9 @@ describe('P-007/R-06 G2 — an attestation cannot conceal a work-item that moved
     );
     expect(res.ok).toBe(false);
     expect(res.refusedReason).toBe('attestation_state_changed');
+    // The refusal still returns the current body hash, so the caller can
+    // reconcile the stale attestation against the exact stored note.
+    expect(res.currentHash).toBe(shortCarryHash(BODY));
     // Reported so the caller can say WHAT moved, not merely that something did.
     expect(res.itemUpdatedAtMs).toBe(bodyTs + 1);
     // The guard runs BEFORE the store write, so a refusal must not have spent a slot

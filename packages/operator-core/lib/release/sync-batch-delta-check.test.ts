@@ -215,23 +215,26 @@ describe('runSyncBatchDeltaCheck — cursor discipline', () => {
     expect(state.cursor?.sha).toBe(SHA_B);
   });
 
-  it('load-skip: does NOT advance the cursor, only annotates the skip', async () => {
-    const { deps, state } = makeDeps(
-      { hostLoad: () => ({ load1: 500, cores: 128 }) },
-      { sha: SHA_A, updatedAtMs: 1 },
-    );
+  it('a skip does NOT advance the cursor, only annotates the skip', async () => {
+    const { deps, state } = makeDeps({ listBatches: async () => null }, { sha: SHA_A, updatedAtMs: 1 });
     const res = await runSyncBatchDeltaCheck(deps);
     expect(res.status).toBe('skipped');
-    expect(res.reason).toMatch(/^host-load/);
+    expect(res.reason).toBe('git-log-unreadable');
     expect(state.cursor?.sha).toBe(SHA_A); // window stays unjudged
-    expect(state.cursor?.lastSkipReason).toMatch(/^host-load/);
+    expect(state.cursor?.lastSkipReason).toBe('git-log-unreadable');
   });
 
-  it('an unreadable load also skips (optional work never runs blind)', async () => {
-    const { deps } = makeDeps({ hostLoad: () => null }, { sha: SHA_A, updatedAtMs: 1 });
+  // green-main-ratchet-convergence-2026-10-17 P-009 / D-017: load never skips. Above the
+  // hard ceiling, or with an unreadable load, the window is judged on the reduced budget.
+  it.each([
+    ['load above the hard ceiling', () => ({ load1: 500, cores: 128 })],
+    ['an unreadable load', () => null],
+  ])('%s does NOT skip: the window is judged and the cursor advances', async (_label, hostLoad) => {
+    const { deps, state } = makeDeps({ hostLoad }, { sha: SHA_A, updatedAtMs: 1 });
     const res = await runSyncBatchDeltaCheck(deps);
-    expect(res.status).toBe('skipped');
-    expect(res.reason).toBe('host-load-unreadable');
+    expect(res.status).not.toBe('skipped');
+    expect(state.cursor?.sha).not.toBe(SHA_A);
+    expect(state.cursor?.lastSkipReason).toBeUndefined();
   });
 
   it('a running green-checkpoint suite REDUCES the budget instead of skipping (P-001)', async () => {

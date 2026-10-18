@@ -67,18 +67,25 @@ vi.mock('../agent-tools/testing/record-run', () => ({
   },
 }));
 
-import { buildSyncBatchDeltaDeps, type RunResult } from './sync-batch-delta-check-deps';
+import { buildSyncBatchDeltaDeps, runReservedArgv, type RunResult } from './sync-batch-delta-check-deps';
 import { buildSyncLintGuardDeps } from './sync-batch-lint-guards-deps';
 import {
   COVERAGE_ALARM_CONDITION_KEY,
   COVERAGE_ALARM_MIN_TICKS,
+  COVERAGE_ALARM_THRESHOLD,
+  COVERAGE_ALARM_WINDOW_MS,
+  COVERAGE_JUDGE_DEADLINE_MS,
   REDUCED_BUDGET,
+  SOURCE_CHECK_SLICE,
+  buildCoverageAlarm,
+  creditLateJudgedSlots,
   evaluateCapacity,
   evaluateCoverage,
   evaluateSyncRedDeliveryWindow,
   executeSyncRedDeliveryWindow,
   fileRoutedRed,
-  idlePriorityArgv,
+  isScopeLaunchFailure,
+  reservedCapacityArgv,
   pickRedAuthor,
   recordCoverageOpportunities,
   recordCoverageTick,
@@ -221,34 +228,38 @@ function ticks(n: number, evaluated: boolean): CoverageTick[] {
   }));
 }
 
-describe('evaluateCapacity (R-1)', () => {
+describe('evaluateCapacity (R-1; green-main-ratchet P-009 R-8)', () => {
   it('runs the full budget below the soft band with no gate running', () => {
     const v = evaluateCapacity({ reading: { load1: 10, cores: 128 }, gateRunning: false, fullBudget: FULL });
-    expect(v).toEqual({ skip: false, mode: 'full', budget: FULL });
+    expect(v).toEqual({ mode: 'full', budget: FULL });
   });
 
   it('the soft load band reduces the budget instead of skipping', () => {
     const v = evaluateCapacity({ reading: { load1: 200, cores: 128 }, gateRunning: false, fullBudget: FULL });
-    expect(v.skip).toBe(false);
-    if (v.skip) return;
     expect(v.mode).toBe('reduced');
     expect(v.budget).toEqual(REDUCED_BUDGET);
   });
 
   it('a running gate reduces the budget; an undetectable gate (null) does not', () => {
     const running = evaluateCapacity({ reading: { load1: 10, cores: 128 }, gateRunning: true, fullBudget: FULL });
-    expect(running).toMatchObject({ skip: false, mode: 'reduced', reason: 'green-checkpoint-running' });
+    expect(running).toMatchObject({ mode: 'reduced', reason: 'green-checkpoint-running' });
     const unknown = evaluateCapacity({ reading: { load1: 10, cores: 128 }, gateRunning: null, fullBudget: FULL });
-    expect(unknown).toMatchObject({ skip: false, mode: 'full' });
+    expect(unknown).toMatchObject({ mode: 'full' });
   });
 
-  it('only the hard ceiling (and an unreadable load) still skip', () => {
-    const hard = evaluateCapacity({ reading: { load1: 129 * 3, cores: 128 }, gateRunning: false, fullBudget: FULL });
-    expect(hard).toMatchObject({ skip: true });
-    if (hard.skip) expect(hard.reason).toMatch(/hard ceiling/);
-    expect(evaluateCapacity({ reading: null, gateRunning: false, fullBudget: FULL })).toEqual({
-      skip: true,
-      reason: 'host-load-unreadable',
+  // R-8 falsifier (1): no load condition may skip the check. Before P-009 these two
+  // cases returned { skip: true }; the measured lint-guard skip was load 384.91 > 384.
+  it('never skips: the hard ceiling and an unreadable load only reduce the budget, and say why', () => {
+    const hard = evaluateCapacity({ reading: { load1: 384.91, cores: 128 }, gateRunning: false, fullBudget: FULL });
+    expect(hard).not.toHaveProperty('skip');
+    expect(hard.mode).toBe('reduced');
+    expect(hard.budget).toEqual(REDUCED_BUDGET);
+    expect(hard.reason).toMatch(/hard ceiling 384\.00/);
+    const blind = evaluateCapacity({ reading: null, gateRunning: true, fullBudget: FULL });
+    expect(blind).toEqual({
+      mode: 'reduced',
+      reason: 'host-load-unreadable; green-checkpoint-running',
+      budget: REDUCED_BUDGET,
     });
   });
 
@@ -281,21 +292,50 @@ describe('runSyncBatchDeltaCheck under load (R-1)', () => {
     expect(state.confirms).toBe(REDUCED_BUDGET.maxConfirmRuns);
     expect(state.cursor?.sha).toBe(SHA_B);
   });
+
+  // R-8 falsifier (1), end to end: above the hard ceiling and with an unreadable load
+  // the tick still judges its window and advances the cursor.
+  it.each([
+    ['above the hard ceiling', () => ({ load1: 10_000, cores: 128 })],
+    ['with an unreadable load', () => null],
+  ])('judges the window %s instead of skipping', async (_label, hostLoad) => {
+    const { deps, state } = fakeDeps({ hostLoad }, { sha: SHA_A, updatedAtMs: 1 });
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res.status).toBe('green');
+    expect(state.cursor?.sha).toBe(SHA_C);
+    expect(state.cursor?.coverage?.ticks.at(-1)).toMatchObject({ evaluated: true, status: 'green' });
+    expect(state.logs.some((m) => /reduced budget/.test(m))).toBe(true);
+  });
 });
 
-describe('deprioritized legs (R-1)', () => {
-  it('idlePriorityArgv wraps a command in nice 19 + best-effort ionice 7', () => {
-    expect(idlePriorityArgv('node', ['x.mjs', '--a'])).toEqual({
-      cmd: 'nice',
-      args: ['-n', '19', 'ionice', '-c', '2', '-n', '7', 'node', 'x.mjs', '--a'],
+describe('reserved-capacity legs (green-main-ratchet P-009 / D-017)', () => {
+  it('reservedCapacityArgv runs the payload in source-checks.slice at the default weights', () => {
+    expect(reservedCapacityArgv('node', ['x.mjs', '--a'])).toEqual({
+      cmd: 'systemd-run',
+      args: [
+        '--user',
+        '--scope',
+        '--quiet',
+        '--collect',
+        '--property=CollectMode=inactive-or-failed',
+        `--slice=${SOURCE_CHECK_SLICE}`,
+        '--property=CPUWeight=100',
+        '--property=IOWeight=100',
+        '--',
+        'node',
+        'x.mjs',
+        '--a',
+      ],
     });
+    // A dash would nest it under papercusp.slice (CPUWeight=25): the slice must be top-level.
+    expect(SOURCE_CHECK_SLICE).toBe('source-checks.slice');
   });
 
-  it('every heavy leg spawns through low CPU + best-effort I/O priority; the millisecond git/proc-guard reads do not', async () => {
+  it('every heavy leg spawns in the reserved slice; the millisecond git/proc-guard reads do not', async () => {
     const calls: Array<{ cmd: string; args: string[] }> = [];
     const exec = async (cmd: string, args: string[]): Promise<RunResult | null> => {
       calls.push({ cmd, args });
-      return { status: 0, stdout: '', stderr: '' };
+      return { status: 0, stdout: '', stderr: '', durationMs: 10 };
     };
     const deps = buildSyncBatchDeltaDeps({ installSlug: 'h', workspaceId: 'w', root: '/r', branch: 'staging', exec });
     await deps.probeRadius(['a.ts']);
@@ -305,8 +345,9 @@ describe('deprioritized legs (R-1)', () => {
     const heavy = calls.splice(0);
     expect(heavy).toHaveLength(4);
     for (const c of heavy) {
-      expect(c.cmd).toBe('nice');
-      expect(c.args.slice(0, 8)).toEqual(['-n', '19', 'ionice', '-c', '2', '-n', '7', 'node']);
+      expect(c.cmd).toBe('systemd-run');
+      expect(c.args).toContain(`--slice=${SOURCE_CHECK_SLICE}`);
+      expect(c.args[c.args.indexOf('--') + 1]).toBe('node');
     }
     const affectedRun = heavy.find(
       (c) => c.args.includes('--changed-paths') && !c.args.includes('--print-affected'),
@@ -315,6 +356,62 @@ describe('deprioritized legs (R-1)', () => {
     await deps.headSha();
     await deps.greenCheckpointRunning();
     expect(calls.map((c) => c.cmd)).toEqual(['git', 'node']);
+  });
+
+  it('the lint guards run in the reserved slice too', async () => {
+    const calls: Array<{ cmd: string; args: string[] }> = [];
+    const exec = async (cmd: string, args: string[]): Promise<RunResult | null> => {
+      calls.push({ cmd, args });
+      return { status: 0, stdout: 'clean', stderr: '', durationMs: 10 };
+    };
+    const deps = buildSyncLintGuardDeps({ installSlug: 'h', workspaceId: 'w', root: '/r', branch: 'staging', exec });
+    const run = await deps.runGuard('lint:no-control-bytes');
+    expect(run.exitCode).toBe(0);
+    expect(calls).toEqual([{ cmd: 'systemd-run', args: reservedCapacityArgv('npm', ['run', '--silent', 'lint:no-control-bytes']).args }]);
+  });
+
+  it('falls back to an unwrapped run, with a diagnostic, when the scope cannot start', async () => {
+    const calls: string[] = [];
+    const exec = async (cmd: string): Promise<RunResult | null> => {
+      calls.push(cmd);
+      if (cmd === 'systemd-run') {
+        return { status: 1, stdout: '', stderr: 'Failed to connect to bus: No medium found\n', durationMs: 40 };
+      }
+      return { status: 0, stdout: 'ok', stderr: '', durationMs: 900 };
+    };
+    const r = await runReservedArgv(exec, 'node', ['x.mjs'], { cwd: '/r', timeoutMs: 1000 });
+    expect(calls).toEqual(['systemd-run', 'node']);
+    expect(r).toMatchObject({ status: 0, stdout: 'ok' });
+    expect(r?.stderr).toMatch(/reserved slice unavailable \(exit 1: Failed to connect to bus/);
+    // A missing systemd-run binary (unmeasurable spawn) falls back too.
+    const missing: string[] = [];
+    const r2 = await runReservedArgv(
+      async (cmd) => {
+        missing.push(cmd);
+        return cmd === 'systemd-run' ? null : { status: 0, stdout: '', stderr: '' };
+      },
+      'node',
+      [],
+      { cwd: '/r', timeoutMs: 1000 },
+    );
+    expect(missing).toEqual(['systemd-run', 'node']);
+    expect(r2?.stderr).toMatch(/systemd-run could not be spawned/);
+  });
+
+  it('never re-runs a payload that failed INSIDE a healthy scope', async () => {
+    const calls: string[] = [];
+    const exec = async (cmd: string): Promise<RunResult | null> => {
+      calls.push(cmd);
+      // ENOENT text from the payload, but well past the launch window: a real red.
+      return { status: 1, stdout: '', stderr: 'Error: No such file or directory', durationMs: 60_000 };
+    };
+    const r = await runReservedArgv(exec, 'node', ['x.mjs'], { cwd: '/r', timeoutMs: 120_000 });
+    expect(calls).toEqual(['systemd-run']);
+    expect(r?.status).toBe(1);
+    expect(isScopeLaunchFailure({ status: 1, stderr: 'Failed to start transient scope', durationMs: 50 })).toBe(true);
+    expect(isScopeLaunchFailure({ status: 1, stderr: 'Failed to start transient scope', durationMs: 5_000 })).toBe(false);
+    expect(isScopeLaunchFailure({ status: 0, stderr: 'Failed to connect to bus' })).toBe(false);
+    expect(isScopeLaunchFailure({ status: null, stderr: 'x', failureKind: 'timeout' })).toBe(false);
   });
 });
 
@@ -333,36 +430,39 @@ describe('coverage record + alarm (R-2)', () => {
   it('counts missed five-minute opportunities around a long action and raises the coverage alarm', async () => {
     const startedAt = NOW;
     const completedAt = NOW + 30 * 60_000;
-    const priorTick: CoverageTick = {
-      atMs: NOW - 30 * 60_000,
+    // 133 judged slots of history ending 30 min before this run: with the 11 slots
+    // below that is exactly COVERAGE_ALARM_MIN_TICKS (144), 133/144 = 92% < 95%.
+    const history: CoverageTick[] = Array.from({ length: 133 }, (_, i) => ({
+      atMs: NOW - 30 * 60_000 - (132 - i) * 5 * 60_000,
       evaluated: true,
-      status: 'green',
-    };
+      status: 'green' as const,
+    }));
     const { deps, state } = fakeDeps(
       {
-        hostLoad: () => null,
+        headSha: async () => null, // git unreadable: a skipped, unevaluated run
         now: (() => {
           const times = [startedAt, completedAt, completedAt];
           let index = 0;
           return () => times[Math.min(index++, times.length - 1)]!;
         })(),
       },
-      { sha: SHA_A, updatedAtMs: 1, coverage: { ticks: [priorTick] } },
+      { sha: SHA_A, updatedAtMs: 1, coverage: { ticks: history } },
     );
 
     await runSyncBatchDeltaCheck(deps);
 
     const coverage = state.cursor?.coverage;
     expect(coverage?.ticks.filter((tick) => tick.status === 'missed-opportunity')).toHaveLength(10);
-    expect(coverage?.ticks.filter((tick) => tick.evaluated)).toHaveLength(1);
-    expect(evaluateCoverage(coverage, completedAt)).toMatchObject({ low: true, evaluated: 1, total: 12 });
+    expect(coverage?.ticks.filter((tick) => tick.evaluated)).toHaveLength(133);
+    expect(evaluateCoverage(coverage, completedAt)).toMatchObject({ low: true, evaluated: 133, total: 144 });
     expect(state.filed).toHaveLength(1);
     expect(state.filed[0]?.conditionKey).toBe(COVERAGE_ALARM_CONDITION_KEY);
+    expect(state.filed[0]?.title).toMatch(/over 24h$/);
   });
 
   it('files ONE condition-keyed alarm when coverage drops, dedups the next tick, clears on recovery', async () => {
     const { deps, state } = fakeDeps(
-      { hostLoad: () => null }, // every tick skips → unevaluated
+      { headSha: async () => null }, // every tick skips (git unreadable) → unevaluated
       { sha: SHA_A, updatedAtMs: 1, coverage: { ticks: ticks(COVERAGE_ALARM_MIN_TICKS, false) } },
     );
     await runSyncBatchDeltaCheck(deps);
@@ -373,17 +473,168 @@ describe('coverage record + alarm (R-2)', () => {
     await runSyncBatchDeltaCheck(deps); // still low — must not re-file
     expect(state.filed).toHaveLength(1);
 
-    // Recovery: a window of evaluated ticks and a judged run clear the alarm state.
+    // Recovery: a window of judged five-minute slots and a judged run clear the alarm state.
+    const judged: CoverageTick[] = Array.from({ length: COVERAGE_ALARM_MIN_TICKS + 1 }, (_, i) => ({
+      atMs: NOW - (COVERAGE_ALARM_MIN_TICKS + 1 - i) * 5 * 60_000,
+      evaluated: true,
+      status: 'green' as const,
+    }));
     state.cursor = {
       sha: SHA_A,
       updatedAtMs: 1,
-      coverage: { alarmOpenSinceMs: NOW - 1, ticks: ticks(COVERAGE_ALARM_MIN_TICKS + 1, true) },
+      coverage: { alarmOpenSinceMs: NOW - 1, ticks: judged },
     };
-    deps.hostLoad = () => ({ load1: 2, cores: 128 });
+    deps.headSha = async () => SHA_B;
     const res = await runSyncBatchDeltaCheck(deps);
     expect(res.status).toBe('green');
     expect(state.cursor?.coverage?.alarmOpenSinceMs).toBeUndefined();
     expect(state.cursor?.coverage?.ticks.at(-1)).toMatchObject({ atMs: NOW, evaluated: true });
+  });
+});
+
+// green-main-ratchet-convergence-2026-10-17 P-009, R-8 falsifier (2): coverage is computed
+// per schedule slot over 24h at a 95% target, crediting a slot whose commits a later run
+// judged within 30 minutes, and never crediting slots whose commits nobody judged.
+describe('slot coverage with late-judgment crediting (P-009 / D-017)', () => {
+  const MIN = 60_000;
+  const slot = (atMs: number, status: CoverageTick['status'], evaluated = false): CoverageTick => ({ atMs, evaluated, status });
+
+  it('pins the target: 24h window, 95%, 144-slot minimum, 30-minute judge deadline', () => {
+    expect(COVERAGE_ALARM_WINDOW_MS).toBe(24 * 60 * MIN);
+    expect(COVERAGE_ALARM_THRESHOLD).toBe(0.95);
+    expect(COVERAGE_ALARM_MIN_TICKS).toBe(144);
+    expect(COVERAGE_JUDGE_DEADLINE_MS).toBe(30 * MIN);
+  });
+
+  it('credits only skipped/missed slots at or before the judged point and within 30 minutes', () => {
+    const judgedAtMs = NOW;
+    const coverage = {
+      ticks: [
+        slot(NOW - 40 * MIN, 'missed-opportunity'), // judged 40 min later: too late
+        slot(NOW - 30 * MIN, 'skipped'), // exactly 30 min: credited
+        slot(NOW - 25 * MIN, 'leg-timeout'), // cursor advanced past it unjudged: never
+        slot(NOW - 20 * MIN, 'radius-too-wide'), // likewise never
+        slot(NOW - 15 * MIN, 'missed-opportunity'), // credited
+        slot(NOW - 10 * MIN, 'green', true), // already its own judgment: untouched
+        slot(NOW - 5 * MIN, 'missed-opportunity'), // after the judged point: not credited
+      ],
+    };
+    const out = creditLateJudgedSlots(coverage, { throughMs: NOW - 8 * MIN, judgedAtMs });
+    expect(out.ticks.map((t) => [t.status, t.evaluated, t.judgedAtMs ?? null])).toEqual([
+      ['missed-opportunity', false, null],
+      ['skipped', true, NOW],
+      ['leg-timeout', false, null],
+      ['radius-too-wide', false, null],
+      ['missed-opportunity', true, NOW],
+      ['green', true, null],
+      ['missed-opportunity', false, null],
+    ]);
+    // Pure: the input is not mutated, and nothing to credit returns the same object.
+    expect(coverage.ticks[1]!.evaluated).toBe(false);
+    const none = { ticks: [slot(NOW - 60 * MIN, 'skipped')] };
+    expect(creditLateJudgedSlots(none, { throughMs: NOW, judgedAtMs: NOW })).toBe(none);
+  });
+
+  it('evaluateCoverage judges 95% over the trailing 24h and reports late credits', () => {
+    const day = (evaluatedCount: number): CoverageTick[] =>
+      Array.from({ length: 288 }, (_, i) => ({
+        atMs: NOW - i * 5 * MIN,
+        evaluated: i < evaluatedCount,
+        status: i < evaluatedCount ? ('green' as const) : ('missed-opportunity' as const),
+        ...(i < 10 ? { judgedAtMs: NOW } : {}),
+      }));
+    expect(evaluateCoverage({ ticks: day(274) }, NOW)).toMatchObject({ total: 288, evaluated: 274, low: false });
+    expect(evaluateCoverage({ ticks: day(273) }, NOW)).toMatchObject({ total: 288, evaluated: 273, low: true });
+    expect(evaluateCoverage({ ticks: day(274) }, NOW).lateCredited).toBe(10);
+    // Slots older than 24h fall out of the window.
+    const old = { ticks: [...day(288), slot(NOW - 25 * 60 * MIN, 'missed-opportunity')] };
+    expect(evaluateCoverage(old, NOW)).toMatchObject({ total: 288, ratio: 1 });
+  });
+
+  /** A tick whose deps.now() returns `startedAt` first and `completedAt` afterwards. */
+  function clock(startedAt: number, completedAt: number): () => number {
+    let first = true;
+    return () => {
+      if (first) {
+        first = false;
+        return startedAt;
+      }
+      return completedAt;
+    };
+  }
+
+  // The slots a long previous run left as missed-opportunity during its own execution.
+  const leftBehind = (): CoverageTick[] => [
+    slot(NOW - 20 * MIN, 'green', true),
+    slot(NOW - 15 * MIN, 'missed-opportunity'),
+    slot(NOW - 10 * MIN, 'missed-opportunity'),
+    slot(NOW - 5 * MIN, 'missed-opportunity'),
+  ];
+
+  it('a later run that judged the whole backlog credits the slots it reached within 30 minutes', async () => {
+    const { deps, state } = fakeDeps(
+      { now: clock(NOW, NOW + 25 * MIN) },
+      { sha: SHA_A, updatedAtMs: 1, coverage: { ticks: leftBehind() } },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res).toMatchObject({ status: 'green', judgedThrough: 'start' });
+    const t = state.cursor?.coverage?.ticks ?? [];
+    const at = (ms: number) => t.find((x) => x.atMs === ms);
+    // Finished 25 min after start: the NOW-5 slot was judged exactly 30 min later.
+    expect(at(NOW - 5 * MIN)).toMatchObject({ status: 'missed-opportunity', evaluated: true, judgedAtMs: NOW + 25 * MIN });
+    expect(at(NOW - 10 * MIN)).toMatchObject({ evaluated: false });
+    expect(at(NOW - 15 * MIN)).toMatchObject({ evaluated: false });
+    // Slots that passed DURING this run were not judged by it.
+    expect(t.filter((x) => x.atMs > NOW && x.status === 'missed-opportunity').every((x) => !x.evaluated)).toBe(true);
+    expect(evaluateCoverage(state.cursor?.coverage, NOW + 25 * MIN).lateCredited).toBe(1);
+  });
+
+  it('a quick later run credits every left-behind slot', async () => {
+    const { deps, state } = fakeDeps(
+      { now: clock(NOW, NOW + 4 * MIN) },
+      { sha: SHA_A, updatedAtMs: 1, coverage: { ticks: leftBehind() } },
+    );
+    await runSyncBatchDeltaCheck(deps);
+    const credited = (state.cursor?.coverage?.ticks ?? []).filter((x) => x.judgedAtMs !== undefined);
+    expect(credited.map((x) => x.atMs)).toEqual([NOW - 15 * MIN, NOW - 10 * MIN, NOW - 5 * MIN]);
+  });
+
+  it('a run that left backlog behind credits only slots up to its newest judged commit', async () => {
+    const { deps, state } = fakeDeps(
+      {
+        now: clock(NOW, NOW + 4 * MIN),
+        // Newest first: the window cap of 1 judges only the older commit (committed NOW-12m).
+        listBatches: async () => [
+          batch({ sha: SHA_B, committedAtMs: NOW - 1 * MIN }),
+          batch({ sha: SHA_C, committedAtMs: NOW - 12 * MIN }),
+        ],
+      },
+      { sha: SHA_A, updatedAtMs: 1, windowCommitCap: 1, coverage: { ticks: leftBehind() } },
+    );
+    const res = await runSyncBatchDeltaCheck(deps);
+    expect(res).toMatchObject({ status: 'green', judgedThrough: NOW - 12 * MIN });
+    expect(state.cursor?.sha).toBe(SHA_C);
+    const credited = (state.cursor?.coverage?.ticks ?? []).filter((x) => x.judgedAtMs !== undefined);
+    expect(credited.map((x) => x.atMs)).toEqual([NOW - 15 * MIN]);
+  });
+
+  it('an unevaluated run credits nothing', async () => {
+    const { deps, state } = fakeDeps(
+      { now: clock(NOW, NOW + 4 * MIN), headSha: async () => null },
+      { sha: SHA_A, updatedAtMs: 1, coverage: { ticks: leftBehind() } },
+    );
+    await runSyncBatchDeltaCheck(deps);
+    expect((state.cursor?.coverage?.ticks ?? []).some((x) => x.judgedAtMs !== undefined)).toBe(false);
+  });
+
+  it('the alarm reports the 24h window, the 95% target and the late-credit count', () => {
+    const coverage = { ticks: Array.from({ length: 150 }, (_, i) => slot(NOW - i * 5 * MIN, 'missed-opportunity')) };
+    const verdict = evaluateCoverage(coverage, NOW);
+    const alarm = buildCoverageAlarm(verdict, coverage);
+    expect(alarm.conditionKey).toBe(COVERAGE_ALARM_CONDITION_KEY);
+    expect(alarm.title).toBe('sync-batch delta check coverage low: 0% of schedule slots judged over 24h');
+    expect(alarm.body).toMatch(/below the 95% target/);
+    expect(alarm.body).toMatch(/within 30m \(0 of the judged slots/);
   });
 });
 

@@ -25,7 +25,8 @@ function headerRows(name: string): readonly unknown[] | undefined {
   if (name === 'taskManager.inventory') return [{ enabled: false }];
   if (name === 'hive.controlState') return [];
   if (name === 'plans.attentionCounts') return [{ decisionItems: 0, decisionPlans: 0, alerts: 0, total: 0, degraded: false }];
-  if (name === 'plans.list' || name === 'plans.attention' || name === 'planWorkActivity.list') return [];
+  if (name === 'plans.list' || name === 'plans.attention' || name === 'plans.attentionRefs'
+      || name === 'planWorkActivity.list') return [];
   return undefined;
 }
 
@@ -56,13 +57,23 @@ async function scopeFixture(page: Page) {
 type CollectionKind = 'plans' | 'tea';
 type CollectionJourney = 'priority' | 'selection' | 'refusal';
 
+// These mounted shell consumers are outside the collection contract. Keep an
+// explicit manifest: unknown queries and the real dock layout still fall through.
+const collectionShellQueries = new Set([
+  'accounts.pool', 'accounts.sessionOverride', 'dev.gitPipeline', 'hiveFromRepo.progress',
+  'operatorConversations.current', 'operatorTurns.page', 'themes.catalog', 'toastLog.recent',
+  'voicePrefs.effective', 'workspaceHosts.control',
+]);
+
 async function prepareDeclaredCollection(page: Page, kind: CollectionKind, journey: CollectionJourney) {
     const projects = await scopeFixture(page);
     // This editor never launches an agent. Its hidden launcher still requests
     // these options through the same two-slot request scheduler, so a live
     // bootstrap scan can consume the save/readback deadline before the
     // collection fixture is reached. Model that unrelated contract explicitly.
-    await page.route('**/api/agent-mcp/console/bootstrap-su/options', (route) => route.fulfill({
+    // Match the path rather than a bare-URL glob: the launcher appends both
+    // ?agent=... and ?identities=... to this endpoint.
+    await page.route(url => url.pathname === '/api/agent-mcp/console/bootstrap-su/options', (route) => route.fulfill({
       status: 200, contentType: 'application/json', body: JSON.stringify({
         status: 'ok', identities: [], unreadable: [], nextAfter: null,
         fleets: [], accounts: [], schemes: [], ompCatalog: { status: 'unavailable', models: [] },
@@ -94,6 +105,7 @@ async function prepareDeclaredCollection(page: Page, kind: CollectionKind, journ
     const unreadableReadbacks: string[] = [];
     const invalidations: Array<{ before: number; after: number }> = [];
     const acknowledgements: Array<{ expectedVersion: number; observedVersion?: number; phase: string }> = [];
+    const unmodelledQueries = new Set<string>();
     const selection = () => readTypedPropertyCollection({ propertySchema: schema, property,
       properties: { [property]: { value: ids, version: 2, edited_by: 'agent', provenance: 'agent-edit', edited_at: '2026-10-07T00:00:00Z' },
         [policyName]: { value: policy, version, edited_by: 'owner', provenance: 'owner-edit', edited_at: '2026-10-07T00:00:00Z' } },
@@ -110,7 +122,11 @@ async function prepareDeclaredCollection(page: Page, kind: CollectionKind, journ
           rows: selected.items.map((row) => ({ ...row, label: labels[visibleIds.indexOf(row.id)],
             state: row.id === ids[2] ? 'blocked' : 'ready', reason: row.id === ids[2] ? 'Waiting for dependency' : null })) } } } }];
       }
-      return headerRows(name);
+      const ancillary = headerRows(name);
+      if (ancillary !== undefined) return ancillary;
+      if (collectionShellQueries.has(name)) return [];
+      if (name !== 'dockLayouts.byName') unmodelledQueries.add(name);
+      return undefined;
     }, { push: true });
     await page.route('**/api/admin/goals/set-property', async (route) => {
       const posted = route.request().postDataJSON();
@@ -192,7 +208,8 @@ async function prepareDeclaredCollection(page: Page, kind: CollectionKind, journ
           };
         }).catch((error) => ({ unavailable: String(error) }));
         await test.info().attach(`collection-${kind}-readback-v${version}`, {
-          body: JSON.stringify({ reads, writes, invalidations, unreadableReadbacks, acknowledgements, policy, version, browser }), contentType: 'application/json',
+          body: JSON.stringify({ reads, writes, invalidations, unreadableReadbacks, acknowledgements,
+            unmodelledQueries: [...unmodelledQueries], policy, version, browser }), contentType: 'application/json',
         });
       }
     }
@@ -275,6 +292,7 @@ async function prepareDeclaredCollection(page: Page, kind: CollectionKind, journ
     if (kind === 'plans') await expect(editor.getByRole('checkbox', { name: 'Include Maintained rubric' })).toBeChecked();
     await page.screenshot({ path: test.info().outputPath(`collection-${kind}-${journey}.png`) });
     sync.assertServed('goals.list', 'goals.detail');
+    expect([...unmodelledQueries], 'new shell queries need an explicit fixture contract').toEqual([]);
       },
     };
 }
@@ -312,6 +330,30 @@ const collectionTest = test.extend<{
 });
 const collectionJourneys = (['plans', 'tea'] as const).flatMap((kind) =>
   (['priority', 'selection', 'refusal'] as const).map((journey) => ({ kind, journey })));
+test('declared collection fixture intercepts launcher option queries', async ({ page }) => {
+  // A missed fixture route must fail locally rather than reach a live scan.
+  await page.route('**/api/agent-mcp/console/bootstrap-su/options**', route => route.fulfill({
+    status: 502, body: 'Unmodelled launcher options request',
+  }));
+  await page.route(/\/api\/zero-harness\/rest-query\?/, route => route.fulfill({
+    status: 502, body: 'Unmodelled sync request',
+  }));
+  await prepareDeclaredCollection(page, 'tea', 'selection');
+  for (const query of ['', '?agent=claude', '?identities=1&limit=30']) {
+    const response = await page.goto(`/api/agent-mcp/console/bootstrap-su/options${query}`);
+    expect(response?.status(), `fixture must cover launcher options${query}`).toBe(200);
+    expect(await response!.json()).toMatchObject({ status: 'ok', identities: [], fleets: [], accounts: [] });
+  }
+  for (const name of [...collectionShellQueries, 'plans.attentionRefs']) {
+    const response = await page.goto(`/api/zero-harness/rest-query?name=${name}&args={}`);
+    expect(response?.status(), `fixture must cover shell query ${name}`).toBe(200);
+    expect(await response!.json()).toMatchObject({ rows: [] });
+  }
+  for (const name of ['dockLayouts.byName', 'fixture.unmodelled']) {
+    const response = await page.goto(`/api/zero-harness/rest-query?name=${name}&args={}`);
+    expect(response?.status(), `fixture must preserve fallthrough for ${name}`).toBe(502);
+  }
+});
 for (const { kind, journey } of collectionJourneys) {
   const contract = journey === 'priority' ? 'preserves owner order through reload'
     : journey === 'selection' ? 'preserves exclusion and reselection through reload'

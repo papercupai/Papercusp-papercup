@@ -264,6 +264,34 @@ describe('checkGreenMainSlo (production wiring)', () => {
     expect(String(mocks.recordWatchdogPassOutcome.mock.calls[0][3])).toContain('reason ledger down');
   });
 
+  it('keeps the pass healthy and the SLO alert active when no live gate owner can take a reason follow-up', async () => {
+    mocks.readGateNonVerdictReasons.mockResolvedValue({
+      windowHours: 24,
+      sinceMs: NOW - 24 * HOUR,
+      measuredAtMs: NOW,
+      reasons: [{ reason: 'skipped-qualification-conflict', count: 7, latestAtMs: NOW - 1 }],
+    });
+    mocks.readGateOwnership.mockResolvedValueOnce({ claimState: 'held', takenBy: 'su-dead', holderSessionState: 'ended' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await checkGreenMainSlo(fakeSql([{ workspace_id: 'ws-1', last_green_at: String(NOW - 2 * HOUR) }]), {
+      installSlug: 'papercusp', nowMs: () => NOW,
+    });
+
+    expect(res?.slo.breaches.some((breach) => breach.metric === 'non-verdict-reason' &&
+      breach.subject === 'skipped-qualification-conflict')).toBe(true);
+    expect(res?.reasonItems).toEqual([]);
+    expect(res?.reasonFilingSkips).toEqual([{ reason: 'skipped-qualification-conflict', cause: 'no-live-gate-owner' }]);
+    expect(res?.conditionErrors).toEqual([]);
+    expect(mocks.createOneWorkItem).not.toHaveBeenCalled();
+    expect(mocks.broadcastSevereEvent).toHaveBeenCalled();
+    expect(mocks.notifyAttentionOnce).toHaveBeenCalled();
+    expect(mocks.recordWatchdogPassOutcome).toHaveBeenCalledWith(
+      expect.anything(), 'green-main-slo', { routineName: 'green-checkpoint', installSlug: 'papercusp' }, undefined,
+    );
+    warn.mockRestore();
+  });
+
   it('does nothing (and records a healthy pass) when the install has no gate routine', async () => {
     const res = await checkGreenMainSlo(fakeSql([]), { installSlug: 'papercusp', nowMs: () => NOW });
     expect(res).toBeNull();
@@ -352,15 +380,19 @@ describe('recurring non-verdict reasons (P-029)', () => {
     });
     it('preserves a different incumbent and claims an unassigned adopted item without force', async () => {
       mocks.createOneWorkItem.mockResolvedValueOnce({ ok: true, workItem: { id: 'WI-reason', assignee: 'su-incumbent' } });
-      expect((await fileRecurringNonVerdictReason(target, breach)).assignee).toBe('su-incumbent');
+      expect(await fileRecurringNonVerdictReason(target, breach)).toMatchObject({ id: 'WI-reason', assignee: 'su-incumbent' });
       mocks.createOneWorkItem.mockResolvedValueOnce({ ok: true, workItem: { id: 'WI-reason', assignee: null, harness: 'papercusp' } });
       mocks.claimWorkItem.mockResolvedValueOnce({ id: 'WI-reason', assignee: 'su-current' });
-      expect((await fileRecurringNonVerdictReason(target, breach)).assignee).toBe('su-current');
+      expect(await fileRecurringNonVerdictReason(target, breach)).toMatchObject({ id: 'WI-reason', assignee: 'su-current' });
       expect(mocks.claimWorkItem).toHaveBeenCalledWith('WI-reason', 'su-current', { harness: 'papercusp', assignedBy: 'system:green-main-slo' });
     });
-    it('refuses unverified ownership and never reports an unassigned filing as successful', async () => {
+    it('skips without a verified live owner and never reports an unassigned filing as successful', async () => {
       mocks.readGateOwnership.mockResolvedValueOnce({ claimState: 'held', takenBy: 'su-dead', holderSessionState: 'ended' });
-      await expect(fileRecurringNonVerdictReason(target, breach)).rejects.toThrow('no verified live gate owner');
+      mocks.createOneWorkItem.mockClear();
+      await expect(fileRecurringNonVerdictReason(target, breach)).resolves.toEqual({ skipped: 'no-live-gate-owner' });
+      expect(mocks.createOneWorkItem).not.toHaveBeenCalled();
+      mocks.readGateOwnership.mockRejectedValueOnce(new Error('ownership ledger unavailable'));
+      await expect(fileRecurringNonVerdictReason(target, breach)).rejects.toThrow('ownership ledger unavailable');
       mocks.createOneWorkItem.mockResolvedValueOnce({ ok: true, workItem: { id: 'WI-reason', assignee: null, harness: 'papercusp' } });
       mocks.claimWorkItem.mockResolvedValueOnce(null); mocks.getWorkItem.mockResolvedValueOnce(null);
       await expect(fileRecurringNonVerdictReason(target, breach)).rejects.toThrow('remains unassigned');

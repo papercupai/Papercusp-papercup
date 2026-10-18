@@ -200,6 +200,9 @@ async function completeExecutionWorkItem(id: string, actor: string): Promise<Rec
     id,
     state: 'done',
     assumptions: 'none',
+    // change-kind-declared-proof P-002: a successful close must declare its change kind.
+    changeKinds: ['no-code-change'],
+    changeKindReason: 'plan-run acceptance fixture close; no code is changed',
     completion: {
       summary: 'Acceptance fixture root completed',
       testsRun: 'plan-run-action.integration.test.ts real shared-seam acceptance',

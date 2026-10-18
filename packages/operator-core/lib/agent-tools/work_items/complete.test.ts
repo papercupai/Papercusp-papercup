@@ -235,6 +235,7 @@ import {
   hoistMisplacedCompletionFields,
 } from './completion-coerce';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
+import { CHANGE_KIND_GATE_CUTOVER } from '../../change-kind-proof';
 import {
   COMPLETION_SETTLEMENT_MANIFEST_CONTRACT,
   hasEnumeratedVerificationCoverage,
@@ -1541,7 +1542,13 @@ describe('work_items:complete (keyed-array)', () => {
     setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linked, state: 'passed' }));
     // `plans:set-status` can deliberately return ok:true without flipping when a
     // coverage guard sees another open sibling. The canonical readback remains wip.
-    dbMocks.planItemStatusRows.mockResolvedValueOnce([{ status: 'wip' }]);
+    // Answer the plan_items readback by its query text, not by call order: other reads on
+    // the close path (e.g. the change-kind declaration read, P-002) share this mock and
+    // would otherwise consume a one-shot value meant for the readback.
+    const defaultRows = dbMocks.planItemStatusRows.getMockImplementation();
+    dbMocks.planItemStatusRows.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) =>
+      strings.join('').includes('FROM harness_shared.plan_items') ? [{ status: 'wip' }] : defaultRows?.(strings, ...values),
+    );
 
     const r = await one({
       id: 'F-12',
@@ -8043,5 +8050,161 @@ describe('work_items:complete — completion prefill wiring (P-008)', () => {
     expect(r.ok).toBe(true);
     expect(r.completionPrefill).toBeUndefined();
     expect(persistedEvidence()?.filesChanged).toBeUndefined();
+  });
+});
+
+// ── change-kind-declared-proof-2026-10-15 P-002: the change-kind close gate, through the handler ──
+describe('work_items:complete — change-kind proof gate (change-kind-declared-proof P-002)', () => {
+  const AFTER_CUTOVER = new Date(Date.parse(CHANGE_KIND_GATE_CUTOVER) + 3_600_000).toISOString();
+  const BEFORE_CUTOVER = new Date(Date.parse(CHANGE_KIND_GATE_CUTOVER) - 3_600_000).toISOString();
+  const claimed = (takenAt: string) => ({ ...item, takenAt, assignee: 'su-tester' });
+  /** The stored declaration rows readChangeKinds returns for F-12 (newest last). */
+  let declarationRows: Array<Record<string, unknown>>;
+
+  beforeEach(() => {
+    declarationRows = [];
+    const defaultRows = dbMocks.planItemStatusRows.getMockImplementation();
+    dbMocks.planItemStatusRows.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('');
+      if (text.includes('work_item_change_kind_declarations')) {
+        return text.includes('SELECT feature_id, kinds') ? declarationRows : [];
+      }
+      return defaultRows?.(strings, ...values);
+    });
+  });
+
+  const declaredAtClaim = (kinds: string[]) => {
+    declarationRows = [
+      { feature_id: 'F-12', kinds, step: 'claim', declared_by: 'su-tester', declared_at: AFTER_CUTOVER, reason: null },
+    ];
+  };
+
+  it('refuses a ui-declared close that carries no recorded real-app run artifact; the record is kept and the item stays open', async () => {
+    getWorkItem.mockResolvedValue(claimed(AFTER_CUTOVER));
+    declaredAtClaim(['ui']);
+    const r = await one({
+      id: 'F-12',
+      state: 'passed',
+      completion: {
+        summary: 'restyled the queue panel',
+        testsRun: 'npm run test:file -- queue-panel.test.ts',
+        testResult: '6/6 vitest green',
+        filesChanged: ['apps/operator/app/queue/panel.css'],
+      },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.stateError).toMatch(/^REJECTED — F-12 declares change kind\(s\) ui/);
+    expect(r.error).toContain('a recorded run of the real app');
+    expect(r.changeKindProof.kinds).toEqual(['ui']);
+    expect(r.changeKindProof.missing.map((m: { kind: string }) => m.kind)).toEqual(['ui']);
+    // D-002: the terminal transition is never attempted, and the completion record survives.
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    expect(r.completion).toMatchObject({ summary: 'restyled the queue panel' });
+  });
+
+  it('a validateOnly preview reports the change-kind-proof contract requirement as unsatisfied', async () => {
+    getWorkItem.mockResolvedValue(claimed(AFTER_CUTOVER));
+    declaredAtClaim(['logic']);
+    const r = await one({
+      id: 'F-12',
+      state: 'passed',
+      validateOnly: true,
+      completion: { summary: 'changed the ranking', testsRun: 'eyeballed it', testResult: 'looks right' },
+    });
+    expect(r.validationOnly).toBe(true);
+    expect(r.completionContract.requirements).toEqual(
+      expect.arrayContaining([expect.objectContaining({ key: 'change-kind-proof', applicable: true, satisfied: false })]),
+    );
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('lands a logic-declared close that carries a passing test run', async () => {
+    getWorkItem.mockResolvedValue(claimed(AFTER_CUTOVER));
+    declaredAtClaim(['logic']);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+    const completion = {
+      summary: 'changed the ranking',
+      testsRun: 'testing:run { files: ["packages/operator-core/lib/rank.test.ts"] }',
+      testResult: '12 passed',
+    };
+    const preview = await one({ id: 'F-12', state: 'passed', validateOnly: true, completion });
+    expect(preview.completionContract.requirements).toEqual(
+      expect.arrayContaining([expect.objectContaining({ key: 'change-kind-proof', applicable: true, satisfied: true })]),
+    );
+    const r = await one({ id: 'F-12', state: 'passed', completion });
+    expect(r.ok).toBe(true);
+    expect(r.stateError).toBeUndefined();
+    expect(r.changeKindProof).toBeUndefined();
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+    expect(r.workItem.state).toBe('passed');
+  });
+
+  it('lands a multi-kind close that carries one completion.kindEvidence entry per declared kind', async () => {
+    getWorkItem.mockResolvedValue(claimed(AFTER_CUTOVER));
+    declaredAtClaim(['config', 'docs']);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+    const r = await one({
+      id: 'F-12',
+      state: 'passed',
+      completion: {
+        summary: 'raised the default and documented it',
+        kindEvidence: [
+          { kind: 'config', readBack: 'config:get queue.limit returned 50' },
+          { kind: 'docs', readBack: 'docs:get agent-insights/queue-limit shows the new default' },
+        ],
+      },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.workItem.state).toBe('passed');
+  });
+
+  it('refuses an undeclared close of a claim taken after the cutover', async () => {
+    getWorkItem.mockResolvedValue(claimed(AFTER_CUTOVER));
+    const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'done', testsRun: 'npm test', testResult: 'pass' } });
+    expect(r.ok).toBe(false);
+    expect(r.stateError).toContain('has no change-kind declaration');
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('D-003: an undeclared close of a claim taken before the cutover lands with changeKindWarning', async () => {
+    getWorkItem.mockResolvedValue(claimed(BEFORE_CUTOVER));
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+    const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'done', testsRun: 'npm test', testResult: 'pass' } });
+    expect(r.ok).toBe(true);
+    expect(r.workItem.state).toBe('passed');
+    expect(r.changeKindWarning).toContain(`began ${BEFORE_CUTOVER}`);
+  });
+
+  it('D-001: a first declaration at close lands only with changeKindReason, and is then recorded', async () => {
+    getWorkItem.mockResolvedValue(claimed(AFTER_CUTOVER));
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+    const completion = { summary: 'changed the ranking', testsRun: 'npx vitest run rank.test.ts', testResult: '12 passed' };
+
+    const late = await one({ id: 'F-12', state: 'passed', changeKinds: ['logic'], completion });
+    expect(late.ok).toBe(false);
+    expect(late.stateError).toContain('`changeKindReason`');
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+
+    const reasoned = await one({
+      id: 'F-12',
+      state: 'passed',
+      changeKinds: ['logic'],
+      changeKindReason: 'claimed through scheduler:get_next before the item was read',
+      completion,
+    });
+    expect(reasoned.ok).toBe(true);
+    expect(reasoned.changeKinds).toMatchObject({ recorded: true, current: ['logic'], step: 'complete' });
+    const inserts = dbMocks.planItemStatusRows.mock.calls.filter(([strings]) =>
+      (strings as TemplateStringsArray).join('').includes('INSERT INTO harness_shared.work_item_change_kind_declarations'),
+    );
+    expect(inserts.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a dropped close is not gated', async () => {
+    getWorkItem.mockResolvedValue(claimed(AFTER_CUTOVER));
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'dropped' }));
+    const r = await one({ id: 'F-12', state: 'dropped', completion: { summary: 'superseded by F-13' } });
+    expect(r.stateError ?? '').not.toContain('change-kind');
+    expect(r.changeKindProof).toBeUndefined();
   });
 });

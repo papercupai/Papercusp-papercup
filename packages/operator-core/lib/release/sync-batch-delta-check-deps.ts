@@ -37,7 +37,8 @@ import { getMessageById, sendMessage } from '../agent-tools/coordination/message
 import { wakeRecipients } from '../agent-tools/coordination/inbox-wake';
 import { getWorkItem } from '../work-items';
 import {
-  idlePriorityArgv,
+  isScopeLaunchFailure,
+  reservedCapacityArgv,
   parseAffectedProbe,
   parseFailingFilesLine,
   parseLoadavg1,
@@ -96,7 +97,7 @@ export interface SyncBatchDeltaDepsConfig {
   /** Log label retained for the lint guard's existing retry diagnostics. */
   notificationLogLabel?: string;
   /** Process seam — defaults to the real async argv spawn below. Tests inject a
-   *  recorder to assert WHICH legs run at low CPU / best-effort I/O priority without spawning anything. */
+   *  recorder to assert WHICH legs run in the reserved slice without spawning anything. */
   exec?: (cmd: string, args: string[], opts: { cwd: string; timeoutMs: number }) => Promise<RunResult | null>;
 }
 
@@ -172,6 +173,36 @@ export function stripSgr(s: string): string {
  *  (`sync-batch-lint-guards-deps.ts`, P-028) under the same contract. */
 export const runBoundedArgv = run;
 
+type ExecFn = (cmd: string, args: string[], opts: { cwd: string; timeoutMs: number }) => Promise<RunResult | null>;
+
+/**
+ * Run a heavy leg in the reserved `source-checks.slice` (P-009 / D-017 point 2). When the
+ * SCOPE cannot start (no user bus, no systemd-run binary) the payload is re-run unwrapped
+ * at normal priority and the result's stderr carries a one-line diagnostic saying so, so
+ * a leg never goes unmeasured because the reservation was unavailable. A spawn that
+ * could not be measured at all (`null`, e.g. ENOENT for `systemd-run`) also falls back.
+ */
+export async function runReservedArgv(
+  exec: ExecFn,
+  cmd: string,
+  args: string[],
+  opts: { cwd: string; timeoutMs: number },
+): Promise<RunResult | null> {
+  const wrapped = reservedCapacityArgv(cmd, args);
+  const reserved = await exec(wrapped.cmd, wrapped.args, opts);
+  if (reserved && !isScopeLaunchFailure(reserved)) return reserved;
+  const why = reserved
+    ? `exit ${reserved.status}: ${reserved.stderr.trim().split(/\r?\n/)[0]?.slice(0, 200) ?? ''}`
+    : 'systemd-run could not be spawned';
+  const plain = await exec(cmd, args, opts);
+  if (!plain) return null;
+  return {
+    ...plain,
+    stderr: `${plain.stderr}${plain.stderr.endsWith('\n') || plain.stderr === '' ? '' : '\n'}` +
+      `[source-checks] reserved slice unavailable (${why}); ran at normal priority\n`,
+  };
+}
+
 /** Parse the router's terminal `TEST_FILE_RESULT … status=…` line. Contract (root
  *  CLAUDE.md + the pure module's header): an ABSENT line or `matched=0` is `null`
  *  (undetermined), never `false` — a batch/collection abort must not read as a red. */
@@ -214,15 +245,12 @@ export async function readSyncDeltaKnownGood(installSlug: string): Promise<strin
 export function buildSyncBatchDeltaDeps(cfg: SyncBatchDeltaDepsConfig): SyncBatchDeltaDeps {
   const script = (rel: string): string => path.join(cfg.root, rel);
   const exec = cfg.exec ?? run;
-  /** A HEAVY leg (radius probe, affected suites, tsc, per-file confirm) runs at low
-   *  CPU + best-effort I/O priority (P-001): that, not skipping, is what keeps the
-   *  check from competing with the green-checkpoint suite without starving it in the
-   *  idle I/O class. git and proc-guard stay normal —
-   *  they are millisecond reads and a starved cursor read would only add latency. */
-  const heavy = (cmd: string, args: string[], opts: { cwd: string; timeoutMs: number }) => {
-    const wrapped = idlePriorityArgv(cmd, args);
-    return exec(wrapped.cmd, wrapped.args, opts);
-  };
+  /** A HEAVY leg (radius probe, affected suites, tsc, per-file confirm) runs in the
+   *  reserved `source-checks.slice` (green-main-ratchet-convergence-2026-10-17 P-009 /
+   *  D-017): that, not skipping under load, is what bounds its share of the box. git and
+   *  proc-guard stay unwrapped — they are millisecond reads. */
+  const heavy = (cmd: string, args: string[], opts: { cwd: string; timeoutMs: number }) =>
+    runReservedArgv(exec, cmd, args, opts);
 
   const filedBy = cfg.filedBy ?? 'system:sync-batch-delta-check';
   const notificationPrefix = cfg.notificationPrefix ?? 'sync-delta-red';

@@ -939,12 +939,12 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     cancellationSignal ??= signal;
     cancellation.abort();
   };
-  const onInt = () => cancel('SIGINT'), onTerm = () => cancel('SIGTERM');
-  process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);
+  const onInt = () => cancel('SIGINT'), onTerm = () => cancel('SIGTERM'), onHup = () => cancel('SIGHUP');
+  process.on('SIGINT', onInt); process.on('SIGTERM', onTerm); process.on('SIGHUP', onHup);
   let owned;
   try { owned = await fs.mkdtemp(join(scratch, 'verifier-command-')); }
   catch (error) {
-    process.off('SIGINT', onInt); process.off('SIGTERM', onTerm);
+    process.off('SIGINT', onInt); process.off('SIGTERM', onTerm); process.off('SIGHUP', onHup);
     throw error;
   }
   const root = join(owned, 'invoked-source');
@@ -1142,7 +1142,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
           } finally { await fs.rm(next, { force: true }); }
         }
       } finally {
-        process.off('SIGINT', onInt); process.off('SIGTERM', onTerm);
+        process.off('SIGINT', onInt); process.off('SIGTERM', onTerm); process.off('SIGHUP', onHup);
       }
     }
     checkCancellation();
@@ -1337,13 +1337,23 @@ export function readVerifierPhaseMeasurements(path) {
 /** Reserve both complete final censuses and cleanup, using this run's observations or an
  * explicitly selected earlier phase receipt. Estimates are prognoses, not guarantees;
  * an omitted child estimate remains explicitly unknown. No source/dependency scope changes.
+ * `totalMs` is work remaining at source admission, not a caller timeout. Use
+ * `requiredTimeoutMs` when launching: startup already spends the absolute clock.
+ * Reserve at least 30s, or 125% of an explicitly measured launch delay. This is
+ * a forecast; admission still checks the actual remaining clock independently.
  * @param {Record<string, number>} measurements @param {number} [childEstimateMs]
+ * @param {{ observedLaunchMs?: number, maxTimeoutMs?: number }} [options]
  */
-export function estimateVerifierCommandBudget(measurements, childEstimateMs = 0) {
+export function estimateVerifierCommandBudget(measurements, childEstimateMs = 0,
+  { observedLaunchMs, maxTimeoutMs } = {}) {
   for (const phase of VERIFIER_PREPARATION_PHASES)
     assert.ok(Number.isSafeInteger(measurements[phase]) && measurements[phase] >= 0,
       `Verifier budget requires completed phase: ${phase}`);
   assert.ok(Number.isSafeInteger(childEstimateMs) && childEstimateMs >= 0, 'Invalid verifier child estimate');
+  assert.ok(observedLaunchMs === undefined || Number.isSafeInteger(observedLaunchMs) && observedLaunchMs >= 0,
+    'Invalid verifier launch observation');
+  assert.ok(maxTimeoutMs === undefined || Number.isSafeInteger(maxTimeoutMs) && maxTimeoutMs > 0,
+    'Invalid verifier caller timeout ceiling');
   const preparationMs = VERIFIER_PREPARATION_PHASES.reduce((total, phase) => total + measurements[phase], 0);
   const sourceCheckMs = Math.max(...['deps.source.before', 'deps.source.after-snapshot',
     'deps.source.after-preflight', 'child.preflight', 'source.postverify'].map(phase => measurements[phase] ?? 0));
@@ -1352,9 +1362,19 @@ export function estimateVerifierCommandBudget(measurements, childEstimateMs = 0)
   // work: deletion must still walk the whole population. This is a conservative proxy.
   const cleanupMs = Math.max(120_000, measurements.cleanup ?? 0, measurements['source.freeze'], measurements['deps.snapshot']);
   const remainingMs = sourceCheckMs * 2 + dependencyCheckMs + cleanupMs + childEstimateMs;
+  const totalMs = Math.ceil((preparationMs + remainingMs) * 1.25);
+  const launchReserveMs = Math.max(30_000, Math.ceil((observedLaunchMs ?? 0) * 1.25));
+  // The launcher publishes whole seconds and admission requires strictly more
+  // than the forecast. Retain that strict boundary even on exact seconds.
+  const requiredTimeoutMs = (Math.floor((totalMs + launchReserveMs) / 1_000) + 1) * 1_000;
+  assert.ok(Number.isSafeInteger(requiredTimeoutMs), 'Invalid verifier launch budget');
+  if (maxTimeoutMs !== undefined && requiredTimeoutMs > maxTimeoutMs)
+    throw new PreviewError(`VERIFIER_LAUNCH_BUDGET_REFUSAL requiredTimeoutMs=${requiredTimeoutMs} ` +
+      `maxTimeoutMs=${maxTimeoutMs} workEstimateMs=${totalMs} launchReserveMs=${launchReserveMs} — ` +
+      'the caller ceiling cannot fit the work forecast plus launch reserve; do not start providers.', 2);
   return { preparationMs, sourceCheckMs, dependencyCheckMs, cleanupMs, childEstimateMs,
     unknownChild: childEstimateMs === 0, remainingMs: Math.ceil(remainingMs * 1.25),
-    totalMs: Math.ceil((preparationMs + remainingMs) * 1.25) };
+    totalMs, observedLaunchMs: observedLaunchMs ?? null, launchReserveMs, requiredTimeoutMs };
 }
 
 /** Reuse the launcher's absolute deadline and the scheduler's attributable refusal. */

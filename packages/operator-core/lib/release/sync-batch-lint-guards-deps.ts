@@ -8,23 +8,31 @@
  * the guard state (on this routine's own `routines` row) and the guard runner.
  *
  * ⛔ Async by contract, like its sibling: this runs inside bg-host, whose event loop also
- * serves :3271 and the DBOS routine engine (WI-10001771). Every guard is an argv spawn at
- * idle CPU + IO priority with a hard timeout.
+ * serves :3271 and the DBOS routine engine (WI-10001771). Every guard is an argv spawn in
+ * the reserved `source-checks.slice` (P-009 / D-017) with a hard timeout.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { idlePriorityArgv } from './sync-batch-delta-check';
 import {
   buildSyncBatchDeltaDeps,
   runBoundedArgv,
+  runReservedArgv,
   stripSgr,
   type SyncBatchDeltaDepsConfig,
 } from './sync-batch-delta-check-deps';
-import type { GuardRun, SyncLintGuardDeps, SyncLintGuardScript, SyncLintGuardState } from './sync-batch-lint-guards';
+import {
+  SYNC_LINT_GUARDS_FILED_BY,
+  type GuardRun,
+  type SyncLintGuardDeps,
+  type SyncLintGuardScript,
+  type SyncLintGuardState,
+} from './sync-batch-lint-guards';
+
+/** The system identity guard findings (and the coverage alarm) are filed under. Defined
+ *  beside the coverage alarm subject that also names it. */
+export { SYNC_LINT_GUARDS_FILED_BY };
 
 /** The `harness_shared.routines.name` whose metadata carries the guard state. */
 export const SYNC_LINT_GUARDS_ROUTINE_NAME = 'sync-batch-lint-guards';
-/** The system identity guard findings are filed under. */
-export const SYNC_LINT_GUARDS_FILED_BY = 'system:sync-batch-lint-guards';
 /** One guard's budget. The gate measured these at 1.3-16.1s on a quiet box; under a load
  *  of ~340 on 128 cores they took 9-550s at idle priority (2026-10-13). A guard past this
  *  budget is undetermined, never red. */
@@ -75,8 +83,11 @@ export function buildSyncLintGuardDeps(cfg: Omit<SyncBatchDeltaDepsConfig, 'file
     },
 
     async runGuard(script: SyncLintGuardScript): Promise<GuardRun> {
-      const argv = idlePriorityArgv('npm', ['run', '--silent', script]);
-      const r = await exec(argv.cmd, argv.args, { cwd: cfg.root, timeoutMs: SYNC_LINT_GUARD_TIMEOUT_MS });
+      // Reserved slice, with the unwrapped fallback when the scope cannot start (P-009 / D-017).
+      const r = await runReservedArgv(exec, 'npm', ['run', '--silent', script], {
+        cwd: cfg.root,
+        timeoutMs: SYNC_LINT_GUARD_TIMEOUT_MS,
+      });
       if (!r) return { exitCode: null, output: '', diagnostic: { outcome: 'spawn-error', durationMs: null, exitCode: null } };
       const output = stripSgr(`${r.stdout}\n${r.stderr}`);
       if (r.failureKind) {

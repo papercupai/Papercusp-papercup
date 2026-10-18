@@ -1098,16 +1098,56 @@ export const capabilityReadDefinition = {
         return err('mixed_window_modes', 'content_indexes cannot be combined with line or byte windows.');
       }
       if (!reference) return err('not_a_reference', 'content_indexes requires a stable scratch reference.');
+      let selectionBytes = bytes;
+      if (reference.bodyOffsetInPayload !== undefined) {
+        const bodyOffset = reference.bodyOffsetInPayload;
+        if (!Number.isSafeInteger(bodyOffset) || bodyOffset < 0 || bodyOffset >= bytes.length) {
+          return err('content_not_selectable', 'scratch reference has an invalid declared JSON body offset.');
+        }
+        selectionBytes = bytes.subarray(bodyOffset);
+      }
       let decoded: unknown;
       try {
-        decoded = JSON.parse(bytes.toString('utf8'));
+        decoded = JSON.parse(selectionBytes.toString('utf8'));
       } catch {
-        return err('content_not_selectable', 'scratch reference payload is not JSON. Use line or byte windows.');
+        decoded = undefined;
       }
       const row = decoded && typeof decoded === 'object' ? decoded as Record<string, unknown> : null;
-      const content = row?.content;
-      if (!row || !Array.isArray(content)) {
-        return err('content_not_selectable', 'scratch reference payload has no MCP content array.');
+      let content = row?.content;
+      if (!Array.isArray(content)) {
+        // Text result-door spills retain the selected text body plus a manifest
+        // describing the original MCP content items, rather than serializing a
+        // second `{content:[...]}` envelope. Reconstruct that contract here so
+        // the advertised content_indexes mode remains usable for those spills.
+        const metadata = reference.content ?? [];
+        if (metadata.length === 0 || metadata.some((entry) => entry.type !== 'text')) {
+          return err('content_not_selectable', 'scratch reference payload has no MCP content array.');
+        }
+        const bodyText = selectionBytes.toString('utf8');
+        let advisoryTexts: string[] = [];
+        if (reference.bodyOffsetInPayload !== undefined) {
+          const prefix = bytes.subarray(0, reference.bodyOffsetInPayload).toString('utf8');
+          const advisoryLine = prefix.match(/^# advisory-text-items-json: (.+)$/m)?.[1];
+          if (advisoryLine) {
+            try {
+              const parsedAdvisories = JSON.parse(advisoryLine) as unknown;
+              if (Array.isArray(parsedAdvisories) && parsedAdvisories.every((item) => typeof item === 'string')) {
+                advisoryTexts = [...parsedAdvisories];
+              }
+            } catch {
+              // A malformed advisory prefix does not make the body unreadable;
+              // the selected JSON/text item remains available below.
+            }
+          }
+        }
+        const bodyBytes = Buffer.byteLength(bodyText, 'utf8');
+        const bodyIndex = metadata.findIndex((entry) => entry.byteCount === bodyBytes);
+        const selectedBodyIndex = bodyIndex >= 0 ? bodyIndex : 0;
+        content = metadata.map((entry, index) => ({
+          type: entry.type,
+          ...(entry.mimeType ? { mimeType: entry.mimeType } : {}),
+          text: index === selectedBodyIndex ? bodyText : advisoryTexts.shift() ?? '',
+        }));
       }
       const unique = [...new Set(args.content_indexes)];
       const invalid = unique.filter((index) => index >= content.length);

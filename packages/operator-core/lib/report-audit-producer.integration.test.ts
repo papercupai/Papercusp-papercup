@@ -54,8 +54,10 @@ const note = {
   filesChanged: [],
 };
 // Reject fixture schema errors before allocating a database.
+// change-kind-declared-proof P-002: a successful close must declare its change kind.
 const terminalTemplate = complete.args.parse({ id: 'WI-123', harness: HARNESS, state: 'done',
-  assumptions: 'none', completion: note });
+  assumptions: 'none', completion: note, changeKinds: ['no-code-change'],
+  changeKindReason: 'audit-producer fixture close; no code is changed' });
 const progressTemplate = complete.args.parse({ id: 'WI-123', harness: HARNESS, recordOnly: true,
   completion: note });
 

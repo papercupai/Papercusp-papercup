@@ -5,6 +5,36 @@
  * classify) fails only that item and carries holder/hint; top-level ok stays true.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+
+const stackRegistry = vi.hoisted(() => ({ projects: [] as Array<{ slug: string; path: string }> }));
+vi.mock('../../harness-registry', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../harness-registry')>(),
+  loadHarnessRegistry: async () => stackRegistry,
+}));
+// Keep declaration persistence out of this unit fixture; stack detection and
+// claim-receipt rendering remain real. P-001 covers the declaration writer.
+const stackDeclarations = vi.hoisted(() => ({ views: new Map<string, import('../../work-item-change-kinds').ChangeKindsView>() }));
+vi.mock('../../work-item-change-kinds', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../work-item-change-kinds')>(),
+  readChangeKinds: async () => stackDeclarations.views,
+  attachChangeKindDeclarations: async (input: {
+    results: Array<Record<string, unknown>>;
+    declared: Map<string, { kinds: string[]; reason: string | null }>;
+    step: 'claim';
+  }) => input.results.map((result) => {
+    const declaration = input.declared.get(String(result.id));
+    if (!result.ok || !declaration) return result;
+    const current = declaration.kinds as import('../../change-kind-catalog').ChangeKind[];
+    stackDeclarations.views.set(String(result.id), {
+      current,
+      history: [{ kinds: current, step: 'claim', declaredBy: 'me', declaredAt: '2026-10-19T00:00:00Z', reason: declaration.reason }],
+    });
+    return { ...result, changeKinds: { recorded: true, current, step: input.step, previous: null } };
+  }),
+}));
 
 const identity = vi.hoisted(() => ({ ownerId: 'me', workspaceId: 'ws-1' as string | null }));
 const fleetAdmission = vi.hoisted(() => ({
@@ -169,6 +199,8 @@ const body = async (args: unknown) => ((await tool.handler(args as never, {} as 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  stackRegistry.projects = [];
+  stackDeclarations.views.clear();
   explicitAssigneeM.resolve.mockImplementation(async (raw, callerOwnerId) => ({
     ok: true,
     ownerId: raw.trim() === 'self' ? callerOwnerId : raw.trim(),
@@ -192,6 +224,31 @@ beforeEach(() => {
   pilotReceipts.persistBinding.mockReset();
   gateSingleton.conditionKey = null;
   gateSingleton.rewake = { guaranteed: true, reason: null };
+});
+
+describe('R3 claim receipt stack defaults (independent P023 acceptance)', () => {
+  it.each([
+    { stack: 'Tauri', file: 'src-tauri/tauri.conf.json', manifest: { productName: 'Fixture' }, tool: /verify-tauri-headless\.sh|headless\s+Tauri\s+runner/i },
+    { stack: 'web', file: 'package.json', manifest: { dependencies: { next: '15.0.0' } }, tool: /headless\s+browser|playwright|\bverdict\b/i },
+    { stack: 'unknown', file: 'package.json', manifest: { name: 'unknown-fixture' }, tool: /(?:name|choose|specify).{0,80}tool|tool.{0,80}(?:name|choos|specif)/i },
+  ])('names the default proof tool for an unconfigured $stack harness', async ({ file, manifest, tool: expectedTool }) => {
+    const root = mkdtempSync(join(tmpdir(), 'r3-claim-stack-'));
+    try {
+      const path = join(root, file);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify(manifest));
+      stackRegistry.projects = [{ slug: 'r3-fixture', path: root }];
+      claimM.mockResolvedValue(issueItem({ id: 'WI-R3-STACK', harness: 'r3-fixture', assignee: 'me' }));
+
+      const receipt = await body({ id: 'WI-R3-STACK', harness: 'r3-fixture', changeKinds: ['ui'] });
+      const result = receipt.results[0];
+      expect(result).toMatchObject({ ok: true, changeKinds: { recorded: true, current: ['ui'] } });
+      expect(JSON.stringify(result)).toMatch(expectedTool);
+      expect(JSON.stringify(result)).toMatch(/artifact|recorded/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('work_items:claim gate-red singleton guard (green-main-cycle-time-2026-10-08 P-013, D-028(4))', () => {

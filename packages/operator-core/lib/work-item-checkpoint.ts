@@ -36,6 +36,7 @@ import {
   splitCarryNoteWalls,
   workItemScope,
   attestCarryNoteUnchanged,
+  shortCarryHash,
   type WorkItemSubject,
   type CarryJournalEntry,
   type CarryNoteAttestationResult,
@@ -608,8 +609,9 @@ export async function attestWorkItemCheckpointUnchanged(
     // PASS direction, concealing a real move, which is the one direction this guard
     // exists to close; the aggregate reads as "did ANY row for this id move", which
     // is both deterministic and refuse-biased.
-    const rows = await sql<Array<{ item_updated: string | number | null; body_ts: string | number | null; updated_ts: string | number | null }>>`
-      SELECT (SELECT MAX(w.updated_ts)
+    const rows = await sql<Array<{ note: string | null; item_updated: string | number | null; body_ts: string | number | null; updated_ts: string | number | null }>>`
+      SELECT n.note,
+             (SELECT MAX(w.updated_ts)
                 FROM harness_shared.work_items w
                WHERE w.workspace_id = n.workspace_id AND w.feature_id = ${ref.workItemId}) AS item_updated,
              n.body_ts, n.updated_ts
@@ -627,7 +629,10 @@ export async function attestWorkItemCheckpointUnchanged(
           return {
             ok: false,
             refusedReason: 'attestation_state_changed',
-            currentHash: null,
+            // The body is still present when the subject moved. Return its hash so
+            // callers can reconcile the refusal against the exact stored note
+            // without first rewriting a checkpoint just to recover the CAS value.
+            currentHash: typeof row.note === 'string' && row.note.length > 0 ? shortCarryHash(row.note) : null,
             attestedCount: 0,
             bodyAgeMs: null,
             remainingAttestations: 0,
