@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
-import type { DaoPerson, DaoWorkspaceView } from '@papercusp/operator-core/lib/dao-workspace-types';
+import type { DaoCapTable, DaoPerson, DaoWorkspaceView } from '@papercusp/operator-core/lib/dao-workspace-types';
 import PeopleViews from './PeopleViews';
 import { reportingForest } from './org-chart';
 // The application provides RouteLink's progress/router context; this component
@@ -28,11 +28,78 @@ describe('SPEC-P-009 — current members including unprofiled members', () => {
 });
 
 describe('SPEC-P-011 / A — cap table and my equity', () => {
-  const position = { holderId: '1', wallet: '0x1111111111111111111111111111111111111111', shares: '1200', committed: '2000', earned: '500', claimed: '100', unvested: '1500',
-    returnEntitlements: '80', unclaimedReturns: '40', ownershipPercent: '12.00', fullyDilutedPercent: '14.00', grants: [], returns: [], personId: 'PER-alice', displayName: 'Alice equity holder', isSelf: false };
-  const capView: DaoWorkspaceView = { ...view, capTable: { status: 'ready', value: { chainId: 1, blockNumber: '42', contractVersion: '2',
+  // Production wire DTO, with hand-calculated economics rather than values from
+  // the cap-table implementation: owned 1200 + 8800 = 10000; pending grants
+  // (2000 - 100) + (9000 - 1000), plus unclaimed returns 40 + 60 = 10000.
+  // Alice's diluted position is (1200 + 1900 + 40) / 20000 = 15.70%.
+  // These are component fixtures; chain reads are verified by cap-table.test.ts.
+  const snapshot: DaoCapTable = { chainId: 1, blockNumber: '42', contractVersion: '2',
     issuedShares: '10000', reservedShares: '10000', fullyDilutedShares: '20000', nonBinding: true,
-    positions: [position, { ...position, holderId: '2', personId: null, displayName: 'My equity holder', isSelf: true }] } } };
+    positions: [
+      { holderId: '1', wallet: '0x1111111111111111111111111111111111111111', shares: '1200', committed: '2000', earned: '500', claimed: '100', unvested: '1500',
+        returnEntitlements: '80', unclaimedReturns: '40', ownershipPercent: '12.00', fullyDilutedPercent: '15.70',
+        grants: [{ id: 'alice-grant', committed: '2000', earned: '500', claimed: '100', unvested: '1500', forfeited: '0', stopped: false }],
+        returns: [{ id: 'return-claimed', entitled: '40', claimed: true }, { id: 'return-pending', entitled: '40', claimed: false }],
+        personId: 'PER-alice', displayName: 'Alice equity holder', isSelf: false },
+      { holderId: '2', wallet: '0x2222222222222222222222222222222222222222', shares: '8800', committed: '9000', earned: '2000', claimed: '1000', unvested: '7000',
+        returnEntitlements: '160', unclaimedReturns: '60', ownershipPercent: '88.00', fullyDilutedPercent: '84.30',
+        grants: [{ id: 'self-grant', committed: '9000', earned: '2000', claimed: '1000', unvested: '7000', forfeited: '0', stopped: false }],
+        returns: [{ id: 'return-claimed', entitled: '100', claimed: true }, { id: 'return-pending', entitled: '60', claimed: false }],
+        personId: null, displayName: 'My equity holder', isSelf: true },
+    ] };
+  const capView: DaoWorkspaceView = { ...view, capTable: { status: 'ready', value: snapshot } };
+  it('calibrates the public DTO fixture against independent supply, grant and return oracles', () => {
+    expect(new Set(snapshot.positions.map(row => row.wallet)).size).toBe(2);
+    expect(snapshot.positions.reduce((total, row) => total + BigInt(row.shares), 0n)).toBe(10000n);
+    expect(snapshot.positions.map(row => [row.committed, row.earned, row.claimed, row.unvested,
+      row.returnEntitlements, row.unclaimedReturns, row.ownershipPercent, row.fullyDilutedPercent])).toEqual([
+      ['2000', '500', '100', '1500', '80', '40', '12.00', '15.70'],
+      ['9000', '2000', '1000', '7000', '160', '60', '88.00', '84.30'],
+    ]);
+    let reserved = 0n;
+    for (const row of snapshot.positions) {
+      for (const key of ['committed', 'earned', 'claimed', 'unvested'] as const)
+        expect(row.grants.reduce((total, grant) => total + BigInt(grant[key]), 0n)).toBe(BigInt(row[key]));
+      expect(row.returns.reduce((total, entry) => total + BigInt(entry.entitled), 0n)).toBe(BigInt(row.returnEntitlements));
+      expect(row.returns.filter(entry => !entry.claimed).reduce((total, entry) => total + BigInt(entry.entitled), 0n)).toBe(BigInt(row.unclaimedReturns));
+      reserved += BigInt(row.earned) - BigInt(row.claimed) + BigInt(row.unvested) + BigInt(row.unclaimedReturns);
+    }
+    expect(reserved).toBe(10000n);
+    expect(snapshot.reservedShares).toBe('10000');
+    expect(BigInt(snapshot.issuedShares) + reserved).toBe(20000n);
+    expect(snapshot.fullyDilutedShares).toBe('20000');
+  });
+  it.each([true, false])('uses the production nonBinding=%s marker in both equity views', async nonBinding => {
+    const update = vi.fn();
+    render(<NuqsTestingAdapter searchParams="?peopleTab=cap" onUrlUpdate={update}>
+      <PeopleViews view={{ ...capView, capTable: { status: 'ready', value: { ...snapshot, nonBinding } } }} />
+    </NuqsTestingAdapter>);
+    const checkMarker = () => {
+      if (nonBinding) {
+        expect(screen.getByRole('note').textContent).toBe('test chain - non-binding');
+        expect(screen.queryByText('On-chain register · verify against issuer documents.')).toBeNull();
+      } else {
+        expect(screen.queryByRole('note')).toBeNull();
+        expect(screen.getByText('On-chain register · verify against issuer documents.')).toBeTruthy();
+      }
+    };
+    checkMarker();
+    expect(screen.getByText('Chain 1 · block 42 · issued 10000 · reserved 10000 · fully diluted 20000')).toBeTruthy();
+    expect(screen.getAllByText('15.70%').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('84.30%').length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('tab', { name: 'My equity' }));
+    await waitFor(() => expect(update.mock.calls.at(-1)![0].searchParams.get('peopleTab')).toBe('my'));
+    checkMarker();
+    expect(screen.queryByText('15.70%')).toBeNull();
+    expect(screen.getAllByText('84.30%').length).toBeGreaterThan(0);
+  });
+  it('preserves the contributor-work destination through the shared link seam', () => {
+    render(<NuqsTestingAdapter searchParams="?peopleTab=cap">
+      <PeopleViews view={{ ...capView, localHomeSlug: 'dao / equity & people' }} />
+    </NuqsTestingAdapter>);
+    expect(screen.getByRole('link', { name: 'Open contributor work' }).getAttribute('href'))
+      .toBe('/adv?slug=dao%20%2F%20equity%20%26%20people&tab=harnesses');
+  });
   it('shows every holder and the non-binding marker, then URL-selected My equity limits only that view', async () => {
     const update = vi.fn();
     render(<NuqsTestingAdapter searchParams="?peopleTab=cap" onUrlUpdate={update}><PeopleViews view={capView} /></NuqsTestingAdapter>);

@@ -3,11 +3,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-const parser = vi.hoisted(() => ({ version: '0.45.1', inputs: [] as Buffer[] }));
+const parser = vi.hoisted(() => ({ version: '0.45.1', inputs: [] as Buffer[], provisioned: true }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn().mockResolvedValue(true) }));
 vi.mock('node:fs', async original => {
   const fs = await original<typeof import('node:fs')>();
-  return { ...fs, existsSync: (path: string) => path.includes('.papercusp/vendor/ast-grep') || fs.existsSync(path) };
+  return { ...fs, existsSync: (path: string) => (path.includes('.papercusp/vendor/ast-grep') && parser.provisioned) || fs.existsSync(path) };
 });
 vi.mock('node:child_process', async original => {
   const childProcess = await original<typeof import('node:child_process')>();
@@ -22,7 +22,7 @@ vi.mock('node:child_process', async original => {
   return { ...childProcess, execFile };
 });
 import { astGrepSyntaxIndex, buildSyntaxIndexArgs, SYNTAX_INDEX_KINDS } from './ast-grep-facade';
-afterEach(() => { parser.version = '0.45.1'; parser.inputs = []; });
+afterEach(() => { parser.version = '0.45.1'; parser.inputs = []; parser.provisioned = true; });
 
 describe('P-005 syntax profile admission', () => {
   it('uses the maintained grammars in read-only stdin mode', () => {
@@ -43,6 +43,19 @@ describe('P-005 syntax profile admission', () => {
     expect(result.sites).toEqual([]);
     expect(() => buildSyntaxIndexArgs('cpp' as 'ts')).toThrow(/unsupported/);
   });
+  it('reports an unsupported source extension before requiring the pinned parser', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'syntax-unsupported-extension-'));
+    writeFileSync(join(root, 'probe.cpp'), 'class Unsupported {};\n');
+    try {
+      parser.provisioned = false;
+      const result = await astGrepSyntaxIndex({ language: 'ts', rootPath: root, paths: ['probe.cpp'] });
+      expect(result.error).toContain('unsupported source extension');
+      expect(result.error).not.toContain('not provisioned');
+      expect(result.freshness.health).toBe('unknown');
+      expect(result.sites).toEqual([]);
+      expect(parser.inputs).toEqual([]);
+    } finally { parser.provisioned = true; rmSync(root, { recursive: true, force: true }); }
+  });
   it('retains inferred syntax and the exact stdin identity without compiler resolution', async () => {
     const root = mkdtempSync(join(tmpdir(), 'syntax-unit-'));
     const text = 'import { missing } from "unavailable";\nfunction target() {}\n';
@@ -60,10 +73,14 @@ describe('P-005 syntax profile admission', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it('refuses an unadmitted parser generation before scanning', async () => {
-    parser.version = '0.45.2';
-    const result = await astGrepSyntaxIndex({ language: 'ts', rootPath: '/absent', paths: ['probe.ts'] });
-    expect(result.error).toContain('unsupported syntax-index grammar generation');
-    expect(result.freshness.health).toBe('unknown');
-    expect(parser.inputs).toEqual([]);
+    const root = mkdtempSync(join(tmpdir(), 'syntax-generation-'));
+    writeFileSync(join(root, 'probe.ts'), 'function target() {}\n');
+    try {
+      parser.version = '0.45.2';
+      const result = await astGrepSyntaxIndex({ language: 'ts', rootPath: root, paths: ['probe.ts'] });
+      expect(result.error).toContain('unsupported syntax-index grammar generation');
+      expect(result.freshness.health).toBe('unknown');
+      expect(parser.inputs).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

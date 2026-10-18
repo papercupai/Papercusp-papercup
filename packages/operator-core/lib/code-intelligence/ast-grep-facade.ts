@@ -250,15 +250,13 @@ export async function astGrepSyntaxIndex(args: Omit<AstGrepArgs, 'pattern'>): Pr
   if (!SYNTAX_INDEX_KINDS[args.language]) return fail('unsupported syntax-index language; refusing an uncertified empty');
   if (!(await getFlag(FLAGS.CODE_INTEL_AST_GREP, 'system').catch(() => false))) return fail('structural search is disabled');
   if (!args.paths?.length || args.paths.length > 16) return fail('syntax_index requires 1..16 explicit source files');
-  const identity = await astGrepIdentity();
-  if (!identity.ok) return fail(identity.reason);
-  if (identity.identity.version !== '0.45.1') return fail('unsupported syntax-index grammar generation: expected ast-grep 0.45.1');
   const sources: CodeIntelSourceFile[] = [];
   const sites: SymbolSite[] = [];
   const limitations = ['Syntax relationships are inferred; compiler resolution, calls and runtime execution are unverified.', 'Generated files and dynamic/evaluated source are excluded.'];
   const limit = Math.max(1, Math.min(args.limit ?? MAX_AST_GREP_SITES, MAX_AST_GREP_SITES));
   let root: string;
   try { root = realpathSync(args.rootPath); } catch { return fail('syntax-index project root is unavailable'); }
+  const admittedSources: Array<{ path: string; bytes: Buffer }> = [];
   try {
     for (const requested of [...new Set(args.paths)].sort()) {
       const absolute = realpathSync(resolve(root, requested));
@@ -272,6 +270,16 @@ export async function astGrepSyntaxIndex(args: Omit<AstGrepArgs, 'pattern'>): Pr
       const bytes = readFileSync(absolute);
       const text = bytes.toString('utf8');
       if (/[@]generated|DO NOT EDIT|Code generated/.test(text.slice(0, 500))) { limitations.push('Excluded generated source: ' + path); continue; }
+      admittedSources.push({ path, bytes });
+    }
+  } catch (error) { return fail('syntax index failed: ' + (error instanceof Error ? error.message : String(error))); }
+
+  const identity = await astGrepIdentity();
+  if (!identity.ok) return fail(identity.reason);
+  if (identity.identity.version !== '0.45.1') return fail('unsupported syntax-index grammar generation: expected ast-grep 0.45.1');
+
+  try {
+    for (const { path, bytes } of admittedSources) {
       const result = await new Promise<{ stdout: string }>((resolveRun, rejectRun) => {
         const child = execFile(identity.identity.bin, buildSyntaxIndexArgs(args.language), {
           cwd: root, timeout: 5000, maxBuffer: 4 * 1024 * 1024,
