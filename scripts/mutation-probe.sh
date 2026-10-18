@@ -1852,7 +1852,10 @@ mutation_descriptor_subject_path() {
 # production command shape; it is also useful to test that the baseline and
 # mutant really went through the same invocation path.
 run_guard() {
-  local phase="$1" label="$2" cmd="$3" output="$4" rc attempt guard_started guard_elapsed npm_lock_wrapper
+  local phase="$1" label="$2" cmd="$3" output="$4" rc attempt guard_started guard_elapsed npm_lock_wrapper guard_cwd guard_repo_root
+  guard_cwd="$(pwd -P)" || die "could not resolve the guard working directory"
+  guard_repo_root="$(git -C "$guard_cwd" rev-parse --show-toplevel 2>/dev/null || true)"
+  guard_repo_root="${guard_repo_root:-$RUNNER_ROOT}"
   local -a sandbox_lock_prefix=()
   for attempt in 1 2; do
     log "running $label: $cmd"
@@ -1943,7 +1946,10 @@ run_guard() {
           npm_lock_wrapper="$RUNNER_ROOT/scripts/npm-install-safe.mjs"
           [ -n "$RUNNER_ROOT" ] && [ -f "$npm_lock_wrapper" ] \
             || die "the direct test-files.mjs router needs the repository's npm-install-safe reader wrapper outside the read-only sandbox"
-          sandbox_lock_prefix=(node "$npm_lock_wrapper" --repo-root "$RUNNER_ROOT" --exec-under-lock --)
+          # The utility may be invoked from another immutable checkout. Lease
+          # that guard's dependencies, and preserve its cwd below: the wrapper
+          # starts its child in --repo-root rather than the caller's directory.
+          sandbox_lock_prefix=(node "$npm_lock_wrapper" --repo-root "$guard_repo_root" --exec-under-lock --)
         fi
         # --dev replaces /dev, hiding subjects stored in a tmpfs TMPDIR under /dev/shm.
         # Preserve that source tree read-only before granting the two writable binds.
@@ -1955,7 +1961,7 @@ run_guard() {
           --bind "$SANDBOX_ROOT" "$SANDBOX_ROOT" --bind "$SCRATCH" "$SCRATCH" \
           ${SANDBOX_TMPFS_ARGS[@]+"${SANDBOX_TMPFS_ARGS[@]}"} \
           ${overlay_args[@]+"${overlay_args[@]}"} \
-          --die-with-parent -- bash "$SCRATCH/guard-cmd.sh"
+          --chdir "$guard_cwd" --die-with-parent -- bash "$SCRATCH/guard-cmd.sh"
       fi
       if [ "${#overlay_args[@]}" -gt 0 ]; then
         exec ${guard_prefix[@]+"${guard_prefix[@]}"} \

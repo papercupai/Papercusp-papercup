@@ -2878,6 +2878,33 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
   );
 
   it.skipIf(!bwrapWorks)(
+    'preserves the guard checkout and cwd when the sandbox takes its install reader lease',
+    () => {
+      const repo = join(dir, 'guard-repo');
+      const cwd = join(repo, 'nested');
+      const sb = join(dir, 'sb');
+      mkdirSync(cwd, { recursive: true });
+      mkdirSync(sb);
+      git(repo, ['init', '-q']);
+      writeFileSync(subject, '#!/usr/bin/env bash\necho ok\n');
+      const env = { ...process.env };
+      delete env.PAPERCUSP_INSTALL_MUTEX_HELD;
+      const leaseModule = resolve(dirname(SCRIPT), 'lib/install-lock-name.mjs');
+      const leaseCheck = `import { installLockNameForRoot, installMutexIsHeld } from ${JSON.stringify(leaseModule)}; `
+        + `process.exitCode = installMutexIsHeld(installLockNameForRoot(${JSON.stringify(repo)}), process.env) ? 0 : 71;`;
+      const { code, out } = runProbeIO([
+        '--i-know-this-deletes', '--sandbox-root', sb,
+        '--file', subject, '--mutate', 's/echo ok/echo OK/',
+        '--test', `: scripts/test-files.mjs; [ "$PWD" = '${cwd}' ] && node --input-type=module -e '${leaseCheck}' && [ "$(bash {})" = ok ]`,
+      ], env, cwd);
+      expect(code, out).toBe(0);
+      expect(out).toContain(`root=${repo}, lock=`);
+      expect(out).toMatch(/verdict=caught/);
+      expect(out).not.toMatch(/SANDBOX READ-ONLY WRITE/);
+    },
+  );
+
+  it.skipIf(!bwrapWorks)(
     'EI-25768400647222256: the direct test router reuses the host-held install lease inside the read-only sandbox',
     () => {
       writeFileSync(subject, ['#!/usr/bin/env bash', 'echo ok', ''].join('\n'));
@@ -2905,7 +2932,7 @@ describe('mutation-probe.sh — destructive subjects are never executed unprotec
         '--file', subject,
         '--mutate', 's/echo ok/echo OK/',
         '--test', routerLeaseProbe + ' && test -f {}',
-      ], env);
+      ], env, resolve(dirname(SCRIPT), '..'));
       expect(code, out).toBe(0);
       expect(out).toMatch(/NPM_INSTALL_SAFE (?:guarding reader|mutex already held)/);
       expect(out).toMatch(/verdict=survived/);

@@ -86,6 +86,40 @@ describe('reopenStrandedTask', () => {
 });
 
 describe('closeTask terminal event', () => {
+  it.each(['read', 'cleanup', 'update', 'event'] as const)(
+    'identifies a blocked %s phase without reporting later close phases or returning early', async (blockedPhase) => {
+      const row = { task_id: 'phase-task', workspace_id: 'workspace-1', class: 'other',
+        state: 'running', ended_at: null, launched_by: 'fixture' };
+      const stages: string[] = [];
+      let enter!: () => void, release!: () => void;
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const pause = async (phase: typeof blockedPhase) => {
+        if (phase === blockedPhase) { enter(); await gate; }
+      };
+      const sql = (async (strings: TemplateStringsArray) => {
+        await pause(strings.join('').includes('UPDATE harness_shared.task_ledger') ? 'update' : 'read');
+        return [row];
+      }) as unknown as Sql;
+      let finished = false;
+      const closing = closeTask('phase-task', { state: 'exited', exitCode: 0 }, sql, {
+        stage: (name) => { stages.push(name); },
+        cleanupVerifierDirectories: async () => { await pause('cleanup'); },
+        emitTerminal: async () => { await pause('event'); },
+      }).then((result) => { finished = true; return result; });
+      try {
+        await entered;
+        expect(stages.at(-1)).toBe(`task-close-${blockedPhase}`);
+        expect(stages).not.toContain(`task-close-${blockedPhase}-complete`);
+        expect(finished).toBe(false);
+      } finally { release(); }
+      await expect(closing).resolves.toBe(true);
+      expect(stages).toEqual(['task-close-client-init', 'task-close-read', 'task-close-read-complete',
+        'task-close-cleanup', 'task-close-cleanup-complete', 'task-close-update', 'task-close-update-complete',
+        'task-close-event', 'task-close-event-complete']);
+    },
+  );
+
   it('retains the live ledger row and emits nothing when verifier cleanup fails, then retries before UPDATE', async () => {
     const row = { task_id: 'cleanup-task', workspace_id: 'workspace-1', class: 'bash-job',
       state: 'running', ended_at: null, launched_by: 'fixture' };

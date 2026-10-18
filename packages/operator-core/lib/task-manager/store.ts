@@ -338,6 +338,8 @@ export interface CloseTaskInput {
 }
 
 export interface CloseTaskEffects {
+  /** Reuse managedSpawn's tracer to distinguish awaited terminal-close phases. */
+  stage?: (name: string) => void;
   /** Cleanup must succeed before the terminal row loses its retry path. */
   cleanupVerifierDirectories?: typeof cleanupEndedVerifierDirectories;
   /** Test seam; production uses the awaited-event bridge. */
@@ -430,8 +432,11 @@ export async function closeTask(
   inject?: Sql,
   effects: CloseTaskEffects = {},
 ): Promise<boolean> {
+  effects.stage?.('task-close-client-init');
   const sql = sqlOf(inject);
+  effects.stage?.('task-close-read');
   const existing = await getTask(taskId, inject);
+  effects.stage?.('task-close-read-complete');
   if (input.terminalProvenance && !existing) return false;
   if (input.terminalProvenance && existing?.scopeUnit && existing.scopeUnit !== input.terminalProvenance.scopeUnit) {
     // A systemd snapshot is identity-bearing evidence. Refuse to attach it to a
@@ -441,9 +446,13 @@ export async function closeTask(
   const classified = classifyTerminalClose(input, existing);
   assertState(classified.state);
   if (!isTerminalState(classified.state)) throw new Error(`task-manager: ${classified.state} is not terminal`);
-  if (existing && !existing.endedAt)
+  if (existing && !existing.endedAt) {
+    effects.stage?.('task-close-cleanup');
     await (effects.cleanupVerifierDirectories ?? cleanupEndedVerifierDirectories)(existing);
+    effects.stage?.('task-close-cleanup-complete');
+  }
   const terminalJson = classified.terminalProvenance ? JSON.stringify(classified.terminalProvenance) : null;
+  effects.stage?.('task-close-update');
   const rows = await sql<Array<{
     task_id: string;
     workspace_id: string;
@@ -484,6 +493,7 @@ export async function closeTask(
     RETURNING task_id, workspace_id, harness_slug, class, launched_by,
               work_item_id, log_path, argv, started_at, ended_at
   `;
+  effects.stage?.('task-close-update-complete');
   const closed = rows[0];
   if (!closed) return false;
   // expensive-verification-loops P-001: a slow work-item attempt gets its outcome and
@@ -514,6 +524,7 @@ export async function closeTask(
         : false,
     );
   }
+  effects.stage?.('task-close-event');
   await (effects.emitTerminal ?? emitTaskTerminalEvent)({
     taskId: closed.task_id,
     workspaceId: closed.workspace_id,
@@ -524,6 +535,7 @@ export async function closeTask(
     exitCode: classified.exitCode ?? null,
     exitReason: classified.exitReason ?? null,
   });
+  effects.stage?.('task-close-event-complete');
   return true;
 }
 
