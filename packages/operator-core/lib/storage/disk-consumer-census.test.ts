@@ -197,6 +197,8 @@ describe('streaming retention census evidence', () => {
     try {
       const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now(), timeoutMs: 1, spawn });
       expect(census.error).toBe('retention native census timed out');
+      expect(census.timing).toMatchObject({ timeoutKind: 'absolute', timeoutMs: 1,
+        lastProgressAfterMs: null, lastChildPath: null });
       expect(census.entries).toEqual([]); expect(kill).toHaveBeenCalledWith('SIGKILL');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
@@ -209,9 +211,9 @@ describe('streaming retention census evidence', () => {
       expect(args.slice(0, 2)).toEqual(['-n', '--']);
       expect(args[2]).toMatch(/\/timeout$/);
       if (progressOnly) {
-        expect(args.slice(3, 5)).toEqual(['--signal=KILL', '900s']);
+        expect(args.slice(3, 6)).toEqual(['--signal=KILL', '--verbose', '900s']);
         expect(args).toContain('-I');
-      } else expect(args.slice(3, 6)).toEqual(['--foreground', '--signal=KILL', '0.025s']);
+      } else expect(args.slice(3, 7)).toEqual(['--foreground', '--signal=KILL', '--verbose', '0.025s']);
       expect(args.indexOf('find')).toBeGreaterThan(5);
       const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(), kill });
       kill.mockImplementation(() => { child.emit('error', new Error('kill EPERM')); return false; });
@@ -223,6 +225,7 @@ describe('streaming retention census evidence', () => {
       const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now(), sudo: '/usr/bin/sudo', spawn,
         ...(progressOnly ? { progressTimeoutMs: 25 } : { timeoutMs: 25 }) });
       expect(census.error).toBe('retention native census timed out');
+      expect(census.timing?.timeoutKind).toBe('native-signal');
       expect(census.entries).toEqual([]); expect(kill).not.toHaveBeenCalled();
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
@@ -255,9 +258,14 @@ for i in range(5 if mode == 'advancing' else 30):
       expect(signalAttempts).toBe(0);
       if (mode === 'advancing') {
         expect(census.error).toBeUndefined(); expect(census.entries).toHaveLength(5);
+        expect(census.timing?.timeoutKind).toBeNull();
       } else {
         expect(census.error).toBe('retention native census timed out'); expect(census.entries).toEqual([]);
+        expect(census.timing?.timeoutKind).toBe(mode === 'ceiling' ? 'absolute' : 'progress');
       }
+      expect(census.timing?.elapsedMs).toBeGreaterThan(0);
+      expect(census.timing?.lastProgressAfterMs === null).toBe(mode === 'noise');
+      expect(census.timing?.lastChildPath === null).toBe(mode === 'noise');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

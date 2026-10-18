@@ -374,6 +374,15 @@ export class RetentionAllocationCounter {
   }
 }
 
+export interface RetentionCensusTiming {
+  elapsedMs: number;
+  lastProgressAfterMs: number | null;
+  lastChildPath: string | null;
+  timeoutMs: number | null;
+  progressTimeoutMs: number | null;
+  /** An unmarked native kill is deliberately not attributed to a deadline. */
+  timeoutKind: 'absolute' | 'progress' | 'native-signal' | null;
+}
 export interface RetentionTreeCensus {
   entries: Array<{ path: string; newestWriteMs: number; bytes: number; dev: number; ino: number;
     hardlinks?: RetentionHardlink[];
@@ -381,6 +390,7 @@ export interface RetentionTreeCensus {
   retained: Array<{ path: string; reason: string; entry?: RetentionTreeCensus['entries'][number] }>;
   inspectedNodes: number;
   retainedRecentTrees: number;
+  timing?: RetentionCensusTiming;
   error?: string;
 }
 
@@ -418,6 +428,7 @@ try:
             if remaining <= 0 or not selector.select(remaining):
                 child.kill()
                 child.wait()
+                print('papercusp-retention-census: progress timeout', file=sys.stderr, flush=True)
                 sys.exit(137)
             chunk = os.read(child.stdout.fileno(), 65536)
             if not chunk:
@@ -493,11 +504,14 @@ export async function inspectRetentionTrees(root: string, opts: {
   if (progressSupervised && !python) return { ...result, error: 'python3 executable unavailable for privileged retention progress supervision' };
   const command = sudo ?? nativeCommand;
   const argv = !sudo ? nativeArgs : progressSupervised
-    ? ['-n', '--', timeout!, '--signal=KILL', `${Math.max(1, opts.timeoutMs ?? 15 * 60_000) / 1000}s`,
+    ? ['-n', '--', timeout!, '--signal=KILL', '--verbose', `${Math.max(1, opts.timeoutMs ?? 15 * 60_000) / 1000}s`,
       python!, '-I', '-c', RETENTION_CENSUS_PROGRESS_WORKER, String(Math.max(1, opts.progressTimeoutMs!)), root, nativeCommand, ...nativeArgs]
-    : ['-n', '--', timeout!, '--foreground', '--signal=KILL',
+    : ['-n', '--', timeout!, '--foreground', '--signal=KILL', '--verbose',
       `${Math.max(1, opts.timeoutMs ?? 60_000) / 1000}s`, nativeCommand, ...nativeArgs];
   return new Promise<RetentionTreeCensus>((done) => {
+    const started = performance.now();
+    let lastProgressAfterMs: number | null = null, lastChildPath: string | null = null;
+    let timeoutKind: RetentionCensusTiming['timeoutKind'] = null;
     const groups = new Map<string, { entry: RetentionTreeCensus['entries'][number]; allocation: RetentionAllocationCounter; reason?: string }>();
     const ancestors = new Map<string, { path: string; dev: number; ino: number }>();
     let pending = '', fields: string[] = [], stderr = '', stderrOverflow = false, malformed = false, timedOut = false, settled = false;
@@ -506,7 +520,7 @@ export async function inspectRetentionTrees(root: string, opts: {
     let child: ReturnType<CensusSpawn>;
     const armProgressDeadline = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, opts.progressTimeoutMs ?? 60_000);
+      timer = setTimeout(() => { timedOut = true; timeoutKind ??= 'progress'; child.kill('SIGKILL'); }, opts.progressTimeoutMs ?? 60_000);
     };
     const take = (row: string[]) => {
       const [type, dev, ino, mtime, ctime, blocks, owner, nlink, path] = row;
@@ -517,6 +531,7 @@ export async function inspectRetentionTrees(root: string, opts: {
       }
       result.inspectedNodes++;
       const child = join(root, path.slice(root.length + 1).split('/')[0]!);
+      lastChildPath = child;
       const direct = path === child;
       let group = groups.get(child);
       if (!group) {
@@ -558,6 +573,11 @@ export async function inspectRetentionTrees(root: string, opts: {
         else result.entries.push(entry);
       }
       if (error) { result.error = error; result.entries = []; }
+      result.timing = { elapsedMs: performance.now() - started, lastProgressAfterMs, lastChildPath,
+        timeoutMs: sudo ? Math.max(1, opts.timeoutMs ?? (progressSupervised ? 15 * 60_000 : 60_000)) : opts.timeoutMs ?? null,
+        progressTimeoutMs: progressSupervised || !sudo && (opts.timeoutMs === undefined || opts.progressTimeoutMs !== undefined)
+          ? opts.progressTimeoutMs ?? 60_000 : null,
+        timeoutKind };
       done(result);
     };
     try { child = (opts.spawn ?? defaultCensusSpawn)(command, argv); }
@@ -565,7 +585,7 @@ export async function inspectRetentionTrees(root: string, opts: {
     // Ordinary-owner scans can use metadata progress rather than an absolute
     // bound. Elevated scans are supervised by their native timeout above.
     if (!sudo) {
-      if (opts.timeoutMs !== undefined) absoluteTimer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, opts.timeoutMs);
+      if (opts.timeoutMs !== undefined) absoluteTimer = setTimeout(() => { timedOut = true; timeoutKind ??= 'absolute'; child.kill('SIGKILL'); }, opts.timeoutMs);
       if (opts.timeoutMs === undefined || opts.progressTimeoutMs !== undefined) armProgressDeadline();
     }
     child.stdout.setEncoding('utf8');
@@ -573,6 +593,7 @@ export async function inspectRetentionTrees(root: string, opts: {
       const before = result.inspectedNodes;
       const records = (pending + chunk).split('\0'); pending = records.pop() ?? '';
       for (const value of records) { fields.push(value); if (fields.length === 9) { take(fields); fields = []; } }
+      if (!malformed && result.inspectedNodes > before) lastProgressAfterMs = performance.now() - started;
       // Noise, partial records and malformed data cannot keep a wedged scan alive.
       if (!sudo && (opts.timeoutMs === undefined || opts.progressTimeoutMs !== undefined) && !malformed && result.inspectedNodes > before) armProgressDeadline();
     });
@@ -586,6 +607,10 @@ export async function inspectRetentionTrees(root: string, opts: {
     // signal with a null exit code rather than the direct-child status 137.
     child.once('close', async (code, signal) => {
       if (timedOut || (sudo && (code === 137 || (progressSupervised && signal === 'SIGKILL')))) {
+        // Only explicit supervisor evidence identifies which deadline fired.
+        // A locale-specific timeout message or an external kill stays unknown.
+        timeoutKind ??= stderr.split('\n').includes('papercusp-retention-census: progress timeout') ? 'progress'
+          : /^timeout: sending signal KILL to command /m.test(stderr) ? 'absolute' : 'native-signal';
         finish('retention native census timed out'); return;
       }
       // GNU find's ignore_readdir_race covers a failed stat, but not a

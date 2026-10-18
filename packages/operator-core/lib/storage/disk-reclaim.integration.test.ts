@@ -576,6 +576,27 @@ describe('retention on a real fixture tree', () => {
     await expect(stat(old)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('persists root census timeout attribution without copying allocation inventories', async () => {
+    const { root, options } = await setup();
+    const events: Array<{ phase: string; [key: string]: unknown }> = [];
+    const timing = { elapsedMs: 200, lastProgressAfterMs: 150, lastChildPath: join(root, 'large'),
+      timeoutMs: 200, progressTimeoutMs: 50, timeoutKind: 'absolute' as const };
+    const receipt = await runDiskReclaimOnce({ ...options,
+      record: async (phase, details) => { if (phase === 'progress') events.push(details as typeof events[number]); },
+      inspectTrees: async () => ({ entries: [], retained: [], inspectedNodes: 123, retainedRecentTrees: 0,
+        timing, error: 'retention native census timed out',
+        inventoryMustNotBePersisted: ['private allocation graph'],
+      }),
+    });
+    expect(receipt.complete).toBe(false);
+    expect(receipt.censuses).toEqual([{ root, classId: 'fixture', elapsedMs: expect.any(Number),
+      inspectedNodes: 123, timing, error: 'retention native census timed out' }]);
+    expect(events).toContainEqual({ phase: 'census-start', root, classId: 'fixture' });
+    expect(events).toContainEqual({ phase: 'census-finish', ...receipt.censuses![0] });
+    expect(JSON.stringify({ censuses: receipt.censuses, events })).not.toContain('private allocation graph');
+    expect(receipt.entries.some(entry => entry.status === 'removed')).toBe(false);
+  });
+
   it('reaps an elevated census worker at its native deadline when ordinary-user signalling would fail', async () => {
     const { root } = await setup(); const pidFile = join(root, 'worker-pid');
     let signalAttempts = 0;

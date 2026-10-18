@@ -18,7 +18,7 @@ import { openWriterPidsMany, type OpenWriterScan } from '../native-bg-task-ledge
 import { readRegistry } from '../workspace-registry';
 import { mapWithConcurrency } from '../gym/concurrency';
 import { sampleDiskSnapshots, type DiskSnapshot } from './disk-space-alarm';
-import { RetentionAllocationCounter, type RetentionHardlink } from './disk-consumer-census';
+import { RetentionAllocationCounter, type RetentionHardlink, type RetentionCensusTiming } from './disk-consumer-census';
 import {
   retentionPolicyForWorkspaceRoot, compilePolicy, containsClassRoot, deletionClassFor,
   retentionRootSizeCap, buildDirsEligible, isBuildDirName, BUILD_DIR_NAMES, CACHEDIR_TAG_SIGNATURE,
@@ -96,6 +96,9 @@ export interface DiskReclaimReceipt {
   /** Physical roots actually enforced; aliases share identity, selection and holder evidence. */
   roots?: Array<{ path: string; classId: string; aliases: string[] }>;
   scan?: { inspectedNodes: number; retainedRecentTrees: number; stoppedAtRoot: string | null; incompleteRoots?: string[] };
+  /** One scalar observation per initial root census; never persist its inventory. */
+  censuses?: Array<{ root: string; classId: string; elapsedMs: number; inspectedNodes: number;
+    timing?: RetentionCensusTiming; error?: string }>;
   effects?: Array<{
     root: string; selected: number; processed: number; remaining: number;
     nextPath: string | null; elapsedMs: number; stopped: boolean;
@@ -883,11 +886,24 @@ export async function runDiskReclaimOnce(options: DiskReclaimOptions = {}): Prom
             // per-root inspection allowance on every scheduled pass. Bound stalls
             // by metadata progress and the complete walk by the remaining run.
             // Cap accounting still requires a successful complete-root census.
-            const census = await outsideInspectionBudget(() => options.inspectTrees!(root.path, {
-              retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped, collectBuildDirs,
-              excludedPaths: excluded, timeoutMs: Math.max(1, runDeadline - Date.now()),
-              progressTimeoutMs: options.budgetMs ?? 60_000,
-            }));
+            await options.record?.('progress', { phase: 'census-start', root: root.path, classId: root.classId });
+            const censusStarted = performance.now();
+            let census: Awaited<ReturnType<NonNullable<DiskReclaimOptions['inspectTrees']>>> | undefined;
+            let censusError: string | undefined;
+            try {
+              census = await outsideInspectionBudget(() => options.inspectTrees!(root.path, {
+                retainAfterMs: retainAfterMs ?? Number.POSITIVE_INFINITY, includeRecent: capped, collectBuildDirs,
+                excludedPaths: excluded, timeoutMs: Math.max(1, runDeadline - Date.now()),
+                progressTimeoutMs: options.budgetMs ?? 60_000,
+              }));
+            } catch (error) { censusError = message(error); throw error; }
+            finally {
+              const measured = { root: root.path, classId: root.classId, elapsedMs: performance.now() - censusStarted,
+                inspectedNodes: census?.inspectedNodes ?? 0, ...(census?.timing ? { timing: census.timing } : {}),
+                ...(census?.error || censusError ? { error: census?.error ?? censusError } : {}) };
+              (receipt.censuses ??= []).push(measured);
+              await options.record?.('progress', { phase: 'census-finish', ...measured });
+            }
             progress.inspectedNodes += census.inspectedNodes;
             progress.retainedRecentTrees += census.retainedRecentTrees;
             // Allocation graphs belong to selection below. Persist only the
