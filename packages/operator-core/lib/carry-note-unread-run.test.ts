@@ -86,6 +86,18 @@ describe('describeUnreadRun', () => {
     }
   });
 
+  it('does not treat a superseded in-flight compiler note as the current run result', () => {
+    const body = [
+      'FINAL18:38Z supersedes immediately preceding in-flight compiler note: native30019 COMPLETED exit0.',
+      'LINT_TSC_RESULT scopefiles exit0 statusclean.',
+      'Read /tmp/ei262382-loop-types-final-20261017.log immediately before saving this checkpoint.',
+    ].join('\n');
+
+    expect(describeUnreadRun(body, 0)).toBeNull();
+    // The regression is specifically that a broad in-flight matcher would warn here.
+    expect(naiveUnreadRun(body, 0)).not.toBeNull();
+  });
+
   it('preserves a current unread run alongside the historical quotation', () => {
     const body = 'The historical transcript said "still running".\n' +
       'The new run has results pending; output at /tmp/current.log.';

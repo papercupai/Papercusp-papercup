@@ -1559,4 +1559,43 @@ describe('testRunBindingSchema', () => {
     expect(testRunBindingSchema.safeParse({ workItemId: 'WI-1', specId: 'S', fromTestRun: 1, evidenceRef: 'x' }).success).toBe(false);
     expect(testRunBindingSchema.safeParse({ workItemId: 'WI-1', fromTestRun: 1 }).success).toBe(false);
   });
+
+  it('requires fixture provenance before the first immutable calibration bind', () => {
+    const unclassified = testRunBindingSchema.safeParse({
+      workItemId: 'WI-1',
+      specId: 'SPEC-1',
+      fromTestRun: 42,
+    });
+    expect(unclassified.success).toBe(true);
+    if (unclassified.success) expect(unclassified.data.details).toBeUndefined();
+
+    const missing = testRunBindingSchema.safeParse({
+      workItemId: 'WI-1',
+      specId: 'SPEC-1',
+      fromTestRun: 42,
+      details: { adequacy: { fixtureCalibrated: true } },
+    });
+    expect(missing.success).toBe(false);
+    if (!missing.success) {
+      expect(missing.error.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          path: ['fixturePaths'],
+          message: expect.stringContaining('requires fixturePaths or fixtureGlobs on the first bind'),
+        }),
+      ]));
+    }
+
+    for (const recipe of [
+      { fixturePaths: ['pkg/lib/thing.test.ts'] },
+      { fixtureGlobs: ['pkg/lib/__fixtures__/**/*.ts'] },
+    ]) {
+      expect(testRunBindingSchema.safeParse({
+        workItemId: 'WI-1',
+        specId: 'SPEC-1',
+        fromTestRun: 42,
+        ...recipe,
+        details: { adequacy: { fixtureCalibrated: true } },
+      }).success).toBe(true);
+    }
+  });
 });

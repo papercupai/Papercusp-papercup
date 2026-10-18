@@ -30,6 +30,8 @@
  * (per-hive-learning-loops-2026-06-14 P-022 / D-003).
  */
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { getServingHostIdentity } from '../../serving-host-identity';
 import { getOrgPg } from '@papercusp/db-org';
 import { blueprintRetirement, type BlueprintRetirementInfo } from '@papercusp/orchestrator/blueprint';
 import { registerSystemAction } from './system-actions';
@@ -39,6 +41,7 @@ import { resolveProject } from '../../harness-core';
 import { getEffectiveBlueprint } from '../../blueprint/project-to-pg';
 import {
   gymBudgetFloorUsd,
+  GYM_ADMISSION_DECISION_PREFIX,
   runGymAutoloopTick,
   selectRoutedGymIdeas,
   type GymCycleRequest,
@@ -108,35 +111,44 @@ const defaultRunCycle: GymCycleRunFn = async (req) => {
 async function isHarnessBlueprintRetired(workspaceId: string, slug: string): Promise<BlueprintRetirementInfo | null> {
   const { sql } = getOrgPg();
   const project = await resolveProject(slug, workspaceId);
-  if (!project) return null;
+  if (!project) throw new Error('Missing project for blueprint resolution');
   const bp = await getEffectiveBlueprint(sql as never, {
     workspaceId,
     harnessSlug: slug,
     blueprintPath: join(project.path, '.papercusp', 'blueprint.yaml'),
-  }).catch((error) => {
-    console.warn(
-      `[gym-cycle] effective-blueprint resolve failed (${slug}): ` +
-        `${error instanceof Error ? error.message : error}`,
-    );
-    return null;
   });
-  return bp ? blueprintRetirement(bp) : null;
+  if (!bp) throw new Error('Missing effective blueprint');
+  return blueprintRetirement(bp);
 }
 
 /** The original in-process action body, also used by the detached CLI fallback. */
 export async function runGymCycleInline(workspaceId: string): Promise<void> {
   const { sql } = getOrgPg();
+  const actionId = randomUUID();
+  const observeAdmission = (decision: Record<string, unknown>) => console.log(GYM_ADMISSION_DECISION_PREFIX + JSON.stringify({
+    schemaVersion: 1, actionId, capturedAt: new Date().toISOString(), runtime: getServingHostIdentity(),
+    source: 'harness/routines/gym-actions:runGymCycleInline', ...decision,
+  }));
   // Owner idle-activity toggle (queen-steering-panel P-006): the owner can gate gym
   // spend OFF for the home hive from the 👑 tab. Fail-soft → runs (default ON).
   const { idleActivityAllowed } = await import('../../owner-steering');
-  if (!(await idleActivityAllowed(workspaceId, 'gym'))) {
+  if (!(await idleActivityAllowed(workspaceId, 'gym', undefined, undefined, observation => {
+    observeAdmission({ workspaceId, potSlug: null, gate: 'owner-idle',
+      status: observation.status === 'unknown' ? 'unknown' : observation.allowed ? 'passed' : 'refused',
+      inputs: { ...observation, scope: 'workspace-home', source: 'owner-steering:idleActivityAllowed' } });
+  }))) {
     console.log('[gym-cycle] skipped — owner idle-activity toggle (gym) is OFF');
     return;
   }
   const outcome = await runGymAutoloopTick(
     {
+      observeAdmission: decision => observeAdmission({ ...decision }),
       listAutoloops: () => listAutoloopsForWorkspace(sql, { workspaceId }),
-      checkFireGate: (slug) => checkFireGate(slug, GYM_CYCLE_FIRE_ROLE),
+      checkFireGate: (slug) => checkFireGate(slug, GYM_CYCLE_FIRE_ROLE, new Date(), observation => {
+        observeAdmission({ workspaceId, potSlug: slug, gate: 'fire-backoff',
+          status: observation.status === 'unknown' ? 'unknown' : observation.verdict.allow ? 'passed' : 'refused',
+          inputs: observation });
+      }),
       recordFire: (slug, status, oc) => recordFire(slug, GYM_CYCLE_FIRE_ROLE, status, oc),
       setAutoloop: (input) => setAutoloop(sql, input),
       // P-032: open improvements the triage pass routed to the gym
@@ -150,7 +162,11 @@ export async function runGymCycleInline(workspaceId: string): Promise<void> {
       // (authority / not-in-hive), so the standalone gym path is unchanged.
       isHiveRunner: async (slug) => {
         const { checkHiveSingleRunner } = await import('../../hive-single-runner');
-        return (await checkHiveSingleRunner(workspaceId, slug)).run;
+        const verdict = await checkHiveSingleRunner(workspaceId, slug);
+        if (verdict.reason === 'fail-open') throw new Error('Single-runner resolution failed open');
+        observeAdmission({ workspaceId, potSlug: slug, gate: 'authority',
+          status: verdict.run ? 'passed' : 'refused', inputs: verdict });
+        return verdict.run;
       },
       // WI-5645: refuse to fire a gym cycle against a harness whose effective
       // blueprint (or an ancestor) is retired — the hard cost guard for the exact
@@ -171,6 +187,9 @@ export async function runGymCycleInline(workspaceId: string): Promise<void> {
     },
     { budgetFloorUsd: gymBudgetFloorUsd() },
   );
+  observeAdmission({ workspaceId, potSlug: outcome.harnessSlug ?? null, gate: 'tick-result',
+    status: outcome.action === 'ran' ? 'passed' : outcome.action === 'idle' ? 'refused' : 'unknown',
+    inputs: outcome });
 
   // FB-01 (self-learning-frontier P-003): mirror the autoloop budgets onto the
   // shared learning-governor ledger as sub-budgets + ledger this tick's spend.

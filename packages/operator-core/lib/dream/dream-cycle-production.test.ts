@@ -169,7 +169,7 @@ describe('production capability Dream adapter', () => {
     await productionDreamCycle(ctx, { mode: 'auto' });
     h.idle.mockResolvedValue(false);
     expect(await captured().deps.canContinue!()).toBe(false);
-    expect(h.idle).toHaveBeenCalledWith(ctx.workspaceId, 'dream', ctx.installSlug);
+    expect(h.idle).toHaveBeenCalledWith(ctx.workspaceId, 'dream', ctx.installSlug, undefined, expect.any(Function));
     const queries = h.sql.mock.calls.map((c) => c.slice(1));
     expect(queries).toContainEqual([ctx.workspaceId, ctx.installSlug, 'dream-cycle-manual']);
     expect(queries).toContainEqual([ctx.workspaceId, ctx.installSlug, 'dream-cycle-auto']);
@@ -179,5 +179,18 @@ describe('production capability Dream adapter', () => {
     h.registry.mockResolvedValue({ projects: [] });
     await expect(productionDreamCycle(ctx, { mode: 'manual' })).rejects.toThrow('registered repository');
     expect(h.run).not.toHaveBeenCalled();
+  });
+  it('observes the actual production governor verdict and repeated pause decisions', async () => {
+    const observeAdmission = vi.fn();
+    await productionDreamCycle(ctx, { mode: 'manual' }, { observeAdmission });
+    h.preflight.mockResolvedValue({ allow: false, reason: 'governor-error', loopId: 'dream:papercusp',
+      cycleRemainingUsd: null, rollingSpentUsd: 0, rollingRemainingUsd: 5, rollingLoopCount: 0 });
+    expect((await captured().deps.preflight()).allow).toBe(false);
+    expect(observeAdmission).toHaveBeenCalledWith(expect.objectContaining({ gate: 'governor', status: 'unknown',
+      inputs: expect.objectContaining({ source: 'dream-governor:preflightDreamCycle', reason: 'governor-error' }) }));
+    expect(await captured().deps.canContinue!()).toBe(true);
+    h.sql.mockResolvedValue([{ active: false }]);
+    expect(await captured().deps.canContinue!()).toBe(false);
+    expect(observeAdmission).toHaveBeenLastCalledWith({ gate: 'continue', status: 'refused', inputs: { reason: 'routine-inactive', rows: [{ active: false }] } });
   });
 });

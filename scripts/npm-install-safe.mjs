@@ -55,7 +55,7 @@
  * Running that build command under the install mutex makes it wait for the
  * verified install boundary instead of repeatedly reading the transition.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -1112,6 +1112,154 @@ export function readChildRssBytes(pid, platform = process.platform) {
   }
 }
 
+/**
+ * Capture the bounded identity tuple used to attribute a dependency-path
+ * transition. The probe is observational: missing paths are represented as
+ * not-observed instead of being treated as a publisher defect.
+ */
+export function writerAttributionSnapshot({
+  repoRoot = DEFAULT_REPO_ROOT,
+  nestedPath,
+  invocationId = null,
+  lockName = null,
+  childPid = null,
+  phase = null,
+  ownerPid = process.pid,
+  now = () => new Date().toISOString(),
+} = {}) {
+  const absolute = nestedPath && isAbsolute(nestedPath)
+    ? nestedPath
+    : nestedPath ? resolve(repoRoot, nestedPath) : null;
+  const packageLock = join(repoRoot, "package-lock.json");
+  let canonicalRepoRoot = null;
+  try {
+    canonicalRepoRoot = realpathSync(repoRoot);
+  } catch {
+    // A failed probe must not change the install result.
+  }
+  const stat = (path) => {
+    if (!path) return { status: "not-observed", reason: "path-not-configured" };
+    try {
+      const value = lstatSync(path);
+      return {
+        status: "observed",
+        type: value.isDirectory() ? "directory" : value.isFile() ? "file" : "other",
+        dev: value.dev,
+        ino: value.ino,
+        size: value.size,
+        mtimeMs: value.mtimeMs,
+        ctimeMs: value.ctimeMs,
+      };
+    } catch (error) {
+      return {
+        status: "not-observed",
+        reason: error?.code === "ENOENT" ? "absent" : "probe-failed",
+      };
+    }
+  };
+  const digest = (() => {
+    try {
+      return {
+        status: "observed",
+        sha256: createHash("sha256").update(readFileSync(packageLock)).digest("hex"),
+      };
+    } catch (error) {
+      return {
+        status: "not-observed",
+        reason: error?.code === "ENOENT" ? "absent" : "probe-failed",
+      };
+    }
+  })();
+  return {
+    observedAt: now(),
+    invocationId,
+    repoRoot: canonicalRepoRoot,
+    repoRootStatus: canonicalRepoRoot ? "observed" : "not-observed",
+    lockName,
+    owner: {
+      pid: ownerPid,
+      processStartIdentity: processIdentityForAttribution(ownerPid) ?? {
+        status: "not-observed",
+        reason: "process-identity-unavailable",
+      },
+    },
+    childPid,
+    phase,
+    nestedPath: absolute,
+    nestedPathStat: stat(absolute),
+    packageJsonStat: stat(absolute ? join(absolute, "package.json") : null),
+    rootPackageLockSha256: digest,
+  };
+}
+
+function processIdentityForAttribution(pid) {
+  if (!Number.isSafeInteger(pid) || process.platform !== "linux") return null;
+  try {
+    const value = readFileSync("/proc/" + pid + "/stat", "utf8");
+    const startTicks = value.slice(value.lastIndexOf(")") + 2).trim().split(/\s+/)[19];
+    const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+    return { startTicks, bootId };
+  } catch {
+    return null;
+  }
+}
+
+/** A path transition is temporal evidence; a shared reader cannot identify its writer. */
+export function writerAttributionRecord({ before, after, ...details }) {
+  const first = before?.nestedPathStat;
+  const last = after?.nestedPathStat;
+  const pathTransition = first?.status === "observed" && last?.reason === "absent"
+    ? "disappeared-during-phase"
+    : first?.reason === "absent"
+      ? "initially-absent"
+      : first?.status === "observed" && last?.status === "observed"
+        ? "present-after-phase"
+        : "not-observed";
+  const writerInference = pathTransition !== "disappeared-during-phase"
+    ? "none"
+    : details.lockMode === "writer"
+      ? "candidate-writer-window"
+      : "unattributed-shared-or-unlocked-window";
+  return { ...details, before, after, pathTransition, writerInference };
+}
+
+/** Include wrapper repair and verification work that runs between npm children. */
+export async function withWriterAttribution({
+  repoRoot,
+  nestedPath,
+  invocationId,
+  lockName,
+  lockMode = "writer",
+  phase,
+  childPid = null,
+  log = (line) => console.error(line),
+}, action) {
+  const base = { repoRoot, nestedPath, invocationId, lockName, phase,
+    lockMode, ownerPid: process.pid,
+    childPid: typeof childPid === "function" ? childPid(null) : childPid };
+  const before = writerAttributionSnapshot(base);
+  let status = null;
+  let error = null;
+  try {
+    status = await action();
+    return status;
+  } catch (caught) {
+    error = caught;
+    throw caught;
+  } finally {
+    const finalChildPid = typeof childPid === "function" ? childPid(status) : childPid;
+    const after = writerAttributionSnapshot({ ...base, childPid: finalChildPid });
+    log("NPM_INSTALL_SAFE attribution=" + JSON.stringify(writerAttributionRecord({
+      ...base,
+      childPid: finalChildPid,
+      exitCode: typeof status === "number" ? status : status?.status ?? null,
+      error: error ? String(error?.code ?? error?.message ?? error) : null,
+      before,
+      after,
+    })));
+  }
+}
+
 /** Spawn npm asynchronously so long resolve/reify/repair phases stay observable. */
 export function runNpmWithHeartbeat({
   phase,
@@ -1123,9 +1271,29 @@ export function runNpmWithHeartbeat({
   readRssBytes = readChildRssBytes,
   log = (line) => console.error(line),
   now = Date.now,
+  attribution = null,
 } = {}) {
   return new Promise((resolveResult, rejectResult) => {
     const startedAt = now();
+    const envAttribution = !attribution && env.PAPERCUSP_INSTALL_ATTRIBUTION_ID
+      ? {
+          invocationId: env.PAPERCUSP_INSTALL_ATTRIBUTION_ID,
+          repoRoot: env.PAPERCUSP_INSTALL_ATTRIBUTION_REPO ?? cwd,
+          nestedPath: env.PAPERCUSP_INSTALL_ATTRIBUTION_PATH,
+          lockName: env.PAPERCUSP_INSTALL_ATTRIBUTION_LOCK ?? null,
+        }
+      : null;
+    const attributionBase = attribution || envAttribution
+      ? {
+          ...(attribution || envAttribution),
+          phase,
+          lockMode: phase === "resolve" ? "none" : "writer",
+          ownerPid: process.pid,
+        }
+      : null;
+    const attributionBefore = attributionBase
+      ? writerAttributionSnapshot({ ...attributionBase, childPid: null })
+      : null;
     const child = spawnCommand("npm", args, {
       cwd,
       stdio: "inherit",
@@ -1158,6 +1326,25 @@ export function runNpmWithHeartbeat({
         " args=npm " + args.join(" ") +
         " (cwd=" + cwd + ")",
     );
+    const recordAttribution = ({ code, signal, error }) => {
+      if (!attributionBase) return;
+      const childPid = child.pid ?? null;
+      const attributionAfter = writerAttributionSnapshot({
+        ...attributionBase,
+        childPid,
+      });
+      log("NPM_INSTALL_SAFE attribution=" + JSON.stringify(writerAttributionRecord({
+        ...attributionBase,
+        childPid,
+        startedAt: new Date(startedAt).toISOString(),
+        endedAt: new Date(now()).toISOString(),
+        exitCode: code ?? null,
+        signal: signal ?? null,
+        error: error ? String(error?.code ?? error?.message ?? error) : null,
+        before: attributionBefore,
+        after: attributionAfter,
+      })));
+    };
     if (heartbeatIntervalMs > 0) {
       timer = setInterval(heartbeat, heartbeatIntervalMs);
       timer.unref?.();
@@ -1166,6 +1353,7 @@ export function runNpmWithHeartbeat({
       if (settled) return;
       settled = true;
       finish();
+      recordAttribution({ error });
       rejectResult(error);
     });
     child.once("close", (code, signal) => {
@@ -1178,6 +1366,7 @@ export function runNpmWithHeartbeat({
           " exitCode=" + (code ?? "unknown") +
           " signal=" + (signal ?? "none"),
       );
+      recordAttribution({ code, signal });
       resolveResult(code ?? 1);
     });
   });
@@ -1504,7 +1693,13 @@ async function runManifestOnlyInstall({
         const files = resolvedManifestFiles(input.scratchRoot, layout.outputPaths);
         const status = await withFsMutex(
           lockName,
-          async () => {
+          async () => withWriterAttribution({
+            repoRoot,
+            nestedPath: npmEnv.PAPERCUSP_INSTALL_ATTRIBUTION_PATH,
+            invocationId: npmEnv.PAPERCUSP_INSTALL_ATTRIBUTION_ID,
+            lockName,
+            phase: "reify-transaction",
+          }, async () => {
             const applied = applyResolvedManifestFiles({
               repoRoot,
               snapshot: input.snapshot,
@@ -1585,7 +1780,7 @@ async function runManifestOnlyInstall({
               }
               return verdict;
             });
-          },
+          }),
           {
             ...installLockWaitReporter({
               lock: "writer",
@@ -1659,17 +1854,30 @@ export async function publishDependencyGeneration({
   repoRoot = DEFAULT_REPO_ROOT,
   runPublisher = spawnSync,
   env = process.env,
+  log = (line) => console.error(line),
 } = {}) {
   if (env.PAPERCUSP_SKIP_DEP_GENERATION === "1") return 0;
   const lockName = repoLockName(repoRoot);
+  let publisherResult = null;
   const result = await withFsMutexRead(
     lockName,
-    () =>
-      runPublisher(
+    () => withWriterAttribution({
+      repoRoot,
+      nestedPath: env.PAPERCUSP_INSTALL_ATTRIBUTION_PATH,
+      invocationId: env.PAPERCUSP_INSTALL_ATTRIBUTION_ID,
+      lockName,
+      lockMode: "reader",
+      phase: "generation-publish",
+      childPid: () => publisherResult?.pid ?? null,
+      log,
+    }, async () => {
+      publisherResult = runPublisher(
         "bash",
         [DEPENDENCY_GENERATION_SCRIPT, "--integration", repoRoot],
         { cwd: repoRoot, stdio: "inherit", env },
-      ),
+      );
+      return publisherResult;
+    }),
     {
       onWaiting: ({ owner, elapsedMs }) => {
         console.error(
@@ -1910,14 +2118,21 @@ export async function main(argv = process.argv.slice(2)) {
   if ("commandArgs" in parsed) return runCommandUnderInstallMutex(parsed);
 
   const { repoRoot, npmArgs } = parsed;
+  const lockName = repoLockName(repoRoot);
   const npmEnv = {
     ...npmChildEnv({
       env: process.env,
       offlineSafe: parsed.offlineSafe === true,
     }),
     PAPERCUSP_INSTALL_SAFE_ACTIVE: "1",
+    PAPERCUSP_INSTALL_ATTRIBUTION_ID: randomUUID(),
+    PAPERCUSP_INSTALL_ATTRIBUTION_REPO: repoRoot,
+    PAPERCUSP_INSTALL_ATTRIBUTION_PATH: join(
+      repoRoot,
+      "apps/slack-asana-bug-drill/node_modules/@types/node/node_modules/undici-types",
+    ),
+    PAPERCUSP_INSTALL_ATTRIBUTION_LOCK: lockName,
   };
-  const lockName = repoLockName(repoRoot);
   const installPlan = manifestOnlyInstallPlan(npmArgs, npmEnv);
   const packageLockOnly = isPackageLockOnlyInstall(npmArgs, npmEnv);
 
@@ -1958,7 +2173,7 @@ export async function main(argv = process.argv.slice(2)) {
       // installed tree and can fail a healthy metadata operation on copy
       // headroom. Actual reify/repair paths still publish below.
       if (installPlan.packageLockOnly) return 0;
-      return publishDependencyGeneration({ repoRoot });
+      return publishDependencyGeneration({ repoRoot, env: npmEnv });
     }
     console.error(
       "NPM_INSTALL_SAFE_RESOLUTION_FALLBACK: " + result.reason +
@@ -1976,7 +2191,13 @@ export async function main(argv = process.argv.slice(2)) {
   // verifyNpmCacheExclusive (WI-10004430).
   const installStatus = await withFsMutex(
     lockName,
-    async () => {
+    async () => withWriterAttribution({
+      repoRoot,
+      nestedPath: npmEnv.PAPERCUSP_INSTALL_ATTRIBUTION_PATH,
+      invocationId: npmEnv.PAPERCUSP_INSTALL_ATTRIBUTION_ID,
+      lockName,
+      phase: "install-transaction",
+    }, async () => {
       const mismatches = findRootLockManifestMismatches(repoRoot);
       if (mismatches.length > 0) {
         console.error(formatRootLockManifestMismatches(mismatches));
@@ -2038,7 +2259,7 @@ export async function main(argv = process.argv.slice(2)) {
           },
         },
       );
-    },
+    }),
     {
       // WI-10006385: re-announce every 30 s (was once) and close with the real wait.
       ...installLockWaitReporter({
@@ -2055,7 +2276,7 @@ export async function main(argv = process.argv.slice(2)) {
   // A fallback can still be metadata-only (for example a local tarball).
   // Its new lock describes future installs, not the unchanged node_modules.
   if (packageLockOnly) return 0;
-  return publishDependencyGeneration({ repoRoot });
+  return publishDependencyGeneration({ repoRoot, env: npmEnv });
 }
 
 function isInvokedDirectly(argv1, moduleUrl) {

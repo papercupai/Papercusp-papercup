@@ -43,6 +43,7 @@ import {
 import { recentWatchdogFires, recordFire } from '../../pot/watchdog';
 import { openEscalation } from '../../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 /** Corpus lookback when the routine row does not say. */
 export const DEFAULT_CENSUS_WINDOW_DAYS = 7;
@@ -208,7 +209,7 @@ export async function runSqlReadCensus(
 ): Promise<CensusRunResult> {
   const now = deps.now ?? Date.now();
   const ranOn = utcDate(now);
-  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const installSlug = opts.installSlug ?? 'papercusp';
   const windowDays = Math.max(1, Math.floor(opts.windowDays ?? DEFAULT_CENSUS_WINDOW_DAYS));
   const base: CensusRunResult = {

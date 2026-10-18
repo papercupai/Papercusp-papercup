@@ -44,6 +44,7 @@ import { resolveOperatorAppRootFromModuleDir } from '../../operator-app-root';
 import { claimWatchdogFire, recentWatchdogFires, scopedFireReason } from '../../pot/watchdog';
 import { RESTART_TARGET_UNITS } from '../../agent-tools/dev/restart-target-units';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { hostIdentity } from '../../serving-host-identity';
 import {
   IMMINENT_FIRE_LOOKAHEAD_SEC,
@@ -1150,7 +1151,7 @@ export async function staleRoutineExecutorSweep(opts: {
   const enabled = routinesEnabledHere();
   if (!enabled) return { outcome: 'skipped', reason: 'PAPERCUSP_DBOS_ROUTINES not enabled on this process' };
 
-  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const installSlug = opts.installSlug ?? operatorHomeHarnessSlug();
   const now = opts.now ?? Date.now();
   const identity = executorIdentity();

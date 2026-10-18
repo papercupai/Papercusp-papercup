@@ -13,7 +13,7 @@ import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
-import { pathToFileURL } from 'node:url';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 function ping(socketPath, timeoutMs, signal) {
   return new Promise((done) => {
@@ -139,7 +139,7 @@ export async function runWithPrivatePodman(command, args, { evidenceDir, env = p
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+if (isCliEntry(import.meta.url)) {
   const args = process.argv.slice(2);
   if (args[0] !== '--evidence-dir' || !args[1] || args[2] !== '--' || !args[3]) {
     console.error('usage: node scripts/with-private-podman.mjs --evidence-dir <fresh-dir> -- <command> [args...]');

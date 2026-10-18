@@ -142,3 +142,97 @@ export async function declareChangeKinds(input: DeclareChangeKindsInput, sql?: S
     return { recorded: false, error: `change-kind declaration not stored: ${(err as Error).message}` };
   }
 }
+
+/** Kinds a caller declared for one requested item id (an item's own, else the call's default). */
+export interface DeclaredChangeKinds {
+  kinds: readonly string[];
+  reason?: string | null;
+}
+
+/** Build the per-id declaration map, dropping entries that declared nothing. */
+export function declaredChangeKindsById(
+  items: readonly { id: string; changeKinds?: readonly string[] | null; changeKindReason?: string | null }[],
+): Map<string, DeclaredChangeKinds> {
+  const out = new Map<string, DeclaredChangeKinds>();
+  for (const it of items) {
+    if (it.changeKinds?.length) out.set(it.id, { kinds: it.changeKinds, reason: it.changeKindReason ?? null });
+  }
+  return out;
+}
+
+/** The fields of a bulk tool result this helper reads. */
+export interface ChangeKindResultLike {
+  ok: boolean;
+  id?: unknown;
+  workItem?: unknown;
+  [k: string]: unknown;
+}
+
+/**
+ * Per-result verdict: `true` records the declaration, a string attaches
+ * `{ recorded:false, error }` naming why it was not recorded, and `false` leaves the result
+ * untouched (for example a validate-only preview, which writes nothing).
+ */
+export type ChangeKindEligibility<R> = (result: R) => true | false | string;
+
+/** claim and checkpoint: record only when the write itself succeeded. */
+export function writeSucceededEligibility(what: string): ChangeKindEligibility<ChangeKindResultLike> {
+  return (r) => (r.ok ? true : `the ${what} did not succeed`);
+}
+
+/**
+ * work_items:complete: record whenever the call wrote a completion record, even when the
+ * terminal transition was then refused (`ok:false` with `completion` present). The proof gate
+ * (P-002) reads the declaration, so a refused close must not make the agent declare again. A
+ * validate-only preview writes nothing, and a result without a completion record (not found,
+ * not held, refused before persistence) stores nothing.
+ */
+export const completeChangeKindEligibility: ChangeKindEligibility<ChangeKindResultLike> = (r) => {
+  if (r.validationOnly === true) return false;
+  return r.completion ? true : 'this call wrote no completion record';
+};
+
+/**
+ * Record the declared kinds for each result of a bulk work_items write and attach the outcome
+ * as `changeKinds` on that result. Results are matched to declarations by the requested id
+ * runBulk echoes; the row is stored under the canonical `workItem.id` when the result carries
+ * one. Never throws: a storage failure is reported on the result by `declareChangeKinds`.
+ */
+export async function attachChangeKindDeclarations<R extends ChangeKindResultLike>(
+  input: {
+    declared: ReadonlyMap<string, DeclaredChangeKinds>;
+    results: readonly R[];
+    step: ChangeKindStep;
+    declaredBy: string;
+    workspaceId: string;
+    eligible: ChangeKindEligibility<R>;
+  },
+  sql?: Sql,
+): Promise<R[]> {
+  if (input.declared.size === 0) return [...input.results];
+  return Promise.all(
+    input.results.map(async (r) => {
+      const declared = typeof r.id === 'string' ? input.declared.get(r.id) : undefined;
+      if (!declared) return r;
+      const verdict = input.eligible(r);
+      if (verdict === false) return r;
+      if (verdict !== true) {
+        return { ...r, changeKinds: { recorded: false as const, error: `changeKinds were not recorded: ${verdict}.` } };
+      }
+      const canonical = (r.workItem as { id?: unknown } | undefined)?.id;
+      const featureId = typeof canonical === 'string' && canonical ? canonical : (r.id as string);
+      const changeKinds = await declareChangeKinds(
+        {
+          workspaceId: input.workspaceId,
+          featureId,
+          kinds: declared.kinds,
+          step: input.step,
+          declaredBy: input.declaredBy,
+          reason: declared.reason ?? null,
+        },
+        sql,
+      );
+      return { ...r, changeKinds };
+    }),
+  );
+}

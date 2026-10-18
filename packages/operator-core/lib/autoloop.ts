@@ -192,10 +192,16 @@ export async function readFireState(slug: string, role: string): Promise<FireSta
 }
 
 /** Read + evaluate in one call — the gate the live fire paths consult. */
-export async function checkFireGate(slug: string, role: string, now: Date = new Date()): Promise<FireGateVerdict> {
+export async function checkFireGate(slug: string, role: string, now: Date = new Date(),
+  observe?: (value: { status: 'observed'; state: FireState | null; verdict: FireGateVerdict } |
+    { status: 'unknown'; error: string }) => void): Promise<FireGateVerdict> {
+  const report = (value: Parameters<NonNullable<typeof observe>>[0]) => {
+    try { observe?.(value); } catch { /* observation must never alter the gate */ }
+  };
   try {
     const state = await readFireState(slug, role);
     const verdict = evaluateFireGate(state, now);
+    report({ status: 'observed', state, verdict });
     if (verdict.autoReset) {
       // Recovery-debounce: the circuit was open past the recovery window with no fire (a
       // wedged routine, not a probing one) — self-heal by zeroing the counter so the role
@@ -215,6 +221,7 @@ export async function checkFireGate(slug: string, role: string, now: Date = new 
     }
     return verdict;
   } catch (e) {
+    report({ status: 'unknown', error: e instanceof Error ? e.message : String(e) });
     // Fail OPEN (allow): the gate is a protection, not a dependency — a PG
     // hiccup must not stop the fleet's scheduled fires.
     console.warn(`[autoloop] fire-gate read failed (${slug}/${role}) — allowing:`, e instanceof Error ? e.message : e);

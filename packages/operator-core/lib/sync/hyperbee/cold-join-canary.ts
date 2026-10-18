@@ -23,6 +23,7 @@
  */
 
 import { recordFire, recentWatchdogFires } from '../../pot/watchdog';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 /** Interval between forced cold joins. `<= 0` DISABLES the canary (the default —
  *  a cold join is too heavy to run on an ordinary host). A canary/release env sets
@@ -88,7 +89,7 @@ export async function runColdJoinCanarySweep(opts: ColdJoinCanarySweepOpts = {})
   const intervalSec = opts.intervalSec ?? coldJoinCanaryIntervalSec();
   if (intervalSec <= 0) return { outcome: 'skipped', reason: 'disabled (interval <= 0)' };
 
-  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const installSlug = opts.installSlug ?? 'papercusp';
   const windowHours = coldJoinCanaryWindowHours(intervalSec);
   const recentFires = opts.recentFires ?? ((ws, slug, h) => recentWatchdogFires(ws, slug, h, SOURCE));

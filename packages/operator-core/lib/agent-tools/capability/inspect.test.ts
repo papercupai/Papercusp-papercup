@@ -39,6 +39,7 @@ import {
 } from './inspect';
 import inspectTool from './inspect';
 import { startBackground } from './bash-jobs';
+import { vmCopyInspectSchema } from './vm-copy-authority';
 
 const BASE = '/repo';
 const OPERATOR_CORE_GATES = [{ npmScript: 'lint:tsc', prefixes: ['packages/operator-core/'] }];
@@ -76,6 +77,25 @@ function inspectCtx() {
     role: 'cup',
   } as never;
 }
+
+describe('protected vm-copy inspect branch', () => {
+  const request = { schemaVersion: 1, phase: 'preflight', challenge: 'c'.repeat(64), operationId: 'copy-1',
+    manifestRawBase64: Buffer.from('{}').toString('base64'), manifestSha256: 'a'.repeat(64) };
+  it('advertises a distinct strict branch and rejects shell/identity overrides', () => {
+    const schema = (inspectTool as unknown as { args: { safeParse(value: unknown): { success: boolean } } }).args;
+    expect(schema.safeParse({ check: 'vm-copy-authority', request }).success).toBe(true);
+    expect(schema.safeParse({ check: 'vm-copy-authority', request, command: 'anything' }).success).toBe(false);
+    expect(schema.safeParse({ check: 'vm-copy-authority', request: { ...request, ownerId: 'foreign' } }).success).toBe(false);
+    expect(vmCopyInspectSchema.safeParse({ check: 'test', request }).success).toBe(false);
+  });
+  it('refuses an invalid manifest before resolving a cwd or starting a shell', async () => {
+    const start = vi.mocked(startBackground); const calls = start.mock.calls.length;
+    const result = await inspect.handler({ check: 'vm-copy-authority', request }, {});
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text).reason).toBe('vm-copy-manifest-digest');
+    expect(start.mock.calls.length).toBe(calls);
+  });
+});
 
 describe('resolveInspectCommand — verb mapping', () => {
   it('typecheck requires a package', () => {
@@ -407,7 +427,7 @@ describe('resolveNpmWorkspaceAlias — EI-21200682380693689', () => {
   });
 
   it('publishes self-correcting guidance for the flattened test/typecheck argument surface', () => {
-    const shape = (inspectTool as unknown as { args: { shape: Record<string, { description?: string }> } }).args.shape;
+    const shape = (inspectTool as unknown as { args: { options: Array<{ shape: Record<string, { description?: string }> }> } }).args.options[0].shape;
     expect(shape.package.description).toMatch(/Repository-relative directory path to run in/);
     expect(shape.package.description).toMatch(/or the canonical npm workspace name such as "@papercusp\/operator-core"/);
     expect(shape.onlyPaths.description).toMatch(/For test, pass one or more package-relative paths/);

@@ -3395,7 +3395,7 @@
           "POST"
         ]
       },
-      "description": "Run a READ-ONLY code verification (typecheck or test) to confirm a claim about the code before diagnosing. Fixed safe commands only (npx tsc --noEmit, npm run test:affected, package-local npx vitest run, or the repository test:file router for layered tests); never an arbitrary shell command. Use this — not capability:bash — to verify.",
+      "description": "Run fixed code verification (typecheck or test), or check vm-copy-authority for an already accepted operation. The protected VM-copy check requires authenticated applied execution authority and never runs commands or acquires leases. Fixed safe commands only for code verification; never an arbitrary shell command.",
       "capabilities": [
         "capability:code-inspect"
       ],
@@ -22672,7 +22672,7 @@
           "POST"
         ]
       },
-      "description": "For { fromTestRun }, omit canonicalTestPath for local/Playwright rows (the recorded path is used); provide it only for a cargo test's defining .rs file or a mutation-probe copy-out run whose temporary mirror is unavailable. Bind tests, fixtures, coverage-census rows, mutations/counterexamples, checks, manual proof, or operational evidence to an exact immutable spec revision and work item. Repository-backed evidence may pass measurement so the server hashes and later re-measures bounded source/test file sets; opaque evidence passes sourceFingerprint and remains caller-attested. Legacy coversVALs are accepted as sourceValId aliases. Exact replays are idempotent; changed fingerprints append history. The retract op withdraws a bound row by id with a required reason — stamped, never deleted, and excluded from default reads.",
+      "description": "For { fromTestRun }, omit canonicalTestPath for local/Playwright rows (the recorded path is used); provide it only for a cargo test's defining .rs file or a mutation-probe copy-out run whose temporary mirror is unavailable. Before the first bind, supply fixturePaths or fixtureGlobs when calibration is needed, including the test file for inline fixtures; fixtures are not derived. A missing recipe leaves calibration unknown, and adding it to an already-bound run is refused. details.adequacy.fixtureCalibrated=true requires these paths; fixtureFree=true is not independent proof of fixture absence. Bind tests, fixtures, coverage-census rows, mutations/counterexamples, checks, manual proof, or operational evidence to an exact immutable spec revision and work item. Repository-backed evidence may pass measurement so the server hashes and later re-measures bounded source/test file sets; opaque evidence passes sourceFingerprint and remains caller-attested. Legacy coversVALs are accepted as sourceValId aliases. Exact replays are idempotent; changed fingerprints append history. The retract op withdraws a bound row by id with a required reason — stamped, never deleted, and excluded from default reads.",
       "capabilities": [
         "plans:write"
       ],

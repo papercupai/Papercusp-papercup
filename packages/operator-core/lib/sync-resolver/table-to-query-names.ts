@@ -821,6 +821,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.dream_runs': ['learning.dream'],
   'harness_shared.experiment_runs': ['learning.experiments', 'learning.dream'],
   'harness_shared.learning_governor_loops': ['learning.frontier', 'learning.dream'],
+  'harness_shared.learning_spend_reservations': ['learning.dream'],
   'harness_shared.calibration_predictions': ['learning.frontier'],
   'harness_shared.regret_findings': ['learning.frontier'],
   'harness_shared.transfer_lessons': ['learning.frontier'],

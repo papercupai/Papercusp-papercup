@@ -210,7 +210,20 @@ export interface TickFireGateVerdict {
   retryAfterSec?: number;
 }
 
+/** Branch evidence from the production tick, not a reconstructed admission. */
+export const GYM_ADMISSION_DECISION_PREFIX = 'GYM_ADMISSION_DECISION ';
+export const GYM_ADMISSION_GATES = ['native-budget', 'pot-scope', 'authority', 'blueprint', 'fire-backoff', 'selection'] as const;
+export interface GymAdmissionDecision {
+  workspaceId: string;
+  potSlug: string;
+  gate: typeof GYM_ADMISSION_GATES[number];
+  status: 'passed' | 'refused' | 'unknown' | 'not-applicable';
+  inputs: Record<string, unknown>;
+}
+
 export interface GymTickDeps {
+  /** Optional observation only. Observer errors cannot change selection or spend. */
+  observeAdmission?(decision: GymAdmissionDecision): void;
   /** All autoloop rows for the workspace (listAutoloopsForWorkspace). */
   listAutoloops(): Promise<GymAutoloopConfig[]>;
   /** The shared autoloop fire-gate (error backoff / circuit, D-009) for role 'gym-cycle'. */
@@ -323,6 +336,10 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
   const floor = opts.budgetFloorUsd ?? GYM_AUTOLOOP_BUDGET_FLOOR_USD;
   const now = deps.now ?? (() => Date.now());
   const log = deps.log ?? (() => {});
+  const admission = (cfg: GymAutoloopConfig, gate: GymAdmissionDecision['gate'], status: GymAdmissionDecision['status'], inputs: Record<string, unknown>) => {
+    try { deps.observeAdmission?.({ workspaceId: cfg.workspaceId, potSlug: cfg.harnessSlug, gate, status, inputs }); }
+    catch (error) { log(`admission observer failed: ${error instanceof Error ? error.message : error}`); }
+  };
 
   // P-030 (B-09): settle any post-acceptance outcome windows that have elapsed
   // BEFORE the cycle work — cheap SQL, independent of selection, and it feeds
@@ -379,12 +396,24 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
   // tick. Fail-open on a read error: an unreadable pot gate must never become a
   // fleet-wide learning outage (R-5), and the candidate simply stays eligible.
   let disabledPots: ReadonlySet<string> = EMPTY_POT_SET;
+  let potReadFailed = false;
   if (deps.disabledPots) {
     try {
       disabledPots = await deps.disabledPots();
     } catch (e) {
+      potReadFailed = true;
       log(`pot-scope gate read failed — allowing every pot: ${e instanceof Error ? e.message : e}`);
     }
+  }
+
+  for (const cfg of pool) {
+    admission(cfg, 'native-budget', isEligibleAutoloop(cfg, floor) ? 'passed' : 'refused', {
+      enabled: cfg.enabled, status: cfg.status, budgetUsd: cfg.budgetUsd, spentUsd: cfg.spentUsd,
+      remainingUsd: remainingBudgetUsd(cfg), floorUsd: floor, reclaimed: reclaimedSlugs.includes(cfg.harnessSlug),
+    });
+    admission(cfg, 'pot-scope', potReadFailed || !deps.disabledPots ? 'unknown' : disabledPots.has(cfg.harnessSlug) ? 'refused' : 'passed', {
+      disabled: disabledPots.has(cfg.harnessSlug), readFailed: potReadFailed, wired: Boolean(deps.disabledPots),
+    });
   }
 
   let eligiblePool = pool.filter((c) => isEligibleAutoloop(c, floor, !disabledPots.has(c.harnessSlug)));
@@ -406,8 +435,11 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
     const verdicts = await Promise.all(
       eligiblePool.map(async (c) => {
         try {
-          return await deps.isHiveRunner!(c.harnessSlug);
+          const run = await deps.isHiveRunner!(c.harnessSlug);
+          admission(c, 'authority', run ? 'passed' : 'refused', { run });
+          return run;
         } catch (e) {
+          admission(c, 'authority', 'unknown', { error: e instanceof Error ? e.message : String(e), failOpen: true });
           log(`hive-runner gate check failed for ${c.harnessSlug} — allowing: ${e instanceof Error ? e.message : e}`);
           return true; // fail-open: never stall the loop on an unresolvable gate
         }
@@ -433,8 +465,11 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
     const verdicts = await Promise.all(
       eligiblePool.map(async (c) => {
         try {
-          return await deps.isBlueprintRetired!(c.harnessSlug);
+          const retired = await deps.isBlueprintRetired!(c.harnessSlug);
+          admission(c, 'blueprint', retired ? 'refused' : 'passed', { retired });
+          return retired;
         } catch (e) {
+          admission(c, 'blueprint', 'unknown', { error: e instanceof Error ? e.message : String(e), failOpen: true });
           log(`blueprint-retirement check failed for ${c.harnessSlug} — allowing: ${e instanceof Error ? e.message : e}`);
           return null; // fail-open: never stall the loop on an unresolvable check
         }
@@ -477,7 +512,9 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
     let verdict: TickFireGateVerdict;
     try {
       verdict = await deps.checkFireGate(cfg.harnessSlug);
+      admission(cfg, 'fire-backoff', verdict.allow ? 'passed' : 'refused', { ...verdict });
     } catch (e) {
+      admission(cfg, 'fire-backoff', 'unknown', { error: e instanceof Error ? e.message : String(e), failOpen: true });
       // The gate is a protection, not a dependency — fail OPEN (mirrors checkFireGate).
       log(`fire-gate check failed for ${cfg.harnessSlug} — allowing: ${e instanceof Error ? e.message : e}`);
       verdict = { allow: true };
@@ -496,6 +533,8 @@ export async function runGymAutoloopTick(deps: GymTickDeps, opts: GymTickOptions
   if (!chosen) {
     return { action: 'idle', reason: 'fire-gate-backoff', eligibleCount: eligible.length, gateBlocked, ...reclaimExtra };
   }
+
+  admission(chosen, 'selection', 'passed', { selected: true, eligibleOrder: eligible.map(c => c.harnessSlug) });
 
   const remaining = remainingBudgetUsd(chosen);
   if (remaining === null) {

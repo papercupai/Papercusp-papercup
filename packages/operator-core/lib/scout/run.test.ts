@@ -160,7 +160,9 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
     expect(recordTick).toHaveBeenCalledWith({
       status: 'gated',
       gate: 'not-hive-runner',
-      detail: { reason: 'standby' },
+      detail: { reason: 'standby', budgetProvenance: {
+        schemaVersion: 1, supplied: null, resolved: { maxCostUsd: 1, maxIdeators: 6, maxCriticsPerIdea: 2 },
+      } },
     });
   });
 
@@ -189,6 +191,9 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
         totalScoutSpentUsd: 9,
         ceilingUsd: 8,
         scoutLoopCount: 3,
+        budgetProvenance: {
+          schemaVersion: 1, supplied: null, resolved: { maxCostUsd: 1, maxIdeators: 6, maxCriticsPerIdea: 2 },
+        },
       },
     });
     expect(recordGovernor).toHaveBeenCalledTimes(1);
@@ -220,7 +225,9 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
     expect(recordTick).toHaveBeenCalledWith({
       status: 'gated',
       gate: 'pot-disabled',
-      detail: { reason: 'pot-disabled' },
+      detail: { reason: 'pot-disabled', budgetProvenance: {
+        schemaVersion: 1, supplied: null, resolved: { maxCostUsd: 1, maxIdeators: 6, maxCriticsPerIdea: 2 },
+      } },
     });
   });
 
@@ -280,6 +287,10 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
         p95Ms: null,
         throttleReasons: pressure.reasons,
         admissionThrottle: pressure,
+        budgetProvenance: {
+          schemaVersion: 1, supplied: { maxCostUsd: 2, maxIdeators: 6 },
+          resolved: { maxCostUsd: 2, maxIdeators: 6, maxCriticsPerIdea: 2 },
+        },
       },
     });
   });
@@ -302,7 +313,11 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
     expect(recordTick).toHaveBeenCalledWith({
       status: 'gated',
       gate: 'generation-preflight',
-      detail: { reason: 'dedup-saturated', consecutiveSaturated: 5, lastRatio: 0.9, skipStreak: 5, probeIn: 5 },
+      detail: { reason: 'dedup-saturated', consecutiveSaturated: 5, lastRatio: 0.9, skipStreak: 5, probeIn: 5,
+        budgetProvenance: {
+          schemaVersion: 1, supplied: null, resolved: { maxCostUsd: 1, maxIdeators: 6, maxCriticsPerIdea: 2 },
+        },
+      },
     });
 
     const priorSkips = Array.from({ length: 5 }, () => ({
@@ -315,6 +330,43 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
       mkDeps({ generationPreflightTicks: async () => [...priorSkips, ...saturated] }),
     );
     expect(sched.runScoutTick).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['pot-disabled', 'not-hive-runner', 'workspace-ceiling', 'generation-preflight'] as const)(
+    'preserves the supplied one-ideator zero-spend cap when %s refuses before the scheduler', async gate => {
+      const budget = { maxCostUsd: 0, maxIdeators: 1 };
+      const refusal = {
+        'pot-disabled': { potGate: async () => ({ enabled: false }) },
+        'not-hive-runner': { hiveRunnerGate: async () => ({ run: false }) },
+        'workspace-ceiling': { workspaceCeilingGate: async () => ({ allow: false }) },
+        'generation-preflight': { admissionPressureGate: async () => ({ level: 'deep', reasons: [] }) },
+      }[gate]!;
+      const result = await runScoutCycleTick(
+        { ...baseInput, payloadTemplate: { budget } }, mkDeps(refusal),
+      );
+      expect(result).toEqual({ fired: false, reason: gate });
+      expect(sched.runScoutTick).not.toHaveBeenCalled();
+      expect(runCycle).not.toHaveBeenCalled();
+      expect(recordTick).toHaveBeenCalledTimes(1);
+      expect(recordTick.mock.calls[0][0]).toMatchObject({ status: 'gated', gate, detail: {
+        budgetProvenance: { schemaVersion: 1, supplied: budget,
+          resolved: { maxCostUsd: 0, maxIdeators: 1, maxCriticsPerIdea: 2 } },
+      } });
+      expect(recordTick.mock.calls[0][0].detail).not.toHaveProperty('ideators');
+    },
+  );
+
+  it('records the layered pot budget on an early refusal without inventing a caller default', async () => {
+    await runScoutCycleTick(
+      { ...baseInput, payloadTemplate: { budget: { maxCostUsd: 2, maxIdeators: 6 } } },
+      mkDeps({ resolveConfigDelta: async () => ({ budget: { maxCostUsd: 0.05, maxIdeators: 1 } }),
+        potGate: async () => ({ enabled: false }) }),
+    );
+    expect(recordTick.mock.calls[0][0].detail.budgetProvenance).toEqual({ schemaVersion: 1,
+      supplied: { maxCostUsd: 0.05, maxIdeators: 1 },
+      resolved: { maxCostUsd: 0.05, maxIdeators: 1, maxCriticsPerIdea: 2 } });
+    expect(sched.runScoutTick).not.toHaveBeenCalled();
+    expect(runCycle).not.toHaveBeenCalled();
   });
 
   it('curbs ideator admission under elevated queue pressure and records the exact pressure on the tick', async () => {

@@ -43,9 +43,12 @@
  * → `it('generated bindings declare every type they reference')`.
  */
 import { describe, expect, it } from 'vitest';
-import { existsSync, readdirSync, readFileSync, type Dirent } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, type Dirent } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
 /** Walk up from this file to the monorepo root (the package.json with "workspaces"). */
 function findRepoRoot(): string {
@@ -129,11 +132,24 @@ function collectedCommands(mainRs: string): string[] {
  * nested type args (`__TAURI_INVOKE<DesktopWindow[]>`, `<Array<Foo>>`) still pair
  * with the right `(`.
  */
+const invocationNames = new Map<string, Set<string>>();
 function hasBinding(bindings: string, name: string): boolean {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`__TAURI_INVOKE\\s*(?:<[\\s\\S]{0,200}?>)?\\s*\\(\\s*"${escaped}"`).test(
-    bindings,
-  );
+  let names = invocationNames.get(bindings);
+  if (!names) {
+    names = new Set<string>();
+    const source = ts.createSourceFile('tauri-bindings.ts', bindings, ts.ScriptTarget.Latest, true);
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+        && node.expression.text === '__TAURI_INVOKE' && node.arguments[0]
+        && ts.isStringLiteral(node.arguments[0])) {
+        names!.add(node.arguments[0].text);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    invocationNames.set(bindings, names);
+  }
+  return names.has(name);
 }
 
 /** The banner tauri-specta puts at the top of every file it generates. */
@@ -358,6 +374,58 @@ describe('tauri-specta bindings stay in sync with the Rust command list', () => 
     ).toBe(CANONICAL_BINDINGS);
   });
 
+  it('preserves receipt-backed bindings at startup while ordinary development regenerates them', () => {
+    // Execute the production Rust export statement with a tiny stand-in for
+    // specta's writer. This catches an unguarded startup write without building
+    // the desktop or weakening the archive verifier's recorded-file census.
+    const exportAt = mainRs.indexOf('.export(');
+    const start = mainRs.lastIndexOf('#[cfg(debug_assertions)]', exportAt);
+    const end = mainRs.indexOf('// P-009 single-instance guard', exportAt);
+    expect(exportAt).toBeGreaterThan(0);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(exportAt);
+    const directory = mkdtempSync(path.join(tmpdir(), 'bindings-export-'));
+    try {
+      const crate = path.join(directory, 'papercusp-desktop/src-tauri');
+      const bindings = path.join(directory, 'packages/operator-core/lib/tauri-bindings.ts');
+      mkdirSync(crate, { recursive: true });
+      mkdirSync(path.dirname(bindings), { recursive: true });
+      const source = path.join(directory, 'export.rs');
+      const binary = path.join(directory, process.platform === 'win32' ? 'export.exe' : 'export');
+      writeFileSync(source, `
+mod specta_typescript {
+    #[derive(Default)] pub struct Typescript;
+    impl Typescript { pub fn header(self, _: &str) -> Self { self } }
+}
+struct SpectaBuilder;
+impl SpectaBuilder {
+    fn export(&self, _: specta_typescript::Typescript, path: &str) -> std::io::Result<()> {
+        std::fs::write(path, "regenerated")
+    }
+}
+fn main() {
+    let specta_builder = SpectaBuilder;
+    const BINDINGS_HEADER: &str = "fixture header";
+    ${mainRs.slice(start, end)}
+}
+`);
+      execFileSync('rustc', ['--edition=2021', '--crate-name', 'bindings_export_guard', source, '-o', binary], {
+        env: { ...process.env, CARGO_MANIFEST_DIR: crate }, timeout: 20_000, stdio: 'pipe',
+      });
+      for (const receipt of ['/independent/verifier-source.json', '', undefined]) {
+        const env = { ...process.env };
+        delete env.VERIFY_TAURI_SOURCE_RECEIPT;
+        if (receipt !== undefined) env.VERIFY_TAURI_SOURCE_RECEIPT = receipt;
+        writeFileSync(bindings, 'committed bindings');
+        execFileSync(binary, { env, timeout: 5_000, stdio: 'pipe' });
+        expect(readFileSync(bindings, 'utf8'), `receipt=${JSON.stringify(receipt)}`)
+          .toBe(receipt === undefined ? 'regenerated' : 'committed bindings');
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it('does not resurrect a dead pre-rename `papercup/` tree', () => {
     // All three depths the misdirected export was found writing to — three, not
     // one, because a relative path follows the process CWD and the CWD varied.
@@ -386,6 +454,10 @@ describe('tauri-specta bindings stay in sync with the Rust command list', () => 
     expect(hasBinding(bindings, 'workspaces_list')).toBe(true); // parameterised form
     expect(hasBinding(bindings, 'endpoint_ipc_status')).toBe(true); // plain form
     expect(hasBinding(bindings, 'no_such_command_zzz')).toBe(false);
+    const longType = `{ ${Array.from({ length: 40 }, (_, i) => `field${i}: Array<{ value: string }>`).join('; ')} }`;
+    expect(hasBinding(`__TAURI_INVOKE<${longType}>("long_return", {})`, 'long_return')).toBe(true);
+    expect(hasBinding('// __TAURI_INVOKE("comment_only")', 'comment_only')).toBe(false);
+    expect(hasBinding('const text = \'__TAURI_INVOKE("string_only")\';', 'string_only')).toBe(false);
   });
 
   it('exactly ONE file carries the Tauri-Specta generated header', () => {

@@ -3456,6 +3456,47 @@ describe('a lifecycle-only revision carries proof forward (WI-10002889)', () => 
     expect(edge?.spec_fingerprint).toBe((promoted as { contentHash: string }).contentHash);
   });
 
+  it('keeps a dirty test-run binding unknown through promotion and the get-spec-evidence reader', async () => {
+    await specs.setSpecClause(clause({ lifecycleStatus: 'draft' }));
+    const external = await seedExternalEvidence('test/reconnect.test.ts');
+    await db.sql`
+      UPDATE harness_shared.test_runs
+         SET worktree_dirty = true
+       WHERE id = ${external.testRunId}`;
+    await bindAtCurrent('surface:GET /events', external.testRunId, external.coverageEvidenceRef);
+
+    const promoted = await specs.setSpecClause(clause({ expectedRevision: 1, lifecycleStatus: 'active' }));
+    expect(promoted).toMatchObject({ status: 'revised', revision: 2, evidenceCarriedForward: 1 });
+
+    const [carried] = await db.sql<{ id: number; test_run_id: string | number | null }[]>`
+      SELECT id, test_run_id
+        FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id = ${WORKSPACE} AND harness_slug = ${HARNESS}
+         AND plan_slug = 'reconnect-plan' AND spec_id = 'SPEC-003-01'
+         AND spec_revision = 2 AND evidence_ref = 'surface:GET /events'`;
+    // The copy path must preserve the exact run identity. If it dropped the id, the reader
+    // would report testRun not-applicable instead of exposing the dirty-run uncertainty.
+    expect(Number(carried?.test_run_id)).toBe(external.testRunId);
+
+    const read = (await getTool.handler(
+      {
+        harness: HARNESS,
+        slug: 'reconnect-plan',
+        detail: 'summary',
+        bindingIds: [Number(carried?.id)],
+      } as never,
+      CTX,
+    )) as { data: { evidence: Array<Record<string, any>>; currentness: Record<string, number> } };
+    expect(read.data.currentness).toEqual({ current: 0, stale: 0, unknown: 1 });
+    expect(read.data.evidence[0]).toMatchObject({
+      testRunId: external.testRunId,
+      currentness: {
+        overall: 'unknown',
+        unknownReasons: expect.arrayContaining(['test-run-worktree-not-clean']),
+      },
+    });
+  });
+
   it.each(['accepted', 'active'] as const)('carries manual proof when an exempt clause becomes %s and clears required lifecycle metadata', async (lifecycleStatus) => {
     const exemption = { justification: 'Manually inspect the final signed package.', provenance: 'D-003' };
     const manual = clause({

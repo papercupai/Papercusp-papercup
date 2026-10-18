@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { FLAGS } from '@papercusp/flags';
 import type { FlagAttestation } from '@papercusp/flags/server';
-import { assessDreamControlObservationCurrentness, readDreamControlObservations, type ControlObservationScope } from './dream-control-observations';
+import { assessDreamActionDecisions, assessDreamAdmission, assessGymAdmissionDecisions, assessDreamControlObservationCurrentness, readDreamControlObservations, type ControlObservationScope } from './dream-control-observations';
+import { DREAM_ACTION_DECISION_PREFIX, DREAM_ADMISSION_GATES } from './dream-config';
+import { GYM_ADMISSION_DECISION_PREFIX, GYM_ADMISSION_GATES } from '../gym/autoloop-tick';
+import type { JournalReadResult } from '../journal-read';
 
 const now = Date.parse('2026-10-17T12:00:00Z');
 const runtime = { host: 'port-3170', processId: 'linux:boot:1234', buildSha: 'loaded-build' };
@@ -38,11 +41,103 @@ function fixture(change: Record<string, readonly Row[]> = {}) {
     }];
     return [];
   };
-  return { sql: tagged as unknown as Sql, queries };
+  return { sql: tagged as unknown as Sql, queries, query: tagged };
 }
 
 afterEach(() => vi.unstubAllEnvs());
 describe('mutation-free Dream/Gym/Scout control observations', () => {
+  it.each(['valid', 'missing-gates', 'unknown', 'wrong-prefix', 'dispatch-only'])(
+    'requires an actual complete Dream refusal chain: %s', fault => {
+      const gates = DREAM_ADMISSION_GATES.map((gate, i) => ({ gate,
+        status: i === 0 ? 'passed' : i === 1 ? 'refused' : 'not-reached', inputs: {} }));
+      if (fault === 'unknown') gates[0].status = 'unknown';
+      if (fault === 'wrong-prefix') gates[0].status = 'not-reached';
+      const row = { schemaVersion: 1 as const, actionId: 'a', workspaceId: 'ws', potSlug: 'pot', capturedAt: scope.since,
+        runtime, source: 'dream/dream-cycle-action:makeDreamCycleAction' as const, mode: 'auto' as const,
+        reason: 'owner-idle-disabled', disposition: 'pre-attempt-policy-skip' as const, costUsd: 0,
+        ...(fault === 'missing-gates' ? {} : { admission: fault === 'dispatch-only' ? [] : gates }) };
+      expect(assessDreamAdmission(row).status).toBe(fault === 'valid' ? 'observed' : 'unknown');
+    });
+  it.each(['valid', 'refusal', 'missing-prefix', 'fail-open', 'wrong-runtime', 'wrong-unit', 'clipped', 'truncated', 'absent'])(
+    'validates actual Gym gate records and preserves %s uncertainty', fault => {
+      const names = ['owner-idle', ...GYM_ADMISSION_GATES];
+      const records = names.map(gate => ({ schemaVersion: 1, actionId: 'gym-a', workspaceId: 'ws', potSlug: gate === 'owner-idle' ? null : 'pot',
+        capturedAt: scope.since, runtime: fault === 'wrong-runtime' ? { ...runtime, buildSha: 'other' } : runtime,
+        source: 'harness/routines/gym-actions:runGymCycleInline', gate,
+        status: fault === 'fail-open' && gate === 'authority' ? 'unknown' : fault === 'refusal' && gate === 'native-budget' ? 'refused' : 'passed', inputs: {} }));
+      const selected = fault === 'absent' ? [] : fault === 'missing-prefix' ? [{ ...records[5], status: 'refused' }]
+        : fault === 'refusal' ? records.slice(0, 3) : records;
+      const journal = { journalAvailable: true, journalError: null, truncated: fault === 'truncated', unitsUnknown: [],
+        entries: selected.map(row => ({ ts: scope.since, unit: fault === 'wrong-unit' ? 'wrong.service' : 'gym.service',
+          message: GYM_ADMISSION_DECISION_PREFIX + JSON.stringify(row), clipped: fault === 'clipped' })) } as unknown as JournalReadResult;
+      const assessed = assessGymAdmissionDecisions(journal, { ...scope, gymJournalUnit: 'gym.service', expectedGymRuntime: runtime });
+      expect(assessed.status).toBe(['valid', 'refusal'].includes(fault) ? 'observed' : 'unknown');
+      if (assessed.status === 'observed') expect(assessed.value.actions[0].allow).toBe(fault === 'valid');
+    });
+  it('uses open reservations in lifetime governor decisions, preserving native and later-gate limits', async () => {
+    const { query } = fixture({ 'FROM harness_shared.learning_governor_loops': [{ workspace_id: 'ws', loop_id: 'dream:pot', pot_slug: 'pot',
+      budget_kind: 'lifetime', budget_usd: 2, spent_usd: 0.25, enabled: true, enforcement: 'governor', registered_at: now, updated_at: now }] });
+    // Each loop has distinct authoritative identity; keep the fixture's dynamic
+    // lookup for Gym/Scout and override only Dream, as a real store does.
+    const dynamic = async (parts: TemplateStringsArray, ...values: unknown[]) => {
+      if (parts.join('?').includes('FROM harness_shared.learning_governor_loops') && values[1] !== 'dream:pot')
+        return [{ workspace_id: 'ws', loop_id: values[1], pot_slug: 'pot', budget_kind: 'per-cycle', budget_usd: 1,
+          spent_usd: 0, enabled: true, enforcement: 'native', registered_at: now, updated_at: now }];
+      if (parts.join('?').includes('FROM harness_shared.learning_spend_reservations'))
+        return [{ loop_id: 'dream:pot', open_reserved_usd: 1.5, open_count: 2 }];
+      return query(parts, ...values);
+    };
+    const value = await readDreamControlObservations(dynamic as unknown as Sql, scope, deps);
+    expect(value.observations?.governors).toMatchObject({ status: 'observed', value: {
+      admission: 'not-evaluated', governorAdmission: [
+        { loopId: 'dream:pot', openReservedUsd: 1.5, chargedOpenUsd: 1.5, openCount: 2,
+          verdict: { allow: false, reason: 'exhausted', remainingUsd: 0.25 }, scope: 'governor-budget-and-pot-only' },
+        { loopId: 'gym:pot', chargedOpenUsd: 0, enforcement: 'native', verdict: { allow: true } },
+        { loopId: 'blender:pot', chargedOpenUsd: 0, enforcement: 'native', verdict: { allow: true } },
+      ],
+    } });
+  });
+  it.each(['valid', 'absent', 'dispatch', 'wrong-runtime', 'wrong-scope', 'wrong-window', 'clipped', 'truncated', 'read-error', 'paid-skip'])(
+    'accepts only an authentic complete actual action skip: %s', fault => {
+      const row = { schemaVersion: 1, actionId: 'a', workspaceId: fault === 'wrong-scope' ? 'foreign' : 'ws', potSlug: 'pot',
+        capturedAt: fault === 'wrong-window' ? scope.until : scope.since,
+        runtime: fault === 'wrong-runtime' ? { ...runtime, buildSha: 'foreign' } : runtime,
+        source: 'dream/dream-cycle-action:makeDreamCycleAction', mode: 'auto', reason: 'owner-idle-disabled',
+        disposition: 'pre-attempt-policy-skip', paidCalls: fault === 'paid-skip' ? 1 : 0, model: null, usage: null, costUsd: 0 };
+      const journal = { journalAvailable: true, journalError: fault === 'read-error' ? 'unreadable' : null,
+        truncated: fault === 'truncated', unitsUnknown: [], entries: fault === 'absent' ? [] : [{
+          ts: scope.since, unit: 'test-bg.service', message: fault === 'dispatch' ? 'routineFire SUCCESS' : DREAM_ACTION_DECISION_PREFIX + JSON.stringify(row),
+          ...(fault === 'clipped' ? { clipped: true } : {}),
+        }] } as unknown as JournalReadResult;
+      expect(assessDreamActionDecisions(journal, { ...scope, actionJournalUnit: 'test-bg.service', expectedActionRuntime: runtime }).status)
+        .toBe(fault === 'valid' ? 'observed' : 'unknown');
+    });
+  it('does not certify requested action currentness from absent journal records or a different expected action process', async () => {
+    const actionScope = { ...scope, actionJournalUnit: 'test-bg.service', expectedActionRuntime: runtime };
+    const journal = { journalAvailable: true, journalError: null, truncated: false, unitsUnknown: [], entries: [] } as unknown as JournalReadResult;
+    const value = await readDreamControlObservations(fixture().sql, actionScope, { ...deps, journal: async () => journal });
+    expect(assessDreamControlObservationCurrentness(value, actionScope, now)).toEqual({ current: false, reason: 'incomplete-action-decisions' });
+    expect(assessDreamControlObservationCurrentness(value, { ...actionScope, expectedActionRuntime: { ...runtime, processId: 'another' } }, now))
+      .toEqual({ current: false, reason: 'wrong-action-runtime-or-unit' });
+  });
+  it.each(['valid', 'missing', 'mismatch', 'overspend', 'missing-cost', 'invalid-supplied'])(
+    'preserves actual per-tick Scout cap provenance and refuses %s ambiguity', async fault => {
+      const provenance = { schemaVersion: 1, supplied: { maxIdeators: 1, maxCostUsd: 0.37 },
+        resolved: { maxCostUsd: 0.37, maxIdeators: 1, maxCriticsPerIdea: 2 } };
+      const tick = { workspace_id: 'ws', pot_slug: 'pot', install_slug: 'pot', tick_at: scope.since, origin: 'scout', status: 'ran',
+        ideas_routed: 0, budget_used_usd: fault === 'overspend' ? 0.38 : fault === 'missing-cost' ? null : 0.12,
+        detail: { ideators: [{ lens: 'analogical', ok: true, raw: 0, produced: 0 }],
+          ...(fault === 'missing' ? {} : { budgetProvenance: provenance }) } };
+      if (fault === 'mismatch') provenance.resolved.maxIdeators = 2;
+      if (fault === 'invalid-supplied') provenance.supplied.maxCostUsd = -1;
+      const value = await readDreamControlObservations(fixture({ 'FROM harness_shared.scout_ticks': [tick] }).sql, scope, deps);
+      const activity = value.observations?.activity;
+      expect(activity?.status).toBe('observed');
+      if (activity?.status !== 'observed') throw new Error('missing activity');
+      expect(activity.value.scout.observations[0].suppliedOneIdeatorCapRespected).toBe(
+        fault === 'valid' ? true : ['overspend', 'missing-cost'].includes(fault) ? false : null);
+      expect(activity.value.scout.rows[0]).toEqual(tick);
+    });
   it('reads actual persisted per-mode limits, loaded floor and NULL budgets without setup or paid dispatch', async () => {
     vi.stubEnv('PAPERCUSP_GYM_BUDGET_FLOOR_USD', '0.8');
     const { sql, queries } = fixture();

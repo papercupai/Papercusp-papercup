@@ -52,6 +52,23 @@ beforeEach(() => {
 });
 
 describe('inbox:automation-policy', () => {
+  it('permits policy reads as probes while preserving write classification for every mutation', async () => {
+    expect(tool.effect).toBe('write');
+    expect(tool.effectForCall?.({ op: 'get' })).toBe('read');
+    const result = body(await tool.handler({ op: 'get' } as never, { role: 'su' } as never));
+    expect(result).toEqual({ policy: { level: 'L0', minConfidence: 'high' } });
+    expect(writeM).not.toHaveBeenCalled();
+    expect(resetM).not.toHaveBeenCalled();
+    for (const args of [
+      { op: 'set', level: 'L2' },
+      { op: 'set', level: 'L2', dryRun: true },
+      { op: 'reset' },
+      { op: 'reset', dryRun: true },
+    ] as const) {
+      expect(tool.effectForCall?.(args)).toBe('write');
+    }
+  });
+
   it('persists and verifies an explicit grant for all three risk levels', async () => {
     const riskLevels = { low: 'automatic', medium: 'automatic', high: 'automatic' } as const;
     writeM.mockResolvedValue({ level: 'L0', minConfidence: 'high', riskLevels });

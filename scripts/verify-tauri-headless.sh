@@ -35,8 +35,10 @@
 #
 #   ISOLATED:      the X display, the devUrl port, the pty port, the sidecar
 #                  *process*, and (EI-10364) the SPA MODULE BUNDLE — a frozen
-#                  snapshot the fleet's shared `vite build --watch` can't touch,
-#                  so this webview's module graph is stable for the whole run.
+#                  snapshot the fleet's shared rebuild (the one-shot
+#                  scripts/papercup-vite-rebuild.sh `npm run build`, see
+#                  WI-10004972 below) can't touch, so this webview's module
+#                  graph is stable for the whole run.
 #   **NOT** ISOLATED: the DATABASE, the WORKSPACE, and the WebView profile. The
 #                  sidecar inherits the ambient env, so it connects to the SAME
 #                  `DATABASE_URL` / `PAPERCUSP_WORKSPACE` as the live system, and

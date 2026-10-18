@@ -42,6 +42,9 @@ import {
   verificationScopeForNpmArgs,
   verifyNpmCache,
   verifyNpmCacheExclusive,
+  withWriterAttribution,
+  writerAttributionRecord,
+  writerAttributionSnapshot,
 } from "./npm-install-safe.mjs";
 import {
   PACKAGE_CACHE_MUTEX_NAME,
@@ -337,6 +340,15 @@ test("reify and repair still publish and propagate generation failure", {
     assert.equal(result.status, 77, result.stderr + result.stdout);
     assert.deepEqual(readFileSync(fixture.tracePath, 'utf8').trim().split('\n'), ['cache-verify', 'resolve', 'reify', 'repair', 'publish']);
     assert.match(result.stderr, /immutable dependency generation publish exited 77/);
+    const attribution = result.stderr.split('\n')
+      .filter((line) => line.startsWith('NPM_INSTALL_SAFE attribution='))
+      .map((line) => JSON.parse(line.slice('NPM_INSTALL_SAFE attribution='.length)));
+    const reify = attribution.find((record) => record.phase === 'reify');
+    const publish = attribution.find((record) => record.phase === 'generation-publish');
+    assert.ok(reify && publish, result.stderr);
+    assert.equal(publish.invocationId, reify.invocationId);
+    assert.equal(publish.lockMode, 'reader');
+    assert.equal(publish.exitCode, 77);
   } finally { rmSync(fixture.tempRoot, { recursive: true, force: true }); }
 });
 
@@ -662,6 +674,146 @@ test("runNpmWithHeartbeat reports asynchronous phase, child PID, RSS, and exit s
     ),
   );
   assert.match(lines.at(-1), /phase=resolve finished .*exitCode=0 signal=none/);
+});
+
+test("writer attribution distinguishes a phase disappearance from an initially absent path", async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-attribution-"));
+  const nestedPath = "apps/slack-asana-bug-drill/node_modules/@types/node/node_modules/undici-types";
+  const target = join(repoRoot, nestedPath);
+  const packageLock = '{"lockfileVersion":3,"packages":{}}\n';
+  const runPhase = async (removeDuringPhase) => {
+    const child = new EventEmitter();
+    child.pid = 4321;
+    const lines = [];
+    const status = await runNpmWithHeartbeat({
+      phase: "reify",
+      args: ["install"],
+      cwd: repoRoot,
+      heartbeatIntervalMs: 0,
+      attribution: {
+        repoRoot,
+        nestedPath,
+        invocationId: "fixture-invocation",
+        lockName: repoLockName(repoRoot),
+      },
+      spawnCommand: () => {
+        setImmediate(() => {
+          if (removeDuringPhase) rmSync(target, { recursive: true, force: true });
+          child.emit("close", 0, null);
+        });
+        return child;
+      },
+      log: (line) => lines.push(line),
+    });
+    assert.equal(status, 0);
+    return JSON.parse(lines.find((line) => line.startsWith("NPM_INSTALL_SAFE attribution="))
+      .slice("NPM_INSTALL_SAFE attribution=".length));
+  };
+  try {
+    writeFileSync(join(repoRoot, "package-lock.json"), packageLock);
+    mkdirSync(target, { recursive: true });
+    writeFileSync(join(target, "package.json"), '{"name":"undici-types"}\n');
+    const disappearance = await runPhase(true);
+    assert.equal(disappearance.pathTransition, "disappeared-during-phase");
+    assert.equal(disappearance.writerInference, "candidate-writer-window");
+    assert.equal(disappearance.invocationId, "fixture-invocation");
+    assert.equal(disappearance.lockMode, "writer");
+    assert.equal(disappearance.childPid, 4321);
+    assert.equal(disappearance.before.nestedPathStat.status, "observed");
+    assert.equal(disappearance.after.nestedPathStat.reason, "absent");
+    assert.equal(disappearance.before.rootPackageLockSha256.status, "observed");
+    assert.equal(disappearance.before.rootPackageLockSha256.sha256,
+      disappearance.after.rootPackageLockSha256.sha256);
+
+    // Negative control: a later successful phase cannot be blamed for a path
+    // that had already gone missing before its child was spawned.
+    const initiallyAbsent = await runPhase(false);
+    assert.equal(initiallyAbsent.pathTransition, "initially-absent");
+    assert.equal(initiallyAbsent.writerInference, "none");
+    assert.equal(initiallyAbsent.before.nestedPathStat.reason, "absent");
+    assert.equal(initiallyAbsent.after.nestedPathStat.reason, "absent");
+    assert.equal(writerAttributionRecord({
+      before: { nestedPathStat: { status: "not-observed", reason: "probe-failed" } },
+      after: { nestedPathStat: { status: "not-observed", reason: "probe-failed" } },
+    }).pathTransition, "not-observed");
+    assert.equal(writerAttributionRecord({
+      lockMode: "none",
+      before: { nestedPathStat: { status: "observed" } },
+      after: { nestedPathStat: { status: "not-observed", reason: "absent" } },
+    }).writerInference, "unattributed-shared-or-unlocked-window");
+    assert.equal(writerAttributionSnapshot({ repoRoot, nestedPath }).nestedPathStat.reason, "absent");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("writer transaction attribution captures wrapper-side removal before any npm child", async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-writer-attribution-"));
+  const nestedPath = "apps/slack-asana-bug-drill/node_modules/@types/node/node_modules/undici-types";
+  const target = join(repoRoot, nestedPath);
+  const lines = [];
+  try {
+    mkdirSync(target, { recursive: true });
+    writeFileSync(join(repoRoot, "package-lock.json"), "{}\n");
+    assert.equal(await withWriterAttribution({
+      repoRoot,
+      nestedPath,
+      invocationId: "wrapper-fixture",
+      lockName: repoLockName(repoRoot),
+      phase: "install-transaction",
+      log: (line) => lines.push(line),
+    }, async () => {
+      rmSync(target, { recursive: true, force: true });
+      return 0;
+    }), 0);
+    const record = JSON.parse(lines[0].slice("NPM_INSTALL_SAFE attribution=".length));
+    assert.equal(record.invocationId, "wrapper-fixture");
+    assert.equal(record.phase, "install-transaction");
+    assert.equal(record.childPid, null);
+    assert.equal(record.pathTransition, "disappeared-during-phase");
+    assert.equal(record.writerInference, "candidate-writer-window");
+    assert.equal(record.before.nestedPathStat.status, "observed");
+    assert.equal(record.after.nestedPathStat.reason, "absent");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("generation publish attribution records the source transition under the reader grant", async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "install-safe-generation-attribution-"));
+  const nestedPath = "apps/slack-asana-bug-drill/node_modules/@types/node/node_modules/undici-types";
+  const target = join(repoRoot, nestedPath);
+  const lines = [];
+  try {
+    mkdirSync(target, { recursive: true });
+    writeFileSync(join(repoRoot, "package-lock.json"), "{}\n");
+    const result = await publishDependencyGeneration({
+      repoRoot,
+      log: (line) => lines.push(line),
+      env: {
+        ...process.env,
+        PAPERCUSP_INSTALL_ATTRIBUTION_ID: "generation-fixture",
+        PAPERCUSP_INSTALL_ATTRIBUTION_PATH: target,
+      },
+      runPublisher: () => {
+        rmSync(target, { recursive: true, force: true });
+        return { status: 0, signal: null, pid: 7654 };
+      },
+    });
+    assert.equal(result, 0);
+    const attribution = JSON.parse(lines.find((line) =>
+      line.startsWith("NPM_INSTALL_SAFE attribution="),
+    ).slice("NPM_INSTALL_SAFE attribution=".length));
+    assert.equal(attribution.childPid, 7654);
+    assert.equal(attribution.phase, "generation-publish");
+    assert.equal(attribution.invocationId, "generation-fixture");
+    assert.equal(attribution.lockMode, "reader");
+    assert.equal(attribution.exitCode, 0);
+    assert.equal(attribution.pathTransition, "disappeared-during-phase");
+    assert.equal(attribution.writerInference, "unattributed-shared-or-unlocked-window");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
 });
 
 test("readChildRssBytes refuses unsupported platforms and invalid PIDs", () => {

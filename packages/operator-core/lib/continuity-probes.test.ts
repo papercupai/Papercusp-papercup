@@ -153,6 +153,48 @@ describe('criterion ALL probes', () => {
       kind: 'probe', probe: readProbe({ schemaRevision: 'old' }),
     } }]).ok).toBe(false);
   });
+
+  it.each([{ event: 'rubric:criterion-regressed:example' }, { meter: true }])(
+    'rejects judge-denied events:status arguments at authoring for single and ALL checks: %j',
+    (args) => {
+      const target = projected('events:status', 'read', {
+        event: { type: 'string' }, meter: { type: 'boolean' }, await_id: { type: 'number' },
+      });
+      catalog.push({ ...target, agentRoles: ['su', 'judge'] });
+      const probe = readProbe({ tool: 'events:status', args, schemaRevision: continuityProbeRevision('events:status')! });
+      // A generic continuity probe remains valid for its SU author. The rubric
+      // must additionally prove the SAME arguments are admitted to its grader.
+      expect(continuityProbeSchema.safeParse(probe).success).toBe(true);
+      for (const binding of [{ kind: 'probe' as const, probe }, check([readProbe(), probe])]) {
+        expect(validateCriterionCheckPaths([{ key: 'proof', check: binding }])).toMatchObject({
+          ok: false,
+          scopeFailures: [{ criterionKey: 'proof', reason: expect.stringContaining('evidence-only judge') }],
+        });
+      }
+    },
+  );
+
+  it.each([{}, { await_id: 11 }, { meter: false }])(
+    'keeps caller-scoped events:status probes authorable and executable: %j',
+    async (args) => {
+      catalog.push({
+        ...projected('events:status', 'read', {
+          event: { type: 'string' }, meter: { type: 'boolean' }, await_id: { type: 'number' },
+        }),
+        agentRoles: ['su', 'judge'],
+      });
+      const probe = readProbe({ tool: 'events:status', args, schemaRevision: continuityProbeRevision('events:status')! });
+      for (const binding of [{ kind: 'probe' as const, probe }, check([probe])]) {
+        expect(validateCriterionCheckPaths([{ key: 'proof', check: binding }]).ok).toBe(true);
+        const dispatch = vi.fn(async () => ({ state: 'green' }));
+        expect(await evaluateCriterionProbeChecks({
+          criteria: [{ key: 'proof', check: binding }], ratings: { proof: { rating: 'pass' } }, dispatchTool: dispatch,
+        })).toMatchObject({ ok: true, checkRuns: { proof: { verdict: 'pass' } } });
+        expect(dispatch).toHaveBeenCalledOnce();
+        expect(dispatch).toHaveBeenCalledWith('events:status', args);
+      }
+    },
+  );
 });
 
 function projected(name: string, effect: 'read' | 'write' = 'read', properties: Record<string, unknown> = {}) {

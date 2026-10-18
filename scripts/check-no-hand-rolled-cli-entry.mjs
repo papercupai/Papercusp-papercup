@@ -77,7 +77,6 @@ export const ALLOW_COUNTS = new Map([
   ['scripts/check-no-ungated-infinite-animation.mjs|path-to-file-url', 1],
   ['scripts/check-no-unthreaded-apply.mjs|file-template', 1],
   ['scripts/check-no-wire-compression.mjs|path-to-file-url', 2],
-  ['scripts/check-partial-index-alignment.mjs|file-template', 1],
   ['scripts/check-plane-adoption.mjs|file-template', 1],
   ['scripts/check-plane-producers.mjs|file-template', 1],
   ['scripts/check-systemd-startlimit-placement.mjs|path-to-file-url', 2],

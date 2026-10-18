@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chromium } from 'playwright';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { pageHtml } from './tutorial-character-model.mjs';
 
 export const PREVIEW_TEXT = "Hi, I'm PaperCup, the operator of Papercusp. I'll guide you through your first project.";
@@ -78,4 +79,4 @@ export async function renderPreview({ outDir, text = PREVIEW_TEXT, width = 960, 
   return { outDir, video, duration, alignmentCharacters: alignment?.characters?.length ?? 0 };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) { const i = process.argv.indexOf('--out'); const outDir = i >= 0 ? process.argv[i + 1] : '/tmp/papercup-speaking-preview'; renderPreview({ outDir }).then(result => console.log(JSON.stringify(result))).catch(error => { console.error(error); process.exitCode = 1; }); }
+if (isCliEntry(import.meta.url)) { const i = process.argv.indexOf('--out'); const outDir = i >= 0 ? process.argv[i + 1] : '/tmp/papercup-speaking-preview'; renderPreview({ outDir }).then(result => console.log(JSON.stringify(result))).catch(error => { console.error(error); process.exitCode = 1; }); }

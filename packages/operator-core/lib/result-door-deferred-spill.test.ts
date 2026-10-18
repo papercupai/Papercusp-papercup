@@ -479,6 +479,92 @@ describe('result-door deferred spill (WI-10004533)', () => {
     }
   });
 
+  it('keeps work_items:get checkpoint and comment recovery when the primary spill times out', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    let rejectWrite!: (error: Error) => void;
+    let signalStarted!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const stalledWrite = new Promise<void>((_resolve, reject) => { rejectWrite = reject; });
+    const writer = vi.spyOn(scratchGc, 'writeWithScratchQuota').mockImplementation((_opts, write) => {
+      signalStarted();
+      return stalledWrite.then(() => write(async (_phase, _subphase, operation) => operation()));
+    });
+    const durablePersist = vi.spyOn(
+      scratchReference,
+      'persistVolatileScratchReference',
+    ).mockRejectedValue(new Error('test spool unavailable'));
+    const checkpoint = 'RETAINED-CHECKPOINT-BEGIN\n' + 'next step: verify the current work-item receipt.\n'.repeat(500);
+    const comment = 'RETAINED-COMMENT: reviewer requested a current-build reproduction.';
+    const originalText = JSON.stringify({
+      ok: true,
+      results: [{
+        id: 'EI-checkpoint-timeout',
+        ok: true,
+        workItem: {
+          id: 'EI-checkpoint-timeout',
+          kind: 'bug',
+          state: 'open',
+          title: 'large work item read',
+          summary: 'S'.repeat(1_200),
+        },
+        checkpoint,
+        checkpointContentHash: 'checkpoint-hash-timeout',
+        threadWindow: {
+          total: 1,
+          shown: 1,
+          posts: [{ id: 42, author_id: 'su-reviewer', body: comment }],
+        },
+      }],
+      counts: { ok: 1, failed: 0 },
+    });
+    expect(originalText.length).toBeGreaterThan(BUDGET_CHARS);
+    let resultPromise: Promise<DoorableResult> | undefined;
+
+    try {
+      resultPromise = applyResultDoorAsync(
+        { content: [{ type: 'text' as const, text: originalText }] },
+        {
+          ...OPTS,
+          toolName: 'work_items:get',
+          ownerId: 'su-1',
+          preservePaths: ['results[].checkpoint', 'results[].threadWindow.posts[].body'],
+        },
+      );
+      await writeStarted;
+      await vi.advanceTimersByTimeAsync(30_000);
+      const result = await resultPromise;
+      const cursor = volatileCursorFrom(result);
+      const meta = result._meta?.resultDoor as {
+        spillPending?: boolean;
+        spillFailed?: boolean;
+        spillErrorCode?: string;
+        recoveryCursor?: Record<string, unknown>;
+        pendingSpill?: { cursor?: Record<string, unknown> };
+      };
+
+      expect(meta).toMatchObject({
+        spillPending: true,
+        spillFailed: false,
+        spillErrorCode: 'ETIMEDOUT',
+        pendingSpill: { cursor: { kind: 'pending-spill', errorCode: 'ETIMEDOUT' } },
+      });
+      expect(cursor).toMatchObject({ kind: 'volatile-scratch-page', tool: 'capability:read' });
+      expect(meta.recoveryCursor).toMatchObject(cursor);
+      const recovered = readVolatileText(cursor, 'ws-1', 'su-1');
+      expect(recovered).toContain('RETAINED-CHECKPOINT-BEGIN');
+      expect(recovered).toContain(comment);
+      expect(durablePersist).toHaveBeenCalledTimes(1);
+    } finally {
+      rejectWrite(new Error('test cleanup'));
+      await resultPromise?.catch(() => undefined);
+      writer.mockRestore();
+      durablePersist.mockRestore();
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
   it('attaches the pending spill cursor to a durable reference-envelope fallback', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();

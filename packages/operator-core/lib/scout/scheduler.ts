@@ -338,9 +338,13 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
   // P-034 observability: one durable row per tick, naming the self-gate that
   // stopped a no-op or the counts of a full cycle. Best-effort by contract —
   // a recording failure must never fail the tick itself.
+  const budget = resolveScoutBudget(opts.budget);
   const note = async (rec: ScoutTickRecord): Promise<void> => {
     try {
-      await deps.recordTick?.(rec);
+      await deps.recordTick?.({ ...rec, detail: { ...rec.detail,
+        // Preserve this tick's caller input, not a later routine/default.
+        budgetProvenance: { schemaVersion: 1, supplied: opts.budget ?? null, resolved: budget },
+      } });
     } catch {
       /* best-effort — observability never fails the tick */
     }
@@ -407,7 +411,6 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
     }
   }
 
-  const budget = resolveScoutBudget(opts.budget);
   const cycleId = (deps.newCycleId ?? ((n) => `scout-${n}`))(state.nowMs);
   let activePhase: ScoutCyclePhase | undefined;
   // WI-5436: snapshot the pool HERE — cycle-top, before the cycle can consume or

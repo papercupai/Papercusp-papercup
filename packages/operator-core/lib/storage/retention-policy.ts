@@ -1,4 +1,6 @@
 import { retentionPinProtectsPath } from '../../../../scripts/lib/retention-pins.mjs';
+import { hostWorkspaceRootPattern } from '../workspace-root';
+
 /**
  * Written retention policy for disk consumers on `/`, `/mnt/data` and `/mnt/backup`
  * (plan disk-headroom-standing-reclaim-2026-10-12, P-003 / R-2; `/mnt/backup`
@@ -39,6 +41,8 @@ import { retentionPinProtectsPath } from '../../../../scripts/lib/retention-pins
  */
 import { homedir } from 'node:os';
 import { normalize } from 'node:path';
+
+const WORKSPACE_ROOT_TOKEN = '__PAPERCUSP_WORKSPACE_ROOT__';
 
 export type RetentionOrigin = 'agent' | 'owner' | 'system';
 
@@ -309,9 +313,9 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   // ── Protected: live agent/platform state ────────────────────────────────
   {
     id: 'source-checkouts',
-    title: 'Git checkouts under ~/papercupai-workspace',
+    title: 'Git checkouts under the configured Papercusp workspace root',
     origin: 'agent',
-    roots: ['~/papercupai-workspace/*'],
+    roots: [`${WORKSPACE_ROOT_TOKEN}/*`],
     keep: { kind: 'keep', reason: 'project checkouts; their scratch, tmp and release-cut trees are separate classes' },
     enforcers: [{ kind: 'none' }],
   },
@@ -436,7 +440,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     id: 'release-cut-worktrees',
     title: 'Release-cut worktrees',
     origin: 'agent',
-    roots: ['~/papercupai-workspace/papercusp-relcut-*', '~/papercupai-workspace/papercup-relcut-*'],
+    roots: [`${WORKSPACE_ROOT_TOKEN}/papercusp-relcut-*`, `${WORKSPACE_ROOT_TOKEN}/papercup-relcut-*`],
     keep: { kind: 'lease', record: 'a release retention lease (~/.papercusp/release-retention) or a registered worktree', graceHours: 24 },
     maxBytes: AGENT_ROOT_MAX_BYTES,
     enforcers: [{ kind: 'standing-reclaim', via: 'papercusp/packages/operator-core/lib/release-cut-reclaim.ts' }],
@@ -460,14 +464,14 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     title: 'In-tree agent scratch, tmp and tool caches under a checkout’s .papercusp',
     origin: 'agent',
     roots: [
-      '~/papercupai-workspace/*/.papercusp/scratch',
-      '~/papercupai-workspace/*/.papercusp/tmp',
-      '~/papercupai-workspace/*/.papercusp/vitest-tmp',
-      '~/papercupai-workspace/*/.papercusp/tsx-*',
-      '~/papercupai-workspace/*/.papercusp/node-compile-cache',
-      '~/papercupai-workspace/*/.papercusp/spawn-results',
-      '~/papercupai-workspace/*/.papercusp/evidence',
-      '~/papercupai-workspace/*/.papercusp/artifacts',
+      `${WORKSPACE_ROOT_TOKEN}/*/.papercusp/scratch`,
+      `${WORKSPACE_ROOT_TOKEN}/*/.papercusp/tmp`,
+      `${WORKSPACE_ROOT_TOKEN}/*/.papercusp/vitest-tmp`,
+      `${WORKSPACE_ROOT_TOKEN}/*/.papercusp/tsx-*`,
+      `${WORKSPACE_ROOT_TOKEN}/*/.papercusp/node-compile-cache`,
+      `${WORKSPACE_ROOT_TOKEN}/*/.papercusp/spawn-results`,
+      `${WORKSPACE_ROOT_TOKEN}/*/.papercusp/evidence`,
+      `${WORKSPACE_ROOT_TOKEN}/*/.papercusp/artifacts`,
     ],
     keep: AGENT_DEFAULT_RULE,
     enforcers: [{ kind: 'standing-reclaim' }],
@@ -579,7 +583,7 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
     id: 'staging-generations',
     title: 'Staging operator checkout generations',
     origin: 'agent',
-    roots: ['~/papercupai-workspace/papercusp-staging.generations'],
+    roots: [`${WORKSPACE_ROOT_TOKEN}/papercusp-staging.generations`],
     keep: { kind: 'review', reason: 'the generation :3170 serves must be read before any is deleted' },
     enforcers: [{ kind: 'none' }],
   },
@@ -667,11 +671,23 @@ const BASE_RETENTION_POLICY: readonly RetentionClass[] = [
   },
 ];
 
+/** Materialize the policy against the host's configured checkout root. */
+export function retentionPolicyForWorkspaceRoot(
+  workspaceRootPattern = hostWorkspaceRootPattern(),
+): readonly RetentionClass[] {
+  const root = workspaceRootPattern.trim().replace(/\/+$/, '') || '/';
+  const replacement = root === '/' ? '' : root;
+  return BASE_RETENTION_POLICY.map((cls) => {
+    const roots = cls.roots.map((pattern) => pattern.replaceAll(WORKSPACE_ROOT_TOKEN, replacement));
+    const materialized = roots === cls.roots ? cls : { ...cls, roots };
+    return materialized.origin === 'agent' && (materialized.keep.kind === 'max-age' || materialized.keep.kind === 'newest')
+      ? { ...materialized, maxBytes: AGENT_ROOT_MAX_BYTES } : materialized;
+  });
+}
+
 /** Keep the ceilings alongside the existing policy, rather than maintaining a
  * second root registry. Owners of native/lease classes enforce their own limits. */
-export const RETENTION_POLICY: readonly RetentionClass[] = BASE_RETENTION_POLICY.map((cls) =>
-  cls.origin === 'agent' && (cls.keep.kind === 'max-age' || cls.keep.kind === 'newest')
-    ? { ...cls, maxBytes: AGENT_ROOT_MAX_BYTES } : cls);
+export const RETENTION_POLICY: readonly RetentionClass[] = retentionPolicyForWorkspaceRoot();
 
 // ── Matching ───────────────────────────────────────────────────────────────
 

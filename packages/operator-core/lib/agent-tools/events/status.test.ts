@@ -178,13 +178,14 @@ describe('events:status projection', () => {
     expect(out).not.toHaveProperty('meter');
   });
 
-  it('judge cannot inspect arbitrary event keys or the fleet wake meter', async () => {
+  it.each([{ event: 'work-item:claimable' }, { meter: true }])('judge rejects restricted arguments before any store reads: %j', async (args) => {
     const judgeCtx = { ...ctx, role: 'judge' } as typeof ctx;
 
-    await expect(call({ event: 'work-item:claimable' }, judgeCtx)).rejects.toThrow();
-    await expect(call({ meter: true }, judgeCtx)).rejects.toThrow();
+    await expect(call(args, judgeCtx)).rejects.toThrow('evidence-only judge');
     expect(inspectEventKey).not.toHaveBeenCalled();
     expect(wakeMeter).not.toHaveBeenCalled();
+    expect(listActiveAwaits).not.toHaveBeenCalled();
+    expect(listRecentDeliveries).not.toHaveBeenCalled();
   });
 
   it('judge await_id reads only the caller-owned delivery row', async () => {

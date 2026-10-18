@@ -42,6 +42,7 @@ import { gitPipelineSnapshot } from './git-pipeline-stats';
 import { computeDeployStatus, type DeployStateKind } from './release-deploy-launch';
 import { claimWatchdogFire, recentWatchdogFires } from './pot/watchdog';
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
+import { activeWorkspaceId } from './workspace-registry';
 
 // ── paging rails (EI-16537) ────────────────────────────────────────────────────
 
@@ -463,7 +464,7 @@ export async function releaseDeployStalenessSweep(opts: {
 }): Promise<DeployStalenessSweepResult> {
   const thresholdSec = deployStalenessThresholdSec();
   if (thresholdSec <= 0) return { outcome: 'skipped', reason: 'kill switch' };
-  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const installSlug = opts.installSlug ?? (process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug());
   const now = opts.now ?? Date.now();
   try {

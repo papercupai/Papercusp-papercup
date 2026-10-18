@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, platform, tmpdir } from 'node:os';
@@ -229,6 +229,7 @@ describe('drive (end to end with a fake CLI)', () => {
   // tool_result line that is_error when the write fails.
   const FAKE = `#!/usr/bin/env node
 const fs = require('node:fs');
+if (process.argv.includes('--version')) { console.log('v'); process.exit(0); }
 const base = process.env.ANTHROPIC_BASE_URL;
 const prompt = process.argv[process.argv.indexOf('-p') + 1];
 const results = [];
@@ -259,8 +260,15 @@ const call = async (n) => {
   if (base.includes('/T-p')) await new Promise(r => setTimeout(r, Number(process.env.CAPDRV_PARK_SETUP_DELAY_MS ?? 0)));
   const out = [await call(2), await call(4)];
   if (process.env.FAKE_EXTRA === '1') out.push(await call(6));
+  let placement = null;
+  if (process.env.CAPDRV_PLACEMENT_UPPER) {
+    placement = { before: fs.readFileSync('README', 'utf8'), filesystem: fs.statfsSync('.').type,
+      upperDevice: fs.statSync(process.env.CAPDRV_PLACEMENT_UPPER).dev };
+    fs.writeFileSync('README', 'private native overlay write');
+    placement.after = fs.readFileSync('README', 'utf8');
+  }
   for (const l of results) console.log(l);
-  console.log(JSON.stringify({ prompt, out, cfg: process.env.CLAUDE_CONFIG_DIR ? 'set' : 'unset', cwd: process.cwd(), agentVar: process.env.CAPDRV_AGENT_PROBE ?? null }));
+  console.log(JSON.stringify({ prompt, out, cfg: process.env.CLAUDE_CONFIG_DIR ? 'set' : 'unset', cwd: process.cwd(), agentVar: process.env.CAPDRV_AGENT_PROBE ?? null, placement }));
   process.exit(out.every(([s]) => s === 200) ? 0 : 1);
 })();
 `;
@@ -362,6 +370,96 @@ const call = async (n) => {
       rmSync(cacheDir, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(platform() !== 'linux')('drives a native overlay on the default data device and removes its private upper layer after the CLI exits', async () => {
+    const cacheRoot = capacityCacheRoot(__dirname);
+    expect(cacheRoot).toBe('/mnt/data/agent-capacity');
+    expect(statSync(cacheRoot).dev).not.toBe(statSync('/').dev);
+    const cacheDir = realpathSync(mkdtempSync(path.join(cacheRoot, 'drive-overlay-')));
+    const prepared = path.join(cacheDir, 'prepared', 'r');
+    const checkout = path.join(cacheDir, 'replay-work', 'N', 's0-i0');
+    mkdirSync(prepared, { recursive: true });
+    writeFileSync(path.join(prepared, 'README'), 'native prepared source');
+    try {
+      const [result] = await drive({
+        cacheDir, agents: 1, sessions: [meta({ id: 'claude-s1' })], corpus,
+        corpusDir: path.join(root, 'corpus'), outDir: path.join(root, 'out'), runId: 'N',
+        speed: 0, staggerMs: 0, durationSec: 0, isolation: 'none', keepWork: false, workdir: 'overlay',
+        agentEnv: { CAPDRV_PLACEMENT_UPPER: `${checkout}.ovl/up` },
+      });
+      expect(result).toMatchObject({ exitCode: 0, timedOut: false, diverged: false });
+      const printed = JSON.parse(readFileSync(path.join(root, 'out', 'sessions', `${result!.instance}.cli.jsonl`), 'utf8'));
+      expect(printed.cwd).toBe(checkout);
+      expect(printed.placement).toEqual({ before: 'native prepared source', after: 'private native overlay write',
+        filesystem: 0x794c7630, upperDevice: statSync(cacheRoot).dev });
+      expect(readFileSync(path.join(prepared, 'README'), 'utf8')).toBe('native prepared source');
+      expect(existsSync(checkout)).toBe(false);
+      expect(existsSync(`${checkout}.ovl`)).toBe(false);
+      expect(existsSync(path.join(cacheDir, 'replay-home', 'N', 's0-i0'))).toBe(false);
+    } finally {
+      // Also clean a failed assertion or partially prepared mount, using the same
+      // bounded private path as the production workdir teardown.
+      try { execFileSync('sudo', ['-n', 'umount', checkout], { stdio: 'ignore' }); } catch {}
+      execFileSync('sudo', ['-n', 'rm', '-rf', '--', cacheDir]);
+    }
+  });
+
+  it.skipIf(platform() !== 'linux')('uses the real driver CLI default on data and refuses explicit root caches before starting a session', () => {
+    const cacheRoot = capacityCacheRoot(__dirname);
+    const preparedRoot = path.join(cacheRoot, 'prepared');
+    mkdirSync(preparedRoot, { recursive: true });
+    const prepared = mkdtempSync(path.join(preparedRoot, 'cli-placement-'));
+    const repo = path.basename(prepared);
+    const runId = repo;
+    const rootCache = realpathSync(mkdtempSync(path.join(homedir(), '.capacity-cli-refusal-')));
+    writeFileSync(path.join(prepared, 'README'), 'native CLI source');
+    writeFileSync(path.join(root, 'corpus', 'claude-s1', 'meta.json'), JSON.stringify(meta({ id: 'claude-s1', repo })));
+    const tasks = path.join(root, 'tasks.json');
+    writeFileSync(tasks, JSON.stringify(corpus));
+    const entry = path.join(__dirname, 'load-driver.ts');
+    const args = ['--import', 'tsx', entry, '--tasks-file', tasks, '--corpus', path.join(root, 'corpus'),
+      '--agents', '1', '--isolation', 'none', '--run-id', runId, '--speed', '0', '--stagger-ms', '0'];
+    // The child drives only the local CLI fixture, with a private recording and
+    // native filesystem. Its source is the working tree, like this unit suite.
+    const env = { ...process.env, NODE_OPTIONS: '', PC_HEAVY_BYPASS: '1' };
+    try {
+      const out = path.join(root, 'cli-default-out');
+      const result = spawnSync(process.execPath, [...args, '--out', out, '--keep-work'],
+        { env, encoding: 'utf8', timeout: 30_000 });
+      expect(result.status, result.stderr).toBe(0);
+      const config = JSON.parse(readFileSync(path.join(out, 'run.json'), 'utf8'));
+      expect(config.cacheDir).toBe('/mnt/data/agent-capacity');
+      expect(config.workdir).toBe('copy');
+      const checkout = path.join(cacheRoot, 'replay-work', runId, 's0-i0');
+      expect(statSync(checkout).dev).toBe(statSync('/mnt/data').dev);
+      expect(statSync(checkout).dev).not.toBe(statSync('/').dev);
+      expect(readFileSync(path.join(checkout, 'README'), 'utf8')).toBe('native CLI source');
+      expect(JSON.parse(readFileSync(path.join(out, 'summary.json'), 'utf8'))).toMatchObject({ runs: 1, clean: 1, failed: 0 });
+
+      const rootPrepared = path.join(rootCache, 'prepared', repo);
+      const refusedCheckout = path.join(rootCache, 'replay-work', runId, 's0-i0');
+      mkdirSync(rootPrepared, { recursive: true });
+      mkdirSync(refusedCheckout, { recursive: true });
+      const sentinel = path.join(refusedCheckout, 'sentinel');
+      writeFileSync(sentinel, 'preserve before CLI refusal');
+      const identity = statSync(sentinel);
+      for (const workdir of ['copy', 'overlay']) {
+        const refusedOut = path.join(root, `cli-refused-${workdir}`);
+        const refused = spawnSync(process.execPath, [...args, '--out', refusedOut, '--cache', rootCache, '--workdir', workdir],
+          { env, encoding: 'utf8', timeout: 30_000 });
+        expect(refused.status, refused.stderr).toBe(1);
+        expect(refused.stderr).toContain('refuse the root filesystem');
+        expect(readFileSync(sentinel, 'utf8')).toBe('preserve before CLI refusal');
+        expect(statSync(sentinel).ino).toBe(identity.ino);
+        expect(existsSync(`${refusedCheckout}.ovl`)).toBe(false);
+        expect(existsSync(path.join(rootCache, 'replay-home'))).toBe(false);
+        expect(existsSync(path.join(refusedOut, 'sessions'))).toBe(false);
+      }
+    } finally {
+      for (const p of [prepared, path.join(cacheRoot, 'replay-work', runId),
+        path.join(cacheRoot, 'replay-home', runId), rootCache]) rmSync(p, { recursive: true, force: true });
+    }
+  }, 90_000);
 
   it.skipIf(platform() !== 'linux').each(['copy', 'overlay'] as const)('refuses a native root-backed %s at driver setup without replacing its destination or starting the CLI', async (workdir) => {
     const cacheDir = realpathSync(mkdtempSync(path.join(homedir(), '.capacity-drive-refusal-')));

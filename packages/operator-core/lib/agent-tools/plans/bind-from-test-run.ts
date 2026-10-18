@@ -159,8 +159,12 @@ export const testRunBindingSchema = z
       .optional()
       .describe("Override the derived subject files (default: the test file's relative imports)."),
     sourceGlobs: repoFilesEvidenceMeasurementSchema.shape.sourceGlobs,
-    fixturePaths: repoFilesEvidenceMeasurementSchema.shape.fixturePaths,
-    fixtureGlobs: repoFilesEvidenceMeasurementSchema.shape.fixtureGlobs,
+    fixturePaths: repoFilesEvidenceMeasurementSchema.shape.fixturePaths.describe(
+      'Supply fixturePaths or fixtureGlobs on the first bind when fixture calibration is needed (including inline fixtures in the test file). The recipe is immutable; fixtures are not derived from source imports.',
+    ),
+    fixtureGlobs: repoFilesEvidenceMeasurementSchema.shape.fixtureGlobs.describe(
+      'Alternative to fixturePaths for first-bind fixture calibration; the matched files are hashed for fixture currentness.',
+    ),
     fixtureRootHarnessSlug: repoFilesEvidenceMeasurementSchema.shape.fixtureRootHarnessSlug,
     completedRuntime: repoFilesEvidenceMeasurementSchema.shape.completedRuntime,
     canonicalTestPath: repoFilesEvidenceMeasurementSchema.shape.testPaths.unwrap().element
@@ -182,6 +186,23 @@ export const testRunBindingSchema = z
   .strict()
   .refine((b) => Boolean(b.specId) !== Boolean(b.sourceValId), {
     message: 'pass exactly one of specId or sourceValId',
+  })
+  .superRefine((b, ctx) => {
+    const adequacy = b.details?.adequacy;
+    const fixtureCalibrated =
+      adequacy !== null &&
+      typeof adequacy === 'object' &&
+      !Array.isArray(adequacy) &&
+      (adequacy as Record<string, unknown>).fixtureCalibrated === true;
+    if (fixtureCalibrated && b.fixturePaths === undefined && b.fixtureGlobs === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['fixturePaths'],
+        message:
+          'details.adequacy.fixtureCalibrated=true requires fixturePaths or fixtureGlobs on the first bind; ' +
+          'the measurement recipe is immutable after it is recorded, so add the actual fixture files now.',
+      });
+    }
   });
 
 export type TestRunBindingInput = z.infer<typeof testRunBindingSchema>;

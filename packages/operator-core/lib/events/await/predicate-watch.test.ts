@@ -91,6 +91,17 @@ describe('read-only projected dispatch effect gate', () => {
     expect(dispatchMocks.dispatchProjectedTool).toHaveBeenCalledTimes(1);
   });
 
+  it('honors a resolver tool\'s skipWorkspaceTx contract instead of holding an idle transaction', async () => {
+    dispatchMocks.lookupByMcpName.mockReturnValue({ effect: 'read', skipWorkspaceTx: true });
+
+    await dispatchReadOnlyTool('dev:pipeline_position', { path: 'packages/operator-core/lib/x.ts' }, env);
+
+    expect(dispatchMocks.withWorkspace).not.toHaveBeenCalled();
+    expect(dispatchMocks.dispatchProjectedTool).toHaveBeenCalledTimes(1);
+    const context = dispatchMocks.dispatchProjectedTool.mock.calls[0]?.[3] as Record<string, unknown>;
+    expect(Object.prototype.hasOwnProperty.call(context, 'tx')).toBe(false);
+  });
+
   it('refuses a write operation before entering the workspace dispatcher', async () => {
     const effectForCall = vi.fn((args: unknown) => (args as { confirm?: boolean }).confirm ? 'write' : 'read');
     dispatchMocks.lookupByMcpName.mockReturnValue({ effect: 'write', effectForCall });

@@ -1,0 +1,177 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Historical staging native Git placement and root refusal, 2026-10-17T18:17Z",
+  "framework": "operational",
+  "command": [
+    "ptool",
+    "--url",
+    "http://127.0.0.1:3170",
+    "capability:git",
+    "--json",
+    "-"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-17T18:17:54.386Z",
+  "finishedAt": "2026-10-17T18:18:52.874833Z",
+  "summary": "Archives the already-executed native capability:git default clone and explicit root-side refusal. The original observation SHA-256 is preserved. Serving staging runtime PID 789496/build 2f8b413726 is historical; its later replacement invalidates live currentness of binding 54457. No command was replayed for this archive. No current-runtime, full P-009, P-008 standing-host, exact 72-hour, or shipment acceptance is asserted. Distributed string copies are identity-redacted with the maintained serializer; original and exported receipt hashes are recorded separately.",
+  "assertions": [
+    {
+      "id": "default-clone-on-separate-data-device",
+      "passed": true,
+      "evidence": "Original default returned /mnt/data/tmp/papercusp-git-scratch-wp6s1j; observed clone/data st_dev=66304, root/home st_dev=66307."
+    },
+    {
+      "id": "requested-exact-ref-detached",
+      "passed": true,
+      "evidence": "Default response and native Git observation both resolved 43662ff52aff1f5408a823cb34c817f5ed0ea18b; detached=true."
+    },
+    {
+      "id": "clone-remotes-removed",
+      "passed": true,
+      "evidence": "Original native Git remotes output was empty and tool response remotesRemoved=true."
+    },
+    {
+      "id": "explicit-root-destination-refused-before-creation",
+      "passed": true,
+      "evidence": "Original refusal returned ok:false/reason:scratch_clone_failed and the root-filesystem refusal message. Native observation found /home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/e9919-git-native-root-refusal-20261017T1817 absent."
+    }
+  ],
+  "archive": {
+    "workItem": "WI-6554700010014939",
+    "plan": "disk-durable-headroom-2026-10-15",
+    "planItem": "P-009",
+    "originalObservationSha256": "d8c64ac001ad01a18df87d160fbe05c1e24cfdf5e973581707a298a85f7ec7fe",
+    "timestampProvenance": {
+      "startedAt": "Earliest original ptool connection trace of the two native calls.",
+      "finishedAt": "Original final serving-source snapshot file mtime; the native observation file mtime was 2026-10-17T18:18:45.917Z. Archive creation does not change execution timestamps."
+    },
+    "resultProvenance": "exitCode 0 records the aggregate successful placement/refusal observation; the intentionally refused root-side tool call is retained with ok:false in its raw stderr. No new native execution took place.",
+    "historicalServingRuntime": {
+      "runtime": "staging-operator",
+      "label": ":3170 staging operator (origin/staging checkout)",
+      "role": "owner",
+      "releasePipelineApplies": false,
+      "codeSource": "staging-checkout",
+      "pid": 789496,
+      "startedAtMs": 1792260465312.7305,
+      "buildSha": "2f8b413726",
+      "buildShaSource": "health",
+      "instances": null,
+      "activation": "git-sync publishes to origin/staging, then dev:restart { target: \"staging\", confirm: true, authorize: true, reason: \"<why>\" } reloads it",
+      "containsChange": true,
+      "method": "blob",
+      "unknownReason": null
+    },
+    "requests": [
+      {
+        "scratchClone": {
+          "source": "/home/builduser/papercupai-workspace/papercusp",
+          "ref": "43662ff52aff1f5408a823cb34c817f5ed0ea18b"
+        }
+      },
+      {
+        "scratchClone": {
+          "source": "/home/builduser/papercupai-workspace/papercusp",
+          "ref": "43662ff52aff1f5408a823cb34c817f5ed0ea18b",
+          "destination": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/e9919-git-native-root-refusal-20261017T1817"
+        }
+      }
+    ],
+    "observation": {
+      "instrument": "capability:git",
+      "runtime": "http://127.0.0.1:3170",
+      "runtimePreflight": "/tmp/e9919-p009-runtime-preflight.err",
+      "requestSource": "/home/builduser/papercupai-workspace/papercusp",
+      "requestedRef": "43662ff52aff1f5408a823cb34c817f5ed0ea18b",
+      "default": {
+        "ok": true,
+        "mode": "scratchClone",
+        "path": "/mnt/data/tmp/papercusp-git-scratch-wp6s1j",
+        "source": "/home/builduser/papercupai-workspace/papercusp",
+        "requestedRef": "43662ff52aff1f5408a823cb34c817f5ed0ea18b",
+        "sha": "43662ff52aff1f5408a823cb34c817f5ed0ea18b",
+        "submodules": 0,
+        "borrowedRepositories": 1,
+        "detached": true,
+        "remotesRemoved": true,
+        "objectStorage": "borrowed-local-alternates"
+      },
+      "nativeObservation": {
+        "rootDev": 66307,
+        "homeDev": 66307,
+        "dataDev": 66304,
+        "cloneDev": 66304,
+        "canonicalScratchDev": 66307,
+        "head": "43662ff52aff1f5408a823cb34c817f5ed0ea18b",
+        "remotes": "",
+        "detached": true,
+        "refusedDestination": "/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/e9919-git-native-root-refusal-20261017T1817",
+        "refusedDestinationExists": false
+      },
+      "refusalEvidence": "/tmp/e9919-p009-native-git-root-refusal-20261017T1817.err",
+      "scope": "serving operator capability native placement/refusal with exact empty committed tree; no large-copy performance or other producer coverage"
+    },
+    "originals": [
+      {
+        "path": "/tmp/e9919-p009-native-git-observation-20261017T1819.json",
+        "capturedMtime": "2026-10-17T18:18:45.917000+00:00",
+        "originalSha256": "d8c64ac001ad01a18df87d160fbe05c1e24cfdf5e973581707a298a85f7ec7fe",
+        "originalBytes": 1396,
+        "identityRedactedText": "{\n  \"instrument\": \"capability:git\",\n  \"runtime\": \"http://127.0.0.1:3170\",\n  \"runtimePreflight\": \"/tmp/e9919-p009-runtime-preflight.err\",\n  \"requestSource\": \"/home/builduser/papercupai-workspace/papercusp\",\n  \"requestedRef\": \"43662ff52aff1f5408a823cb34c817f5ed0ea18b\",\n  \"default\": {\n    \"ok\": true,\n    \"mode\": \"scratchClone\",\n    \"path\": \"/mnt/data/tmp/papercusp-git-scratch-wp6s1j\",\n    \"source\": \"/home/builduser/papercupai-workspace/papercusp\",\n    \"requestedRef\": \"43662ff52aff1f5408a823cb34c817f5ed0ea18b\",\n    \"sha\": \"43662ff52aff1f5408a823cb34c817f5ed0ea18b\",\n    \"submodules\": 0,\n    \"borrowedRepositories\": 1,\n    \"detached\": true,\n    \"remotesRemoved\": true,\n    \"objectStorage\": \"borrowed-local-alternates\"\n  },\n  \"nativeObservation\": {\n    \"rootDev\": 66307,\n    \"homeDev\": 66307,\n    \"dataDev\": 66304,\n    \"cloneDev\": 66304,\n    \"canonicalScratchDev\": 66307,\n    \"head\": \"43662ff52aff1f5408a823cb34c817f5ed0ea18b\",\n    \"remotes\": \"\",\n    \"detached\": true,\n    \"refusedDestination\": \"/home/builduser/papercupai-workspace/papercusp/.papercusp/scratch/e9919-git-native-root-refusal-20261017T1817\",\n    \"refusedDestinationExists\": false\n  },\n  \"refusalEvidence\": \"/tmp/e9919-p009-native-git-root-refusal-20261017T1817.err\",\n  \"scope\": \"serving operator capability native placement/refusal with exact empty committed tree; no large-copy performance or other producer coverage\"\n}\n",
+        "exportedSha256": "0aa57b68fa944cdf9123c5fde0989ac67d9e52810174c906590365a0564b3f73",
+        "exportedBytes": 1387
+      },
+      {
+        "path": "/tmp/e9919-p009-native-git-default-20261017T1817.json",
+        "capturedMtime": "2026-10-17T18:17:56.138855+00:00",
+        "originalSha256": "bb014b8a057c3190c5c1d770fe0308aba2fc4ceb386684b6d5bc4632def8a974",
+        "originalBytes": 376,
+        "identityRedactedText": "{\"ok\":true,\"mode\":\"scratchClone\",\"path\":\"/mnt/data/tmp/papercusp-git-scratch-wp6s1j\",\"source\":\"/home/builduser/papercupai-workspace/papercusp\",\"requestedRef\":\"43662ff52aff1f5408a823cb34c817f5ed0ea18b\",\"sha\":\"43662ff52aff1f5408a823cb34c817f5ed0ea18b\",\"submodules\":0,\"borrowedRepositories\":1,\"detached\":true,\"remotesRemoved\":true,\"objectStorage\":\"borrowed-local-alternates\"}\n",
+        "exportedSha256": "8ad22a00e5f3482d5ed616a7ca4e7eac00769ea555258d80c01c3bd92eabf65d",
+        "exportedBytes": 373
+      },
+      {
+        "path": "/tmp/e9919-p009-native-git-default-20261017T1817.err",
+        "capturedMtime": "2026-10-17T18:17:55.167799+00:00",
+        "originalSha256": "355edadfc3bf70aa92d1541e9920e24a00b0635b39e8ec783a843eaa596a0eaf",
+        "originalBytes": 3299,
+        "identityRedactedText": "papercusp defineTool CLI (ptool): launcher\n/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/ptool.mjs\nptool: connection trace {\"schemaVersion\":\"ptool-connection-trace-v1\",\"traceId\":\"088efdee-f5b8-4c7d-b4ec-d0035f357dd6\",\"operatorConnectSequence\":1,\"launcherSource\":\"cli-url-flag\",\"launcherScriptPath\":\"/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/ptool.mjs\",\"clientId\":\"su-e99190cf-f24a-4f8d-a10f-97084e45eae7\",\"toolName\":\"capability:git\",\"candidateRoutes\":[{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000}],\"retryBudgetMs\":120000,\"primaryCandidateMaxAttempts\":121,\"fallbackCandidateMaxAttempts\":121,\"attemptedRoutes\":[],\"event\":\"operator-connect-start\",\"stage\":\"operator-connect\",\"phaseStartedAt\":\"2026-10-17T18:17:54.388Z\"}\nptool: connection trace {\"schemaVersion\":\"ptool-connection-trace-v1\",\"traceId\":\"088efdee-f5b8-4c7d-b4ec-d0035f357dd6\",\"operatorConnectSequence\":1,\"launcherSource\":\"cli-url-flag\",\"launcherScriptPath\":\"/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/ptool.mjs\",\"clientId\":\"su-e99190cf-f24a-4f8d-a10f-97084e45eae7\",\"toolName\":\"capability:git\",\"candidateRoutes\":[{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000}],\"retryBudgetMs\":120000,\"primaryCandidateMaxAttempts\":121,\"fallbackCandidateMaxAttempts\":121,\"attemptedRoutes\":[{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000,\"attempts\":1}],\"event\":\"operator-connect-complete\",\"stage\":\"operator-connect\",\"route\":{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000},\"phaseStartedAt\":\"2026-10-17T18:17:54.388Z\",\"elapsedMs\":367}\nptool: connection trace {\"schemaVersion\":\"ptool-connection-trace-v1\",\"traceId\":\"088efdee-f5b8-4c7d-b4ec-d0035f357dd6\",\"operatorConnectSequence\":2,\"launcherSource\":\"cli-url-flag\",\"launcherScriptPath\":\"/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/ptool.mjs\",\"clientId\":\"su-e99190cf-f24a-4f8d-a10f-97084e45eae7\",\"toolName\":\"capability:git\",\"candidateRoutes\":[{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000}],\"retryBudgetMs\":120000,\"primaryCandidateMaxAttempts\":121,\"fallbackCandidateMaxAttempts\":121,\"attemptedRoutes\":[],\"event\":\"operator-connect-start\",\"stage\":\"operator-connect\",\"phaseStartedAt\":\"2026-10-17T18:17:54.767Z\"}\nptool: connection trace {\"schemaVersion\":\"ptool-connection-trace-v1\",\"traceId\":\"088efdee-f5b8-4c7d-b4ec-d0035f357dd6\",\"operatorConnectSequence\":2,\"launcherSource\":\"cli-url-flag\",\"launcherScriptPath\":\"/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/ptool.mjs\",\"clientId\":\"su-e99190cf-f24a-4f8d-a10f-97084e45eae7\",\"toolName\":\"capability:git\",\"candidateRoutes\":[{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000}],\"retryBudgetMs\":120000,\"primaryCandidateMaxAttempts\":121,\"fallbackCandidateMaxAttempts\":121,\"attemptedRoutes\":[{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000,\"attempts\":1}],\"event\":\"operator-connect-complete\",\"stage\":\"operator-connect\",\"route\":{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000},\"phaseStartedAt\":\"2026-10-17T18:17:54.767Z\",\"elapsedMs\":402}\n",
+        "exportedSha256": "2c9dfe00012216dce6db170fb0584b6e6cedab837f892356a2fff374e66e00ee",
+        "exportedBytes": 3284
+      },
+      {
+        "path": "/tmp/e9919-p009-native-git-root-refusal-20261017T1817.err",
+        "capturedMtime": "2026-10-17T18:17:55.586823+00:00",
+        "originalSha256": "c3325d008d80663465d00eee03a4cf0a74e4c92e766b86612f617f2a53e6bb18",
+        "originalBytes": 3478,
+        "identityRedactedText": "papercusp defineTool CLI (ptool): launcher\n/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/ptool.mjs\nptool: connection trace {\"schemaVersion\":\"ptool-connection-trace-v1\",\"traceId\":\"5e512c61-7617-49ea-8804-c8b3c6a7ac5b\",\"operatorConnectSequence\":1,\"launcherSource\":\"cli-url-flag\",\"launcherScriptPath\":\"/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/ptool.mjs\",\"clientId\":\"su-e99190cf-f24a-4f8d-a10f-97084e45eae7\",\"toolName\":\"capability:git\",\"candidateRoutes\":[{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000}],\"retryBudgetMs\":120000,\"primaryCandidateMaxAttempts\":121,\"fallbackCandidateMaxAttempts\":121,\"attemptedRoutes\":[],\"event\":\"operator-connect-start\",\"stage\":\"operator-connect\",\"phaseStartedAt\":\"2026-10-17T18:17:54.386Z\"}\nptool: connection trace {\"schemaVersion\":\"ptool-connection-trace-v1\",\"traceId\":\"5e512c61-7617-49ea-8804-c8b3c6a7ac5b\",\"operatorConnectSequence\":1,\"launcherSource\":\"cli-url-flag\",\"launcherScriptPath\":\"/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/ptool.mjs\",\"clientId\":\"su-e99190cf-f24a-4f8d-a10f-97084e45eae7\",\"toolName\":\"capability:git\",\"candidateRoutes\":[{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000}],\"retryBudgetMs\":120000,\"primaryCandidateMaxAttempts\":121,\"fallbackCandidateMaxAttempts\":121,\"attemptedRoutes\":[{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000,\"attempts\":1}],\"event\":\"operator-connect-complete\",\"stage\":\"operator-connect\",\"route\":{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000},\"phaseStartedAt\":\"2026-10-17T18:17:54.386Z\",\"elapsedMs\":360}\nptool: connection trace {\"schemaVersion\":\"ptool-connection-trace-v1\",\"traceId\":\"5e512c61-7617-49ea-8804-c8b3c6a7ac5b\",\"operatorConnectSequence\":2,\"launcherSource\":\"cli-url-flag\",\"launcherScriptPath\":\"/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/ptool.mjs\",\"clientId\":\"su-e99190cf-f24a-4f8d-a10f-97084e45eae7\",\"toolName\":\"capability:git\",\"candidateRoutes\":[{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000}],\"retryBudgetMs\":120000,\"primaryCandidateMaxAttempts\":121,\"fallbackCandidateMaxAttempts\":121,\"attemptedRoutes\":[],\"event\":\"operator-connect-start\",\"stage\":\"operator-connect\",\"phaseStartedAt\":\"2026-10-17T18:17:54.762Z\"}\nptool: connection trace {\"schemaVersion\":\"ptool-connection-trace-v1\",\"traceId\":\"5e512c61-7617-49ea-8804-c8b3c6a7ac5b\",\"operatorConnectSequence\":2,\"launcherSource\":\"cli-url-flag\",\"launcherScriptPath\":\"/home/builduser/papercupai-workspace/papercusp/apps/operator/scripts/ptool.mjs\",\"clientId\":\"su-e99190cf-f24a-4f8d-a10f-97084e45eae7\",\"toolName\":\"capability:git\",\"candidateRoutes\":[{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000}],\"retryBudgetMs\":120000,\"primaryCandidateMaxAttempts\":121,\"fallbackCandidateMaxAttempts\":121,\"attemptedRoutes\":[{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000,\"attempts\":1}],\"event\":\"operator-connect-complete\",\"stage\":\"operator-connect\",\"route\":{\"routeClass\":\"local-direct\",\"host\":\"127.0.0.1\",\"port\":3170,\"attemptTimeoutMs\":15000},\"phaseStartedAt\":\"2026-10-17T18:17:54.762Z\",\"elapsedMs\":403}\n✗ tool returned an error:\n{\"ok\":false,\"reason\":\"scratch_clone_failed\",\"message\":\"scratchClone refuses repository materialisation on the root filesystem; choose /mnt/data/tmp.\"}\n",
+        "exportedSha256": "22cdbb7100009b68e8d0a332551ad3fc8d73ab55e86210f49734e486936e9738",
+        "exportedBytes": 3463
+      },
+      {
+        "path": "/tmp/e9919-p009-native-git-after-source-20261017T1819.json",
+        "capturedMtime": "2026-10-17T18:18:52.874833+00:00",
+        "originalSha256": "7db568ed9f8551b07ec330b8a639382bc541697cadd62cfa03acf25357d789f5",
+        "originalBytes": 2509,
+        "identityRedactedText": "{\n  \"repoRoot\": \"/home/builduser/papercupai-workspace/papercusp\",\n  \"servingRuntimes\": [\n    {\n      \"runtime\": \"release-operator\",\n      \"label\": \":3070 release operator (green main)\",\n      \"role\": \"owner\",\n      \"releasePipelineApplies\": true,\n      \"codeSource\": \"release-checkout\",\n      \"pid\": 3528160,\n      \"startedAtMs\": 1792170080040.3752,\n      \"buildSha\": \"d740fc3802\",\n      \"buildShaSource\": \"health\",\n      \"instances\": null,\n      \"activation\": \"the green pipeline (git-sync → green main → deploy); a deploy restarts it on the new pin\",\n      \"containsChange\": false,\n      \"method\": \"blob\",\n      \"unknownReason\": null\n    },\n    {\n      \"runtime\": \"staging-operator\",\n      \"label\": \":3170 staging operator (origin/staging checkout)\",\n      \"role\": \"owner\",\n      \"releasePipelineApplies\": false,\n      \"codeSource\": \"staging-checkout\",\n      \"pid\": 789496,\n      \"startedAtMs\": 1792260465312.7305,\n      \"buildSha\": \"2f8b413726\",\n      \"buildShaSource\": \"health\",\n      \"instances\": null,\n      \"activation\": \"git-sync publishes to origin/staging, then dev:restart { target: \\\"staging\\\", confirm: true, authorize: true, reason: \\\"<why>\\\" } reloads it\",\n      \"containsChange\": true,\n      \"method\": \"blob\",\n      \"unknownReason\": null\n    },\n    {\n      \"runtime\": \"bg-host\",\n      \"label\": \"bg-host (routines, sweeps, watchdogs; canonical tree)\",\n      \"role\": \"shared\",\n      \"releasePipelineApplies\": false,\n      \"codeSource\": \"canonical-tree\",\n      \"pid\": 2911146,\n      \"startedAtMs\": 1792258083356.2195,\n      \"buildSha\": \"b6b82c2737\",\n      \"buildShaSource\": \"health\",\n      \"instances\": null,\n      \"activation\": \"bundles the canonical tree on start — dev:restart { target: \\\"bg-host\\\", confirm: true, authorize: true, reason: \\\"<why>\\\" }; a deploy never carries it\",\n      \"containsChange\": true,\n      \"method\": \"blob\",\n      \"unknownReason\": null\n    },\n    {\n      \"runtime\": \"gateway\",\n      \"label\": \"inference gateway :8788 (canonical tree)\",\n      \"role\": \"shared\",\n      \"releasePipelineApplies\": false,\n      \"codeSource\": \"canonical-tree\",\n      \"pid\": 316932,\n      \"startedAtMs\": 1792098131025.875,\n      \"buildSha\": \"740c3311b9\",\n      \"buildShaSource\": \"runtime-vintage\",\n      \"instances\": null,\n      \"activation\": \"runs the canonical tree — dev:restart { target: \\\"gateway\\\", confirm: true, authorize: true, reason: \\\"<why>\\\" }; a deploy never carries it\",\n      \"containsChange\": true,\n      \"method\": \"blob\",\n      \"unknownReason\": null\n    }\n  ]\n}\n",
+        "exportedSha256": "1380ae9e61511b49d5a3f3698bab1615924a328de3562b47792b851d2a042450",
+        "exportedBytes": 2506
+      }
+    ],
+    "limits": [
+      "The distributed archive contains identity-redacted copies and both original and exported receipt hashes. Private originals remain unchanged. Historical runtime identity is retained; recorder ingestion cannot make that evidence current.",
+      "No testLayer, compiled witness, native execution descriptor, or fresh runtime fingerprint is inferred by this artifact.",
+      "Existing ephemeral operational binding 54457 has a stale live environment after runtime replacement and is not superseded by archival alone.",
+      "The earlier fixture proof and its disclosed serving-dispatch gap remain independent evidence; archival does not erase that disclosure.",
+      "The clone used an exact empty committed tree with borrowed local object storage; large-copy performance and other heavy-write producers are outside this observation.",
+      "P-008 standing/native-host completion and P-012 complete 72-hour hourly census and reclaim-receipt acceptance remain open."
+    ],
+    "privacyExport": {
+      "serializer": "scripts/lib/identity-leak-patterns.mjs#serializeIdentitySafeJson",
+      "originalArchiveSha256": "a291c0923918014918e8cdf1d1bed1acedba22188c7d6928a6220307cb402b3e",
+      "originalBytesCommitted": false,
+      "note": "Original receipt SHA-256 and byte counts describe the unchanged private originals. Published text is identity-redacted and has separate exported SHA-256 and byte counts. Redaction does not change assertion outcomes, timestamps, native device numbers, requested ref, or historical runtime PID/build."
+    }
+  }
+}

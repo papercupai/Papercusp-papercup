@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010015411",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "planRevision": 28,
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 6,
+  "scope": "Partial current-build real returning-provider signin acceptance; full R2/current archive/shipment remain open",
+  "stats": {
+    "startTime": "2026-10-17T23:06:44.907Z",
+    "duration": 45216.445,
+    "expected": 1,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "receipt": {
+    "scope": "Real returning-provider signin; account pre-admitted by the owned TEST kit; no browser session injection; excludes final shipment",
+    "sessionInjected": false,
+    "accountExistedBeforeSignin": true,
+    "existingAccount": {
+      "sessionId": "hs_C2ba57ptxWIFoI93vhyD-DaGQFqjLDTnXH288hdTcuU",
+      "organizationId": "dd10b83d-e633-4556-9940-7f67f43879c5"
+    },
+    "release": {
+      "schemaVersion": 2,
+      "buildId": "OnJErRMjvcuZQEf56RsNP",
+      "release": "OnJErRMjvcuZQEf56RsNP-20261017085950313-2856534-d23045c0",
+      "sourceRoot": "harness:portal",
+      "publishedAt": "2026-10-17T08:59:50.313Z",
+      "sourceRootDigest": "20a7004042ac4a619dd28353258e0dc55d38135c5de91475b03186b7c4de2b8b"
+    },
+    "emailFormButtons": [
+      "Continue with email "
+    ],
+    "passwordFormButtons": [
+      "",
+      "Sign in "
+    ],
+    "providerSigninSubmitted": true,
+    "callback": {
+      "status": 303,
+      "path": "/api/hosted/auth/callback"
+    },
+    "actualSession": {
+      "authenticated": true,
+      "organizationId": "dd10b83d-e633-4556-9940-7f67f43879c5",
+      "userId": "1f5781b0-32f7-486b-b373-1a58d497128e",
+      "workspaceId": null
+    },
+    "afterSigninDownloadCount": 0,
+    "afterSigninUtilityRequestCount": 0,
+    "productGuideChoice": "skipped through existing guide control",
+    "downloadCount": 0,
+    "utilityRequestCount": 0,
+    "guiRendered": true,
+    "destination": "/?app=home",
+    "guiScreenshot": "real-returning-signin-gui.png",
+    "browserClosed": true,
+    "accountCleanup": true,
+    "cleanup": {
+      "attempted": 2,
+      "completed": 2,
+      "failed": 0,
+      "byKind": {
+        "browser": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        },
+        "provider-user": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        }
+      }
+    }
+  },
+  "sourceHashes": {
+    "e2e/hosted-test-user.ts": "8d5540bf829999c69083326ed24e7fb5a0a3187864771ae763dbf7bf7f545e5d",
+    "e2e/portal-utility-welcome.spec.ts": "447f7a237a78f7bc138092f5eea1d5daf92867b2532cfcd002f5dbd73374b426"
+  },
+  "screenshot": {
+    "path": "docs/evidence/machine-first-authkit-returning-20261017-gui.png",
+    "sha256": "64323623099c8e7bfebe39576314f00f4e651ea3a3b546c82305f0fb9cc2a39f"
+  },
+  "cleanup": {
+    "ownedPidAlive": {
+      "3978404": false,
+      "3978711": false,
+      "4017702": false
+    },
+    "ownedPorts": {
+      "privateTLS": {
+        "port": 46249,
+        "open": false
+      },
+      "hostedAPI": {
+        "port": 43933,
+        "open": false
+      },
+      "portalBackend": {
+        "port": 40871,
+        "open": false
+      },
+      "privateTestPG": {
+        "port": 33119,
+        "open": false
+      }
+    },
+    "privateHomeExists": false,
+    "providerCleanup": "Owned TEST kit deleteUser and session cleanup returned success; provider absence was not independently queried after deletion"
+  },
+  "rawEvidence": [
+    {
+      "path": "/tmp/machine-first-authkit-returning-v3-browser-20261017.json",
+      "sha256": "41acd9327a5b331d659714f6e639874ccf4e2dc9806ed6b811226242af832942"
+    },
+    {
+      "path": "/tmp/machine-first-authkit-returning-v3-runtime-20261017.json",
+      "sha256": "cf0ebd98df6086c1b608a22095117be94f5f1241fde91750aae71308b2fef6c1"
+    },
+    {
+      "path": "/tmp/machine-first-authkit-returning-v3-launcher-20261017.log",
+      "sha256": "29439f0addc807cc4b6bd7a4cedf140f1ec64375708e52ebf60e0f217d086c10"
+    }
+  ],
+  "harnessAudit": {
+    "v1": "Email submit regex omitted actual Continue with email label; failed before callback. Repaired with keyboard form submission.",
+    "v2": "Real signin303/same existing tenant succeeded; one-time Skip guide visibility read raced guide hydration. Repaired with unconditional awaited guide, early zero-download counters and sanitized failure-stage diagnostics.",
+    "v3Preflight": {
+      "bothPriorRuntimesStopped": true,
+      "keyboardEmailAndPasswordForms": true,
+      "awaitedGuide": true,
+      "earlyDownloadCounters": true,
+      "sanitizedFailureStages": true,
+      "testSha256": "447f7a237a78f7bc138092f5eea1d5daf92867b2532cfcd002f5dbd73374b426",
+      "launcherSha256": "2be49b2f4990db63c73b40afca1a8f6f23a1c440cea5c626e5f3020f6b77dc06"
+    },
+    "priorEditionsRetained": true
+  },
+  "remainingUnverified": [
+    "Denied-storage-only automatic request/reload observation and exact automatic-anchor counts for retained combined fault case",
+    "Published archive includes current launcher changes (currently FAIL)",
+    "Full source/environment and mandatory prerequisite ledger currentness",
+    "Final promotion/deployment/shipment"
+  ]
+}

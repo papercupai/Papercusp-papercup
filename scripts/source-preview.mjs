@@ -696,6 +696,7 @@ function verifierPhaseRunner(path, env) {
     try {
       const result = await operation();
       record(phase, 'completed', { durationMs: Math.round(performance.now() - before),
+        ...(['source.admission', 'child.admission'].includes(phase) ? { budget: result } : {}),
         ...(phase === 'child.run' ? { exitCode: result } : {}) });
       return result;
     } catch (error) {
@@ -798,7 +799,11 @@ export async function runVerifierDependencyCommand(command, args, { cwd, env,
  * @param {{ donor: string, dest: string, receipt: Awaited<ReturnType<typeof prepareVerifierSource>>, runPhase?: VerifierPhaseRunner, signal?: AbortSignal }} options
  */
 export async function prepareVerifierDependencies({ donor, dest, receipt, runPhase = async (_phase, operation) => operation(), signal }) {
-  await runPhase('deps.source.before', () => verifyVerifierSource(dest, receipt));
+  // A retry can retain staging and completed dependency trees. Only this
+  // pre-copy check permits staging; the locked helper must adopt it, and
+  // subsequent source checks still reject unfinished copies.
+  await runPhase('deps.source.before', () => verifyVerifierSource(dest, receipt,
+    { runtimeArtifacts: true, dependencyStaging: true }));
   const env = { ...process.env, NODE_OPTIONS: '', NODE_PATH: '' };
   const run = (command, args) => runVerifierDependencyCommand(command, args, { cwd: dest, env, signal });
   const copyMode = (await fs.stat(donor)).dev === (await fs.stat(dest)).dev ? 'hardlink' : 'copy';
@@ -898,10 +903,12 @@ export function verifierCommandAdmissionEnv({ repo, env = process.env, preflight
 
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number }} options
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number,
+ *   clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
-export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0 }) {
+export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], inputsFile, tauriInputs = false, command, env = process.env, budgetFrom, childEstimateMs = 0,
+  clock = { now: Date.now, setTimeout, clearTimeout } }) {
   if (!ref?.trim() || !receiptPath || !command?.length || !command[0])
     throw new PreviewError('verifier command needs an explicit ref, external receipt and command', 2);
   if (!Number.isSafeInteger(childEstimateMs) || childEstimateMs < 0)
@@ -950,6 +957,14 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
   /** @type {VerifierPhaseRunner} */
   let runPhase = async (_phase, operation) => operation();
   let failure;
+  let budget;
+  const admitBudget = (estimate, preparation = false) => {
+    const admission = admitVerifierCommandBudget(estimate, { env, preparation, nowMs: clock.now() });
+    budget = { deadlineEpochMs: admission.deadlineEpochMs, cleanupReserveMs: admission.cleanupReserveMs,
+      childCutoffEpochMs: admission.childCutoffEpochMs, admittedAtMs: clock.now(),
+      cutoffTriggeredAtMs: null, childExitVerifiedAtMs: null };
+    return admission;
+  };
   try {
     assertOutsideArchive(owned, resolve(receiptPath));
     ownership = writeVerifierTaskReceipt(owned, sourceRepo, env, taskReceiptPath);
@@ -971,11 +986,13 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
       }
       return result;
     };
+    let previousMeasurements;
     await runPhase('source.admission', () => {
-      const estimate = budgetFrom
-        ? estimateVerifierCommandBudget(readVerifierPhaseMeasurements(budgetFrom), childEstimateMs)
+      previousMeasurements = budgetFrom ? readVerifierPhaseMeasurements(budgetFrom) : null;
+      const estimate = previousMeasurements
+        ? estimateVerifierCommandBudget(previousMeasurements, childEstimateMs)
         : null;
-      admitVerifierCommandBudget(estimate, { env, preparation: true });
+      return admitBudget(estimate, true);
     });
     const receipt = await runPhase('source.freeze', () => prepareVerifierSource({ repo: sourceRepo, ref, dest: root,
       inputs, inputsFile, tauriInputs, gitCheckout: true }));
@@ -983,31 +1000,68 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
     const dependencies = await prepareVerifierDependencies({ donor, dest: root, receipt, runPhase, signal: cancellation.signal });
     await runPhase('deps.receipt.write', () => fs.writeFile(`${receiptPath}.dependencies.json`,
       `${JSON.stringify(dependencies)}\n`, { flag: 'wx', mode: 0o600 }));
-    await runPhase('child.admission', () => admitVerifierCommandBudget(
-      estimateVerifierCommandBudget(measurements, childEstimateMs), { env }));
+    const childEstimate = estimateVerifierCommandBudget({ ...previousMeasurements, ...measurements }, childEstimateMs);
+    await runPhase('child.admission', () => admitBudget(childEstimate));
     const childEnv = await runPhase('child.preflight', () => verifierSourceChildEnv({ root, receiptPath,
         env: { ...env, PAPERCUSP_REPO_DIR: root, NODE_OPTIONS: '', NODE_PATH: '',
           VERIFY_TAURI_SOURCE_INPUTS: receipt.testedInputs.map(input => input.path).join(',') } }));
     const exitCode = await runPhase('child.run', async () => {
+      // Preflight can consume the admitted clock. Check again at the actual
+      // spawn boundary, then keep the absolute cutoff until the WHOLE group exits.
+      admitBudget(childEstimate);
       const child = spawn(command[0], command.slice(1), { cwd: root, env: childEnv,
         detached: process.platform !== 'win32', stdio: 'inherit' });
       const lifetime = processGroupLifetime(child, message => process.stderr.write(`${message}\n`));
       let termination;
+      let timer;
+      let finished = false;
+      let rejectStopped;
+      const stopped = new Promise((_, reject) => { rejectStopped = reject; });
+      stopped.catch(() => {});
+      const cutoffError = () => new PreviewError(`VERIFIER_CHILD_DEADLINE_CUTOFF deadlineEpochMs=${budget.deadlineEpochMs} ` +
+        `cleanupReserveMs=${budget.cleanupReserveMs} childCutoffEpochMs=${budget.childCutoffEpochMs}`, 2);
       const onAbort = () => {
-        termination ??= lifetime.terminate({ graceMs: 1_000, killWaitMs: 5_000 });
-        // Keep a rejection handled while the child's close notification is pending.
-        termination.catch(() => {});
+        if (termination) return;
+        termination = lifetime.terminate({ graceMs: 1_000, killWaitMs: 5_000 });
+        // An unverified group may never close its pipes. Surface the failed fence
+        // without waiting forever for close, and retain its tree for reconciliation.
+        termination.then(() => {
+          budget.childExitVerifiedAtMs = clock.now();
+          rejectStopped(budget.cutoffTriggeredAtMs !== null ? cutoffError()
+            : new PreviewError(`verifier command canceled by ${cancellationSignal}`, 2));
+        }, error => {
+          error.retainVerifierTree = true;
+          rejectStopped(error);
+        });
       };
+      const armCutoff = () => {
+        if (finished || budget.childCutoffEpochMs === null || cancellation.signal.aborted) return;
+        const remainingMs = budget.childCutoffEpochMs - clock.now();
+        if (remainingMs > 0) {
+          // Long deadlines must not overflow Node's signed 32-bit timer delay.
+          timer = clock.setTimeout(armCutoff, Math.min(remainingMs, 2_147_483_647));
+        } else {
+          budget.cutoffTriggeredAtMs = clock.now();
+          cancellation.abort();
+        }
+      };
+      let onError, onClose;
       try {
         /** @type {Promise<number>} */
         const closed = new Promise((done, reject) => {
-          child.once('error', reject);
-          child.once('close', (code, signal) => done(code ?? (128 + (constants.signals[signal] || 0))));
+          onError = reject;
+          onClose = (code, signal) => done(code ?? (128 + (constants.signals[signal] || 0)));
+          child.once('error', onError);
+          child.once('close', onClose);
         });
         cancellation.signal.addEventListener('abort', onAbort, { once: true });
         if (cancellation.signal.aborted) onAbort();
-        const code = await closed;
+        armCutoff();
+        const code = await Promise.race([closed, stopped]);
         await (termination ?? lifetime.waitForExit({ timeoutMs: 60_000 }));
+        if (termination) await termination;
+        budget.childExitVerifiedAtMs = clock.now();
+        if (budget.cutoffTriggeredAtMs !== null) throw cutoffError();
         return code;
       } catch (error) {
         try { await (termination ?? lifetime.terminate({ graceMs: 1_000, killWaitMs: 5_000 })); }
@@ -1017,7 +1071,11 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
         }
         throw error;
       } finally {
+        finished = true;
+        if (timer !== undefined) clock.clearTimeout(timer);
         cancellation.signal.removeEventListener('abort', onAbort);
+        if (onError) child.removeListener('error', onError);
+        if (onClose) child.removeListener('close', onClose);
       }
     });
     await runPhase('deps.postverify', async () => {
@@ -1078,6 +1136,7 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
           const next = `${taskReceiptPath}.${process.pid}.tmp`;
           try {
             await fs.writeFile(next, `${JSON.stringify({ ...ownership, cleanup,
+              ...(budget ? { budget } : {}),
               ...(cancellationSignal ? { cancellationSignal } : {}) })}\n`, { flag: 'wx', mode: 0o600 });
             await fs.rename(next, taskReceiptPath);
           } finally { await fs.rm(next, { force: true }); }
@@ -1093,8 +1152,9 @@ export async function runVerifierCommand({ repo, ref, receiptPath, inputs = [], 
 /** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
  * @param {string} dest
  * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
- * @param {{ runtimeArtifacts?: boolean }} [options] Source-only runtime mode permits
+ * @param {{ runtimeArtifacts?: boolean, dependencyStaging?: boolean }} [options] Source-only runtime mode permits
  * named untracked build outputs and materialized dependency directories, not source edits.
+ * dependencyStaging is reserved for the pre-copy preparation check; it never attests dependency bytes.
  */
 export async function verifyVerifierSource(dest, expected, options = {}) {
   return verifyVerifierSourceSync(dest, expected, options);
@@ -1104,7 +1164,8 @@ export async function verifyVerifierSource(dest, expected, options = {}) {
  * value is not awaited. Uses the same source population and receipt checks.
  * @param {string} dest
  * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
- * @param {{ runtimeArtifacts?: boolean }} [options]
+ * @param {{ runtimeArtifacts?: boolean, dependencyStaging?: boolean }} [options]
+ * dependencyStaging is reserved for the pre-copy preparation check.
  */
 export function verifyVerifierSourceSync(dest, expected, options = {}) {
   try {
@@ -1289,7 +1350,7 @@ export function estimateVerifierCommandBudget(measurements, childEstimateMs = 0)
   const dependencyCheckMs = Math.max(measurements['deps.census'], measurements['deps.postverify'] ?? 0);
   // With no completed cleanup receipt, reserve at least the observed snapshot/freezing
   // work: deletion must still walk the whole population. This is a conservative proxy.
-  const cleanupMs = Math.max(measurements.cleanup ?? 0, measurements['source.freeze'], measurements['deps.snapshot']);
+  const cleanupMs = Math.max(120_000, measurements.cleanup ?? 0, measurements['source.freeze'], measurements['deps.snapshot']);
   const remainingMs = sourceCheckMs * 2 + dependencyCheckMs + cleanupMs + childEstimateMs;
   return { preparationMs, sourceCheckMs, dependencyCheckMs, cleanupMs, childEstimateMs,
     unknownChild: childEstimateMs === 0, remainingMs: Math.ceil(remainingMs * 1.25),
@@ -1299,12 +1360,14 @@ export function estimateVerifierCommandBudget(measurements, childEstimateMs = 0)
 /** Reuse the launcher's absolute deadline and the scheduler's attributable refusal. */
 export function admitVerifierCommandBudget(estimate, { env = process.env, nowMs = Date.now(), preparation = false } = {}) {
   const deadlineEpochMs = readTaskDeadlineEpochMs(env);
-  const knownEstimateMs = estimate ? (preparation ? estimate.totalMs : estimate.remainingMs) : 0;
+  const cleanupReserveMs = Math.max(120_000, estimate?.cleanupMs ?? 0);
+  const childCutoffEpochMs = deadlineEpochMs === null ? null : deadlineEpochMs - cleanupReserveMs;
+  const knownEstimateMs = Math.max(cleanupReserveMs, estimate ? (preparation ? estimate.totalMs : estimate.remainingMs) : 0);
   const remainingMs = deadlineEpochMs === null ? null : deadlineEpochMs - nowMs;
   if (remainingMs !== null && (remainingMs <= 0 || remainingMs <= knownEstimateMs))
     throw new PreviewError(formatTaskDeadlineRefusal({ remainingMs, knownEstimateMs,
       knownTasks: estimate ? VERIFIER_PREPARATION_PHASES.length : 0, unknownTasks: estimate?.unknownChild === false ? 0 : 1 }), 2);
-  return { deadlineEpochMs, remainingMs, knownEstimateMs, estimate };
+  return { deadlineEpochMs, remainingMs, knownEstimateMs, cleanupReserveMs, childCutoffEpochMs, estimate };
 }
 
 async function listFiles(dir) {

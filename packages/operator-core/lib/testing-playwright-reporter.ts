@@ -54,7 +54,6 @@ import { prepareNativeRuntimeReader } from './testing-native-runtime';
 export { prepareNativeRuntimeReader } from './testing-native-runtime';
 import {
   isRecordedCaseTitle,
-  MAX_RECORDED_FAILED_CASES,
   MAX_RECORDED_PASSED_CASES,
   TEST_RUN_EXECUTION_DETAILS_SCHEMA_VERSION,
   parseRecordedRuntimeEnvironment,
@@ -160,7 +159,7 @@ export function playwrightExecutionDetails(
       ...(row.runtimeEnvironmentAfter.witness ? { runtimeEnvironmentAfter: row.runtimeEnvironmentAfter.witness } : {}),
     } : {}),
     ...(row.failedCaseTitles && row.failedCaseTitles.length > 0
-      ? { failedCaseTitles: row.failedCaseTitles.slice(0, Math.min(MAX_RECORDED_FAILED_CASES, row.failed)) }
+      ? { failedCaseTitles: row.failedCaseTitles.slice(0, row.failed) }
       : {}),
     ...(row.passedCaseTitles && row.passedCaseTitles.length > 0
       ? { passedCaseTitles: row.passedCaseTitles.slice(0, Math.min(MAX_RECORDED_PASSED_CASES, row.passed)) }
@@ -405,7 +404,7 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
           }
           {
             const title = playwrightCaseTitle(test);
-            if (title && existing.failedTitles.size < MAX_RECORDED_FAILED_CASES) existing.failedTitles.add(title);
+            if (title) existing.failedTitles.add(title);
           }
           break;
         case 'skipped':

@@ -1154,6 +1154,76 @@ describe('collection child identity evidence (WI-10007991)', () => {
 });
 
 describe('bounded observable Vitest child execution (EI-21400813289605169)', () => {
+  it.each(['stdout', 'stderr'] as const)('retains worker-startup evidence from chunked %s before exit (EI-26268916098999544)', async (channel) => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    const snapshot = { status: 'partial', rootPid: child.pid,
+      processes: [{ pid: child.pid, name: 'node', state: 'S', waitChannel: null }] };
+    const reader = vi.fn(() => snapshot);
+    const progress: string[] = [];
+    const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+      cwd: '/repo', files: ['a.test.ts'], env: { PATH: '/usr/bin' },
+      systemdRunPath: null, setsidPath: null, spawnImpl: () => child,
+      readProcessDiagnosticImpl: reader, onProgress: (line: string) => progress.push(line),
+      governedProcessImpl: (_options: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+    });
+    child[channel].write('[vitest-pool]: Failed to sta');
+    expect(reader).not.toHaveBeenCalled();
+    child[channel].write('rt forks worker for test files a.test.ts.\n');
+    child[channel].write('[vitest-pool]: Failed to start forks worker for test files a.test.ts.\n');
+    const diagnostics = progress.filter(line => line.startsWith('TEST_FILE_CHILD_DIAGNOSTIC '));
+    // The failure comes from Vitest before the router's watchdog, so evidence
+    // must already exist while the owned child tree is still inspectable.
+    try {
+      expect(reader).toHaveBeenCalledTimes(1);
+      expect(reader).toHaveBeenCalledWith(child.pid);
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0]).toContain('"trigger":"worker-startup"');
+      expect(child.kill).not.toHaveBeenCalled();
+    } finally { child.emit('close', 1, null); }
+    const result = await pending;
+    expect(result).toMatchObject({ status: 1, signal: null, timedOut: false, processDiagnostic: snapshot });
+    expect(result[channel]).toContain('Failed to start forks worker');
+  });
+
+  it.each(['unavailable', 'disabled'] as const)('preserves a startup failure with a %s diagnostic reader (EI-26268916098999544)', async (mode) => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+      cwd: '/repo', files: ['a.test.ts'], env: { PATH: '/usr/bin' },
+      systemdRunPath: null, setsidPath: null, spawnImpl: () => child,
+      readProcessDiagnosticImpl: mode === 'disabled' ? null : () => { throw new Error('EACCES'); },
+      onProgress: () => {},
+      governedProcessImpl: (_options: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+    });
+    child.stderr.write('[vitest-pool]: Failed to start forks worker for test files a.test.ts.\n');
+    child.emit('close', 1, null);
+    const result = await pending;
+    expect(result).toMatchObject({ status: 1, signal: null, timedOut: false });
+    expect(result.processDiagnostic).toEqual(mode === 'disabled' ? null :
+      { status: 'unavailable', reason: 'reader-error', processes: [], truncated: false });
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it('does not classify ordinary assertion output as a worker-startup failure (EI-26268916098999544)', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 4350, stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn(),
+    });
+    const reader = vi.fn();
+    const pending = runCapturedTestProcess('npx', ['vitest', 'run', 'a.test.ts'], {
+      cwd: '/repo', files: ['a.test.ts'], env: { PATH: '/usr/bin' },
+      systemdRunPath: null, setsidPath: null, spawnImpl: () => child,
+      readProcessDiagnosticImpl: reader, onProgress: () => {},
+      governedProcessImpl: (_options: unknown, run: Function) => run(undefined, undefined, { inherited: true }),
+    });
+    child.stderr.write('AssertionError: Failed to start test server\n');
+    child.emit('close', 1, null);
+    expect((await pending).processDiagnostic).toBeNull();
+    expect(reader).not.toHaveBeenCalled();
+  });
+
   it.each(['available', 'unavailable', 'default', 'disabled'] as const)(
     'retains bounded worker-termination evidence before exit with a %s reader (EI-25678025879775952)', async (mode) => {
       const child = Object.assign(new EventEmitter(), {

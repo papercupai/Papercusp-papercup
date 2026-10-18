@@ -268,11 +268,123 @@ describe('source-preview export — R-1 selection parity with the installer cut'
   });
 });
 
+describe('verifier dependency staging preparation boundary', () => {
+  function fixture(recordedStaging?: string) {
+    const dest = mkdtempSync(join(tmp, 'dependency-staging-'));
+    write(dest, 'input.mjs', 'export default 1;\n');
+    // The no-op models a completed helper that incorrectly left staging behind.
+    write(dest, 'papercusp-desktop/bin/lib/pinned-deps.sh', '#!/bin/bash\nexit 0\n');
+    if (recordedStaging) write(dest, recordedStaging + '/source.mjs', 'recorded source');
+    const files = verifierSourceFiles(dest);
+    const receipt = { schemaVersion: 'verifier-source-v1', sourceCommit: 'a'.repeat(40), submodules: [],
+      testedInputs: [{ path: 'input.mjs', sha256: files.find(file => file.path === 'input.mjs')!.sha256 }], files };
+    write(dest, '.verifier-source.json', JSON.stringify(receipt));
+    return { dest, receipt };
+  }
+
+  it.each(['node_modules.pinned-deps-tmp', 'node_modules.pinned-deps-tmp.12345',
+    'apps/operator/node_modules.pinned-deps-tmp.12345'])(
+    'retains strict source/runtime verification outside preparation for %s, including empty staging', async staging => {
+      const { dest, receipt } = fixture();
+      await fsPromises.mkdir(join(dest, staging), { recursive: true });
+      for (const options of [{}, { runtimeArtifacts: true }])
+        await expect(verifyVerifierSource(dest, receipt, options)).rejects.toThrow('unexpected dependency staging');
+      await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true, dependencyStaging: true }))
+        .resolves.toEqual(receipt);
+      write(dest, staging + '/partial', 'retained bytes');
+      await expect(verifyVerifierSource(dest, receipt, { runtimeArtifacts: true }))
+        .rejects.toThrow('unexpected dependency staging');
+    },
+  );
+
+  it.each(['node_modules.pinned-deps-tmp.0', 'node_modules.pinned-deps-tmp.0123',
+    'node_modules.pinned-deps-tmp.-1', 'node_modules.pinned-deps-tmp.123.tmp',
+    'node_modules.pinned-deps-tmp-other'])(
+    'rejects the empty staging lookalike %s before the helper', async staging => {
+      const { dest, receipt } = fixture();
+      await fsPromises.mkdir(join(dest, staging));
+      const phases: string[] = [];
+      await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+        runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
+        .rejects.toThrow('invalid dependency staging name');
+      expect(phases).toEqual(['deps.source.before']);
+      expect(existsSync(join(dest, staging))).toBe(true);
+    },
+  );
+
+  it.each(['symlink', 'dangling-link', 'file', 'ambiguous-pids', 'ambiguous-stable', 'redirected-parent'])(
+    'rejects %s before helper execution without removing retained evidence', async defect => {
+      const { dest, receipt } = fixture();
+      const staging = join(dest, 'node_modules.pinned-deps-tmp.12345');
+      if (defect === 'symlink') symlinkSync('.', staging);
+      else if (defect === 'dangling-link') symlinkSync('absent', staging);
+      else if (defect === 'file') writeFileSync(staging, 'retained bytes');
+      else if (defect === 'redirected-parent') {
+        const external = mkdtempSync(join(tmp, 'redirected-staging-'));
+        write(external, 'node_modules.pinned-deps-tmp/partial', 'external bytes');
+        symlinkSync(external, join(dest, 'app'));
+      } else {
+        await fsPromises.mkdir(staging);
+        await fsPromises.mkdir(join(dest, defect === 'ambiguous-pids'
+          ? 'node_modules.pinned-deps-tmp.67890' : 'node_modules.pinned-deps-tmp'));
+      }
+      const before = readdirSync(dest).sort();
+      const phases: string[] = [];
+      await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+        runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
+        .rejects.toThrow(/dependency staging|symlink escapes source root/);
+      expect(phases).toEqual(['deps.source.before']);
+      expect(readdirSync(dest).sort()).toEqual(before);
+    },
+  );
+
+  it.each(['input.mjs', 'node_modules.pinned-deps-tmp/source.mjs',
+    'node_modules.pinned-deps-tmp.12345/source.mjs', 'apps/operator/node_modules.pinned-deps-tmp/source.mjs'])(
+    'never exempts changed recorded source at %s', async input => {
+      const { dest, receipt } = fixture(input === 'input.mjs' ? undefined : dirname(input));
+      write(dest, input, 'changed recorded source');
+      if (input === 'input.mjs') write(dest, 'node_modules.pinned-deps-tmp/partial', 'retained bytes');
+      const phases: string[] = [];
+      await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+        runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
+        .rejects.toThrow('changed ' + input);
+      expect(phases).toEqual(['deps.source.before']);
+    },
+  );
+
+  it('rejects unfinished empty staging after the helper and before any invoked Node command', async () => {
+    const { dest, receipt } = fixture();
+    await fsPromises.mkdir(join(dest, 'node_modules.pinned-deps-tmp'));
+    const phases: string[] = [];
+    await expect(prepareVerifierDependencies({ donor: dest, dest, receipt,
+      runPhase: async (phase, operation) => { phases.push(phase); return operation(); } }))
+      .rejects.toThrow('unexpected dependency staging');
+    expect(phases).toEqual(['deps.source.before', 'deps.snapshot', 'deps.source.after-snapshot']);
+    expect(existsSync(join(dest, 'node_modules.pinned-deps-tmp'))).toBe(true);
+  });
+});
+
 describe('EI-25303741091409100 — pinned verifier source identity', () => {
   const budgetPhases = { 'source.freeze': 103_607, 'receipt.write': 377,
     'deps.source.before': 11_836, 'deps.snapshot': 140_626, 'deps.source.after-snapshot': 22_222,
     'deps.inputs': 212, 'deps.measure': 3_197, 'deps.source.after-preflight': 9_789,
     'deps.census': 556_985, 'deps.receipt.write': 2_778 };
+
+  it('reserves at least two minutes and exposes the absolute child cutoff even without history', () => {
+    expect(() => admitVerifierCommandBudget(null, { nowMs: 1_000,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '121000' } })).toThrow('TASK_DEADLINE_REFUSAL');
+    expect(admitVerifierCommandBudget(null, { nowMs: 1_000,
+      env: { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: '121001' } })).toMatchObject({
+      cleanupReserveMs: 120_000, childCutoffEpochMs: 1_001,
+    });
+    expect(admitVerifierCommandBudget(null, { nowMs: 1_000, env: {} }))
+      .toMatchObject({ deadlineEpochMs: null, childCutoffEpochMs: null, cleanupReserveMs: 120_000 });
+    const small = Object.fromEntries(Object.keys(budgetPhases).map(phase => [phase, 1]));
+    expect(estimateVerifierCommandBudget(small).cleanupMs).toBe(120_000);
+    expect(estimateVerifierCommandBudget({ ...small, cleanup: 180_000 }).cleanupMs).toBe(180_000);
+    expect(estimateVerifierCommandBudget({ ...small, 'source.freeze': 190_000 }).cleanupMs).toBe(190_000);
+    expect(estimateVerifierCommandBudget({ ...small, 'deps.snapshot': 200_000 }).cleanupMs).toBe(200_000);
+  });
 
   it('refuses a 900-second envelope from measured phases before preparation and reserves the full final census', () => {
     const estimate = estimateVerifierCommandBudget(budgetPhases, 60_000);
@@ -617,8 +729,9 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     }
   });
 
-  it('loads TypeScript directory imports with the invoked tree loader before native allocation and survives donor dependency removal', async () => {
-    const fixture = makeSuperproject(join(tmp, 'verifier-native-dependencies'));
+  it.each(['fresh', 'node_modules.pinned-deps-tmp', 'node_modules.pinned-deps-tmp.12345'])(
+    'loads TypeScript directory imports with the invoked tree loader before native allocation and survives donor dependency removal (%s)', async staging => {
+    const fixture = makeSuperproject(join(tmp, 'verifier-native-dependencies-' + staging));
     git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
     const script = 'scripts/source-preview.mjs';
     const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
@@ -628,14 +741,14 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
     write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
     // Substitute the expensive copy only; execute real Node resolution from the
     // independent source tree, with ambient loaders and NODE_PATH excluded.
-    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+    write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ntest "$1" = snapshot-locked\ntest "$4" = hardlink\nshopt -s nullglob\nstaging=("$3"/node_modules.pinned-deps-tmp*)\nif [ "${#staging[@]}" = 1 ]; then mv -- "${staging[0]}" "$3/node_modules"; else mkdir "$3/node_modules"; fi\ncp -al -- "$2/node_modules/." "$3/node_modules/"\n');
     write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
     git(fixture.repo, ['add', script, 'scripts/schema', helper, '.gitignore', DEPENDENCY_POLICY_PATH]);
     git(fixture.repo, ['commit', '-qm', 'native dependency preflight fixture']);
     const scratch = join(fixture.repo, '.papercusp', 'scratch');
     await fsPromises.mkdir(scratch, { recursive: true });
     const dest = join(scratch, 'invoked');
-    const otherTemp = join(tmp, 'verifier-native-dependencies-other-temp');
+    const otherTemp = join(tmp, 'verifier-native-dependencies-other-temp-' + staging);
     await fsPromises.mkdir(otherTemp);
     vi.stubEnv('TMPDIR', otherTemp);
     let receipt: Awaited<ReturnType<typeof prepareVerifierSource>>;
@@ -650,7 +763,12 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
     write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
     installVerifierTsx(fixture.repo);
+    if (staging !== 'fresh') write(dest, staging + '/retained-proof', 'retained private fixture bytes');
     const dependencies = await prepareVerifierDependencies({ donor: fixture.repo, dest, receipt });
+    if (staging !== 'fresh') {
+      expect(existsSync(join(dest, staging))).toBe(false);
+      expect(readFileSync(join(dest, 'node_modules/retained-proof'), 'utf8')).toBe('retained private fixture bytes');
+    }
     expect(dependencies.trees[0]!.files.map(file => file.path)).toEqual(expect.arrayContaining([
       '@native-proof/runtime/index.mjs', '@native-proof/runtime/package.json', 'tsx/package.json',
     ]));
@@ -848,7 +966,9 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
           ...(mode === 'history-refusal' ? { budgetFrom } : {}),
           childEstimateMs: mode === 'deadline-refusal' ? 600_000 : 0,
           env: { ...process.env, NODE_OPTIONS: '--import=/nonexistent/ambient-loader', NODE_PATH: '/ambient/dependencies',
-            ...(['history-refusal', 'deadline-refusal'].includes(mode) ? { PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + 60_000) } : {}) } });
+            ...(['history-refusal', 'deadline-refusal'].includes(mode) ? {
+              PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(Date.now() + (mode === 'deadline-refusal' ? 180_000 : 60_000)),
+            } : {}) } });
       if (mode === 'deadline-refusal' || mode === 'history-refusal') {
         await expect(invocation).rejects.toThrow('TASK_DEADLINE_REFUSAL');
         expect(existsSync(proofPath)).toBe(false);
@@ -905,6 +1025,140 @@ describe('EI-25303741091409100 — pinned verifier source identity', () => {
       expect(phases.find(row => row.phase === 'child.run' && row.event === 'completed'))
         .toMatchObject({ exitCode: mode === 'child-failure' ? 37 : 0 });
       expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
+    });
+
+  it.each(['hung', 'descendant', 'signal-race', 'unverified', 'completed', 'no-deadline'] as const)(
+    'enforces the cleanup-reserve cutoff through the owned process group (%s)', async mode => {
+      const fixture = makeSuperproject(join(tmp, 'verifier-cutoff-' + mode));
+      git(fixture.repo, ['rm', '-r', '--', 'node_modules', 'apps/operator/node_modules']);
+      const helper = 'papercusp-desktop/bin/lib/pinned-deps.sh';
+      const preflight = 'scripts/source-preview.mjs';
+      const provider = 'scripts/cutoff-fixture.mjs';
+      const ready = join(tmp, 'verifier-cutoff-ready-' + mode);
+      write(fixture.repo, DEPENDENCY_POLICY_PATH, DEPENDENCY_POLICY);
+      write(fixture.repo, preflight, "console.log(process.argv.includes('verifier-measure') ? '4096' : 'inputs-ok');\n");
+      write(fixture.repo, helper, '#!/bin/bash\nset -eu\nif [ "$1" = trees ]; then echo node_modules; exit; fi\ncp -al -- "$2/node_modules" "$3/node_modules"\n');
+      const successful = mode === 'completed' || mode === 'no-deadline';
+      write(fixture.repo, provider, [
+        "import { spawn } from 'node:child_process';",
+        "import { writeFileSync } from 'node:fs';",
+        successful ? `writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ root: process.cwd(), group: process.pid })); process.exitCode = 37;`
+          : `spawn(process.execPath, ['-e', ${JSON.stringify([
+            "const fs = require('node:fs'); process.on('SIGTERM', () => {});",
+            `fs.writeFileSync(${JSON.stringify(ready)}, JSON.stringify({ root: process.cwd(), group: process.ppid, descendant: process.pid }));`,
+            "setInterval(() => {}, 1000);",
+          ].join('\n'))}], { stdio: 'ignore' });`,
+        ...(!successful && mode !== 'descendant' ? ['setInterval(() => {}, 1000);'] : []),
+      ].join('\n'));
+      write(fixture.repo, '.gitignore', readFileSync(join(fixture.repo, '.gitignore'), 'utf8') + '\n/.papercusp/scratch/\n');
+      git(fixture.repo, ['add', helper, preflight, provider, '.gitignore', DEPENDENCY_POLICY_PATH]);
+      git(fixture.repo, ['commit', '-qm', 'owned verifier cutoff fixture']);
+      const ref = git(fixture.repo, ['rev-parse', 'HEAD']);
+      write(fixture.repo, 'node_modules/@native-proof/runtime/package.json', JSON.stringify({
+        name: '@native-proof/runtime', type: 'module', exports: './index.mjs' }));
+      write(fixture.repo, 'node_modules/@native-proof/runtime/index.mjs', "export default 'private-snapshot';\n");
+      installVerifierTsx(fixture.repo);
+      const receiptPath = join(tmp, 'verifier-cutoff-' + mode + '.json');
+      let now = 1_000_000;
+      const deadline = now + 300_000;
+      const pending = new Map<ReturnType<typeof setTimeout>, { callback: () => void; delay: number }>();
+      const clock = { now: () => now,
+        setTimeout: vi.fn(((callback: () => void, delay: number) => {
+          const timer = {} as ReturnType<typeof setTimeout>;
+          pending.set(timer, { callback, delay });
+          return timer;
+        })),
+        clearTimeout: vi.fn((timer: ReturnType<typeof setTimeout>) => { pending.delete(timer); }),
+      };
+      const env = childEnv({ PAPERCUSP_TASK_DEADLINE_EPOCH_MS: String(deadline) });
+      if (mode === 'no-deadline') delete env.PAPERCUSP_TASK_DEADLINE_EPOCH_MS;
+      const listeners = [process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')];
+      const result = runVerifierCommand({ repo: fixture.repo, ref, receiptPath, inputs: [provider],
+        command: [process.execPath, provider], env, clock })
+        .then(code => ({ code, error: null }), error => ({ code: null, error }));
+      let owned: string | undefined, peer: string | undefined, group: number | undefined;
+      const kill = process.kill.bind(process);
+      let killSpy: ReturnType<typeof vi.spyOn> | undefined;
+      let signalShutdown: Promise<void> | undefined;
+      try {
+        await vi.waitFor(() => expect(existsSync(ready)).toBe(true), { timeout: 20_000, interval: 20 });
+        const child = JSON.parse(readFileSync(ready, 'utf8'));
+        owned = dirname(child.root); group = child.group;
+        peer = mkdtempSync(join(dirname(owned!), 'verifier-command-'));
+        writeFileSync(join(peer, 'peer-owned'), 'must survive');
+        const initial = JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8'));
+        expect(initial).toMatchObject({ cleanup: 'pending', ownedRoot: owned });
+        if (!successful) {
+          expect(pending.size).toBe(1);
+          const fire = () => {
+            const [timer, scheduled] = [...pending.entries()][0]!;
+            pending.delete(timer); scheduled.callback();
+          };
+          expect([...pending.values()][0]!.delay).toBe(180_000);
+          // An early callback must re-arm against the absolute clock.
+          now = deadline - 120_000 - 1; fire();
+          expect([...pending.values()][0]!.delay).toBe(1);
+          expect(existsSync(owned!)).toBe(true);
+          if (mode === 'unverified') {
+            killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) =>
+              pid === -group! && signal !== 0 ? true : kill(pid, signal));
+          }
+          now++; fire();
+          if (mode === 'signal-race') {
+            // The shared lifetime's process-shutdown handler also schedules a
+            // final group sweep. Join that observed callback before this test
+            // admits the next fixture, so a simulated host shutdown cannot kill it.
+            let swept!: () => void;
+            signalShutdown = new Promise<void>(resolve => { swept = resolve; });
+            const schedule = globalThis.setTimeout;
+            const timerSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) =>
+              schedule(() => { callback(...args); if (delay === 2_000) swept(); }, delay)) as typeof setTimeout);
+            try { process.emit('SIGTERM', 'SIGTERM'); }
+            finally { timerSpy.mockRestore(); }
+          }
+        }
+        const outcome = await result;
+        const task = JSON.parse(readFileSync(receiptPath + '.task.json', 'utf8'));
+        expect(task.budget).toMatchObject({ deadlineEpochMs: mode === 'no-deadline' ? null : deadline,
+          cleanupReserveMs: 120_000, childCutoffEpochMs: mode === 'no-deadline' ? null : deadline - 120_000 });
+        if (successful) {
+          expect(outcome).toEqual({ code: 37, error: null });
+          expect(task.budget).toMatchObject({ cutoffTriggeredAtMs: null, childExitVerifiedAtMs: now });
+          // A callback already queued at completion cannot cancel a finished run.
+          const callback = clock.setTimeout.mock.calls[0]?.[0] as (() => void) | undefined;
+          now = deadline; callback?.();
+          expect(pending.size).toBe(0);
+        } else {
+          expect(outcome.error).toBeInstanceOf(Error);
+          expect(outcome.error.message).toContain(mode === 'unverified' ? 'exit unverified'
+            : mode === 'signal-race' ? 'canceled by SIGTERM' : 'VERIFIER_CHILD_DEADLINE_CUTOFF');
+          expect(task.budget.cutoffTriggeredAtMs).toBe(deadline - 120_000);
+          expect(task.budget.childExitVerifiedAtMs).toBe(mode === 'unverified' ? null : now);
+          expect(outcome.error.exitCode).toBe(mode === 'unverified' ? undefined : mode === 'signal-race' ? 143 : 2);
+          if (mode === 'signal-race') expect(task.cancellationSignal).toBe('SIGTERM');
+          if (mode !== 'unverified' && existsSync(`/proc/${child.descendant}/stat`))
+            expect(readFileSync(`/proc/${child.descendant}/stat`, 'utf8').split(') ')[1]![0]).toMatch(/[ZX]/);
+        }
+        expect(task.cleanup).toBe(mode === 'unverified' ? 'deferred' : 'completed');
+        expect(existsSync(owned!)).toBe(mode === 'unverified');
+        expect(readFileSync(join(peer, 'peer-owned'), 'utf8')).toBe('must survive');
+        expect(pending.size).toBe(0);
+        expect([process.listenerCount('SIGINT'), process.listenerCount('SIGTERM')]).toEqual(listeners);
+        const phases = readFileSync(receiptPath + '.phases.jsonl', 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        expect(phases.find(row => row.phase === 'child.admission' && row.event === 'completed').budget)
+          .toMatchObject({ cleanupReserveMs: 120_000, childCutoffEpochMs: mode === 'no-deadline' ? null : deadline - 120_000 });
+        if (!successful) expect(phases.some(row => row.phase === 'deps.postverify')).toBe(false);
+        if (mode !== 'unverified') expect(phases.at(-1)).toMatchObject({ phase: 'cleanup', event: 'completed' });
+      } finally {
+        killSpy?.mockRestore();
+        if (group) { try { kill(-group, 'SIGKILL'); } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+        } }
+        await result;
+        await signalShutdown;
+        if (owned) rmSync(owned, { recursive: true, force: true });
+        if (peer) rmSync(peer, { recursive: true, force: true });
+      }
     });
 
   it.each(['snapshot', 'census', 'child', 'sigint', 'sigkill'] as const)(

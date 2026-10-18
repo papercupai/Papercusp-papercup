@@ -1007,6 +1007,56 @@
       },
       "verification": "On2026-10-16, exact original/before/after evidence, source-changing bootstrap history, unchanged pre-repair fixture identity, full terminal logs, committed source hashes and authoritative completion established this scoped fixture repair. No historical repair was reclaimed or reclosed; no broad affected or live-gate run was launched.",
       "proofBoundary": "Original21116758 and current baseline21293705/06 remain failed. The two repaired complete suites passed10 with retained dirty working-tree provenance; matching committed fixture bytes do not establish an immutable executed import graph. No full affected PASS, current gate verdict, native/attended/novice/screen-reader/voice/exact-production acceptance or tutorial shipment is established."
+    },
+    {
+      "originalTestRunId": 21116699,
+      "testFile": "packages/operator-core/lib/generated-declarations.test.ts",
+      "observedFailure": "Original clean-f419 receipt21116699 records6PASS1FAIL0SKIP. The generator check named exactly one missing manual declaration export: rootReadDenyPaths from libs/papercusp/packages/orchestrator/src/fleet-srt-spawn.mjs was absent from its adjacent .d.mts.",
+      "repairId": "EI-25732602759029469",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "32963fcf189514a06c2bf22d984cee03dba4dc6e",
+      "sourceRepairSubmoduleCommit": "4b8664816ce23c8ac6cce82337f9fbc9b047a9cf",
+      "rootConnection": "Originalf419 pins submodulee6579e3b17bfe9f227a982e7b612ccdd250cb61a: the runtime exports rootReadDenyPaths while the manual declaration omits it. The completed repair adds only its structural Dirent input/string[] result signature; the runtime module is byte-identical across this repair. A conventional real-file parity regression verifies that this manual path is scanned, stays outside generated declarations, and detects exactly rootReadDenyPaths when that export alone is removed in memory. The completion's emitted superproject32963 pins submodule435b571bea5f38a63ffe13fde33a399840669959, which retains the repaired declaration blob e6d644d661458d1a32ecd33a4d96b5a7c8597dca. The same missing-export signature and regression remain in current source.",
+      "retainedWorkingProof": {
+        "beforeTestRunId": 21134712,
+        "testRunId": 21134721,
+        "testFile": "packages/operator-core/lib/declaration-export-parity.test.ts",
+        "recordedCommit": "ad3ba262de8856b66be5145e47413ae604e6faf2",
+        "sourceSha256": "4f8a5c2fe5586fddd052125b251deb9f698cab9a33263116f0ff406feaaf98ab",
+        "testSha256": "b9a6cc55baa89c808700905a3f9b2380da87d4d45d931f45f9caca9d5b7b5b32",
+        "testResult": "Exact retained LOCAL21134712 is failed and names only stranded rootReadDenyPaths; LOCAL21134721 is passed. Both released ledger rows record worktreeDirty=true, root=null and isScratchConfig=false. The stored completion reports selected regression0PASS1FAIL12unselected before repair, then full parity suite13PASS0FAIL0SKIP, global115-declaration check exit0 and selected TypeScript exit0. The released ledger reader omits executionDetails and measured case counts/collection/selector metadata, so those counts remain attributed to stored completion rather than independently remeasured.",
+        "retentionBoundary": "The three completion-cited /dev/shm global-check and TypeScript logs are no longer present. A bounded historical lookup for generated-declarations.test.ts at ad3ba262 returned no row; this does not establish that no historical run exists elsewhere. No fresh test was run to replace missing retained evidence."
+      },
+      "verification": "On2026-10-17, exact original and before/after test-run reads matched this defect. Authoritative work_items:get confirmed EI-25732602759029469 DONE/committed and unassigned; no repair was reclaimed or reclosed. git-show hashes verified original omission, the unchanged runtime across the source repair, the exact repaired declaration at emitted32963's submodule pin, and the conventional regression at32963/currentHEAD. Current declaration has a later native-container binding addition, so the repair's completion-freshness warning remains stale and its historical proof is not promoted to current-suite qualification.",
+      "proofBoundary": "This maps the original missing-export failure to an existing committed repair with retained dirty working-tree proof. Original21116699 and the selected before-repair21134712 remain failed. Committed source identity does not establish an immutable executed import graph, a newly verified current declaration suite, full affected PASS, current gate verdict, runtime or tutorial shipment acceptance."
+    },
+    {
+      "originalTestRunId": 21103993,
+      "testFile": "packages/operator-core/lib/harness/routines/reconcile-plan-runs.integration.test.ts",
+      "observedFailure": "Original clean-f419 receipt21103993 records13PASS5FAIL0SKIP, collectionFailed=false and testNamePattern=null. The retained error names pot-lookup-unmeasured for ws-recon/plan-run-reconcile-fixture, raised through vitest-fail-on-console when instance settlement resolves its storage slug. Exact before-repair21209331 repeats all five original failed case titles among its11 failures.",
+      "repairId": "WI-6554700010009851",
+      "repairState": "done",
+      "completionAuthority": "committed",
+      "sourceRepairCommit": "b3f2d313e5db51d23e1d3fe0ad9e19cfe2287caa",
+      "rootConnection": "The integration fixture passed its throwaway sql explicitly to reconcile, but routineStorageSlug calls pot-membership's default getOrgPg pool for the pots lookup. The original fixture left that pool outside the isolated database. The committed repair hoists h.sql, binds getOrgPg to it and sets it to org.adminSql in beforeAll; it keeps the real resolver, console-warning guard and original assertions. The same commit adds settled-instance convergence cases for the existing repair. Its commit attribution names WI-6554700010009851 and the repair's source custodian. Originalf419, retained11f8067e3f and the repair parent share test blobe23662065ef2cd3ca719b0673451dbb8a32a5453 without the pool binding. Repaired blobae464bef4b6e531bea9f809e99a4ce8f3ecca65e contains it; current HEAD/working test has later cases and still preserves the binding. pot-membership is byte-identical at11f8067e3f and b3f2d313e5; reconcile-plan-runs also changed between those commits, so this entry does not infer an unchanged imported graph.",
+      "retainedProof": {
+        "beforeTestRunId": 21209331,
+        "testRunId": 21209349,
+        "recordedCommit": "11f8067e3f998c3e2a39f1e1dadd40939d37df81",
+        "source": "local",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "runGroupId": null,
+        "originalTestSha256": "ca766a8df30515e6af2588b5badb5f51b8b88453acc7c268b73d0eee901f12d0",
+        "repairTestSha256": "3e1105649b548368462db9ac92b29a11e9a9747c666dd19e4810a5eca0f87ee6",
+        "logPath": ".papercusp/scratch/su-0dd6b-9851-integ2.log",
+        "logSha256": "c625c0e05bea6ee611385085dd770307f880380101445b8eaeef31473aec0786",
+        "testResult": "Exact raw execution_details records14PASS11FAIL0SKIP before and25PASS0FAIL0SKIP after, both collectionFailed=false, testNamePattern=null and integration layer. Both raw rows name canonical staging as root and runtime-environment capture not-configured; the released reader returned root=null and omitted executionDetails. The retained after log ends EXIT=0 and TEST_FILE_RESULT requested1/executed1/matched1/childSubstituted0/skippedTests0, uncommittedPaths1/1, startedAt2026-10-13T14:47:32.464Z. The existing repair completion cites this same log and25-test run.",
+        "retentionBoundary": "The passing receipt predates b3f2d313e5 and its recorded11f8067e3f still contains the old test. The later committed test hash therefore does not identify the dirty executed bytes or imports. Later21209900 records31PASS0FAIL0SKIP but is also dirty and is not used as immutable or current-suite qualification."
+      },
+      "verification": "On2026-10-17, the exact original-root census, exact original/before/after ledger rows and raw execution_details, retained terminal log, source-changing diff, committed blob/SHA256 checks and current authoritative work_items:get established this mapping. The existing repair is DONE/committed and unassigned; it was neither reclaimed nor reclosed. Reporter code confirms measured case counts, selector and root provenance. No source or test was changed or replayed, and no source-admission, live-gate or acceptance operation was attempted.",
+      "proofBoundary": "This maps the historical fixture-pool failure to an existing committed repair with retained dirty working proof. Original21103993 and before21209331 remain failed. The mapping does not independently qualify the repair's broader production behavior, immutable executed source, the current suite, full affected PASS, a current gate verdict, parent acceptance or tutorial shipment."
     }
   ],
   "sourceReconciliations": [
@@ -1080,6 +1130,66 @@
         "verification": "On2026-10-16, exact-id original and passing ledger reads, the retained original-root census, both source-changing diffs, producer completion and git ancestry/blob/hash checks established this reconciliation. No test was replayed, no terminal repair was claimed or reclosed, and no live-gate operation was performed."
       },
       "proofBoundary": "This is a committed baseline source correction with unresolved repair attribution and retained dirty historical PASS evidence. It adds no completed-repair mapping. Original21116573 remains failed; no immutable full affected PASS, current gate verdict, runtime, parent acceptance or tutorial shipment is established."
+    },
+    {
+      "originalTestRunId": 21116796,
+      "testFile": "packages/operator-core/lib/agent-tools/scheduler/get_next.result-envelope.test.ts",
+      "observedFailure": "Original clean-f419 receipt21116796 records8PASS5FAIL0SKIP. The retained original log ties the missing structured claim data and unexpected console warnings to scheduler:get_next preflight throwing because the context-pressure mock has no fetchContextPressureReadings export, then degrading to fallback.",
+      "originalLogPath": "~/.papercusp/logs/papercusp-affected-tests/1954068-628608ae.log",
+      "sourceRepairCommit": "2998298920a789179489753fd7cb06d7c5fc4922",
+      "rootConnection": "The original f419 handler imports and calls fetchContextPressureReadings when the context-pressure gate is enabled, while its whole-module fixture exports only fetchContextPressure. Commit2998298920 adds the missing async Map-returning stub and its explanatory comment, without changing any assertion. Its parent and original f419 have the identical test blob2cadea11851adcbd5f4dc1261ad96a63b230551d. The corrected blob459cf467e5b587194278542fb97018dfe8a5735d is also present at the later passing receipt's recorded commit bef8d2fb9f; that commit and HEAD descend from the correction. The stub and committed-claim assertions remain in the current test, preserving the recurrence guard.",
+      "relatedPriorRepair": {
+        "id": "EI-20308567859934395",
+        "state": "done",
+        "completionAuthority": "committed",
+        "scope": "The authoritative item concerns an older five-second timeout in a three-file focused batch. It is not attributed the later missing-export assertion failures or their fixture correction, and was read without reclaiming or reclosing it."
+      },
+      "repairAttribution": "Unresolved for the three-line fixture correction in2998298920. Literal-file work-item search found the older timeout repair, whose scope is different. WI-10005128 retains source-reconciliation custody; this entry does not claim a completed-repair mapping.",
+      "retainedProof": {
+        "commit": "bef8d2fb9f3792fb713eaffaa438663291c39a8e",
+        "testRunId": 21251365,
+        "source": "local",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "root": null,
+        "runGroupId": null,
+        "originalTestSha256": "e9df66d0cf7af20b71f1e5b7d7755aa7ed4269c1b393c087c3c40c719251d5df",
+        "repairTestSha256": "0feab9a7e0f760d24c94a5e92d9cb2bb98d7744c3e1232fedf02b405d57a690d",
+        "testResult": "Existing exact historical receipt21251365 is pass. Its recorded commit contains the same corrected test blob as2998298920. The receipt is dirty; matching committed blobs do not establish the executed dirty bytes or imported source graph. The released reader returns root=null and omits executionDetails, measured counts, collection status and selector. No immutable or complete-suite qualification is inferred.",
+        "verification": "On2026-10-17, exact-id original and passing ledger reads, the retained original-root census and raw original preflight error, minimal source-changing diff, older repair scope and git ancestry/blob/hash checks established this reconciliation. No test was replayed, no terminal repair was claimed or reclosed, and no live-gate operation was performed."
+      },
+      "proofBoundary": "This is a committed fixture source correction with unresolved repair attribution and retained dirty historical PASS evidence. It adds no completed-repair mapping. Original21116796 remains failed; no immutable full affected PASS, current gate verdict, runtime, parent acceptance or tutorial shipment is established."
+    },
+    {
+      "originalTestRunId": 21100188,
+      "testFile": "apps/operator/test/role-principal-caps.integration.test.ts",
+      "observedFailure": "Original clean-f419 receipt21100188 records5PASS4FAIL0SKIP, collectionFailed=false and testNamePattern=null. The two operator and two worker exact-set assertions omit the five declared capability:* native replacements; the operator expectation also omits memory:search:read derived from memory:read. Original source already declares these grants.",
+      "sourceRepairCommit": "b6aae68230471be3ca2513afb8629cff1bf6c5c1",
+      "rootConnection": "Originalf419, the repair parent and retained receipts' recorded fd91b033 commit share test blob72bdfc63fcf3f39a2fd4139e5e442734d9856eec. The correction adds an independent five-capability oracle, the derived operator read grant and an unknown-role negative control, while retaining exact-set, workspace-isolation and superuser assertions. Corrected test blob4af418575ded809835498706dc943167650c3d7c remains identical at current HEAD and in the working file. The producer is byte-identical at fd91b033 and b6aae682; the correction changes expectations rather than granting capabilities. The existing conventional unit guard separately checks cutover-role parity and excludes replacement grants from evidence-only roles.",
+      "relatedAllocationCandidate": {
+        "id": "WI-6554700010008722",
+        "state": "open",
+        "assignee": null,
+        "sourceAdmissionRequired": true,
+        "sourceRepairAdmitted": false,
+        "scope": "Exact current read retains the source-admission hold under source parent WI-10006170. This allocation candidate has no committed completion authority and is not attributed the existing source correction. No claim, implementation, test execution, admission or completion was attempted."
+      },
+      "repairAttribution": "Unresolved for the correction in b6aae682. Title and literal-file summary searches found the open allocation candidate and its cohort, without establishing a completed repair for this change. WI-10005128 retains reconciliation custody; this entry adds no completed-repair mapping and does not clear source admission.",
+      "retainedProof": {
+        "beforeTestRunId": 21278818,
+        "testRunId": 21278869,
+        "recordedCommit": "fd91b033ebc4324957a539d300ea2f3345d0a2a8",
+        "source": "local",
+        "worktreeDirty": true,
+        "isScratchConfig": false,
+        "runGroupId": null,
+        "originalTestSha256": "bee272f0004536d58ff22b9801f5b54fcc7b41d913864b6ab3eca72b7044862a",
+        "repairTestSha256": "b9249727094fd3e34998234718e56069d4b9f2a96a942b40ec23c343d91ce13a",
+        "testResult": "Exact before receipt21278818 repeats the original four failure titles and5PASS4FAIL0SKIP. Exact after receipt21278869 is pass; stored execution_details records10PASS0FAIL0SKIP, collectionFailed=false, testNamePattern=null and integration layer. Both raw records name canonical staging as root, are dirty and have no runtime-environment capture configured. The released testing:runs reader returns root=null and omits executionDetails; counts/root/selector here come from the exact raw rows, checked against the reporter writer. A configuration snapshot exists, but its contents and the executed imported graph were not qualified.",
+        "retentionBoundary": "Both receipts predate the source commit. Their recorded fd91b033 contains the OLD test blob, so the later committed correction's hash cannot establish which dirty bytes or imports produced the pass. Current loader bytes also differ from the retained recorded commit. This is retained historical working proof, with no immutable or current-suite qualification."
+      },
+      "verification": "On2026-10-17, exact original and before/after ledger reads, raw execution_details, retained original-root census, source-changing diff, blob/SHA256/ancestry checks and the open candidate's authoritative admission state established this reconciliation. Reporter code shows counts come from collectModuleExecution, selector/root from run context and dirty status from before/after snapshots. No test was replayed, source permission changed, repair claimed or reclosed, gate operated or acceptance lane taken over.",
+      "proofBoundary": "Original21100188 and before21278818 remain failed. This source-only reconciliation preserves unresolved repair attribution and the candidate's source-admission wall. Retained dirty10PASS does not establish immutable executed source, current runtime, full affected PASS, gate verdict, parent acceptance or tutorial shipment."
     }
   ],
   "currentCommittedQualification": {

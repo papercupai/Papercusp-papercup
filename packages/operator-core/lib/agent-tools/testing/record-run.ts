@@ -21,7 +21,6 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   parseTestRunExecutionDetails,
   isRecordedCaseTitle,
-  MAX_RECORDED_FAILED_CASES,
   MAX_RECORDED_PASSED_CASES,
   type RecordedRuntimeEnvironment,
   stableRecordedRuntimeEnvironment,
@@ -429,7 +428,7 @@ export function operationalExecution(artifact: OperationalEvidenceArtifact) {
   const titles = [...new Set([
     ...failing.map((assertion) => assertion.id),
     ...(unexplainedExit ? [`nonzero-exit-${artifact.exitCode}`] : []),
-  ])].filter((title) => isRecordedCaseTitle(title)).slice(0, MAX_RECORDED_FAILED_CASES);
+  ])].filter((title) => isRecordedCaseTitle(title));
   const failedTitles = new Set(titles);
   const allPassedTitles = [...new Set(
     artifact.assertions.filter((assertion) => assertion.passed).map((assertion) => assertion.id),

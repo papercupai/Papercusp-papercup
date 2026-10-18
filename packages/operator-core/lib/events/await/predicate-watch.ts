@@ -792,7 +792,16 @@ export async function dispatchReadOnlyTool(
   if (env.signal?.aborted || caller?.signal.aborted) {
     throw new ReadOnlyDispatchError('dispatch_failed', 'cell read was cancelled before dispatch');
   }
-  const result = await withWorkspace(env.workspaceId, async (tx) => {
+  /**
+   * Transaction-free resolvers (notably dev:pipeline_position) explicitly declare
+   * `skipWorkspaceTx`. The top-level dispatcher honors that declaration, but this
+   * in-process read-only bridge used to wrap every resolver in withWorkspace anyway.
+   * That left an idle workspace transaction open across git/systemd probes and made
+   * state:read time out while the same resolver answered through its direct door
+   * (EI-25342644580478656). Keep the role/capability dispatch identical; only the
+   * unnecessary transaction acquisition is skipped for tools that opt out.
+   */
+  const dispatch = async (tx?: unknown) => {
     if (caller) {
       // Never inherit an internal caller's bypass flags, nor replace the wearer
       // with a system principal. The normal dispatcher rechecks live authority.
@@ -802,7 +811,7 @@ export async function dispatchReadOnlyTool(
         gateBypass: undefined,
         isSuperuser: false,
         signal: env.signal ?? caller.signal,
-        tx,
+        ...(tx === undefined ? {} : { tx }),
       };
       return dispatchProjectedTool(projected, tool, args, ctx, PROJECTED_DEPS);
     }
@@ -835,10 +844,13 @@ export async function dispatchReadOnlyTool(
         workspaceId: env.workspaceId,
         capabilities: new Set(['*']),
       },
-      tx,
+      ...(tx === undefined ? {} : { tx }),
     };
     return dispatchProjectedTool(projected, tool, args, ctx, PROJECTED_DEPS);
-  });
+  };
+  const result = projected.skipWorkspaceTx
+    ? await dispatch()
+    : await withWorkspace(env.workspaceId, async (tx) => dispatch(tx));
   if (!result.ok) {
     // Message text is UNCHANGED from before the extraction, so predicate_watches'
     // `last_error` + the consecutive-error deactivation behave identically; the `code`

@@ -50,8 +50,12 @@ import {
   renderFleetDependencyEscape,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeCheckpointHint } from '../../work-item-checkpoint';
-import { changeKindsArg, changeKindReasonArg, type ChangeKind } from '../../change-kind-catalog';
-import { declareChangeKinds } from '../../work-item-change-kinds';
+import { changeKindsArg, changeKindReasonArg } from '../../change-kind-catalog';
+import {
+  attachChangeKindDeclarations,
+  declaredChangeKindsById,
+  writeSucceededEligibility,
+} from '../../work-item-change-kinds';
 import {
   authorshipRevalidationWarning,
   getClaimTimeAuthorshipRevalidationHint,
@@ -1387,45 +1391,29 @@ export default defineTool({
       ? verifiedSpawnSessionAlias(ctx, ident.ownerId) : null;
     // change-kind-declared-proof P-001 (D-001): per-item kinds (an item's own, else the
     // top-level default), keyed by the requested id runBulk echoes on each result.
-    const declaredById = new Map<string, { kinds: ChangeKind[]; reason?: string }>();
-    const declare = (id: string, kinds: ChangeKind[] | undefined, reason: string | undefined) => {
-      if (kinds?.length) declaredById.set(id, { kinds, reason });
-    };
-    if (args.items?.length) {
-      for (const it of args.items) declare(it.id, it.changeKinds ?? args.changeKinds, it.changeKindReason ?? args.changeKindReason);
-    } else {
-      for (const it of list) declare(it.id, args.changeKinds, args.changeKindReason);
-    }
+    const declaredById = declaredChangeKindsById(
+      args.items?.length
+        ? args.items.map((it) => ({
+            id: it.id,
+            changeKinds: it.changeKinds ?? args.changeKinds,
+            changeKindReason: it.changeKindReason ?? args.changeKindReason,
+          }))
+        : list.map((it) => ({ id: it.id, changeKinds: args.changeKinds, changeKindReason: args.changeKindReason })),
+    );
     const claimed = await runBulk(list, (it) => claimOne(it, ident, reader, verifiedCallerAlias), {
       keyOf: (it) => ({ id: it.id }),
     });
     const env = declaredById.size
       ? {
           ...claimed,
-          results: await Promise.all(
-            claimed.results.map(async (r) => {
-              const declared = typeof r.id === 'string' ? declaredById.get(r.id) : undefined;
-              if (!declared) return r;
-              if (!r.ok) {
-                return {
-                  ...r,
-                  changeKinds: { recorded: false as const, error: 'changeKinds were not recorded: the claim did not succeed.' },
-                };
-              }
-              const featureId = (r.workItem as { id?: string } | undefined)?.id ?? (r.id as string);
-              return {
-                ...r,
-                changeKinds: await declareChangeKinds({
-                  workspaceId: ident.workspaceId ?? ctx.workspaceId ?? 'default',
-                  featureId,
-                  kinds: declared.kinds,
-                  step: 'claim',
-                  declaredBy: ident.ownerId,
-                  reason: declared.reason ?? null,
-                }),
-              };
-            }),
-          ),
+          results: await attachChangeKindDeclarations({
+            declared: declaredById,
+            results: claimed.results,
+            step: 'claim',
+            declaredBy: ident.ownerId,
+            workspaceId: ident.workspaceId ?? ctx.workspaceId ?? 'default',
+            eligible: writeSucceededEligibility('claim'),
+          }),
         }
       : claimed;
     // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /

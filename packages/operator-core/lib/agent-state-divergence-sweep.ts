@@ -29,6 +29,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { activeWorkspaceId } from './workspace-registry';
 import {
   detectIntentActionDivergence,
   deliverableKinds,
@@ -427,7 +428,7 @@ export interface DivergenceSweepDeps {
  */
 export async function divergenceSweep(deps: DivergenceSweepDeps = {}): Promise<DivergenceSweepResult> {
   const now = deps.now ?? Date.now();
-  const workspaceId = deps.workspaceId ?? 'papercusp-workspace';
+  const workspaceId = deps.workspaceId ?? activeWorkspaceId();
   const installSlug = deps.installSlug ?? DEFAULT_INSTALL_SLUG;
   const outcomes: DivergenceSweepOutcome[] = [];
 

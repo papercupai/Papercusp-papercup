@@ -94,6 +94,7 @@ describe('findOrphanTestRunGroups', () => {
       // and be prunable without a file-existence check.
       { harness_slug: null, file_path: 'apps/operator-vite/src/components/left-sidebar/MugTab.flakeproof.test.tsx', row_count: 2 },
       { harness_slug: null, file_path: 'papercupai-workspace/papercusp-checkpoint/packages/x.test.ts', row_count: 5 },
+      { harness_slug: null, file_path: 'custom-install/papercusp-checkpoint/packages/y.test.ts', row_count: 7 },
       { harness_slug: null, file_path: 'packages/live.test.ts', row_count: 6 },
     ]);
     const out = await findOrphanTestRunGroups({ workspaceId: 'ws', sql });
@@ -102,6 +103,7 @@ describe('findOrphanTestRunGroups', () => {
       { harnessSlug: null, filePath: '.papercusp/scratch/tdg-abc/app/x.test.ts', rowCount: 4, reason: 'scratch_path' },
       { harnessSlug: null, filePath: 'apps/operator-vite/src/components/left-sidebar/MugTab.flakeproof.test.tsx', rowCount: 2, reason: 'flakeproof_path' },
       { harnessSlug: null, filePath: 'papercupai-workspace/papercusp-checkpoint/packages/x.test.ts', rowCount: 5, reason: 'wrong_tree_path' },
+      { harnessSlug: null, filePath: 'custom-install/papercusp-checkpoint/packages/y.test.ts', rowCount: 7, reason: 'wrong_tree_path' },
     ]);
     expect(existsSyncMock).not.toHaveBeenCalled();
   });

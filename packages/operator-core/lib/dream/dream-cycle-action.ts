@@ -7,10 +7,12 @@ import { registerSystemAction, type SystemActionCtx } from '../harness/routines/
 import { idleActivityAllowed } from '../owner-steering';
 import { readHiveIdleRatio } from '../scout/cadence-signals';
 import type { ScoutLlmCall } from '../scout/types';
-import { resolveDreamCycleConfig, type DreamCycleConfig } from './dream-config';
+import { DREAM_ACTION_DECISION_PREFIX, DREAM_ADMISSION_GATES, resolveDreamCycleConfig, type DreamCycleConfig, type DreamAdmissionGate } from './dream-config';
+export { DREAM_ACTION_DECISION_PREFIX } from './dream-config';
 import { runDreamCycle, type DreamCycleInput, type DreamCycleResult } from './dream-cycle';
 import type { DreamRunMode } from './dream-run-store';
 import { DreamPilotPinSchema, type DreamPilotPin } from './dream-evaluation';
+import { getServingHostIdentity } from '../serving-host-identity';
 
 export const DREAM_CYCLE_ACTION = 'dream-cycle';
 
@@ -51,41 +53,77 @@ export function parseDreamCycleActionConfig(payload: Record<string, unknown> | n
 
 export interface DreamCycleActionDeps {
   featureEnabled: () => Promise<boolean>;
-  idleAllowed: (workspaceId: string, potSlug: string) => Promise<boolean>;
+  idleAllowed: (workspaceId: string, potSlug: string, observe?: Parameters<typeof idleActivityAllowed>[4]) => Promise<boolean>;
   readIdleRatio: (workspaceId: string) => Promise<number>;
-  runCycle: (ctx: SystemActionCtx, config: DreamCycleActionConfig) => Promise<DreamCycleResult>;
+  runCycle: (ctx: SystemActionCtx, config: DreamCycleActionConfig, observe: (gate: DreamAdmissionGate) => void) => Promise<DreamCycleResult>;
   log: (message: string) => void;
 }
 
 const defaultActionDeps: DreamCycleActionDeps = {
   featureEnabled: () => getFlag(FLAGS.DREAM_CYCLE, 'dream-cycle'),
-  idleAllowed: (workspaceId, potSlug) => idleActivityAllowed(workspaceId, 'dream', potSlug),
+  idleAllowed: (workspaceId, potSlug, observe) => idleActivityAllowed(workspaceId, 'dream', potSlug, undefined, observe),
   readIdleRatio: (workspaceId) => readHiveIdleRatio({ workspaceId }),
-  runCycle: productionDreamCycle,
+  runCycle: (ctx, config, observeAdmission) => productionDreamCycle(ctx, config, { observeAdmission }),
   log: (message) => console.log(`[dream-cycle] ${message}`),
 };
 
 export function makeDreamCycleAction(overrides: Partial<DreamCycleActionDeps> = {}) {
   const deps = { ...defaultActionDeps, ...overrides };
   return async function dreamCycleAction(ctx: SystemActionCtx): Promise<void> {
-    if (!(await deps.featureEnabled())) {
+    // Extend the existing action journal: these are ACTUAL branch decisions,
+    // never a retrospective inference from an empty attempt ledger. A skip has
+    // zero paid calls because every return below precedes runCycle.
+    const actionId = DBOS.workflowID?.trim() || randomUUID();
+    const admission: DreamAdmissionGate[] = DREAM_ADMISSION_GATES.map(gate => ({ gate, status: 'not-reached', inputs: {} }));
+    const observeAdmission = (row: DreamAdmissionGate) => {
+      const at = admission.findIndex(g => g.gate === row.gate);
+      // Continue is checked repeatedly; keep every result, including refusals.
+      if (at >= 0 && admission[at].status === 'not-reached') admission[at] = row;
+      else admission.push(row);
+    };
+    const decision = (reason: string, config: DreamCycleActionConfig | null, detail: Record<string, unknown> = {}) => {
+      deps.log(DREAM_ACTION_DECISION_PREFIX + JSON.stringify({ schemaVersion: 1,
+        actionId, workspaceId: ctx.workspaceId, potSlug: ctx.installSlug, capturedAt: new Date().toISOString(),
+        runtime: getServingHostIdentity(), source: 'dream/dream-cycle-action:makeDreamCycleAction',
+        mode: config?.mode ?? ctx.payloadTemplate?.mode ?? 'manual', reason,
+        cycle: config ? resolveDreamCycleConfig(config.cycle) : null, admission, ...detail,
+      }));
+    };
+    const featureEnabled = await deps.featureEnabled();
+    observeAdmission({ gate: 'feature', status: featureEnabled ? 'passed' : 'refused', inputs: { enabled: featureEnabled } });
+    if (!featureEnabled) {
+      decision('feature-off', null, { disposition: 'pre-attempt-policy-skip', paidCalls: 0, model: null, usage: null, costUsd: 0 });
       deps.log(`${ctx.installSlug}: skipped — DREAM_CYCLE feature flag is OFF`);
       return;
     }
     const config = parseDreamCycleActionConfig(ctx.payloadTemplate);
     if (config.mode === 'auto') {
-      if (!(await deps.idleAllowed(ctx.workspaceId, ctx.installSlug))) {
+      let idleObservation: Parameters<NonNullable<Parameters<typeof idleActivityAllowed>[4]>>[0] | undefined;
+      const idleAllowed = await deps.idleAllowed(ctx.workspaceId, ctx.installSlug, value => { idleObservation = value; });
+      observeAdmission({ gate: 'owner-idle', status: idleObservation?.status === 'unknown' ? 'unknown' : idleAllowed ? 'passed' : 'refused',
+        inputs: { allowed: idleAllowed, potSlug: ctx.installSlug, observation: idleObservation ?? null } });
+      if (!idleAllowed) {
+        decision('owner-idle-disabled', config, { disposition: 'pre-attempt-policy-skip', paidCalls: 0, model: null, usage: null, costUsd: 0 });
         deps.log(`${ctx.installSlug}: skipped — owner idle-activity toggle (dream) is OFF`);
         return;
       }
       const idleRatio = await deps.readIdleRatio(ctx.workspaceId);
       const floor = resolveDreamCycleConfig(config.cycle).autoIdleRatioFloor;
+      observeAdmission({ gate: 'idle-ratio', status: !Number.isFinite(idleRatio) ? 'unknown' : idleRatio < floor ? 'refused' : 'passed', inputs: { idleRatio, floor } });
       if (idleRatio < floor) {
+        decision('idle-ratio-below-floor', config, { disposition: 'pre-attempt-policy-skip', idleRatio, floor,
+          paidCalls: 0, model: null, usage: null, costUsd: 0 });
         deps.log(`${ctx.installSlug}: skipped — idle ratio ${idleRatio.toFixed(2)} < ${floor.toFixed(2)}`);
         return;
       }
+    } else {
+      observeAdmission({ gate: 'owner-idle', status: 'not-applicable', inputs: { mode: 'manual' } });
+      observeAdmission({ gate: 'idle-ratio', status: 'not-applicable', inputs: { mode: 'manual' } });
     }
-    const result = await deps.runCycle(ctx, config);
+    const result = await deps.runCycle(ctx, config, observeAdmission);
+    decision(result.reason, config, { disposition: 'cycle-result', cycleId: result.cycleId, attempts: result.attempts,
+      costUsd: result.costUsd, governorReason: result.governorReason ?? null,
+      modelUsageSource: 'harness_shared.dream_runs', runRefs: result.runs.map(run => run.runId) });
     deps.log(
       `${ctx.installSlug}: ${result.reason} cycle=${result.cycleId} attempts=${result.attempts} accepted=${result.accepted} cost=$${result.costUsd.toFixed(4)}`,
     );
@@ -100,7 +138,9 @@ function stableCycleId(ctx: SystemActionCtx): string {
 export async function productionDreamCycle(
   ctx: SystemActionCtx,
   config: DreamCycleActionConfig,
-  overrides: Pick<import('./capability-review-sources').BuildCapabilityReviewSourcesInput, 'verifyPacket'> = {},
+  overrides: Pick<import('./capability-review-sources').BuildCapabilityReviewSourcesInput, 'verifyPacket'> & {
+    observeAdmission?: (gate: DreamAdmissionGate) => void;
+  } = {},
 ): Promise<DreamCycleResult> {
   if (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')) {
     const { gatewayLlmEnv } = await import('../inference-gateway/spawn-env');
@@ -123,6 +163,7 @@ export async function productionDreamCycle(
   const { sql } = getOrgPg();
   const registered = await registry.loadHarnessRegistry(ctx.workspaceId);
   const rootPath = registry.resolveHarnessContentPath(registered, ctx.installSlug);
+  overrides.observeAdmission?.({ gate: 'source', status: rootPath ? 'passed' : 'refused', inputs: { rootPath, repositoryId: ctx.installSlug } });
   if (!rootPath) throw new Error('Dream requires the registered repository for ' + ctx.installSlug);
   const pilotProtocol = config.pilot ? DreamPilotPinSchema.shape.protocol.safeParse(config.pilot.protocol).data : null;
   const manifest = config.pilot && !pilotProtocol?.comparison ? catalog.getPilotCapabilityManifest() : catalog.getCurrentCapabilityManifest();
@@ -130,7 +171,8 @@ export async function productionDreamCycle(
   const cycleId = stableCycleId(ctx);
   const llmCall: ScoutLlmCall = (input) => llm.llmCall({ ...input, priority: 'scout', harnessSlug: ctx.installSlug });
   const sources = (values: import('./capability-contracts').CapabilityPacket[]) =>
-    reviewSources.buildCapabilityReviewSources({ sql, scope, rootPath, manifest, packets: values, ...overrides });
+    reviewSources.buildCapabilityReviewSources({ sql, scope, rootPath, manifest, packets: values,
+      ...(overrides.verifyPacket ? { verifyPacket: overrides.verifyPacket } : {}) });
   const { notifySyncInvalidate } = await import('../sync-sse');
   const changing = async <T>(write: () => Promise<T>): Promise<T> => {
     const value = await write();
@@ -154,15 +196,34 @@ export async function productionDreamCycle(
     {
       llmCall,
       exclusiveReplay: Boolean(DBOS.workflowID?.trim()),
-      preflight: () => governor.preflightDreamCycle(sql, { ...scope, config: config.cycle }),
+      preflight: async () => {
+        const verdict = await governor.preflightDreamCycle(sql, { ...scope, config: config.cycle });
+        overrides.observeAdmission?.({ gate: 'governor', status: !verdict.allow && verdict.reason === 'governor-error' ? 'unknown' : verdict.allow ? 'passed' : 'refused', inputs: {
+          ...verdict, config: resolveDreamCycleConfig(config.cycle),
+          source: 'dream-governor:preflightDreamCycle',
+        } });
+        return verdict;
+      },
       canContinue: async () => {
-        if (!(await getFlag(FLAGS.DREAM_CYCLE, 'dream-cycle'))) return false;
+        if (!(await getFlag(FLAGS.DREAM_CYCLE, 'dream-cycle'))) {
+          overrides.observeAdmission?.({ gate: 'continue', status: 'refused', inputs: { reason: 'feature-off' } });
+          return false;
+        }
         const rows = await sql<Array<{ active: boolean }>>`
           SELECT active FROM harness_shared.routines
            WHERE workspace_id = ${ctx.workspaceId} AND install_slug = ${ctx.installSlug}
              AND name = ${config.mode === 'auto' ? 'dream-cycle-auto' : 'dream-cycle-manual'}`;
-        if (rows[0]?.active !== true) return false;
-        return config.mode !== 'auto' || idleActivityAllowed(ctx.workspaceId, 'dream', ctx.installSlug);
+        if (rows[0]?.active !== true) {
+          overrides.observeAdmission?.({ gate: 'continue', status: 'refused', inputs: { reason: 'routine-inactive', rows } });
+          return false;
+        }
+        let idleObservation: Parameters<NonNullable<Parameters<typeof idleActivityAllowed>[4]>>[0] | undefined;
+        const idleAllowed = config.mode !== 'auto' || await idleActivityAllowed(ctx.workspaceId, 'dream', ctx.installSlug, undefined,
+          value => { idleObservation = value; });
+        overrides.observeAdmission?.({ gate: 'continue', status: idleObservation?.status === 'unknown' ? 'unknown' : idleAllowed ? 'passed' : 'refused', inputs: {
+          feature: true, active: true, idleAllowed, mode: config.mode, idleObservation: idleObservation ?? null,
+        } });
+        return idleAllowed;
       },
       loadPackets: async (signal) => {
         const result: import('./capability-contracts').CapabilityPacket[] = [];

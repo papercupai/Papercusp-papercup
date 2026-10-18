@@ -616,36 +616,44 @@ function processIdentity(pid) {
   } catch { return null; } // Non-Linux/access failures retain the kill(0) policy.
 }
 
-async function reclaimAbandonedLock(lockDir, staleMs, io = {}) {
+async function reclaimAbandonedLock(
+  lockDir,
+  staleMs,
+  io = {},
+  measureSubphase = (_name, operation) => operation(),
+) {
   let owner;
   try {
-    owner = JSON.parse(await (io.readFile ?? readFile)(join(lockDir, "owner.json"), "utf8"));
+    owner = await measureSubphase("abandoned-lock.owner-read", async () =>
+      JSON.parse(await (io.readFile ?? readFile)(join(lockDir, "owner.json"), "utf8")),
+    );
   } catch {
     // The age fallback below handles unreadable and unparseable records.
   }
   if (!owner || !Number.isInteger(owner.pid) || owner.pid <= 0 ||
       typeof owner.host !== "string" || owner.host.length === 0) {
-    if ((await lockAgeMs(lockDir)) <= staleMs) return false;
-    await rm(lockDir, { recursive: true, force: true });
+    if (await measureSubphase("abandoned-lock.age-check", () => lockAgeMs(lockDir)) <= staleMs)
+      return false;
+    await measureSubphase("abandoned-lock.remove", () => rm(lockDir, { recursive: true, force: true }));
     return true;
   }
   if (owner.host !== hostname()) return false;
   try {
-    process.kill(owner.pid, 0);
-    const current = processIdentity(owner.pid);
+    await measureSubphase("abandoned-lock.process-probe", () => process.kill(owner.pid, 0));
+    const current = await measureSubphase("abandoned-lock.process-identity", () => processIdentity(owner.pid));
     // process.pid always names a thread-group leader. A reused nonleader TID
     // cannot own even a legacy lease. New leases also survive leader-PID reuse
     // and reboot safely by recording their kernel identity at publication.
     if (current && ((Number.isInteger(current.tgid) && current.tgid !== owner.pid) ||
         (owner.startTicks && current.startTicks && owner.startTicks !== current.startTicks) ||
         (owner.bootId && current.bootId && owner.bootId !== current.bootId))) {
-      await rm(lockDir, { recursive: true, force: true });
+      await measureSubphase("abandoned-lock.remove", () => rm(lockDir, { recursive: true, force: true }));
       return true;
     }
     return false;
   } catch (error) {
     if (!error || error.code !== "ESRCH") return false;
-    await rm(lockDir, { recursive: true, force: true });
+    await measureSubphase("abandoned-lock.remove", () => rm(lockDir, { recursive: true, force: true }));
     return true;
   }
 }
@@ -917,7 +925,7 @@ export async function withFsMutex(name, fn, opts = {}) {
         await measureAdmissionSubphase("waiting-notice", () => announceWaiting(elapsed));
         if (await measureAdmissionSubphase(
           "abandoned-lock-reclaim",
-          () => reclaimAbandonedLock(lockDir, staleMs, io),
+          () => reclaimAbandonedLock(lockDir, staleMs, io, measureAdmissionSubphase),
         )) continue;
         if (elapsed > timeoutMs) {
           const currentOwner = await readOwner(lockDir, io);

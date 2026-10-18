@@ -190,8 +190,110 @@ export function repoLockName(repoRoot?: string): string;
 export function withPackageCacheReadLease(fn: any, opts?: {}): Promise<any>;
 /** Read the npm process RSS on Linux; other platforms report an unknown value. */
 export function readChildRssBytes(pid: any, platform?: NodeJS.Platform): number | null;
+/**
+ * Capture the bounded identity tuple used to attribute a dependency-path
+ * transition. The probe is observational: missing paths are represented as
+ * not-observed instead of being treated as a publisher defect.
+ */
+export function writerAttributionSnapshot({ repoRoot, nestedPath, invocationId, lockName, childPid, phase, ownerPid, now, }?: {
+    repoRoot?: string | undefined;
+    invocationId?: null | undefined;
+    lockName?: null | undefined;
+    childPid?: null | undefined;
+    phase?: null | undefined;
+    ownerPid?: number | undefined;
+    now?: (() => string) | undefined;
+}): {
+    observedAt: string;
+    invocationId: null;
+    repoRoot: string | null;
+    repoRootStatus: string;
+    lockName: null;
+    owner: {
+        pid: number;
+        processStartIdentity: {
+            startTicks: string;
+            bootId: string;
+        } | {
+            status: string;
+            reason: string;
+        };
+    };
+    childPid: null;
+    phase: null;
+    nestedPath: any;
+    nestedPathStat: {
+        status: string;
+        reason: string;
+        type?: undefined;
+        dev?: undefined;
+        ino?: undefined;
+        size?: undefined;
+        mtimeMs?: undefined;
+        ctimeMs?: undefined;
+    } | {
+        status: string;
+        type: string;
+        dev: number;
+        ino: number;
+        size: number;
+        mtimeMs: number;
+        ctimeMs: number;
+        reason?: undefined;
+    };
+    packageJsonStat: {
+        status: string;
+        reason: string;
+        type?: undefined;
+        dev?: undefined;
+        ino?: undefined;
+        size?: undefined;
+        mtimeMs?: undefined;
+        ctimeMs?: undefined;
+    } | {
+        status: string;
+        type: string;
+        dev: number;
+        ino: number;
+        size: number;
+        mtimeMs: number;
+        ctimeMs: number;
+        reason?: undefined;
+    };
+    rootPackageLockSha256: {
+        status: string;
+        sha256: string;
+        reason?: undefined;
+    } | {
+        status: string;
+        reason: string;
+        sha256?: undefined;
+    };
+};
+/** A path transition is temporal evidence; a shared reader cannot identify its writer. */
+export function writerAttributionRecord({ before, after, ...details }: {
+    [x: string]: any;
+    before: any;
+    after: any;
+}): {
+    before: any;
+    after: any;
+    pathTransition: string;
+    writerInference: string;
+};
+/** Include wrapper repair and verification work that runs between npm children. */
+export function withWriterAttribution({ repoRoot, nestedPath, invocationId, lockName, lockMode, phase, childPid, log, }: {
+    repoRoot: any;
+    nestedPath: any;
+    invocationId: any;
+    lockName: any;
+    lockMode?: string | undefined;
+    phase: any;
+    childPid?: null | undefined;
+    log?: ((line: any) => void) | undefined;
+}, action: any): Promise<any>;
 /** Spawn npm asynchronously so long resolve/reify/repair phases stay observable. */
-export function runNpmWithHeartbeat({ phase, args, cwd, env, spawnCommand, heartbeatIntervalMs, readRssBytes, log, now, }?: {
+export function runNpmWithHeartbeat({ phase, args, cwd, env, spawnCommand, heartbeatIntervalMs, readRssBytes, log, now, attribution, }?: {
     cwd?: string | undefined;
     env?: NodeJS.ProcessEnv | undefined;
     spawnCommand?: typeof spawn | undefined;
@@ -199,6 +301,7 @@ export function runNpmWithHeartbeat({ phase, args, cwd, env, spawnCommand, heart
     readRssBytes?: typeof readChildRssBytes | undefined;
     log?: ((line: any) => void) | undefined;
     now?: (() => number) | undefined;
+    attribution?: null | undefined;
 }): Promise<any>;
 /** Apply resolver output only while the source snapshot is current. */
 export function applyResolvedManifestFiles({ repoRoot, snapshot, files, outputPaths, }: {
@@ -240,10 +343,11 @@ export function npmChildEnv({ env, offlineSafe, }?: {
  * node_modules during the potentially long copy while still allowing other
  * dependency readers to proceed together.
  */
-export function publishDependencyGeneration({ repoRoot, runPublisher, env, }?: {
+export function publishDependencyGeneration({ repoRoot, runPublisher, env, log, }?: {
     repoRoot?: string | undefined;
     runPublisher?: typeof spawnSync | undefined;
     env?: NodeJS.ProcessEnv | undefined;
+    log?: ((line: any) => void) | undefined;
 }): Promise<any>;
 /**
  * Parse the wrapper-only target selector without stealing npm's own flags.

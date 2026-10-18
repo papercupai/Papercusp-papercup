@@ -649,6 +649,12 @@ function buildOperatorProcessBundle(): string {
 const timingTrace: Array<Record<string, unknown>> = [];
 const namedQueryRequests: string[] = [];
 const namedQueryReplies: Array<{ name: string; status: number }> = [];
+const agentChatsListDiagnostics: Array<{
+  slug: string;
+  searchPath?: string[];
+  relation?: string | null;
+  error?: string;
+}> = [];
 const pipelineCellRequests: string[] = [];
 const PIPELINE_CELLS = new Set([
   'gate.greenCheckpoint.verdict', 'gate.greenCheckpoint.candidate',
@@ -2144,6 +2150,28 @@ beforeAll(async () => {
       const requestStarted = performance.now();
       const traceFields = { path: pathname, query: requestUrl.searchParams.get('name') };
       traceTiming('request-start', traceFields);
+      const agentChatsList = request.method === 'GET' && /^\/api\/harness\/([^/]+)\/agent-chats$/.exec(pathname);
+      if (agentChatsList) {
+        const slug = decodeURIComponent(agentChatsList[1]!);
+        try {
+          // EI-26232861280801317: the private-PG acceptance log recorded an
+          // unqualified `agent_chats` lookup failing while the PUI test passed.
+          // Capture the exact route slug and its effective schema visibility
+          // immediately before dispatch so a missing view can be distinguished
+          // from a wrong caller slug.
+          const { getHarnessPg } = await import('@papercusp/db-org');
+          const [probe] = await getHarnessPg(slug).sql`
+            SELECT current_schemas(true) AS search_path,
+                   to_regclass('agent_chats')::text AS relation`;
+          agentChatsListDiagnostics.push({
+            slug,
+            searchPath: probe?.search_path as string[] | undefined,
+            relation: probe?.relation as string | null | undefined,
+          });
+        } catch (error) {
+          agentChatsListDiagnostics.push({ slug, error: String(error).slice(0, 500) });
+        }
+      }
       if (pathname === '/api/zero-harness/rest-query' && traceFields.query) {
         namedQueryRequests.push(traceFields.query);
       }
@@ -2345,6 +2373,7 @@ afterEach(async () => {
 beforeEach(async () => {
   namedQueryRequests.length = 0;
   namedQueryReplies.length = 0;
+  agentChatsListDiagnostics.length = 0;
   pipelineCellRequests.length = 0;
   sessionTraffic = [];
   launchRequests = [];
@@ -4274,7 +4303,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       expect(reloaded).toContain(`evidence ${promoted.work_item_id} (for)`);
       expect(await links(chat.id)).toEqual([promoted]);
       console.info('PUI_TASK_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, chatId: chat.id,
-        suOwnerId: ownerId, tasks: final, frame, reloadedFrame: reloaded }));
+        suOwnerId: ownerId, tasks: final, frame, reloadedFrame: reloaded, agentChatsListDiagnostics }));
       console.info('PUI_TASK_PROMOTE_ACCEPTANCE', JSON.stringify({ binary: bin, binarySha256, chatId: chat.id,
         taskId: installer, link: promoted, workItem, promoteFrame, reloadedFrame: reloaded }));
     } finally { await pane?.stop().catch(() => {}); }

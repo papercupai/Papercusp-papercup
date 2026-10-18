@@ -501,6 +501,77 @@ describe('withFsMutexRead wait observations', () => {
 });
 
 describe('withFsMutex', () => {
+  it('reports the filesystem steps used to reclaim an ownerless stale lock', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-reclaim-timing-'));
+    const previousLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const lockDir = join(dir, 'reclaim-timing.lock');
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(join(lockDir, 'owner.json'), '{invalid-json');
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lockDir, old, old);
+    let admission: { admissionSubphaseTimingsMs?: Record<string, number> } | undefined;
+    try {
+      await expect(withFsMutex('reclaim-timing', async () => 'recovered', {
+        timeoutMs: 1_000,
+        staleMs: 1,
+        retryMs: 5,
+        onAcquired: (info) => { admission = info; },
+      })).resolves.toBe('recovered');
+
+      expect(admission?.admissionSubphaseTimingsMs).toEqual(expect.objectContaining({
+        'abandoned-lock.owner-read': expect.any(Number),
+        'abandoned-lock.age-check': expect.any(Number),
+        'abandoned-lock.remove': expect.any(Number),
+      }));
+      for (const elapsedMs of Object.values(admission?.admissionSubphaseTimingsMs ?? {})) {
+        expect(Number.isFinite(elapsedMs)).toBe(true);
+        expect(elapsedMs).toBeGreaterThanOrEqual(0);
+      }
+    } finally {
+      if (previousLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== 'linux')('reports process checks used to reclaim a reused local lock identity', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-process-reclaim-timing-'));
+    const previousLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = dir;
+    const lockDir = join(dir, 'process-reclaim-timing.lock');
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(join(lockDir, 'owner.json'), JSON.stringify({
+      pid: process.pid,
+      host: hostname(),
+      startTicks: '0',
+    }));
+    let admission: { admissionSubphaseTimingsMs?: Record<string, number> } | undefined;
+    try {
+      await expect(withFsMutex('process-reclaim-timing', async () => 'recovered', {
+        timeoutMs: 1_000,
+        staleMs: 60_000,
+        retryMs: 5,
+        onAcquired: (info) => { admission = info; },
+      })).resolves.toBe('recovered');
+
+      expect(admission?.admissionSubphaseTimingsMs).toEqual(expect.objectContaining({
+        'abandoned-lock.owner-read': expect.any(Number),
+        'abandoned-lock.process-probe': expect.any(Number),
+        'abandoned-lock.process-identity': expect.any(Number),
+        'abandoned-lock.remove': expect.any(Number),
+      }));
+      for (const elapsedMs of Object.values(admission?.admissionSubphaseTimingsMs ?? {})) {
+        expect(Number.isFinite(elapsedMs)).toBe(true);
+        expect(elapsedMs).toBeGreaterThanOrEqual(0);
+      }
+    } finally {
+      if (previousLockDir === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+      else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockDir;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('reports filesystem admission subphases, including time queued behind a writer', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'pc-fs-mutex-admission-timing-'));
     const previousLockDir = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;

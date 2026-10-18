@@ -13,7 +13,7 @@
  * (the handlers consult it only when resolveHarnessScope returns 'none').
  */
 
-import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { planHarnessesForSlugs } from './source';
 
 /** Per-slug candidate harnesses, most-recently-updated first. More than one
@@ -106,7 +106,7 @@ export function decideSlugScope(
  *  the same default resolvePlanScope applies for operator-home scope. */
 function callerWorkspaceId(ctx: unknown): string {
   const raw = (ctx as { workspaceId?: string | null }).workspaceId?.trim();
-  return raw && raw !== '*' ? raw : PAPERCUSP_WORKSPACE_ID;
+  return raw && raw !== '*' ? raw : activeWorkspaceId();
 }
 
 /**

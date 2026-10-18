@@ -237,6 +237,59 @@ function request(id: string) {
 }
 
 describe('original authority context fidelity', () => {
+  it('uses ordinary component screening for an authenticated scope-held request beyond the FIFO window', async () => {
+    const original = await create('Component screening target');
+    const twin = await create(original.title);
+    for (let i = 0; i < 31; i++) {
+      const backlog = await create(`Unrelated earlier work ${i}`);
+      await db.sql`UPDATE harness_shared.work_items SET created_ts = ${i + 1} WHERE feature_id = ${backlog.id}`;
+    }
+    const [a, b] = [original.id, twin.id].sort();
+    h.model.mockResolvedValue({ text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
+      json: { judgements: [{ pairKey: `${a}::${b}`, verdict: 'distinct', reason: 'Independent fixes' }] } });
+    const first = await request(original.id);
+    const exact = await tick();
+    expect(exact.guardRefusals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ itemId: original.id, reason: 'outside-mutation-scope' }),
+    ]));
+    const held = (await row(original.id)).payload._admissionRecovery;
+    expect(held).toMatchObject({ requestId: first.request.requestId, state: 'held', stage: 'screen' });
+    expect(await row(twin.id)).toMatchObject({ admission: 'pending', taken_by: null });
+    // This is a separate ordinary tick, with no targetItemIds or request replay.
+    await tick();
+    expect(h.model).toHaveBeenCalledTimes(2);
+    expect(await row(original.id)).toMatchObject({ admission: 'admitted', taken_by: null });
+    // The outside-window twin participates in the component's adjudication but
+    // is not itself selected for promotion by this ordinary batch.
+    expect(await row(twin.id)).toMatchObject({ admission: 'pending', taken_by: null });
+    expect(await db.sql`SELECT a, b FROM harness_shared.dedup_adjudications
+      WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+        AND a = ${a} AND b = ${b}`).toHaveLength(1);
+    expect((await row(original.id)).payload._admissionRecovery).toEqual(held);
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
+  it('keeps a prioritized component pending when a peer claims its twin before ordinary screening', async () => {
+    const original = await create('Protected component screening target');
+    const twin = await create(original.title);
+    const [a, b] = [original.id, twin.id].sort();
+    h.model.mockResolvedValue({ text: '', inputTokens: 17, outputTokens: 9, costUsd: 0,
+      json: { judgements: [{ pairKey: `${a}::${b}`, verdict: 'distinct', reason: 'Independent fixes' }] } });
+    await request(original.id);
+    await tick();
+    const held = (await row(original.id)).payload._admissionRecovery;
+    expect(held).toMatchObject({ state: 'held', stage: 'screen', reason: expect.stringContaining('outside-mutation-scope') });
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'live-peer' WHERE feature_id = ${twin.id}`;
+    await tick();
+    expect(h.model).toHaveBeenCalledTimes(1);
+    expect(await row(original.id)).toMatchObject({ admission: 'pending', taken_by: null });
+    expect(await row(twin.id)).toMatchObject({ admission: 'pending', taken_by: 'live-peer' });
+    expect((await row(original.id)).payload._admissionRecovery).toEqual(held);
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.wake).not.toHaveBeenCalled();
+  });
+
   it('retains original harness/run/chunk/spawn instead of substituting the item scope', async () => {
     const ctx = await admissionReplayContext(db.sql, { ...scope, workItemId: 'WI-context' }, 'requester', {
       kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 0, context: originalContext,

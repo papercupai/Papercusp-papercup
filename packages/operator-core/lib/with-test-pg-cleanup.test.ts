@@ -1,9 +1,10 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
-import { cleanupOwnedTestState } from '../../../scripts/lib/with-test-pg-cleanup.mjs';
+import { cleanupOwnedTestState, removePrivateState } from '../../../scripts/lib/with-test-pg-cleanup.mjs';
 
 describe('private PostgreSQL independent cleanup', () => {
   function fixture(failedStop?: 'child' | 'profile' | 'pg') {
@@ -60,6 +61,25 @@ describe('private PostgreSQL independent cleanup', () => {
       expect(existsSync(f.resources.dataDir)).toBe(false);
       expect(existsSync(f.resources.runtimeRoot)).toBe(false);
       expect(f.stages.at(-1)).toEqual({ stage: 'complete', runtimeRemoved: true, pgDataRemoved: true });
+    } finally { f.dispose(); }
+  });
+
+  it('retries a transient ENOTEMPTY while removing private runtime state', async () => {
+    const f = fixture();
+    try {
+      const runtimePath = f.resources.runtimeRoot!;
+      let attempts = 0;
+      const removeWithTransientFailure = async (path: string, options: Parameters<typeof rm>[1]) => {
+        if (path === runtimePath && attempts++ < 2) {
+          const error = new Error('directory not empty') as NodeJS.ErrnoException;
+          error.code = 'ENOTEMPTY';
+          throw error;
+        }
+        await rm(path, options);
+      };
+      await removePrivateState(runtimePath, removeWithTransientFailure);
+      expect(attempts).toBe(3);
+      expect(existsSync(runtimePath)).toBe(false);
     } finally { f.dispose(); }
   });
 

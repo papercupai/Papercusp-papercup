@@ -1881,6 +1881,28 @@ describe('work-item admission promoter (real Postgres)', () => {
       expect(await db.sql`SELECT 1 FROM harness_shared.dedup_adjudications`).toHaveLength(0);
     }, 60_000);
 
+    it('preserves a component screening opportunity without spending a batch slot on its protected twin', async () => {
+      await seedItem({ id: 'WI-protected', title: 'component finding', admission: 'admitted', vector: '[1,0,0]', takenBy: 'su-holder', createdAtMs: NOW - 40_000 });
+      await seedItem({ id: 'WI-free', title: 'component finding', admission: 'admitted', vector: '[1,0,0]', createdAtMs: NOW - 30_000 });
+      await seedItem({ id: 'WI-request', title: 'component finding', vector: '[1,0,0]', createdAtMs: NOW - 20_000 });
+      await seedItem({ id: 'WI-unrelated', title: 'unrelated finding', vector: '[0,1,0]', createdAtMs: NOW - 10_000 });
+      const input = { workspaceId: WS, harnessSlug: HARNESS, batchSize: 1,
+        recentTerminalDays: 30, nowMs: NOW, componentScreeningItemIds: ['WI-request'] };
+      const protectedWindow = await readPromoterWindow(db.sql, input);
+      expect(protectedWindow.pendingRows.map((item) => item.id)).toEqual(['WI-unrelated']);
+      expect(protectedWindow.forcedHolds.size).toBe(0);
+      expect(protectedWindow.prescreen).toMatchObject({ selected: 1, deferred: 1 });
+
+      await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL, updated_ts = updated_ts + 1
+                    WHERE feature_id = 'WI-protected'`;
+      const releasedWindow = await readPromoterWindow(db.sql, input);
+      expect(releasedWindow.pendingRows.map((item) => item.id)).toEqual(['WI-request']);
+      expect(releasedWindow.pairRows.map((pair) => pair.pairKey).sort()).toEqual([
+        'WI-free::WI-request', 'WI-protected::WI-request',
+      ]);
+      expect(await admissionOf('WI-request')).toBe('pending');
+    }, 90_000);
+
     it('defers a row whose only twin is protected, holds one with a movable twin, and releases both when the protection lifts', async () => {
       // alpha: the pending row's ONLY twin is claimed → deferred (no slot, no model).
       await seedItem({ id: 'WI-alpha-claimed', title: 'alpha finding', admission: 'admitted', vector: '[1,0,0]', takenBy: 'su-holder', createdAtMs: NOW - 50_000 });
@@ -1900,6 +1922,9 @@ describe('work-item admission promoter (real Postgres)', () => {
       expect(tick1.prescreen).toMatchObject({ selected: 1, deferred: 1, protectedPairs: 2, forcedHolds: 1 });
       expect(await admissionOf('WI-alpha-new')).toBe('pending');
       expect(await admissionOf('WI-beta-new')).toBe('pending');
+      const [held] = await db.sql`SELECT payload->'admissionHold' AS hold FROM harness_shared.work_items
+                                 WHERE feature_id = 'WI-beta-new'`;
+      expect(held?.hold.screeningDeferred).toBe(true);
       expect(
         await db.sql`SELECT verdict FROM harness_shared.dedup_adjudications WHERE a = 'WI-beta-free' AND b = 'WI-beta-new'`,
       ).toEqual([{ verdict: 'distinct' }]);
@@ -3557,6 +3582,22 @@ describe('readPendingBatch resolver-input priority (P-006)', () => {
     // the KNOWN behaviour (both writers only ever stamp non-empty, per dedup-candidates-
     // stamp.ts's contract) rather than left for a reader to rediscover by surprise.
     expect(batch.map((item) => item.id)).toEqual(['WI-6', 'WI-5']);
+  });
+
+  it('prioritizes component screening only in the ordinary model window and keeps peer guards first', async () => {
+    await seedPending({ id: 'WI-old', createdAtMs: NOW - 30_000 });
+    await seedPending({ id: 'WI-recovery', createdAtMs: NOW - 20_000 });
+    await seedPending({ id: 'WI-peer', createdAtMs: NOW - 10_000 });
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = 'live-peer' WHERE feature_id = 'WI-peer'`;
+    const opts = { demoteGuardBlocked: true, componentScreeningItemIds: ['WI-recovery', 'WI-peer'] };
+    expect((await readPendingBatch(db.sql, WS, HARNESS, 3, undefined, opts)).map((r) => r.id))
+      .toEqual(['WI-recovery', 'WI-old', 'WI-peer']);
+    expect((await readPendingBatch(db.sql, WS, HARNESS, 3)).map((r) => r.id))
+      .toEqual(['WI-old', 'WI-recovery', 'WI-peer']);
+    expect((await readPendingBatch(db.sql, WS, HARNESS, 3, undefined, { ...opts, preferModelFree: true })).map((r) => r.id))
+      .toEqual(['WI-old', 'WI-recovery', 'WI-peer']);
+    expect((await readPendingBatch(db.sql, WS, HARNESS, 3, ['WI-old', 'WI-recovery'], opts)).map((r) => r.id))
+      .toEqual(['WI-old', 'WI-recovery']);
   });
 
   it('rotates scheduled ambiguous reviews behind never-reviewed and less-recently reviewed rows', async () => {

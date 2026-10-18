@@ -445,6 +445,16 @@ describe('throttle accessors (P-006)', () => {
     // Calibrated control: the inherited fail-open behavior remains reachable for Scout.
     expect(await idleActivityAllowed('ws', 'scout', 'pot')).toBe(true);
   });
+  it('observes policy failures as unknown while retaining production fail-soft behavior', async () => {
+    const observe = vi.fn();
+    listHiveSettings.mockRejectedValue(new Error('settings unavailable'));
+    expect(await idleActivityAllowed('ws', 'gym', 'pot', undefined, observe)).toBe(true);
+    expect(observe).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'unknown', allowed: true, home: 'pot' }));
+    listHiveSettings.mockResolvedValue(rows({ [OWNER_STEERING_KEYS.idleActivities]: { gym: false } }));
+    expect(await idleActivityAllowed('ws', 'gym', 'pot', undefined, observe)).toBe(false);
+    expect(observe).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'observed', allowed: false, home: 'pot' }));
+    expect(await idleActivityAllowed('ws', 'gym', 'pot', undefined, () => { throw new Error('observer'); })).toBe(false);
+  });
 
   it('plan-review is a registered idle-activity kind that gates the Queen↔Scout feedback loop (queen-scout-feedback-loop-2026-06-20 D-003 #2)', () => {
     // The kind exists, so the Queen's idle review-iteration of Scout drafts is a

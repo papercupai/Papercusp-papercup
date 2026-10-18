@@ -848,7 +848,11 @@ describe('dispatchPendingGradingAudits', () => {
       );
 
       expect(d.reserve).toHaveBeenCalledTimes(1);
-      expect(d.reserve).toHaveBeenCalledWith(issueId, `${STRANDED_RECERTIFY_KEY_PREFIX}${issueId}`, expect.objectContaining({ workspaceId: 'ws-test' }));
+      expect(d.reserve).toHaveBeenCalledWith(
+        issueId,
+        `${STRANDED_RECERTIFY_KEY_PREFIX}${issueId}`,
+        expect.objectContaining({ workspaceId: 'ws-test', allowGenerationIncompatibleBackoff: true }),
+      );
       // Released BEFORE certification: certify supersedes only a card with no live lease.
       expect(d.release).toHaveBeenCalledWith(issueId, `${STRANDED_RECERTIFY_KEY_PREFIX}${issueId}`, expect.objectContaining({ reservedAt: '2026-10-14T18:00:00.000Z' }));
       expect(d.release.mock.invocationCallOrder[0]).toBeLessThan(recertifyStranded.mock.invocationCallOrder[0]!);
@@ -864,6 +868,56 @@ describe('dispatchPendingGradingAudits', () => {
       // The dispatch receipt names the certify call, not the read-only evaluator.
       expect(result.receipts).toEqual([
         expect.objectContaining({ issueId, reason: expect.stringContaining('plans:certify-spec-clauses') }),
+      ]);
+    });
+
+    it('clears a legacy generation-incompatible backoff before re-certifying a stranded card', async () => {
+      const d = deps();
+      const issueId = 'EI-stranded-generation-backoff';
+      d.listScorecards.mockResolvedValue([
+        strandedCard(issueId),
+      ]);
+      const reservation = {
+        key: `${STRANDED_RECERTIFY_KEY_PREFIX}${issueId}`,
+        reservedAt: '2026-10-14T18:00:00.000Z',
+      };
+      d.reserve.mockImplementation(async (_id, _key, options) => {
+        if (options?.allowGenerationIncompatibleBackoff !== true) {
+          return {
+            status: 'dispatch-backoff',
+            backoff: {
+              until: '2026-10-14T18:15:00.000Z',
+              source: 'retry-window',
+              code: 'generation_incompatible',
+              recordedAt: '2026-10-14T18:00:00.000Z',
+              reason: 'legacy exact-build dispatcher backoff',
+            },
+          };
+        }
+        return { status: 'claimed', reservation };
+      });
+      const recertifyStranded = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['recertifyStranded']>>(async () =>
+        certifyReply(issueId, 'EI-new-generation-card'),
+      );
+
+      const result = await reconcilePendingGradingAudits(
+        { targetIds: [issueId], ctx },
+        { ...d, now: () => nowMs, getEvaluatorBuild: liveBuild, recertifyStranded },
+      );
+
+      expect(d.reserve).toHaveBeenCalledWith(
+        issueId,
+        `${STRANDED_RECERTIFY_KEY_PREFIX}${issueId}`,
+        expect.objectContaining({ allowGenerationIncompatibleBackoff: true }),
+      );
+      expect(d.release).toHaveBeenCalledWith(
+        issueId,
+        `${STRANDED_RECERTIFY_KEY_PREFIX}${issueId}`,
+        expect.objectContaining({ reservedAt: reservation.reservedAt }),
+      );
+      expect(recertifyStranded).toHaveBeenCalledTimes(1);
+      expect(result.recertifications).toEqual([
+        expect.objectContaining({ issueId, state: 'recertified', supersededBy: 'EI-new-generation-card' }),
       ]);
     });
 

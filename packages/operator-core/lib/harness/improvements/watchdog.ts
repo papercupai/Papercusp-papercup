@@ -37,6 +37,7 @@ import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join as pathJoin, isAbsolute as pathIsAbsolute } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
+import { normalizeStoredTestRunPath, storedTestRunPathPattern } from '@papercusp/test-config/test-run-paths';
 import { isInProcessLaunchIdentity } from '../../fleet/spawn-row-class';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
@@ -933,14 +934,14 @@ type Sql = ReturnType<typeof getOrgPg>['sql'];
 /**
  * Pure: normalize a `test_runs.file_path` to its REPO-RELATIVE form so one broken
  * test has ONE identity. Runs from the green-checkpoint (or any sibling
- * `papercupai-workspace/<tree>/`) checkout record prefixed paths — the same test
+ * `<workspace-root>/<tree>/`) checkout record prefixed paths — the same test
  * the canonical tree records as `packages/...` — which used to file DUPLICATE
  * improvements (EI-36/EI-143, EI-157/EI-163). Returns null for paths to drop
  * entirely: synthetic fixture tests (`__synthetic__`) are loop probes, not bugs;
  * retired trees (`_retired/`) are preserved history, not active test suites.
  */
-export function normalizeRedTestPath(filePath: string): string | null {
-  const normalized = filePath.replace(/^.*papercupai-workspace\/[^/]+\//, '');
+export function normalizeRedTestPath(filePath: string, workspaceRoot?: string | null): string | null {
+  const normalized = normalizeStoredTestRunPath(filePath, workspaceRoot);
   if (normalized.includes('__synthetic__')) return null;
   if (normalized.startsWith('_retired/') || normalized.includes('/_retired/')) return null;
   return normalized;
@@ -1550,11 +1551,12 @@ export async function fetchRedTestRows(
   const normalizedPaths = paths === undefined
     ? []
     : [...new Set(paths.map(normalizeRedTestPath).filter((p): p is string => p != null))];
+  const storedPathPattern = storedTestRunPathPattern();
   const pathFilter = paths === undefined
     ? sql`TRUE`
     : normalizedPaths.length === 0
       ? sql`FALSE`
-      : sql`regexp_replace(file_path, '^.*papercupai-workspace/[^/]+/', '') = ANY(${normalizedPaths})`;
+      : sql`regexp_replace(file_path, ${storedPathPattern}, '') = ANY(${normalizedPaths})`;
   return sql<RedTestRow[]>`
     WITH recent AS (
       SELECT file_path, framework, status, output_tail, started_at, commit_sha,

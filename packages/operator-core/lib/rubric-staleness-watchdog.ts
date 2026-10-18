@@ -29,6 +29,7 @@ import { openEscalation } from './agent-tools/coordination/escalations';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { broadcastSevereEvent, broadcastSevereEventResolved } from './severe-event-broadcast';
 import { resolveAlarm, type AlarmAttentionDeps } from './alarm-attention';
+import { activeWorkspaceId } from './workspace-registry';
 
 // ── tunables (env-overridable, like the sibling watchdog floors) ───────────────
 
@@ -280,7 +281,7 @@ export async function rubricStalenessSweep(
   if (thresholdSec <= 0) return [{ rubricRef: '*', outcome: 'skipped', reason: 'kill switch' }];
   const thresholdMs = thresholdSec * 1_000;
   const now = deps.now ?? Date.now();
-  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const installSlug = opts.installSlug ?? 'papercusp';
   const results: RubricStalenessSweepResult[] = [];
   const alarm = rubricAlarmDeps(deps.alarm);
@@ -394,7 +395,7 @@ export async function rubricProposalDwellSweep(
   if (thresholdSec <= 0) return [{ rubricRef: '*', outcome: 'skipped', reason: 'kill switch' }];
   const thresholdMs = thresholdSec * 1_000;
   const now = deps.now ?? Date.now();
-  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const installSlug = opts.installSlug ?? 'papercusp';
   const results: RubricStalenessSweepResult[] = [];
   const alarm = rubricAlarmDeps(deps.alarm);

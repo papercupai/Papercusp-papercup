@@ -43,6 +43,7 @@
 
 import { claimWatchdogFire, recentWatchdogFires, scopedFireReason } from '../../pot/watchdog';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { resolveCurrentHeadCommit } from '../../dbos/process-boot-identity';
 
 /** One host's footprint in the ledger window. */
@@ -356,7 +357,7 @@ export async function collectLedgerHostObservations(opts: {
   windowMs?: number;
   now?: number;
 }): Promise<LedgerHostSnapshot> {
-  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const windowMs = opts.windowMs ?? ledgerHostWindowSec() * 1_000;
   const since = new Date((opts.now ?? Date.now()) - windowMs).toISOString();
   const { getOrgPg } = await import('@papercusp/db-org');
@@ -447,7 +448,7 @@ export async function hostCodeStalenessFromLedgerSweep(opts: {
     return { outcome: 'skipped', reason: 'throttled' };
   }
   lastLedgerSweepAtMs = now;
-  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
+  const workspaceId = opts.workspaceId ?? activeWorkspaceId();
   const installSlug = opts.installSlug ?? operatorHomeHarnessSlug();
 
   try {

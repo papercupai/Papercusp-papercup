@@ -232,10 +232,11 @@ export function verifierCommandAdmissionEnv({ repo, env, preflight }: {
 }): NodeJS.ProcessEnv;
 /** Freeze source and dependencies before invoking a command that allocates fixtures.
  * The receipt survives outside the owned tree; only this invocation's tree is removed.
- * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number }} options
+ * @param {{ repo: string, ref: string, receiptPath: string, inputs?: string[], inputsFile?: string, tauriInputs?: boolean, command: string[], env?: NodeJS.ProcessEnv, budgetFrom?: string, childEstimateMs?: number,
+ *   clock?: { now: () => number, setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>, clearTimeout: (timer: ReturnType<typeof setTimeout>) => void } }} options
  * @returns {Promise<number>}
  */
-export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env, budgetFrom, childEstimateMs }: {
+export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile, tauriInputs, command, env, budgetFrom, childEstimateMs, clock }: {
     repo: string;
     ref: string;
     receiptPath: string;
@@ -246,15 +247,22 @@ export function runVerifierCommand({ repo, ref, receiptPath, inputs, inputsFile,
     env?: NodeJS.ProcessEnv;
     budgetFrom?: string;
     childEstimateMs?: number;
+    clock?: {
+        now: () => number;
+        setTimeout: (callback: () => void, delay: number) => ReturnType<typeof setTimeout>;
+        clearTimeout: (timer: ReturnType<typeof setTimeout>) => void;
+    };
 }): Promise<number>;
 /** Fail closed on absent/changed provenance or any modified/extra/missing source byte.
  * @param {string} dest
  * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
- * @param {{ runtimeArtifacts?: boolean }} [options] Source-only runtime mode permits
+ * @param {{ runtimeArtifacts?: boolean, dependencyStaging?: boolean }} [options] Source-only runtime mode permits
  * named untracked build outputs and materialized dependency directories, not source edits.
+ * dependencyStaging is reserved for the pre-copy preparation check; it never attests dependency bytes.
  */
 export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<typeof prepareVerifierSource>>, options?: {
     runtimeArtifacts?: boolean;
+    dependencyStaging?: boolean;
 }): Promise<{
     testedInputs: {
         path: string;
@@ -278,10 +286,12 @@ export function verifyVerifierSource(dest: string, expected: Awaited<ReturnType<
  * value is not awaited. Uses the same source population and receipt checks.
  * @param {string} dest
  * @param {Awaited<ReturnType<typeof prepareVerifierSource>>} expected
- * @param {{ runtimeArtifacts?: boolean }} [options]
+ * @param {{ runtimeArtifacts?: boolean, dependencyStaging?: boolean }} [options]
+ * dependencyStaging is reserved for the pre-copy preparation check.
  */
 export function verifyVerifierSourceSync(dest: string, expected: Awaited<ReturnType<typeof prepareVerifierSource>>, options?: {
     runtimeArtifacts?: boolean;
+    dependencyStaging?: boolean;
 }): {
     testedInputs: {
         path: string;
@@ -340,7 +350,9 @@ export function admitVerifierCommandBudget(estimate: any, { env, nowMs, preparat
 }): {
     deadlineEpochMs: number | null;
     remainingMs: number | null;
-    knownEstimateMs: any;
+    knownEstimateMs: number;
+    cleanupReserveMs: number;
+    childCutoffEpochMs: number | null;
     estimate: any;
 };
 export function noticeText(manifest: any): string;

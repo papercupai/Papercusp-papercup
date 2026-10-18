@@ -22,15 +22,12 @@ import { runtimeDiagnostic, type RuntimeDiagnostic } from './runtime-diagnostic'
 import { computeDiagnosticVintage, type DiagnosticVintage } from './diagnostic-vintage';
 import { getBuildInfo } from './build-info';
 import { gateAbortLever, gateAbortRefireClause } from './release/gate-abort-status';
+import { RESTORED_CHECKOUT_PATH_PATTERN } from '@papercusp/test-config/test-run-paths';
 
 /** A postgres-js-like tagged-template client; injectable so this stays unit-testable. */
 type SqlLike = (strings: TemplateStringsArray, ...values: unknown[]) => PromiseLike<unknown[]>;
 
 const FAIL_STATUSES = new Set(['fail', 'error']);
-// Same restored-checkout exclusion testing-flakiness.ts applies (a checkpoint/gate
-// worktree copy uses a different path scheme than a harness's own root).
-const RESTORED_CHECKOUT_PREFIX = 'papercupai-workspace/papercup-';
-
 export type WhyChainStatus = 'ok' | 'degraded' | 'blocked';
 
 /** Live gateway ADMISSION snapshot (the subset of :8788/admin/stats the chain judges). EI-10880. */
@@ -142,7 +139,7 @@ export async function recentFailingFiles(deps: WhyChainDeps = {}): Promise<strin
          AND finished_at > now() - interval '2 hours'
          AND status IN ('fail', 'error')
          AND source <> 'mutation-probe'
-         AND file_path NOT LIKE ${RESTORED_CHECKOUT_PREFIX + '%'}
+         AND file_path !~ ${RESTORED_CHECKOUT_PATH_PATTERN}
          AND ${scopePredicate}
        ORDER BY file_path ASC, finished_at DESC
     `) as unknown as Array<{ file_path: string; finished_at: string }>;
@@ -271,7 +268,7 @@ export async function ledgerFilesForCandidate(
        WHERE commit_sha LIKE ${candidateShort + '%'}
          AND status IN ('fail', 'error')
          AND source = 'ci'
-         AND file_path NOT LIKE ${RESTORED_CHECKOUT_PREFIX + '%'}
+         AND file_path !~ ${RESTORED_CHECKOUT_PATH_PATTERN}
          AND worktree_dirty = false
          AND ${scopePredicate}
        LIMIT 50

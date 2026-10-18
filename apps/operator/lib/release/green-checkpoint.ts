@@ -22563,7 +22563,10 @@ export function realCheckpointDeps(
           try {
             const downgrades = await readActiveTestDowngradesForGate(ratchetTarget);
             const dirByName = npmWorkspaceDirsByName(treeDir);
+            // P-017 (D-005): case names let a case-level downgrade cover a failing file.
+            const casesByFile = extractFailingCasesByFile(fullOutput);
             const verdict = decidePromotionRatchet({
+              failingCasesOf: (f) => casesByFile.get(f.file) ?? null,
               failingTests,
               failingFiles: inferFailingFilesFromEntries(
                 failingTests,

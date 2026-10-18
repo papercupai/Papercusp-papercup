@@ -2923,7 +2923,12 @@ export function runCapturedTestProcess(command, args, options = {}) {
       }
       const completeLines = combined.slice(0, lastNewline + 1);
       progressRemainders[channel] = combined.slice(lastNewline + 1);
-      if (/\[vitest-pool\]: (?:Timeout terminating|Failed to terminate) \S+ worker\b/.test(completeLines)) {
+      // Vitest's own startup deadline can fail before our outer watchdog.
+      // Retain the remaining owned tree while the runner is still alive;
+      // missing child rows remain unknown, never a verdict about the stall.
+      if (/\[vitest-pool\]: Failed to start \S+ worker\b/.test(completeLines)) {
+        captureProcessDiagnostic('worker-startup');
+      } else if (/\[vitest-pool\]: (?:Timeout terminating|Failed to terminate) \S+ worker\b/.test(completeLines)) {
         captureProcessDiagnostic('worker-termination');
       }
       const before = completedFiles.size;

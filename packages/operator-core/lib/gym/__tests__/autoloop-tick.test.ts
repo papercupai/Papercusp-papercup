@@ -18,10 +18,43 @@ import {
   type GymCycleRequest,
   type GymCycleResult,
   type GymTickDeps,
+  type GymAdmissionDecision,
 } from '../autoloop-tick';
 import type { GymAutoloopConfig, SetAutoloopInput } from '../control-plane';
 
 const okResult: GymCycleResult = { spentUsd: 1.25, breakerTripped: false, cycles: 1, accepts: 1, skipped: 0 };
+
+describe('actual admission branch observations', () => {
+  it.each(['budget', 'pot', 'authority', 'blueprint', 'backoff', 'pass'])(
+    'records the actual %s boundary and never probes later gates after refusal', async fault => {
+      const rows: GymAdmissionDecision[] = [];
+      const { deps, rec } = makeDeps([autoloop({ budgetUsd: fault === 'budget' ? null : 20 })], {
+        observeAdmission: row => rows.push(row), disabledPots: async () => new Set(fault === 'pot' ? ['alpha'] : []),
+        isHiveRunner: async () => fault !== 'authority',
+        isBlueprintRetired: async () => fault === 'blueprint' ? { retired: true, at: '2026-10-17', reason: 'retired' } : null,
+        checkFireGate: async () => ({ allow: fault !== 'backoff', reason: 'backoff' }),
+      });
+      await runGymAutoloopTick(deps);
+      expect(rec.cycleReqs).toHaveLength(fault === 'pass' ? 1 : 0);
+      const refusal = { budget: 'native-budget', pot: 'pot-scope', authority: 'authority', blueprint: 'blueprint', backoff: 'fire-backoff' }[fault];
+      if (refusal) expect(rows).toEqual(expect.arrayContaining([expect.objectContaining({ gate: refusal, status: 'refused' })]));
+      if (fault !== 'pass') expect(rows.some(row => row.gate === 'selection')).toBe(false);
+      if (['budget', 'pot', 'authority'].includes(fault)) expect(rows.some(row => row.gate === 'blueprint')).toBe(false);
+      if (['budget', 'pot', 'authority', 'blueprint'].includes(fault)) expect(rows.some(row => row.gate === 'fire-backoff')).toBe(false);
+    });
+  it('keeps fail-open resolution failures unknown and observer errors do not alter the tick', async () => {
+    const rows: GymAdmissionDecision[] = [];
+    const { deps, rec } = makeDeps([autoloop()], { observeAdmission: row => { rows.push(row); throw new Error('observer'); },
+      disabledPots: async () => { throw new Error('pot-store'); },
+      isHiveRunner: async () => { throw new Error('authority'); },
+      isBlueprintRetired: async () => { throw new Error('blueprint'); },
+      checkFireGate: async () => { throw new Error('fire-state'); },
+    });
+    await runGymAutoloopTick(deps);
+    expect(rec.cycleReqs).toHaveLength(1);
+    expect(rows.filter(row => row.status === 'unknown').map(row => row.gate)).toEqual(['pot-scope', 'authority', 'blueprint', 'fire-backoff']);
+  });
+});
 
 function autoloop(over: Partial<GymAutoloopConfig> = {}): GymAutoloopConfig {
   return {

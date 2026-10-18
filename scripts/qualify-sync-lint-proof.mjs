@@ -9,8 +9,8 @@ import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createRequire, isBuiltin } from 'node:module';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { validateVerifierInputs } from './source-preview.mjs';
 
 const integration = 'packages/operator-core/lib/release/sync-batch-lint-guards.integration.test.ts';
@@ -289,7 +289,7 @@ export async function qualifySyncLintProofInputs({ repo, roots = syncLintProofRo
     workingDrift, validationRefusal, stabilityRefusal, refusal, qualification: refusal ? 'refused' : 'qualified' };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   const args = process.argv.slice(2);
   if (args.length !== 2 || args[0] !== '--receipt') throw new Error('usage: node scripts/qualify-sync-lint-proof.mjs --receipt <new-json-path>');
   const receipt = await qualifySyncLintProofInputs({ repo: process.cwd() });

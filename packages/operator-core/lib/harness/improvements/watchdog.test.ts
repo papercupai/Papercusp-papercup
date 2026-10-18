@@ -1242,6 +1242,13 @@ describe('red-test path normalization — one identity per broken test', () => {
       .toBe('packages/operator-core/lib/a.test.ts');
   });
 
+  it('strips an installation-specific workspace root when supplied', () => {
+    expect(normalizeRedTestPath(
+      '/srv/acme/test-workspace/papercusp/apps/operator/lib/a.test.ts',
+      '/srv/acme/test-workspace',
+    )).toBe('apps/operator/lib/a.test.ts');
+  });
+
   it('drops synthetic fixture tests (loop probes, not bugs)', () => {
     expect(normalizeRedTestPath('lib/__synthetic__/close-loop-watchdog-probe.test.ts')).toBeNull();
   });

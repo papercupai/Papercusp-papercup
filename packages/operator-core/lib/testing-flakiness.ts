@@ -20,6 +20,7 @@
  * Pure aggregation — read-only, no writes.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { RESTORED_CHECKOUT_PATH_PATTERN } from '@papercusp/test-config/test-run-paths';
 
 /** A postgres-js-like tagged-template client; injectable so this stays unit-testable. */
 type SqlLike = (strings: TemplateStringsArray, ...values: unknown[]) => PromiseLike<unknown[]>;
@@ -57,12 +58,6 @@ export function statusFlipStats(statuses: readonly string[]): {
   const flipRate = statuses.length > 1 ? flips / (statuses.length - 1) : 0;
   return { flips, flipRate: Math.round(flipRate * 1000) / 1000, passCount, failCount };
 }
-// A run row addressed via the restored-checkout scheme (a checkpoint/gate
-// worktree copy) uses a different path scheme than a harness's own root —
-// same exclusion testing-orphan-runs.ts applies, so it's not double-counted
-// as a distinct "file" here.
-const RESTORED_CHECKOUT_PREFIX = 'papercupai-workspace/papercup-';
-
 export interface FlakinessRow {
   filePath: string;
   totalRuns: number;
@@ -143,7 +138,7 @@ export async function computeFlakiness(opts: FlakinessOpts = {}): Promise<Flakin
        AND finished_at > now() - make_interval(days => ${lookbackDays})
        AND status IN ('pass', 'fail', 'error')
        AND source NOT IN ('ci', 'mutation-probe')
-       AND file_path NOT LIKE ${RESTORED_CHECKOUT_PREFIX + '%'}
+       AND file_path !~ ${RESTORED_CHECKOUT_PATH_PATTERN}
        AND ${opts.harnessSlug ? sql`(harness_slug = ${opts.harnessSlug} OR harness_slug IS NULL)` : sql`TRUE`}
        AND ${!opts.harnessSlug && opts.workspaceId ? sql`(workspace_id = ${opts.workspaceId} OR workspace_id IS NULL)` : sql`TRUE`}
      ORDER BY file_path ASC, finished_at ASC

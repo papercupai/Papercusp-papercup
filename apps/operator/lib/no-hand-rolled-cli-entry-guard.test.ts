@@ -88,6 +88,7 @@ describe('lint:no-hand-rolled-cli-entry — repository ratchet', () => {
     const result = repositoryScan;
     expect(result.violations.map((hit: { rel: string; line: number; kind: string }) => `${hit.rel}:${hit.line}:${hit.kind}`)).toEqual([]);
     expect(result.exemptions.map((hit: { rel: string; kind: string }) => [hit.rel, hit.kind])).toEqual([
+      ['apps/operator/scripts/hooks/cc/posttooluse-launch-prose-budget-nudge.mjs', 'file-url-to-path'],
       ['scripts/reviewer-operator-assert.mjs', 'file-url-to-path'],
     ]);
     expect(result.exemptions.every((hit: { reason?: string }) => Boolean(hit.reason?.trim()))).toBe(true);

@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { PRODUCT_TUTORIAL_CHAPTERS } from '@papercusp/operator-core/lib/onboarding/product-tutorial-lesson';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { prepareNarration, renderPreview } from './tutorial-character-preview.mjs';
 import { captionCues, escapeHtml, tutorialVideoMedia, validateManifest, verifyPublishedTutorial, webVtt } from './tutorial-video-contract.mjs';
 
@@ -80,7 +81,7 @@ export async function verifyTutorialPublication({ publicationPath, outDir }) {
   if (mediaPath) await writeFile(mediaPath, JSON.stringify(media, null, 2));
   return { receipt, mediaPath, browserPlayback: 'not-assessed' };
 }
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isCliEntry(import.meta.url)) {
   const option = key => process.argv[process.argv.indexOf(key) + 1];
   const outDir = process.argv.includes('--out') ? option('--out') : null;
   const operation = process.argv.includes('--verify-delivery')

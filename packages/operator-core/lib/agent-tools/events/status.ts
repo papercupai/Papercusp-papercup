@@ -35,6 +35,7 @@ import {
   gatherDeclaredGateEvidence,
 } from '../../events/await/declared-gate-recovery-runtime';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { eventStatusReadAccessError } from '../../events/await/status-access';
 
 const EVENTS_SCOPE_NOTE =
   'Workspace-global read surface: scope comes from request context and caller identity; do not pass `harness` or `workspace` as JSON arguments (those keys are rejected).';
@@ -353,9 +354,8 @@ export default defineTool({
     // The judge's evidence lane is caller-scoped: its default view and await_id
     // path read only rows keyed by identity.ownerId. Exact event-key inspection
     // and the meter cross that boundary, so reject them before any store reads.
-    if (ctx.role === 'judge' && (args.event != null || args.meter === true)) {
-      throw new Error('events:status — the evidence-only judge may inspect its own awaits only; exact-key inspection and fleet-meter access are unavailable.');
-    }
+    const accessError = eventStatusReadAccessError(args, ctx.role);
+    if (accessError) throw new Error(accessError);
     if (args.await_id != null && args.event != null) {
       throw new Error('events:status — await_id and event are mutually exclusive; use await_id to inspect one registration or event to inspect one key.');
     }

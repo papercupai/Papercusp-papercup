@@ -125,10 +125,14 @@ describe('recordFire outcome semantics (P-009)', () => {
   it('the gate withholds under accumulated errors and resetFireErrors clears it', async () => {
     // Rebuild 3 errors → 240s backoff window; last_fired_at is now() ⇒ withheld.
     for (let i = 0; i < 3; i++) await recordFire(SLUG, ROLE, 'error: x', 'error');
-    const withheld = await checkFireGate(SLUG, ROLE);
+    const observations: unknown[] = [];
+    const withheld = await checkFireGate(SLUG, ROLE, new Date(), value => { observations.push(value); });
     expect(withheld.allow).toBe(false);
     expect(withheld.reason).toBe('backoff');
     expect(withheld.consecutiveErrors).toBe(3);
+    expect(observations).toEqual([expect.objectContaining({ status: 'observed',
+      state: expect.objectContaining({ consecutiveErrors: 3 }), verdict: expect.objectContaining({ allow: false, reason: 'backoff' }) })]);
+    expect((await checkFireGate(SLUG, ROLE, new Date(), () => { throw new Error('observer'); })).allow).toBe(false);
 
     // Pushing the last fire into the past re-allows (elapsed ≥ window).
     await rootSql`UPDATE harness_shared.autoloop_state

@@ -12,6 +12,8 @@ import { classifyCriticalArea } from './critical-area-registry';
 import {
   cleanPromotionRatchetHealth,
   decidePromotionRatchet,
+  failingFileCovered,
+  makeDowngradeCoverage,
   parsePromotionRatchetHealth,
   promotionRatchetHealth,
   unmeasuredPromotionRatchetHealth,
@@ -228,6 +230,52 @@ describe('decidePromotionRatchet (P-004, R-3)', () => {
     const v = decidePromotionRatchet({ failingTests: [], failingFiles: [], downgrades: [down(PLAIN_REPO)], repoPathOf });
     expect(v.allFailuresDowngraded).toBe(false);
     expect(v.blocking).toEqual([]);
+  });
+
+  // P-017 (D-005): downgrades are keyed by file + case.
+  const plainFailure = { failingTests: [`${PLAIN_WS}::${PLAIN_FILE}`], failingFiles: [{ workspace: PLAIN_WS, file: PLAIN_FILE }], repoPathOf };
+
+  it('promotes when every known failing case of a file has its own case-level downgrade', () => {
+    const v = decidePromotionRatchet({
+      ...plainFailure,
+      downgrades: [down(PLAIN_REPO, { testCase: 'renders > disabled' }), down(PLAIN_REPO, { testCase: 'renders > focus ring' })],
+      failingCasesOf: () => ['renders > disabled', 'renders > focus ring'],
+    });
+    expect(v.allFailuresDowngraded).toBe(true);
+    expect(v.downgraded).toEqual([PLAIN_REPO]);
+  });
+
+  it('holds when one known failing case has no downgrade, even if its sibling case has one', () => {
+    const v = decidePromotionRatchet({
+      ...plainFailure,
+      downgrades: [down(PLAIN_REPO, { testCase: 'renders > disabled' })],
+      failingCasesOf: () => ['renders > disabled', 'renders > focus ring'],
+    });
+    expect(v.allFailuresDowngraded).toBe(false);
+    expect(v.blocking).toEqual([PLAIN_REPO]);
+  });
+
+  it('holds when the failing cases are unknown and only case-level downgrades exist', () => {
+    for (const cases of [null, [], ['  ']]) {
+      const v = decidePromotionRatchet({ ...plainFailure, downgrades: [down(PLAIN_REPO, { testCase: 'renders > disabled' })], failingCasesOf: () => cases });
+      expect(v.allFailuresDowngraded).toBe(false);
+    }
+  });
+
+  it('lets a file-level downgrade cover every failing case', () => {
+    const v = decidePromotionRatchet({ ...plainFailure, downgrades: [down(PLAIN_REPO)], failingCasesOf: () => ['renders > disabled'] });
+    expect(v.allFailuresDowngraded).toBe(true);
+  });
+});
+
+describe('failingFileCovered / makeDowngradeCoverage (P-017 case keys)', () => {
+  it('applies the same case rule at the repair head', () => {
+    const covered = makeDowngradeCoverage({ downgrades: [down(PLAIN_REPO, { testCase: 'a' })], dirByWorkspace: DIRS });
+    const file = { workspace: PLAIN_WS, file: PLAIN_FILE };
+    expect(covered(file, ['a'])).toBe(true);
+    expect(covered(file, ['a', 'b'])).toBe(false);
+    expect(covered(file)).toBe(false);
+    expect(failingFileCovered([down(PLAIN_REPO)], PLAIN_REPO, null)).toBe(true);
   });
 });
 

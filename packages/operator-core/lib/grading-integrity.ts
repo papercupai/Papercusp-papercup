@@ -3112,7 +3112,17 @@ async function recertifyStrandedSpecAdequacyCards(
     const call = receipt.stranded!.recertify!;
     const key = `${STRANDED_RECERTIFY_KEY_PREFIX}${issueId}`;
     try {
-      const claim = await reserve(issueId, key, { workspaceId, now: new Date(deps.now?.() ?? Date.now()) });
+      // The stranded receipt is produced only after this dispatcher has proven that
+      // the live build descends from the card's recorded evaluator build. A prior
+      // exact-build dispatcher can therefore leave a generation-incompatible
+      // backoff behind; this compatible re-certification pass must be allowed to
+      // clear that legacy stamp or the recovery path deadlocks until the retry
+      // window expires (EI-26032900751635017).
+      const claim = await reserve(issueId, key, {
+        workspaceId,
+        now: new Date(deps.now?.() ?? Date.now()),
+        allowGenerationIncompatibleBackoff: true,
+      });
       if (claim.status !== 'claimed' || !claim.reservation) {
         results.push({
           issueId,

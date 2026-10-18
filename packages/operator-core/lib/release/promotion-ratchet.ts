@@ -44,6 +44,26 @@ export interface PromotionRatchetInput {
   /** Repo-relative path of a failing file (`packages/x/lib/y.test.ts`), or null when the
    *  owning workspace directory cannot be resolved uniquely. */
   repoPathOf: (file: RatchetFailingFile) => string | null;
+  /** P-017 (D-005): the failing case names of a file, parsed from the suite output. When a
+   *  file's cases are known, case-level downgrades can cover it (every failing case needs
+   *  one). Absent or empty means unknown: only a file-level downgrade covers the file. */
+  failingCasesOf?: (file: RatchetFailingFile) => readonly string[] | null | undefined;
+}
+
+/**
+ * PURE (P-017, D-005): whether usable downgrades cover one failing file. A file-level row
+ * (empty case) covers every case. Otherwise each known failing case needs its own row, and a
+ * file whose cases are unknown stays blocking — a case-level row cannot cover cases nobody named.
+ */
+export function failingFileCovered(
+  usable: readonly RatchetDowngrade[],
+  repoPath: string,
+  cases?: readonly string[] | null,
+): boolean {
+  if (!isTestBlocking(usable, repoPath, '')) return true;
+  const named = (cases ?? []).map((c) => c.trim()).filter(Boolean);
+  if (named.length === 0) return false;
+  return named.every((c) => !isTestBlocking(usable, repoPath, c));
 }
 
 export interface PromotionRatchetVerdict {
@@ -89,7 +109,7 @@ export function decidePromotionRatchet(input: PromotionRatchetInput): PromotionR
   const downgraded: string[] = [];
   for (const f of input.failingFiles) {
     const repoPath = input.repoPathOf(f);
-    const isCovered = repoPath !== null && covered(repoPath);
+    const isCovered = repoPath !== null && failingFileCovered(usable, repoPath, input.failingCasesOf?.(f));
     const label = repoPath ?? `${f.workspace}::${f.file}`;
     (isCovered ? downgraded : blocking).push(label);
     fileStatus.set(f.file, isCovered && (fileStatus.get(f.file) ?? true));
@@ -154,13 +174,13 @@ export interface RepairDowngradeCoverage {
  */
 export function makeDowngradeCoverage(
   coverage: RepairDowngradeCoverage | null | undefined,
-): (file: RatchetFailingFile) => boolean {
+): (file: RatchetFailingFile, cases?: readonly string[] | null) => boolean {
   if (!coverage || coverage.downgrades.length === 0) return () => false;
   const { usable } = usableDowngrades(coverage.downgrades);
-  return (file) => {
+  return (file, cases) => {
     const dir = coverage.dirByWorkspace[file.workspace];
     if (!dir) return false;
-    return !isTestBlocking(usable, `${dir.replace(/\/+$/, '')}/${file.file}`, '');
+    return failingFileCovered(usable, `${dir.replace(/\/+$/, '')}/${file.file}`, cases);
   };
 }
 

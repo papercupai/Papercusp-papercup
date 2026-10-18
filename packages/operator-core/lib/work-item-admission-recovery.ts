@@ -521,6 +521,60 @@ export async function requestAdmissionRecovery(
   });
 }
 
+/** Ordering hints for the ordinary component writer, never replay/assignment grants.
+ * Exact-request fires still stop at their original mutation scope. */
+export async function readAuthorizedComponentScreeningIds(
+  scope: Omit<AdmissionRecoveryScope, 'workItemId'>,
+  deps: Pick<AdmissionRecoveryDeps, 'authorize'>,
+  sql: Sql = getOrgPg().sql,
+): Promise<string[]> {
+  const rows = await sql<{ feature_id: string }[]>`
+    SELECT feature_id FROM harness_shared.work_items
+     WHERE workspace_id = ${scope.workspaceId} AND harness_slug = ${scope.harnessSlug}
+       AND admission IN ('pending', 'unreviewed')
+       AND payload #>> '{_admissionRecovery,state}' = 'held'
+       AND payload #>> '{_admissionRecovery,stage}' = 'screen'
+       AND payload #>> '{_admissionRecovery,version}' = '3'
+       AND position('outside-mutation-scope' IN COALESCE(payload #>> '{_admissionRecovery,reason}', '')) > 0
+     ORDER BY feature_id LIMIT 20`;
+  const ids: string[] = [];
+  for (const row of rows) {
+    const exact = { ...scope, workItemId: row.feature_id };
+    try {
+      const item = await readItem(sql, exact);
+      const request = savedRequest(item);
+      if (!request || request.version !== 3 || request.state !== 'held' || request.stage !== 'screen' ||
+          !request.reason?.includes('outside-mutation-scope')) continue;
+      // A held request gets one ordinary screening turn. Existing hold/review
+      // watermarks retire the hint so an ambiguous component cannot monopolize
+      // every later model window while its exact recovery remains held.
+      const review = item.payload?.admissionReview as { lastRetryAt?: string } | undefined;
+      const hold = item.payload?.admissionHold as { heldAt?: string } | undefined;
+      const requestedScreenAt = Date.parse(request.updatedAt);
+      if (!Number.isFinite(requestedScreenAt) ||
+          [review?.lastRetryAt, hold?.heldAt].some((at) => at && Date.parse(at) >= requestedScreenAt)) continue;
+      await verifyRequest(sql, exact, request);
+      await assertRoutineActive(sql, exact, request.routineId);
+      assertItemEligible(item, request.target);
+      await deps.authorize(exact, request);
+      // Authorization may wait on policy I/O. Do not prioritize a replaced request
+      // or an item newly held by a peer during that read.
+      const current = await readItem(sql, exact);
+      assertItemEligible(current, request.target);
+      const [same] = await sql<{ unchanged: boolean }[]>`
+        SELECT payload->'_admissionRecovery' = ${sql.typed(JSON.stringify(item.payload?._admissionRecovery), 25)}::jsonb AS unchanged
+          FROM harness_shared.work_items WHERE workspace_id = ${exact.workspaceId}
+            AND harness_slug = ${exact.harnessSlug} AND feature_id = ${exact.workItemId}`;
+      if (same?.unchanged) ids.push(row.feature_id);
+    } catch (error) {
+      if (!(error instanceof AdmissionRecoveryRefused) && !(error instanceof AdmissionAuthorityRefused)) throw error;
+      // An invalid request earns no priority. Ordinary screening and its own
+      // endpoint protections remain available without mutating the saved request.
+    }
+  }
+  return ids;
+}
+
 /** Called inside the existing durable promoter action; a crash retries the original item.
  * Returns queued requests reserving this fire for exact-item recovery. Observing
  * an already-delivered request does not reserve the ordinary admission lane.

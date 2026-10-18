@@ -4,9 +4,9 @@ import type { ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import postgres from 'postgres';
 import { readProcessIdentity } from '../lib/process-identity';
+import { isCliEntry } from '../lib/util/cli-entry';
 import { buildPrivateOperatorApiBundle, privateBundleRuntimeEnv, stopPrivateOperatorHost, waitForPrivateOperator } from './private-http-workspace-preflight';
 // @ts-ignore -- native ESM fixture keeps the already-built host outside tsx.
 import { KEY, CANONICAL, PUBLICATION, spawnBlogPostHttpHost } from './blog-post-http-host.mjs';
@@ -156,7 +156,7 @@ async function main() {
   } finally { await sql.end({ timeout: 5 }); }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   try {
     assert.ok(evidenceDir, 'retained evidence directory required');
     await main();

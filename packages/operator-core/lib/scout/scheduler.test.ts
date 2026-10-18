@@ -72,6 +72,19 @@ function makeDeps(over: Partial<ScoutTickDeps> & { state?: Partial<ScoutCadenceS
 }
 
 describe('runScoutTick (P-008)', () => {
+  it('retains supplied and resolved caps on zero-route and pre-attempt policy-gated ticks', async () => {
+    const budget = { maxIdeators: 1, maxCostUsd: 0.37 };
+    const ran = makeDeps({ runCycle: async () => ({ provenance: [], costUsd: 0.12, ideators: [{ lens: 'analogical', ok: true, raw: 0, produced: 0 }] }) });
+    await runScoutTick(ran.deps, { budget });
+    expect(ran.calls.ticks[0]).toMatchObject({ status: 'ran', ideasRouted: 0, detail: {
+      budgetProvenance: { schemaVersion: 1, supplied: budget, resolved: { maxIdeators: 1, maxCostUsd: 0.37 } },
+      ideators: [{ lens: 'analogical' }],
+    } });
+    const gated = makeDeps({ fireGate: async () => ({ allow: false, reason: 'circuit-open' }) });
+    await runScoutTick(gated.deps, { budget });
+    expect(gated.calls.ticks[0]).toMatchObject({ status: 'gated', detail: { budgetProvenance: { supplied: budget } } });
+    expect(gated.calls.ranBudget).toBeUndefined();
+  });
   it('withholds when the cadence gate says no-fire (no cycle, no fire-record)', async () => {
     const { deps, calls } = makeDeps({ state: { idleRatio: 0, frictionSignals: 0, lastRunAtMs: NOW - 60_000 } });
     const r = await runScoutTick(deps, { cadence: { minIntervalSec: 3600 } });
@@ -200,7 +213,9 @@ describe('runScoutTick — tick observability (P-034)', () => {
   it('records a gated tick with gate=no-trigger when nothing fires', async () => {
     const { deps, calls } = makeDeps({ state: { idleRatio: 0, frictionSignals: 0, lastRunAtMs: NOW - 7200_000 } });
     await runScoutTick(deps, { cadence: { minIntervalSec: 3600, maxIntervalSec: 86400 } });
-    expect(calls.ticks).toEqual([{ status: 'gated', gate: 'no-trigger' }]);
+    expect(calls.ticks).toEqual([{ status: 'gated', gate: 'no-trigger', detail: {
+      budgetProvenance: { schemaVersion: 1, supplied: null, resolved: { maxCostUsd: 1, maxIdeators: 6, maxCriticsPerIdea: 2 } },
+    } }]);
   });
 
   it('records a gated tick with gate=circuit when the autoloop fire-gate denies', async () => {

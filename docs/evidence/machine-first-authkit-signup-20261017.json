@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010015411",
+  "plan": "machine-first-access-and-signup-utility-download-2026-10-15",
+  "planRevision": 28,
+  "specId": "AUTO-BAR-R-2-P-002",
+  "specRevision": 6,
+  "scope": "Partial current-build real AuthKit TEST signup/callback acceptance; full R2 and shipment remain open",
+  "origin": "https://app.papercusp.com",
+  "stats": {
+    "startTime": "2026-10-17T22:32:42.977Z",
+    "duration": 48954.187,
+    "expected": 1,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "receipt": {
+    "scope": "Real AuthKit TEST signup, callback redemption and utility destination; excludes final shipment",
+    "sessionInjected": false,
+    "accountExistedBefore": false,
+    "callbackObservations": [
+      {
+        "status": 303,
+        "path": "/api/hosted/auth/callback"
+      },
+      {
+        "status": 400,
+        "path": "/api/hosted/auth/callback"
+      }
+    ],
+    "release": {
+      "schemaVersion": 2,
+      "buildId": "OnJErRMjvcuZQEf56RsNP",
+      "release": "OnJErRMjvcuZQEf56RsNP-20261017085950313-2856534-d23045c0",
+      "sourceRoot": "harness:portal",
+      "publishedAt": "2026-10-17T08:59:50.313Z",
+      "sourceRootDigest": "20a7004042ac4a619dd28353258e0dc55d38135c5de91475b03186b7c4de2b8b"
+    },
+    "signupFormSubmitted": true,
+    "emailVerificationSubmitted": true,
+    "callback": {
+      "status": 303,
+      "path": "/api/hosted/auth/callback"
+    },
+    "actualSession": {
+      "authenticated": true,
+      "newAccount": true,
+      "workspaceId": null,
+      "userId": "685a8626-d661-489d-ba82-5c1e805ad8ab",
+      "organizationId": "b7a43dad-0de0-4437-8ddf-8358701b5620"
+    },
+    "renderedDialogCopy": "Your Papercusp utility\n\nFinding the published utility for your computer\u2026\n\nThe next page takes you to the GUI, but you may prefer to drive your agents from psu. It wraps Claude Code, Codex and OMP with your context, memory, documentation, Papercusp tools and prompts so you can steer a coordinated agent factory.\n\nYou can run the local server to keep agents and data on your machine, use managed cloud where Papercusp handles the cloud account and billing for a flat monthly rate, or bring your own cloud account while Papercusp provisions the machines and you retain control of your data.\n\nChoose your platform\nContinue to GUI\n\nWindows uses the Linux package through WSL2. On macOS, choose Apple Silicon or Intel on the download page.",
+    "download": {
+      "filename": "pui-0.1.0-linux-x86_64.tar.gz",
+      "sha256": "5f720ea9e54bd37efe2f02ba5d8c0e1db518e47b6efb7049a7e88436088f18f6",
+      "count": 1
+    },
+    "signupScreenshot": "real-signup-utility.png",
+    "callbackReplay": {
+      "status": 400,
+      "downloadCount": 1
+    },
+    "continueDestination": "/?app=home&firstRun=deferred",
+    "guiScreenshot": "real-signup-gui.png",
+    "guiRendered": true,
+    "downloadCountAfterContinue": 1,
+    "browserClosed": true,
+    "accountCleanup": {
+      "usersDeleted": 1,
+      "providerUserAbsent": true
+    },
+    "cleanup": {
+      "attempted": 2,
+      "completed": 2,
+      "failed": 0,
+      "byKind": {
+        "browser": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        },
+        "provider-user": {
+          "attempted": 1,
+          "completed": 1,
+          "failed": 0
+        }
+      }
+    }
+  },
+  "sourceHashes": {
+    "e2e/hosted-test-user.ts": "fb32c0651920d9ce522541e0b5c0d0f55919846945986b66e2f7bba2fb2f06f8",
+    "e2e/portal-utility-welcome.spec.ts": "3d7db342688ec6eb7a2891076c87deea693b174867a4a9059ff092991d09a1d6",
+    "tests/hosted-test-user-env.test.ts": "e761d21e707220a011d06b41ac88a577a7cf3bcc26ca6c9832d2e940eaac2e2c"
+  },
+  "testSelection": {
+    "stage": "two-cause-harness-audit-preflight",
+    "priorRuntimesStopped": true,
+    "OTPnavigationAwaited": true,
+    "callback303": true,
+    "continueAndGuideChecked": true,
+    "testSha256": "3d7db342688ec6eb7a2891076c87deea693b174867a4a9059ff092991d09a1d6"
+  },
+  "screenshots": [
+    {
+      "path": "docs/evidence/machine-first-authkit-signup-20261017-utility.png",
+      "sha256": "0a1160b4aa9d77a733f83b5670b897cb643b9efa58c8c52bbc5cb78c7c405021"
+    },
+    {
+      "path": "docs/evidence/machine-first-authkit-signup-20261017-gui.png",
+      "sha256": "ab4d5cbe4079db9d6e0cc3a5dc1ce33587a9f4e5191ed4c2ef3eec86e27e41c7"
+    }
+  ],
+  "cleanup": {
+    "ownedPidAlive": {
+      "2323251": false,
+      "2263413": false,
+      "2283573": false,
+      "2283519": false
+    },
+    "ownedPortsOpen": {
+      "41429": false,
+      "37655": false,
+      "39597": false,
+      "33955": false
+    },
+    "privateHomeExists": false
+  },
+  "rawEvidence": [
+    {
+      "path": "/tmp/machine-first-authkit-signup-v3-browser-20261017.json",
+      "sha256": "eb91e9c8ed608d5008535fc0adc82528a4c6203079b2d7412706a1de0f8b6fa2"
+    },
+    {
+      "path": "/tmp/machine-first-authkit-signup-v3-runtime-20261017.json",
+      "sha256": "42abec1606cdb70ffdb618642124c77845c920d50a5a812a1b696a641b482d43"
+    },
+    {
+      "path": "/tmp/machine-first-authkit-signup-v3-launcher-20261017.log",
+      "sha256": "f6532b0bf98f687eca8b513c2eda0fca3e271f7c77466df7fa9842b6f06d9732"
+    }
+  ],
+  "prerequisite": {
+    "path": "/tmp/machine-first-authkit-signup-guards-20261017.log",
+    "sha256": "056f57c64415ac86eaedad6147f29799327a7a34f838ad9447d277b10da369b9",
+    "passed": 39,
+    "skipped": 0
+  },
+  "remainingUnverified": [
+    "Complete R2 expected/actual table across all required cases, including a real returning sign-in",
+    "Current advertised utility archive manifest sourceSha/version/target and psu+pui launcher contents",
+    "Complete explicit D004 commercial/server-choice/data-control boundary row",
+    "Final promotion/deployment/shipment"
+  ]
+}

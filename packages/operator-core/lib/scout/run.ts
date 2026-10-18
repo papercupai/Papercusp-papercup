@@ -341,7 +341,12 @@ export async function runScoutCycleTick(input: ScoutCycleInput, deps: ScoutCycle
   const tickDeps = (deps.buildDeps ?? productionDepsBuilder)(layered, deps.runCycle);
   const note = async (rec: ScoutTickRecord): Promise<void> => {
     try {
-      await tickDeps.recordTick?.(rec);
+      await tickDeps.recordTick?.({ ...rec, detail: { ...rec.detail,
+        // These gates return before runScoutTick's recorder can observe the
+        // caller budget. Preserve the already-layered input at this exit too.
+        budgetProvenance: { schemaVersion: 1, supplied: cfg.budget ?? null,
+          resolved: resolveScoutBudget(cfg.budget) },
+      } });
     } catch {
       /* best-effort — observability never fails the tick */
     }

@@ -24,6 +24,7 @@
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { getOrgPg } from '@papercusp/db-org';
+import { storedTestRunPathPattern } from '@papercusp/test-config/test-run-paths';
 import {
   listIssues,
   setIssueState,
@@ -371,12 +372,13 @@ export function defaultAutoCloseDeps(workspaceId: string): AutoCloseDeps {
     recentRedTestRuns: async (paths, windowHours) => {
       const byPath = new Map<string, RedTestRun[]>();
       if (paths.length === 0) return byPath;
+      const storedPathPattern = storedTestRunPathPattern();
       const rows = await sql<{ npath: string; status: string; started_at: Date | string; commit_sha: string | null }[]>`
         WITH ranked AS (
-          SELECT regexp_replace(file_path, '^.*papercupai-workspace/[^/]+/', '') AS npath,
+          SELECT regexp_replace(file_path, ${storedPathPattern}, '') AS npath,
                  status, started_at, commit_sha,
                  row_number() OVER (
-                   PARTITION BY regexp_replace(file_path, '^.*papercupai-workspace/[^/]+/', '')
+                   PARTITION BY regexp_replace(file_path, ${storedPathPattern}, '')
                    ORDER BY started_at DESC
                  ) AS rn
             FROM harness_shared.test_runs

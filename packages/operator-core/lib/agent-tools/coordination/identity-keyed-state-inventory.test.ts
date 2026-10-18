@@ -380,6 +380,11 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: 'per-agent UI preference (panel layout etc.) — a rebind losing it means the new sid sees default UI state, not a lost claim or a wrongly-freed resource.',
   },
+  'test_downgrades.owner': {
+    status: 'exempt',
+    reason:
+      'accountability record (green-main-ratchet P-002): who owns getting a downgraded test blocking again. No reaper or reader keys on it as a live holder; the downgrade stays active until revoked, and the daily digest surfaces it whatever the owner session state.',
+  },
   'tui_layouts.owner_id': { status: 'exempt', reason: 'same class as tui_view_state.owner_id — UI preference, not a claim.' },
   'tui_crews.owner_id': { status: 'exempt', reason: 'same class as tui_view_state.owner_id — UI preference, not a claim.' },
   'agent_name_sessions.session_owner_id': {

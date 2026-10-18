@@ -160,6 +160,8 @@ import {
 } from '../_carry-row-id';
 import { detectPauseDeclaration, pauseNotEnforcedWarning } from '../../carry-note-pause-declaration';
 import { runBulk, bulkContent } from '../_bulk';
+import { changeKindsArg, changeKindReasonArg } from '../../change-kind-catalog';
+import { declareChangeKinds } from '../../work-item-change-kinds';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import {
   carryProvenanceFields,
@@ -1205,6 +1207,9 @@ const itemSpec = z.object({
         '`unchanged:true` and ignored otherwise. Binds the attestation to a body you have actually read, so a ' +
         'checkpoint someone else replaced fails the check instead of being silently re-blessed.',
     ),
+  // change-kind-declared-proof P-001 (D-001): recorded after a successful write.
+  changeKinds: changeKindsArg().optional(),
+  changeKindReason: changeKindReasonArg().optional(),
 });
 
 // EI-21035020852712365: a terminal work-item is no longer an active work lane.
@@ -1365,6 +1370,8 @@ export default defineTool({
       dependsOn: dependsOnSpec(),
       learned: learnedSpec(),
       learnedLevel: learnedLevelSpec(),
+      changeKinds: changeKindsArg().optional(),
+      changeKindReason: changeKindReasonArg().optional(),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || Boolean(a.id) || Boolean(a.workItem), {
       message: 'pass { id, checkpoint? } (workItem aliases id) for one, or items:[{ id, checkpoint? }] for many',
@@ -1427,6 +1434,8 @@ export default defineTool({
             // attestation is asking for.
             unchanged: args.unchanged,
             contentHash: args.contentHash,
+            changeKinds: args.changeKinds,
+            changeKindReason: args.changeKindReason,
           },
         ];
     const traceCheckpointPhases = args.items !== undefined;
@@ -3214,6 +3223,37 @@ export default defineTool({
       },
       { keyOf: (it) => ({ id: it.id }) },
     );
-    return bulkContent(env);
+    // change-kind-declared-proof P-001 (D-001): record declared kinds for each entry whose
+    // checkpoint write succeeded, keyed by the requested id runBulk echoes on each result.
+    const declaredById = new Map(
+      items
+        .filter((it) => (it.changeKinds?.length ?? 0) > 0)
+        .map((it) => [it.id, { kinds: it.changeKinds!, reason: it.changeKindReason }] as const),
+    );
+    if (declaredById.size === 0) return bulkContent(env);
+    const results = await Promise.all(
+      env.results.map(async (r) => {
+        const declared = typeof r.id === 'string' ? declaredById.get(r.id) : undefined;
+        if (!declared) return r;
+        if (!r.ok) {
+          return {
+            ...r,
+            changeKinds: { recorded: false as const, error: 'changeKinds were not recorded: the checkpoint write did not succeed.' },
+          };
+        }
+        return {
+          ...r,
+          changeKinds: await declareChangeKinds({
+            workspaceId: ident.workspaceId ?? c.workspaceId ?? 'default',
+            featureId: r.id as string,
+            kinds: declared.kinds,
+            step: 'checkpoint',
+            declaredBy: ident.ownerId,
+            reason: declared.reason ?? null,
+          }),
+        };
+      }),
+    );
+    return bulkContent({ ...env, results });
   },
 });

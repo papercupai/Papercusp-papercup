@@ -641,17 +641,27 @@ export async function idleActivityAllowed(
   kind: IdleActivityKind,
   potHomeSlug?: string,
   sql?: Sql,
+  observe?: (value: { status: 'observed' | 'unknown'; home: string | null; allowed: boolean; reason?: string; steering?: OwnerSteering }) => void,
 ): Promise<boolean> {
+  const report = (value: Parameters<NonNullable<typeof observe>>[0]) => {
+    try { observe?.(value); } catch { /* observation never changes policy */ }
+  };
+  let home = potHomeSlug?.trim() || null;
   try {
-    let home = potHomeSlug?.trim() || null;
     if (!home) {
       const { resolvePotHomeSlug } = await import('./pot/wake');
       home = resolvePotHomeSlug();
     }
-    if (!home) return kind !== 'dream';
+    if (!home) {
+      report({ status: 'unknown', home, allowed: kind !== 'dream', reason: 'unresolved-home' });
+      return kind !== 'dream';
+    }
     const s = await getOwnerSteering(workspaceId, home, sql);
-    return idleActivityEnabled(s, kind);
-  } catch {
+    const allowed = idleActivityEnabled(s, kind);
+    report({ status: 'observed', home, allowed, steering: s });
+    return allowed;
+  } catch (error) {
+    report({ status: 'unknown', home, allowed: kind !== 'dream', reason: error instanceof Error ? error.message : String(error) });
     return kind !== 'dream';
   }
 }

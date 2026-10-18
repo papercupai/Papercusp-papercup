@@ -1,6 +1,26 @@
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 
+const PRIVATE_STATE_REMOVE_RETRIES = 3;
+const PRIVATE_STATE_REMOVE_RETRY_DELAY_MS = 100;
+const RETRYABLE_REMOVE_ERRORS = new Set(['EBUSY', 'EMFILE', 'ENFILE', 'ENOTEMPTY', 'EPERM']);
+
+export async function removePrivateState(path, remove = rm) {
+  let lastError;
+  for (let attempt = 0; attempt <= PRIVATE_STATE_REMOVE_RETRIES; attempt++) {
+    try {
+      await remove(path, { recursive: true, force: true, maxRetries: 0 });
+      return;
+    } catch (cause) {
+      lastError = cause;
+      if (!RETRYABLE_REMOVE_ERRORS.has(cause?.code)) throw cause;
+      if (attempt === PRIVATE_STATE_REMOVE_RETRIES) throw cause;
+      await new Promise(resolve => setTimeout(resolve, PRIVATE_STATE_REMOVE_RETRY_DELAY_MS));
+    }
+  }
+  throw lastError;
+}
+
 /** Stop each owned resource even when another exit fence fails. Private state
  * remains available until every resource has a verified stop.
  * @param {import('./with-test-pg-cleanup.d.mts').CleanupOwnedTestStateOptions} state */
@@ -66,8 +86,8 @@ export async function cleanupOwnedTestState(state) {
   await recordStage('remove-private-state');
   if (failures.length) throw new AggregateError(failures, 'private runtime cleanup has unverified resource stops');
   // Removal failures also need an unsuccessful exit and an exact residue receipt.
-  await attempt('pg-data-remove', () => rm(dataDir, { recursive: true, force: true }), {}, 'pg-data-removed');
-  if (runtimeRoot) await attempt('runtime-remove', () => rm(runtimeRoot, { recursive: true, force: true }), {}, 'runtime-removed');
+  await attempt('pg-data-remove', () => removePrivateState(dataDir), {}, 'pg-data-removed');
+  if (runtimeRoot) await attempt('runtime-remove', () => removePrivateState(runtimeRoot), {}, 'runtime-removed');
   const removed = { runtimeRemoved: !runtimeRoot || !existsSync(runtimeRoot), pgDataRemoved: !existsSync(dataDir) };
   if (failures.length || !removed.runtimeRemoved || !removed.pgDataRemoved) {
     await recordStage('private-state-retained', { ...removed, errors: failures.map(error => error.message) });

@@ -74,6 +74,7 @@ import type {
 import { managedSpawn } from './task-manager/managed-spawn';
 import { CONTINUITY_PROBE_MAX_PER_WAKE, SQL_PROBE_TOOL, continuityProbeSchema, runContinuityProbeBatch, type ContinuityProbe } from './continuity-probes';
 import { RUBRIC_PROBE_MAX_PER_EMIT } from './agent-tools/limits';
+import { eventStatusReadAccessError } from './events/await/status-access';
 
 /** The minimal criterion shape this module reads — key + the optional check. */
 export interface CheckedCriterion {
@@ -302,6 +303,19 @@ export function validateCriterionCheckPaths(
               criterionKey: c.key,
               path: `probe[${index}]`,
               reason: `tool '${toolName}' excludes the independent judge role — a rubric probe must be re-runnable by its grader. Choose a judge-readable tool or extend the read-only target's role allowlist before authoring this check`,
+            });
+          }
+          // events:status admits judges only for caller-scoped reads. Reuse the
+          // handler's exact predicate; neither read-only effect nor membership
+          // in agentRoles proves these particular arguments can be graded.
+          const accessError = parsed.data.kind === 'tool' && toolName === 'events:status'
+            ? eventStatusReadAccessError(parsed.data.args, 'judge')
+            : null;
+          if (accessError) {
+            scopeFailures.push({
+              criterionKey: c.key,
+              path: `probe[${index}]`,
+              reason: `${accessError} Choose a judge-readable binding before authoring this check.`,
             });
           }
         }

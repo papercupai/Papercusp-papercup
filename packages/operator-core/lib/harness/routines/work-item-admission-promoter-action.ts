@@ -87,7 +87,7 @@ export async function runAdmissionPromoterWithRecovery(
   options: ReturnType<typeof admissionPromoterOptions>,
   deps: Pick<AdmissionRecoveryDeps, 'authorize' | 'dispatch' | 'lockSql'> & { sql: Sql; llmCall: PromoterLlmCall },
 ): Promise<PromoterRunResult> {
-  const { runAdmissionRecoveries } = await import('../../work-item-admission-recovery');
+  const { runAdmissionRecoveries, readAuthorizedComponentScreeningIds } = await import('../../work-item-admission-recovery');
   const recoveryRuns: PromoterRunResult[] = [];
   const recovered = await runAdmissionRecoveries(options, {
     authorize: deps.authorize,
@@ -122,10 +122,13 @@ export async function runAdmissionPromoterWithRecovery(
     modelCalled: false, tokensIn: 0, tokensOut: 0, censusBefore: 0, censusAfter: 0,
     guardRefusals: [], writerCoverageGap: [],
   });
+  const componentScreeningItemIds = options.targetItemIds === undefined
+    ? await readAuthorizedComponentScreeningIds(options, deps, deps.sql) : [];
   return runWorkItemAdmissionPromoter({
     ...options,
     sql: deps.sql,
     llmCall: deps.llmCall,
+    componentScreeningItemIds,
   });
 }
 

@@ -31,7 +31,6 @@ import {
   parseTestRunExecutionDetails,
   isRecordedInstant,
   isRecordedCaseTitle,
-  MAX_RECORDED_FAILED_CASES,
   MAX_RECORDED_PASSED_CASES,
   type TestRunExecutionDetails,
 } from '@papercusp/test-config/execution-details';
@@ -1951,9 +1950,7 @@ function countVitestAssertions(assertions: VitestJsonAssertion[]): HarnessTestFi
         break;
       case 'failed':
         failed += 1;
-        if (isRecordedCaseTitle(assertion.fullName) && failedCaseTitles.size < MAX_RECORDED_FAILED_CASES) {
-          failedCaseTitles.add(assertion.fullName);
-        }
+        if (isRecordedCaseTitle(assertion.fullName)) failedCaseTitles.add(assertion.fullName);
         break;
       // Vitest's completed JSON reporter calls filtered-out tests "pending".
       case 'skipped':

@@ -31,6 +31,8 @@ export default defineTool({
   description:
     'Read or set the standing workspace Inbox automation policy. riskLevels controls review or automatic application for low (delegable), medium (owner decisions), and high (protected) risk. Explicit high automatic is an owner grant. Confidence and live action checks remain independent. Legacy level L0/L1/L2 remains supported.',
   capability: 'operator:write',
+  effect: 'write',
+  effectForCall: (args) => (args.op === 'get' ? 'read' : 'write'),
   guidance: {
     when: 'Changing the workspace-wide authority ladder or confidence floor for future unattended Inbox runs.',
     notWhen: 'Inspecting what an existing run used — read its automationPolicy launch receipt instead.',

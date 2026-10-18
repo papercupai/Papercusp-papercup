@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   AdmissionRecoveryRefused, observeAdmissionRecoveryPickup, requestAdmissionRecovery, runAdmissionRecoveries,
+  readAuthorizedComponentScreeningIds,
   type AdmissionRecoveryDeps,
 } from './work-item-admission-recovery';
 
@@ -64,6 +65,84 @@ function deps(overrides: Partial<AdmissionRecoveryDeps> = {}): AdmissionRecovery
 }
 
 describe('original-item durable admission recovery', () => {
+  async function heldComponentRequest() {
+    const result = await requestAdmissionRecovery({ ...input, authority: {
+      kind: 'signed-spawn', role: 'reviewer', expiresAtSec: 0,
+      credentialSha256: 'a'.repeat(64),
+    } }, { authorize }, db.sql);
+    await db.sql`UPDATE harness_shared.work_items SET payload = payload || jsonb_build_object('_admissionRecovery',
+      ${db.sql.json({ ...result.request, state: 'held', stage: 'screen', reason: 'outside-mutation-scope: component endpoints' })})`;
+    authorize.mockClear();
+    return (await current()).payload;
+  }
+
+  it('reads authenticated scope-held component priority without modifying or dispatching its request', async () => {
+    const before = await heldComponentRequest();
+    expect(await readAuthorizedComponentScreeningIds(scope, { authorize }, db.sql)).toEqual([scope.workItemId]);
+    expect(authorize).toHaveBeenCalledWith(scope, expect.objectContaining({ requestId: before._admissionRecovery.requestId }));
+    expect((await current()).payload).toEqual(before);
+    expect((await current()).taken_by).toBeNull();
+  });
+
+  it.each(['pending', 'unreviewed'] as const)(
+    'preserves the screening opportunity after an unjudged twin hold on a %s row', async (admission) => {
+      await heldComponentRequest();
+      for (const structured of [false, true]) {
+        const heldAt = '2099-01-01T00:00:00Z';
+        await db.sql`UPDATE harness_shared.work_items SET admission = ${admission}, payload = payload ||
+          ${db.sql.json({
+            admissionHold: {
+              reason: 'deferred: twin WI-protected is claimed; held until it can be judged',
+              actor: 'system:work-item-admission-promoter', heldAt,
+              ...(structured ? { screeningDeferred: true } : {}),
+            },
+            ...(admission === 'unreviewed' ? { admissionReview: { lastRetryAt: heldAt } } : {}),
+          })}`;
+        const before = (await current()).payload;
+        expect(await readAuthorizedComponentScreeningIds(scope, { authorize }, db.sql)).toEqual([scope.workItemId]);
+        expect((await current()).payload).toEqual(before);
+      }
+    },
+  );
+
+  it.each(['judged', 'foreign-actor'])(
+    'retires a hold that resembles a structural deferral but is %s', async (kind) => {
+      await heldComponentRequest();
+      await db.sql`UPDATE harness_shared.work_items SET payload = payload || ${db.sql.json({
+        admissionHold: {
+          reason: 'deferred: twin WI-protected is claimed; held until it can be judged',
+          actor: kind === 'foreign-actor' ? 'unverified' : 'system:work-item-admission-promoter',
+          heldAt: '2099-01-01T00:00:00Z',
+          ...(kind === 'judged' ? { screeningDeferred: false } : {}),
+        },
+      })}`;
+      expect(await readAuthorizedComponentScreeningIds(scope, { authorize }, db.sql)).toEqual([]);
+    },
+  );
+
+  it.each(['signature', 'authority', 'peer', 'routine', 'foreign', 'malformed', 'changed', 'claim-during-authorization', 'reviewed', 'held-after-screen'])(
+    'does not prioritize an ineligible component request: %s', async (failure) => {
+      await heldComponentRequest();
+      if (failure === 'signature') await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload, '{_admissionRecovery,signature}', ${db.sql.json('0'.repeat(64))})`;
+      if (failure === 'authority') authorize.mockRejectedValue(new AdmissionRecoveryRefused('revoked original authority'));
+      if (failure === 'peer') await db.sql`UPDATE harness_shared.work_items SET taken_by = 'another-peer'`;
+      if (failure === 'routine') await db.sql`UPDATE harness_shared.routines SET active = false`;
+      if (failure === 'foreign') await db.sql`UPDATE harness_shared.work_items SET harness_slug = 'foreign'`;
+      if (failure === 'malformed') await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload, '{_admissionRecovery,requestId}', '"invalid"')`;
+      if (failure === 'reviewed') await db.sql`UPDATE harness_shared.work_items SET payload = payload ||
+        jsonb_build_object('admissionReview', jsonb_build_object('lastRetryAt', '2099-01-01T00:00:00Z'))`;
+      if (failure === 'held-after-screen') await db.sql`UPDATE harness_shared.work_items SET payload = payload ||
+        jsonb_build_object('admissionHold', jsonb_build_object('heldAt', '2099-01-01T00:00:00Z'))`;
+      if (failure === 'changed') authorize.mockImplementationOnce(async () => {
+        await db.sql`UPDATE harness_shared.work_items SET payload = jsonb_set(payload, '{_admissionRecovery,state}', '"queued"')`;
+      });
+      if (failure === 'claim-during-authorization') authorize.mockImplementationOnce(async () => {
+        await db.sql`UPDATE harness_shared.work_items SET taken_by = 'new-peer'`;
+      });
+      expect(await readAuthorizedComponentScreeningIds(scope, { authorize }, db.sql)).toEqual([]);
+    },
+  );
+
   it('persists and signs the original bounded dispatch instructions across retries', async () => {
     const first = await requestAdmissionRecovery({
       ...input, note: 'Independent review', body: 'Report findings; do not modify implementation.',

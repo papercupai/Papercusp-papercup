@@ -179,6 +179,27 @@ describe('plans:bind-spec-evidence instrument declaration schema', () => {
 });
 
 describe('plans:bind-spec-evidence repo-files measurement contract', () => {
+  it.each(['test', 'mutation', 'counterexample'] as const)(
+    'preflights first-bind fixture calibration for recorded %s evidence in single and bulk calls',
+    (evidenceKind) => {
+      const binding = {
+        workItemId: 'WI-1', specId: 'SPEC-001-01', fromTestRun: 42, evidenceKind,
+        details: { adequacy: { fixtureCalibrated: true } },
+      };
+      for (const request of [{ binding }, { items: [binding] }]) {
+        expect(tool.args.safeParse(request).success).toBe(false);
+      }
+      for (const recipe of [
+        { fixturePaths: ['test/reconnect.test.ts'] },
+        { fixtureGlobs: ['test/fixtures/*.ts'] },
+      ]) {
+        for (const request of [{ binding: { ...binding, ...recipe } }, { items: [{ ...binding, ...recipe }] }]) {
+          expect(tool.args.safeParse(request).success).toBe(true);
+        }
+      }
+    },
+  );
+
   it('accepts a workspace-registered sibling harness slug without accepting an arbitrary root path', () => {
     expect(
       bindingSchema.safeParse({

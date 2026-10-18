@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isCliEntry } from '../lib/util/cli-entry.ts';
 
 export const KEY = 'synthetic-blog-request-key';
 export const CANONICAL = 'https://papercusp.com/blog/request-proof';
@@ -44,7 +45,7 @@ async function serve(bundle) {
   await import(pathToFileURL(bundle).href);
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isCliEntry(import.meta.url)) {
   try { await serve(process.argv[2]); }
   catch (error) {
     console.error('BLOG_POST_FAILURE ' + (error instanceof Error ? error.stack : String(error)));

@@ -39,6 +39,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { detectPapercupRoot } from '../harness/register-papercusp';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../harness-registry';
 import { selectUnambiguousEvidenceRoot } from '../evidence-root-selection';
+import { resolveHostWorkspaceRoot } from '../workspace-root';
 
 /** Context a resolver needs to scope its lookups. */
 export interface FreshnessResolverCtx {
@@ -227,8 +228,7 @@ const resolveFiles = async (refs: readonly string[], ctx: FreshnessResolverCtx, 
 export function findFileInSiblingCheckouts(ref: string, opts: { workspaceRoot?: string } = {}): string | null {
   // Same containment contract as containedFilePath: no absolute/escaping refs.
   if (isAbsolute(ref) || normalize(ref).startsWith('..')) return null;
-  const workspaceRoot =
-    opts.workspaceRoot ?? process.env.PAPERCUSP_WORKSPACE_ROOT ?? `${process.env.HOME ?? ''}/papercupai-workspace`;
+  const workspaceRoot = opts.workspaceRoot ?? resolveHostWorkspaceRoot();
   let entries: Dirent[];
   try {
     entries = readdirSync(workspaceRoot, { withFileTypes: true });

@@ -12,7 +12,14 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
-import { declareChangeKinds, readChangeKinds } from '../../work-item-change-kinds';
+import {
+  attachChangeKindDeclarations,
+  completeChangeKindEligibility,
+  declareChangeKinds,
+  declaredChangeKindsById,
+  readChangeKinds,
+  writeSucceededEligibility,
+} from '../../work-item-change-kinds';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../../../libs/papercusp/libs/db/sql');
@@ -106,5 +113,118 @@ describe('work-item change-kind declarations (migration 1518)', () => {
     }) as unknown as typeof db.sql;
     const res = await declareChangeKinds({ workspaceId: WS, featureId: 'EI-7', kinds: ['ui'], step: 'claim', declaredBy: 'su-a' }, broken);
     expect(res).toEqual({ recorded: false, error: 'change-kind declaration not stored: connection refused' });
+  });
+});
+
+describe('entry-point recording (claim, checkpoint, complete share attachChangeKindDeclarations)', () => {
+  const base = { declaredBy: 'su-c', workspaceId: WS };
+
+  it('declaredChangeKindsById keeps only entries that declared something', () => {
+    const m = declaredChangeKindsById([
+      { id: 'EI-10', changeKinds: ['ui'], changeKindReason: 'r' },
+      { id: 'EI-11', changeKinds: [] },
+      { id: 'EI-12' },
+    ]);
+    expect([...m.keys()]).toEqual(['EI-10']);
+    expect(m.get('EI-10')).toEqual({ kinds: ['ui'], reason: 'r' });
+  });
+
+  it('claim and checkpoint record only a successful write, under the canonical workItem id', async () => {
+    const declared = declaredChangeKindsById([
+      { id: '6554700010099001', changeKinds: ['logic'] },
+      { id: 'EI-21', changeKinds: ['docs'] },
+      { id: 'EI-22' },
+    ]);
+    const results = await attachChangeKindDeclarations(
+      {
+        ...base,
+        declared,
+        step: 'claim',
+        eligible: writeSucceededEligibility('claim'),
+        results: [
+          { ok: true, id: '6554700010099001', workItem: { id: 'WI-6554700010099001' } },
+          { ok: false, id: 'EI-21', error: 'claim_conflict' },
+          { ok: true, id: 'EI-22' },
+        ],
+      },
+      db.sql,
+    );
+    expect(results[0]!.changeKinds).toEqual({ recorded: true, current: ['logic'], step: 'claim', previous: null });
+    expect(results[1]!.changeKinds).toEqual({ recorded: false, error: 'changeKinds were not recorded: the claim did not succeed.' });
+    expect(results[2]).toEqual({ ok: true, id: 'EI-22' });
+
+    const views = await readChangeKinds(WS, ['WI-6554700010099001', '6554700010099001', 'EI-21'], db.sql);
+    expect(views.get('WI-6554700010099001')!.current).toEqual(['logic']);
+    expect(views.get('6554700010099001')!.history).toEqual([]);
+    expect(views.get('EI-21')!.history).toEqual([]);
+  });
+
+  it('complete records a refused close that wrote a completion record, and skips previews and early refusals', async () => {
+    const declared = declaredChangeKindsById([
+      { id: 'EI-30', changeKinds: ['ui'] },
+      { id: 'EI-31', changeKinds: ['service'] },
+      { id: 'EI-32', changeKinds: ['migration'] },
+      { id: 'EI-33', changeKinds: ['config'] },
+    ]);
+    const results = await attachChangeKindDeclarations(
+      {
+        ...base,
+        declared,
+        step: 'complete',
+        eligible: completeChangeKindEligibility,
+        results: [
+          { ok: false, id: 'EI-30', completion: { summary: 's' }, stateError: 'REJECTED' },
+          { ok: true, id: 'EI-31', validationOnly: true },
+          { ok: false, id: 'EI-32', error: 'not held' },
+          { ok: true, id: 'EI-33', completion: { summary: 's' } },
+        ],
+      },
+      db.sql,
+    );
+    expect(results[0]!.changeKinds).toMatchObject({ recorded: true, step: 'complete', current: ['ui'] });
+    expect(results[1]).toEqual({ ok: true, id: 'EI-31', validationOnly: true });
+    expect(results[2]!.changeKinds).toEqual({
+      recorded: false,
+      error: 'changeKinds were not recorded: this call wrote no completion record.',
+    });
+    expect(results[3]!.changeKinds).toMatchObject({ recorded: true, step: 'complete', current: ['config'] });
+
+    const views = await readChangeKinds(WS, ['EI-30', 'EI-31', 'EI-32'], db.sql);
+    expect(views.get('EI-30')!.history.map((h) => h.step)).toEqual(['complete']);
+    expect(views.get('EI-31')!.history).toEqual([]);
+    expect(views.get('EI-32')!.history).toEqual([]);
+  });
+
+  it('keeps one history entry per step across create, claim, checkpoint and complete', async () => {
+    const id = 'EI-40';
+    await declareChangeKinds({ workspaceId: WS, featureId: id, kinds: ['ui'], step: 'create', declaredBy: 'su-c' }, db.sql);
+    const steps = [
+      { step: 'claim' as const, eligible: writeSucceededEligibility('claim'), kinds: ['ui', 'logic'], extra: {} },
+      { step: 'checkpoint' as const, eligible: writeSucceededEligibility('checkpoint write'), kinds: ['ui', 'logic', 'service'], extra: {} },
+      { step: 'complete' as const, eligible: completeChangeKindEligibility, kinds: ['ui', 'service'], extra: { completion: { summary: 's' } } },
+    ];
+    for (const s of steps) {
+      const [r] = await attachChangeKindDeclarations(
+        {
+          ...base,
+          declared: declaredChangeKindsById([{ id, changeKinds: s.kinds, changeKindReason: s.step === 'complete' ? 'logic moved out' : null }]),
+          step: s.step,
+          eligible: s.eligible,
+          results: [{ ok: true, id, ...s.extra }],
+        },
+        db.sql,
+      );
+      expect(r!.changeKinds).toMatchObject({ recorded: true, step: s.step });
+    }
+    const view = (await readChangeKinds(WS, [id], db.sql)).get(id)!;
+    expect(view.current).toEqual(['ui', 'service']);
+    expect(view.history.map((h) => [h.step, h.kinds, h.declaredBy, h.reason])).toEqual([
+      ['create', ['ui'], 'su-c', null],
+      ['claim', ['ui', 'logic'], 'su-c', null],
+      // stored in catalog order, not call order
+      ['checkpoint', ['ui', 'service', 'logic'], 'su-c', null],
+      ['complete', ['ui', 'service'], 'su-c', 'logic moved out'],
+    ]);
+    for (const h of view.history) expect(Number.isNaN(Date.parse(h.declaredAt))).toBe(false);
   });
 });

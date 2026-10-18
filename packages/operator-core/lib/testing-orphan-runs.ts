@@ -31,14 +31,9 @@
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { isRestoredCheckoutPath } from '@papercusp/test-config/test-run-paths';
 import { loadHarnessRegistry } from './harness-registry';
 import { phasePath } from './harness-phases';
-
-const WRONG_TREE_PREFIXES = [
-  'papercupai-workspace/papercup-checkpoint/',
-  'papercupai-workspace/papercusp-checkpoint/',
-  'papercupai-workspace/papercup-staging/',
-] as const;
 
 export type OrphanRunReason =
   | 'file_not_found'
@@ -87,9 +82,7 @@ function classifyPhantomPath(filePath: string): OrphanRunReason | null {
   if (filePath.includes('.flakeproof.test.')) {
     return 'flakeproof_path';
   }
-  if (WRONG_TREE_PREFIXES.some((prefix) => filePath.startsWith(prefix))) {
-    return 'wrong_tree_path';
-  }
+  if (isRestoredCheckoutPath(filePath)) return 'wrong_tree_path';
   return null;
 }
 

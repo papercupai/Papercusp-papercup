@@ -23,6 +23,9 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { isAbsolute, resolve, sep } from 'node:path';
 import type { OrgSql } from '../work-items';
+import { resolveHostWorkspaceRoot } from '../workspace-root';
+
+export { resolveHostWorkspaceRoot } from '../workspace-root';
 
 export type ForeignWorkspaceState =
   | 'provisioning'
@@ -101,17 +104,6 @@ function fromRow(r: Row): ForeignWorkspace {
     createdAt: toEpochMs(r.created_at),
     updatedAt: toEpochMs(r.updated_at),
   };
-}
-
-/**
- * The host tree root the Q1 invariant measures against. Exported (WI-6680) so
- * the SEEDING side (ensure-host-routines.ts) resolves the workspace root the
- * exact same way the CHECKING side below does — when the two drifted apart the
- * seeder wrote a config every registration then refused, and nothing caught it
- * because each side was self-consistent.
- */
-export function resolveHostWorkspaceRoot(): string {
-  return process.env.PAPERCUSP_WORKSPACE_ROOT ?? `${process.env.HOME ?? ''}/papercupai-workspace`;
 }
 
 /** Is `child` strictly inside (or equal to) `parent`, path-wise? */

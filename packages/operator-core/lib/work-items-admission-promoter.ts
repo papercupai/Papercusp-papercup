@@ -2127,7 +2127,7 @@ export async function readPendingBatch(
   harnessSlug: string,
   batchSize: number,
   targetItemIds?: readonly string[],
-  opts: { demoteGuardBlocked?: boolean; preferModelFree?: boolean } = {},
+  opts: { demoteGuardBlocked?: boolean; preferModelFree?: boolean; componentScreeningItemIds?: readonly string[] } = {},
 ): Promise<PromoterItem[]> {
   const targets = normalizeAdmissionTargetIds(targetItemIds);
   // demoteGuardBlocked (scheduled window only, WI-10004724): rows the promote guard will
@@ -2140,6 +2140,8 @@ export async function readPendingBatch(
   // lead the already-unreviewed ones because they are about to fail open and become new debt.
   // Ordering only, like `demote`; the pair read stays the authority on what has a candidate.
   const modelFree = opts.preferModelFree === true;
+  const componentScreeningIds = targets === undefined && demote && !modelFree
+    ? [...(opts.componentScreeningItemIds ?? [])] : [];
   // WI-10007333: ambiguous holds advance lastRetryAt, but FIFO/candidate priority
   // alone selected those same rows on every model tick. Rotate scheduled model
   // reviews by that existing watermark so never-reviewed debt gets a turn.
@@ -2188,6 +2190,7 @@ export async function readPendingBatch(
           OR (${claimed()} AND NOT ${overdueReReview()}))) ASC,
        (${modelFree} AND admission <> 'pending') ASC,
        (${modelFree} AND (payload -> 'dedupCandidates') IS NOT NULL) ASC,
+       (feature_id = ANY(${componentScreeningIds}::text[])) DESC,
        CASE WHEN ${demote} AND NOT ${modelFree}
               AND pg_input_is_valid(payload #>> '{admissionReview,lastRetryAt}', 'timestamp with time zone')
             THEN (payload #>> '{admissionReview,lastRetryAt}')::timestamptz
@@ -2323,6 +2326,8 @@ export async function readPromoterWindow(
     nowMs: number;
     /** No-model pass (WI-10004725): order the window so model-free rows lead it. */
     noModel?: boolean;
+    /** Authenticated scope-held requests, for ordinary component screening only. */
+    componentScreeningItemIds?: readonly string[];
   },
 ): Promise<{
   pendingRows: PromoterItem[];
@@ -2361,7 +2366,8 @@ export async function readPromoterWindow(
     input.harnessSlug,
     input.batchSize * PROMOTER_PRESCREEN_WINDOW_FACTOR,
     undefined,
-    { demoteGuardBlocked: true, preferModelFree: input.noModel === true },
+    { demoteGuardBlocked: true, preferModelFree: input.noModel === true,
+      componentScreeningItemIds: input.componentScreeningItemIds },
   );
   const snapshotsById = await readSnapshots(window.map((item) => item.id));
   // Self-blocked rows are excluded from the pair read itself: their pairs can never persist.
@@ -2395,7 +2401,9 @@ export async function readPromoterWindow(
       chunk,
       input.recentTerminalDays,
       input.nowMs,
-      false,
+      // A prioritized exact recovery must retain visibility of pending twins
+      // outside this ordinary window; hiding them would evade component screening.
+      input.noModel !== true && chunk.some((item) => input.componentScreeningItemIds?.includes(item.id)),
       selected.batch.map((item) => item.id),
     );
     for (const pair of chunkPairs) {
@@ -5487,6 +5495,8 @@ export async function runWorkItemAdmissionPromoter(opts: {
   runId?: string;
   batchSize?: number;
   targetItemIds?: readonly string[];
+  /** Internal ordinary-selection hint; never a mutation scope or authority grant. */
+  componentScreeningItemIds?: readonly string[];
   recentTerminalDays?: number;
   model?: string;
   now?: () => number;
@@ -5572,6 +5582,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       recentTerminalDays,
       nowMs: startedAt,
       noModel,
+      componentScreeningItemIds: opts.componentScreeningItemIds,
     });
     const pending = pendingRows.map((item) => bindAdmissionMergeSnapshot(item, snapshotsById.get(item.id)));
     const pairs = pairRows.map((pair) => ({

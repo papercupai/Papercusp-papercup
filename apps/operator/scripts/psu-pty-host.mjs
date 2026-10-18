@@ -10689,7 +10689,16 @@ export function hostThroughPty(o) {
   const carryProofRetryMax = Number.isFinite(configuredCarryProofRetryMax) && configuredCarryProofRetryMax >= 0
     ? Math.floor(configuredCarryProofRetryMax)
     : CARRY_PROOF_RETRY_MAX;
+  /** @type {string | null} */
+  let nativeChildExitReason = null;
   const publishKickoffProof = (proof) => {
+    // EI-26236600643747632: teardown wakes the pending injector with the generic
+    // host-ended reason. Retain the native exit we observed first, even when the
+    // CLI produced no output or transcript. This reports its status, not why it
+    // exited; unrelated host shutdowns keep their existing refusal reason.
+    if (proof.persisted !== true && proof.reason === 'kickoff-not-submitted:host-ended' && nativeChildExitReason) {
+      proof = { ...proof, reason: `kickoff-not-submitted:${nativeChildExitReason}` };
+    }
     const result = publishKickoffProofReceipt(proof, env);
     if (!result.published && result.reason !== 'kickoff-proof-request-missing') {
       appendHostEvent(ownerId, 'kickoff-proof-receipt-publication-failed', {
@@ -16188,6 +16197,9 @@ export function hostThroughPty(o) {
         // session state. A pre-turn failure can leave no transcript or output;
         // the spawn row alone cannot distinguish a native exit from host failure.
         // Link existing output evidence without copying potentially secret text.
+        if (!hostCleanedUp && !shuttingDown) {
+          nativeChildExitReason = `native-child-exited:exit=${Number.isInteger(exitCode) ? exitCode : 'unknown'};signal=${signalNameFromCode(signal) ?? 'none'}`;
+        }
         appendHostEvent(ownerId, 'pty-child-exited', {
           childPid: Number.isInteger(thisChild.pid) ? thisChild.pid : null,
           agent: env.PAPERCUSP_AGENT || null,

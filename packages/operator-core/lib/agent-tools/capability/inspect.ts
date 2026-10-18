@@ -27,6 +27,7 @@ import { isAbsolute, basename, dirname, relative, resolve } from 'node:path';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { z } from 'zod';
+import { inspectVmCopyAuthority, vmCopyInspectSchema, VmCopyRefusal } from './vm-copy-authority';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   DEFAULT_BACKGROUND_TIMEOUT_MS,
@@ -578,7 +579,7 @@ export function filterTscOutputToPaths(
 export default defineTool({
   name: 'capability:inspect',
   description:
-    'Run a READ-ONLY code verification (typecheck or test) to confirm a claim about the code before diagnosing. Fixed safe commands only (npx tsc --noEmit, npm run test:affected, package-local npx vitest run, or the repository test:file router for layered tests); never an arbitrary shell command. Use this — not capability:bash — to verify.',
+    'Run fixed code verification (typecheck or test), or check vm-copy-authority for an already accepted operation. The protected VM-copy check requires authenticated applied execution authority and never runs commands or acquires leases. Fixed safe commands only for code verification; never an arbitrary shell command.',
   guidance: {
     when: 'VERIFY a code claim before you report or diagnose: typecheck a package after a suspected type error, or run a package / test-file suite to confirm a failure actually reproduces. This is the sanctioned read-only exec for confined fleet agents (capability:bash is gated for them).',
     notWhen:
@@ -602,7 +603,7 @@ export default defineTool({
   // ProjectedTool.skipWorkspaceTx.
   skipWorkspaceTx: true,
   events: { output: z.string().describe('text/plain') },
-  args: z.object({
+  args: z.discriminatedUnion('check', [z.object({
     check: z
       .enum(['typecheck', 'test'])
       .describe('typecheck = `npx tsc --noEmit` in the package; test = the package suite (`npx vitest run`), the repository `npm run test:file -- <path…>` router for exact one- or multi-file runs (including `.integration.test.*`, `.browser.test.*`, and `.e2e.test.*`), or, with no package and no paths, the repo `npm run test:affected`.'),
@@ -649,8 +650,17 @@ export default defineTool({
       .describe(
         `Wall-clock timeout in ms. FOREGROUND: default ${DEFAULT_TIMEOUT_MS}, clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms (below the ~55s MCP transport cap) so it returns a hint instead of an opaque request_timeout. BACKGROUND (run_in_background): default ${DEFAULT_BACKGROUND_TIMEOUT_MS}, max ${MAX_BACKGROUND_TIMEOUT_MS} — not bound by the transport cap, but still terminated at its own deadline.`,
       ),
-  }),
+  }), vmCopyInspectSchema]),
   async handler(args, ctx) {
+    if (args.check === 'vm-copy-authority') {
+      try {
+        const response = await inspectVmCopyAuthority(args.request, ctx);
+        return { content: [{ type: 'text' as const, text: JSON.stringify(response) }] };
+      } catch (error) {
+        return err(error instanceof VmCopyRefusal ? error.code : 'vm-copy-authority-unavailable',
+          'Protected copy authority refused; no copy or lease action was performed.');
+      }
+    }
     const baseDir = resolveCapabilityBaseDir(ctx);
     let resolved: InspectResolution;
     if (args.check === 'typecheck' && args.onlyPaths && args.onlyPaths.length > 0) {

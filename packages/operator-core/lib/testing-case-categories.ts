@@ -27,6 +27,7 @@
 import { minimatch } from 'minimatch';
 import type { RecordedTestLayer } from '@papercusp/test-config/execution-details';
 import { getOrgPg } from '@papercusp/db-org';
+import { RESTORED_CHECKOUT_PATH_PATTERN } from '@papercusp/test-config/test-run-paths';
 import { checkFileTestLayers } from './acceptance-bar-contract-completeness';
 import { hasMatchingDeclaredCaseTitle } from './testing-case-filter';
 import { statusFlipStats } from './testing-flakiness';
@@ -316,9 +317,6 @@ export function deriveTestCaseCategories(input: CategoriesInput): CategoriesResu
 /** A postgres-js-like tagged-template client; injectable so the reader stays unit-testable. */
 export type SqlLike = (strings: TemplateStringsArray, ...values: unknown[]) => PromiseLike<unknown[]>;
 
-/** Same population testing-flakiness reads: local runs, not gate or mutation-probe rows. */
-const RESTORED_CHECKOUT_PREFIX = 'papercupai-workspace/papercup-';
-
 /** Hard cap on case-occurrence rows one read loads; hitting it is reported, never hidden. */
 export const CASE_ROW_CAP = 20_000;
 
@@ -395,7 +393,7 @@ export async function readTestCaseCategories(
      WHERE r.finished_at IS NOT NULL
        AND r.finished_at > now() - make_interval(days => ${lookbackDays})
        AND r.source NOT IN ('ci', 'mutation-probe')
-       AND r.file_path NOT LIKE ${RESTORED_CHECKOUT_PREFIX + '%'}
+       AND r.file_path !~ ${RESTORED_CHECKOUT_PATH_PATTERN}
        AND (${files.length === 0} OR r.file_path = ANY(${files}::text[]))
        AND (${workspaceId}::text IS NULL OR r.workspace_id = ${workspaceId} OR r.workspace_id IS NULL)
      ORDER BY r.file_path, c.case_key, r.finished_at, c.occurrence
