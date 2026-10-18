@@ -1,6 +1,7 @@
 /** P-002 real-Postgres coverage for canonical plan spec revisions and tools. */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
+import { RECORDED_TEST_LAYERS } from '@papercusp/test-config/execution-details';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
@@ -698,6 +699,47 @@ describe('first-class plan spec clauses', () => {
  *  - a MALFORMED declaration is refused structurally rather than silently
  *    dropped — a caller must never believe they declared what the row does not say.
  */
+describe('WI-6554700010017412 recorded layer declarations', () => {
+  it.each(['concurrency', 'performance', 'failure-injection', 'recovery', 'rendered', 'user-journey'])(
+    'refuses %s at the common writer, including the existing-transaction route',
+    async (layer) => {
+      const input = clause({ requiredTestLayers: ['integration', layer] });
+      const executor = vi.fn(() => { throw new Error('invalid declaration reached SQL'); });
+      const refusal = { status: 'test_layers_invalid', specId: input.specId, invalidTestLayers: [layer] };
+      expect(await store.setSpecClause(input)).toEqual(refusal);
+      expect(await store.setSpecClause(input, { executor, workspaceId: WORKSPACE, harnessSlug: HARNESS })).toEqual(refusal);
+      expect(executor).not.toHaveBeenCalled();
+      expect(await store.listSpecClauses({ harnessSlug: HARNESS, planSlug: 'reconnect-plan' })).toEqual([]);
+    },
+  );
+
+  it('round-trips all recordable layers through the public reader and writer without losing proof obligations', async () => {
+    const input = clause({
+      requiredTestLayers: [...RECORDED_TEST_LAYERS],
+      falsifier: { observation: 'An acknowledged event is delivered twice.', requiredScenarios: ['concurrent-reconnect', 'cancellation'] },
+    });
+    expect(await store.setSpecClause(input)).toMatchObject({ status: 'created', revision: 1 });
+    const get = await getSpecsTool.handler(
+      getSpecsTool.args.parse({ harness: HARNESS, slug: 'reconnect-plan', specIds: [input.specId] }), CTX,
+    ) as { data: { specs: SpecClauseRevision[] } };
+    const [row] = get.data.specs;
+    const write = setSpecsTool.args.parse({ harness: HARNESS, slug: 'reconnect-plan', spec: {
+      specId: row.specId, expectedRevision: row.revision, sourceValId: row.sourceValId,
+      planItemId: row.planItemId, behavior: row.behavior, behaviorClass: row.behaviorClass,
+      requiredEvidence: row.requiredEvidence, requiredTestLayers: row.requiredTestLayers,
+      mutationRequired: row.mutationRequired, lifecycleStatus: row.lifecycleStatus,
+      supersedes: row.supersedes, exemption: row.exemption, falsifier: row.falsifier,
+      acceptanceRef: row.acceptanceRef, sourceBar: row.sourceBar,
+    } });
+    const set = await setSpecsTool.handler(write, CTX) as { data: { results: Array<Record<string, unknown>> } };
+    expect(set.data.results[0]).toMatchObject({ ok: true, status: 'unchanged', revision: 1 });
+    expect(row.requiredTestLayers).toEqual([...RECORDED_TEST_LAYERS].sort());
+    expect(row.falsifier?.requiredScenarios).toEqual(['cancellation', 'concurrent-reconnect']);
+    expect(row.requiredEvidence).toEqual([...input.requiredEvidence!].sort());
+    expect(row.mutationRequired).toBe(true);
+  });
+});
+
 describe('D-016 clause falsifier', () => {
   const withFalsifier = (over: Partial<SpecClauseWrite> = {}) =>
     clause({

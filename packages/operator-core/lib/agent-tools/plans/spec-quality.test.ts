@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { RECORDED_TEST_LAYERS } from '@papercusp/test-config/execution-details';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import { specBehaviorNonAtomicReason } from './spec-clause-compiler';
 import { evaluatePlanSpecQuality, specQualityPlanItemIds } from './spec-quality';
@@ -35,6 +36,38 @@ function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
 }
 
 describe('evaluatePlanSpecQuality', () => {
+  describe('WI-6554700010017412 recorded layer declarations', () => {
+    it.each(['concurrency', 'performance', 'failure-injection', 'recovery', 'rendered', 'user-journey'])(
+      'rejects an active unrecordable %s obligation without changing it',
+      (layer) => {
+        const legacy = clause({ requiredTestLayers: ['integration', layer] });
+        const before = structuredClone(legacy);
+        const result = evaluatePlanSpecQuality({
+          planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+          clauses: [legacy], classRef: 'plan-class-feature-ship',
+        });
+        expect(result.verdict).toBe('fail');
+        expect(result.ratings['plan-class-specialization']).toMatchObject({ rating: 'fail' });
+        expect(result.ratings['plan-class-specialization'].evidence).toContain('SPEC-001-01');
+        expect(result.ratings['plan-class-specialization'].evidence).toContain(JSON.stringify(layer));
+        expect(result.ratings['plan-class-specialization'].suggestion).toContain('preserve');
+        expect(legacy).toEqual(before);
+      },
+    );
+
+    it('accepts every recordable layer and leaves historical draft obligations outside the active check', () => {
+      const result = evaluatePlanSpecQuality({
+        planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+        clauses: [
+          clause({ requiredTestLayers: [...RECORDED_TEST_LAYERS] }),
+          clause({ specId: 'LEGACY-DRAFT', sourceValId: null, lifecycleStatus: 'draft', requiredTestLayers: ['concurrency'] }),
+        ],
+        classRef: 'plan-class-feature-ship',
+      });
+      expect(result.verdict).toBe('pass');
+    });
+  });
+
   it('uses the same quality evidence for the stored index and locked Markdown with dropped items', () => {
     const markdown = [
       '---', 'title: Quality plan', 'status: ready', '---', '## Items',

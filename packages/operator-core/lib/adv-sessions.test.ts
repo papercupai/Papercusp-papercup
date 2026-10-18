@@ -155,6 +155,37 @@ function advSessionTableReads(): unknown[][] {
   );
 }
 
+describe('P040 unkeyed retained-wake claim contract', () => {
+  it.each([null, '', '  '] as const)('keeps the no-key transition distinct from keyed finalization (%j)', async (key) => {
+    advSessionRowsMock.mockResolvedValueOnce([{ id: 42 }]);
+
+    await expect(claimAdvSessionResume(42, key, undefined, 'su-retained-codex')).resolves.toBe(true);
+
+    expect(advSessionBeginMock).not.toHaveBeenCalled();
+    expect(advSessionRowsMock).toHaveBeenCalledOnce();
+    const [template, ...values] = advSessionRowsMock.mock.calls[0] as unknown[];
+    const statement = (template as readonly string[]).join(' ');
+    expect(values).toContain('su-retained-codex');
+    expect(statement).toContain('coord_owner_id =');
+    expect(statement).toContain('successor.id > adv_sessions.id');
+    for (const field of ['ended_at', 'exit_code', 'ended_by', 'ended_signal', 'shutdown_accepted_at',
+      'resume_claim_key', 'resume_claimed_at']) {
+      expect(statement).toContain(`${field} = NULL`);
+    }
+    // The legacy claim changes liveness only. Real receipt preservation and
+    // rollback are asserted by the sibling PostgreSQL integration suite.
+    expect(statement).not.toContain('launch_spec =');
+    expect(statement).not.toContain('agent_launch_idempotency');
+  });
+
+  it('propagates an unevaluated claim instead of reporting a lost election', async () => {
+    const failure = new Error('P040 unkeyed claim datastore failure');
+    advSessionRowsMock.mockRejectedValueOnce(failure);
+    await expect(claimAdvSessionResume(42, null, undefined, 'su-retained-codex')).rejects.toBe(failure);
+    expect(advSessionRowsMock).toHaveBeenCalledOnce();
+  });
+});
+
 function appAdvSessionTableReads(): unknown[][] {
   return (appSessionRowsMock.mock.calls as unknown[][]).filter(([template]) =>
     Array.isArray(template) && template.join(' ').includes('FROM harness_shared.adv_sessions'),

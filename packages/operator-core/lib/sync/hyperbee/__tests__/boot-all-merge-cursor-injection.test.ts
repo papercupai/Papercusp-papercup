@@ -89,7 +89,7 @@ describe('WI-3297 merge-cursor-store injection (in-process boot path)', () => {
     expect(bootSpy).not.toHaveBeenCalled();
   });
 
-  it('routing-latch timeout fallback still injects a durable PG cursor store', async () => {
+  it('routing-latch timeout fails closed instead of starting a duplicate engine', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.useFakeTimers();
     try {
@@ -101,11 +101,11 @@ describe('WI-3297 merge-cursor-store injection (in-process boot path)', () => {
       // without sleeping in the suite.
       await vi.advanceTimersByTimeAsync(300_000);
       const r = await pending;
-      expect(r.state).toBe('booted');
-      expect(bootSpy).toHaveBeenCalledTimes(1);
-      expect(bootSpy.mock.calls[0]![0].mergeCursorStore).toBeDefined();
+      expect(r.state).toBe('failed');
+      expect(r.error).toContain('substrate routing undecided after 300000ms');
+      expect(bootSpy).not.toHaveBeenCalled();
       expect(errorSpy).toHaveBeenCalledWith(
-        expect.stringContaining('substrate routing still undecided after 300000ms'),
+        expect.stringContaining('last-resort in-process fallback refused'),
       );
     } finally {
       vi.useRealTimers();

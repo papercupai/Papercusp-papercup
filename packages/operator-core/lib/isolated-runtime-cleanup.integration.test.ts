@@ -600,20 +600,22 @@ it('fences intentional PG shutdown before cancelling an owned process group', as
     const result = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 120_000, killGraceMs: 45_000 });
     expect(cancelled).toBe(true);
     // A detached supervisor owns a separate process group. Its SIGTERM handler
-    // fences PG before signalling that group; the worker's SIGINT exit can win
-    // the supervisor's final-exit race, so the observed supervisor result is
-    // code 1 rather than a raw SIGTERM. The guard is the absence of restart and
-    // the complete cleanup receipt.
+    // fences PG before signalling that group. Depending on whether the worker
+    // exit wins the final-exit race, Node reports either code 1 or the original
+    // SIGTERM; both are handled cancellation outcomes. The guard is the
+    // absence of restart and the complete cleanup receipt.
+    expect([
+      { code: 1, signal: null },
+      { code: null, signal: 'SIGTERM' },
+    ]).toContainEqual({ code: result.code, signal: result.signal });
     expect({
-      code: result.code,
-      signal: result.signal,
       timedOut: result.timedOut,
       exitWaitTimedOut: result.exitWaitTimedOut,
       stdioDrainTimedOut: result.stdioDrainTimedOut,
       unexpectedDeath: result.output.includes('postgres exited unexpectedly'),
       restartAttempt: result.output.includes('restart attempt'),
       cleanupComplete: result.output.includes('stage":"complete"'),
-    }).toEqual({ code: 1, signal: null, timedOut: false, exitWaitTimedOut: false,
+    }).toEqual({ timedOut: false, exitWaitTimedOut: false,
       stdioDrainTimedOut: false, unexpectedDeath: false, restartAttempt: false, cleanupComplete: true });
   } finally {
     child.off('message', cancelOnRuntimeStart);

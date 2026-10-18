@@ -1,5 +1,6 @@
 /** Plan-level spec quality over the exact current first-class clause set (P-004). */
 import { createHash } from 'node:crypto';
+import { RECORDED_TEST_LAYERS, isRecordedTestLayer } from '@papercusp/test-config/execution-details';
 import type { SpecClauseRevision } from './spec-clauses-store';
 import { isNonAutomatedBehaviorClass } from '../../plan-verification-profile';
 import {
@@ -868,8 +869,20 @@ export function evaluatePlanSpecQuality(input: {
   const everyItemExplicitlyExempt =
     planItemIds.length > 0 &&
     planItemIds.every((itemId) => validExemptions.some((clause) => clause.planItemId === itemId));
+  // Old internal writers could bypass plans:set-specs validation. A class-fit
+  // pass cannot endorse an active proof obligation the recorder cannot satisfy.
+  // Draft history is preserved and is not an enforceable runtime requirement.
+  const invalidLayerDeclarations = behavioral.flatMap((clause) => {
+    const invalid = clause.requiredTestLayers.filter((layer) => !isRecordedTestLayer(layer));
+    return invalid.length ? [`${clause.specId}@${clause.revision}:${JSON.stringify(invalid)}`] : [];
+  });
   ratings['plan-class-specialization'] =
-    classFit.ok || (input.classRef === 'plan-class-investigation' && everyItemExplicitlyExempt)
+    invalidLayerDeclarations.length > 0
+      ? fail(
+          `Active clause(s) declare unrecordable required test layers: ${invalidLayerDeclarations.join('; ')}. Recorded layers: ${RECORDED_TEST_LAYERS.join(', ')}.`,
+          'Append explicit revisions with recorded layers; preserve every original behavior, scenario and evidence obligation instead of silently dropping or mapping legacy labels.',
+        )
+      : classFit.ok || (input.classRef === 'plan-class-investigation' && everyItemExplicitlyExempt)
       ? pass(
           classFit.ok
             ? classFit.evidence

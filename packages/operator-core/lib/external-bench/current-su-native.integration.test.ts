@@ -26,6 +26,7 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
     sourcePaths: ['scripts/with-test-pg.mjs', 'packages/operator-core/test/staging-first-http-fixture.ts',
       'packages/operator-core/test/private-http-workspace-preflight.ts',
       'packages/operator-core/test/current-su-native-http-scenario.ts',
+      'packages/operator-core/test/current-su-native-http-protocol.ts',
       'packages/operator-core/test/isolated-integration-proof.ts',
       'packages/operator-core/lib/external-bench/current-su.ts',
       'packages/operator-core/lib/external-bench/frontier-swe-launch-adapter.ts',
@@ -42,6 +43,7 @@ async function nativeScenario(scenario: 'current-su-native' | 'current-su-native
       'packages/operator-core/lib/desktop-install/papercusp-files.ts',
       'packages/operator-core/lib/role-codex-home.ts', ...hookInputs],
     retainedArtifacts: ['phases/prepare/operator-api-build.log', 'phases/prepare/operator-api-build-result.json',
+      'native-model-requests.json',
       'phases/prepare/bundle-restricted-hold-inputs.json',
       'phases/prepare/hono-host.mjs.build-steps.jsonl'],
     prepare: async evidenceDir => {

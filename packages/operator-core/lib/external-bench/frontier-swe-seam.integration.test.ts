@@ -15,6 +15,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer } from 'node:http';
+import { guardedCurrentSuNativeHandler } from '../../test/current-su-native-http-protocol';
 import type { BenchTask } from './types';
 import { makeFrontierSweCloneGradeSeam, type FrontierSweEnvHandle } from './frontier-swe-seam';
 import { materializeDockerExecWrapper } from './container-exec-target';
@@ -49,7 +51,7 @@ function task(): BenchTask {
 }
 
 describe('FrontierSWE seam with an in-container Codex session home (real docker)', () => {
-  it('clone mounts only this task, the container writes as its own user, and teardown returns a host-owned, deletable session dir to the shared root', async () => {
+  it('clone mounts only this task and returns a host-owned, deletable session dir after a scripted HTTP handler rejects', async () => {
     const homesRoot = join(base, 'x', 'home', 'su-codex-homes');
     const sqliteRoot = join(base, 'x', 'tmp', 'papercusp-codex-sqlite-homes');
     const sessionHome = join(homesRoot, 'session-11');
@@ -140,7 +142,27 @@ describe('FrontierSWE seam with an in-container Codex session home (real docker)
     console.log('SEAM_PRIVATE_CONFIG_HANDBACK', JSON.stringify({ containerUid,
       hostUid: hostOwner.uid, beforeUid: beforeHandback.uid, mode: beforeHandback.mode & 0o777 }));
 
-    await seam.teardown(h);
+    // Native210's async HTTP assertion escaped Node's request callback and
+    // skipped this handback. Exercise the maintained failure boundary while
+    // these exact root-owned transcript/config files still exist.
+    const handlerError = new Error('intentional native protocol assertion');
+    let reported: unknown;
+    const transport = guardedCurrentSuNativeHandler(async () => { await Promise.resolve(); throw handlerError; },
+      error => { reported = error; });
+    const listener = createServer(transport.listener);
+    await new Promise<void>(done => listener.listen(0, '127.0.0.1', done));
+    try {
+      const response = await fetch(`http://127.0.0.1:${(listener.address() as { port: number }).port}/responses`, { method: 'POST' });
+      expect(response.status).toBe(500);
+      await response.text();
+      await expect(transport.failure).rejects.toBe(handlerError);
+      expect(reported).toBe(handlerError);
+    } finally {
+      try {
+        listener.closeAllConnections();
+        await new Promise<void>(done => listener.close(() => done()));
+      } finally { await seam.teardown(h); }
+    }
 
     expect(spawnSync('docker', ['inspect', h.containerId], { stdio: 'ignore' }).status).not.toBe(0);
     // The task network went with the container; the run's egress stays up for other tasks.

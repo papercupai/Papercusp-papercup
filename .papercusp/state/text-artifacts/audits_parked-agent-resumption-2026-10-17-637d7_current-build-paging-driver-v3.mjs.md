@@ -1,6 +1,6 @@
 ---
 rel_path: "audits/parked-agent-resumption-2026-10-17-637d7/current-build-paging-driver-v3.mjs"
-updated_at: 1792311881832
+updated_at: 1792314341055
 _body: "content"
 ---
 
@@ -15,6 +15,7 @@ function call(tool,args){
   try {
    const raw=r.stdout||'';
    const candidate=tool==='code:run' ? raw.split(/\n/).filter(x=>x.startsWith('data: ')).at(-1)?.slice(6) : raw;
+   if(tool==='code:run'&&!candidate) throw new Error('missing SSE result');
    j=JSON.parse(candidate||'{}');
    if(tool==='code:run' && j.result?.content){
     const jsonBlock=j.result.content.find(c=>c.type==='text'&&c.text?.trim().startsWith('{'));
@@ -72,7 +73,7 @@ function exactSummary(j){
 let start=current(); console.log(JSON.stringify({start}));
 for(let i=0;i<Number(process.env.MAX_BATCH||1250) && !start.complete;i++){
  const rr=call('code:run',{script:readScript,timeoutSec:45,projection:{pick:['ok','summary','summaryNotice','error','partial','childFailures']}});
- if((rr.status!==0 && rr.status!==6) || rr.json.ok===false) throw new Error('read batch '+(i+1)+' failed '+JSON.stringify(rr.json));
+ if((rr.status!==0 && rr.status!==6) || rr.json.ok===false) throw new Error('read batch '+(i+1)+' failed status='+rr.status+' stderr='+rr.stderr.slice(-1000)+' json='+JSON.stringify(rr.json));
  const d=exactSummary(rr.json);
  if(!d || typeof d.recordsRead!=='number') throw new Error('read batch missing delta '+JSON.stringify(rr.json));
  const payload={script:'const d='+JSON.stringify(d)+';'+persistScript,timeoutSec:45,projection:{pick:['ok','summary','error','partial','childFailures']}};

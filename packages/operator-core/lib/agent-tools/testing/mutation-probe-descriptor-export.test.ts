@@ -146,7 +146,7 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     const replay = JSON.parse(out.match(/^MUTATION_PROBE_EVIDENCE_JSON=(.+)$/m)![1]!);
     expect(replay.environment).toMatchObject({
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `file://${operatorRoot}/api/health`,
-      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '1',
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: 1,
     });
     const seen = legs(log);
     expect(seen.length).toBeGreaterThan(0);
@@ -169,6 +169,12 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     expect(code, out).toBe(2);
     expect(out).toContain('MUTATION_PROBE_RESULT verdict=harness-error phase=descriptor reason=reader-unavailable');
     expect(out).toContain('refusing to run an unbindable proof');
+    // The refusal must name the reader it judged (on the RESULT line) and the
+    // remedy for a close evaluated on another build (EI-26306001661366608: a
+    // :3170-evaluated close was refused against the session's :3070 route with
+    // no pointer to the fix).
+    expect(out).toMatch(/MUTATION_PROBE_RESULT verdict=harness-error phase=descriptor reason=reader-unavailable reader_source=operator-url reader_url=http:\/\/127\.0\.0\.1:1\/api\/health /);
+    expect(out).toMatch(/evaluated on a different build[\s\S]*PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL set to that build's \/api\/health/);
     expect(out).not.toContain('running baseline guard');
     expect(legs(log)).toEqual([]);
   });

@@ -25,6 +25,9 @@ let allocations: Awaited<ReturnType<typeof startDockerAllocationOwner>> | undefi
 // fixture startup rather than reported as an opaque hook timeout.
 const FIXTURE_READY_TIMEOUT_MS = 300_000;
 const FIXTURE_HOOK_TIMEOUT_MS = 420_000;
+// Headless runners may provide no usable terminal. Both SSH entrypoints
+// exercise an interactive tmux session, so give them the same terminal contract.
+const FIXTURE_TERM = 'xterm-256color';
 // Killing the Docker CLI does not cancel the daemon's create/start/stop/rm.
 // The external owner survives the runner's cgroup kill and joins each daemon
 // outcome before removing the exact labelled container and its private keys.
@@ -41,7 +44,10 @@ async function ssh(command: string, args: string[]) {
   const socket = args.indexOf('-S');
   if (socket >= 0) masters.add(args[socket + 1]);
   return new Promise<{ code: number | null; signal: string | null; output: string }>((resolve, reject) => {
-    const child = spawn(command, ['-F', config, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, ['-F', config, ...args], {
+      env: { ...process.env, TERM: FIXTURE_TERM },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     let output = '';
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
@@ -68,7 +74,7 @@ async function nativePsu(args: string[], input?: string) {
       cwd: root,
       env: {
         HOME: root, PATH: `${join(root, 'bin')}:${process.env.PATH}`,
-        TERM: 'xterm-256color', LANG: 'C.UTF-8',
+        TERM: FIXTURE_TERM, LANG: 'C.UTF-8',
         PERSONAL_SSH_FIXTURE_CONFIG: config,
         // Preserve the suite's source-identity enforcement in the native child.
         ...(process.env.NODE_OPTIONS ? { NODE_OPTIONS: process.env.NODE_OPTIONS } : {}),
@@ -113,10 +119,13 @@ beforeAll(async () => {
   for (const name of ['client', 'host']) {
     execFileSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', join(root, name)], { timeout: 10_000 });
   }
-  writeFileSync(join(root, 'psu'), `#!/usr/bin/python3\nimport json,os,socket,sys,time\nprint(json.dumps({'argv':sys.argv[1:],'forwarded':os.environ.get('PAPERCUSP_PSU_CONNECTION_FORWARDED'),'cwd':os.getcwd(),'hostname':socket.gethostname()}),flush=True)\nif '--transport-stdin' in sys.argv:\n print('PERSONAL_SSH_INPUT_READY',flush=True)\n print(json.dumps({'stdin':sys.stdin.readline()}),flush=True)\ntime.sleep(0.2)\n`);
+  writeFileSync(join(root, 'psu'), `#!/usr/bin/python3\nimport json,os,socket,sys,time\nprint(json.dumps({'argv':sys.argv[1:],'forwarded':os.environ.get('PAPERCUSP_PSU_CONNECTION_FORWARDED'),'cwd':os.getcwd(),'hostname':socket.gethostname(),'term':os.environ.get('TERM')}),flush=True)\nif '--transport-stdin' in sys.argv:\n print('PERSONAL_SSH_INPUT_READY',flush=True)\n print(json.dumps({'stdin':sys.stdin.readline()}),flush=True)\ntime.sleep(0.2)\n`);
   writeFileSync(join(root, 'gui.py'), `from http.server import BaseHTTPRequestHandler,HTTPServer\nclass H(BaseHTTPRequestHandler):\n def do_GET(self):\n  self.send_response(200); self.end_headers(); self.wfile.write(b'personal-computer-gui')\nHTTPServer(('127.0.0.1',3070),H).serve_forever()\n`);
   process.stderr.write(`PERSONAL_SSH_FIXTURE ${JSON.stringify({ status: 'ownership', resource: container, mount: root })}\n`);
-  await docker(['create', '--rm', '--name', container, '--label', `papercusp.test.owner=${container}`, '-p', '127.0.0.1::22',
+  // The external allocation owner performs the stop/remove and verifies that
+  // the labeled container is gone. Docker's --rm would race that owner-side
+  // rm --force when stopping this running fixture.
+  await docker(['create', '--name', container, '--label', `papercusp.test.owner=${container}`, '-p', '127.0.0.1::22',
     '--mount', `type=bind,source=${root},target=/fixture,readonly`, image, 'sh', '-ec',
     'set -eu; apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server tmux python3; '
     + 'mkdir -p /run/sshd /root/.ssh; cp /fixture/client.pub /root/.ssh/authorized_keys; chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys; '
@@ -185,6 +194,7 @@ test('native psu entrypoint selects the saved machine and preserves remote host 
   expect(result.output).toContain('"forwarded": "1"');
   expect(result.output).toContain('"cwd": "/root"');
   expect(result.output).toContain(`"hostname": ${JSON.stringify(remoteHostname)}`);
+  expect(result.output).toContain(`"term": ${JSON.stringify(FIXTURE_TERM)}`);
   expect(result.output).toContain('"stdin": "native input $value\\n"');
 }, 40_000);
 
@@ -205,6 +215,7 @@ test('runs remote psu, serves the private GUI and refuses a revoked or offline c
   expect(terminalOutput).toContain('"argv": ["--resume=session 1", "--label=quoted value"]');
   expect(terminalOutput).toContain('"forwarded": "1"');
   expect(terminalOutput).toContain('"cwd": "/root"');
+  expect(terminalOutput).toContain(`"term": ${JSON.stringify(FIXTURE_TERM)}`);
 
   let browserUrl = '';
   const browser = { ...deps, openBrowser: (url: string) => { browserUrl = url; },

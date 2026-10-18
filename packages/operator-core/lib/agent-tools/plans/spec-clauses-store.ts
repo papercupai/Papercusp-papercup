@@ -1,6 +1,7 @@
 /** Canonical first-class plan spec clause storage (P-002 / D-001..D-003). */
 import { createHash } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
+import { isRecordedTestLayer } from '@papercusp/test-config/execution-details';
 import { isNonAutomatedBehaviorClass } from '../../plan-verification-profile';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from '../../pg-timestamp';
 import { resolveSpecScopeSlug } from './adhoc-spec-scope';
@@ -155,6 +156,7 @@ export type SetSpecClauseResult =
       conflictingSpecId: string;
     }
   | { status: 'falsifier_invalid'; specId: string; reason: FalsifierIssue }
+  | { status: 'test_layers_invalid'; specId: string; invalidTestLayers: string[] }
   | { status: 'bar_pin_invalid'; specId: string; reason: string }
   | { status: 'plan_not_found'; specId: string; planSlug: string }
   | { status: 'plan_item_not_found'; specId: string; planItemId: string }
@@ -380,6 +382,14 @@ export async function setSpecClause(
   input: SpecClauseWrite,
   transaction?: SetSpecClauseTransaction,
 ): Promise<SetSpecClauseResult> {
+  // Internal seed/amendment callers also use this writer, bypassing the public
+  // tool's Zod schema. Never persist an obligation the test ledger cannot record.
+  // Historical reads stay exact: repairing a legacy label requires a deliberate
+  // immutable revision that preserves its scenario and evidence obligations.
+  const invalidTestLayers = [...new Set((input.requiredTestLayers ?? []).filter((layer) => !isRecordedTestLayer(layer)))].sort();
+  if (invalidTestLayers.length > 0) {
+    return { status: 'test_layers_invalid', specId: input.specId, invalidTestLayers };
+  }
   const falsifierIssue = falsifierIssueOf(input.falsifier);
   if (falsifierIssue) {
     return { status: 'falsifier_invalid', specId: input.specId, reason: falsifierIssue };

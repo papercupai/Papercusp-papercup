@@ -197,11 +197,16 @@ describe('host-bootstrap fails the background plane closed on migration failure'
     // returns (which left the substrate down until a manual restart). It awaits
     // awaitBootMigrationGate, which only resolves on a clean result and retries in
     // place while failed — so the ordering below is still the fail-closed contract.
-    const gate = bootSrc.indexOf('await awaitBootMigrationGate({', bootSrc.indexOf('const gateHost = `${utilityHost'));
+    const gateHost = bootSrc.indexOf('const gateHost = `${utilityHost');
+    const provisionalRoutingFailure = bootSrc.indexOf('markSubstrateBootRoutingFailed(\'boot migration gate pending;', gateHost);
+    const gate = bootSrc.indexOf('await awaitBootMigrationGate({', gateHost);
     const routingFailure = bootSrc.indexOf('markSubstrateBootRoutingFailed', gate);
     const requestGate = bootSrc.indexOf('markMigrationsAppliedForRequestGate()', gate);
     const backgroundStartup = bootSrc.indexOf('provisionSystemPrincipals', requestGate);
 
+    expect(gateHost).toBeGreaterThan(-1);
+    expect(provisionalRoutingFailure).toBeGreaterThan(gateHost);
+    expect(provisionalRoutingFailure).toBeLessThan(gate);
     expect(gate).toBeGreaterThan(-1);
     expect(routingFailure).toBeGreaterThan(gate);
     expect(requestGate).toBeGreaterThan(routingFailure);

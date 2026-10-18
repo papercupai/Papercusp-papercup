@@ -120,8 +120,8 @@ export async function liveLockHoldingsStrict(options: LiveLockPathReadOptions = 
   // live by construction. No `paths`/`owner` filter ⇒ the whole active set.
   const pool = observeSyncPhase(options.onPhase, 'pool-lookup', () => getTxPool());
   const queue = options.onPhase
-    ? await readQueue(pool, { coordinationDomain: null }, { onPhase: options.onPhase })
-    : await readQueue(pool, { coordinationDomain: null });
+    ? await readQueue(pool, { coordinationDomain: null, includeWaiting: false }, { onPhase: options.onPhase })
+    : await readQueue(pool, { coordinationDomain: null, includeWaiting: false });
   return queue.active_locks.map((l) => ({
     path: l.path,
     owner: l.owner,

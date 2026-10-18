@@ -220,7 +220,7 @@ describe('docker-exec wrapper with a hook bridge', () => {
     expect(calls).toHaveLength(2);
     for (const args of calls) expect(args.slice(0, 3)).toEqual(['--host', 'unix:///run/docker-bench.sock', 'exec']);
     expect(calls[0].at(-1)).toBe('ping');
-    expect(calls[1].slice(-3)).toEqual([CONTAINER_CODEX_BIN_PATH, 'exec', 'go']);
+    expect(calls[1].slice(-5)).toEqual([CONTAINER_CODEX_BIN_PATH, '-c', 'projects={"/app"={trust_level="trusted"}}', 'exec', 'go']);
     expect(calls[1]).not.toContain('DOCKER_HOST');
   });
 
@@ -242,7 +242,7 @@ describe('docker-exec wrapper with a hook bridge', () => {
     const calls = l.docker.calls();
     expect(calls).toHaveLength(2);
     expect(calls[0]).toEqual(['exec', 'c0ffee', CONTAINER_HOOK_SHIM_PATH, URL, 'session-7', rec.token, 'ping']);
-    expect(calls[1]!.slice(-3)).toEqual([CONTAINER_CODEX_BIN_PATH, 'exec', 'go']);
+    expect(calls[1]!.slice(-5)).toEqual([CONTAINER_CODEX_BIN_PATH, '-c', 'projects={"/app"={trust_level="trusted"}}', 'exec', 'go']);
   });
 
   it('resume: an already-shimmed hooks.json is accepted and the record is unchanged', () => {

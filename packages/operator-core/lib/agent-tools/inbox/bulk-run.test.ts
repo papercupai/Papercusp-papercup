@@ -24,6 +24,7 @@ const h = vi.hoisted(() => ({
   setRunPhase: vi.fn(),
   settleRunPhase: vi.fn(),
   callPlansRead: vi.fn(),
+  callPlansReadWorkspace: null as string | null,
   readInboxWindow: vi.fn(),
   readAckedMsgIds: vi.fn(),
   inProcessCall: vi.fn(),
@@ -69,6 +70,7 @@ vi.mock('../coordination/inbox-reply', () => ({ deliverInboxOwnerReply: vi.fn() 
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: h.notifySyncInvalidate }));
 
 import { bulkRunAct, bulkRunManifest, bulkRunReport } from './bulk-run';
+import { currentRequestWorkspaceId } from '../../workspace-als';
 
 type ToolBody = Record<string, unknown>;
 type ExecuteInput = {
@@ -123,6 +125,7 @@ beforeEach(() => {
   h.callPlansRead.mockResolvedValue({
     groups: [{ items: [{ id: item.itemId, ref: item.ref, actions: [{ id: 'ack', label: 'Acknowledge' }] }] }],
   });
+  h.callPlansReadWorkspace = null;
   h.readInboxWindow.mockResolvedValue({ entries: [], exhausted: true, rowsScanned: 0, pages: 0 });
   h.readAckedMsgIds.mockResolvedValue(new Set<string>());
   h.inProcessCall.mockReturnValue(h.innerCall);
@@ -264,6 +267,13 @@ describe('inbox:bulk-run-report late-return evidence', () => {
 
 describe('inbox:bulk-run-manifest canonical action vocabulary', () => {
   it('bypasses the UI list projection, which intentionally strips actions', async () => {
+    h.callPlansRead.mockImplementation(async () => {
+      h.callPlansReadWorkspace = currentRequestWorkspaceId();
+      return {
+        groups: [{ items: [{ id: item.itemId, ref: item.ref, actions: [{ id: 'ack', label: 'Acknowledge' }] }] }],
+      };
+    });
+
     const result = body(
       await bulkRunManifest.handler({ runId: run.runId, includeReported: false }, {
         workspaceId: run.workspaceId,
@@ -271,6 +281,7 @@ describe('inbox:bulk-run-manifest canonical action vocabulary', () => {
     );
 
     expect(h.callPlansRead).toHaveBeenCalledWith('attention', { limit: 500 }, { uiProjection: false });
+    expect(h.callPlansReadWorkspace).toBe(run.workspaceId);
     expect(h.callPlansRead).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       ok: true,

@@ -277,6 +277,52 @@ describe('installInjectionHooks — install provenance', () => {
     expect(error).toHaveBeenCalledWith(expect.stringContaining('OMP hook bundle load check FAILED'));
   });
 
+  it('loads the real installed coordination hook outside the workspace and links its native UUID', async () => {
+    const destination = path.join(home, '.papercusp');
+    const result = await installOmpHookBundle({
+      sourceDir: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../apps/operator/scripts/hooks/omp'),
+      entryFile: 'coord-hook.ts',
+      destinationDir: destination,
+      destinationEntry: 'papercusp-coord.ts',
+    });
+    expect(result.unresolved).toEqual([]);
+
+    const { stdout } = await run(process.execPath, ['--input-type=module', '-e', `
+      import { pathToFileURL } from 'node:url';
+      const hook = await import(pathToFileURL(process.argv[1]).href);
+      const calls = [];
+      globalThis.fetch = async (_url, options) => {
+        const request = JSON.parse(options.body);
+        calls.push(request.params);
+        return { ok: true, text: async () => JSON.stringify({ jsonrpc: '2.0', id: 1,
+          result: { content: [{ type: 'text', text: JSON.stringify({ ok: true, result: 'linked' }) }] } }) };
+      };
+      const linked = await hook.linkAdvSessionFromContext({ cwd: process.cwd(),
+        sessionManager: { getSessionId: () => 'native-omp-installed-hook' } });
+      console.log(JSON.stringify({ linked, calls }));
+    `, path.join(destination, 'papercusp-coord.ts')], {
+      cwd: home,
+      env: { ...process.env, NODE_OPTIONS: '', PAPERCUSP_HOME: destination,
+        PAPERCUSP_ADV_SESSION_ID: '424242', PAPERCUSP_BUNDLE_URL: 'http://operator.test' },
+    });
+    expect(JSON.parse(stdout)).toEqual({ linked: true, calls: [{ name: 'omp:sessions',
+      arguments: { op: 'link', advSessionId: 424242, sessionId: 'native-omp-installed-hook', cwd: home } }] });
+  });
+
+  it('refuses an unresolved package import before replacing a healthy coordination hook', async () => {
+    const ompSource = path.join(srcRoot, 'omp');
+    const destination = path.join(home, 'omp-package-dest');
+    await fs.mkdir(ompSource, { recursive: true });
+    await fs.mkdir(destination, { recursive: true });
+    await fs.writeFile(path.join(destination, 'papercusp-coord.ts'), '// healthy installed hook\n');
+    await fs.writeFile(path.join(ompSource, 'coord-hook.ts'),
+      "import '@papercusp/missing-hook-dependency';\nexport default {};\n");
+
+    await expect(installOmpHookBundle({ sourceDir: ompSource, entryFile: 'coord-hook.ts',
+      destinationDir: destination, destinationEntry: 'papercusp-coord.ts' })).rejects.toThrow();
+    expect(await fs.readFile(path.join(destination, 'papercusp-coord.ts'), 'utf8')).toBe('// healthy installed hook\n');
+  });
+
   it('installs one self-contained vm-release .mjs bundle under the established .ts destination', async () => {
     const ompSource = path.join(srcRoot, 'omp');
     const destination = path.join(home, 'omp-release-dest');

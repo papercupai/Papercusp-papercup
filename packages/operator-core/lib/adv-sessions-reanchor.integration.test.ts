@@ -15,7 +15,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type postgres from 'postgres';
@@ -26,6 +26,7 @@ import {
   acquireAdvSessionResume,
   adoptStartingTerminalLaunch,
   classifyOwnerNativeSession,
+  claimAdvSessionResume,
   finalizeAdvSessionResume,
   markAdvSessionEnded,
   readSuLaunchSpecByOwner,
@@ -43,6 +44,11 @@ import { acknowledgeActivation, normalizeSessionActivation, prepareActivation } 
 import { readActiveOperationWorkerClaimBinding } from './blueprint/operation-worker-binding';
 import { compileAgentSpecification } from '@papercusp/orchestrator/blueprint';
 import { resolveIdentityArtifact } from './capability-envelope/identity-grants-port';
+import { dispatchProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
+import { controlAnchorKernelResolver, setStaleArtifactConverger } from './projected-tool-deps';
+import { codexHomeForAdvSession, executeWake, type ExecuteWakeDeps } from './events/await/wake-executor';
+import { makeDelivery } from '../test/_multi-session-testbed';
+import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 import {
   carryIdentityReceiptForControlActivation,
   IDENTITY_HISTORY_LIMIT,
@@ -510,6 +516,327 @@ describe('keyed resume applied receipt retention (real PG)', () => {
       await admin`DELETE FROM harness_shared.agent_launch_idempotency WHERE workspace_id = ${WS} AND idempotency_key = ${`psu-resume-finalize:${id}:${key}`}`;
     }
   });
+});
+
+describe('P040 retained Codex unkeyed wake persistence (real PG)', () => {
+  function makeRecord(text: string, stateRevision: string, governed = true) {
+    const specificationArtifact = compileAgentSpecification({
+      source: {
+        id: 'p040-retained-codex', workItem: { kind: 'feature' },
+        spine: { edges: { DONE: { to: 'done' } } },
+        ...(governed ? { grants: { requires: [], optional: [] } } : {}),
+      },
+      prompt: { role: 'worker', text }, inputClosure: [],
+    });
+    return {
+      v: 1, workspaceId: WS, harnessSlug: 'papercusp', role: 'worker',
+      stack: ['domain:blueprint-operation-worker'], stateRevision,
+      specificationRevision: specificationArtifact.specificationRevision, specificationArtifact,
+    };
+  }
+
+  async function retainedFixture(governed = true) {
+    const owner = `su-p040-retained-${randomUUID()}`;
+    const id = await seedAdv({ coordOwnerId: owner, sessionId: DEAD_ID, ended: true });
+    await admin`
+      UPDATE harness_shared.adv_sessions
+         SET agent = 'codex', exit_code = 1, ended_by = 'self', ended_signal = 'SIGTERM',
+             shutdown_accepted_at = now()
+       WHERE id = ${id}
+    `;
+    const original = makeRecord('P040 instructions acknowledged by the retained host', 'acknowledged', governed);
+    const next = makeRecord('P040 prepared successor instructions', 'prepared', governed);
+    const applied = { specificationRevision: original.specificationRevision, stateRevision: original.stateRevision };
+    expect(await recordSuLaunchSpec(id, owner, original)).toBe(true);
+    const requested = await requestSessionIdentityActivation({
+      ownerId: owner, workspaceId: WS, revision: applied, source: 'launch',
+      attribution: { actorId: owner, principalId: owner, sessionId: owner },
+    });
+    const activation = acknowledgeActivation(prepareActivation(requested.state.activation!, applied), applied);
+    await admin`
+      UPDATE harness_shared.session_briefs
+         SET control_state = jsonb_set(control_state, '{activation}', ${admin.json(activation)}, true)
+       WHERE workspace_id = ${WS} AND owner_id = ${owner}
+    `;
+    const read = async () => (await admin<Array<{
+      agent: string; session_id: string; launch_spec: Record<string, unknown>;
+      ended_at: unknown; exit_code: number | null; ended_by: string | null; ended_signal: string | null;
+      shutdown_accepted_at: unknown; resume_claim_key: string | null; resume_claimed_at: unknown;
+      started_at: unknown; control_state: unknown;
+    }>>`
+      SELECT a.agent, a.session_id, a.launch_spec, a.ended_at, a.exit_code, a.ended_by, a.ended_signal,
+             a.shutdown_accepted_at, a.resume_claim_key, a.resume_claimed_at, a.started_at, b.control_state
+        FROM harness_shared.adv_sessions a
+        JOIN harness_shared.session_briefs b ON b.workspace_id = a.workspace_id AND b.owner_id = a.coord_owner_id
+       WHERE a.id = ${id}
+    `)[0];
+    const ledger = () => admin`
+      SELECT idempotency_key, summary FROM harness_shared.agent_launch_idempotency
+       WHERE workspace_id = ${WS} AND idempotency_key LIKE ${`psu-resume%:${id}:%`}
+       ORDER BY idempotency_key
+    `;
+    const cleanup = async () => {
+      await admin`DELETE FROM harness_shared.session_identity_activation_events WHERE workspace_id = ${WS} AND owner_id = ${owner}`;
+      await admin`DELETE FROM harness_shared.session_briefs WHERE workspace_id = ${WS} AND owner_id = ${owner}`;
+      await admin`DELETE FROM harness_shared.adv_sessions WHERE id = ${id}`;
+    };
+    return { owner, id, original, next, applied, read, ledger, cleanup };
+  }
+
+  it.each(['current', 'history', 'missing-history'] as const)(
+    'connects Channel 2 Codex wake, persisted %s receipt and ordinary tool dispatch', async (receiptSource) => {
+      // Ordinary retained sessions have no grant-class enrollment. They still
+      // require their acknowledged receipt: the missing-history control below
+      // must fail before the same ordinary handler can execute.
+      const f = await retainedFixture(false);
+      const root = mkdtempSync(join(tmpdir(), 'p040-retained-wake-'));
+      const previousHomes = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+      const spawn = vi.fn<NonNullable<ExecuteWakeDeps['spawnDetached']>>(() => 4242);
+      const account = vi.fn<NonNullable<ExecuteWakeDeps['accountHeadlessResumeTurn']>>(() => ({
+        pidRecorded: Promise.resolve(), finish: () => {},
+      }));
+      const handler = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'P040 ordinary sentinel' }] }));
+      // Keep recovery observation local; this case never invents a receipt to
+      // make the missing-history control pass.
+      const converge = vi.fn(async () => false);
+      setStaleArtifactConverger(converge);
+      try {
+        process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = root;
+        const home = codexHomeForAdvSession(f.id);
+        const sessions = join(home, 'sessions', '2026', '10', '18');
+        mkdirSync(sessions, { recursive: true });
+        writeFileSync(join(sessions, `rollout-2026-10-18T00-00-00-${DEAD_ID}.jsonl`), JSON.stringify({
+          type: 'session_meta', payload: { id: DEAD_ID, cwd: root },
+        }) + '\n');
+        await admin`UPDATE harness_shared.adv_sessions SET cwd = ${root} WHERE id = ${f.id}`;
+        if (receiptSource !== 'current') expect(await recordSuLaunchSpec(f.id, f.owner, f.next)).toBe(true);
+        if (receiptSource === 'missing-history') {
+          await admin`UPDATE harness_shared.adv_sessions SET launch_spec = launch_spec - 'identityHistory' WHERE id = ${f.id}`;
+        }
+        const before = await f.read();
+        const claim = vi.fn(claimAdvSessionResume);
+        const deps: ExecuteWakeDeps = {
+          // Session lookup, owner election, claim, receipt persistence and the
+          // dispatch authority reader stay real against the owned test DB.
+          claimResume: claim,
+          resolveWakeModeFn: async () => 'auto', getSessionLifecycle: async () => null,
+          presence: async () => null, alive: () => false, findPty: () => null,
+          findPsuHost: async () => null, codexThreadWriterHolder: () => null,
+          ensureCodexHomeForWake: async () => ({ ok: true, repaired: false }),
+          prepareDirectCodexWakeAuth: () => ({ checked: true, ready: true, reason: 'fixture-auth' }),
+          ensureInboxWakeArmedForActiveSession: async () => false,
+          getLoopStatusFn: async () => null,
+          getLoopCarryNoteWithMetaFn: async () => ({ note: null, updatedAtMs: null }),
+          tagTurn: (args) => tagTurnForInjection({ ...args, dir: join(root, 'provenance') }),
+          spawnDetached: spawn, accountHeadlessResumeTurn: account,
+        };
+        const delivery = makeDelivery({
+          workspaceId: WS, subscriberId: f.owner, eventKey: `p040:receipt:${f.owner}`,
+          wakeHandle: { kind: 'adv-session', advSessionId: f.id, agent: 'codex',
+            sessionId: DEAD_ID, ompThreadId: null, cwd: root, pid: null },
+        });
+        expect(await executeWake(delivery, deps)).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+        expect(claim).toHaveBeenCalledExactlyOnceWith(f.id, null, undefined, f.owner);
+        expect(spawn).toHaveBeenCalledOnce();
+        const [, argv, { env }] = spawn.mock.calls[0];
+        expect(argv).toEqual(expect.arrayContaining(['resume', DEAD_ID]));
+        expect(env).toMatchObject({ PAPERCUSP_SID: f.owner, PAPERCUSP_WORKSPACE: WS, CODEX_HOME: home });
+        expect(account).toHaveBeenCalledOnce();
+        const resumed = account.mock.calls[0][0];
+        expect(resumed).toMatchObject({ advSessionId: f.id, coordOwnerId: f.owner, agent: 'codex', resumeId: DEAD_ID });
+        expect(await classifyOwnerNativeSession({
+          ownerId: env.PAPERCUSP_SID, sessionId: resumed.resumeId!, advSessionId: resumed.advSessionId, workspaceId: WS,
+        })).toMatchObject({ binding: 'bound', advSessionId: f.id });
+        const result = await dispatchProjectedTool({
+          pluginName: 'fixture', description: 'P040 ordinary handler', inputSchema: { type: 'object' },
+          capabilities: [], expose: { mcp: { name: 'fixture:p040-ordinary' } }, fn: handler,
+        }, 'fixture:p040-ordinary', {}, {
+          workspaceId: env.PAPERCUSP_WORKSPACE, uiClientId: env.PAPERCUSP_SID,
+          advSessionId: resumed.advSessionId, isSuperuser: true,
+        } as UnifiedToolContext, { kernelEnforcement: controlAnchorKernelResolver });
+        if (receiptSource === 'missing-history') {
+          expect(result.ok).toBe(false);
+          expect(result.error?.message).toContain('stale-artifact');
+          expect(handler).not.toHaveBeenCalled();
+        } else {
+          expect(result.ok).toBe(true);
+          expect(handler).toHaveBeenCalledOnce();
+          expect(JSON.stringify(result)).toContain('P040 ordinary sentinel');
+          expect(converge).not.toHaveBeenCalled();
+        }
+        const after = await f.read();
+        expect(after.ended_at).toBeNull();
+        expect(after.launch_spec).toEqual(before.launch_spec);
+        expect(after.control_state).toEqual(before.control_state);
+        expect(await f.ledger()).toHaveLength(0);
+      } finally {
+        setStaleArtifactConverger(null);
+        if (previousHomes === undefined) delete process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+        else process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = previousHomes;
+        rmSync(root, { recursive: true, force: true });
+        await f.cleanup();
+      }
+    },
+  );
+
+  it.each(['current', 'history'] as const)(
+    'preserves the genuine %s receipt through the actual unkeyed claim without a keyed-finalize substitute',
+    async (receiptSource) => {
+      const f = await retainedFixture();
+      try {
+        if (receiptSource === 'history') expect(await recordSuLaunchSpec(f.id, f.owner, f.next)).toBe(true);
+        const before = await f.read();
+        expect(await classifyOwnerNativeSession({ ownerId: f.owner, sessionId: DEAD_ID, advSessionId: f.id, workspaceId: WS }))
+          .toMatchObject({ binding: 'bound', advSessionId: f.id });
+        expect(await claimAdvSessionResume(f.id, null, undefined, f.owner)).toBe(true);
+        const stored = await f.read();
+        expect(stored).toMatchObject({
+          agent: 'codex', session_id: DEAD_ID, ended_at: null, exit_code: null,
+          ended_by: null, ended_signal: null, shutdown_accepted_at: null,
+          resume_claim_key: null, resume_claimed_at: null,
+        });
+        expect(stored.launch_spec).toEqual(before.launch_spec);
+        expect(stored.control_state).toEqual(before.control_state);
+        expect(resolveIdentityArtifact(stored.launch_spec, f.applied)).toMatchObject({
+          kind: 'governed', artifact: f.original.specificationArtifact,
+          current: (receiptSource === 'history' ? f.next : f.original).specificationArtifact,
+        });
+        // A second unkeyed delivery loses the liveness election. It must not
+        // duplicate a receipt or masquerade as the keyed replay protocol.
+        expect(await claimAdvSessionResume(f.id, null, undefined, f.owner)).toBe(false);
+        expect(await f.read()).toEqual(stored);
+        expect(await f.ledger()).toHaveLength(0);
+      } finally { await f.cleanup(); }
+    },
+  );
+
+  it.each(['missing', 'malformed', 'wrong-state'] as const)(
+    'does not manufacture authority from a %s historical receipt during an unkeyed wake', async (shape) => {
+      const f = await retainedFixture();
+      try {
+        expect(await recordSuLaunchSpec(f.id, f.owner, f.next)).toBe(true);
+        const launch = {
+          ...f.next,
+          identityHistory: shape === 'missing' ? [] : shape === 'malformed' ? { receipt: f.original }
+            : [{ ...f.original, stateRevision: 'never-acknowledged' }],
+        };
+        // Deliberately corrupt only this owned fixture, after the genuine
+        // writer has run, to distinguish absent provenance from liveness.
+        await admin`UPDATE harness_shared.adv_sessions SET launch_spec = ${admin.json(launch)} WHERE id = ${f.id}`;
+        const before = await f.read();
+        expect(await claimAdvSessionResume(f.id, null, undefined, f.owner)).toBe(true);
+        const stored = await f.read();
+        expect(stored.launch_spec).toEqual(before.launch_spec);
+        expect(stored.control_state).toEqual(before.control_state);
+        expect(resolveIdentityArtifact(stored.launch_spec, f.applied)).toEqual({
+          kind: 'stale-artifact', reason: 'receipt-missing',
+        });
+        expect(await f.ledger()).toHaveLength(0);
+      } finally { await f.cleanup(); }
+    },
+  );
+
+  it('rolls back the entire unkeyed liveness transition on a real persistence fault', async () => {
+    const f = await retainedFixture();
+    try {
+      expect(await recordSuLaunchSpec(f.id, f.owner, f.next)).toBe(true);
+      const before = await f.read();
+      const beforeLedger = await f.ledger();
+      await admin.unsafe(`
+        CREATE FUNCTION harness_shared.reject_p040_unkeyed() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'P040 unkeyed persistence rejection'; END $$;
+        CREATE TRIGGER reject_p040_unkeyed BEFORE UPDATE ON harness_shared.adv_sessions
+          FOR EACH ROW EXECUTE FUNCTION harness_shared.reject_p040_unkeyed();
+      `);
+      try {
+        await expect(claimAdvSessionResume(f.id, null, undefined, f.owner))
+          .rejects.toThrow('P040 unkeyed persistence rejection');
+        expect(await f.read()).toEqual(before);
+        expect(await f.ledger()).toEqual(beforeLedger);
+      } finally {
+        await admin.unsafe('DROP TRIGGER reject_p040_unkeyed ON harness_shared.adv_sessions; DROP FUNCTION harness_shared.reject_p040_unkeyed()');
+      }
+    } finally { await f.cleanup(); }
+  });
+
+  it('leaves receipt, control, liveness and replay state unchanged when the receipt writer itself fails', async () => {
+    const f = await retainedFixture();
+    try {
+      const before = await f.read();
+      const beforeLedger = await f.ledger();
+      await admin.unsafe(`
+        CREATE FUNCTION harness_shared.reject_p040_receipt() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'P040 receipt write rejection'; END $$;
+        CREATE TRIGGER reject_p040_receipt BEFORE UPDATE OF launch_spec ON harness_shared.adv_sessions
+          FOR EACH ROW WHEN (OLD.id = ${f.id}) EXECUTE FUNCTION harness_shared.reject_p040_receipt();
+      `);
+      try {
+        // This is a different statement boundary from claimAdvSessionResume:
+        // the real launch_spec writer catches the transaction's failure.
+        expect(await recordSuLaunchSpec(f.id, f.owner, f.next)).toBe(false);
+        expect(await f.read()).toEqual(before);
+        expect(await f.ledger()).toEqual(beforeLedger);
+        expect(resolveIdentityArtifact(before.launch_spec, f.applied)).toMatchObject({
+          kind: 'governed', artifact: f.original.specificationArtifact,
+        });
+      } finally {
+        await admin.unsafe('DROP TRIGGER reject_p040_receipt ON harness_shared.adv_sessions; DROP FUNCTION harness_shared.reject_p040_receipt()');
+      }
+    } finally { await f.cleanup(); }
+  });
+
+  it.each(['claim-first', 'writer-first'] as const)(
+    'retains one acknowledged receipt while the unkeyed wake and render writer overlap (%s)', async (order) => {
+      const f = await retainedFixture();
+      let releaseRow!: () => void;
+      const mayCommit = new Promise<void>((resolve) => { releaseRow = resolve; });
+      let signalLocked!: () => void;
+      const locked = new Promise<void>((resolve) => { signalLocked = resolve; });
+      let blocker: Promise<unknown> | undefined;
+      let operations: Array<Promise<unknown>> = [];
+      try {
+        const before = await f.read();
+        blocker = admin.begin(async (tx) => {
+          await tx`SELECT id FROM harness_shared.adv_sessions WHERE id = ${f.id} FOR UPDATE`;
+          signalLocked();
+          await mayCommit;
+        });
+        await Promise.race([locked, blocker.then(() => { throw new Error('P040 row lock ended before release'); })]);
+        operations = order === 'claim-first'
+          ? [claimAdvSessionResume(f.id, null, undefined, f.owner), recordSuLaunchSpec(f.id, f.owner, f.next)]
+          : [recordSuLaunchSpec(f.id, f.owner, f.next), claimAdvSessionResume(f.id, null, undefined, f.owner)];
+        // Observe both operations waiting on a real database lock before
+        // releasing it, rather than assuming Promise creation caused overlap.
+        for (const operation of operations) void operation.catch(() => {});
+        await expect.poll(async () => {
+          const [row] = await admin<Array<{ waiting: number | string }>>`
+            SELECT count(*) AS waiting FROM pg_stat_activity
+             WHERE datname = current_database() AND wait_event_type = 'Lock'
+               AND query LIKE '%harness_shared.adv_sessions%'
+          `;
+          return Number(row.waiting);
+        }, { timeout: 3_000 }).toBeGreaterThanOrEqual(2);
+        releaseRow();
+        expect(await Promise.all(operations)).toEqual([true, true]);
+        await blocker;
+        const stored = await f.read();
+        expect(stored.ended_at).toBeNull();
+        expect(stored.control_state).toEqual(before.control_state);
+        expect(stored.launch_spec).toMatchObject(f.next);
+        expect(stored.launch_spec.identityHistory).toEqual([expect.objectContaining(f.applied)]);
+        expect(resolveIdentityArtifact(stored.launch_spec, f.applied)).toMatchObject({
+          kind: 'governed', artifact: f.original.specificationArtifact, current: f.next.specificationArtifact,
+        });
+        expect(await recordSuLaunchSpec(f.id, f.owner, f.next)).toBe(true);
+        expect(await f.read()).toEqual(stored);
+        expect(await f.ledger()).toHaveLength(0);
+      } finally {
+        releaseRow();
+        await Promise.allSettled([blocker, ...operations].filter((p): p is Promise<unknown> => Boolean(p)));
+        await f.cleanup();
+      }
+    },
+  );
 });
 
 describe('control activation receipt concurrency', () => {

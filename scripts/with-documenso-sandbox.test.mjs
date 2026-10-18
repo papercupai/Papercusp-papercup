@@ -679,6 +679,20 @@ test('cleanup accepts an already reaped resource but reports a retained resource
     inspect: args => args[0] === 'ps' ? 'retained-container' : '' }), /retained-container.*daemon removal failed/);
 });
 
+test('personal SSH fixture leaves container removal to the external owner', () => {
+  const source = readFileSync(new URL('../packages/operator-core/lib/workspace-host/personal-ssh-connection.e2e.test.ts', import.meta.url), 'utf8');
+  const createStart = source.indexOf("await docker(['create'");
+  assert.notEqual(createStart, -1, 'personal SSH fixture must create a labeled container');
+  const createEnd = source.indexOf(']);', createStart);
+  assert.notEqual(createEnd, -1, 'personal SSH fixture create call must remain readable');
+  const create = source.slice(createStart, createEnd);
+  assert.equal(create.includes("'--rm'"), false,
+    'Docker --rm races the external owner rm --force after the fixture is stopped');
+  assert.match(create, /'--label', `papercusp\.test\.owner=/);
+  assert.match(source, /allocations\.close\(\)/,
+    'the external owner must remain the cleanup authority');
+});
+
 test('database startup failure retains state, readiness and sanitized logs before cleanup', async () => {
   const secret = 'never-emit-me', calls = [];
   await assert.rejects(waitForSandboxPostgres('owned-pg', {

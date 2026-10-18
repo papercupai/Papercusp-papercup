@@ -1713,6 +1713,17 @@ export function runBootstrap(): void {
       );
       const { hostIdentity } = await import('@papercusp/operator-core/lib/serving-host-identity');
       const gateHost = `${utilityHost ? 'utility' : 'bg'}-host:${hostIdentity()}`;
+      // WI-6554700010017443: applyPendingMigrationsAtBoot may wait an
+      // intentionally unbounded amount of time for the backup migration
+      // rendezvous. Publish a fail-closed routing decision BEFORE entering
+      // that wait so standalone boot callers do not exhaust the separate
+      // 300s substrate-routing latch and start an in-process engine beside
+      // the still-undecided background host. setSubstrateBootDefaults clears
+      // this provisional marker once migrations pass and routing is chosen.
+      const { markSubstrateBootRoutingFailed } = await import(
+        '@papercusp/operator-core/lib/sync/hyperbee/boot-all'
+      );
+      markSubstrateBootRoutingFailed('boot migration gate pending; substrate routing is held until migrations pass');
       // WI-10002822: the gate used to be one-shot — a failed apply withheld the
       // background plane (and with it every pot's P2P replication) until a human
       // restarted this host, even after the migration was applied out of band.

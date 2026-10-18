@@ -1519,8 +1519,9 @@ fi
 # Expand-then-contract (D-001, D-006): the deployed reader parses execution_details
 # strictly, so a row carrying a key it does not know reads as unproven. In `auto`
 # (the default) the export is therefore WITHHELD until the operator that serves
-# :3070 contains the descriptor parser — its /api/health sha → the libs/test-config
-# gitlink at that sha → src/mutation-descriptor.ts present in that submodule commit.
+# The selected reader contains the descriptor parser — its /api/health sha → the
+# libs/test-config gitlink at that sha → src/mutation-descriptor.ts present in
+# that submodule commit. With no selected runtime, D-001/D-006 retain :3070.
 # Any step that cannot be resolved withholds (fail closed, logged), so the export
 # turns on by itself the first time main deploys the parser.
 # PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=always|never overrides the check.
@@ -1698,7 +1699,11 @@ build_mutation_descriptor() {
     if [ "$MUTATION_DESCRIPTOR_READER_REQUIRED" -eq 1 ]; then
       printf 'MUTATION_PROBE_RESULT verdict=harness-error phase=descriptor reason=reader-unavailable reader_source=%s reader_url=%s target=%s\n' \
         "$MUTATION_DESCRIPTOR_READER_SOURCE" "$MUTATION_DESCRIPTOR_READER_HEALTH_URL" "$FILE"
-      die "mutation descriptor reader preflight failed ($MUTATION_DESCRIPTOR_GATE); refusing to run an unbindable proof. Set PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL only for an intentional D-001/D-006 compatibility override."
+      # The selected reader (named on the RESULT line above) is the session's
+      # operator route, usually the green :3070 build. A close evaluated on
+      # another build (the staging :3170 operator while :3070 lags main) needs
+      # the override, so the refusal says when the override is the right choice.
+      die "mutation descriptor reader preflight failed ($MUTATION_DESCRIPTOR_GATE); refusing to run an unbindable proof. If this proof's close will be evaluated on a different build (for example the staging :3170 operator while :3070 lags), rerun with PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL set to that build's /api/health. Otherwise wait until the selected reader deploys the parser. Any other use of the override is a D-001/D-006 compatibility exception."
     fi
     log "mutation descriptor $MUTATION_DESCRIPTOR_GATE — guard rows will carry no execution_details.mutation"
     return 0

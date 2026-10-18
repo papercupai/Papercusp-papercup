@@ -4857,8 +4857,11 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
     onTestFailed(async () => console.info('PUI_P030_NARROW_FAILURE', JSON.stringify({
       session: wb.session, sessions: await paneZellij(['list-sessions', '--no-formatting']), ...wb.pane.failureEvidence(),
     })));
-    // A zellij pane frame title: the pane name between the border glyphs.
-    const paneTitle = (name: string) => new RegExp(`[┌─] ${name} [─┐]`);
+    // Zellij renders a pane name between border glyphs at roomy widths, but
+    // uses a compact title row (the name between the pane separators) for a
+    // stacked pane whose 30% column is narrow. Accept both representations so
+    // this check verifies the pane is visible across the supported widths.
+    const paneTitle = (name: string) => new RegExp(`(?:[┌─] ${name} [─┐]|│\\s+${name}\\s+│)`);
     try {
       await wb.pane.waitFor('Claude ·', { timeoutMs: 90_000 });
       // Visible from the start: no key press, at the owner's own width.

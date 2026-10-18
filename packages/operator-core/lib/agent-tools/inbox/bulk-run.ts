@@ -256,7 +256,9 @@ async function liveActionsById(
     // of rows; an unbounded resolver read exceeds the MCP deadline before it can
     // index actions. Selected coord messages outside this window are hydrated by
     // the exact keyset read below.
-    const r = (await callPlansRead('attention', { limit: 500 }, { uiProjection: false })) as {
+    const r = (await runWithWorkspaceIfConcrete(workspaceId, () =>
+      callPlansRead('attention', { limit: 500 }, { uiProjection: false }),
+    )) as {
       groups?: unknown;
     } | null;
     if (!Array.isArray(r?.groups)) throw new Error('plans:attention returned no groups array');

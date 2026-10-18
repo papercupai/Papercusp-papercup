@@ -315,7 +315,7 @@ const SPEC_EVIDENCE_CURRENT_SEGMENT_MAX_CHARS = 400;
  * required by the runtime schema even when a sibling array/object is the field
  * that made the segment too wide (for example, `rerunRecipe.current.supplied`).
  */
-const NESTED_OBJECT_HINT_MAX_CHARS = 180;
+const NESTED_OBJECT_HINT_MAX_CHARS = 220;
 
 function nestedObjectFieldHint(node: JsonSchemaNode, depth: number, includeNestedPath = true): string {
   const nested = nestedObjectProperties(node);
@@ -690,12 +690,30 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
       ...omittedRequired.map(([name]) => name),
       ...omittedRequiredArrayItems.map(([name]) => name),
     ]);
+    // Contract-priority fields (for example completion.rootCauseVerification
+    // and completion.verification) must remain ahead of degraded array items.
+    // The latter are moved forward to preserve their required item keys, but
+    // allowing that reorder to displace a load-bearing conditional path makes
+    // the bounded projection teach callers the wrong shape.
+    const contractPriorityNames = new Set(
+      propertiesForRender
+        .filter(([name]) => contractPriority(name) > 0)
+        .map(([name]) => name),
+    );
+    const protectedContracts = propertiesForRender.filter(
+      ([name]) => contractPriorityNames.has(name) && !omittedRequiredNames.has(name),
+    );
     propertiesForRender = [
       ...omittedRequired,
-      ...omittedRequiredArrayItems.filter(
+      ...protectedContracts.filter(
         ([name]) => !omittedRequired.some(([requiredName]) => requiredName === name),
       ),
-      ...propertiesForRender.filter(([name]) => !omittedRequiredNames.has(name)),
+      ...omittedRequiredArrayItems.filter(
+        ([name]) => !omittedRequiredNames.has(name) && !contractPriorityNames.has(name),
+      ),
+      ...propertiesForRender.filter(
+        ([name]) => !omittedRequiredNames.has(name) && !contractPriorityNames.has(name),
+      ),
     ];
   }
   return '';

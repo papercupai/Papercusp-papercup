@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "kind": "operational-test-evidence",
+  "name": "Owner-question plan P-005 bounded cleanup census",
+  "framework": "operational",
+  "command": [
+    "work_items:get",
+    "--harness",
+    "papercusp",
+    "--ids",
+    "WI-6554700010017174,WI-6554700010017213,WI-6554700010014180,WI-6554700010014285,WI-6554700010008333"
+  ],
+  "exitCode": 0,
+  "startedAt": "2026-10-18T09:46:37Z",
+  "finishedAt": "2026-10-18T09:46:37Z",
+  "summary": "Bounded P-005 cleanup population read: five named work-items each has one current state and accountable assignee or a terminal resolved state.",
+  "assertions": [
+    {
+      "id": "population-cardinality",
+      "passed": true,
+      "evidence": "The immutable census population contains exactly five work-items: WI-6554700010017174, WI-6554700010017213, WI-6554700010014180, WI-6554700010014285, and WI-6554700010008333."
+    },
+    {
+      "id": "case-dispositions",
+      "passed": true,
+      "evidence": "WI-6554700010017174=wip assignee su-35f7dfa1-063b-44b2-a2ab-283283a08979; WI-6554700010017213=open assignee su-35f7dfa1-063b-44b2-a2ab-283283a08979; WI-6554700010014180=blocked assignee su-5a09c09c-3d74-47ef-9d46-6a66084e89a8; WI-6554700010014285=wip assignee su-47bfac02-465f-4113-b156-f0aad25858af; WI-6554700010008333=done."
+    },
+    {
+      "id": "no-unowned-residue",
+      "passed": true,
+      "evidence": "Every non-terminal case has a verified assignee in the authoritative work_items:get read; the terminal case is done and has no remaining owner obligation."
+    }
+  ]
+}

@@ -1062,6 +1062,46 @@ describe('resolveIdentityArtifact — one replay per distinct artifact (WI-10008
   });
 });
 
+describe('P040 retained receipt shape calibration', () => {
+  function retained() {
+    const applied = fixture();
+    const current = fixture({ requires: [], optional: [CLASS] });
+    expect(current.applied.specificationRevision).not.toBe(applied.applied.specificationRevision);
+    return { applied, record: { ...current.record, stateRevision: 'prepared-state', identityHistory: [applied.record] } };
+  }
+
+  it('resolves the genuine acknowledged receipt while preserving the current narrowing', () => {
+    const { applied, record } = retained();
+    const before = structuredClone(record);
+    expect(resolveIdentityArtifact(record, applied.applied)).toMatchObject({
+      kind: 'governed', artifact: applied.artifact, current: record.specificationArtifact,
+    });
+    expect(record).toEqual(before);
+  });
+
+  it.each(['absent', 'non-array', 'null-entry', 'wrong-state', 'wrong-specification',
+    'missing-artifact', 'different-artifact', 'tampered-artifact'] as const)(
+    'refuses %s history without synthesizing an acknowledged receipt', (shape) => {
+      const { applied, record } = retained();
+      const receipt = { ...applied.record };
+      const history: unknown = shape === 'absent' ? []
+        : shape === 'non-array' ? { receipt }
+        : shape === 'null-entry' ? [null]
+        : [shape === 'wrong-state' ? { ...receipt, stateRevision: 'not-acknowledged' }
+          : shape === 'wrong-specification' ? { ...receipt, specificationRevision: 'f'.repeat(64) }
+          : shape === 'missing-artifact' ? { ...receipt, specificationArtifact: undefined }
+          : shape === 'different-artifact' ? { ...receipt, specificationArtifact: record.specificationArtifact }
+          : { ...receipt, specificationArtifact: { ...applied.artifact, configuration: {} } }];
+      const candidate = { ...record, identityHistory: history };
+      const before = structuredClone(candidate);
+      expect(resolveIdentityArtifact(candidate, applied.applied)).toEqual({
+        kind: 'stale-artifact', reason: shape === 'tampered-artifact' ? 'replay-failed' : 'receipt-missing',
+      });
+      expect(candidate).toEqual(before);
+    },
+  );
+});
+
 describe('P-018 readIdentityReactionCeiling', () => {
   function prepare(workerRoles: unknown[]) {
     io.state.mockImplementation(async (table) => table === 'harness_registry'

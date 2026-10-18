@@ -12,7 +12,7 @@
  * Reuses the canonical artifact store and live-suite PG gate. It creates no watchdog,
  * alternative census, or changes to the archived start population.
  */
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -20,11 +20,158 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { allowRealPgForLiveSuite } from '../../testing/live-suite-real-pg';
-import { auditKnown, auditUnknown, auditWakeEvidence, createRosterAudit, pageRosterAudit, type AuditRecord } from './tools/roster-audit';
+import { auditKnown, auditUnknown, auditWakeEvidence, createRosterAudit, pageRosterAudit, type AuditRecord, type RosterAuditSnapshot } from './tools/roster-audit';
 
 const SEARCH_QUERY = 'parked agent audit';
 const AUDIT_DOC = 'agent-insights/parked-agent-audit-roster-view';
 const AUDIT_LIVE_PROFILE = 'packages/operator-core/test/parked-agent-audit.live-profile.json';
+const PUBLIC_AUDIT_ID = '45250822471a901a36bec955ae89fc2f8ab107058c6b9c93864b2fa8bfd8ef12';
+const PUBLIC_AUDIT_PATH = `audits/roster/24201c2745800b53/${PUBLIC_AUDIT_ID}.json`;
+
+interface PageOracle {
+  auditId: string; asOf: string; populationCount: number; recordCount: number;
+  baseOffset: number; baseCovered: number; records: AuditRecord[];
+}
+function publicPageViolations(expected: PageOracle, page: ReturnType<typeof pageRosterAudit> | null,
+  offset: number, cursor: string | null): string[] {
+  if (!page || !Array.isArray(page.records)) return ['public-page-unavailable'];
+  const errors: string[] = [];
+  if (page.auditId !== expected.auditId || page.asOf !== expected.asOf) errors.push('snapshot-changed');
+  if (page.projection?.offset !== offset) errors.push('offset-changed');
+  const end = offset + page.records.length;
+  const wanted = expected.records.slice(offset - expected.baseOffset, end - expected.baseOffset);
+  if (JSON.stringify(page.records) !== JSON.stringify(wanted)) errors.push('record-stream-changed');
+  const covered = expected.baseCovered + expected.records.slice(0, end - expected.baseOffset)
+    .filter(row => row.kind === 'agent').length;
+  const complete = end === expected.recordCount;
+  const coverage = page.coverage;
+  if (!coverage || coverage.total !== expected.populationCount || coverage.covered !== covered
+    || coverage.recordsRead !== end || coverage.totalRecords !== expected.recordCount
+    || coverage.missing !== 0 || coverage.duplicates !== 0 || coverage.complete !== complete
+    || coverage.truncatedByLimit !== !complete) errors.push('coverage-changed');
+  if (complete ? page.nextCursor !== null : !page.nextCursor || page.nextCursor === cursor || !page.records.length) {
+    errors.push('cursor-did-not-progress');
+  }
+  return errors;
+}
+
+function recordDigest(row: unknown): string {
+  const text = JSON.stringify(row);
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return (h >>> 0).toString(16).padStart(8, '0') + ':' + text.length;
+}
+
+describe('R-1 public pager detector controls', () => {
+  const time = '2026-10-18T00:00:00.000Z';
+  const records: AuditRecord[] = ['a', 'b', 'c'].map(ownerId => ({ id: `agent:${ownerId}`, ownerId,
+    kind: 'agent', fields: { state: auditKnown('parked', 'independent writer fixture', time) } }));
+  const expected: PageOracle = { auditId: 'frozen', asOf: time, populationCount: 3, recordCount: 3,
+    baseOffset: 0, baseCovered: 0, records };
+  const page = () => ({ auditId: 'frozen', asOf: time, records: records.slice(0, 1), nextCursor: 'next',
+    projection: { offset: 0 }, coverage: { total: 3, covered: 1, recordsRead: 1, totalRecords: 3,
+      missing: 0, duplicates: 0, complete: false, truncatedByLimit: true } }) as ReturnType<typeof pageRosterAudit>;
+  it('accepts a real page and rejects a truthful archive paired with an absent public tool', () => {
+    expect(publicPageViolations(expected, page(), 0, null)).toEqual([]);
+    expect(publicPageViolations(expected, null, 0, null)).toEqual(['public-page-unavailable']);
+  });
+  it('rejects an omitted middle page, repeated cursor, changed identity and false terminal coverage', () => {
+    const omitted = page(); omitted.records = records.slice(2); omitted.projection.offset = 2;
+    expect(publicPageViolations(expected, omitted, 1, 'prior')).toContain('record-stream-changed');
+    const repeated = page(); repeated.nextCursor = 'prior';
+    expect(publicPageViolations(expected, repeated, 0, 'prior')).toContain('cursor-did-not-progress');
+    const changed = page(); changed.auditId = 'other';
+    expect(publicPageViolations(expected, changed, 0, null)).toContain('snapshot-changed');
+    const falseEnd = page(); falseEnd.coverage.complete = true; falseEnd.nextCursor = null;
+    expect(publicPageViolations(expected, falseEnd, 0, null)).toContain('coverage-changed');
+  });
+});
+
+/** A refused dispatch ran no script; semantic failures and unknown outcomes are never retried. */
+async function retryAuditRead<T>(read: () => Promise<T>, wait: (ms: number) => Promise<void> =
+  ms => new Promise(resolveWait => setTimeout(resolveWait, ms)), frozenReadOnly = false): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try { return await read(); }
+    catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const refused = message.includes('operator rejected the request before dispatch (loop_pressure_critical)')
+        && message.includes('"reason":"loop_pressure_critical"');
+      const interruptedRead = frozenReadOnly && message.includes('authenticated audit read exit 4:')
+        && /UND_ERR_SOCKET|ECONNRESET|ECONNREFUSED/.test(message);
+      if (attempt === 5 || (!refused && !interruptedRead)) throw error;
+      process.stdout.write(`PARKED_AUDIT_TRANSPORT_RETRY ${JSON.stringify({ attempt: attempt + 1,
+        reason: refused ? 'refused-before-dispatch' : 'frozen-read-interrupted' })}\n`);
+      await wait(Math.min(1000 * 2 ** attempt, 10_000));
+    }
+  }
+}
+
+describe('R-1 public pager transport controls', () => {
+  it('retries an explicit refusal before dispatch without losing the measured result', async () => {
+    let attempts = 0; const waits: number[] = [];
+    expect(await retryAuditRead(async () => {
+      if (++attempts < 3) throw new Error('operator rejected the request before dispatch (loop_pressure_critical) {"reason":"loop_pressure_critical"}');
+      return { offset: 17, digest: 'measured' };
+    }, async ms => { waits.push(ms); })).toEqual({ offset: 17, digest: 'measured' });
+    expect(waits).toEqual([1000, 2000]);
+  });
+  it('fails immediately on a semantic error or an unknown dispatch outcome', async () => {
+    for (const message of ['record-stream-changed', 'authenticated audit read exceeded 90s', 'connection lost']) {
+      let attempts = 0;
+      await expect(retryAuditRead(async () => { attempts++; throw new Error(message); }, async () => {
+        throw new Error('must not retry');
+      })).rejects.toThrow(message);
+      expect(attempts).toBe(1);
+    }
+  });
+  it('bounds repeated admission refusals', async () => {
+    let attempts = 0;
+    await expect(retryAuditRead(async () => {
+      attempts++; throw new Error('operator rejected the request before dispatch (loop_pressure_critical) {"reason":"loop_pressure_critical"}');
+    }, async () => {})).rejects.toThrow('loop_pressure_critical');
+    expect(attempts).toBe(6);
+  });
+  it('replays an interrupted frozen read only when the caller explicitly declares no writes', async () => {
+    let attempts = 0;
+    expect(await retryAuditRead(async () => {
+      if (++attempts === 1) throw new Error('authenticated audit read exit 4: UND_ERR_SOCKET');
+      return { offset: 42 };
+    }, async () => {}, true)).toEqual({ offset: 42 });
+    expect(attempts).toBe(2);
+  });
+});
+
+/** Use stdin for large independent page oracles; never shell-interpolate evidence. */
+async function authenticatedAuditCode<T>(script: string, inputs: object = {}, frozenReadOnly = false): Promise<T> {
+  expect(process.env.PAPERCUSP_SID).toBeTruthy();
+  expect(process.env.PAPERCUSP_WORKSPACE).toBeTruthy();
+  expect(process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE).toBe(AUDIT_LIVE_PROFILE);
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+  const env = { ...process.env }; delete env.PAPERCUSP_SCRATCH_ROOT;
+  const result = await retryAuditRead(() => new Promise<{ stdout: string; stderr: string }>((resolveResult, reject) => {
+    const child = spawn(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'), 'code:run', '--json', '-',
+      '--port', '3170', '--client', process.env.PAPERCUSP_SID!, '--workspace', process.env.PAPERCUSP_WORKSPACE!,
+      '--harness', '*'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = ''; let stderr = '';
+    const timer = setTimeout(() => { child.kill('SIGTERM'); reject(new Error('authenticated audit read exceeded 90s')); }, 90_000);
+    child.stdout.on('data', data => { stdout += data; });
+    child.stderr.on('data', data => { stderr += data; });
+    child.on('error', error => { clearTimeout(timer); reject(error); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (code !== 0) reject(new Error(`authenticated audit read exit ${code}: ${stderr.slice(-1500)} ${stdout.slice(-2000)}`));
+      else resolveResult({ stdout, stderr });
+    });
+    child.stdin.end(JSON.stringify({ script, inputs, timeoutSec: 45,
+      projection: { pick: ['ok', 'summary', 'summaryNotice', 'error', 'partial', 'childFailures'] } }));
+  }), undefined, frozenReadOnly);
+  const value = JSON.parse(result.stdout);
+  expect(value.ok, result.stderr).toBe(true);
+  expect(value.partial).not.toBe(true);
+  expect(value.summaryNotice?.truncated, 'a clipped live measurement is unavailable').not.toBe(true);
+  expect(value.childFailures ?? []).toEqual([]);
+  return value.summary as T;
+}
 interface SearchObservation {
   tools: { query: string; hits: Array<{ tool: string; description: string }> };
   docs: { hits: Array<{ slug: string; url: string }>; legs: { degraded: boolean } };
@@ -80,6 +227,70 @@ describe('R-8 live discovery detector controls', () => {
   });
 });
 
+interface PickupDisposition { ownerId: string; request: string; outcome: string; reply: { id: string; at: string } | null; }
+interface FollowupState { id: string; state: string; assignee: string | null; hasCompletionEvidence: boolean; }
+function originalUnconfirmedPairs(rows: Array<{ ownerId: string; request: string; verification: string }>) {
+  // The corrected edition preserves its old pickup label. Its verification
+  // writer includes activity-only rows among unconfirmed pickups.
+  return rows.filter(row => row.verification === 'pickup-not-confirmed')
+    .map(({ ownerId, request }) => ({ ownerId, request }));
+}
+function pickupDispositionViolations(expected: Array<{ ownerId: string; request: string }>,
+  cases: PickupDisposition[], items: FollowupState[], authenticatedOwner: string): string[] {
+  const errors: string[] = [];
+  const key = (row: { ownerId: string; request: string }) => `${row.ownerId}:${row.request}`;
+  const wanted = expected.map(key);
+  const actual = cases.map(key);
+  if (expected.length !== 10 || new Set(wanted).size !== 10) errors.push('invalid-frozen-ten');
+  if (actual.length !== 10 || new Set(actual).size !== 10
+    || wanted.some(id => !actual.includes(id)) || actual.some(id => !wanted.includes(id))) errors.push('disposition-population');
+  for (const row of cases) {
+    if (row.outcome === 'recipient-replied') {
+      if (!row.reply?.id || !Number.isFinite(Date.parse(row.reply.at))) errors.push(`unsupported-pickup:${key(row)}`);
+    } else if (row.outcome !== 'pickup-unconfirmed' || row.reply !== null) errors.push(`unsupported-disposition:${key(row)}`);
+  }
+  for (const id of ['WI-6554700010017003', 'WI-6554700010017004']) {
+    const item = items.find(row => row.id === id);
+    // The authenticated running session proves its own liveness. A different
+    // holder needs a fresh acceptance observation, never an assumed live owner.
+    if (!item || (item.state === 'done' ? !item.hasCompletionEvidence : item.assignee !== authenticatedOwner)) errors.push(`unowned-or-unverified:${id}`);
+  }
+  return errors;
+}
+
+describe('R-6 finite pickup disposition detector controls', () => {
+  const expected = Array.from({ length: 10 }, (_, i) => ({ ownerId: `owner-${i}`, request: `request-${i}` }));
+  const cases = (): PickupDisposition[] => expected.map(row => ({ ...row, outcome: 'pickup-unconfirmed', reply: null }));
+  const items = (): FollowupState[] => ['WI-6554700010017003', 'WI-6554700010017004']
+    .map(id => ({ id, state: 'wip', assignee: 'running-owner', hasCompletionEvidence: false }));
+  it('accepts ten evidence-based unknown dispositions without crediting pickup', () => {
+    expect(pickupDispositionViolations(expected, cases(), items(), 'running-owner')).toEqual([]);
+  });
+  it('uses corrected evidence rather than a legacy activity-only pickup label', () => {
+    const rows = expected.map(row => ({ ...row, verification: 'pickup-not-confirmed', pickup: 'unconfirmed' }));
+    rows[0].pickup = 'activity-observed';
+    expect(originalUnconfirmedPairs(rows)).toEqual(expected);
+    rows[0].verification = 'explicit-recipient-reply';
+    expect(originalUnconfirmedPairs(rows)).toHaveLength(9);
+  });
+  it('rejects missing, duplicate and foreign pairs even when counts look complete', () => {
+    const missing = cases(); missing.pop();
+    expect(pickupDispositionViolations(expected, missing, items(), 'running-owner')).toContain('disposition-population');
+    const duplicate = cases(); duplicate[9] = duplicate[0];
+    expect(pickupDispositionViolations(expected, duplicate, items(), 'running-owner')).toContain('disposition-population');
+    const foreign = cases(); foreign[9].request = 'foreign';
+    expect(pickupDispositionViolations(expected, foreign, items(), 'running-owner')).toContain('disposition-population');
+  });
+  it('rejects unsupported pickup and an open unowned item', () => {
+    const unsupported = cases(); unsupported[0].outcome = 'recipient-replied';
+    expect(pickupDispositionViolations(expected, unsupported, items(), 'running-owner')).toContain('unsupported-pickup:owner-0:request-0');
+    const unowned = items(); unowned[0].assignee = null;
+    expect(pickupDispositionViolations(expected, cases(), unowned, 'running-owner')).toContain('unowned-or-unverified:WI-6554700010017003');
+    const unevidencedClose = items(); unevidencedClose[0].state = 'done';
+    expect(pickupDispositionViolations(expected, cases(), unevidencedClose, 'running-owner')).toContain('unowned-or-unverified:WI-6554700010017003');
+  });
+});
+
 const SEARCH_LIVE_REQUESTED = process.env.PAPERCUSP_PARKED_SEARCH_LIVE === '1';
 const SEARCH_TEST_LAYER = inject('papercuspTestLayer');
 // A measured e2e run must execute the searches. Missing opt-in/configuration
@@ -110,6 +321,59 @@ describe.skipIf(!SEARCH_LIVE_REQUESTED && SEARCH_TEST_LAYER !== 'e2e')('LIVE: R-
       docRank: docs.hits?.findIndex((hit: { slug: string }) => hit.slug === AUDIT_DOC) + 1, errors })}\n`);
     expect(errors).toEqual([]);
   }, 180_000);
+});
+
+describe.skipIf(!SEARCH_LIVE_REQUESTED && SEARCH_TEST_LAYER !== 'e2e')('LIVE: R-6 owned finite pickup dispositions', () => {
+  it('reads both current owners and one honest disposition for each frozen recipient/message pair', async () => {
+    expect(SEARCH_LIVE_REQUESTED, 'R-6 requires an actual live measurement').toBe(true);
+    expect(process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE).toBe(AUDIT_LIVE_PROFILE);
+    expect(process.env.PAPERCUSP_SID).toBeTruthy();
+    expect(process.env.PAPERCUSP_WORKSPACE).toBeTruthy();
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+    const toolEnv = { ...process.env }; delete toolEnv.PAPERCUSP_SCRATCH_ROOT;
+    const call = async (script: string) => {
+      const result = await promisify(execFile)(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'),
+        'code:run', '--port', '3170', '--client', process.env.PAPERCUSP_SID!,
+        '--workspace', process.env.PAPERCUSP_WORKSPACE!, '--harness', 'papercusp',
+        JSON.stringify({ script, timeoutSec: 45, projection: { pick: ['ok', 'summary', 'partial', 'childFailures'] } })],
+      { env: toolEnv, encoding: 'utf8', timeout: 90_000, maxBuffer: 2 * 1024 * 1024 });
+      const value = JSON.parse(result.stdout);
+      expect(value.ok).toBe(true); expect(value.partial).not.toBe(true);
+      expect(value.summaryNotice?.truncated, 'a clipped measurement is unavailable').not.toBe(true);
+      expect(value.childFailures ?? []).toEqual([]);
+      return value.summary;
+    };
+    const prefix = 'audits/parked-agent-resumption-2026-10-17-637d7/';
+    const expected = await call(`const r=await tools.artifacts.load({slug:'papercusp',rel_path:'${prefix}final-edition.json'});const a=JSON.parse(r.results[0].content);return (${originalUnconfirmedPairs.toString()})(a.rows);`);
+    const cases = await call(`const r=await tools.artifacts.load({slug:'papercusp',rel_path:'${prefix}pickup-reconciliation-7947311d.json'});return JSON.parse(r.results[0].content).cases;`);
+    const items = await call("const r=await tools.work_items.get({ids:['WI-6554700010017003','WI-6554700010017004'],harness:'papercusp',threadLimit:0});return r.results.map(x=>({id:x.id,state:x.workItem.state,assignee:x.workItem.assignee,hasCompletionEvidence:x.hasCompletionEvidence===true}));");
+    const errors = pickupDispositionViolations(expected, cases, items, process.env.PAPERCUSP_SID!);
+    process.stdout.write(`PARKED_AUDIT_R6 ${JSON.stringify({ observedAt: new Date().toISOString(), pairs: expected.length,
+      dispositions: cases.length, replied: cases.filter((row: PickupDisposition) => row.outcome === 'recipient-replied').length,
+      unconfirmed: cases.filter((row: PickupDisposition) => row.outcome === 'pickup-unconfirmed').length, errors })}\n`);
+    expect(errors).toEqual([]);
+  }, 180_000);
+});
+
+describe.skipIf(!SEARCH_LIVE_REQUESTED && SEARCH_TEST_LAYER !== 'e2e')('LIVE: R-4 authenticated directive after persisted reload', () => {
+  it('resolves the original ledger turn and preserves it through a separate authenticated reader', async () => {
+    expect(SEARCH_LIVE_REQUESTED).toBe(true);
+    // This directive predates this managed continuation. A separate subprocess
+    // rehydrates the persisted audit, the canonical state boundary used by carry.
+    const first = await authenticatedAuditCode<{ auditId: string; provenance: object; expectedQuote: string; expectedSourceRef: string }>(
+      "const d=await tools.orders.get({id:1973});if(!d.directive?.verbatim||!d.directive.sourceTurnRef)throw Error('directive unavailable');"
+      + "const p=await tools.coord.roster({view:'audit',scope:'workspace',owner:inputs.owner,auditDirectiveId:1973,pageSize:1});"
+      + "if(p.provenance?.status!=='verified-owner'||p.provenance?.turnOrigin!=='owner-typed')throw Error('owner provenance not verified');"
+      + "if(p.provenance.quote!==d.directive.verbatim.slice(0,180)||p.provenance.sourceRef!==d.directive.sourceTurnRef)throw Error('directive quote/source mismatch');"
+      + "return {auditId:p.auditId,provenance:p.provenance,expectedQuote:d.directive.verbatim.slice(0,180),expectedSourceRef:d.directive.sourceTurnRef};",
+      { owner: process.env.PAPERCUSP_SID });
+    const restored = await authenticatedAuditCode<{ auditId: string; provenance: object }>(
+      "const p=await tools.coord.roster({view:'audit',scope:'workspace',owner:inputs.owner,auditId:inputs.auditId,auditDirectiveId:1973,pageSize:1});"
+      + "return {auditId:p.auditId,provenance:p.provenance};", { owner: process.env.PAPERCUSP_SID, auditId: first.auditId });
+    expect(restored).toEqual({ auditId: first.auditId, provenance: first.provenance });
+    process.stdout.write(`PARKED_AUDIT_R4 ${JSON.stringify({ directiveId: 1973, auditId: first.auditId,
+      sourceRef: first.expectedSourceRef, persistedReload: true, errors: [] })}\n`);
+  }, 240_000);
 });
 
 describe('dynamic roster audit regression oracles', () => {
@@ -491,6 +755,45 @@ describe.skipIf(!LIVE_REQUESTED)('LIVE: R-1 complete parked-agent census partiti
     await sql`SELECT 1`;
   });
   afterAll(async () => { await sql?.end({ timeout: 5 }); });
+
+  it('walks the authenticated public audit pager to termination against the independent frozen writer records', async () => {
+    // SQL is only the independent test oracle. Every measured page goes through
+    // authenticated coord:roster; the dogfood caller still needs zero SQL.
+    const rows = await sql<Array<{ content: string }>>`SELECT content FROM harness_shared.harness_text_artifacts
+      WHERE workspace_id='papercusp-workspace' AND harness_slug='*' AND rel_path=${PUBLIC_AUDIT_PATH}`;
+    expect(rows).toHaveLength(1);
+    const oracle = JSON.parse(rows[0].content) as RosterAuditSnapshot;
+    expect(oracle.auditId).toBe(PUBLIC_AUDIT_ID);
+    expect(oracle.population.length).toBe(oracle.expectedPopulation);
+    expect(new Set(oracle.population).size).toBe(oracle.expectedPopulation);
+    expect(new Set(oracle.records.map(row => row.id)).size).toBe(oracle.records.length);
+    let state = { cursor: null as string | null, offset: 0, covered: 0, pages: 0, complete: false };
+    while (!state.complete) {
+      const before = state.offset;
+      const batch = await authenticatedAuditCode<{ digest: string; final: typeof state }>(
+        `const digest=r=>{const t=JSON.stringify(r);let h=2166136261;for(let i=0;i<t.length;i++){h^=t.charCodeAt(i);h=Math.imul(h,16777619);}return (h>>>0).toString(16).padStart(8,'0')+':'+t.length;};`
+        + "const s={cursor:inputs.cursor??null,offset:inputs.offset??0,covered:inputs.covered??0,pages:inputs.pages??0,complete:false};const seen=[];const start=Date.now();let count=0;"
+        + "while(!s.complete&&count<20&&Date.now()-start<10000){const p=await tools.coord.roster({view:'audit',scope:'workspace',auditId:inputs.auditId,cursor:s.cursor??undefined,pageSize:10});"
+        + "if(!p.records?.length)throw Error('public pager returned no records at offset '+s.offset);"
+        + "const end=s.offset+p.records.length;const covered=s.covered+p.records.filter(r=>r.kind==='agent').length;const complete=end===inputs.recordCount;"
+        + "if(p.auditId!==inputs.auditId||p.asOf!==inputs.asOf)throw Error('snapshot-changed');if(p.projection.offset!==s.offset)throw Error('offset-changed');"
+        + "if(p.coverage.total!==inputs.populationCount||p.coverage.covered!==covered||p.coverage.missing!==0||p.coverage.duplicates!==0||p.coverage.recordsRead!==end||p.coverage.totalRecords!==inputs.recordCount||p.coverage.complete!==complete||p.coverage.truncatedByLimit!==!complete)throw Error('coverage-changed');"
+        + "if(complete?p.nextCursor!==null:!p.nextCursor||p.nextCursor===s.cursor)throw Error('cursor-did-not-progress');"
+        + "seen.push(...p.records);s.offset=end;s.covered=covered;s.cursor=p.nextCursor;s.complete=complete;s.pages++;count++;}return {digest:digest(seen),final:s};",
+        { auditId: oracle.auditId, asOf: oracle.asOf, populationCount: oracle.expectedPopulation,
+          recordCount: oracle.records.length, ...state }, true);
+      expect(batch.digest).toBe(recordDigest(oracle.records.slice(before, batch.final.offset)));
+      state = batch.final;
+      expect(state.offset).toBeGreaterThan(before);
+      expect(state.covered).toBe(oracle.records.slice(0, state.offset).filter(row => row.kind === 'agent').length);
+      process.stdout.write(`PARKED_AUDIT_R1_PAGE ${JSON.stringify(state)}\n`);
+    }
+    expect(state.offset).toBe(oracle.records.length);
+    expect(state.covered).toBe(oracle.expectedPopulation);
+    expect(state.cursor).toBeNull();
+    process.stdout.write(`PARKED_AUDIT_R1_PUBLIC ${JSON.stringify({ auditId: oracle.auditId, asOf: oracle.asOf,
+      population: oracle.expectedPopulation, records: state.offset, pages: state.pages, complete: true, errors: [] })}\n`);
+  }, 3_600_000);
 
   it('every frozen start-population agent has exactly one disposition and explicit evidence unknowns', async () => {
     const prefix = 'audits/parked-agent-resumption-2026-10-09/';

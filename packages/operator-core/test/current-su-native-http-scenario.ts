@@ -23,41 +23,7 @@ import { readSessionConfinement } from '../lib/capability-envelope/session-confi
 import { emptyPool, registerAccount } from '../lib/deployment/account-pool';
 import { loadAccountPool, updateAccountPool } from '../lib/deployment/account-pool-store';
 import { installClaudeHooks, installInjectionHooks } from '../lib/desktop-install/papercusp-files';
-import { codexCliResponsesBody, codexCliResponsesCompletionSse } from '../lib/inference-gateway/codex-cli-bridge';
-
-/** A local scripted wire response, never inference or a provider-spend receipt. */
-function scriptedTool(body: Record<string, unknown>, kind: 'edit' | 'compact') {
-  type Tool = { type: string; name: string; tools?: Tool[] };
-  const flattened: Array<Tool & { namespace?: string }> = [];
-  const visit = (tools: Tool[], namespace?: string) => {
-    for (const tool of tools) {
-      if (tool.type === 'namespace' && Array.isArray(tool.tools)) visit(tool.tools, tool.name);
-      else flattened.push({ ...tool, namespace });
-    }
-  };
-  visit(Array.isArray(body.tools) ? body.tools as Tool[] : []);
-  const command = "printf 'after\\n' > /app/answer.txt";
-  const direct = flattened.find(tool => tool.type === 'function' && (kind === 'edit'
-    ? /(?:^|__)exec_command$/.test(tool.name)
-    : /(?:^|__)session_request_compaction$/.test(tool.name)));
-  const invoke = flattened.find(tool => tool.type === 'function' && /(?:^|__)tools_invoke$/.test(tool.name));
-  const exec = flattened.find(tool => tool.type === 'custom' && tool.name === 'exec' && tool.namespace === 'functions');
-  const tool = direct ?? (kind === 'compact' ? invoke : undefined) ?? exec;
-  assert.ok(tool, `Native ${kind} tool missing: ${JSON.stringify(flattened.map(({ type, name, namespace }) => ({ type, name, namespace })))}`);
-  const input = direct ? kind === 'edit' ? { cmd: command } : {}
-    : kind === 'compact' ? { name: 'session:request-compaction', args: {} } : { cmd: command };
-  const text = tool === exec ? kind === 'edit'
-    ? `text(await tools.exec_command(${JSON.stringify(input)}));`
-    : `text(await tools.mcp__papercusp_su__tools_invoke(${JSON.stringify(input)}));` : JSON.stringify(input);
-  const call = { type: tool.type === 'custom' ? 'custom_tool_call' : 'function_call',
-    id: 'fc_private_' + kind, call_id: 'call_private_' + kind, name: tool.name,
-    ...(tool.namespace ? { namespace: tool.namespace } : {}),
-    ...(tool.type === 'custom' ? { input: text } : { arguments: text }), status: 'completed' };
-  const response = { ...codexCliResponsesBody({ model: String(body.model), text: '', inputTokens: 100, outputTokens: 8 }), output: [call] };
-  return ['response.output_item.added', 'response.output_item.done', 'response.completed'].map(type =>
-    `event: ${type}\ndata: ${JSON.stringify({ type, ...(type === 'response.completed'
-      ? { response } : { output_index: 0, item: call }) })}\n\n`).join('') + 'data: [DONE]\n\n';
-}
+import { createCurrentSuNativeProtocol, guardedCurrentSuNativeHandler } from './current-su-native-http-protocol';
 
 /** Seed only the disposable private pool before its operator boots. The
  * credential is deliberately invalid; inference still terminates at the local
@@ -148,16 +114,18 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
     });
   };
   let predecessor: { ownerId: string; taskId: string; sessionId: string } | undefined;
-  let successorId: string | undefined, carryRequested = false, carryInputSeen = false;
+  let successorId: string | undefined;
   let stoppedAfterCarry = false;
+  const protocol = createCurrentSuNativeProtocol();
   // This service has no provider credential or forwarding path. The carry
   // variant supplies fixed protocol output solely to exercise the native host.
-  const listener = createServer(async (req, res) => {
+  const transport = guardedCurrentSuNativeHandler(async (req, res) => {
     requests.push({ method: req.method, path: req.url, at: new Date().toISOString() });
     progress('model-transport-request', { request: requests.at(-1), modelRequests: bodies.length });
     const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
     if (req.url?.endsWith('/responses')) {
-      bodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+      bodies.push(body);
       const sessions = await sql`SELECT coord_owner_id FROM harness_shared.adv_sessions WHERE workspace_id=${workspace}`;
       if (sessions.length === 1) observedAuto = (await getModes(workspace, sessions[0].coord_owner_id)).some(mode => mode.mode === 'auto');
       if (managedCarry) {
@@ -167,23 +135,23 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
         assert.equal(rows.length, 1, JSON.stringify(rows));
         const row = rows[0];
         if (!predecessor) predecessor = { ownerId: row.coord_owner_id, taskId: row.task_id, sessionId: row.session_id };
-        const body = bodies.at(-1)!;
-        const received = JSON.stringify(body.input);
-        carryInputSeen ||= received.includes('codex-carry-lineage predecessor:' + predecessor.sessionId);
-        if (bodies.length === 3) {
-          carryRequested = /"requested"\s*:\s*true/.test(received.replace(/\\"/g, '"')) && received.includes('queued');
-          assert.ok(carryRequested, 'Managed boundary did not queue: ' + received.slice(-5000));
+        let wire: string;
+        try {
+          wire = protocol.respond(body, { predecessorSessionId: predecessor.sessionId,
+            editApplied: () => readFileSync(join(taskCheckout, 'answer.txt'), 'utf8') === 'after\n' });
+        } finally {
+          writeFileSync(join(evidenceDir, 'native-model-requests.json'), JSON.stringify(protocol.census, null, 2));
+          progress('model-protocol-request', { census: protocol.census.at(-1) });
         }
         res.writeHead(200, { 'content-type': 'text/event-stream' });
-        res.end(bodies.length <= 2 ? scriptedTool(body, bodies.length === 1 ? 'edit' : 'compact')
-          : codexCliResponsesCompletionSse(codexCliResponsesBody({ model: String(body.model),
-            text: 'Private managed carry protocol acknowledgement.', inputTokens: 100, outputTokens: 8 })));
+        res.end(wire);
         return;
       }
     }
     res.writeHead(400, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: 'Private current-su no-forwarding lifecycle fixture.' } }));
-  });
+  }, error => progress('model-handler-failed', { error: String(error) }));
+  const listener = createServer(transport.listener);
   await new Promise<void>((done, reject) => { listener.once('error', reject); listener.listen(0, '127.0.0.1', done); });
   const port = (listener.address() as { port: number }).port;
   const assignmentId = currentBenchAssignmentId(config.runId, 'papercusp', 't1', 1);
@@ -193,9 +161,11 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
       wallClockMs: 360000, wallClockMsPerArm: 180000,
       armIds: config.arms.map(arm => currentBenchAssignmentId(config.runId, arm.id, 't1', 1)) },
     authenticateProvider: async () => { throw new Error('Provider authentication is forbidden in the private fixture'); } });
-  const hosted = await controller.startNativeGateway(() => {}, async () => ({ port, stop: async () => {
+  const stopListener = async () => {
     listener.closeAllConnections(); await new Promise<void>(done => listener.close(() => done()));
-  } } as never));
+  };
+  const hosted = await controller.startNativeGateway(() => {}, async () => ({ port, stop: stopListener } as never))
+    .catch(async error => { await stopListener(); throw error; });
   const ctx = { workspaceId: workspace, isSuperuser: true, uiClientId: `su-private-native-${randomUUID()}`,
     principal: { slug: 'system:superuser' } } as PapercuspUnifiedToolContext;
   const phase = (name: string) => { progress(name); console.log('CURRENT_SU_NATIVE_PHASE ' + name); };
@@ -242,7 +212,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
           },
           getTask: async id => {
             let task = await ports.getTask(id);
-            if (managedCarry && carryInputSeen && predecessor && task?.sessionId && task.sessionId !== predecessor.sessionId && !stoppedAfterCarry) {
+            if (managedCarry && protocol.carryInputSeen && predecessor && task?.sessionId && task.sessionId !== predecessor.sessionId && !stoppedAfterCarry) {
               assert.equal(task.detail.coordOwnerId, predecessor.ownerId);
               assert.equal(task.taskId, predecessor.taskId);
               successorId = task.sessionId;
@@ -271,8 +241,8 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
     handle = await adapter.seam.clone(task);
     phase('clone-ready');
     phase('native-start');
-    const output = await adapter.runAgent({ task, handle, role: 'worker', arm: 'papercusp', teamKey: 'private-native',
-      topic: '', directive: '', forbidTools: [], attemptBudget: { maxCostUsd: 3, maxTokens: 100000, maxWallMs: 180000 } });
+    const output = await Promise.race([adapter.runAgent({ task, handle, role: 'worker', arm: 'papercusp', teamKey: 'private-native',
+      topic: '', directive: '', forbidTools: [], attemptBudget: { maxCostUsd: 3, maxTokens: 100000, maxWallMs: 180000 } }), transport.failure]);
     writeFileSync(join(evidenceDir, 'native-result.json'), JSON.stringify({ output, requests }));
     phase('native-ended');
     const rows = await sql`SELECT a.id, a.coord_owner_id, a.session_id, a.ended_at,
@@ -307,10 +277,12 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
     assert.ok(!toml.includes(`http://127.0.0.1:${port}`) && !toml.includes(base), toml);
     assert.ok(hooks.includes(adapter.egress.originFor('hooks')) && hooks.includes('/opt/papercusp/hook-shim'), hooks);
     assert.ok(instructions.includes('Papercusp') || instructions.includes('papercusp'), 'native su instructions missing');
-    const request = JSON.stringify(bodies[0]);
+    const firstTaskBody = managedCarry ? protocol.initialBody : bodies[0];
+    assert.ok(firstTaskBody, 'No task-driving model request was observed');
+    const request = JSON.stringify(firstTaskBody);
     assert.ok(request.includes('<cwd>/app</cwd>'), diagnostic);
     assert.ok(!request.includes(checkout), 'observer checkout leaked into native request');
-    assert.equal(bodies[0].model, 'gpt-6-luna');
+    assert.equal(firstTaskBody.model, 'gpt-6-luna');
     assert.ok(observedAuto, 'AUTO was not registered at the first native generation request');
     const confinement = await readSessionConfinement(row.coord_owner_id, workspace);
     assert.ok(confinement, 'native session has no host confinement');
@@ -322,7 +294,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
     assert.ok(adapter.egress.stats().gw.connections > 0 && adapter.egress.stats().mcp.connections > 0);
     let managedCarryReceipt;
     if (managedCarry) {
-      assert.ok(carryRequested && carryInputSeen && stoppedAfterCarry && successorId && predecessor, diagnostic);
+      assert.ok(protocol.carryRequested && protocol.carryInputSeen && stoppedAfterCarry && successorId && predecessor, diagnostic);
       assert.notEqual(successorId, predecessor.sessionId);
       assert.equal(taskGit('rev-parse', 'HEAD'), taskHead);
       assert.equal(readFileSync(join(taskCheckout, 'answer.txt'), 'utf8'), 'after\n');
@@ -336,8 +308,14 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
       containerWorkdir: '/app', mcpConfined: true, status: output.status,
       ...(managedCarryReceipt ? { managedCarry: managedCarryReceipt } : {}) };
   } finally {
-    if (handle && adapter) await adapter.seam.teardown(handle);
-    if (adapter) assert.deepEqual((await adapter.stop()).errors, []);
-    await hosted.stop();
+    try { progress('native-cleanup-start', { bridge: bridge?.stats(), egress: adapter?.egress.stats() }); }
+    finally {
+      try { if (handle && adapter) await adapter.seam.teardown(handle); }
+      finally {
+        try { if (adapter) assert.deepEqual((await adapter.stop()).errors, []); }
+        finally { await hosted.stop(); }
+      }
+    }
+    progress('native-cleanup-completed');
   }
 }

@@ -2904,11 +2904,20 @@ RAIL_MIGRATION_CASES.push({
         },
       }, 'bootSingleHarness') as (workspace: string, slug: string, opts: object) => Promise<{ state: string }>;
       const opts = { resolveSwarmBinding: async () => null };
-      expect((await producer('fixture', 'member', opts)).state).toBe('booted');
+      const first = await producer('fixture', 'member', opts);
+      if (timedOut) {
+        expect(first.state).toBe('failed');
+        expect(boots).toBe(0);
+        continue;
+      }
+      expect(first.state).toBe('booted');
       expect((await producer('fixture', 'member', opts)).state).toBe('already-booted');
       expect(boots).toBe(1);
     }
-    expect(observations.map((row) => [row.applied, row.reason])).toEqual([[0, 'routing-decision-timeout'], [1, 'applied']]);
+    expect(observations.map((row) => [row.applied, row.reason])).toEqual([
+      [0, 'routing-decision-timeout'],
+      [1, 'applied'],
+    ]);
     return { route: 'observation', mechanism: 'substrate-boot-routing', observations };
   },
 });

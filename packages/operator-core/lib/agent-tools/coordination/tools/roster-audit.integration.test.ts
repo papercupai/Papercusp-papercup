@@ -1,8 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 import { createRosterAudit, auditKnown, pageRosterAudit, type AuditScope } from './roster-audit';
-import { buildRosterAudit, loadRosterAudit, saveRosterAudit } from './roster-audit-store';
+import { auditRequestProvenance, buildRosterAudit, loadRosterAudit, saveRosterAudit } from './roster-audit-store';
+import { recordOwnerDirective } from '../../../owner-directives';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { publishReport } from '../../../report-library';
 
@@ -15,6 +19,102 @@ vi.mock('../../../workspace-registry', async importOriginal => ({
   ...await importOriginal<typeof import('../../../workspace-registry')>(), activeWorkspaceId: () => fixture.workspaceId,
 }));
 vi.mock('../log', () => ({ coordScopeReady: async () => {}, coordWorkspaceId: () => fixture.workspaceId }));
+
+describe.skipIf(process.env.PAPERCUSP_PARKED_SEARCH_LIVE !== '1')('LIVE: R-5 current correction lineage', () => {
+  it('compares public 2026-10-17 edition/count records with the canonical visible report bodies', () => {
+    expect(process.env.PAPERCUSP_APP_OPERATION_LIVE_PROFILE)
+      .toBe('packages/operator-core/test/parked-agent-audit.live-profile.json');
+    expect(process.env.PAPERCUSP_SID).toBeTruthy();
+    expect(process.env.PAPERCUSP_WORKSPACE).toBeTruthy();
+    const auditId = '45250822471a901a36bec955ae89fc2f8ab107058c6b9c93864b2fa8bfd8ef12';
+    const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../..');
+    const env = { ...process.env }; delete env.PAPERCUSP_SCRATCH_ROOT;
+    const run = (script: string) => {
+      const value = JSON.parse(execFileSync(process.execPath, [resolve(root, 'scripts/mcp-call.mjs'), 'code:run', '--port', '3170',
+        '--client', process.env.PAPERCUSP_SID!, '--workspace', process.env.PAPERCUSP_WORKSPACE!, '--harness', '*',
+        JSON.stringify({ script, timeoutSec: 30, projection: { pick: ['ok', 'summary', 'summaryNotice', 'partial', 'childFailures', 'error'] } })],
+      { env, encoding: 'utf8', timeout: 60_000, maxBuffer: 2 * 1024 * 1024 }));
+      expect(value.ok, value.error).toBe(true); expect(value.partial).not.toBe(true);
+      expect(value.childFailures ?? []).toEqual([]); expect(value.summaryNotice?.truncated).not.toBe(true);
+      return value.summary;
+    };
+    // Each call reads one bounded public page. Report reads use the same digest
+    // over exact quoted paragraphs, so neither full bodies nor the accumulated
+    // lineage need to pass through a capped code:run summary.
+    const digest = (value: unknown) => {
+      const text = JSON.stringify(value); let hash = 2166136261;
+      for (let i = 0; i < text.length; i++) { hash ^= text.charCodeAt(i); hash = Math.imul(hash, 16777619); }
+      return `${(hash >>> 0).toString(16)}:${text.length}`;
+    };
+    const headers: Array<{ ref: string; supersedes: string | null; publishedAt: string; supersededBy: string[] }> = [];
+    const quotes: Array<{ edition: string; part: number; quote: string }> = [];
+    let cursor: string | null = null; let expectedCount: number | undefined; let done = false; let pages = 0;
+    while (!done && pages < 200) {
+      const page = run("const p=await tools.coord.roster({view:'audit',scope:'workspace',auditId:" + JSON.stringify(auditId)
+        + ",cursor:" + (cursor === null ? 'undefined' : JSON.stringify(cursor)) + ",pageSize:1});const r=p.records[0];return {auditId:p.auditId,nextCursor:p.nextCursor,count:p.previous.correctionCount,kind:r?.kind,header:r?.fields.correction?.value,quote:r?.fields.reportedCountContext?.value};");
+      expect(page.auditId).toBe(auditId); expectedCount = page.count;
+      if (page.header) headers.push(page.header);
+      if (page.quote) quotes.push(page.quote);
+      done = page.kind !== 'history' || page.nextCursor === null;
+      if (!done) expect(page.nextCursor).not.toBe(cursor);
+      cursor = page.nextCursor; pages++;
+    }
+    expect(done).toBe(true); expect(headers.length).toBe(expectedCount);
+    expect(headers.some(h => h.ref === 'report:rpt_7a449b1b-64f6-4097-b3bd-5b5ec00d6eab')).toBe(true);
+    let correctedInstanceSeen = false;
+    for (const header of headers) {
+      const report = run("const r=await tools.reports.get({id:" + JSON.stringify(header.ref.slice(7))
+        + "});const p=r.results[0].report;if(!p?.body_md)throw Error('canonical visible report unavailable');"
+        + "const quotes=p.body_md.split(/\\n\\s*\\n/).filter(p=>/\\d/.test(p)).flatMap(p=>p.match(/[\\s\\S]{1,1000}/g)??[]);"
+        + "return {supersedes:p.supersedes_report_id,publishedAt:p.published_at,quoteDigest:(" + digest.toString()
+        + ")(quotes),quoteCount:quotes.length,corrected:p.body_md.includes('WI-6554700010016838')};");
+      expect(report.supersedes).toBe(header.supersedes); expect(report.publishedAt).toBe(header.publishedAt);
+      const actual = quotes.filter(q => q.edition === header.ref).sort((a, b) => a.part - b.part);
+      expect(actual.map(q => q.part)).toEqual(actual.map((_, i) => i));
+      expect(actual.length).toBe(report.quoteCount); expect(digest(actual.map(q => q.quote))).toBe(report.quoteDigest);
+      correctedInstanceSeen ||= report.corrected;
+    }
+    expect(correctedInstanceSeen).toBe(true);
+    for (const header of headers) {
+      expect(header.supersededBy.sort()).toEqual(headers.filter(h => h.supersedes === header.ref.slice(7)).map(h => h.ref).sort());
+    }
+    process.stdout.write(`PARKED_AUDIT_R5 ${JSON.stringify({ auditId, editions: headers.length, countQuoteRecords: quotes.length, pages, correctedInstanceSeen, errors: [] })}\n`);
+  }, 600_000);
+});
+
+/** Independent inventory: a new output field requires an explicit detector review. */
+function verifyFieldProvenance(snapshot: ReturnType<typeof createRosterAudit>) {
+  const inventory: Record<string, string[]> = {
+    agent: ['session', 'ownedWorkCount', 'wait', 'registeredAuto', 'wakeMode', 'independentWork', 'wakeWindow'],
+    work: ['identity', 'next', 'left', 'blockers', 'executable'],
+    blocker: ['blocker', 'clearance'],
+    wake: ['request', 'queued', 'delivered', 'turnStarted', 'replied'],
+    history: ['correction', 'edition', 'reportedCounts'],
+    count: ['reportedCountContext'],
+  };
+  for (const [index, row] of snapshot.records.entries()) {
+    const shape = row.kind === 'work' && 'blocker' in row.fields ? 'blocker'
+      : row.kind === 'history' && 'reportedCountContext' in row.fields ? 'count' : row.kind;
+    expect(Object.keys(row.fields).sort(), row.id).toEqual([...inventory[shape]].sort());
+    for (const [name, field] of Object.entries(row.fields)) {
+      expect(['known', 'unknown'], `${row.id}.${name}`).toContain(field.status);
+      expect(field.source.length).toBeGreaterThan(0);
+      expect(Number.isFinite(Date.parse(field.observedAt))).toBe(true);
+      for (const stamp of ['status', 'source', 'observedAt'] as const) {
+        const mutant = structuredClone(snapshot);
+        delete (mutant.records[index].fields[name] as unknown as Record<string, unknown>)[stamp];
+        expect(() => createRosterAudit(mutant), `${row.id}.${name}.${stamp}`)
+          .toThrowError(expect.objectContaining({ code: 'evidence_unlabelled' }));
+      }
+      if (field.status === 'unknown') {
+        const mutant = structuredClone(snapshot);
+        delete mutant.records[index].fields[name].reason;
+        expect(() => createRosterAudit(mutant), `${row.id}.${name}.reason`)
+          .toThrowError(expect.objectContaining({ code: 'unknown_unexplained' }));
+      }
+    }
+  }
+}
 
 describe('roster frozen audit PG persistence', () => {
   let db: OrgTestDb;
@@ -38,6 +138,27 @@ describe('roster frozen audit PG persistence', () => {
     const end = pageRosterAudit(restored!, scope, { cursor: page.nextCursor! });
     expect(end.records.map(row => row.ownerId)).toEqual(['b']);
     expect(end.coverage).toMatchObject({ total: 2, covered: 2, complete: true });
+  });
+  it('resolves captured directive ledger rows after persistence without upgrading agent or unverified text', async () => {
+    const text = 'Audit the parked population and retain the source owner request.';
+    const capture = (suffix: string, verbatimText: string, capturedByHook: boolean) => recordOwnerDirective({
+      workspaceId: scope.workspaceId, recordedBy: 'reader-a', sessionRef: `${harness}-${suffix}`,
+      sourceTurnRef: `session_turn:codex:${harness}-${suffix}:0`, verbatimText, capturedByHook,
+    }, db.adminSql);
+    const owner = await capture('owner', text, true);
+    const agent = await capture('agent', `⟦turn-origin:self-compaction nonce:test⟧\n${text}`, true);
+    const unverified = await capture('unverified', text, false);
+    const provenance = await auditRequestProvenance(scope.workspaceId, owner.id);
+    expect(provenance).toMatchObject({ status: 'verified-owner', directiveId: owner.id,
+      sourceRef: owner.sourceTurnRef, turnOrigin: 'owner-typed', quote: text });
+    const snapshot = createRosterAudit({ ...build(), provenance });
+    await saveRosterAudit(harness, snapshot);
+    const restored = await loadRosterAudit(harness, snapshot.auditId, scope);
+    expect(restored?.provenance).toEqual(provenance);
+    expect(await auditRequestProvenance(scope.workspaceId, owner.id)).toEqual(provenance);
+    expect(await auditRequestProvenance(scope.workspaceId, agent.id)).toMatchObject({ status: 'unverified' });
+    expect(await auditRequestProvenance(scope.workspaceId, unverified.id)).toMatchObject({ status: 'unverified' });
+    expect(await auditRequestProvenance(scope.workspaceId, Number.MAX_SAFE_INTEGER)).toMatchObject({ status: 'unknown' });
   });
   it('refuses another reader or workspace, including with the exact known audit id', async () => {
     const snapshot = build();
@@ -144,6 +265,7 @@ describe('roster frozen audit PG persistence', () => {
     expect(b.fields.wait.value).toMatchObject({ kind: 'substantive' });
     const wake = snapshot.records.find(row => row.id === 'wake:audit-agent-a:audit-request')!;
     for (const field of ['queued', 'delivered', 'turnStarted', 'replied']) expect(wake.fields[field]).toMatchObject({ status: 'known', value: true });
+    verifyFieldProvenance(snapshot);
     expect(snapshot.population).toEqual(['audit-agent-a', 'audit-agent-b']);
     await saveRosterAudit(harness, snapshot);
     expect(await loadRosterAudit(harness, snapshot.auditId, scope)).toEqual(snapshot);
@@ -155,12 +277,19 @@ describe('roster frozen audit PG persistence', () => {
       (workspace_id, harness_slug, feature_id, item_kind, title, status, taken_by)
       VALUES (${scope.workspaceId}, ${harness}, 'F-1', 'feature', 'First harness', 'wip', 'audit-agent-work'),
         (${scope.workspaceId}, ${harness + '-second'}, 'F-2', 'feature', 'Second harness', 'wip', 'audit-agent-work')`;
+    await db.adminSql`UPDATE harness_shared.work_items SET payload = ${db.adminSql.json({ externalBlockers: [{
+      kind: 'runtime', capability: 'live-dependency', capabilitySource: 'explicit', ref: 'fixture-runtime',
+      summary: 'Fixture runtime remains unavailable', status: 'active', createdAt: asOf,
+      updatedAt: asOf, createdBy: 'fixture',
+    }] })} WHERE workspace_id=${scope.workspaceId} AND harness_slug=${harness} AND feature_id='F-1'`;
     const snapshot = await buildRosterAudit({ harness, scope, asOf, expectedPopulation: 1,
       viewer: { ownerId: 'reader-a' }, agents: [{ ownerId: 'audit-agent-work', sessionState: 'parked', awaitingEvent: false }] });
-    const work = snapshot.records.filter(row => row.kind === 'work');
+    const work = snapshot.records.filter(row => row.kind === 'work' && 'identity' in row.fields);
     expect(work).toHaveLength(2);
     expect(work.map(row => (row.fields.identity.value as { harness: string }).harness).sort()).toEqual([harness, harness + '-second'].sort());
     expect(work.map(row => row.fields.next.status)).toEqual(['unknown', 'unknown']);
+    expect(snapshot.records.some(row => row.kind === 'work' && 'clearance' in row.fields)).toBe(true);
+    verifyFieldProvenance(snapshot);
   });
 
   it('retains each visible report edition count and correction link through frozen paging', async () => {
@@ -195,5 +324,6 @@ describe('roster frozen audit PG persistence', () => {
     expect(countQuotes(corrected.reportId)).toEqual(corrected.bodyMd.split('\n\n'));
     expect(records.some(row => row.id.includes(hidden.reportId))).toBe(false);
     expect(frozen.expectedPopulation).toBe(0);
+    verifyFieldProvenance(frozen);
   });
 });

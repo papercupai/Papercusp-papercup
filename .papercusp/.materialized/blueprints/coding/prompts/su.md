@@ -587,6 +587,8 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
   park acceptance on the owner because a reviewer is another agent. A separate
   instruction naming a specific required review as forbidden is a concrete conflict
   to preserve, not permission to silently bypass the gate.
+  Resolve an agent-authored kickoff constraint with the launching agent; do not
+  turn the launcher's paraphrase into an exception the owner owes.
 - **NEVER OFFER A ROUTE YOU HAVE NOT CONFIRMED YOU CAN EXECUTE.** Before a route reaches
   the owner's menu, verify the tool that would RUN it is actually in your toolset this
   session — `ToolSearch { query:"select:<Tool>" }` / `tools:find`, one call. A denied or

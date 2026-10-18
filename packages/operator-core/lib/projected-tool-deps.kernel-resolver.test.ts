@@ -86,7 +86,17 @@ const db = vi.hoisted(() => {
     const known = knownFrom(strings, values);
     const selectorAt = strings.findIndex((part) => part.endsWith('::bigint IS NULL OR s.id = '));
     const callerAdvSessionId = selectorAt < 0 ? null : values[selectorAt];
+    // Model only the real anchor query's owner/workspace predicates. P040's
+    // dispatch cases also assert the emitted predicates and bound values;
+    // PostgreSQL enforcement belongs to the real-DB sibling suite.
+    const ownerAt = strings.findIndex((part) => part.endsWith('WHERE s.coord_owner_id = '));
+    const workspaceAt = strings.findIndex((part) => part.endsWith(' AND s.workspace_id = '));
     return (rows.shift() ?? [])
+      .filter((row) => {
+        const candidate = row as Record<string, unknown>;
+        return (ownerAt < 0 || candidate.coord_owner_id == null || candidate.coord_owner_id === values[ownerAt]) &&
+          (workspaceAt < 0 || candidate.workspace_id == null || candidate.workspace_id === values[workspaceAt]);
+      })
       .filter((row) => callerAdvSessionId == null ||
         (row as Record<string, unknown>).adv_session_id != null &&
         String((row as Record<string, unknown>).adv_session_id) === String(callerAdvSessionId))
@@ -1236,6 +1246,72 @@ describe('P-005 grants reach actual execution boundaries', () => {
     });
     expect(grants.read).not.toHaveBeenCalled();
   });
+});
+
+describe('P040 retained-wake authority through ordinary dispatch', () => {
+  const ordinary: Omit<ProjectedTool, 'fn'> = {
+    pluginName: 'fixture', description: 'P040 local ordinary handler', inputSchema: { type: 'object' },
+    capabilities: [], expose: { mcp: { name: 'fixture:ordinary' } },
+  };
+
+  it.each(['history', 'control-only', 'owner', 'workspace', 'verified-incarnation', 'missing-verified-row',
+    'missing-receipt', 'desired-only', 'wrong-state', 'malformed-history'] as const)(
+    'enforces %s provenance before the ordinary handler', async (scenario) => {
+      const next = { specificationRevision: PREDECESSOR_ARTIFACT.specificationRevision, stateRevision: 'prepared-b' };
+      const record = {
+        workspaceId: 'ws-a', harnessSlug: 'sales', ...next, specificationArtifact: PREDECESSOR_ARTIFACT,
+        identityHistory: [{ ...REVISION_A, specificationArtifact: PLAIN_ARTIFACT }],
+      };
+      const launch = scenario === 'control-only'
+        ? { ...record, ...REVISION_A, specificationArtifact: PLAIN_ARTIFACT, identityHistory: [] }
+        : scenario === 'missing-receipt' || scenario === 'desired-only' ? { ...record, identityHistory: [] }
+        : scenario === 'wrong-state' ? { ...record, identityHistory: [{ ...record.identityHistory[0], stateRevision: 'wrong' }] }
+        : scenario === 'malformed-history' ? { ...record, identityHistory: { receipt: record.identityHistory[0] } }
+        : record;
+      const activation = {
+        ...appliedActivation(scenario === 'control-only' ? { ...REVISION_A, stateRevision: 'state-next' } : REVISION_A),
+        desired: next, status: 'desired',
+      };
+      const row = anchorRow({ activation }, {
+        adv_session_id: 31, adv_session_xmin: 'p040-1', coord_owner_id: 'owner-a', launch_spec: launch,
+      });
+      const before = structuredClone(row);
+      const callCtx = ctx({
+        advSessionId: scenario === 'verified-incarnation' || scenario === 'missing-verified-row' ? 32 : 31,
+        ...(scenario === 'owner' ? { uiClientId: 'owner-b' } : {}),
+        ...(scenario === 'workspace' ? { workspaceId: 'ws-b' } : {}),
+      });
+      db.rows.push(scenario === 'missing-verified-row' ? [] : [row]);
+      const handler = vi.fn(async () => ({ content: [{ type: 'text' as const, text: 'P040 ordinary sentinel' }] }));
+      const result = await dispatchProjectedTool({ ...ordinary, fn: handler }, 'fixture:ordinary', {}, callCtx, {
+        kernelEnforcement: controlAnchorKernelResolver,
+      });
+      const positive = scenario === 'history' || scenario === 'control-only';
+      expect(result.ok).toBe(positive);
+      if (positive) {
+        expect(handler).toHaveBeenCalledOnce();
+        expect(JSON.stringify(result)).toContain('P040 ordinary sentinel');
+      } else {
+        expect(handler).not.toHaveBeenCalled();
+        expect(result.error?.message).toContain(
+          ['owner', 'workspace', 'verified-incarnation', 'missing-verified-row'].includes(scenario)
+            ? 'policy-unavailable' : 'stale-artifact',
+        );
+      }
+      const [template, ...values] = db.queryCalls()[0];
+      const statement = template.join(' ');
+      expect(statement).toContain('WHERE s.coord_owner_id =');
+      expect(statement).toContain('AND s.workspace_id =');
+      expect(values).toContain(scenario === 'owner' ? 'owner-b' : 'owner-a');
+      expect(values).toContain(scenario === 'workspace' ? 'ws-b' : 'ws-a');
+      expect(row).toEqual(before);
+      if (['missing-receipt', 'desired-only', 'wrong-state', 'malformed-history'].includes(scenario)) {
+        expect(heal.converge).toHaveBeenCalledWith('owner-a', 'ws-a', 9, next);
+      } else {
+        expect(heal.converge).not.toHaveBeenCalled();
+      }
+    },
+  );
 });
 
 /**

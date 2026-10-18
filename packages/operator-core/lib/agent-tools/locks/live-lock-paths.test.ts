@@ -67,10 +67,14 @@ describe('liveLockHoldings', () => {
   // false-negative this read exists to remove.
   it('reads across EVERY coordination domain (null), with no path/owner filter', async () => {
     await liveLockHoldings();
-    expect(readQueue).toHaveBeenCalledWith(expect.anything(), { coordinationDomain: null });
+    expect(readQueue).toHaveBeenCalledWith(expect.anything(), {
+      coordinationDomain: null,
+      includeWaiting: false,
+    });
     const params = readQueue.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(params.paths).toBeUndefined();
     expect(params.owner).toBeUndefined();
+    expect(params.includeWaiting).toBe(false);
   });
 
   // Unlike the `@file:` AUDIENCE (where an extra recipient is harmless), a false positive
