@@ -5,7 +5,10 @@
  * Container capability remains the consuming test's responsibility.
  *
  * node scripts/with-private-podman.mjs --evidence-dir /tmp/fresh-evidence
- *   [--run-timeout-ms 2700000] -- <command> [args...]
+ *   [--run-timeout-ms 2700000] [--storage-root /tmp/owned-storage] -- <command> [args...]
+ * An explicit storage root uses <root>/store and <root>/run with vfs. Seed
+ * images using those same Podman flags; storage remains owned by the caller.
+ * Keep the absolute <root>/run path at most 50 characters (Podman's limit).
  */
 import { spawn } from 'node:child_process';
 import { openSync, closeSync } from 'node:fs';
@@ -95,19 +98,29 @@ async function stop(child) {
 }
 
 export async function runWithPrivatePodman(command, args, { evidenceDir, env = process.env,
-  podman = 'podman', timeoutMs = 15_000, runTimeoutMs = 45 * 60_000, signal } = {}) {
+  podman = 'podman', storageRoot, timeoutMs = 15_000, runTimeoutMs = 45 * 60_000, signal } = {}) {
   if (!command || !evidenceDir) throw new Error('command and fresh evidenceDir are required');
   if (!Number.isSafeInteger(runTimeoutMs) || runTimeoutMs <= 0 || runTimeoutMs > 2_147_483_647) {
     throw new Error('runTimeoutMs must be an integer between 1 and 2147483647');
+  }
+  // In rootless Podman, graphroot/runroot in storage.conf can resolve to the
+  // user's existing store instead. CLI flags take precedence over that config
+  // and its database, so a private socket cannot silently use the shared store.
+  const storage = storageRoot ? { graphRoot: resolve(storageRoot, 'store'),
+    runRoot: resolve(storageRoot, 'run'), driver: 'vfs' } : undefined;
+  if (storage && storage.runRoot.length > 50) {
+    throw new Error('Podman runroot must be at most 50 characters; choose a shorter storageRoot');
   }
   // Never overwrite another attempt's evidence or connect to an inherited API.
   await mkdir(evidenceDir, { recursive: false });
   const runtime = await mkdtemp(join(tmpdir(), 'pc-podman-'));
   const socketPath = join(runtime, 'api.sock');
   const api = `unix://${socketPath}`;
+  const storageArgs = storage ? ['--root', storage.graphRoot, '--runroot', storage.runRoot,
+    '--storage-driver', storage.driver] : [];
   const probes = [];
   const receipt = { startedAt: new Date().toISOString(), api, healthPath: '/_ping', probes, runTimeoutMs,
-    deadlineAt: new Date(Date.now() + runTimeoutMs).toISOString() };
+    deadlineAt: new Date(Date.now() + runTimeoutMs).toISOString(), ...(storage ? { storage } : {}) };
   let host, child, log;
   const abort = new AbortController();
   const combined = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
@@ -123,7 +136,7 @@ export async function runWithPrivatePodman(command, args, { evidenceDir, env = p
   process.on('SIGINT', interrupted);
   try {
     log = openSync(join(evidenceDir, 'api.log'), 'wx', 0o600);
-    host = spawn(podman, ['system', 'service', '--time=0', api], {
+    host = spawn(podman, [...storageArgs, 'system', 'service', '--time=0', api], {
       env, stdio: ['ignore', log, log], detached: process.platform !== 'win32',
     });
     receipt.apiPid = host.pid;
@@ -165,14 +178,22 @@ export async function runWithPrivatePodman(command, args, { evidenceDir, env = p
 
 if (isCliEntry(import.meta.url)) {
   const args = process.argv.slice(2);
-  const hasRunTimeout = args[2] === '--run-timeout-ms';
-  const separator = hasRunTimeout ? 4 : 2;
-  if (args[0] !== '--evidence-dir' || !args[1] || args[separator] !== '--' || !args[separator + 1]) {
-    console.error('usage: node scripts/with-private-podman.mjs --evidence-dir <fresh-dir> [--run-timeout-ms <ms>] -- <command> [args...]');
+  const separator = args.indexOf('--');
+  const options = {};
+  const names = { '--evidence-dir': 'evidenceDir', '--run-timeout-ms': 'runTimeoutMs',
+    '--storage-root': 'storageRoot' };
+  let valid = separator > 0 && separator % 2 === 0;
+  for (let i = 0; valid && i < separator; i += 2) {
+    const key = names[args[i]];
+    if (!key || options[key] !== undefined || !args[i + 1] || args[i + 1].startsWith('--')) valid = false;
+    else options[key] = key === 'runTimeoutMs' ? Number(args[i + 1]) : resolve(args[i + 1]);
+  }
+  if (!valid || !options.evidenceDir || !args[separator + 1]) {
+    console.error('usage: node scripts/with-private-podman.mjs --evidence-dir <fresh-dir> [--run-timeout-ms <ms>] [--storage-root <owned-dir>] -- <command> [args...]');
     process.exitCode = 2;
   } else {
     try { process.exitCode = await runWithPrivatePodman(args[separator + 1], args.slice(separator + 2),
-      { evidenceDir: resolve(args[1]), ...(hasRunTimeout ? { runTimeoutMs: Number(args[3]) } : {}) }); }
+      options); }
     catch (error) { console.error(error.message); process.exitCode = 1; }
   }
 }

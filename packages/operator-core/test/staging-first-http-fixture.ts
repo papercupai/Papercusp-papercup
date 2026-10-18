@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { Socket } from 'node:net';
 import { getOrgPg, getOrgPgApp, getOrgPgListener, _resetForTests } from '@papercusp/db-org';
@@ -125,10 +125,18 @@ async function main() {
       nativeHookPreflight = { beforeInstall, configured, events: Object.keys(hooks),
         privateHookRoot: configured && JSON.stringify(hooks).includes(join(e.HOME!, '.papercusp', 'hooks')) };
     } finally { rmSync(probeHome, { recursive: true, force: true }); }
+    const { readSuperuserToken, isValidSuperuserBearer, superuserTokenPath } = await import('../lib/superuser-token');
+    const bearer = readSuperuserToken();
+    // Check the same reader/validator used by bootstrap-su and the HTTP MCP
+    // host. Return booleans only; the disposable credential stays in its home.
+    const nativeMcpAuth = { bearerPresent: bearer !== null, bearerAccepted: isValidSuperuserBearer(bearer),
+      privatePath: superuserTokenPath() === join(e.PAPERCUSP_HOME!, 'superuser-token'),
+      mode: bearer === null ? null : statSync(superuserTokenPath()).mode & 0o777,
+      absentRejected: !isValidSuperuserBearer(null), wrongRejected: !isValidSuperuserBearer('wrong-private-bearer') };
     console.log('CURRENT_SU_NATIVE_SETUP_RECEIPT ' + JSON.stringify({ workspace,
       accountId: 'private-current-su', provider: 'codex', providerForwarding: false,
       launcherPath: process.env.PAPERCUSP_PSU_LAUNCHER ?? null,
-      nodeOptions: e.NODE_OPTIONS ?? '', nativeHookPreflight }));
+      nodeOptions: e.NODE_OPTIONS ?? '', nativeHookPreflight, nativeMcpAuth }));
     return;
   }
   if (['committed-reader-setup', 'committed-reader-setup-exception'].includes(e.STAGING_FIRST_HTTP_SCENARIO ?? '')) {

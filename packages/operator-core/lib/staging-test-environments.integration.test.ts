@@ -75,7 +75,7 @@ describe('current-build execution route contract', () => {
     }
   }, 220000);
 
-  it('prepares the dummy account and real hooks in the native fixture private home', () => {
+  it('prepares the dummy account, real hooks and MCP bearer in the native fixture private home', () => {
     const evidenceDir = mkdtempSync(join(tmpdir(), 'private-native-setup-'));
     try {
       const result = spawnSync(process.execPath, [join(root, 'scripts/with-test-pg.mjs'),
@@ -94,6 +94,8 @@ describe('current-build execution route contract', () => {
         workspace: expect.stringMatching(/^test-runtime-/), accountId: 'private-current-su',
         provider: 'codex', providerForwarding: false,
         launcherPath: join(root, 'apps/operator/scripts/psu-launcher.mjs'),
+        nativeMcpAuth: { bearerPresent: true, bearerAccepted: true, privatePath: true, mode: 0o600,
+          absentRejected: true, wrongRejected: true },
         nativeHookPreflight: { beforeInstall: false, configured: true, privateHookRoot: true,
           events: expect.arrayContaining(['PreToolUse', 'PostToolUse', 'SessionStart', 'SessionEnd']) } });
       expect(receipt.nodeOptions).not.toContain('vitest-startup-trace.mjs');

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -98,6 +98,45 @@ http.createServer((req,res)=>{res.end(req.url==='/_ping'?'OK':'unexpected')}).li
   assert.equal(receipt.readiness.attempts >= 1, true);
   assert.deepEqual(receipt.cleanup, { apiStopped: true, commandStopped: true });
   assert.throws(() => process.kill(receipt.apiPid, 0), { code: 'ESRCH' });
+});
+
+test('explicit storage pins the API store even with inherited rootless configuration', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'pc-podman-storage-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const podman = join(dir, 'podman');
+  const captured = join(dir, 'service.json');
+  await writeFile(podman, `#!/usr/bin/env node
+require('node:fs').writeFileSync(process.env.PC_STORAGE_CAPTURE, JSON.stringify(process.argv.slice(2)));
+require('node:http').createServer((req,res)=>res.end('OK')).listen(process.argv.at(-1).slice(7));
+`);
+  await chmod(podman, 0o755);
+  const evidenceDir = join(dir, 'evidence');
+  const storageRoot = join(dir, 'private');
+  const code = await runWithPrivatePodman(process.execPath, ['-e',
+    'require("node:http").get({socketPath:process.env.DOCKER_HOST.slice(7),path:"/_ping"},r=>{let b="";r.on("data",c=>b+=c);r.on("end",()=>process.exit(b==="OK"?0:91))}).on("error",()=>process.exit(92))'],
+    { podman, evidenceDir, storageRoot, env: { ...process.env,
+      PC_STORAGE_CAPTURE: captured, CONTAINERS_STORAGE_CONF: join(dir, 'shared-rootless.conf'),
+      DOCKER_HOST: 'unix:///inherited-shared-api.sock' } });
+  assert.equal(code, 0, 'the workload must reach the owned API rather than an inherited socket');
+  const serviceArgs = JSON.parse(await readFile(captured, 'utf8'));
+  assert.deepEqual(serviceArgs.slice(0, 6), [
+    '--root', join(storageRoot, 'store'), '--runroot', join(storageRoot, 'run'), '--storage-driver', 'vfs',
+  ]);
+  const receipt = JSON.parse(await readFile(join(evidenceDir, 'receipt.json'), 'utf8'));
+  assert.deepEqual(receipt.storage, {
+    graphRoot: join(storageRoot, 'store'), runRoot: join(storageRoot, 'run'), driver: 'vfs',
+  });
+  assert.deepEqual(receipt.cleanup, { apiStopped: true, commandStopped: true });
+});
+
+test('oversized private runroot is refused before creating evidence or starting Podman', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'pc-storage-limit-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const evidenceDir = join(dir, 'evidence');
+  await assert.rejects(runWithPrivatePodman(process.execPath, ['-e', 'process.exit(99)'], {
+    evidenceDir, storageRoot: join(dir, 'x'.repeat(51)), podman: join(dir, 'missing'),
+  }), /runroot must be at most 50 characters/);
+  await assert.rejects(access(evidenceDir), { code: 'ENOENT' });
 });
 
 test('failed service spawn is retained and no test command starts', async t => {

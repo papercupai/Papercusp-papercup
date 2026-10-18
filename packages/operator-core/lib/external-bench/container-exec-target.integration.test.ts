@@ -520,9 +520,11 @@ describe('container exec target against a live container', () => {
 
   it('initializes native MCP through the maintained container egress without model inference', async () => {
     const base = mkdtempSync(join(root, 'native-mcp-'));
-    const checkout = join(base, 'checkout');
     const homes = join(base, 'homes'), perHomes = join(base, 'task-homes'), home = join(homes, 'session-7');
-    for (const dir of [checkout, home, perHomes]) mkdirSync(dir, { recursive: true });
+    // This probe exercises the egress/MCP path only. Keep its cwd inside the
+    // image: the prior host-checkout bind produced a Docker /app chdir failure
+    // before MCP traffic, which obscured the path this case is meant to prove.
+    for (const dir of [home, perHomes]) mkdirSync(dir, { recursive: true });
     const methods: string[] = [];
     const server = createServer(async (req, res) => {
       if (req.url?.includes('/models')) {
@@ -561,9 +563,9 @@ describe('container exec target against a live container', () => {
         'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }',
       ].join('\n'));
       cid = await startContainer(['--user', `${process.getuid!()}:${process.getgid!()}`,
-        '-v', `${checkout}:/app`, '-v', `${perHomes}:${homes}`, '-v', `${resolveContainerCodexBinary()}:${CONTAINER_CODEX_BIN_PATH}:ro`], lease.network);
+        '-v', `${perHomes}:${homes}`, '-v', `${resolveContainerCodexBinary()}:${CONTAINER_CODEX_BIN_PATH}:ro`], lease.network);
       const { wrapperPath } = materializeDockerExecWrapper({ kind: 'docker-exec', containerId: cid,
-        workdir: '/app', binPath: CONTAINER_CODEX_BIN_PATH,
+        workdir: '/', binPath: CONTAINER_CODEX_BIN_PATH,
         sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: perHomes }] } },
       { dir: mkdtempSync(join(root, 'mcp-wrapper-')) });
       const child = createRequire(import.meta.url)('@lydell/node-pty').spawn(wrapperPath,

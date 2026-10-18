@@ -1,20 +1,27 @@
 import type { ChildProcess } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { linuxPgrpFromProcStat, linuxPpidFromProcStat, linuxProcStateFromStat,
   linuxStartTicksFromProcStat } from '@papercusp/operator-core/lib/process-identity';
 
 /** A failed signal-zero fence needs member evidence, not a guessed cause. */
-function groupExitEvidence(group: number) {
+async function groupExitEvidence(group: number) {
   const members: { pid: number; parentPid: number | null; state: string | null; startTicks: string | null }[] = [];
   let unreadable = 0;
   let omitted = 0;
   let liveMembers = 0;
   try {
-    for (const name of readdirSync('/proc')) {
-      if (!/^\d+$/.test(name)) continue;
-      try {
-        const stat = readFileSync(`/proc/${name}/stat`, 'utf8');
+    const names = (await readdir('/proc')).filter(name => /^\d+$/.test(name));
+    // Read in bounded parallel batches: serial async reads keep the event loop
+    // responsive but make the exit fence take seconds on a busy host.
+    for (let start = 0; start < names.length; start += 64) {
+      const batch = await Promise.all(names.slice(start, start + 64).map(async name => {
+        try { return { name, stat: await readFile(`/proc/${name}/stat`, 'utf8') }; }
+        catch (error) { return { name, error }; }
+      }));
+      for (const entry of batch) try {
+        if ('error' in entry) throw entry.error;
+        const { name, stat } = entry;
         const pgrp = linuxPgrpFromProcStat(stat);
         if (pgrp === null) {
           // The destructive PID parser excludes group zero. It is a valid
@@ -34,6 +41,9 @@ function groupExitEvidence(group: number) {
       } catch (error) {
         if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) unreadable++;
       }
+      // Keep pipe delivery and deadline timers responsive while collecting
+      // evidence from a large /proc population under fleet load.
+      await new Promise<void>(resolve => setImmediate(resolve));
     }
     return { group, members, unreadable, omitted, liveMembers };
   } catch (error) {
@@ -125,7 +135,7 @@ export function processGroupLifetime(child: ChildProcess, report: (message: stri
         // releasing the fence; unreadable/live members stay open.
         // Only sample this exceptional case, and do not scan on every 10ms tick.
         if (groupFound && process.platform === 'linux' && Date.now() >= nextMemberProbe) {
-          const evidence = groupExitEvidence(group);
+          const evidence = await groupExitEvidence(group);
           nextMemberProbe = Date.now() + 100;
           if (!evidence.error && evidence.unreadable === 0 && evidence.members.length > 0 && evidence.liveMembers === 0) {
             report(`process-group dead members exit evidence: ${JSON.stringify(evidence)}`);
@@ -134,7 +144,7 @@ export function processGroupLifetime(child: ChildProcess, report: (message: stri
           }
         }
         if (Date.now() >= deadline) {
-          const evidence = process.platform === 'linux' ? groupExitEvidence(group) : { group, platform: process.platform };
+          const evidence = process.platform === 'linux' ? await groupExitEvidence(group) : { group, platform: process.platform };
           report(`process-group exit deadline evidence: ${JSON.stringify(evidence)}`);
           throw new Error(`process-group ${group} exit unverified before deadline; ${JSON.stringify(evidence)}`);
         }
