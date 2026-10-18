@@ -35325,7 +35325,7 @@
           "POST"
         ]
       },
-      "description": "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all real claim floors, via the SAME oracle scheduler:get_next uses. READ-ONLY. These review fields differ: `excludedSample.agentReview` samples rows blocked from ordinary issue claims and can include `revision-requested` reviews; it is not the pending-review queue. `excludedSample.queueControl.agentReview` lists pending reviewer candidates only. `queueControl` also separates active claims, hold-open leases, and durable parks; `sampleExcluded` adds provenance, age, and UNPARK-condition detail without changing legacy floor fields.",
+      "description": "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all real claim floors, via the SAME oracle scheduler:get_next uses. Fleet scoping uses `spec:'<fleet-slug>'`; this tool has no `fleet` argument. READ-ONLY. These review fields differ: `excludedSample.agentReview` samples rows blocked from ordinary issue claims and can include `revision-requested` reviews; it is not the pending-review queue. `excludedSample.queueControl.agentReview` lists pending reviewer candidates only. `queueControl` also separates active claims, hold-open leases, durable parks; `sampleExcluded` adds provenance, age, and UNPARK-condition detail without changing legacy floor fields.",
       "capabilities": [
         "work_items:read"
       ],
@@ -35351,7 +35351,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "How many/which issue-family items (bug/change/task) are ACTUALLY claimable — before a drain/wind-down call, a backlog read, or picking work. Work-predicate SSOT; not raw SQL/view.",
+        "when": "How many/which issue-family items (bug/change/task) are ACTUALLY claimable — before a drain/wind-down call, a backlog read, or picking work. For a named fleet lane pass `spec:'<fleet-slug>'`; `fleet` is not an argument here. Work-predicate SSOT; not raw SQL/view.",
         "notWhen": "Taking an item → work_items:claim / claim_next / scheduler:get_next (this only reports). Feature-family (F-…) claimability, or a backlog incl. gated rows → work_items:list. `includeObservations` is intentionally unsupported: observation-lane rows are never claimable. Curate them with work_items:list/work_items:search { includeObservations:true }, or pass sampleExcluded here to inspect them under the observationLane exclusion floor.",
         "chaining": "→ work_items:claim { id } (take a surfaced row) · scheduler:get_next (top-ranked pick)."
       }

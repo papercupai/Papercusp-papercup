@@ -1201,9 +1201,10 @@ mod cli_help_tests {
         );
     }
 
-    /// P-030 regression guard: stopping the pane must launch zellij and return
-    /// without waiting for its kill-session client. The fake client sleeps so
-    /// a blocking `.output()` implementation would exceed this bound.
+    /// P-030 regression guard: return without waiting for the shutdown client,
+    /// and keep that client out of the pane's foreground process group. Zellij
+    /// gives the pane a controlling terminal; exiting its session leader must
+    /// not hang up the client before it sends the shutdown request.
     #[cfg(unix)]
     #[test]
     fn chat_workbench_shutdown_launch_is_nonblocking() {
@@ -1815,12 +1816,18 @@ fn spawn_chat_workbench_shutdown_with(
     program: &str,
     session: &str,
 ) -> std::io::Result<std::process::Child> {
-    std::process::Command::new(program)
+    let mut command = std::process::Command::new(program);
+    command
         .args(chat_workbench_shutdown_args(session))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    command.spawn()
 }
 
 /// The chat pane of a chat workbench is exiting: leave the exit text for the

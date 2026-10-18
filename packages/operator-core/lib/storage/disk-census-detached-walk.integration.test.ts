@@ -75,6 +75,48 @@ afterAll(() => {
 });
 
 describe.skipIf(!linux)('detached census walk (real du, real processes)', () => {
+  it.each([0, 7, TIMEOUT_EXIT_STATUS])('propagates walk exit %i to the managed scope as well as its durable receipt', async (exitCode) => {
+    let scopeExit!: Promise<number | null>;
+    const launch: WalkLauncher = async (cmd, args) => {
+      const child = spawn(cmd, args, { stdio: 'ignore' });
+      scopeExit = new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', resolve);
+      });
+      if (child.pid == null) throw new Error('no pid');
+      return { pid: child.pid, taskId: null, confined: true };
+    };
+    const dir = join(base, `scope-exit-${exitCode}`);
+    const run = await runDetachedDuWalk(tree, {
+      dir, launch, pollMs: 25,
+      command: () => ['sh', ['-c', 'printf "1\\t%s\\0" "$1"; exit "$2"', 'walk-exit', tree, String(exitCode)]],
+    });
+    expect(run.exitCode).toBe(exitCode);
+    expect(readFileSync(walkAttemptFiles(dir, 1).exit, 'utf8').trim()).toBe(String(exitCode));
+    expect(await scopeExit).toBe(exitCode);
+  });
+
+  it('fails the managed scope when a successful walk cannot persist its exit receipt', async () => {
+    let scopeExit!: Promise<number | null>;
+    const launch: WalkLauncher = async (cmd, args, meta) => {
+      mkdirSync(walkAttemptFiles(meta.dir, meta.attempt).exit + '.part');
+      const child = spawn(cmd, args, { stdio: 'ignore' });
+      scopeExit = new Promise((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', resolve);
+      });
+      if (child.pid == null) throw new Error('no pid');
+      return { pid: child.pid, taskId: null, confined: true };
+    };
+    const run = await runDetachedDuWalk(tree, {
+      dir: join(base, 'scope-receipt-failure'), launch, pollMs: 25, maxAttempts: 1,
+      command: () => ['sh', ['-c', 'exit 0']],
+    });
+    expect(run.exitCode).toBeNull();
+    expect(run.error).toContain('without an exit status');
+    expect(await scopeExit).toBe(125);
+  });
+
   it('preserves ordered cross-root hardlink allocation and stores only root totals', async () => {
     const roots = [join(base, 'usage pinned'), join(base, 'usage\nevictable')];
     roots.forEach(root => mkdirSync(root));

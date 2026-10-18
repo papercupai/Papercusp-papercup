@@ -26,7 +26,7 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   evaluateHookContextSink,
-  evaluatePreToolGuards,
+  evaluateToolGuard,
   pgHookTurnStore,
   readAppliedWornRules,
   type GuardVerdict,
@@ -92,22 +92,16 @@ export function guardRefusalText(verdict: GuardVerdict): string {
 }
 
 /**
- * The guard verdict for one pending call. Never throws: an unreadable applied
- * artifact is no verdict (fail open), while a guard that cannot evaluate is
- * already a named refusal inside `evaluatePreToolGuards`.
+ * The guard verdict for one pending call. Never throws. The always-worn kernel
+ * safety rails refuse first, whatever is worn (R-11); after them an unreadable
+ * applied artifact is no verdict (fail open), while a worn guard that cannot
+ * evaluate is already a named refusal inside `evaluatePreToolGuards`.
  */
 export async function toolGuardText(
   input: { ownerId: string; workspaceId: string; call: PendingToolCall },
   readWornRules: (ownerId: string, workspaceId: string) => Promise<WornSyncRules | null> = readAppliedWornRules,
 ): Promise<string> {
-  let worn: WornSyncRules | null;
-  try {
-    worn = await readWornRules(input.ownerId, input.workspaceId);
-  } catch {
-    return '';
-  }
-  if (!worn) return '';
-  return guardRefusalText(evaluatePreToolGuards(worn, input.call));
+  return guardRefusalText(await evaluateToolGuard(input.call, () => readWornRules(input.ownerId, input.workspaceId)));
 }
 
 /**

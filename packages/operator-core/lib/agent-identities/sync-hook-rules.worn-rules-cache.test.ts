@@ -35,7 +35,8 @@ vi.mock('../capability-envelope/identity-grants-port', () => ({
   appliedOrCurrentIdentityArtifact: appliedIdentityArtifactMock,
 }));
 
-import { readAppliedIdentityRules, readAppliedWornRules } from './sync-hook-rules';
+import { evaluateToolGuard, readAppliedIdentityRules, readAppliedWornRules, type WornSyncRules } from './sync-hook-rules';
+import { evaluateKernelSafetyRails, KERNEL_IDENTITY_ID, KERNEL_SAFETY_RAILS } from './kernel-safety-rails';
 
 const ruleArtifact = {
   inputs: [{
@@ -106,5 +107,81 @@ describe('readAppliedWornRules', () => {
     now.mockReturnValue(1_000_000 + 30_001);
     expect((await readAppliedWornRules('owner-unreadable', 'ws'))?.rules).toHaveLength(1);
     expect(readGateSelectedLaunchSpecMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+/*
+ * R-11 (identity-system-everything-migration-2026-10-18 P-004): every listed
+ * safety rail refuses a violating call whatever the session wears — no identity
+ * package, a broken one, a read that throws — and before any worn read, so no
+ * budget or worn state can drop it.
+ */
+describe('always-worn kernel safety rails (R-11)', () => {
+  const bash = (command: string) => ({ tool: 'Bash', input: { command }, client: 'claude' });
+  /** One violating call per listed rail, keyed by rail id. */
+  const VIOLATIONS: Record<string, { tool: string; input: unknown; client: string }[]> = {
+    'kernel:git-reset-hard': [
+      bash('git reset --hard'),
+      bash('cd /repo && git -C libs/papercusp reset --hard HEAD~1'),
+      { tool: 'mcp__papercusp-su__capability_bash', input: { cmd: 'sudo -n git reset --hard origin/staging' }, client: 'claude' },
+    ],
+    'kernel:git-clean-force': [bash('git clean -fd'), bash('echo x; nohup git clean -xfd')],
+    'kernel:git-checkout-all': [bash('git checkout .'), bash('git checkout -- :/'), bash('git restore .')],
+    'kernel:git-stash': [
+      bash('git stash'),
+      bash('git stash pop'),
+      { tool: 'exec_command', input: { cmd: 'git stash push -- src/a.ts' }, client: 'codex' },
+    ],
+  };
+
+  const broken: WornSyncRules = { rules: [], unreadable: [{ identityId: 'broken-pack', pinRef: 'broken-pack', error: 'bad manifest' }] };
+  const WORN_STATES: { name: string; read: () => Promise<WornSyncRules | null> }[] = [
+    { name: 'no identity package (nothing applied)', read: async () => null },
+    { name: 'the worn-rules read throws', read: async () => { throw new Error('db down'); } },
+    { name: 'a broken identity package', read: async () => broken },
+    { name: 'an empty identity package', read: async () => ({ rules: [], unreadable: [] }) },
+  ];
+
+  it('lists a violating call for every rail, so a new rail cannot ship untested', () => {
+    expect(Object.keys(VIOLATIONS).sort()).toEqual(KERNEL_SAFETY_RAILS.map((rail) => rail.id).sort());
+  });
+
+  for (const [ruleId, calls] of Object.entries(VIOLATIONS)) {
+    for (const state of WORN_STATES) {
+      it(`${ruleId} refuses with ${state.name}, before any worn read`, async () => {
+        for (const call of calls) {
+          const read = vi.fn(state.read);
+          const verdict = await evaluateToolGuard(call, read);
+          expect(verdict, JSON.stringify(call)).toMatchObject({ decision: 'deny', identityId: KERNEL_IDENTITY_ID, ruleId });
+          expect(read).not.toHaveBeenCalled();
+        }
+      });
+    }
+  }
+
+  it('the worn guards still run after the rails pass (the real applied read, absent and present)', async () => {
+    const call = bash('rm -rf build');
+    expect(await evaluateToolGuard(call, () => readAppliedWornRules('owner-r11-none', 'ws'))).toEqual({ decision: 'none' });
+    applied('owner-r11-worn');
+    expect(await evaluateToolGuard(call, () => readAppliedWornRules('owner-r11-worn', 'ws')))
+      .toMatchObject({ decision: 'deny', identityId: 'no-rm' });
+  });
+
+  it.each([
+    bash('git status'),
+    bash('git stash list'),
+    bash('git stash show -p'),
+    bash('git reset HEAD~1'),
+    bash('git checkout main'),
+    bash('git clean -n'),
+    bash('echo "never git reset --hard"'),
+    { tool: 'Edit', input: { command: 'git reset --hard' }, client: 'claude' },
+  ])('does not refuse a call no rail lists: %j', (call) => {
+    expect(evaluateKernelSafetyRails(call)).toEqual({ decision: 'none' });
+  });
+
+  it('a rail that cannot evaluate refuses (fail closed)', () => {
+    const throwing = [{ id: 'kernel:bad', reason: 'x', deny: { tool: { matches: '(' } } }];
+    expect(evaluateKernelSafetyRails(bash('ls'), throwing)).toMatchObject({ decision: 'deny', ruleId: 'kernel:bad' });
   });
 });

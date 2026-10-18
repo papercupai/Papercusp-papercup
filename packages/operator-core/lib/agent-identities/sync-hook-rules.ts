@@ -50,6 +50,7 @@ import {
   type PackageSinkWearer,
   type ProduceContextInput,
 } from './turn-start-package-sink';
+import { evaluateKernelSafetyRails } from './kernel-safety-rails';
 
 /** The adapter ships `tool_input` unclamped up to this bound and flags anything beyond. */
 export const SYNC_HOOK_GUARD_INPUT_MAX_BYTES = 64 * 1024;
@@ -176,6 +177,29 @@ export function evaluatePreToolGuards(worn: WornSyncRules, call: PendingToolCall
 
 function key(entry: { identityId: string; pinRef: string }): string {
   return `${entry.identityId}\u0000${entry.pinRef}`;
+}
+
+/**
+ * The pre-tool verdict for one pending call (identity-system-everything-migration
+ * P-004, R-11). The always-worn kernel safety rails are checked FIRST, before
+ * anything worn is read, so a session that wears no identity package, wears a
+ * broken one, or whose worn-rules read fails still has every rail. Only then
+ * are the worn guards read and evaluated. An unreadable or absent worn read is
+ * no worn verdict (fail open, see the module header); a rail never depends on it.
+ */
+export async function evaluateToolGuard(
+  call: PendingToolCall,
+  readWorn: () => Promise<WornSyncRules | null>,
+): Promise<GuardVerdict> {
+  const kernel = evaluateKernelSafetyRails(call);
+  if (kernel.decision === 'deny') return kernel;
+  let worn: WornSyncRules | null;
+  try {
+    worn = await readWorn();
+  } catch {
+    return { decision: 'none' };
+  }
+  return worn ? evaluatePreToolGuards(worn, call) : { decision: 'none' };
 }
 
 /* ------------------------------------------------------------------ */

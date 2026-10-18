@@ -3979,7 +3979,10 @@ desktop_binary_started() {
   # Put stderr redirection before input redirection. If cargo has not created
   # the log yet, opening it is the expected non-ready result; placing `< "$LOG"`
   # first leaks bash's "No such file or directory" diagnostic during each poll.
-  strip_ansi 2>/dev/null < "$LOG" | grep -qE "Running[[:space:]]+.*papercusp-desktop"
+  # Tauri announces Running DevCommand before Cargo compiles. Require Cargo's
+  # quoted executable command and the exact binary basename, including when
+  # Cargo invokes it through tauri-guarded, so compilation keeps its own budget.
+  strip_ansi 2>/dev/null < "$LOG" | grep -qE '^[[:space:]]*Running[[:space:]]+`[^`]*[/\\]papercusp-desktop([[:space:]`])'
 }
 vh_capture_phase_stop
 verifier_begin_phase boot

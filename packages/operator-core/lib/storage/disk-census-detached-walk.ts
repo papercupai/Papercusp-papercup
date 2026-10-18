@@ -43,7 +43,7 @@ export const CENSUS_WALK_KEEP_MS = 2 * 24 * 60 * 60 * 1000;
 export const TIMEOUT_EXIT_STATUS = 124;
 
 const WALK_SCRIPT =
-  'out=$1; err=$2; ex=$3; shift 3; "$@" >"$out" 2>"$err"; rc=$?; printf "%s\\n" "$rc" >"$ex.part" && mv -f "$ex.part" "$ex"';
+  'out=$1; err=$2; ex=$3; shift 3; "$@" >"$out" 2>"$err"; rc=$?; printf "%s\\n" "$rc" >"$ex.part" && mv -f "$ex.part" "$ex" || exit 125; exit "$rc"';
 
 /** The record a walk directory keeps of its current attempt. */
 export interface DetachedWalkState {

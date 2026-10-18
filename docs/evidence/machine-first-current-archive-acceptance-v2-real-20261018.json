@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010015411",
+  "attempt": "machine-first-current-pui-20261018-v2-real",
+  "scope": "Exact installed archive acceptance; refused release, no publication or shipment claim",
+  "verdict": {
+    "checkedAt": "2026-10-18T08:59:21.580Z",
+    "ok": false,
+    "refusals": ["installed-product scripted test leg did not exit successfully (status 1)"],
+    "path": "/tmp/machine-first-current-pui-20261018/pui-0.1.0-linux-x86_64.acceptance-v2-real.json",
+    "sha256": "ea8b44c2abdd702067331e69e26338b30c0859b5b174a5e9fc78dae1aa4033c5"
+  },
+  "candidate": {
+    "sourceSha": "90e18f70064c484ef417f0f085ff2f0e59553707",
+    "archive": "/tmp/machine-first-current-pui-20261018/pui-0.1.0-linux-x86_64.tar.gz",
+    "archiveSha256": "86acc126c7a49e7706aa756eefdc89b49ceb17b1ff6ebf0631c2b853a25b076e",
+    "installedBinarySha256": "53a93b61decba8a36a74b80543de9a7154cc2d96327d54e16ddeec32de8bd64b",
+    "advertise": [{"platform": "Linux x86_64", "backend": "Claude"}]
+  },
+  "legs": [
+    {
+      "engine": "scripted",
+      "exitCode": 1,
+      "passed": 87,
+      "failed": 1,
+      "skipped": 11,
+      "evidenceRows": 66,
+      "log": "/tmp/machine-first-current-pui-acceptance-20261018-v2-real/vitest-scripted.log",
+      "logSha256": "50b439342f61ed48c82f76bcfeb9b095eb6959c58d3329552c3e1f8a63ec666a",
+      "evidence": "/tmp/machine-first-current-pui-acceptance-20261018-v2-real/evidence-scripted.json",
+      "evidenceSha256": "51b0d41fa9505e2238baa93a0beda16fb885f0adda344e9abc14e76ef82ba6c2"
+    },
+    {
+      "engine": "claude",
+      "exitCode": 0,
+      "passed": 13,
+      "failed": 0,
+      "skipped": 86,
+      "evidenceRows": 5,
+      "log": "/tmp/machine-first-current-pui-acceptance-20261018-v2-real/vitest-claude.log",
+      "logSha256": "9ec7cae3ae3bdb6565690ed8f023512b7171e004bb524741a883da4b74db5331",
+      "evidence": "/tmp/machine-first-current-pui-acceptance-20261018-v2-real/evidence-claude.json",
+      "evidenceSha256": "d76e9e86f7f0045133c3545649da00af2930087f0bf13fc6183acb2ccd463391"
+    }
+  ],
+  "stockMachines": [
+    {"image": "ubuntu:24.04", "status": 0},
+    {"image": "debian:stable-slim", "status": 0}
+  ],
+  "cloudDeviceStart": {
+    "endpoint": "https://app.papercusp.com/api/hosted/cli/device/code",
+    "checkedAt": "2026-10-18T08:38:13.425Z",
+    "status": 200,
+    "ok": true
+  },
+  "failure": {
+    "test": "P-030: bare `pui` opens the chat as the focused main pane with the workbench panes beside it",
+    "session": "pui-chat-1046812",
+    "launcherExit": {"exitCode": 0, "at": "2026-10-18T08:45:27.984Z"},
+    "failedObservation": "Own session socket did not retire within 15000ms after launcher exit",
+    "preCleanupAt": "2026-10-18T08:45:43.030Z",
+    "socket": "/tmp/pui-z-wF4wTG/contract_version_1/pui-chat-1046812",
+    "socketOwnerPid": 1047503,
+    "survivingSidePanePid": 1052228,
+    "diagnostic": "Private Zellij log records screen and async-runtime shutdown panics with failed pane-state/plugin/channel sends",
+    "rootCauseStatus": "Exact panic cause unproven; this archive predates the independently repaired dependency and shutdown-helper combination"
+  },
+  "sourceComparison": {
+    "installedZellijVersion": "0.44.3",
+    "currentPackageZellijVersion": "0.45.1",
+    "pinnedMainSha256": "9f0b7001d0d3241d1453f1c535c78a5634bb038bbae6c3b440fe6e2a7076d033",
+    "observedCurrentMainSha256": "c9ccc08588418907c3d72b9e0626187e89c688eb195e17104dbb35b7ab2380b9",
+    "pinnedShutdownHelperHasProcessGroupIsolation": false,
+    "observedCurrentShutdownHelperHasProcessGroupIsolation": true,
+    "reapSourceIdentical": true,
+    "relatedRepair": "EI-26281148606503044",
+    "relatedRepairOwner": "su-9086d0aa-f537-409e-abb9-9a7947bcdef5",
+    "nextAcceptanceRequirement": "A newly frozen archive containing the corrected source and dependency needs its own complete installed acceptance; this refused archive and a focused current-binary pass cannot substitute"
+  },
+  "cleanup": {
+    "receipt": "/tmp/machine-first-current-pui-podman-20261018-v2-real/receipt.json",
+    "receiptSha256": "38929e8f4ce014bc6116c3cdf1ec0c7e2e4ec0d04b90918170e893168f6c1032",
+    "startedAt": "2026-10-18T08:29:23.911Z",
+    "finishedAt": "2026-10-18T09:03:25.368Z",
+    "commandExitCode": 1,
+    "commandSignal": null,
+    "apiStopped": true,
+    "commandStopped": true,
+    "independentProcessRead": [
+      {"pid": 102602, "expectedStartTicks": "110113679", "gone": true},
+      {"pid": 103654, "expectedStartTicks": "110113786", "gone": true},
+      {"pid": 103059, "expectedStartTicks": "110113740", "gone": true}
+    ]
+  }
+}

@@ -1527,6 +1527,110 @@ fi
 MUTATION_DESCRIPTOR_JSON=""
 MUTATION_DESCRIPTOR_MAX_EXPRESSION_CHARS=2000
 MUTATION_DESCRIPTOR_MAX_DIFF_CHARS=8000
+MUTATION_DESCRIPTOR_READER_HEALTH_URL=""
+MUTATION_DESCRIPTOR_READER_SOURCE=""
+MUTATION_DESCRIPTOR_READER_REQUIRED=0
+
+# Resolve the reader that will consume this probe's execution_details rows.
+# The legacy default remains :3070 for D-001/D-006 compatibility, but an
+# operator-selected runtime (the staging :3170 shell, a desktop port, or a
+# launcher-provided base) must win over that legacy default. The effective URL
+# is captured for replay so a later run cannot silently switch readers.
+mutation_descriptor_select_reader() {
+  local selection
+  if [ -n "${PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL:-}" ]; then
+    MUTATION_DESCRIPTOR_READER_HEALTH_URL="$PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL"
+    MUTATION_DESCRIPTOR_READER_SOURCE="override"
+  else
+    selection="$(node - <<'NODE'
+const { readFileSync } = require('node:fs');
+const { homedir } = require('node:os');
+const { join } = require('node:path');
+const env = process.env;
+
+function validPort(raw) {
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  if (!/^\d+$/.test(value)) return null;
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? value : null;
+}
+
+function healthUrl(raw) {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  try {
+    const url = new URL(raw.trim());
+    // `file:` is used by the hermetic reader fixtures; preserve its directory
+    // because unlike an HTTP origin it has no host root to resolve against.
+    url.pathname = url.protocol === 'file:'
+      ? `${url.pathname.replace(/\/+$/, '')}/api/health`
+      : '/api/health';
+    url.search = '';
+    url.hash = '';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return null;
+  }
+}
+
+let source = 'legacy-default';
+let base = '';
+const configuredBase = typeof env.PAPERCUSP_OPERATOR_BASE === 'string'
+  ? env.PAPERCUSP_OPERATOR_BASE.trim()
+  : '';
+if (configuredBase) {
+  base = configuredBase;
+  source = 'operator-base';
+} else {
+  const selfPort = validPort(env.PAPERCUSP_HONO_PORT);
+  if (selfPort) {
+    base = `http://127.0.0.1:${selfPort}`;
+    source = 'hono-port';
+  } else if (typeof env.PAPERCUSP_OPERATOR_URL === 'string' && env.PAPERCUSP_OPERATOR_URL.trim()) {
+    base = env.PAPERCUSP_OPERATOR_URL.trim();
+    source = 'operator-url';
+  }
+}
+if (!base) {
+  try {
+    const discovery = JSON.parse(readFileSync(join(homedir(), '.papercusp', 'operator.json'), 'utf8'));
+    if (typeof discovery?.httpUrl === 'string' && discovery.httpUrl.trim()) {
+      base = discovery.httpUrl.trim();
+      source = 'operator-discovery';
+    } else {
+      const port = validPort(String(discovery?.port ?? ''));
+      if (port) {
+        base = `http://127.0.0.1:${port}`;
+        source = 'operator-discovery';
+      }
+    }
+  } catch {
+    // No discovery file: retain the D-001/D-006 :3070 fallback.
+  }
+}
+const url = healthUrl(base || 'http://127.0.0.1:3070');
+if (!url) process.exit(1);
+process.stdout.write(`${source}\t${url}`);
+NODE
+  )" || die "could not resolve the intended mutation descriptor reader"
+    MUTATION_DESCRIPTOR_READER_SOURCE="${selection%%$'\t'*}"
+    MUTATION_DESCRIPTOR_READER_HEALTH_URL="${selection#*$'\t'}"
+  fi
+  case "${PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED:-}" in
+    1) MUTATION_DESCRIPTOR_READER_REQUIRED=1 ;;
+    0) MUTATION_DESCRIPTOR_READER_REQUIRED=0 ;;
+    '')
+      # Explicit health overrides remain the compatibility/testing escape
+      # hatch. An ambient operator selection is the intended runtime and must
+      # refuse an unbindable proof before any guard leg runs.
+      if [ "$MUTATION_DESCRIPTOR_READER_SOURCE" != "override" ] &&
+         [ "$MUTATION_DESCRIPTOR_READER_SOURCE" != "legacy-default" ] &&
+         [ "$MUTATION_DESCRIPTOR_READER_SOURCE" != "operator-discovery" ]; then
+        MUTATION_DESCRIPTOR_READER_REQUIRED=1
+      fi
+      ;;
+    *) die "PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED must be 0 or 1" ;;
+  esac
+}
 
 mutation_descriptor_reader_ready() {
   local url sha repo link parser_entry
@@ -1536,7 +1640,7 @@ mutation_descriptor_reader_ready() {
     auto) ;;
     *) die "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT must be auto, always or never (got: '${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT}')" ;;
   esac
-  url="${PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL:-http://127.0.0.1:3070/api/health}"
+  url="$MUTATION_DESCRIPTOR_READER_HEALTH_URL"
   sha="$(curl -s -m 3 "$url" 2>/dev/null | tr -d '\n' | sed -n 's/.*"sha":"\([0-9a-f]\{7,40\}\)".*/\1/p')"
   if [ -z "$sha" ]; then
     MUTATION_DESCRIPTOR_GATE="withheld: the deployed reader's build sha is unreadable at $url"
@@ -1589,7 +1693,13 @@ mutation_descriptor_reader_ready() {
 build_mutation_descriptor() {
   local mode="$1" subject="$2" expression="$3" commit="$4" before="$5" after="$6"
   MUTATION_DESCRIPTOR_GATE=""
+  mutation_descriptor_select_reader
   if ! mutation_descriptor_reader_ready; then
+    if [ "$MUTATION_DESCRIPTOR_READER_REQUIRED" -eq 1 ]; then
+      printf 'MUTATION_PROBE_RESULT verdict=harness-error phase=descriptor reason=reader-unavailable reader_source=%s reader_url=%s target=%s\n' \
+        "$MUTATION_DESCRIPTOR_READER_SOURCE" "$MUTATION_DESCRIPTOR_READER_HEALTH_URL" "$FILE"
+      die "mutation descriptor reader preflight failed ($MUTATION_DESCRIPTOR_GATE); refusing to run an unbindable proof. Set PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL only for an intentional D-001/D-006 compatibility override."
+    fi
     log "mutation descriptor $MUTATION_DESCRIPTOR_GATE — guard rows will carry no execution_details.mutation"
     return 0
   fi
@@ -2930,8 +3040,9 @@ REPLAY_RECORD="$(
   MUTATION_PROBE_COPY_BASELINE_LEDGER="$COPY_BASELINE_LEDGER" \
   MUTATION_PROBE_MUTANT_LEDGER="$MUTANT_LEDGER" \
   MUTATION_PROBE_REPLAY_DESCRIPTOR_EXPORT="${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT:-auto}" \
-  MUTATION_PROBE_REPLAY_READER_HEALTH_URL="${PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL:-http://127.0.0.1:3070/api/health}" \
+  MUTATION_PROBE_REPLAY_READER_HEALTH_URL="$MUTATION_DESCRIPTOR_READER_HEALTH_URL" \
   MUTATION_PROBE_REPLAY_READER_REPO="${PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO:-$RUNNER_ROOT}" \
+  MUTATION_PROBE_REPLAY_READER_REQUIRED="$MUTATION_DESCRIPTOR_READER_REQUIRED" \
   MUTATION_PROBE_REPLAY_HARNESS="${PAPERCUSP_TEST_RUN_HARNESS:-${HARNESS_SLUG:-${PAPERCUSP_HARNESS_SLUG:-}}}" \
   perl -MJSON::PP -MEncode=decode,FB_CROAK,LEAVE_SRC -e '
     # Perl receives argv and environment values as bytes. Decode text before
@@ -2947,11 +3058,20 @@ REPLAY_RECORD="$(
       MUTATION_PROBE_RELOCATION MUTATION_PROBE_BASELINE_LEDGER
       MUTATION_PROBE_COPY_BASELINE_LEDGER MUTATION_PROBE_MUTANT_LEDGER
       MUTATION_PROBE_REPLAY_DESCRIPTOR_EXPORT MUTATION_PROBE_REPLAY_READER_HEALTH_URL
-      MUTATION_PROBE_REPLAY_READER_REPO MUTATION_PROBE_REPLAY_HARNESS
+      MUTATION_PROBE_REPLAY_READER_REPO MUTATION_PROBE_REPLAY_READER_REQUIRED
+      MUTATION_PROBE_REPLAY_HARNESS
     )) {
       # %ENV is tied: storing decoded text there turns it back into bytes.
       $text_env{$key} = decode("UTF-8", $ENV{$key}, FB_CROAK | LEAVE_SRC);
     }
+    my %environment = (
+        PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT => $text_env{MUTATION_PROBE_REPLAY_DESCRIPTOR_EXPORT},
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL => $text_env{MUTATION_PROBE_REPLAY_READER_HEALTH_URL},
+        PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO => $text_env{MUTATION_PROBE_REPLAY_READER_REPO},
+        PAPERCUSP_TEST_RUN_HARNESS => $text_env{MUTATION_PROBE_REPLAY_HARNESS},
+    );
+    $environment{PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED} = '1'
+      if $text_env{MUTATION_PROBE_REPLAY_READER_REQUIRED} eq '1';
     print encode_json({
       schemaVersion => 1,
       runnerPath => $text_env{MUTATION_PROBE_RUNNER_PATH},
@@ -2959,12 +3079,7 @@ REPLAY_RECORD="$(
       runnerCommit => $text_env{MUTATION_PROBE_RUNNER_COMMIT},
       cwd => $text_env{MUTATION_PROBE_REPLAY_CWD},
       argv => \@ARGV,
-      environment => {
-        PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT => $text_env{MUTATION_PROBE_REPLAY_DESCRIPTOR_EXPORT},
-        PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL => $text_env{MUTATION_PROBE_REPLAY_READER_HEALTH_URL},
-        PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO => $text_env{MUTATION_PROBE_REPLAY_READER_REPO},
-        PAPERCUSP_TEST_RUN_HARNESS => $text_env{MUTATION_PROBE_REPLAY_HARNESS},
-      },
+      environment => \%environment,
       result => {
         verdict => $text_env{MUTATION_PROBE_VERDICT},
         expected => $text_env{MUTATION_PROBE_EXPECTED},

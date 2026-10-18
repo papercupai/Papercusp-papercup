@@ -123,22 +123,54 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     writeFileSync(script, readFileSync(SCRIPT));
     git(reader, ['add', 'scripts/mutation-probe.sh', 'libs/test-config']);
     git(reader, ['commit', '-qm', 'original runner and reader']);
-    const health = join(dir, 'health.json');
-    writeFileSync(health, JSON.stringify({ sha: git(reader, ['rev-parse', 'HEAD']).slice(0, 10) }));
+    const operatorRoot = join(dir, 'operator');
+    mkdirSync(join(operatorRoot, 'api'), { recursive: true });
+    writeFileSync(join(operatorRoot, 'api', 'health'), JSON.stringify({ sha: git(reader, ['rev-parse', 'HEAD']).slice(0, 10) }));
     const { file } = makeSubjectRepo();
     const { recorder, log } = makeRecorder();
     const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
       PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
-      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `file://${health}`,
+      // The intended reader comes from the ambient operator pin. The probe
+      // must not silently fall back to the legacy :3070 reader when a staging
+      // or desktop shell has selected another runtime.
+      PAPERCUSP_OPERATOR_URL: `file://${operatorRoot}`,
+      PAPERCUSP_OPERATOR_BASE: undefined,
+      PAPERCUSP_HONO_PORT: undefined,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: undefined,
       PAPERCUSP_MUTATION_DESCRIPTOR_READER_REPO: undefined,
+      PAPERCUSP_TEST_RUNS_DB_URL: 'postgresql://ledger.example:5444/papercusp',
     }, script);
 
     expect(code, out).toBe(0);
     expect(out).toMatch(/mutation descriptor on: deployed reader [0-9a-f]+ parses execution_details\.mutation/);
+    const replay = JSON.parse(out.match(/^MUTATION_PROBE_EVIDENCE_JSON=(.+)$/m)![1]!);
+    expect(replay.environment).toMatchObject({
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: `file://${operatorRoot}/api/health`,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '1',
+    });
     const seen = legs(log);
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.every(leg => leg.descriptor !== null
       && parseMutationInvocationDescriptor(JSON.parse(leg.descriptor)))).toBe(true);
+  });
+
+  it('auto: refuses before any guard leg when the selected reader is unavailable', () => {
+    const { file } = makeSubjectRepo();
+    const { recorder, log } = makeRecorder();
+    const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'auto',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1',
+      PAPERCUSP_OPERATOR_BASE: undefined,
+      PAPERCUSP_HONO_PORT: undefined,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: undefined,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: undefined,
+    });
+
+    expect(code, out).toBe(2);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=harness-error phase=descriptor reason=reader-unavailable');
+    expect(out).toContain('refusing to run an unbindable proof');
+    expect(out).not.toContain('running baseline guard');
+    expect(legs(log)).toEqual([]);
   });
 
   it('fails closed when the admitted descriptor builder crashes, without issuing a caught or survived verdict', () => {

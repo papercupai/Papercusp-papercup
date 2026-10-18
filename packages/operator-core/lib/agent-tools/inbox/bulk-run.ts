@@ -252,7 +252,11 @@ async function liveActionsById(
     // projection made every real item look like `actions:[]`, so the agent skipped
     // the entire run even though the middle pane showed Acknowledge/Resolve.
     // Ask the shared reader for the canonical shape, not the list display shape.
-    const r = (await callPlansRead('attention', {}, { uiProjection: false })) as {
+    // Keep the live feed read bounded. The attention surface can contain thousands
+    // of rows; an unbounded resolver read exceeds the MCP deadline before it can
+    // index actions. Selected coord messages outside this window are hydrated by
+    // the exact keyset read below.
+    const r = (await callPlansRead('attention', { limit: 500 }, { uiProjection: false })) as {
       groups?: unknown;
     } | null;
     if (!Array.isArray(r?.groups)) throw new Error('plans:attention returned no groups array');

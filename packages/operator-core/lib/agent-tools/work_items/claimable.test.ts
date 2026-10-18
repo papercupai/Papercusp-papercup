@@ -970,6 +970,18 @@ describe('work_items:claimable handler', () => {
     expect(description).toContain('pending reviewer candidates only');
   });
 
+  it('names spec as the fleet selector and rejects the historical fleet argument', () => {
+    const argsSchema = tool.args as unknown as { safeParse: (value: unknown) => { success: boolean } };
+    const description = String(tool.description ?? '');
+    const when = String(tool.guidance?.when ?? '');
+    expect(description).toContain("Fleet scoping uses `spec:'<fleet-slug>'`");
+    expect(description).toContain('this tool has no `fleet` argument');
+    expect(when).toContain("pass `spec:'<fleet-slug>'`");
+    expect(when).toContain('`fleet` is not an argument here');
+    expect(argsSchema.safeParse({ harness: 'papercup', spec: 'enterprise-readiness' }).success).toBe(true);
+    expect(argsSchema.safeParse({ harness: 'papercup', fleet: 'enterprise-readiness' }).success).toBe(false);
+  });
+
   it('sampleExcluded rides through as sampleLimit on the SAME snapshot read + surfaces excludedSample', async () => {
     sampleValue = {
       ...EMPTY_SAMPLE,

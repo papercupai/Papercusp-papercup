@@ -270,7 +270,7 @@ describe('inbox:bulk-run-manifest canonical action vocabulary', () => {
       } as never),
     );
 
-    expect(h.callPlansRead).toHaveBeenCalledWith('attention', {}, { uiProjection: false });
+    expect(h.callPlansRead).toHaveBeenCalledWith('attention', { limit: 500 }, { uiProjection: false });
     expect(h.callPlansRead).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       ok: true,
