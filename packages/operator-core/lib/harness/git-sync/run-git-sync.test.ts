@@ -6158,7 +6158,7 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     });
     expect(out.status).toBe('nothing'); // clean + up-to-date on main
     // it fetched origin MAIN (the remote default), never origin staging (cfg.branch)
-    expect(fetched.join('|')).toContain('fetch origin main');
+    expect(fetched).toContain('fetch origin +refs/heads/main:refs/remotes/origin/main');
     expect(fetched.join('|')).not.toContain('staging');
   });
 });

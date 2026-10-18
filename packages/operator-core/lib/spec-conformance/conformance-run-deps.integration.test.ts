@@ -4,6 +4,7 @@ import { judgeTestsFromLedger, productionConformanceDeps } from './conformance-r
 import * as ledger from '../check-results-ledger';
 import { evaluateCriterionProbeChecks } from '../rubrics-criterion-checks';
 import { currentRequestWorkspaceId, runWithWorkspace } from '../workspace-als';
+import { dispatchPaletteTarget } from '../capabilities/invoke';
 
 describe('conformance test-ledger evidence population', () => {
   let db: FreshPgDb;
@@ -82,8 +83,8 @@ describe('conformance test-ledger evidence population', () => {
 
   it('binds executable probe checks to the canonical workspace', async () => {
     const calls: Array<{ name: string; args: Record<string, unknown>; workspace: string | undefined }> = [];
-    const dispatchTool = async (opts: { name: string; args: Record<string, unknown>; harness?: string }) => {
-      calls.push({ name: opts.name, args: opts.args, workspace: currentRequestWorkspaceId() });
+    const dispatchTool: typeof dispatchPaletteTarget = async (opts) => {
+      calls.push({ name: opts.name, args: opts.args as Record<string, unknown>, workspace: currentRequestWorkspaceId() });
       return { content: [{ type: 'text', text: '{"value":"next-sha"}' }] };
     };
     const probe = {
@@ -120,7 +121,7 @@ describe('conformance test-ledger evidence population', () => {
     const result = await runWithWorkspace('ambient-workspace', async () => {
       const value = await deps.evaluateCheck({
         barKey: 'R-4',
-        role: 'outcome',
+        role: 'done-when',
         checkId: 'R-4',
         check: {
           kind: 'probe',
