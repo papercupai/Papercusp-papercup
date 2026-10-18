@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { captureWorkbenchResponses, workbenchTextField, workbenchTextFieldReady, workbenchButtonReady, workbenchControlDiagnostics, clickWorkbenchButton } from '../../../../../../scripts/lib/dao-workbench-controls.mts';
 import OnboardingViews from './OnboardingViews';
 
 const fetcher = vi.fn(), wallet = vi.fn(), hash = '0x' + '11'.repeat(32), address = '0x' + '22'.repeat(20);
@@ -8,8 +9,50 @@ const steps = ['contract','identity','wallet','proposal','acceptance','membershi
 const view = (complete: string[] = []) => ({ offerId:'offer',state:'signed',bindingEligible:false,isAdmin:false,isCandidate:true,chainError:null,proposalId:'123',
   plan:{chainId:1,shares:'1000',wallet:address},checklist:steps.map(key=>({key,label:key,complete:complete.includes(key)})) });
 beforeEach(() => { fetcher.mockReset(); wallet.mockReset(); vi.stubGlobal('fetch', fetcher); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); delete (window as any).ethereum; });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); delete (window as any).ethereum; delete (window as any).__DAO_HR_CAPTURE__; });
 describe('Candidate onboarding journey', () => {
+  it('can capture the challenge before its form renders and retains it after the parent refresh', async () => {
+    let release!: () => void, releaseRefresh!: () => void;
+    const received = new Promise<void>(resolve => { release = resolve; });
+    const refreshed = new Promise<void>(resolve => { releaseRefresh = resolve; });
+    const result = { ok: true, result: { challengeId: 'challenge', message: 'exact message' } };
+    let reads = 0;
+    fetcher.mockImplementation(async (_url, init) => init ? {
+      ok: true, status: 200, clone: () => Response.json(result),
+      json: async () => { await received; return result; },
+    } : { ok: true, json: async () => { if (++reads > 1) await refreshed; return { ok: true, onboarding: view(['contract']) }; } });
+    const changed = vi.fn(() => root.rerender(<section data-testid="dao-workspace"><OnboardingViews daoSlug="dao" offerId="offer" onChanged={changed} /></section>));
+    const root = render(<section data-testid="dao-workspace"><OnboardingViews daoSlug="dao" offerId="offer" onChanged={changed} /></section>);
+    const form = await screen.findByRole('form', { name: 'Bind onboarding wallet' });
+    window.eval(captureWorkbenchResponses());
+    fireEvent.change(within(form).getByLabelText('Wallet address'), { target: { value: address } });
+    fireEvent.submit(form);
+    await waitFor(() => expect((window as any).__DAO_HR_CAPTURE__.responses['wallet-challenge']?.status).toBe(200));
+    expect(screen.queryByLabelText('Wallet signature')).toBeNull();
+    const ready = () => window.eval(workbenchTextFieldReady('Wallet signature', '[data-testid=dao-workspace]'));
+    const buttonReady = () => window.eval(workbenchButtonReady('Verify wallet signature'));
+    expect(ready()).toBe(false);
+    expect(buttonReady()).toBe(false);
+    expect(() => window.eval(workbenchTextField('Wallet signature', '0x' + '33'.repeat(65), '[data-testid=dao-workspace]'))).toThrow('Missing text field Wallet signature');
+    await act(async () => { release(); });
+    await screen.findByLabelText('Wallet signature');
+    expect(ready()).toBe(true);
+    expect(buttonReady()).toBe(false);
+    expect(() => window.eval(clickWorkbenchButton('Verify wallet signature'))).toThrow('Unavailable control');
+    const pending = window.eval(workbenchControlDiagnostics('[data-testid=dao-workspace]'));
+    expect(pending.fields).toContainEqual(expect.objectContaining({ label: 'Wallet signature', tag: 'INPUT' }));
+    expect(pending.buttons).toContainEqual({ text: 'Verify wallet signature', disabled: true });
+    await act(async () => { releaseRefresh(); });
+    await waitFor(() => expect(changed).toHaveBeenCalledOnce());
+    expect(ready()).toBe(true);
+    expect(buttonReady()).toBe(true);
+    const signature = screen.getByLabelText('Wallet signature') as HTMLInputElement;
+    act(() => { window.eval(workbenchTextField('Wallet signature', '0x' + '33'.repeat(65), '[data-testid=dao-workspace]')); });
+    expect(signature.value).toBe('0x' + '33'.repeat(65));
+    expect(JSON.stringify(window.eval(workbenchControlDiagnostics('[data-testid=dao-workspace]')))).not.toContain(signature.value);
+    expect(screen.getByLabelText('Wallet signature')).toBe(signature);
+    expect((screen.getByRole('button', { name: 'Verify wallet signature' }) as HTMLButtonElement).disabled).toBe(false);
+  });
   it('shows incomplete steps and offers acceptance only after execution', async () => {
     fetcher.mockResolvedValue(Response.json({ok:true,onboarding:view(['contract','identity','wallet'])}));
     render(<OnboardingViews daoSlug="dao" offerId="offer" />);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 import { execFile, fork } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
@@ -9,6 +10,53 @@ import { pathToFileURL } from 'node:url';
 import { loaderIdentity, nativeProcessTraceEnv, observeForkStartup, startupTraceEnv } from '../../../../scripts/lib/vitest-startup-trace.mjs';
 
 describe('focused runner startup tracing', () => {
+  it.each(['event', 'stream'])('never publishes partial %s artifacts when killed after opening the output', async kind => {
+    const dir = mkdtempSync(join(tmpdir(), 'native-interrupted-write-'));
+    const out = join(dir, 'sources.json');
+    const preload = new URL('../../../../scripts/lib/vitest-startup-trace.mjs?interrupted-write', import.meta.url).href;
+    const env: NodeJS.ProcessEnv = { ...process.env, PAPERCUSP_TEST_STARTUP_TRACE: '0' };
+    delete env.PC_EXECUTED_SOURCE_MAP_OUT;
+    const source = `import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      const write = fs.writeFileSync;
+      fs.writeFileSync = function(path, bytes, ...args) {
+        const content = Buffer.from(bytes).toString();
+        if (String(path).startsWith(${JSON.stringify(out + '.native-processes')}) &&
+            (${JSON.stringify(kind)} === 'event' ? content.startsWith('{') : content === 'fixture-body')) {
+          fs.closeSync(fs.openSync(path, 'wx'));
+          process.stdout.write('NATIVE_WRITE_OPEN');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+        }
+        return write.call(this, path, bytes, ...args);
+      };
+      syncBuiltinESMExports();
+      process.env.PC_EXECUTED_SOURCE_MAP_OUT = ${JSON.stringify(out)};
+      await import(${JSON.stringify(preload)});
+      process.stdout.write('fixture-body');`;
+    try {
+      let entered = false, output = '';
+      await new Promise<void>((resolve, reject) => {
+        const child = execFile(process.execPath, ['--input-type=module', '-e', source],
+          { env, timeout: 10_000, killSignal: 'SIGKILL' }, error => {
+            if (entered && error?.signal === 'SIGKILL') resolve();
+            else reject(error ?? new Error('interrupted writer unexpectedly returned'));
+          });
+        child.stdout?.on('data', chunk => {
+          output += String(chunk);
+          if (output.includes('NATIVE_WRITE_OPEN')) { entered = true; child.kill('SIGKILL'); }
+        });
+      });
+      expect(entered).toBe(true);
+      const names = readdirSync(`${out}.native-processes`);
+      if (kind === 'stream') expect(names.length).toBeGreaterThan(0);
+      for (const name of names) {
+        const bytes = readFileSync(join(`${out}.native-processes`, name));
+        expect(createHash('sha256').update(bytes).digest('hex')).toBe(name.split('.')[0]);
+        if (name.endsWith('.json')) expect(JSON.parse(bytes.toString())).toHaveProperty('schemaVersion', 1);
+      }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('arms native observation only on the existing OUT channel, without changing stderr trace mode', () => {
     const plain = { NODE_OPTIONS: '--conditions=test' };
     expect(nativeProcessTraceEnv(plain)).toBe(plain);

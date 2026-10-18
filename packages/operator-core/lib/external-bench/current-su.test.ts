@@ -2005,10 +2005,17 @@ describe('current benchmark restart and live binding', () => {
       authenticateProvider: async () => null });
     const hosted = await controller.startNativeGateway(() => {}, async () => ({ port: 32102, stop: vi.fn(async () => {}) } as never));
     const opts = { ...options, preregistration: { preregHash, config: protocol, repoRoot: snapshotRoot } };
-    const containerExec = { kind: 'docker-exec' as const, containerId: 'fswe-task-1', workdir: '/app', binPath: '/opt/papercusp/codex' };
+    const containerExec = { kind: 'docker-exec' as const, containerId: 'fswe-task-1', workdir: '/app', binPath: '/opt/papercusp/codex',
+      sessionRelocation: { sessionEnv: 'CODEX_HOME' as const, roots: [
+        { hostRoot: join(snapshotRoot, 'homes'), perTaskDir: join(snapshotRoot, 'task-homes') },
+        { hostRoot: join(snapshotRoot, 'sqlite'), perTaskDir: join(snapshotRoot, 'task-sqlite') },
+      ] } };
     try {
       expect(() => liveCurrentSuBenchPorts(ctx, { admit: f.ports.admit, observeIdentity: async () => null, ...hosted,
         containerExec: { ...containerExec, workdir: 'app' } }, opts)).toThrow(/workdir must be absolute/);
+      const { sessionRelocation: _missingRelocation, ...withoutRelocation } = containerExec;
+      expect(() => liveCurrentSuBenchPorts(ctx, { admit: f.ports.admit, observeIdentity: async () => null, ...hosted,
+        containerExec: withoutRelocation }, opts)).toThrow(/CODEX_HOME relocation/);
       const ports = liveCurrentSuBenchPorts(ctx, { admit: f.ports.admit, observeIdentity: async () => null, ...hosted, containerExec }, opts);
       const context = await ports.restoreContext(restoredHandle, 't1');
       const args = currentBenchLaunchRequest(opts, restoredHandle, 'issue', context);
@@ -2020,6 +2027,8 @@ describe('current benchmark restart and live binding', () => {
       const wrapper = readFileSync(override.codex.command, 'utf8');
       expect(wrapper).toContain('fswe-task-1');
       expect(wrapper).toContain('/opt/papercusp/codex');
+      expect(wrapper).toContain('CODEX_HOME');
+      expect(wrapper).toContain('projects={\\"/app\\"={trust_level=\\"trusted\\"}}');
       expect(statSync(override.codex.command).mode & 0o111).not.toBe(0);
       // The in-container launch keeps the private gateway route and the session ceiling.
       expect(forwarded[Symbol.for('benchmark-test-private-route')]).toEqual(hosted.nativeGateway);

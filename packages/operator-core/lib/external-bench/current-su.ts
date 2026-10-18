@@ -32,7 +32,7 @@ import { concurrencyTimelineFromIntervals } from './hive-backlog-utilities';
 import { restoreBenchmarkContext, readRestoredBenchmarkContext, readContainedBenchmarkFile, type BenchmarkContextInput, type BenchmarkContextReceipt } from './reproducibility/context';
 import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
 import { openAiCacheGeneration } from '../inference-gateway/cache-policy';
-import { materializeDockerExecWrapper, validateDockerExecTarget, type DockerExecTarget } from './container-exec-target';
+import { CONTAINER_CODEX_BIN_PATH, materializeDockerExecWrapper, validateDockerExecTarget, type DockerExecTarget } from './container-exec-target';
 
 interface NativeCostParticipant {
   taskId: string; ownerId: string; codexHome: string; terminal: boolean;
@@ -2711,7 +2711,17 @@ export function liveCurrentSuBenchPorts(
   const host = observations.nativeGateway === undefined ? undefined : currentBenchHostGateways.get(observations.nativeGateway);
   const accounting = observations.nativeAccountingBinding === undefined ? undefined : Object.freeze({ ...observations.nativeAccountingBinding });
   const containerExec = observations.containerExec === undefined ? undefined : Object.freeze({ ...observations.containerExec });
-  if (containerExec) validateDockerExecTarget(containerExec);
+  if (containerExec) {
+    validateDockerExecTarget(containerExec);
+    // An in-container current-su launch must carry the same session home into
+    // the task container. Without this relocation the generated wrapper cannot
+    // apply the repository trust override to the Codex process, so a committed
+    // /app checkout can stop at the native trust prompt before any model call.
+    if (containerExec.binPath !== CONTAINER_CODEX_BIN_PATH || containerExec.workdir !== '/app' ||
+        containerExec.sessionRelocation?.sessionEnv !== 'CODEX_HOME' || !containerExec.sessionRelocation.roots.length) {
+      throw new Error('Current-su in-container Codex target requires /app, the maintained Codex binary, and CODEX_HOME relocation roots.');
+    }
+  }
   let containerWrapper: ReturnType<typeof materializeDockerExecWrapper> | undefined;
   /** The `{ codex: wrapper }` override for an in-container launch; undefined for a host launch. */
   const containerExecWrapper = (args: LaunchArgs): import('../agent-tools/capability/launch-agent').InternalBackendBinOverride | undefined => {

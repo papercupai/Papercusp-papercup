@@ -148,14 +148,15 @@ describe('Cargo reporter ledger destination (EI-26344781297566924)', () => {
     testCommandSha256: 'c'.repeat(64), testCommand: 'cargo test --manifest-path Cargo.toml',
   };
   it.each([
-    ['explicit ledger', ' postgresql://ledger.example/evidence ', 'postgresql://ledger.example/evidence', 'baseline', 'valid'],
+    ['explicit ledger', ' postgresql://ledger.example/evidence ', 'postgresql://ledger.example/evidence', 'baseline', 'valid', 'p032-cargo-ledger'],
     ['runtime fallback', undefined, 'postgresql://runtime.example/private', 'copy-baseline', 'valid'],
     ['blank ledger fallback', '  ', 'postgresql://runtime.example/private', 'mutant', 'valid'],
-    ['ordinary run', undefined, 'postgresql://runtime.example/private', undefined, 'valid'],
+    ['ordinary run', undefined, 'postgresql://runtime.example/private', undefined, 'valid', "cargo ordinary: owner's run"],
+    ['empty run group', undefined, 'postgresql://runtime.example/private', undefined, 'valid', ''],
     ['malformed descriptor', undefined, 'postgresql://runtime.example/private', 'mutant', 'malformed'],
     ['unknown descriptor field', undefined, 'postgresql://runtime.example/private', 'mutant', 'unknown-field'],
     ['absent descriptor', undefined, 'postgresql://runtime.example/private', 'mutant', 'absent'],
-  ])('records the real CLI inserts in the %s', (_label, ledgerUrl, expectedUrl, phase, descriptorKind) => {
+  ])('records the real CLI inserts in the %s', (_label, ledgerUrl, expectedUrl, phase, descriptorKind, runGroup) => {
     const root = mkdtempSync(join(tmpdir(), 'cargo-ledger-destination-'));
     const inserts = join(root, 'inserts.jsonl');
     const loader = join(root, 'loader.mjs');
@@ -181,7 +182,12 @@ describe('Cargo reporter ledger destination (EI-26344781297566924)', () => {
         export default function postgres(url) {
           const sql = async (_strings, ...values) => {
             const execution = values.find(value => value?.schemaVersion === 1 && 'mutationPhase' in value);
-            appendFileSync(process.env.CARGO_LEDGER_INSERTS, JSON.stringify({ url, execution }) + '\\n');
+            const query = _strings.map((part, index) => part + (index < values.length ? '__value_' + index + '__' : '')).join('');
+            const columns = query.match(/INSERT INTO harness_shared.test_runs\\s*\\(([^)]+)\\)/)[1].split(',').map(column => column.trim());
+            const slots = query.match(/VALUES\\s*\\(([^)]+)\\)/)[1].split(',');
+            const groupSlot = slots[columns.indexOf('run_group_id')]?.match(/__value_(\\d+)__/);
+            const runGroupId = groupSlot ? values[Number(groupSlot[1])] : '__missing_run_group_id__';
+            appendFileSync(process.env.CARGO_LEDGER_INSERTS, JSON.stringify({ url, execution, runGroupId }) + '\\n');
             return [{ id: '70001' }];
           };
           sql.json = value => value;
@@ -208,6 +214,7 @@ describe('Cargo reporter ledger destination (EI-26344781297566924)', () => {
           ...process.env, ...PERMISSIVE_REPORTER_DISK_ENV,
           PATH: `${root}:${process.env.PATH ?? ''}`, CARGO_TARGET_DIR: join(root, 'target'),
           CARGO_LEDGER_INSERTS: inserts, PAPERCUSP_TEST_RUN_RECEIPT_FILE: receipts,
+          PAPERCUSP_TEST_RUN_GROUP: runGroup,
           PAPERCUSP_TEST_RUNS_DB_URL: ledgerUrl,
           HARNESS_ADMIN_DATABASE_URL: 'postgresql://runtime.example/private',
           PAPERCUSP_PG_PORT: '25432',
@@ -223,6 +230,12 @@ describe('Cargo reporter ledger destination (EI-26344781297566924)', () => {
       expect(result.stdout).toContain('inserted 2/2 rows');
       const recorded = readFileSync(inserts, 'utf8').trim().split('\n').map(line => JSON.parse(line));
       expect(recorded.map(row => row.url)).toEqual([expectedUrl, expectedUrl]);
+      // EI-26347306867077217: queryable SQL and strict details must identify
+      // the same run, including aggregates and runs without a group override.
+      expect(recorded.map(row => row.runGroupId)).toEqual([runGroup ?? null, runGroup ?? null]);
+      for (const row of recorded) {
+        expect(parseTestRunExecutionDetails(row.execution)).toMatchObject({ runGroupId: runGroup ?? null });
+      }
       // EI-26345752138365143: inspect the INSERT payload, not a hand-built
       // execution-details object. The shared descriptor parser rejects invalid
       // exports; the aggregate cannot invent a source-file hash.

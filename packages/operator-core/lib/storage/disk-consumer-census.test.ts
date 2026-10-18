@@ -5,7 +5,7 @@
  * A stub `sudo` on a private PATH stands in for the real binary, so the default
  * probe (`sudo -n true`) runs for real without needing real privilege.
  */
-import { spawn as spawnProcess } from 'node:child_process';
+import { execFileSync, spawn as spawnProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { chmodSync, mkdtempSync, promises as fsp, rmSync, writeFileSync } from 'node:fs';
 import { request, type ClientRequest, type IncomingMessage, type RequestOptions } from 'node:http';
@@ -23,13 +23,53 @@ vi.mock('node:http', async (importOriginal) => ({
 const isRoot = process.getuid?.() === 0;
 
 describe('streaming retention census evidence', () => {
-  it('counts hardlinks once within a subtree and preserves shared sibling identities', async () => {
+  it.each(['symlink', 'special', 'policy'])('stops an uncapped candidate at its first conclusive %s boundary in one native walk', async (boundary) => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-early-protection-'));
+    try {
+      const tree = join(root, 'tree'); await fsp.mkdir(tree);
+      const paths = Array.from({ length: 64 }, (_, index) => join(tree, `boundary-${index}`));
+      for (const path of paths) {
+        if (boundary === 'symlink') await fsp.symlink('/never-follow-this-retention-target', path);
+        else if (boundary === 'policy') await fsp.writeFile(path, 'protected');
+      }
+      if (boundary === 'special') execFileSync('mkfifo', ['--', ...paths]);
+      const sibling = join(root, 'eligible'); await fsp.writeFile(sibling, 'old');
+      const spawn = vi.fn((command: string, args: string[]) => spawnProcess(command, args, { stdio: ['ignore', 'pipe', 'pipe'] }));
+      const census = await inspectRetentionTrees(root, { retainAfterMs: 2_000_000_000_000, spawn,
+        ...(boundary === 'policy' ? { excludedPaths: paths } : {}) });
+      expect(census.error).toBeUndefined();
+      expect(census.entries).toEqual([expect.objectContaining({ path: sibling })]);
+      expect(census.retained).toEqual([{ path: tree, reason: boundary === 'symlink' ? 'symlink boundary'
+        : boundary === 'special' ? 'special filesystem entry' : 'protected policy root' }]);
+      expect(census.inspectedNodes).toBe(3);
+      expect(spawn).toHaveBeenCalledTimes(1);
+      expect(await fsp.readdir(tree)).toHaveLength(64);
+      // Capped roots still inspect every protected allocation for accounting.
+      const full = await inspectRetentionTrees(root, { retainAfterMs: 2_000_000_000_000, includeRecent: true,
+        ...(boundary === 'policy' ? { excludedPaths: paths } : {}) });
+      expect(full.error).toBeUndefined(); expect(full.inspectedNodes).toBe(66);
+      expect(full.retained[0]?.entry?.bytes).toBeGreaterThanOrEqual((await fsp.stat(tree)).blocks * 512);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('stops an uncapped recent tree before reading its children', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-early-recent-'));
+    try {
+      const tree = join(root, 'tree'); await fsp.mkdir(tree);
+      for (let index = 0; index < 64; index++) await fsp.writeFile(join(tree, String(index)), 'recent');
+      const census = await inspectRetentionTrees(root, { retainAfterMs: 1 });
+      expect(census.error).toBeUndefined(); expect(census.entries).toEqual([]);
+      expect(census.retainedRecentTrees).toBe(1); expect(census.inspectedNodes).toBe(1);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each([false, true])('counts hardlinks once within a subtree and preserves shared sibling identities (capped=%s)', async (includeRecent) => {
     const root = mkdtempSync(join(tmpdir(), 'retention-hardlinks-'));
     try {
       const tree = join(root, 'tree'); await fsp.mkdir(tree);
       const file = join(tree, 'first'); await fsp.writeFile(file, Buffer.alloc(65536));
       await fsp.link(file, join(tree, 'second')); await fsp.link(file, join(root, 'sibling'));
-      const census = await inspectRetentionTrees(root, { retainAfterMs: Infinity, includeRecent: true });
+      const census = await inspectRetentionTrees(root, { retainAfterMs: Infinity, includeRecent });
       const allocation = (await fsp.stat(file)).blocks * 512;
       expect(census.error).toBeUndefined();
       expect(census.entries.find(entry => entry.path === tree)?.bytes).toBe((await fsp.stat(tree)).blocks * 512 + allocation);
@@ -39,6 +79,53 @@ describe('streaming retention census evidence', () => {
       expect(census.entries.find(entry => entry.path === join(root, 'sibling'))?.hardlinks).toEqual([
         expect.objectContaining({ bytes: allocation, paths: [join(root, 'sibling')] }),
       ]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each(['root', 'child'])('refuses an uncapped %s replaced before opening its directory descriptor', async (replacement) => {
+    const fixture = mkdtempSync(join(tmpdir(), 'retention-descriptor-race-'));
+    const root = join(fixture, 'root'); const outside = join(fixture, 'outside');
+    await fsp.mkdir(root); await fsp.mkdir(outside);
+    await fsp.writeFile(join(outside, 'must-not-read'), 'outside');
+    const victim = replacement === 'root' ? root : join(root, 'victim');
+    if (replacement === 'child') await fsp.mkdir(victim);
+    const spawn = ((command: string, args: string[]) => {
+      const index = args.findIndex(value => value.includes('retention root changed before census'));
+      expect(index).toBeGreaterThan(0);
+      // Replace the selected directory at the actual open boundary. The native
+      // worker's real O_NOFOLLOW and descriptor identity checks must refuse it.
+      const hook = `
+real_open = os.open
+replaced = False
+def race_open(path, flags, *args, **kwargs):
+    global replaced
+    if not replaced and path == ${JSON.stringify(replacement === 'root' ? root : 'victim')}:
+        replaced = True
+        os.rename(${JSON.stringify(victim)}, ${JSON.stringify(victim + '-old')})
+        os.symlink(${JSON.stringify(outside)}, ${JSON.stringify(victim)})
+    return real_open(path, flags, *args, **kwargs)
+os.open = race_open
+`;
+      const argv = [...args]; argv[index] = argv[index]!.replace("config = json.loads(sys.argv[1])", hook + '\nconfig = json.loads(sys.argv[1])');
+      return spawnProcess(command, argv, { stdio: ['ignore', 'pipe', 'pipe'] });
+    }) as CensusSpawn;
+    try {
+      const census = await inspectRetentionTrees(root, { retainAfterMs: Infinity, spawn });
+      expect(census.error).toContain('find exited 1');
+      expect(census.entries).toEqual([]); expect(census.inspectedNodes).toBe(replacement === 'root' ? 0 : 1);
+      expect(await fsp.readFile(join(outside, 'must-not-read'), 'utf8')).toBe('outside');
+    } finally { rmSync(fixture, { recursive: true, force: true }); }
+  });
+
+  it('inspects multiple selected uncapped children in one native process', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'retention-targeted-expiry-'));
+    try {
+      const selected = [join(root, 'first'), join(root, 'second')];
+      for (const path of [...selected, join(root, 'not-selected')]) await fsp.writeFile(path, 'old');
+      const spawn = vi.fn((command: string, args: string[]) => spawnProcess(command, args, { stdio: ['ignore', 'pipe', 'pipe'] }));
+      const census = await inspectRetentionTrees(root, { retainAfterMs: Infinity, paths: selected, spawn });
+      expect(census.error).toBeUndefined(); expect(census.entries.map(value => value.path)).toEqual(selected);
+      expect(census.inspectedNodes).toBe(2); expect(spawn).toHaveBeenCalledTimes(1);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it('measures recent foreign-owned bytes under explicit sudo and retains special trees', async () => {
@@ -112,7 +199,7 @@ describe('streaming retention census evidence', () => {
     }) as unknown as CensusSpawn;
     vi.useFakeTimers();
     try {
-      const census = inspectRetentionTrees(root, { retainAfterMs: Date.now(), progressTimeoutMs: 25, spawn });
+      const census = inspectRetentionTrees(root, { retainAfterMs: Date.now(), includeRecent: true, progressTimeoutMs: 25, spawn });
       await launched;
       const record = (name: string) => ['f', String(info.dev), '1', '1.0', '1.0', '1', String(process.getuid?.() ?? 0), '1', join(root, name), ''].join('\0');
       child.stdout.write(record('first')); await vi.advanceTimersByTimeAsync(20);
@@ -223,7 +310,7 @@ describe('streaming retention census evidence', () => {
     }) as unknown as CensusSpawn;
     try {
       const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now(), sudo: '/usr/bin/sudo', spawn,
-        ...(progressOnly ? { progressTimeoutMs: 25 } : { timeoutMs: 25 }) });
+        includeRecent: true, ...(progressOnly ? { progressTimeoutMs: 25 } : { timeoutMs: 25 }) });
       expect(census.error).toBe('retention native census timed out');
       expect(census.timing?.timeoutKind).toBe('native-signal');
       expect(census.entries).toEqual([]); expect(kill).not.toHaveBeenCalled();
@@ -254,7 +341,7 @@ for i in range(5 if mode == 'advancing' else 30):
     }) as CensusSpawn;
     try {
       const census = await inspectRetentionTrees(root, { retainAfterMs: Date.now(), sudo: '/usr/bin/sudo', spawn,
-        progressTimeoutMs: mode === 'advancing' || mode === 'ceiling' ? 1000 : 200, timeoutMs: mode === 'ceiling' ? 750 : 3000 });
+        includeRecent: true, progressTimeoutMs: mode === 'advancing' || mode === 'ceiling' ? 1000 : 200, timeoutMs: mode === 'ceiling' ? 750 : 3000 });
       expect(signalAttempts).toBe(0);
       if (mode === 'advancing') {
         expect(census.error).toBeUndefined(); expect(census.entries).toHaveLength(5);

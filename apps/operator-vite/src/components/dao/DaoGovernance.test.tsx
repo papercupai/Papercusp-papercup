@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import userEvent from '@testing-library/user-event';
 import type { DaoWorkspaceView } from '@papercusp/operator-core/lib/dao-workspace-types';
 import DaoGovernance from './DaoGovernance';
-import { workbenchTextField, openWorkbenchSelect, chooseWorkbenchOption, reviewWorkbenchProposal } from '../../../../../scripts/lib/dao-workbench-controls.mts';
+import { workbenchTextField, workbenchTextFieldReady, openWorkbenchDisclosure, openWorkbenchSelect, chooseWorkbenchOption, reviewWorkbenchProposal } from '../../../../../scripts/lib/dao-workbench-controls.mts';
 
 const view: DaoWorkspaceView = { directoryId: 'dao', localHomeSlug: 'local-home', status: 'connected',
   projects: { status: 'ready', value: [{ slug: 'project', title: 'Project', plans: [{ slug: 'proposal', title: 'Build the tool', status: 'draft', owner: null, itemCount: 1 }] }] } };
@@ -70,6 +70,10 @@ describe('DAO member decision actions', () => {
   });
   it('updates controlled proposal fields through the native verifier adapter', async () => {
     render(<DaoGovernance view={view} />);
+    expect(window.eval(workbenchTextFieldReady('Proposal title'))).toBe(false);
+    expect(() => window.eval(workbenchTextField('Proposal title', 'Native proposal'))).toThrow('Unavailable text field');
+    act(() => { window.eval(openWorkbenchDisclosure('Propose work')); });
+    expect(window.eval(workbenchTextFieldReady('Proposal title'))).toBe(true);
     act(() => { window.eval(workbenchTextField('Proposal title', 'Native proposal')); });
     expect((screen.getByLabelText('Proposal title') as HTMLInputElement).value).toBe('Native proposal');
     act(() => { window.eval(workbenchTextField('Purpose & scope', 'Persist exact scope')); });

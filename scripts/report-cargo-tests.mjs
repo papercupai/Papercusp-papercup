@@ -426,9 +426,9 @@ async function insertRows(sql, rows, worktree, testRunReporter) {
       const returned = await Promise.race([
         sql`
           INSERT INTO harness_shared.test_runs
-            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, source, loop_lag_p95_ms, rss_mb, harness_slug, workspace_id, execution_details, commit_sha, worktree_dirty)
+            (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, source, loop_lag_p95_ms, rss_mb, harness_slug, workspace_id, execution_details, commit_sha, worktree_dirty, run_group_id)
           VALUES
-            (${row.filePath}, 'cargo', ${row.status}, ${row.durationMs}, ${row.startedAt}, ${row.finishedAt}, ${row.outputTail}, ${row.source}, ${loopLagP95Ms}, ${rssMb}, ${harnessSlug}, ${workspaceId}, ${executionDetails ? sql.json(executionDetails) : null}, ${worktree.commitSha}, ${worktree.worktreeDirty})
+            (${row.filePath}, 'cargo', ${row.status}, ${row.durationMs}, ${row.startedAt}, ${row.finishedAt}, ${row.outputTail}, ${row.source}, ${loopLagP95Ms}, ${rssMb}, ${harnessSlug}, ${workspaceId}, ${executionDetails ? sql.json(executionDetails) : null}, ${worktree.commitSha}, ${worktree.worktreeDirty}, ${executionDetails.runGroupId})
           RETURNING id
         `,
         new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout_2000ms')), 2000)),

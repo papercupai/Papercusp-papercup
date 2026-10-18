@@ -450,7 +450,107 @@ finally:
     child.wait()
 `;
 
-/** Full max-age census through the same read-only native find as own-files.
+// Uncapped expiry needs an eligibility proof, not a complete allocation count
+// for a protected tree. One worker owns the root and all directory descriptors;
+// a conclusive boundary ends only that direct child's walk. Capped accounting
+// continues to use find below and never takes this early-exit path.
+const RETENTION_CENSUS_EXPIRY_WORKER = `
+import json, os, stat, sys
+config = json.loads(sys.argv[1])
+root = config['root']
+excluded = set(config['excluded'])
+cutoff = float(config['retainAfterMs'])
+uid = config['uid']
+flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+
+def identity(value):
+    return value.st_dev, value.st_ino
+
+def timestamp(ns):
+    seconds, nanos = divmod(abs(ns), 1000000000)
+    return ('-' if ns < 0 else '') + str(seconds) + '.' + str(nanos).zfill(9)
+
+def emit(path, value):
+    mode = value.st_mode
+    kind = 'd' if stat.S_ISDIR(mode) else 'f' if stat.S_ISREG(mode) else 'l' if stat.S_ISLNK(mode) else 'p' if stat.S_ISFIFO(mode) else 's' if stat.S_ISSOCK(mode) else 'b' if stat.S_ISBLK(mode) else 'c' if stat.S_ISCHR(mode) else '?'
+    fields = [kind, str(value.st_dev), str(value.st_ino), timestamp(value.st_mtime_ns), timestamp(value.st_ctime_ns), str(value.st_blocks), str(value.st_uid), str(value.st_nlink), path]
+    sys.stdout.buffer.write(b'\\0'.join(os.fsencode(field) for field in fields) + b'\\0')
+    return path in excluded or kind not in ['f', 'd'] or value.st_dev != config['dev'] or (uid is not None and value.st_uid != uid) or max(value.st_mtime_ns, value.st_ctime_ns) / 1000000 >= cutoff
+
+def descend(parent, name, expected):
+    fd = os.open(name, flags, dir_fd=parent)
+    try:
+        if identity(os.fstat(fd)) != identity(expected):
+            raise RuntimeError('retention directory changed before descent')
+        return fd, os.scandir(fd)
+    except BaseException:
+        os.close(fd)
+        raise
+
+def candidate(parent, name, path):
+    stack = []
+    try:
+        try:
+            value = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if emit(path, value) or not stat.S_ISDIR(value.st_mode):
+            return
+        try:
+            fd, entries = descend(parent, name, value)
+        except FileNotFoundError:
+            return
+        stack.append((fd, entries, path))
+        while stack:
+            fd, entries, directory = stack[-1]
+            item = next(entries, None)
+            if item is None:
+                entries.close()
+                os.close(fd)
+                stack.pop()
+                continue
+            child_path = os.path.join(directory, item.name)
+            try:
+                value = os.stat(item.name, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if emit(child_path, value):
+                break
+            if stat.S_ISDIR(value.st_mode):
+                try:
+                    child_fd, child_entries = descend(fd, item.name, value)
+                except FileNotFoundError:
+                    continue
+                stack.append((child_fd, child_entries, child_path))
+    finally:
+        for fd, entries, _ in reversed(stack):
+            entries.close()
+            os.close(fd)
+
+try:
+    root_fd = os.open(root, flags)
+    try:
+        expected = (config['dev'], config['ino'])
+        if identity(os.fstat(root_fd)) != expected:
+            raise RuntimeError('retention root changed before census')
+        if config['paths'] is not None:
+            for path in config['paths']:
+                candidate(root_fd, os.path.basename(path), path)
+        else:
+            with os.scandir(root_fd) as entries:
+                for item in entries:
+                    candidate(root_fd, item.name, os.path.join(root, item.name))
+        if identity(os.stat(root, follow_symlinks=False)) != expected:
+            raise RuntimeError('retention root changed during census')
+    finally:
+        os.close(root_fd)
+    sys.stdout.buffer.flush()
+except Exception as error:
+    print('papercusp-retention-census: ' + str(error), file=sys.stderr, flush=True)
+    sys.exit(1)
+`;
+
+/** Max-age census through one read-only native worker per root.
  * Stream metadata, aggregate direct children, and prune proven recent/protected
  * subtrees. A time cap or unreadable node invalidates the entire candidate set.
  * The result is planning evidence only; callers must remeasure before deletion.
@@ -491,7 +591,6 @@ export async function inspectRetentionTrees(root: string, opts: {
   const args = [...(opts.paths ?? [root]), '-ignore_readdir_race', '-xdev', '-mindepth', opts.paths ? '0' : '1', '(', ...prune, ...(prune.length ? ['-o'] : []),
     ...foreignOwner, ...(foreignOwner.length ? ['-o'] : []), ...recent,
     ')', '-printf', format, '-prune', '-o', '-printf', format];
-  const [nativeCommand, nativeArgs] = censusCommand('find', args, { sudo: null, ionice: await resolveBin('ionice'), nice: await resolveBin('nice') });
   // sudo may exec with every UID set to root. The caller then cannot signal
   // it (EPERM), and killing a sudo monitor can leave find holding its pipes.
   // Put deadline enforcement INSIDE elevation. A progress-supervised walk has
@@ -500,8 +599,13 @@ export async function inspectRetentionTrees(root: string, opts: {
   const timeout = sudo ? await resolveBin('timeout') : null;
   if (sudo && !timeout) return { ...result, error: 'timeout executable unavailable for privileged retention census' };
   const progressSupervised = Boolean(sudo) && opts.progressTimeoutMs !== undefined;
-  const python = progressSupervised ? await resolveBin('python3') : null;
+  const python = progressSupervised || !opts.includeRecent ? await resolveBin('python3') : null;
   if (progressSupervised && !python) return { ...result, error: 'python3 executable unavailable for privileged retention progress supervision' };
+  if (!opts.includeRecent && !python) return { ...result, error: 'python3 executable unavailable for retention expiry census' };
+  const [nativeCommand, nativeArgs] = censusCommand(opts.includeRecent ? 'find' : python!, opts.includeRecent ? args : [
+    '-I', '-c', RETENTION_CENSUS_EXPIRY_WORKER, JSON.stringify({ root, excluded, retainAfterMs: String(opts.retainAfterMs),
+      uid: privileged ? null : uid ?? null, dev: rootStat.dev, ino: rootStat.ino, paths: opts.paths ?? null }),
+  ], { sudo: null, ionice: await resolveBin('ionice'), nice: await resolveBin('nice') });
   const command = sudo ?? nativeCommand;
   const argv = !sudo ? nativeArgs : progressSupervised
     ? ['-n', '--', timeout!, '--signal=KILL', '--verbose', `${Math.max(1, opts.timeoutMs ?? 15 * 60_000) / 1000}s`,
@@ -610,7 +714,7 @@ export async function inspectRetentionTrees(root: string, opts: {
         // Only explicit supervisor evidence identifies which deadline fired.
         // A locale-specific timeout message or an external kill stays unknown.
         timeoutKind ??= stderr.split('\n').includes('papercusp-retention-census: progress timeout') ? 'progress'
-          : /^timeout: sending signal KILL to command /m.test(stderr) ? 'absolute' : 'native-signal';
+          : /^(?:[^\n]*\/)?timeout: sending signal KILL to command /m.test(stderr) ? 'absolute' : 'native-signal';
         finish('retention native census timed out'); return;
       }
       // GNU find's ignore_readdir_race covers a failed stat, but not a

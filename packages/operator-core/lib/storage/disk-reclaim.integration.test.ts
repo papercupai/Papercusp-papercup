@@ -571,7 +571,7 @@ describe('retention on a real fixture tree', () => {
         // disk-consumer-census.test.ts; this fixture isolates run-budget routing.
         return inspectRetentionTrees(path, { ...input, progressTimeoutMs: undefined });
       } });
-    expect(receipt.complete).toBe(true); expect(receipt.errors).toEqual([]);
+    expect(receipt.complete, JSON.stringify({ errors: receipt.errors, censuses: receipt.censuses, effects: receipt.effects })).toBe(true); expect(receipt.errors).toEqual([]);
     expect(receipt.caps?.[0]).toMatchObject({ afterBytes: 0, overByBytes: 0 });
     await expect(stat(old)).rejects.toMatchObject({ code: 'ENOENT' });
   });

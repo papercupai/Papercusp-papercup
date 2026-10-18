@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { nativeChildEnvironment } from '../../../../scripts/tauri-surface-verify-reports.mts';
 import { readNativeHostHealth, selectIdentityFixtureActor } from '../../../../scripts/fixtures/dao-workbench-identity.mjs';
 import { assertCompletionResponse, sign } from '../../../../scripts/fixtures/dao-hr-documenso-ui';
-import { workbenchTextField, openWorkbenchDisclosure, openWorkbenchSelect, chooseWorkbenchOption, captureWorkbenchResponses, workbenchVerifiedWallet, clickWorkbenchButton } from '../../../../scripts/lib/dao-workbench-controls.mts';
+import { workbenchTextField, workbenchTextFieldReady, workbenchButtonReady, workbenchControlDiagnostics, openWorkbenchDisclosure, openWorkbenchSelect, chooseWorkbenchOption, captureWorkbenchResponses, workbenchVerifiedWallet, clickWorkbenchButton } from '../../../../scripts/lib/dao-workbench-controls.mts';
 import { insertHiveIfAbsent } from '../hive-store';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../harness-registry';
 import { upsertHiveMember } from '../hive-membership-store';
@@ -39,8 +39,23 @@ describe.skipIf(process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED !== '1' || !process.
     const value = <T = any>(code: string): T => JSON.parse(ev('JSON.stringify(' + code + ')'));
     const reload = () => native('navigate', value<string>('location.href'), '--json');
     const wait = (code: string) => native('wait', '--eval', code, '--timeout', '60000', '--interval', '500');
-    const click = (text: string, scope = 'document') => ev(clickWorkbenchButton(text, scope));
-    const field = (label: string, input: string) => ev(workbenchTextField(label, input, '[data-testid=dao-workspace]'));
+    const withControlDiagnostics = (kind: string, label: string, action: () => string) => {
+      try { return action(); }
+      catch (cause) {
+        let dom: unknown;
+        try { dom = value(workbenchControlDiagnostics('[data-testid=dao-workspace]')); }
+        catch (captureError) { dom = { captureError: String(captureError) }; }
+        writeFileSync(config.resultPath + '.control-failure.json', JSON.stringify({ kind, label, error: String(cause), dom }, null, 2));
+        throw cause;
+      }
+    };
+    const click = (text: string, scope = 'document') => withControlDiagnostics('button', text, () => {
+      wait(workbenchButtonReady(text, scope)); return ev(clickWorkbenchButton(text, scope));
+    });
+    const field = (label: string, input: string) => withControlDiagnostics('field', label, () => {
+      wait(workbenchTextFieldReady(label, '[data-testid=dao-workspace]'));
+      return ev(workbenchTextField(label, input, '[data-testid=dao-workspace]'));
+    });
     const textHas = (text: string) => {
       try { wait('document.body.innerText.includes(' + JSON.stringify(text) + ')'); }
       catch (cause) {

@@ -13,12 +13,38 @@ export function workbenchVerifiedWallet(address: string, chainId: number): strin
 }
 
 /** Action buttons must not resolve to a Select trigger showing the same text. */
+function workbenchButtonElement(label: string, scope: string): string {
+  return `[...${scope}.querySelectorAll('button:not([role="combobox"])')].find(e=>e.textContent.trim()===${JSON.stringify(label)})`;
+}
+
+function workbenchTextFieldElement(label: string, scope: string): string {
+  return `([...document.querySelectorAll(${JSON.stringify(scope + ' label')})].find(e=>e.firstChild?.textContent?.trim()===${JSON.stringify(label)}))?.querySelector('input:not([type="hidden"]),textarea,select')`;
+}
+
+function workbenchControlReady(target: string): string {
+  return `(()=>{const control=${target};if(!control||control.matches(':disabled,[readonly],[aria-disabled="true"]')||control.closest('[hidden],[aria-hidden="true"],details:not([open])'))return false;for(let n=control;n;n=n.parentElement){const s=getComputedStyle(n);if(s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse')return false}return true})()`;
+}
+
+/** Response capture precedes React's render; wait for the actual control before acting. */
+export function workbenchButtonReady(label: string, scope = 'document'): string {
+  return workbenchControlReady(workbenchButtonElement(label, scope));
+}
+
+export function workbenchTextFieldReady(label: string, scope = '.dao-governance'): string {
+  return workbenchControlReady(workbenchTextFieldElement(label, scope));
+}
+
+/** Retain rendered-state evidence without serializing field values or signed payloads. */
+export function workbenchControlDiagnostics(scope = '.dao-governance'): string {
+  return `(()=>{const root=document.querySelector(${JSON.stringify(scope)});return {url:location.href,scopeFound:!!root,text:root?.textContent,alerts:[...document.querySelectorAll('[role="alert"]')].map(e=>e.textContent),fields:[...(root?.querySelectorAll('label')||[])].map(l=>{const e=l.querySelector('input,textarea,select');return {label:l.firstChild?.textContent?.trim(),tag:e?.tagName,type:e?.getAttribute('type'),disabled:e?.matches(':disabled'),readOnly:e?.hasAttribute('readonly')}}),buttons:[...(root?.querySelectorAll('button')||[])].map(e=>({text:e.textContent.trim(),disabled:e.disabled})),disclosures:[...(root?.querySelectorAll('details')||[])].map(e=>({summary:e.querySelector('summary')?.textContent,open:e.open}))}})()`;
+}
+
 export function clickWorkbenchButton(label: string, scope = 'document'): string {
-  return `(()=>{const b=[...${scope}.querySelectorAll('button:not([role="combobox"])')].find(e=>e.textContent.trim()===${JSON.stringify(label)});if(!b||b.disabled)throw Error('Unavailable control '+${JSON.stringify(label)});b.click();return true})()`;
+  return `(()=>{const b=${workbenchButtonElement(label, scope)};if(!${workbenchControlReady('b')})throw Error('Unavailable control '+${JSON.stringify(label)});b.click();return true})()`;
 }
 
 export function workbenchTextField(label: string, value: string, scope = '.dao-governance'): string {
-  return `(()=>{const l=[...document.querySelectorAll(${JSON.stringify(scope + ' label')})].find(e=>e.firstChild?.textContent?.trim()===${JSON.stringify(label)});const e=l?.querySelector('input:not([type="hidden"]),textarea,select');if(!e)throw Error('Missing text field '+${JSON.stringify(label)});const p=e instanceof HTMLInputElement?HTMLInputElement.prototype:e instanceof HTMLSelectElement?HTMLSelectElement.prototype:HTMLTextAreaElement.prototype;Object.getOwnPropertyDescriptor(p,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event(e instanceof HTMLSelectElement?'change':'input',{bubbles:true}));return true})()`;
+  return `(()=>{const e=${workbenchTextFieldElement(label, scope)};if(!e)throw Error('Missing text field '+${JSON.stringify(label)});if(!${workbenchControlReady('e')})throw Error('Unavailable text field '+${JSON.stringify(label)});const p=e instanceof HTMLInputElement?HTMLInputElement.prototype:e instanceof HTMLSelectElement?HTMLSelectElement.prototype:HTMLTextAreaElement.prototype;Object.getOwnPropertyDescriptor(p,'value').set.call(e,${JSON.stringify(value)});e.dispatchEvent(new Event(e instanceof HTMLSelectElement?'change':'input',{bubbles:true}));return true})()`;
 }
 
 /** Open the named disclosure through its summary, preserving an already-open form. */

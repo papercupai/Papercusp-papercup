@@ -431,16 +431,16 @@ export const CENSUS_COVERAGE_GAP_BYTES = 10 * 1024 ** 3;
 export const CENSUS_IONICE_ARGS = ['-c2', '-n7'] as const;
 
 /**
- * argv for one census subprocess — the du walk, or the find that lists a directory's own
- * files: best-effort I/O + nice 19 CPU, each only when available. With `bins.sudo` the
+ * argv for one read-only census subprocess (du, find, or the resolved expiry
+ * worker): best-effort I/O + nice 19 CPU, each only when available. With `bins.sudo` the
  * whole command runs as root through `sudo -n --` (never prompts), so root-owned trees
  * (/var/lib/postgresql, /var/lib/docker, backup repos on /mnt/data) are measured instead
  * of being lost to "Permission denied" — the R-1 falsifier is a consumer above 10 GiB the
- * census does not list, and an unreadable tree hides exactly those. Both programs are
+ * census does not list, and an unreadable tree hides exactly those. The workers are
  * read-only (metadata only); the precedent is fleet-logs-gc's sudo census.
  */
 export function censusCommand(
-  program: 'du' | 'find',
+  program: string,
   programArgs: readonly string[],
   bins: { ionice: string | null; nice: string | null; sudo?: string | null },
 ): [string, string[]] {

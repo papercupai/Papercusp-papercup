@@ -157,7 +157,7 @@ export function buildCargoExecutionDetails({
     schemaVersion: 1,
     root,
     filePath,
-    runGroupId: null,
+    runGroupId: env.PAPERCUSP_TEST_RUN_GROUP ?? null,
     workspaceId,
     harnessSlug,
     testNamePattern: null,

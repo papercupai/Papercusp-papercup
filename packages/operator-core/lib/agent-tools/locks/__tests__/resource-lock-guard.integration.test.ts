@@ -27,6 +27,9 @@ import { resourceLockDomain } from '../coordination-domain';
 
 async function dbLive(): Promise<boolean> {
   try {
+    // A fresh private Postgres has no papercusp_su until this bootstrap runs.
+    // Probing its pool first would silently skip every regression below.
+    await ensureBootstrap();
     await getTxPool()`SELECT 1`;
     return true;
   } catch {
@@ -96,7 +99,10 @@ describe('guardResource (requiresLock enforcement)', async () => {
       }
     });
 
-  it.skipIf(!live)('nested same-owner shared guard preserves the caller lease and independent owners', async () => {
+  it.skipIf(!live).each([
+    [3600, 60],
+    [60, 3600],
+  ])('nested same-owner shared guard preserves expiry with outer TTL %s and inner TTL %s', async (outerTtlSec, innerTtlSec) => {
     await ensureBootstrap();
     const ws = uniqueWs();
     const resource = 'staging-server';
@@ -113,7 +119,7 @@ describe('guardResource (requiresLock enforcement)', async () => {
         owner,
         ownerLabel: owner,
         reason: 'outer caller lease',
-        ttlSec: 60,
+        ttlSec: outerTtlSec,
       }));
       if (!outer.ok) throw new Error('could not acquire outer shared lease: ' + outer.reason);
       outerLockId = outer.lock_id;
@@ -137,6 +143,7 @@ describe('guardResource (requiresLock enforcement)', async () => {
         coordIdentity: mkId(owner),
         resource,
         mode: 'shared',
+        ttlSec: innerTtlSec,
       }, async fence => {
         expect(fence.lockId).toBe(outerLockId);
         const during = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource });
@@ -147,8 +154,15 @@ describe('guardResource (requiresLock enforcement)', async () => {
       expect(out.acquired).toBe(true);
       if (out.acquired) expect(out.lock_id).toBe(outerLockId);
       const after = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource });
-      expect(after.holders.some(holder => holder.owner === owner && holder.lock_id === outerLockId)).toBe(true);
-      expect(after.holders.some(holder => holder.owner === independentOwner && holder.lock_id === independentLockId)).toBe(true);
+      const retained = after.holders.find(holder => holder.owner === owner && holder.lock_id === outerLockId);
+      expect(retained).toBeDefined();
+      expect(new Date(retained!.expires_ts).getTime()).toBeGreaterThanOrEqual(outer.expires_ts.getTime());
+      if (innerTtlSec > outerTtlSec) {
+        expect(new Date(retained!.expires_ts).getTime()).toBeGreaterThan(outer.expires_ts.getTime());
+      }
+      const retainedIndependent = after.holders.find(holder => holder.owner === independentOwner && holder.lock_id === independentLockId);
+      expect(retainedIndependent).toBeDefined();
+      expect(new Date(retainedIndependent!.expires_ts).getTime()).toBe(independent.expires_ts.getTime());
     } finally {
       if (independentLockId) await inWorkspaceTxn(ws, independentOwner, tx => tryReleaseResource(tx, {
         coordinationDomain: ws,

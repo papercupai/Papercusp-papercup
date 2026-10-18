@@ -2,7 +2,7 @@
 import childProcess from 'node:child_process';
 import { registerHooks, syncBuiltinESMExports } from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
-import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { linkSync, lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** Reuse the OUT channel and this preload without enabling stderr diagnostics. */
@@ -28,6 +28,19 @@ function installNativeProcessTrace(out) {
   } catch { return; }
   const lifecycle = env => ({ event: env.npm_lifecycle_event ?? null,
     script: env.npm_lifecycle_script ?? null });
+  // An interrupted direct write leaves a final hash-named file empty or partial.
+  // Publish completed bytes by a no-replace hard link; interrupted staging files
+  // stay outside the trusted event directory and are removed with the run root.
+  const publish = (path, bytes) => {
+    const temporary = `${root}.pending-${identity}-${randomUUID()}`;
+    try {
+      writeFileSync(temporary, bytes, { flag: 'wx', mode: 0o600 });
+      try { linkSync(temporary, path); }
+      catch (error) { if (error?.code !== 'EEXIST') throw error; }
+    } finally {
+      try { unlinkSync(temporary); } catch { /* A killed writer may leave only staging evidence. */ }
+    }
+  };
   let remaining = 512;
   const emit = (event, fields = {}, terminal = false) => {
     if (!terminal && remaining-- < 0) return;
@@ -43,8 +56,7 @@ function installNativeProcessTrace(out) {
       }
       const sha256 = createHash('sha256').update(bytes).digest('hex');
       const path = join(root, `${sha256}.json`);
-      try { writeFileSync(path, bytes, { flag: 'wx', mode: 0o600 }); }
-      catch (error) { if (error?.code !== 'EEXIST') return; }
+      publish(path, bytes);
       // Do not replace redirected or changed evidence on a repeated write.
       if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink() ||
           !readFileSync(path).equals(bytes)) return;
@@ -91,8 +103,7 @@ function installNativeProcessTrace(out) {
       const bytes = Buffer.concat(state.chunks.sort((a, b) => a.order - b.order).map(row => row.bytes));
       const sha256 = createHash('sha256').update(bytes).digest('hex');
       const ref = `${sha256}.stream`, path = join(root, ref);
-      try { writeFileSync(path, bytes, { flag: 'wx', mode: 0o600 }); }
-      catch (error) { if (error?.code !== 'EEXIST') throw error; }
+      publish(path, bytes);
       if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink() || !readFileSync(path).equals(bytes))
         throw new Error('redirected or changed stream artifact');
       return [role, { scope, ref, sha256, byteLength: bytes.length,
