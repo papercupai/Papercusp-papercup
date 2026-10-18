@@ -1,0 +1,1057 @@
+{
+  "schemaVersion": 1,
+  "kind": "source-compatibility-closure-review",
+  "generatedAt": "2026-10-18T02:12:00Z",
+  "workItem": "WI-10007947",
+  "planItem": "P-005",
+  "qualificationReceipt": "docs/evidence/original-four-qualification-2026-10-18.json",
+  "sourceRef": "a44756aa009f52a2e9d96252e523ebbe1252f68e",
+  "comparedArtifactRef": "d740fc3802877d1c8c3b1068768681ee32ef0025",
+  "method": "Read-only git show/diff and bounded source/test searches. No admission, ref, repair-queue, gate, build, or native mutation.",
+  "modelClosure": {
+    "file": "apps/operator/app/adv/hud/goal-detail-model.ts",
+    "sourceChanges": [
+      "GoalDetailInput adds rubricStewardship and goalData wire shapes.",
+      "GoalDetailInput adds measured completedByDay window data.",
+      "GoalDetailGoalInput adds standing and goalPackage; GoalDetailActivityInput adds planSlug.",
+      "goalData collections depend on typed-properties schemas and collection-read types."
+    ],
+    "artifactComparison": "The compared artifact contains the file but its GoalDetailInput has none of the rubricStewardship, goalData, or completedByDay fields.",
+    "status": "incompatible-until-reconciled"
+  },
+  "producerClosure": {
+    "file": "packages/operator-core/lib/sync-resolver/goals.ts",
+    "sourceChanges": [
+      "The resolver computes a measured 21-day completedByDay query and emits it in the detail payload.",
+      "The resolver reads typed-property declarations and emits collection selections, rows, plan state, counts, live lane owner, fleet members, outcomes, worklist history, and history errors.",
+      "For the work-on-everything package (or the qualifying legacy worklist), the resolver calls readGoalRubricStewardship and returns rubricStewardship.",
+      "The resolver imports the goal-rubric-stewardship reader and plan-events/worklist-console helpers."
+    ],
+    "artifactComparison": "The compared artifact lacks the producer additions and has no rubricStewardship producer path.",
+    "status": "incompatible-until-reconciled"
+  },
+  "apiClosure": {
+    "newSourceFilesAbsentFromComparedArtifact": [
+      "packages/operator-core/lib/goal-rubric-stewardship.ts",
+      "packages/operator-core/lib/goal-rubric-stewardship.test.ts"
+    ],
+    "apiContract": [
+      "readGoalRubricStewardship is read-only and composes scorecard, rubric, completion-authority, work-item, and acceptance-author-identity readers.",
+      "GoalRubricStewardship preserves bounded-page incompleteness, baseline/regrade comparability, repair ownership/verification, and independent-acceptance requirements."
+    ],
+    "status": "producer-and-test-api-missing"
+  },
+  "reverseTestClosure": {
+    "sourceTestsAbsentFromComparedArtifact": [
+      "apps/operator/app/adv/hud/WorkOnEverythingPanel.test.tsx",
+      "apps/operator/app/adv/hud/ongoing-work-model.test.ts",
+      "apps/operator/app/adv/hud/ongoing-work-draft.test.ts",
+      "apps/operator/app/adv/hud/woe-progress-model.test.ts",
+      "apps/operator/e2e/ongoing-work-native-collection.spec.mts",
+      "apps/operator/e2e/ongoing-work-ui.spec.ts",
+      "apps/operator/lib/__tests__/ongoing-work-native-fixture.integration.test.ts",
+      "apps/operator/lib/__tests__/ongoing-work-native-fixture.test.ts"
+    ],
+    "existingTestFilesChangedAtSource": [
+      "apps/operator/app/adv/hud/GoalDetailPanel.test.tsx",
+      "packages/operator-core/lib/sync-resolver/goals.integration.test.ts"
+    ],
+    "coverageIntent": [
+      "Pure model tests cover measured/unmeasured progress, plan selection, liveness, and staged policy.",
+      "WorkOnEverythingPanel tests cover rubric duties, canonical references, incomplete evidence, plan progress, and stale-save behavior.",
+      "Resolver integration tests cover persisted native collections, rubric stewardship reads, goal attribution, foreign-goal exclusion, and canonical work-item evidence.",
+      "Native/UI E2E specs cover persisted collection behavior and GUI visibility on the maintained native rig."
+    ],
+    "status": "reverse-tests-missing-from-compared-artifact"
+  },
+  "receiptCrossCheck": {
+    "selectedMissingPaths": 7,
+    "differingExistingDependencies": 9,
+    "knownDifferingExistingDependencies": [
+      "apps/operator/app/adv/hud/GoalPackagesRail.tsx",
+      "apps/operator/app/adv/hud/GoalStatusControl.tsx",
+      "apps/operator/app/adv/hud/goal-detail-model.ts",
+      "apps/operator/app/adv/hud/hud-entity-board.ts",
+      "packages/operator-core/lib/pg-timestamp.ts",
+      "packages/operator-core/lib/rubrics.ts",
+      "packages/operator-core/lib/scorecards.ts",
+      "packages/operator-core/lib/work-item-completion-authority.ts",
+      "packages/operator-core/lib/work-items.ts"
+    ],
+    "unresolvedDimensions": [
+      "alias/type/package closure",
+      "reverse-test closure on the qualified containing artifact",
+      "runtime and deployed-serving identity"
+    ]
+  },
+  "apiCompatibility": {
+    "requiredFieldGaps": [
+      {
+        "path": "packages/operator-core/lib/scorecards.ts",
+        "declaration": "ScorecardRow",
+        "missingAtComparedArtifact": ["baselineRef", "rubricCurrentness"],
+        "usedBy": "goal-rubric-stewardship.ts uses baselineRef in its StewardshipCard Pick and compares rubricCurrentness.state when establishing current evidence."
+      },
+      {
+        "path": "packages/operator-core/lib/typed-properties.ts",
+        "declaration": "TypedPropertyDefinitionSchema",
+        "missingAtComparedArtifact": ["collection"],
+        "usedBy": "The a447 schema admits the collection declaration. The d740 schema is strict and rejects that key, so path existence and an identical TypedPropertySchemaDocument alias do not establish schema compatibility."
+      }
+    ],
+    "method": "TypeScript AST of top-level declarations at the two immutable refs; exact declaration hashes compare text, not assignability or transitive behavior.",
+    "missingExports": [
+      {
+        "path": "packages/operator-core/lib/rubrics.ts",
+        "name": "getRubricWithoutSeeding",
+        "sourceDeclarationSha256": "8749d79399322200b017b71cd41a12b6f8814690f97bc8c458988b9a7faf1c0d"
+      },
+      {
+        "path": "packages/operator-core/lib/typed-properties.ts",
+        "name": "TypedPropertyCollectionRead",
+        "sourceDeclarationSha256": "c479fca5714509abe65b49ce65ad3bba20f25cd878226024168f12aeb5c694e0"
+      },
+      {
+        "path": "packages/operator-core/lib/typed-properties.ts",
+        "name": "readTypedPropertyCollection",
+        "sourceDeclarationSha256": "8687f45107a50d1de7125d31a6a8f38d481fa36c3c3fa3a1f21d580957afe9ca"
+      },
+      {
+        "path": "packages/operator-core/lib/goals/worklist-console.ts",
+        "name": "projectWorklistHistory",
+        "sourceDeclarationSha256": "5c57676e4e87db871b060e875f277a9152c03ea818ba42620d3b82eb72165951",
+        "targetPathAbsent": true
+      }
+    ],
+    "identicalDeclarations": [
+      "scorecards.ts:listScorecards",
+      "scorecards.ts:settledGradingAuditIsCurrent",
+      "pg-timestamp.ts:pgTimestampToIsoOrNull",
+      "work-item-completion-authority.ts:isSufficientEvidence",
+      "work-items.ts:getWorkItemsByIds",
+      "acceptance-author-identity.ts:acceptanceLineageClosure",
+      "typed-properties.ts:TypedPropertySchemaDocument"
+    ],
+    "differingDeclarations": [
+      "scorecards.ts:ScorecardRow",
+      "pg-timestamp.ts:pgTimestampToIso",
+      "typed-properties.ts:TypedPropertySchemaDocumentSchema"
+    ],
+    "interpretation": "Missing named exports prove incompatibility even when dependency paths exist. Identical declarations are bounded evidence only; referenced types, schemas, helpers, and runtime behavior remain separate.",
+    "integrationSeam": "a447 GoalDetailPanel.tsx imports WorkOnEverythingPanel and isWorkOnEverything and routes the matching goals.detail snapshot into the panel. The integration file itself differs at d740 and must be part of source reconciliation."
+  },
+  "expandedRelativeClosure": {
+    "source": "a44756aa009f52a2e9d96252e523ebbe1252f68e",
+    "target": "d740fc3802877d1c8c3b1068768681ee32ef0025",
+    "scannerSha256": "4100ced90bd6c28ade4ae4aa68dc5fd6f1bf32834e33337461565e7a30814505",
+    "roots": [
+      "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+      "apps/operator/app/adv/hud/WorkOnEverythingPanel.css",
+      "apps/operator/app/adv/hud/WorkOnEverythingPanel.test.tsx",
+      "packages/operator-core/lib/goal-rubric-stewardship.ts",
+      "apps/operator/app/adv/hud/ongoing-work-model.ts",
+      "apps/operator/app/adv/hud/ongoing-work-draft.ts",
+      "apps/operator/app/adv/hud/woe-progress-model.ts",
+      "apps/operator/app/adv/hud/goal-detail-model.ts",
+      "apps/operator/app/adv/hud/GoalDetailPanel.tsx",
+      "packages/operator-core/lib/sync-resolver/goals.ts",
+      "packages/operator-core/lib/typed-properties.ts",
+      "packages/operator-core/lib/goal-rubric-stewardship.test.ts",
+      "apps/operator/app/adv/hud/ongoing-work-model.test.ts",
+      "apps/operator/app/adv/hud/ongoing-work-draft.test.ts",
+      "apps/operator/app/adv/hud/woe-progress-model.test.ts",
+      "apps/operator/lib/__tests__/ongoing-work-native-fixture.integration.test.ts",
+      "apps/operator/lib/__tests__/ongoing-work-native-fixture.test.ts",
+      "apps/operator/e2e/ongoing-work-native-collection.spec.mts",
+      "apps/operator/e2e/ongoing-work-ui.spec.ts",
+      "packages/operator-core/lib/sync-resolver/goals.integration.test.ts",
+      "apps/operator/app/adv/hud/GoalDetailPanel.test.tsx"
+    ],
+    "scanned": [
+      "apps/operator/app/adv/hud/GoalDataSection.tsx",
+      "apps/operator/app/adv/hud/GoalDetailPanel.test.tsx",
+      "apps/operator/app/adv/hud/GoalDetailPanel.tsx",
+      "apps/operator/app/adv/hud/OngoingWorkOverview.tsx",
+      "apps/operator/app/adv/hud/WorkOnEverythingPanel.css",
+      "apps/operator/app/adv/hud/WorkOnEverythingPanel.test.tsx",
+      "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+      "apps/operator/app/adv/hud/goal-detail-model.ts",
+      "apps/operator/app/adv/hud/ongoing-work-draft.test.ts",
+      "apps/operator/app/adv/hud/ongoing-work-draft.ts",
+      "apps/operator/app/adv/hud/ongoing-work-model.test.ts",
+      "apps/operator/app/adv/hud/ongoing-work-model.ts",
+      "apps/operator/app/adv/hud/woe-progress-model.test.ts",
+      "apps/operator/app/adv/hud/woe-progress-model.ts",
+      "apps/operator/e2e/_native-bridge-json.ts",
+      "apps/operator/e2e/_ongoing-work-native-fixture.ts",
+      "apps/operator/e2e/ongoing-work-native-collection.spec.mts",
+      "apps/operator/e2e/ongoing-work-ui.spec.ts",
+      "apps/operator/lib/__tests__/ongoing-work-native-fixture.integration.test.ts",
+      "apps/operator/lib/__tests__/ongoing-work-native-fixture.test.ts",
+      "packages/operator-core/lib/capability-envelope/refusal-contract-types.ts",
+      "packages/operator-core/lib/goal-holder-wake-state.ts",
+      "packages/operator-core/lib/goal-rubric-stewardship.test.ts",
+      "packages/operator-core/lib/goal-rubric-stewardship.ts",
+      "packages/operator-core/lib/goals/worklist-console.ts",
+      "packages/operator-core/lib/sync-resolver/goals.integration.test.ts",
+      "packages/operator-core/lib/sync-resolver/goals.ts",
+      "packages/operator-core/lib/typed-properties.ts"
+    ],
+    "missing": [
+      {
+        "path": "apps/operator/app/adv/hud/GoalDataSection.tsx",
+        "sourceBlob": "f601f132f6ea3f5292f5bca05731d98cc1a60dda"
+      },
+      {
+        "path": "apps/operator/app/adv/hud/OngoingWorkOverview.tsx",
+        "sourceBlob": "44b92254f20f35f78a81382090ddb60df06d4608"
+      },
+      {
+        "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.css",
+        "sourceBlob": "7ac59c71a76a42cb9ff74c0f48aa6aae343a80ec"
+      },
+      {
+        "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.test.tsx",
+        "sourceBlob": "37da98e4c0a012d75bc0b12211a32129ade2941f"
+      },
+      {
+        "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+        "sourceBlob": "d61b67efa31bda9bf4f8bc0a59b4b70da40d8fde"
+      },
+      {
+        "path": "apps/operator/app/adv/hud/ongoing-work-draft.test.ts",
+        "sourceBlob": "1b5d9e2d7da0d20d6cbb5a2a349df5f9781222ce"
+      },
+      {
+        "path": "apps/operator/app/adv/hud/ongoing-work-draft.ts",
+        "sourceBlob": "5cae0e36901f3bbfc5e1641a50b38c5162cb68f3"
+      },
+      {
+        "path": "apps/operator/app/adv/hud/ongoing-work-model.test.ts",
+        "sourceBlob": "f96e9010fd86adb5286247258260c4ed56a71f75"
+      },
+      {
+        "path": "apps/operator/app/adv/hud/ongoing-work-model.ts",
+        "sourceBlob": "1cba0919703609f006f7f0f183021b64d08c3a8b"
+      },
+      {
+        "path": "apps/operator/app/adv/hud/woe-progress-model.test.ts",
+        "sourceBlob": "959ed2be9303fafc763fda949e6da2487d2d7f47"
+      },
+      {
+        "path": "apps/operator/app/adv/hud/woe-progress-model.ts",
+        "sourceBlob": "b0812994426e4c2be1b776bed8b8a2a3bddc0ff6"
+      },
+      {
+        "path": "apps/operator/e2e/_native-bridge-json.ts",
+        "sourceBlob": "620501804ca80cfb7e4b2fe17d3259c5b0cf5115"
+      },
+      {
+        "path": "apps/operator/e2e/_ongoing-work-native-fixture.ts",
+        "sourceBlob": "dc452a2b9a9362ed088d5d76fc3c6046708d17c3"
+      },
+      {
+        "path": "apps/operator/e2e/ongoing-work-native-collection.spec.mts",
+        "sourceBlob": "46519ed3f1440e75a5df9487f388292631dff42c"
+      },
+      {
+        "path": "apps/operator/e2e/ongoing-work-ui.spec.ts",
+        "sourceBlob": "3909de0b3fc77953547c95de121b93989a85bd4a"
+      },
+      {
+        "path": "apps/operator/lib/__tests__/ongoing-work-native-fixture.integration.test.ts",
+        "sourceBlob": "2c26c157e3b4d867e28058f991770836fa955834"
+      },
+      {
+        "path": "apps/operator/lib/__tests__/ongoing-work-native-fixture.test.ts",
+        "sourceBlob": "90b469caa1e7638939e75e23c773a8edceaa934a"
+      },
+      {
+        "path": "packages/operator-core/lib/capability-envelope/refusal-contract-types.ts",
+        "sourceBlob": "13459899ab7e8e131f31f3db2062decf215d27d8"
+      },
+      {
+        "path": "packages/operator-core/lib/goal-holder-wake-state.ts",
+        "sourceBlob": "2571cf40a90a75bbe3e377352ea758e42be5bff7"
+      },
+      {
+        "path": "packages/operator-core/lib/goal-rubric-stewardship.test.ts",
+        "sourceBlob": "582a4c108f120a473ce86ad1f5623f1ca5037999"
+      },
+      {
+        "path": "packages/operator-core/lib/goal-rubric-stewardship.ts",
+        "sourceBlob": "57ec170e22b74671f17056cac990af063144b0ea"
+      },
+      {
+        "path": "packages/operator-core/lib/goals/worklist-console.ts",
+        "sourceBlob": "50a429961204150710a6c7027dfddc45252c567e"
+      }
+    ],
+    "differingExisting": [
+      {
+        "path": "apps/operator/app/adv/hud/GoalDetailPanel.tsx",
+        "sourceBlob": "231872df7de2f1805d88e2b1375982098067d8a2",
+        "targetBlob": "85fb4a6da004ac5c5601bb33669e4dc387004605"
+      },
+      {
+        "path": "apps/operator/app/adv/hud/GoalPackagesRail.tsx",
+        "sourceBlob": "094b80878ef343133c327c18b506b7264d0517a5",
+        "targetBlob": "a1e500fc7f81076bfe6c97573fe2aa5866f63621"
+      },
+      {
+        "path": "apps/operator/app/adv/hud/GoalStatusControl.tsx",
+        "sourceBlob": "270f319d4dd001bfced9bec1c5fa90476db5264e",
+        "targetBlob": "508ffb4880497388997bfa2fad4ec39b024757b5"
+      },
+      {
+        "path": "apps/operator/app/adv/hud/goal-detail-model.ts",
+        "sourceBlob": "47993447c2736e02d0ed1658543da07fca38d64f",
+        "targetBlob": "acf1e3bcabf970dc4691d82492ea1eca07b02f2b"
+      },
+      {
+        "path": "apps/operator/app/adv/hud/hud-entity-board.ts",
+        "sourceBlob": "bcc4cca68f39f767e4acff1fcb4b9817f5ffbb85",
+        "targetBlob": "c2d014485f8f1bf30a53fcfa797265b88d943366"
+      },
+      {
+        "path": "apps/operator/app/adv/hud/hud.css",
+        "sourceBlob": "809cb9361e4d7548caff7228a679651189d80cf5",
+        "targetBlob": "d17393cae59e15ab9faa72e346004e4ded083861"
+      },
+      {
+        "path": "apps/operator/e2e/_egress.ts",
+        "sourceBlob": "5d79043c683e9b9cc516dbf4bff6241022e501e9",
+        "targetBlob": "f09508f51d59d43a22d91fbf5e91d235a38ba924"
+      },
+      {
+        "path": "apps/operator/e2e/_sync-stub.ts",
+        "sourceBlob": "c7f36e376e044200ed05f09d9a7994a1b27de118",
+        "targetBlob": "2208628f216846637b8b70d2b2b92a7381d21737"
+      },
+      {
+        "path": "packages/operator-core/lib/_baseline-coord-fixture.ts",
+        "sourceBlob": "d48e1aa8afbdea4827260b215d992f524db069c7",
+        "targetBlob": "695560aa92a4ffb33503fcafb720d796c3f34e98"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-obligation-reader.ts",
+        "sourceBlob": "01114f6241c27b7187925bb802e41aa075c82d21",
+        "targetBlob": "e90b3e85a3f5ad67cd8e41011d0aaffb8a15c390"
+      },
+      {
+        "path": "packages/operator-core/lib/agent-tools/plans/run-instance-slug.ts",
+        "sourceBlob": "d0057c51d11e17b329a0a2c47fc5935fbb7f8d6e",
+        "targetBlob": "ca0e04f08a3cf047f578df58ea496c510833a587"
+      },
+      {
+        "path": "packages/operator-core/lib/goal-launch-settings.ts",
+        "sourceBlob": "9d6ff35514907d73463818034a60586021b2056b",
+        "targetBlob": "af82f762a0ac78acc766a36fdeda3486c2a43d9a"
+      },
+      {
+        "path": "packages/operator-core/lib/goals/package-property-datatypes.ts",
+        "sourceBlob": "eca840bfeeded200287556870c2f8284fa762224",
+        "targetBlob": "927f0f49acf45b8568abddacd7f5943635d3e07a"
+      },
+      {
+        "path": "packages/operator-core/lib/goals/package-update.ts",
+        "sourceBlob": "e6352024c59914cad4146c35312ccd92a005e053",
+        "targetBlob": "59c27c68d0250841b4acbd034cc8feb957de9017"
+      },
+      {
+        "path": "packages/operator-core/lib/pg-timestamp.ts",
+        "sourceBlob": "c44c06df87bf22aaf15348203253d5fd85596c75",
+        "targetBlob": "b3cfe4919cbe6fd4e0dabf31d0acd8c8798a8f86"
+      },
+      {
+        "path": "packages/operator-core/lib/rubrics.ts",
+        "sourceBlob": "6796334e00ea9c917a6515009bbdac176d7649ff",
+        "targetBlob": "8b0b54588a0e415b5a8392ca628391deff6b1432"
+      },
+      {
+        "path": "packages/operator-core/lib/scorecards.ts",
+        "sourceBlob": "9c4f1fa91a2fd573682e55d284baafc9b8ba873b",
+        "targetBlob": "20b0951634fc05059957aa6e4eb94c8338267c06"
+      },
+      {
+        "path": "packages/operator-core/lib/sync-resolver/goals.ts",
+        "sourceBlob": "8c60891e8e8c856add9b128fbec8318340e3ddef",
+        "targetBlob": "17ccbcf06e6e621b2bbd826061a28fdcf0c8b2c1"
+      },
+      {
+        "path": "packages/operator-core/lib/typed-properties-db.ts",
+        "sourceBlob": "acbc47e287db4ca2c6b9b67a91161a4afb29d1b8",
+        "targetBlob": "6735350f26aa0816af3af5d5253d31738d9f969b"
+      },
+      {
+        "path": "packages/operator-core/lib/typed-properties.ts",
+        "sourceBlob": "de267f73e1e8044aa03eca437eab11720ce17bea",
+        "targetBlob": "02559538536cb6abd912b35ca4281cfd17e9c075"
+      },
+      {
+        "path": "packages/operator-core/lib/work-item-completion-authority.ts",
+        "sourceBlob": "3dd033ced19506176bf4565634a42572709b3ed9",
+        "targetBlob": "04fbb3061ba87edbf60d575f0583f1368652c9b1"
+      },
+      {
+        "path": "packages/operator-core/lib/work-items.ts",
+        "sourceBlob": "ab0435c1f0ff02a027b1269afedcf635e63452b8",
+        "targetBlob": "e43219d3f72eff21489676e3070bf91c8d0a1311"
+      }
+    ],
+    "unresolved": [],
+    "edgeCount": 105,
+    "limitation": "Follows newly missing relative imports only; differing existing files and alias/type/package/runtime/test execution remain review inputs, not compatibility proof."
+  },
+  "aliasAndPackageReview": {
+    "sourceRef": "a44756aa009f52a2e9d96252e523ebbe1252f68e",
+    "targetRef": "d740fc3802877d1c8c3b1068768681ee32ef0025",
+    "tsconfigPathsEqual": true,
+    "aliases": [
+      {
+        "specifier": "@/app/_components/chat/chat-controls.css",
+        "sourcePath": "apps/operator/app/_components/chat/chat-controls.css",
+        "sourceBlob": "a7bcb4a02fa78a85519429ca63df414f53d8760f",
+        "targetPath": "apps/operator/app/_components/chat/chat-controls.css",
+        "targetBlob": "a7bcb4a02fa78a85519429ca63df414f53d8760f",
+        "status": "identical"
+      },
+      {
+        "specifier": "@/app/_components/chat/fleet-peers",
+        "sourcePath": "apps/operator/app/_components/chat/fleet-peers.ts",
+        "sourceBlob": "48e9d4109e9368acb0f0f0ca6c57721d7f455172",
+        "targetPath": "apps/operator/app/_components/chat/fleet-peers.ts",
+        "targetBlob": "48e9d4109e9368acb0f0f0ca6c57721d7f455172",
+        "status": "identical"
+      },
+      {
+        "specifier": "@/app/_components/chat/FleetPeersRail",
+        "sourcePath": "apps/operator/app/_components/chat/FleetPeersRail.tsx",
+        "sourceBlob": "41725bae00ab462f17e6fbfca9e42473b829ea5b",
+        "targetPath": "apps/operator/app/_components/chat/FleetPeersRail.tsx",
+        "targetBlob": "41725bae00ab462f17e6fbfca9e42473b829ea5b",
+        "status": "identical"
+      },
+      {
+        "specifier": "@/app/_components/chat/PanelToggleButton",
+        "sourcePath": "apps/operator/app/_components/chat/PanelToggleButton.tsx",
+        "sourceBlob": "efebbb3414bbacce19ed38af083f6a72e41bd562",
+        "targetPath": "apps/operator/app/_components/chat/PanelToggleButton.tsx",
+        "targetBlob": "efebbb3414bbacce19ed38af083f6a72e41bd562",
+        "status": "identical"
+      },
+      {
+        "specifier": "@/app/_components/chat/SessionChatModal",
+        "sourcePath": "apps/operator/app/_components/chat/SessionChatModal.tsx",
+        "sourceBlob": "c873a9e16ebd94180ac9b300330ec0689692751f",
+        "targetPath": "apps/operator/app/_components/chat/SessionChatModal.tsx",
+        "targetBlob": "c873a9e16ebd94180ac9b300330ec0689692751f",
+        "status": "identical"
+      },
+      {
+        "specifier": "@/app/_components/chat/use-owner-session-chat",
+        "sourcePath": "apps/operator/app/_components/chat/use-owner-session-chat.ts",
+        "sourceBlob": "5c0c5259a5073b12db19ce0e99794f55ca9a407a",
+        "targetPath": "apps/operator/app/_components/chat/use-owner-session-chat.ts",
+        "targetBlob": "5c0c5259a5073b12db19ce0e99794f55ca9a407a",
+        "status": "identical"
+      },
+      {
+        "specifier": "@/app/_components/chat/use-popup-maximize",
+        "sourcePath": "apps/operator/app/_components/chat/use-popup-maximize.ts",
+        "sourceBlob": "6dbc47175a8605069c6f88627a8e21abce7d4e31",
+        "targetPath": "apps/operator/app/_components/chat/use-popup-maximize.ts",
+        "targetBlob": "6dbc47175a8605069c6f88627a8e21abce7d4e31",
+        "status": "identical"
+      },
+      {
+        "specifier": "@/app/harness/Checkbox",
+        "sourcePath": "apps/operator/app/harness/Checkbox.tsx",
+        "sourceBlob": "485efefd37cee5b9969b2b28b77d203149cfb14a",
+        "targetPath": "apps/operator/app/harness/Checkbox.tsx",
+        "targetBlob": "485efefd37cee5b9969b2b28b77d203149cfb14a",
+        "status": "identical"
+      },
+      {
+        "specifier": "@/app/harness/Modal",
+        "sourcePath": "apps/operator/app/harness/Modal.tsx",
+        "sourceBlob": "cd8f944f4fdbcaa24c2a6d2733db13d8e78472cb",
+        "targetPath": "apps/operator/app/harness/Modal.tsx",
+        "targetBlob": "cd8f944f4fdbcaa24c2a6d2733db13d8e78472cb",
+        "status": "identical"
+      },
+      {
+        "specifier": "@/app/harness/TextInput",
+        "sourcePath": "apps/operator/app/harness/TextInput.tsx",
+        "sourceBlob": "190e7a833f258f8fa7fb1f387c7a141816c9fbbb",
+        "targetPath": "apps/operator/app/harness/TextInput.tsx",
+        "targetBlob": "190e7a833f258f8fa7fb1f387c7a141816c9fbbb",
+        "status": "identical"
+      },
+      {
+        "specifier": "@/app/harness/Tooltip",
+        "sourcePath": "apps/operator/app/harness/Tooltip.tsx",
+        "sourceBlob": "cc62f9f6533c578d0732342d4a350e41a795489e",
+        "targetPath": "apps/operator/app/harness/Tooltip.tsx",
+        "targetBlob": "cc62f9f6533c578d0732342d4a350e41a795489e",
+        "status": "identical"
+      },
+      {
+        "specifier": "@/lib/adv-roster-args",
+        "sourcePath": "apps/operator/lib/adv-roster-args.ts",
+        "sourceBlob": "590ce86ccc4e5c4334ff76c056482f505bc0bde6",
+        "targetPath": "apps/operator/lib/adv-roster-args.ts",
+        "targetBlob": "590ce86ccc4e5c4334ff76c056482f505bc0bde6",
+        "status": "identical"
+      },
+      {
+        "specifier": "@papercusp/operator-core/lib/goal-rubric-stewardship",
+        "sourcePath": "packages/operator-core/lib/goal-rubric-stewardship.ts",
+        "sourceBlob": "57ec170e22b74671f17056cac990af063144b0ea",
+        "targetPath": null,
+        "targetBlob": null,
+        "status": "missing"
+      },
+      {
+        "specifier": "@papercusp/operator-core/lib/typed-properties",
+        "sourcePath": "packages/operator-core/lib/typed-properties.ts",
+        "sourceBlob": "de267f73e1e8044aa03eca437eab11720ce17bea",
+        "targetPath": "packages/operator-core/lib/typed-properties.ts",
+        "targetBlob": "02559538536cb6abd912b35ca4281cfd17e9c075",
+        "status": "different"
+      }
+    ],
+    "packageDeclarationComparisons": [
+      {
+        "specifier": "react",
+        "sourceDeclarations": [
+          {
+            "path": "package.json",
+            "kind": "dependencies",
+            "value": "^19.2.6"
+          },
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^19.2.0"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "package.json",
+            "kind": "dependencies",
+            "value": "^19.2.6"
+          },
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^19.2.0"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "@dnd-kit/core",
+        "sourceDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^6.3.1"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^6.3.1"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "@dnd-kit/sortable",
+        "sourceDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^8.0.0"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^8.0.0"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "@dnd-kit/utilities",
+        "sourceDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^3.2.2"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^3.2.2"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "vitest",
+        "sourceDeclarations": [
+          {
+            "path": "package.json",
+            "kind": "devDependencies",
+            "value": "4.1.8"
+          },
+          {
+            "path": "apps/operator/package.json",
+            "kind": "devDependencies",
+            "value": "^4.1.4"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "devDependencies",
+            "value": "^4.1.4"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "package.json",
+            "kind": "devDependencies",
+            "value": "4.1.8"
+          },
+          {
+            "path": "apps/operator/package.json",
+            "kind": "devDependencies",
+            "value": "^4.1.4"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "devDependencies",
+            "value": "^4.1.4"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "@testing-library/react",
+        "sourceDeclarations": [],
+        "targetDeclarations": [],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "@papercusp/test-config/nuqs-mock",
+        "sourceDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "devDependencies",
+            "value": "*"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "devDependencies",
+            "value": "*"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "devDependencies",
+            "value": "*"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "devDependencies",
+            "value": "*"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "nuqs",
+        "sourceDeclarations": [
+          {
+            "path": "package.json",
+            "kind": "dependencies",
+            "value": "^2.8.9"
+          },
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^2.8.9"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "package.json",
+            "kind": "dependencies",
+            "value": "^2.8.9"
+          },
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^2.8.9"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "@papercusp/sync",
+        "sourceDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "file:../../libs/generic/sync"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "dependencies",
+            "value": "*"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "file:../../libs/generic/sync"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "dependencies",
+            "value": "*"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "lucide-react",
+        "sourceDeclarations": [
+          {
+            "path": "package.json",
+            "kind": "dependencies",
+            "value": "^1.14.0"
+          },
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^1.14.0"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "package.json",
+            "kind": "dependencies",
+            "value": "^1.14.0"
+          },
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^1.14.0"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "postgres",
+        "sourceDeclarations": [
+          {
+            "path": "package.json",
+            "kind": "dependencies",
+            "value": "^3.4.9"
+          },
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^3.4.9"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "package.json",
+            "kind": "dependencies",
+            "value": "^3.4.9"
+          },
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^3.4.9"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "@papercusp/verification-harness",
+        "sourceDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "file:../../libs/generic/verification-harness"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "dependencies",
+            "value": "*"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "dependencies",
+            "value": "*"
+          }
+        ],
+        "declarationsEqual": false
+      },
+      {
+        "specifier": "@playwright/test",
+        "sourceDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "devDependencies",
+            "value": "^1.59.1"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "devDependencies",
+            "value": "^1.59.1"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "@papercusp/flags",
+        "sourceDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "file:../../libs/flags"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "dependencies",
+            "value": "*"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "file:../../libs/flags"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "dependencies",
+            "value": "*"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "@papercusp/flags/test",
+        "sourceDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "file:../../libs/flags"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "dependencies",
+            "value": "*"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "file:../../libs/flags"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "dependencies",
+            "value": "*"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "@papercusp/module-singleton",
+        "sourceDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "file:../../libs/generic/module-singleton"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "dependencies",
+            "value": "*"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "file:../../libs/generic/module-singleton"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "dependencies",
+            "value": "*"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "@papercusp/test-config/pg",
+        "sourceDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "devDependencies",
+            "value": "*"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "devDependencies",
+            "value": "*"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "devDependencies",
+            "value": "*"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "devDependencies",
+            "value": "*"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "@papercusp/db-org",
+        "sourceDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "file:../../libs/papercusp/libs/db"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "dependencies",
+            "value": "*"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "file:../../libs/papercusp/libs/db"
+          },
+          {
+            "path": "packages/operator-core/package.json",
+            "kind": "dependencies",
+            "value": "*"
+          }
+        ],
+        "declarationsEqual": true
+      },
+      {
+        "specifier": "zod",
+        "sourceDeclarations": [
+          {
+            "path": "package.json",
+            "kind": "dependencies",
+            "value": "^4.4.2"
+          },
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^4.4.2"
+          }
+        ],
+        "targetDeclarations": [
+          {
+            "path": "package.json",
+            "kind": "dependencies",
+            "value": "^4.4.2"
+          },
+          {
+            "path": "apps/operator/package.json",
+            "kind": "dependencies",
+            "value": "^4.4.2"
+          }
+        ],
+        "declarationsEqual": true
+      }
+    ],
+    "limitation": "Declarations and alias target blobs only. Package exports, submodule pins, lock resolution, TypeScript assignability, and runtime compatibility remain unmeasured."
+  },
+  "exportAndSchemaReview": {
+    "packageExports": {
+      "path": "packages/operator-core/package.json",
+      "sourceAdds": [
+        "./lib/endpoint-route/hosted-auth-runtime",
+        "./lib/endpoint-route/hosted-auth-runtime.ts",
+        "./lib/*.mjs"
+      ],
+      "comparedArtifactExports": "The d740 manifest has only the generic ./lib/* and ./lib/*.ts mappings; the a447 source adds explicit hosted-auth routes and an mjs mapping.",
+      "impact": "The source-only tsconfig alias is unchanged, but package exports and runtime/package resolution are not identical."
+    },
+    "goalPortfolioProducer": {
+      "path": "packages/operator-core/lib/goal-launch-settings.ts",
+      "sourceAdds": [
+        "GoalPortfolioBrief.rubricStewardship",
+        "renderGoalPortfolioBrief renders the canonical stewardship brief",
+        "readGoalPortfolioBrief accepts rubricStewardship read/skip and calls readGoalRubricStewardship for opted-in duties"
+      ],
+      "comparedArtifact": "d740 has no rubricStewardship brief field or read/skip option.",
+      "impact": "The goals.detail producer closure must include the portfolio/wake brief API, not only the panel reader."
+    },
+    "typedPropertyContract": {
+      "path": "packages/operator-core/lib/typed-properties.ts",
+      "sourceAdds": [
+        "collection declaration schema and ordered-selection-policy validation",
+        "TypedPropertyCollectionRead",
+        "readTypedPropertyCollection",
+        "qualified active-plan reference validation"
+      ],
+      "comparedArtifact": "d740 strict property definitions reject collection declarations and do not export the collection reader/type.",
+      "impact": "A goalData payload cannot be compatible by copying UI files alone."
+    },
+    "status": "additional producer/package/schema gaps confirmed"
+  },
+  "evidenceValidation": {
+    "status": "pass",
+    "source": "a44756aa009f52a2e9d96252e523ebbe1252f68e",
+    "target": "d740fc3802877d1c8c3b1068768681ee32ef0025",
+    "rootPaths": 21,
+    "scannedPaths": 28,
+    "missingPaths": 22,
+    "differingExistingPaths": 22,
+    "relativeImportEdges": 105,
+    "missingExports": 4,
+    "requiredFieldGapChecks": 3,
+    "errors": [],
+    "qualificationSha256": "83e603aa14ad63f5b2d53c6fa38a6aa874d214c1278a057467c690e1f006e3ae",
+    "verificationClass": "Evidence consistency only; no behavior tests or typecheck."
+  },
+  "decision": "Do not admit, accept, export, or rerun native proof from these refs. The d740 artifact is not a qualified containing artifact for the a447 model/producer/test contract. Reconcile the missing and differing source set, then qualify a new immutable artifact before any final native journey.",
+  "gateAndPins": {
+    "frozenCandidatePinsPreserved": true,
+    "liveGateOwnershipChanged": false
+  }
+}

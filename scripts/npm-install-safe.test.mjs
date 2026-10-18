@@ -50,6 +50,7 @@ import {
   PACKAGE_CACHE_MUTEX_NAME,
   resolveFsMutexTimeoutMs,
   withFsMutex,
+  withFsMutexRead,
 } from "./lib/fs-mutex.mjs";
 import { TEST_FILE_EXIT_NOT_MEASURED } from "./lib/test-file-exit-codes.mjs";
 
@@ -882,6 +883,237 @@ test("fs-mutex reclaims a recycled reader PID but retains its matching live iden
 
 // WI-10006385: a printed wait must be closed by a line saying how long it really lasted
 // and under which budget; an uncontested lock stays silent.
+test("install writer drains existing readers before reserving new-reader admission", { timeout: 5_000 }, async () => {
+  const lockRootDir = mkdtempSync(join(tmpdir(), "install-prereserve-drain-"));
+  const name = "install";
+  let releaseReader;
+  let readyReader;
+  const ready = new Promise(resolve => { readyReader = resolve; });
+  const held = new Promise(resolve => { releaseReader = resolve; });
+  const reader = withFsMutexRead(name, async () => { readyReader(); await held; }, { lockRootDir });
+  let releaseWriter;
+  const writerHeld = new Promise(resolve => { releaseWriter = resolve; });
+  let writer;
+  let newcomer;
+  let writerEntered = false;
+  let newcomerEntered = false;
+  try {
+    await ready;
+    let draining;
+    const waiting = new Promise(resolve => { draining = resolve; });
+    let enteredWriter;
+    const writerReady = new Promise(resolve => { enteredWriter = resolve; });
+    writer = withFsMutex(name, async () => {
+      writerEntered = true;
+      enteredWriter();
+      await writerHeld;
+    }, { lockRootDir, waitForReadersBeforeReserve: true, timeoutMs: 2_000, retryMs: 5, onWaiting: draining });
+    await waiting;
+    assert.equal(writerEntered, false);
+    assert.equal(existsSync(join(lockRootDir, name + ".lock")), false);
+    await withFsMutexRead(name, async () => { newcomerEntered = true; }, { lockRootDir, timeoutMs: 100 });
+    assert.equal(newcomerEntered, true);
+    releaseReader();
+    await reader;
+    await writerReady;
+    newcomerEntered = false;
+    let blocked;
+    const blockedReader = new Promise(resolve => { blocked = resolve; });
+    newcomer = withFsMutexRead(name, async () => { newcomerEntered = true; }, {
+      lockRootDir, timeoutMs: 2_000, retryMs: 5, onWaiting: blocked,
+    });
+    await blockedReader;
+    assert.equal(newcomerEntered, false);
+    releaseWriter();
+    await writer;
+    await newcomer;
+    assert.equal(newcomerEntered, true);
+  } finally {
+    releaseReader();
+    releaseWriter();
+    await Promise.allSettled([reader, ...(writer ? [writer] : []), ...(newcomer ? [newcomer] : [])]);
+    rmSync(lockRootDir, { recursive: true, force: true });
+  }
+});
+
+test("install writer timeout before reservation leaves readers available and removes its ticket", async () => {
+  const lockRootDir = mkdtempSync(join(tmpdir(), "install-prereserve-timeout-"));
+  let releaseReader;
+  let readyReader;
+  const ready = new Promise(resolve => { readyReader = resolve; });
+  const held = new Promise(resolve => { releaseReader = resolve; });
+  const reader = withFsMutexRead("install", async () => { readyReader(); await held; }, { lockRootDir });
+  let writerEntered = false;
+  try {
+    await ready;
+    await assert.rejects(withFsMutex("install", async () => { writerEntered = true; }, {
+      lockRootDir, waitForReadersBeforeReserve: true, timeoutMs: 30, retryMs: 5,
+    }), /waiting for fs-mutex readers/);
+    assert.equal(writerEntered, false);
+    assert.equal(existsSync(join(lockRootDir, "install.lock")), false);
+    assert.deepEqual(readdirSync(join(lockRootDir, "install.queue")), []);
+    assert.equal(await withFsMutexRead("install", async () => "available", { lockRootDir, timeoutMs: 100 }), "available");
+  } finally {
+    releaseReader();
+    await reader;
+    rmSync(lockRootDir, { recursive: true, force: true });
+  }
+});
+
+test("install writer rechecks readers that race the pre-reservation drain", async () => {
+  const lockRootDir = mkdtempSync(join(tmpdir(), "install-prereserve-race-"));
+  const readerDir = join(lockRootDir, "install.readers", "racing.lock");
+  let writerEntered = false;
+  let writer;
+  try {
+    let draining;
+    const waiting = new Promise(resolve => { draining = resolve; });
+    writer = withFsMutex("install", async () => { writerEntered = true; }, {
+      lockRootDir, waitForReadersBeforeReserve: true, timeoutMs: 2_000, retryMs: 5,
+      onWaiting: draining,
+      io: {
+        writeFile: async (path, ...args) => {
+          if (String(path) === join(lockRootDir, "install.lock", "owner.json")) {
+            mkdirSync(readerDir, { recursive: true });
+            writeFileSync(join(readerDir, "owner.json"), JSON.stringify({ pid: process.pid, host: hostname(), mode: "read" }));
+          }
+          writeFileSync(path, ...args);
+        },
+      },
+    });
+    await waiting;
+    assert.equal(writerEntered, false);
+    rmSync(readerDir, { recursive: true });
+    await writer;
+    assert.equal(writerEntered, true);
+  } finally {
+    rmSync(readerDir, { recursive: true, force: true });
+    await Promise.allSettled(writer ? [writer] : []);
+    rmSync(lockRootDir, { recursive: true, force: true });
+  }
+});
+
+test("installer admission drains both protected readers before admitting a waiting new reader", { timeout: 5_000 }, async () => {
+  const lockRootDir = mkdtempSync(join(tmpdir(), "install-two-reader-drain-"));
+  const name = "two-generation-readers";
+  const releases = [];
+  const entered = [];
+  const readers = Array.from({ length: 2 }, () => {
+    let enteredReader;
+    entered.push(new Promise(resolve => { enteredReader = resolve; }));
+    const held = new Promise(resolve => { releases.push(resolve); });
+    return withFsMutexRead(name, async () => {
+      enteredReader();
+      await held;
+    }, { lockRootDir });
+  });
+  let releaseWriter;
+  const writerHeld = new Promise(resolve => { releaseWriter = resolve; });
+  let writer;
+  let newcomer;
+  let writerEntered = false;
+  let newcomerEntered = false;
+  let firstReaderReleased = false;
+  try {
+    await Promise.all(entered);
+    let draining;
+    const drainStarted = new Promise(resolve => { draining = resolve; });
+    let remainingReaderObserved;
+    const stillDraining = new Promise(resolve => { remainingReaderObserved = resolve; });
+    let admitted;
+    const writerAdmitted = new Promise(resolve => { admitted = resolve; });
+    writer = withFsMutex(name, async () => {
+      writerEntered = true;
+      admitted();
+      await writerHeld;
+    }, {
+      lockRootDir, timeoutMs: 2_000, retryMs: 5, waitingNoticeIntervalMs: 1,
+      onWaiting: () => {
+        draining();
+        if (firstReaderReleased) remainingReaderObserved();
+      },
+    });
+    await drainStarted;
+    let waitingNewcomer;
+    const newcomerWaiting = new Promise(resolve => { waitingNewcomer = resolve; });
+    newcomer = withFsMutexRead(name, async () => { newcomerEntered = true; }, {
+      lockRootDir, timeoutMs: 2_000, retryMs: 5, onWaiting: () => waitingNewcomer(),
+    });
+    await newcomerWaiting;
+    assert.equal(writerEntered, false);
+    assert.equal(newcomerEntered, false);
+
+    // Cancelling just the publisher is insufficient: its joining reader still
+    // protects the source and must finish before any installer may mutate it.
+    releases[0]();
+    await readers[0];
+    firstReaderReleased = true;
+    await stillDraining;
+    assert.equal(writerEntered, false);
+    assert.equal(newcomerEntered, false);
+
+    releases[1]();
+    await readers[1];
+    await writerAdmitted;
+    assert.equal(newcomerEntered, false);
+    releaseWriter();
+    await writer;
+    await newcomer;
+    assert.equal(newcomerEntered, true);
+  } finally {
+    releases.forEach(release => release());
+    releaseWriter();
+    await Promise.allSettled([...readers, ...(writer ? [writer] : []), ...(newcomer ? [newcomer] : [])]);
+    rmSync(lockRootDir, { recursive: true, force: true });
+  }
+});
+
+test("installLockWaitReporter identifies protected readers while the writer drains them", async () => {
+  const lockRootDir = mkdtempSync(join(tmpdir(), "install-reader-drain-"));
+  const name = "reader-drain-report";
+  const lines = [];
+  let releaseReader;
+  let readerEntered;
+  const entered = new Promise(resolve => { readerEntered = resolve; });
+  const held = new Promise(resolve => { releaseReader = resolve; });
+  const reader = withFsMutexRead(name, async () => {
+    readerEntered();
+    await held;
+  }, { lockRootDir });
+  let writer;
+  let writerEntered = false;
+  try {
+    await entered;
+    let noticed;
+    const waiting = new Promise(resolve => { noticed = resolve; });
+    const reporter = installLockWaitReporter({
+      lock: "writer",
+      describe: owner => `waiting on another install: ${owner}`,
+      log: line => lines.push(line),
+      budgetMs: 2_000,
+    });
+    writer = withFsMutex(name, async () => { writerEntered = true; }, {
+      lockRootDir, timeoutMs: 2_000, retryMs: 5,
+      ...reporter,
+      onWaiting: info => { reporter.onWaiting(info); noticed(); },
+    });
+    await Promise.race([waiting, writer.then(() => assert.fail("writer bypassed held reader"))]);
+    assert.equal(writerEntered, false);
+    assert.match(lines[0], /writer waiting for dependency readers/);
+    assert.doesNotMatch(lines[0], /another install/);
+    assert.match(lines[0], new RegExp(`"pid": ${process.pid}`));
+    releaseReader();
+    await reader;
+    await writer;
+    assert.equal(writerEntered, true);
+    assert.match(lines.at(-1), /NPM_INSTALL_SAFE_LOCK_ACQUIRED lock=writer/);
+  } finally {
+    releaseReader();
+    await Promise.allSettled([reader, ...(writer ? [writer] : [])]);
+    rmSync(lockRootDir, { recursive: true, force: true });
+  }
+});
+
 test("installLockWaitReporter closes a printed wait with its real length and stays quiet uncontested", () => {
   const quiet = [];
   const uncontested = installLockWaitReporter({
@@ -902,10 +1134,12 @@ test("installLockWaitReporter closes a printed wait with its real length and sta
   });
   contested.onWaiting({ owner: "  {\"pid\":7}\n", elapsedMs: 0 });
   contested.onWaiting({ owner: "{\"pid\":8}", elapsedMs: 30_000 });
+  contested.onWaiting({ owner: "unreadable owner", elapsedMs: 60_000 });
   contested.onAcquired({ waitedMs: 2_712_345 });
   assert.deepEqual(lines, [
     'waiting 0 {"pid":7}',
     'waiting 30000 {"pid":8}',
+    'waiting 60000 unreadable owner',
     "NPM_INSTALL_SAFE_LOCK_ACQUIRED lock=writer waitedMs=2712345 budgetMs=3600000",
   ]);
 });
@@ -2075,6 +2309,7 @@ test("parseCliArgs treats a leading --help / -h as a wrapper help request", () =
   // Calibration: an ordinary leading flag still gets the implicit install.
   assert.deepEqual(parseCliArgs(["--legacy-peer-deps"]).npmArgs, ["install", "--legacy-peer-deps"]);
 });
+
 
 test("the CLI prints usage for --help and exits 0 without spawning npm or taking the mutex", () => {
   const cli = fileURLToPath(new URL("./npm-install-safe.mjs", import.meta.url));

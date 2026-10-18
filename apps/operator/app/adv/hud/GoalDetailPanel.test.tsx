@@ -21,6 +21,7 @@ import { cleanup, fireEvent, render, screen, within, waitFor } from '@testing-li
 import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 import { readTypedPropertyCollection, type TypedPropertySchemaDocument } from '@papercusp/operator-core/lib/typed-properties';
 import type { GoalDetailInput } from './goal-detail-model';
+import GoalDataSection from './GoalDataSection';
 
 /* P-023: the popup's two expand buttons reach the DESKTOP shell for full
    SCREEN. Mocked to spies so this suite asserts the panel's BRANCH (which
@@ -235,6 +236,56 @@ function openPanelsMenu() {
 }
 
 describe('GoalDetailPanel', () => {
+  it.each(['ack-first', 'snapshot-first'] as const)(
+    'unlocks the generic collection after both save acknowledgements arrive (%s)', async order => {
+      const schema: TypedPropertySchemaDocument = {
+        tea: { datatype: 'string-list', editable_by: 'both', collection: {
+          source: 'manual', policy: 'tea_policy', order: 'display', selectable: true, defaultSelected: true,
+        } },
+        tea_policy: { datatype: 'ordered-selection-policy', editable_by: 'owner', default: { order: [], excluded: [] } },
+      };
+      const snapshot = (version: number, excluded: string[]): GoalDetailInput['goalData'] => {
+        const selection = readTypedPropertyCollection({ propertySchema: schema, property: 'tea', properties: {
+          tea: { value: ['mint'], version: 1, edited_by: 'agent', provenance: 'agent-edit', edited_at: '2026-10-01T00:00:00Z' },
+          tea_policy: { value: { order: ['mint'], excluded }, version,
+            edited_by: 'owner', provenance: 'owner-edit', edited_at: '2026-10-01T00:00:00Z' },
+        } });
+        if (!selection.ok || !selection.configured) throw new Error(`Invalid acknowledgement fixture: ${JSON.stringify(selection)}`);
+        return { propertySchema: schema, collections: { tea: { selection,
+          rows: selection.items.map(row => ({ ...row, label: row.id, state: 'ready', reason: null })) } } };
+      };
+      let acknowledge!: () => void;
+      const acknowledged = new Promise<void>(resolve => { acknowledge = resolve; });
+      const writes = vi.fn(async () => {
+        await acknowledged;
+        return { ok: true, json: async () => ({ ok: true, version: 5 }) };
+      });
+      vi.stubGlobal('fetch', writes);
+      try {
+        const view = render(<GoalDataSection goalId="goal-1" data={snapshot(4, [])} />);
+        const checkbox = () => screen.getByRole('checkbox', { name: 'Include mint' });
+        fireEvent.click(checkbox());
+        await waitFor(() => expect(writes).toHaveBeenCalledTimes(1));
+        if (order === 'ack-first') {
+          acknowledge();
+          await waitFor(() => expect(screen.getByRole('status', { name: 'Save status' }).textContent)
+            .toContain('Waiting for the refreshed list'));
+          expect(checkbox()).toHaveProperty('disabled', true);
+        }
+        view.rerender(<GoalDataSection goalId="goal-1" data={snapshot(5, ['mint'])} />);
+        if (order === 'snapshot-first') {
+          expect(checkbox()).toHaveProperty('disabled', true);
+          acknowledge();
+        }
+        await waitFor(() => expect(checkbox()).toHaveProperty('disabled', false));
+        expect(checkbox().getAttribute('aria-checked')).toBe('false');
+        expect(screen.queryByRole('status', { name: 'Save status' })).toBeNull();
+        fireEvent.click(checkbox());
+        await waitFor(() => expect(writes).toHaveBeenCalledTimes(2));
+      } finally { acknowledge(); vi.unstubAllGlobals(); }
+    },
+  );
+
   it.each(['plans', 'tea'] as const)('edits an arbitrary %s declaration through the generic panel and preserves refused choices', async (kind) => {
     const property = kind === 'plans' ? 'worklist' : 'tea_choices';
     const policyName = kind === 'plans' ? 'worklist_policy' : 'tea_policy';

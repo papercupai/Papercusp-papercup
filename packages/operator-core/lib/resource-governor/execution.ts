@@ -331,7 +331,20 @@ export async function beginGovernedExecution<T = unknown>(
     );
   }
   if (!running?.changed) {
-    const error = new Error(`durable receipt '${claim.receiptId}' could not enter running state`);
+    // Preserve the failed transition BEFORE cleanup cancels the receipt and
+    // overwrites the decision that explains the refusal. Do not expose lease
+    // tokens: equality and the observed decision are sufficient to distinguish
+    // a missing row, owner-death reclamation and a competing lease.
+    const transition = running ? {
+      state: running.record.state,
+      decision: running.record.decision.reason,
+      generation: running.record.decision.generation,
+      leasePresent: Boolean(running.record.lease),
+      leaseMatches: running.record.lease?.leaseId === claim.lease.leaseId,
+    } : { state: 'missing' };
+    const error = Object.assign(new Error(
+      `durable receipt '${claim.receiptId}' could not enter running state; transition=${JSON.stringify(transition)}`,
+    ), { governedAdmissionTransition: transition });
     throw await cancelStartFailure(error, error.message, claim);
   }
 

@@ -606,7 +606,40 @@ async function resolveProjectGuideText(
  * left untouched. Inserted just before the project-guide section so they sit in the playbook body,
  * not buried under the 600-line guide.
  */
-function injectSharedBaseNotes(text: string, opts: { repoSpecific?: boolean; eligible?: boolean } = {}): string {
+/**
+ * The PROMOTION-MODEL seam's content: the release-config-derived promotion section, plus —
+ * for a profile that works the Papercusp repo (`repoSpecific`) — the deploy-pipeline note.
+ * Both describe THIS workspace's release pipeline, so they travel together into the
+ * instance layer (su.instance.md carries the seam; identity-system-everything-migration-
+ * 2026-10-18 R-2 / #D-005). Exported for the relocation-parity test.
+ */
+export function renderPromotionModelSplice(opts: { repoSpecific: boolean }): string {
+  return [renderPromotionModelSection(), ...(opts.repoSpecific ? [renderDeployPipelineNote()] : [])]
+    .filter((s) => s && s.trim())
+    .join('\n\n');
+}
+
+/**
+ * Place the reference-deferral KERNEL END for a sealed (identity-stack) base. The kernel
+ * renders LAST, under `<!-- PAPERCUSP-KERNEL:SEAL -->`, so its end is the first trailing
+ * non-kernel seam AFTER the seal — or the end of the text when every such seam now lives
+ * above the seal (SHARED-BASE-NOTES in practice, PROJECT-GUIDE in instance). Matching by
+ * POSITION, not marker name: a marker-name anchor that has moved above the seal would put
+ * the end BEFORE the kernel and make kernel sections deferrable.
+ */
+const SU_KERNEL_SEAL_MARKER = '<!-- PAPERCUSP-KERNEL:SEAL -->';
+
+export function placeSuKernelEnd(text: string): string {
+  const seal = text.indexOf(SU_KERNEL_SEAL_MARKER);
+  if (seal < 0) return text;
+  for (const anchor of [SHARED_BASE_NOTES_MARKER, PROJECT_GUIDE_MARKER]) {
+    const at = text.indexOf(anchor, seal);
+    if (at >= 0) return `${text.slice(0, at)}${SU_KERNEL_END}\n${text.slice(at)}`;
+  }
+  return `${text}\n${SU_KERNEL_END}`;
+}
+
+function injectSharedBaseNotes(text: string, opts: { eligible?: boolean } = {}): string {
   // POSITION and ELIGIBILITY are now decided SEPARATELY. Conflating them is what caused the
   // 12-day silent drop (see SHARED_BASE_NOTES_MARKER's doc-comment):
   //
@@ -621,7 +654,7 @@ function injectSharedBaseNotes(text: string, opts: { repoSpecific?: boolean; eli
   // "ship nothing" — it means "no preferred position stated". That inversion is the fix: the
   // old code treated an absent anchor as an absent REQUIREMENT, so the live base losing an
   // unrelated feature's marker silently dropped five behavioural clauses.
-  const { repoSpecific = true, eligible = false } = opts;
+  const { eligible = false } = opts;
   const anchor = text.includes(SHARED_BASE_NOTES_MARKER)
     ? SHARED_BASE_NOTES_MARKER
     : text.includes(PROJECT_GUIDE_MARKER)
@@ -629,14 +662,13 @@ function injectSharedBaseNotes(text: string, opts: { repoSpecific?: boolean; eli
       : '';
   if (!anchor && !eligible) return text;
   const notes = [
-    // REPO-SPECIFIC: the deploy-pipeline note names :3070, the green gate and this repo's
-    // promotion stages, so it is meaningful only for a profile that works the Papercusp repo.
-    // Everything below it is PLATFORM-wide and applies to any su session on any repo — that
-    // split is the whole reason this takes a flag rather than gating the entire bundle. Before
-    // the split, `profile === 'engineer'` gated ALL of these, which silently withheld the
-    // coupling note from su-power even though D-062's owner directive was explicitly "ALL
-    // agents" — a platform behaviour lost to a repo-specific gate it had been bundled with.
-    ...(repoSpecific ? [renderDeployPipelineNote()] : []),
+    // PLATFORM-wide practice notes only — they apply to any su session on any repo. The
+    // REPO-SPECIFIC deploy-pipeline note (it names :3070, the green gate and this repo's
+    // promotion stages) is NOT here: it renders with the PROMOTION-MODEL seam, in the
+    // instance layer, via `renderPromotionModelSplice` (identity-system-everything-migration-
+    // 2026-10-18 R-2 / #D-005 — the domain-neutral kernel and practice layers carry no
+    // repo-specific text). Never gate this bundle on `profile`: D-062's coupling directive
+    // was explicitly "ALL agents".
     renderWaitLoopNote(),
     renderPeerWakeNote(),
     // Coupling (owner directive 2026-07-27; P-031, D-061/D-062) — the owner's ask was
@@ -694,7 +726,7 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
   out = spliceGeneratedSection(out, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
   // per-hive-git-and-release-gate P-012: the staging→main promotion contract, generated
   // from the same release-gate config (non-coding hives render nothing → marker removed).
-  out = spliceGeneratedSection(out, PROMOTION_MODEL_MARKER, renderPromotionModelSection());
+  out = spliceGeneratedSection(out, PROMOTION_MODEL_MARKER, renderPromotionModelSplice({ repoSpecific: true }));
   // Operating modes (AUTO act-don't-ask switch + its AUTO↔loop relationship, plus the IDEATE
   // invent-vs-patch switch and the AUTO×IDEATE composition table) — profile-agnostic, so both
   // engineer + power get the one canonical clause spliced here at the (still-named) AUTO marker.
@@ -836,6 +868,9 @@ function extensionCandidates(operatorAppRoot: string, explicitRoot: boolean): st
 // on disk appears here — the check that would have caught WI-5543, WI-5542 and
 // EI-20782070131658758, each of which shipped a working guard that never installed.
 export const CC_HOOK_FILES = [
+  // Detached hooks cannot resolve workspace packages. Ship the canonical
+  // host-platform/home implementation beside them (installed-hooks-parity pins it).
+  'pc_home.mjs',
   'pretooluse-locks-acquire.sh',
   // Managed Codex automatic compaction must enter Papercusp's deterministic
   // carry path instead of cutting around its checkpoint/authority gate.
@@ -1253,6 +1288,7 @@ export const CC_HOOK_FILES = [
 
 /** Hook files that are LIBRARIES, not executables — installed 0644, never chmod +x. */
 const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set([
+  'pc_home.mjs',
   'pc_tty.py',
   'mcp_response.py',
   'pc_nested_cli.py',
@@ -4427,7 +4463,11 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   );
   const withLegend = spliceGeneratedSection(withWire, COORD_LEGEND_MARKER, renderCoordLegend());
   const withMap = spliceGeneratedSection(withLegend, WORKSPACE_MAP_MARKER, renderWorkspaceMapSection());
-  const withPromo = spliceGeneratedSection(withMap, PROMOTION_MODEL_MARKER, renderPromotionModelSection());
+  const withPromo = spliceGeneratedSection(
+    withMap,
+    PROMOTION_MODEL_MARKER,
+    renderPromotionModelSplice({ repoSpecific: profile === 'engineer' }),
+  );
   // Operating modes are profile-agnostic (the AUTO act-don't-ask grant + its AUTO↔loop
   // relationship, plus the IDEATE invent-vs-patch switch and the AUTO×IDEATE table, apply to
   // every interactive su surface), so splice them BEFORE the engineer-only shared-base notes —
@@ -4461,17 +4501,8 @@ export async function renderSuPlaybook(input: RenderSuPlaybookInput): Promise<Re
   // The sealed source kernel ends BEFORE the generated reference bundle. Its
   // insertion anchor may be inside the original base, so an EOF sentinel would
   // incorrectly protect the entire generated bundle too.
-  const kernelBoundary = base.includes('<!-- PAPERCUSP-KERNEL:SEAL -->')
-    ? withCompaction.includes(SHARED_BASE_NOTES_MARKER)
-      ? withCompaction.replace(SHARED_BASE_NOTES_MARKER, SU_KERNEL_END + '\n' + SHARED_BASE_NOTES_MARKER)
-      : withCompaction.includes(PROJECT_GUIDE_MARKER)
-        ? withCompaction.replace(PROJECT_GUIDE_MARKER, SU_KERNEL_END + '\n' + PROJECT_GUIDE_MARKER)
-        : withCompaction + '\n' + SU_KERNEL_END
-    : withCompaction;
-  const withNotes = injectSharedBaseNotes(kernelBoundary, {
-    repoSpecific: profile === 'engineer',
-    eligible: isSuPlaybook,
-  });
+  const kernelBoundary = base.includes(SU_KERNEL_SEAL_MARKER) ? placeSuKernelEnd(withCompaction) : withCompaction;
+  const withNotes = injectSharedBaseNotes(kernelBoundary, { eligible: isSuPlaybook });
   // Project guide (P-001 / D-002): splice the repo's CLAUDE.md so a psu session
   // gets the full project conventions via psu, not client auto-load. Only read
   // the (large) guide file when the base actually carries the marker.

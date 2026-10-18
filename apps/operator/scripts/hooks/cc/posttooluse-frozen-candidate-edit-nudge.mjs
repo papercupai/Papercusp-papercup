@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { papercuspPath } from './pc_home.mjs';
 // apps/operator/scripts/hooks/cc/posttooluse-frozen-candidate-edit-nudge.mjs
 //
 // PostToolUse (Edit|Write|MultiEdit) hook with TWO jobs, both only while a gate candidate is
@@ -49,7 +49,6 @@ import { papercuspPath } from '@papercusp/host-platform/home';
 //
 import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 

@@ -4,7 +4,8 @@
  * and is neither a cheap health check nor proof that containers can start.
  * Container capability remains the consuming test's responsibility.
  *
- * node scripts/with-private-podman.mjs --evidence-dir /tmp/fresh-evidence -- <command> [args...]
+ * node scripts/with-private-podman.mjs --evidence-dir /tmp/fresh-evidence
+ *   [--run-timeout-ms 2700000] -- <command> [args...]
  */
 import { spawn } from 'node:child_process';
 import { openSync, closeSync } from 'node:fs';
@@ -14,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
+import { killSpawnedProcessTree } from './lib/batch-watchdog.mjs';
 
 function ping(socketPath, timeoutMs, signal) {
   return new Promise((done) => {
@@ -76,38 +78,59 @@ export async function waitForPrivatePodmanApi({ host, socketPath, signal,
 }
 
 async function stop(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  if (!child?.pid) return;
+  // A shell can exit before its descendants. Its owned process group still
+  // needs cleanup even when the direct child's close event already arrived.
+  if (child.exitCode !== null || child.signalCode !== null) {
+    killSpawnedProcessTree(child, 'SIGKILL');
+    return;
+  }
   const closed = new Promise(done => child.once('close', done));
-  child.kill('SIGTERM');
-  const timer = setTimeout(() => child.kill('SIGKILL'), 5_000);
-  try { await closed; } finally { clearTimeout(timer); }
+  killSpawnedProcessTree(child, 'SIGTERM');
+  const timer = setTimeout(() => killSpawnedProcessTree(child, 'SIGKILL'), 5_000);
+  try { await closed; } finally {
+    clearTimeout(timer);
+    killSpawnedProcessTree(child, 'SIGKILL');
+  }
 }
 
 export async function runWithPrivatePodman(command, args, { evidenceDir, env = process.env,
-  podman = 'podman', timeoutMs = 15_000, signal } = {}) {
+  podman = 'podman', timeoutMs = 15_000, runTimeoutMs = 45 * 60_000, signal } = {}) {
   if (!command || !evidenceDir) throw new Error('command and fresh evidenceDir are required');
+  if (!Number.isSafeInteger(runTimeoutMs) || runTimeoutMs <= 0 || runTimeoutMs > 2_147_483_647) {
+    throw new Error('runTimeoutMs must be an integer between 1 and 2147483647');
+  }
   // Never overwrite another attempt's evidence or connect to an inherited API.
   await mkdir(evidenceDir, { recursive: false });
   const runtime = await mkdtemp(join(tmpdir(), 'pc-podman-'));
   const socketPath = join(runtime, 'api.sock');
   const api = `unix://${socketPath}`;
   const probes = [];
-  const receipt = { startedAt: new Date().toISOString(), api, healthPath: '/_ping', probes };
+  const receipt = { startedAt: new Date().toISOString(), api, healthPath: '/_ping', probes, runTimeoutMs,
+    deadlineAt: new Date(Date.now() + runTimeoutMs).toISOString() };
   let host, child, log;
   const abort = new AbortController();
   const combined = signal ? AbortSignal.any([signal, abort.signal]) : abort.signal;
+  // This bound belongs to the workload owner, so it survives a CLI observer's
+  // exit. It covers API startup and immutable dependency preparation as well as
+  // the test command; a timeout receipt is never a product acceptance verdict.
+  const deadline = setTimeout(() => {
+    receipt.deadlineExceededAt = new Date().toISOString();
+    abort.abort(new Error('private Podman run deadline exceeded'));
+  }, runTimeoutMs);
   const interrupted = () => abort.abort(new Error('private Podman wrapper interrupted'));
   process.on('SIGTERM', interrupted);
   process.on('SIGINT', interrupted);
   try {
     log = openSync(join(evidenceDir, 'api.log'), 'wx', 0o600);
     host = spawn(podman, ['system', 'service', '--time=0', api], {
-      env, stdio: ['ignore', log, log],
+      env, stdio: ['ignore', log, log], detached: process.platform !== 'win32',
     });
     receipt.apiPid = host.pid;
     receipt.readiness = await waitForPrivatePodmanApi({ host, socketPath, signal: combined, timeoutMs, probes });
     combined.throwIfAborted();
-    child = spawn(command, args, { env: { ...env, DOCKER_HOST: api }, stdio: 'inherit' });
+    child = spawn(command, args, { env: { ...env, DOCKER_HOST: api }, stdio: 'inherit',
+      detached: process.platform !== 'win32' });
     receipt.commandPid = child.pid;
     let onAbort;
     try {
@@ -125,6 +148,7 @@ export async function runWithPrivatePodman(command, args, { evidenceDir, env = p
     receipt.failure = error instanceof Error ? error.message : String(error);
     throw error;
   } finally {
+    clearTimeout(deadline);
     try { await stop(child); await stop(host); }
     finally {
       if (log !== undefined) closeSync(log);
@@ -141,11 +165,14 @@ export async function runWithPrivatePodman(command, args, { evidenceDir, env = p
 
 if (isCliEntry(import.meta.url)) {
   const args = process.argv.slice(2);
-  if (args[0] !== '--evidence-dir' || !args[1] || args[2] !== '--' || !args[3]) {
-    console.error('usage: node scripts/with-private-podman.mjs --evidence-dir <fresh-dir> -- <command> [args...]');
+  const hasRunTimeout = args[2] === '--run-timeout-ms';
+  const separator = hasRunTimeout ? 4 : 2;
+  if (args[0] !== '--evidence-dir' || !args[1] || args[separator] !== '--' || !args[separator + 1]) {
+    console.error('usage: node scripts/with-private-podman.mjs --evidence-dir <fresh-dir> [--run-timeout-ms <ms>] -- <command> [args...]');
     process.exitCode = 2;
   } else {
-    try { process.exitCode = await runWithPrivatePodman(args[3], args.slice(4), { evidenceDir: resolve(args[1]) }); }
+    try { process.exitCode = await runWithPrivatePodman(args[separator + 1], args.slice(separator + 2),
+      { evidenceDir: resolve(args[1]), ...(hasRunTimeout ? { runTimeoutMs: Number(args[3]) } : {}) }); }
     catch (error) { console.error(error.message); process.exitCode = 1; }
   }
 }

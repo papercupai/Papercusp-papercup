@@ -41,6 +41,7 @@ import {
 import { resolveConcreteWorkspaceId } from '../../../workspace-registry';
 import { resolveAgentIdentity } from '../identity';
 import { PRESENCE_TIER_CAPS, shapeCoordPresence } from './presence-shape';
+import { decodeAuditCursor, RosterAuditError } from './roster-audit';
 
 /**
  * Explicit liveness is a deliberately cheap row shape, but it is still
@@ -76,9 +77,9 @@ function hasCallerLens(data: unknown): boolean {
 export default defineTool({
   name: 'coord:roster',
   description:
-    'ONE read door with an explicit lens: view=live (in-a-turn presence), members (fleet/hive membership), claims (who-on-what-item), history (who-was-ever-here). Same underlying model; coord:presence / fleet:status / fleet:assignments / coord:glance become thin aliases (or deprecate). Kills "which of 5 tools do I call".',
+    'Read agents through one lens: live, members, claims, history, or audit. For a parked agent audit use view=audit: complete frozen cursor pages with current work, real waits, registered AUTO, exact wake outcomes, provenance and corrections; no caller SQL.',
   guidance: {
-    when: 'Before dispatch/handoff/routing: who can take work (view=live)? Who joined what fleet (view=members)? Who\'s on plan P (view=claims)? Historical who-was-ever-here (view=history). Just need live ownerIds? { view:"live", project:"liveness", states:["live"] } — ~99% smaller than the default read, and the only form that reliably fits one result.',
+    when: 'Audit parked agents: view=audit, optional auditDirectiveId; follow nextCursor to complete coverage, retaining auditId/asOf. Routing: view=live. Ownership: view=claims. Just live ids: project=liveness, states=[live].',
     notWhen: 'Being notified of future changes (subscribe fleet_assignment change-feed). Full message history (coord:inbox). Rate-limit telemetry (dev:rate_governor_status). NEVER hand-query coord_presence for liveness — sessionState is derived from six legs, two of which are not in Postgres, so no column holds it; use project/states here instead.',
     chaining: 'coord:roster { view } → read ONCE per turn; tail [coord+N] deltas for transitions. For history, use coord:catch-up after to refine by topic/plan.',
     returns:
@@ -164,10 +165,10 @@ export default defineTool({
   },
   args: z.object({
     view: z
-      .enum(['live', 'members', 'claims', 'history'])
+      .enum(['live', 'members', 'claims', 'history', 'audit'])
       .optional()
       .describe(
-        'Lens type: live (DEFAULT) = in-a-turn presence state; members = fleet/hive membership; claims = work/plan-item claims; history = append-only who-was-ever-here.',
+        'Lens type: live (DEFAULT) = in-a-turn presence state; members = fleet/hive membership; claims = work/plan-item claims; history = append-only who-was-ever-here; audit = complete frozen parked-agent evidence with cursor pagination.',
       ),
     scope: z
       .enum(['hive', 'workspace', 'all'])
@@ -227,6 +228,10 @@ export default defineTool({
       .describe(
         'CHEAP UNCHANGED RE-POLL (view=live,members): pass the `etag` from your PRIOR coord:roster read with THE SAME lens args. If the rows you would be handed are byte-identical, you get a ~120B { unchanged:true, etag, as_of } instead of the payload. This etag hashes the EMITTED representation, so unlike coord:presence\'s it DOES track liveness — a live↔parked flip changes it, and { project:"liveness", states:["live"] } re-polls correctly. It is NOT interchangeable with a coord:presence etag (different scope, salted apart); a foreign, stale, or different-lens token simply misses and you get the full read. ⚠ On the DEFAULT project:"full" read the rows carry lastActiveSecAgo, which moves nearly every read — the etag churns and this guard does nothing. Pair `since:` with a cheap lens (ids/liveness/states), which is where re-polling is worth guarding anyway.',
       ),
+    auditId: z.string().max(128).optional().describe('Frozen audit snapshot id for view=audit pagination.'),
+    auditDirectiveId: z.number().int().positive().optional().describe('Owner directive whose captured original turn should survive in this audit; no prose authority inference.'),
+    cursor: z.string().max(2000).optional().describe('Opaque cursor returned by view=audit.'),
+    pageSize: z.number().int().min(1).max(10).optional().describe('Maximum audit records per page; default 10, reduced to honor the byte budget.'),
   }),
   result: z
     .object({
@@ -247,6 +252,57 @@ export default defineTool({
   async handler(args, ctx) {
     const view = args.view ?? 'live';
     const scope = args.scope;
+
+    if (view === 'audit') {
+      try {
+        if (args.since !== undefined || args.project !== undefined || args.states !== undefined || args.plan !== undefined || args.agent !== undefined || args.scope === 'all') {
+          throw new RosterAuditError('unsupported_filter', 'Audit supports one workspace or hive, optional owner, and its frozen cursor; other lens filters are not applied.');
+        }
+        const c = (ctx ?? {}) as { workspaceId?: string | null; harnessSlug?: string | null; isSuperuser?: boolean };
+        const [{ buildRosterAudit, loadRosterAudit, saveRosterAudit, pageRosterAuditResponse }, { resolveViewer }] = await Promise.all([
+          import('./roster-audit-store'), import('../../reports/_shared'),
+        ]);
+        const resolved = await resolvePresenceScope(c, { scope: args.scope, hive: args.pot, workspace: args.workspace, targetedOwner: !!args.owner });
+        const scopeKey = { workspaceId: resolved.wsId ?? resolveConcreteWorkspaceId(args.workspace, c.workspaceId), scope: resolved.scope === 'hive' ? 'hive' as const : 'workspace' as const, potId: resolved.potId ?? null, owner: args.owner ?? null, readerId: resolveSelfRef(ctx)?.ownerId ?? null };
+        const harness = resolved.potId ?? c.harnessSlug ?? 'papercusp';
+        const auditId = args.auditId ?? (args.cursor ? decodeAuditCursor(args.cursor).auditId : undefined);
+        let snapshot;
+        if (auditId) {
+          snapshot = await loadRosterAudit(harness, auditId, scopeKey);
+          if (!snapshot) throw new RosterAuditError('audit_not_found', 'Frozen audit is absent in this scope; a continuation never silently starts a different census.');
+          if (args.auditDirectiveId !== undefined && snapshot.provenance.directiveId !== args.auditDirectiveId) {
+            throw new RosterAuditError('audit_provenance_mismatch', 'Directive differs from the frozen audit.');
+          }
+        } else {
+          const failedSources: string[] = [];
+          const presence = await assemblePresenceSnapshot(resolved, {
+            ...(args.owner ? { owner: args.owner } : {}), includeMaintenance: false,
+            onDiagnostic: diagnostic => {
+              if (diagnostic.phase === 'source' && diagnostic.status === 'error') failedSources.push(diagnostic.name);
+            },
+          });
+          if (failedSources.length) throw new RosterAuditError('audit_population_unknown',
+            'A required roster source failed; no complete census was frozen: ' + failedSources.join(', '));
+          const expectedPopulation = presence.summary.byState?.parked;
+          if (!Number.isSafeInteger(expectedPopulation) || expectedPopulation < 0) {
+            throw new RosterAuditError('audit_population_unknown',
+              'The roster writer did not measure a valid parked population; no complete census was frozen.');
+          }
+          const agents = presence.active.filter(row => row.sessionState === 'parked');
+          snapshot = await buildRosterAudit({ harness, scope: scopeKey, asOf: presence.as_of,
+            agents: agents as unknown as Array<Record<string, unknown>>, expectedPopulation,
+            directiveId: args.auditDirectiveId, viewer: resolveViewer(ctx as never) });
+          await saveRosterAudit(harness, snapshot);
+        }
+        return { content: [{ type: 'text' as const, text: JSON.stringify(pageRosterAuditResponse(snapshot, scopeKey, args.cursor, args.pageSize)) }] };
+      } catch (error) {
+        const e = error as { code?: string; message?: string };
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: e.code ?? 'audit_error', message: e.message ?? String(error) }) }], isError: true };
+      }
+    }
+    if (args.auditId !== undefined || args.cursor !== undefined || args.pageSize !== undefined || args.auditDirectiveId !== undefined) {
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'unsupported_filter', detail: 'Audit pagination arguments require view=audit.' }) }], isError: true };
+    }
 
     // `plan` is a claims-lens filter.  The shared argument schema keeps the
     // field available for every view so callers can discover one stable

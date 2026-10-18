@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { papercuspPath } from './pc_home.mjs';
 /**
  * PreToolUse (matcher "ScheduleWakeup") — best-effort turn-provenance
  * ENROLLMENT for the Claude-CLI-native ScheduleWakeup tool
@@ -52,7 +52,6 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { nestedCliCached } from './pc_nested_cli.mjs';
 

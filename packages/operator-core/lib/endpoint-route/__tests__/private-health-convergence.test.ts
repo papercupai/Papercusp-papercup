@@ -1,14 +1,38 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isolatedIntegrationDiagnosticArtifacts } from '../../../test/isolated-integration-proof';
-import { reloadPrivateHealthSnapshot, waitForPrivateHealthSnapshot } from '../../../test/portal-roster-browser-fixture';
+import { reloadPrivateHealthSnapshot, waitForPrivateHealthSnapshot, withPrivateBrowserWorkspaceHeader } from '../../../test/portal-roster-browser-fixture';
+import { installWorkspaceHeaderFetch } from '../../transport-adapters/workspace-header-fetch';
 
 function clock() {
   let time = 0;
   return { now: () => time, pause: async (ms: number) => { time += ms; }, timeoutMs: 2_000 };
 }
+
+it('places the production workspace transport bootstrap before the standalone panel entry', () => {
+  const productEntry = 'createRoot(document.getElementById("root"));';
+  const entry = withPrivateBrowserWorkspaceHeader(productEntry);
+  expect(entry.indexOf('installWorkspaceHeaderFetch();')).toBeGreaterThanOrEqual(0);
+  expect(entry.indexOf('installWorkspaceHeaderFetch();')).toBeLessThan(entry.indexOf(productEntry));
+});
+
+it('stamps the workspace selected by ?ws onto operator API fetches', async () => {
+  const inner = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}'));
+  vi.stubGlobal('window', {
+    location: { href: 'http://127.0.0.1:3070/?ws=byoc-a', origin: 'http://127.0.0.1:3070' },
+    fetch: inner,
+  });
+  try {
+    installWorkspaceHeaderFetch();
+    await window.fetch('/api/zero-harness/rest-query?name=health.snapshot');
+    const init = inner.mock.calls[0]?.[1];
+    expect(new Headers(init?.headers).get('x-papercusp-workspace')).toBe('byoc-a');
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 
 it('preserves the Health publication and HTTP evidence when a failed run is pruned', async () => {
   const root = await mkdtemp(join(tmpdir(), 'health-diagnostics-'));

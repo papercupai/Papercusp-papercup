@@ -28,6 +28,8 @@ export interface GatewayRequestOutcomeRecord {
   transport: GatewayRequestTimeline['transport'];
   model: string | null;
   selectedAccountId: string | null;
+  /** Exact provider completion identity; absent on historical or unobserved completions. */
+  providerResponseId?: string | null;
   outcomeClass: GatewayRequestTimeline['outcome'];
   finalStatus: number | null;
   requestTimestampMs: number;
@@ -89,7 +91,7 @@ export function gatewayRequestOutcomeRecord(
   workspaceId = activeWorkspaceId(),
 ): GatewayRequestOutcomeRecord {
   const recordedAtMs = Math.max(0, timeline.finalizedAt);
-  const selectedAccountId = timeline.cache.servingAccountId ?? timeline.providerIdentity?.accountId ?? null;
+  const selectedAccountId = timeline.providerIdentity?.accountId ?? timeline.cache.servingAccountId ?? null;
   return {
     requestId: `${gatewayProcessInstanceId}:${timeline.requestId}`,
     gatewayProcessInstanceId,
@@ -101,6 +103,7 @@ export function gatewayRequestOutcomeRecord(
     transport: timeline.transport,
     model: timeline.model,
     selectedAccountId,
+    providerResponseId: timeline.providerIdentity?.responseId ?? null,
     outcomeClass: timeline.outcome,
     finalStatus: timeline.finalStatus,
     requestTimestampMs: timeline.startedAt,
@@ -127,6 +130,7 @@ type GatewayRequestOutcomeRow = Omit<GatewayRequestOutcomeRecord, 'workspaceId' 
   gateway_process_instance_id: string;
   request_ordinal: number | string;
   selected_account_id: string | null;
+  provider_response_id: string | null;
   outcome_class: GatewayRequestOutcomeRecord['outcomeClass'];
   final_status: number | string | null;
   request_timestamp_ms: number | string;
@@ -151,6 +155,7 @@ function fromRow(row: GatewayRequestOutcomeRow): GatewayRequestOutcomeRecord {
     transport: row.transport,
     model: row.model,
     selectedAccountId: row.selected_account_id,
+    providerResponseId: row.provider_response_id,
     outcomeClass: row.outcome_class,
     finalStatus: row.final_status == null ? null : Number(row.final_status),
     requestTimestampMs: Number(row.request_timestamp_ms),
@@ -177,14 +182,14 @@ class PgGatewayRequestOutcomeStore implements GatewayRequestOutcomeStore {
          provider, protocol, transport, model, selected_account_id, outcome_class, final_status,
          request_timestamp_ms, finalized_at_ms, attempts, failovers,
          native_session_id, native_thread_id, native_turn_id, native_window_id,
-         recorded_at_ms, retention_expires_at_ms)
+         recorded_at_ms, retention_expires_at_ms, provider_response_id)
       VALUES
         (${record.requestId}, ${record.workspaceId}, ${record.gatewayProcessInstanceId}, ${record.requestOrdinal},
          ${record.ownerId}, ${record.provider}, ${record.protocol}, ${record.transport}, ${record.model},
          ${record.selectedAccountId}, ${record.outcomeClass}, ${record.finalStatus}, ${record.requestTimestampMs},
          ${record.finalizedAtMs}, ${record.attempts}, ${record.failovers}, ${record.nativeSessionId},
          ${record.nativeThreadId}, ${record.nativeTurnId}, ${record.nativeWindowId}, ${record.recordedAtMs},
-         ${record.retentionExpiresAtMs})
+         ${record.retentionExpiresAtMs}, ${record.providerResponseId ?? null})
       ON CONFLICT (gateway_process_instance_id, request_ordinal) DO NOTHING
     `;
     // Pruning is row-bounded by the indexed retention key and happens only on a write.
@@ -214,7 +219,7 @@ class PgGatewayRequestOutcomeStore implements GatewayRequestOutcomeStore {
              provider, protocol, transport, model, selected_account_id, outcome_class, final_status,
              request_timestamp_ms, finalized_at_ms, attempts, failovers,
              native_session_id, native_thread_id, native_turn_id, native_window_id,
-             recorded_at_ms, retention_expires_at_ms
+             recorded_at_ms, retention_expires_at_ms, provider_response_id
         FROM harness_shared.gateway_request_outcomes
        WHERE ${where}
        ORDER BY request_timestamp_ms ASC, request_ordinal ASC

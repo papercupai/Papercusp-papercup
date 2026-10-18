@@ -922,6 +922,13 @@ describe('evaluatePlanSpecQuality', () => {
     );
   });
 
+  it.each([
+    'The audit has exactly one evidence-based disposition and never counts queued or delivered as pickup.',
+    'The audit completes the parked-agent census and records complete coverage.',
+  ])('detects compound clauses whose verbs were previously missing from the detector: %s', (behavior) => {
+    expect(specBehaviorNonAtomicReason(behavior)).toBe('behavior joins multiple independently observable outcomes');
+  });
+
   it('reports draft sourceBar projections as excluded from the active atomicity population', () => {
     const result = evaluatePlanSpecQuality({
       planSlug: 'quality-plan',
@@ -1219,5 +1226,59 @@ describe('spec-quality activation guidance', () => {
     expect(evaluateChain.indexOf('plans:evaluate-spec-quality')).toBeLessThan(evaluateChain.indexOf('scorecards:emit'));
     expect(evaluateChain.indexOf('scorecards:emit')).toBeLessThan(evaluateChain.indexOf('grading-integrity'));
     expect(evaluateChain.indexOf('grading-integrity')).toBeLessThan(evaluateChain.indexOf('plans:start'));
+  });
+});
+
+// WI-6554700010017142: the implementation-independence pass used to read ONLY
+// clause.behavior, so a sourceBar projection whose falsifier observation named
+// src/*.html, out/ and tests/fixtures/*.json earned a confident pass.
+describe('implementation-independence covers falsifier observations and repository paths', () => {
+  const evaluateOne = (over: Partial<SpecClauseRevision>) =>
+    evaluatePlanSpecQuality({
+      planSlug: 'quality-plan', harnessSlug: 'papercusp', planItemIds: ['P-001'],
+      classRef: 'plan-class-feature-ship', clauses: [clause(over)],
+    });
+
+  it.each([
+    'BROKEN if a clickable block has no clip in src/cup-audio/.',
+    'BROKEN if wording from tests/fixtures/cupboard-brief.json appears outside a coming-soon element.',
+    'BROKEN if src/architecture.html contains an inline engine script.',
+    'BROKEN if out/*/index.html leaves a placeholder behind.',
+  ])('fails a clean behavior whose falsifier observation names a repo path: %s', (observation) => {
+    const result = evaluateOne({
+      behavior: 'Every clickable block of the map plays its own narration clip.',
+      falsifier: { observation, probeMethod: 'Click each block in headless Chromium.' },
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('fail');
+    expect(result.details.implementationIndependenceClauseDiagnostics).toContainEqual(
+      expect.objectContaining({
+        specId: 'SPEC-001-01', disposition: 'evaluated', rating: 'fail',
+        reason: expect.stringMatching(/^falsifier observation names (?:a repository path|an implementation file) /),
+      }),
+    );
+  });
+
+  it('fails a behavior that names a repository directory or a markup/data file', () => {
+    for (const behavior of [
+      'Each clip ships from src/cup-audio/ unchanged.',
+      'The map config in tests/fixtures/map.json lists every block.',
+    ]) {
+      expect(evaluateOne({ behavior }).ratings['implementation-independence'].rating).toBe('fail');
+    }
+  });
+
+  it('passes served-site observations and a probe method that names the test file', () => {
+    const result = evaluateOne({
+      behavior: 'Every clickable block of the map plays its own narration clip.',
+      falsifier: {
+        observation:
+          'BROKEN if GET /architecture/index.html or https://papercusp.com/cup-tour.mp3 does not return 200, ' +
+          'or a visitor who opts out/in loses that choice after a reload.',
+        probeMethod: 'Run vitest tests/cupboard-map.test.js against the built out/ directory.',
+      },
+    });
+    expect(result.ratings['implementation-independence'].rating).toBe('pass');
+    expect(result.ratings['implementation-independence'].evidence).toContain('falsifier.observation');
+    expect(result.ratings['implementation-independence'].evidence).toContain('falsifier.probeMethod is excluded');
   });
 });

@@ -19,3 +19,9 @@ export interface CleanupOwnedTestStateOptions {
 
 /** Attempts every independent stop and preserves state if any stop is unverified. */
 export function cleanupOwnedTestState(state: CleanupOwnedTestStateOptions): Promise<void>;
+
+/** Remove owned private state, retrying transient filesystem removal failures. */
+export function removePrivateState<Path extends import('node:fs').PathLike>(
+  path: Path,
+  remove?: (path: Path, options: import('node:fs').RmOptions) => Promise<void>,
+): Promise<void>;

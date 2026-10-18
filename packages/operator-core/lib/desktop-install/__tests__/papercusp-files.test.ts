@@ -26,6 +26,7 @@ import {
   resolveOperatorAppRootFromModuleDir,
   resolveInstallPaths,
   renderSuPlaybook,
+  placeSuKernelEnd,
   provisionRtk,
   readPinnedRtkVersion,
   rtkInstallerCandidates,
@@ -48,10 +49,38 @@ const execFileAsync = promisify(execFile);
  * interpreter.
  */
 function expectLauncherInterpreter(shim: string, nodePath: string): void {
-  const invocations = shim.match(/^[ \t]*(?:exec )?(?:"[^"]*"|\S+) "\$launcher" "\$@"$/gm) ?? [];
+  // The psu shim may pass a terminal-safe inspector array between the interpreter and
+  // the launcher (`"${psu_inspector_args[@]}"`, e8a32eb23e); it is optional and never a
+  // second interpreter, so it must not hide the invocation from this guard.
+  const invocations =
+    shim.match(/^[ \t]*(?:exec )?(?:"[^"]*"|\S+)(?: "\$\{psu_inspector_args\[@\]\}")? "\$launcher" "\$@"$/gm) ?? [];
   expect(invocations.length).toBeGreaterThan(0);
   for (const line of invocations) {
     expect(line).toContain(JSON.stringify(nodePath));
+  }
+}
+
+/**
+ * Run an install that auto-discovers hook sources from the LIVE repository (no explicit
+ * `operatorAppRoot`). On this shared tree a peer may hold an uncommitted hook file at any
+ * moment, and the installer then correctly warns that the bytes are not in the stamped
+ * sha. That warning is environmental and unrelated to what these tests assert, so it is
+ * the ONLY warning allowed; any other `console.warn` still fails the test. Without this,
+ * the auto-discover tests went red whenever any agent was mid-edit on a hook
+ * (WI-6554700010017212).
+ */
+async function withOnlyUncommittedHookWarnings<T>(run: () => Promise<T>): Promise<T> {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const result = await run();
+    for (const [message] of warn.mock.calls) {
+      expect(String(message)).toMatch(
+        /^\[desktop-install\] cc hooks: \d+ file\(s\) UNCOMMITTED in .+ NOT contained in sha=/,
+      );
+    }
+    return result;
+  } finally {
+    warn.mockRestore();
   }
 }
 
@@ -611,13 +640,14 @@ describe('installPapercuspFiles', () => {
     expect(playbook).toContain('## Tail');
   });
 
-  it('projects the canonical deploy-pipeline note into the ENGINEER playbook at the project-guide anchor', async () => {
+  it('projects the canonical deploy-pipeline note into the ENGINEER playbook at the promotion-model seam', async () => {
     // recipes-reuse-activation follow-up: a cross-cutting behavioral note (DEPLOY_PIPELINE_NOTE)
     // lives in ONE source and is PROJECTED into su (engineer) — not hand-mirrored, not loose in
-    // CLAUDE.md. A base carrying the project-guide marker (the injection anchor) gets it.
+    // CLAUDE.md. Since identity-system-everything-migration-2026-10-18 R-2 / #D-005 it rides the
+    // PROMOTION-MODEL seam (instance data), not the shared practice bundle.
     await fs.writeFile(
       path.join(tmpAppRoot, 'prompts', 'papercusp-su-engineer.tools.md'),
-      `# Base\n\n<!-- PAPERCUSP-SU:PROJECT-GUIDE -->\n\n## Tail\n`,
+      `# Base\n\n<!-- PAPERCUSP-SU:PROMOTION-MODEL -->\n\n## Middle\n\n<!-- PAPERCUSP-SU:PROJECT-GUIDE -->\n\n## Tail\n`,
     );
 
     const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
@@ -634,8 +664,9 @@ describe('installPapercuspFiles', () => {
     expect(playbook).toContain('even if it is not your lane');
     // ...exactly once (one source, one projection)...
     expect(playbook.split('## The deploy pipeline is ASYNC').length - 1).toBe(1);
-    // ...sitting in the body BEFORE the project-guide slot, not appended at the very end.
-    expect(playbook.indexOf('do NOT ask the owner')).toBeLessThan(playbook.indexOf('## Tail'));
+    // ...sitting AT the promotion-model seam, before the next section — not in the trailing
+    // practice bundle and not appended at the very end.
+    expect(playbook.indexOf('do NOT ask the owner')).toBeLessThan(playbook.indexOf('## Middle'));
   });
 
   it('projects the canonical wait-loop note into the ENGINEER playbook at the project-guide anchor', async () => {
@@ -732,11 +763,13 @@ describe('installPapercuspFiles', () => {
     // opts.extensionSource override the candidate list. We force both
     // via explicit non-existent paths to confirm the override-without-
     // root branch reports missing rather than crashing.
-    const result = await installPapercuspFiles({
-      home: tmpHome,
-      playbookSource: '/nonexistent/playbook.md',
-      extensionSource: '/nonexistent/coord.ts',
-    });
+    const result = await withOnlyUncommittedHookWarnings(() =>
+      installPapercuspFiles({
+        home: tmpHome,
+        playbookSource: '/nonexistent/playbook.md',
+        extensionSource: '/nonexistent/coord.ts',
+      }),
+    );
     expect(result.playbookWritten).toBe(false);
     expect(result.extensionWritten).toBe(false);
     // Token + agent_id still mint correctly in the no-source case.
@@ -781,17 +814,9 @@ describe('installPapercuspFiles', () => {
     });
     const prevCwd = process.cwd();
     process.chdir(tmpAppRoot);
-    // Auto-discovery can resolve the live repository hook sources. Another agent may be
-    // editing one while this suite runs, in which case the installer correctly warns
-    // that the source bytes are uncommitted. That environmental warning is unrelated to
-    // this layout assertion; allow only that specific warning and keep other warnings
-    // subject to vitest-fail-on-console.
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const result = await installPapercuspFiles({ home: tmpHome });
-      for (const [message] of warn.mock.calls) {
-        expect(String(message)).toMatch(/^\[desktop-install\] cc hooks: \d+ file\(s\) UNCOMMITTED in .+ NOT contained in sha=/);
-      }
+      // Auto-discovery can resolve the live repository hook sources (see helper).
+      const result = await withOnlyUncommittedHookWarnings(() => installPapercuspFiles({ home: tmpHome }));
       expect(result.claudeHooksInstalled).toContain('pretooluse-locks-acquire.sh');
       expect(result.claudeHooksInstalled).toContain('userpromptsubmit-memory.sh');
       expect(result.claudeSettingsMerged).toBe(true);
@@ -799,7 +824,6 @@ describe('installPapercuspFiles', () => {
       const settings = JSON.parse(await fs.readFile(path.join(tmpHome, '.claude', 'settings.json'), 'utf8'));
       expect(JSON.stringify(settings.hooks?.UserPromptSubmit ?? [])).toContain('userpromptsubmit-memory.sh');
     } finally {
-      warn.mockRestore();
       process.chdir(prevCwd);
     }
   });
@@ -1260,6 +1284,83 @@ describe('shared base notes retain blueprint reference contracts (recurrence gua
       expect(text, `positive control must contain ${clause}`).toContain(clause);
       expect(() => expectMechanicalDedupContract(text.replace(clause, ''))).toThrow();
     }
+  });
+
+  it('R-2 (#D-005): a stack render keeps the kernel domain-neutral and relocates — never drops or duplicates — the workspace map, promotion model, deploy note and practice notes', async () => {
+    const SEAL = '<!-- PAPERCUSP-KERNEL:SEAL -->';
+    const baseText = await fs.readFile(fileURLToPath(blueprintBase), 'utf8');
+    const stackBase = composeSuStackSource({
+      suText: baseText,
+      harnessDir: fileURLToPath(blueprintHarness),
+      binding: suSessionBinding({}),
+    }).text;
+    const render = (profile: 'engineer' | 'power') =>
+      renderSuPlaybook({
+        agent: 'claude',
+        baseSource: fileURLToPath(blueprintBase),
+        baseText: stackBase,
+        profile,
+        referenceMode: 'inline',
+      });
+    const [engineer, power, flat] = await Promise.all([
+      render('engineer'),
+      render('power'),
+      renderSuPlaybook({ agent: 'claude', baseSource: fileURLToPath(blueprintBase), referenceMode: 'inline' }),
+    ]);
+    const relocated = {
+      workspaceMap: 'Where to work — the workspace map',
+      promotionModel: 'the promotion model**',
+      deployPipeline: '## The deploy pipeline is ASYNC',
+      waitLoop: '## Waiting on something?',
+      peerWake: '## You can WAKE a peer',
+      coupling: '## Coupling',
+      readTheCell: '## Read the value; say what you want back',
+    };
+    const count = (text: string, needle: string) => text.split(needle).length - 1;
+
+    const seal = engineer.text.indexOf(SEAL);
+    expect(seal, 'the stack render carries the kernel seal').toBeGreaterThan(0);
+    const kernel = engineer.text.slice(seal);
+    const above = engineer.text.slice(0, seal);
+    // Positive control: the kernel slice really is the kernel.
+    expect(kernel).toContain('## Registering work is a SEPARATE discipline');
+    for (const [name, needle] of Object.entries(relocated)) {
+      expect(count(kernel, needle), `${name} must not render inside the kernel`).toBe(0);
+      // Relocation, not loss or duplication: exactly once, above the seal...
+      expect(count(above, needle), `${name} renders exactly once above the seal`).toBe(1);
+      // ...and the flat (pre-stack) render carries the same section, so nothing was invented.
+      expect(count(flat.text, needle), `${name} is in the flat render too`).toBe(1);
+    }
+    // The deploy note rides the promotion-model seam (instance data).
+    expect(above.indexOf(relocated.deployPipeline)).toBeGreaterThan(above.indexOf(relocated.promotionModel));
+
+    // A non-coding (power) su keeps every platform practice note but gets no repo-specific deploy note.
+    expect(count(power.text, relocated.deployPipeline)).toBe(0);
+    for (const name of ['waitLoop', 'peerWake', 'coupling', 'readTheCell'] as const) {
+      expect(count(power.text.slice(0, power.text.indexOf(SEAL)), relocated[name]), `power: ${name}`).toBe(1);
+    }
+    // Every splice seam was resolved: no real `<!-- PAPERCUSP-SU:NAME -->` marker survives.
+    // (A bare substring check is wrong here — the su prose itself documents the
+    // `<!-- PAPERCUSP-SU:* -->` convention, so the literal prefix legitimately renders.)
+    const spliceMarker = /<!-- PAPERCUSP-SU:[A-Z0-9-]+ -->/g;
+    expect(stackBase.match(spliceMarker)?.length ?? 0, 'positive control: the stack source carries seams').toBeGreaterThan(0);
+    expect(engineer.text.match(spliceMarker) ?? []).toEqual([]);
+  });
+
+  it('placeSuKernelEnd anchors the kernel end AFTER the seal by position, never on a seam that moved above it', () => {
+    const END = '<!-- PAPERCUSP-SU:REFERENCE-KERNEL-END -->';
+    const SEAL = '<!-- PAPERCUSP-KERNEL:SEAL -->';
+    const NOTES = '<!-- PAPERCUSP-SU:SHARED-BASE-NOTES -->';
+    const GUIDE = '<!-- PAPERCUSP-SU:PROJECT-GUIDE -->';
+    // Both seams above the seal (the R-2 stack layout): the end is the end of the text.
+    const moved = placeSuKernelEnd(`practice\n${NOTES}\ninstance\n${GUIDE}\n${SEAL}\nkernel`);
+    expect(moved.endsWith(`kernel\n${END}`)).toBe(true);
+    expect(moved.indexOf(END)).toBeGreaterThan(moved.indexOf(SEAL));
+    // A trailing seam after the seal still bounds the kernel before it.
+    const trailing = placeSuKernelEnd(`${SEAL}\nkernel\n${NOTES}\ntail`);
+    expect(trailing).toBe(`${SEAL}\nkernel\n${END}\n${NOTES}\ntail`);
+    // No seal: untouched.
+    expect(placeSuKernelEnd(`a\n${NOTES}`)).toBe(`a\n${NOTES}`);
   });
 
   it('renders all five shared notes, and leaks no marker', async () => {

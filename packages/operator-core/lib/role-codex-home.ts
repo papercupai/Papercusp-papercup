@@ -50,7 +50,6 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   renameSync,
@@ -62,7 +61,7 @@ import {
 } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { homedir as osHomedir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { parse as parseToml } from '@iarna/toml';
 import {
   codexHomeForSessionKey,
@@ -71,6 +70,7 @@ import {
 import {
   codexGatewayConfigToml,
   codexManagedFeaturesToml,
+  publishCodexConfig,
   tomlEscape,
 } from '@papercusp/orchestrator/codex-gateway-config';
 import { readCodexLockRuntimeVerdict, type CodexLockRuntimeVerdict } from './codex-lock-runtime';
@@ -258,21 +258,6 @@ function freshCodexSqliteHome(sessionKey: string | number): string {
   return sqliteHome;
 }
 
-/** Publish only a complete, valid document. In-place truncate/write can leave
- * partial bytes after an interrupted write or mix two processes' documents.
- * A private sibling on the same filesystem keeps rename atomic for readers. */
-function publishCodexConfig(configPath: string, text: string): void {
-  parseToml(text);
-  const staging = mkdtempSync(join(dirname(configPath), '.config-toml-'));
-  try {
-    const stagedConfig = join(staging, 'config.toml');
-    writeFileSync(stagedConfig, text, { mode: 0o600 });
-    renameSync(stagedConfig, configPath);
-  } finally {
-    rmSync(staging, { recursive: true, force: true });
-  }
-}
-
 /** A resume must retain its recorded state location even when the serving
  * operator has a different TMPDIR or SQLite-root override from the launch. */
 function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number, recordedHome?: string | null): string {
@@ -282,7 +267,7 @@ function preservedCodexSqliteHome(codexHome: string, sessionKey: string | number
   const configPath = join(codexHome, 'config.toml');
   if (!existsSync(configPath)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
   const text = readFileSync(configPath, 'utf8');
-  if (!/^sqlite_home\s*=/m.test(text)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
+  if (!/^[ \t]*sqlite_home[ \t]*=/m.test(text)) return recordedHome || codexSqliteHomeForSessionKey(sessionKey);
   let config: ReturnType<typeof parseToml>;
   try {
     config = parseToml(text);
@@ -770,6 +755,7 @@ export function writeCodexLockHooks(
      *  (the dispatcher's own invariant 3 would exit 0 silently anyway). */
     injectSid?: string;
     agentSession?: boolean;
+    headless?: boolean;
     /** Exact per-session MCP URL. The managed PreCompact hook reuses this
      * route verbatim so role/workspace/harness/signature boundaries survive. */
     mcpUrl?: string;
@@ -783,6 +769,7 @@ export function writeCodexLockHooks(
   const post = join(dir, 'posttooluse-locks-release.sh');
   if (!existsSync(pre) || !existsSync(post)) return false;
   const root = shellSingleQuote(resolveWorkspaceRoot());
+  const headless = opts.headless ?? process.env.PAPERCUSP_PSU_HEADLESS === '1';
   // Codex gives hook commands a minimal/stale environment. The lock hooks MUST
   // use the exact same per-session owner as the MCP URL; otherwise an explicit
   // multi-file claim by this session blocks its own automatic per-edit acquire.
@@ -1041,6 +1028,20 @@ export function writeCodexLockHooks(
     preToolUse.push({
       matcher: '^apply_patch$',
       hooks: [{ type: 'command', command: duplicateTarget }],
+    });
+  }
+
+  // The same local guard as Claude: a headless native dialog cannot be
+  // answered from the Inbox's text-reply path. Keep the watcher as a backstop
+  // for old homes; new homes deny the dialog before it can park.
+  const ownerQuestionGuard = join(dir, 'ask-gate-mirror.sh');
+  if (headless && opts.activitySid && existsSync(ownerQuestionGuard)) {
+    preToolUse.push({
+      matcher: '^(?:functions(?:\\.|__))?request_user_input$',
+      hooks: [{
+        type: 'command',
+        command: `PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)} PAPERCUSP_AGENT=codex PAPERCUSP_PSU_HEADLESS=1 ${ownerQuestionGuard}`,
+      }],
     });
   }
 
@@ -1344,6 +1345,18 @@ function repairSuCodexHomeIdentityImpl(
       return false;
     }
   })();
+  const ownerQuestionGuardMatches = (() => {
+    if (!hooksExpected || !existsSync(papercuspPath('hooks', 'cc', 'ask-gate-mirror.sh'))) return true;
+    const headless = process.env.PAPERCUSP_PSU_HEADLESS === '1';
+    try {
+      const parsed = JSON.parse(hooksText) as { hooks?: { PreToolUse?: Array<{ hooks?: Array<{ command?: string }> }> } };
+      const guards = parsed.hooks?.PreToolUse?.flatMap((g) => g.hooks ?? [])
+        .filter((h) => h.command?.includes('ask-gate-mirror.sh')) ?? [];
+      return headless
+        ? guards.some((h) => h.command?.includes(`PAPERCUSP_SID='${sid}'`) && h.command.includes('PAPERCUSP_PSU_HEADLESS=1'))
+        : guards.length === 0;
+    } catch { return false; }
+  })();
   if (
     hooksMatch &&
     hookWorkspaceMatches &&
@@ -1352,7 +1365,8 @@ function repairSuCodexHomeIdentityImpl(
     lifecycleHooksMatch &&
     preCompactHookMatches &&
     managedTurnHooksMatch &&
-    rtkRewriteHookMatches
+    rtkRewriteHookMatches &&
+    ownerQuestionGuardMatches
   ) {
     return { repaired: false, hooksInstalled: hooksExpected };
   }
@@ -1514,6 +1528,7 @@ export function writeRoleCodexHome(opts: WriteRoleCodexHomeOptions): RoleCodexHo
     objectiveSid: opts.sid,
     injectSid: opts.sid,
     agentSession: true,
+    headless: opts.headless,
     mcpUrl: opts.mcpUrl,
   });
   const lockRuntime = readCodexLockRuntimeVerdict({
@@ -1993,6 +2008,7 @@ function writeSuCodexHomeImpl(opts: WriteSuCodexHomeOptions, ownerSidIo?: CodexH
     objectiveSid: opts.sid,
     injectSid: opts.sid,
     mcpUrl: mcpUrlWithClient(opts.mcpUrl, opts.sid),
+    headless: opts.headless,
     mcpUsesSuperuserToken: true,
   });
   const lockRuntime = readCodexLockRuntimeVerdict({ ownerId: opts.sid, hooksConfigured: hooksInstalled });

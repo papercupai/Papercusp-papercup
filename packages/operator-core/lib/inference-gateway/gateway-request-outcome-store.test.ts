@@ -54,6 +54,17 @@ function timeline(input: {
 }
 
 describe('gateway request outcome store', () => {
+  it('retains the exact provider response and its serving account over a stale routing observation', () => {
+    const value = timeline({ requestId: 1, startedAt: BASE, outcome: 'ok', finalStatus: 200 });
+    value.cache.servingAccountId = 'prior-attempt-account';
+    value.providerIdentity = { responseId: 'resp-exact', model: 'gpt-6', effort: null, accountId: 'actual-account' };
+    expect(gatewayRequestOutcomeRecord('process', value, workspaceId)).toMatchObject({
+      providerResponseId: 'resp-exact', selectedAccountId: 'actual-account',
+    });
+    value.providerIdentity = null;
+    expect(gatewayRequestOutcomeRecord('process', value, workspaceId).providerResponseId).toBeNull();
+  });
+
   it('captures each completed telemetry span without waiting for durable storage', () => {
     const completed: GatewayRequestTimeline[] = [];
     const telemetry = new GatewayRequestTelemetry({ now: () => BASE, onCompleted: value => { completed.push(value); } });

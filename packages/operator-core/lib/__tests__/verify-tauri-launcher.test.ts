@@ -9,6 +9,116 @@ const source = readFileSync(process.env.VERIFY_TAURI_SOURCE_PATH || resolve(repo
 const launcher = source.match(/write_and_launch_tauri\(\) \{[\s\S]*?\n\}/)?.[0];
 if (!launcher) throw new Error('Maintained native launcher was not found');
 
+describe('isolated Postgres source identity', () => {
+  const select = source.match(/^select_isolated_pg_source\(\) \{[\s\S]*?^\}/m)?.[0];
+  if (!select) throw new Error('Maintained isolated Postgres source selector was not found');
+
+  function choose({ pinned = true, runtime = true, runtimeSql = true, packaged = false } = {}) {
+    const dir = mkdtempSync(resolve(tmpdir(), 'tauri-pg-source-'));
+    const donor = resolve(dir, 'donor'), frozen = resolve(dir, 'frozen');
+    mkdirSync(resolve(donor, 'libs/papercusp/libs/db/sql'), { recursive: true });
+    writeFileSync(resolve(donor, 'libs/papercusp/libs/db/sql/9999-newer.sql'), '-- newer donor schema');
+    if (runtimeSql) mkdirSync(resolve(frozen, packaged ? 'sidecar/db-sql' : 'libs/papercusp/libs/db/sql'), { recursive: true });
+    try {
+      const result = spawnSync('bash', ['-c', [select, 'log() { :; }',
+        'select_isolated_pg_source || exit $?', 'printf "%s\\n%s\\n" "$ISOLATED_PG_REPO_DIR" "$ISOLATED_PG_SQL_DIR"',
+      ].join('\n')], { encoding: 'utf8', timeout: 5_000, env: { ...process.env,
+        REPO_DIR: donor, OPERATOR_SOURCE_ROOT: runtime ? frozen : '', VERIFY_TAURI_SOURCE_REF: pinned ? 'pinned' : '',
+      } });
+      return { ...result, donor, frozen };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  it.each([false, true])('uses the runtime schema rather than a newer donor (packaged=%s)', packaged => {
+    const result = choose({ packaged });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim().split('\n')).toEqual([result.frozen,
+      resolve(result.frozen, packaged ? 'sidecar/db-sql' : 'libs/papercusp/libs/db/sql')]);
+  });
+
+  it.each([{ runtime: false }, { runtimeSql: false }])('refuses an unavailable pinned schema instead of falling back (%j)', options => {
+    const result = choose(options);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+  });
+
+  it('preserves the unpinned donor fallback when no runtime source exists', () => {
+    const result = choose({ pinned: false, runtime: false });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim().split('\n')).toEqual([result.donor, resolve(result.donor, 'libs/papercusp/libs/db/sql')]);
+  });
+});
+
+describe('owned-origin health failure evidence', () => {
+  const capture = source.match(/^capture_owned_origin_health_failure\(\) \{[\s\S]*?^\}/m)?.[0];
+  if (!capture) throw new Error('Maintained owned-origin diagnostic collector was not found');
+  const healthStart = source.indexOf('HEALTH_TIMEOUT="${VERIFY_TAURI_HEALTH_TIMEOUT:-120}"');
+  const healthEnd = source.indexOf('# EI-20191224828837149:', healthStart);
+  if (healthStart < 0 || healthEnd < healthStart) throw new Error('Maintained owned-origin guard was not found');
+
+  function probe(kind: 'unmeasured' | 'unhealthy' | 'healthy') {
+    const dir = mkdtempSync(resolve(tmpdir(), 'tauri-origin-health-'));
+    try {
+      const tool = resolve(dir, 'agent-tools');
+      const liveness = resolve(dir, 'liveness.sh');
+      writeFileSync(liveness, 'exit 0\n');
+      writeFileSync(tool, `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === 'eval' && args.join(' ').includes('Promise.all')) {
+  if (process.env.TEST_HEALTH_KIND === 'unmeasured') { console.error('bridge evaluation timed out'); process.exitCode = 1; }
+  else console.log(JSON.stringify({ apiHealth: process.env.TEST_HEALTH_KIND === 'healthy' ? 200 : 503, rootHtml: 200 }));
+} else console.log(JSON.stringify({ url: 'http://127.0.0.1:33700/', readyState: 'complete', native: true }));
+`, { mode: 0o755 });
+      writeFileSync(resolve(dir, 'curl'), `#!/usr/bin/env node
+const fs = require('node:fs'), args = process.argv.slice(2);
+fs.writeFileSync(args[args.indexOf('--output') + 1], 'owned HTTP control body');
+console.log('200');
+`, { mode: 0o755 });
+      const result = spawnSync('bash', ['-c', [capture, 'log() { :; }',
+        'verify_tauri_dev_url() { printf "http://127.0.0.1:%s" "$1"; }', source.slice(healthStart, healthEnd),
+      ].join('\n')], { encoding: 'utf8', timeout: 20_000, env: { ...process.env,
+        PATH: `${dir}:${process.env.PATH}`, WORK: dir, VH_PHASE_DIR: dir, BRIDGE_PID: '17', DEV_PORT: '33700',
+        VERIFY_TAURI_AGENT_TOOLS_BIN: tool, VERIFY_TAURI_LIVENESS_CHECK: liveness,
+        VERIFY_TAURI_HEALTH_TIMEOUT: '1', VERIFY_TAURI_HEALTH_PROBE_TIMEOUT: '1', TEST_HEALTH_KIND: kind,
+      } });
+      const evidence = resolve(dir, 'owned-origin-health');
+      const read = (name: string) => existsSync(resolve(evidence, name)) ? readFileSync(resolve(evidence, name), 'utf8').trim() : null;
+      return { ...result, probeStatus: read('probe.status'), probeOutput: read('probe-output.txt'),
+        completedResponse: read('last-completed-response.txt'), page: read('page-state.json'),
+        synchronousEval: read('synchronous-eval.json'), apiStatus: read('api-health.http-status'),
+        rootStatus: read('root.http-status'), apiBody: read('api-health.body') };
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  }
+
+  it('retains independent controls without calling an incomplete bridge evaluation an HTTP failure', () => {
+    const result = probe('unmeasured');
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toContain('owned-origin health is unmeasured');
+    expect(result.stderr).not.toContain('origin unreachable');
+    expect(result.probeStatus).toBe('1');
+    expect(result.probeOutput).toContain('bridge evaluation timed out');
+    expect(result.completedResponse).toBe('');
+    expect(JSON.parse(result.page!)).toMatchObject({ native: true });
+    expect(JSON.parse(result.synchronousEval!)).toMatchObject({ readyState: 'complete' });
+    expect(result.apiStatus).toBe('200');
+    expect(result.rootStatus).toBe('200');
+    expect(result.apiBody).toBe('owned HTTP control body');
+  }, 30_000);
+
+  it('keeps completed unhealthy WebView responses and still refuses readiness', () => {
+    const result = probe('unhealthy');
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('did not return healthy WebView responses');
+    expect(JSON.parse(result.completedResponse!)).toEqual({ apiHealth: 503, rootHtml: 200 });
+  }, 30_000);
+
+  it('accepts two measured healthy WebView responses without failure artifacts', () => {
+    const result = probe('healthy');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.probeStatus).toBeNull();
+  }, 30_000);
+});
+
 describe('native desktop binary readiness', () => {
   it.each([
     ['missing log', undefined, false],

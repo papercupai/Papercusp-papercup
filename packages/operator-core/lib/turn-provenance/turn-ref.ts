@@ -198,6 +198,11 @@ export function classifyRecordedTurn(text: string): RecordedTurnClass {
   const env = parseEnvelope(text);
   if (env) return { verdict: 'agent-injected', origin: env.origin };
   const t = text ?? '';
+  // A malformed or truncated turn-origin envelope is still machine-originated
+  // evidence. Never let a bad nonce or partial carry marker fall through to the
+  // clean owner-typed default and grant authority.
+  const malformedOrigin = t.match(/^\s*⟦turn-origin:([^\s⟧]*)/u);
+  if (malformedOrigin) return { verdict: 'agent-injected', origin: malformedOrigin[1] || null };
   if (t.trimStart().startsWith(OWNER_DIALOG_TURN_MARKER)) {
     return { verdict: 'owner-dialog', origin: null };
   }

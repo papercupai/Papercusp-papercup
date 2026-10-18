@@ -133,10 +133,17 @@ export async function stubSyncQueries(
     async invalidate(name, args) {
       if (!options.push) throw new Error('stubSyncQueries.invalidate requires push:true');
       try {
-        await page.waitForFunction(() => {
+        await page.waitForFunction(({ name, args }) => {
           const sources = (window as unknown as { __syncQueryFixtureSources?: Set<EventSource> }).__syncQueryFixtureSources;
-          return [...(sources ?? [])].some((source) => source.readyState !== EventSource.CLOSED);
-        });
+          const active = [...(sources ?? [])].filter((source) => source.readyState !== EventSource.CLOSED);
+          if (active.length === 0) return false;
+          // Readiness and delivery must share one browser task: reconnect may
+          // close every source before a second evaluate call can dispatch.
+          for (const source of active) source.dispatchEvent(new MessageEvent('invalidate', {
+            data: JSON.stringify({ name, args, tsMs: Date.now() }),
+          }));
+          return true;
+        }, { name, args });
       } catch (error) {
         const diagnostic = await page.evaluate(() => ({
           visibility: document.visibilityState,
@@ -145,14 +152,6 @@ export async function stubSyncQueries(
         })).catch((failure) => ({ unavailable: String(failure) }));
         throw new Error(`SYNC_FIXTURE_PUSH_UNAVAILABLE query=${name} ${JSON.stringify(diagnostic)}`, { cause: error });
       }
-      await page.evaluate(({ name, args }) => {
-        const sources = (window as unknown as { __syncQueryFixtureSources: Set<EventSource> }).__syncQueryFixtureSources;
-        for (const source of sources) {
-          if (source.readyState !== EventSource.CLOSED) source.dispatchEvent(new MessageEvent('invalidate', {
-            data: JSON.stringify({ name, args, tsMs: Date.now() }),
-          }));
-        }
-      }, { name, args });
     },
     get hits() {
       return names.length;

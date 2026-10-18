@@ -28,7 +28,8 @@
  * Idempotent, and refuses to touch a home that is already healthy.
  * Usage:  node scripts/repair-codex-home-configs.mjs [--write]
  */
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { publishCodexConfig } from '@papercusp/orchestrator/codex-gateway-config';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 // Reused, not re-implemented, on purpose: the repair and the launcher MUST agree
@@ -190,7 +191,7 @@ for (const dirName of readdirSync(HOMES).sort()) {
     report.push({ dirName, action: 'ABORT (result lacks the papercusp-su MCP block)' });
     continue;
   }
-  if (WRITE) writeFileSync(cfgPath, text, { mode: 0o600 });
+  if (WRITE) publishCodexConfig(cfgPath, text);
   report.push({
     dirName,
     action,

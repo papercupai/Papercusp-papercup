@@ -1,0 +1,335 @@
+{
+  "schemaVersion": 1,
+  "kind": "source-and-authority-qualification",
+  "ownerId": "su-81bb8095-b84c-4d05-82d5-c857e979124b",
+  "workItems": [
+    "WI-4480",
+    "WI-10007840",
+    "WI-10007947"
+  ],
+  "scope": "Original four-feature direct-self AUTO continuation; existing native proofs are preserved.",
+  "wi4480": {
+    "rulingRef": "coord-send-25ee0a64a256a8e70e3dd5dc2830f7e574989da98814a10ca837b88efaee8411",
+    "rulingReadback": "coord:thread returned the original ruling and five related entries.",
+    "frozenWorkspaceCommit": "dccbbe21054d5967ed0e5fb2b991e12d296fe27c",
+    "frozenDesktopCommit": "c4912717cfb2221042cb99641900661dcd07433b",
+    "lockSha256": "1df5152fec391e86476532dd0a55154ebcde1b4fa20665ef725b46212df9b9c1",
+    "dependencyConflict": {
+      "rootVitest": "4.1.8",
+      "rootOverride": "$vitest",
+      "resumableDeclaration": "^4.1.9",
+      "rawLockNestedVitest": "4.1.10",
+      "savedDoctorExitCode": 1,
+      "freshDoctorRun": false
+    },
+    "disposition": "Preserve this failed generation and unchanged pins. No re-export or doctor exception. It is ineligible for a new build/install until source/lock reconciliation has governing authority.",
+    "recordedPairs": [
+      {
+        "platform": "Linux",
+        "guiSha256Prefix": "e54cfa97",
+        "serverSha256Prefix": "b42ccbf8",
+        "spaSha256Prefix": "8c1005a3",
+        "evidence": "WI-4480 retained native fire66/fire72 receipts and twelve checkpoint check rows",
+        "disposition": "Historical scoped native assertions only. Active shared voice and camera prerequisites remain open under nonp2p-feature-queue-cleanup-2026-10-03#D-010."
+      },
+      {
+        "platform": "Windows",
+        "version": "0.0.23",
+        "guiSha256": "543d78ae12761ea8b4cc59548234049fce1ff0639675f4e9ebbb319ebce6fbcd",
+        "serverSha256": "8e40796035bc87cb9de23e97a8ea761b8be9f848d9fc116e22def449319e276d",
+        "recordedWorkspaceCommitPrefix": "851fcfbe",
+        "recordedDesktopCommitPrefix": "1ad00995",
+        "recordedSpaSha256Prefix": "06ed2ee9",
+        "disposition": "Installed September baseline differs from the frozen required native source. Completed interactive launch/visibility smoke is a precondition only, not shortcut-matrix acceptance."
+      },
+      {
+        "platform": "macOS",
+        "guiSha256": "68250d0670dbd30e2cf8cccec48bee241431804eb0956ddd48d5ce3d0489fd1f",
+        "serverSha256": "20e3d15dec8297050bd5c429473ddf67b03b8112c22be6e40f3375fe49e5d714",
+        "disposition": "Retained signed builds and paint/IPC evidence do not establish full keys. Saved vm-release refusals and ordinary-profile qualification remain unresolved. No auth/profile relaxation or alternate-ref workaround."
+      }
+    ],
+    "qualificationResult": "No recorded pair establishes the prerequisites for completing the remaining full native matrices. This is a bounded qualification of the listed records, not a claim that no candidate exists elsewhere."
+  },
+  "woe": {
+    "plan": "work-on-everything-rubric-stewardship-2026-10-09",
+    "planRevisionRead": 36,
+    "governingDecision": "D-015",
+    "specs": [
+      {
+        "id": "AUTO-BAR-R-7-P-005",
+        "revision": 3,
+        "requiredEvidence": [
+          "deployed"
+        ],
+        "requiredTestLayers": [
+          "e2e",
+          "unit"
+        ]
+      },
+      {
+        "id": "SPEC-WOE-SHIP",
+        "revision": 1,
+        "requiredEvidence": [
+          "deployed"
+        ],
+        "requiredTestLayers": [
+          "unit"
+        ]
+      }
+    ],
+    "historicalNativeReceipt": {
+      "path": "docs/evidence/woe-native-design-c-2026-10-11-a44756a.json",
+      "sourceCommit": "a44756aa009f52a2e9d96252e523ebbe1252f68e",
+      "sharedTestRunId": 21024594,
+      "ledgerReadback": {
+        "status": "pass",
+        "worktreeDirty": false,
+        "isScratchConfig": false,
+        "source": "local"
+      },
+      "newExecution": false
+    },
+    "comparedArtifactCommit": "d740fc3802877d1c8c3b1068768681ee32ef0025",
+    "currentServingArtifactMeasured": false,
+    "sourceProbe": "For each exact ref:path, git show must succeed before hashing stdout. A failed git lookup has no source hash. git grep -n -F rubricStewardship was additionally scoped to apps/operator/app and packages/operator-core/lib.",
+    "files": [
+      {
+        "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+        "historicalSha256": "4fac202bd156214e6cb45065d33ea05494bb9e552d8ff7983632fe6c9aeb5416",
+        "artifactContainsPath": false
+      },
+      {
+        "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.css",
+        "historicalSha256": "d7096305e9a055a71e7edfe8179dc66d6c00581378f1b756d1fa1fd7321eb34d",
+        "artifactContainsPath": false
+      },
+      {
+        "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.test.tsx",
+        "historicalSha256": "94ba1817c1de069c9872805779686972e01ac64fbf7219439c03c8df6187e2aa",
+        "artifactContainsPath": false
+      },
+      {
+        "path": "packages/operator-core/lib/goal-rubric-stewardship.ts",
+        "historicalSha256": "7b4b013d6b43ecc954ff5c221778c8e6daf00bdfbc4c935aa2cce5f71bf3fef0",
+        "artifactContainsPath": false
+      }
+    ],
+    "scopedSymbolProbe": {
+      "historicalGitGrepExitCode": 0,
+      "artifactGitGrepExitCode": 1
+    },
+    "qualificationResult": "The compared frozen artifact does not contain the named tested frontend/reader. The original current-build pass cannot satisfy deployed acceptance. A qualified containing artifact is required before a new final native journey.",
+    "next": "Prepare the required source closure against a qualified artifact. Keep live gate control and admission mutations with their existing owner. Do not rerun the successful historical native case solely to reconstruct proof.",
+    "sourceClosurePreparation": {
+      "sourceCommit": "a44756aa009f52a2e9d96252e523ebbe1252f68e",
+      "comparedArtifactCommit": "d740fc3802877d1c8c3b1068768681ee32ef0025",
+      "reusedScanner": {
+        "path": "packages/operator-core/lib/release/admission-import-completeness.ts",
+        "sha256": "4100ced90bd6c28ade4ae4aa68dc5fd6f1bf32834e33337461565e7a30814505",
+        "exports": [
+          "extractRelativeImportSpecifiers",
+          "resolveImportCandidates"
+        ]
+      },
+      "method": "Start from the four qualified historical files. Follow relative imports only when their source path is absent from the compared artifact. Preserve differing existing dependencies as review inputs; do not silently include them.",
+      "selectedMissingPaths": [
+        {
+          "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+          "blob": "d61b67efa31bda9bf4f8bc0a59b4b70da40d8fde",
+          "sha256": "4fac202bd156214e6cb45065d33ea05494bb9e552d8ff7983632fe6c9aeb5416",
+          "presentAtComparedArtifact": false
+        },
+        {
+          "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.css",
+          "blob": "7ac59c71a76a42cb9ff74c0f48aa6aae343a80ec",
+          "sha256": "d7096305e9a055a71e7edfe8179dc66d6c00581378f1b756d1fa1fd7321eb34d",
+          "presentAtComparedArtifact": false
+        },
+        {
+          "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.test.tsx",
+          "blob": "37da98e4c0a012d75bc0b12211a32129ade2941f",
+          "sha256": "94ba1817c1de069c9872805779686972e01ac64fbf7219439c03c8df6187e2aa",
+          "presentAtComparedArtifact": false
+        },
+        {
+          "path": "packages/operator-core/lib/goal-rubric-stewardship.ts",
+          "blob": "57ec170e22b74671f17056cac990af063144b0ea",
+          "sha256": "7b4b013d6b43ecc954ff5c221778c8e6daf00bdfbc4c935aa2cce5f71bf3fef0",
+          "presentAtComparedArtifact": false
+        },
+        {
+          "path": "apps/operator/app/adv/hud/ongoing-work-model.ts",
+          "blob": "1cba0919703609f006f7f0f183021b64d08c3a8b",
+          "sha256": "a803e2355c4ead6a2a56f3888bb42c1e99f306a47ce899016eb6d1ac6df7aca7",
+          "presentAtComparedArtifact": false
+        },
+        {
+          "path": "apps/operator/app/adv/hud/ongoing-work-draft.ts",
+          "blob": "5cae0e36901f3bbfc5e1641a50b38c5162cb68f3",
+          "sha256": "67c795fb4083eb65f16489d739e678015fd15bcfb1793cc04c2f2ca367cd8e9e",
+          "presentAtComparedArtifact": false
+        },
+        {
+          "path": "apps/operator/app/adv/hud/woe-progress-model.ts",
+          "blob": "b0812994426e4c2be1b776bed8b8a2a3bddc0ff6",
+          "sha256": "e5e33001f070842dc143ef821257484088aa19fea52b0e744858ffedb351d63a",
+          "presentAtComparedArtifact": false
+        }
+      ],
+      "edges": [
+        {
+          "from": "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+          "specifier": "./GoalStatusControl",
+          "resolved": "apps/operator/app/adv/hud/GoalStatusControl.tsx",
+          "presentAtComparedArtifact": true
+        },
+        {
+          "from": "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+          "specifier": "./GoalSettingsSection",
+          "resolved": "apps/operator/app/adv/hud/GoalSettingsSection.tsx",
+          "presentAtComparedArtifact": true
+        },
+        {
+          "from": "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+          "specifier": "./goal-detail-model",
+          "resolved": "apps/operator/app/adv/hud/goal-detail-model.ts",
+          "presentAtComparedArtifact": true
+        },
+        {
+          "from": "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+          "specifier": "./ongoing-work-model",
+          "resolved": "apps/operator/app/adv/hud/ongoing-work-model.ts",
+          "presentAtComparedArtifact": false
+        },
+        {
+          "from": "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+          "specifier": "./ongoing-work-draft",
+          "resolved": "apps/operator/app/adv/hud/ongoing-work-draft.ts",
+          "presentAtComparedArtifact": false
+        },
+        {
+          "from": "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+          "specifier": "./woe-progress-model",
+          "resolved": "apps/operator/app/adv/hud/woe-progress-model.ts",
+          "presentAtComparedArtifact": false
+        },
+        {
+          "from": "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+          "specifier": "./WorkOnEverythingPanel.css",
+          "resolved": "apps/operator/app/adv/hud/WorkOnEverythingPanel.css",
+          "presentAtComparedArtifact": false
+        },
+        {
+          "from": "apps/operator/app/adv/hud/WorkOnEverythingPanel.test.tsx",
+          "specifier": "./goal-detail-model",
+          "resolved": "apps/operator/app/adv/hud/goal-detail-model.ts",
+          "presentAtComparedArtifact": true
+        },
+        {
+          "from": "apps/operator/app/adv/hud/WorkOnEverythingPanel.test.tsx",
+          "specifier": "./WorkOnEverythingPanel",
+          "resolved": "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+          "presentAtComparedArtifact": false
+        },
+        {
+          "from": "packages/operator-core/lib/goal-rubric-stewardship.ts",
+          "specifier": "./scorecards",
+          "resolved": "packages/operator-core/lib/scorecards.ts",
+          "presentAtComparedArtifact": true
+        },
+        {
+          "from": "packages/operator-core/lib/goal-rubric-stewardship.ts",
+          "specifier": "./pg-timestamp",
+          "resolved": "packages/operator-core/lib/pg-timestamp.ts",
+          "presentAtComparedArtifact": true
+        },
+        {
+          "from": "packages/operator-core/lib/goal-rubric-stewardship.ts",
+          "specifier": "./rubrics",
+          "resolved": "packages/operator-core/lib/rubrics.ts",
+          "presentAtComparedArtifact": true
+        },
+        {
+          "from": "packages/operator-core/lib/goal-rubric-stewardship.ts",
+          "specifier": "./work-item-completion-authority",
+          "resolved": "packages/operator-core/lib/work-item-completion-authority.ts",
+          "presentAtComparedArtifact": true
+        },
+        {
+          "from": "packages/operator-core/lib/goal-rubric-stewardship.ts",
+          "specifier": "./work-items",
+          "resolved": "packages/operator-core/lib/work-items.ts",
+          "presentAtComparedArtifact": true
+        },
+        {
+          "from": "packages/operator-core/lib/goal-rubric-stewardship.ts",
+          "specifier": "./acceptance-author-identity",
+          "resolved": "packages/operator-core/lib/acceptance-author-identity.ts",
+          "presentAtComparedArtifact": true
+        },
+        {
+          "from": "apps/operator/app/adv/hud/ongoing-work-model.ts",
+          "specifier": "./goal-detail-model",
+          "resolved": "apps/operator/app/adv/hud/goal-detail-model.ts",
+          "presentAtComparedArtifact": true
+        },
+        {
+          "from": "apps/operator/app/adv/hud/ongoing-work-model.ts",
+          "specifier": "./hud-entity-board",
+          "resolved": "apps/operator/app/adv/hud/hud-entity-board.ts",
+          "presentAtComparedArtifact": true
+        },
+        {
+          "from": "apps/operator/app/adv/hud/ongoing-work-model.ts",
+          "specifier": "./GoalPackagesRail",
+          "resolved": "apps/operator/app/adv/hud/GoalPackagesRail.tsx",
+          "presentAtComparedArtifact": true
+        },
+        {
+          "from": "apps/operator/app/adv/hud/ongoing-work-draft.ts",
+          "specifier": "./goal-detail-model",
+          "resolved": "apps/operator/app/adv/hud/goal-detail-model.ts",
+          "presentAtComparedArtifact": true
+        },
+        {
+          "from": "apps/operator/app/adv/hud/woe-progress-model.ts",
+          "specifier": "./goal-detail-model",
+          "resolved": "apps/operator/app/adv/hud/goal-detail-model.ts",
+          "presentAtComparedArtifact": true
+        },
+        {
+          "from": "apps/operator/app/adv/hud/woe-progress-model.ts",
+          "specifier": "./ongoing-work-draft",
+          "resolved": "apps/operator/app/adv/hud/ongoing-work-draft.ts",
+          "presentAtComparedArtifact": false
+        }
+      ],
+      "missingAtSource": [],
+      "differingExistingDependencies": [
+        "apps/operator/app/adv/hud/GoalPackagesRail.tsx",
+        "apps/operator/app/adv/hud/GoalStatusControl.tsx",
+        "apps/operator/app/adv/hud/goal-detail-model.ts",
+        "apps/operator/app/adv/hud/hud-entity-board.ts",
+        "packages/operator-core/lib/pg-timestamp.ts",
+        "packages/operator-core/lib/rubrics.ts",
+        "packages/operator-core/lib/scorecards.ts",
+        "packages/operator-core/lib/work-item-completion-authority.ts",
+        "packages/operator-core/lib/work-items.ts"
+      ],
+      "limitations": [
+        "Read-only preparation: no admission commit, ref, repair queue or gate mutation.",
+        "This is not a complete type, alias/package, reverse-test, runtime, or product closure; those dimensions require qualification before admission.",
+        "Source files already present but different at the compared artifact may require compatible changes.",
+        "No build, tests or native assertions were run."
+      ],
+      "next": "Review differing-existing and alias/type/reverse-test closure with the existing source owner before handing a complete immutable source set to the live gate owner."
+    }
+  },
+  "limitations": [
+    "No current gate status, deploy status, serving process or shipped artifact was measured by this receipt.",
+    "No shortcut keys, native matrix, source export, dependency doctor, build, install, migration, cleanup or deployment ran.",
+    "Existing storage acceptance and historical ENOSPC causality remain separate unfinished obligations.",
+    "No original acceptance criterion is waived, passed or bound as deployed evidence by this qualification."
+  ]
+}

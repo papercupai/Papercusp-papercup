@@ -252,6 +252,36 @@ describe('governed execution lifecycle', () => {
     expect(d.current()).toMatchObject({ state: 'cancelled' });
   });
 
+  it.each([
+    ['owner-ended', undefined, false],
+    ['leased', { leaseId: 'other-private-token', owner: 'replacement', generation: 2, expiresAtMs: 7_000 }, false],
+  ] as const)('preserves %s refusal evidence before cancellation without exposing lease tokens', async (reason, lease, leaseMatches) => {
+    const d = deps();
+    vi.spyOn(d.driver, 'markRunning').mockImplementation(async receiptId => ({
+      receiptId,
+      changed: false,
+      record: {
+        ...d.current(), state: lease ? 'leased' : 'queued', lease,
+        decision: { generation: 2, atMs: 1_000, reason, evidence: {} },
+      },
+    }));
+
+    const error = await beginGovernedExecution(
+      { idempotencyKey: 'observed-refusal', admissionClass: 'agent' },
+      { owner: 'resumed-agent' }, d,
+    ).then(() => { throw new Error('expected start refusal'); }, error => error);
+
+    expect(error.governedAdmissionTransition).toEqual({
+      state: lease ? 'leased' : 'queued', decision: reason, generation: 2,
+      leasePresent: Boolean(lease), leaseMatches,
+    });
+    expect(error.message).toContain(`\"decision\":\"${reason}\"`);
+    expect(error.message).not.toContain('other-private-token');
+    expect(error.message).not.toContain('lease-1');
+    expect(error.governedAdmissionStartFailure.cancellationVerified).toBe(true);
+    expect(d.current()).toMatchObject({ state: 'cancelled' });
+  });
+
   it('retries the real execution seam without re-leasing its cancelled receipt', async () => {
     // Preserve idempotent tombstones as the durable store does. A same-key
     // retry returns the cancelled row and cannot lease it, reproducing EI-25713586716473636.

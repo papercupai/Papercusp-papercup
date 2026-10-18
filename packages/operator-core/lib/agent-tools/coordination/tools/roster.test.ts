@@ -11,6 +11,14 @@ import { CHARS_PER_TOKEN_ESTIMATE } from '../../../context-doors';
 import { RESULT_DOOR_TOKENS } from '../../../result-door';
 import { assemblePresenceSnapshot, type PresenceSnapshot } from '../presence-snapshot';
 import rosterTool, { EXPLICIT_LIVENESS_ROW_CAP } from './roster';
+import { createRosterAudit, auditKnown } from './roster-audit';
+import { resolveSelfRef } from '../self-marker';
+
+const auditStore = vi.hoisted(() => ({ build: vi.fn(), load: vi.fn(), save: vi.fn() }));
+vi.mock('./roster-audit-store', async importOriginal => ({
+  ...await importOriginal<typeof import('./roster-audit-store')>(),
+  buildRosterAudit: auditStore.build, loadRosterAudit: auditStore.load, saveRosterAudit: auditStore.save,
+}));
 
 // Mock dependencies
 vi.mock('../presence-snapshot', async (importOriginal) => ({
@@ -194,6 +202,59 @@ const call = async (
 
 describe('coord:roster', () => {
   const tool = rosterTool;
+
+  describe('view=audit', () => {
+    beforeEach(() => { auditStore.build.mockReset(); auditStore.load.mockReset(); auditStore.save.mockReset(); });
+    it('freezes the unshaped parked census and uses a maintenance-free snapshot', async () => {
+      vi.mocked(resolveSelfRef).mockReturnValueOnce({ ownerId: 'reader-a', ownerLabel: 'Reader A' });
+      auditStore.build.mockImplementation(async input => createRosterAudit({
+        asOf: input.asOf, scope: input.scope, expectedPopulation: input.expectedPopulation,
+        population: input.agents.map((a: { ownerId: string }) => a.ownerId),
+        records: input.agents.map((a: { ownerId: string }) => ({ id: 'agent:' + a.ownerId, kind: 'agent', ownerId: a.ownerId,
+          fields: { state: auditKnown('parked', 'test-oracle', input.asOf) } })),
+        provenance: { status: 'unknown', directiveId: null, sourceRef: null, quote: null, turnOrigin: null },
+        previous: { status: 'known', auditId: null, asOf: null, total: null, corrections: [] },
+      }));
+      const { output } = await call({ view: 'audit', scope: 'workspace' }, { workspaceId: 'test-ws' });
+      expect(output).toMatchObject({ view: 'audit', coverage: { total: 1, covered: 1, complete: true } });
+      expect(output.scope).toMatchObject({ readerId: 'reader-a' });
+      expect(auditStore.build.mock.calls[0][0].agents.map((a: { ownerId: string }) => a.ownerId)).toEqual(['agent-2']);
+      expect(vi.mocked(assemblePresenceSnapshot).mock.lastCall?.[1]).toMatchObject({ includeMaintenance: false });
+      expect(auditStore.save).toHaveBeenCalledOnce();
+    });
+    it('refuses a degraded census instead of persisting a complete-looking empty snapshot', async () => {
+      const snapshotSource = vi.mocked(assemblePresenceSnapshot).getMockImplementation()!;
+      vi.mocked(assemblePresenceSnapshot).mockImplementationOnce(async (_scope, opts) => {
+        opts?.onDiagnostic?.({ phase: 'source', name: 'listPresence', status: 'error', elapsedMs: 5 });
+        return snapshotSource(_scope, opts);
+      });
+      const { output } = await call({ view: 'audit', scope: 'workspace' }, { workspaceId: 'test-ws' });
+      expect(output).toMatchObject({ ok: false, error: 'audit_population_unknown' });
+      expect(auditStore.build).not.toHaveBeenCalled();
+      expect(auditStore.save).not.toHaveBeenCalled();
+    });
+    it.each([undefined, NaN, Infinity, -1, 1.5])('refuses an unmeasured or invalid writer parked count (%s)', async parked => {
+      const snapshotSource = vi.mocked(assemblePresenceSnapshot).getMockImplementation()!;
+      vi.mocked(assemblePresenceSnapshot).mockImplementationOnce(async (resolved, opts) => {
+        const snapshot = await snapshotSource(resolved, opts);
+        return { ...snapshot, summary: { ...snapshot.summary,
+          byState: { ...snapshot.summary.byState, parked },
+        } } as PresenceSnapshot;
+      });
+      const { output } = await call({ view: 'audit', scope: 'workspace' }, { workspaceId: 'test-ws' });
+      expect(output).toMatchObject({ ok: false, error: 'audit_population_unknown' });
+      expect(auditStore.build).not.toHaveBeenCalled();
+      expect(auditStore.save).not.toHaveBeenCalled();
+    });
+    it('does not remeasure a missing continuation or accept lens-only filters', async () => {
+      auditStore.load.mockResolvedValue(null);
+      const result = await call({ view: 'audit', scope: 'workspace', auditId: 'a'.repeat(64) }, { workspaceId: 'test-ws' });
+      expect(result.output).toMatchObject({ ok: false, error: 'audit_not_found' });
+      expect(auditStore.build).not.toHaveBeenCalled();
+      const invalid = await call({ view: 'audit', states: ['parked'] });
+      expect(invalid.output).toMatchObject({ error: 'unsupported_filter' });
+    });
+  });
 
   describe('view=live (default)', () => {
     it('should return presence snapshot with live view', async () => {

@@ -110,6 +110,15 @@ function scratchWorkspaceMutexName(workspaceId: string): string {
   return 'papercusp-scratch-quota-' + digest;
 }
 
+function normalizeScratchMutexTimeout(error: unknown, timeoutMs?: number): unknown {
+  if (timeoutMs == null || !error || typeof error !== 'object') return error;
+  const row = error as { code?: unknown; message?: unknown };
+  if (row.code == null && typeof row.message === 'string' && row.message.includes('Timed out after')) {
+    Object.assign(error, { code: 'ETIMEDOUT' });
+  }
+  return error;
+}
+
 /**
  * Scratch quota admission is high-churn metadata work. Keep its queue, ticket,
  * and lease markers on the per-user runtime filesystem when one is available so
@@ -143,6 +152,7 @@ function withScratchWorkspaceMutex<T>(
     admissionSubphaseTimingsMs?: Record<string, number>;
   }) => void,
   requestTraceId?: string,
+  mutexTimeoutMs?: number,
 ): Promise<T> {
   const mutexName = scratchWorkspaceMutexName(workspaceId);
   const intent = {
@@ -157,6 +167,7 @@ function withScratchWorkspaceMutex<T>(
     return withFsMutex(mutexName, run, {
       intent,
       ...(lockRootDir ? { lockRootDir } : {}),
+      ...(mutexTimeoutMs != null ? { timeoutMs: mutexTimeoutMs } : {}),
       waitingNoticeIntervalMs: 5_000,
       onWaiting,
       onAcquired: onAcquired
@@ -170,7 +181,7 @@ function withScratchWorkspaceMutex<T>(
           });
         }
         : undefined,
-    });
+    }).catch((error) => { throw normalizeScratchMutexTimeout(error, mutexTimeoutMs); });
   }
 
   const previous = scratchMutexState.get(mutexName) ?? Promise.resolve();
@@ -216,9 +227,47 @@ function withScratchWorkspaceMutex<T>(
     localWaitTimer?.stop();
     localWaitTimer = undefined;
   };
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    stopLocalWaitTimer();
+    release();
+    const requestIndex = requests.indexOf(request);
+    if (requestIndex >= 0) requests.splice(requestIndex, 1);
+    if (requests.length === 0) scratchMutexWaiters.delete(mutexName);
+    if (scratchMutexState.get(mutexName) === tail) scratchMutexState.delete(mutexName);
+  };
 
   return (async () => {
-    await previous.catch(() => {});
+    try {
+      const waitForPrevious = previous.catch(() => {});
+      if (mutexTimeoutMs == null) {
+        await waitForPrevious;
+      } else {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            waitForPrevious,
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => {
+                const error = Object.assign(
+                  new Error(`Timed out after ${mutexTimeoutMs}ms waiting for scratch quota mutex`),
+                  { code: 'ETIMEDOUT' },
+                );
+                reject(error);
+              }, mutexTimeoutMs);
+              (timer as { unref?: () => void } | undefined)?.unref?.();
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }
+    } catch (error) {
+      cleanup();
+      throw error;
+    }
     const localWaitMs = queuedLocally
       ? Math.max(0, performance.now() - localWaitStartedAt)
       : 0;
@@ -236,6 +285,7 @@ function withScratchWorkspaceMutex<T>(
       return await withFsMutex(mutexName, run, {
         intent,
         ...(lockRootDir ? { lockRootDir } : {}),
+        ...(mutexTimeoutMs != null ? { timeoutMs: mutexTimeoutMs } : {}),
         waitingNoticeIntervalMs: 5_000,
         onWaiting: observedOnWaiting,
         onAcquired: onAcquired
@@ -252,13 +302,10 @@ function withScratchWorkspaceMutex<T>(
           }
           : undefined,
       });
+    } catch (error) {
+      throw normalizeScratchMutexTimeout(error, mutexTimeoutMs);
     } finally {
-      stopLocalWaitTimer();
-      release();
-      const requestIndex = requests.indexOf(request);
-      if (requestIndex >= 0) requests.splice(requestIndex, 1);
-      if (requests.length === 0) scratchMutexWaiters.delete(mutexName);
-      if (scratchMutexState.get(mutexName) === tail) scratchMutexState.delete(mutexName);
+      cleanup();
     }
   })();
 }
@@ -1713,6 +1760,8 @@ const SCRATCH_USAGE_REFRESH_REQUIRED = Symbol('scratch-usage-refresh-required');
 export async function writeWithScratchQuota(
   opts: { workspaceId: string; filePath: string; bytes: number;
     requestTraceId?: string;
+    /** Optional caller budget for quota-mutex admission. */
+    mutexTimeoutMs?: number;
     captureSubphaseTimings?: boolean;
     onTiming?: (timings: ScratchWriteTimings) => void },
   write: (observeAwait: ScratchWriteAwaitObserver) => Promise<void>,
@@ -2003,7 +2052,7 @@ export async function writeWithScratchQuota(
         }
         if (refreshWaitOwner) timings.refreshWaitMs += waitedMs;
         else timings.quotaWaitMs += waitedMs;
-      }, opts.requestTraceId);
+      }, opts.requestTraceId, opts.mutexTimeoutMs);
       if (outcome === SCRATCH_USAGE_REFRESH_REQUIRED) {
         await timed('refreshWaitMs', () => refreshScratchUsage(opts.workspaceId));
         continue;

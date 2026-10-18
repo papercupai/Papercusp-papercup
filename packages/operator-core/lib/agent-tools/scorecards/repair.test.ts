@@ -72,6 +72,7 @@ describe('scorecards:repair', () => {
     expect(reconcilePendingGradingAudits).toHaveBeenCalledWith({
       targetIds: ['EI-target'],
       harness: 'papercusp',
+      recertifyStranded: false,
       ctx,
     });
     expect(result).toEqual({
@@ -118,7 +119,7 @@ describe('scorecards:repair', () => {
     const ctx = makeContext();
     await repairTool.handler({} as never, ctx);
 
-    expect(reconcilePendingGradingAudits).toHaveBeenCalledWith({ ctx });
+    expect(reconcilePendingGradingAudits).toHaveBeenCalledWith({ ctx, recertifyStranded: false });
   });
 
   it('carries the requested model pin into exact-target audit repair without changing caller identity', async () => {
@@ -129,7 +130,12 @@ describe('scorecards:repair', () => {
     await repairTool.handler(args, ctx);
 
     const dispatched = reconcilePendingGradingAudits.mock.calls[0][0];
-    expect(dispatched).toEqual({ targetIds: ['EI-target'], harness: 'papercusp', ctx: { ...ctx, gradingLaunch } });
+    expect(dispatched).toEqual({
+      targetIds: ['EI-target'],
+      harness: 'papercusp',
+      recertifyStranded: false,
+      ctx: { ...ctx, gradingLaunch },
+    });
     expect(dispatched.ctx).not.toBe(ctx);
     expect(ctx).not.toHaveProperty('gradingLaunch');
   });

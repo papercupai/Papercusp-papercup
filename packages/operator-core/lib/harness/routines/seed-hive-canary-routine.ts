@@ -2,17 +2,15 @@
  * Seed the daily hive-canary routine (hive-loop-e2e-testing-2026-06-10 P-009).
  *
  * One routine, `hive-canary` → `system:hive-canary`, daily at 09:00 (6-field
- * cron). Seeded ACTIVE by default: the action SELF-GATES on the canary harness
- * being registered (unregistered → clean no-op), so an active routine is safe
- * and goes live the moment the harness exists — finished work never ships dark
- * (CLAUDE.md). `--inactive` seeds it off for an explicit dark launch.
+ * cron). RETIRED: the autonomous cup loop this routine measured is permanently
+ * disarmed. This seed remains as an idempotent row normalizer for historical
+ * installs, but it always writes an inactive row and has no activation mode.
  *
  * The routine's install_slug IS the canary harness (default 'hive-canary';
  * override via POT_CANARY_HARNESS). payload_template tunables:
  * `deadlineHours` (default 6), `title` (the trivial feature's title).
  *
- *   tsx seed-hive-canary-routine.ts              # seed ACTIVE
- *   tsx seed-hive-canary-routine.ts --inactive   # seed off
+ *   tsx seed-hive-canary-routine.ts              # seed INACTIVE (permanently retired)
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -20,7 +18,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 const SLUG = process.env.POT_CANARY_HARNESS ?? process.env.HIVE_CANARY_HARNESS ?? 'hive-canary'; // legacy env name — dual-accept until callers migrate
 
 async function main(): Promise<void> {
-  const active = !process.argv.includes('--inactive');
+  const active = false;
   const ws = activeWorkspaceId();
   const { sql } = getOrgPg();
   const id = `rt_${SLUG}_hive_canary`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
@@ -35,8 +33,8 @@ async function main(): Promise<void> {
     ON CONFLICT (install_slug, name) DO UPDATE SET
       trigger_config = EXCLUDED.trigger_config,
       target_role = EXCLUDED.target_role,
-      -- active intentionally NOT re-applied on conflict (EI-19301170070808928): a
-      -- re-seed must never clobber an operator's runtime pause/resume of this routine.
+      -- Permanently retired: a re-seed must not resurrect the canary row.
+      active = false,
       updated_at = now()`;
   console.log(`[seed-hive-canary] routine ${id} seeded (harness=${SLUG}, active=${active})`);
   await sql.end({ timeout: 5 });

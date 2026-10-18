@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "workItem": "WI-6554700010017140",
+  "recordedAt": "2026-10-18T01:55:57.727657+00:00",
+  "scope": "Maintained acceptance harness source verification; excludes installed product behavior and shipment",
+  "source": {
+    "head": "258ed96687e4c7cb9c2a44f2f15cb8abf2ae0e15",
+    "files": [
+      {
+        "path": "scripts/with-private-podman.mjs",
+        "sha256": "df00ba47ac4182be6337a53d2235ce9b619ed049b30d1a2f90631ea6c3973efc"
+      },
+      {
+        "path": "scripts/with-private-podman.test.mjs",
+        "sha256": "59528c5eb87b36eec3a54826c1527f88460b48f7dc162aeb9585903c443937a7"
+      },
+      {
+        "path": "packages/operator-core/lib/__tests__/with-private-podman.test.ts",
+        "sha256": "88f95ca2ab7eb77232d8c51c0bbc008091092b3824172086c95c79fad9b3335e"
+      }
+    ]
+  },
+  "antecedent": {
+    "session": "01a14c69-a9a3-7940-8ab0-e6235d6dc2c6",
+    "launchCall": "call_1e84fdd8c29e4a3ab5d3796448e2473a",
+    "driver": {
+      "pid": 783515,
+      "startTicks": "107328494"
+    },
+    "wrapper": {
+      "pid": 785315,
+      "startTicks": "107328646"
+    },
+    "driverExitCause": "unknown",
+    "couplingDefect": "Detached wrapper had no run deadline; only the native Python observer enforced2700s.",
+    "productMeasured": false
+  },
+  "change": {
+    "reused": "scripts/with-private-podman.mjs, scripts/lib/batch-watchdog.mjs and conventional Node/operator-core suites",
+    "defaultRunTimeoutMs": 2700000,
+    "cliOption": "--run-timeout-ms",
+    "cleanup": "API and command have owned process groups; existing group helper terminates remaining descendants after direct-child exit.",
+    "receipt": "deadlineAt, runTimeoutMs, deadlineExceededAt when exceeded, failure and cleanup"
+  },
+  "verification": {
+    "red": {
+      "passed": 0,
+      "failed": 1,
+      "skipped": 0,
+      "failure": "No terminal receipt after launching observer exits",
+      "log": {
+        "path": "/tmp/machine-first-observer-lifecycle-red-20261018.log",
+        "sha256": "f418d75b6affc6057dc26c2213bb806f251e347978cd9252f6e05b3b35047b7e"
+      }
+    },
+    "green": {
+      "passed": 10,
+      "failed": 0,
+      "skipped": 0,
+      "command": "node --import tsx --test scripts/with-private-podman.test.mjs",
+      "log": {
+        "path": "/tmp/machine-first-observer-lifecycle-green-20261018.log",
+        "sha256": "f1489b7a2efb1d2453e23bb6b08b9e35443d5f2477f94048f1f66370044505a8"
+      }
+    },
+    "ci": {
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "nestedSuitePassed": 10,
+      "command": "vitest run lib/__tests__/with-private-podman.test.ts (cwd packages/operator-core)",
+      "log": {
+        "path": "/tmp/machine-first-observer-lifecycle-ci-final-20261018.log",
+        "sha256": "085f92a40aadd7e1d09ac6bd13473119f1c5a49511670c2f82a00bf23ed84f7a"
+      }
+    }
+  },
+  "preparationAudit": {
+    "evidence": {
+      "path": "/tmp/machine-first-p030-isolated-20261018-v4.log",
+      "sha256": "bef1786d7dfbde339a431a019f9cf6638e561cae525faf94d9b1ea128f0b6312"
+    },
+    "observed": "Changed root node_modules capture and advancing external dependency-copy holders; cancellation during preparation. No installed binary or product verdict.",
+    "existingReuseSurface": "dependency-generation.sh --select-inputs-from / --predict-ref / --ensure-ref; setup-release-checkout.sh NODE_MODULES_GENERATION_ID and NODE_MODULES_GENERATION_TOKEN; existing immutable generation leases.",
+    "unresolved": "Acceptance wrapper selects its own generation store. Establish exact candidate-compatible ready generation and store/lease before another expensive attempt; do not infer high load as cause or widen timeout.",
+    "next": "Inspect existing exact-ref prewarm/selection controls, prepare once through maintained dependency producer, then run one durable bounded acceptance job."
+  },
+  "limitations": [
+    "Original driver exit signal is unknown.",
+    "No installed P030 product measurement was rerun.",
+    "Historical diagnostic archive is not current full-release proof.",
+    "Publication and shipment remain open."
+  ]
+}

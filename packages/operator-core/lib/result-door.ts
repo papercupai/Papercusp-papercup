@@ -82,6 +82,10 @@ import {
  *  it is exactly this value. */
 export const RESULT_DOOR_TOKENS = computeTurnDoors(0).resultEach;
 const RESULT_DOOR_SCRATCH_WRITE_WAIT_MS = 30_000;
+// Result-door writers must not queue behind an unbounded scratch-quota mutex wait.
+// A failed admission still preserves the exact bytes through the existing volatile/
+// durable fallback path, while a successful writer retains the normal quota fence.
+const RESULT_DOOR_SCRATCH_MUTEX_WAIT_MS = 5_000;
 const RESULT_DOOR_DURABLE_FALLBACK_WAIT_MS = 5_000;
 
 const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -1874,6 +1878,9 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
       evidence,
       deferredWrites: input.opts.deferredScratchWrites,
       requestTraceId: input.opts.requestTraceId,
+      ...(input.opts.deferredScratchWrites
+        ? { mutexTimeoutMs: RESULT_DOOR_SCRATCH_MUTEX_WAIT_MS }
+        : {}),
       onScratchWriteTiming: input.opts.onScratchWriteTiming,
       // This spill path stores the JSON MCP content envelope directly as the
       // scratch payload. Declare byte zero as its machine-readable body so the
@@ -2446,6 +2453,19 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
     timeoutMs: RESULT_DOOR_SCRATCH_WRITE_WAIT_MS,
     label: 'result-door scratch spill write',
   });
+  const recoverTimedOut = async (error: unknown): Promise<T | null> => {
+    const pendingResult = markPendingScratchWrite(doored, error, opts);
+    if (!pendingResult) return null;
+    await recordPendingScratchWriteTimeout(pendingResult, opts);
+    observeLateScratchWrite(writeSettlements, pendingResult, opts);
+    const volatileFallback = applyResultDoor(result, {
+      ...opts,
+      deferredScratchWrites: undefined,
+      scratchWriteFailure: { error },
+    });
+    const recoveryFallback = await persistTimedOutScratchFallback(volatileFallback, opts);
+    return attachPendingScratchFallback(recoveryFallback, pendingResult, opts) ?? pendingResult;
+  };
   if (boundedWrites.degraded || boundedWrites.value === null) {
     const error = boundedWrites.reason === 'timeout'
       ? Object.assign(
@@ -2454,18 +2474,8 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
         )
       : boundedWrites.error ?? new Error('result-door scratch spill write did not settle');
     if (boundedWrites.reason === 'timeout') {
-      const pendingResult = markPendingScratchWrite(doored, error, opts);
-      if (pendingResult) {
-        await recordPendingScratchWriteTimeout(pendingResult, opts);
-        observeLateScratchWrite(writeSettlements, pendingResult, opts);
-        const volatileFallback = applyResultDoor(result, {
-          ...opts,
-          deferredScratchWrites: undefined,
-          scratchWriteFailure: { error },
-        });
-        const recoveryFallback = await persistTimedOutScratchFallback(volatileFallback, opts);
-        return attachPendingScratchFallback(recoveryFallback, pendingResult, opts) ?? pendingResult;
-      }
+      const recovered = await recoverTimedOut(error);
+      if (recovered) return recovered;
     }
     const failedResult = applyResultDoor(result, {
       ...opts,
@@ -2477,6 +2487,10 @@ export async function applyResultDoorAsync<T extends DoorableResult>(
   const settled = boundedWrites.value;
   const failure = settled.find((s) => s.status === 'rejected');
   if (!failure || failure.status !== 'rejected') return doored;
+  if ((failure.reason as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
+    const recovered = await recoverTimedOut(failure.reason);
+    if (recovered) return recovered;
+  }
   const failedResult = applyResultDoor(result, { ...opts, deferredScratchWrites: undefined,
     scratchWriteFailure: { error: failure.reason } });
   return failedResult;
@@ -3407,6 +3421,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
           evidence: spillEvidence,
           deferredWrites: opts.deferredScratchWrites,
           requestTraceId: opts.requestTraceId,
+          ...(opts.deferredScratchWrites
+            ? { mutexTimeoutMs: RESULT_DOOR_SCRATCH_MUTEX_WAIT_MS }
+            : {}),
           onScratchWriteTiming: opts.onScratchWriteTiming,
           // EI-21949915395361184: put the boundary IN THE FILE, not only in the cursor
           // this call returns. Ten reports across five months all describe the same

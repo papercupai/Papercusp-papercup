@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { listSpecEvidence, type RetractSpecEvidenceOptions } from '../plans/spec-evidence-store';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { listSpecEvidence, measureRepoFilesEvidenceAtRoot, type RetractSpecEvidenceOptions } from '../plans/spec-evidence-store';
 import {
   deferredTestEvidenceRecoveryBundle,
   prepareTestEvidence,
@@ -157,6 +160,65 @@ describe('test-time evidence continuity', () => {
       details: { currentMeasurement: { sourcePaths: ['src/feature.ts'], testPaths: [binding.testPath] },
         adequacy: { collected: true, executed: true, skipped: false, outcome: 'pass' } } });
     expect(d.bind.mock.calls[1][0].details.adequacy).not.toHaveProperty('oracleIndependent');
+  });
+
+  it('retracts earlier pending bindings when a later evidence registration is refused', async () => {
+    const d = deps();
+    const batch = {
+      ...request,
+      bindings: [binding, { ...binding, specId: 'R-2', specRevision: 99 }],
+    };
+    d.bind
+      .mockResolvedValueOnce({ status: 'created', id: 101 } as never)
+      .mockResolvedValueOnce({ status: 'spec_revision_not_found', specId: 'R-2', specRevision: 99 } as never);
+    d.list.mockResolvedValue([{
+      id: 101,
+      withdrawal: null,
+      evidenceKind: 'test',
+      specId: 'R-1',
+      specRevision: 2,
+      evidenceRef: 'test-run-group:' + runId + ':0',
+      testRunId: null,
+      details: { testExecution: { schemaVersion: 1, phase: 'pending', runId, originRunId: runId } },
+    }] as never);
+
+    await expect(prepareTestEvidence(batch, runId, [binding.testPath], scope, d))
+      .rejects.toThrow('evidence_registration_failed:spec_revision_not_found');
+
+    expect(d.bind).toHaveBeenCalledTimes(2);
+    expect(d.retract).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      harnessSlug: scope.harnessSlug,
+      bindingId: 101,
+      reason: expect.stringContaining('evidence_registration_failed:spec_revision_not_found'),
+      actorId: scope.actorId,
+    }));
+  });
+
+  it('rejects a nonexistent source path before binding any evidence rows', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'testing-run-missing-evidence-source-'));
+    try {
+      await mkdir(join(root, 'src'), { recursive: true });
+      await mkdir(join(root, 'test'), { recursive: true });
+      await writeFile(join(root, 'src/feature.ts'), 'export const answer = 42;\n');
+      await writeFile(join(root, 'test/feature.test.ts'), "import { it } from 'vitest'; it('noop', () => {});\n");
+      const d = deps();
+      d.measure = measureRepoFilesEvidenceAtRoot;
+      const batch = {
+        ...request,
+        bindings: [
+          { ...binding, testPath: 'test/feature.test.ts', sourcePaths: ['src/feature.ts'] },
+          { ...binding, specId: 'R-2', testPath: 'test/feature.test.ts',
+            sourcePaths: ['packages/operator-core/lib/agent-tools/plans/plan-converge.ts'] },
+        ],
+      };
+
+      await expect(prepareTestEvidence(batch, runId, ['test/feature.test.ts'], { ...scope, root }))
+        .rejects.toThrow();
+
+      expect(d.bind).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   // R-8: an infrastructure/attribution failure must not be reported as a missing run.

@@ -315,10 +315,55 @@ function exemptSourceBarProjectionMismatches(input: {
     );
 }
 
+/**
+ * A repository path in contract text: a source-tree directory token (`src/`,
+ * `tests/fixtures/x.json`) or a markup/data/config file that is not a served
+ * URL. Served paths (`/architecture/index.html`, `https://…/x.json`) start
+ * with `/` or a scheme and are observable boundaries, so they are skipped.
+ * A directory token counts only with a trailing slash, a second segment or a
+ * file extension, so English such as "opt out/in" stays independent.
+ */
+const REPO_DIR_TOKEN_RE =
+  /(?:^|[\s(\[`'"])((?:\.\/)?(?:src|tests?|libs?|packages|apps|scripts|fixtures|dist|out)\/[\w*.-]*(?:\/[\w*.-]*)*)/gi;
+const NON_CODE_FILE_TOKEN_RE = /(?:^|[\s(\[`'"])([^\s()[\]`'"]+\.(?:html?|css|json|ya?ml|toml))\b/gi;
+
+function repositoryPathReason(text: string): string | null {
+  for (const match of text.matchAll(REPO_DIR_TOKEN_RE)) {
+    const token = match[1].replace(/\.+$/, '');
+    const rest = token.replace(/^(?:\.\/)?[^/]+\//, '');
+    if (rest === '' || rest.includes('/') || /\.\w+$/.test(rest) || rest.includes('*')) {
+      return 'names a repository path ' + JSON.stringify(token);
+    }
+  }
+  for (const match of text.matchAll(NON_CODE_FILE_TOKEN_RE)) {
+    const token = match[1];
+    if (/^(?:[a-z][a-z0-9+.-]*:\/\/|\/)/i.test(token)) continue;
+    return 'names an implementation file ' + JSON.stringify(token);
+  }
+  return null;
+}
+
+/**
+ * The clause fields whose text must stay implementation-independent: the
+ * behavior AND the falsifier's observation (what a reader would SEE if the
+ * promise broke). `falsifier.probeMethod` is deliberately excluded — it says
+ * HOW to elicit the observation and legitimately names tests and probes.
+ */
+function clauseImplementationCouplingReason(clause: SpecClauseRevision): string | null {
+  const behaviorReason = implementationCouplingReason(clause.behavior);
+  if (behaviorReason) return behaviorReason;
+  const observation = clause.falsifier?.observation;
+  if (!observation) return null;
+  const observationReason = implementationCouplingReason(observation);
+  return observationReason ? 'falsifier observation ' + observationReason : null;
+}
+
 function implementationCouplingReason(behavior: string): string | null {
   const sourcePresence = specBehaviorImplementationPresenceReason(behavior);
   if (sourcePresence) return sourcePresence;
   if (/\.(?:[cm]?[jt]sx?|rs|py|sql|sh)\b/i.test(behavior)) return 'names an implementation file';
+  const repositoryPath = repositoryPathReason(behavior);
+  if (repositoryPath) return repositoryPath;
   const internalRouteCall =
     /\b(?:call(?:s|ed)?|invoke(?:s|d)?|route(?:s|d)?|wire(?:s|d)?)\b[^.\n]{0,160}\/(?:admin|internal|oauth|api)(?:\/[A-Za-z0-9._~-]+)*/i.exec(behavior);
   if (internalRouteCall) {
@@ -749,7 +794,7 @@ export function evaluatePlanSpecQuality(input: {
       return { ...identity, disposition: 'excluded', rating: 'not-applicable',
         reason: `${clause.lifecycleStatus} clause is outside the active/accepted behavioral population.` };
     }
-    const reason = implementationCouplingReason(clause.behavior);
+    const reason = clauseImplementationCouplingReason(clause);
     return reason
       ? { ...identity, disposition: 'evaluated', rating: 'fail', reason }
       : { ...identity, disposition: 'evaluated', rating: 'pass', reason: null };
@@ -764,7 +809,12 @@ export function evaluatePlanSpecQuality(input: {
     { behavior: 'Reuse the runtime usage ledger for per-call token counts.', expected: 'coupled' as const },
     { behavior: 'Reuse PostHog for consented portal events.', expected: 'coupled' as const },
     { behavior: 'Reuse prior clean receipts when current; reuse PostHog for consented portal events.', expected: 'coupled' as const },
+    { behavior: 'A clickable block has no clip in src/cup-audio/.', expected: 'coupled' as const },
+    { behavior: 'Wording from tests/fixtures/cupboard-brief.json appears outside a label.', expected: 'coupled' as const },
+    { behavior: 'The built out/*/index.html leaves a placeholder behind.', expected: 'coupled' as const },
     { behavior: 'An existing customer sees their subscription after signing in.', expected: 'independent' as const },
+    { behavior: 'GET /architecture/index.html returns 200 with the map.', expected: 'independent' as const },
+    { behavior: 'A visitor who opts out/in keeps that choice after a reload.', expected: 'independent' as const },
     { behavior: 'The customer reuses an existing account when accepting an invitation.', expected: 'independent' as const },
     { behavior: 'Reuse of an expired invitation is refused.', expected: 'independent' as const },
     { behavior: 'Reuse prior clean receipts when current; do not recreate proof just for recovery.', expected: 'independent' as const },
@@ -774,7 +824,8 @@ export function evaluatePlanSpecQuality(input: {
   });
   const implementationIndependenceControlsPassed = implementationIndependenceDetectorControls.every((control) => control.passed);
   const implementationIndependenceCoverage =
-    ' Detector coverage: implementation filenames/symbols, internal route literals, named operations, mandated reuse of existing surfaces (including runtimes, flows, ledgers and mechanisms), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
+    ' Fields inspected per clause: behavior and falsifier.observation (falsifier.probeMethod is excluded because it legitimately names the test or probe).' +
+    ' Detector coverage: implementation filenames/symbols, repository paths, internal route literals, named operations, mandated reuse of existing surfaces (including runtimes, flows, ledgers and mechanisms), imperative implementation selection, filesystem permission modes, named storage backends, encryption, and mirroring. Inspected ' +
     behavioral.length + ' active/accepted behavior clause(s), including ' +
     behavioral.filter(isProjectedBar).length + ' sourceBar-pinned acceptance BAR projection(s).' +
     ` ${currentSet.length - behavioral.length} draft/exempt clause(s) excluded; per-clause dispositions are in details.implementationIndependenceClauseDiagnostics.` +

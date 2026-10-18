@@ -1782,6 +1782,7 @@ async function runManifestOnlyInstall({
             });
           }),
           {
+            waitForReadersBeforeReserve: true,
             ...installLockWaitReporter({
               lock: "writer",
               describe: (owner, elapsedMs) =>
@@ -1966,7 +1967,21 @@ export function installLockWaitReporter({ lock, describe, log, budgetMs }) {
   return {
     onWaiting: ({ owner, elapsedMs }) => {
       noticed = true;
-      log(describe(String(owner).trim(), elapsedMs));
+      const ownerText = String(owner).trim();
+      // A writer first reserves admission, then drains protected readers.
+      // Those holders are not competing installs: generation publication can
+      // legitimately keep this phase occupied for much longer than reifying.
+      let waitingForReaders = false;
+      if (lock === "writer") {
+        try {
+          waitingForReaders = JSON.parse(ownerText)?.mode === "read";
+        } catch {
+          // Missing/unreadable owner diagnostics retain the caller's fallback.
+        }
+      }
+      log(waitingForReaders
+        ? `NPM_INSTALL_SAFE writer waiting for dependency readers (${Math.round(elapsedMs / 1000)}s so far) — holder: ${ownerText}`
+        : describe(ownerText, elapsedMs));
     },
     onAcquired: ({ waitedMs }) => {
       if (!noticed) return;
@@ -2261,6 +2276,9 @@ export async function main(argv = process.argv.slice(2)) {
       );
     }),
     {
+      // A queued install must not reserve every test/tool reader while a
+      // protected generation snapshot is still being published (D-009).
+      waitForReadersBeforeReserve: true,
       // WI-10006385: re-announce every 30 s (was once) and close with the real wait.
       ...installLockWaitReporter({
         lock: "writer",

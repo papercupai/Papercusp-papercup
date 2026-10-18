@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -10,7 +12,7 @@ import {
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const SOURCE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const INSTALLED_DIR = join(homedir(), '.papercusp', 'hooks', 'cc');
@@ -48,6 +50,49 @@ function parityProblems(sourceDir: string, installedDir: string): string[] {
 }
 
 describe('installed cc hook parity', () => {
+  it('ships the canonical host-platform home helper unchanged', () => {
+    const canonical = resolve(SOURCE_DIR, '../../../../../libs/host-platform/src/home.mjs');
+    expect(readFileSync(join(SOURCE_DIR, 'pc_home.mjs'), 'utf8')).toBe(readFileSync(canonical, 'utf8'));
+  });
+
+  it('loads affected hooks from a detached installation without node_modules', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-hook-load-'));
+    const installed = join(root, 'hooks');
+    const names = [
+      'artifact-url-delivery-guard.mjs',
+      'precompact-managed-carry.mjs',
+      'pretooluse-schedule-wakeup-provenance.mjs',
+      'posttooluse-proof-stale-nudge.mjs',
+      'posttooluse-frozen-candidate-edit-nudge.mjs',
+      'posttooluse-launch-prose-budget-nudge.mjs',
+    ];
+    try {
+      cpSync(SOURCE_DIR, installed, {
+        recursive: true,
+        filter: (source) => !source.includes('__tests__'),
+      });
+      const urls = names.map((name) => pathToFileURL(join(installed, name)).href);
+      const run = () => spawnSync(process.execPath, [
+        '--input-type=module', '-e',
+        `await Promise.all(${JSON.stringify(urls)}.map(url => import(url))); console.log('hooks loaded');`,
+      ], { cwd: root, env: { ...process.env, NODE_OPTIONS: '' }, encoding: 'utf8', timeout: 10_000 });
+      const loaded = run();
+      expect(loaded.stderr).toBe('');
+      expect(loaded.status).toBe(0);
+      expect(loaded.stdout.trim()).toBe('hooks loaded');
+
+      // A missing dependency must fail this check instead of silently passing
+      // through the hooks' fail-open policy.
+      rmSync(join(installed, 'pc_home.mjs'));
+      const incomplete = run();
+      expect(incomplete.status).toBe(1);
+      expect(incomplete.stderr).toContain('ERR_MODULE_NOT_FOUND');
+      expect(incomplete.stderr).toContain('pc_home.mjs');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('keeps atomic-edit temporary files out of the source hook directory', () => {
     const transient = readdirSync(SOURCE_DIR, { withFileTypes: true })
       .filter((entry) => entry.isFile() && entry.name.includes('.tmp'))

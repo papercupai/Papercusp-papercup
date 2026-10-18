@@ -1,4 +1,4 @@
-import { papercuspPtyPath } from '@papercusp/host-platform/home';
+import { papercuspPath, papercuspPtyPath } from '@papercusp/host-platform/home';
 /**
  * psu-pty-host — the production managed-PTY host for interactive psu sessions
  * (turn-lifecycle-control-2026-06-08 Phase 3, P-012/P-013/P-014; D-006/D-011).

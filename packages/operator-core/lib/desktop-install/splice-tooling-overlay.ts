@@ -185,14 +185,27 @@ export const SU_PLAYBOOK_MARKER_IDS = [
   'PAPERCUSP-SU:SHARED-BASE-NOTES',
 ] as const satisfies readonly SpliceMarkerId[];
 
+/**
+ * The domain-neutral kernel's seams. WORKSPACE-MAP / PROMOTION-MODEL (instance data)
+ * live in su.instance.md and SHARED-BASE-NOTES (practice notes) in su.practice.md —
+ * identity-system-everything-migration-2026-10-18 R-2 / #D-005.
+ */
 const SU_KERNEL_MARKER_IDS = [
   'PAPERCUSP-SU:WIRE-SCHEMAS',
   'PAPERCUSP-SU:COORD-LEGEND',
-  'PAPERCUSP-SU:WORKSPACE-MAP',
-  'PAPERCUSP-SU:PROMOTION-MODEL',
   'PAPERCUSP-SU:AUTO-MODE',
   'PAPERCUSP-SU:RESULT-DOOR',
+] as const satisfies readonly SpliceMarkerId[];
+
+const SU_PRACTICE_MARKER_IDS = [
+  'PAPERCUSP-SU:COMPACTION',
   'PAPERCUSP-SU:SHARED-BASE-NOTES',
+] as const satisfies readonly SpliceMarkerId[];
+
+const SU_INSTANCE_MARKER_IDS = [
+  'PAPERCUSP-SU:WORKSPACE-MAP',
+  'PAPERCUSP-SU:PROMOTION-MODEL',
+  'PAPERCUSP-SU:PROJECT-GUIDE',
 ] as const satisfies readonly SpliceMarkerId[];
 
 export interface RequiredSpliceMarkerArtifact {
@@ -216,18 +229,18 @@ export const REQUIRED_SPLICE_MARKERS_BY_ARTIFACT: readonly RequiredSpliceMarkerA
   { path: 'packages/operator-core/lib/desktop-install/__fixtures__/su-render-baseline/su.base.md', markerIds: SU_PLAYBOOK_MARKER_IDS, required: true },
   { path: 'papercusp-desktop/src-tauri/env-sidecars/staging/harness/blueprints/base/prompts/su.md', markerIds: SU_PLAYBOOK_MARKER_IDS, required: true },
   { path: 'libs/papercusp/packages/harness/blueprints/base/prompts/su.kernel.md', markerIds: SU_KERNEL_MARKER_IDS, required: true },
-  { path: 'libs/papercusp/packages/harness/blueprints/base/prompts/su.practice.md', markerIds: ['PAPERCUSP-SU:COMPACTION'], required: true },
-  { path: 'libs/papercusp/packages/harness/blueprints/base/prompts/su.instance.md', markerIds: ['PAPERCUSP-SU:PROJECT-GUIDE'], required: true },
+  { path: 'libs/papercusp/packages/harness/blueprints/base/prompts/su.practice.md', markerIds: SU_PRACTICE_MARKER_IDS, required: true },
+  { path: 'libs/papercusp/packages/harness/blueprints/base/prompts/su.instance.md', markerIds: SU_INSTANCE_MARKER_IDS, required: true },
   { path: 'apps/operator/prompts/papercusp-compaction.base.md', markerIds: ['PAPERCUSP-COMPACTION:CLIENT-OVERLAY'], required: true },
   { path: 'apps/operator/dist-host/blueprints/base/prompts/su.md', markerIds: SU_PLAYBOOK_MARKER_IDS, required: false },
   { path: 'apps/operator/dist-host/blueprints/base/prompts/su.kernel.md', markerIds: SU_KERNEL_MARKER_IDS, required: false },
-  { path: 'apps/operator/dist-host/blueprints/base/prompts/su.practice.md', markerIds: ['PAPERCUSP-SU:COMPACTION'], required: false },
-  { path: 'apps/operator/dist-host/blueprints/base/prompts/su.instance.md', markerIds: ['PAPERCUSP-SU:PROJECT-GUIDE'], required: false },
+  { path: 'apps/operator/dist-host/blueprints/base/prompts/su.practice.md', markerIds: SU_PRACTICE_MARKER_IDS, required: false },
+  { path: 'apps/operator/dist-host/blueprints/base/prompts/su.instance.md', markerIds: SU_INSTANCE_MARKER_IDS, required: false },
   { path: 'apps/operator/dist-sidecar/blueprints/base/prompts/su.md', markerIds: SU_PLAYBOOK_MARKER_IDS, required: false },
   { path: 'papercusp-desktop/src-tauri/sidecar/harness/blueprints/base/prompts/su.md', markerIds: SU_PLAYBOOK_MARKER_IDS, required: false },
   { path: 'papercusp-desktop/src-tauri/sidecar/harness/blueprints/base/prompts/su.kernel.md', markerIds: SU_KERNEL_MARKER_IDS, required: false },
-  { path: 'papercusp-desktop/src-tauri/sidecar/harness/blueprints/base/prompts/su.practice.md', markerIds: ['PAPERCUSP-SU:COMPACTION'], required: false },
-  { path: 'papercusp-desktop/src-tauri/sidecar/harness/blueprints/base/prompts/su.instance.md', markerIds: ['PAPERCUSP-SU:PROJECT-GUIDE'], required: false },
+  { path: 'papercusp-desktop/src-tauri/sidecar/harness/blueprints/base/prompts/su.practice.md', markerIds: SU_PRACTICE_MARKER_IDS, required: false },
+  { path: 'papercusp-desktop/src-tauri/sidecar/harness/blueprints/base/prompts/su.instance.md', markerIds: SU_INSTANCE_MARKER_IDS, required: false },
 ];
 
 /**

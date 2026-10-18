@@ -58,6 +58,16 @@ type CollectionJourney = 'priority' | 'selection' | 'refusal';
 
 async function prepareDeclaredCollection(page: Page, kind: CollectionKind, journey: CollectionJourney) {
     const projects = await scopeFixture(page);
+    // This editor never launches an agent. Its hidden launcher still requests
+    // these options through the same two-slot request scheduler, so a live
+    // bootstrap scan can consume the save/readback deadline before the
+    // collection fixture is reached. Model that unrelated contract explicitly.
+    await page.route('**/api/agent-mcp/console/bootstrap-su/options', (route) => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        status: 'ok', identities: [], unreadable: [], nextAfter: null,
+        fleets: [], accounts: [], schemes: [], ompCatalog: { status: 'unavailable', models: [] },
+      }),
+    }));
     const goal = { id: `collection-${kind}`, title: `${kind} collection`, status: 'active', standing: kind === 'plans' };
     const property = kind === 'plans' ? 'worklist' : 'tea_choices';
     const policyName = kind === 'plans' ? 'worklist_policy' : 'tea_policy';
@@ -83,6 +93,7 @@ async function prepareDeclaredCollection(page: Page, kind: CollectionKind, journ
     const reads: Array<{ version: number; order: string[] }> = [];
     const unreadableReadbacks: string[] = [];
     const invalidations: Array<{ before: number; after: number }> = [];
+    const acknowledgements: Array<{ expectedVersion: number; observedVersion?: number; phase: string }> = [];
     const selection = () => readTypedPropertyCollection({ propertySchema: schema, property,
       properties: { [property]: { value: ids, version: 2, edited_by: 'agent', provenance: 'agent-edit', edited_at: '2026-10-07T00:00:00Z' },
         [policyName]: { value: policy, version, edited_by: 'owner', provenance: 'owner-edit', edited_at: '2026-10-07T00:00:00Z' } },
@@ -122,6 +133,7 @@ async function prepareDeclaredCollection(page: Page, kind: CollectionKind, journ
     const editor = page.getByTestId('goal-data');
     async function saveWithReadback(action: () => Promise<void>) {
       const expectedVersion = version + 1;
+      acknowledgements.push({ expectedVersion, phase: 'action-start' });
       const saved = page.waitForResponse('**/api/admin/goals/set-property');
       const readback = page.waitForResponse(async (response) => {
         const url = new URL(response.url());
@@ -140,21 +152,47 @@ async function prepareDeclaredCollection(page: Page, kind: CollectionKind, journ
           unreadableReadbacks.push(response.url());
           return false;
         }
-        return payload.rows[0]?.goal?.id === goal.id
-          && payload.rows[0]?.goalData?.collections?.[property]?.selection?.policyVersion === expectedVersion;
+        const observedVersion = payload.rows[0]?.goalData?.collections?.[property]?.selection?.policyVersion;
+        acknowledgements.push({ expectedVersion, observedVersion, phase: 'canonical-response' });
+        return payload.rows[0]?.goal?.id === goal.id && observedVersion === expectedVersion;
       });
-      await action();
       try {
-        expect((await saved).status()).toBe(200);
-        const payload = await (await readback).json();
+        // Observe both responses while Playwright waits for the control. A
+        // disabled control can outlast either response deadline; handle those
+        // rejections here so the fixture evidence still reaches the attachment.
+        const [, savedResponse, canonicalReadback] = await Promise.all([action(), saved, readback]);
+        acknowledgements.push({ expectedVersion, phase: 'responses-complete' });
+        expect(savedResponse.status()).toBe(200);
+        const payload = await canonicalReadback.json();
         expect(payload.rows[0].goalData.collections[property].selection.policyVersion).toBe(version);
         const expected = selection();
         if (!expected.ok || !expected.configured) throw new Error('collection unavailable');
         expect(payload.rows[0].goalData.collections[property].rows.map((row: { id: string }) => row.id))
           .toEqual(expected.items.map((row) => row.id));
       } finally {
+        // A response seen by Playwright is not proof that React applied it.
+        // Keep the rendered state and the real SSE subscriber beside the
+        // fixture ledger so a failed save names the boundary that stopped.
+        const browser = await page.evaluate(() => {
+          const fixture = window as unknown as {
+            __syncQueryFixtureSources?: Set<EventSource>;
+            __sync_metrics__?: { snapshot(): unknown };
+          };
+          const editor = document.querySelector('[data-testid="goal-data"]');
+          return {
+            saveStatus: editor?.querySelector('[aria-label="Save status"]')?.textContent ?? null,
+            checkboxes: [...(editor?.querySelectorAll('[role="checkbox"]') ?? [])].map((node) => ({
+              label: node.getAttribute('aria-label'), checked: node.getAttribute('aria-checked'),
+              disabled: node.hasAttribute('disabled'),
+            })),
+            sources: [...(fixture.__syncQueryFixtureSources ?? [])].map((source) => ({
+              url: source.url, readyState: source.readyState,
+            })),
+            sync: fixture.__sync_metrics__?.snapshot() ?? null,
+          };
+        }).catch((error) => ({ unavailable: String(error) }));
         await test.info().attach(`collection-${kind}-readback-v${version}`, {
-          body: JSON.stringify({ reads, writes, invalidations, unreadableReadbacks, policy, version }), contentType: 'application/json',
+          body: JSON.stringify({ reads, writes, invalidations, unreadableReadbacks, acknowledgements, policy, version, browser }), contentType: 'application/json',
         });
       }
     }

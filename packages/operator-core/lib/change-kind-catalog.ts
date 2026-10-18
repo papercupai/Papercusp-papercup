@@ -178,3 +178,69 @@ export const changeKindReasonArg = () =>
     .min(1)
     .max(1000)
     .describe('Why the declared kinds changed or were first declared late. Stored with the declaration.');
+
+// ── Per-kind proof carried by a close (P-002 / R-2, R-6) ──
+//
+// `verifiedHow` is one label, so a close covering several kinds carries one entry per kind in
+// `completion.kindEvidence`. A single-kind close may keep using the completion's root
+// summary/testsRun/testResult/filesChanged; an entry for that kind then adds to (and overrides)
+// them. Which fields each kind needs is CHANGE_KIND_CATALOG[kind].proof; change-kind-proof.ts
+// checks them. Lives here (zod only) so coord-lifecycle/records.ts can embed it without an
+// import cycle through completion-audit.ts.
+
+const nonEmpty = () => z.string().trim().min(1).max(4000);
+
+export const ChangeKindEvidenceSchema = z
+  .object({
+    kind: z.enum(CHANGE_KINDS),
+    summary: nonEmpty().optional(),
+    testsRun: nonEmpty().optional().describe('The command or probe run for this kind.'),
+    testResult: nonEmpty().optional().describe('What it returned or observed.'),
+    artifacts: z
+      .array(nonEmpty())
+      .max(50)
+      .optional()
+      .describe('ui: retained artifact paths or URLs from the real-app run (screenshot, capture, DOM snapshot).'),
+    build: nonEmpty()
+      .optional()
+      .describe(
+        'ui/service: the build the run or call used, proving it contained this change — its commit/build sha ' +
+          '(for example from /api/health) or a VERIFY_TAURI_ASSERT_SNAPSHOT_CONTAINS check.',
+      ),
+    states: z
+      .array(z.object({ name: nonEmpty(), evidence: nonEmpty() }).strict())
+      .max(50)
+      .optional()
+      .describe('ui: every user-visible state you changed, each with where the run covered it.'),
+    distinguishingChecks: z
+      .array(
+        z
+          .object({
+            assertion: nonEmpty().describe('What the check asserted.'),
+            expected: nonEmpty().describe('The value the right result produces.'),
+            plausibleWrong: nonEmpty().describe('The value a plausible wrong result would produce instead.'),
+          })
+          .strict(),
+      )
+      .max(20)
+      .optional()
+      .describe('ui: at least one check whose expected value tells the right result apart from a plausible wrong one.'),
+    database: nonEmpty().optional().describe('migration: the disposable database the migration was applied to.'),
+    runtime: nonEmpty().optional().describe('background-job: the isolated runtime the job ran in.'),
+    readBack: nonEmpty()
+      .optional()
+      .describe('config: the effective value read back from its consumer. docs: the document read back from where readers get it.'),
+  })
+  .strict();
+
+export type ChangeKindEvidence = z.infer<typeof ChangeKindEvidenceSchema>;
+
+export const kindEvidenceArg = () =>
+  z
+    .array(ChangeKindEvidenceSchema)
+    .min(1)
+    .max(CHANGE_KINDS.length)
+    .describe(
+      'Proof per declared change kind: one { kind, ... } entry each. Required when more than one kind is declared; ' +
+        'a single-kind close may use the root summary/testsRun/testResult instead.',
+    );

@@ -250,6 +250,8 @@ export function writeScratchReference(input: {
   ownerId?: string | null;
   /** MCP request correlation used to identify this writer in mutex wait diagnostics. */
   requestTraceId?: string;
+  /** Optional caller budget for scratch-quota mutex admission. */
+  mutexTimeoutMs?: number;
   audience?: OutputAudience;
   mediaType: string;
   content?: readonly ScratchReferenceContentMetadata[];
@@ -278,6 +280,7 @@ export function writeScratchReference(input: {
     const filePath = input.filePath;
     const write = writeWithScratchQuota({ workspaceId: input.workspaceId, filePath, bytes: bytes.length,
       requestTraceId: input.requestTraceId,
+      mutexTimeoutMs: input.mutexTimeoutMs,
       captureSubphaseTimings: Boolean(input.onScratchWriteTiming),
       onTiming: input.onScratchWriteTiming }, async (observeAwait) => {
       // WI-10006512: a root this mkdir creates is marked as a workspace scratch root, so the

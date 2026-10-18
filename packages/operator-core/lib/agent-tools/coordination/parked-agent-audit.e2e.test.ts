@@ -16,6 +16,40 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { allowRealPgForLiveSuite } from '../../testing/live-suite-real-pg';
+import { auditKnown, auditWakeEvidence, createRosterAudit, pageRosterAudit } from './tools/roster-audit';
+
+describe('dynamic roster audit regression oracles', () => {
+  it('assembles exact multi-page owner coverage without changing the frozen historical census', () => {
+    const time = '2026-10-18T00:00:00Z';
+    const scope = { workspaceId: 'dynamic-test', scope: 'workspace' as const, potId: null, owner: null };
+    const owners = Array.from({ length: 131 }, (_, i) => 'dynamic-owner-' + i);
+    const snapshot = createRosterAudit({ asOf: time, scope, population: owners, expectedPopulation: 131,
+      records: owners.map(ownerId => ({ id: 'agent:' + ownerId, ownerId, kind: 'agent' as const, fields: { state: auditKnown('parked', 'oracle fixture', time) } })),
+      provenance: { status: 'unknown', directiveId: null, sourceRef: null, turnOrigin: null, quote: null, reason: 'fixture' },
+      previous: { status: 'known', auditId: null, asOf: null, total: null, corrections: [] },
+    });
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = pageRosterAudit(snapshot, scope, { pageSize: 10, cursor });
+      seen.push(...page.records.filter(row => row.kind === 'agent').map(row => row.ownerId));
+      cursor = page.nextCursor ?? undefined;
+      if (!cursor) expect(page.coverage).toMatchObject({ total: 131, covered: 131, missing: 0, duplicates: 0, complete: true });
+    } while (cursor);
+    expect(seen).toEqual(owners);
+    expect(new Set(seen).size).toBe(131);
+  });
+  it('never treats enqueue or an unrelated response as recipient pickup', () => {
+    const evidence = auditWakeEvidence({ ownerId: 'owner-a', msgId: 'request-a', observedAt: '2026-10-18T00:00:00Z', messageExists: true,
+      deliveries: [{ ownerId: 'owner-a', msgId: 'request-a', status: 'delivered', turnProof: 'not-picked-up', turnStartedAt: null }],
+      replies: [{ from: 'different-owner', relatedMsgId: 'request-a' }],
+    });
+    expect(evidence.queued.status).toBe('known');
+    expect(evidence.delivered.status).toBe('known');
+    expect(evidence.turnStarted.status).toBe('unknown');
+    expect(evidence.replied.status).toBe('unknown');
+  });
+});
 
 interface Census {
   asOf: string;

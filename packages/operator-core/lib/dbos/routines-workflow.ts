@@ -264,21 +264,27 @@ export interface RoutineDispatchAdmissionEpoch {
 /**
  * One process-local controller owns the feedback history between scheduler ticks.
  * The durable source of truth is the indexed DBOS in-flight population read below;
- * resetting this transient state on a process restart is deliberately safe because
- * a cold controller restarts at the one-start floor. Persisting a larger window via
- * the shared snapshot store would add a write to the pool this guard protects and
- * could restore stale optimistic credit after a host failure. Each evaluated epoch
- * is nevertheless a DBOS step output, so replay of that tick uses the exact decision.
+ * resetting this transient state on a process restart does not restore optimistic
+ * credit. A healthy cold class starts from its measured admitted occupancy (or
+ * the one-start floor when empty), then earns new credit through normal feedback.
+ * Persisting a larger window via the shared snapshot store would add a write to
+ * the pool this guard protects and could restore stale optimistic credit after a
+ * host failure. Each evaluated epoch is nevertheless a DBOS step output, so replay
+ * of that tick uses the exact decision.
  */
 export function createRoutineDispatchController(): CaplessAdaptiveController {
   return new CaplessAdaptiveController({
     initialWindow: 1,
+    // EI-26273544248345621: six recovered durable fires must not need five
+    // healthy ticks to re-learn their own admitted occupancy after a restart.
+    // This grants no initial extra credit and cannot override later contraction.
+    initializeFromInFlight: true,
     minimumWindow: 1,
     // EI-24202587238356894: a bg-host restart resets this process-local window.
     // With 67 git-sync installs, +1 every third 30-second tick takes over 16m to
     // regain the roughly 12 starts/tick needed for their three-minute cadence.
-    // Grow by three after three healthy observations: the first two cold ticks
-    // still admit only one start. Critical pool feedback still limits this
+    // Grow by three after three healthy observations: an empty cold class's
+    // first two ticks still admit only one start. Critical pool feedback limits this
     // queue to one start and contracts an occupied, attributable class.
     increaseStep: 3,
   });

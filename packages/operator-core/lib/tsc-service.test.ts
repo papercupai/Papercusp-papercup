@@ -6,6 +6,7 @@
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -15,6 +16,7 @@ const { API } = await import(pathToFileURL(join(nativeDir, 'dist/api/async/api.j
 // eslint-disable-next-line import/no-relative-packages
 import {
   TSC_SERVICE_ENV,
+  TSC_SERVICE_TIMEOUT_MS,
   TSC_SERVICE_UNIT_TEMPLATE_ENV,
   baselineWithinScope,
   checkedSetFor,
@@ -23,6 +25,7 @@ import {
   lineStarts,
   namedSetFor,
   refreshProjectRootFiles,
+  resolveTscServiceTimeoutMs,
   readTextOrNull,
   renderDiagnostics,
   serviceProjectFromTscCommand,
@@ -177,6 +180,52 @@ describe('typecheckViaService under a unit template', () => {
     });
     expect(response).toBeNull();
     expect(lines.join('\n')).toMatch(/TSC_SERVICE unavailable .*papercusp-tsc-service-test-absent@nonexistent-checkout\.socket/);
+  });
+});
+
+describe('bounded shared-service timeout', () => {
+  it('caps configured waits at 30 seconds while allowing shorter budgets', () => {
+    expect(TSC_SERVICE_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
+    expect(resolveTscServiceTimeoutMs(undefined)).toBe(30_000);
+    expect(resolveTscServiceTimeoutMs('240000')).toBe(30_000);
+    expect(resolveTscServiceTimeoutMs(240_000)).toBe(30_000);
+    expect(resolveTscServiceTimeoutMs('15000')).toBe(15_000);
+  });
+
+  it('falls back promptly when the socket accepts a request but never answers', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tsc-service-unresponsive-'));
+    const socketPath = join(dir, 'service.sock');
+    const sockets = new Set<import('node:net').Socket>();
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      socket.on('error', () => {});
+      socket.on('close', () => sockets.delete(socket));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, resolve);
+    });
+    const lines: string[] = [];
+    try {
+      const startedAt = Date.now();
+      const result = await typecheckViaService({
+        root: '/repo',
+        project: '/repo/tsconfig.json',
+        files: ['src/a.ts'],
+        label: 'test',
+        timeoutMs: 50,
+        log: (line) => lines.push(line),
+        env: { PAPERCUSP_TSC_SERVICE_SOCKET: socketPath },
+      });
+
+      expect(result).toBeNull();
+      expect(lines.join('\n')).toContain('no answer within 50 ms');
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

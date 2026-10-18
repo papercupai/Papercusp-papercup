@@ -11,13 +11,15 @@
  * daemonPid + restartCount + bwrapExitCode (Batch I5).
  */
 
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { promisify } from 'node:util';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { existsSync, statSync } from 'node:fs';
 import { JsonRpcBridge, type JsonRpcNotification, type JsonRpcRequestHandler } from './jsonrpc-bridge';
 import { buildBwrapArgs, buildProviderBwrapArgs } from './bwrap-args';
 
 const DEFAULT_BWRAP = '/usr/bin/bwrap';
+const execFileAsync = promisify(execFile);
 
 /** A provider daemon was refused because its sandbox cannot be established. */
 export class DaemonSandboxUnavailableError extends Error {
@@ -36,6 +38,8 @@ export interface ProviderSandboxProbe {
 }
 
 const _providerProbeCache = new Map<string, ProviderSandboxProbe>();
+const _providerProbesInFlight = new Map<string, Promise<ProviderSandboxProbe>>();
+type ProviderSandboxInput = { bwrapBinary?: string; pluginDir: string; runtimeDirs?: string[] };
 /**
  * Probe the EXACT provider profile (including `--unshare-net`) rather than a
  * generic bwrap call: a host can run plain bwrap yet refuse a network
@@ -47,39 +51,52 @@ const _providerProbeCache = new Map<string, ProviderSandboxProbe>();
  * for a reason specific to this plugin dir (WI-10006742: a dir under /dev/shm
  * was shadowed by `--dev /dev`) and that is not a host without namespaces.
  */
-export function probeProviderSandbox(input: { bwrapBinary?: string; pluginDir: string; runtimeDirs?: string[] }): ProviderSandboxProbe {
+export async function probeProviderSandbox(input: ProviderSandboxInput): Promise<ProviderSandboxProbe> {
   const binary = input.bwrapBinary ?? DEFAULT_BWRAP;
   const key = JSON.stringify([binary, input.pluginDir, input.runtimeDirs ?? []]);
   const cached = _providerProbeCache.get(key);
   if (cached !== undefined) return cached;
+  const pending = _providerProbesInFlight.get(key);
+  if (pending !== undefined) return pending;
   if (process.platform !== 'linux') return { works: false, detail: `platform ${process.platform} has no bwrap sandbox` };
   if (!existsSync(binary)) return { works: false, detail: `${binary} is not installed` };
-  let result: ReturnType<typeof spawnSync>;
+  // Sandbox setup can take seconds. Await the child without blocking identity
+  // probes and other operator requests; concurrent starts share this exact probe.
+  const probe = (async (): Promise<ProviderSandboxProbe> => {
+    let result: ProviderSandboxProbe;
+    try {
+      const { argv } = buildProviderBwrapArgs({
+        pluginDir: input.pluginDir,
+        runtimeDirs: input.runtimeDirs,
+        bwrapBinary: binary,
+        cmd: ['/usr/bin/true'],
+      });
+      await execFileAsync(binary, argv, { timeout: 5_000, env: {}, encoding: 'utf8' });
+      result = { works: true };
+    } catch (err) {
+      // A numeric exit status proves the profile ran. Spawn errors, signals and
+      // timeouts are transient evidence and must remain retryable.
+      if (!(err instanceof Error) || !('code' in err) || typeof err.code !== 'number'
+        || ('signal' in err && err.signal)) {
+        return { works: false, detail: `probe did not finish (${err instanceof Error ? err.message : String(err)}); not cached` };
+      }
+      const stderr = 'stderr' in err ? String(err.stderr).trim() : '';
+      result = { works: false, detail: stderr || `${binary} exited ${err.code}` };
+    }
+    _providerProbeCache.set(key, result);
+    return result;
+  })();
+  _providerProbesInFlight.set(key, probe);
   try {
-    const { argv } = buildProviderBwrapArgs({
-      pluginDir: input.pluginDir,
-      runtimeDirs: input.runtimeDirs,
-      bwrapBinary: binary,
-      cmd: ['/usr/bin/true'],
-    });
-    result = spawnSync(binary, argv, { stdio: ['ignore', 'ignore', 'pipe'], timeout: 5_000, env: {}, encoding: 'utf8' });
-  } catch (err) {
-    return { works: false, detail: `probe could not run: ${err instanceof Error ? err.message : String(err)}` };
+    return await probe;
+  } finally {
+    _providerProbesInFlight.delete(key);
   }
-  if (result.error || result.status === null) {
-    const why = result.error ? result.error.message : `killed by ${result.signal ?? 'signal'}`;
-    return { works: false, detail: `probe did not finish (${why}); not cached` };
-  }
-  const stderr = String(result.stderr ?? '').trim();
-  const probe: ProviderSandboxProbe =
-    result.status === 0 ? { works: true } : { works: false, detail: stderr || `${binary} exited ${result.status}` };
-  _providerProbeCache.set(key, probe);
-  return probe;
 }
 
 /** Boolean form of {@link probeProviderSandbox}. */
-export function providerSandboxWorks(input: { bwrapBinary?: string; pluginDir: string; runtimeDirs?: string[] }): boolean {
-  return probeProviderSandbox(input).works;
+export async function providerSandboxWorks(input: ProviderSandboxInput): Promise<boolean> {
+  return (await probeProviderSandbox(input)).works;
 }
 
 /**
@@ -90,23 +107,17 @@ export function providerSandboxWorks(input: { bwrapBinary?: string; pluginDir: s
  * time and cache the result. Mirrors `require_bwrap_or_skip` from the
  * Rust slice-3 v1 host.
  */
-let _bwrapWorksCache: boolean | null = null;
-function bwrapWorks(): boolean {
+let _bwrapWorksCache: Promise<boolean> | null = null;
+function bwrapWorks(): Promise<boolean> {
   if (_bwrapWorksCache !== null) return _bwrapWorksCache;
   if (process.platform !== 'linux' || !existsSync('/usr/bin/bwrap')) {
-    _bwrapWorksCache = false;
-    return false;
+    return Promise.resolve(false);
   }
-  try {
-    const r = spawnSync(
+  _bwrapWorksCache = execFileAsync(
       '/usr/bin/bwrap',
       ['--ro-bind', '/', '/', '--proc', '/proc', '--dev', '/dev', '--die-with-parent', '/bin/true'],
-      { stdio: 'ignore', timeout: 5_000 },
-    );
-    _bwrapWorksCache = r.status === 0;
-  } catch {
-    _bwrapWorksCache = false;
-  }
+      { timeout: 5_000 },
+    ).then(() => true, () => false);
   return _bwrapWorksCache;
 }
 
@@ -199,11 +210,11 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
 
   const spawnOnce = async (): Promise<void> => {
     const providerMode = opts.sandbox === 'provider';
-    const useBwrap = providerMode ? false : bwrapWorks();
+    const useBwrap = providerMode ? false : await bwrapWorks();
     let binary: string;
     let argv: string[];
     if (providerMode) {
-      const probe = probeProviderSandbox({ bwrapBinary: opts.bwrapBinary, pluginDir: opts.cwd, runtimeDirs: opts.runtimeDirs });
+      const probe = await probeProviderSandbox({ bwrapBinary: opts.bwrapBinary, pluginDir: opts.cwd, runtimeDirs: opts.runtimeDirs });
       if (!probe.works) {
         throw new DaemonSandboxUnavailableError(
           `provider daemon ${opts.pluginName} refused: the provider sandbox (bwrap with --unshare-net) could not be established for ${opts.cwd}: ${probe.detail ?? 'unknown reason'}`,

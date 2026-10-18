@@ -133,6 +133,73 @@ describe('parseCodexChunk (P-015)', () => {
       },
     });
 
+  const nativeIdentity = (changed: Record<string, unknown> = {}) => codexLine({ type: 'token_usage_record', payload: {
+    session_id: 'native-1', thread_id: 'native-1', turn_id: 't-1', response_id: 'resp-exact',
+    thread_token_usage: { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10 },
+    usage: { input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 10 },
+    ...changed,
+  } });
+  const nativeHeader = codexLine({ type: 'session_meta', payload: { id: 'native-1' } });
+
+  it('adds the exact provider response identity without changing request keys, totals or counts', () => {
+    const legacy = parseCodexChunk(nativeHeader + turnCtx + tokenCount(100, 20, 10));
+    const enriched = parseCodexChunk(nativeHeader + turnCtx + nativeIdentity() + tokenCount(100, 20, 10) + tokenCount(100, 20, 10));
+    expect(enriched.events).toHaveLength(1);
+    expect(enriched.events![0]).toMatchObject({ providerResponseId: 'resp-exact', sourceId: legacy.events![0].sourceId,
+      usage: legacy.events![0].usage, requestOrdinal: 1 });
+    expect(enriched.perModel).toEqual(legacy.perModel);
+    expect(legacy.events![0].providerResponseId).toBeUndefined();
+  });
+
+  it('preserves a pending native identity through a serialized parser restart', () => {
+    const first = parseCodexChunk(nativeHeader + turnCtx + nativeIdentity());
+    expect(first.events).toEqual([]);
+    const next = parseCodexChunk(tokenCount(100, 20, 10), JSON.parse(JSON.stringify(first.parserState)));
+    expect(next.events![0]).toMatchObject({ providerResponseId: 'resp-exact', requestOrdinal: 1 });
+    expect(next.parserState?.pendingCodexUsageIdentity).toBeUndefined();
+  });
+
+  it.each([
+    { session_id: 'another-session' }, { thread_id: 'another-thread' }, { turn_id: 'another-turn' },
+    { response_id: '' }, { response_id: 'bad\nidentity' }, { response_id: 'x'.repeat(513) },
+    { thread_token_usage: { input_tokens: 101, cached_input_tokens: 20, output_tokens: 10 } },
+    { usage: { input_tokens: 101, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 10 } },
+  ])('leaves a mismatched native identity unknown: %j', (changed) => {
+    const parsed = parseCodexChunk(nativeHeader + turnCtx + nativeIdentity(changed) + tokenCount(100, 20, 10));
+    expect(parsed.events).toHaveLength(1);
+    expect(parsed.events![0].providerResponseId).toBeUndefined();
+    expect(parsed.perModel.get('gpt-5.5')?.turns).toBe(1);
+  });
+
+  it('requires an observed native session header and consumes identity on a nonmatching count', () => {
+    expect(parseCodexChunk(turnCtx + nativeIdentity() + tokenCount(100, 20, 10)).events![0].providerResponseId).toBeUndefined();
+    const parsed = parseCodexChunk(nativeHeader + turnCtx + nativeIdentity() + tokenCount(101, 20, 10) + tokenCount(100, 20, 10));
+    expect(parsed.events!.map(event => event.providerResponseId)).toEqual([undefined, undefined]);
+  });
+
+  it('does not carry a pending response identity over turn or compaction boundaries', () => {
+    for (const boundary of [turnCtx, codexLine({ type: 'compacted' })]) {
+      const parsed = parseCodexChunk(nativeHeader + turnCtx + nativeIdentity() + boundary + tokenCount(100, 20, 10));
+      expect(parsed.events![0].providerResponseId).toBeUndefined();
+    }
+  });
+
+  it('attributes only explicit native user-message envelopes and retires them at the next turn', () => {
+    const user = (text: string) => codexLine({ type: 'response_item', payload: { type: 'message', role: 'user',
+      content: [{ type: 'input_text', text }] } });
+    const first = parseCodexChunk(nativeHeader + user('⟦turn-origin:loop-fire nonce:1234567890abcdef⟧\ncontinue'));
+    const next = parseCodexChunk(turnCtx + tokenCount(100, 20, 10), JSON.parse(JSON.stringify(first.parserState)));
+    expect(next.events![0].turnTrigger).toBe('loop-fire');
+    const active = parseCodexChunk(tokenCount(101, 20, 10), JSON.parse(JSON.stringify(next.parserState)));
+    expect(active.events![0].turnTrigger).toBe('loop-fire');
+    const plain = parseCodexChunk(user('continue the work') + turnCtx + tokenCount(102, 20, 10), active.parserState);
+    expect(plain.events![0].turnTrigger).toBeUndefined();
+    const absent = parseCodexChunk(turnCtx + tokenCount(103, 20, 10), active.parserState);
+    expect(absent.events![0].turnTrigger).toBeUndefined();
+    const quote = parseCodexChunk(user('A quoted example: ⟦turn-origin:loop-fire nonce:1234567890abcdef⟧') + turnCtx + tokenCount(100, 20, 10));
+    expect(quote.events![0].turnTrigger).toBeUndefined();
+  });
+
   it('sums last_token_usage per token_count event under the turn_context model', () => {
     const { perModel, consumedBytes } = parseCodexChunk(turnCtx + tokenCount(17550, 9600, 14) + tokenCount(2000, 1500, 50));
     expect(consumedBytes).toBeGreaterThan(0);
@@ -172,7 +239,7 @@ describe('parseCodexChunk (P-015)', () => {
     const second = parseCodexChunk(tokenCount(1000, 600, 40), persisted);
     expect([...second.perModel.keys()]).toEqual(['gpt-6-luna']);
     expect(second.perModel.get('gpt-6-luna')?.inputTokens).toBe(400);
-    expect(persisted).toEqual({ model: 'gpt-6-luna' }); // parsing does not mutate the committed state
+    expect(persisted).toEqual({ model: 'gpt-6-luna', attributionStateVersion: 1 }); // parsing does not mutate the committed state
   });
 
   it('updates the model when the source changes it, without relabeling earlier usage', () => {

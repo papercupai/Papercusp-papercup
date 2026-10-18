@@ -205,7 +205,9 @@ export async function writeRunResult(result: HarnessRunResult, retainedArtifacts
   // shell CLI and TypeScript runner finalize here, before either invokes pruning.
   // Preserve declared original phase receipts as well as the completion result.
   // Binding may happen after pruning, so binding-time retention alone is too late.
-  if (!result.endedAt || (result.verdict !== 'pass' && retainedArtifacts.length === 0)) return;
+  // Failures are the runs later diagnosis needs most. Keep their compact result
+  // even when no phase artifact was declared; count GC may remove the run dir.
+  if (!result.endedAt) return;
   const root = await realpath(path.dirname(result.evidenceDir));
   if (path.basename(result.evidenceDir) !== result.runId) throw new Error('invalid retained harness run id');
   const insideRoot = (target: string) => {

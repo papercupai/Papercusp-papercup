@@ -7833,7 +7833,7 @@
           "POST"
         ]
       },
-      "description": "ONE read door with an explicit lens: view=live (in-a-turn presence), members (fleet/hive membership), claims (who-on-what-item), history (who-was-ever-here). Same underlying model; coord:presence / fleet:status / fleet:assignments / coord:glance become thin aliases (or deprecate). Kills \"which of 5 tools do I call\".",
+      "description": "Read agents through one lens: live, members, claims, history, or audit. For a parked agent audit use view=audit: complete frozen cursor pages with current work, real waits, registered AUTO, exact wake outcomes, provenance and corrections; no caller SQL.",
       "capabilities": [
         "coord:read"
       ],
@@ -7858,7 +7858,7 @@
         "content-fixer"
       ],
       "guidance": {
-        "when": "Before dispatch/handoff/routing: who can take work (view=live)? Who joined what fleet (view=members)? Who's on plan P (view=claims)? Historical who-was-ever-here (view=history). Just need live ownerIds? { view:\"live\", project:\"liveness\", states:[\"live\"] } — ~99% smaller than the default read, and the only form that reliably fits one result.",
+        "when": "Audit parked agents: view=audit, optional auditDirectiveId; follow nextCursor to complete coverage, retaining auditId/asOf. Routing: view=live. Ownership: view=claims. Just live ids: project=liveness, states=[live].",
         "notWhen": "Being notified of future changes (subscribe fleet_assignment change-feed). Full message history (coord:inbox). Rate-limit telemetry (dev:rate_governor_status). NEVER hand-query coord_presence for liveness — sessionState is derived from six legs, two of which are not in Postgres, so no column holds it; use project/states here instead.",
         "chaining": "coord:roster { view } → read ONCE per turn; tail [coord+N] deltas for transitions. For history, use coord:catch-up after to refine by topic/plan."
       }

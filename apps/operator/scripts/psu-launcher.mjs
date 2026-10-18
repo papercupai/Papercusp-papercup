@@ -218,6 +218,7 @@ import {
 import {
   CODEX_GATEWAY_PROVIDER_ID,
   codexGatewayConfigToml,
+  publishCodexConfig,
   SCOPED_INFERENCE_GATEWAY_ENV,
   snapshotScopedInferenceGateway,
 } from "@papercusp/orchestrator/codex-gateway-config";
@@ -7732,7 +7733,7 @@ function applyCodexContextWindow(codexHome, model = null, compactionLimit = null
     const next = codexContextWindowConfigPatch(current, effective, {
       compactionLimit,
     });
-    if (next !== current) writeFileSync(configPath, next, { mode: 0o600 });
+    if (next !== current) publishCodexConfig(configPath, next);
     return effective;
   } catch {
     // Never fail a launch over a window optimization — the `-c` args on a
@@ -7758,10 +7759,7 @@ export function applyCodexGatewayRoute(
   const current = existsSync(configPath)
     ? readFileSync(configPath, "utf8")
     : "";
-  // writeFileSync's mode only protects creation, not a reused home. Tighten
-  // the existing file BEFORE writing a private controller credential.
-  if (existsSync(configPath)) chmodSync(configPath, 0o600);
-  writeFileSync(
+  publishCodexConfig(
     configPath,
     codexGatewayConfigPatch(current, mode === "pin" ? id : null, {
       gatewayOn: mode === "auto",
@@ -7770,7 +7768,6 @@ export function applyCodexGatewayRoute(
       keepProviderTableWhenUnrouted,
       gateway,
     }),
-    { mode: 0o600 },
   );
 }
 

@@ -1147,7 +1147,7 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: 'One-agent route scopes implementation fan-out',
-    body: '“One agent on this plan” / “launch no additional agents” limits extra implementation workers, fleets, or subagents you start; it does not disable platform-routed independent reviews, graders, or validators required for acceptance. Use their canonical workflow and do not omit the review request or park acceptance on the owner because the reviewer is another agent.',
+    body: '“One agent on this plan” / “launch no additional agents” limits extra implementation workers, fleets, or subagents you start; it does not disable platform-routed independent reviews, graders, validators, or consult responders required for acceptance. Use their canonical workflow and do not omit the review request or park acceptance on the owner because the reviewer is another agent. Resolve an agent-authored kickoff constraint with the launching agent, rather than asking the owner to lift the launcher’s paraphrase.',
   },
   {
     // EI-8318: members were completing exactly ONE item per external wake, then ending

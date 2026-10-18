@@ -41,6 +41,13 @@ export interface ControllerClassSample {
 
 export interface CaplessControllerOptions {
   readonly initialWindow?: number;
+  /**
+   * Opt in to initializing a new class from its observed admitted occupancy,
+   * only under healthy, non-actionable feedback. Occupied classes receive no
+   * new initial credit. This is not a floor: later feedback may contract below
+   * that occupancy, and existing/restored classes are never reinitialized.
+   */
+  readonly initializeFromInFlight?: boolean;
   readonly minimumWindow?: number;
   readonly healthySamplesPerIncrease?: number;
   readonly increaseStep?: number;
@@ -228,6 +235,7 @@ function actionableConfidence(verdict: HealthVerdict, resource: HealthResource):
  */
 export class CaplessAdaptiveController {
   readonly initialWindow: number;
+  readonly initializeFromInFlight: boolean;
   readonly minimumWindow: number;
   readonly healthySamplesPerIncrease: number;
   readonly increaseStep: number;
@@ -245,6 +253,7 @@ export class CaplessAdaptiveController {
   constructor(options: CaplessControllerOptions = {}) {
     this.minimumWindow = Math.max(1, Math.floor(options.minimumWindow ?? 1));
     this.initialWindow = Math.max(this.minimumWindow, Math.floor(options.initialWindow ?? this.minimumWindow));
+    this.initializeFromInFlight = options.initializeFromInFlight === true;
     this.healthySamplesPerIncrease = Math.max(1, Math.floor(options.healthySamplesPerIncrease ?? 3));
     this.increaseStep = Math.max(1, Math.floor(options.increaseStep ?? 1));
     this.contractionFraction = clampUnit(options.contractionFraction ?? 0.5);
@@ -327,11 +336,11 @@ export class CaplessAdaptiveController {
     });
   }
 
-  #state(admissionClass: AdmissionClass): MutableClassState {
+  #state(admissionClass: AdmissionClass, admittedOccupancy = 0): MutableClassState {
     let state = this.#classes.get(admissionClass);
     if (!state) {
       state = {
-        desiredWindow: this.initialWindow,
+        desiredWindow: Math.max(this.initialWindow, admittedOccupancy),
         healthySamples: 0,
         pauseUntilMs: 0,
         feedback: new Map(),
@@ -428,7 +437,9 @@ export class CaplessAdaptiveController {
     for (const sample of samples) {
       // A caller floor lifts the class before this step's feedback is applied, so a
       // cold class starts at it and a contracted one resumes at it (WI-10006946).
-      const state = this.#state(sample.admissionClass);
+      const state = this.#state(sample.admissionClass,
+        this.initializeFromInFlight && input.verdict.state === 'healthy' && !input.verdict.actionable
+          ? Math.min(Number.MAX_SAFE_INTEGER, sample.inFlight) : 0);
       state.desiredWindow = Math.max(state.desiredWindow, sample.minimumWindow);
     }
     this.#expire(atMs);

@@ -1,4 +1,4 @@
-import { defineVitestConfig, BASELINE_SCHEMA_GLOBAL_SETUP_PATH } from '@papercusp/test-config/vitest-config';
+import { defineVitestConfig } from '@papercusp/test-config/vitest-config';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tsImport } from 'tsx/esm/api';
@@ -16,6 +16,11 @@ const liveRuntimeDb = liveRuntime ? await tsImport('@papercusp/db-org', import.m
 const posthogRuntimeUnit = process.env.PAPERCUSP_TEST_POSTHOG_LIVE === 'true'
   ? process.env.PAPERCUSP_TEST_POSTHOG_RUNTIME_UNIT : null;
 const remoteRuntime = posthogRuntimeUnit ? await tsImport('./lib/remote-runtime-identity.ts', import.meta.url) : null;
+// PostHog's producer performs two parallel authenticated reads, each bounded at
+// 10s. The generic reporter deadline is intentionally 1s for local readers, so
+// declare the producer's actual boundary here instead of manufacturing a witness
+// after a short consumer timeout.
+const POSTHOG_RUNTIME_CAPTURE_TIMEOUT_MS = 15_000;
 
 // The SP1 C4 carve moved the plans/cross_harness integration tests here; they
 // inject('baselineSchemaDsn') via _pg-tool-fixture, so this package needs the
@@ -46,8 +51,10 @@ export default defineVitestConfig({
         await sql.end({ timeout: 1 });
       }
     },
+    ...(remoteRuntime && posthogRuntimeUnit && !profileRuntimeReader
+      ? { runtimeEnvironmentCaptureTimeoutMs: POSTHOG_RUNTIME_CAPTURE_TIMEOUT_MS } : {}),
   } : {}),
-  globalSetup: [BASELINE_SCHEMA_GLOBAL_SETUP_PATH, resolve(__dirname, 'test/_org-template.globalSetup.ts')],
+  globalSetup: [resolve(__dirname, 'test/_integration-substrate.globalSetup.ts')],
   setupFiles: [
     resolve(__dirname, 'lib/coverage-census/attribution/setup-vitest.ts'),
     // Integration routes also start tracked lazy imports (e.g. session end).

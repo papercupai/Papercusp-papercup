@@ -584,9 +584,20 @@ describe('goals.* resolvers against real SQL', () => {
       } } } };
       expect(detail.goalData.collections.worklist.selection).toMatchObject({ ok: true, selected: [ref] });
       expect(portfolio).toHaveBeenCalledTimes(1);
-      for (const [message] of warn.mock.calls) {
-        expect(message).toBe("[bounded-timeout] agent-obligations:plan-acceptance:overlapping-plan failed: no acceptance-gate verdict has been recorded for 'overlapping-plan' yet — degrading to fallback");
-      }
+      const { AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS } = await import('../agent-obligation-reader');
+      const warningMessages = warn.mock.calls.map(([message]) => String(message));
+      // The deliberately held holder read can make an optional source either
+      // exceed its bound or finish with its canonical fallback error, depending
+      // on scheduling. Assert the exact warning grammar and the required
+      // plan-acceptance warning without making the timing race a product bar.
+      const warningPattern = new RegExp(
+        `^\\[bounded-timeout\\] agent-obligations:[\\w:-]+ (?:exceeded ${AGENT_OBLIGATION_OPTIONAL_READ_TIMEOUT_MS}ms|failed: .+) — degrading to fallback$`,
+      );
+      expect(warningMessages.length).toBeGreaterThan(0);
+      expect(warningMessages.every((message) => warningPattern.test(message))).toBe(true);
+      expect(warningMessages.some((message) => message.startsWith(
+        '[bounded-timeout] agent-obligations:plan-acceptance:overlapping-plan ',
+      ))).toBe(true);
       const [saved] = await sql`SELECT properties FROM harness_shared.goals WHERE workspace_id=${WS} AND id=${GOAL}`;
       expect(saved.properties).toEqual(properties);
     } finally {

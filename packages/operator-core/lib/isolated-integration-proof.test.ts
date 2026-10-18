@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
-import { assertIsolatedWorkerReaped, captureIsolatedWorker, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress } from '../test/isolated-integration-proof';
+import { assertIsolatedWorkerReaped, captureIsolatedWorker, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
 import { assertPrivateUnrelatedCheckpointObservation, privateClaudeModelConfig, privateCodexModelConfig, retainPrivateProviderResponse, stopPrivateOperatorHost, type PrivateUnrelatedCheckpointObservation } from '../test/private-http-workspace-preflight';
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
@@ -251,6 +251,48 @@ it('fails bounded host cleanup when a descendant still owns the output pipes', a
     host.stdout?.destroy(); host.stderr?.destroy();
   }
 }, 5_000);
+
+it.for(['receipt', 'throw'] as const)('retains native launch %s diagnostics before disposable home removal', async outcome => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-native-launch-'));
+  const nativeHome = join(evidenceDir, 'native-home');
+  mkdirSync(nativeHome);
+  const sources = { stdout: join(nativeHome, 'stdout.log'), normalized: join(nativeHome, 'normalized.log'),
+    boot: join(nativeHome, 'boot.log') };
+  const refusal = new Error('kickoff-not-submitted:codex-backend-frame-not-observed');
+  const receipt = { isError: true, data: { agentStarted: false } };
+  try {
+    const launch = async () => {
+      for (const [kind, path] of Object.entries(sources)) writeFileSync(path, kind + ' original failure evidence');
+      if (outcome === 'throw') throw refusal;
+      return receipt;
+    };
+    const operation = withIsolatedNativeLaunchDiagnostics(evidenceDir, launch, async () => {
+      retainIsolatedNativeTaskDiagnostics(evidenceDir, { taskId: 'native-refused', state: 'failed',
+        exitCode: 1, nativeStreamError: refusal.message }, sources);
+    }).finally(() => rmSync(nativeHome, { recursive: true, force: true }));
+    if (outcome === 'throw') await expect(operation).rejects.toBe(refusal);
+    else await expect(operation).resolves.toBe(receipt);
+    expect(existsSync(nativeHome)).toBe(false);
+    for (const kind of Object.keys(sources))
+      expect(readFileSync(join(evidenceDir, `native-task-${kind}.log`), 'utf8')).toBe(kind + ' original failure evidence');
+    expect(JSON.parse(readFileSync(join(evidenceDir, 'native-task-diagnostics.json'), 'utf8')))
+      .toMatchObject({ task: { taskId: 'native-refused', state: 'failed', exitCode: 1, nativeStreamError: refusal.message },
+        files: { stdout: { captured: true }, normalized: { captured: true }, boot: { captured: true } } });
+  } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
+});
+
+it('records failed launch diagnostics while preserving the original launch error', async () => {
+  const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-native-launch-errors-'));
+  const refusal = new Error('original native refusal');
+  const capture = async () => { throw new Error('task ledger unavailable'); };
+  try {
+    await expect(withIsolatedNativeLaunchDiagnostics(evidenceDir, async () => { throw refusal; }, capture)).rejects.toBe(refusal);
+    expect(readFileSync(join(evidenceDir, 'worker-progress.ndjson'), 'utf8'))
+      .toContain('launch-diagnostics-failed');
+    await expect(withIsolatedNativeLaunchDiagnostics(evidenceDir, async () => 'started', capture))
+      .rejects.toThrow('task ledger unavailable');
+  } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
+});
 
 it('retains native output when a later source snapshot is empty or shorter', () => {
   const evidenceDir = mkdtempSync(join(tmpdir(), 'isolated-native-shrink-'));

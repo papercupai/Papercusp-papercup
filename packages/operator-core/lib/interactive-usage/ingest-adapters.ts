@@ -29,6 +29,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { codexHomesRoot } from '@papercusp/orchestrator/session-launch-dirs';
+import { parseEnvelope } from '../turn-provenance/turn-provenance';
 import type { ParsedChunk, TranscriptDelta, TranscriptParserState, TranscriptUsageEvent } from './ingest-claude-transcripts';
 import { parseTranscriptChunk, transcriptEventTime, transcriptUsageEventKey } from './ingest-claude-transcripts';
 
@@ -250,6 +251,14 @@ function codexCarryLineagePredecessor(payload: {
   return undefined;
 }
 
+/** Keep the established cumulative key format identical for old and new native wire records. */
+function codexUsageFingerprint(value: Record<string, number> | null | undefined): string | null {
+  const fields = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'total_tokens'];
+  const entries = value && fields.filter((key) => value[key] !== undefined).map((key) => [key, value[key]] as const);
+  return entries?.length && entries.every(([, n]) => Number.isFinite(n) && n >= 0) && entries.some(([, n]) => n > 0)
+    ? JSON.stringify(entries) : null;
+}
+
 /** Parse a codex rollout chunk. Exported for unit tests. */
 export function parseCodexChunk(chunk: string, priorState: TranscriptParserState = {}): ParsedChunk {
   const perModel = new Map<string, TranscriptDelta>();
@@ -257,6 +266,7 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
   const parserState = { ...priorState };
   const { text, bytes } = completeLines(chunk);
   if (bytes === 0) return { perModel, consumedBytes: 0, parserState };
+  parserState.attributionStateVersion = 1;
   let model = typeof parserState.model === 'string' && parserState.model ? parserState.model : UNKNOWN_CODEX_MODEL;
   let relativeOffset = 0;
   for (const line of text.split('\n')) {
@@ -273,9 +283,15 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
       type?: string;
       timestamp?: unknown;
       payload?: {
+        id?: string;
         type?: string;
         model?: string;
         turn_id?: string;
+        session_id?: string;
+        thread_id?: string;
+        response_id?: string;
+        usage?: Record<string, number>;
+        thread_token_usage?: Record<string, number>;
         forked_from_id?: string;
         role?: string;
         content?: unknown;
@@ -295,6 +311,8 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
       // A resumed parser without prefix evidence must not label a later request as startup.
       parserState.contextGeneration ??= 0;
       parserState.requestOrdinal ??= 0;
+      parserState.nativeSessionId = typeof evt.payload?.id === 'string' ? evt.payload.id : undefined;
+      delete parserState.pendingCodexUsageIdentity;
       if (typeof evt.payload?.forked_from_id === 'string' && evt.payload.forked_from_id) {
         parserState.predecessorSessionId = evt.payload.forked_from_id;
       }
@@ -307,10 +325,20 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
       if (predecessor && !parserState.predecessorSessionId) {
         parserState.predecessorSessionId = predecessor;
       }
+      if (evt.payload?.type === 'message' && evt.payload.role === 'user') {
+        // Attribution only: preserve an explicit recorded origin. An ordinary
+        // user-shaped row establishes neither owner authorship nor a trigger.
+        const blocks = Array.isArray(evt.payload.content) ? evt.payload.content : [];
+        const content = blocks.filter((part): part is { type: 'input_text'; text: string } =>
+          part != null && typeof part === 'object' && (part as { type?: unknown }).type === 'input_text' &&
+          typeof (part as { text?: unknown }).text === 'string').map(part => part.text).join('\n');
+        parserState.pendingTurnTrigger = parseEnvelope(content)?.origin;
+      }
     }
     if (evt?.type === 'compacted' || evt.payload?.type === 'context_compacted') {
       parserState.contextGeneration = (parserState.contextGeneration ?? 0) + 1;
       delete parserState.lastCumulativeUsage;
+      delete parserState.pendingCodexUsageIdentity;
     }
     if (evt?.type === 'turn_context') {
       if (typeof evt.payload?.model === 'string' && evt.payload.model) {
@@ -318,6 +346,24 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
         parserState.model = model;
       }
       parserState.turnId = typeof evt.payload?.turn_id === 'string' ? evt.payload.turn_id : undefined;
+      parserState.turnTrigger = parserState.pendingTurnTrigger;
+      delete parserState.pendingTurnTrigger;
+      delete parserState.pendingCodexUsageIdentity;
+      continue;
+    }
+    if (evt?.type === 'token_usage_record') {
+      // This is identity evidence for the following notification, not a second
+      // counted request. Persist it across byte-watermark/chunk boundaries.
+      delete parserState.pendingCodexUsageIdentity;
+      const p = evt.payload;
+      const cumulative = codexUsageFingerprint(p?.thread_token_usage);
+      const usage = codexUsageFingerprint(p?.usage);
+      if (parserState.nativeSessionId && p?.session_id === parserState.nativeSessionId &&
+          p.thread_id === parserState.nativeSessionId && p.turn_id && p.turn_id === parserState.turnId &&
+          typeof p.response_id === 'string' && p.response_id.length <= 512 && p.response_id.trim() === p.response_id &&
+          p.response_id.length > 0 && !/[\r\n]/.test(p.response_id) && cumulative && usage) {
+        parserState.pendingCodexUsageIdentity = { responseId: p.response_id, turnId: p.turn_id, cumulative, usage };
+      }
       continue;
     }
     if (evt?.type !== 'event_msg' || evt.payload?.type !== 'token_count') continue;
@@ -325,10 +371,11 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
     if (!u) continue; // rate-limit-only token_count update
     const cumulative = evt.payload?.info?.total_token_usage;
     // Ignore non-usage metadata; an empty/invalid object is NOT a request id.
-    const fields = ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'total_tokens'];
-    const entries = cumulative && fields.filter((key) => cumulative[key] !== undefined).map((key) => [key, cumulative[key]] as const);
-    const fingerprint = entries?.length && entries.every(([, n]) => Number.isFinite(n) && n >= 0) && entries.some(([, n]) => n > 0)
-      ? JSON.stringify(entries) : null;
+    const fingerprint = codexUsageFingerprint(cumulative);
+    const identity = parserState.pendingCodexUsageIdentity;
+    delete parserState.pendingCodexUsageIdentity;
+    const providerResponseId = identity && identity.turnId === parserState.turnId && identity.cumulative === fingerprint &&
+      identity.usage === codexUsageFingerprint(u) ? identity.responseId : undefined;
     if (fingerprint) {
       if (fingerprint === parserState.lastCumulativeUsage) continue;
       parserState.lastCumulativeUsage = fingerprint;
@@ -353,6 +400,8 @@ export function parseCodexChunk(chunk: string, priorState: TranscriptParserState
       contextGeneration: parserState.contextGeneration, predecessorSessionId: parserState.predecessorSessionId,
       requestOrdinal: parserState.requestOrdinal,
       cacheReadKnown: typeof u.cached_input_tokens === 'number' && Number.isSafeInteger(u.cached_input_tokens) && u.cached_input_tokens >= 0,
+      ...(providerResponseId ? { providerResponseId } : {}),
+      ...(parserState.turnTrigger ? { turnTrigger: parserState.turnTrigger } : {}),
       turnId: parserState.turnId });
     const acc = perModel.get(model) ?? emptyDelta();
     acc.turns += 1;

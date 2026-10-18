@@ -44,6 +44,7 @@ const {
   deliveryBacklogSummary,
   settleCancelledAwaitDeliveries,
   findAnnouncementsForKey,
+  findNearMissKeys,
   AwaitGenerationMismatchError,
   listActiveAnnouncements,
   listFiredAnnouncements,
@@ -2637,6 +2638,49 @@ describe('recordKeyFire / getKeyFireLatch / inspectEventKey.fireLatch (PG)', () 
     expect(history.waiters).toHaveLength(1);
     expect(history.fireLatch).toBeNull();
   });
+
+  it('bounds exact event inspection and await preflight reads under real table locks', async () => {
+    const withLock = async (
+      table: 'event_awaits' | 'event_key_fires',
+      run: () => Promise<void>,
+    ) => {
+      let unlock!: () => void;
+      let reportLockAcquired!: () => void;
+      const locked = new Promise<void>((resolve) => { reportLockAcquired = resolve; });
+      const release = new Promise<void>((resolve) => { unlock = resolve; });
+      const blocker = rootSql.begin(async tx => {
+        if (table === 'event_awaits') {
+          await tx`LOCK TABLE harness_shared.event_awaits IN ACCESS EXCLUSIVE MODE`;
+        } else {
+          await tx`LOCK TABLE harness_shared.event_key_fires IN ACCESS EXCLUSIVE MODE`;
+        }
+        reportLockAcquired();
+        await release;
+      });
+      await locked;
+      try {
+        await run();
+      } finally {
+        unlock();
+        await blocker;
+      }
+    };
+    const assertBoundedContention = async (read: Promise<unknown>) => {
+      const startedAt = Date.now();
+      const error = await read.then(() => null, failure => failure as Error & { pgCode?: string });
+      expect(error).toMatchObject({ name: 'OrgTxnTimeoutError', pgCode: '55P03' });
+      const elapsedMs = Date.now() - startedAt;
+      expect(elapsedMs, `${error?.message ?? 'missing timeout error'} (elapsed ${elapsedMs}ms)`).toBeLessThan(15_000);
+    };
+
+    await withLock('event_awaits', async () => {
+      await assertBoundedContention(inspectEventKey('lock:grant:status-read'));
+      await assertBoundedContention(findNearMissKeys('lock:grant:await-preflight'));
+    });
+    await withLock('event_key_fires', async () => {
+      await assertBoundedContention(probeKeyFireEvidence('lock:grant:fire-preflight'));
+    });
+  }, 30_000);
 });
 
 describe('probeKeyFireEvidence (PG) — EI-18676056143796303, the emitter evidence behind the orphan guard', () => {

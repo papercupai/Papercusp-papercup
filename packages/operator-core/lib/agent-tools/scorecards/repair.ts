@@ -111,6 +111,9 @@ export default defineTool({
       async () => {
         const input: DispatchPendingGradingAuditsInput = {
           ctx: (args.gradingLaunch ? { ...ctx, gradingLaunch: args.gradingLaunch } : ctx) as DispatchPendingGradingAuditsInput['ctx'],
+          // This callable surface promises dispatch-only repair. The periodic
+          // sweep keeps stranded-card re-certification enabled by default.
+          recertifyStranded: false,
           ...(args.targetIds ? { targetIds: args.targetIds } : {}),
           ...(args.harness ? { harness: args.harness } : {}),
         };

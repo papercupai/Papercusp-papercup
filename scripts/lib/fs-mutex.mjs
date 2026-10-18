@@ -776,9 +776,12 @@ async function waitForReaders(
  * The callback may check for live queued writers and voluntarily return early.
  * The check uses the same ticket reclamation as acquisition; it never releases
  * the lock itself. Reader-mode and explicitly disabled locks have no check.
+ * `waitForReadersBeforeReserve` leaves reader admission open while this writer
+ * waits for existing readers. The reserved writer still drains again for races.
+ * Continuous readers can exhaust the same timeout without blocking newcomers.
  *
  * @param {(context?: { hasWaiters: () => Promise<boolean> }) => Promise<T>} fn
- * @param {{ mode?: 'read' | 'reader' | 'write', lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
+ * @param {{ mode?: 'read' | 'reader' | 'write', waitForReadersBeforeReserve?: boolean, lockRootDir?: string, timeoutMs?: number, staleMs?: number, retryMs?: number, onWaiting?: (info: { owner: string, elapsedMs: number }) => void, waitingNoticeIntervalMs?: number, onAcquired?: (info: { waitedMs: number, admissionSubphaseTimingsMs?: Record<string, number> }) => void, intent?: Record<string, string | number | boolean>, io?: FsMutexIo }} [opts]
  * @returns {Promise<T>}
  */
 export async function withFsMutex(name, fn, opts = {}) {
@@ -903,6 +906,17 @@ export async function withFsMutex(name, fn, opts = {}) {
           await measureAdmissionSubphase("backoff-sleep", () => sleep(retryMs));
           continue;
         }
+      }
+      if (opts.waitForReadersBeforeReserve) {
+        // EI-26278797990253601: reserving before a long generation reader
+        // finishes blocked every new test/SDK reader although no mutation was
+        // running. Keep this oldest writer's FIFO ticket, but leave admission
+        // open until the current readers drain. The post-reservation drain is
+        // still required: a new reader can win between this check and mkdir.
+        await measureAdmissionSubphase("reader-drain-before-reserve", () => waitForReaders(readersDir, {
+          timeoutMs, staleMs, retryMs, startedAt,
+          onWaiting: opts.onWaiting, waitingNoticeIntervalMs, io,
+        }));
       }
       try {
         await measureAdmissionSubphase("writer-lock-mkdir", () => mkdir(lockDir));

@@ -88,7 +88,8 @@ describe('member baseline implementation route scope', () => {
   it('does not treat a no-additional-agent route as a veto on platform acceptance', () => {
     const rule = MEMBER_BASELINE_RULES.find((item) => item.head === 'One-agent route scopes implementation fan-out');
     expect(rule?.body).toContain('launch no additional agents');
-    expect(rule?.body).toContain('platform-routed independent reviews, graders, or validators required for acceptance');
+    expect(rule?.body).toContain('platform-routed independent reviews, graders, validators, or consult responders required for acceptance');
+    expect(rule?.body).toContain('with the launching agent');
     const context = composeMemberLaunchContext({
       fleetSlug: 'single-agent-fleet',
       plan: 'single-agent-plan',

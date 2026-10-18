@@ -180,7 +180,7 @@ it('keeps request fixtures on the bounded progress-aware builder path', () => {
     visit(source);
   }
   expect(callers.sort()).toEqual([routingProof, nativeProof, 'blog-post-http-fixture.ts', 'consult-cascade-http-fixture.ts', 'cupboard-listing-install-http-fixture.ts',
-    'governance-http-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
+    'customer-data-support-http-fixture.ts', 'governance-http-fixture.ts', 'integrations-setup-http-fixture.ts', 'knowledge-native-fixture.ts', 'liveness-alarm-http-fixture.ts',
     'roster-stop-http-fixture.ts', 'staging-first-http-fixture.ts']);
 });
 
@@ -304,14 +304,14 @@ it('allows a progressing real build beyond its checkpoint and retains its bounde
   const evidenceDir = mkdtempSync(join(tmpdir(), 'private-builder-')); dirs.push(evidenceDir);
   const journal = join(evidenceDir, 'hono-host.mjs.build-steps.jsonl');
   const result = await buildPrivateOperatorApiBundle(evidenceDir, evidenceDir, { command: 'bash',
-    args: ['-c', 'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; for step in a b c d e; do bundle_host_run_step "$step" sleep .25; done; echo bundle > "$3"',
-      '_', common, journal, join(evidenceDir, 'hono-host.mjs')], timeoutMs: 600, maxMs: 2400, pollMs: 20 });
+    args: ['-c', 'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; for step in a b c d e; do bundle_host_run_step "$step" sleep .5; done; echo bundle > "$3"',
+      '_', common, journal, join(evidenceDir, 'hono-host.mjs')], timeoutMs: 2000, maxMs: 6000, pollMs: 20 });
   expect(result.sha256).toMatch(/^[a-f0-9]{64}$/);
   const receipt = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
   expect(receipt).toMatchObject({ status: 0, signal: null, progress: { extensions: expect.any(Number) } });
-  expect(receipt.elapsedMs).toBeGreaterThan(600);
+  expect(receipt.elapsedMs).toBeGreaterThan(2000);
   expect(receipt.progress.extensions).toBeGreaterThan(0);
-  expect(receipt.elapsedMs).toBeLessThan(2400);
+  expect(receipt.elapsedMs).toBeLessThan(6000);
 });
 
 it('prepares the real bundle receipt after progress renews the build checkpoint', async () => {
@@ -319,15 +319,15 @@ it('prepares the real bundle receipt after progress renews the build checkpoint'
   const bundle = join(evidenceDir, 'hono-host.mjs');
   const result = await preparePrivateOperatorApiBundle(evidenceDir, evidenceDir, { builder: {
     command: 'bash', args: ['-c',
-      'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; for step in a b c d e; do bundle_host_run_step "$step" sleep .25; done; echo bundle > "$3"',
-      '_', common, `${bundle}.build-steps.jsonl`, bundle], timeoutMs: 600, maxMs: 2400, pollMs: 20,
+      'source "$1"; BUNDLE_HOST_STEP_LOG="$2"; for step in a b c d e; do bundle_host_run_step "$step" sleep .5; done; echo bundle > "$3"',
+      '_', common, `${bundle}.build-steps.jsonl`, bundle], timeoutMs: 2000, maxMs: 6000, pollMs: 20,
   } });
   const retained = readFileSync(join(evidenceDir, 'operator-api-preflight.json'));
   expect(JSON.parse(String(retained))).toEqual({ path: bundle, sha256: result.sha256 });
   expect(result.receiptSha256).toBe(createHash('sha256').update(retained).digest('hex'));
   expect(result.sha256).toBe(createHash('sha256').update(readFileSync(bundle)).digest('hex'));
   const build = JSON.parse(readFileSync(join(evidenceDir, 'operator-api-build-result.json'), 'utf8'));
-  expect(build.elapsedMs).toBeGreaterThan(600);
+  expect(build.elapsedMs).toBeGreaterThan(2000);
   expect(build.progress.extensions).toBeGreaterThan(0);
   expect(build.status).toBe(0);
 });

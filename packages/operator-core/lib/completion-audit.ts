@@ -785,6 +785,14 @@ export function auditWhereSql(
  */
 export const LIVE_DROVE_UI_EVIDENCE_SUBCOMMANDS = ['capture', 'screenshot', 'check'] as const;
 
+/**
+ * A recognizable test-runner invocation in `testsRun`. Shared by the integration-label check in
+ * work_items:complete and the change-kind proof check for `logic` / `test-only`
+ * (change-kind-proof.ts), so both read "a test runner ran" the same way.
+ */
+export const TEST_RUNNER_COMMAND_RE =
+  /\b(?:npm|pnpm|yarn|bun)\s+(?:test|run\s+\S*test\b|exec\s+\S*test\b)|\b(?:npx|pnpx|bunx)\s+(?:vitest|jest|mocha|ava|pytest)\b|\b(?:vitest|jest|mocha|ava|pytest)\s+(?:run|--run)\b|\b(?:testing:run|node\s+--test|go\s+test|cargo\s+test)\b/i;
+
 const SCREENSHOT_ARTIFACT_PATTERNS: readonly RegExp[] = [
   // An image artifact path — a screenshot/capture output file.
   // PPM is the canonical raw-pixel output of the vmctl desktop verifier.  The

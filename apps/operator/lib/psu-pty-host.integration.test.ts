@@ -2264,6 +2264,30 @@ describe('session-port managed seed + native persistence helpers', () => {
     }
   });
 
+  it('writes session-port provenance under the platform home without a directory override', () => {
+    const root = mkdtempSync(join(tmpdir(), 'psu-port-default-provenance-'));
+    const previousHome = process.env.PAPERCUSP_HOME;
+    process.env.PAPERCUSP_HOME = root;
+    try {
+      const tagged = tagSessionPortTurn('history', 'su-port-default', {}, 1234);
+      expect(tagged).toMatch(/^⟦turn-origin:session-port nonce:[a-f0-9]{16}⟧\nhistory$/);
+      const dir = join(root, 'turn-provenance');
+      const file = join(dir, 'su-port-default.jsonl');
+      const row = JSON.parse(readFileSync(file, 'utf8'));
+      expect(row).toMatchObject({
+        sid: 'su-port-default', origin: 'session-port', ts: 1234,
+        sha256: createHash('sha256').update('history').digest('hex'),
+      });
+      expect(tagged).toContain(`nonce:${row.nonce}`);
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      expect(statSync(file).mode & 0o777).toBe(0o600);
+    } finally {
+      if (previousHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = previousHome;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('accepts only the exact marker in the target Claude/Codex/OMP native JSONL roots', async () => {
     const home = mkdtempSync(join(tmpdir(), 'psu-port-native-'));
     const marker = `[PAPERCUSP SESSION PORT CHECKSUM ${'b'.repeat(64)}]`;

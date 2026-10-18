@@ -205,7 +205,11 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
   // Only the host geometry and supplied roster population are fixtures. The
   // component's native fetch, callbacks and HTTP receipts stay unmodified.
   const operatorRoot = resolve(import.meta.dirname, '../../../apps/operator');
-  const entry = input.dev ? `
+  // Standalone browser proofs mount the product component directly instead of
+  // going through the full SPA root. Keep the same per-window workspace
+  // transport seam the real RootSyncProvider installs so query resolvers run
+  // under the workspace selected by ?ws= rather than the process-global one.
+  const entry = withPrivateBrowserWorkspaceHeader(input.dev ? `
     import * as React from 'react';
     import { createRoot } from 'react-dom/client';
     import { NuqsAdapter } from 'nuqs/adapters/react';
@@ -555,7 +559,7 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       agents: ${JSON.stringify(rows)}, open: true, onClose: () => {},
       loadEndedSessions: async () => ({ sessions: [], hasMore: false, nextBefore: null }),
     }));
-  `;
+  `);
   const originals = new Map<string, { sha256: string; bytes: number }>();
   const standaloneRouter = Boolean(input.docs || input.brainstorm || input.prs || input.insights || input.testing || input.harnessSettings || input.conversations || input.createDock
     || input.overview || input.hud || input.health || input.harnesses || input.projectHistory || input.calendar || input.learning || input.workflows || input.stats || input.git || input.frames || input.evals || input.support || input.cupboard || input.dev);
@@ -688,6 +692,14 @@ export async function buildPortalRosterBrowser(input: Pick<PortalRosterBrowserIn
       ? '/packages/ui/src/portal-shortcuts.tsx' : '/packages/ui/src/agents-popover.tsx')),
     'Executed bundle must contain the actual product control');
   return { portal, entry, bundle, css, originals };
+}
+
+/** Keep the real per-window workspace fetch seam ahead of every standalone product entry. */
+export function withPrivateBrowserWorkspaceHeader(entry: string): string {
+  return `
+    import { installWorkspaceHeaderFetch } from '@papercusp/operator-core/lib/transport-adapters/workspace-header-fetch';
+    installWorkspaceHeaderFetch();
+  ` + entry;
 }
 
 /** A failing action must leave its original rendered state before teardown. */
@@ -2360,7 +2372,8 @@ export async function runPortalRosterBrowser(input: PortalRosterBrowserInput) {
         : [input.hud ? 'advRoster.list' : input.plans ? 'plans.list' : 'plans.attention'];
       if (!url.pathname.endsWith('/rest-query') || !queryNames.some(query => name?.startsWith(query))) return;
       const observation = { at: new Date().toISOString(), url: response.url(), name, args: url.searchParams.get('args'),
-        delta: url.searchParams.get('delta'), status: response.status() };
+        delta: url.searchParams.get('delta'), status: response.status(),
+        requestWorkspace: response.request().headers()['x-papercusp-workspace'] ?? null };
       const capture = response.json().then(body => {
         syncReads.push({ ...observation, body });
       }, error => {
@@ -2955,6 +2968,8 @@ async function runPrivateHealthPage(page: Page, context: BrowserContext, input: 
   await Promise.all([...pendingReads]);
   const snapshot = reads.find(read => read.name === 'health.snapshot' && read.status === 200);
   assert.ok(snapshot, 'Health must read the actual private sync endpoint');
+  assert.equal(snapshot.requestWorkspace, input.workspace,
+    'standalone Health browser must send its selected workspace to the resolver request scope');
   const row = (snapshot.body as { rows: Array<{ workspaceId: string }> }).rows[0];
   assert.equal(row.workspaceId, input.workspace, 'snapshot must belong to the private runtime workspace');
   assert.ok(reads.some(read => read.name === 'health.history' && read.status === 200));

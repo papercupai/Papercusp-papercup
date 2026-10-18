@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { runWithPrivatePodman, waitForPrivatePodmanApi } from './with-private-podman.mjs';
 
 async function fixture(t, handle) {
@@ -153,4 +154,68 @@ test('failed readiness cleans the API and keeps the command unstarted', async t 
   assert.equal(receipt.commandPid, undefined);
   assert.equal(receipt.cleanup.apiStopped, true);
   assert.throws(() => process.kill(receipt.apiPid, 0), { code: 'ESRCH' });
+});
+
+test('wrapper deadline survives observer exit and cleans command descendants', { timeout: 15_000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'pc-podman-observer-'));
+  const evidenceDir = join(dir, 'evidence');
+  const marker = join(dir, 'command.json');
+  const podman = join(dir, 'podman');
+  await writeFile(podman, `#!/usr/bin/env node
+require('node:http').createServer((req,res)=>res.end('OK')).listen(process.argv.at(-1).slice(7));
+`);
+  await chmod(podman, 0o755);
+  const command = `
+const { spawn } = require('node:child_process');
+const child = spawn(process.execPath, ['-e', 'process.on("SIGTERM",()=>{});setInterval(()=>{},1000)'], {stdio:'ignore'});
+require('node:fs').writeFileSync(process.argv[1], JSON.stringify({pid:process.pid, descendant:child.pid}));
+setInterval(()=>{},1000);
+`;
+  // The launching observer exits immediately; only the maintained wrapper can
+  // enforce the deadline and preserve cleanup evidence after it is gone.
+  const wrapper = fileURLToPath(new URL('./with-private-podman.mjs', import.meta.url));
+  const observer = spawn(process.execPath, ['-e', `
+const child = require('node:child_process').spawn(process.execPath, JSON.parse(process.argv[1]), {
+  detached:true, stdio:'ignore', env:{...process.env, PATH:process.argv[2]+':'+process.env.PATH}
+});
+require('node:fs').writeFileSync(process.argv[3], String(child.pid));
+child.unref();
+`, JSON.stringify(['--import', 'tsx', wrapper, '--evidence-dir', evidenceDir,
+    '--run-timeout-ms', '1500', '--', process.execPath, '-e', command, marker]), dir, join(dir, 'wrapper.pid')],
+  { stdio: 'ignore' });
+  t.after(async () => {
+    // Also bound cleanup on the intentionally red pre-fix implementation.
+    for (const path of [marker, join(evidenceDir, 'receipt.json')]) {
+      try {
+        const saved = JSON.parse(await readFile(path, 'utf8'));
+        for (const pid of [saved.descendant, saved.pid, saved.commandPid, saved.apiPid]) {
+          if (pid) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+        }
+      } catch {}
+    }
+    try { process.kill(-Number(await readFile(join(dir, 'wrapper.pid'), 'utf8')), 'SIGKILL'); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  });
+  const observerExit = await new Promise(resolve => observer.once('close', (code, signal) => resolve({code, signal})));
+  assert.deepEqual(observerExit, {code:0, signal:null});
+  let receipt;
+  const until = Date.now() + 10_000;
+  while (Date.now() < until) {
+    try { receipt = JSON.parse(await readFile(join(evidenceDir, 'receipt.json'), 'utf8')); break; } catch {}
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.ok(receipt, 'wrapper must write a terminal receipt after its observer exits');
+  assert.match(receipt.failure, /run deadline exceeded/);
+  assert.equal(receipt.runTimeoutMs, 1500);
+  assert.ok(receipt.deadlineExceededAt);
+  assert.deepEqual(receipt.cleanup, {apiStopped:true, commandStopped:true});
+  const saved = JSON.parse(await readFile(marker, 'utf8'));
+  for (const pid of [saved.pid, saved.descendant, receipt.apiPid]) {
+    // A reparented zombie has already stopped executing; the host reaper owns
+    // its final removal. It must never be confused with a live workload.
+    try {
+      const stat = await readFile(`/proc/${pid}/stat`, 'utf8');
+      assert.equal(stat.slice(stat.lastIndexOf(') ') + 2).split(' ')[0], 'Z');
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
 });

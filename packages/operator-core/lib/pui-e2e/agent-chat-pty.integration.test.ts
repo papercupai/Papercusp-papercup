@@ -899,6 +899,7 @@ class PuiPane {
   readonly pty: IPty;
   private raw = '';
   private exit: Promise<{ exitCode: number; signal?: number }>;
+  private exitReceipt: { exitCode: number; signal?: number; at: string } | undefined;
   private cols: number;
   private rows: number;
   private setupDriverArmed = false;
@@ -1020,7 +1021,10 @@ class PuiPane {
         }).finally(() => { this.setupDriverRunning = false; });
       }
     });
-    this.exit = new Promise((resolve) => this.pty.onExit(resolve));
+    this.exit = new Promise((resolve) => this.pty.onExit((result) => {
+      this.exitReceipt = { ...result, at: new Date().toISOString() };
+      resolve(result);
+    }));
   }
 
   screen(): string {
@@ -1105,6 +1109,49 @@ class PuiPane {
       }),
     };
   }
+
+  /** Capture the live PTY/process state before a teardown can erase it. */
+  async capturePreCleanupEvidence(): Promise<Record<string, unknown>> {
+    const frame = { screen: this.failureScreen(), rawTail: this.raw.slice(-12_000),
+      pid: this.pty.pid, exitReceipt: this.exitReceipt, at: new Date().toISOString() };
+    const descendants: string[] = [];
+    let processProbeError: string | undefined;
+    try {
+      // Query only this launch. A host-wide args census can exceed execFile's
+      // output buffer and discard the very process state this snapshot needs.
+      const seen = new Set([this.pty.pid]);
+      let parents = [this.pty.pid];
+      let first = true;
+      const deadline = performance.now() + 2_000;
+      while (parents.length) {
+        const remaining = Math.ceil(deadline - performance.now());
+        if (remaining <= 0) throw new Error('workbench process snapshot exceeded its 2000ms deadline');
+        let stdout: string;
+        try {
+          ({ stdout } = await execFileAsync('ps', ['-o', 'pid=,ppid=,stat=,etime=,wchan:24=,args=',
+            ...(first ? ['-p', String(this.pty.pid)] : []), '--ppid', parents.join(',')], {
+            encoding: 'utf8', timeout: remaining,
+          }));
+        } catch (error) {
+          if ((error as { code?: number }).code === 1) break; // no surviving selection
+          throw error;
+        }
+        first = false;
+        const rows = stdout.split('\n').filter((line) => line.trim());
+        descendants.push(...rows);
+        parents = rows.map((line) => Number(line.trim().split(/\s+/, 1)[0])).filter((pid) => !seen.has(pid));
+        for (const pid of parents) seen.add(pid);
+      }
+    } catch (error) {
+      processProbeError = error instanceof Error ? error.message : String(error);
+    }
+    return {
+      ...frame, descendants, processProbeError, exitReceiptAfterProbe: this.exitReceipt,
+      observerMaxLateMs: this.observerMaxLateMs,
+    };
+  }
+
+  whenExited(): Promise<{ exitCode: number; signal?: number }> { return this.exit; }
 
   write(keys: string): void {
     if (keys === 'm' && this.inputTraceLog) {
@@ -1817,8 +1864,9 @@ async function stopEngines(): Promise<void> {
 
 beforeAll(async () => {
   vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
-  operatorProcessBundlePath = buildOperatorProcessBundle();
+  // Refuse an incomplete installed-store selection before the expensive bundle.
   bin = ensurePuiBinary();
+  operatorProcessBundlePath = buildOperatorProcessBundle();
   binarySha256 = createHash('sha256').update(readFileSync(bin)).digest('hex');
   home = mkdtempSync(path.join(tmpdir(), 'pui-agent-chat-e2e-'));
   const fixturePapercuspHome = path.join(home, '.papercusp');
@@ -4664,20 +4712,33 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
       env: { PATH: `${path.dirname(bin)}:${process.env.PATH ?? '/usr/bin:/bin'}` },
     });
     const session = `pui-chat-${pane.pty.pid}`;
-    const exited = new Promise<number>((resolve) => pane.pty.onExit(({ exitCode }) => resolve(exitCode)));
+    const exited = pane.whenExited().then(({ exitCode }) => exitCode);
+    let preCleanupEvidence: Record<string, unknown> | undefined;
     const cleanup = async () => {
+      // onTestFailed is invoked after the test's finally block. Preserve the
+      // actual failing frame and descendants before stop()/kill-session erase
+      // the only evidence that distinguishes a product hang from teardown.
+      preCleanupEvidence ??= await pane.capturePreCleanupEvidence();
+      console.info('PUI_P030_PRE_CLEANUP', JSON.stringify({ session, ...preCleanupEvidence }));
+      if (process.env.PUI_TIMING_DIR) {
+        mkdirSync(process.env.PUI_TIMING_DIR, { recursive: true });
+        writeFileSync(path.join(process.env.PUI_TIMING_DIR, `workbench-${pane.pty.pid}.json`),
+          JSON.stringify({ session, ...preCleanupEvidence }));
+      }
       await pane.stop();
       paneZellij(['kill-session', session]);
       paneZellij(['delete-session', session]);
       rmSync(launchDir, { recursive: true, force: true });
     };
-    return { launchDir, pane, session, exited, cleanup };
+    return { launchDir, pane, session, exited, cleanup,
+      get preCleanupEvidence() { return preCleanupEvidence; } };
   };
 
   test.skipIf(!zellijAvailable)('P-030: bare `pui` opens the chat as the focused main pane with the workbench panes beside it', async ({ onTestFailed }) => {
     const wb = startChatWorkbench(200, 50);
     onTestFailed(() => console.info('PUI_P030_FAILURE', JSON.stringify({
-      session: wb.session, sessions: listSessions(), ...wb.pane.failureEvidence(),
+      session: wb.session, sessions: listSessions(), preCleanupEvidence: wb.preCleanupEvidence,
+      ...wb.pane.failureEvidence(),
     })));
     try {
       // The child chat and zellij's tab-bar plugin render independently. Wait

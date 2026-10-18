@@ -338,6 +338,28 @@ describe('R-3: an as-committed bind measures the closure at the run commit (P-00
     expect(rebind.sourceFingerprint).toBe(expected);
   });
 
+  it('a corrected inline fixture recipe measures the original run commit despite later committed and working-tree edits', async () => {
+    const ran = git(root, 'rev-parse', 'HEAD');
+    const measurement = {
+      ...recipe(['src/a.ts']),
+      testPaths: ['src/b.ts'],
+      fixturePaths: ['src/b.ts'],
+    };
+    const expectedFixture = fileSetFingerprintAtCommit(root, ran, [{ path: 'src/b.ts', inRepo: 'src/b.ts' }]);
+    writeFileSync(join(root, 'src/b.ts'), 'export const b = 2;\n');
+    git(root, 'commit', '-q', '-am', 'fixture changed after recorded run');
+    writeFileSync(join(root, 'src/b.ts'), 'export const b = 3;\n');
+
+    const corrected = await measureAndPinRepoFilesEvidenceAtCommitForScope(
+      'workspace-test', 'papercusp', measurement, { commitSha: ran, repoPrefix: '' },
+    );
+    expect(corrected.fixtureFingerprint).toBe(expectedFixture);
+    expect(corrected.testFingerprint).toBe(expectedFixture);
+    expect(corrected.fixtureFingerprint).not.toBe(fileSetFingerprint(root, ['src/b.ts']));
+    const original = await atCommit(['src/a.ts'], { commitSha: ran, repoPrefix: '' });
+    expect(corrected.sourceFingerprint).toBe(original.sourceFingerprint);
+  });
+
   it('a re-bind does not launder freshness: a closure change committed after the run reads stale and names the path', async () => {
     const ran = git(root, 'rev-parse', 'HEAD');
     writeFileSync(join(root, 'src/a.ts'), 'export const a = 2;\n');

@@ -9,7 +9,7 @@
  * must carry bwrap's own reason, and a non-finishing probe that must not be
  * cached.
  */
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -30,44 +30,63 @@ afterAll(() => {
 });
 
 describe.runIf(process.platform === 'linux' && existsSync(BWRAP))('provider sandbox probe (real bwrap)', () => {
-  it('establishes the profile for a plugin dir under the OS tmpdir (precondition, not a skip)', () => {
-    const probe = probeProviderSandbox({ pluginDir: scratchUnder(tmpdir()), runtimeDirs });
+  it('establishes the profile for a plugin dir under the OS tmpdir (precondition, not a skip)', async () => {
+    const probe = await probeProviderSandbox({ pluginDir: scratchUnder(tmpdir()), runtimeDirs });
     expect(probe).toEqual({ works: true });
   });
 
-  it.runIf(existsSync('/dev/shm'))('establishes the profile for a plugin dir under /dev/shm, the test TMPDIR fallback', () => {
-    const probe = probeProviderSandbox({ pluginDir: scratchUnder('/dev/shm'), runtimeDirs });
+  it.runIf(existsSync('/dev/shm'))('establishes the profile for a plugin dir under /dev/shm, the test TMPDIR fallback', async () => {
+    const probe = await probeProviderSandbox({ pluginDir: scratchUnder('/dev/shm'), runtimeDirs });
     expect(probe).toEqual({ works: true });
   });
 
-  it('a failure carries bwrap\'s own reason, not a claim about the host', () => {
+  it('a failure carries bwrap\'s own reason, not a claim about the host', async () => {
     const missing = join(scratchUnder(tmpdir()), 'not-installed');
-    const probe = probeProviderSandbox({ pluginDir: missing, runtimeDirs });
+    const probe = await probeProviderSandbox({ pluginDir: missing, runtimeDirs });
     expect(probe.works).toBe(false);
     expect(probe.detail).toContain(missing);
-    expect(providerSandboxWorks({ pluginDir: missing, runtimeDirs })).toBe(false);
+    expect(await providerSandboxWorks({ pluginDir: missing, runtimeDirs })).toBe(false);
   });
 
-  it('a probe that did not run to an exit status is not cached', () => {
+  it('a probe that did not run to an exit status is not cached', async () => {
     const dir = scratchUnder(tmpdir());
     const fakeBwrap = join(dir, 'fake-bwrap');
-    // Present but not executable: spawnSync fails with EACCES before bwrap ever runs.
+    // Present but not executable: EACCES occurs before bwrap ever runs.
     writeFileSync(fakeBwrap, '#!/bin/sh\nexit 0\n', { mode: 0o644 });
     const pluginDir = scratchUnder(tmpdir());
-    const first = probeProviderSandbox({ bwrapBinary: fakeBwrap, pluginDir, runtimeDirs });
+    const first = await probeProviderSandbox({ bwrapBinary: fakeBwrap, pluginDir, runtimeDirs });
     expect(first.works).toBe(false);
     expect(first.detail).toMatch(/not cached/);
     chmodSync(fakeBwrap, 0o755);
-    expect(probeProviderSandbox({ bwrapBinary: fakeBwrap, pluginDir, runtimeDirs })).toEqual({ works: true });
+    expect(await probeProviderSandbox({ bwrapBinary: fakeBwrap, pluginDir, runtimeDirs })).toEqual({ works: true });
   });
 
-  it('a profile that ran and failed IS cached (positive control for the case above)', () => {
+  it('a profile that ran and failed IS cached (positive control for the case above)', async () => {
     const dir = scratchUnder(tmpdir());
     const fakeBwrap = join(dir, 'fake-bwrap');
     writeFileSync(fakeBwrap, '#!/bin/sh\necho refused >&2\nexit 1\n', { mode: 0o755 });
     const pluginDir = scratchUnder(tmpdir());
-    expect(probeProviderSandbox({ bwrapBinary: fakeBwrap, pluginDir, runtimeDirs })).toEqual({ works: false, detail: 'refused' });
+    expect(await probeProviderSandbox({ bwrapBinary: fakeBwrap, pluginDir, runtimeDirs })).toEqual({ works: false, detail: 'refused' });
     writeFileSync(fakeBwrap, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-    expect(probeProviderSandbox({ bwrapBinary: fakeBwrap, pluginDir, runtimeDirs })).toEqual({ works: false, detail: 'refused' });
+    expect(await probeProviderSandbox({ bwrapBinary: fakeBwrap, pluginDir, runtimeDirs })).toEqual({ works: false, detail: 'refused' });
+  });
+});
+
+describe.runIf(process.platform === 'linux')('provider sandbox probe responsiveness', () => {
+  it('keeps the host responsive while a probe waits and shares concurrent starts', async () => {
+    const dir = scratchUnder(tmpdir());
+    const fakeBwrap = join(dir, 'fake-bwrap');
+    // Only the host timer can release this child. A synchronous probe prevents
+    // that timer from firing and times out instead of establishing the profile.
+    writeFileSync(fakeBwrap, '#!/bin/sh\necho call >> "$0.calls"\nwhile [ ! -f "$0.ready" ]; do /bin/sleep 0.01; done\n', { mode: 0o755 });
+    const input = { bwrapBinary: fakeBwrap, pluginDir: dir, runtimeDirs };
+    const release = setTimeout(() => writeFileSync(`${fakeBwrap}.ready`, 'ready'), 0);
+    try {
+      expect(await Promise.all([probeProviderSandbox(input), probeProviderSandbox(input)]))
+        .toEqual([{ works: true }, { works: true }]);
+      expect(readFileSync(`${fakeBwrap}.calls`, 'utf8').trim().split('\n')).toEqual(['call']);
+    } finally {
+      clearTimeout(release);
+    }
   });
 });

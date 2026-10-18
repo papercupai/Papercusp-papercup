@@ -295,6 +295,23 @@ describe('declared completion receipt retention', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('retains a terminal failure without declared artifacts after its run directory is pruned', async () => {
+    const root = tmp(), runId = '20261010T000001Z-1';
+    try {
+      const original = await runHarness({
+        contract: { name: 'failure-proof', phases: [{ id: 'boot' }] },
+        evidenceRoot: root, runId,
+        runPhase: async () => ({ ok: false, step: 'load-config', reasonCode: 'invalid-config' }),
+      });
+      expect(original.verdict).toBe('fail');
+      await complete(root, '20261010T000002Z-2');
+      expect(await pruneRuns(root, 1)).toContain(runId);
+      expect(existsSync(original.evidenceDir)).toBe(false);
+      expect(readFileSync(path.join(root, 'retained', runId, 'result.json')))
+        .toEqual(Buffer.from(JSON.stringify(original, null, 2) + '\n'));
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('refuses missing declared phase receipts before publishing retained completion', async () => {
     const root = tmp(), runId = '20261010T000003Z-3';
     try {

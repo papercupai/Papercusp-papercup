@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import path from 'node:path';
-import { defaultGateWatchRoots, extractGateQuestion, parseGateChunk } from './gate-watch';
+import { defaultGateWatchRoots, extractGateQuestion, gateTranscriptIdentity, parseGateChunk } from './gate-watch';
 
 const assistantToolUse = (id: string, name: string, input: unknown): string =>
   JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } });
@@ -123,6 +123,11 @@ describe('parseGateChunk', () => {
 });
 
 describe('defaultGateWatchRoots (WI-10002079/R1)', () => {
+  it('includes the native Codex and OMP transcript trees', () => {
+    expect(defaultGateWatchRoots('/home/agent')).toEqual(expect.arrayContaining([
+      '/home/agent/.codex/sessions', '/home/agent/.omp/agent/sessions',
+    ]));
+  });
   it('includes the psu transcript root, not only the native CLI root', () => {
     const roots = defaultGateWatchRoots('/home/agent');
     // Watching only ~/.claude/projects made the tick tail a tree that does not
@@ -133,5 +138,53 @@ describe('defaultGateWatchRoots (WI-10002079/R1)', () => {
 
   it('orders the psu root first — it holds the overwhelming majority of transcripts', () => {
     expect(defaultGateWatchRoots('/home/agent')[0]).toBe(path.join('/home/agent', '.papercusp', 'session-claude'));
+  });
+});
+
+describe('native question correlation across clients', () => {
+  const question = askInput('Which route?', [{ label: 'Direct', description: 'This session' }]);
+  const codexCall = (id: string, name = 'functions.request_user_input', args = JSON.stringify(question)) =>
+    JSON.stringify({ type: 'response_item', payload: { type: 'function_call', call_id: id, name, arguments: args } });
+  const codexResult = (id: string) => JSON.stringify({ type: 'response_item', payload: { type: 'function_call_output', call_id: id, output: 'Direct' } });
+  const ompCall = (id: string) => JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', id, name: 'AskUserQuestion', arguments: question }] } });
+  const ompResult = (id: string) => JSON.stringify({ type: 'message', message: { role: 'toolResult', toolCallId: id, content: [{ type: 'text', text: 'Direct' }] } });
+
+  it.each([
+    { client: 'codex', call: codexCall, result: codexResult, name: 'request_user_input' },
+    { client: 'omp', call: ompCall, result: ompResult, name: 'AskUserQuestion' },
+  ])('$client opens, resolves in the same delta, and correlates a later answer by call id', ({ call, result, name }) => {
+    expect(parseGateChunk(call('native-ask') + '\n').opens).toEqual([{
+      toolUseId: 'native-ask', toolName: name, question: 'Which route?',
+      options: [{ label: 'Direct', description: 'This session' }],
+    }]);
+    const together = parseGateChunk(call('native-ask') + '\n' + result('native-ask') + '\n');
+    expect(together.resolved).toEqual([{ toolUseId: 'native-ask' }]);
+    expect(together.opens).toHaveLength(0);
+    expect(parseGateChunk(result('native-ask') + '\n').closes).toEqual([{ toolUseId: 'native-ask' }]);
+  });
+
+  it('ignores a non-question call and malformed arguments beside a real question', () => {
+    const parsed = parseGateChunk([
+      'null', '[]', '42',
+      codexCall('shell', 'exec_command'), codexCall('broken', 'request_user_input', '{'), codexCall('valid'),
+    ].join('\n') + '\n');
+    expect(parsed.opens.map((g) => g.toolUseId)).toEqual(['valid']);
+  });
+
+  it('leaves a partial native answer for the next watermark delta', () => {
+    const first = codexCall('split') + '\n';
+    const answer = codexResult('split');
+    const parsed = parseGateChunk(first + answer.slice(0, 30));
+    expect(parsed.consumedBytes).toBe(Buffer.byteLength(first));
+    expect(parsed.opens[0].toolUseId).toBe('split');
+    expect(parseGateChunk(answer + '\n').closes).toEqual([{ toolUseId: 'split' }]);
+  });
+
+  it.each([
+    { header: { type: 'session_meta', payload: { id: 'codex-native-id' } }, client: 'codex', id: 'codex-native-id' },
+    { header: { type: 'session', id: 'omp-native-id' }, client: 'omp', id: 'omp-native-id' },
+    { header: { type: 'assistant', sessionId: 'claude-native-id' }, client: 'claude', id: 'claude-native-id' },
+  ])('uses the $client header instead of an unrelated filename', ({ header, client, id }) => {
+    expect(gateTranscriptIdentity(JSON.stringify(header) + '\n', '/tmp/timestamp_rollout.jsonl')).toEqual({ client, sessionId: id });
   });
 });

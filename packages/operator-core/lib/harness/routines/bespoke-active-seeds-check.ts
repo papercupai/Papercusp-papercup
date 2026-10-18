@@ -160,8 +160,9 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'gc-plan-runs', seedScript: 'seed-gc-plan-runs-routine.ts' },
   { name: 'gc-verify-instances', seedScript: 'seed-gc-verify-instances-routine.ts' },
   { name: 'gitnexus-reindex', seedScript: 'seed-gitnexus-reindex-routine.ts' },
-  { name: 'hive-canary', seedScript: 'seed-hive-canary-routine.ts', scope: 'hive-canary' },
-  { name: 'hive-canary-sla', seedScript: 'seed-hive-canary-sla-routine.ts', scope: 'hive-canary' },
+  // Hive Canary is permanently retired with the autonomous cup loop. Its historical seed
+  // scripts remain inactive row normalizers, but these rows must not participate in the
+  // always-on registry or boot alarm population.
   // WI-2143803. Added in the SAME change as the action, its import, its spend entry and its seed
   // script — for the reason the dead-citation-sweep and durable-escalation-orphan-sweep entries
   // above both record. This routine's entire subject IS an instrument that exists and never fires

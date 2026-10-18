@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-10-18T02:19:36.545Z",
+  "workItems": [
+    "WI-6554700010017140",
+    "WI-6554700010016781"
+  ],
+  "scope": "Preparation and current wrapper source/unit verification. No installed acceptance or shipment verdict.",
+  "rootCause": {
+    "hypothesis": "The acceptance wrapper unconditionally replaced the existing configured generation store with its private cache store.",
+    "alternativeHypothesis": "The setup helper lost an unchanged configured store after argument forwarding.",
+    "distinguishingTest": "Run the maintained actual shell/snapshot invocation against a fixture helper and record its --dependency-generation-root argument for default and configured paths.",
+    "actualBefore": "Configured path with spaces was replaced before setup; default passed. 1 failed, 1 passed, 85 filtered.",
+    "actualAfter": "All 87 conventional wrapper tests passed with zero skipped, including both configured and default snapshot cases.",
+    "limit": "The original native driver termination signal remains unknown. The v4 dependency copy/wait timing alone does not prove a cache defect or resource bottleneck."
+  },
+  "files": [
+    {
+      "path": "apps/tui/scripts/release-acceptance.sh",
+      "sha256": "3b31a0987fa4cba58807cd502894930b5c0d2698c576cd54dc86705f43eb560f"
+    },
+    {
+      "path": "packages/operator-core/lib/pui-e2e/release-acceptance.test.ts",
+      "sha256": "1b7e7dc414c2b03b9d8f813554ef8731430f65f60a6ab0caaae83c5e9b77c939"
+    }
+  ],
+  "reuse": "Extended the existing acceptance wrapper, PAPERCUSP_DEPENDENCY_GENERATION_ROOT, and maintained snapshot regression. Reused dependency-generation.sh exact-ref selector and immutable publication token; no new service or config key.",
+  "verification": {
+    "command": "PAPERCUSP_TEST_RUN_HARNESS=papercusp npm run test:file -- packages/operator-core/lib/pui-e2e/release-acceptance.test.ts",
+    "testRunId": 21360958,
+    "head": "258ed96687e4c7cb9c2a44f2f15cb8abf2ae0e15",
+    "worktreeDirty": true,
+    "passed": 87,
+    "failed": 0,
+    "skipped": 0,
+    "exitCode": 0,
+    "bashSyntax": true,
+    "scopedDiffCheck": true,
+    "logs": [
+      {
+        "path": "/tmp/machine-first-generation-store-red-20261018.log",
+        "sha256": "a5ad42942af026388dd79bd8f44acee28bae03de8bd64841637c5ff0042a1a03",
+        "testRunId": 21360948,
+        "harness": null,
+        "exitCode": 1
+      },
+      {
+        "path": "/tmp/machine-first-generation-store-green-20261018.log",
+        "sha256": "f06e627f9ff84b77190170a3d35d2367a07947caf0eff15b54bcd0d73104b872"
+      }
+    ]
+  },
+  "readyGeneration": {
+    "root": "/mnt/data/papercusp-dependency-generations",
+    "candidateSource": "9a59f25f25b1f7c8751438637074c603955090a7",
+    "input": "c6271afe0180f57606776f3bc4070137bcc8797fe5c441e4ab830915288467d3",
+    "identity": "v1-3a81939f61fc9c7fd72b5c87226fbe0aa3ae4359f08931169b966f22640407d7",
+    "token": "v3:e1ecdac9ab00ed007810b0d878ba13b435ba291908a45ed4c69a284dbd403010",
+    "prediction": "prewarmed",
+    "ensureRef": "reused=true",
+    "predictExit": 0,
+    "ensureExit": 0,
+    "leaseHeld": false,
+    "logs": [
+      {
+        "path": "/tmp/machine-first-generation-prediction-20261018.log",
+        "sha256": "0a498bb2a2fbe5dc5a9bc9a096296b86eed5dd7cee885eb73e1fd947c4be26f6"
+      },
+      {
+        "path": "/tmp/machine-first-ready-generation-20261018.log",
+        "sha256": "56f05146e1f01959d1278be70de2c1bea0e2bea4a56d34376c29ed0cd359061e"
+      }
+    ],
+    "nextHandoff": "Supply existing PAPERCUSP_DEPENDENCY_GENERATION_ROOT and NODE_MODULES_GENERATION_ID/TOKEN. setup-release-checkout.sh must acquire and revalidate its selector lease before preparation."
+  },
+  "diagnosticArchive": {
+    "path": "/tmp/machine-first-warning-fixed-pui-20261017-v3-9a59/pui-0.1.0-linux-x86_64.tar.gz",
+    "sha256": "993bb8f825406e495793b23dc64ba57d926b0fab469e1eeb4fac259649630e8f",
+    "scope": "Retained diagnostic candidate only; current full launcher/test source differs, so this archive cannot certify the current release."
+  },
+  "priorEvidence": "docs/evidence/machine-first-installed-acceptance-preparation-20261018.json and docs/evidence/machine-first-observer-lifecycle-20261018.json retained without rerunning passing proof.",
+  "remaining": [
+    "Installed PUI launcher exit behavior",
+    "Current complete archive acceptance and public publication",
+    "Portal storage-denied production acceptance",
+    "Guide adequacy",
+    "Final shipment"
+  ],
+  "acceptanceExecuted": false,
+  "shipmentVerified": false
+}

@@ -246,6 +246,7 @@ describe('posttooluse-proof-stale-nudge (real hook process)', () => {
     const mutantDir = mkdtempSync(join(tmpdir(), 'proof-stale-nudge-mutant-'));
     const mutant = join(mutantDir, 'posttooluse-proof-stale-nudge.mjs');
     copyFileSync(HOOK, mutant);
+    copyFileSync(join(dirname(HOOK), 'pc_home.mjs'), join(mutantDir, 'pc_home.mjs'));
     const src = readFileSync(mutant, 'utf8');
     const gate = 'const opened = !prior || nowMs - prior.lastEditAtMs > gapMs;';
     expect(src).toContain(gate);

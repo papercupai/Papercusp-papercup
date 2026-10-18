@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { papercuspPath } from './pc_home.mjs';
 // apps/operator/scripts/hooks/cc/posttooluse-proof-stale-nudge.mjs
 //
 // PostToolUse (Edit|Write|MultiEdit) advisory: tell the editor, AT THE EDIT, which live
@@ -28,7 +28,6 @@ import { papercuspPath } from '@papercusp/host-platform/home';
 
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import process from 'node:process';
 

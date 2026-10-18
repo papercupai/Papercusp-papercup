@@ -256,6 +256,36 @@ describe('evaluateRoutineDispatchEpoch — capless delayed-feedback admission (E
     ]).toEqual([1, 1, 1]);
   });
 
+  it('earns new routine credit after three healthy ticks when a restart recovers six admitted fires', () => {
+    const controller = createRoutineDispatchController();
+    const epochs = Array.from({ length: 3 }, (_, tick) => evaluateRoutineDispatchEpoch({
+      pressure: 'ok',
+      probeMs: 4,
+      inFlightByQueue: { [ROUTINES_QUEUE]: 6 },
+      activeQueues: [ROUTINES_QUEUE, ROUTINES_LOOP_QUEUE],
+      controller,
+      atMs: START + tick * 30_000,
+    }));
+    expect(epochs.map(epoch => queue(epoch, ROUTINES_QUEUE).availableStarts)).toEqual([0, 0, 3]);
+    // A busy class cannot bootstrap credit into an unrelated empty queue.
+    expect(epochs.slice(0, 2).map(epoch => queue(epoch, ROUTINES_LOOP_QUEUE).availableStarts)).toEqual([1, 1]);
+  });
+
+  it('does not use recovered occupancy to lift a cold routine window under pool pressure', () => {
+    for (const pressure of ['elevated', 'critical'] as const) {
+      const epoch = evaluateRoutineDispatchEpoch({
+        pressure,
+        probeMs: pressure === 'critical' ? 2_800 : 800,
+        inFlightByQueue: { [ROUTINES_QUEUE]: 6 },
+        activeQueues: [ROUTINES_QUEUE],
+        controller: createRoutineDispatchController(),
+        atMs: START,
+      });
+      expect(queue(epoch, ROUTINES_QUEUE).desiredWindow).toBe(1);
+      expect(queue(epoch, ROUTINES_QUEUE).availableStarts).toBe(0);
+    }
+  });
+
   it('probes upward without a configured maximum after sustained healthy epochs', () => {
     const controller = new CaplessAdaptiveController({ healthySamplesPerIncrease: 1 });
     const first = evaluateRoutineDispatchEpoch({

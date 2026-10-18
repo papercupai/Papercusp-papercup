@@ -659,7 +659,12 @@ describe('dispatchPendingGradingAudits', () => {
       { ...d, cancelStaleEvidence, killTask },
     );
 
-    expect(d.listTasks).not.toHaveBeenCalled();
+    expect(d.listTasks).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      states: ['pending', 'running'],
+      labelPrefix: `grading-audit:${issueId}`,
+      limit: 10,
+    });
     expect(killTask).not.toHaveBeenCalled();
     expect(target.gradingAudit).toMatchObject({ state: 'pending', dispatchReservation: reservation });
     expect(d.readEvidence).toHaveBeenCalledWith(issueId);
@@ -674,6 +679,101 @@ describe('dispatchPendingGradingAudits', () => {
         reason: expect.stringContaining('requires a dispatcher running the recorded evaluator build'),
       }),
     ]);
+  });
+
+  it('retires a build-drifted retained auditor only with an owner-bound native unsupported-role error', async () => {
+    const d = deps();
+    const issueId = 'EI-evaluator-build-drift-terminal-role';
+    const sessionId = 'native-drift-terminal-role';
+    const ownerId = 'su-retained-auditor';
+    const rerunRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      evaluatorBuild: { sha: 'recorded-evaluator-sha', version: '1.2.2' },
+      args: { harness: 'papercusp' },
+      selection: {},
+    } as NonNullable<ScorecardRow['rerunRecipe']>;
+    d.listScorecards.mockResolvedValue([card(issueId, { rerunRecipe })]);
+    d.listTasks.mockResolvedValue([{
+      taskId: 'task-drifted-terminal-role', sessionId, workspaceId: 'ws-test', class: 'agent-session', state: 'running',
+      startedAt: new Date().toISOString(), logPath: '/tmp/drifted-terminal-role.log',
+      detail: { label: `grading-audit:${issueId}`, coordOwnerId: ownerId },
+    } as unknown as TaskRow]);
+    const listNativeSessions = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['listNativeSessionsByTranscriptHandles']>>()
+      .mockResolvedValue([{ sessionId, coordOwnerId: ownerId, agent: 'claude' }]);
+    const resolveTranscript = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['findSessionTranscript']>>()
+      .mockResolvedValue('/tmp/drifted-terminal-role.jsonl');
+    const killTask = vi.fn(async (taskId: string) => ({ ok: true as const, taskId, action: 'kill' as const }));
+    const nativeTranscript = JSON.stringify({
+      type: 'assistant', sessionId, isSidechain: false, isApiErrorMessage: true, apiErrorStatus: 400,
+      message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: "API Error: 400 role 'system' is not supported on this model" }] },
+    });
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: [issueId], ctx },
+      {
+        ...d, listNativeSessionsByTranscriptHandles: listNativeSessions, findSessionTranscript: resolveTranscript, killTask,
+        readLogTail: (path) => path.endsWith('.jsonl') ? nativeTranscript : "● API Error: 400 role 'system' is not supported on this model\n❯",
+        terminalLogRecheckDelayMs: 0, terminalLogMaxRechecks: 0,
+      },
+    );
+
+    expect(listNativeSessions).toHaveBeenCalledExactlyOnceWith([sessionId]);
+    expect(resolveTranscript).toHaveBeenCalledExactlyOnceWith(sessionId, { owner: ownerId });
+    expect(killTask).toHaveBeenCalledExactlyOnceWith('task-drifted-terminal-role', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(result.receipts[0]).toMatchObject({
+      issueId, state: 'skipped',
+      terminalRecovery: { retiredTaskIds: ['task-drifted-terminal-role'], codes: ['inference_gateway_error'] },
+    });
+  });
+
+  it('preserves a build-drifted retained auditor when the unsupported-role text is only quoted', async () => {
+    const d = deps();
+    const issueId = 'EI-evaluator-build-drift-quoted-role';
+    const sessionId = 'native-drift-quoted-role';
+    const ownerId = 'su-retained-auditor';
+    const rerunRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      evaluatorBuild: { sha: 'recorded-evaluator-sha', version: '1.2.2' },
+      args: { harness: 'papercusp' },
+      selection: {},
+    } as NonNullable<ScorecardRow['rerunRecipe']>;
+    d.listScorecards.mockResolvedValue([card(issueId, { rerunRecipe })]);
+    d.listTasks.mockResolvedValue([{
+      taskId: 'task-drifted-quoted-role', sessionId, workspaceId: 'ws-test', class: 'agent-session', state: 'running',
+      startedAt: new Date().toISOString(), logPath: '/tmp/drifted-quoted-role.log',
+      detail: { label: `grading-audit:${issueId}`, coordOwnerId: ownerId },
+    } as unknown as TaskRow]);
+    const listNativeSessions = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['listNativeSessionsByTranscriptHandles']>>()
+      .mockResolvedValue([{ sessionId, coordOwnerId: ownerId, agent: 'claude' }]);
+    const resolveTranscript = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['findSessionTranscript']>>()
+      .mockResolvedValue('/tmp/drifted-quoted-role.jsonl');
+    const killTask = vi.fn();
+    const nativeTranscript = JSON.stringify({
+      type: 'assistant', sessionId, isSidechain: false,
+      message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text: "The source evidence quoted API Error: 400 role 'system' is not supported on this model" }] },
+    });
+
+    const result = await dispatchPendingGradingAudits(
+      { targetIds: [issueId], ctx },
+      {
+        ...d, listNativeSessionsByTranscriptHandles: listNativeSessions, findSessionTranscript: resolveTranscript, killTask,
+        readLogTail: (path) => path.endsWith('.jsonl') ? nativeTranscript : "● API Error: 400 role 'system' is not supported on this model\n❯",
+        terminalLogRecheckDelayMs: 0, terminalLogMaxRechecks: 0,
+      },
+    );
+
+    expect(listNativeSessions).toHaveBeenCalledExactlyOnceWith([sessionId]);
+    expect(resolveTranscript).toHaveBeenCalledExactlyOnceWith(sessionId, { owner: ownerId });
+    expect(killTask).not.toHaveBeenCalled();
+    expect(d.reserve).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
+    expect(d.launch).not.toHaveBeenCalled();
+    expect(result.receipts[0]).toMatchObject({ issueId, state: 'skipped' });
   });
 
   it('defers a foreign evaluator build pinned only in executable recipe args', async () => {
@@ -868,6 +968,26 @@ describe('dispatchPendingGradingAudits', () => {
       // The dispatch receipt names the certify call, not the read-only evaluator.
       expect(result.receipts).toEqual([
         expect.objectContaining({ issueId, reason: expect.stringContaining('plans:certify-spec-clauses') }),
+      ]);
+    });
+
+    it('can run dispatch-only reconciliation without re-certifying stranded cards', async () => {
+      const d = deps();
+      const issueId = 'EI-stranded-dispatch-only';
+      d.listScorecards.mockResolvedValue([strandedCard(issueId)]);
+      const recertifyStranded = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['recertifyStranded']>>();
+
+      const result = await reconcilePendingGradingAudits(
+        { targetIds: [issueId], ctx, recertifyStranded: false },
+        { ...d, now: () => nowMs, getEvaluatorBuild: liveBuild, recertifyStranded },
+      );
+
+      expect(recertifyStranded).not.toHaveBeenCalled();
+      expect(d.reserve).not.toHaveBeenCalled();
+      expect(d.release).not.toHaveBeenCalled();
+      expect(result).not.toHaveProperty('recertifications');
+      expect(result.receipts).toEqual([
+        expect.objectContaining({ issueId, stranded: expect.objectContaining({ recertify: expect.any(Object) }) }),
       ]);
     });
 

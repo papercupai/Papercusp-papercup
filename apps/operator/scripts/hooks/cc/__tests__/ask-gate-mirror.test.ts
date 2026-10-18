@@ -106,10 +106,10 @@ describe('ask-gate-mirror — operator-independent paths', () => {
     expect(r.stdout).toBe('');
   });
 
-  it.each(['AskUserQuestion', 'ExitPlanMode'])(
+  it.each(['AskUserQuestion', 'ExitPlanMode', 'request_user_input', 'functions.request_user_input'])(
     'PreToolUse headless %s → denies the invisible dialog and points to a durable owner channel',
     (tool_name) => {
-    const tool_input = tool_name === 'AskUserQuestion'
+    const tool_input = tool_name !== 'ExitPlanMode'
       ? { questions: [{ question: 'Which route?', header: 'Route', multiSelect: false, options: [{ label: 'A' }] }] }
       : { plan: '## Proposed plan\n1. do the work' };
     const r = run(

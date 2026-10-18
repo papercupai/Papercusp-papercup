@@ -55,6 +55,12 @@ const INACTIVE_BY_DEFAULT = /const\s+active\s*=\s*process\.argv\.includes\(['"]-
 // pattern-matched-and-non-exempt or explicitly listed here, so a future exemption can't be
 // silent either.
 const EXEMPT_SEED_SCRIPTS: Record<string, string> = {
+  'seed-hive-canary-routine.ts':
+    'permanently retired with the autonomous cup loop; its seed is a historical inactive-row ' +
+    'normalizer and is intentionally excluded from BESPOKE_ACTIVE_SEEDS',
+  'seed-hive-canary-sla-routine.ts':
+    'permanently retired with the autonomous cup loop; its seed is a historical inactive-row ' +
+    'normalizer and is intentionally excluded from BESPOKE_ACTIVE_SEEDS',
   'seed-hive-release-routines.ts':
     'covered by its own dedicated seed-hive-release-routines.test.ts (see the mirrors-comment ' +
     'at the top of this file) — not this guard’s single-line active/inactive idiom',

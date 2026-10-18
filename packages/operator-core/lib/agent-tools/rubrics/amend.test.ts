@@ -1038,6 +1038,9 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
     expect(result.review.state).toBe('not-requested');
     expect(result.review.next).toContain("reviewPreviewPost:'thread-post:");
     expect(result.review.next).not.toMatch(/coord:send/);
+    expect(result.review.next).toContain('one-agent/no-additional-agents implementation route');
+    expect(result.review.next).toContain('no owner exception is needed');
+    expect(result.review.next).toContain('requestReview');
     expect(reviewMocks.openAcceptanceBarAmendmentReview).not.toHaveBeenCalled();
   });
 

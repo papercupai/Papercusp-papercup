@@ -633,7 +633,7 @@ describe('runtime-content probes catch partial packages that directory checks ca
     );
 
     expect(findUnextractedDeps({ repoRoot: root })).toEqual([]); // old directory-only verdict
-    const runtimeProbes = RUNTIME_CONTENT_PROBES.filter((probe: string | { specifier: string; declarationsOnly: boolean }) => typeof probe === 'string');
+    const runtimeProbes = RUNTIME_CONTENT_PROBES.filter((probe: string | { specifier: string; declarationsOnly?: boolean; css?: boolean }) => typeof probe === 'string');
     expect(resolveRuntimeContentProbes(root)).toEqual(runtimeProbes);
 
     const writePackage = (name: string, pkg: object, files: Record<string, string> = {}) => {

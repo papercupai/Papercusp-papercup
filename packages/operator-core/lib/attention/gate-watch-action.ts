@@ -23,6 +23,7 @@ import { registerSystemAction, type SystemActionCtx } from '../harness/routines/
 import { tickGateWatch } from './gate-watch';
 import { sweepSessionIndependentGates } from './gate-reaper';
 import { sweepWorkItemBlockerDefaults } from './work-item-blocker-reaper';
+import { sweepOmittedReviews } from './review-stall-reaper';
 
 registerSystemAction('gate-watcher-tick', async (ctx: SystemActionCtx) => {
   const cfg = ctx.triggerConfig ?? {};
@@ -43,6 +44,12 @@ registerSystemAction('gate-watcher-tick', async (ctx: SystemActionCtx) => {
       (result.errors.length ? `, ${result.errors.length} error(s)` : ''),
   );
   for (const e of result.errors.slice(0, 5)) console.warn(`[gate-watch]   ! ${e.file}: ${e.error}`);
+  try {
+    const reviews = await sweepOmittedReviews();
+    if (reviews.examined || reviews.errors.length) console.log(`[omitted-review] ${JSON.stringify(reviews)}`);
+  } catch (error) {
+    console.warn(`[omitted-review] ${error instanceof Error ? error.message : String(error)}`);
+  }
 
   // WI-10002067: the SESSION-INDEPENDENT half. The watcher above can only ever
   // close a gate whose asking session is alive to be observed, which is why 241

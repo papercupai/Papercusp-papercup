@@ -23,6 +23,12 @@ export interface AmendReceiptEntry {
 }
 
 export const AMEND_RECEIPT_RETENTION_MS = 60 * 60 * 1000;
+export interface OmittedReviewRecovery {
+  ownerId: string;
+  /** Original validated arguments, retained so the detector never invents a patch. */
+  retryArgs: Record<string, unknown>;
+  carrier?: { workItemId: string; harness: string };
+}
 /** A run still 'running' after this long is treated as orphaned and may be reclaimed by a same-key retry. */
 export const AMEND_RECEIPT_RUNNING_LEASE_MS = 15 * 60 * 1000;
 interface ReceiptRow {
@@ -133,7 +139,7 @@ export async function trackAmendRun(
   idempotencyKey: string,
   rubricRef: string,
   run: () => Promise<Record<string, unknown>>,
-  options: { onRegistered?: () => void } = {},
+  options: { onRegistered?: () => void; omittedReviewRecovery?: OmittedReviewRecovery } = {},
 ): Promise<Record<string, unknown>> {
   const { sql } = getOrgPg();
   const workspaceId = activeWorkspaceId();
@@ -144,6 +150,10 @@ export async function trackAmendRun(
     DELETE FROM harness_shared.rubric_amend_receipts
      WHERE workspace_id = ${workspaceId}
        AND finished_at < now() - interval '1 hour' AND state <> 'running'
+       AND NOT COALESCE((state = 'previewed'
+         AND result_json #>> '{review,state}' = 'not-requested'
+         AND result_json->'_reviewRecovery' IS NOT NULL
+         AND result_json #>> '{_reviewRecovery,completedAt}' IS NULL), false)
   `;
   const inserted = await sql<Array<{ idempotency_key: string }>>`
     INSERT INTO harness_shared.rubric_amend_receipts
@@ -234,9 +244,24 @@ export async function trackAmendRun(
     ? (result.dryRun === true ? 'previewed' : 'committed') : 'failed';
   const error = state === 'failed'
     ? (launchFailure ?? (typeof result.error === 'string' ? result.error : 'amend returned ok:false')) : null;
+  let persistedResult = result;
+  if (options.omittedReviewRecovery && state === 'previewed'
+    && (result.review as { state?: string } | undefined)?.state === 'not-requested') {
+    const subjectPlan = (result.preview as { approval?: { subjectPlan?: string } } | undefined)?.approval?.subjectPlan;
+    const carriers = subjectPlan ? await sql<{ feature_id: string; harness_slug: string }[]>`
+      SELECT feature_id, harness_slug FROM harness_shared.work_items
+       WHERE workspace_id = ${workspaceId} AND taken_by = ${options.omittedReviewRecovery.ownerId}
+         AND source_plan_slug = ${subjectPlan} AND status NOT IN ('done', 'dropped', 'resolved', 'shipped')
+       ORDER BY feature_id LIMIT 2` : [];
+    // An ambiguous lane is never arbitrarily picked. Preserve the exact retry
+    // but leave automatic recovery unbound until a single carrier is proven.
+    persistedResult = { ...result, _reviewRecovery: { ...options.omittedReviewRecovery,
+      ...(carriers.length === 1 ? { carrier: { workItemId: carriers[0].feature_id, harness: carriers[0].harness_slug } } : {}),
+    } };
+  }
   await sql`
     UPDATE harness_shared.rubric_amend_receipts
-       SET state = ${state}, result_json = ${JSON.stringify(result)}::text::jsonb,
+       SET state = ${state}, result_json = ${JSON.stringify(persistedResult)}::text::jsonb,
            error = ${error}, finished_at = now()
      WHERE workspace_id = ${workspaceId} AND rubric_ref = ${rubricRef}
        AND idempotency_key = ${idempotencyKey}

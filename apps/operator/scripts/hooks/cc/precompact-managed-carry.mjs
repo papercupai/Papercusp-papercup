@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { papercuspPath } from '@papercusp/host-platform/home';
+import { papercuspPath } from './pc_home.mjs';
 /**
  * Managed Codex PreCompact bridge.
  *
@@ -38,7 +38,6 @@ import { papercuspPath } from '@papercusp/host-platform/home';
  */
 
 import { readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { nestedCliCached } from './pc_nested_cli.mjs';
 

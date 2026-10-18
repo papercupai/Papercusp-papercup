@@ -103,6 +103,20 @@ const AWAIT_PRE_REGISTRATION_TXN_OPTIONS = {
   lockTimeoutMs: 5_000,
 } as const;
 
+// Interactive event-history and await-preflight reads must not inherit the
+// admin pool's unbounded statement budget. These rows are useful only while
+// the caller is registering or inspecting a wake; fail quickly under a lock
+// or stalled query so the caller can retry without pinning a pool connection.
+const AWAIT_READ_TXN_OPTIONS: BoundedOrgTxnOptions = {
+  acquireTimeoutMs: 1_500,
+  acquireRetries: 0,
+  connectionSetupRetries: 0,
+  statementTimeoutMs: 1_500,
+  lockTimeoutMs: 1_000,
+  readOnly: true,
+  phase: 'events:await-store-read',
+};
+
 /** jsonb arrives parsed OR as text depending on the postgres-js client config
  *  (the repo's known sql.json quirk) — tolerate both. */
 function parseJsonb<T>(v: unknown): T | null {
@@ -3619,16 +3633,18 @@ export interface NearMissKey {
 export async function findNearMissKeys(eventKey: string, opts?: { excludeOwner?: string }): Promise<NearMissKey[]> {
   const target = normalizeEventKey(eventKey);
   if (!target) return [];
-  const { sql } = getOrgPg();
   const ws = eventsWs();
-  const rows = await sql`
-    SELECT event_key, policy, subscriber_id FROM harness_shared.event_awaits
-     WHERE workspace_id = ${ws} AND cancelled_at IS NULL AND fired_at IS NULL
-       AND event_key <> ${eventKey}
-       AND position('*' in event_key) = 0
-     ORDER BY created_at DESC
-     LIMIT 200
-  `;
+  const rows = await boundedOrgTxn(
+    (tx) => tx`
+      SELECT event_key, policy, subscriber_id FROM harness_shared.event_awaits
+       WHERE workspace_id = ${ws} AND cancelled_at IS NULL AND fired_at IS NULL
+         AND event_key <> ${eventKey}
+         AND position('*' in event_key) = 0
+       ORDER BY created_at DESC
+       LIMIT 200
+    `,
+    AWAIT_READ_TXN_OPTIONS,
+  );
   const byKey = new Map<string, { kind: 'await' | 'announce'; holders: Set<string> }>();
   for (const r of rows) {
     const key = String(r.event_key);
@@ -3994,7 +4010,6 @@ export function keyFireEvidencePrefix(eventKey: string): string {
  * the prefix scan is a btree range read).
  */
 export async function probeKeyFireEvidence(eventKey: string): Promise<KeyFireEvidence> {
-  const { sql } = getOrgPg();
   const ws = eventsWs();
   const key = String(eventKey ?? '').trim();
   const prefix = keyFireEvidencePrefix(key);
@@ -4004,21 +4019,24 @@ export async function probeKeyFireEvidence(eventKey: string): Promise<KeyFireEvi
   // `prefix` is a literal key segment, never a caller-supplied LIKE pattern —
   // escape the wildcards anyway so a key containing `%`/`_` cannot widen the scan.
   const escaped = prefix.replace(/([\\%_])/g, '\\$1');
-  const rows = await sql`
-    SELECT count(*)::int                                             AS distinct_keys,
-           coalesce(sum(fire_count), 0)::bigint                      AS fires,
-           max(last_fired_at)                                        AS last_fired_at,
-           bool_or(event_key = ${key})                               AS exact
-      FROM harness_shared.event_key_fires
-     WHERE workspace_id = ${ws}
-       AND (
-         event_key = ${key}
-         OR (
-           ${!exactOnly}
-           AND (event_key = ${prefix} OR event_key LIKE ${`${escaped}:%`} ESCAPE '\\')
+  const rows = await boundedOrgTxn(
+    (tx) => tx`
+      SELECT count(*)::int                                             AS distinct_keys,
+             coalesce(sum(fire_count), 0)::bigint                      AS fires,
+             max(last_fired_at)                                        AS last_fired_at,
+             bool_or(event_key = ${key})                               AS exact
+        FROM harness_shared.event_key_fires
+       WHERE workspace_id = ${ws}
+         AND (
+           event_key = ${key}
+           OR (
+             ${!exactOnly}
+             AND (event_key = ${prefix} OR event_key LIKE ${`${escaped}:%`} ESCAPE '\\')
+           )
          )
-       )
-  `;
+    `,
+    AWAIT_READ_TXN_OPTIONS,
+  );
   const row = rows[0];
   if (!row) return empty;
   return {
@@ -4125,9 +4143,8 @@ export async function inspectEventKey(eventKey: string): Promise<{
     timeoutBehavior?: TimeoutBehavior;
   } | null;
 }> {
-  const { sql } = getOrgPg();
   const ws = eventsWs();
-  return sql.begin(async (tx) => {
+  return boundedOrgTxn(async (tx) => {
     const announcementRows = await tx`
       SELECT * FROM harness_shared.event_awaits
        WHERE workspace_id = ${ws} AND event_key = ${eventKey} AND policy = 'announce'
@@ -4183,7 +4200,7 @@ export async function inspectEventKey(eventKey: string): Promise<{
       fireLatch: fireLatchRows.length > 0 ? mapKeyFire(fireLatchRows[0]) : null,
       composedRoot,
     };
-  }) as Promise<{
+  }, AWAIT_READ_TXN_OPTIONS) as Promise<{
     announcements: AwaitRow[];
     waiters: AwaitRow[];
     deliveries: DeliveryRow[];

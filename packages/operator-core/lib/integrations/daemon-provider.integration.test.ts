@@ -163,8 +163,8 @@ afterAll(async () => {
 });
 
 describe('sandboxed daemon provider — hostile isolation (P-002)', () => {
-  it('runs on a host where the exact provider sandbox profile is available (precondition, not a skip)', () => {
-    expect(providerSandboxWorks({ pluginDir, runtimeDirs: [path.dirname(path.dirname(process.execPath))] })).toBe(true);
+  it('runs on a host where the exact provider sandbox profile is available (precondition, not a skip)', async () => {
+    expect(await providerSandboxWorks({ pluginDir, runtimeDirs: [path.dirname(path.dirname(process.execPath))] })).toBe(true);
     expect(runtime.descriptor.id).toBe(PROVIDER_ID);
     // The sandboxed daemon could not write the host-side marker.
     expect(existsSync(markerPath)).toBe(false);

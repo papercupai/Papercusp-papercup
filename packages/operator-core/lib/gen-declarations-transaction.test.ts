@@ -1,8 +1,9 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
-import { generate, runDeclarationCli } from '../../../scripts/gen-declarations.ts';
+import { check, generate, runDeclarationCli } from '../../../scripts/gen-declarations.ts';
 
 type Compile = (repoRoot: string, config: string, outDir: string) => void;
 
@@ -90,6 +91,34 @@ describe('gen:declarations transactional publish', () => {
     });
   });
 
+  it('checks only selected enrolled outputs through the scoped --check CLI', () => {
+    withFixture(({ root, declaration }) => {
+      const siblingSource = join(root, 'sibling.mjs');
+      const siblingDeclaration = join(root, 'sibling.d.mts');
+      writeFileSync(siblingSource, 'export const sibling = true;\n');
+      writeFileSync(
+        join(root, 'tsconfig.declarations.json'),
+        JSON.stringify({ files: ['input.mjs', 'sibling.mjs'] }),
+      );
+      execFileSync('git', ['init', '--quiet'], { cwd: root, stdio: 'ignore' });
+      execFileSync('git', ['add', '--', 'input.mjs', 'sibling.mjs'], { cwd: root, stdio: 'ignore' });
+
+      const compile: Compile = (_repoRoot, _config, outDir) => {
+        writeFileSync(join(outDir, 'input.d.mts'), 'export declare const answer: 42;\n');
+        writeFileSync(join(outDir, 'sibling.d.mts'), 'export declare const sibling: true;\n');
+      };
+      generate(root, 'tsconfig.declarations.json', compile);
+      writeFileSync(siblingDeclaration, '// stale sibling declaration\n');
+
+      expect(() => runDeclarationCli(['--check', '--files=input.mjs'], {
+        generateImpl: vi.fn(),
+        checkImpl: (selection) => check(root, 'tsconfig.declarations.json', selection, compile),
+      })).not.toThrow();
+      expect(readFileSync(declaration, 'utf8')).toContain('export declare const answer: 42;');
+      expect(readFileSync(siblingDeclaration, 'utf8')).toBe('// stale sibling declaration\n');
+    });
+  });
+
   it('refuses an unenrolled selection before compiling or changing an existing declaration', () => {
     withFixture(({ root, declaration }) => {
       const original = '// existing declaration\n';
@@ -118,8 +147,6 @@ describe('gen:declarations CLI validation', () => {
     { args: ['--file=input.mjs'], error: /unknown declaration-generator argument/ },
     { args: ['--files=input.mjs', 'unexpected'], error: /unknown declaration-generator argument/ },
     { args: ['--check', '--unknown'], error: /unknown declaration-generator argument/ },
-    { args: ['--check', '--files=input.mjs'], error: /only valid for generation/ },
-    { args: ['--files', 'input.mjs', '--check'], error: /only valid for generation/ },
   ])('refuses $args before either operation can change output', ({ args, error }) => {
     const generateImpl = vi.fn();
     const checkImpl = vi.fn();
@@ -137,6 +164,17 @@ describe('gen:declarations CLI validation', () => {
     runDeclarationCli(['--check'], { generateImpl, checkImpl });
     expect(checkImpl).toHaveBeenCalledOnce();
     expect(generateImpl).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { form: 'equals', args: ['--check', '--files=input.mjs'] },
+    { form: 'spaced', args: ['--files', 'input.mjs', '--check'] },
+  ])('routes a scoped check selection through the check operation ($form form)', ({ args }) => {
+    const generateImpl = vi.fn();
+    const checkImpl = vi.fn();
+    runDeclarationCli(args, { generateImpl, checkImpl });
+    expect(checkImpl).toHaveBeenCalledExactlyOnceWith(['input.mjs']);
+    expect(generateImpl).not.toHaveBeenCalled();
   });
 
   it('combines repeated selectors across both supported forms', () => {

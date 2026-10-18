@@ -42,7 +42,7 @@ import { openAcceptanceBarAmendmentReview } from '../../consult/acceptance-bar-a
 
 /** P-006: the requirement this dry run still owes when nobody has opened its review. */
 const REVIEW_NOT_REQUESTED_NEXT =
-  "Repeat this dry run with requestReview:{ workItemId } (the server posts preview.approval on that work-item and opens the review), or post it yourself and pass reviewPreviewPost:'thread-post:<that post id>'. The relevance router picks and screens the outside-lineage reviewer; do not pick or message one yourself.";
+  "Repeat this dry run with requestReview:{ workItemId } (the server posts preview.approval on that work-item and opens the review), or post it yourself and pass reviewPreviewPost:'thread-post:<that post id>'. The relevance router picks and screens the outside-lineage reviewer; do not pick or message one yourself. A one-agent/no-additional-agents implementation route does not prohibit this platform-routed review. Keep the review request; no owner exception is needed for that route.";
 
 const NO_LIVE_DISCHARGE_MAPPING_CODE = 'acceptance_bar_amendment_no_live_discharge_mapping';
 const NO_LIVE_DISCHARGE_MAPPING_NEXT =
@@ -50,7 +50,7 @@ const NO_LIVE_DISCHARGE_MAPPING_NEXT =
 
 const ACCEPTANCE_BAR_APPROVAL_REQUIRED_CODE = 'acceptance_bar_approval_required';
 const ACCEPTANCE_BAR_APPROVAL_REQUIRED_NEXT =
-  "Run rubrics:amend with dryRun:true and requestReview:{ workItemId } (or post preview.approval yourself and pass reviewPreviewPost:'thread-post:<preview-id>'), follow review.next, and apply only with approvalRef:'thread-post:<reviewer-answer-id>'.";
+  "Run rubrics:amend with dryRun:true and requestReview:{ workItemId } (or post preview.approval yourself and pass reviewPreviewPost:'thread-post:<preview-id>'), follow review.next, and apply only with approvalRef:'thread-post:<reviewer-answer-id>'. A one-agent implementation route does not prohibit platform-routed independent acceptance review.";
 
 const REVIEWER_MODEL_NOT_ALLOWED_CODE = 'reviewer_model_not_allowed';
 const REVIEWER_MODEL_NOT_ALLOWED_NEXT =
@@ -669,7 +669,10 @@ export default defineTool({
           throw error;
         }
         return { ok: true, dryRun: true, preview, review };
-      }, { onRegistered: () => { registered = true; } });
+      }, {
+        onRegistered: () => { registered = true; },
+        omittedReviewRecovery: { ownerId: identity.ownerId, retryArgs: { ...args } },
+      });
       const settled = await settleWithin(run, remainingBudget(), ctx.signal);
       if (settled.kind === 'rejected') {
         const refusal = proposeRubricInvalidArgsRefusal(settled.error);

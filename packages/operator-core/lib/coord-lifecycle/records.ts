@@ -22,6 +22,7 @@ import { z } from 'zod';
 // about the stored shape without a compile error — and so no runtime import cycle
 // is created between this module and the facts substrate.
 import { COMPLETION_CLAIMS_CONTRACT, CompletionClaimSchema } from '../completion-claims';
+import { kindEvidenceArg } from '../change-kind-catalog';
 import type { CompletionClaimBaseline } from '../completion-claim-recheck';
 import type { ResolvedAssumption } from '../agent-facts/assumptions';
 // A leaf module with no imports of its own, so this edge cannot form a cycle.
@@ -1138,6 +1139,12 @@ export const CompletionRecordSchema = z.object({
   tests: z.string().min(1).optional(),
   /** Queryable verification evidence; aliases below keep legacy callers cheap. */
   verification: CompletionVerificationEvidenceSchema.optional(),
+  /**
+   * change-kind-declared-proof P-002: the proof for each declared change kind, one entry per
+   * kind. A successful close is refused (the record is kept) when a declared kind's proof is
+   * missing. Optional: a single-kind close may rely on the root testsRun/testResult fields.
+   */
+  kindEvidence: kindEvidenceArg().optional(),
   /** Required on successful bug/capability-gap closes; persisted with terminal evidence. */
   rootCauseVerification: RootCauseVerificationSchema.optional().meta({
     'x-papercusp-call-constraint':

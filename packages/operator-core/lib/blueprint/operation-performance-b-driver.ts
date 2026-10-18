@@ -144,6 +144,8 @@ export async function runP013WorkloadB(
   const complete = async (id: string) => {
     const args = tools.completeWorkItemTool.args.parse({
       id, harness: P013B_HARNESS, state: 'done', assumptions: 'none',
+      // change-kind-declared-proof P-002: a successful close must declare its change kind.
+      changeKinds: ['no-code-change'], changeKindReason: 'performance fixture close; no code is changed',
       outputPayload: { value: P013B_PAYLOAD },
       completion: {
         summary: 'P-013 workload B deterministic item', testsRun: 'deterministic fixture worker',

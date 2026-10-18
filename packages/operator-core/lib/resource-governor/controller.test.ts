@@ -86,6 +86,69 @@ function lane(decision: { readonly classes: readonly ClassAdmissionDecision[] },
 }
 
 describe('CaplessAdaptiveController', () => {
+  it('can initialize healthy classes from admitted occupancy without granting initial credit', () => {
+    const controller = new CaplessAdaptiveController({ initializeFromInFlight: true, increaseStep: 3 });
+    const decisions = Array.from({ length: 3 }, (_, tick) =>
+      lane(controller.step({
+        verdict: verdict({ atMs: START + tick * 30_000 }),
+        classes: [{ admissionClass: 'routines', inFlight: 6, demand: { databaseConnections: 1 } }],
+      }), 'routines'),
+    );
+    // EI-26273544248345621: a restart recovered six admitted fires. They need
+    // no speculative new credit, but must not be re-learned from a window of one.
+    expect(decisions.map(item => item.desiredWindow)).toEqual([6, 6, 9]);
+    expect(decisions.map(item => item.availableStarts)).toEqual([0, 0, 3]);
+
+    const ordinary = new CaplessAdaptiveController();
+    expect(lane(ordinary.step({ verdict: verdict(), classes: [{ admissionClass: 'routines', inFlight: 6 }] }),
+      'routines').desiredWindow).toBe(1);
+  });
+
+  it('does not initialize occupied classes above the cold floor without healthy evidence', () => {
+    for (const state of ['unknown', 'degraded'] as const) {
+      const controller = new CaplessAdaptiveController({ initializeFromInFlight: true });
+      const decision = controller.step({
+        verdict: verdict({ state, severity: state === 'degraded' ? 'critical' : 'none', resource: 'database' }),
+        classes: [{ admissionClass: 'routines', inFlight: 6, demand: { databaseConnections: 1 } }],
+      });
+      expect(lane(decision, 'routines').desiredWindow).toBe(1);
+      expect(lane(decision, 'routines').availableStarts).toBe(0);
+    }
+  });
+
+  it('does not turn initial admitted occupancy into a contraction floor or reseed a warm class', () => {
+    const controller = new CaplessAdaptiveController({ initializeFromInFlight: true });
+    const classes = [{ admissionClass: 'routines', inFlight: 6, demand: { databaseConnections: 1 } }];
+    controller.step({ verdict: verdict(), classes });
+    const degraded = controller.step({
+      verdict: verdict({ state: 'degraded', severity: 'critical', resource: 'database', atMs: START + 30_000 }),
+      classes,
+    });
+    expect(lane(degraded, 'routines').desiredWindow).toBe(3);
+    const recovering = controller.step({ verdict: verdict({ atMs: START + 60_000 }), classes });
+    expect(lane(recovering, 'routines').desiredWindow).toBe(3);
+    expect(lane(recovering, 'routines').availableStarts).toBe(0);
+
+    const restored = new CaplessAdaptiveController({
+      initializeFromInFlight: true,
+      state: controller.snapshot(START + 60_000),
+    });
+    expect(lane(restored.step({ verdict: verdict({ atMs: START + 90_000 }), classes }),
+      'routines').desiredWindow).toBe(3);
+  });
+
+  it('keeps occupancy initialization finite for invalid or oversized samples', () => {
+    for (const [inFlight, expected] of [[NaN, 1], [Infinity, 1], [-1, 1],
+      [Number.MAX_VALUE, Number.MAX_SAFE_INTEGER]] as const) {
+      const controller = new CaplessAdaptiveController({ initializeFromInFlight: true });
+      const decision = controller.step({
+        verdict: verdict(),
+        classes: [{ admissionClass: 'routines', inFlight }],
+      });
+      expect(lane(decision, 'routines').desiredWindow).toBe(expected);
+    }
+  });
+
   it('probes upward without a configured or derived ceiling', () => {
     const controller = new CaplessAdaptiveController({ healthySamplesPerIncrease: 1 });
     let decision = controller.step({ verdict: verdict(), classes: [{ admissionClass: 'agent', demand: { cpuWeight: 1 } }] });

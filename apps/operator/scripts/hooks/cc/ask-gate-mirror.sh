@@ -141,12 +141,13 @@ def truthy(v):
 name = (first('hook_event_name', 'hookEventName') or '').strip()
 session_id = first('session_id', 'sessionId') or ''
 tool_name = first('tool_name', 'toolName') or ''
+tool_name = re.sub(r'^functions(?:\.|__)', '', tool_name)
 tool_input = first('tool_input', 'toolInput')
 if not isinstance(tool_input, dict):
     tool_input = {}
 tool_use_id = first('tool_use_id', 'toolCallId', 'tool_call_id') or ''
 
-GATE_TOOLS = ('AskUserQuestion', 'ExitPlanMode')
+GATE_TOOLS = ('AskUserQuestion', 'ExitPlanMode', 'request_user_input')
 
 
 def log_failure(context, detail=''):
@@ -244,7 +245,7 @@ def report_str(v):
 def build_ask_question(name_, tool_input_):
     """Returns (question, options|None, text|None) for the PreToolUse mirror,
     or (None, None, None) when the tool's input carries nothing usable."""
-    if name_ == 'AskUserQuestion':
+    if name_ in ('AskUserQuestion', 'request_user_input'):
         qs = tool_input_.get('questions')
         if not isinstance(qs, list) or not qs:
             return None, None, None

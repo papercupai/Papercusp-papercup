@@ -53,6 +53,33 @@ beforeEach(async () => {
 });
 
 describe('tickGateWatch (real PG + real transcript files)', () => {
+  it.each(['codex', 'omp'] as const)('persists and closes %s questions under the native header identity across watermark ticks', async (client) => {
+    const sessionId = `${client}-native-session`;
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gate-watch-native-'));
+    tmpDirs.push(dir);
+    const file = path.join(dir, 'timestamp-unrelated-to-session.jsonl');
+    const input = { questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }] };
+    const header = client === 'codex' ? { type: 'session_meta', payload: { id: sessionId } } : { type: 'session', id: sessionId };
+    const ask = client === 'codex'
+      ? { type: 'response_item', payload: { type: 'function_call', name: 'request_user_input', call_id: 'native-ask', arguments: JSON.stringify(input) } }
+      : { type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'native-ask', name: 'AskUserQuestion', arguments: input }] } };
+    await fs.writeFile(file, [header, ask].map((r) => JSON.stringify(r)).join('\n') + '\n');
+    expect((await tickGateWatch({ root: dir })).opened).toBe(1);
+    expect(await listPendingGates({ workspaceId: WS, sessionId })).toMatchObject([
+      { client, session_id: sessionId, ref_id: 'native-ask', question: 'Continue?', options: [{ label: 'Yes' }] },
+    ]);
+    const answer = client === 'codex'
+      ? { type: 'response_item', payload: { type: 'function_call_output', call_id: 'native-ask', output: 'Yes' } }
+      : { type: 'message', message: { role: 'toolResult', toolCallId: 'native-ask', content: [{ type: 'text', text: 'Yes' }] } };
+    await fs.appendFile(file, JSON.stringify(answer) + '\n');
+    expect((await tickGateWatch({ root: dir })).closed).toBe(1);
+    const rows = await listPendingGates({ workspaceId: WS, sessionId, includeClosed: true });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ client, closed_reason: 'tool_result_observed' });
+    expect(rows[0].closed_at).toBeTruthy();
+    expect((await tickGateWatch({ root: dir })).opened).toBe(0);
+  });
+
   it('opens a gate for an unanswered AskUserQuestion, then closes it once the tool_result lands', async () => {
     const uuid = 'cccc3333-dddd-4444-eeee-555566667777';
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gate-watch-'));

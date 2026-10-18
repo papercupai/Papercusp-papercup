@@ -7,6 +7,7 @@
  *   npm run gen:declarations -- --files=a.mjs,b.mjs # emit selected enrolled outputs
  *   npm run gen:declarations -- --files a.mjs,b.mjs # the same selection, spaced form
  *   npm run gen:declarations:check                   # verify every committed output
+ *   npm run gen:declarations:check -- --files=a.mjs # verify selected enrolled outputs
  *
  * Both modes compile into an isolated temp directory. `--check` compares that
  * output without publishing it; normal generation publishes only after the
@@ -91,14 +92,18 @@ function declarationFor(mjs: string): string {
   return mjs.replace(/\.mjs$/, '.d.mts');
 }
 
-/** Resolve an optional publish selection against the config-owned input set. */
-function publishSelection(declaredInputs: string[], requestedInputs?: readonly string[]): string[] {
+/** Resolve an optional operation selection against the config-owned input set. */
+function selectedInputs(
+  declaredInputs: string[],
+  requestedInputs: readonly string[] | undefined,
+  operation: 'generate' | 'check',
+): string[] {
   if (requestedInputs === undefined) return declaredInputs;
   const requested = new Set(requestedInputs);
   if (requested.size === 0) throw new Error('`--files` must name at least one enrolled .mjs input');
   for (const input of requested) {
     if (!declaredInputs.includes(input)) {
-      throw new Error(`cannot generate undeclared input: ${input}`);
+      throw new Error(`cannot ${operation} undeclared input: ${input}`);
     }
   }
   // Preserve config order so logs and writes stay deterministic regardless of
@@ -219,14 +224,14 @@ export function generate(
   requestedInputs?: readonly string[],
 ): void {
   const declaredInputs = inputs(repoRoot, config);
-  const selectedInputs = publishSelection(declaredInputs, requestedInputs);
+  const selection = selectedInputs(declaredInputs, requestedInputs, 'generate');
   const out = mkdtempSync(join(tmpdir(), 'papercusp-decl-generate-'));
   try {
     compile(repoRoot, config, out);
     stamp(out, declaredInputs);
-    publish(out, repoRoot, selectedInputs);
+    publish(out, repoRoot, selection);
     console.log(
-      `✓ gen:declarations: emitted ${selectedInputs.length} of ${declaredInputs.length} declaration file(s) — compiler: ${COMPILER_LABEL}`,
+      `✓ gen:declarations: emitted ${selection.length} of ${declaredInputs.length} declaration file(s) — compiler: ${COMPILER_LABEL}`,
     );
     // Publishing a declaration is exactly the moment an importer's `@ts-expect-error` goes stale
     // (WI-10005290). Report it HERE, naming each line, rather than leaving it to surface as TS2578
@@ -250,18 +255,24 @@ export function staleSuppressionsIn(repoRoot: string, modules: readonly string[]
   return sources === null ? null : staleDeclarationSuppressions(modules, sources);
 }
 
-export function check(repoRoot = REPO_ROOT, config = CONFIG): void {
+export function check(
+  repoRoot = REPO_ROOT,
+  config = CONFIG,
+  requestedInputs?: readonly string[],
+  compile: Compile = runTsc,
+): void {
   // BEFORE the comparison, so a red names the compiler that produced the emit.
   console.log(`gen:declarations:check — compiler: ${COMPILER_LABEL}`);
   const out = mkdtempSync(join(tmpdir(), 'papercusp-decl-check-'));
   try {
     const declaredInputs = inputs(repoRoot, config);
-    runTsc(repoRoot, config, out);
+    const selection = selectedInputs(declaredInputs, requestedInputs, 'check');
+    compile(repoRoot, config, out);
     stamp(out, declaredInputs);
 
     const stale: string[] = [];
     const missing: string[] = [];
-    for (const mjs of declaredInputs) {
+    for (const mjs of selection) {
       const rel = declarationFor(mjs);
       const committedPath = join(repoRoot, rel);
       if (!existsSync(committedPath)) {
@@ -329,8 +340,11 @@ export function check(repoRoot = REPO_ROOT, config = CONFIG): void {
       process.exit(1);
     }
 
+    const checkedCount = requestedInputs === undefined
+      ? String(declaredInputs.length)
+      : `${selection.length} of ${declaredInputs.length}`;
     console.log(
-      `✓ gen:declarations:check: ${declaredInputs.length} declaration file(s) up to date; ` +
+      `✓ gen:declarations:check: ${checkedCount} declaration file(s) up to date; ` +
         `hand-written declarations match their sources; no importer suppresses a declared module`,
     );
   } finally {
@@ -343,7 +357,7 @@ export function runDeclarationCli(
   args: readonly string[],
   {
     generateImpl = (selected?: readonly string[]) => generate(REPO_ROOT, CONFIG, runTsc, selected),
-    checkImpl = check,
+    checkImpl = (selected?: readonly string[]) => check(REPO_ROOT, CONFIG, selected),
   } = {},
 ): void {
   const requestedInputs: string[] = [];
@@ -366,8 +380,7 @@ export function runDeclarationCli(
     requestedInputs.push(...value.split(','));
   }
   if (checkOnly) {
-    if (hasSelection) throw new Error('`--files` is only valid for generation, not `--check`');
-    checkImpl();
+    checkImpl(hasSelection ? requestedInputs : undefined);
   } else {
     generateImpl(hasSelection ? requestedInputs : undefined);
   }

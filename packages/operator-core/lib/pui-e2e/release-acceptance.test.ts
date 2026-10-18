@@ -380,7 +380,7 @@ cp "$PUI_FIXTURE_TSX" "$target/node_modules/.bin/tsx"
     }
   }, 20_000);
 
-  it('keeps the admitted helper stable when the shared source changes during checkout', async () => {
+  it.each([false, true])('keeps the admitted helper and generation store stable during checkout (configured store: %s)', async configuredStore => {
     const wrapper = readFileSync(path.join(REPO_ROOT, 'apps/tui/scripts/release-acceptance.sh'), 'utf8');
     const invocation = wrapper.match(/node "\$ROOT\/scripts\/npm-install-safe\.mjs"[\s\S]*?(?=\nlanded=)/)?.[0];
     expect(invocation).toBeDefined();
@@ -392,6 +392,7 @@ cp "$PUI_FIXTURE_TSX" "$target/node_modules/.bin/tsx"
     const resume = path.join(root, 'resume');
     const admittedArgs = path.join(root, 'admitted-args');
     const checkouts = path.join(root, 'acceptance-cache');
+    const generationRoot = configuredStore ? path.join(root, 'shared generations') : '';
     mkdirSync(path.dirname(helper), { recursive: true });
     mkdirSync(path.dirname(snapshot), { recursive: true });
     mkdirSync(path.dirname(installSafe), { recursive: true });
@@ -411,6 +412,7 @@ process.exit(result.status ?? 1);
       + 'printf "CHECKOUT_HELPER_COMPLETED\\n"\n');
     const child = spawn('bash', ['-c', `fail() { exit 2; }\n${invocation}`], {
       env: { ...process.env, ROOT: root, checkouts, checkout: path.join(checkouts, 'slot-1'), sha: 'a'.repeat(40),
+        PAPERCUSP_DEPENDENCY_GENERATION_ROOT: generationRoot,
         PUI_SNAPSHOT_STARTED: started, PUI_SNAPSHOT_RESUME: resume,
         PUI_SNAPSHOT_ARGS: admittedArgs },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -430,7 +432,7 @@ process.exit(result.status ?? 1);
       const args = readFileSync(admittedArgs, 'utf8').trim().split('\n');
       expect(args[args.indexOf('--node-modules-copy') + 1]).toBe('copy');
       expect(args[args.indexOf('--node-modules-generation') + 1]).toBe('required');
-      expect(args[args.indexOf('--dependency-generation-root') + 1]).toBe(path.join(checkouts, 'dependency-generations'));
+      expect(args[args.indexOf('--dependency-generation-root') + 1]).toBe(generationRoot || path.join(checkouts, 'dependency-generations'));
       writeFileSync(helper, 'this is an invalid concurrent edit (\n');
       writeFileSync(resume, 'continue');
       expect(await exit).toBe(0);

@@ -288,6 +288,8 @@ export async function runP013WorkloadA(
   phasesMs.push(claimed.ms);
   const args = completeWorkItemTool.args.parse({
     id, harness: P013_HARNESS, state: 'done', assumptions: 'none',
+    // change-kind-declared-proof P-002: a successful close must declare its change kind.
+    changeKinds: ['no-code-change'], changeKindReason: 'performance fixture close; no code is changed',
     outputPayload: { value: P013_PAYLOAD },
     completion: {
       summary: 'P-013 deterministic direct result',

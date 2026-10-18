@@ -25,8 +25,23 @@ export const TSC_SERVICE_ENV = 'PAPERCUSP_TSC_SERVICE';
 /** A scoped request whose checked set exceeds this is refused; a full compile is cheaper then. */
 export const TSC_SERVICE_MAX_CHECKED_FILES = Number(process.env.PAPERCUSP_TSC_SERVICE_MAX_FILES) || 1500;
 
-/** Queue wait plus check. A refusal or timeout falls back to the CLI, so this bounds the loss. */
-export const TSC_SERVICE_TIMEOUT_MS = Number(process.env.PAPERCUSP_TSC_SERVICE_TIMEOUT_MS) || 240_000;
+/** Maximum time a caller waits for the shared service before falling back to the CLI. */
+const TSC_SERVICE_TIMEOUT_CAP_MS = 30_000;
+
+/**
+ * Resolve a configured or per-call service budget while keeping a slow or wedged service from
+ * delaying the caller for minutes. A shorter explicit value remains useful for local diagnostics.
+ *
+ * @param {string | number | undefined} [value]
+ * @returns {number}
+ */
+export function resolveTscServiceTimeoutMs(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, TSC_SERVICE_TIMEOUT_CAP_MS) : TSC_SERVICE_TIMEOUT_CAP_MS;
+}
+
+/** Queue wait plus check; timeout falls back to the CLI within a bounded foreground window. */
+export const TSC_SERVICE_TIMEOUT_MS = resolveTscServiceTimeoutMs(process.env.PAPERCUSP_TSC_SERVICE_TIMEOUT_MS);
 
 /**
  * The unix socket the service listens on (systemd passes it pre-bound; see
@@ -707,11 +722,21 @@ export function requestTscService({ socketPath, request, timeoutMs = TSC_SERVICE
  *   label: string,
  *   log?: (line: string) => void,
  *   scope?: 'dependencies' | 'named',
+ *   timeoutMs?: number,
  *   env?: Record<string, string | undefined>,
  * }} opts
  * @returns {Promise<Extract<TscServiceResponse, { ok: true }> | null>}
  */
-export async function typecheckViaService({ root, project, files, label, log = (line) => console.error(line), scope, env = process.env }) {
+export async function typecheckViaService({
+  root,
+  project,
+  files,
+  label,
+  log = (line) => console.error(line),
+  scope,
+  timeoutMs = TSC_SERVICE_TIMEOUT_MS,
+  env = process.env,
+}) {
   let socketPath = tscServiceSocketPath(env);
   const template = env[TSC_SERVICE_UNIT_TEMPLATE_ENV];
   if (template) {
@@ -726,6 +751,7 @@ export async function typecheckViaService({ root, project, files, label, log = (
     const response = await requestTscService({
       socketPath,
       request: { v: 1, root, project, files, ...(scope === undefined ? {} : { scope }) },
+      timeoutMs: resolveTscServiceTimeoutMs(timeoutMs),
     });
     if (response.ok) return response;
     log(`⚠ TSC_SERVICE declined (${response.reason}${response.detail ? `: ${response.detail}` : ''}) — running the full ${label} compile instead.`);

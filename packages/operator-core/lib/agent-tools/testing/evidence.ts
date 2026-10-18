@@ -223,16 +223,35 @@ export async function prepareTestEvidence(request: Request, runId: string, files
     };
     prepared.push({ input, binding: normalized, measurement });
   }
-  for (const row of prepared) {
-    const receipt = await deps.bind(row.input);
-    if (!succeeded(receipt.status)) throw new Error(`evidence_registration_failed:${receipt.status}`);
+  const attempted: Prepared[] = [];
+  try {
+    for (const row of prepared) {
+      // Include the in-flight row too: a transport error can arrive after the store committed.
+      attempted.push(row);
+      const receipt = await deps.bind(row.input);
+      if (!succeeded(receipt.status)) throw new Error(`evidence_registration_failed:${receipt.status}`);
+    }
+  } catch (error) {
+    // Each bind commits independently. If a later row is refused, retire this run's earlier
+    // pending rows so a failed preparation cannot leave evidence that no test process produced.
+    const rollback = await retractRefusedTestEvidence(
+      attempted,
+      runId,
+      scope,
+      'evidence registration failed: ' + String(error),
+      deps,
+    );
+    if (rollback.status === 'retirement-incomplete') {
+      throw new Error(String(error) + '; evidence_batch_rollback_incomplete:' + JSON.stringify(rollback));
+    }
+    throw error;
   }
   return prepared;
 }
 
 /**
  * EI-24100872054224181 — withdraw the pending rows `prepareTestEvidence` registered when the
- * run was then refused before any test process started. Finishing them instead would bind a
+ * batch or run was refused before any test process started. Finishing them instead would bind a
  * second pending row per binding, and remeasure skips a pending row as `run-in-flight`, so the
  * clause would stay stuck until someone retracted both by hand.
  */

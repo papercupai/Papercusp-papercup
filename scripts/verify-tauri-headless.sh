@@ -3401,6 +3401,26 @@ ISOLATED_BEARER_NODE
   fi
 }
 
+select_isolated_pg_source() {
+  # Runtime source owns the schema too. The canonical install is only a
+  # dependency donor and may contain migrations newer than this pinned host.
+  if [ -n "${VERIFY_TAURI_SOURCE_REF:-}" ] && [ -z "${OPERATOR_SOURCE_ROOT:-}" ]; then
+    echo 'FATAL: pinned isolated Postgres requires the verified runtime source' >&2
+    return 1
+  fi
+  ISOLATED_PG_REPO_DIR="${OPERATOR_SOURCE_ROOT:-$REPO_DIR}"
+  ISOLATED_PG_SQL_DIR=""
+  local cand
+  for cand in "$ISOLATED_PG_REPO_DIR/libs/papercusp/libs/db/sql" "$ISOLATED_PG_REPO_DIR/sidecar/db-sql"; do
+    [ -d "$cand" ] && { ISOLATED_PG_SQL_DIR="$cand"; break; }
+  done
+  if [ -z "$ISOLATED_PG_SQL_DIR" ]; then
+    echo "FATAL: no isolated Postgres migrations in runtime source $ISOLATED_PG_REPO_DIR" >&2
+    return 1
+  fi
+  log "isolated-db source: repo=$ISOLATED_PG_REPO_DIR sql=$ISOLATED_PG_SQL_DIR"
+}
+
 if [ "$ISOLATED_DB" = "1" ]; then
   ISOLATED_PG_TIMEOUT="${VERIFY_TAURI_ISOLATED_PG_TIMEOUT:-90}"
   [[ "$ISOLATED_PG_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || { echo 'FATAL: VERIFY_TAURI_ISOLATED_PG_TIMEOUT must be a positive integer' >&2; exit 1; }
@@ -3420,13 +3440,7 @@ if [ "$ISOLATED_DB" = "1" ]; then
   mkdir -p "$ISOLATED_HOME" "$ISOLATED_CODEX_HOMES_DIR" "$ISOLATED_WEBVIEW_DATA" "$ISOLATED_WEBVIEW_CACHE" "$ISOLATED_WEBVIEW_CONFIG"
   prepare_isolated_bearer
 
-  # Migrations dir: monorepo path, else a packaged sidecar's own copy — same
-  # resolution with-test-pg.mjs uses.
-  ISOLATED_PG_SQL_DIR=""
-  for cand in "$REPO_DIR/libs/papercusp/libs/db/sql" "$REPO_DIR/sidecar/db-sql"; do
-    [ -d "$cand" ] && { ISOLATED_PG_SQL_DIR="$cand"; break; }
-  done
-  [ -n "$ISOLATED_PG_SQL_DIR" ] || { echo "FATAL: VERIFY_TAURI_ISOLATED_DB=1 but no migrations dir found (looked under $REPO_DIR)" >&2; exit 1; }
+  select_isolated_pg_source || exit $?
 
   ISOLATED_PG_BOOT_SCRIPT="$WORK/boot-isolated-pg.mjs"
   # Quoted heredoc (no bash expansion inside) — every input crosses via env,
@@ -3596,7 +3610,7 @@ PGBOOT
 
   log "VERIFY_TAURI_ISOLATED_DB=1 — booting a throwaway migrated Postgres (data=$ISOLATED_PG_DATA_DIR)"
   setsid env \
-    ISOLATED_PG_REPO_DIR="$REPO_DIR" \
+    ISOLATED_PG_REPO_DIR="$ISOLATED_PG_REPO_DIR" \
     ISOLATED_PG_DATA_DIR="$ISOLATED_PG_DATA_DIR" \
     ISOLATED_PG_SQL_DIR="$ISOLATED_PG_SQL_DIR" \
     node "$ISOLATED_PG_BOOT_SCRIPT" >"$ISOLATED_PG_LOG" 2>&1 &
@@ -4471,6 +4485,38 @@ export VERIFY_TAURI_POLL="$POLL"
 # may not have resolved yet.
 # EI-21894787139229424: was 15s — too tight for a substrate-booting sidecar
 # under fleet load; see the VERIFY_TAURI_HEALTH_TIMEOUT header doc above.
+capture_owned_origin_health_failure() {
+  local evidence_dir="${VH_PHASE_DIR:-$WORK}/owned-origin-health" status
+  mkdir -p -- "$evidence_dir" || return 1
+  printf '%s\n' "$HEALTH_PROBE_STATUS" > "$evidence_dir/probe.status"
+  printf '%s\n' "$HEALTH_JSON" > "$evidence_dir/probe-output.txt"
+  printf '%s\n' "$HEALTH_LAST_RESPONSE" > "$evidence_dir/last-completed-response.txt"
+  # Separate the WebView evaluation path from an HTTP control against the
+  # already-proven owned listener. Never infer an HTTP failure from a bridge
+  # callback that did not complete. Capture before teardown destroys the rig.
+  status=0
+  timeout --signal=TERM --kill-after=1 5 "$VERIFY_TAURI_AGENT_TOOLS_BIN" \
+    page-state --pid "$BRIDGE_PID" --json > "$evidence_dir/page-state.json" 2>&1 || status=$?
+  printf '%s\n' "$status" > "$evidence_dir/page-state.status"
+  status=0
+  timeout --signal=TERM --kill-after=1 5 "$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" \
+    'JSON.stringify({url:location.href,readyState:document.readyState,native:Boolean(window.__TAURI_INTERNALS__)})' \
+    > "$evidence_dir/synchronous-eval.json" 2>&1 || status=$?
+  printf '%s\n' "$status" > "$evidence_dir/synchronous-eval.status"
+  local route
+  for route in api/health ''; do
+    local name="${route//\//-}"
+    [ -n "$name" ] || name=root
+    status=0
+    curl --noproxy '*' --silent --show-error --connect-timeout 2 --max-time 5 \
+      --output "$evidence_dir/$name.body" --write-out '%{http_code}\n' \
+      "$(verify_tauri_dev_url "$DEV_PORT")/$route" \
+      > "$evidence_dir/$name.http-status" 2> "$evidence_dir/$name.stderr" || status=$?
+    printf '%s\n' "$status" > "$evidence_dir/$name.command-status"
+  done
+  echo "owned-origin health diagnostics retained: $evidence_dir" >&2
+}
+
 HEALTH_TIMEOUT="${VERIFY_TAURI_HEALTH_TIMEOUT:-120}"
 HEALTH_PROBE_TIMEOUT="${VERIFY_TAURI_HEALTH_PROBE_TIMEOUT:-8}"
 case "$HEALTH_TIMEOUT" in
@@ -4527,9 +4573,13 @@ while :; do
     exit "$HEALTH_PROBE_STATUS"
   fi
   if [ "$SECONDS" -ge "$HEALTH_DEADLINE" ]; then
-    echo "FATAL: owned origin unreachable from the webview after ${HEALTH_TIMEOUT}s (pid=$BRIDGE_PID)." >&2
-    echo "       The bridge/PID is alive but /api/health and/or / did not return 200 — refusing to" >&2
-    echo "       hand back a shell whose DOM may be a stale false-positive (EI-13218). Last result:" >&2
+    capture_owned_origin_health_failure || echo 'WARNING: could not retain owned-origin health diagnostics' >&2
+    if [ -z "$HEALTH_LAST_RESPONSE" ]; then
+      echo "FATAL: owned-origin health is unmeasured after ${HEALTH_TIMEOUT}s: no WebView health evaluation completed (pid=$BRIDGE_PID)." >&2
+    else
+      echo "FATAL: owned origin did not return healthy WebView responses after ${HEALTH_TIMEOUT}s (pid=$BRIDGE_PID)." >&2
+    fi
+    echo "       Refusing to hand back an unverified shell (EI-13218). Last probe exit=$HEALTH_PROBE_STATUS, output:" >&2
     echo "       ${HEALTH_JSON}" >&2
     if [ -n "$HEALTH_LAST_RESPONSE" ]; then
       echo "       Last completed response: ${HEALTH_LAST_RESPONSE}" >&2

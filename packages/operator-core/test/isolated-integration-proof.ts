@@ -117,6 +117,23 @@ export function retainIsolatedNativeTaskDiagnostics(evidenceDir: string, task: R
   }), { mode: 0o600 });
 }
 
+/** Launch may return a refusal receipt or throw after enrolling a task. Capture
+ * either outcome before the caller can dispose of its native home. A failed
+ * diagnostic must remain visible without replacing the original launch error. */
+export async function withIsolatedNativeLaunchDiagnostics<T>(evidenceDir: string,
+  launch: () => Promise<T>, capture: () => Promise<void>): Promise<T> {
+  let launchFailed = false;
+  try { return await launch(); }
+  catch (error) { launchFailed = true; throw error; }
+  finally {
+    try { await capture(); }
+    catch (error) {
+      retainIsolatedWorkerProgress(evidenceDir, 'launch-diagnostics-failed', { error: String(error) });
+      if (!launchFailed) throw error;
+    }
+  }
+}
+
 /** A reaped signal termination proves cleanup, while the execute verdict stays failed. */
 export function assertIsolatedWorkerReaped(child: Pick<ChildProcess, 'exitCode' | 'signalCode'>,
   ended: { runtimeRemoved?: boolean; pgDataRemoved?: boolean } | undefined) {

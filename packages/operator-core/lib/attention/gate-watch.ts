@@ -18,11 +18,8 @@
  * 619) rather than sharing `interactive_usage_files` — a different
  * producer/consumer, kept decoupled.
  *
- * "Claude transcripts first" (plan Background) — this tick walks every Claude
- * transcript root (`defaultGateWatchRoots`: the psu root AND the native
- * `~/.claude/projects`); codex/OMP roots are a straightforward follow-on (same
- * shape as `interactive-usage/ingest-adapters.ts`) once each adapter's
- * tool_use/tool_result line shape is confirmed, left for a later plan item.
+ * Claude, Codex and OMP use the same correlation/watermark discipline. Native
+ * headers identify the session; rollout filenames are not session identities.
  */
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -30,10 +27,12 @@ import path from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { readFileDelta } from '../interactive-usage/ingest-claude-transcripts';
-import { closeGateByToolUseId, listOpenGateRefs, openOrTouchGate } from './gate-store';
+import { codexSessionRoots } from '../interactive-usage/ingest-adapters';
+import { ompSessionHomesRoot, ompSessionsRootForSessionKey } from '../session-transcript-resolvers';
+import { closeGateByToolUseId, listOpenGateRefs, openOrTouchGate, type GateClient } from './gate-store';
 
 /** Tool names whose unanswered tool_use means "blocked on the owner". */
-const GATE_TOOL_NAMES = new Set(['AskUserQuestion', 'ExitPlanMode']);
+const GATE_TOOL_NAMES = new Set(['AskUserQuestion', 'ExitPlanMode', 'request_user_input']);
 const QUESTION_MAX_CHARS = 500;
 
 export interface GateOpenEvent {
@@ -79,7 +78,7 @@ export function extractGateQuestion(
   toolName: string,
   input: unknown,
 ): { question: string; options: Array<{ label: string; description?: string }> | null } {
-  if (toolName === 'AskUserQuestion') {
+  if (toolName === 'AskUserQuestion' || toolName === 'request_user_input') {
     const inp = (input ?? {}) as AskUserQuestionInput;
     const qs = Array.isArray(inp.questions) ? inp.questions : [];
     const question =
@@ -87,7 +86,7 @@ export function extractGateQuestion(
         .map((q) => (typeof q?.question === 'string' ? q.question : ''))
         .filter(Boolean)
         .join(' / ')
-        .slice(0, QUESTION_MAX_CHARS) || 'AskUserQuestion';
+        .slice(0, QUESTION_MAX_CHARS) || toolName;
     const options = qs
       .flatMap((q) => (Array.isArray(q?.options) ? q.options : []))
       .filter((o): o is { label: string; description?: string } => typeof o?.label === 'string')
@@ -122,6 +121,19 @@ export function parseGateChunk(chunk: string): ParsedGateChunk {
   const stillOpen = new Map<string, GateOpenEvent>();
   const closes: GateCloseEvent[] = [];
   const resolved: GateCloseEvent[] = [];
+  const close = (id: string) => {
+    if (stillOpen.delete(id)) resolved.push({ toolUseId: id });
+    else closes.push({ toolUseId: id });
+  };
+  const open = (id: unknown, rawName: unknown, input: unknown) => {
+    if (typeof id !== 'string' || !id || typeof rawName !== 'string') return;
+    const name = rawName.replace(/^functions(?:\.|__)/, '');
+    if (!GATE_TOOL_NAMES.has(name)) return;
+    if (typeof input === 'string') {
+      try { input = JSON.parse(input); } catch { return; }
+    }
+    stillOpen.set(id, { toolUseId: id, toolName: name, ...extractGateQuestion(name, input) });
+  };
 
   for (const line of consumed.split('\n')) {
     if (!line.trim()) continue;
@@ -131,27 +143,36 @@ export function parseGateChunk(chunk: string): ParsedGateChunk {
     } catch {
       continue; // torn/garbage line — consumed, contributes nothing
     }
-    const evt = j as { type?: string; message?: { content?: unknown } };
+    if (!j || typeof j !== 'object' || Array.isArray(j)) continue;
+    const evt = j as {
+      type?: string;
+      payload?: { type?: string; call_id?: string; name?: string; arguments?: unknown };
+      message?: { role?: string; toolCallId?: string; content?: unknown };
+    };
+    if (evt.type === 'response_item') {
+      const p = evt.payload;
+      if (p?.type === 'function_call') open(p.call_id, p.name, p.arguments);
+      else if (p?.type === 'function_call_output' && p.call_id) close(p.call_id);
+      continue;
+    }
+    if (evt.type === 'message' && evt.message?.role === 'toolResult' && evt.message.toolCallId) {
+      close(evt.message.toolCallId);
+      continue;
+    }
     const content = evt?.message?.content;
     if (!Array.isArray(content)) continue;
 
-    if (evt.type === 'assistant') {
+    if (evt.type === 'assistant' || (evt.type === 'message' && evt.message?.role === 'assistant')) {
       for (const part of content) {
-        const p = part as { type?: string; id?: string; name?: string; input?: unknown };
-        if (p?.type !== 'tool_use' || !p.id || !p.name || !GATE_TOOL_NAMES.has(p.name)) continue;
-        const { question, options } = extractGateQuestion(p.name, p.input);
-        stillOpen.set(p.id, { toolUseId: p.id, toolName: p.name, question, options });
+        const p = part as { type?: string; id?: string; name?: string; input?: unknown; arguments?: unknown };
+        if (p?.type === 'tool_use') open(p.id, p.name, p.input);
+        else if (p?.type === 'toolCall') open(p.id, p.name, p.arguments);
       }
     } else if (evt.type === 'user') {
       for (const part of content) {
         const p = part as { type?: string; tool_use_id?: string };
         if (p?.type !== 'tool_result' || !p.tool_use_id) continue;
-        if (stillOpen.has(p.tool_use_id)) {
-          stillOpen.delete(p.tool_use_id); // resolved inside this same window
-          resolved.push({ toolUseId: p.tool_use_id });
-        } else {
-          closes.push({ toolUseId: p.tool_use_id });
-        }
+        close(p.tool_use_id);
       }
     }
   }
@@ -215,7 +236,40 @@ const DEFAULT_COLD_START_OPEN_WINDOW_MS = 24 * 60 * 60 * 1000;
  * file list is de-duplicated by absolute path.
  */
 export function defaultGateWatchRoots(home: string = os.homedir()): string[] {
-  return [path.join(home, '.papercusp', 'session-claude'), path.join(home, '.claude', 'projects')];
+  return [
+    path.join(home, '.papercusp', 'session-claude'), path.join(home, '.claude', 'projects'),
+    path.join(home, '.codex', 'sessions'), ompSessionsRootForSessionKey(undefined, home),
+  ];
+}
+
+/** Inspect only the bounded header, including on a resumed watermark delta. */
+export function gateTranscriptIdentity(prefix: string, file: string): { client: GateClient; sessionId: string } {
+  for (const line of prefix.split('\n')) {
+    try {
+      const r = JSON.parse(line);
+      if (!r || typeof r !== 'object') continue;
+      if (r.type === 'session_meta' && typeof r.payload?.id === 'string' && r.payload.id) {
+        return { client: 'codex', sessionId: r.payload.id };
+      }
+      if (r.type === 'session' && typeof r.id === 'string' && r.id) return { client: 'omp', sessionId: r.id };
+      if ((r.type === 'assistant' || r.type === 'user') && typeof r.sessionId === 'string' && r.sessionId) {
+        return { client: 'claude', sessionId: r.sessionId };
+      }
+    } catch { /* A partial/unrelated line does not identify the session. */ }
+  }
+  // Legacy fixtures and headerless Claude logs retain the original fallback.
+  return { client: 'claude', sessionId: path.basename(file, '.jsonl') };
+}
+
+async function managedGateWatchRoots(): Promise<string[]> {
+  const roots = [...defaultGateWatchRoots(), ...await codexSessionRoots()];
+  // Use the canonical OMP home resolver; enumerate only its known sessions
+  // subtrees instead of recursively walking credentials/config/extensions.
+  const homes = await fs.readdir(ompSessionHomesRoot()).catch(() => [] as string[]);
+  for (const home of homes) {
+    if (home.startsWith('session-')) roots.push(ompSessionsRootForSessionKey(home.slice('session-'.length)));
+  }
+  return roots;
 }
 
 /**
@@ -225,7 +279,7 @@ export function defaultGateWatchRoots(home: string = os.homedir()): string[] {
  * by its own byte watermark.
  */
 export async function tickGateWatch(opts: GateWatchOptions = {}): Promise<GateWatchResult> {
-  const roots = opts.roots?.length ? opts.roots : opts.root ? [opts.root] : defaultGateWatchRoots();
+  const roots = opts.roots?.length ? opts.roots : opts.root ? [opts.root] : await managedGateWatchRoots();
   const maxFiles = opts.maxFilesPerTick ?? DEFAULT_MAX_FILES;
   const capBytes = opts.maxBytesPerFile ?? DEFAULT_MAX_BYTES_PER_FILE;
   const coldWindowMs = opts.coldStartOpenWindowMs ?? DEFAULT_COLD_START_OPEN_WINDOW_MS;
@@ -303,7 +357,8 @@ export async function tickGateWatch(opts: GateWatchOptions = {}): Promise<GateWa
       const chunk = await readFileDelta(file, offset, capBytes);
       const { opens, closes, resolved, consumedBytes } = parseGateChunk(chunk);
       if (consumedBytes === 0) continue; // no complete line yet — retry next tick
-      const sessionId = path.basename(file, '.jsonl');
+      const prefix = offset === 0 ? chunk : await readFileDelta(file, 0, 64 * 1024);
+      const { client, sessionId } = gateTranscriptIdentity(prefix, file);
 
       // WI-10002079/R3 — the cold-start replay bound. With no watermark rows
       // a first tick reads every file from byte 0, so a transcript's entire
@@ -320,7 +375,7 @@ export async function tickGateWatch(opts: GateWatchOptions = {}): Promise<GateWa
           const { outcome } = await openOrTouchGate({
             workspaceId: ws,
             sessionId,
-            client: 'claude',
+            client,
             kind: 'ask',
             refId: open.toolUseId,
             question: open.question,

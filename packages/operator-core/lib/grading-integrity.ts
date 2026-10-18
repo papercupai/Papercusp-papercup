@@ -595,9 +595,9 @@ export interface PendingGradingAuditDispatchReceipt {
     retiredTaskIds: string[];
     attempts: number;
     codes: GradingAuditRecoveryCode[];
-    fallback: typeof GRADING_AUDIT_FALLBACK | GradingLaunchProfile;
-    /** Backend the bounded retry actually launched on (see recoveryFields). */
-    routedTo: 'claude' | 'codex';
+    fallback?: typeof GRADING_AUDIT_FALLBACK | GradingLaunchProfile;
+    /** Backend the bounded retry actually launched on; omitted for cleanup without a retry. */
+    routedTo?: 'claude' | 'codex';
   };
 }
 
@@ -639,6 +639,13 @@ export interface DispatchPendingGradingAuditsInput {
   ctx: GradingAuditLaunchContext;
   /** Keep the auditor in the completed item's harness when available. */
   harness?: string | null;
+  /**
+   * Whether this reconciliation may re-certify stranded spec-test-adequacy cards.
+   * The periodic acceptance sweep keeps this enabled by default; dispatch-only
+   * callers such as scorecards:repair set it to false to avoid an undisclosed
+   * card-superseding write.
+   */
+  recertifyStranded?: boolean;
 }
 
 export interface DispatchPendingGradingAuditsDeps {
@@ -2049,6 +2056,126 @@ export async function dispatchPendingGradingAudits(
     return fallbackServiceable;
   };
 
+  const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
+  const readLogMtimeMs = deps.readLogMtimeMs ?? readAcceptanceGraderLogMtimeMs;
+  const detectTerminalFailure = (
+    logPath: string | null,
+    maxRechecks = deps.terminalLogMaxRechecks ?? GRADING_AUDIT_TERMINAL_LOG_MAX_RECHECKS,
+    allowGatewayErrorWithoutFooter = true,
+    nativeProof?: { nativeTranscriptPath: string; nativeSessionId: string; nativeBackend?: 'claude' | 'codex' },
+  ) =>
+    detectAcceptanceGraderTerminalFailure(logPath, {
+      readLogTail,
+      ...nativeProof,
+      ...(deps.sleep ? { sleep: deps.sleep } : {}),
+      delayMs: deps.terminalLogRecheckDelayMs ?? GRADING_AUDIT_TERMINAL_LOG_RECHECK_DELAY_MS,
+      maxRechecks,
+      allowStandaloneWeeklyLimit: true,
+      allowInferenceGatewayError: true,
+      // The controlled grading brief cannot quote provider screens. A retained
+      // task still needs its own native session+owner proof before this detector
+      // may use the no-footer path.
+      allowGatewayErrorWithoutFooter,
+      allowLauncherQuotaDrop: true,
+      allowLauncherWalledPoolRefusal: true,
+      allowLauncherKickoffDrop: true,
+      allowToolSurfaceRefusal: true,
+      allowGradingAuditRefusal: true,
+      detectStartupStall: false,
+    });
+  const retireProvenTerminalDriftTasks = async (issueId: string) => {
+    const retiredTaskIds: string[] = [];
+    const codes: GradingAuditRecoveryCode[] = [];
+    const errors: string[] = [];
+    if (!workspaceId) return { retiredTaskIds, codes, errors };
+
+    const labelPrefix = `${GRADING_AUDIT_TASK_LABEL_PREFIX}${issueId}`;
+    let tasks: Awaited<ReturnType<typeof listTasks>>;
+    try {
+      tasks = await readTasksForCleanup({
+        workspaceId,
+        states: ['pending', 'running'],
+        labelPrefix,
+        limit: 10,
+      });
+    } catch (error) {
+      return {
+        retiredTaskIds,
+        codes,
+        errors: [`retained auditor task read failed: ${error instanceof Error ? error.message : String(error)}`],
+      };
+    }
+
+    const matchingTasks = tasks.filter((task) => {
+      const label = task.detail?.label;
+      return typeof label === 'string' && (label === labelPrefix || label.startsWith(`${labelPrefix}:`));
+    });
+    for (const task of matchingTasks) {
+      const taskLogPath = task.logPath ?? null;
+      const taskOwnerId = typeof task.detail?.coordOwnerId === 'string' ? task.detail.coordOwnerId.trim() : '';
+      let taskSessionId = typeof task.sessionId === 'string' ? task.sessionId.trim() : '';
+      if (!taskSessionId && taskOwnerId) {
+        try {
+          taskSessionId = (await (deps.bindTaskNativeSession ?? bindAgentSessionTaskToLatestNativeSession)(task.taskId))?.trim() ?? '';
+        } catch {
+          // Missing binding evidence is unknown, never permission to retire a task.
+        }
+      }
+      if (!taskLogPath || !taskOwnerId || !taskSessionId) continue;
+
+      let nativeSessionBindings: Array<Pick<AdvSessionRow, 'agent' | 'coordOwnerId' | 'sessionId'> & Partial<Pick<AdvSessionRow, 'id'>>>;
+      try {
+        nativeSessionBindings = await listNativeSessionsByTranscriptHandles([taskSessionId]);
+      } catch {
+        continue;
+      }
+      const nativeSession = nativeSessionBindings.find((session) =>
+        session.sessionId === taskSessionId && session.coordOwnerId === taskOwnerId &&
+        (session.agent === 'claude' || session.agent === 'codex'));
+      if (!nativeSession) continue;
+
+      let nativeTranscriptPath: string | null;
+      try {
+        nativeTranscriptPath = nativeSession.agent === 'claude'
+          ? await resolveSessionTranscript(taskSessionId, { owner: taskOwnerId })
+          : typeof nativeSession.id === 'number'
+            ? await (deps.findCodexRolloutPath ?? findCodexRolloutPathByUuid)(taskSessionId, {
+                homeOverride: codexHomeForSessionKey(nativeSession.id),
+              })
+            : null;
+      } catch {
+        continue;
+      }
+      if (!nativeTranscriptPath) continue;
+
+      let terminalFailure: { code: GradingAuditRecoveryCode; evidence: string } | null;
+      try {
+        terminalFailure = await detectTerminalFailure(taskLogPath, 0, false, {
+          nativeTranscriptPath,
+          nativeSessionId: taskSessionId,
+          ...(nativeSession.agent === 'codex' ? { nativeBackend: 'codex' as const } : {}),
+        });
+      } catch {
+        continue;
+      }
+      if (!terminalFailure) continue;
+
+      try {
+        const result = await terminateSupersededTask(task.taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+        if (!result.ok && result.error !== 'not_live' && result.error !== 'task_not_found' && result.error !== 'already_gone') {
+          errors.push(`terminal auditor '${task.taskId}' could not be retired: ${result.error}`);
+          continue;
+        }
+      } catch (error) {
+        errors.push(`terminal auditor '${task.taskId}' retirement failed: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+      retiredTaskIds.push(task.taskId);
+      codes.push(terminalFailure.code);
+    }
+    return { retiredTaskIds, codes, errors };
+  };
+
   const dispatchTarget = async (issueId: string): Promise<PendingGradingAuditDispatchReceipt> => {
     let phase: GradingAuditDispatchPhase = 'dispatch';
     const markPhase = (next: GradingAuditDispatchPhase) => {
@@ -2058,6 +2185,7 @@ export async function dispatchPendingGradingAudits(
     if (!card) {
       if (evaluatorBuildDriftIds.has(issueId)) {
         const driftCard = evaluatorBuildDriftById.get(issueId);
+        const cleanup = driftCard ? await retireProvenTerminalDriftTasks(issueId) : { retiredTaskIds: [], codes: [], errors: [] };
         const stranding = driftCard
           ? await assessEvaluatorBuildStrandingAsync(driftCard, liveEvaluatorBuild, {
               nowMs: deps.now?.() ?? Date.now(),
@@ -2065,19 +2193,18 @@ export async function dispatchPendingGradingAudits(
               probe: deps.generationAncestry,
             })
           : null;
-        if (driftCard && stranding?.stranded) {
-          return {
-            issueId,
-            rubricRef: driftCard.rubricRef,
-            state: 'skipped',
-            reason: stranding.reason,
-            stranded: stranding,
-          };
-        }
+        const reason = stranding?.stranded
+          ? stranding.reason
+          : 'card requires a dispatcher running the recorded evaluator build; this host skipped it without changing the card or audit lease';
         return {
           issueId,
-          state: 'skipped',
-          reason: 'card requires a dispatcher running the recorded evaluator build; this host skipped it without changing the card or audit lease',
+          ...(driftCard ? { rubricRef: driftCard.rubricRef } : {}),
+          state: cleanup.errors.length ? 'failed' : 'skipped',
+          reason: [reason, ...cleanup.errors].join('; '),
+          ...(stranding?.stranded ? { stranded: stranding } : {}),
+          ...(cleanup.retiredTaskIds.length
+            ? { terminalRecovery: { retiredTaskIds: cleanup.retiredTaskIds, attempts: 0, codes: cleanup.codes } }
+            : {}),
         };
       }
       return {
@@ -2200,43 +2327,6 @@ export async function dispatchPendingGradingAudits(
     });
     const terminateTask = deps.killTask ?? killTask;
     const readTask = deps.getTask ?? getTask;
-    const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
-    const readLogMtimeMs = deps.readLogMtimeMs ?? readAcceptanceGraderLogMtimeMs;
-    const detectTerminalFailure = (
-      logPath: string | null,
-      maxRechecks = deps.terminalLogMaxRechecks ?? GRADING_AUDIT_TERMINAL_LOG_MAX_RECHECKS,
-      allowGatewayErrorWithoutFooter = true,
-      nativeProof?: { nativeTranscriptPath: string; nativeSessionId: string; nativeBackend?: 'claude' | 'codex' },
-    ) =>
-      detectAcceptanceGraderTerminalFailure(logPath, {
-        readLogTail,
-        ...nativeProof,
-        ...(deps.sleep ? { sleep: deps.sleep } : {}),
-        delayMs: deps.terminalLogRecheckDelayMs ?? GRADING_AUDIT_TERMINAL_LOG_RECHECK_DELAY_MS,
-        maxRechecks,
-        allowStandaloneWeeklyLimit: true,
-        allowInferenceGatewayError: true,
-        // This controlled brief contains only the scorecard identity and
-        // fingerprint, never a quoted gateway screen. A headless Claude
-        // turn can stop on that exact screen before rendering its footer;
-        // treating it as terminal is what lets the Codex fallback run.
-        allowGatewayErrorWithoutFooter,
-        allowLauncherQuotaDrop: true,
-        // EI-22978598482930667: a launch REFUSED by the walled-pool preflight
-        // is terminal for this mission. Without this it classified as nothing,
-        // so the refusal was receipted as a successful launch and the card sat
-        // on a held reservation until the TTL expired.
-        allowLauncherWalledPoolRefusal: true,
-        // WI-10002903 (second leg): a judge whose kickoff psu-pty-host DROPPED
-        // after the launch receipt returned never received this brief, yet its
-        // PTY stays live. Without this the live-task guard deduped to it for the
-        // whole reservation. The brief carries only the scorecard identity and
-        // fingerprint, so it cannot quote the host receipt.
-        allowLauncherKickoffDrop: true,
-        allowToolSurfaceRefusal: true,
-        allowGradingAuditRefusal: true,
-        detectStartupStall: false,
-      });
     /**
      * EI-22978598482930667: a terminal QUOTA failure is futile to retry until
      * capacity returns, and the recovery instant is knowable — from the account
@@ -3019,7 +3109,8 @@ export async function reconcilePendingGradingAudits(
 ): Promise<PendingGradingAuditDispatchResult> {
   await retireSettledGradingAuditTasks(input, deps);
   const result = await dispatchPendingGradingAudits(input, deps);
-  const recertifications = await recertifyStrandedSpecAdequacyCards(input, result.receipts, deps);
+  const recertifications =
+    input.recertifyStranded === false ? [] : await recertifyStrandedSpecAdequacyCards(input, result.receipts, deps);
   return recertifications.length > 0 ? { ...result, recertifications } : result;
 }
 

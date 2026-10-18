@@ -66,12 +66,14 @@ let fakeHome = '';
 const RESOLVED_CODEX_DEFAULT = 'gpt-5.6-sol:xhigh';
 const savedCodexSqliteHomes = process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR;
 const savedSuCodexHomes = process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
+const savedPapercuspHome = process.env.PAPERCUSP_HOME;
 
 beforeEach(() => {
   ownerSidSyncCalls.length = 0;
   configWriteFault.armed = false;
   fakeHome = mkdtempSync(join(tmpdir(), 'role-codex-home-test-'));
   homeHolder.home = fakeHome;
+  process.env.PAPERCUSP_HOME = join(fakeHome, '.papercusp');
   process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = join(fakeHome, '.papercusp', 'su-codex-homes');
   process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = join(fakeHome, 'codex-sqlite-homes');
   vi.resetModules();
@@ -84,6 +86,8 @@ afterEach(() => {
   else process.env.PAPERCUSP_CODEX_SQLITE_HOMES_DIR = savedCodexSqliteHomes;
   if (savedSuCodexHomes === undefined) delete process.env.PAPERCUSP_SU_CODEX_HOMES_DIR;
   else process.env.PAPERCUSP_SU_CODEX_HOMES_DIR = savedSuCodexHomes;
+  if (savedPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+  else process.env.PAPERCUSP_HOME = savedPapercuspHome;
 });
 
 function withResolvedDefault<T extends (opts: any) => any>(fn: T): T {
@@ -1266,11 +1270,13 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(repaired.configPath, 'utf8')).toBe(before);
   });
 
-  it('keeps an SU session on its native SQLite companion after the serving root changes', async () => {
+  it.each(['', '  ', '\t'])('keeps an SU session on its native SQLite companion after the serving root changes (indent=%j)', async (indent) => {
     const { writeSuCodexHome, ensureSuCodexHomeConfig } = await loadMod();
     const input = { sessionKey: 'stable-sqlite', mcpUrl: 'http://x/api/mcp?superuser=1',
       sid: 'su-stable-sqlite', promptText: 'CURRENT SU RULES' };
     const first = writeSuCodexHome(input);
+    const config = readFileSync(first.configPath, 'utf8');
+    writeFileSync(first.configPath, config.replace(/^sqlite_home/m, indent + 'sqlite_home'));
     const database = join(first.sqliteHome, 'state_5.sqlite');
     writeFileSync(database, 'native conversation state');
     const replacementRoot = join(fakeHome, 'different-serving-root');
@@ -2641,6 +2647,53 @@ describe('writeCodexLockHooks — launch-prose edit-time signal', () => {
       expect(new RegExp(entries[0].matcher).test(tool), tool).toBe(true);
     }
     expect(new RegExp(entries[0].matcher).test('Read')).toBe(false);
+  });
+});
+
+describe('managed Codex headless owner questions', () => {
+  it('repairs a missing question guard on a same-owner headless resume and removes it for a visible resume', async () => {
+    const dir = await installFakeHooks();
+    writeFileSync(join(dir, 'ask-gate-mirror.sh'), '#!/usr/bin/env bash\n');
+    const { writeSuCodexHome, repairSuCodexHomeIdentity } = await loadMod();
+    const sid = 'su-resumed-headless-ask';
+    const out = writeSuCodexHome({ sessionKey: 'resumed-headless-ask', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid, headless: true });
+    const hooksPath = join(out.codexHome, 'hooks.json');
+    const config = JSON.parse(readFileSync(hooksPath, 'utf8'));
+    const isGuard = (entry: { hooks: { command: string }[] }) => entry.hooks.some((h) => h.command.includes('ask-gate-mirror.sh'));
+    config.hooks.PreToolUse = config.hooks.PreToolUse.filter((entry: { hooks: { command: string }[] }) => !isGuard(entry));
+    writeFileSync(hooksPath, JSON.stringify(config));
+    const priorHeadless = process.env.PAPERCUSP_PSU_HEADLESS;
+    try {
+      process.env.PAPERCUSP_PSU_HEADLESS = '1';
+      expect(repairSuCodexHomeIdentity(out.codexHome, sid).repaired).toBe(true);
+      const guards = () => JSON.parse(readFileSync(hooksPath, 'utf8')).hooks.PreToolUse.filter(isGuard);
+      expect(guards()).toHaveLength(1);
+      expect(guards()[0].hooks[0].command).toContain(`PAPERCUSP_SID='${sid}'`);
+      delete process.env.PAPERCUSP_PSU_HEADLESS;
+      expect(repairSuCodexHomeIdentity(out.codexHome, sid).repaired).toBe(true);
+      expect(guards()).toHaveLength(0);
+    } finally {
+      if (priorHeadless === undefined) delete process.env.PAPERCUSP_PSU_HEADLESS;
+      else process.env.PAPERCUSP_PSU_HEADLESS = priorHeadless;
+    }
+  });
+
+  it('installs the native question guard with a baked headless identity only on headless homes', async () => {
+    const dir = await installFakeHooks();
+    writeFileSync(join(dir, 'ask-gate-mirror.sh'), '#!/usr/bin/env bash\n');
+    const { writeSuCodexHome } = await loadMod();
+    const headless = writeSuCodexHome({ sessionKey: 'headless-ask', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-headless-ask', headless: true });
+    const visible = writeSuCodexHome({ sessionKey: 'visible-ask', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'P', sid: 'su-visible-ask', headless: false });
+    const guards = (home: string) => JSON.parse(readFileSync(join(home, 'hooks.json'), 'utf8')).hooks.PreToolUse
+      .filter((e: { hooks: { command: string }[] }) => e.hooks.some((h) => h.command.includes('ask-gate-mirror.sh')));
+    const entries = guards(headless.codexHome);
+    expect(entries).toHaveLength(1);
+    for (const tool of ['request_user_input', 'functions.request_user_input', 'functions__request_user_input']) {
+      expect(new RegExp(entries[0].matcher).test(tool)).toBe(true);
+    }
+    expect(entries[0].hooks[0].command).toContain('PAPERCUSP_PSU_HEADLESS=1');
+    expect(entries[0].hooks[0].command).toContain("PAPERCUSP_SID='su-headless-ask'");
+    expect(guards(visible.codexHome)).toHaveLength(0);
   });
 });
 

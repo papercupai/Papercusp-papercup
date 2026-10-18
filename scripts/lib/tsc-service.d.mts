@@ -2,6 +2,14 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/lib/tsc-service.mjs and regenerate.
 /**
+ * Resolve a configured or per-call service budget while keeping a slow or wedged service from
+ * delaying the caller for minutes. A shorter explicit value remains useful for local diagnostics.
+ *
+ * @param {string | number | undefined} [value]
+ * @returns {number}
+ */
+export function resolveTscServiceTimeoutMs(value?: string | number | undefined): number;
+/**
  * The unix socket the service listens on (systemd passes it pre-bound; see
  * apps/operator/scripts/systemd/papercup-tsc-service.socket, which must name the same path).
  *
@@ -355,17 +363,19 @@ export function requestTscService({ socketPath, request, timeoutMs }: {
  *   label: string,
  *   log?: (line: string) => void,
  *   scope?: 'dependencies' | 'named',
+ *   timeoutMs?: number,
  *   env?: Record<string, string | undefined>,
  * }} opts
  * @returns {Promise<Extract<TscServiceResponse, { ok: true }> | null>}
  */
-export function typecheckViaService({ root, project, files, label, log, scope, env }: {
+export function typecheckViaService({ root, project, files, label, log, scope, timeoutMs, env, }: {
     root: string;
     project: string;
     files: string[];
     label: string;
     log?: (line: string) => void;
     scope?: "dependencies" | "named";
+    timeoutMs?: number;
     env?: Record<string, string | undefined>;
 }): Promise<Extract<TscServiceResponse, {
     ok: true;
@@ -400,7 +410,7 @@ export function readTextOrNull(absFile: string): string | null;
 export const TSC_SERVICE_ENV: "PAPERCUSP_TSC_SERVICE";
 /** A scoped request whose checked set exceeds this is refused; a full compile is cheaper then. */
 export const TSC_SERVICE_MAX_CHECKED_FILES: number;
-/** Queue wait plus check. A refusal or timeout falls back to the CLI, so this bounds the loss. */
+/** Queue wait plus check; timeout falls back to the CLI within a bounded foreground window. */
 export const TSC_SERVICE_TIMEOUT_MS: number;
 /**
  * WI-10005362 — hosted workspace hosts run one service PER CHECKOUT. Set (by the operator, never

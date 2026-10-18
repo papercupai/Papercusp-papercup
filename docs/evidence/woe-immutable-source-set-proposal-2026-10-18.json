@@ -1,0 +1,1009 @@
+{
+  "schemaVersion": 1,
+  "kind": "immutable-whole-source-set-proposal",
+  "workItem": "WI-10007947",
+  "carryingWorkItem": "WI-10007840",
+  "plan": "work-on-everything-rubric-stewardship-2026-10-09",
+  "planItem": "P-005",
+  "basedOn": {
+    "path": "docs/evidence/woe-source-compatibility-closure-2026-10-18.json",
+    "sha256": "de9153a0d4c776b7b7a986336f4476bb8444982a99bcf581189a5b0295e4a2d2"
+  },
+  "source": {
+    "historicalNativeRef": "a44756aa009f52a2e9d96252e523ebbe1252f68e",
+    "proposedRef": "d4dc3833b5883fb7930999b3ce6c5f872becd921",
+    "tree": "7303fcd84d927776c9307a30a57021f5299b40f5",
+    "comparedRef": "d740fc3802877d1c8c3b1068768681ee32ef0025",
+    "selection": "Coherent whole superproject tree plus recursive gitlinks; scoped inventory is review evidence, not an admission path list. d4dc contains the retained R2 fixture renewal and descends from a447.",
+    "status": "proposal-only-unqualified",
+    "artifactBuilt": false
+  },
+  "scopeReview": [
+    {
+      "path": "apps/operator/app/adv/hud/GoalDataSection.tsx",
+      "historicalBlob": "f601f132f6ea3f5292f5bca05731d98cc1a60dda",
+      "sourceBlob": "a8144b1bafde8d0490574fd5911de12875f71b46",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/app/adv/hud/GoalDetailPanel.test.tsx",
+      "historicalBlob": "bd2d15c57211572da6921459ce38abd838c87e43",
+      "sourceBlob": "bd2d15c57211572da6921459ce38abd838c87e43",
+      "targetBlob": "fbbade76034c3a9df4801dc7c3c24c4eff715153"
+    },
+    {
+      "path": "apps/operator/app/adv/hud/GoalDetailPanel.tsx",
+      "historicalBlob": "231872df7de2f1805d88e2b1375982098067d8a2",
+      "sourceBlob": "231872df7de2f1805d88e2b1375982098067d8a2",
+      "targetBlob": "85fb4a6da004ac5c5601bb33669e4dc387004605"
+    },
+    {
+      "path": "apps/operator/app/adv/hud/GoalPackagesRail.tsx",
+      "historicalBlob": "094b80878ef343133c327c18b506b7264d0517a5",
+      "sourceBlob": "094b80878ef343133c327c18b506b7264d0517a5",
+      "targetBlob": "a1e500fc7f81076bfe6c97573fe2aa5866f63621"
+    },
+    {
+      "path": "apps/operator/app/adv/hud/GoalStatusControl.tsx",
+      "historicalBlob": "270f319d4dd001bfced9bec1c5fa90476db5264e",
+      "sourceBlob": "270f319d4dd001bfced9bec1c5fa90476db5264e",
+      "targetBlob": "508ffb4880497388997bfa2fad4ec39b024757b5"
+    },
+    {
+      "path": "apps/operator/app/adv/hud/OngoingWorkOverview.tsx",
+      "historicalBlob": "44b92254f20f35f78a81382090ddb60df06d4608",
+      "sourceBlob": "44b92254f20f35f78a81382090ddb60df06d4608",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.css",
+      "historicalBlob": "7ac59c71a76a42cb9ff74c0f48aa6aae343a80ec",
+      "sourceBlob": "7ac59c71a76a42cb9ff74c0f48aa6aae343a80ec",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.test.tsx",
+      "historicalBlob": "37da98e4c0a012d75bc0b12211a32129ade2941f",
+      "sourceBlob": "37da98e4c0a012d75bc0b12211a32129ade2941f",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.tsx",
+      "historicalBlob": "d61b67efa31bda9bf4f8bc0a59b4b70da40d8fde",
+      "sourceBlob": "d61b67efa31bda9bf4f8bc0a59b4b70da40d8fde",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/app/adv/hud/goal-detail-model.ts",
+      "historicalBlob": "47993447c2736e02d0ed1658543da07fca38d64f",
+      "sourceBlob": "47993447c2736e02d0ed1658543da07fca38d64f",
+      "targetBlob": "acf1e3bcabf970dc4691d82492ea1eca07b02f2b"
+    },
+    {
+      "path": "apps/operator/app/adv/hud/hud-entity-board.ts",
+      "historicalBlob": "bcc4cca68f39f767e4acff1fcb4b9817f5ffbb85",
+      "sourceBlob": "bcc4cca68f39f767e4acff1fcb4b9817f5ffbb85",
+      "targetBlob": "c2d014485f8f1bf30a53fcfa797265b88d943366"
+    },
+    {
+      "path": "apps/operator/app/adv/hud/hud.css",
+      "historicalBlob": "809cb9361e4d7548caff7228a679651189d80cf5",
+      "sourceBlob": "809cb9361e4d7548caff7228a679651189d80cf5",
+      "targetBlob": "d17393cae59e15ab9faa72e346004e4ded083861"
+    },
+    {
+      "path": "apps/operator/app/adv/hud/ongoing-work-draft.test.ts",
+      "historicalBlob": "1b5d9e2d7da0d20d6cbb5a2a349df5f9781222ce",
+      "sourceBlob": "1b5d9e2d7da0d20d6cbb5a2a349df5f9781222ce",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/app/adv/hud/ongoing-work-draft.ts",
+      "historicalBlob": "5cae0e36901f3bbfc5e1641a50b38c5162cb68f3",
+      "sourceBlob": "5cae0e36901f3bbfc5e1641a50b38c5162cb68f3",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/app/adv/hud/ongoing-work-model.test.ts",
+      "historicalBlob": "f96e9010fd86adb5286247258260c4ed56a71f75",
+      "sourceBlob": "f96e9010fd86adb5286247258260c4ed56a71f75",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/app/adv/hud/ongoing-work-model.ts",
+      "historicalBlob": "1cba0919703609f006f7f0f183021b64d08c3a8b",
+      "sourceBlob": "1cba0919703609f006f7f0f183021b64d08c3a8b",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/app/adv/hud/woe-progress-model.test.ts",
+      "historicalBlob": "959ed2be9303fafc763fda949e6da2487d2d7f47",
+      "sourceBlob": "959ed2be9303fafc763fda949e6da2487d2d7f47",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/app/adv/hud/woe-progress-model.ts",
+      "historicalBlob": "b0812994426e4c2be1b776bed8b8a2a3bddc0ff6",
+      "sourceBlob": "b0812994426e4c2be1b776bed8b8a2a3bddc0ff6",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/e2e/_egress.ts",
+      "historicalBlob": "5d79043c683e9b9cc516dbf4bff6241022e501e9",
+      "sourceBlob": "5d79043c683e9b9cc516dbf4bff6241022e501e9",
+      "targetBlob": "f09508f51d59d43a22d91fbf5e91d235a38ba924"
+    },
+    {
+      "path": "apps/operator/e2e/_native-bridge-json.ts",
+      "historicalBlob": "620501804ca80cfb7e4b2fe17d3259c5b0cf5115",
+      "sourceBlob": "620501804ca80cfb7e4b2fe17d3259c5b0cf5115",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/e2e/_ongoing-work-native-fixture.ts",
+      "historicalBlob": "dc452a2b9a9362ed088d5d76fc3c6046708d17c3",
+      "sourceBlob": "dc452a2b9a9362ed088d5d76fc3c6046708d17c3",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/e2e/_sync-stub.ts",
+      "historicalBlob": "c7f36e376e044200ed05f09d9a7994a1b27de118",
+      "sourceBlob": "c7f36e376e044200ed05f09d9a7994a1b27de118",
+      "targetBlob": "2208628f216846637b8b70d2b2b92a7381d21737"
+    },
+    {
+      "path": "apps/operator/e2e/ongoing-work-native-collection.spec.mts",
+      "historicalBlob": "46519ed3f1440e75a5df9487f388292631dff42c",
+      "sourceBlob": "4ac7d21c85af079a75bca4fe354b210cfa1a3457",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/e2e/ongoing-work-ui.spec.ts",
+      "historicalBlob": "3909de0b3fc77953547c95de121b93989a85bd4a",
+      "sourceBlob": "3909de0b3fc77953547c95de121b93989a85bd4a",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/lib/__tests__/ongoing-work-native-fixture.integration.test.ts",
+      "historicalBlob": "2c26c157e3b4d867e28058f991770836fa955834",
+      "sourceBlob": "2c26c157e3b4d867e28058f991770836fa955834",
+      "targetBlob": null
+    },
+    {
+      "path": "apps/operator/lib/__tests__/ongoing-work-native-fixture.test.ts",
+      "historicalBlob": "90b469caa1e7638939e75e23c773a8edceaa934a",
+      "sourceBlob": "90b469caa1e7638939e75e23c773a8edceaa934a",
+      "targetBlob": null
+    },
+    {
+      "path": "packages/operator-core/lib/_baseline-coord-fixture.ts",
+      "historicalBlob": "d48e1aa8afbdea4827260b215d992f524db069c7",
+      "sourceBlob": "d48e1aa8afbdea4827260b215d992f524db069c7",
+      "targetBlob": "695560aa92a4ffb33503fcafb720d796c3f34e98"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-obligation-reader.ts",
+      "historicalBlob": "01114f6241c27b7187925bb802e41aa075c82d21",
+      "sourceBlob": "01114f6241c27b7187925bb802e41aa075c82d21",
+      "targetBlob": "e90b3e85a3f5ad67cd8e41011d0aaffb8a15c390"
+    },
+    {
+      "path": "packages/operator-core/lib/agent-tools/plans/run-instance-slug.ts",
+      "historicalBlob": "d0057c51d11e17b329a0a2c47fc5935fbb7f8d6e",
+      "sourceBlob": "d0057c51d11e17b329a0a2c47fc5935fbb7f8d6e",
+      "targetBlob": "ca0e04f08a3cf047f578df58ea496c510833a587"
+    },
+    {
+      "path": "packages/operator-core/lib/capability-envelope/refusal-contract-types.ts",
+      "historicalBlob": "13459899ab7e8e131f31f3db2062decf215d27d8",
+      "sourceBlob": "13459899ab7e8e131f31f3db2062decf215d27d8",
+      "targetBlob": null
+    },
+    {
+      "path": "packages/operator-core/lib/goal-holder-wake-state.ts",
+      "historicalBlob": "2571cf40a90a75bbe3e377352ea758e42be5bff7",
+      "sourceBlob": "2571cf40a90a75bbe3e377352ea758e42be5bff7",
+      "targetBlob": null
+    },
+    {
+      "path": "packages/operator-core/lib/goal-launch-settings.test.ts",
+      "historicalBlob": "e47906cd84f6f4140d502a9a75bdfb504e1cb32f",
+      "sourceBlob": "e47906cd84f6f4140d502a9a75bdfb504e1cb32f",
+      "targetBlob": "80419c9c8b32c53a42ca107a7a9e2c49539435e1"
+    },
+    {
+      "path": "packages/operator-core/lib/goal-launch-settings.ts",
+      "historicalBlob": "9d6ff35514907d73463818034a60586021b2056b",
+      "sourceBlob": "9d6ff35514907d73463818034a60586021b2056b",
+      "targetBlob": "af82f762a0ac78acc766a36fdeda3486c2a43d9a"
+    },
+    {
+      "path": "packages/operator-core/lib/goal-rubric-stewardship.test.ts",
+      "historicalBlob": "582a4c108f120a473ce86ad1f5623f1ca5037999",
+      "sourceBlob": "582a4c108f120a473ce86ad1f5623f1ca5037999",
+      "targetBlob": null
+    },
+    {
+      "path": "packages/operator-core/lib/goal-rubric-stewardship.ts",
+      "historicalBlob": "57ec170e22b74671f17056cac990af063144b0ea",
+      "sourceBlob": "57ec170e22b74671f17056cac990af063144b0ea",
+      "targetBlob": null
+    },
+    {
+      "path": "packages/operator-core/lib/goals/package-property-datatypes.ts",
+      "historicalBlob": "eca840bfeeded200287556870c2f8284fa762224",
+      "sourceBlob": "eca840bfeeded200287556870c2f8284fa762224",
+      "targetBlob": "927f0f49acf45b8568abddacd7f5943635d3e07a"
+    },
+    {
+      "path": "packages/operator-core/lib/goals/package-update.ts",
+      "historicalBlob": "e6352024c59914cad4146c35312ccd92a005e053",
+      "sourceBlob": "e6352024c59914cad4146c35312ccd92a005e053",
+      "targetBlob": "59c27c68d0250841b4acbd034cc8feb957de9017"
+    },
+    {
+      "path": "packages/operator-core/lib/goals/worklist-console.ts",
+      "historicalBlob": "50a429961204150710a6c7027dfddc45252c567e",
+      "sourceBlob": "50a429961204150710a6c7027dfddc45252c567e",
+      "targetBlob": null
+    },
+    {
+      "path": "packages/operator-core/lib/pg-timestamp.ts",
+      "historicalBlob": "c44c06df87bf22aaf15348203253d5fd85596c75",
+      "sourceBlob": "c44c06df87bf22aaf15348203253d5fd85596c75",
+      "targetBlob": "b3cfe4919cbe6fd4e0dabf31d0acd8c8798a8f86"
+    },
+    {
+      "path": "packages/operator-core/lib/rubrics.ts",
+      "historicalBlob": "6796334e00ea9c917a6515009bbdac176d7649ff",
+      "sourceBlob": "0f0a96ac7d63bb1576a2d719ab6d346a0200c6c4",
+      "targetBlob": "8b0b54588a0e415b5a8392ca628391deff6b1432"
+    },
+    {
+      "path": "packages/operator-core/lib/scorecards.ts",
+      "historicalBlob": "9c4f1fa91a2fd573682e55d284baafc9b8ba873b",
+      "sourceBlob": "9c4f1fa91a2fd573682e55d284baafc9b8ba873b",
+      "targetBlob": "20b0951634fc05059957aa6e4eb94c8338267c06"
+    },
+    {
+      "path": "packages/operator-core/lib/sync-resolver/goals.integration.test.ts",
+      "historicalBlob": "56e2a0717a17ad2cca62c28f5f72080f1fc790aa",
+      "sourceBlob": "bdcd48d8a5082a87b36b2fbadca3a7e0636af5ea",
+      "targetBlob": "8192fefa288ac90985058545c3f486a202d0a71d"
+    },
+    {
+      "path": "packages/operator-core/lib/sync-resolver/goals.ts",
+      "historicalBlob": "8c60891e8e8c856add9b128fbec8318340e3ddef",
+      "sourceBlob": "16c161e72d93f5c55f0ab287a688af883df0f9e5",
+      "targetBlob": "17ccbcf06e6e621b2bbd826061a28fdcf0c8b2c1"
+    },
+    {
+      "path": "packages/operator-core/lib/typed-properties-db.ts",
+      "historicalBlob": "acbc47e287db4ca2c6b9b67a91161a4afb29d1b8",
+      "sourceBlob": "acbc47e287db4ca2c6b9b67a91161a4afb29d1b8",
+      "targetBlob": "6735350f26aa0816af3af5d5253d31738d9f969b"
+    },
+    {
+      "path": "packages/operator-core/lib/typed-properties.test.ts",
+      "historicalBlob": "66cb4be03ed3bedcd7bb10bed8214832a0e8cdbf",
+      "sourceBlob": "66cb4be03ed3bedcd7bb10bed8214832a0e8cdbf",
+      "targetBlob": "9b1cd7ac0eb4d3cc06b726fe99cea73df68a8930"
+    },
+    {
+      "path": "packages/operator-core/lib/typed-properties.ts",
+      "historicalBlob": "de267f73e1e8044aa03eca437eab11720ce17bea",
+      "sourceBlob": "de267f73e1e8044aa03eca437eab11720ce17bea",
+      "targetBlob": "02559538536cb6abd912b35ca4281cfd17e9c075"
+    },
+    {
+      "path": "packages/operator-core/lib/work-item-completion-authority.ts",
+      "historicalBlob": "3dd033ced19506176bf4565634a42572709b3ed9",
+      "sourceBlob": "3dd033ced19506176bf4565634a42572709b3ed9",
+      "targetBlob": "04fbb3061ba87edbf60d575f0583f1368652c9b1"
+    },
+    {
+      "path": "packages/operator-core/lib/work-items.ts",
+      "historicalBlob": "ab0435c1f0ff02a027b1269afedcf635e63452b8",
+      "sourceBlob": "8da8cabbaa4202a573a37daa50966493166d0a13",
+      "targetBlob": "e43219d3f72eff21489676e3070bf91c8d0a1311"
+    }
+  ],
+  "apiReview": {
+    "method": "Group every top-level declaration by name, including overloads and implementation. Text identity is bounded evidence; transitive assignability/runtime compatibility is unverified.",
+    "declarations": [
+      {
+        "path": "packages/operator-core/lib/goal-launch-settings.ts",
+        "name": "GoalPortfolioBrief",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "3095a9d495ce6d6c9a62c4ecde4930bb23fd069185f942a9386e07084ff67137",
+        "targetSha256": "d5ed7c0a8ca94acd68486fcf54b81deef0575576c67e343da9d784240d0ebef7",
+        "status": "different-declaration"
+      },
+      {
+        "path": "packages/operator-core/lib/goal-launch-settings.ts",
+        "name": "readGoalPortfolioBrief",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "6ffa1ae92cb396bdc71a312730cfdb30f9169c9e23656b6592dedfecbe6df9f9",
+        "targetSha256": "241cc26ed710e3c2fff7b50ccd8fba43aad97adc033d53a24c33ef4f8f0d8f93",
+        "status": "different-declaration"
+      },
+      {
+        "path": "packages/operator-core/lib/goal-launch-settings.ts",
+        "name": "renderGoalPortfolioBrief",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "db35dd58fd06978048806c657b39a5c70b187927a9f9fdcff70670e2ea1d5f94",
+        "targetSha256": "1104ffd82c56f9b4cf5522918cc51f16eccbe5e116b56448144d8c61b8e84ca3",
+        "status": "different-declaration"
+      },
+      {
+        "path": "packages/operator-core/lib/goal-launch-settings.ts",
+        "name": "budgetSpendScope",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "902fa0f23ffaa149c2f74da5e9230016ddda0611dab5bcad7b520b425e7e607d",
+        "targetSha256": "902fa0f23ffaa149c2f74da5e9230016ddda0611dab5bcad7b520b425e7e607d",
+        "status": "identical-declaration"
+      },
+      {
+        "path": "packages/operator-core/lib/typed-properties.ts",
+        "name": "TypedPropertyCollectionRead",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 0,
+        "sourceSha256": "c479fca5714509abe65b49ce65ad3bba20f25cd878226024168f12aeb5c694e0",
+        "targetSha256": null,
+        "status": "target-export-missing"
+      },
+      {
+        "path": "packages/operator-core/lib/typed-properties.ts",
+        "name": "readTypedPropertyCollection",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 0,
+        "sourceSha256": "8687f45107a50d1de7125d31a6a8f38d481fa36c3c3fa3a1f21d580957afe9ca",
+        "targetSha256": null,
+        "status": "target-export-missing"
+      },
+      {
+        "path": "packages/operator-core/lib/typed-properties.ts",
+        "name": "TypedPropertyDefinitionSchema",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "6546fe2f91cfe21e2c631be1ef368caa801b0f5c93ca294e8c9986decc4fbe36",
+        "targetSha256": "aff6f5b5d964f4849268ed112cadf7c8fd93eed653eaf34c989390e430746e12",
+        "status": "different-declaration"
+      },
+      {
+        "path": "packages/operator-core/lib/typed-properties.ts",
+        "name": "TypedPropertySchemaDocumentSchema",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "4c51f58b488808b3f7b541c42e815ddf4e69da546d3af0c9f96cff475e119cff",
+        "targetSha256": "1b0027413a9143af72e46002f5b0c3e5fa25cc01d8bfe0dfd5027f977458663d",
+        "status": "different-declaration"
+      },
+      {
+        "path": "packages/operator-core/lib/typed-properties.ts",
+        "name": "prepareTypedPropertyMutation",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "e60443adcbe29f9587fcb9d8d54ff7a4ac56283a12358836bfa4d2b5b7eeb639",
+        "targetSha256": "3f55d19af5e5050a5ae1fba908efe3ab8ca1a7fd62d5e312f8388ce721524377",
+        "status": "different-declaration"
+      },
+      {
+        "path": "packages/operator-core/lib/rubrics.ts",
+        "name": "getRubricWithoutSeeding",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 0,
+        "sourceSha256": "b0a7c103b04c6f46c473496bd7261b89c8a9b6cbb0764dcb001be3c2e015bf33",
+        "targetSha256": null,
+        "status": "target-export-missing"
+      },
+      {
+        "path": "packages/operator-core/lib/rubrics.ts",
+        "name": "Rubric",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "c7e9115f78e61d7b3025f0f389a5274db2e95a045be4e3003ae75752580e0d02",
+        "targetSha256": "c7e9115f78e61d7b3025f0f389a5274db2e95a045be4e3003ae75752580e0d02",
+        "status": "identical-declaration"
+      },
+      {
+        "path": "packages/operator-core/lib/scorecards.ts",
+        "name": "listScorecards",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "23b65ccda9c9e24f2de15eaac0574b2688316ee5f63410b64577fa952ef0b718",
+        "targetSha256": "23b65ccda9c9e24f2de15eaac0574b2688316ee5f63410b64577fa952ef0b718",
+        "status": "identical-declaration"
+      },
+      {
+        "path": "packages/operator-core/lib/scorecards.ts",
+        "name": "settledGradingAuditIsCurrent",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "f015e175671aee9b341a346f5854071f9466d75b8b6ad22c36bbb254bd95d069",
+        "targetSha256": "f015e175671aee9b341a346f5854071f9466d75b8b6ad22c36bbb254bd95d069",
+        "status": "identical-declaration"
+      },
+      {
+        "path": "packages/operator-core/lib/scorecards.ts",
+        "name": "ScorecardRow",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "fb93d24af105f4d2de976809501b28057e94410c63ba348f12447e6f4e7072a7",
+        "targetSha256": "8719def536de9cb1775cc0183fbedb1e371ceb6a282d71e65b0d913180f52ba1",
+        "status": "different-declaration"
+      },
+      {
+        "path": "packages/operator-core/lib/pg-timestamp.ts",
+        "name": "pgTimestampToIso",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "5002129da325415577a4fde743613e113bd2022e251a4cc3ca21fdb74589e980",
+        "targetSha256": "ee5c12794afa8fbb8310a287d9b8d2d6ef979f571562077b81dbebb3e3b5a702",
+        "status": "different-declaration"
+      },
+      {
+        "path": "packages/operator-core/lib/pg-timestamp.ts",
+        "name": "pgTimestampToIsoOrNull",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "6ffdace70024193c8fb233930a93bb149930cbe82b83fe597aed98ba352a7c5c",
+        "targetSha256": "6ffdace70024193c8fb233930a93bb149930cbe82b83fe597aed98ba352a7c5c",
+        "status": "identical-declaration"
+      },
+      {
+        "path": "packages/operator-core/lib/work-item-completion-authority.ts",
+        "name": "isSufficientEvidence",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "dfcd1107b54698b36a1d1d71fdcb1147143a43a1d393dad8df9150c68a725612",
+        "targetSha256": "dfcd1107b54698b36a1d1d71fdcb1147143a43a1d393dad8df9150c68a725612",
+        "status": "identical-declaration"
+      },
+      {
+        "path": "packages/operator-core/lib/work-items.ts",
+        "name": "getWorkItemsByIds",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "4a25f9421e152c5001bfdd0f509d19a669fe371de108c020d9f7dacd0262067f",
+        "targetSha256": "f59a38a1bf708033deb973382dea88cc13caeefe2ce26eb1a27998b91725a715",
+        "status": "different-declaration"
+      },
+      {
+        "path": "packages/operator-core/lib/acceptance-author-identity.ts",
+        "name": "acceptanceLineageClosure",
+        "sourceDeclarations": 1,
+        "targetDeclarations": 1,
+        "sourceSha256": "da2adc6d0a5aea8b1ff342bb0f17baf9b61678ed65a7b7aaf3e24f771808f5bc",
+        "targetSha256": "da2adc6d0a5aea8b1ff342bb0f17baf9b61678ed65a7b7aaf3e24f771808f5bc",
+        "status": "identical-declaration"
+      }
+    ]
+  },
+  "packageAndLockScope": {
+    "manifests": [
+      {
+        "path": "package.json",
+        "sourceBlob": "1b1b972b4e2182d45a7c9caf9d972112b3bece96",
+        "targetBlob": "ec3f351e8a622490cded37dde0a515d7966c0456",
+        "sourceSha256": "e3b318883fd7b8774198bb223b2b06cffc6f15f83249d41dab1ace687c1d14fe",
+        "targetSha256": "19c4e6cfae58b32bf336cf1d0d4698d2fa450c5e25ed7ad277a3d907ac89a9c3"
+      },
+      {
+        "path": "package-lock.json",
+        "sourceBlob": "c724500a197b164442c44393baf11f56413ea878",
+        "targetBlob": "4080e3602257660f58eb542be9c16a3f2df808dd",
+        "sourceSha256": "9b593ec7353a963a8174548a2da6e6f73354de0f5a2e88b08059fce2806d06f7",
+        "targetSha256": "43ea5c65e4fa0330739b167ad7b25cc4b233163675d8f8c45242069bca2adcc6"
+      },
+      {
+        "path": "apps/operator/package.json",
+        "sourceBlob": "6e5e3c17f285165c40197ea7f11f308de06c3c2d",
+        "targetBlob": "3e1aae9afccc5d3c4de9dbebf0af49849fc8a948",
+        "sourceSha256": "50fee8c09a1927ea03906b5339db61f7aed6d6f1960be5dda9ce10f9419f50b5",
+        "targetSha256": "a0325de8f02d1e90a27a522127d7fb69e19beccb78a0035246608b802b2c0d5c"
+      },
+      {
+        "path": "packages/operator-core/package.json",
+        "sourceBlob": "be74361a6a10cfdad57c7c57873144c59e16cc52",
+        "targetBlob": "f2d8085d28369c70ca008fc4bdb931b53664d123",
+        "sourceSha256": "92fcab41dbca6b1d9def9460a9ee20b5ca07384b33dcbf9887bb354ca60b09c7",
+        "targetSha256": "139ff8dab1ecfc3e23a7f393b50fda5a53761392e6a3df2ebac174bc77eadde9"
+      },
+      {
+        "path": ".gitmodules",
+        "sourceBlob": "bca2aa4e297ff92bf2c3d7756143e7b518f336b8",
+        "targetBlob": "082043397c534195d3f58709a42395372cdcf6ee",
+        "sourceSha256": "6b24c78be9aec23dfb91bf539549e92e95ad8ffa354023310da6f46c46ddda16",
+        "targetSha256": "c1b771258cd2d8abbe39b744afb05a03710e17ada0dbb719c3eaede5b598f002"
+      },
+      {
+        "path": "apps/operator/tsconfig.json",
+        "sourceBlob": "001d724c5caff63231cd94161a1b7b6ea5dd855a",
+        "targetBlob": "40cb06c529d3232e886eee554e68a0420113e278",
+        "sourceSha256": "d35cf144cc3f186d32f1c9fe1bc28cba731e95f27201b85664533af580d10c75",
+        "targetSha256": "883a7033505c8e8314a4b2754f79b68c2ea2bd8906e5e067bedd5b1447169134"
+      }
+    ],
+    "gitlinks": [
+      {
+        "path": "apps/slack-asana-bug-drill",
+        "sourceCommit": "dc97913675d444bd7bb228272c72948a6a5d8e08",
+        "targetCommit": null,
+        "unchanged": false
+      },
+      {
+        "path": "libs/agent-chat",
+        "sourceCommit": "9b3c74f0b7fb75a8df4dc0ebc58a836b34d5874d",
+        "targetCommit": "2e2de7639c654d7e26b7a0733cc3790bad015205",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/cache",
+        "sourceCommit": "6fb88cb19fb339cb7f230bab9004304eb4105973",
+        "targetCommit": "4c32764ecf742eead930c346f3a4f73f630c6e41",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/card-stack",
+        "sourceCommit": "66fe6981418eefd3283877f088a81459de77fc5c",
+        "targetCommit": "7c0dec78a9fa0d6553bf6908bb06a9e81f153496",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/chat-protocol",
+        "sourceCommit": "bd3c34506b3a55fbe2c6cf1a527fc59a1bcece5c",
+        "targetCommit": "4b17dcaec785f86747ffc0b3ce593de78322c4ad",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/control-mutation",
+        "sourceCommit": "a5a799dc594754d4f8a0c253f61d02844ceeb455",
+        "targetCommit": "ae8d65376c178d3f89b56bc4918af7f1736c83c0",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/debounce-coalesce",
+        "sourceCommit": "e8e09f6e1c0ece67c1240283240df0b4efca2e24",
+        "targetCommit": "7f5be7375cc9420b3f446724542a70d1b382c953",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/desktop-ipc",
+        "sourceCommit": "b3f3a670928fa26f1c0b7203093c8f33d12114ac",
+        "targetCommit": "cfdd8a2fbf312dc85f37c0e9719b7564240b332a",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/dock-workbench",
+        "sourceCommit": "9bebec1de001ece29bd5f393a7d3fa703aea22a8",
+        "targetCommit": "b2cc3751bdd90ac4c24995271b8e6d97d71ab1f5",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/embedded-pg-discovery",
+        "sourceCommit": "430387d16bcc35a0c815df66a8d43d7076748a50",
+        "targetCommit": "1dc55adb817f6e5ab75fb64f3703d1773972a8c5",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/failure-detector",
+        "sourceCommit": "dc1586c1b2f1195ea4f527f1e431b64b26ac5481",
+        "targetCommit": "3edf6df7f3e4bcd2a0abaac863bd1e8a57410cb2",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/git-graph",
+        "sourceCommit": "2ca138ffcae22876528a67b7207578e741d4c1d6",
+        "targetCommit": "a19025b74001cb510258c8de9cb20faa605f6616",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/ipc-endpoint-server",
+        "sourceCommit": "04cd9c8e9cc60f6e9bc9d84e45c94d13e7a81116",
+        "targetCommit": "c99c2c78b7cf552fc9327d8c92240cd8aaffe306",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/ipc-framing",
+        "sourceCommit": "9b614cd6daf325a22b187a7949d0682e27d3a5f5",
+        "targetCommit": "82a623665508fbf907fdf5c6fc8cb3b980f6ea85",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/memory",
+        "sourceCommit": "55c5121c3326e613b5b8cd5951ab76c6ecc9a710",
+        "targetCommit": "5100d345b92589857386e1ab7f662f017428cd98",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/model-pricing",
+        "sourceCommit": "5c1b88e6ae3575d57ad5842c2cc2bf2da4cfb496",
+        "targetCommit": "131933451f4a542ae27d2dec98c1b09fcc412adf",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/papergrid",
+        "sourceCommit": "131a4429d4236c545b9fca2958c73c9ff9a396e4",
+        "targetCommit": "b5a9d8c264ef9476eb1184d274f00cc161c36601",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/plan-parser",
+        "sourceCommit": "7eee9032461e6d4710a4bc08e1111c094019d522",
+        "targetCommit": "2492e7011c5b693324233a6c0130607694749a4c",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/prospect-contract",
+        "sourceCommit": "27362e68ad3149865983e3e6f27f7b8d5be621d8",
+        "targetCommit": "7efe33148f010f13eb258dc991108a96d97f14f3",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/rate-limit",
+        "sourceCommit": "b456025fca567129a0348c51434f1d66aee99667",
+        "targetCommit": "aabd6edd33e5f1dbf0c437d3a21f0cbf79881852",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/rerank",
+        "sourceCommit": "604ebda578680df35508a41c31814f7d03df819b",
+        "targetCommit": "670332d5a41ca83a3fff013dffc646ae2bc89e94",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/resumable-download",
+        "sourceCommit": "f4ce7fadb1fc3714546f652116b7bc4aa403ff45",
+        "targetCommit": "e3c6c87e5a89803d91f5254d742702a3500c8fac",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/rrf",
+        "sourceCommit": "d76b57ec0cb661fadbe59b6f500b8c9c103650e6",
+        "targetCommit": "c0a44046b76f169ea7b5bec267b8db5cfb776f26",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/rules",
+        "sourceCommit": "066c6f149f40d5fe65c184e4351069871dfd9c0d",
+        "targetCommit": "d1bd7540fac6e09e1d9ec9a2cc74e2b4a13b7310",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/search",
+        "sourceCommit": "3b96fff2aa5920045c10e5db56d0a8a2e6d54002",
+        "targetCommit": "e2cd43cf06404accee368b2167ba74c8c3cbfbb0",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/search-core",
+        "sourceCommit": "c619fbacdf2d20c70e2a18b8a492a7c3d3d2cf9f",
+        "targetCommit": "4906bba1d71b3ae6eff517bb4d6f7330f5a355d4",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/sse",
+        "sourceCommit": "4de91e64ab6eb210497826be700b51062126f924",
+        "targetCommit": "2a1ca663b9acd87f09c4139037a95a45c56db16c",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/sync",
+        "sourceCommit": "41d31768a85855debde3ea84a07ccf9169ff8162",
+        "targetCommit": "a8c203858987644fe7b018d2094852d18898466c",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/tauri-release-kit",
+        "sourceCommit": "71cd24d93e341dacccaf6b5f96b89b1a45c5ea9b",
+        "targetCommit": "de8b89d6ee245baa9caf600b4998e21d67c593b3",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/token-kit",
+        "sourceCommit": "209ee35a28f23e75b1d4d6ab498fe78b5e376fe7",
+        "targetCommit": "02eea9fd505ef8271d49b122ca7c115fe5af7501",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/tooldef",
+        "sourceCommit": "4144310a3d0fa8395c8e5bd3ee8356e78e010245",
+        "targetCommit": "afcee6bc026fcf7ba99f841e73da039f9ec98eef",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/tooldef-http",
+        "sourceCommit": "7be8d5cc3c7dc781bb0f4c9ed93a5394ed1433d5",
+        "targetCommit": "859806f8b7a88b69970e615f6373301d788200e8",
+        "unchanged": false
+      },
+      {
+        "path": "libs/generic/ui-primitives",
+        "sourceCommit": "b479ccca46f1ca1165f703f1f57ada6152ec5a33",
+        "targetCommit": "c4f523978daea871a36a00c2f099ac106e6ecfdc",
+        "unchanged": false
+      },
+      {
+        "path": "libs/papercusp",
+        "sourceCommit": "afce457b4ebbdeec7f86da60d17d1980f9d973b9",
+        "targetCommit": "e406e2fa943dda49468d92bc64896ab5cc8fbb6c",
+        "unchanged": false
+      },
+      {
+        "path": "libs/papercusp-db",
+        "sourceCommit": "500c0860e9ad723055f8a0e809e8fa627f352e50",
+        "targetCommit": "bed083524ad62fe3376e61b0eb15931a6b2e8091",
+        "unchanged": false
+      },
+      {
+        "path": "libs/papercusp-shared",
+        "sourceCommit": "6aff3a6466f890c862debf040966bfb001d74c10",
+        "targetCommit": "b883df64fc3ff8860a59d160094217127f849bb7",
+        "unchanged": false
+      },
+      {
+        "path": "libs/test-config",
+        "sourceCommit": "d004df14bcfff505e96740d08092ae61f2481ad4",
+        "targetCommit": "bf397e653ed3de642caf3eaac0b0cf7c9b5b27d2",
+        "unchanged": false
+      },
+      {
+        "path": "libs/testing-shell",
+        "sourceCommit": "5c35a5c55d77ff03f9057c22573b332a5f06d134",
+        "targetCommit": "54009dddd7fae504eb35115ef85938476dbd2951",
+        "unchanged": false
+      },
+      {
+        "path": "papercusp-desktop",
+        "sourceCommit": "ae13e7f7323b94c22164659c88119bf581a46bf4",
+        "targetCommit": "c864f7a1d1b62721a21dc8b0a576d51ff4edb345",
+        "unchanged": false
+      }
+    ],
+    "dependencyReview": {
+      "rootVitest": "4.1.8",
+      "rootVitestOverride": "$vitest",
+      "resumableGitlink": "f4ce7fadb1fc3714546f652116b7bc4aa403ff45",
+      "resumableVitestDeclaration": "^4.1.9",
+      "lockVitest": "4.1.8",
+      "lockResumableVitest": null,
+      "qualification": "Full candidate dependency-doctor qualification remains unrun. Raw manifest ranges do not establish failure; effective override and actual resolved package placement both matter.",
+      "lockResumableDeclaration": "^4.1.9",
+      "lockVitestEntries": [
+        {
+          "path": "node_modules/vitest",
+          "version": "4.1.8"
+        }
+      ],
+      "observation": "The pinned manifest and lock workspace entry retain ^4.1.9; the root declares 4.1.8 and override $vitest, making 4.1.8 the effective direct requirement. The proposed lock contains node_modules/vitest=4.1.8 and no nested Vitest entry. Installed contents have not been qualified.",
+      "frozenWI4480Comparison": "The preserved WI-4480 failed generation has a different recorded lock and nested Vitest 4.1.10. It is not the proposed WOE source; no eligibility or evidence transfers between them.",
+      "effectiveVitestRequirement": "4.1.8",
+      "rawRangeMismatchEstablishesFailure": false,
+      "correction": "The earlier raw-range concern is withdrawn as a dependency-failure claim. At the exact proposed d4dc source, effectiveDirectDeclaration honors the unqualified root override $vitest and resolves it from root devDependencies to 4.1.8. A package declaration ^4.1.9 alone does not show an invalid effective install.",
+      "maintainedChecker": {
+        "path": "scripts/check-declared-deps-extracted.mjs",
+        "effectiveDirectDeclarationSha256": "372ae6e3b5f66a2c47afe617cb2ba8d0cf6ab6231d5b53dec3c65d56beeb5bbb",
+        "checkedAgainst": "d4dc3833b5883fb7930999b3ce6c5f872becd921",
+        "sameCurrentFunctions": [
+          "effectiveDirectDeclaration",
+          "rootManifestForOverrides",
+          "findInvalidWorkspacePackageVersions",
+          "findUnsatisfiedDeclaredDepRanges",
+          "declaredVersionRange",
+          "resolvedDepDir"
+        ],
+        "tests": "Existing root override regression cases passed locally; ledger21361206. This is not immutable candidate qualification."
+      }
+    },
+    "policy": "Qualification must use exact proposed tree, lock and recursively pinned submodules; no mixed a447/d740 inputs and no live HEAD substitution. No pin or admission mutation is authorized by this proposal."
+  },
+  "supportTests": [
+    {
+      "path": "packages/operator-core/lib/goal-launch-settings.test.ts",
+      "sourceBlob": "e47906cd84f6f4140d502a9a75bdfb504e1cb32f",
+      "relevantCases": [
+        "allows an unowned harness and proves terminal owner rows are excluded by goal status",
+        "allows the active goal that owns the target harness",
+        "refuses placement when a different active goal owns the target harness",
+        "a LIVE owner (non-terminal worklist plan) refuses and never pays for the oracle",
+        "an owner whose only worklist plan is terminal (count 0) with a DEAD holder is vacant",
+        "a STANDING goal is not released by a recorded disposition alone",
+        "measures the worklist over non-archived, non-terminal plans using the plan grammar",
+        "reads the arm from the goal row and fails soft toward full on a read error",
+        "rejects a non-positive ceiling — 0 agents is a paused goal, not a launch policy",
+        "accepts a holder policy on the settings document",
+        "REJECTS an unknown key inside the holder policy too — .strict() on BOTH levels",
+        "rejects an onLoss value outside the closed set, so a typo cannot read as a policy",
+        "accepts null on either field and on the policy itself — the panel clears with null",
+        "covers a goal that has pinned NOTHING — the case the defaults exist for",
+        "defaults onLoss to deactivate — a goal earns respawn only by being NAMED (D-001)",
+        "REFUSES a goal that declares nothing (the case the item exists for)",
+        "ADMITS a goal that pinned only onLoss — engaging with the policy IS declaring it",
+        "REFUSES a null-cleared policy — clearing is unpinning, not opting out",
+        "CONTROL: the rule reads requireLive, so an opted-out goal is admitted even unpinned elsewhere",
+        "lets an explicit caller request beat the stored policy",
+        "returns an empty profile when a goal has no settings at all",
+        "accepts every slot the GOAL contract enumerates",
+        "isGoalLaunchRole separates a slot from a persona",
+        "refuses ceilings below the floor on a goal that runs a drain fleet, and writes nothing",
+        "allows the same ceilings on a sole-member goal (no drain fleet)",
+        "does not read the goal row when the new ceilings already clear the floor",
+        "fails CLOSED when the goal row cannot be read",
+        "lets a drain-fleet goal clear to defaults or go unlimited",
+        "binds the holder-policy merge door too, since it writes through the same writer",
+        "resolves the goal from the LAUNCHER and takes no goalId argument",
+        "resolves the INHERITED goal for a launcher that merely works under one",
+        "is inert with no goal in scope — no ceiling, no profile, not degraded",
+        "readGoalLaunchSettingsForLauncher degrades with a reason instead of throwing",
+        "resolveGoalLaunch degrades instead of throwing, and imposes no ceiling",
+        "resolveGoalLaunch still THROWS for a superseded holder",
+        "readGoalLaunchSettingsForLauncher still THROWS for a superseded holder",
+        "a LIVE handoff is not superseded — the predecessor still resolves its goal",
+        "COMPOSES: a fleet with room is still refused when the GOAL is full",
+        "rubricStewardship:'skip' omits the stewardship read even for a goal with rubric duties (EI-25306440159635835)",
+        "skips a blocked first worklist plan and emits the next eligible launch",
+        "blocks launch deterministically when the worklist plan identity is unresolved",
+        "assembles the portfolio only for the GOAL-holder launch slot",
+        "surfaces missing owner, link criterion and goal stamps as typed issues",
+        "does not excuse a remote row stamped to ANOTHER goal — that is a real mismatch",
+        "governs a goal that has pinned NOTHING — the case that was ungoverned",
+        "actually REFUSES an unpinned goal at the default, rather than reporting a number it ignores",
+        "lets an owner opt a goal OUT entirely, and admits a launch the default would refuse",
+        "applies NO ceiling when there is no goal in scope — defaults are per-GOAL, not global",
+        "hands down the per-SLOT profile the goal declared",
+        "the retired goal-spend-tick marker no longer carries authority (D-011)",
+        "REFUSES a goal whose window holds attributed samples that carry no price",
+        "REFUSES an empty authoritative stream beside goal usage on the pot/session legs",
+        "escalates the owner on refusal: blocker severity, deduped per goal, attributed to the launcher",
+        "resolves the active goal and measures current spend before allowing another turn"
+      ],
+      "executed": false
+    },
+    {
+      "path": "packages/operator-core/lib/typed-properties.test.ts",
+      "sourceBlob": "66cb4be03ed3bedcd7bb10bed8214832a0e8cdbf",
+      "relevantCases": [
+        "leaves an unconfigured legacy collection and its saved plan order outside automatic enrollment",
+        "refuses a missing, self-referencing, agent-editable or wrong-datatype policy",
+        "checks policy defaults, unique collection ids and qualified active-plan identity",
+        "the pure policy and registry validator reject the same malformed values",
+        "stores owner choices with CAS/provenance while independent agent source writes preserve the policy",
+        "retains dormant preferences but refuses malformed and ambiguous policy writes",
+        "the same reader orders and selects a manual non-plan collection and discovered plans",
+        "an initially unchecked collection uses explicit inclusions, and exclusion always wins",
+        "selects exactly the stored list, in its order, and flags the policy as derived",
+        "the seeded policy is exactly what the owner can persist at expectedVersion 0",
+        "a saved owner policy alone decides; the stored list no longer widens it"
+      ],
+      "executed": false
+    },
+    {
+      "path": "packages/operator-core/lib/goal-rubric-stewardship.test.ts",
+      "sourceBlob": "582a4c108f120a473ce86ad1f5623f1ca5037999",
+      "relevantCases": [
+        "leaves an absent rubric unmeasured without starting the seedable library read",
+        "retains the existing rubric revision through the same read-only lookup",
+        "also resolves referenced scorecard rubrics without entering the seedable fallback",
+        "carries the canonical rubric revision and baseline/repair/regrade status without hiding limited or failed reads",
+        "does not accept foreign-goal, unverified or incorrectly ordered repairs",
+        "requires an independent final grader where the rubric asks for one"
+      ],
+      "executed": false
+    },
+    {
+      "path": "packages/operator-core/lib/sync-resolver/goals.integration.test.ts",
+      "sourceBlob": "bdcd48d8a5082a87b36b2fbadca3a7e0636af5ea",
+      "relevantCases": [
+        "reads a preserved goal-owned baseline, verified repair and audited regrade while rejecting foreign and unsettled controls",
+        "reads the migrated ledgers and distinguishes absent evidence from a foreign goal card",
+        "reads the active-plan collection even when the goal has no attached holder",
+        "keeps discovered scheduled runs addressable and applies their saved exclusion in goal detail",
+        "reads a non-plan collection through the shared reader, retaining owner choices",
+        "keeps independent owner policies for two declared active-plan collections",
+        "exposes stored standing identity in list and detail even after a goal is renamed",
+        "resolveGoalsList RUNS — the assertion the whole file exists for",
+        "reports the TRUE goal count even when the limit cut the rows",
+        "harness-scoped listing includes an installed goal with no pot attachment",
+        "exposes a spend snapshot only when its goal-pot provenance is present",
+        "resolveGoalDetail RUNS and returns every section the detail view reads",
+        "returns the goal holder’s exact turn-start obligation projection and canonical portfolio",
+        "carries the goal’s launch settings, parsed, with the editor’s option lists",
+        "derives plans from the goal’s work items — and never from its pots’ harnesses",
+        "shows a plan the goal’s agent AUTHORED before any work item has come from it",
+        "keeps the DERIVED leg for a plan the goal inherited but never authored",
+        "does not lend the stamp to ANOTHER goal’s plan",
+        "returns the agent RUNNING this goal, and only that goal",
+        "the LIST carries the same agents as the detail, so the HUD Goals tab can filter by agent id",
+        "a goal with NO agent gets an empty list, never null — the board maps over it",
+        "returns { goal: null } for a goal that does not exist"
+      ],
+      "executed": false
+    },
+    {
+      "path": "apps/operator/app/adv/hud/WorkOnEverythingPanel.test.tsx",
+      "sourceBlob": "37da98e4c0a012d75bc0b12211a32129ade2941f",
+      "relevantCases": [
+        "totals filter the table, and scope narrows to the worklist or the rest",
+        "reorders in worklist order and opens a plan by its title",
+        "says where the worklist came from when the picks are derived from the saved list",
+        "shows the real paused state, unbounded attention total and existing question/plan/steward actions"
+      ],
+      "executed": false
+    },
+    {
+      "path": "apps/operator/e2e/ongoing-work-native-collection.spec.mts",
+      "sourceBlob": "4ac7d21c85af079a75bca4fe354b210cfa1a3457",
+      "relevantCases": [
+        "native collection fixture writer graph loads under the Playwright Node loader",
+        "real Work on Everything goal exposes its saved picks in the native progress table without writes"
+      ],
+      "executed": false
+    }
+  ],
+  "proofCustody": {
+    "historicalNative": {
+      "ref": "a44756aa009f52a2e9d96252e523ebbe1252f68e",
+      "testRunId": 21024594,
+      "disposition": "retained historical scoped proof; not rerun or transferred"
+    },
+    "r2References": {
+      "ref": "d4dc3833b5883fb7930999b3ce6c5f872becd921",
+      "baseline": 21034313,
+      "relocatedControl": 21034330,
+      "mutant": 21034341,
+      "disposition": "retained checkpoint references; no new execution or acceptance assertion"
+    },
+    "changedScopedPaths": [
+      "apps/operator/app/adv/hud/GoalDataSection.tsx",
+      "apps/operator/e2e/ongoing-work-native-collection.spec.mts",
+      "packages/operator-core/lib/rubrics.ts",
+      "packages/operator-core/lib/sync-resolver/goals.integration.test.ts",
+      "packages/operator-core/lib/sync-resolver/goals.ts",
+      "packages/operator-core/lib/work-items.ts"
+    ]
+  },
+  "qualificationContract": [
+    "Reconcile exact dependency inputs through the maintained qualification route before materialization/build.",
+    "A selective admission needs a separately reviewed complete path list and proof for omitted dependencies; this whole-source proposal does not widen a frozen admission.",
+    "Qualify one immutable containing artifact using source/lock identity, conventional tests and required typecheck; reuse sufficient stored proof only if its binding remains eligible.",
+    "Final R7 and SPEC-WOE-SHIP require the exact green deployed containing artifact and maintained isolated GUI runner/shared ledger; then renew R5 and obtain independent whole-plan acceptance."
+  ],
+  "verification": {
+    "class": "source evidence consistency only",
+    "receiptHashMatched": true,
+    "candidateDescendsFromHistorical": true,
+    "allScopedBlobsResolved": true,
+    "overloadsPreserved": true,
+    "behaviorTestsRun": [],
+    "typecheckRun": false,
+    "nativeRun": false,
+    "compatibilityVerdict": "not-established",
+    "focusedRegression": {
+      "command": "npm run test:file -- packages/operator-core/lib/__tests__/check-declared-deps-extracted.test.ts -t 'root override'",
+      "exitCode": 0,
+      "testRunId": 21361206,
+      "status": "pass",
+      "source": "local",
+      "commitSha": "5f5d36ca76d77bf5656052100c2521b5debba7d1",
+      "worktreeDirty": true,
+      "harnessSlug": null,
+      "skippedTests": 73,
+      "scope": "Only filtered root override cases; other assertions were collected but not run. Not source-bound acceptance for d4dc."
+    }
+  },
+  "constraints": {
+    "frozenPinsPreserved": true,
+    "claimHoldPreserved": true,
+    "liveGateOwnershipChanged": false,
+    "repairQueueChanged": false,
+    "sourceExported": false,
+    "admissionRequested": false,
+    "independentPassClaimed": false,
+    "shipmentClaimed": false
+  }
+}

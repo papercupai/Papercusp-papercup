@@ -12,6 +12,11 @@
  * tree, which git-sync can commit mid-probe.
  */
 import { describe, it, expect } from 'vitest';
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   collectStrings,
   durableWriteStrings,
@@ -21,10 +26,13 @@ import {
   harvestLedgerIds,
   isArtifactTool,
   isDurableWriteTool,
+  ledgerPathFor,
   lastAssistantText,
   normalizeToolName,
   stripQuotedForScanning,
 } from '../artifact-url-delivery-guard.mjs';
+
+const HOOK_SOURCE = fileURLToPath(new URL('../artifact-url-delivery-guard.mjs', import.meta.url));
 
 /** The id from the real incident; it does not exist and never did. */
 const PHANTOM = '04e509ec-1703-42fc-adeb-bb243f8794e7';
@@ -32,6 +40,69 @@ const PHANTOM = '04e509ec-1703-42fc-adeb-bb243f8794e7';
 const REAL = 'c500b6d2-d039-49f1-8b3e-3e7819dd72d7';
 
 const incidentText = `Design is ready for your review: **https://claude.ai/code/artifact/${PHANTOM}**`;
+
+describe('detached installation', () => {
+  it('loads without repository package resolution', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'artifact-url-guard-'));
+    const detached = join(dir, 'artifact-url-delivery-guard.mjs');
+    try {
+      cpSync(HOOK_SOURCE, detached);
+      cpSync(fileURLToPath(new URL('../pc_home.mjs', import.meta.url)), join(dir, 'pc_home.mjs'));
+      const output = execFileSync(process.execPath, [
+        '--input-type=module',
+        '-e',
+        `import(${JSON.stringify(pathToFileURL(detached).href)}).then((m) => console.log(typeof m.ledgerPathFor))`,
+      ], { cwd: dir, env: { ...process.env, NODE_OPTIONS: '' }, encoding: 'utf8' }).trim();
+      expect(output).toBe('function');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('honors PAPERCUSP_HOME when choosing the default ledger directory', () => {
+    expect(ledgerPathFor('session-1', { PAPERCUSP_HOME: '/tmp/papercusp-test-home' })).toBe(
+      '/tmp/papercusp-test-home/artifact-url-ledger/session-1.ids',
+    );
+  });
+
+  it('denies an unverified plan URL, then allows it after the installed hook records verification', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'artifact-url-guard-cli-'));
+    const detached = join(dir, 'artifact-url-delivery-guard.mjs');
+    try {
+      cpSync(HOOK_SOURCE, detached);
+      cpSync(fileURLToPath(new URL('../pc_home.mjs', import.meta.url)), join(dir, 'pc_home.mjs'));
+      const session = 'detached-regression';
+      const env = { ...process.env, NODE_OPTIONS: '', PAPERCUSP_HOME: join(dir, 'home'), PAPERCUSP_ARTIFACT_LEDGER_DIR: '' };
+      const run = (payload: object) => spawnSync(process.execPath, [detached], {
+        cwd: dir, env, encoding: 'utf8', timeout: 5000,
+        input: JSON.stringify({ session_id: session, ...payload }),
+      });
+      const plan = {
+        hook_event_name: 'PreToolUse', tool_name: 'mcp__papercusp-su__plans_new',
+        tool_input: { content: `Published: https://claude.ai/code/artifact/${REAL}` },
+      };
+      const denied = run(plan);
+      expect(denied.status).toBe(0);
+      expect(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(denied.stderr).toContain(REAL);
+
+      const recorded = run({
+        hook_event_name: 'PostToolUse', tool_name: 'Artifact',
+        tool_response: { url: `https://claude.ai/code/artifact/${REAL}` },
+      });
+      expect(recorded.status).toBe(0);
+      expect(recorded.stderr).toBe('');
+      expect(readFileSync(join(env.PAPERCUSP_HOME, 'artifact-url-ledger', `${session}.ids`), 'utf8')).toContain(REAL);
+
+      const allowed = run(plan);
+      expect(allowed.status).toBe(0);
+      expect(allowed.stderr).toBe('');
+      expect(allowed.stdout).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('the incident is caught', () => {
   it('blocks the exact message that was sent to the owner', () => {

@@ -456,6 +456,8 @@ export async function assemblePresenceSnapshot(
     detail?: { coordinationDomain: string };
     /** Defaults to true. Compact presence rebootstrap blocks do not render desktop state. */
     includeDesktopEnrichment?: boolean;
+    /** Evidence-only readers must not run presence retention maintenance. */
+    includeMaintenance?: boolean;
     onDiagnostic?: (diagnostic: PresenceSnapshotDiagnostic) => void;
   } = {},
 ): Promise<PresenceSnapshot> {
@@ -578,7 +580,7 @@ export async function assemblePresenceSnapshot(
     // a targeted { owner } lookup is the hot "is this agent alive?" point-read and
     // must not queue a write behind a starved pool. The hourly presence-reaper and
     // every default read keep the sweep cadence, so retention is unaffected.
-    boundedLeg('source', 'sweepStalePresence', () => targeted
+    boundedLeg('source', 'sweepStalePresence', () => targeted || opts.includeMaintenance === false
       ? Promise.resolve(0)
       : sweepStalePresence(PRESENCE_GC_MS), 0, PRESENCE_SOURCE_LEG_TIMEOUT_MS),
     // EI-16639: the alias-aware nursery-liveness leg (nursery-alias-liveness.ts)

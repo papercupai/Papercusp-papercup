@@ -99,7 +99,7 @@ describe('posttooluse-launch-prose-budget-nudge', () => {
       symlinkSync(join(repo, 'node_modules'), join(root, 'node_modules'), 'dir');
       const installed = join(root, '.papercusp/hooks/cc');
       mkdirSync(installed, { recursive: true });
-      for (const file of ['posttooluse-launch-prose-budget-nudge.mjs', 'posttooluse-frozen-candidate-edit-nudge.mjs']) {
+      for (const file of ['pc_home.mjs', 'posttooluse-launch-prose-budget-nudge.mjs', 'posttooluse-frozen-candidate-edit-nudge.mjs']) {
         copyFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', file), join(installed, file));
       }
       const result = spawnSync(process.execPath, [join(installed, 'posttooluse-launch-prose-budget-nudge.mjs')], {

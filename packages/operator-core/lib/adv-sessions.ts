@@ -3149,15 +3149,25 @@ export async function firstAdvSessionStartByCoordOwner(coordOwnerId: string): Pr
  */
 export async function latestAdvSessionByCoordOwner(coordOwnerId: string): Promise<AdvSessionRow | null> {
   try {
-    const { sql } = getOrgPg();
-    const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
-      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
-        FROM harness_shared.adv_sessions
-       WHERE coord_owner_id = ${coordOwnerId}
-       ORDER BY id DESC
-       LIMIT 1
-    `;
+    const rows = await boundedOrgTxn(
+      (tx) => tx<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
+        SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+               window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal, retired_at, retired_by, retired_reason
+          FROM harness_shared.adv_sessions
+         WHERE coord_owner_id = ${coordOwnerId}
+         ORDER BY id DESC
+         LIMIT 1
+      `,
+      {
+        acquireTimeoutMs: 1_500,
+        acquireRetries: 0,
+        connectionSetupRetries: 0,
+        statementTimeoutMs: 1_500,
+        lockTimeoutMs: 1_000,
+        readOnly: true,
+        phase: 'adv-sessions:latest-by-coord-owner',
+      },
+    );
     const r = rows[0];
     return r ? mapAdvSessionRow(r) : null;
   } catch (e) {

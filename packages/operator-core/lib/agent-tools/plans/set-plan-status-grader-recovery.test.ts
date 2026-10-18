@@ -130,7 +130,9 @@ describe('acceptanceGraderRefusalFields', () => {
   it('leaves the gate repair untouched when recovery is automatic', () => {
     const grader = lifecycle({ state: 'launched' });
     const fields = acceptanceGraderRefusalFields(gateRepair, grader, RUNNING);
-    expect(fields).toEqual({ acceptanceGrader: grader });
+    expect(fields.acceptanceGrader).toMatchObject(grader);
+    expect(fields.acceptanceGrader?.routeScope).toContain('one-agent/no-additional-agents');
+    expect(fields.acceptanceGrader?.routeScope).toContain('platform-routed independent acceptance');
     expect('repairAction' in fields).toBe(false);
   });
 

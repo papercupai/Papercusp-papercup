@@ -163,6 +163,10 @@ export interface TranscriptUsageEvent {
   inputTotalTokens?: number | null;
   uncachedInputKnown?: boolean;
   turnId?: string;
+  /** Provider response identity matched to the counted native usage, never a routing guess. */
+  providerResponseId?: string;
+  /** Recorded injection origin; absence never implies an owner-triggered request. */
+  turnTrigger?: string;
   contextGeneration?: number;
   predecessorSessionId?: string;
   /** Unique usage observations since an observed native session header; absent for partial sources. */
@@ -229,6 +233,12 @@ export interface TranscriptParserState {
   predecessorSessionId?: string;
   contextGeneration?: number;
   requestOrdinal?: number;
+  nativeSessionId?: string;
+  pendingTurnTrigger?: string;
+  turnTrigger?: string;
+  /** Codex writes this identity record before its matching token_count notification. */
+  pendingCodexUsageIdentity?: { responseId: string; turnId: string; cumulative: string; usage: string };
+  attributionStateVersion?: number;
 }
 
 const emptyDelta = (): TranscriptDelta => ({
@@ -405,12 +415,50 @@ export interface IngestResult {
   samples: number;
   skippedUnchanged: number;
   bootstrapPending: number;
+  attributedAccounts?: number;
   totals: TranscriptDelta;
   errors: Array<{ file: string; error: string }>;
 }
 
 const DEFAULT_MAX_FILES = 5000;
 const DEFAULT_MAX_BYTES_PER_FILE = 32 * 1024 * 1024;
+
+/** Reuse this ingest tick for late gateway evidence too, even when native files
+ * are unchanged. Update at most 500 exact matches with a bounded query deadline;
+ * unmatched recent rows must not starve older requests that have exact evidence. */
+export async function reconcileTranscriptAccounts(sql: Sql, workspaceId: string): Promise<number> {
+  return sql.begin(async (tx) => {
+    await tx`SET LOCAL statement_timeout = '5s'`;
+    const rows = await tx<Array<{ id: string }>>`
+    WITH pending AS (
+      SELECT id, session_id, provider, usage_provenance FROM harness_shared.agent_usage_samples
+       WHERE workspace_id = ${workspaceId} AND source = 'interactive' AND account_id IS NULL
+         AND usage_provenance->>'providerResponseId' IS NOT NULL
+    ), matched AS (
+      SELECT s.id, min(g.selected_account_id) AS account_id, min(g.request_id) AS request_id
+        FROM pending s JOIN harness_shared.gateway_request_outcomes g
+          ON g.workspace_id = ${workspaceId}
+         AND g.provider_response_id = s.usage_provenance->>'providerResponseId'
+         AND g.owner_id = s.usage_provenance->>'sessionOwnerId'
+         AND ((s.provider = 'openai' AND g.provider = 'codex' AND g.protocol = 'openai-responses'
+               AND g.native_session_id = s.session_id AND g.native_thread_id = s.session_id
+               AND g.native_turn_id = s.usage_provenance->>'turnId')
+           OR (s.provider = 'anthropic' AND g.provider = 'claude' AND g.protocol = 'anthropic-messages'
+               AND (g.native_session_id IS NULL OR g.native_session_id = s.session_id)))
+       GROUP BY s.id
+      HAVING count(*) = 1 AND count(g.selected_account_id) = 1
+         AND bool_and(g.outcome_class = 'ok' AND g.final_status BETWEEN 200 AND 299)
+       ORDER BY s.id LIMIT 500
+    )
+    UPDATE harness_shared.agent_usage_samples s SET account_id = m.account_id,
+      usage_provenance = s.usage_provenance || jsonb_build_object(
+        'accountSource', 'exact-gateway-provider-response', 'gatewayRequestId', m.request_id)
+      FROM matched m WHERE s.workspace_id = ${workspaceId} AND s.id = m.id AND s.account_id IS NULL
+    RETURNING s.id
+    `;
+    return rows.length;
+  });
+}
 
 /**
  * One ingest tick: walk every adapter's transcript root (P-015: claude +
@@ -606,6 +654,12 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
         }
         let fileState: TranscriptParserState = size < stored.offset
           ? { fileGeneration: (stored.parserState.fileGeneration ?? 0) + 1 } : stored.parserState;
+        if (!opts.historical && adapter.replayStateFromPrefix && offset > 0 && !fileState.attributionStateVersion) {
+          // Existing initialized watermarks predate native identity/trigger state.
+          // Reconstruct only parser context through the established bounded replay;
+          // the paid byte frontier and previously counted requests stay untouched.
+          fileState = { fileGeneration: fileState.fileGeneration, bootstrapOffset: 0 };
+        }
         if (!opts.historical && adapter.replayStateFromPrefix && offset > 0 && !fileState.initialized &&
           (fileState.bootstrapOffset !== undefined || !fileState.model)) {
           // Replay at most the normal per-file byte budget per tick, discarding
@@ -718,6 +772,12 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
               'interactive'
             ) AS role
           `;
+          const [sessionContext] = await tx<Array<{ id: string; coord_owner_id: string | null; plan_slug: string | null }>>`
+            SELECT id, coord_owner_id, plan_slug FROM harness_shared.adv_sessions
+             WHERE workspace_id = ${ws}
+               AND (id = ${adapter.advSessionId ?? null}::bigint OR session_id = ${sessionId})
+             ORDER BY (id = ${adapter.advSessionId ?? null}::bigint) DESC NULLS LAST, id DESC LIMIT 1
+          `;
           const deltas: TranscriptDelta[] = [];
           // Keep custom adapters compatible, but label their coarser grain explicitly.
           const observations: TranscriptUsageEvent[] = events ?? [...perModel].map(([model, usage]) => ({
@@ -773,18 +833,28 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
             const price = priceStoredUsageSample(stored);
             const ingestedAt = Date.now();
             const eventTime = previous?.event_ts != null ? Number(previous.event_ts) : event.eventTime;
+            const providerResponseId = event.providerResponseId ??
+              (sourceId.startsWith('message:') ? sourceId.slice('message:'.length) : null);
             const provenance = { parserVersion: 2, adapter: adapter.name, sourceFile: file, fileGeneration: fileState.fileGeneration ?? 0,
               sourceId, byteOffset: offset + event.relativeOffset, grain: events ? 'request' : 'file-model-delta',
               modelSource: model === 'unknown-openai' ? 'unavailable' : 'transcript',
               parserStateSource: fileState.bootstrapSource ?? 'incremental',
               turnId: event.turnId ?? null,
+              ...(providerResponseId ? { providerResponseId,
+                providerResponseIdSource: event.providerResponseId ? 'native-token-usage-record' : 'native-message-id' } : {}),
               cacheWriteSource: d.cacheCreationUnreported ? 'unreported' : 'reported',
               // 'lower' = cache writes with no TTL split, priced at the 5-minute floor; always
               // written (null included) so the ON CONFLICT `||` merge cannot keep a stale bound.
               costBound: price.costBound,
               uncachedInputSource: inputKnown ? 'reported-or-reconciled' : 'unknown-decomposition',
               inputTotalTokens: event.inputTotalTokens ?? null,
-              accountSource: 'unavailable', triggerSource: 'unavailable',
+              accountSource: 'unavailable', triggerSource: event.turnTrigger ? 'native-turn-envelope' : 'unavailable',
+              ...(sessionContext ? { advSessionId: sessionContext.id,
+                sessionOwnerId: sessionContext.coord_owner_id, sessionPlanSlug: sessionContext.plan_slug,
+                sessionContextSource: 'ingest-time-adv-session' } : adapter.ownerId ? {
+                  sessionOwnerId: adapter.ownerId, sessionContextSource: 'adapter-isolation-root' } : {}),
+              // Session context is not evidence of a causal per-request work item.
+              workItemSource: 'unavailable',
               predecessorSessionId: event.predecessorSessionId ?? null, contextGeneration: event.contextGeneration ?? null,
               requestOrdinal: event.requestOrdinal ?? null,
               cacheReadSource: event.cacheReadKnown === true ? 'reported' : event.cacheReadKnown === false ? 'unreported' : 'unavailable',
@@ -807,7 +877,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
               INSERT INTO harness_shared.agent_usage_samples
                 (workspace_id, ts, bucket_key, provider, model_class, source,
                  input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
-                 model, cost_source, harness_slug, run_id, role, session_id, goal_id,
+                 model, cost_source, harness_slug, run_id, role, session_id, goal_id, turn_trigger,
                  cache_creation_5m_tokens, cache_creation_1h_tokens, turn_count,
                  usage_event_key, event_ts, ingested_at, usage_provenance, price_table_version)
               VALUES (
@@ -819,6 +889,7 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
                 ${sessionId}, ${sessionRole.role}, ${sessionId},
                 (SELECT harness_shared.goal_id_for_usage_session(
                    ${ws}, ${sessionId}, ${adapter.advSessionId ?? null})),
+                ${event.turnTrigger ?? null},
                 ${stored.cache_creation_5m_tokens},
                 ${stored.cache_creation_1h_tokens}, ${d.turns},
                 ${eventKey}, ${eventTime}, ${ingestedAt}, ${JSON.stringify(provenance)}::jsonb, ${PRICE_TABLE_VERSION}
@@ -831,7 +902,9 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
                 price_table_version = EXCLUDED.price_table_version, turn_count = EXCLUDED.turn_count,
                 event_ts = EXCLUDED.event_ts, ts = COALESCE(EXCLUDED.event_ts, agent_usage_samples.ts),
                 ingested_at = EXCLUDED.ingested_at,
+                turn_trigger = COALESCE(EXCLUDED.turn_trigger, agent_usage_samples.turn_trigger),
                 usage_provenance = COALESCE(agent_usage_samples.usage_provenance, '{}'::jsonb) || EXCLUDED.usage_provenance
+                  || jsonb_build_object('accountSource', COALESCE(agent_usage_samples.usage_provenance->>'accountSource', 'unavailable'))
             `;
             if (d.cacheCreationUnreported) change.cacheCreationUnreported = true;
             deltas.push(change);
@@ -860,6 +933,11 @@ export async function ingestInteractiveUsage(opts: IngestOptions = {}, scope: { 
         result.errors.push({ file, error: e instanceof Error ? e.message : String(e) });
       }
     }
+  }
+  try {
+    result.attributedAccounts = await reconcileTranscriptAccounts(sql, ws);
+  } catch (error) {
+    result.errors.push({ file: 'gateway-account-attribution', error: error instanceof Error ? error.message : String(error) });
   }
   return result;
 }

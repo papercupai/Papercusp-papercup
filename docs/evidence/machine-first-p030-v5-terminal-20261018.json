@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-10-18T02:45:30.249766Z",
+  "workItems": ["WI-6554700010016781", "WI-6554700010017140"],
+  "scope": "One retained installed P-030 diagnostic on archive 993/source 9a59. This is a failed bounded diagnostic, not full current-release acceptance or shipment.",
+  "task": {
+    "id": "0mvd78ba618j3ljf1ql",
+    "status": "exited",
+    "exitCode": 1,
+    "relaunched": false,
+    "log": ".papercusp/scratch/bash-befd252b-d24.log",
+    "logSha256": "3e2e2ab6d972c89fd5a6baed76852de2b991ed79b3852f14755f8a25677d23ce"
+  },
+  "candidate": {
+    "sourceSha": "9a59f25f25b1f7c8751438637074c603955090a7",
+    "archiveSha256": "993bb8f825406e495793b23dc64ba57d926b0fab469e1eeb4fac259649630e8f",
+    "installedBinarySha256": "8e8ee66bee3dd9e060f97a6ab7bdb3e4b6227c321df9847650229fb5bff3513f",
+    "runnerTreeChangedBefore": [],
+    "runnerTreeChangedAfter": []
+  },
+  "preparation": {
+    "generation": "v1-3a81939f61fc9c7fd72b5c87226fbe0aa3ae4359f08931169b966f22640407d7",
+    "configuredStore": "/mnt/data/papercusp-dependency-generations",
+    "generationLeaseAndPinObserved": true,
+    "materializedTrees": 98,
+    "releaseCheckoutReady": true,
+    "priorPassingProof": "docs/evidence/machine-first-ready-generation-20261018.json#sha256=23f215e17948b39b7788970d533eec6a255aaa28167507120e9c3c0a187006eb",
+    "priorPassingTestRunId": 21360958,
+    "priorPassingTests": 87,
+    "priorSkippedTests": 0,
+    "priorProofRerun": false
+  },
+  "verdict": {
+    "acceptance": "/tmp/machine-first-p030-isolated-20261018-v5-prewarmed.acceptance.json",
+    "acceptanceSha256": "d830e18197ec96099370e7bf3431f459c7d39ac13cad7964a7171676d1171cec",
+    "ok": false,
+    "scriptedLegStatus": 1,
+    "acceptanceRows": 0,
+    "testLog": "/tmp/machine-first-p030-isolated-20261018-v5-prewarmed-work/vitest-scripted.log",
+    "testLogSha256": "1d600aab600e5b6d771caf9d78b2457dfb56f8da11a234956ec8a741238dadf4",
+    "testsFailed": 1,
+    "testsSkippedByFilter": 97,
+    "failure": "P-030 bare pui completed its rendered workbench/focus assertions, then wb.exited did not resolve to 0 within the existing 30000ms after /exit. Captured screen ends in Bye from Zellij; session list is empty.",
+    "rootCause": "unproven: distinguish surviving launcher/cleanup from a missed PTY exit observation before any rerun",
+    "stockInstallSmoke": [
+      {"image": "ubuntu:24.04", "status": 0},
+      {"image": "debian:stable-slim", "status": 0}
+    ],
+    "cloudDeviceStartStatus": 200
+  },
+  "cleanup": {
+    "receipt": "/tmp/machine-first-p030-private-api-20261018-v5-prewarmed/receipt.json",
+    "receiptSha256": "56b0a15db57f3c2aad9400bbc29740f940308366c73d0ab7cd8b6b8666516d2f",
+    "finishedAt": "2026-10-18T02:39:13.990Z",
+    "apiStopped": true,
+    "commandStopped": true,
+    "trackedPids": [1350038, 1350628, 1351139],
+    "presentTrackedPids": [],
+    "matchingPgidOrSessionProcesses": [],
+    "apiSocketExists": false,
+    "taskUnitActiveState": "inactive",
+    "taskUnitSubState": "dead",
+    "taskUnitControlGroup": ""
+  },
+  "shipmentVerified": false
+}

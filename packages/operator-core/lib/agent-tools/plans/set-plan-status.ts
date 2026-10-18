@@ -637,14 +637,15 @@ export function acceptanceGraderRefusalFields(
   sweep: AcceptanceGradingSweepState | undefined,
 ): {
   repairAction?: PlanAcceptanceRepairAction;
-  acceptanceGrader?: AcceptanceGraderLifecycle & { recovery?: AcceptanceGraderRecovery };
+  acceptanceGrader?: AcceptanceGraderLifecycle & { recovery?: AcceptanceGraderRecovery; routeScope: string };
 } {
   if (!lifecycle) return {};
+  const routeScope = 'A one-agent/no-additional-agents route limits implementation fan-out. This grader is platform-routed independent acceptance; keep the canonical grading workflow without asking the owner for a route exception.';
   const recovery = acceptanceGraderRecovery(lifecycle, sweep);
-  if (!recovery) return { acceptanceGrader: lifecycle };
+  if (!recovery) return { acceptanceGrader: { ...lifecycle, routeScope } };
   return {
     ...(repairAction ? { repairAction: { ...repairAction, instruction: recovery.instruction } } : {}),
-    acceptanceGrader: { ...lifecycle, recovery },
+    acceptanceGrader: { ...lifecycle, recovery, routeScope },
   };
 }
 

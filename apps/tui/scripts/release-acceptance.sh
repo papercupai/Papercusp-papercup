@@ -158,15 +158,16 @@ echo "release-acceptance: checking out candidate source $sha at $checkout" >&2
 # Freeze the shared helper and its adjacent sidecars before its long checkout
 # work. Bash reads scripts lazily; a peer edit during materialization must not
 # change the program this invocation is executing.
-# Keep immutable dependency generations in the acceptance cache. Each slot
-# consumes a validated donor while the shared integration tree may change.
+# Reuse the configured immutable store when one was prewarmed for this candidate;
+# otherwise keep generations in the acceptance cache. Each slot consumes a
+# validated donor while the shared integration tree may change.
 # Use the maintained install-reader boundary throughout capture/materialization.
 node "$ROOT/scripts/npm-install-safe.mjs" --repo-root "$ROOT" --exec-under-lock -- \
   bash "$ROOT/apps/operator/scripts/systemd/papercusp-script-snapshot.sh" \
   "$ROOT/apps/operator/bin/release/setup-release-checkout.sh" \
   --ref "$sha" --integration "$ROOT" --release "$checkout" \
   --node-modules force --node-modules-copy copy --node-modules-generation required \
-  --dependency-generation-root "$checkouts/dependency-generations" \
+  --dependency-generation-root "${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-$checkouts/dependency-generations}" \
   --source-integrity object-sourced >&2 \
   || fail "could not check out $sha at $checkout (setup-release-checkout.sh failed; output above)"
 landed="$(git -C "$checkout" rev-parse HEAD)"

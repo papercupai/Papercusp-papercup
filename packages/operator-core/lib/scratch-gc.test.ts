@@ -2110,6 +2110,39 @@ describe('deferred scratch quota recovery', () => {
     }
   });
 
+  it('bounds a scratch quota write when filesystem mutex admission stalls', async () => {
+    const workspaceId = 'ws-Q';
+    const workspaceRoot = resolve(scratchRootForWorkspace(workspaceId));
+    const mutexDigest = createHash('sha256').update(workspaceRoot).digest('hex').slice(0, 40);
+    const mutexName = `papercusp-scratch-quota-${mutexDigest}`;
+    let releaseHolder!: () => void;
+    let startedHolder!: () => void;
+    const holderGate = new Promise<void>((resolveGate) => { releaseHolder = resolveGate; });
+    const holderStarted = new Promise<void>((resolveStarted) => { startedHolder = resolveStarted; });
+    const holder = withFsMutex(mutexName, async () => {
+      startedHolder();
+      await holderGate;
+    }, {
+      intent: { subsystem: 'scratch-quota', operation: 'write', workspaceId },
+    });
+    try {
+      await holderStarted;
+      const startedAt = performance.now();
+      await expect(writeWithScratchQuota({
+        workspaceId,
+        filePath: join(scratchRootForWorkspace(workspaceId), 'mutex-timeout', 'spill'),
+        bytes: 1,
+        mutexTimeoutMs: 40,
+      }, async () => {
+        throw new Error('payload writer must not run after admission timeout');
+      })).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+      expect(performance.now() - startedAt).toBeLessThan(1_000);
+    } finally {
+      releaseHolder();
+      await Promise.allSettled([holder]);
+    }
+  });
+
   it('protects an in-flight writer even when its run is the oldest FIFO candidate', async () => {
     const active = makeSparseRun('ws-Q', UUID(1), 2 * 1024 ** 3, 20_000);
     const other = makeSparseRun('ws-Q', UUID(2), 1024 ** 3, 10_000);

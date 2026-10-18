@@ -362,6 +362,7 @@
     // Enrolled rather than `@ts-ignore`-d because the detector surface is the thing
     // the test asserts on, so a generated declaration is worth more than a suppression.
     "apps/operator/scripts/hooks/cc/artifact-url-delivery-guard.mjs",
+    "apps/operator/scripts/hooks/cc/pc_home.mjs",
     // Imported by stop-owner-directive-check.test.ts for `evaluateStop`
     // (owner-directive-delivery-redesign-2026-09-22 P-007).
     "apps/operator/scripts/hooks/cc/stop-owner-directive-check.mjs",

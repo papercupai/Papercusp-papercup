@@ -46,6 +46,7 @@ type ToolDef = {
   name: string;
   capability: string;
   requirePrincipal: boolean;
+  skipWorkspaceTx: boolean;
   timeoutSec: number;
   args: { safeParse: (v: unknown) => { success: boolean } };
   handler: (a: unknown, c?: unknown) => Promise<{ content: Array<{ text: string }>; isError?: boolean }>;
@@ -58,6 +59,9 @@ describe('tools:invoke registration', () => {
     expect(def.name).toBe('tools:invoke');
     expect(def.capability).toBe('agent_tools:read');
     expect(def.requirePrincipal).toBe(false);
+    // This pure delegator must not hold a workspace transaction across a slow
+    // nested tool call; the idle transaction is killed by PostgreSQL after 60s.
+    expect(def.skipWorkspaceTx).toBe(true);
     // db:migrate's explicit target budget (1020s) is longer than scorecards:emit's
     // 900s budget. Keep the meta-wrapper at least 60s above it, not merely above
     // the previously longest known target.

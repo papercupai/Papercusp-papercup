@@ -8,9 +8,9 @@ import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import type { PapercuspUnifiedToolContext } from '../lib/agent-tools/_tool-context';
-import { currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, currentBenchAssignmentId, currentBenchGatewayController } from '../lib/external-bench/current-su';
+import { currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, currentBenchAssignmentId, currentBenchGatewayController, type CurrentBenchTask } from '../lib/external-bench/current-su';
 import { liveBenchHarnessOps } from '../lib/external-bench/bench-harness-live';
-import { retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress } from './isolated-integration-proof';
+import { retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from './isolated-integration-proof';
 import { psuLaunchLogPath } from '../lib/psu-launch-log.mjs';
 import { startFrontierSweLaunchAdapter } from '../lib/external-bench/frontier-swe-launch-adapter';
 import { startCodexHookBridge, type CodexHookBridge } from '../lib/external-bench/codex-hook-bridge';
@@ -135,6 +135,18 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
     retainIsolatedWorkerProgress(evidenceDir, stage, evidence);
   let observedAuto = false;
   let nativeDiagnosticsAt = 0;
+  const retainTaskDiagnostics = (task: CurrentBenchTask) => {
+    const logPath = 'logPath' in task && typeof task.logPath === 'string' ? task.logPath : undefined;
+    const boot = typeof task.detail.coordOwnerId === 'string'
+      ? psuLaunchLogPath(task.detail.coordOwnerId, { home: process.env.HOME }) : null;
+    retainIsolatedNativeTaskDiagnostics(evidenceDir, { taskId: task.taskId,
+      workspaceId: task.workspaceId, state: task.state, sessionId: task.sessionId,
+      exitCode: task.exitCode, ownerId: task.detail.coordOwnerId, nativeStreamError: task.detail.nativeStreamError,
+      exitReason: 'exitReason' in task ? task.exitReason : undefined }, {
+      ...(logPath ? { stdout: logPath, normalized: logPath.replace(/\.log$/, '.normalized.log') } : {}),
+      ...(boot ? { boot } : {}),
+    });
+  };
   let predecessor: { ownerId: string; taskId: string; sessionId: string } | undefined;
   let successorId: string | undefined, carryRequested = false, carryInputSeen = false;
   let stoppedAfterCarry = false;
@@ -216,7 +228,16 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
         return currentSuBenchHarnessDriver(liveBenchHarnessOps(options), { ...ports,
           launch: async args => {
             phase('launch-start');
-            try { const receipt = await ports.launch(args); progress('launch-returned', { receipt }); return receipt; }
+            try { return await withIsolatedNativeLaunchDiagnostics(evidenceDir, async () => {
+              const receipt = await ports.launch(args); progress('launch-returned', { receipt }); return receipt;
+            }, async () => {
+              assert.ok(args.label, 'native launch diagnostic scope requires its exact assignment label');
+              const tasks = await ports.listTasks({ workspaceId: workspace, labelPrefix: args.label, includeEnded: true, limit: 100 });
+              const matching = tasks.filter(task => task.workspaceId === workspace && task.detail.label === args.label);
+              progress('launch-diagnostics-observed', { taskIds: matching.map(task => task.taskId) });
+              assert.equal(matching.length, 1, 'native launch diagnostics require the single enrolled assignment task');
+              retainTaskDiagnostics(matching[0]);
+            }); }
             catch (error) { progress('launch-failed', { error: String(error) }); throw error; }
           },
           getTask: async id => {
@@ -232,15 +253,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
             }
             if (task && Date.now() - nativeDiagnosticsAt >= 1000) {
               nativeDiagnosticsAt = Date.now();
-              const logPath = 'logPath' in task && typeof task.logPath === 'string' ? task.logPath : undefined;
-              const boot = typeof task.detail.coordOwnerId === 'string'
-                ? psuLaunchLogPath(task.detail.coordOwnerId, { home: process.env.HOME }) : null;
-              retainIsolatedNativeTaskDiagnostics(evidenceDir, { taskId: task.taskId,
-                workspaceId: task.workspaceId, state: task.state, sessionId: task.sessionId,
-                exitCode: task.exitCode, ownerId: task.detail.coordOwnerId }, {
-                ...(logPath ? { stdout: logPath, normalized: logPath.replace(/\.log$/, '.normalized.log') } : {}),
-                ...(boot ? { boot } : {}),
-              });
+              retainTaskDiagnostics(task);
             }
             progress('task-observed', { task: task && { taskId: task.taskId, workspaceId: task.workspaceId,
               sessionId: task.sessionId, state: task.state, exitCode: task.exitCode,

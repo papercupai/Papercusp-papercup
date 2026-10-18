@@ -19,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { parseCodexChunk } from './ingest-adapters';
 
 const WS = 'ws-interactive-ingest-p3';
 
@@ -33,7 +34,7 @@ vi.mock('../workspace-registry', async () => {
   return { ...actual, activeWorkspaceId: () => WS };
 });
 
-const { ingestInteractiveUsage, parseTranscriptChunk } = await import('./ingest-claude-transcripts');
+const { ingestInteractiveUsage, parseTranscriptChunk, reconcileTranscriptAccounts } = await import('./ingest-claude-transcripts');
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -43,6 +44,7 @@ beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
   h.sql = sql;
+  await sql.unsafe(await fs.readFile(new URL('../../../../libs/papercusp/libs/db/sql/1533-gateway-response-usage-attribution.sql', import.meta.url), 'utf8'));
 });
 afterAll(async () => {
   await org?.cleanup();
@@ -51,9 +53,122 @@ afterAll(async () => {
 beforeEach(async () => {
   await sql`DELETE FROM harness_shared.agent_usage_samples WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.interactive_usage_files WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.gateway_request_outcomes WHERE workspace_id = ${WS}`;
 });
 
 describe('ingestInteractiveUsage — session_id attribution (P3)', () => {
+  it('attributes late exact gateway evidence while preserving ambiguous and mismatched accounts as unknown', async () => {
+    const session = '44444444-aaaa-4444-8444-444444444444';
+    for (const response of ['resp-a', 'resp-b', 'resp-ambiguous', 'resp-wrong-owner', 'resp-wrong-turn', 'resp-cancelled']) {
+      await sql`INSERT INTO harness_shared.agent_usage_samples
+        (workspace_id, ts, bucket_key, provider, model_class, source, session_id, cost_usd, usage_provenance, usage_event_key)
+        VALUES (${WS}, 1, 'openai:gpt', 'openai', 'gpt', 'interactive', ${session}, 1,
+          ${JSON.stringify({ providerResponseId: response, sessionOwnerId: 'exact-owner', turnId: 'exact-turn',
+            accountSource: 'unavailable' })}::jsonb, ${response})`;
+    }
+    const before = await sql<Array<{ count: number }>>`SELECT count(*)::int AS count FROM harness_shared.agent_usage_samples
+      WHERE workspace_id = ${WS} AND account_id IS NOT NULL`;
+    expect(before[0].count).toBe(0);
+    for (const [index, response] of ['resp-a', 'resp-b', 'resp-ambiguous', 'resp-ambiguous', 'resp-wrong-owner', 'resp-wrong-turn', 'resp-cancelled'].entries()) {
+      await sql`INSERT INTO harness_shared.gateway_request_outcomes
+        (request_id, workspace_id, gateway_process_instance_id, request_ordinal, owner_id, provider, protocol,
+         transport, selected_account_id, outcome_class, final_status, request_timestamp_ms, finalized_at_ms,
+         attempts, failovers, native_session_id, native_thread_id, native_turn_id, recorded_at_ms,
+         retention_expires_at_ms, provider_response_id)
+        VALUES (${`request-${index}`}, ${WS}, '00000000-0000-4000-8000-000000000001', ${index + 1},
+          ${response === 'resp-wrong-owner' ? 'another-owner' : 'exact-owner'}, 'codex', 'openai-responses', 'oauth-http',
+          ${index === 1 ? 'account-b' : 'account-a'}, ${response === 'resp-cancelled' ? 'cancelled' : 'ok'}, 200,
+          1, 2, 1, 0, ${session}, ${session}, ${response === 'resp-wrong-turn' ? 'another-turn' : 'exact-turn'},
+          2, 3, ${response})`;
+    }
+    // More than a page of newer unknowns must not hide older exact matches.
+    await sql`INSERT INTO harness_shared.agent_usage_samples
+      (workspace_id, ts, bucket_key, provider, model_class, source, usage_provenance)
+      SELECT ${WS}, 1, 'openai:gpt', 'openai', 'gpt', 'interactive',
+        jsonb_build_object('providerResponseId', 'unmatched-' || n) FROM generate_series(1,501) n`;
+    const result = await ingestInteractiveUsage({ adapters: [] });
+    expect(result.errors).toEqual([]);
+    expect(result.attributedAccounts).toBe(2);
+    expect(await reconcileTranscriptAccounts(sql, WS)).toBe(0);
+    const rows = await sql<Array<{ usage_event_key: string; account_id: string | null; usage_provenance: Record<string, unknown> }>>`
+      SELECT usage_event_key, account_id, usage_provenance FROM harness_shared.agent_usage_samples
+      WHERE workspace_id = ${WS} AND usage_event_key LIKE 'resp-%' ORDER BY usage_event_key`;
+    expect(rows).toHaveLength(6);
+    expect(rows.map(row => [row.usage_event_key, row.account_id])).toEqual([
+      ['resp-a', 'account-a'], ['resp-ambiguous', null], ['resp-b', 'account-b'], ['resp-cancelled', null],
+      ['resp-wrong-owner', null], ['resp-wrong-turn', null],
+    ]);
+    expect(rows[0].usage_provenance).toMatchObject({ accountSource: 'exact-gateway-provider-response', gatewayRequestId: 'request-0' });
+    const [coverage] = await sql<Array<{ samples: number; total: number; attributed: number }>>`
+      SELECT count(*)::int AS samples, sum(cost_usd)::float8 AS total,
+        sum(cost_usd) FILTER (WHERE account_id IS NOT NULL)::float8 AS attributed
+      FROM harness_shared.agent_usage_samples WHERE workspace_id = ${WS} AND usage_event_key LIKE 'resp-%'`;
+    expect(coverage).toEqual({ samples: 6, total: 6, attributed: 2 });
+  });
+
+  it('persists exact native response provenance once and keeps account and trigger unknown', async () => {
+    const uuid = '22222222-aaaa-4222-8222-222222222222';
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'wi-native-response-'));
+    tmpDirs.push(dir);
+    const file = path.join(dir, `${uuid}.jsonl`);
+    const usage = { input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 0, output_tokens: 10 };
+    const cumulative = { ...usage, total_tokens: 110 };
+    const line = (value: unknown) => JSON.stringify(value) + '\n';
+    await fs.writeFile(file,
+      line({ type: 'session_meta', payload: { id: uuid } }) +
+      line({ type: 'turn_context', payload: { turn_id: 'native-turn', model: 'gpt-6' } }) +
+      line({ type: 'token_usage_record', payload: { session_id: uuid, thread_id: uuid, turn_id: 'native-turn',
+        response_id: 'resp-persisted', usage, thread_token_usage: cumulative } }));
+    const adapters = [{ name: 'codex', root: dir, parse: parseCodexChunk, replayStateFromPrefix: true }];
+    await ingestInteractiveUsage({ adapters });
+    // Simulate a deployed, already initialized watermark from the old parser.
+    await sql`UPDATE harness_shared.interactive_usage_files SET parser_state =
+      ${JSON.stringify({ initialized: true, model: 'gpt-6', turnId: 'native-turn' })}::jsonb
+      WHERE workspace_id = ${WS} AND file_path = ${file}`;
+    await fs.appendFile(file, line({ type: 'event_msg', timestamp: '2026-10-18T00:00:00Z', payload: {
+      type: 'token_count', info: { total_token_usage: cumulative, last_token_usage: usage },
+    } }));
+    await ingestInteractiveUsage({ adapters });
+    await ingestInteractiveUsage({ adapters });
+    const rows = await sql<Array<{ turn_count: number; account_id: string | null; turn_trigger: string | null;
+      usage_provenance: Record<string, unknown> }>>`
+      SELECT turn_count, account_id, turn_trigger, usage_provenance FROM harness_shared.agent_usage_samples
+      WHERE workspace_id = ${WS} AND session_id = ${uuid}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ turn_count: 1, account_id: null, turn_trigger: null,
+      usage_provenance: { providerResponseId: 'resp-persisted', providerResponseIdSource: 'native-token-usage-record',
+        turnId: 'native-turn', accountSource: 'unavailable', triggerSource: 'unavailable' } });
+  });
+
+  it('persists an explicit trigger and session context without claiming causal work-item attribution', async () => {
+    const uuid = '33333333-aaaa-4333-8333-333333333333';
+    const [session] = await sql<Array<{ id: number | string }>>`
+      INSERT INTO harness_shared.adv_sessions (workspace_id, mode, coord_owner_id, session_id, role, plan_slug)
+      VALUES (${WS}, 'console', 'exact-session-owner', ${uuid}, 'su', 'launch-plan') RETURNING id`;
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'wi-native-trigger-'));
+    tmpDirs.push(dir);
+    const line = (value: unknown) => JSON.stringify(value) + '\n';
+    await fs.writeFile(path.join(dir, `${uuid}.jsonl`),
+      line({ type: 'session_meta', payload: { id: uuid } }) +
+      line({ type: 'response_item', payload: { type: 'message', role: 'user', content: [
+        { type: 'input_text', text: '⟦turn-origin:self-compaction nonce:1234567890abcdef⟧\ncarry' },
+      ] } }) +
+      line({ type: 'turn_context', payload: { turn_id: 'native-turn', model: 'gpt-6' } }) +
+      line({ type: 'event_msg', payload: { type: 'token_count', info: {
+        total_token_usage: { input_tokens: 100 }, last_token_usage: { input_tokens: 100, output_tokens: 10 },
+      } } }));
+    await ingestInteractiveUsage({ adapters: [{ name: 'codex', root: dir, parse: parseCodexChunk,
+      advSessionId: Number(session.id) }] });
+    const rows = await sql<Array<{ turn_trigger: string | null; account_id: string | null; usage_provenance: Record<string, unknown> }>>`
+      SELECT turn_trigger, account_id, usage_provenance FROM harness_shared.agent_usage_samples
+      WHERE workspace_id = ${WS} AND session_id = ${uuid}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ turn_trigger: 'self-compaction', account_id: null, usage_provenance: {
+      triggerSource: 'native-turn-envelope', sessionOwnerId: 'exact-session-owner', sessionPlanSlug: 'launch-plan',
+      sessionContextSource: 'ingest-time-adv-session', workItemSource: 'unavailable',
+    } });
+  });
+
   it('writes the transcript native UUID into agent_usage_samples.session_id (was NULL before the fix)', async () => {
     const uuid = 'aaaa1111-bbbb-2222-cccc-333344445555';
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'p3-ingest-'));
