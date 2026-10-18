@@ -1423,14 +1423,22 @@ export function callerChoseReporting(vitestArgs) {
  *
  * Preserve the caller's output reporters and report paths. Explicit CLI reporters replace
  * the configured list, so retain the silent evidence reporters even for a caller-owned JSON
- * report. Add a private JSON report only when the caller selected human formatting.
+ * report. Add a private JSON report when the caller selected human formatting, or when the
+ * caller needs an exact test count for a name-filtered run. The latter matters for machine-only
+ * reporters such as the admin ledger reporter: they intentionally omit Vitest's human `Tests`
+ * row, so without a private report the name-filter guard cannot distinguish a real match from a
+ * zero-match run.
  *
  * @param {string[]} vitestArgs
  * @param {string | null} reportPath
- * @param {{ repoRoot?: string, env?: NodeJS.ProcessEnv }} [options]
+ * @param {{ repoRoot?: string, env?: NodeJS.ProcessEnv, requireTestCounts?: boolean }} [options]
  * @returns {{ args: string[], injectedReportPath: string | null }}
  */
-export function withInjectedJsonReport(vitestArgs, reportPath, { repoRoot = REPO_ROOT, env = process.env } = {}) {
+export function withInjectedJsonReport(vitestArgs, reportPath, {
+  repoRoot = REPO_ROOT,
+  env = process.env,
+  requireTestCounts = false,
+} = {}) {
   const args = vitestArgs ?? [];
   const humanReporters = new Set(['default', 'verbose', 'dot']);
   const selectedReporters = [];
@@ -1448,7 +1456,7 @@ export function withInjectedJsonReport(vitestArgs, reportPath, { repoRoot = REPO
     return { args, injectedReportPath: null };
   }
   const injectPrivateJson = Boolean(reportPath) && !callerHasOutputFile
-    && selectedReporters.every((reporter) => humanReporters.has(reporter));
+    && (requireTestCounts || selectedReporters.every((reporter) => humanReporters.has(reporter)));
   if (!injectPrivateJson && selectedReporters.length === 0) {
     // An outputFile alone does not replace the configured reporters.
     return { args, injectedReportPath: null };
@@ -3641,7 +3649,7 @@ export async function main(
     const { args: groupVitestArgs, injectedReportPath } = withInjectedJsonReport(
       perGroupVitestArgs(vitestArgs, groupIndex, groups.length),
       injectedReportDir ? join(injectedReportDir, `group-${groupIndex}.json`) : null,
-      { env: groupChildEnv },
+      { env: groupChildEnv, requireTestCounts: Boolean(nameFilter) },
     );
     const requested = group.routes.map((route) => route.requested);
     // A null config is a config-less Vitest package (libs/generic/* shape): omit `--config`

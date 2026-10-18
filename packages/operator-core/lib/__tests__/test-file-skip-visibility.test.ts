@@ -296,6 +296,21 @@ describe('withInjectedJsonReport — a private report, without stealing stdout f
     });
   });
 
+  it('adds a private json report for exact name-filter counts with a machine reporter', () => {
+    withReporterFiles(['admin-test-runs'], (repoRoot, reporterPath) => {
+      const chosen = [`--reporter=${reporterPath('admin-test-runs')}`];
+      const result = withInjectedJsonReport(chosen, '/tmp/r.json', {
+        repoRoot,
+        env: {},
+        requireTestCounts: true,
+      });
+      expect(result).toEqual({
+        args: [...chosen, '--reporter=json', '--outputFile=/tmp/r.json'],
+        injectedReportPath: '/tmp/r.json',
+      });
+    });
+  });
+
   it.each([['--reporter'], ['--outputFile=/x.json'], ['--outputFile', '/x.json']])(
     'preserves a malformed reporter or outputFile-only config selection (%j)', (...chosen) => {
       withReporterFiles(['admin-test-runs'], (repoRoot) => {

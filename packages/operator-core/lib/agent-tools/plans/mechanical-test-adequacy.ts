@@ -24,7 +24,7 @@
  * applicable here and keeps the evaluator + scorecard path.
  */
 import { hasLinkedMutationBaseline, latestLogicalEvidence, type SpecEvidenceForAdequacy } from './spec-test-adequacy';
-import { hasMatchingDeclaredCaseTitle } from './spec-evidence-store';
+import { hasMatchingDeclaredCaseTitle, repoFilesEvidenceMeasurementSchema } from './spec-evidence-store';
 import type { SourceBarTestRequirements } from './source-bar-test-requirements';
 import { CALIBRATION_LEGS } from '@papercusp/test-config/mutation-descriptor';
 import { isRecordedCaseTitle, MAX_RECORDED_PASSED_CASES } from '@papercusp/test-config/execution-details';
@@ -55,9 +55,16 @@ export function normalizeTestPath(path: string): string {
   return path.trim().replaceAll('\\', '/').replace(/\/{2,}/g, '/').replace(/^\.\//, '');
 }
 
-function rowTestFile(row: SpecEvidenceForAdequacy): string | null {
+function rowMatchesTestFile(row: SpecEvidenceForAdequacy, required: string): boolean {
   const path = row.testRunProvenance?.filePath ?? row.testRunExecution?.filePath ?? null;
-  return path ? normalizeTestPath(path) : null;
+  if (!path) return false;
+  const relativePath = normalizeTestPath(path);
+  if (relativePath === required) return true;
+  // Ledger paths are relative to their measured checkout. Cross-harness BARs
+  // qualify that path with the registered root; never infer it from a suffix.
+  const measurement = repoFilesEvidenceMeasurementSchema.safeParse(row.details.currentMeasurement);
+  const root = measurement.success ? measurement.data.rootHarnessSlug : undefined;
+  return root !== undefined && normalizeTestPath(`${root}/${relativePath}`) === required;
 }
 
 function isWithdrawn(row: SpecEvidenceForAdequacy): boolean {
@@ -127,7 +134,6 @@ export function evaluateMechanicalTestAdequacy(input: {
   if (sourceBarTestRequirements.status !== 'required') return { applicable: false };
 
   const requiredFiles = [...new Set(sourceBarTestRequirements.files.map(normalizeTestPath))].sort();
-  const required = new Set(requiredFiles);
   const clauseRows = latestLogicalEvidence(
     input.evidence.filter(
       (row) =>
@@ -148,7 +154,7 @@ export function evaluateMechanicalTestAdequacy(input: {
       isOriginalTestRun(row),
   );
   for (const file of requiredFiles) {
-    const bound = testRows.filter((row) => rowTestFile(row) === file);
+    const bound = testRows.filter((row) => rowMatchesTestFile(row, file));
     const qualifying = bound.find(
       (row) => row.id !== undefined && isPassingLedgerRun(row) && isCurrent(row),
     );
@@ -171,10 +177,7 @@ export function evaluateMechanicalTestAdequacy(input: {
   const mutantRows = clauseRows.filter(
     (row) => (row.evidenceKind === 'mutation' || row.evidenceKind === 'counterexample') && row.testRunId !== null,
   );
-  const fromNamedTests = mutantRows.filter((row) => {
-    const file = rowTestFile(row);
-    return file !== null && required.has(file);
-  });
+  const fromNamedTests = mutantRows.filter((row) => requiredFiles.some((file) => rowMatchesTestFile(row, file)));
   const caught = fromNamedTests.filter(isCaughtMutant);
   const caughtMutantBindingIds = caught
     .filter((row) => isCurrent(row) && row.id !== undefined)

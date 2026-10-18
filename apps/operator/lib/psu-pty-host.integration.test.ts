@@ -795,6 +795,9 @@ describe('plain launch kickoff turn-start proof', () => {
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '3',
+          // This fake child has no provider; the production 10s quota grace
+          // would outlive its 7s lifetime and this fixture's receipt deadline.
+          PAPERCUSP_PSU_PTY_KICKOFF_QUOTA_GRACE_MS: '1',
           TERM: 'xterm-256color',
         },
         ownerId, io, bridgeTty: false,
@@ -802,8 +805,7 @@ describe('plain launch kickoff turn-start proof', () => {
         nativePersistenceTimeoutMs: 2_000,
         signalSource: new EventEmitter(), onExit: () => undefined,
       });
-      const deadline = Date.now() + 8_000;
-      while (readFileSync(proofPath, 'utf8').length === 0 && Date.now() < deadline) await sleep(10);
+      await vi.waitFor(() => expect(readFileSync(proofPath, 'utf8'), captured()).not.toBe(''), { timeout: 8_000 });
       const eventsPath = eventLogPathForOwner(ownerId);
       const events = existsSync(eventsPath) ? readFileSync(eventsPath, 'utf8') : '(no host events)';
       expect(existsSync(choiceFile), `${captured()}\n${events}`).toBe(true);

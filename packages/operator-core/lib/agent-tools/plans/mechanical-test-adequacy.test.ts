@@ -51,6 +51,41 @@ describe('mechanical test adequacy', () => {
     expect(grade(undefined, [file, 'src/other.test.ts'])).toMatchObject({ verdict: 'fail' });
   });
 
+  it('matches a registered sibling test and caught mutant to their harness-qualified requirement', () => {
+    const rows = [proof('test'), proof('mutation')];
+    for (const row of rows) Object.assign(row.details.currentMeasurement!, { rootHarnessSlug: 'portal' });
+    expect(grade(rows, [`portal/${file}`])).toMatchObject({ verdict: 'pass', gaps: [],
+      passingTestBindingIds: { [`portal/${file}`]: 1 }, caughtMutantBindingIds: [2] });
+  });
+
+  it.each(['test', 'mutation'] as const)('does not cross-credit the same relative %s path from another harness', kind => {
+    const rows = [proof('test'), proof('mutation')];
+    for (const row of rows) Object.assign(row.details.currentMeasurement!, {
+      rootHarnessSlug: row.evidenceKind === kind ? 'other' : 'portal',
+    });
+    expect(grade(rows, [`portal/${file}`])).toMatchObject({ verdict: 'fail' });
+  });
+
+  it.each(['absent', 'malformed'] as const)('does not infer a sibling root from %s measurement metadata', kind => {
+    const rows = [proof('test'), proof('mutation')];
+    if (kind === 'malformed') for (const row of rows) row.details.currentMeasurement = {
+      kind: 'repo-files', rootHarnessSlug: 'portal',
+    };
+    expect(grade(rows, [`portal/${file}`])).toMatchObject({ verdict: 'fail' });
+  });
+
+  it('does not suffix-match an unrelated parent of a registered harness', () => {
+    const rows = [proof('test'), proof('mutation')];
+    for (const row of rows) Object.assign(row.details.currentMeasurement!, { rootHarnessSlug: 'portal' });
+    expect(grade(rows, [`other/portal/${file}`])).toMatchObject({ verdict: 'fail' });
+  });
+
+  it('preserves a requirement already relative to the measured checkout', () => {
+    const rows = [proof('test'), proof('mutation')];
+    for (const row of rows) Object.assign(row.details.currentMeasurement!, { rootHarnessSlug: 'portal' });
+    expect(grade(rows)).toMatchObject({ verdict: 'pass' });
+  });
+
   it('requires a caught mutant even when the clause does not request one separately', () => {
     expect(grade([proof('test')])).toMatchObject({ verdict: 'fail', caughtMutantBindingIds: [] });
   });
