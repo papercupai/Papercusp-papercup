@@ -67,7 +67,8 @@ async function implementers(scope: Scope, id: string): Promise<string[]> {
 }
 async function independent(scope: Scope, item: WorkItem, author: string, deps: FrozenTestsDeps): Promise<boolean> {
   const authors = [...new Set([item.assignee, ...(await implementers(scope, item.id))].filter((id): id is string => Boolean(id)))];
-  if (!authors.length || !author) return false;
+  if (!authors.length) throw new Error('frozen_tests_implementer_unassigned');
+  if (!author) return false;
   for (const builder of authors) if (builder === author || await deps.related(author, builder, scope.workspaceId)) return false;
   return true;
 }

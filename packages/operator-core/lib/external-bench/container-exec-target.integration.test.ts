@@ -518,6 +518,83 @@ describe('container exec target against a live container', () => {
     }
   }, 180_000);
 
+  it('initializes native MCP through the maintained container egress without model inference', async () => {
+    const base = mkdtempSync(join(root, 'native-mcp-'));
+    const checkout = join(base, 'checkout');
+    const homes = join(base, 'homes'), perHomes = join(base, 'task-homes'), home = join(homes, 'session-7');
+    for (const dir of [checkout, home, perHomes]) mkdirSync(dir, { recursive: true });
+    const methods: string[] = [];
+    const server = createServer(async (req, res) => {
+      if (req.url?.includes('/models')) {
+        res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"models":[]}'); return;
+      }
+      const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      let body: { id?: number; method?: string };
+      try { body = JSON.parse(Buffer.concat(chunks).toString()); }
+      catch { res.writeHead(405); res.end(); return; }
+      methods.push(body.method ?? 'unknown');
+      if (body.id === undefined) { res.writeHead(202); res.end(); return; }
+      const result = body.method === 'initialize'
+        ? { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'private-mcp', version: '1' } }
+        : body.method === 'tools/list' ? { tools: [] } : {};
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }));
+    });
+    await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+    const port = (server.address() as { port: number }).port;
+    let egress: Awaited<ReturnType<typeof startBenchEgress>> | undefined;
+    let lease: Awaited<ReturnType<NonNullable<typeof egress>['openTaskNetwork']>> | undefined;
+    let cid: string | undefined, primaryError: unknown;
+    try {
+      egress = await startBenchEgress({ runId: `native-mcp-${randomUUID()}`, endpoints: [
+        { name: 'mcp', listenPort: 9071, targetPort: port, transport: 'http' },
+        { name: 'gw', listenPort: 8788, targetPort: port },
+      ] });
+      lease = await egress.openTaskNetwork('mcp');
+      writeFileSync(join(home, 'config.toml'), [
+        'model = "gpt-6-luna"', 'model_provider = "private-mcp"',
+        '[features]', 'apps = false', 'plugins = false', 'remote_plugin = false',
+        '[model_providers.private-mcp]', 'name = "Offline MCP fixture"',
+        `base_url = "${egress.originFor('gw')}/v1"`, `model_catalog_url = "${egress.originFor('gw')}/models"`,
+        'wire_api = "responses"', 'requires_openai_auth = false',
+        '[mcp_servers.papercusp-su]', `url = "${egress.originFor('mcp')}/mcp"`,
+        'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }',
+      ].join('\n'));
+      cid = await startContainer(['--user', `${process.getuid!()}:${process.getgid!()}`,
+        '-v', `${checkout}:/app`, '-v', `${perHomes}:${homes}`, '-v', `${resolveContainerCodexBinary()}:${CONTAINER_CODEX_BIN_PATH}:ro`], lease.network);
+      const { wrapperPath } = materializeDockerExecWrapper({ kind: 'docker-exec', containerId: cid,
+        workdir: '/app', binPath: CONTAINER_CODEX_BIN_PATH,
+        sessionRelocation: { sessionEnv: 'CODEX_HOME', roots: [{ hostRoot: homes, perTaskDir: perHomes }] } },
+      { dir: mkdtempSync(join(root, 'mcp-wrapper-')) });
+      const child = createRequire(import.meta.url)('@lydell/node-pty').spawn(wrapperPath,
+        ['--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox', '--dangerously-bypass-hook-trust'],
+        { env: { PATH: process.env.PATH, CODEX_HOME: home, TERM: 'xterm-256color' }, cwd: base, cols: 120, rows: 30 });
+      const output = await new Promise<string>((resolve, reject) => {
+        let output = '', probes = '';
+        const timer = setTimeout(() => child.kill('SIGTERM'), 8000);
+        const cleanupTimer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('native MCP TUI did not terminate')); }, 10_000);
+        const data = child.onData((chunk: string) => {
+          output = (output + chunk).slice(-12000); probes = (probes + chunk).slice(-100);
+          if (probes.includes('\x1b[6n')) { child.write('\x1b[1;1R'); probes = ''; }
+        });
+        child.onExit(() => { clearTimeout(timer); clearTimeout(cleanupTimer); data.dispose(); resolve(output); });
+      });
+      expect(methods, output).toContain('initialize');
+      expect(methods, output).toContain('tools/list');
+      expect(methods, output).not.toContain('unknown');
+    } catch (error) { primaryError = error; throw error; }
+    finally {
+      const failures: unknown[] = [];
+      const clean = async (action: () => Promise<unknown>) => { try { await action(); } catch (error) { failures.push(error); } };
+      if (cid) await clean(() => removeContainer(cid!));
+      if (lease) await clean(async () => expect(await lease!.release()).toEqual([]));
+      if (egress) await clean(async () => expect((await egress!.stop()).errors).toEqual([]));
+      server.closeAllConnections();
+      await clean(() => new Promise<void>((done, reject) => server.close(error => error ? reject(error) : done())));
+      if (failures.length) throw new AggregateError([...(primaryError ? [primaryError] : []), ...failures], 'Native MCP cleanup failed');
+    }
+  }, 90_000);
+
   it('runs the musl Codex from the host install, mounted read-only at the seam path, with no network', async () => {
     const musl = resolveContainerCodexBinary();
     const cid = await startContainer(['-v', `${musl}:${CONTAINER_CODEX_BIN_PATH}:ro`]);

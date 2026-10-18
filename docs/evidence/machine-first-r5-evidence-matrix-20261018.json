@@ -1533,7 +1533,7 @@
   },
   "detectorControls": {
     "maintainedTest": "packages/operator-core/lib/agent-tools/plans/spec-test-adequacy.test.ts",
-    "testResult": "330 passed, 0 skipped",
+    "testResult": "331 passed, 0 skipped",
     "testSourceHead": "8e42437b2c",
     "testedPathDirty": true,
     "controls": [
@@ -1572,5 +1572,5 @@
       "P-006/MACHINE-FIRST-P006@1"
     ]
   },
-  "canonicalSha256": "a2744bcc459d531d5d0fffdcd92e2cd5c8a130b1124546dc62e37d30d91a2903"
+  "canonicalSha256": "9784237421396db2e319d9a23e922e1b19e68040d4584a12911652da12c3e686"
 }

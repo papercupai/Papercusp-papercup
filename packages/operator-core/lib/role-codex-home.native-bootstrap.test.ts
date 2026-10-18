@@ -10,6 +10,7 @@ import { codexGatewayConfigToml, codexManagedFeaturesToml } from '@papercusp/orc
 import { resolveOnPath, wellKnownBackendBin } from './backend-bin-resolve.mjs';
 import { isCodexWorkspaceDiscoveryTimeout } from './psu-launch-log.mjs';
 import { codexSessionFrameObserved } from '../../../apps/operator/scripts/psu-pty-host.mjs';
+import { resolveContainerCodexBinary } from './external-bench/container-exec-target';
 
 // Use the maintained per-user install precedence. The test worker's PATH can
 // prefer a broken system wrapper over the Codex PSU actually launches.
@@ -17,10 +18,12 @@ const codex = wellKnownBackendBin('codex') ?? resolveOnPath('codex');
 const require = createRequire(import.meta.url);
 
 /** Exercise the TUI's mandatory account/read path, including terminal probes. */
-async function readNativeTui(home: string, budgetMs: number): Promise<{ output: string; exitedBeforeBudget: boolean; exitCode: number }> {
+async function readNativeTui(home: string, budgetMs: number, nativeSessionId?: string | null, binary = codex): Promise<{ output: string; exitedBeforeBudget: boolean; exitCode: number }> {
   const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: home, TERM: 'xterm-256color' };
   delete env.OPENAI_API_KEY;
-  const child = require('@lydell/node-pty').spawn(codex!, [
+  if (nativeSessionId === null) delete env.CODEX_SESSION_ID;
+  else if (nativeSessionId !== undefined) env.CODEX_SESSION_ID = nativeSessionId;
+  const child = require('@lydell/node-pty').spawn(binary!, [
     '--no-alt-screen', '--dangerously-bypass-approvals-and-sandbox',
     '--dangerously-bypass-hook-trust', '-C', home,
   ], { env, cwd: home, cols: 120, rows: 30 });
@@ -91,6 +94,55 @@ async function readNativeAccount(home: string): Promise<{ result?: unknown; erro
 }
 
 describe('native gateway account bootstrap', () => {
+  it.runIf(Boolean(codex) && process.platform === 'linux').each([
+    { binary: 'host', nativeSessionId: null },
+    { binary: 'host', nativeSessionId: 'private-inherited-native-session' },
+    { binary: 'musl', nativeSessionId: null },
+    { binary: 'musl', nativeSessionId: 'private-inherited-native-session' },
+  ])('initializes managed MCP without model inference ($binary, $nativeSessionId)', async ({ binary, nativeSessionId }) => {
+      const home = mkdtempSync(join(tmpdir(), 'codex-native-mcp-'));
+      const methods: string[] = [];
+      const server = createServer(async (req, res) => {
+        if (req.url?.includes('/models')) {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"models":[]}');
+          return;
+        }
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(Buffer.from(chunk));
+        let body: { id?: number; method?: string };
+        try { body = JSON.parse(Buffer.concat(chunks).toString()); }
+        catch { res.writeHead(405); res.end(); return; }
+        methods.push(body.method ?? 'unknown');
+        if (body.id === undefined) { res.writeHead(202); res.end(); return; }
+        const result = body.method === 'initialize'
+          ? { protocolVersion: '2025-03-26', capabilities: { tools: {} }, serverInfo: { name: 'private-mcp', version: '1' } }
+          : body.method === 'tools/list' ? { tools: [] } : {};
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: body.id, result }));
+      });
+      await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+      try {
+        const baseURL = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+        const gateway = codexGatewayConfigToml(null, { gateway: { baseURL, token: 'a'.repeat(64) } });
+        writeFileSync(join(home, 'config.toml'), ['model = "gpt-6-luna"', ...gateway.root,
+          ...codexManagedFeaturesToml({ headless: true }), ...gateway.tables,
+          '[mcp_servers.papercusp-su]', `url = "${baseURL}/mcp"`,
+          'env_http_headers = { "x-papercusp-native-session" = "CODEX_SESSION_ID" }',
+        ].join('\n'));
+        const result = await readNativeTui(home, 7000, nativeSessionId,
+          binary === 'musl' ? resolveContainerCodexBinary() : codex);
+        const diagnostic = JSON.stringify({ binary, nativeSessionId, methods, ...result });
+        expect(methods, diagnostic).toContain('initialize');
+        expect(methods, diagnostic).toContain('tools/list');
+        expect(methods, diagnostic).not.toContain('unknown');
+      } finally {
+        server.closeAllConnections();
+        await new Promise<void>(done => server.close(() => done()));
+        rmSync(home, { recursive: true, force: true });
+      }
+    }, 12_000);
+
   it.runIf(Boolean(codex) && process.platform === 'linux').each([400, 200])(
     'keeps a fresh TUI alive without a pre-submission rollout after local catalog status %s', async status => {
       const home = mkdtempSync(join(tmpdir(), 'codex-native-catalog-'));
