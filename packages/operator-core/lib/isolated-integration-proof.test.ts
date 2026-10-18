@@ -351,6 +351,27 @@ it('retains and enrolls the native Codex TUI log before disposable home removal'
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+it('retains and enrolls native host lifecycle events before disposable home removal', () => {
+  const root = mkdtempSync(join(tmpdir(), 'isolated-native-host-events-'));
+  const home = join(root, 'native-home');
+  const evidence = join(root, 'phases', 'execute');
+  mkdirSync(home, { recursive: true });
+  mkdirSync(evidence, { recursive: true });
+  const source = join(home, 'owner.events.jsonl');
+  const events = JSON.stringify({ kind: 'respawn-carry-deferred', reason: 'busy-gate-expired' }) + '\n';
+  const sources = { 'host-events': source };
+  try {
+    writeFileSync(source, events);
+    retainIsolatedNativeTaskDiagnostics(evidence, { taskId: 'private-native' }, sources);
+    rmSync(home, { recursive: true });
+    retainIsolatedNativeTaskDiagnostics(evidence, { taskId: 'private-native' }, sources);
+    expect(readFileSync(join(evidence, 'native-task-host-events.log'), 'utf8')).toBe(events);
+    expect(JSON.parse(readFileSync(join(evidence, 'native-task-diagnostics.json'), 'utf8')))
+      .toMatchObject({ files: { 'host-events': { source, captured: false, reason: 'missing' } } });
+    expect(isolatedIntegrationDiagnosticArtifacts(root)).toContain('phases/execute/native-task-host-events.log');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 it('records an unreadable native Codex TUI log without masking the task result', () => {
   const evidence = mkdtempSync(join(tmpdir(), 'isolated-codex-log-permission-'));
   try {

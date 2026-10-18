@@ -2,12 +2,17 @@
 import { getRubric, type Rubric } from '../../rubrics';
 import type { LiveAcceptanceViewStatus } from '../../acceptance-live-requirements';
 import type { SpecClauseBarPin } from './spec-clauses-store';
+import { rubricCriterionCheckSchema, type RubricCriterionCheck } from './rubric-template';
+
+type TestCheck = Extract<RubricCriterionCheck, { kind: 'tests' }>;
 
 export type SourceBarTestRequirements =
   | { status: 'not-required' }
   | {
       status: 'required';
       files: string[];
+      /** Exact named selectors from the same authoritative check as files. */
+      cases?: NonNullable<TestCheck['cases']>;
       /**
        * Present only when the files came from the subject plan's LIVE requirement block rather
        * than the pinned rubric copy (agent-paperwork-and-restart-tax-reduction-2026-10-15 P-001).
@@ -57,6 +62,15 @@ function normalizedFiles(files: readonly string[]): string[] {
   return [...new Set(files.map((file) => file.trim()).filter(Boolean))].sort();
 }
 
+function testRequirements(check: TestCheck): Pick<Extract<SourceBarTestRequirements, { status: 'required' }>, 'files' | 'cases'> {
+  const parsed = rubricCriterionCheckSchema.parse(check) as TestCheck;
+  const cases = parsed.cases ?? (parsed.testName ? [{ file: parsed.files[0]!, testName: parsed.testName }] : undefined);
+  return {
+    files: normalizedFiles(parsed.files),
+    ...(cases ? { cases: [...cases].sort((a, b) => a.file.localeCompare(b.file) || a.testName.localeCompare(b.testName)) } : {}),
+  };
+}
+
 /**
  * P-001 (R-1): a path-only edit to a requirement block no longer amends the rubric, so the pinned
  * revision's copy of `check.files` can name a file that moved. When the pin is the rubric's
@@ -70,7 +84,7 @@ async function liveTestFiles(
   pin: SpecClauseBarPin,
   cache: SourceBarRubricCache,
   live: SourceBarLiveRead,
-): Promise<{ files: string[]; subjectPlan: string } | null> {
+): Promise<({ subjectPlan: string } & ReturnType<typeof testRequirements>) | null> {
   const subjectPlan = rubric.subjectPlan;
   if (rubric.kind !== 'acceptance' || !subjectPlan) return null;
   try {
@@ -94,8 +108,8 @@ async function liveTestFiles(
     const liveRubric = await overlaid;
     const criterion = liveRubric?.criteria.find((candidate) => candidate.barKey === pin.barKey);
     if (criterion?.check?.kind !== 'tests') return null;
-    const files = normalizedFiles(criterion.check.files);
-    return files.length > 0 ? { files, subjectPlan } : null;
+    const requirements = testRequirements(criterion.check);
+    return requirements.files.length > 0 ? { ...requirements, subjectPlan } : null;
   } catch {
     return null;
   }
@@ -150,7 +164,13 @@ export async function resolveSourceBarTestRequirements(
   }
   if (criterion.check?.kind !== 'tests') return { status: 'not-required' };
 
-  const files = normalizedFiles(criterion.check.files);
+  let pinnedRequirements: ReturnType<typeof testRequirements>;
+  try {
+    pinnedRequirements = testRequirements(criterion.check);
+  } catch {
+    return { status: 'unavailable', reason: `pinned BAR ${pin.barKey} declares an invalid tests check` };
+  }
+  const { files } = pinnedRequirements;
   if (files.length === 0) {
     return {
       status: 'unavailable',
@@ -158,10 +178,13 @@ export async function resolveSourceBarTestRequirements(
     };
   }
   const liveFiles = await liveTestFiles(rubric, pin, cache, live);
-  if (!liveFiles || liveFiles.files.join('\n') === files.join('\n')) return { status: 'required', files };
+  if (!liveFiles || JSON.stringify({ files: liveFiles.files, cases: liveFiles.cases }) === JSON.stringify(pinnedRequirements)) {
+    return { status: 'required', ...pinnedRequirements };
+  }
   return {
     status: 'required',
     files: liveFiles.files,
+    ...(liveFiles.cases ? { cases: liveFiles.cases } : {}),
     liveRequirement: { subjectPlan: liveFiles.subjectPlan, pinnedFiles: files },
   };
 }

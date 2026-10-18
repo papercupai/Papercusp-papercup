@@ -603,7 +603,7 @@ describe('machine-first R5 evidence matrix calibration', () => {
       (copy: ReturnType<typeof matrix>) => { copy.observed[0]!.rowId = 'unexpected-journey'; },
       (copy: ReturnType<typeof matrix>) => { copy.required[0]!.candidate.sourceSha = ''; copy.observed[0]!.observed.sourceSha = ''; },
       (copy: ReturnType<typeof matrix>) => { copy.observed[0]!.evidence.currentness.provenance = 'attested-current'; },
-      (copy: ReturnType<typeof matrix>) => { copy.observed[0]!.evidence.id = undefined; },
+      (copy: ReturnType<typeof matrix>) => { Reflect.deleteProperty(copy.observed[0]!.evidence, 'id'); },
       (copy: ReturnType<typeof matrix>) => { copy.observed[0]!.evidence.specRevision = 99; },
     ];
     for (const alter of changes) {
@@ -730,6 +730,52 @@ describe('source BAR registered test files', () => {
 
     expect(result.ratings.traceability.evidence).toContain('2 distinct immutable proof record(s)');
     expect(result.ratings.traceability.evidence).not.toContain('3 immutable binding(s)');
+  });
+
+  describe('explicit shared source BAR cases', () => {
+    const target = clause({ sourceBar, specId: 'AUTO-BAR-R-08-P-010', requiredTestLayers: ['integration'] });
+    const ownCase = `${target.specId}: onboarding`;
+    const sharedCase = 'AUTO-BAR-R-08-P-011: package lifecycle';
+    const selectors = [{ file: requiredFiles[0]!, testName: ownCase }, { file: requiredFiles[1]!, testName: sharedCase }];
+    function selectedRun(file: string, title: string, id: number) {
+      const row = successfulTestBinding(file, { targeted: target.specId, testCases: [`suite > ${title}`] });
+      return { ...row, planSlug: target.planSlug, specId: target.specId, specFingerprint: target.contentHash, testRunId: id };
+    }
+    const own = () => selectedRun(requiredFiles[0]!, ownCase, 201);
+    const shared = () => selectedRun(requiredFiles[1]!, sharedCase, 202);
+    function evaluate(rows = [own(), shared()], cases: typeof selectors | undefined = selectors) {
+      return evaluateSpecTestAdequacy({ clause: target, evidence: rows, classRef: 'plan-class-feature-ship', sourceBarTestRequirements: { status: 'required', files: requiredFiles, ...(cases ? { cases } : {}) } });
+    }
+
+    it('credits an explicitly selected shared suite case while requiring independent same-clause path proof', () => {
+      const result = evaluate();
+      expect(result.ratings['correct-layer'].rating).toBe('pass');
+      expect(result.ratings.traceability.rating).toBe('pass');
+      const noOwnPath = evaluate([
+        selectedRun(requiredFiles[0]!, sharedCase, 203), shared(),
+      ], [{ file: requiredFiles[0]!, testName: sharedCase }, selectors[1]!]);
+      expect(noOwnPath.ratings['correct-layer'].rating).toBe('unknown');
+      expect(noOwnPath.ratings['correct-layer'].evidence).toContain('Every registered source BAR test file has a current passing binding');
+      expect(noOwnPath.ratings.traceability.rating).toBe('unknown');
+      expect(noOwnPath.ratings.falsifiability.rating).not.toBe('pass');
+    });
+
+    it('keeps undeclared sibling cases unknown and does not treat a different registered sibling as proof', () => {
+      const withoutSelectors = evaluateSpecTestAdequacy({ clause: target, evidence: [own(), shared()], classRef: 'plan-class-feature-ship', sourceBarTestRequirements: { status: 'required', files: requiredFiles } });
+      expect(withoutSelectors.ratings['correct-layer'].rating).toBe('unknown');
+      expect(evaluate(undefined, [selectors[0]!, { ...selectors[1]!, testName: 'AUTO-BAR-R-08-P-012: other case' }]).ratings['correct-layer'].rating).toBe('unknown');
+    });
+
+    it.each(['stale', 'failed', 'unrecorded', 'unselected', 'missing-selector', 'missing-file'] as const)('refuses incomplete shared suite coverage: %s', mode => {
+      const row = shared();
+      if (mode === 'stale') row.currentness = { ...row.currentness, overall: 'stale' };
+      if (mode === 'failed') row.testRunExecution = { ...row.testRunExecution!, status: 'fail', passed: 0, failed: 1 };
+      if (mode === 'unrecorded') row.testRunExecution = { ...row.testRunExecution!, passedCaseTitles: ['unrelated passed case'] };
+      if (mode === 'unselected') row.details = { adequacy: { ...(row.details.adequacy as Record<string, unknown>), testCases: ['unrelated declared case'] } };
+      const cases = mode === 'missing-selector' ? [...selectors, { file: requiredFiles[1]!, testName: 'AUTO-BAR-R-08-P-018: archive' }] : selectors;
+      const result = evaluate(mode === 'missing-file' ? [own()] : [own(), row], cases);
+      expect(result.ratings['correct-layer'].rating).toBe(mode === 'failed' ? 'fail' : 'unknown');
+    });
   });
 });
 
@@ -3863,7 +3909,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('pins the evaluator revision when an adequacy rule changes', () => {
-    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(35);
+    expect(SPEC_TEST_ADEQUACY_EVALUATOR_REVISION).toBe(36);
   });
 
   it('keeps fixture calibration unknown when a null fingerprint has no independent fixture-free measurement', () => {

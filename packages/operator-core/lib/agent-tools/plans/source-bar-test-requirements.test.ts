@@ -59,6 +59,17 @@ describe('source BAR test requirement resolution', () => {
     });
   });
 
+  it('preserves explicit shared named cases and the single-file shorthand from the pinned check', async () => {
+    const cases = [{ file: 'z.test.ts', testName: 'AUTO-BAR-R-08-P-011: package' }, { file: 'a.test.ts', testName: 'onboarding' }];
+    const withCheck = (check: unknown) => sourceRubric({ criteria: [{ ...sourceRubric().criteria[0], check }] });
+    rubricReads.getRubric.mockResolvedValue(withCheck({ kind: 'tests', files: ['z.test.ts', 'a.test.ts'], cases }));
+    await expect(resolveSourceBarTestRequirements(pin)).resolves.toEqual({ status: 'required', files: ['a.test.ts', 'z.test.ts'], cases: [cases[1], cases[0]] });
+    rubricReads.getRubric.mockResolvedValue(withCheck({ kind: 'tests', files: ['z.test.ts'], testName: cases[0]!.testName }));
+    await expect(resolveSourceBarTestRequirements(pin)).resolves.toEqual({ status: 'required', files: ['z.test.ts'], cases: [cases[0]] });
+    rubricReads.getRubric.mockResolvedValue(withCheck({ kind: 'tests', files: ['z.test.ts', 'a.test.ts'], cases: [cases[0]] }));
+    await expect(resolveSourceBarTestRequirements(pin)).resolves.toMatchObject({ status: 'unavailable' });
+  });
+
   it.each([
     ['BAR hash', { barHash: 'other-bar' }],
     ['evidence plane', { evidencePlane: 'live' }],
@@ -111,6 +122,7 @@ describe('source BAR test requirements read live requirement check.files', () =>
   function liveRead(opts: {
     currentRevision?: number | null;
     liveFiles?: string[];
+    liveCases?: Array<{ file: string; testName: string }>;
     liveKind?: string;
     planReadable?: boolean;
     throws?: boolean;
@@ -122,7 +134,7 @@ describe('source BAR test requirements read live requirement check.files', () =>
         calls += 1;
         if (opts.throws) throw new Error('plan store down');
         const check = (opts.liveKind ?? 'tests') === 'tests'
-          ? { kind: 'tests', files: opts.liveFiles ?? [MOVED] }
+          ? { kind: 'tests', files: opts.liveFiles ?? [MOVED], ...(opts.liveCases ? { cases: opts.liveCases } : {}) }
           : { kind: opts.liveKind!, instrumentKey: 'x' };
         // Exercise the REAL overlay policy, not a hand-rolled copy of it.
         return readLiveAcceptanceCriteria(rubric, {
@@ -158,6 +170,18 @@ describe('source BAR test requirements read live requirement check.files', () =>
       files: ['a.test.ts', 'z.test.ts'],
     });
     expect(live.liveCalls()).toBe(0);
+  });
+
+  it('uses live named selectors even when files are unchanged, while older pins keep their exact selectors', async () => {
+    const files = ['a.test.ts', 'z.test.ts'];
+    const pinnedCases = files.map(file => ({ file, testName: 'pinned case' }));
+    rubricReads.getRubric.mockResolvedValue({ ...planRubric(), criteria: [{ ...sourceRubric().criteria[0], check: { kind: 'tests', files, cases: pinnedCases } }] });
+    const cases = files.map(file => ({ file, testName: 'live shared case' }));
+    await expect(resolveSourceBarTestRequirements(pin, new Map(), liveRead({ liveFiles: files, liveCases: cases }))).resolves.toEqual({
+      status: 'required', files, cases,
+      liveRequirement: { subjectPlan: 'live-plan-fixture', pinnedFiles: files },
+    });
+    await expect(resolveSourceBarTestRequirements(pin, new Map(), liveRead({ currentRevision: 5, liveFiles: files, liveCases: cases }))).resolves.toEqual({ status: 'required', files, cases: pinnedCases });
   });
 
   it.each([

@@ -32,8 +32,14 @@ describe('native bootstrap admission and lifecycle', () => {
     const scratch = join(dir, 'private'), evidence = join(dir, 'evidence');
     mkdirSync(scratch); mkdirSync(evidence);
     const result = join(scratch, 'result.json'), log = join(evidence, 'native.log');
-    const suffixes = ['.text-failure.json', '.response-failure.json', '.wallet-render-failure.json'];
-    const snapshots = suffixes.map((suffix, i) => ({ failure: suffix, step: i, text: 'Native candidate' }));
+    const suffixes = ['.text-failure.json', '.response-failure.json', '.wallet-render-failure.json',
+      '.completion-response.json', '.control-failure.json'];
+    const snapshots = [
+      ...suffixes.slice(0, 3).map((suffix, i) => ({ failure: suffix, step: i, text: 'Native candidate' })),
+      { status: 409, ok: false, error: 'invalid_completion',
+        completion: { check: 'envelope_schema', providerStatus: 'PENDING', invalidFields: ['completedAt'] } },
+      { scope: 'onboarding', control: 'Wallet signature', controls: [], alerts: [] },
+    ];
     writeFileSync(join(scratch, 'native-config.json'), '{"privateKey":"secret"}');
     writeFileSync(join(scratch, 'candidate-provider.json'), '{"cookies":["secret"]}');
     writeFileSync(log + suffixes[0], 'stale', { mode: 0o644 });

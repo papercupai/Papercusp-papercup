@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { join, resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import { eventLogPathForOwner } from '../../../apps/operator/scripts/psu-pty-host.mjs';
 import type { PapercuspUnifiedToolContext } from '../lib/agent-tools/_tool-context';
 import { currentSuBenchHarnessDriver, liveCurrentSuBenchPorts, currentBenchAssignmentId, currentBenchGatewayController, type CurrentBenchTask } from '../lib/external-bench/current-su';
 import { liveBenchHarnessOps } from '../lib/external-bench/bench-harness-live';
@@ -125,6 +126,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
       exitReason: 'exitReason' in task ? task.exitReason : undefined }, {
       ...(logPath ? { stdout: logPath, normalized: logPath.replace(/\.log$/, '.normalized.log') } : {}),
       ...(boot ? { boot } : {}),
+      ...(ownerId ? { 'host-events': eventLogPathForOwner(ownerId) } : {}),
     }, codexHome);
   };
   let predecessor: { ownerId: string; taskId: string; sessionId: string } | undefined;

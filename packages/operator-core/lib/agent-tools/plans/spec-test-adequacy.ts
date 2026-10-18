@@ -2025,9 +2025,18 @@ function sourceBarTestSuiteRating(
     );
   }
 
-  // A binding whose every declared case names a sibling BAR clause is not a
-  // source-suite proof for this clause, even when the run used the same file.
-  const relevantEvidence = evidence.filter((row) => !bindingHasOnlyMismatchedClauseCases(row, clause));
+  // A source BAR may explicitly require shared named cases. Credit those only
+  // for suite coverage; clause path, targeting and mutation raters remain strict.
+  const selectorsForFile = (file: string) => (resolved.cases ?? []).filter((selector) => selector.file === file);
+  const declaresSelector = (row: SpecEvidenceForAdequacy, testName: string) =>
+    hasMatchingDeclaredCaseTitle(testName, detailsOf(row).testCases ?? []);
+  const relevantEvidence = evidence.filter((row) => {
+    if (!bindingHasOnlyMismatchedClauseCases(row, clause)) return true;
+    const measuredPath = row.testRunProvenance?.filePath ?? row.testRunExecution?.filePath;
+    return typeof measuredPath === 'string' && requiredFiles.some((file) =>
+      testFilePathMatches(file, measuredPath) && selectorsForFile(file).some(({ testName }) => declaresSelector(row, testName)),
+    );
+  });
 
   const rowsByFile = new Map<string, SpecEvidenceForAdequacy[]>();
   const ambiguousFiles = new Set<string>();
@@ -2062,7 +2071,10 @@ function sourceBarTestSuiteRating(
       continue;
     }
     const passingRows = currentRows.filter(isSuccessfulExecutableEvidence);
-    if (passingRows.length > 0 && !ambiguousFiles.has(file)) {
+    const selectorsPassed = selectorsForFile(file).every(({ testName }) => passingRows.some((row) =>
+      declaresSelector(row, testName) && hasPassingLedgerCase(row, testName),
+    ));
+    if (passingRows.length > 0 && selectorsPassed && !ambiguousFiles.has(file)) {
       citedRows.push(...passingRows);
       continue;
     }
@@ -2087,9 +2099,9 @@ function sourceBarTestSuiteRating(
     ])].sort();
     return boundCorrectLayerPart(
       'unknown',
-      `Current passing bindings are not established for every registered source BAR file for ${clauseIdentity(clause)}: ${unresolved.join(', ')}.`,
+      `Current passing bindings are not established for every registered source BAR file and required named case for ${clauseIdentity(clause)}: ${unresolved.join(', ')}.`,
       distinctTestRunRows(citedRows),
-      'Bind a current, ledger-backed passing test result for every registered source BAR file; missing, stale, and ambiguous paths remain unknown.',
+      'Bind a current, ledger-backed passing test result for every registered source BAR file and named selector; missing, stale, unexecuted cases and ambiguous paths remain unknown.',
     );
   }
   return boundCorrectLayerPart(
@@ -2590,8 +2602,9 @@ function appendRatingRerunProbes(
  *  33 — nested adequacy planes participate in required-plane checks, attempt identity, traceability and runtime freshness.
  *  34 — durable test-run references in resolved-gap notes do not imply a live limitation.
  *  35 — late automatic same/older receipts cannot hide the latest explicit proof correction.
+ *  36 — explicitly registered source BAR named cases can establish shared suite coverage only.
  */
-export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 35;
+export const SPEC_TEST_ADEQUACY_EVALUATOR_REVISION = 36;
 
 /**
  * EI-25889625242363568: a null fixture fingerprint proves nothing by itself.

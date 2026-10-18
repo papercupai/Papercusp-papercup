@@ -16,7 +16,8 @@ export const NATIVE_BOOTSTRAP_TIMEOUT_MS = 5 * 60_000
 /** Retain only assertion snapshots; config and provider sessions stay in private scratch. */
 export function retainNativeDiagnostics(resultPath: string, logPath: string) {
   const retained: Array<{ suffix: string; status: 'retained' | 'skipped' | 'error'; path?: string; reason?: string }> = [];
-  for (const suffix of ['.text-failure.json', '.response-failure.json', '.wallet-render-failure.json']) {
+  for (const suffix of ['.text-failure.json', '.response-failure.json', '.wallet-render-failure.json',
+    '.completion-response.json', '.control-failure.json']) {
     let input: number | undefined, output: number | undefined;
     try {
       input = openSync(resultPath + suffix, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);

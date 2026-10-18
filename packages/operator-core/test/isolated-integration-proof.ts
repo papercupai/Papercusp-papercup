@@ -98,7 +98,7 @@ export function retainIsolatedWorkerProgress(evidenceDir: string, stage: string,
 /** Snapshot native child diagnostics while its disposable home still exists.
  * Missing or shrinking files are explicit and never erase captured output. */
 export function retainIsolatedNativeTaskDiagnostics(evidenceDir: string, task: Record<string, unknown>,
-  sources: Partial<Record<'stdout' | 'normalized' | 'boot', string>>, codexHome?: string) {
+  sources: Partial<Record<'stdout' | 'normalized' | 'boot' | 'host-events', string>>, codexHome?: string) {
   const files = Object.fromEntries(Object.entries({ ...sources,
     ...(codexHome ? { 'codex-tui': join(codexHome, 'log', 'codex-tui.log'),
       'codex-config': join(codexHome, 'config.toml') } : {}),
@@ -646,6 +646,7 @@ export function isolatedIntegrationDiagnosticArtifacts(runDir: string): string[]
     'phases/execute/roster-stop-native.jsonl',
     'phases/execute/native-task-diagnostics.json', 'phases/execute/native-task-stdout.log',
     'phases/execute/native-task-normalized.log', 'phases/execute/native-task-boot.log',
+    'phases/execute/native-task-host-events.log',
     'phases/execute/native-task-codex-tui.log', 'phases/execute/native-task-config.json',
     'phases/execute/native-result.json', 'phases/execute/operator-api-build-result.json',
     'phases/execute/portal-browser-source.json', 'phases/execute/portal-browser-receipt.json',
