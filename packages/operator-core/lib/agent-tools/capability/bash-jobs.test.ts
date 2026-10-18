@@ -1660,6 +1660,40 @@ describe('background job deadlines (WI-6677)', () => {
     }
   }
 
+  async function expireDeadlineAfterOutput(command: string, marker: string) {
+    // These cases test deadline classification, whose precondition is an
+    // observed landmark. Hold ONLY that deadline callback until real shell
+    // output arrives; separate tests above still exercise real wall clocks.
+    // Deliberately delayed output in the callers guards the former 400ms race.
+    const realSetTimeout = globalThis.setTimeout;
+    let expire: (() => void) | undefined;
+    let heldTimer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((callback, delay, ...args) => {
+      if (delay !== 400) return realSetTimeout(callback, delay, ...args);
+      expire = () => callback(...args);
+      heldTimer = realSetTimeout(() => {}, 30_000);
+      return heldTimer;
+    });
+    let job: ReturnType<typeof startBackground>;
+    try {
+      job = startBackground({ command, cwd: STATE, stateDir: STATE }, 400);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+    try {
+      expect(await waitForOutput(job.id, marker), `shell never emitted ${marker}`).toBe(true);
+      expect(job.status).toBe('running');
+      expect(expire, 'startBackground did not arm its deadline').toBeDefined();
+      clearTimeout(heldTimer);
+      expire!();
+      await waitForEnd(job.id);
+      return job;
+    } finally {
+      clearTimeout(heldTimer);
+      if (job.status === 'running') killJob(job);
+    }
+  }
+
   it('a background job is NOT bound by the foreground pair — its default outlives a foreground call and its ceiling can host a real suite', () => {
     // Stated as an invariant rather than a literal so re-tuning the durations stays
     // free, while re-pointing background back at the foreground constants (the
@@ -1929,11 +1963,10 @@ describe('background job deadlines (WI-6677)', () => {
   }, 30_000);
 
   it('⭐ classifies a queued pc-heavy deadline and exposes the reason in the snapshot', async () => {
-    const job = startBackground(
-      { command: `echo '${PC_HEAVY_QUEUE_WAIT_MARKER} a heavy slot'; sleep 30`, cwd: STATE, stateDir: STATE },
-      400,
+    const job = await expireDeadlineAfterOutput(
+      `sleep 0.6; echo '${PC_HEAVY_QUEUE_WAIT_MARKER} a heavy slot'; sleep 30`,
+      PC_HEAVY_QUEUE_WAIT_MARKER,
     );
-    await waitForEnd(job.id);
     const out = readJobOutput(job);
     expect(job.deadlineReason).toBe('deadline_before_slot_acquired');
     expect(snapshotJobResult(job, true).reason).toBe('deadline_before_slot_acquired');
@@ -1941,11 +1974,10 @@ describe('background job deadlines (WI-6677)', () => {
   }, 30_000);
 
   it("⭐ classifies a deadline after the pc-heavy slot-acquired marker", async () => {
-    const job = startBackground(
-      { command: `echo '${PC_HEAVY_SLOT_ACQUIRED_MARKER}'; sleep 30`, cwd: STATE, stateDir: STATE },
-      400,
+    const job = await expireDeadlineAfterOutput(
+      `sleep 0.6; echo '${PC_HEAVY_SLOT_ACQUIRED_MARKER}'; sleep 30`,
+      PC_HEAVY_SLOT_ACQUIRED_MARKER,
     );
-    await waitForEnd(job.id);
     const out = readJobOutput(job);
     expect(out).toContain('deadline reached');
     expect(job.deadlineReason).toBe('deadline_after_slot_acquired');

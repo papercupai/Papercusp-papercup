@@ -93,7 +93,7 @@ function fixturePlan(): string {
   });
 }
 
-interface Alarm { id: string; barKey: string; conditionKey: string; doneWhenRegressed: boolean; open: boolean; closeReason?: string }
+interface Alarm { id: string; barKey: string; conditionKey: string; doneWhenRegressed: boolean; paths: string[]; open: boolean; closeReason?: string }
 
 /**
  * An in-memory world: a scripted verdict per check id, an append-only ledger, a work-item
@@ -107,6 +107,7 @@ function world(opts: { mapped?: Record<string, Array<{ id: string; terminal: boo
   const blocks = new Set<string>();
   const events: PlanDriftAlarmPayload[] = [];
   const requests: ConformanceCheckRequest[] = [];
+  const filings: DriftAlarmFiling[] = [];
   let nextId = 1;
   const deps: ConformanceRunDeps = {
     async evaluateCheck(request): Promise<EvaluatedConformanceCheck | null> {
@@ -135,12 +136,14 @@ function world(opts: { mapped?: Record<string, Array<{ id: string; terminal: boo
       return alarms.filter((a) => a.open).map((a) => ({ id: a.id, barKey: a.barKey, doneWhenRegressed: a.doneWhenRegressed }));
     },
     async openDriftAlarm(filing: DriftAlarmFiling) {
+      filings.push(filing);
       const incumbent = alarms.find((a) => a.open && a.conditionKey === filing.conditionKey);
       if (incumbent) {
         incumbent.doneWhenRegressed = filing.doneWhenRegressed;
+        incumbent.paths = filing.paths ?? [];
         return { id: incumbent.id, created: false };
       }
-      const alarm: Alarm = { id: `EI-ALARM-${nextId++}`, barKey: filing.barKey, conditionKey: filing.conditionKey, doneWhenRegressed: filing.doneWhenRegressed, open: true };
+      const alarm: Alarm = { id: `EI-ALARM-${nextId++}`, barKey: filing.barKey, conditionKey: filing.conditionKey, doneWhenRegressed: filing.doneWhenRegressed, paths: filing.paths ?? [], open: true };
       alarms.push(alarm);
       return { id: alarm.id, created: true };
     },
@@ -163,7 +166,7 @@ function world(opts: { mapped?: Record<string, Array<{ id: string; terminal: boo
     },
   };
   const run = () => runPlanConformance({ planSlug: SLUG, harnessSlug: HARNESS, planContent: fixturePlan() }, deps);
-  return { deps, verdicts, ledger, alarms, blocks, events, requests, run, openAlarms: () => alarms.filter((a) => a.open) };
+  return { deps, verdicts, ledger, alarms, blocks, events, requests, filings, run, openAlarms: () => alarms.filter((a) => a.open) };
 }
 
 const R1_FALSIFIER = falsifierCheckId('R-1', 'duplicate-alarm');
@@ -180,6 +183,7 @@ describe('runPlanConformance — falsifiers raise one deduplicated drift alarm (
       firedFalsifiers: ['duplicate-alarm'],
       alarm: { action: 'opened' },
     });
+    expect(w.filings[0]?.paths).toEqual(expect.arrayContaining(TESTS_CHECK.files.concat(FALSIFIER_CHECK.files)));
 
     const second = await w.run();
     expect(second.alarmsOpened).toEqual([]);

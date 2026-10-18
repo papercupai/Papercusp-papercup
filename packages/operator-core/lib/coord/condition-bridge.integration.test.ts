@@ -226,6 +226,13 @@ beforeAll(async () => {
       '1294-work-item-readiness-payload-projections.sql',
       '1308-work-items-severity-projection.sql',
     ],
+    knownInapplicable: [
+      {
+        file: '1534-work-items-duplicate-of.sql',
+        reason:
+          'The consolidated fixture (_work-items-schema.ts) already models 1534\'s duplicate_* columns on work_items and on both family views. 1534 also locks and patches work_items_claimable, which this fixture does not build, so replaying it fails on the missing relation before any assertion runs.',
+      },
+    ],
   });
 }, 120_000);
 

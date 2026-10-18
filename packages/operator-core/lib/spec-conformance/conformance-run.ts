@@ -91,6 +91,8 @@ export interface DriftAlarmFiling {
   firedFalsifiers: string[];
   doneWhenRegressed: boolean;
   summary: string;
+  /** Concrete repository files named by executable checks, used as task scope on the alarm work-item. */
+  paths?: string[];
 }
 
 export interface MappedWorkItem {
@@ -208,6 +210,25 @@ function alarmSummary(input: {
       'never a silent close.',
   );
   return lines.join('\n');
+}
+
+/**
+ * Keep drift-alarm task scope grounded in the same concrete files the requirement's
+ * executable checks run.  Test and Cargo checks name repository files directly;
+ * probe/instrument/coverage checks do not provide a safe file scope for a task brief.
+ */
+function checkScopePaths(check: RubricCriterionCheck | null | undefined): string[] {
+  if (!check) return [];
+  if (check.kind === 'tests') return check.files;
+  if (check.kind === 'cargo') return [check.manifestPath, ...check.sourceFiles];
+  return [];
+}
+
+function requirementScopePaths(requirement: RequirementEnforcement): string[] {
+  return [...new Set([
+    ...checkScopePaths(requirement.doneWhenCheck),
+    ...requirement.falsifiers.bound.flatMap((falsifier) => checkScopePaths(falsifier.check)),
+  ])];
 }
 
 /** Run every requirement's checks once and reconcile drift alarms against the verdicts. */
@@ -341,6 +362,7 @@ export async function runPlanConformance(
       }
       row.alarm = { action: 'suppressed', id: alarm?.id ?? null };
     } else if (drifting) {
+      const paths = requirementScopePaths(requirement);
       const filing: DriftAlarmFiling = {
         barKey,
         title: `Spec drift: ${input.planSlug} ${barKey} — ${requirement.title}`.slice(0, 300),
@@ -348,6 +370,7 @@ export async function runPlanConformance(
         firedFalsifiers,
         doneWhenRegressed,
         summary: alarmSummary({ planSlug: input.planSlug, requirement, firedFalsifiers, doneWhenRegressed, ledgerRef }),
+        ...(paths.length > 0 ? { paths } : {}),
       };
       const opened = await deps.openDriftAlarm(filing);
       row.alarm = { action: opened.created ? 'opened' : 'kept', id: opened.id };

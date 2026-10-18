@@ -17120,9 +17120,13 @@ export function hostThroughPty(o) {
             nativeId = binding.nativeId;
             respawnReported = true;
           }
+          // sessionClass is optional drill metadata; ordinary compaction requests
+          // omit it. Use the child's launch role so production SU carries receive
+          // the same readiness check, without probing a role's signed MCP server
+          // through the superuser server name.
           if (!(respawnMode === 'carry-respawn' &&
           String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'claude' &&
-          sessionClass === 'claude-su')) return { ok: true };
+          !String(env.PAPERCUSP_ROLE ?? '').trim())) return { ok: true };
           const tap = makeOutputTap();
           try {
             const result = await verifyHeadlessRoleMcp(() => mcpReconnectMacro({

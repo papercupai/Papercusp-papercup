@@ -149,6 +149,22 @@ const DDL = `
     embedding vector(3),
     embedding_mode text,
     embedding_profile text,
+    -- migration 1534 (bug-inflow-one-problem-one-row-2026-10-18#D-001): the promoter
+    -- stamps its merge verdict here (persistAdmissionDuplicateLink), alongside the
+    -- coord_links 'duplicates' edge. Same CHECKs as production, so a bad write fails here.
+    duplicate_of text,
+    duplicate_source text,
+    duplicate_confidence real,
+    duplicate_evidence jsonb,
+    CONSTRAINT work_items_duplicate_source_check CHECK (
+      duplicate_source IS NULL
+      OR duplicate_source IN ('create-match', 'admission-promoter', 'fold', 'agent')
+    ),
+    CONSTRAINT work_items_duplicate_of_not_self CHECK (duplicate_of IS NULL OR duplicate_of <> feature_id),
+    CONSTRAINT work_items_duplicate_detail_check CHECK (
+      (duplicate_confidence IS NULL OR (duplicate_of IS NOT NULL AND duplicate_confidence >= 0 AND duplicate_confidence <= 1))
+      AND (duplicate_evidence IS NULL OR duplicate_of IS NOT NULL)
+    ),
     PRIMARY KEY (workspace_id, harness_slug, feature_id)
   );
   CREATE TABLE harness_shared.coord_links (

@@ -165,12 +165,10 @@ function deps() {
   const launch = vi
     .fn<Launch>()
     .mockResolvedValue(launchResult({ deduped: false, launch: { opened: 1, tasks: [{ taskId: 'task-audit' }] } }));
-  const reserve = vi.fn(
-    async (): Promise<GradingAuditReservationResult> => ({
-      status: 'claimed',
-      reservation: { key: 'grading-audit:test', reservedAt: '2026-09-08T00:00:00.000Z' },
-    }),
-  );
+  const reserve = vi.fn<NonNullable<DispatchPendingGradingAuditsDeps['reserve']>>().mockResolvedValue({
+    status: 'claimed',
+    reservation: { key: 'grading-audit:test', reservedAt: '2026-09-08T00:00:00.000Z' },
+  });
   const release = vi.fn(async () => true);
   const confirmReservation = vi.fn<ConfirmReservation>().mockResolvedValue(true);
   const listTasks = vi.fn<ListTasks>().mockResolvedValue([]);

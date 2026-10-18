@@ -109,6 +109,11 @@ describe('work_items terminal attribution preservation (migration 726)', () => {
             reason:
               'The canonical fixture (_work-items-schema.ts) already models the `lane` generated column and both family views ending in `lane`. Re-running 721 CREATE OR REPLACE VIEWs them back to the 721-era select list, dropping every column added since — Postgres: "cannot drop columns from view". Same class as 698, which BASE_DDL omits for the same reason.',
           },
+          {
+            file: '1534-work-items-duplicate-of.sql',
+            reason:
+              "The canonical fixture (_work-items-schema.ts) already models 1534's duplicate_* columns on work_items and on both family views. 1534 also locks and patches work_items_claimable, which this fixture does not build, so replaying it fails on the missing relation before any assertion runs.",
+          },
         ],
       },
     );

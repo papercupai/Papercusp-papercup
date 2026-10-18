@@ -51,6 +51,18 @@ describe('production conformance drift alarms', () => {
     expect(sqlMock).not.toHaveBeenCalled();
   });
 
+  it('persists executable check files as the alarm task scope', async () => {
+    upsertMock.mockResolvedValueOnce({ id: 'WI-CONFORMANCE-DRIFT', created: true });
+
+    const paths = ['packages/operator-core/lib/spec-conformance/conformance-run.test.ts'];
+    const deps = productionConformanceDeps({ workspaceId: 'workspace', harnessSlug: 'papercusp', planSlug: PLAN });
+    await deps.openDriftAlarm({ ...filing, paths });
+
+    expect(upsertMock).toHaveBeenCalledWith(CONDITION, expect.objectContaining({
+      payload: expect.objectContaining({ paths, specConformance: expect.objectContaining({ barKey: 'R-9' }) }),
+    }));
+  });
+
   it('repairs the source plan on an adopted alarm', async () => {
     upsertMock.mockResolvedValueOnce({ id: 'WI-CONFORMANCE-DRIFT', created: false });
 

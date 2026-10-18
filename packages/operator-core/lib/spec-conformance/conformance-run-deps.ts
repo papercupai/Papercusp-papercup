@@ -189,6 +189,7 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
         firedFalsifiers: filing.firedFalsifiers,
         doneWhenRegressed: filing.doneWhenRegressed,
       };
+      const paths = filing.paths?.length ? [...new Set(filing.paths)] : [];
       const res = await upsertConditionWorkItem(filing.conditionKey, {
         kind: 'bug',
         severity: 'major',
@@ -198,7 +199,7 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
         createdBy: SPEC_CONFORMANCE_ACTOR,
         title: filing.title,
         summary: filing.summary,
-        payload: { specConformance },
+        payload: { specConformance, ...(paths.length > 0 ? { paths } : {}) },
       });
       if (!res.id) {
         // ConditionUpsertResult.id is typed nullable for the race-loss shape; an alarm
@@ -207,12 +208,24 @@ export function productionConformanceDeps(input: ProductionConformanceDepsInput)
       }
       if (!res.created) {
         // An adopted incumbent keeps its original payload; refresh what this run measured.
-        await sql()`
-          UPDATE harness_shared.work_items
-             SET payload = jsonb_set(coalesce(payload, '{}'::jsonb), '{specConformance}', ${specConformance as never}::jsonb),
-                 source_plan_slug = ${input.planSlug}
-           WHERE feature_id = ${res.id} AND workspace_id = ${input.workspaceId}
-        `;
+        if (paths.length > 0) {
+          await sql()`
+            UPDATE harness_shared.work_items
+               SET payload = jsonb_set(
+                 jsonb_set(coalesce(payload, '{}'::jsonb), '{specConformance}', ${specConformance as never}::jsonb),
+                 '{paths}', ${paths as never}::jsonb
+               ),
+                   source_plan_slug = ${input.planSlug}
+             WHERE feature_id = ${res.id} AND workspace_id = ${input.workspaceId}
+          `;
+        } else {
+          await sql()`
+            UPDATE harness_shared.work_items
+               SET payload = jsonb_set(coalesce(payload, '{}'::jsonb) - 'paths', '{specConformance}', ${specConformance as never}::jsonb),
+                   source_plan_slug = ${input.planSlug}
+             WHERE feature_id = ${res.id} AND workspace_id = ${input.workspaceId}
+          `;
+        }
       }
       return { id: res.id, created: res.created };
     },

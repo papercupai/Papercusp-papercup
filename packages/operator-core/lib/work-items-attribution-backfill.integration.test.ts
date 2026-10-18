@@ -112,6 +112,11 @@ describe('work_items completion-attribution backfill (migration 729)', () => {
             reason:
               'The consolidated fixture already models the lane generated column and wider current family views. Replaying 721 replaces them with narrower historical select lists: PostgreSQL refuses to drop columns from a view.',
           },
+          {
+            file: '1534-work-items-duplicate-of.sql',
+            reason:
+              "The consolidated fixture (_work-items-schema.ts) already models 1534's duplicate_* columns on work_items and on both family views. 1534 also locks and patches work_items_claimable, which this fixture does not build, so replaying it fails on the missing relation before any assertion runs.",
+          },
         ],
       },
     );

@@ -3188,9 +3188,13 @@ describe('hostThroughPty real round-trip', () => {
 });
 
 describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same host (su-cold-auto-mode P-004b)', () => {
-  it(
-    'uses the Claude composer glyph to deliver a carry while the fresh TUI keeps repainting',
-    async () => {
+  it.each([
+    { withDrillMetadata: true, role: '' },
+    { withDrillMetadata: false, role: '' },
+    { withDrillMetadata: true, role: 'researcher' },
+  ])(
+    'uses the Claude composer glyph to deliver a carry while the fresh TUI keeps repainting (drill metadata: $withDrillMetadata; role: $role)',
+    async ({ withDrillMetadata, role }) => {
       const ownerId = `su-recycle-claude-ready-itest-${process.pid}-${Math.floor(performance.now())}`;
       const sock = socketPathFor(ownerId);
       const meta = metaPathFor(ownerId);
@@ -3212,6 +3216,7 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
           ...hermeticEnv(),
           PAPERCUSP_SID: ownerId,
           PAPERCUSP_AGENT: 'claude',
+          ...(role ? { PAPERCUSP_ROLE: role } : {}),
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300',
@@ -3234,22 +3239,27 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
           mode: 'carry-respawn',
           data: 'CARRIED',
           systemPromptAddendum: 'deterministic carry',
-          drillId: 'claude-ready',
-          sessionClass: 'claude-su',
+          ...(withDrillMetadata ? { drillId: 'claude-ready', sessionClass: 'claude-su' } : {}),
         });
         const deadline = Date.now() + 5_000;
         while (!captured().includes('ECHO:CARRIED') && Date.now() < deadline) await sleep(25);
         expect(captured()).toContain('ECHO:CARRIED');
-        expect(captured()).toContain('MCP_DIALOG');
-        expect(captured()).toContain('MCP_RECONNECTED');
-        expect(captured().indexOf('MCP_RECONNECTED')).toBeLessThan(captured().indexOf('ECHO:CARRIED'));
         const events = readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
         expect(events.filter((event) => event.kind === 'busy-gate-expired' && event.mode === 'carry-respawn')).toEqual([]);
-        expect(events).toContainEqual(expect.objectContaining({
-          kind: 'respawn-carry-mcp-ready',
-          serverName: 'papercusp-su',
-          attempts: 1,
-        }));
+        if (role) {
+          // Actual signed-role identity outranks optional drill classification.
+          expect(captured()).not.toContain('MCP_DIALOG');
+          expect(events.some((event) => event.kind === 'respawn-carry-mcp-ready')).toBe(false);
+        } else {
+          expect(captured()).toContain('MCP_DIALOG');
+          expect(captured()).toContain('MCP_RECONNECTED');
+          expect(captured().indexOf('MCP_RECONNECTED')).toBeLessThan(captured().indexOf('ECHO:CARRIED'));
+          expect(events).toContainEqual(expect.objectContaining({
+            kind: 'respawn-carry-mcp-ready',
+            serverName: 'papercusp-su',
+            attempts: 1,
+          }));
+        }
         expect(JSON.parse(readFileSync(meta, 'utf8')).carryDropCount ?? 0).toBe(0);
       } finally {
         if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
@@ -3310,7 +3320,6 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
           mode: 'carry-respawn',
           data: 'CARRY_MUST_NOT_BE_WRITTEN',
           systemPromptAddendum: 'deterministic carry',
-          sessionClass: 'claude-su',
         });
         const deadline = Date.now() + 24_000;
         let events: Array<Record<string, unknown>> = [];
@@ -4445,6 +4454,9 @@ describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
         io,
         bridgeTty: false,
         nativePersistenceTimeoutMs: 200,
+        // MCP readiness is a separate precondition; this fixture isolates the
+        // missing native turn proof after a successful readiness check.
+        mcpReconnectMacro: async () => ({ ok: true, step: 'fixture-ready', detail: 'isolated native proof test' }),
         mintCarryRespawnArgs: (args: string[]) => ({ args, nativeId, launchContextPath: '/tmp/carry.md' }),
         // Confirm identity so failure is specifically missing native turn proof.
         onRespawn: async () => true,

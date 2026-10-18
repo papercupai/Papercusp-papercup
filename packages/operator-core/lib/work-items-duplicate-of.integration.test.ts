@@ -55,9 +55,36 @@ function claimableViewFrom1301(): string {
   return text.slice(start);
 }
 
-/** Base table + the three production-shaped views 1534 patches. */
-async function standUpViews(db: FreshPgDb): Promise<void> {
-  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+/** Remove `pattern` from `text`, refusing unless it matches exactly once. */
+function withoutExactlyOnce(text: string, pattern: RegExp, what: string): string {
+  const hits = text.match(new RegExp(pattern.source, `${pattern.flags.replace('g', '')}g`))?.length ?? 0;
+  if (hits !== 1) {
+    throw new Error(
+      `pre-1534 fixture: expected the ${what} exactly once in HARNESS_FEATURES_CONSOLIDATED_DDL, found ${hits}; ` +
+        're-derive the strip in this file to match _work-items-schema.ts',
+    );
+  }
+  return text.replace(pattern, '');
+}
+
+/**
+ * The shared superset fixture carries 1534's columns already (every claim path reads
+ * duplicate_of, so the fixture must too). This file's subject is 1534 itself, so it needs
+ * the shape 1534 runs AGAINST: the same fixture with exactly the 1534 additions removed.
+ */
+const PRE_1534_DDL = withoutExactlyOnce(
+  withoutExactlyOnce(
+    HARNESS_FEATURES_CONSOLIDATED_DDL,
+    /\n[ \t]*duplicate_of text,\n[ \t]*duplicate_source text,\n[ \t]*duplicate_confidence real,\n[ \t]*duplicate_evidence jsonb,/,
+    'work_items duplicate_* column block',
+  ),
+  /,\n(?:[ \t]*--[^\n]*\n)*[ \t]*duplicate_of,\n[ \t]*duplicate_source(?=\n)/,
+  'engineer_issues duplicate_of/duplicate_source tail',
+);
+
+/** Base table + the three production-shaped views 1534 patches, in the pre-1534 shape. */
+async function standUpViews(db: FreshPgDb, ddl: string = PRE_1534_DDL): Promise<void> {
+  await db.sql.unsafe(ddl);
   await db.sql.unsafe(CLAIM_FLOORS_STUB_DDL).simple();
   await db.sql.unsafe(claimableViewFrom1301()).simple();
 }
@@ -281,5 +308,56 @@ describe('migration 1534 refuses to patch a view whose shape it cannot locate ex
       SELECT count(*)::int AS n FROM information_schema.columns
        WHERE table_schema = 'harness_shared' AND table_name = 'work_items' AND column_name = 'duplicate_of'`;
     expect(n).toBe(0);
+  });
+});
+
+describe('migration 1534 adds the claimable gate even when the view already exposes duplicate_of', () => {
+  // The partial state that once skipped the gate: work_items already has the column
+  // (here via the post-1534 superset fixture), so re-creating the 1301 view — `SELECT wi.*`
+  // — exposes duplicate_of with no `duplicate_of IS NULL` filter. Column presence must not
+  // stand in for the gate.
+  let db: FreshPgDb;
+  let columnsBefore: string[] = [];
+
+  beforeAll(async () => {
+    expect(MIGRATION_1534).toBeDefined();
+    db = await createFreshPgDb('work-items-duplicate-of-partial');
+    await standUpViews(db, HARNESS_FEATURES_CONSOLIDATED_DDL);
+    columnsBefore = await viewColumns(db, 'work_items_claimable');
+    for (const featureId of ['EI-PART-A', 'EI-PART-B']) {
+      await db.sql`
+        INSERT INTO harness_shared.work_items
+          (harness_slug, feature_id, workspace_id, title, status, item_kind, payload, created_ts)
+        VALUES (${HARNESS}, ${featureId}, ${WS}, ${`title ${featureId}`}, 'open', 'bug', '{}'::jsonb, 0)`;
+    }
+    await db.sql`UPDATE harness_shared.work_items SET duplicate_of = 'EI-PART-A', duplicate_source = 'agent'
+                  WHERE feature_id = 'EI-PART-B'`;
+  });
+
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+
+  it('starts from the partial state: column exposed, gate absent, duplicate still claimable', async () => {
+    expect(columnsBefore).toContain('duplicate_of');
+    const [{ def }] = await db.sql<{ def: string }[]>`
+      SELECT pg_get_viewdef('harness_shared.work_items_claimable'::regclass) AS def`;
+    expect(def).not.toContain('duplicate_of IS NULL');
+    const rows = await db.sql<{ feature_id: string }[]>`
+      SELECT feature_id FROM harness_shared.work_items_claimable
+       WHERE feature_id LIKE 'EI-PART-%' ORDER BY feature_id`;
+    expect(rows.map((r) => r.feature_id)).toEqual(['EI-PART-A', 'EI-PART-B']);
+  });
+
+  it('applies the gate without re-appending columns, and the duplicate stops being claimable', async () => {
+    await applyMigrationForTest(db.sql, MIGRATION_1534!);
+    const [{ def }] = await db.sql<{ def: string }[]>`
+      SELECT pg_get_viewdef('harness_shared.work_items_claimable'::regclass) AS def`;
+    expect(def).toContain('duplicate_of IS NULL');
+    expect(await viewColumns(db, 'work_items_claimable')).toEqual(columnsBefore);
+    const rows = await db.sql<{ feature_id: string }[]>`
+      SELECT feature_id FROM harness_shared.work_items_claimable
+       WHERE feature_id LIKE 'EI-PART-%' ORDER BY feature_id`;
+    expect(rows.map((r) => r.feature_id)).toEqual(['EI-PART-A']);
   });
 });
