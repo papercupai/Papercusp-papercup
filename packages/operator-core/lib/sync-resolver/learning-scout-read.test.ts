@@ -203,13 +203,14 @@ describe('readScoutSnapshot', () => {
   it('surfaces the persisted lens weights (C-1c), filtered to known lenses', async () => {
     const sql = fakeSql({
       weights: async () => [
-        { lens: 'analogical', weight: '0.4' }, // numeric arrives as a string
-        { lens: 'reframing', weight: 0.35 },
+        { lens: 'scout.lens-analogical', weight: '0.4' }, // numeric arrives as a string
+        { lens: 'scout.lens-reframing', weight: 0.35 },
         { lens: 'not-a-lens', weight: 0.25 }, // unknown lens ids are ignored
+        { lens: 'analogical', weight: 0.5 }, // a pre-R-8 bare lens-name key is ignored (P-011)
       ],
     });
     const snap = await readScoutSnapshot(sql, 'ws-1');
-    expect(snap.lensWeights).toEqual({ analogical: 0.4, reframing: 0.35 });
+    expect(snap.lensWeights).toEqual({ 'scout.lens-analogical': 0.4, 'scout.lens-reframing': 0.35 });
   });
 
   it('lensWeights is null when no weight rows are recorded yet', async () => {

@@ -36,6 +36,7 @@
 
 import type { ChangeFeedEntry } from '../curation/change-feed';
 import { CHANGE_FEED_COMPLETION_STATUSES } from '../curation/change-feed-deps';
+import { LENS_IDENTITY_IDS, type LensIdentityId } from './lenses';
 import { CREATIVE_LENSES, type CreativeLens } from './types';
 
 /**
@@ -717,10 +718,11 @@ export function allocateIdeators(report: LensOutcomeReport, n: number): Creative
  * D-009 feedback hook: extra ideators are distributed across lenses proportional
  * to these weights (the diversity floor in the weights keeps every lens alive).
  */
-export function lensWeightsFromReport(report: LensOutcomeReport): Record<CreativeLens, number> {
+export function lensWeightsFromReport(report: LensOutcomeReport): Record<LensIdentityId, number> {
+  // Keyed by lens identity id (P-011 / R-8) — the runIdeators `lensWeights` shape.
   return Object.fromEntries(
-    CREATIVE_LENSES.map((l) => [l, report.byLens[l].weight]),
-  ) as Record<CreativeLens, number>;
+    CREATIVE_LENSES.map((l) => [LENS_IDENTITY_IDS[l], report.byLens[l].weight]),
+  ) as Record<LensIdentityId, number>;
 }
 
 /**
@@ -731,7 +733,11 @@ export function lensWeightsFromReport(report: LensOutcomeReport): Record<Creativ
  * routed-ledger.ts.
  */
 export interface LensWeightRow {
-  lens: CreativeLens;
+  /**
+   * The lens identity document id (`scout.lens-<lens>`) the weight is keyed by —
+   * P-011 / R-8. Persisted in `scout_lens_weights.lens`.
+   */
+  identityId: LensIdentityId;
   /**
    * Win mass from this lens (Change-Feed terminal wins + fractional grade
    * credit, C-5). May be fractional in memory; the persisted column is int so
@@ -750,7 +756,7 @@ export interface LensWeightRow {
 export function lensWeightRowsFromReport(report: LensOutcomeReport): LensWeightRow[] {
   return CREATIVE_LENSES.map((l) => {
     const s = report.byLens[l];
-    return { lens: l, wins: s.won, decided: s.won + s.lost, weight: s.weight };
+    return { identityId: LENS_IDENTITY_IDS[l], wins: s.won, decided: s.won + s.lost, weight: s.weight };
   });
 }
 

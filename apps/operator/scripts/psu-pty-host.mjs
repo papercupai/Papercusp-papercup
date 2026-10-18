@@ -707,6 +707,40 @@ export function readManagedKickoffFile(path, expectedRenderedHash) {
  */
 export function tagSessionPortTurn(text, sid, env = process.env, nowMs = Date.now()) {
   if (!text || !sid) throw new Error('session-port provenance requires seed text and target sid');
+  return tagHostOriginTurn(text, sid, 'session-port', env, nowMs);
+}
+
+/** WI-6554700010017571: a `reset`/`recycle` control message's `data` is the
+ * carry-note the fresh context opens on. It is machine-delivered by contract;
+ * the owner's keystrokes reach the child through the PTY, never through this
+ * verb. Production senders put a ⟦turn-origin⟧ envelope on it. A hand-built
+ * control message did not: on 2026-10-18 an agent recycled itself by writing
+ * `{v:1, mode:'recycle', data}` straight to the control socket, and its kickoff
+ * ("... — not an owner turn") was recorded as owner-typed. Stamp a verified
+ * host-control envelope on any untagged lifecycle carry-note so it can never
+ * fall through to the owner default. Already-enveloped and empty text pass
+ * through unchanged.
+ * @param {string} text
+ * @param {string} sid
+ * @param {EnvironmentMap} [env]
+ * @param {number} [nowMs]
+ */
+export function stampUntaggedLifecycleCarry(text, sid, env = process.env, nowMs = Date.now()) {
+  const value = String(text ?? '');
+  if (!value.trim() || !sid || leadingTurnOriginMarker(value)) return value;
+  return tagHostOriginTurn(value, sid, 'host-control', env, nowMs);
+}
+
+/** One writer for every host-minted origin, so the row shape, hash
+ * normalization and file modes cannot drift between them. Mirrors
+ * turn-provenance.ts appendLedgerRow + formatEnvelope + payloadSha256.
+ * @param {string} text
+ * @param {string} sid
+ * @param {string} origin
+ * @param {EnvironmentMap} env
+ * @param {number} nowMs
+ */
+function tagHostOriginTurn(text, sid, origin, env, nowMs) {
   const nonce = randomBytes(8).toString('hex');
   const sha256 = createHash('sha256')
     .update(String(text).replace(/\r\n?/g, '\n').trim(), 'utf8')
@@ -717,10 +751,10 @@ export function tagSessionPortTurn(text, sid, env = process.env, nowMs = Date.no
   const safe = sanitizeKey(sid);
   appendFileSync(
     join(dir, `${safe}.jsonl`),
-    JSON.stringify({ sid, nonce, origin: 'session-port', sha256, ts: nowMs }) + '\n',
+    JSON.stringify({ sid, nonce, origin, sha256, ts: nowMs }) + '\n',
     { mode: 0o600 },
   );
-  return `⟦turn-origin:session-port nonce:${nonce}⟧\n${text}`;
+  return `⟦turn-origin:${origin} nonce:${nonce}⟧\n${text}`;
 }
 
 /** Chunk a large paste without splitting a UTF-16 surrogate pair. 16k code
@@ -14169,6 +14203,16 @@ export function hostThroughPty(o) {
           reason: 'unsupported-control-envelope', bytes: payload.length,
         });
         return { ok: false, reason: 'unsupported-control-envelope' };
+      }
+      // WI-6554700010017571: an untagged lifecycle carry-note gets a verified
+      // host-control envelope before any gate can defer or deliver it, so the
+      // fresh context never records machine text as the owner's.
+      if (msg.mode === 'reset' || msg.mode === 'recycle') {
+        const stamped = stampUntaggedLifecycleCarry(msg.data, ownerId, env);
+        if (stamped !== msg.data) {
+          msg.data = stamped;
+          appendHostEvent(ownerId, 'control-carry-origin-stamped', { mode: msg.mode, origin: 'host-control' });
+        }
       }
       if ((hooksObservationActive || hooksObservationInputHeld) && msg.mode === 'raw')
         return { ok: false, reason: 'observation-input-lease-held' };

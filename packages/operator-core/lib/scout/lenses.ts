@@ -6,16 +6,21 @@
  * *distinct* {@link CreativeLens}, the analogical lens additionally seeded with a
  * *distant domain* so even multiple analogical ideators diverge. This file owns:
  *
- *  - {@link LENS_REGISTRY} — the four lenses + their generative stances.
+ *  - {@link LENS_REGISTRY} — the four lenses, each bound to the identity document
+ *    that carries its stance ({@link LENS_IDENTITY_IDS}; P-011 / R-8).
+ *  - {@link renderLensIdentity} — renders a lens's stance from its identity document.
  *  - {@link DISTANT_DOMAINS} — the priming pool for the analogical lens.
- *  - {@link buildIdeatorPrompt} — pure (system, user) construction per ideator.
+ *  - {@link buildIdeatorPrompt} — (system, user) construction per ideator.
  *  - {@link flattenDigest} / {@link renderDigest} — the grounded substrate the
  *    ideators read (each pattern carries a `ref` the idea must cite).
  *
- * Everything here is pure + deterministic (no LLM, no clock) so the
- * anti-mode-collapse property is unit-tested directly: distinct lenses ⇒
- * pairwise-distinct system prompts; distinct distant domains ⇒ distinct prompts.
+ * Everything here is deterministic (no LLM, no clock; the lens identity documents
+ * are read once and cached) so the anti-mode-collapse property is unit-tested
+ * directly: distinct lenses ⇒ pairwise-distinct system prompts; distinct distant
+ * domains ⇒ distinct prompts.
  */
+import { harnessRootCandidates } from '@papercusp/harness/paths';
+import { renderOnlyStack, resolveSuIdentityDocument } from '@papercusp/orchestrator/blueprint';
 import type { CorpusDigest, CreativeLens, MetaPattern, MetaPatternCategory } from './types';
 import { CREATIVE_LENSES } from './types';
 
@@ -84,71 +89,99 @@ export const DISTANT_DOMAINS: readonly DistantDomain[] = [
   },
 ] as const;
 
-/** A lens definition: its label and the generative stance that makes it distinct. */
+/**
+ * A lens definition: the identity document that carries its prompt, and the one
+ * behavioural switch the engine owns.
+ *
+ * The lens TEXT (its `## Your lens: <label>` heading and its generative stance)
+ * is not here. It lives in the lens's identity document,
+ * `libs/papercusp/packages/harness/blueprints/<identityId>/prompts/lens.md`, and is
+ * rendered by {@link renderLensIdentity} through the orchestrator's render-only
+ * consumer (`identity-system-everything-migration-2026-10-18` P-011 / R-8).
+ */
 export interface LensDef {
   lens: CreativeLens;
-  label: string;
-  /** The lens-specific creative stance — the divergent core of the system prompt. */
-  stance: string;
+  /** The identity document id that carries this lens's prompt, and the key its weight is stored under. */
+  identityId: LensIdentityId;
   /** Whether this lens is primed with a distant domain (only `analogical`). */
   usesDistantDomain: boolean;
+}
+
+/** The identity document id of each lens. Lens weights are keyed by these ids (R-8). */
+export const LENS_IDENTITY_IDS = {
+  analogical: 'scout.lens-analogical',
+  'first-principles': 'scout.lens-first-principles',
+  reframing: 'scout.lens-reframing',
+  'constraint-removal': 'scout.lens-constraint-removal',
+} as const satisfies Record<CreativeLens, string>;
+
+/** A lens identity document id, e.g. `scout.lens-analogical`. */
+export type LensIdentityId = (typeof LENS_IDENTITY_IDS)[CreativeLens];
+
+/** Every lens identity id, in {@link CREATIVE_LENSES} order. */
+export const LENS_IDENTITY_ID_LIST: readonly LensIdentityId[] = CREATIVE_LENSES.map((l) => LENS_IDENTITY_IDS[l]);
+
+/** The identity document id that carries `lens`. */
+export function lensIdentityId(lens: CreativeLens): LensIdentityId {
+  return LENS_IDENTITY_IDS[lens];
+}
+
+/** The lens an identity id names, or null when the id is not a lens identity. */
+export function lensForIdentityId(id: string): CreativeLens | null {
+  return CREATIVE_LENSES.find((l) => LENS_IDENTITY_IDS[l] === id) ?? null;
+}
+
+/** True when `id` is one of the four lens identity ids. */
+export function isLensIdentityId(id: string): id is LensIdentityId {
+  return lensForIdentityId(id) !== null;
 }
 
 /**
  * The four lenses (D-004). Each stance is *structurally* different so the
  * ideators explore different regions of idea-space and cannot collapse to the
- * same median proposal.
+ * same median proposal. The stances themselves are identity documents.
  */
 export const LENS_REGISTRY: Record<CreativeLens, LensDef> = {
-  analogical: {
-    lens: 'analogical',
-    label: 'Analogical transfer',
-    usesDistantDomain: true,
-    stance: [
-      'Map a solution from a DISTANT domain onto a Hive bottleneck.',
-      'You are primed with one distant domain (below). Study HOW that domain solves a',
-      'structurally similar problem, then transplant the *mechanism* — not the surface',
-      'vocabulary — onto a specific friction in the digest. The leap is the transplant:',
-      'name the structural correspondence explicitly, then the Hive mechanism it implies.',
-    ].join(' '),
-  },
-  'first-principles': {
-    lens: 'first-principles',
-    label: 'First-principles redesign',
-    usesDistantDomain: false,
-    stance: [
-      'Ignore how the Hive does this TODAY. Take the underlying goal a friction or gap',
-      'in the digest is really serving, and derive the ideal mechanism from scratch —',
-      'as if nothing existed yet. Reason from the goal backward to the simplest design',
-      'that would achieve it, unconstrained by the current architecture. The leap is the',
-      'gap between the from-scratch ideal and what exists.',
-    ].join(' '),
-  },
-  reframing: {
-    lens: 'reframing',
-    label: 'Reframing / problem-finding',
-    usesDistantDomain: false,
-    stance: [
-      'Do NOT solve the stated problems. Find the REAL constraint nobody named.',
-      'For a cluster of frictions in the digest, ask what single deeper constraint',
-      'generates them all — reframe what the actual bottleneck is. The best ideas',
-      'redefine the problem so the original symptoms dissolve. Output the reframing',
-      'plus the idea it unlocks.',
-    ].join(' '),
-  },
-  'constraint-removal': {
-    lens: 'constraint-removal',
-    label: 'Constraint removal',
-    usesDistantDomain: false,
-    stance: [
-      'Identify a load-bearing ASSUMPTION in how the Hive currently operates (one the',
-      'digest reveals everyone treats as fixed), then imagine it were FALSE. What',
-      'becomes possible that is impossible today? Propose the idea that assumption was',
-      'silently blocking. The leap is naming the assumption and the capability its',
-      'removal unlocks.',
-    ].join(' '),
-  },
+  analogical: { lens: 'analogical', identityId: LENS_IDENTITY_IDS.analogical, usesDistantDomain: true },
+  'first-principles': { lens: 'first-principles', identityId: LENS_IDENTITY_IDS['first-principles'], usesDistantDomain: false },
+  reframing: { lens: 'reframing', identityId: LENS_IDENTITY_IDS.reframing, usesDistantDomain: false },
+  'constraint-removal': { lens: 'constraint-removal', identityId: LENS_IDENTITY_IDS['constraint-removal'], usesDistantDomain: false },
 };
+
+/** Harness-relative path of a lens identity document's prose. */
+export function lensIdentityDocumentPath(lens: CreativeLens): string {
+  return `blueprints/${LENS_IDENTITY_IDS[lens]}/prompts/lens.md`;
+}
+
+const lensRenderCache = new Map<string, string>();
+
+/**
+ * Render one lens's prompt text from its identity document, through the
+ * orchestrator's render-only consumer (`renderOnlyStack`). The document is
+ * resolved through `identityRoots`, most specific first (an installed override
+ * wins over the built-in harness copy); omitted, every harness root candidate is
+ * searched (the primary root first, then any source tree a stale bundle lags).
+ *
+ * Throws when no root carries the document: an ideator must never run with its
+ * lens silently missing, since that would collapse lens diversity (D-004) with
+ * no signal. Cached per lens and root list.
+ */
+export function renderLensIdentity(lens: CreativeLens, opts: { identityRoots?: readonly string[] } = {}): string {
+  const roots = opts.identityRoots && opts.identityRoots.length > 0 ? [...opts.identityRoots] : harnessRootCandidates();
+  const key = `${lens}\u0000${roots.join('\u0000')}`;
+  const cached = lensRenderCache.get(key);
+  if (cached !== undefined) return cached;
+  const path = lensIdentityDocumentPath(lens);
+  const hit = resolveSuIdentityDocument({ path }, roots);
+  if (!hit) {
+    throw new Error(`scout lens "${lens}": identity document ${path} not found under ${roots.join(', ')}`);
+  }
+  const rendered = renderOnlyStack([
+    { id: LENS_IDENTITY_IDS[lens], layer: 'practices', slot: 'practice', text: hit.text, sourcePath: hit.path },
+  ]).text.trim();
+  lensRenderCache.set(key, rendered);
+  return rendered;
+}
 
 /**
  * Collapse a {@link CorpusDigest} into one flat list of patterns, stamping each
@@ -353,6 +386,11 @@ export const DEFAULT_IDEATOR_MISSION = [
 /** Inputs to building one ideator's prompt. */
 export interface BuildIdeatorPromptInput {
   lens: CreativeLens;
+  /**
+   * Roots to resolve the lens identity document through, most specific first
+   * (P-011 / R-8). Omitted ⇒ the harness root candidates (the built-in copy).
+   */
+  identityRoots?: readonly string[];
   digest: CorpusDigest;
   /** The distant domain this analogical ideator is primed with (required iff usesDistantDomain). */
   seedDomain?: DistantDomain;
@@ -415,9 +453,14 @@ export function buildIdeatorPrompt(input: BuildIdeatorPromptInput): { system: st
   const def = LENS_REGISTRY[input.lens];
   const maxIdeas = input.maxIdeas ?? 3;
 
-  // P-010: the domain MISSION framing is blueprint-overridable; the lens stance +
-  // rules + output contract below are the engine mechanism and stay hardcoded.
-  const system: string[] = [input.mission ?? DEFAULT_IDEATOR_MISSION, '', `## Your lens: ${def.label}`, def.stance];
+  // P-010: the domain MISSION framing is blueprint-overridable. The lens heading +
+  // stance come from the lens identity document (P-011 / R-8). The rules + output
+  // contract below are the engine mechanism and stay in code.
+  const system: string[] = [
+    input.mission ?? DEFAULT_IDEATOR_MISSION,
+    '',
+    renderLensIdentity(input.lens, input.identityRoots ? { identityRoots: input.identityRoots } : {}),
+  ];
 
   if (def.usesDistantDomain) {
     const dom = input.seedDomain;

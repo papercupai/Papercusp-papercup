@@ -38,7 +38,7 @@ import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createFreshTestDb } from '@papercusp/test-config/pg';
+import { createFreshTestDb, recordOwnedTestDbCleanupStage, type TestDbDropResult } from '@papercusp/test-config/pg';
 // eslint-disable-next-line import/no-relative-packages -- run the real boot-path migration runner
 import { applyPendingMigrations } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 // EI-18698602043482898: mirror the canonical getOrgPg()/getHarnessPg() client
@@ -99,6 +99,8 @@ export interface OrgTestDb {
   /** The throwaway database name (diagnostics). */
   dbName: string;
   cleanup: () => Promise<void>;
+  /** Deferred/detached outcomes do not establish that the database is absent. */
+  cleanupWithResult: () => Promise<TestDbDropResult>;
 }
 
 const clientOpts = {
@@ -199,18 +201,33 @@ export async function createOrgTestDb(opts: CreateOrgTestDbOptions = {}): Promis
   const appSql = applyRawSerializerFixes(postgres(appDsn, clientOpts));
   const adminSql = applyRawSerializerFixes(postgres(adminDsn, { ...clientOpts, max: adminPoolMax }));
 
-  const cleanup = async () => {
+  let cleanupPromise: Promise<TestDbDropResult> | undefined;
+  const cleanupWithResult = (): Promise<TestDbDropResult> => cleanupPromise ??= (async () => {
+    const receiptErrors: unknown[] = [];
+    const record = (stage: string, detail: Record<string, unknown> = {}): void => {
+      try { recordOwnedTestDbCleanupStage(dbName, stage, detail); }
+      catch (cause) { receiptErrors.push(cause); }
+    };
+    record('start');
     // The two clients are independent. Waiting for their five-second shutdown
     // ceilings serially can consume Vitest's entire default 10s afterAll budget
     // before db.drop() even starts, turning green integration assertions red at
     // teardown. Close them concurrently so the lifecycle ceiling is one client
     // timeout plus the drop, not the sum of both timeouts.
-    await Promise.all([
-      appSql.end({ timeout: 5 }).catch(() => {}),
-      adminSql.end({ timeout: 5 }).catch(() => {}),
+    const clients = await Promise.allSettled([
+      appSql.end({ timeout: 5 }),
+      adminSql.end({ timeout: 5 }),
     ]);
-    await db.drop().catch(() => {});
-  };
+    record('clients-stopped', { clients: clients.map((client, index) => ({ role: index ? 'admin' : 'app',
+      status: client.status, ...(client.status === 'rejected' ? { error: String(client.reason) } : {}) })) });
+    // A failed close/receipt must not prevent the independent owned drop.
+    const outcome = await db.dropWithResult();
+    record(outcome === 'dropped' ? 'complete' : 'retained', { outcome });
+    const errors = [...receiptErrors, ...clients.flatMap(client => client.status === 'rejected' ? [client.reason] : [])];
+    if (errors.length) throw new AggregateError(errors, `org fixture cleanup=${outcome}; client/receipt failures remain`);
+    return outcome;
+  })();
+  const cleanup = async (): Promise<void> => { await cleanupWithResult(); };
 
-  return { appSql, adminSql, appDsn, adminDsn, dbName, cleanup };
+  return { appSql, adminSql, appDsn, adminDsn, dbName, cleanup, cleanupWithResult };
 }

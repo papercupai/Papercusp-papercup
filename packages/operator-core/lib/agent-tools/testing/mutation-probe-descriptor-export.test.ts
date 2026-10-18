@@ -179,6 +179,51 @@ describe('mutation-probe.sh descriptor export (R-1)', () => {
     expect(legs(log)).toEqual([]);
   });
 
+  // WI-6554700010017564: EXPORT=never is the documented override ("always|never
+  // overrides the check"). Under an ambient reader the requirement is only
+  // INFERRED, so a deliberately unbound probe must run, not be refused with the
+  // health-URL remedy (which does not apply: the reader is never consulted).
+  it('never: an ambient reader does not refuse a deliberately unbound probe', () => {
+    const { file } = makeSubjectRepo();
+    const { recorder, log } = makeRecorder();
+    const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'never',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1',
+      PAPERCUSP_OPERATOR_BASE: undefined,
+      PAPERCUSP_HONO_PORT: undefined,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: undefined,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: undefined,
+    });
+
+    expect(code, out).toBe(0);
+    expect(out).not.toContain('refusing to run an unbindable proof');
+    expect(out).toContain('forced off (PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=never)');
+    const seen = legs(log);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((l) => l.descriptor === null)).toBe(true);
+  });
+
+  it('never + explicit READER_REQUIRED=1: refuses as a contradiction and names both remedies', () => {
+    const { file } = makeSubjectRepo();
+    const { recorder, log } = makeRecorder();
+    const { code, out } = probe(['--file', file, '--mutate', MUTATE, '--test', `node ${recorder} {}`], {
+      PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT: 'never',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1',
+      PAPERCUSP_OPERATOR_BASE: undefined,
+      PAPERCUSP_HONO_PORT: undefined,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_HEALTH_URL: undefined,
+      PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED: '1',
+    });
+
+    expect(code, out).toBe(2);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=harness-error phase=descriptor reason=export-disabled-but-reader-required');
+    expect(out).toContain('PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED=0');
+    expect(out).toContain('Unset PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT');
+    expect(out).not.toContain("set to that build's /api/health");
+    expect(out).not.toContain('running baseline guard');
+    expect(legs(log)).toEqual([]);
+  });
+
   it('fails closed when the admitted descriptor builder crashes, without issuing a caught or survived verdict', () => {
     const { file } = makeSubjectRepo();
     const { recorder } = makeRecorder();

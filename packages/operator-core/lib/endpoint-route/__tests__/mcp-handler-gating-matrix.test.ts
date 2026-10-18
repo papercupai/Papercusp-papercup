@@ -73,6 +73,15 @@ const h = vi.hoisted(() => {
     if (kernelAuthority.launchRecord && query.includes('AS launch_spec, n.launch_spec_xmin')) {
       return [kernelAuthority.launchRecord];
     }
+    // Serving-generation is part of every real tools/list baseline. Keep this
+    // PG-free transport fixture on a known migration frontier so the matrix
+    // exercises auth/dispatch wiring instead of failing before listing tools.
+    if (query.includes('harness_shared.schema_migrations')) {
+      return [
+        { filename: '001-core.sql', sha256: 'sha-core' },
+        { filename: '1489-fallback-observations-samples.sql', sha256: 'sha-1489' },
+      ];
+    }
     if (kernelAuthority.rows && query.includes('FROM harness_shared.session_briefs') &&
         query.includes('FROM harness_shared.adv_sessions s')) return kernelAuthority.rows;
     return [] as unknown[];

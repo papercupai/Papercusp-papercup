@@ -42,6 +42,7 @@ import {
   workItemOutcomeTag,
 } from './outcome-feedback';
 import { CREATIVE_LENSES, type CreativeLens, type SuIdeationLens } from './types';
+import { isLensIdentityId, LENS_IDENTITY_ID_LIST, type LensIdentityId } from './lenses';
 import { readPausedRails } from './paused-rails';
 import { IDEA_ORIGIN_PAYLOAD_KEY, isIdeationLedgerOrigin } from './ideation-origin';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
@@ -1522,14 +1523,23 @@ export async function upsertScoutLensWeights(
   // rather than rounding — one mid-scale grade would kill the whole (best-
   // effort, warn-and-continue) upsert and strand the weights stale. Round
   // here; `weight` is computed pre-rounding, so only the analytics blur.
+  // The `lens` column holds the lens IDENTITY id (`scout.lens-<lens>`, P-011 /
+  // R-8). Rows a pre-R-8 build wrote under the bare lens name are dropped for
+  // this scope, so the table holds one key family and a reader cannot mix them.
   const payload = JSON.stringify(
     rows.map((r) => ({
-      lens: r.lens as string,
+      lens: r.identityId as string,
       wins: Math.round(r.wins),
       decided: Math.round(r.decided),
       weight: r.weight,
     })),
   );
+  const legacyKeys = JSON.stringify(CREATIVE_LENSES);
+  await sql`
+    DELETE FROM harness_shared.scout_lens_weights
+     WHERE workspace_id = ${ws}
+       AND pot_slug = ${potSlug}
+       AND lens IN (SELECT jsonb_array_elements_text(${legacyKeys}::text::jsonb))`;
   await sql`
     INSERT INTO harness_shared.scout_lens_weights (workspace_id, pot_slug, lens, wins, decided, weight, updated_at)
     SELECT ${ws}, ${potSlug}, x.lens, x.wins, x.decided, x.weight, now()
@@ -1553,7 +1563,7 @@ export async function upsertScoutLensWeights(
  */
 export async function readScoutLensWeights(
   opts: { workspaceId?: string; sql?: Sql; potSlug?: string } = {},
-): Promise<Partial<Record<CreativeLens, number>>> {
+): Promise<Partial<Record<LensIdentityId, number>>> {
   const sql = opts.sql ?? getOrgPg().sql;
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const rows = await sql<{ lens: string; weight: string | number; pot_slug: string | null; updated_at: Date | string | null }[]>`
@@ -1589,7 +1599,7 @@ export interface PersistedLensWeightRow {
  */
 export function pickNewestLensWeightScope(
   rows: readonly PersistedLensWeightRow[],
-): { potSlug: string | null; updatedAtMs: number | null; weights: Partial<Record<CreativeLens, number>> } {
+): { potSlug: string | null; updatedAtMs: number | null; weights: Partial<Record<LensIdentityId, number>> } {
   const newestByScope = new Map<string, number>();
   for (const r of rows) {
     const key = r.potSlug ?? '';
@@ -1605,13 +1615,15 @@ export function pickNewestLensWeightScope(
       chosenMs = ms;
     }
   }
-  const weights: Partial<Record<CreativeLens, number>> = {};
+  const weights: Partial<Record<LensIdentityId, number>> = {};
   if (chosen === null) return { potSlug: null, updatedAtMs: null, weights };
   for (const r of rows) {
     if ((r.potSlug ?? '') !== chosen) continue;
     const w = typeof r.weight === 'number' ? r.weight : Number(r.weight);
-    if ((CREATIVE_LENSES as readonly string[]).includes(r.lens) && Number.isFinite(w)) {
-      weights[r.lens as CreativeLens] = w;
+    // Weights are keyed by lens identity id (P-011 / R-8); a bare lens name is a
+    // pre-R-8 row and is ignored, like any other unknown key.
+    if (isLensIdentityId(r.lens) && Number.isFinite(w)) {
+      weights[r.lens] = w;
     }
   }
   return {
@@ -1634,7 +1646,7 @@ export function pickNewestLensWeightScope(
  */
 export async function getScoutLensWeights(
   opts: ScoutLedgerOpts & { floorFraction?: number; extraIdeatorBudget?: number } = {},
-): Promise<{ lensWeights: Record<CreativeLens, number>; extraIdeatorBudget: number }> {
+): Promise<{ lensWeights: Record<LensIdentityId, number>; extraIdeatorBudget: number }> {
   // Resolve the hive home slug from harnessSlug (per-hive lens weights, D-008).
   // A standalone harness (not part of a shared Hive) scopes weights under its own slug.
   let potSlug = opts.potSlug ?? opts.harnessSlug;
@@ -1653,7 +1665,7 @@ export async function getScoutLensWeights(
   // legacy per-hive row until the sentinel is first written (zero regression).
   // OFF ⇒ the per-hive read, byte-identical to today.
   const on = await isWorkspaceCoordinationOn();
-  let persisted: Partial<Record<CreativeLens, number>> = {};
+  let persisted: Partial<Record<LensIdentityId, number>> = {};
   try {
     if (potSlug) {
       for (const key of workspaceBrainReadKeys(ws, potSlug, on)) {
@@ -1681,10 +1693,10 @@ export async function getScoutLensWeights(
     );
   }
   return {
-    lensWeights: samplingWeightsWithFloor(
-      persisted,
-      opts.floorFraction != null ? { floorFraction: opts.floorFraction } : {},
-    ),
+    lensWeights: samplingWeightsWithFloor<LensIdentityId>(persisted, {
+      lenses: LENS_IDENTITY_ID_LIST,
+      ...(opts.floorFraction != null ? { floorFraction: opts.floorFraction } : {}),
+    }),
     extraIdeatorBudget: opts.extraIdeatorBudget ?? CREATIVE_LENSES.length,
   };
 }

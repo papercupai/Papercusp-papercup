@@ -75,6 +75,18 @@ function balancedSlice(text: string, open: number): string {
   throw new Error('unbalanced parentheses in rendered CTE');
 }
 
+/** Return only the outer SELECT list, excluding floor expressions after the projection. */
+function outerSelectList(rendered: string): string {
+  const text = stripComments(rendered).replace(/\s+/g, ' ');
+  const cteStart = text.indexOf('(', text.indexOf('AS MATERIALIZED'));
+  const cte = balancedSlice(text, cteStart);
+  const outer = text.slice(cteStart + cte.length);
+  const selectAt = outer.indexOf('SELECT');
+  const fromAt = outer.indexOf('FROM filtered_claim_candidates wi');
+  if (selectAt < 0 || fromAt <= selectAt) throw new Error('could not locate the outer SELECT list');
+  return outer.slice(selectAt + 'SELECT'.length, fromAt);
+}
+
 function renderPushdownSubquery(): string {
   const sql = makeHandle();
   const compiled = sql`TRUE` as unknown as never;
@@ -179,6 +191,13 @@ describe('claimability-snapshot projection covers every column the floors refere
     // the invariant is vacuous.
     expect(text).toContain('filtered_claim_candidates');
     expect(text).toContain('AS MATERIALIZED');
+  });
+
+  it('keeps duplicate_of in the materialized snapshot row projection', () => {
+    // The CTE source must expose duplicate_of for ok_admission, and the outer narrow
+    // projection must retain it in the temp table shape for downstream snapshot consumers.
+    // The latter is distinct from the floor expression, so isolate the outer SELECT list.
+    expect(outerSelectList(renderPushdownSubquery())).toMatch(/\bwi\.duplicate_of\s*,/);
   });
 
   it('projects every wi.<column> referenced anywhere in the rendered subquery', () => {

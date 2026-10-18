@@ -226,6 +226,22 @@ export function readManagedKickoffFile(path: any, expectedRenderedHash: any): {
  * @param {number} [nowMs]
  */
 export function tagSessionPortTurn(text: string, sid: string, env?: EnvironmentMap, nowMs?: number): string;
+/** WI-6554700010017571: a `reset`/`recycle` control message's `data` is the
+ * carry-note the fresh context opens on. It is machine-delivered by contract;
+ * the owner's keystrokes reach the child through the PTY, never through this
+ * verb. Production senders put a ⟦turn-origin⟧ envelope on it. A hand-built
+ * control message did not: on 2026-10-18 an agent recycled itself by writing
+ * `{v:1, mode:'recycle', data}` straight to the control socket, and its kickoff
+ * ("... — not an owner turn") was recorded as owner-typed. Stamp a verified
+ * host-control envelope on any untagged lifecycle carry-note so it can never
+ * fall through to the owner default. Already-enveloped and empty text pass
+ * through unchanged.
+ * @param {string} text
+ * @param {string} sid
+ * @param {EnvironmentMap} [env]
+ * @param {number} [nowMs]
+ */
+export function stampUntaggedLifecycleCarry(text: string, sid: string, env?: EnvironmentMap, nowMs?: number): string;
 /** Chunk a large paste without splitting a UTF-16 surrogate pair. 16k code
  * units is at most 64 KiB of UTF-8, keeping node-pty writes bounded while the
  * concatenated stream remains byte-identical. */

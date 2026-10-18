@@ -63,7 +63,7 @@ describe('buildIdeatorRoster — forced-diversity floor (D-004)', () => {
   it('lensWeights ADD extras but never drop a lens below the floor', () => {
     const roster = buildIdeatorRoster({
       perLens: 1,
-      lensWeights: { analogical: 3, reframing: 1 },
+      lensWeights: { 'scout.lens-analogical': 3, 'scout.lens-reframing': 1 },
       extraIdeatorBudget: 4,
     });
     const counts = Object.fromEntries(CREATIVE_LENSES.map((l) => [l, 0]));
@@ -76,17 +76,27 @@ describe('buildIdeatorRoster — forced-diversity floor (D-004)', () => {
   });
 
   it('ignores weights when no extra budget is given', () => {
-    const roster = buildIdeatorRoster({ lensWeights: { analogical: 10 } });
+    const roster = buildIdeatorRoster({ lensWeights: { 'scout.lens-analogical': 10 } });
     expect(roster).toHaveLength(4); // pure floor, weights inert
   });
 });
 
 describe('allocateExtraIdeators', () => {
   it('distributes exactly `total` by largest-remainder', () => {
-    const out = allocateExtraIdeators([...CREATIVE_LENSES], { analogical: 1, reframing: 1, 'first-principles': 1 }, 4);
+    const out = allocateExtraIdeators(
+      [...CREATIVE_LENSES],
+      { 'scout.lens-analogical': 1, 'scout.lens-reframing': 1, 'scout.lens-first-principles': 1 },
+      4,
+    );
     const sum = Object.values(out).reduce((a, b) => a + b, 0);
     expect(sum).toBe(4);
     expect(out['constraint-removal']).toBe(0); // zero weight → no extras
+  });
+
+  it('R-8: weights are keyed by lens identity id — a bare lens-name key never matches a lens', () => {
+    const bare = { analogical: 5 } as unknown as Parameters<typeof allocateExtraIdeators>[1];
+    const out = allocateExtraIdeators([...CREATIVE_LENSES], bare, 4);
+    expect(Object.values(out).every((v) => v === 0)).toBe(true);
   });
 
   it('gives nothing when there is no weight signal', () => {
@@ -95,7 +105,7 @@ describe('allocateExtraIdeators', () => {
   });
 
   it('returns zeros for non-positive totals', () => {
-    const out = allocateExtraIdeators([...CREATIVE_LENSES], { analogical: 1 }, 0);
+    const out = allocateExtraIdeators([...CREATIVE_LENSES], { 'scout.lens-analogical': 1 }, 0);
     expect(Object.values(out).every((v) => v === 0)).toBe(true);
   });
 });

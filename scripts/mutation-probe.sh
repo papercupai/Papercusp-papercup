@@ -1623,7 +1623,13 @@ NODE
       # Explicit health overrides remain the compatibility/testing escape
       # hatch. An ambient operator selection is the intended runtime and must
       # refuse an unbindable proof before any guard leg runs.
-      if [ "$MUTATION_DESCRIPTOR_READER_SOURCE" != "override" ] &&
+      # An explicit PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=never is the documented
+      # override ("always|never overrides the check", above): the caller chose a
+      # deliberately unbound probe, so an INFERRED requirement must not refuse it
+      # (WI-6554700010017564). An explicit READER_REQUIRED=1 still wins and is
+      # refused as a contradiction in build_mutation_descriptor.
+      if [ "${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT:-auto}" != "never" ] &&
+         [ "$MUTATION_DESCRIPTOR_READER_SOURCE" != "override" ] &&
          [ "$MUTATION_DESCRIPTOR_READER_SOURCE" != "legacy-default" ] &&
          [ "$MUTATION_DESCRIPTOR_READER_SOURCE" != "operator-discovery" ]; then
         MUTATION_DESCRIPTOR_READER_REQUIRED=1
@@ -1696,6 +1702,14 @@ build_mutation_descriptor() {
   MUTATION_DESCRIPTOR_GATE=""
   mutation_descriptor_select_reader
   if ! mutation_descriptor_reader_ready; then
+    if [ "$MUTATION_DESCRIPTOR_READER_REQUIRED" -eq 1 ] &&
+       [ "${PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT:-auto}" = "never" ]; then
+      # Only an EXPLICIT READER_REQUIRED=1 reaches here with EXPORT=never (an
+      # inferred requirement is waived above). The reader was never consulted,
+      # so naming the health-URL override would send the caller the wrong way.
+      printf 'MUTATION_PROBE_RESULT verdict=harness-error phase=descriptor reason=export-disabled-but-reader-required target=%s\n' "$FILE"
+      die "PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT=never and PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED=1 contradict each other: 'never' records no mutation descriptor, so the proof cannot bind to a reader. Unset PAPERCUSP_MUTATION_DESCRIPTOR_EXPORT (auto) for a bindable proof, or set PAPERCUSP_MUTATION_DESCRIPTOR_READER_REQUIRED=0 to run a deliberately unbound falsifiability probe."
+    fi
     if [ "$MUTATION_DESCRIPTOR_READER_REQUIRED" -eq 1 ]; then
       printf 'MUTATION_PROBE_RESULT verdict=harness-error phase=descriptor reason=reader-unavailable reader_source=%s reader_url=%s target=%s\n' \
         "$MUTATION_DESCRIPTOR_READER_SOURCE" "$MUTATION_DESCRIPTOR_READER_HEALTH_URL" "$FILE"

@@ -432,7 +432,9 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
       expect(hives).toContain(WS); // the workspace-sentinel row was written
       // the ideator read-path resolves them back via the sentinel (read-fallback)
       const { lensWeights } = await getScoutLensWeights({ workspaceId: WS, harnessSlug: HARNESS });
-      const total = (['analogical', 'first-principles', 'reframing', 'constraint-removal'] as const).reduce(
+      const total = (
+        ['scout.lens-analogical', 'scout.lens-first-principles', 'scout.lens-reframing', 'scout.lens-constraint-removal'] as const
+      ).reduce(
         (a, l) => a + lensWeights[l],
         0,
       );

@@ -1411,6 +1411,7 @@ export function issueClaimCandidateSubquery(
           wi.updated_ts,
           wi.taken_by,
           wi.taken_at,
+          wi.duplicate_of,
           wi.source_plan_slug,
           wi.source_plan_item_ids,
           wi.feature_order,

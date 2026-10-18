@@ -5,7 +5,17 @@
  * is pinned directly, alongside the digest flatten/render and pool rotation.
  */
 import { describe, it, expect } from 'vitest';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { harnessRoot } from '@papercusp/harness/paths';
 import {
+  isLensIdentityId,
+  LENS_IDENTITY_ID_LIST,
+  lensForIdentityId,
+  lensIdentityDocumentPath,
+  lensIdentityId,
+  renderLensIdentity,
   buildIdeatorPrompt,
   buildRubricFocus,
   flattenDigest,
@@ -41,8 +51,47 @@ describe('buildIdeatorPrompt — anti-mode-collapse + lens stance', () => {
     expect(new Set(systems).size).toBe(CREATIVE_LENSES.length); // all distinct
     for (const lens of CREATIVE_LENSES) {
       const s = buildIdeatorPrompt({ lens, digest: d }).system;
-      expect(s).toContain(LENS_REGISTRY[lens].label);
-      expect(s).toContain(LENS_REGISTRY[lens].stance);
+      expect(s).toContain(renderLensIdentity(lens));
+      expect(LENS_REGISTRY[lens].identityId).toBe(`scout.lens-${lens}`);
+    }
+  });
+
+  it('R-8: each lens prompt is rendered from its identity document, and an installed override wins', () => {
+    for (const lens of CREATIVE_LENSES) {
+      const text = renderLensIdentity(lens);
+      expect(text).toMatch(/^## Your lens: .+\n\S/);
+      const doc = readFileSync(join(harnessRoot(), lensIdentityDocumentPath(lens)), 'utf8').trim();
+      expect(text).toBe(doc);
+    }
+    const local = mkdtempSync(join(tmpdir(), 'scout-lens-override-'));
+    try {
+      mkdirSync(join(local, 'blueprints', 'scout.lens-reframing', 'prompts'), { recursive: true });
+      writeFileSync(join(local, lensIdentityDocumentPath('reframing')), '## Your lens: Local reframing\nA hive-local stance.\n');
+      const roots = [local, harnessRoot()];
+      expect(renderLensIdentity('reframing', { identityRoots: roots })).toBe('## Your lens: Local reframing\nA hive-local stance.');
+      expect(buildIdeatorPrompt({ lens: 'reframing', digest: d, identityRoots: roots }).system).toContain('A hive-local stance.');
+      // A root list that carries no lens document refuses: a lens never renders silently missing.
+      expect(() => renderLensIdentity('analogical', { identityRoots: [local] })).toThrow(/identity document blueprints\/scout\.lens-analogical\/prompts\/lens\.md not found/);
+    } finally {
+      rmSync(local, { recursive: true, force: true });
+    }
+  });
+
+  it('R-8: lens identity ids round-trip and nothing else is a lens identity', () => {
+    expect(LENS_IDENTITY_ID_LIST).toEqual(CREATIVE_LENSES.map((l) => `scout.lens-${l}`));
+    for (const lens of CREATIVE_LENSES) expect(lensForIdentityId(lensIdentityId(lens))).toBe(lens);
+    expect(lensForIdentityId('analogical')).toBeNull();
+    expect(isLensIdentityId('scout.lens-analogical')).toBe(true);
+    expect(isLensIdentityId('reframing')).toBe(false);
+  });
+
+  it('R-8: the lens module carries no inline lens prompt text (stances live in identity documents)', () => {
+    const src = readFileSync(join(__dirname, 'lenses.ts'), 'utf8');
+    expect(src).not.toMatch(/stance:\s*\[/);
+    expect(src).not.toMatch(/## Your lens: \$\{/);
+    for (const lens of CREATIVE_LENSES) {
+      const firstSentence = renderLensIdentity(lens).split('\n')[1].split('. ')[0];
+      expect(src).not.toContain(firstSentence);
     }
   });
 
@@ -328,31 +377,42 @@ describe('lens weights use corrected outcomes (P-008 / R-19)', () => {
     const fresh = '2026-10-08T15:36:29.848Z';
     const stale = '2026-08-02T02:05:36.501Z';
     const picked = pickNewestLensWeightScope([
-      { lens: 'analogical', weight: '0.1926', potSlug: 'papercusp-workspace', updatedAt: fresh },
-      { lens: 'reframing', weight: '0.2737', potSlug: 'papercusp-workspace', updatedAt: fresh },
+      { lens: 'scout.lens-analogical', weight: '0.1926', potSlug: 'papercusp-workspace', updatedAt: fresh },
+      { lens: 'scout.lens-reframing', weight: '0.2737', potSlug: 'papercusp-workspace', updatedAt: fresh },
       // Retired scopes, last in heap order: an old last-row-wins fold returned these.
-      { lens: 'analogical', weight: '0.2592', potSlug: 'papercusp', updatedAt: stale },
-      { lens: 'reframing', weight: '0.2669', potSlug: '@singleton', updatedAt: stale },
+      { lens: 'scout.lens-analogical', weight: '0.2592', potSlug: 'papercusp', updatedAt: stale },
+      { lens: 'scout.lens-reframing', weight: '0.2669', potSlug: '@singleton', updatedAt: stale },
     ]);
     expect(picked.potSlug).toBe('papercusp-workspace');
-    expect(picked.weights).toEqual({ analogical: 0.1926, reframing: 0.2737 });
+    expect(picked.weights).toEqual({ 'scout.lens-analogical': 0.1926, 'scout.lens-reframing': 0.2737 });
     expect(picked.updatedAtMs).toBe(Date.parse(fresh));
   });
 
   it('ties pick deterministically; legacy rows without scope metadata keep every valid weight', () => {
     const t = '2026-09-01T00:00:00.000Z';
     const tie = pickNewestLensWeightScope([
-      { lens: 'analogical', weight: 0.4, potSlug: 'b', updatedAt: t },
-      { lens: 'analogical', weight: 0.6, potSlug: 'a', updatedAt: t },
+      { lens: 'scout.lens-analogical', weight: 0.4, potSlug: 'b', updatedAt: t },
+      { lens: 'scout.lens-analogical', weight: 0.6, potSlug: 'a', updatedAt: t },
     ]);
     expect(tie.potSlug).toBe('a');
-    expect(tie.weights).toEqual({ analogical: 0.6 });
+    expect(tie.weights).toEqual({ 'scout.lens-analogical': 0.6 });
     const legacy = pickNewestLensWeightScope([
-      { lens: 'analogical', weight: 0.3, potSlug: null, updatedAt: null },
-      { lens: 'reframing', weight: '0.7', potSlug: null, updatedAt: null },
+      { lens: 'scout.lens-analogical', weight: 0.3, potSlug: null, updatedAt: null },
+      { lens: 'scout.lens-reframing', weight: '0.7', potSlug: null, updatedAt: null },
       { lens: 'not-a-lens', weight: 0.9, potSlug: null, updatedAt: null },
     ]);
-    expect(legacy.weights).toEqual({ analogical: 0.3, reframing: 0.7 });
+    expect(legacy.weights).toEqual({ 'scout.lens-analogical': 0.3, 'scout.lens-reframing': 0.7 });
     expect(pickNewestLensWeightScope([]).weights).toEqual({});
+  });
+
+  it('R-8: weights are keyed by lens identity id — a bare lens-name row (pre-R-8 key) is ignored', () => {
+    const t = '2026-10-18T00:00:00.000Z';
+    const mixed = pickNewestLensWeightScope([
+      { lens: 'analogical', weight: 0.9, potSlug: 'p', updatedAt: t },
+      { lens: 'scout.lens-analogical', weight: 0.2, potSlug: 'p', updatedAt: t },
+      { lens: 'reframing', weight: 0.8, potSlug: 'p', updatedAt: t },
+    ]);
+    expect(mixed.weights).toEqual({ 'scout.lens-analogical': 0.2 });
+    for (const key of Object.keys(mixed.weights)) expect(isLensIdentityId(key)).toBe(true);
   });
 });

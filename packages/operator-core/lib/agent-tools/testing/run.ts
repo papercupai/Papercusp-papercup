@@ -74,7 +74,7 @@ import {
   statSync,
   type Dirent,
 } from 'node:fs';
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -82,6 +82,8 @@ import type { AbortCompletionContext, AbortCompletionReceipt, ToolResult } from 
 import { parseTestRunExecutionDetails } from '@papercusp/test-config/execution-details';
 import { resolveTestRunsPgUrl } from '@papercusp/test-config/admin-test-runs-reporter';
 import { captureConfigurationSnapshot } from '@papercusp/test-config/configuration-snapshot';
+import { cleanupOwnedTestDatabases, dropDatabaseOnDedicatedConnection, type OwnedTestDbCleanupResult } from '@papercusp/test-config/pg';
+import { TestRunArtifactPacket, testRunDeadline, type TestRunArtifactPaths, type TestRunDeadline } from './run-artifacts';
 import {
   boundTestRunPayload,
   captureWorktreeSnapshotAsync,
@@ -1440,7 +1442,12 @@ export function classifyTestProcessOutcome(outcome: TestProcessOutcome): Governe
 /** The distilled outcome of one runTestFilesCore invocation — either the bounded
  *  run payload (`ok` reflects the tests; counts always complete; no `error` field) or a
  *  typed refusal naming why nothing could be judged. Discriminate on `error`. */
-export type TestFilesCoreResult =
+export type TestFilesCoreResult = TestFilesCorePayload & {
+  artifacts?: TestRunArtifactPaths;
+  /** Test counts and resource cleanup are separate measured outcomes. */
+  cleanup?: OwnedTestDbCleanupResult;
+};
+type TestFilesCorePayload =
   | ({ ok: boolean; runId: string; root: string; error?: undefined } & DistilledTestRun & {
         /** Explicit selector used for an evidence-bearing run, when present. */
         testNamePattern?: string;
@@ -1936,7 +1943,7 @@ export interface RouterOutcome extends TestProcessOutcome {
   aborted: boolean;
   spawnError?: string;
   output: string;
-  /** Original file-backed diagnostics; retain until a measured successful verdict. */
+  /** Complete file-backed stdout/stderr, retained for every verdict. */
   outputLogPaths?: string[];
   actualDemand?: ResourceDemand;
   /** Managed task identity, surfaced when termination cannot be confirmed in time. */
@@ -2100,6 +2107,7 @@ export async function launchManagedTestProcess(
     runGroup: string;
     workspaceId: string;
     outputPath: string;
+    stderrPath?: string;
   },
   deps: ManagedTestProcessDeps = {},
 ): Promise<ManagedTestProcess> {
@@ -2107,8 +2115,10 @@ export async function launchManagedTestProcess(
   const killOwnedScope = deps.killScopeUnitFn ?? killScopeUnit;
   const killProcessGroup = deps.killProcessGroupFn ?? ((pid, signal) => process.kill(-pid, signal));
   const outputFd = openSync(opts.outputPath, 'w', 0o600);
+  let stderrFd = outputFd;
   let launched: ManagedTestSpawn;
   try {
+    if (opts.stderrPath) stderrFd = openSync(opts.stderrPath, 'w', 0o600);
     launched = await spawnManaged(
       opts.command,
       opts.args,
@@ -2122,7 +2132,9 @@ export async function launchManagedTestProcess(
         // The in-process timer owns the ordinary verdict. This slightly wider
         // kernel deadline is the restart-safe backstop and still bounds the task
         // when the operator (and therefore its timer) disappears mid-run.
-        runtimeMaxSec: Math.max(1, Math.ceil((opts.timeoutMs + FOREGROUND_TERMINATION_GRACE_MS) / 1_000)),
+        runtimeMaxSec: Math.max(1, Math.ceil((Number(opts.env.PAPERCUSP_TEST_TASK_DEADLINE_AT_MS) > 0
+          ? Number(opts.env.PAPERCUSP_TEST_TASK_DEADLINE_AT_MS) - Date.now()
+          : opts.timeoutMs + FOREGROUND_TERMINATION_GRACE_MS) / 1_000)),
         detail: { runGroup: opts.runGroup, foreground: true },
       },
       {
@@ -2133,7 +2145,7 @@ export async function launchManagedTestProcess(
           // A pipe belongs to this operator process; its death closes the read
           // end and can EPIPE the surviving payload. An inherited file fd keeps
           // diagnostics writable across the restart and is read on normal close.
-          stdio: ['ignore', outputFd, outputFd],
+          stdio: ['ignore', outputFd, stderrFd],
           // Preserve the unconfined fallback's whole-process-group identity.
           // Under confinement the scope is the stronger whole-tree handle.
           detached: true,
@@ -2142,6 +2154,7 @@ export async function launchManagedTestProcess(
     );
   } finally {
     closeSync(outputFd);
+    if (stderrFd !== outputFd) closeSync(stderrFd);
   }
   const scopeCgroupPath =
     launched.confined && launched.scopeUnit
@@ -2149,6 +2162,11 @@ export async function launchManagedTestProcess(
       : null;
 
   let terminationStarted = false;
+  const terminationGraceMs = (): number => {
+    const deadline = Number(opts.env.PAPERCUSP_TEST_TASK_DEADLINE_AT_MS);
+    return deadline > 0 ? Math.max(1, Math.min(FOREGROUND_TERMINATION_GRACE_MS, deadline - Date.now()))
+      : FOREGROUND_TERMINATION_GRACE_MS;
+  };
   const terminateProcessGroup = (): void => {
     const pid = launched.child.pid;
     if (!pid) return;
@@ -2166,7 +2184,7 @@ export async function launchManagedTestProcess(
       }
     };
     signal('SIGTERM');
-    setTimeout(() => signal('SIGKILL'), FOREGROUND_TERMINATION_GRACE_MS).unref();
+    setTimeout(() => signal('SIGKILL'), terminationGraceMs()).unref();
   };
 
   return {
@@ -2185,7 +2203,7 @@ export async function launchManagedTestProcess(
       // client can orphan the still-running router and Vitest descendants.
       void killOwnedScope(launched.scopeUnit, {
         signal: 'SIGTERM',
-        escalateAfterMs: FOREGROUND_TERMINATION_GRACE_MS,
+        escalateAfterMs: terminationGraceMs(),
       }).then(
         (outcome) => {
           if (!outcome.ok && outcome.error !== 'already_gone') {
@@ -2446,10 +2464,9 @@ function runTestProcess(
           }
           return new Promise((resolve) => {
             const outputCapture = createBoundedRouterOutputCapture();
-            const routerOutputPath = join(
-              ensurePapercuspTmpdir() ?? tmpdir(),
-              `papercusp-testing-run-router-${runGroup}-${randomUUID()}.log`,
-            );
+            const outputBase = env.PAPERCUSP_TEST_ARTIFACT_DIR ?? ensurePapercuspTmpdir() ?? tmpdir();
+            const routerOutputPath = join(outputBase, `router-${runGroup}-${randomUUID()}.stdout.log`);
+            const routerStderrPath = `${routerOutputPath}.stderr.log`;
             let outputBytes = 0;
             let timedOut = false;
             let aborted = false;
@@ -2464,12 +2481,14 @@ function runTestProcess(
             const loadOutput = (): void => {
               if (outputLoaded) return;
               outputLoaded = true;
-              try {
-                const bytes = readFileSync(routerOutputPath);
-                outputBytes = bytes.byteLength;
-                outputCapture.append('stdout', bytes);
-              } catch {
-                /* spawn may have failed before creating output */
+              for (const [channel, path] of [['stdout', routerOutputPath], ['stderr', routerStderrPath]] as const) {
+                try {
+                  const bytes = readFileSync(path);
+                  outputBytes += bytes.byteLength;
+                  outputCapture.append(channel, bytes);
+                } catch {
+                  /* spawn may have failed before creating output */
+                }
               }
             };
             // EI-19324351741370770: `scripts/test-files.mjs` launches the REAL vitest run via
@@ -2506,8 +2525,8 @@ function runTestProcess(
               }
               if (onAbort) childSignal.removeEventListener('abort', onAbort);
               void sampler.stop({ diskBytes: outputBytes }).then(
-                (actualDemand) => resolve({ ...outcome, outputLogPaths: [routerOutputPath], actualDemand }),
-                () => resolve({ ...outcome, outputLogPaths: [routerOutputPath], actualDemand: plannedDemand }),
+                (actualDemand) => resolve({ ...outcome, outputLogPaths: [routerOutputPath, routerStderrPath], actualDemand }),
+                () => resolve({ ...outcome, outputLogPaths: [routerOutputPath, routerStderrPath], actualDemand: plannedDemand }),
               );
             };
             const launchTimeoutMs = Math.max(1, Math.min(childTimeoutMs, remainingTimeoutMs()));
@@ -2532,7 +2551,11 @@ function runTestProcess(
               }
               terminationConfirmationStarted = true;
               terminating.terminate();
-              void waitForTestProcessClose(childClosed).then((closed) => {
+              const taskDeadline = Number(env.PAPERCUSP_TEST_TASK_DEADLINE_AT_MS);
+              const grace = taskDeadline > 0
+                ? Math.max(1, Math.min(FOREGROUND_TERMINATION_GRACE_MS, taskDeadline - Date.now()))
+                : FOREGROUND_TERMINATION_GRACE_MS;
+              void waitForTestProcessClose(childClosed, grace).then((closed) => {
                 if (closed || settled) return;
                 finish({
                   code: null,
@@ -2576,6 +2599,7 @@ function runTestProcess(
               runGroup,
               workspaceId: env.PAPERCUSP_WORKSPACE_ID ?? activeWorkspaceId(),
               outputPath: routerOutputPath,
+              stderrPath: routerStderrPath,
             }).then(
               (launched) => {
                 running = launched;
@@ -3253,10 +3277,14 @@ export function groupDirectVitestRoutes(
  * foreground transport clamp stay THERE (they are transport concerns, not run
  * concerns); everything else lives here.
  */
-export async function runTestFilesCore(opts: {
+export interface RunTestFilesCoreOptions {
   files: string[];
   root: string;
   timeoutMs?: number;
+  /** Absolute cutoff shared by recursive groups; never refreshed after admission. */
+  taskDeadlineAtMs?: number;
+  /** Budget held back from test execution for owned resource cleanup. */
+  cleanupReserveMs?: number;
   /** Original caller budget before the foreground transport clamp, for detached recovery. */
   recoveryTimeoutMs?: number;
   maxFailures?: number;
@@ -3276,7 +3304,53 @@ export async function runTestFilesCore(opts: {
   allowSiblingCheckoutFallback?: boolean;
   /** Optional handler-owned timing accumulator; omitted by internal callers. */
   phaseTimings?: TestingRunPhaseTimings;
-}, deps: { runRouterFn?: typeof runRouter } = {}): Promise<TestFilesCoreResult> {
+}
+type TestFilesCoreDeps = { runRouterFn?: typeof runRouter; artifactBaseDir?: string };
+
+export async function runTestFilesCore(opts: RunTestFilesCoreOptions, deps: TestFilesCoreDeps = {}): Promise<TestFilesCoreResult> {
+  const runId = opts.runId ?? randomUUID();
+  const deadline = testRunDeadline(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, opts);
+  const packet = new TestRunArtifactPacket(runId, resolve(opts.root), deadline, deps.artifactBaseDir);
+  let result: TestFilesCoreResult | undefined;
+  let cleanup: OwnedTestDbCleanupResult | undefined;
+  let error: string | undefined;
+  try {
+    result = await runTestFilesCoreInternal({ ...opts, runId, taskDeadlineAtMs: deadline.taskDeadlineAtMs,
+      cleanupReserveMs: deadline.cleanupReserveMs }, deps, packet, deadline);
+    if (packet.childState === 'pending') {
+      // An unconfirmed/host-detached writer keeps custody; do not drop its database.
+      cleanup = { complete: false, databases: [], errors: ['child exit is unconfirmed; owned cleanup retained'] };
+    } else {
+      packet.stage('cleanup-start');
+      cleanup = packet.cleanupResult ?? await cleanupOwnedTestDatabases({ dir: packet.paths.ownedDatabases, runId,
+        deadlineAtMs: deadline.taskDeadlineAtMs, drop: dropDatabaseOnDedicatedConnection });
+      if (packet.groupCleanups.some(group => (group.cleanup as OwnedTestDbCleanupResult | undefined)?.complete !== true)) {
+        cleanup.complete = false;
+        cleanup.errors.push('one or more checkout groups lack confirmed cleanup; see retained group receipts');
+      }
+      packet.stage(cleanup.complete ? 'cleanup-complete' : 'cleanup-retained', { cleanup });
+    }
+    return { ...result, artifacts: packet.paths, cleanup };
+  } catch (cause) {
+    error = cause instanceof Error ? cause.message : String(cause);
+    // Failed route finalization must not prevent independent cleanup after a confirmed exit.
+    if (packet.childState !== 'pending' && !cleanup) {
+      try { cleanup = packet.cleanupResult ?? await cleanupOwnedTestDatabases({ dir: packet.paths.ownedDatabases, runId,
+        deadlineAtMs: deadline.taskDeadlineAtMs, drop: dropDatabaseOnDedicatedConnection }); }
+      catch (cleanupError) { cleanup = { complete: false, databases: [], errors: [String(cleanupError)] }; }
+    }
+    throw cause;
+  } finally {
+    packet.write('ledger.json', { runGroup: runId, workspace: opts.workspaceId ?? null,
+      harness: opts.harnessSlug ?? null, workItem: opts.workItemId ?? null,
+      lookup: { tool: 'testing:runs', runGroup: runId, source: 'local', latestPerFile: false },
+      status: 'reference-only; presence and verdict require ledger readback' });
+    packet.finish({ result, error, cleanup, executedRoot: result?.root ?? null, phaseTimings: opts.phaseTimings ?? null });
+  }
+}
+
+async function runTestFilesCoreInternal(opts: RunTestFilesCoreOptions, deps: TestFilesCoreDeps,
+  packet: TestRunArtifactPacket, deadline: TestRunDeadline): Promise<TestFilesCoreResult> {
   const runStartedAt = new Date().toISOString();
   // Normalize once before selecting the checkout.  A workspace-relative sibling
   // spelling (for example `portal/tests/foo.test.ts`) becomes an absolute path in
@@ -3293,7 +3367,6 @@ export async function runTestFilesCore(opts: {
     const groups = groupTestFilesByCheckout(requestedPaths.files, opts.root);
     if (groups.length > 1) {
       const roots = groups.map((group) => group.root);
-      const deadline = Date.now() + timeoutMs;
       const completed: CompletedTestGroup[] = [];
       const errors: Array<Extract<TestFilesCoreResult, { error: string }>> = [];
       for (const group of groups) {
@@ -3303,9 +3376,11 @@ export async function runTestFilesCore(opts: {
           root: group.root,
           ...(opts.privatePg ? { privatePg: existsSync(join(group.root, 'scripts', 'with-test-pg.mjs')) } : {}),
           runId,
-          timeoutMs: Math.max(1000, deadline - Date.now()),
+          timeoutMs,
           allowDetachedRecovery: false,
         }, deps);
+        packet.groupCleanups.push({ directory: result.artifacts?.directory ?? null, cleanup: result.cleanup });
+        packet.stage('checkout-group-result', { root: group.root, artifacts: result.artifacts, cleanup: result.cleanup });
         if (result.error !== undefined) errors.push(result);
         else completed.push({ group, result });
         if ('terminationUnconfirmed' in result && result.terminationUnconfirmed) break;
@@ -3418,19 +3493,15 @@ export async function runTestFilesCore(opts: {
   }
   const ingestLedgerInProcess =
     Boolean(opts.workspaceId && opts.harnessSlug) && shouldIngestVitestLedgerInProcess(root);
-  const ledgerWorktreeBefore = ingestLedgerInProcess ? await captureWorktreeSnapshotAsync(root) : null;
+  const sourceSnapshot = await captureWorktreeSnapshotAsync(root);
+  packet.captureSelectedSources(pathResolution.files, sourceSnapshot, root);
+  const ledgerWorktreeBefore = ingestLedgerInProcess ? sourceSnapshot : null;
 
-  // EI-21051590601555185: this tool runs inside the long-lived operator process, so it does not
-  // pass through scripts/test-files.mjs before creating its private report directory. Apply the
-  // same headroom-aware, papercusp-owned TMPDIR policy here; otherwise an exhausted/shared /tmp
-  // fails at this mkdtemp call before the router can report a structured result.
-  ensurePapercuspTmpdir();
-  const dir = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-'));
+  // Reports, raw channels and receipts share a retained directory outside disposable TMPDIR.
+  const dir = packet.paths.reports;
   const reportPath = join(dir, 'report.json');
   const failureDetailsPath = join(dir, TEST_FAILURE_DETAILS_FILENAME);
-  let preserveRunArtifacts = false;
   let outputLogPaths: string[] = [];
-  let measuredSuccess = false;
   try {
     const vitestArgs = ['--reporter=json', `--outputFile=${reportPath}`];
     // Vitest treats an explicit --reporter as a replacement for the reporters declared by
@@ -3451,24 +3522,25 @@ export async function runTestFilesCore(opts: {
       PAPERCUSP_TEST_RUN_GROUP: runId,
       PAPERCUSP_TEST_ATTRIBUTION: '1',
       PAPERCUSP_TEST_FAILURE_DETAILS_PATH: failureDetailsPath,
+      PAPERCUSP_TEST_ARTIFACT_DIR: packet.paths.directory,
+      PAPERCUSP_TEST_OWNED_DB_DIR: packet.paths.ownedDatabases,
+      PAPERCUSP_TEST_TASK_DEADLINE_AT_MS: String(deadline.taskDeadlineAtMs),
+      PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS: String(deadline.childCutoffAtMs),
+      PAPERCUSP_TEST_CLEANUP_RESERVE_MS: String(deadline.cleanupReserveMs),
+      PC_EXECUTED_INPUTS_DIR: packet.paths.runtimeInputs,
       // WI-10005713: restrictedHoldRefusal admitted exactly these files above, so the router's own
       // raw-path preflight would only repeat it (~2s + a census read). Set ONLY here, after the fence.
       [RESTRICTED_HOLD_PREFLIGHT_ENV]: RESTRICTED_HOLD_PREFLIGHT_DONE,
       ...(opts.harnessSlug && opts.harnessSlug !== '*' ? { PAPERCUSP_TEST_RUN_HARNESS: opts.harnessSlug } : {}),
       ...(opts.workspaceId && opts.workspaceId !== '*' ? { PAPERCUSP_WORKSPACE_ID: opts.workspaceId } : {}),
     };
-    // WI-10003090: the router owns a second, inner Vitest watchdog. Its default
-    // is 600s for a short file list, even when this caller has a longer budget
-    // (scorecard checks have 13m). Derive the child deadline from THIS run's
-    // remaining budget so a progressing batch is not reaped by an unrelated
-    // default. Leave at most 30s, or 10% for short runs, for the router to
-    // report a typed timeout before the outer deadline closes its transport.
-    // The router's documented maximum is 120m; this env applies only to the
-    // nested invocation, while direct test:file keeps its own CLI default.
-    const routerHeadroomMs = Math.min(30_000, Math.floor(timeoutMs / 10));
+    // An absolute child cutoff includes preparation/admission time and leaves
+    // a separate cleanup reserve before the task's final deadline.
     childEnv.PAPERCUSP_TEST_FILE_TIMEOUT_MS = String(
-      Math.max(1, Math.min(120 * 60_000, timeoutMs - routerHeadroomMs)),
+      Math.max(1, Math.min(120 * 60_000, deadline.childCutoffAtMs - Date.now())),
     );
+    packet.write('configuration.json', captureConfigurationSnapshot(childEnv));
+    packet.stage('router-start', { deadline });
     // `testing:run` can itself be invoked from the repository's pc-heavy
     // wrapper. That wrapper exports a one-shot readiness/finalization marker
     // for its direct child; forwarding those exact paths into this nested
@@ -3485,6 +3557,9 @@ export async function runTestFilesCore(opts: {
     }
     let directReportPaths: string[] | null = null;
     let outcome: RouterOutcome;
+    if (Date.now() >= deadline.childCutoffAtMs) return { ok: false, runId, root, error: 'timeout', timeoutMs,
+      hint: 'preparation consumed the absolute child budget; cleanup reserve remains available' };
+    packet.childState = 'pending';
     if (hasRouter) {
       outcome = await (deps.runRouterFn ?? runRouter)(
         [...pathResolution.files, '--', ...vitestArgs],
@@ -3497,7 +3572,7 @@ export async function runTestFilesCore(opts: {
         // (see attribution/context.ts), which is a decision only the fork can make correctly,
         // because one `files` array routinely spans both layers.
         childEnv,
-        timeoutMs,
+        Math.max(1, deadline.childCutoffAtMs - Date.now()),
         opts.signal,
         pathResolution.files.length,
         opts.phaseTimings,
@@ -3506,7 +3581,6 @@ export async function runTestFilesCore(opts: {
     } else {
       const groups = groupDirectVitestRoutes(pathResolution.files, root);
       directReportPaths = groups.map((_, index) => (index === 0 ? reportPath : join(dir, `report.${index}.json`)));
-      const deadline = Date.now() + timeoutMs;
       const outcomes: RouterOutcome[] = [];
       for (const [index, group] of groups.entries()) {
         if (opts.signal?.aborted) {
@@ -3519,7 +3593,12 @@ export async function runTestFilesCore(opts: {
           });
           break;
         }
-        const remaining = Math.max(1000, deadline - Date.now());
+        const remaining = deadline.childCutoffAtMs - Date.now();
+        if (remaining <= 0) {
+          outcomes.push({ code: null, signal: null, timedOut: true, aborted: false,
+            output: 'absolute child cutoff reached before direct Vitest group start' });
+          break;
+        }
         const groupArgs = [
           'run',
           ...(group.config ? ['--config', group.config] : []),
@@ -3546,6 +3625,10 @@ export async function runTestFilesCore(opts: {
         signal: outcomes.find((entry) => entry.signal)?.signal ?? null,
         timedOut: outcomes.some((entry) => entry.timedOut),
         aborted: outcomes.some((entry) => entry.aborted),
+        hostShutdownDetached: outcomes.some((entry) => entry.hostShutdownDetached),
+        terminationUnconfirmed: outcomes.some((entry) => entry.terminationUnconfirmed),
+        taskId: outcomes.find(entry => entry.taskId)?.taskId,
+        childClosed: outcomes.find(entry => entry.childClosed)?.childClosed,
         outputLogPaths: outcomes.flatMap((entry) => entry.outputLogPaths ?? []),
         output: outcomes
           .map((entry) => entry.output)
@@ -3555,16 +3638,28 @@ export async function runTestFilesCore(opts: {
     }
 
     outputLogPaths = outcome.outputLogPaths ?? [];
-    preserveRunArtifacts = outcome.hostShutdownDetached === true;
+    packet.childState = outcome.terminationUnconfirmed || outcome.hostShutdownDetached ? 'pending' : 'closed';
+    packet.write('router.json', { code: outcome.code, signal: outcome.signal, timedOut: outcome.timedOut,
+      aborted: outcome.aborted, taskId: outcome.taskId ?? null, outputLogPaths, childState: packet.childState });
+    packet.stage('router-result', { childState: packet.childState, outputLogPaths });
+    // Spend the reserve on resource cleanup before report parsing, ledger
+    // finalization or detached recovery can consume it.
+    if (packet.childState === 'closed') {
+      packet.cleanupResult = await cleanupOwnedTestDatabases({ dir: packet.paths.ownedDatabases, runId,
+        deadlineAtMs: deadline.taskDeadlineAtMs, drop: dropDatabaseOnDedicatedConnection });
+      packet.stage(packet.cleanupResult.complete ? 'cleanup-complete' : 'cleanup-retained',
+        { cleanup: packet.cleanupResult });
+    }
 
     if (outcome.terminationUnconfirmed) {
-      preserveRunArtifacts = true;
       if (outcome.childClosed) {
-        void outcome.childClosed.then(() =>
-          rm(dir, { recursive: true, force: true }).catch(() => {
-            /* best-effort cleanup after the late close confirms the writer is gone */
-          }),
-        );
+        void outcome.childClosed.then(async () => {
+          packet.childState = 'closed';
+          packet.stage('late-child-close');
+          const cleanup = await cleanupOwnedTestDatabases({ dir: packet.paths.ownedDatabases, runId,
+            deadlineAtMs: deadline.taskDeadlineAtMs, drop: dropDatabaseOnDedicatedConnection });
+          packet.write('late-cleanup.json', cleanup);
+        }).catch(cause => packet.stage('late-cleanup-error', { error: String(cause) }));
       }
       const error = outcome.aborted ? 'aborted' : 'timeout';
       return {
@@ -3578,7 +3673,7 @@ export async function runTestFilesCore(opts: {
         hint:
           `termination was requested, but the foreground process did not confirm close within ` +
           `${FOREGROUND_TERMINATION_GRACE_MS}ms. No duplicate recovery was started; task ${outcome.taskId ?? 'unknown'} ` +
-          'remains tracked, and its report artifacts will be removed after the late close.',
+          `remains tracked; its artifacts and late cleanup receipts are retained at ${packet.paths.directory}.`,
         routerOutput: outcome.output.slice(-2000),
       };
     }
@@ -3606,7 +3701,6 @@ export async function runTestFilesCore(opts: {
         ...(opts.maxFailures === undefined ? {} : { maxFailures: opts.maxFailures }),
       });
       if (completed) {
-        measuredSuccess = completed.ok;
         return completed;
       }
 
@@ -3686,7 +3780,7 @@ export async function runTestFilesCore(opts: {
     // `report.json`, `report.0.json`, `report.1.json`, … Reading only `reportPath`
     // distilled whichever group happened to write last and reported it as the whole
     // run: a two-workspace request with a RED first group returned `failed:0,
-    // failures:[]`. `dir` is a private mkdtemp this function owns, so every *.json in
+    // failures:[]`. `dir` is this run's private retained report directory, so every *.json in
     // it belongs to THIS run and can be merged without any output parsing.
     if (directReportPaths?.some((path) => !existsSync(path))) {
       return {
@@ -3726,7 +3820,6 @@ export async function runTestFilesCore(opts: {
       if (routerResult) {
         const executedNothing = zeroExecutedRefusal(routerResult, { runId, root });
         if (executedNothing) return executedNothing;
-        measuredSuccess = routerResult.failed === 0 && outcome.code === 0;
         return boundTestRunPayload(
           {
             ok: routerResult.failed === 0 && outcome.code === 0, runId, root,
@@ -3828,23 +3921,12 @@ export async function runTestFilesCore(opts: {
     // LIST COUNT and so cannot bound bytes at all — one long assertion diff
     // outweighs fifty terse failures. Counts stay complete and a cut is stated
     // explicitly, so `failures.length` is never readable as "how many failed".
-    measuredSuccess = run.failed === 0 && outcome.code === 0;
     return boundTestRunPayload({
       ok: run.failed === 0 && outcome.code === 0, runId, root,
       ...(outcome.code === ROUTER_EXIT_FINALIZATION_ERROR ? { routerOutput: outcome.output.slice(-2000) } : {}),
     }, run) as TestFilesCoreResult;
   } finally {
-    // An unmeasured run's original cause may precede the bounded output tail.
-    // Keep its existing namespaced temp log for diagnosis; ordinary retention
-    // owns expiry. Successful runs leave no extra log behind.
-    if (measuredSuccess) {
-      await Promise.all(outputLogPaths.map((path) => rm(path, { force: true }).catch(() => {})));
-    }
-    if (!preserveRunArtifacts) {
-      await rm(dir, { recursive: true, force: true }).catch(() => {
-        /* best-effort */
-      });
-    }
+    packet.stage('report-finalized', { outputLogPaths });
   }
 }
 

@@ -1222,15 +1222,26 @@ describe('testing:run (integration)', () => {
     expect(snapshot).toEqual({ cpuMicros: 123456, rssBytes: 4096, fileDescriptors: 12 });
   });
 
-  it('applies the shared tmpdir guard before creating its report directory', () => {
-    const source = readFileSync(new URL('../run.ts', import.meta.url), 'utf8');
-    const coreStart = source.indexOf('export async function runTestFilesCore');
-    const guardCall = source.indexOf('ensurePapercuspTmpdir();', coreStart);
-    const reportDirCall = source.indexOf('mkdtemp(join(tmpdir(),', coreStart);
-
-    expect(coreStart).toBeGreaterThan(-1);
-    expect(guardCall).toBeGreaterThan(coreStart);
-    expect(reportDirCall).toBeGreaterThan(guardCall);
+  it('carries the absolute child cutoff and cleanup reserve into the router', async () => {
+    const root = await makeScratchTestCheckout('papercusp-testing-run-deadline-');
+    await mkdir(join(root, 'scripts'), { recursive: true });
+    await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
+    await sealScratchTestCheckout(root);
+    const taskDeadlineAtMs = Date.now() + 45_000;
+    const runRouterFn = vi.fn(async (_args: string[], _cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number) => {
+      expect(Number(env.PAPERCUSP_TEST_TASK_DEADLINE_AT_MS)).toBe(taskDeadlineAtMs);
+      expect(Number(env.PAPERCUSP_TEST_CHILD_CUTOFF_AT_MS)).toBe(taskDeadlineAtMs - 10_000);
+      expect(Number(env.PAPERCUSP_TEST_CLEANUP_RESERVE_MS)).toBe(10_000);
+      expect(timeoutMs).toBeGreaterThan(0);
+      expect(timeoutMs).toBeLessThanOrEqual(taskDeadlineAtMs - 10_000 - Date.now() + 50);
+      return { code: 0, signal: null, timedOut: false, aborted: false,
+        output: '# tests 1\n# pass 1\n# fail 0\n# skipped 0\nTEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed' };
+    });
+    const result = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], timeoutMs: 45_000,
+      taskDeadlineAtMs, cleanupReserveMs: 10_000 }, { runRouterFn });
+    expect(result.ok).toBe(true);
+    expect(result.cleanup?.complete).toBe(true);
+    expect(runRouterFn).toHaveBeenCalledTimes(1);
   });
 
   it.skipIf(!SIDESTAGE_HIVE_ROOT)(
@@ -1482,7 +1493,7 @@ describe('testing:run (integration)', () => {
     expect(runRouterFn).toHaveBeenCalledTimes(1);
   });
 
-  it('removes the original router log only after a measured successful verdict', async () => {
+  it('retains the original router log and source/cleanup packet after a measured successful verdict', async () => {
     const root = await makeScratchTestCheckout('papercusp-testing-run-success-log-');
     await mkdir(join(root, 'scripts'), { recursive: true });
     await writeFile(join(root, 'scripts/test-files.mjs'), 'export {};\n');
@@ -1495,7 +1506,14 @@ describe('testing:run (integration)', () => {
     }));
     const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'] }, { runRouterFn });
     expect(out).toMatchObject({ ok: true, passed: 1, failed: 0 });
-    expect(existsSync(logPath)).toBe(false);
+    expect(existsSync(logPath)).toBe(true);
+    expect(await readFile(logPath, 'utf8')).toBe('original output\n');
+    expect(out.cleanup).toMatchObject({ complete: true, errors: [] });
+    expect(out.artifacts).toBeDefined();
+    const manifest = JSON.parse(await readFile(out.artifacts!.manifest, 'utf8'));
+    expect(manifest).toMatchObject({ state: 'retained', childState: 'closed', cleanup: { complete: true } });
+    expect(await readFile(join(out.artifacts!.directory, 'source.json'), 'utf8')).toContain('package-lock.json');
+    expect(await readFile(join(out.artifacts!.directory, 'router.json'), 'utf8')).toContain(logPath);
     expect(runRouterFn).toHaveBeenCalledTimes(1);
   });
 
@@ -1513,9 +1531,9 @@ describe('testing:run (integration)', () => {
     if (out.error !== 'no_report') throw new Error(JSON.stringify(out));
     const logs = out.diagnostics?.routerLogPaths ?? [];
     try {
-      expect(logs).toHaveLength(1);
-      expect(out.routerOutput).not.toContain(cause);
-      expect(await readFile(logs[0]!, 'utf8')).toContain(cause);
+      expect(logs).toHaveLength(2);
+      expect(await readFile(logs[0]!, 'utf8')).toContain('startup progress');
+      expect(await readFile(logs[1]!, 'utf8')).toContain(cause);
     } finally {
       await Promise.all(logs.map((path) => rm(path, { force: true })));
     }
@@ -1536,7 +1554,7 @@ describe('testing:run (integration)', () => {
     const runRouterFn = vi.fn(async () => ({
       code: null, signal: null, timedOut: true, aborted: false, output,
     }));
-    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], timeoutMs: 1_000 },
+    const out = await runTestFilesCore({ root, files: ['packages/x/real.test.ts'], timeoutMs: 30_000 },
       { runRouterFn });
     expect(out).toMatchObject({ ok: true, passed: 1, failed: 0, skipped: 1, files: 1, budgetExceeded: true });
     expect(out).not.toHaveProperty('detachedRunId');

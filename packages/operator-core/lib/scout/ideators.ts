@@ -21,7 +21,9 @@ import {
   buildRubricFocus,
   digestRefSet,
   DISTANT_DOMAINS,
+  lensIdentityId,
   type DistantDomain,
+  type LensIdentityId,
 } from './lenses';
 import { DEFAULT_SCOUT_IDEATOR_MODEL } from './models';
 import { admissionDenialFrom } from './capacity-errors';
@@ -99,8 +101,9 @@ export interface BuildRosterInput {
    * Per-lens win-weights (P-013 / D-009 hook): EXTRA ideators (beyond the base)
    * are distributed across lenses proportional to these weights. Never removes a
    * lens; diversity floor is preserved — weights only ADD to winning lenses.
+   * Keyed by lens IDENTITY id (`scout.lens-<lens>`, P-011 / R-8).
    */
-  lensWeights?: Partial<Record<CreativeLens, number>>;
+  lensWeights?: Partial<Record<LensIdentityId, number>>;
   /** Total extra ideators to distribute by `lensWeights` (default 0 → weights inert). */
   extraIdeatorBudget?: number;
   /** Distant-domain pool/order for analogical ideators (default {@link DISTANT_DOMAINS}). */
@@ -125,15 +128,17 @@ function normalizeLenses(lenses?: readonly CreativeLens[]): CreativeLens[] {
  * Distribute `total` extra ideators across `lenses` proportional to `weights`,
  * by the largest-remainder method (stable, exact: the parts sum to `total`).
  * Lenses with no/zero weight get no extras. Returns a per-lens extra count.
+ * `weights` is keyed by lens identity id (P-011 / R-8); a key that is not a lens
+ * identity id never matches a lens.
  */
 export function allocateExtraIdeators(
   lenses: readonly CreativeLens[],
-  weights: Partial<Record<CreativeLens, number>>,
+  weights: Partial<Record<LensIdentityId, number>>,
   total: number,
 ): Record<CreativeLens, number> {
   const out = Object.fromEntries(lenses.map((l) => [l, 0])) as Record<CreativeLens, number>;
   if (total <= 0) return out;
-  const w = lenses.map((l) => Math.max(0, weights[l] ?? 0));
+  const w = lenses.map((l) => Math.max(0, weights[lensIdentityId(l)] ?? 0));
   const sum = w.reduce((a, b) => a + b, 0);
   if (sum <= 0) return out; // no signal → no extras
   const ideal = w.map((x) => (x / sum) * total);

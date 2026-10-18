@@ -87,6 +87,10 @@ export const TURN_ORIGIN_BASES = [
   'self-compaction',
   'fleet-kickoff',
   'session-port',
+  // WI-6554700010017571: psu-pty-host stamps this on a reset/recycle control
+  // carry-note that arrived WITHOUT an envelope (a hand-built control message),
+  // writing the ledger row itself, exactly as it does for session-port.
+  'host-control',
   // Role prompts are materialized by the role-launch bootstrap with the same
   // sid that owns the session.  They are system-prompt files at the CLI edge,
   // but native transcript adapters persist their contents as user-shaped rows.

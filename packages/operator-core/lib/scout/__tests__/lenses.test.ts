@@ -10,6 +10,7 @@ import {
   DEFAULT_IDEATOR_MISSION,
   DISTANT_DOMAINS,
   LENS_REGISTRY,
+  renderLensIdentity,
   assignDistantDomain,
   buildIdeatorPrompt,
   digestRefSet,
@@ -30,7 +31,7 @@ describe('LENS_REGISTRY', () => {
     for (const lens of CREATIVE_LENSES) {
       expect(LENS_REGISTRY[lens]).toBeDefined();
       expect(LENS_REGISTRY[lens].lens).toBe(lens);
-      expect(LENS_REGISTRY[lens].stance.length).toBeGreaterThan(20);
+      expect(renderLensIdentity(lens).length).toBeGreaterThan(20);
     }
   });
 
@@ -215,7 +216,7 @@ describe('buildIdeatorPrompt — mission framing (P-010 prompt-overlay seam)', (
     expect(sys.startsWith(mission)).toBe(true);
     expect(sys).not.toContain('multi-agent coding platform');
     // the engine MECHANISM (lens stance + grounding rules + JSON output contract) is untouched
-    expect(sys).toContain(LENS_REGISTRY['first-principles'].stance);
+    expect(sys).toContain(renderLensIdentity('first-principles'));
     expect(sys).toContain('addressesPatternRefs');
     expect(sys).toContain('"ideas"');
   });
