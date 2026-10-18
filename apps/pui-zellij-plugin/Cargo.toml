@@ -29,6 +29,6 @@ name = "pui_companion"
 path = "src/main.rs"
 
 [dependencies]
-# Matches the installed zellij (0.44.3) exactly — the plugin API is version-coupled.
-zellij-tile = "0.44.3"
+# Matches the packaged zellij exactly — the plugin API is version-coupled.
+zellij-tile = "=0.45.1"
 pui-companion-proto = { path = "../pui-companion-proto" }

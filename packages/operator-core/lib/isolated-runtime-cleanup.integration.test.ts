@@ -577,3 +577,47 @@ it.each(['SIGINT', 'SIGTERM'] as const)('waits for cleanup on %s when the superv
     await rm(evidenceDir, { recursive: true, force: true });
   }
 }, 180_000);
+
+it('fences intentional PG shutdown before cancelling an owned process group', async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'isolated-owned-group-cancel-'));
+  const env: NodeJS.ProcessEnv = { ...process.env, PC_ISOLATED_RUNTIME_PROOF: '1', TMPDIR: evidenceDir };
+  delete env.PC_HEAVY_PREEMPT_READY_FILE;
+  delete env.PC_HEAVY_PSI_FINALIZATION_FILE;
+  const child = fork(join(root, 'scripts/with-test-pg.mjs'), [
+    '--isolated-runtime', '--', process.execPath, '-e', 'setInterval(() => {}, 1000);',
+  ], { cwd: root, detached: true, execArgv: [], env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  let cancelled = false;
+  try {
+    child.once('message', message => {
+      if (message && typeof message === 'object' && message.kind === 'isolated-runtime-start') {
+        cancelled = true;
+        child.kill('SIGTERM');
+      }
+    });
+    const result = await captureIsolatedWorker(child, evidenceDir, { timeoutMs: 120_000, killGraceMs: 45_000 });
+    expect(cancelled).toBe(true);
+    // A detached supervisor owns a separate process group. Its SIGTERM handler
+    // fences PG before signalling that group; the worker's SIGINT exit can win
+    // the supervisor's final-exit race, so the observed supervisor result is
+    // code 1 rather than a raw SIGTERM. The guard is the absence of restart and
+    // the complete cleanup receipt.
+    expect({
+      code: result.code,
+      signal: result.signal,
+      timedOut: result.timedOut,
+      exitWaitTimedOut: result.exitWaitTimedOut,
+      stdioDrainTimedOut: result.stdioDrainTimedOut,
+      unexpectedDeath: result.output.includes('postgres exited unexpectedly'),
+      restartAttempt: result.output.includes('restart attempt'),
+      cleanupComplete: result.output.includes('stage":"complete"'),
+    }).toEqual({ code: 1, signal: null, timedOut: false, exitWaitTimedOut: false,
+      stdioDrainTimedOut: false, unexpectedDeath: false, restartAttempt: false, cleanupComplete: true });
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise(resolve => child.once('exit', resolve));
+      try { process.kill(-child.pid!, 'SIGKILL'); } catch { /* owned group already gone */ }
+      await exited;
+    }
+    await rm(evidenceDir, { recursive: true, force: true });
+  }
+}, 180_000);

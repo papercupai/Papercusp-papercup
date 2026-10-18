@@ -428,7 +428,13 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
     if (terminatingSignal) return;
     terminatingSignal = sig;
-    if (ownProcessGroup) {
+    // Once startEmbeddedPostgresServer has returned, cleanup owns the PG handle
+    // and its supervisor. Let pg.stop() fence supervision before stopping the
+    // postmaster; signalling our whole process group first makes the supervisor
+    // observe the intentional code-0 shutdown as an unexpected death and queue a
+    // restart during teardown. During bootstrap there is no handle to fence, so
+    // retain the group signal to reap initdb/postmaster descendants.
+    if (ownProcessGroup && (!pg || !child?.pid)) {
       // The repeated signal to this supervisor is ignored by the guard above;
       // its exact owned initdb/postmaster descendants receive it as well.
       // PG's maintained stop() uses SIGINT (fast shutdown). SIGTERM requests

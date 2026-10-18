@@ -2082,7 +2082,7 @@ describe('refresh_release_worktree — stale Git index.lock recovery (EI-2118158
   // under gate load that exec alone exceeded 0.1s (red at repair head
   // c5865549, 2026-09-27): the probe timed out, reported "unavailable", and the
   // live-holder / unowned verdicts under test were never reached.
-  function runRefresh(fuserScript?: string, probeTimeoutSec = '30'): {
+  function runRefresh(fuserScript?: string, probeTimeoutSec = '30', integrationRoot?: string): {
     status: number | null;
     stdout: string;
     stderr: string;
@@ -2095,7 +2095,7 @@ describe('refresh_release_worktree — stale Git index.lock recovery (EI-2118158
       path = `${fakeBin}:${path}`;
     }
     const wrapper = [
-      'set -uo pipefail',
+      'set -euo pipefail',
       'log() { printf "[test] %s\\n" "$*"; }',
       'source <(sed -n "/^index_lock_has_live_holder()/,/^}/p" "$SETUP_SCRIPT")',
       'source <(sed -n "/^quarantine_stale_worktree_index_lock()/,/^}/p" "$SETUP_SCRIPT")',
@@ -2106,6 +2106,7 @@ describe('refresh_release_worktree — stale Git index.lock recovery (EI-2118158
       env: {
         ...process.env,
         SETUP_SCRIPT: SCRIPT_PATH,
+        INTEGRATION_ROOT: integrationRoot ?? join(quarantineRoot, 'no-integration-runtime'),
         RELEASE_ROOT: releaseRoot,
         TARGET_SHA: targetSha,
         TMPDIR: quarantineRoot,
@@ -2191,6 +2192,49 @@ describe('refresh_release_worktree — stale Git index.lock recovery (EI-2118158
     expect(existsSync(lockPath)).toBe(true);
     expect(git('rev-parse', 'HEAD')).toBe(firstSha);
     expect(result.stdout).toContain('live-holder probe was unavailable');
+  });
+
+  it('reuses the parallel git-sync scanner when fuser would give an unusable verdict', () => {
+    const lockPath = createIndexLock(10 * 60_000);
+    // A false "held" fallback must not override the complete primary scan.
+    const result = runRefresh('exit 0\n', '30', REPO_ROOT);
+
+    expect(result.status).toBe(0);
+    expect(existsSync(lockPath)).toBe(false);
+    expect(git('rev-parse', 'HEAD')).toBe(targetSha);
+    expect(result.stdout).toContain('quarantined stale unowned Git index lock');
+  }, 120_000);
+
+  it('the parallel scanner preserves a real live holder even if fuser would miss it', () => {
+    const lockPath = createIndexLock(10 * 60_000);
+    const fd = openSync(lockPath, 'r');
+    try {
+      const result = runRefresh('exit 1\n', '30', REPO_ROOT);
+      expect(result.status).not.toBe(0);
+      expect(existsSync(lockPath)).toBe(true);
+      expect(git('rev-parse', 'HEAD')).toBe(firstSha);
+      expect(result.stdout).toContain('held by a live process');
+    } finally {
+      closeSync(fd);
+    }
+  }, 120_000);
+
+  it('keeps an old lock when neither the maintained scanner nor fuser can answer', () => {
+    const lockPath = createIndexLock(10 * 60_000);
+    const result = runRefresh('exit 2\n');
+    expect(result.status).not.toBe(0);
+    expect(existsSync(lockPath)).toBe(true);
+    expect(git('rev-parse', 'HEAD')).toBe(firstSha);
+    expect(result.stdout).toContain('live-holder probe was unavailable');
+  });
+
+  it('preserves a replacement lock created while the holder probe is running', () => {
+    const lockPath = createIndexLock(10 * 60_000);
+    const result = runRefresh('rm -- "$1"\nprintf "new writer" > "$1"\nexit 1\n');
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(lockPath, 'utf8')).toBe('new writer');
+    expect(git('rev-parse', 'HEAD')).toBe(firstSha);
+    expect(result.stdout).toContain('changed during its holder probe');
   });
 });
 

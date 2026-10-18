@@ -75,10 +75,12 @@ case "$(uname -s)" in Linux) host_os=linux ;; Darwin) host_os=macos ;; *) host_o
 case "$(uname -m)" in x86_64|amd64) host_arch=x86_64 ;; arm64|aarch64) host_arch=aarch64 ;; *) host_arch=unknown ;; esac
 TARGET="${TARGET:-$host_os-$host_arch}"
 
-# zellij 0.44.3 — the companion plugin API is version-coupled, so this is pinned
+# zellij 0.45.1 — includes upstream #5324's targeted foreground-command lookup;
+# Avoid 0.44.3's whole-host ps scans on the PTY instruction queue.
+# The companion plugin API is version-coupled, so this is pinned
 # exactly. Digests are of the zellij BINARY and equal the upstream-published
-# zellij-<triple>.sha256sum (cross-checked 2026-09-23 for all three).
-ZJ_VER=0.44.3
+# zellij-<triple>.sha256sum (cross-checked 2026-10-18 for all three).
+ZJ_VER=0.45.1
 # Node — the private runtime psu runs on (D-031), the same pin as the desktop
 # sidecar (build-desktop-sidecar.sh NODE_VERSION). Digests are of the upstream
 # tarballs and equal nodejs.org's SHASUMS256.txt for this version (2026-09-26).
@@ -87,21 +89,21 @@ case "$TARGET" in
   linux-x86_64)
     RUST_TRIPLE=x86_64-unknown-linux-gnu
     ZJ_TRIPLE=x86_64-unknown-linux-musl
-    ZJ_SHA256=397481870c4fc3bae646cd7613cde3a1cebdc204558a6cb9a7c603d4c852fc90
+    ZJ_SHA256=d006c521dcb475a6005d741e9dd7c5758e5a23b28dd60a5c10cebfa4876319dd
     NODE_PLATFORM=linux-x64
     NODE_SHA256=9f5eb6ac21845a66c493c91a253b1da32fd684e89e9b7202d4936982336be4ca
     ;;
   macos-aarch64)
     RUST_TRIPLE=aarch64-apple-darwin
     ZJ_TRIPLE=aarch64-apple-darwin
-    ZJ_SHA256=99700a8c0afcf58f05651ccf543f9a84101dd2ea222c8e1cb06b57689425d693
+    ZJ_SHA256=ca5f9333735bdbc59a621f1d8ed8e24798845302a28ff175d253d4793d5a4a2c
     NODE_PLATFORM=darwin-arm64
     NODE_SHA256=eb02f7fab96d3d67de40c5ec8566096fcb4c2026728787683ae5a97eb612b941
     ;;
   macos-x86_64)
     RUST_TRIPLE=x86_64-apple-darwin
     ZJ_TRIPLE=x86_64-apple-darwin
-    ZJ_SHA256=42dca16e7c852dd9c45485bb73457e090463b41ba8fade272b779ac33d54e642
+    ZJ_SHA256=e3afe876c04cb83ca3f68cb939113ec7b1abe5fb46c13727c102a64afcb4b7d4
     NODE_PLATFORM=darwin-x64
     NODE_SHA256=6fb20fceacbb157c2f95825b80df4a454a0f6d81cdcd7bb81eeae9147e0e76ec
     ;;

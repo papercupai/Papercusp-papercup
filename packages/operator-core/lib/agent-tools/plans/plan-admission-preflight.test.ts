@@ -386,6 +386,31 @@ describe('evaluateExactPlanAdmission', () => {
     expect(partial.message).not.toContain(stopTheLineExplanation('papercusp'));
   });
 
+  it('keeps caller-held plan-start recovery out of a new-member fleet launch', () => {
+    const common = {
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [{ id: 'F-1', family: 'feature' as const, sourcePlanItemIds: ['P-001'], payload: null }],
+      laneHealth: lane({ issueReachable: false, feature: 0, featureMatchedByFilter: 1,
+        featureExcluded: { claimFloors: 1, stopTheLine: 1 } }),
+    };
+    const launch = evaluateExactPlanAdmission({ ...common, requestedSeats: 1 });
+    expect(launch).toMatchObject({ ready: false, reason: 'floor-gated' });
+    expect(launch.message).toContain('Launching new fleet members requires rows those members can claim');
+    expect(launch.message).toContain('Claiming a row for the leader does not satisfy this launch');
+    expect(launch.message).not.toContain('then retry plans:start');
+
+    const held = { ...common, assignee: 'leader', allowCallerHeld: true,
+      workItems: [{ ...common.workItems[0], assignee: 'leader', state: 'open' as const }],
+      laneHealth: lane({ issueReachable: false, feature: 0, featureMatchedByFilter: 1,
+        featureExcluded: { claimFloors: 1, taken: 1 } }),
+    };
+    expect(evaluateExactPlanAdmission({ ...held, requestedSeats: 1 })).toMatchObject({
+      ready: false, reason: 'floor-gated', executableWidth: 0,
+    });
+    expect(evaluateExactPlanAdmission(held)).toMatchObject({ ready: true });
+  });
+
   it('names the exact-plan filter when it matches no rows instead of blaming claim floors', () => {
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',

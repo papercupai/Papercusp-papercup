@@ -285,19 +285,15 @@ export async function fleetAdmissionRefusalResult(args: {
   const namedFloors = excluded == null ? null : Object.fromEntries(
     Object.entries(excluded).filter(([name, count]) => name !== 'claimFloors' && count > 0),
   );
-  const held = new Set((admission?.blockingRows ?? []).map((row) => row.workItemId));
-  const claimId = workItemIds.find((id) => !held.has(id));
-  const canClaim = admission?.reason === 'floor-gated' && claimId &&
-    Object.keys(namedFloors ?? {}).length > 0 &&
-    Object.keys(namedFloors ?? {}).every((name) => ['stopTheLine', 'reservedPlanLane', 'releaseCooldown',
-      'claimHold', 'claimState', 'verificationConflict', 'rig', 'swarm', 'redundancy', 'dependencies'].includes(name));
-  const repairCall = canClaim
-    ? { tool: 'work_items:claim', args: { id: claimId, assignee: 'self', harness: args.harness },
-        effect: 'claim', note: 'Claim this exact row with readiness advisories, then retry the plan start.' }
-    : workItemIds.length > 0
+  // A leader's by-ID claim can repair plans:start, which accepts caller-held
+  // work. A fleet launch needs work its different, future members can claim;
+  // taking that work for the leader cannot repair this operation's frontier.
+  const repairCall = workItemIds.length > 0
       ? { tool: 'work_items:get', args: { ids: workItemIds.slice(0, 16), harness: args.harness },
           effect: 'inspect', note: duplicateRows.length
             ? 'Compare the exact duplicate rows before choosing a canonical survivor; do not run whole-corpus dedup.'
+            : admission?.reason === 'floor-gated'
+              ? 'Inspect the named floors and exact holders. Claiming a row for the leader does not create claimable work for a new fleet member; retry only after the executable lane changes.'
             : 'Read the exact blockers and their holders before repairing their recorded prerequisite.' }
       : { tool: 'plans:get', args: { slug: args.plan, harness: args.harness },
           effect: 'inspect', note: 'Repair the exact plan prerequisites shown by this read, then retry.' };

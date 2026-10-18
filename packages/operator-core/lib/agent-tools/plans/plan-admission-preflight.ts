@@ -175,6 +175,7 @@ function finish(
 function zeroClaimableLaneVerdict(
   planSlug: string,
   lane: FleetLaneHealth,
+  requestedSeats: number | null,
 ): Pick<ExactPlanAdmission, 'reason' | 'message'> {
   const { matchedByFilter, excluded } = lane.effective;
   const filter = `plan = '${planSlug}'`;
@@ -213,9 +214,12 @@ function zeroClaimableLaneVerdict(
     typeof excluded.stopTheLine === 'number' &&
     excluded.stopTheLine > 0 &&
     excluded.stopTheLine === matchedByFilter;
-  const stopTheLineRemedy = stopTheLineBlocksEveryMatch
-    ? ` ${stopTheLineExplanation(lane.spec.harness)} Use work_items:claim to claim otherwise-ready rows by ID, then retry plans:start; plans:start accepts rows already held by this caller.`
-    : '';
+  const stopTheLineRemedy = !stopTheLineBlocksEveryMatch
+    ? ''
+    : ` ${stopTheLineExplanation(lane.spec.harness)} ` +
+      (requestedSeats == null
+        ? 'Use work_items:claim to claim otherwise-ready rows by ID, then retry plans:start; plans:start accepts rows already held by this caller.'
+        : 'Launching new fleet members requires rows those members can claim. Claiming a row for the leader does not satisfy this launch. Inspect the named floor before retrying fleet:launch-on-plan.');
   return {
     reason: 'floor-gated',
     message: `Under ${scope}, the exact-plan lane is structurally reachable but every matched row is excluded by claim floors (${activeExclusions}).${stopTheLineRemedy}`,
@@ -474,7 +478,7 @@ export function evaluateExactPlanAdmission(args: {
     );
   }
   if (args.laneHealth.effective.claimable === 0) {
-    const zeroLane = zeroClaimableLaneVerdict(args.planSlug, args.laneHealth);
+    const zeroLane = zeroClaimableLaneVerdict(args.planSlug, args.laneHealth, requestedSeats);
     return finish(base, 'refused', zeroLane.reason, zeroLane.message);
   }
   if (seatShortfall != null && seatShortfall > 0) {

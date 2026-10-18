@@ -65,7 +65,6 @@ import { applyResultDoorAsync } from '../../result-door';
 import { evaluateExactPlanAdmission, type ExactPlanAdmission } from '../plans/plan-admission-preflight';
 import type { PlanItem } from '@papercusp/plan-parser';
 import workItemsGet from '../work_items/get';
-import workItemsClaim from '../work_items/claim';
 
 describe('scoped lane admission', () => {
   const planItem: PlanItem = { id: 'P-001', text: 'unrelated peer lane', storedStatus: 'todo',
@@ -95,7 +94,7 @@ describe('compact exact-plan admission refusal', () => {
     admission: admission as ExactPlanAdmission | null, promotionFailsafe: { ran: true, promoted: 1 },
   });
 
-  it('keeps reason, blocking ids, named floor and runnable repair inside 6000 characters with lossless detail', async () => {
+  it('keeps reason, blocking ids, named floor and runnable inspection inside 6000 characters with lossless detail', async () => {
     const sandbox = mkdtempSync(join(tmpdir(), 'fleet-admission-receipt-'));
     const previousRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
     process.env.PAPERCUSP_SCRATCH_ROOT = join(sandbox, 'scratch');
@@ -114,9 +113,11 @@ describe('compact exact-plan admission refusal', () => {
       expect(body).toMatchObject({ error: 'admission_refused', reason: 'floor-gated',
         message: expect.stringContaining(admission.message),
         blockingPlanItemIds: ['P-001'], blockingWorkItemIds: ['WI-17'], namedFloors: { stopTheLine: 1 },
-        repairCall: { tool: 'work_items:claim', args: { id: 'WI-17', assignee: 'self', harness: 'papercusp' } } });
+        repairCall: { tool: 'work_items:get', effect: 'inspect',
+          args: { ids: ['WI-17'], harness: 'papercusp' } } });
       expect(body.namedFloors).not.toHaveProperty('claimFloors');
-      expect(workItemsClaim.args.safeParse(body.repairCall.args).success).toBe(true);
+      expect(workItemsGet.args.safeParse(body.repairCall.args).success).toBe(true);
+      expect(body.repairCall.note).toContain('Claiming a row for the leader does not create claimable work');
       expect(body._projection.cursor.tool).toBe('capability:read');
       const cursor = body._projection.cursor;
       const reference = parseScratchReference(readFileSync(cursor.args.file_path))!;

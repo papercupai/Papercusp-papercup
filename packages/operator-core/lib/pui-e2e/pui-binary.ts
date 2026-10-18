@@ -12,7 +12,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { accessSync, chmodSync, constants, copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
@@ -25,8 +25,20 @@ export function assertPuiBinaryUnchanged(binary: string, sha256: string): string
   return actual;
 }
 
-/** Cargo's shared output may be replaced by another build while panes start. */
-export function snapshotCurrentPuiBinary(source: string) {
+/** Match PUI's own-directory-first workbench PATH before creating its private copy. */
+export function resolvePuiWorkbenchZellij(source: string, pathValue = process.env.PATH ?? ''): string | undefined {
+  for (const directory of [path.dirname(source), ...pathValue.split(path.delimiter)]) {
+    const candidate = path.resolve(directory, 'zellij');
+    try {
+      accessSync(candidate, constants.X_OK);
+      if (statSync(candidate).isFile()) return realpathSync(candidate);
+    } catch { /* Keep searching, as executable lookup does. */ }
+  }
+  return undefined;
+}
+
+/** Cargo's shared output and its selected multiplexer may change while panes start. */
+export function snapshotCurrentPuiBinary(source: string, { zellijPath }: { zellijPath?: string } = {}) {
   const sha256 = createHash('sha256').update(readFileSync(source)).digest('hex');
   const directory = mkdtempSync(path.join(tmpdir(), 'pui-current-binary-'));
   const binary = path.join(directory, 'pui');
@@ -35,7 +47,17 @@ export function snapshotCurrentPuiBinary(source: string) {
     assertPuiBinaryUnchanged(source, sha256);
     assertPuiBinaryUnchanged(binary, sha256);
     chmodSync(binary, 0o555);
-    return { binary, directory, source, sha256 };
+    let zellij: { binary: string; source: string; sha256: string } | undefined;
+    if (zellijPath) {
+      const dependencySha256 = createHash('sha256').update(readFileSync(zellijPath)).digest('hex');
+      const dependencyBinary = path.join(directory, 'zellij');
+      copyFileSync(zellijPath, dependencyBinary);
+      assertPuiBinaryUnchanged(zellijPath, dependencySha256);
+      assertPuiBinaryUnchanged(dependencyBinary, dependencySha256);
+      chmodSync(dependencyBinary, 0o555);
+      zellij = { binary: dependencyBinary, source: zellijPath, sha256: dependencySha256 };
+    }
+    return { binary, directory, source, sha256, zellij };
   } catch (error) {
     rmSync(directory, { recursive: true, force: true });
     throw error;

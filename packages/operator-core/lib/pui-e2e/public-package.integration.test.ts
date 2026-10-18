@@ -773,7 +773,7 @@ describe.sequential('public PUI package (committed source, isolated HOME, no car
     if (floor) expect(table).toContain(`Requires glibc ${floor} or newer`);
 
     const licenses = readFileSync(path.join(unit, 'THIRD_PARTY_LICENSES.md'), 'utf8');
-    for (const component of ['| zellij | 0.44.3 | MIT |', '| ratatui |', '| tokio |', '| serde |']) {
+    for (const component of ['| zellij | 0.45.1 | MIT |', '| ratatui |', '| tokio |', '| serde |']) {
       expect(licenses).toContain(component);
     }
     const firstPartyLicense = readFileSync(path.join(unit, 'LICENSE'), 'utf8');

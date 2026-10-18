@@ -17,7 +17,7 @@ import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { execFile, fork, spawnSync } from 'node:child_process';
 import { captureWorkbenchSessionEvidence, installWorkbenchPsTrace, runWorkbenchCommand, waitForWorkbenchSessionEnd, workbenchSessionList, workbenchSessionSockets } from './workbench-command';
-import { assertPuiBinaryUnchanged, snapshotCurrentPuiBinary } from './pui-binary';
+import { assertPuiBinaryUnchanged, resolvePuiWorkbenchZellij, snapshotCurrentPuiBinary } from './pui-binary';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -1843,7 +1843,7 @@ beforeAll(async () => {
   // Refuse an incomplete installed-store selection before the expensive bundle.
   bin = ensurePuiBinary();
   if (!process.env.PUI_BIN) {
-    currentBinarySnapshot = snapshotCurrentPuiBinary(bin);
+    currentBinarySnapshot = snapshotCurrentPuiBinary(bin, { zellijPath: resolvePuiWorkbenchZellij(bin) });
     bin = currentBinarySnapshot.binary;
   }
   operatorProcessBundlePath = buildOperatorProcessBundle();
@@ -2361,7 +2361,7 @@ beforeAll(async () => {
   // Release acceptance (P-012 / D-018): every PUI_*_ACCEPTANCE line in this
   // file was produced against the production operator app, not a fixture.
   console.info(HARNESS_TAG, JSON.stringify({ operator: 'production', app: 'apps/operator/bin/host-app',
-    binary: bin, binarySha256 }));
+    binary: bin, binarySha256, zellij: currentBinarySnapshot?.zellij }));
 }, 900_000);
 
 afterAll(async () => {
@@ -2371,6 +2371,13 @@ afterAll(async () => {
         binary: bin, selectedSha256: binarySha256,
         observedSha256: assertPuiBinaryUnchanged(bin, binarySha256),
         currentBuildSource: currentBinarySnapshot?.source,
+      }));
+    },
+    () => {
+      const zellij = currentBinarySnapshot?.zellij;
+      if (zellij) console.info('PUI_ZELLIJ_IDENTITY_FINAL', JSON.stringify({
+        binary: zellij.binary, source: zellij.source, selectedSha256: zellij.sha256,
+        observedSha256: assertPuiBinaryUnchanged(zellij.binary, zellij.sha256),
       }));
     },
     stopEngines,
@@ -2397,6 +2404,8 @@ afterAll(async () => {
 
 afterEach(() => {
   if (bin && binarySha256) assertPuiBinaryUnchanged(bin, binarySha256);
+  const zellij = currentBinarySnapshot?.zellij;
+  if (zellij) assertPuiBinaryUnchanged(zellij.binary, zellij.sha256);
   for (const diagnostic of activeLaunchEventLoopDiagnostics) diagnostic.finish('test-finished');
 });
 afterEach(stopEngines);
@@ -4690,7 +4699,7 @@ describe.skipIf(scriptedEngine.real).sequential('pui SU composer (current binary
   // A global inventory probes unrelated/retiring servers without a read
   // deadline. Give this fixture its own sockets and observe their retirement
   // before asking Zellij for the final inventory.
-  const paneZellij = (args: string[]) => runWorkbenchCommand('zellij', args, {
+  const paneZellij = (args: string[]) => runWorkbenchCommand(currentBinarySnapshot?.zellij?.binary ?? 'zellij', args, {
     env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, TERM: 'xterm-256color', ZELLIJ_SOCKET_DIR: workbenchSocketRoot },
     timeoutMs: 15_000,
   });

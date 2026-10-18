@@ -304,7 +304,32 @@ build_release_spa() {
 # owned lock remains a hard stop. The stale file is MOVED to a recoverable temp
 # quarantine rather than deleted, so the incident evidence survives.
 index_lock_has_live_holder() {
-  local lock_path="$1" probe_status
+  local lock_path="$1" probe_status proc_helper
+
+  # WI-6554700010017403: reuse git-sync's bounded parallel /proc instrument.
+  # A complete fuser walk takes >4s on the measured host, so its 2s deadline
+  # reports unknown even for an abandoned lock. Node's native TS support keeps
+  # this independent of node_modules; older/bootstrap hosts retain the original
+  # fail-closed fuser fallback. The imported helper has only builtin imports.
+  proc_helper="${INTEGRATION_ROOT:-}/packages/operator-core/lib/harness/git-sync/proc-open-file-scan.ts"
+  if [ -r "$proc_helper" ] && command -v node >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+    if timeout --signal=TERM --kill-after=1s 35 node --input-type=module - "$proc_helper" "$lock_path" >/dev/null 2>&1 <<'NODE'
+  import { pathToFileURL } from 'node:url';
+  try {
+    const { scanProcForOpenFile } = await import(pathToFileURL(process.argv[2]).href);
+    const { held } = await scanProcForOpenFile(target => target === process.argv[3]);
+    process.exitCode = held === true ? 0 : held === false ? 1 : 2;
+  } catch {
+    process.exitCode = 2;
+  }
+NODE
+    then
+      return 0
+    else
+      probe_status=$?
+      [ "$probe_status" -eq 1 ] && return 1
+    fi
+  fi
 
   if command -v fuser >/dev/null 2>&1; then
     # `fuser` walks the whole process table. On a busy fleet host that walk can
@@ -338,7 +363,7 @@ index_lock_has_live_holder() {
 }
 
 quarantine_stale_worktree_index_lock() {
-  local lock_path lock_mtime now age quarantine_dir quarantine_path holder_probe_status
+  local lock_path lock_mtime lock_identity now age quarantine_dir quarantine_path holder_probe_status
 
   lock_path="$(git -C "$RELEASE_ROOT" rev-parse --git-path index.lock 2>/dev/null || true)"
   [ -n "$lock_path" ] || return 1
@@ -347,6 +372,7 @@ quarantine_stale_worktree_index_lock() {
     *) lock_path="$RELEASE_ROOT/$lock_path" ;;
   esac
   [ -f "$lock_path" ] || return 1
+  lock_identity="$(stat -c '%d:%i:%s:%y:%z' "$lock_path" 2>/dev/null)" || return 1
 
   lock_mtime="$(stat -c %Y "$lock_path" 2>/dev/null || true)"
   [ -n "$lock_mtime" ] || return 1
@@ -365,6 +391,13 @@ quarantine_stale_worktree_index_lock() {
       log "refusing to reclaim Git index lock because its live-holder probe was unavailable: $lock_path"
       return 1
     fi
+  fi
+
+  # The holder scan is not atomic with quarantine. Never move a different
+  # writer's replacement lock or a lock touched while the scan was running.
+  if [ "$(stat -c '%d:%i:%s:%y:%z' "$lock_path" 2>/dev/null || true)" != "$lock_identity" ]; then
+    log "refusing to reclaim Git index lock changed during its holder probe: $lock_path"
+    return 1
   fi
 
   quarantine_dir="${TMPDIR:-/tmp}/papercusp-stale-git-locks"
