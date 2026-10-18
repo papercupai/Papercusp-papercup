@@ -536,6 +536,33 @@ export function normalizeOperatorBaseUrl(
 export const OPERATOR_URL_PROVENANCE_ENV = "PAPERCUSP_OPERATOR_URL_PROVENANCE";
 export const LAUNCHER_OPERATOR_URL_PROVENANCE = "psu-launcher";
 
+function validLocalPort(raw) {
+  const value = typeof raw === "string" ? raw.trim() : "";
+  if (!/^\d+$/.test(value)) return null;
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? value : null;
+}
+
+function localStagingHostPort(env) {
+  const hintedPort = validLocalPort(env.PAPERCUSP_HONO_PORT);
+  if (hintedPort === "3170") return hintedPort;
+
+  const resolvedBase = typeof env.PAPERCUSP_OPERATOR_BASE === "string"
+    ? env.PAPERCUSP_OPERATOR_BASE.trim()
+    : "";
+  if (!resolvedBase) return null;
+  try {
+    const url = new URL(resolvedBase);
+    const localHost = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(
+      url.hostname.toLowerCase(),
+    );
+    const port = url.port || (url.protocol === "https:" ? "443" : "80");
+    return url.protocol === "http:" && localHost && port === "3170" ? "3170" : null;
+  } catch {
+    return null;
+  }
+}
+
 export function resolveOperatorTarget({
   env = process.env,
   home = homedir(),
@@ -575,6 +602,35 @@ export function resolveOperatorTarget({
     const source =
       env[OPERATOR_URL_PROVENANCE_ENV] === LAUNCHER_OPERATOR_URL_PROVENANCE
         ? "managed-env" : "env";
+    // A staging launcher can inherit a legacy :9071 URL from an older
+    // psu-launcher generation. Its provenance says the URL was selected by the
+    // launcher, and the staging service supplies :9171 without a target hint;
+    // recover to the same-vintage proxy before exporting the child environment.
+    // A green launcher has no staging-proxy marker, so its managed :9071 URL
+    // remains unchanged.
+    const legacyManagedGreenProxy =
+      source === "managed-env" &&
+      /^https?:\/\/(127\.0\.0\.1|localhost):9071$/.test(pinned) &&
+      validLocalPort(env.PAPERCUSP_MCP_STAGING_PROXY_PORT) &&
+      !validLocalPort(env.PAPERCUSP_MCP_PROXY_TARGET_PORT);
+    if (
+      legacyManagedGreenProxy &&
+      env.PAPERCUSP_MCP_STAGING_PROXY !== "0" &&
+      !proxyOptedOut
+    ) {
+      const stagingProxyPort = validLocalPort(env.PAPERCUSP_MCP_STAGING_PROXY_PORT);
+      if (stagingProxyPort && probe(Number(stagingProxyPort))) {
+        warn(
+          "psu: launcher-managed :9071 is a legacy green route for staging; " +
+            "using the same-vintage MCP proxy :" + stagingProxyPort + ".",
+        );
+        return {
+          url: "http://127.0.0.1:" + stagingProxyPort,
+          source,
+          startedAt: null,
+        };
+      }
+    }
     if (
       pinsStaging &&
       env.PAPERCUSP_MCP_STAGING_PROXY !== "0" &&
@@ -643,6 +699,35 @@ export function resolveOperatorTarget({
     return {
       url: pinned,
       source,
+      startedAt: null,
+    };
+  }
+  // A launcher running inside the staging operator must preserve that runtime
+  // for its children. The generic resilient proxy fronts green :3070, so
+  // selecting it here gives ptool a legacy catalog and makes generation-bound
+  // writes fail before dispatch. Prefer the same-vintage :9171 proxy; if it is
+  // disabled or unavailable, stay on the actual :3170 host.
+  const stagingHostPort = localStagingHostPort(env);
+  if (stagingHostPort) {
+    const stagingProxyPort = validLocalPort(env.PAPERCUSP_MCP_STAGING_PROXY_PORT) ?? "9171";
+    if (
+      !proxyOptedOut &&
+      env.PAPERCUSP_MCP_STAGING_PROXY !== "0" &&
+      probe(Number(stagingProxyPort))
+    ) {
+      warn(
+        "psu: launcher is running on staging :" + stagingHostPort + "; using the same-vintage " +
+          "MCP proxy :" + stagingProxyPort + " (same operator) for this launch.",
+      );
+      return {
+        url: "http://127.0.0.1:" + stagingProxyPort,
+        source: "proxy",
+        startedAt: null,
+      };
+    }
+    return {
+      url: "http://127.0.0.1:" + stagingHostPort,
+      source: "staging-host",
       startedAt: null,
     };
   }

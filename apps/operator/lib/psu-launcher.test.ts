@@ -17052,6 +17052,95 @@ describe("operator endpoint resolution (desktop vs dev box)", () => {
       expect(probes).toBe(0);
     });
 
+    it("keeps launches from the staging operator on its same-vintage proxy", () => {
+      const probed: number[] = [];
+      const warnings: string[] = [];
+      const target = resolveOperatorTarget({
+        env: {
+          PAPERCUSP_HONO_PORT: "3170",
+          PAPERCUSP_MCP_STAGING_PROXY_PORT: "9171",
+        },
+        home,
+        probe: (port: number) => {
+          probed.push(port);
+          return port === 9171;
+        },
+        warn: (message: string) => warnings.push(message),
+      });
+
+      expect(target).toEqual({
+        url: "http://127.0.0.1:9171",
+        source: "proxy",
+        startedAt: null,
+      });
+      expect(probed).toEqual([9171]);
+      expect(warnings[0]).toMatch(/same-vintage MCP proxy :9171/);
+    });
+
+    it("uses the resolved local staging base when the Hono port hint is absent", () => {
+      const target = resolveOperatorTarget({
+        env: {
+          PAPERCUSP_OPERATOR_BASE: "http://127.0.0.1:3170/api/mcp",
+          PAPERCUSP_MCP_STAGING_PROXY_PORT: "9272",
+        },
+        home,
+        probe: (port: number) => port === 9272,
+        warn: () => {},
+      });
+
+      expect(target).toEqual({
+        url: "http://127.0.0.1:9272",
+        source: "proxy",
+        startedAt: null,
+      });
+    });
+
+    it("stays on staging directly when its same-vintage proxy is unavailable", () => {
+      const probed: number[] = [];
+      const target = resolveOperatorTarget({
+        env: {
+          PAPERCUSP_HONO_PORT: "3170",
+          PAPERCUSP_MCP_STAGING_PROXY_PORT: "9171",
+        },
+        home,
+        probe: (port: number) => {
+          probed.push(port);
+          return false;
+        },
+        warn: () => {},
+      });
+
+      expect(target).toEqual({
+        url: "http://127.0.0.1:3170",
+        source: "staging-host",
+        startedAt: null,
+      });
+      expect(probed).toEqual([9171]);
+    });
+
+    it.each([
+      { PAPERCUSP_MCP_PROXY: "0" },
+      { PAPERCUSP_MCP_STAGING_PROXY: "0" },
+    ])("honors staging proxy opt-outs and keeps the current host: %j", (overrides) => {
+      let probes = 0;
+      const target = resolveOperatorTarget({
+        env: { PAPERCUSP_HONO_PORT: "3170", ...overrides },
+        home,
+        probe: () => {
+          probes++;
+          return true;
+        },
+        warn: () => {},
+      });
+
+      expect(target).toEqual({
+        url: "http://127.0.0.1:3170",
+        source: "staging-host",
+        startedAt: null,
+      });
+      expect(probes).toBe(0);
+    });
+
     it("honors PAPERCUSP_MCP_PROXY_PORT for both the probe and the url", () => {
       const probed: number[] = [];
       const url = resolveOperatorUrl({
@@ -17163,6 +17252,52 @@ describe("operator endpoint resolution (desktop vs dev box)", () => {
         }),
       ).toEqual({
         url: "http://127.0.0.1:9171",
+        source: "managed-env",
+        startedAt: null,
+      });
+    });
+
+    it("repairs a legacy launcher-managed :9071 route when staging supplies :9171", () => {
+      const probed: number[] = [];
+      const warnings: string[] = [];
+      const target = resolveOperatorTarget({
+        env: {
+          PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:9071",
+          PAPERCUSP_OPERATOR_URL_PROVENANCE: "psu-launcher",
+          PAPERCUSP_MCP_STAGING_PROXY_PORT: "9171",
+        },
+        home,
+        probe: (port: number) => {
+          probed.push(port);
+          return port === 9171;
+        },
+        warn: (message: string) => warnings.push(message),
+      });
+
+      expect(target).toEqual({
+        url: "http://127.0.0.1:9171",
+        source: "managed-env",
+        startedAt: null,
+      });
+      expect(probed).toEqual([9171]);
+      expect(warnings[0]).toMatch(/legacy green route for staging/);
+    });
+
+    it("does not reinterpret a managed :9071 route when its proxy target is explicit", () => {
+      const target = resolveOperatorTarget({
+        env: {
+          PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:9071",
+          PAPERCUSP_OPERATOR_URL_PROVENANCE: "psu-launcher",
+          PAPERCUSP_MCP_STAGING_PROXY_PORT: "9171",
+          PAPERCUSP_MCP_PROXY_TARGET_PORT: "3070",
+        },
+        home,
+        probe: () => true,
+        warn: () => {},
+      });
+
+      expect(target).toEqual({
+        url: "http://127.0.0.1:9071",
         source: "managed-env",
         startedAt: null,
       });
