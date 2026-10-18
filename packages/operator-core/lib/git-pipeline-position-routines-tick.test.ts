@@ -178,10 +178,10 @@ describe('EI-19369080695408825: a new sweep is classified with no hand-edit', ()
     expect(uncovered, `derived paths the catch-all regex fails to match:\n  ${uncovered.join('\n  ')}`).toEqual([]);
   });
 
-  it('derives the set when the runtime module lives in the bundled host directory', () => {
-    // In the host bundle import.meta.url points at apps/operator/dist-host, while
+  it.each(['dist-host', 'dist-hosted-control-plane'])('derives the set when the runtime module lives in apps/operator/%s', (bundleDir) => {
+    // In every bundled host import.meta.url points below apps/operator, while
     // the source-only dispatcher stays under packages/operator-core/lib.
-    const bundleModuleDir = resolve(REPO_ROOT, 'apps/operator/dist-host');
+    const bundleModuleDir = resolve(REPO_ROOT, `apps/operator/${bundleDir}`);
     const sourceLibDir = operatorCoreLibDirFromModuleDir(bundleModuleDir);
 
     expect(sourceLibDir).toBe(resolve(REPO_ROOT, 'packages/operator-core/lib'));

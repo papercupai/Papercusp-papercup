@@ -322,7 +322,7 @@ describe('Claude seed wire budget (EI-23319364088969722)', () => {
     // halts, or strands state, or makes the rest of the catalog unreachable. A byte
     // ceiling with no floor check would happily buy its savings out of exactly these.
     const advertised = new Set(claudeSeedToolNames({}) as string[]);
-    const floors = (CLAUDE_TOOL_DELIVERY as { floors?: string[] }).floors ?? [];
+    const floors = (CLAUDE_TOOL_DELIVERY as { floors?: readonly string[] }).floors ?? [];
     expect(
       floors.length,
       'the generated artifact carries no floor list — this assertion would be vacuous',
@@ -360,7 +360,7 @@ describe('Claude seed wire budget (EI-23319364088969722)', () => {
       claudeSeedToolNames({}) as string[],
       'claudeSeedToolNames({}) no longer returns the generated advertised set verbatim — the ' +
         'default branch has diverged from the artifact gen:tool-delivery:check verifies.',
-    ).toEqual([...(CLAUDE_TOOL_DELIVERY as { advertised: string[] }).advertised]);
+    ).toEqual([...(CLAUDE_TOOL_DELIVERY as { advertised: readonly string[] }).advertised]);
   });
 
   it('the FULL-SEED branch (PAPERCUSP_CLAUDE_FULL_SEED=1) has a wire budget of its own', () => {

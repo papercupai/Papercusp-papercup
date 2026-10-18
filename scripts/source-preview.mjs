@@ -45,7 +45,7 @@
 // Exit: 0 ok / in sync · 1 finding / drift / refused · 2 usage or cannot check.
 import assert from 'node:assert/strict';
 import { committedWorkRootDependencyDonor } from './lint-as-committed.mjs';
-import { readTaskDeadlineEpochMs, formatTaskDeadlineRefusal } from './lib/budgeted-task-scheduler.mjs';
+import { admitTaskDeadline, readTaskDeadlineEpochMs } from './lib/task-deadline.mjs';
 import { createProgressAwareWatchdog } from './lib/batch-watchdog.mjs';
 import { processGroupLifetime } from '@papercusp/operator-core/lib/fleet/process-group-lifetime';
 import { spawn, spawnSync } from 'node:child_process';
@@ -486,6 +486,8 @@ export const TAURI_VERIFIER_INPUTS = Object.freeze([
   'scripts/lib/spa-require-built.sh',
   'scripts/lib/budgeted-task-scheduler.mjs',
   'scripts/lib/task-cgroup-limits.mjs',
+  'scripts/lib/task-deadline.mjs',
+  'scripts/lib/verify-tauri-deadline.mjs',
   'scripts/pc-heavy.sh',
   'apps/operator/bin/release/dependency-generation.sh',
   'papercusp-desktop/bin/tauri-guarded',
@@ -1382,15 +1384,15 @@ export function estimateVerifierCommandBudget(measurements, childEstimateMs = 0,
 
 /** Reuse the launcher's absolute deadline and the scheduler's attributable refusal. */
 export function admitVerifierCommandBudget(estimate, { env = process.env, nowMs = Date.now(), preparation = false } = {}) {
-  const deadlineEpochMs = readTaskDeadlineEpochMs(env);
   const cleanupReserveMs = Math.max(120_000, estimate?.cleanupMs ?? 0);
-  const childCutoffEpochMs = deadlineEpochMs === null ? null : deadlineEpochMs - cleanupReserveMs;
   const knownEstimateMs = Math.max(cleanupReserveMs, estimate ? (preparation ? estimate.totalMs : estimate.remainingMs) : 0);
-  const remainingMs = deadlineEpochMs === null ? null : deadlineEpochMs - nowMs;
-  if (remainingMs !== null && (remainingMs <= 0 || remainingMs <= knownEstimateMs))
-    throw new PreviewError(formatTaskDeadlineRefusal({ remainingMs, knownEstimateMs,
-      knownTasks: estimate ? VERIFIER_PREPARATION_PHASES.length : 0, unknownTasks: estimate?.unknownChild === false ? 0 : 1 }), 2);
-  return { deadlineEpochMs, remainingMs, knownEstimateMs, cleanupReserveMs, childCutoffEpochMs, estimate };
+  try {
+    return { ...admitTaskDeadline({ env, nowMs, cleanupReserveMs, knownEstimateMs,
+      knownTasks: estimate ? VERIFIER_PREPARATION_PHASES.length : 0,
+      unknownTasks: estimate?.unknownChild === false ? 0 : 1 }), estimate };
+  } catch (error) {
+    throw new PreviewError(error.message, 2);
+  }
 }
 
 async function listFiles(dir) {

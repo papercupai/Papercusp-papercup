@@ -1567,6 +1567,7 @@ async function createOneWorkItemCore(
       severity: args.severity,
       harness: harnessForItem,
       by: ctx.ownerId,
+      title: args.title,
     }).catch(() => null);
     return {
       ok: true,
@@ -1589,14 +1590,15 @@ async function createOneWorkItemCore(
 }
 
 /**
- * Create-time duplicate verdict (migration 1534, bug-inflow-one-problem-one-row-2026-10-18#D-001).
- * Stamps the best semantic-hard candidate as duplicate_of with its similarity as confidence,
- * THEN writes the matching 'duplicates' link (linkWorkItem's own stamp is first-writer-wins, so
- * the source stays 'create-match'), so unlinking that edge withdraws the verdict. Skipped when
+ * Create-time duplicate verdict (migration 1534, bug-inflow-one-problem-one-row-2026-10-18#D-001,
+ * as amended by #D-002). Stamps the best semantic-hard candidate as duplicate_of with its
+ * similarity as confidence, THEN writes the matching 'duplicates' link (linkWorkItem's own stamp
+ * is first-writer-wins, so the source stays 'create-match'), so unlinking that edge withdraws the
+ * verdict. Only the calibrated HARD band qualifies, never the advisory soft band. Skipped when
  * the filer passed force (asserted distinct work) or the severity is critical (novelty must
- * never hide behind a false match).
+ * never hide behind a false match). Exported for the real-PG lifecycle test.
  */
-async function stampCreateTimeDuplicate(input: {
+export async function stampCreateTimeDuplicate(input: {
   workItemId: string;
   workspaceId: string | null | undefined;
   similarOpen: readonly { id: string; similarity?: number | null; harness?: string | null }[] | undefined;
@@ -1605,6 +1607,8 @@ async function stampCreateTimeDuplicate(input: {
   severity?: string;
   harness: string | undefined;
   by: string | undefined;
+  /** The new filing's title, recorded on the canonical's occurrence row. */
+  title?: string;
 }): Promise<{ id: string; confidence: number | null } | null> {
   if (input.force || input.severity === 'critical' || !input.workspaceId) return null;
   const hard = (input.similarOpen ?? []).filter(
@@ -1631,5 +1635,20 @@ async function stampCreateTimeDuplicate(input: {
   if (stamped.length === 0) return null;
   const dst = await resolveWorkItemRef(best.id, best.harness ?? input.harness);
   if (dst) await linkWorkItem(input.workItemId, dst, 'duplicates', { harness: input.harness, by: input.by });
+  // P-006 (bug-inflow-one-problem-one-row-2026-10-18): the repeat counts onto the CANONICAL
+  // row's occurrence ledger, so the canonical shows how often the problem was re-filed.
+  // Fail-open like every occurrence write; the explicit sql keeps it live under real-PG tests.
+  await recordIssueOccurrence(
+    {
+      canonicalId: best.id,
+      canonicalHarness: best.harness ?? input.harness ?? null,
+      reporter: input.by ?? null,
+      sourceTool: 'work_items:create',
+      reportKind: 'duplicate',
+      reportedTitle: input.title ?? input.workItemId,
+      evidence: { matchedOn: 'semantic-hard', similarity: confidence, duplicateRow: input.workItemId, writer: 'create-match' },
+    },
+    sql,
+  ).catch(() => null);
   return { id: best.id, confidence };
 }

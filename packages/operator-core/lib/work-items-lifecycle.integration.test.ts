@@ -212,6 +212,8 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('1219-blueprint-operation-invocations.sql')).simple();
   await db.sql.unsafe(readMigration('1223-blueprint-operation-event-replay.sql')).simple();
   await db.sql.unsafe(readMigration('698-work-items-closed-ts.sql')).simple();
+  // A create-time duplicate verdict counts the repeat onto the canonical's occurrence ledger.
+  await db.sql.unsafe(readMigration('831-issue-occurrence-ledger.sql')).simple();
   await db.sql.unsafe(`
     CREATE TABLE harness_shared.blueprints (
       workspace_id text NOT NULL, harness_slug text NOT NULL, blueprint_id text NOT NULL,
@@ -2210,6 +2212,85 @@ describe('link projection — non-blocks rels', () => {
     await wi.unlinkWorkItem(bug.id, { kind: 'issue', ref: other.id }, 'duplicates');
     expect(await verdict(bug.id)).toEqual({ duplicate_of: null, duplicate_source: null, matched: null });
     expect(await isWorkItemDuplicateAdmitted(bug.id)).toBe(true);
+  });
+
+  it('a create-time HARD-band match stamps duplicate_of with confidence + evidence; soft, force and critical never do (D-002)', async () => {
+    const { isWorkItemDuplicateAdmitted } = await import('./work-items-admission');
+    const { stampCreateTimeDuplicate } = await import('./agent-tools/work_items/_create-core');
+    const canonical = await wi.createWorkItem({ kind: 'bug', title: 'canonical', harness: 'papercup', createdBy: 'agA' });
+    const softTwin = await wi.createWorkItem({ kind: 'bug', title: 'soft twin', harness: 'papercup', createdBy: 'agA' });
+    const filed = await wi.createWorkItem({ kind: 'bug', title: 'new filing', harness: 'papercup', createdBy: 'agA' });
+    const workspaceId = (
+      await db.sql<{ workspace_id: string }[]>`SELECT workspace_id FROM harness_shared.work_items WHERE feature_id = ${filed.id}`
+    )[0]!.workspace_id;
+    const verdict = async (id: string) =>
+      (
+        await db.sql<{ duplicate_of: string | null; duplicate_source: string | null; confidence: number | null; matched: string | null; candidates: string[] | null }[]>`
+          SELECT duplicate_of, duplicate_source, duplicate_confidence AS confidence,
+                 duplicate_evidence->>'matchedOn' AS matched,
+                 ARRAY(SELECT jsonb_array_elements_text(duplicate_evidence->'candidates')) AS candidates
+            FROM harness_shared.work_items WHERE feature_id = ${id}`
+      )[0];
+    const base = { workItemId: filed.id, workspaceId, harness: 'papercup', by: 'agA' };
+    const candidates = [
+      { id: softTwin.id, similarity: 0.9, harness: 'papercup' },
+      { id: canonical.id, similarity: 0.95, harness: 'papercup' },
+    ];
+
+    // Advisory (soft-band) candidates alone never set the verdict.
+    expect(await stampCreateTimeDuplicate({ ...base, similarOpen: candidates, hardSemanticIds: new Set() })).toBeNull();
+    // The filer asserting distinct work, or a critical filing, never gets hidden behind a match.
+    const hard = new Set([canonical.id]);
+    expect(await stampCreateTimeDuplicate({ ...base, similarOpen: candidates, hardSemanticIds: hard, force: true })).toBeNull();
+    expect(await stampCreateTimeDuplicate({ ...base, similarOpen: candidates, hardSemanticIds: hard, severity: 'critical' })).toBeNull();
+    expect((await verdict(filed.id)).duplicate_of).toBeNull();
+    expect(await isWorkItemDuplicateAdmitted(filed.id)).toBe(true);
+
+    // A hard-band match becomes the typed verdict the admission gate reads.
+    expect(await stampCreateTimeDuplicate({ ...base, similarOpen: candidates, hardSemanticIds: hard })).toEqual({
+      id: canonical.id,
+      confidence: 0.95,
+    });
+    expect(await verdict(filed.id)).toEqual({
+      duplicate_of: canonical.id,
+      duplicate_source: 'create-match',
+      confidence: 0.95,
+      matched: 'semantic-hard',
+      candidates: [canonical.id],
+    });
+    expect(await isWorkItemDuplicateAdmitted(filed.id)).toBe(false);
+    // The repeat counts onto the canonical row, once; the advisory twin gets nothing.
+    const occurrences = await db.sql<{ canonical: string; kind: string; duplicate_row: string | null }[]>`
+      SELECT canonical_work_item_id AS canonical, report_kind AS kind, evidence->>'duplicateRow' AS duplicate_row
+        FROM harness_shared.work_item_occurrences
+       WHERE canonical_work_item_id IN (${canonical.id}, ${softTwin.id})`;
+    expect(occurrences).toEqual([{ canonical: canonical.id, kind: 'duplicate', duplicate_row: filed.id }]);
+    // A second stamp on an already-decided row is a no-op: no verdict move, no extra occurrence.
+    expect(await stampCreateTimeDuplicate({ ...base, similarOpen: candidates, hardSemanticIds: new Set([softTwin.id]) })).toBeNull();
+    expect((await verdict(filed.id)).duplicate_of).toBe(canonical.id);
+    expect(
+      (
+        await db.sql<{ n: number }[]>`
+          SELECT count(*)::int AS n FROM harness_shared.work_item_occurrences
+           WHERE evidence->>'duplicateRow' = ${filed.id}`
+      )[0]!.n,
+    ).toBe(1);
+    // SPEC-P-006-CLAIM: a claim on the duplicate is refused and records no assignee.
+    const takenBy = async (id: string) =>
+      (await db.sql<{ taken_by: string | null }[]>`SELECT taken_by FROM harness_shared.work_items WHERE feature_id = ${id}`)[0]!
+        .taken_by;
+    const refused = await wi.claimWorkItem(filed.id, 'agB').catch(() => null);
+    expect(refused?.assignee ?? null).not.toBe('agB');
+    expect(await takenBy(filed.id)).toBeNull();
+    // The verdict rides a duplicates edge, so one unlink restores a false match.
+    const out = await links.listOut({ kind: 'issue', ref: filed.id });
+    expect(out.filter((l) => l.rel === 'duplicates').map((l) => l.dst.ref)).toEqual([canonical.id]);
+    await wi.unlinkWorkItem(filed.id, { kind: 'issue', ref: canonical.id }, 'duplicates');
+    expect((await verdict(filed.id)).duplicate_of).toBeNull();
+    expect(await isWorkItemDuplicateAdmitted(filed.id)).toBe(true);
+    // Positive control: with the verdict withdrawn, the same claim succeeds.
+    expect((await wi.claimWorkItem(filed.id, 'agB'))?.assignee).toBe('agB');
+    expect(await takenBy(filed.id)).toBe('agB');
   });
 });
 

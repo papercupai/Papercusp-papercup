@@ -101,7 +101,14 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
     retainIsolatedWorkerProgress(evidenceDir, stage, evidence);
   let observedAuto = false;
   let nativeDiagnosticsAt = 0;
-  const retainTaskDiagnostics = (task: CurrentBenchTask) => {
+  let lastNativeTask: CurrentBenchTask | undefined;
+  const retainTaskDiagnostics = async (task: CurrentBenchTask) => {
+    lastNativeTask = task;
+    const ownerId = typeof task.detail.coordOwnerId === 'string' ? task.detail.coordOwnerId : '';
+    const rows = await sql`SELECT id FROM harness_shared.adv_sessions
+      WHERE workspace_id=${workspace} AND coord_owner_id=${ownerId}
+      ORDER BY id DESC LIMIT 1`;
+    const codexHome = rows[0] ? codexHomeForSessionKey(rows[0].id) : undefined;
     const logPath = 'logPath' in task && typeof task.logPath === 'string' ? task.logPath : undefined;
     const boot = typeof task.detail.coordOwnerId === 'string'
       ? psuLaunchLogPath(task.detail.coordOwnerId, { home: process.env.HOME }) : null;
@@ -111,7 +118,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
       exitReason: 'exitReason' in task ? task.exitReason : undefined }, {
       ...(logPath ? { stdout: logPath, normalized: logPath.replace(/\.log$/, '.normalized.log') } : {}),
       ...(boot ? { boot } : {}),
-    });
+    }, codexHome);
   };
   let predecessor: { ownerId: string; taskId: string; sessionId: string } | undefined;
   let successorId: string | undefined;
@@ -129,7 +136,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
       const sessions = await sql`SELECT coord_owner_id FROM harness_shared.adv_sessions WHERE workspace_id=${workspace}`;
       if (sessions.length === 1) observedAuto = (await getModes(workspace, sessions[0].coord_owner_id)).some(mode => mode.mode === 'auto');
       if (managedCarry) {
-        const rows = await sql`SELECT a.coord_owner_id, a.session_id, t.task_id FROM harness_shared.adv_sessions a
+        const rows = await sql`SELECT a.id, a.coord_owner_id, a.session_id, t.task_id FROM harness_shared.adv_sessions a
           JOIN harness_shared.task_ledger t ON t.workspace_id=a.workspace_id AND t.detail->>'coordOwnerId'=a.coord_owner_id
           WHERE a.workspace_id=${workspace}`;
         assert.equal(rows.length, 1, JSON.stringify(rows));
@@ -140,6 +147,11 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
           wire = protocol.respond(body, { predecessorSessionId: predecessor.sessionId,
             editApplied: () => readFileSync(join(taskCheckout, 'answer.txt'), 'utf8') === 'after\n' });
         } finally {
+          // The protocol can fail before launch's readiness promise returns.
+          // Retain the CLI's own MCP error at that boundary, independently of
+          // task polling, while its exact disposable home still exists.
+          retainIsolatedNativeTaskDiagnostics(evidenceDir, { taskId: row.task_id,
+            ownerId: row.coord_owner_id, sessionId: row.session_id }, {}, codexHomeForSessionKey(row.id));
           writeFileSync(join(evidenceDir, 'native-model-requests.json'), JSON.stringify(protocol.census, null, 2));
           progress('model-protocol-request', { census: protocol.census.at(-1) });
         }
@@ -206,7 +218,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
               const matching = tasks.filter(task => task.workspaceId === workspace && task.detail.label === args.label);
               progress('launch-diagnostics-observed', { taskIds: matching.map(task => task.taskId) });
               assert.equal(matching.length, 1, 'native launch diagnostics require the single enrolled assignment task');
-              retainTaskDiagnostics(matching[0]);
+              await retainTaskDiagnostics(matching[0]);
             }); }
             catch (error) { progress('launch-failed', { error: String(error) }); throw error; }
           },
@@ -223,7 +235,7 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
             }
             if (task && Date.now() - nativeDiagnosticsAt >= 1000) {
               nativeDiagnosticsAt = Date.now();
-              retainTaskDiagnostics(task);
+              await retainTaskDiagnostics(task);
             }
             progress('task-observed', { task: task && { taskId: task.taskId, workspaceId: task.workspaceId,
               sessionId: task.sessionId, state: task.state, exitCode: task.exitCode,
@@ -312,8 +324,11 @@ export async function measureCurrentSuNativeScenario(input: { workspace: string;
     finally {
       try { if (handle && adapter) await adapter.seam.teardown(handle); }
       finally {
-        try { if (adapter) assert.deepEqual((await adapter.stop()).errors, []); }
-        finally { await hosted.stop(); }
+        try { if (lastNativeTask) await retainTaskDiagnostics(lastNativeTask); }
+        finally {
+          try { if (adapter) assert.deepEqual((await adapter.stop()).errors, []); }
+          finally { await hosted.stop(); }
+        }
       }
     }
     progress('native-cleanup-completed');

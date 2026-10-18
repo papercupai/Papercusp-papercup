@@ -31,8 +31,9 @@ import { parseJobLogEndMarker } from '../../task-manager/job-log-terminal';
 import { backgroundTypecheckVerdict } from './background-typecheck-verdict';
 import { capturedExitMismatch } from './captured-exit-verdict';
 import { coresBetween, readCgroupCpuSample, MIN_SAMPLE_GAP_MS } from './cgroup-cpu';
-import { getTask, getTaskByBashJobId } from '../../task-manager/store';
-import { isTerminalState, serviceUnitForTask, type TaskRow } from '../../task-manager/types';
+import { classifyTerminalClose, getTask, getTaskByBashJobId } from '../../task-manager/store';
+import { inspectTaskUnitTerminals } from '../../task-manager/scope-terminal-state';
+import { isTerminalState, serviceUnitForTask, type TaskRow, type TaskTerminalProvenance } from '../../task-manager/types';
 import { readProcessIdentity } from '../../process-identity';
 import { readProcessCgroupPath, readProcessCmdline } from '../../task-manager/cgroup-read';
 import {
@@ -148,55 +149,24 @@ export function strandedJobLookup(bashId: string, stateDir: string | undefined):
 }
 
 /**
- * EI-18666279107998059: decide WHICH of the two known causes actually explains a
- * stranded job, instead of asserting the more dramatic one ("the operator
- * restarted") as fact with no evidence check (the EI-16635 bug this superseded —
- * confirmed live: a job's tracking went stranded while `dev:service_health` showed
- * zero restarts, so the true cause was the job's OWN process dying independently).
- *
- * The check is simple and needs no extra I/O: THIS operator process's own
- * `process.uptime()` tells us exactly when it started. If it started AFTER the
- * job's log file was created, the operator must have restarted at some point
- * after the job began running — a restart is CONFIRMED.
- *
- * The other branch is the one that keeps getting mis-stated, so state it
- * precisely: if this process has been running continuously since before the job
- * started, a restart is IMPOSSIBLE (this very process would not exist to answer
- * the call). That rules out ONE cause. It says NOTHING about whether the job's
- * own process is still running — and on this box the overwhelmingly common
- * explanation is a job QUEUED behind pc-heavy's slot clamp, alive and simply not
- * producing output yet. Hence `job_liveness_unknown`, not `job_process_gone`:
- * the token names what this check can establish, which is the absence of one
- * cause, not the presence of a death.
- *
- * That distinction is not cosmetic — the two states have OPPOSITE correct
- * responses (keep waiting vs re-run), and re-running a queued heavy job adds
- * load to the very queue whose depth caused the missing output. Reported four
- * times independently (EI-19304682667917795, EI-19310882583645327,
- * EI-19327967209159644, EI-19332191089874223) before the code was corrected:
- * EI-18666279107998059 fixed the advice PROSE to hedge correctly but left the
- * `reason` field — the one callers branch on — asserting the confirmed-dead
- * token. Prose that contradicts its own status code loses to the status code.
- *
- * `job_process_gone` now has exactly one emitter: the ledger-confirmed terminal
- * state above, which really did observe an exit.
+ * A worker-local registry miss and a log birth time establish neither task death
+ * nor its cause. A newer reader can be a different cluster worker, and a durable
+ * service can survive its launching host. Only task/OS evidence settles liveness.
+ * Keep the old inputs for callers; uptime must never emit a restart verdict.
  */
-export function diagnoseStrandedCause(opts: {
+export function diagnoseStrandedCause(_opts: {
   jobBirthtimeMs: number;
-  /** Defaults to the real `process.uptime()` — injectable for deterministic tests. */
+  /** Retained for compatibility; worker uptime is not task evidence. */
   processUptimeMs?: number;
-  /** Defaults to `Date.now()` — injectable for deterministic tests. */
+  /** Retained for compatibility. */
   now?: number;
-}): 'stranded_by_operator_restart' | 'job_liveness_unknown' {
-  const now = opts.now ?? Date.now();
-  const processUptimeMs = opts.processUptimeMs ?? process.uptime() * 1000;
-  const processStartedAtMs = now - processUptimeMs;
-  return processStartedAtMs > opts.jobBirthtimeMs ? 'stranded_by_operator_restart' : 'job_liveness_unknown';
+}): 'job_liveness_unknown' {
+  return 'job_liveness_unknown';
 }
 
 /**
- * EI-18759519171684432: `diagnoseStrandedCause` above only rules out ONE cause (a
- * whole-operator restart) — it was never sound evidence that the job's OWN process
+ * EI-18759519171684432: the old reader-uptime heuristic was never sound evidence
+ * that the job's OWN process
  * actually died, yet the handler asserted exactly that ("CONFIRMED NOT the cause …
  * the job's OWN process died independently") with no process check at all. Live
  * repro: a `test:affected` run was still executing (confirmed via `ps`, log file
@@ -212,7 +182,7 @@ export function diagnoseStrandedCause(opts: {
  * and compare: if it still matches, the process is CONFIRMED alive regardless of
  * what happened to the in-memory tracking. If the ledger itself already recorded a
  * terminal exit, that is stronger evidence than any heuristic. Only when neither
- * signal is available do we fall back to the uptime heuristic (below).
+ * signal is available, liveness remains unknown.
  */
 export type LedgerLivenessVerdict =
   | { kind: 'confirmed_alive'; pid: number; scopeUnit: string | null; taskId: string }
@@ -338,25 +308,33 @@ const LIVE_SCOPE_ACTIVE_STATES = new Set(['active', 'activating', 'reloading', '
  * name for a confined bash-job row; an arbitrary unit must never become a
  * liveness oracle. Failing to query systemd remains inconclusive, never dead.
  */
-export async function taskScopeIsActive(
+async function taskScopeSnapshot(
   row: Pick<TaskRow, 'taskId' | 'class' | 'confined' | 'scopeUnit'>,
   execFn: ScopeActiveExec = runScopeActiveExec,
-): Promise<boolean> {
+): Promise<TaskTerminalProvenance | null> {
   if (row.class !== 'bash-job' || !row.confined || !row.scopeUnit) {
-    return false;
+    return null;
   }
   try {
     // Keep malformed or legacy rows fail-soft too: a liveness read must never
     // turn bad ledger metadata into a handler exception.
-    if (row.scopeUnit !== serviceUnitForTask(row.taskId)) return false;
-    const { stdout } = await execFn('systemctl', ['--user', 'show', '-p', 'ActiveState', '--value', row.scopeUnit], {
-      timeout: 2_000,
-      maxBuffer: 64 * 1024,
+    if (row.scopeUnit !== serviceUnitForTask(row.taskId)) return null;
+    const snapshots = await inspectTaskUnitTerminals([row.scopeUnit], async (file, args) => {
+      const result = await execFn(file, args, { timeout: 2_000, maxBuffer: 64 * 1024 });
+      return { stdout: result.stdout, stderr: result.stderr ?? '' };
     });
-    return LIVE_SCOPE_ACTIVE_STATES.has(stdout.trim());
+    return snapshots.get(row.scopeUnit) ?? null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export async function taskScopeIsActive(
+  row: Pick<TaskRow, 'taskId' | 'class' | 'confined' | 'scopeUnit'>,
+  execFn: ScopeActiveExec = runScopeActiveExec,
+): Promise<boolean> {
+  const snapshot = await taskScopeSnapshot(row, execFn);
+  return Boolean(snapshot?.activeState && LIVE_SCOPE_ACTIVE_STATES.has(snapshot.activeState));
 }
 
 /** Max length of an agent-supplied `filter` regex (ReDoS surface bound). */
@@ -1021,7 +999,7 @@ export default defineTool({
   guidance: {
     when: 'Poll a capability:bash background job. After carry use task_id: it reattaches through the durable ledger and never starts a replacement. Repeated calls drain new output; terminal status includes the tail and exit code.',
     notWhen:
-      'For a foreground command — its output is in the capability:bash result directly. A miss WITH a log tail means the job\'s in-memory tracking is gone while its log survived; three DISTINCT reason codes say what is known, never conflate them. `"tracking_lost_process_alive"` = CONFIRMED running (task-ledger pid re-probe) — do NOT re-run, keep polling. `"job_process_gone"` = CONFIRMED ended (the ledger observed a terminal state) — safe to re-run. `"job_liveness_unknown"` = only a whole-operator restart was ruled out; liveness is UNKNOWN and the job is most often alive but QUEUED behind pc-heavy\'s slot clamp — check `ps` for your command before re-running, or you add load to the very queue that is delaying it.',
+      'Foreground output is in capability:bash directly. A registry miss can recover running status from process identity or systemd ActiveState, and terminal status from the task ledger or retained systemd Result. job_liveness_unknown means neither liveness nor exit cause was established; verify the task before relaunching to avoid a duplicate.',
     chaining:
       'capability:bash { run_in_background:true } → capability:bash_output { task_id } after carry (or { bash_id } in the launching context) → processes:kill { taskId } to stop early.',
     returns:
@@ -1273,9 +1251,39 @@ export default defineTool({
               )
             : false;
 
-        const scopeActive =
-          ledgerVerdict.kind === 'ledger_inconclusive' && ledgerRow ? await taskScopeIsActive(ledgerRow) : false;
+        const scopeSnapshot =
+          ledgerVerdict.kind === 'ledger_inconclusive' && ledgerRow ? await taskScopeSnapshot(ledgerRow) : null;
+        const scopeActive = Boolean(scopeSnapshot?.activeState && LIVE_SCOPE_ACTIVE_STATES.has(scopeSnapshot.activeState));
         const currentTaskIsLive = ledgerVerdict.kind === 'confirmed_alive' || scopeActive;
+
+        // The unit retains its own terminal result even when the watcher and
+        // ledger update were lost. Reuse the ledger writer's classification;
+        // this read reports evidence without mutating the task or starting work.
+        // A live unit, an unavailable probe, or not-found defaults never qualify.
+        if (ledgerRow && scopeSnapshot?.loadState === 'loaded' &&
+            (scopeSnapshot.activeState === 'failed' || scopeSnapshot.activeState === 'inactive') &&
+            (scopeSnapshot.serviceResult && scopeSnapshot.serviceResult !== 'success' ||
+             scopeSnapshot.execMainCode === 1)) {
+          const classified = classifyTerminalClose({
+            state: scopeSnapshot.execMainCode === 1 ? 'exited' : 'ended_unobserved',
+            terminalProvenance: scopeSnapshot,
+          }, ledgerRow);
+          const terminal = terminalStatusFromLedger({ ...ledgerRow, ...classified });
+          if (terminal) {
+            const ok = terminal.status === 'completed';
+            return {
+              content: [{ type: 'text' as const, text: JSON.stringify({
+                ok, ...jobIdentity, status: terminal.status, exit_code: terminal.exitCode,
+                exit_reason: classified.exitReason, running: false, recovered_from_scope: true,
+                ledger_state: ledgerRow.state, terminal_provenance: classified.terminalProvenance,
+                ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
+                ...(stranded ? { total_bytes_written: stranded.sizeBytes } : {}),
+                ...selfRedirectFields, ...strandedOutput, output: recoveredStrandedOutput,
+              }) }],
+              ...(ok ? {} : { isError: true }),
+            };
+          }
+        }
 
         // EI-20230176152308336: the durable JOB END marker is stronger than a
         // stale/non-terminal task-ledger row. The marker is appended from the
@@ -1505,6 +1513,8 @@ export default defineTool({
                   ok: false,
                   ...jobIdentity,
                   reason: 'job_process_gone',
+                  ...(terminal ? { status: terminal.status, exit_code: terminal.exitCode, running: false } : {}),
+                  exit_reason: ledgerVerdict.exitReason,
                   ...(recoveredResourceLimitFields ?? {}),
                   advice:
                     "This job's in-memory tracking is gone, and the durable task ledger CONFIRMS it actually ended " +
@@ -1521,8 +1531,7 @@ export default defineTool({
           };
         }
 
-        // Without a surviving log there is no safe uptime-based fallback. The
-        // ledger above has already had the chance to prove alive/dead; preserve
+        // The ledger above has already had the chance to prove alive/dead; preserve
         // the existing unknown-id response rather than dereferencing a missing
         // birth time or inventing a restart cause.
         if (!stranded) {
@@ -1543,25 +1552,14 @@ export default defineTool({
           };
         }
 
-        // EI-18666279107998059: EI-16635 stopped ASSERTING the restart cause as fact
-        // but still couldn't tell the two causes apart, so every stranded job read
-        // "here are two possible causes, go check yourself" even when this very
-        // process's own uptime already proves which one it was (see
-        // diagnoseStrandedCause). Do that check now — but this is a FALLBACK, only
-        // reached when the ledger (above) had no row or could not confirm either
-        // way, so word the verdict as the best available inference, not a fact
-        // about the JOB's liveness (that overclaim is EI-18759519171684432 itself —
-        // a whole-operator restart being ruled out never proved this job's own
-        // process was gone).
         const cause = diagnoseStrandedCause({ jobBirthtimeMs: stranded.birthtimeMs });
         const ledgerCaveat =
           ledgerVerdict.kind === 'no_ledger_row'
             ? ' (no task-ledger record was found for this job to confirm further)'
             : ' (the task ledger still shows it non-terminal but could not confirm liveness — the process may have exited without the ledger observing it yet)';
-        const advice =
-          cause === 'stranded_by_operator_restart'
-            ? "This job STARTED (its log file exists on disk) but its in-memory tracking is gone, and this operator process's own uptime is SHORTER than the job's age — CONFIRMED: the operator process that ran it restarted or was killed mid-job. A routine, common event on a shared dev box: any agent restarting :3070/:3170 kills every OTHER agent's in-flight background jobs too (repo-conventions § two-port model). It is NOT a wrong bash_id and not a bug in your command. Re-run capability:bash if you still need the result; check output_tail below for how far it got before dying."
-            : `This job STARTED (its log file exists on disk) but its in-memory tracking is gone, and this operator process has been running continuously since BEFORE the job started — so a WHOLE-OPERATOR restart is ruled out${ledgerCaveat}. That does NOT confirm the job's own process died: before re-running, check yourself (e.g. \`ps\` for your command) — re-running while the original may still be alive doubles the load. If you can confirm it is really gone, re-run capability:bash; check output_tail below for how far it got.`;
+        const advice = `This job's output log survived but this worker has no in-memory tracking${ledgerCaveat}. ` +
+          'Worker uptime cannot establish the launching host history or the task exit cause. ' +
+          'Liveness remains unknown: verify this task before relaunching; a duplicate could run concurrently.';
         return {
           content: [
             {

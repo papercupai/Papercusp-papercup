@@ -2658,6 +2658,37 @@ describe('work-item admission promoter (real Postgres)', () => {
     expect(run?.batch_size).toBe(DEFAULT_FAIL_OPEN_BATCH_SIZE);
   });
 
+  it('never fail-opens a row that carries a typed duplicate verdict (bug-inflow-one-problem-one-row-2026-10-18 SPEC-P-006-PROMOTE)', async () => {
+    const createdAtMs = NOW - 2 * 60 * 60_000;
+    await seedItem({ id: 'WI-dup-canonical', createdAtMs, vector: null, admission: 'auto' });
+    await seedItem({ id: 'WI-dup-loser', createdAtMs: createdAtMs + 1, vector: null });
+    await seedItem({ id: 'WI-dup-control', createdAtMs: createdAtMs + 2, vector: null });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET duplicate_of = 'WI-dup-canonical', duplicate_source = 'agent'
+       WHERE feature_id = 'WI-dup-loser'`;
+
+    const result = await runWorkItemAdmissionFailOpen({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'fail-open-skips-duplicate',
+      sql: db.sql,
+      now: () => NOW,
+    });
+
+    // The twin with no verdict is the control: same age, same harness, admitted.
+    expect(result.autoPromoted).toEqual(['WI-dup-control']);
+    const rows = await db.sql<Array<{ feature_id: string; admission: string; duplicate_of: string | null }>>`
+      SELECT feature_id, admission, duplicate_of
+        FROM harness_shared.work_items
+       WHERE feature_id IN ('WI-dup-loser', 'WI-dup-control')
+       ORDER BY feature_id`;
+    expect(rows).toEqual([
+      { feature_id: 'WI-dup-control', admission: 'unreviewed', duplicate_of: null },
+      { feature_id: 'WI-dup-loser', admission: 'pending', duplicate_of: 'WI-dup-canonical' },
+    ]);
+  });
+
   // The promoter is seeded per-harness by a hand-run script that defaults to the operator home
   // harness, so in practice only ONE harness ever has one. A harness-scoped fail-open therefore
   // guarantees liveness for that harness and silently starves every other one: measured

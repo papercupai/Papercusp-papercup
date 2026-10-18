@@ -33,7 +33,9 @@ import * as path from 'node:path';
 import { spawn as ptySpawn } from '@lydell/node-pty';
 import { WebSocketServer } from 'ws';
 import { VtScreen } from './vt-screen';
-import { hostedForwardInput } from '../../../../apps/operator/scripts/psu-connection-front-controller.mjs';
+import {
+  hostedForwardInput, normalizeHostedProfile, savePsuConnectionStore,
+} from '../../../../apps/operator/scripts/psu-connection-front-controller.mjs';
 import { assertPackageBuildDependencies, loadPinnedPackageCandidate, readPackageBuildLock, type PackageResult } from './public-package-candidate';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
@@ -474,6 +476,69 @@ describe.sequential('public PUI package (committed source, isolated HOME, no car
     expect(removed.stdout).not.toContain('remove psu link');
     expect(readdirSync(shimBin)).toEqual(['psu']);
     expect(readFileSync(path.join(shimBin, 'psu'), 'utf8')).toBe(shim);
+  });
+
+  test.each([
+    { entrypoint: 'installed psu shim', program: 'psu', installed: true, args: [] },
+    { entrypoint: 'archive bin/psu', program: 'psu', installed: false, args: [] },
+    { entrypoint: 'installed pui --connect', program: 'pui', installed: true, args: ['--connect'] },
+  ])('MACHINE-FIRST-R4: $entrypoint chooses the machine before local context and forwards the selected program', { timeout: 180_000 }, async ({ entrypoint, program, installed, args }) => {
+    const label = `machine-first-${program}-${installed ? 'installed' : 'archive'}`;
+    const unit = unpack(B.archive, label);
+    const home = freshHome(label);
+    const env = sandboxEnv(home);
+    if (installed) {
+      const install = run(path.join(unit, 'install.sh'), ['--yes'], env, home);
+      expect(install.status, output(install)).toBe(0);
+    }
+    const cloud = await startCloudStub();
+    let pane: ReturnType<typeof ptyRun> | undefined;
+    try {
+      savePsuConnectionStore({ profiles: [normalizeHostedProfile({
+        name: 'cloud', origin: cloud.origin, accessToken: CLOUD_TOKEN,
+        tokenId: 'hct_first-run', organizationId: 'org-first-run', userId: 'user_first_run',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      })] }, path.join(home, '.papercusp', 'psu-connections.json'));
+      const launcher = path.join(installed ? path.join(home, '.local', 'bin') : path.join(unit, 'bin'), program);
+      // PUI must find its sibling psu even when the installed shim is absent from PATH.
+      pane = ptyRun(launcher, args, { ...env, TERM: 'xterm-256color',
+        ...(program === 'pui' ? { PATH: TOOLS } : {}) }, home);
+      const prompt = `Where should ${program} run?`;
+      await pane.waitFor(prompt);
+      expect(pane.screen(), entrypoint).toContain(`cloud/${CLOUD_WORKSPACE}`);
+      expect(pane.raw(), entrypoint).not.toMatch(/\b(?:Identity|Workspace|Context size)\b/);
+      // Listing machines is necessary to render the picker. Opening a terminal
+      // before the user selects one would start context/agent work too early.
+      expect(cloud.calls.map((call) => `${call.method} ${call.path}`), entrypoint).toEqual([
+        'GET /api/hosted/cli/workspaces',
+      ]);
+      expect(cloud.remoteInput, entrypoint).toEqual([]);
+      if (program === 'psu') pane.write('\u001b[B'); // Skip the Local entry.
+      pane.write('\r');
+      await pane.waitFor(REMOTE_MARKER);
+      const { exitCode } = await Promise.race([
+        pane.exited,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${entrypoint} did not exit:\n${pane?.screen()}`)), 60_000)),
+      ]);
+      expect(exitCode, pane.screen()).toBe(0);
+      expect(pane.raw(), entrypoint).not.toMatch(/\b(?:Identity|Workspace|Context size)\b/);
+      const connected = pane.raw().indexOf('psu: connected to');
+      expect(connected, entrypoint).toBeGreaterThanOrEqual(0);
+      expect(pane.raw().slice(connected), entrypoint).not.toContain(prompt);
+      expect(cloud.calls.map((call) => `${call.method} ${call.path}`), entrypoint).toEqual([
+        'GET /api/hosted/cli/workspaces',
+        'GET /api/hosted/cli/workspaces',
+        `POST /api/hosted/cli/workspaces/${CLOUD_WORKSPACE}/terminal`,
+      ]);
+      for (const call of cloud.calls) expect(call.authorization).toBe(`Bearer ${CLOUD_TOKEN}`);
+      // The relay observes a shell command, not a real remote agent. Prove the
+      // forwarding contract here; remote context behavior has its own tests.
+      expect(cloud.remoteInput.join(''), entrypoint).toBe(hostedForwardInput(program, []));
+      expect(cloud.remoteInput.join(''), entrypoint).toContain(`PAPERCUSP_PSU_CONNECTION_FORWARDED=1 ${program}`);
+    } finally {
+      pane?.kill();
+      await cloud.close();
+    }
   });
 
   test('AUTO-BAR-R-08-P-020: with no operator, installed PUI setup signs in to Papercusp cloud through its bundled psu and runs PUI on the cloud workspace', { timeout: 300_000 }, async () => {

@@ -5993,7 +5993,10 @@ export async function runWorkItemAdmissionFailOpen(opts: {
     // Rows carrying a duplicate candidate or degraded dedup coverage are unresolved
     // review work. They must remain pending until the resolver adjudicates them; the
     // fail-open liveness backstop must never turn that uncertainty into scheduler work.
+    // A row with a typed duplicate verdict (migration 1534, bug-inflow-one-problem-one-row-
+    // 2026-10-18#D-001/#D-002) already HAS its row: fail-open never admits it either.
     const pendingEligibility = sql`admission = 'pending'
+      AND duplicate_of IS NULL
       AND (status IS NULL OR NOT harness_shared.work_item_status_is_terminal(status))
       AND created_ts < ${cutoffMs}
       AND (payload -> 'dedupCandidates') IS NULL

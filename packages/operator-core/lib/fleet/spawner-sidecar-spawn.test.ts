@@ -370,7 +370,7 @@ describe('spawner-sidecar-spawn (WI-3079 migration)', () => {
     vi.spyOn(globalThis, 'setImmediate').mockImplementation(((callback: (...args: never[]) => void) => {
       pendingImmediate.push(() => callback());
       return {} as ReturnType<typeof setImmediate>;
-    }) as typeof setImmediate);
+    }) as unknown as typeof setImmediate);
 
     await vi.advanceTimersByTimeAsync(10_000);
     expect(pendingImmediate).toHaveLength(1);

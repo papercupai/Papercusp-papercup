@@ -254,7 +254,7 @@ describe('capability:bash_output — durable task attachment', () => {
       const fakeBin = join(stateDir, 'bin');
       mkdirSync(fakeBin, { recursive: true });
       const fakeSystemctl = join(fakeBin, 'systemctl');
-      writeFileSync(fakeSystemctl, '#!/bin/sh\nprintf "active\\n"\n');
+      writeFileSync(fakeSystemctl, '#!/bin/sh\nfor unit; do :; done\nprintf "Id=%s\\nLoadState=loaded\\nActiveState=active\\n" "$unit"\n');
       chmodSync(fakeSystemctl, 0o755);
       writeFileSync(
         logPath,
@@ -304,7 +304,7 @@ describe('capability:bash_output — durable task attachment', () => {
       const fakeBin = join(stateDir, 'bin');
       mkdirSync(fakeBin, { recursive: true });
       const fakeSystemctl = join(fakeBin, 'systemctl');
-      writeFileSync(fakeSystemctl, '#!/bin/sh\nprintf "active\\n"\n');
+      writeFileSync(fakeSystemctl, '#!/bin/sh\nfor unit; do :; done\nprintf "Id=%s\\nLoadState=loaded\\nActiveState=active\\n" "$unit"\n');
       chmodSync(fakeSystemctl, 0o755);
       const queuedRow = taskRow({
         taskId: 'tskcarry5678',
@@ -383,7 +383,7 @@ describe('capability:bash_output — durable task attachment', () => {
       const fakeBin = join(stateDir, 'bin');
       mkdirSync(fakeBin, { recursive: true });
       const fakeSystemctl = join(fakeBin, 'systemctl');
-      writeFileSync(fakeSystemctl, '#!/bin/sh\nprintf "active\\n"\n');
+      writeFileSync(fakeSystemctl, '#!/bin/sh\nfor unit; do :; done\nprintf "Id=%s\\nLoadState=loaded\\nActiveState=active\\n" "$unit"\n');
       chmodSync(fakeSystemctl, 0o755);
       const queuedRow = taskRow({
         taskId: 'tskcarry1234',
@@ -439,7 +439,7 @@ describe('capability:bash_output — durable task attachment', () => {
       const fakeBin = join(stateDir, 'bin');
       mkdirSync(fakeBin, { recursive: true });
       const fakeSystemctl = join(fakeBin, 'systemctl');
-      writeFileSync(fakeSystemctl, '#!/bin/sh\nprintf "active\\n"\n');
+      writeFileSync(fakeSystemctl, '#!/bin/sh\nfor unit; do :; done\nprintf "Id=%s\\nLoadState=loaded\\nActiveState=active\\n" "$unit"\n');
       chmodSync(fakeSystemctl, 0o755);
       // Synchronous enrollment records the systemd-run client cgroup before the
       // payload has moved into its service. The service ActiveState is the
@@ -484,6 +484,51 @@ describe('capability:bash_output — durable task attachment', () => {
         else process.env.PATH = previousPath;
       }
     } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['copied-success', 'missing-log'])('recovers a systemd deadline with %s before ledger reconciliation without inferring a restart or relaunching', async (mode) => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bash-scope-timeout-'));
+    const previousPath = process.env.PATH;
+    try {
+      const fakeBin = join(stateDir, 'bin');
+      mkdirSync(fakeBin, { recursive: true });
+      const fakeSystemctl = join(fakeBin, 'systemctl');
+      writeFileSync(fakeSystemctl, `#!/bin/sh
+case "$*" in
+  *--value*) printf 'failed\\n' ;;
+  *) printf '%s\\n' 'Id=pc-tsktimeout123.service' 'LoadState=loaded' 'ActiveState=failed' 'Result=timeout' 'ExecMainCode=2' 'ExecMainStatus=9' 'InvocationID=deadline-test' ;;
+esac
+`);
+      chmodSync(fakeSystemctl, 0o755);
+      const logPath = join(stateDir, 'interrupted.log');
+      // Even a copied successful marker cannot override this task's observed timeout.
+      if (mode === 'copied-success') {
+        writeFileSync(logPath, `preparing browser${formatJobLogEndMarker('completed', 0, Date.now())}`);
+      }
+      store.getTask.mockResolvedValue(taskRow({
+        taskId: 'tsktimeout123', rootTaskId: 'tsktimeout123', scopeUnit: 'pc-tsktimeout123.service',
+        pid: null, processIdentity: null, cgroupPath: null, logPath,
+      }));
+      jobs.getJob.mockReturnValue(null);
+      process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
+
+      const result = await bashOutput.handler({ task_id: 'tsktimeout123' }, ctx('ws-current', stateDir));
+      const payload = JSON.parse(result.content[0]!.text);
+      expect(result.isError).toBe(true);
+      expect(payload).toMatchObject({
+        ok: false, task_id: 'tsktimeout123', running: false, status: 'timed_out',
+        exit_code: 137, exit_reason: 'timeout', recovered_from_scope: true, ledger_state: 'running',
+      });
+      expect(payload.reason).not.toBe('stranded_by_operator_restart');
+      expect(payload).not.toHaveProperty('recovered_from_log_marker');
+      if (mode === 'copied-success') expect(payload.output).toContain('preparing browser');
+      else expect(payload.output).toBe('');
+      expect(jobs.startBackground).not.toHaveBeenCalled();
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
       rmSync(stateDir, { recursive: true, force: true });
     }
   });

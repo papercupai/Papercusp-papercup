@@ -13,6 +13,9 @@ import { formatTaskBudgetRefusal } from "./task-exit-class.mjs";
 import { scriptCommandWords } from "./executed-source-map.mjs";
 import { readTaskCgroupLimit, readTaskCgroupMemoryMaxMb } from "./task-cgroup-limits.mjs";
 export { readTaskCgroupMemoryMaxMb } from "./task-cgroup-limits.mjs";
+import { readTaskDeadlineEpochMs, formatTaskDeadlineRefusal } from './task-deadline.mjs';
+export { TASK_DEADLINE_EPOCH_MS_ENV, TASK_DEADLINE_REFUSAL_MARKER,
+  readTaskDeadlineEpochMs, formatTaskDeadlineRefusal, isTaskDeadlineRefusal } from './task-deadline.mjs';
 
 export const DURATION_HISTORY_VERSION = 1;
 
@@ -1008,56 +1011,8 @@ export function isSharedAdmissionTimeout(error) {
 // `affected-tests-deadline-admission.test.ts`, which reads BOTH sources, so a rename on
 // either side fails there rather than silently reverting this to the pre-fix behaviour —
 // an absent variable is indistinguishable from "no deadline was set" by design.
-export const TASK_DEADLINE_EPOCH_MS_ENV = "PAPERCUSP_TASK_DEADLINE_EPOCH_MS";
-
-/**
- * Read the launcher-published deadline, or null when there is none.
- *
- * Null means UNKNOWN, never "unbounded and fine": every check below is skipped on null, so
- * an unlaunched/unconfined run behaves exactly as it did before this existed.
- *
- * @param {NodeJS.ProcessEnv} [env]
- * @returns {number | null} absolute epoch ms
- */
-export function readTaskDeadlineEpochMs(env = process.env) {
-  const raw = Number(env?.[TASK_DEADLINE_EPOCH_MS_ENV]);
-  return Number.isSafeInteger(raw) && raw > 0 ? raw : null;
-}
-
-export const TASK_DEADLINE_REFUSAL_MARKER = "TASK_DEADLINE_REFUSAL";
-
-/**
- * Format the pre-flight refusal.
- *
- * `knownEstimateMs` is the history-based wall projection under the configured lane policy,
- * with sequential shards added together. Unknown tasks contribute zero and are reported
- * separately. Historical durations are a prognosis, not a guaranteed lower bound on the
- * next run. A run refused here has measured nothing; the marker says so.
- */
-export function formatTaskDeadlineRefusal({
-  remainingMs,
-  knownEstimateMs,
-  knownTasks,
-  unknownTasks,
-}) {
-  return (
-    `${TASK_DEADLINE_REFUSAL_MARKER} remainingMs=${Math.round(remainingMs)} ` +
-    `knownEstimateMs=${Math.round(knownEstimateMs)} knownTasks=${knownTasks} ` +
-    `unknownTasks=${unknownTasks} remedy=raise-caller-timeout — the lane-aware historical ` +
-    `wall projection exceeds the remaining launch clock, so a kill part-way through with ` +
-    `no verdict is predicted. Refusing before anything runs instead.`
-  );
-}
-
-/**
- * Does this error mean "we were never going to fit inside our own deadline"?
- *
- * Lives beside the throw for the same reason `isSharedAdmissionTimeout` does: a caller that
- * misclassifies it exits with no verdict, which is the exact failure being fixed.
- */
-export function isTaskDeadlineRefusal(error) {
-  return String(error?.message ?? error ?? "").includes(TASK_DEADLINE_REFUSAL_MARKER);
-}
+// Reader, refusal grammar and classifier are re-exported above from the
+// bootstrap-safe contract also used by the native verifier.
 // EI-21437241652128498 / EI-21437837415175286: one stateful test task first
 // reached 1,517 cgroup tasks, then exhausted a 2,048-task capability scope while
 // it was still progressing. A later operator-core pure lane reached 4,096 tasks

@@ -46,9 +46,10 @@
 import { readFileSync } from 'node:fs';
 import { observeFallback } from './degradation/fallback-observations';
 import { fileURLToPath } from 'node:url';
-import { basename, dirname, resolve, relative } from 'node:path';
+import { dirname, resolve, relative } from 'node:path';
+import { resolveOperatorAppRootFromModuleDir } from './operator-app-root';
 
-/** Directory of this module at runtime (packages/operator-core/lib or apps/operator/dist-host). */
+/** Directory of this module at runtime (source lib or one of the bundled host directories). */
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const LIB_PREFIX = 'packages/operator-core/lib/';
 const WORKFLOW_REL = 'dbos/routines-workflow.ts';
@@ -120,18 +121,19 @@ const fileExists = (abs: string): boolean => {
 };
 
 /**
- * The operator host bundles this module into apps/operator/dist-host, but the
- * dispatcher source remains in the source-only operator-core package. Resolve
- * that package from the bundle directory before deriving sweep paths.
+ * Bundled hosts (dist-host, dist-hosted-control-plane, and desktop sidecars)
+ * inline this module, while the dispatcher source remains in the source-only
+ * operator-core package. Resolve that package from the bundle's operator app
+ * root instead of matching one bundle directory name. If the source tree is
+ * not shipped with an artifact, keep the existing fail-soft behavior: return
+ * the module directory so the matcher degrades to NEVER with an observation.
  */
-export function operatorCoreLibDirFromModuleDir(
-  moduleDir: string,
-): string {
-  const isOperatorHostBundle =
-    basename(moduleDir) === 'dist-host' &&
-    basename(dirname(moduleDir)) === 'operator' &&
-    basename(dirname(dirname(moduleDir))) === 'apps';
-  return isOperatorHostBundle ? resolve(moduleDir, '../../../packages/operator-core/lib') : moduleDir;
+export function operatorCoreLibDirFromModuleDir(moduleDir: string): string {
+  if (fileExists(resolve(moduleDir, WORKFLOW_REL))) return moduleDir;
+
+  const appRoot = resolveOperatorAppRootFromModuleDir(moduleDir);
+  const sourceLibDir = resolve(appRoot, '../../packages/operator-core/lib');
+  return fileExists(resolve(sourceLibDir, WORKFLOW_REL)) ? sourceLibDir : moduleDir;
 }
 
 const LIB_DIR = operatorCoreLibDirFromModuleDir(MODULE_DIR);

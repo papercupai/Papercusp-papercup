@@ -44,6 +44,54 @@ function record(value: unknown): Record<string, unknown> | undefined {
     ? value as Record<string, unknown> : undefined;
 }
 
+// An outer code:run may name the work-item whose nested shell calls serve. Keep
+// this binding private to the orchestration context so a nested capability:bash
+// can use it only when its own call omits work_item_id; explicit nested
+// attribution always wins.
+const NESTED_WORK_ITEM_ID = Symbol('papercusp.current-caller.nested-work-item-id');
+type NestedWorkItemContext = UnifiedToolContext & { [NESTED_WORK_ITEM_ID]?: string };
+
+export function withNestedWorkItemId(
+  ctx: UnifiedToolContext,
+  workItemId?: string | null,
+): UnifiedToolContext {
+  const id = workItemId?.trim();
+  if (!id) return ctx;
+  const enriched = { ...ctx } as NestedWorkItemContext;
+  enriched[NESTED_WORK_ITEM_ID] = id;
+  return enriched;
+}
+
+function nestedWorkItemId(ctx: UnifiedToolContext): string | undefined {
+  return (ctx as NestedWorkItemContext)[NESTED_WORK_ITEM_ID];
+}
+
+function applyNestedWorkItemId(
+  toolName: string,
+  input: unknown,
+  ctx: UnifiedToolContext,
+): unknown {
+  const workItemId = nestedWorkItemId(ctx);
+  if (!workItemId) return input;
+
+  const args = record(input);
+  if (!args) return input;
+
+  // Direct facade calls are the common path. Also cover the compatibility
+  // tools:invoke spelling so both routes preserve the same attribution.
+  if (toolName === 'capability:bash') {
+    return Object.prototype.hasOwnProperty.call(args, 'work_item_id')
+      ? input
+      : { ...args, work_item_id: workItemId };
+  }
+  if (toolName === 'tools:invoke' && args.name === 'capability:bash') {
+    const nestedArgs = record(args.args);
+    if (!nestedArgs || Object.prototype.hasOwnProperty.call(nestedArgs, 'work_item_id')) return input;
+    return { ...args, args: { ...nestedArgs, work_item_id: workItemId } };
+  }
+  return input;
+}
+
 function acceptanceCall(name: string, input: unknown, ctx: UnifiedToolContext) {
   let args = record(input);
   // The original caller used tools:invoke. Apply the same barrier to both spellings.
@@ -199,7 +247,8 @@ export const bindCurrentCallerDispatch: WrapDispatch = async (tool, toolName, ar
     return Promise.reject(new ToolDispatchError(toolName, 'invalid_input', nestedProjectionInvalidMessage(prepared.error)));
   }
 
-  const acceptance = acceptanceCall(toolName, prepared.args, ctx);
+  const dispatchArgs = applyNestedWorkItemId(toolName, prepared.args, ctx);
+  const acceptance = acceptanceCall(toolName, dispatchArgs, ctx);
   let steps: Map<string, AcceptanceStep> | undefined;
   if (acceptance && ctx.signal) {
     steps = acceptanceRuns.get(ctx.signal);
@@ -218,8 +267,8 @@ export const bindCurrentCallerDispatch: WrapDispatch = async (tool, toolName, ar
   let complete = false;
 
   const projectedNext = async (callCtx: UnifiedToolContext): Promise<unknown> => {
-    const materializedCtx = nestedProjectionContext(callCtx, prepared.args, prepared.spec);
-    const result = await next(materializedCtx, prepared.args);
+    const materializedCtx = nestedProjectionContext(callCtx, dispatchArgs, prepared.spec);
+    const result = await next(materializedCtx, dispatchArgs);
     // Inspect the full receipt BEFORE a caller projection can hide the refusal.
     if (acceptance?.evaluation && steps) {
       const body = record(result)?.content ? unwrapToolResult(result as ToolResult) : result;
@@ -232,7 +281,7 @@ export const bindCurrentCallerDispatch: WrapDispatch = async (tool, toolName, ar
 
   try {
     return await runWithoutAmbientArgPeeling(() =>
-      rebindCurrentCallerDispatch(tool, toolName, prepared.args, ctx, projectedNext),
+      rebindCurrentCallerDispatch(tool, toolName, dispatchArgs, ctx, projectedNext),
     );
   } finally {
     // Includes thrown timeouts and dispatch refusals that never entered projectedNext.

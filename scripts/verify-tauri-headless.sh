@@ -248,6 +248,11 @@
 #                                dock disabled so ordinary UI verifiers remain
 #                                isolated from terminal processes/windows.
 #   PAPERCUSP_REPO_DIR          repo root (default: derived from this script)
+#   VERIFY_TAURI_BUDGET_FROM    prior native phases.jsonl; only a completed prepare
+#                                duration is used as an admission forecast.
+#   VERIFY_TAURI_ASSERT_ESTIMATE_MS
+#                               explicit assertion wall estimate; unset is unknown.
+#                               Neither observation is acceptance evidence.
 #   VERIFY_TAURI_SOURCE_REF     explicit committed source ref; uses immutable Git
 #                              export with canonical tree as dependency donor
 #   VERIFY_TAURI_SOURCE_INPUTS  comma-separated tested repo-relative acceptance
@@ -550,6 +555,22 @@ esac
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${PAPERCUSP_REPO_DIR:-${VERIFY_TAURI_ORIGINAL_REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
 DESKTOP_DIR="$REPO_DIR/papercusp-desktop"
+
+# Share source-preview's absolute task admission before dependencies or native
+# capacity are allocated. Recheck the real clock at each expensive boundary;
+# elapsed preparation is deducted from an optional prior phase forecast.
+VERIFIER_TASK_PREPARE_STARTED_SECONDS=$SECONDS
+preflight_verifier_task_deadline() {
+  node "$REPO_DIR/scripts/lib/verify-tauri-deadline.mjs" "${1:-prepare}" \
+    "${PREPARE_ONLY:-0}" "${ASSERTION_MODE:-0}" "${BOOT_ATTEMPTS:-0}" \
+    "$((SECONDS - VERIFIER_TASK_PREPARE_STARTED_SECONDS))"
+}
+preflight_verifier_task_deadline prepare || exit $?
+
+verifier_run_step() {
+  preflight_verifier_task_deadline prepare || return $?
+  vh_run_step "$@"
+}
 # WI-10005763 (D-012): this verifier boots the desktop FROM the live shared tree with network
 # (cargo build.rs, the operator sidecar, the host bundle). Code a session holding an active
 # personal disclosure wrote there must not run that way, so refuse before sourcing any helper or
@@ -1078,7 +1099,7 @@ select_verifier_snapshot_root() {
   printf '%s\n' "$OPERATOR_SNAPSHOT_PARENT"
 }
 # Run in this shell: a command substitution would discard the selected mode.
-vh_run_step verifier-snapshot-root select_verifier_snapshot_root || exit $?
+verifier_run_step verifier-snapshot-root select_verifier_snapshot_root || exit $?
 
 # Root-device donors select independent copies above. Validate their task
 # envelope now, before Cargo capacity, native checks, or source export. Keep
@@ -1095,7 +1116,7 @@ preflight_verifier_copy_memory() {
     console.error(`VERIFY_TAURI_COPY_MEMORY_MAX_MB=${limit}`);
   ' "$REPO_DIR/scripts/lib/task-cgroup-limits.mjs"
 }
-vh_run_step verifier-copy-memory preflight_verifier_copy_memory || exit $?
+verifier_run_step verifier-copy-memory preflight_verifier_copy_memory || exit $?
 
 # EI-25558788631579977: claim the actual native slot and reject its known
 # capacity shortage before source/dependency/SPA/database preparation. Keep the
@@ -1116,7 +1137,7 @@ preflight_native_cargo() {
   NATIVE_CARGO_NEED_GB="$need"
   NATIVE_CARGO_DISK_RESERVATION_FILE="${PAPERCUSP_DISK_RESERVATION_FILE:-}"
 }
-vh_run_step native-cargo-capacity preflight_native_cargo || exit $?
+verifier_run_step native-cargo-capacity preflight_native_cargo || exit $?
 
 # WI-10008139: cargo test enabled a Windows/test-only module that Linux's
 # production console also called. Compile the actual module declaration without
@@ -1127,7 +1148,7 @@ preflight_native_console_platform() {
   node --test --test-global-setup="$DESKTOP_DIR/test/monorepo-host-preflight.mjs" \
     "$DESKTOP_DIR/test/native-console-gnome.test.mjs"
 }
-vh_run_step native-console-platform-check preflight_native_console_platform || exit $?
+verifier_run_step native-console-platform-check preflight_native_console_platform || exit $?
 
 TIMEOUT="${VERIFY_TAURI_TIMEOUT:-180}"
 # EI-20229366113827667: cargo compilation and bridge readiness are separate
@@ -1278,7 +1299,7 @@ shared_schema_readiness_preflight() {
   HARNESS_ADMIN_DATABASE_URL="$shared_database_url"
   export HARNESS_ADMIN_DATABASE_URL
 }
-vh_run_step shared-schema-readiness shared_schema_readiness_preflight || exit $?
+verifier_run_step shared-schema-readiness shared_schema_readiness_preflight || exit $?
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/verify-tauri-headless.XXXXXX")"
 LOG="$WORK/tauri.log"
@@ -1350,7 +1371,7 @@ write_run_marker() {
   fi
 }
 
-vh_run_step write-run-marker write_run_marker "$$" || {
+verifier_run_step write-run-marker write_run_marker "$$" || {
   echo "FATAL: could not write verifier ownership marker under $WORK" >&2
   exit 1
 }
@@ -1735,7 +1756,7 @@ snapshot_committed_operator_source() {
   export VERIFY_TAURI_SOURCE_RECEIPT="$receipt"
   log "committed verifier source verified; provenance: $receipt; dependency donor: $REPO_DIR"
 }
-vh_run_step operator-source-snapshot snapshot_operator_source || { cleanup_operator_source_snapshot; exit 1; }
+verifier_run_step operator-source-snapshot snapshot_operator_source || { cleanup_operator_source_snapshot; exit 1; }
 
 # EI-22616267024724225: never boot the frozen operator through tsx's runtime
 # loader. bundle-host.sh documents the failure mechanism: every module
@@ -1891,9 +1912,9 @@ prepare_verifier_spa() {
   VERIFIER_SPA_DIST="$build_root/dist"
   log "frozen operator SPA ready at $VERIFIER_SPA_DIST"
 }
-vh_run_step verifier-spa-build prepare_verifier_spa || { spa_rc=$?; cleanup_operator_source_snapshot; exit "$spa_rc"; }
-vh_run_step verifier-host-bundle build_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
-vh_run_step verifier-host-import-smoke smoke_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
+verifier_run_step verifier-spa-build prepare_verifier_spa || { spa_rc=$?; cleanup_operator_source_snapshot; exit "$spa_rc"; }
+verifier_run_step verifier-host-bundle build_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
+verifier_run_step verifier-host-import-smoke smoke_verifier_operator_host || { cleanup_operator_source_snapshot; exit 1; }
 if [ "$PREPARE_ONLY" -eq 1 ]; then
   log "PREPARE_ONLY_OK source snapshot and host import smoke; no native acceptance"
   vh_end
@@ -1939,7 +1960,7 @@ write_assertion_input_manifest() {
   fi
 }
 
-vh_run_step assertion-input-manifest write_assertion_input_manifest || exit $?
+verifier_run_step assertion-input-manifest write_assertion_input_manifest || exit $?
 
 cleanup_assertion_script_snapshot() {
   if [ -n "${ASSERTION_SCRIPT_SNAPSHOT_PATH:-}" ]; then
@@ -2022,7 +2043,7 @@ snapshot_assertion_script() {
   log "assertion script snapshot frozen at $ASSERTION_SCRIPT_SNAPSHOT_PATH (source $ASSERTION_SCRIPT_ORIGINAL_PATH) — IMMUTABLE for this run; restart to pick up a newer version."
 }
 
-vh_run_step assertion-script-snapshot snapshot_assertion_script || exit $?
+verifier_run_step assertion-script-snapshot snapshot_assertion_script || exit $?
 
 # EI-18805100008031244 (correct-state ask #3, "report contention honestly at
 # boot"): when the port picker retries or a bind loses a race, the caller was
@@ -3339,7 +3360,7 @@ fi
 # EI-17134: write the freshness-check helper unconditionally (a no-op when no
 # snapshot was frozen — SPA_DIST is empty) so $VERIFY_TAURI_FRESHNESS_CHECK is
 # always a valid, runnable path for the caller, in both branches above.
-vh_run_step freshness-check-script write_freshness_check_script
+verifier_run_step freshness-check-script write_freshness_check_script
 
 # Check a caller's literal marker as soon as both immutable artifacts exist.
 # A missing or runtime-concatenated marker must not consume a Postgres/native
@@ -3362,7 +3383,7 @@ verify_snapshot_marker_preflight() {
   return 3
 }
 
-vh_run_step snapshot-containment-preflight verify_snapshot_marker_preflight || exit $?
+verifier_run_step snapshot-containment-preflight verify_snapshot_marker_preflight || exit $?
 
 # ── EI-10387: boot a genuinely isolated, throwaway embedded Postgres ────────
 vh_step isolated-database-prepare
@@ -3987,6 +4008,7 @@ desktop_binary_started() {
 vh_capture_phase_stop
 verifier_begin_phase boot
 while :; do
+  preflight_verifier_task_deadline boot || exit $?
   BOOT_ATTEMPTS=$((BOOT_ATTEMPTS + 1))
   vh_step "launch-attempt-$BOOT_ATTEMPTS"
   write_and_launch_tauri
@@ -5125,6 +5147,7 @@ if [ "$ISOLATED_DB" = "1" ]; then
   export PAPERCUSP_VERIFY_TAURI_ISOLATED=1
 fi
 
+preflight_verifier_task_deadline assert || exit $?
 verifier_begin_phase assert
 # Assertions write diagnostics outside the disposable operator source. Export
 # after vh_begin so children receive the current phase, not the boot directory.

@@ -202,7 +202,7 @@ describe('core MCP spine wire budget (EI-23345472964244980 / D-001)', () => {
     // keeps that correction honest: if ompCoreToolNames() ever collapses back onto the
     // literal, this fails rather than the header quietly becoming true again by accident.
     const derived = ompCoreToolNames({}) as string[];
-    expect(derived).toEqual([...(OMP_TOOL_DELIVERY as { advertised: string[] }).advertised]);
+    expect(derived).toEqual([...(OMP_TOOL_DELIVERY as { advertised: readonly string[] }).advertised]);
     expect(derived).not.toEqual([...(OMP_CORE_MCP_TOOL_NAMES as string[])]);
   });
 
@@ -281,7 +281,7 @@ describe('core MCP spine wire budget (EI-23345472964244980 / D-001)', () => {
 
   it('FLOOR COVERAGE: every floor tool is advertised to psu OMP at >= COMPACT (P-008)', () => {
     const advertised = new Set(ompCoreToolNames({}) as string[]);
-    const floors = (OMP_TOOL_DELIVERY as { floors?: string[] }).floors ?? [];
+    const floors = (OMP_TOOL_DELIVERY as { floors?: readonly string[] }).floors ?? [];
     expect(
       floors.length,
       'the generated artifact carries no floor list — this assertion would be vacuous',

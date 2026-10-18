@@ -12,7 +12,7 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 }));
 vi.mock('../../auth-config-overrides', () => ({ authSafeToolsRemoveSet: safeToolsRemoveSetMock }));
 
-import { bindCurrentCallerDispatch } from './current-caller-dispatch';
+import { bindCurrentCallerDispatch, withNestedWorkItemId } from './current-caller-dispatch';
 import { applyScopedSuperuserTransportBoundary } from '../../endpoint-route/routes/transport/scoped-superuser-transport-boundary';
 
 describe('scoped-superuser transport boundary', () => {
@@ -94,5 +94,53 @@ describe('scoped-superuser transport boundary', () => {
         text: expect.stringContaining('tool_not_available_for_profile'),
       });
     }
+  });
+
+  it('propagates an outer work-item to an omitted nested capability:bash attribution', async () => {
+    let seenArgs: Record<string, unknown> | undefined;
+    const ctx = withNestedWorkItemId({
+      workspaceId: 'ws-one',
+      role: 'su',
+      isSuperuser: true,
+      profile: 'engineer',
+      tx: { outer: true },
+    } as never, 'WI-command');
+
+    await bindCurrentCallerDispatch(
+      { needsWorkspaceTx: true } as never,
+      'capability:bash',
+      { command: 'true' },
+      ctx as never,
+      async (_callCtx, args) => {
+        seenArgs = args as Record<string, unknown>;
+        return { ok: true };
+      },
+    );
+
+    expect(seenArgs).toMatchObject({ command: 'true', work_item_id: 'WI-command' });
+  });
+
+  it('preserves explicit nested attribution over the outer default', async () => {
+    let seenArgs: Record<string, unknown> | undefined;
+    const ctx = withNestedWorkItemId({
+      workspaceId: 'ws-one',
+      role: 'su',
+      isSuperuser: true,
+      profile: 'engineer',
+      tx: { outer: true },
+    } as never, 'WI-outer');
+
+    await bindCurrentCallerDispatch(
+      { needsWorkspaceTx: true } as never,
+      'capability:bash',
+      { command: 'true', work_item_id: 'WI-inner' },
+      ctx as never,
+      async (_callCtx, args) => {
+        seenArgs = args as Record<string, unknown>;
+        return { ok: true };
+      },
+    );
+
+    expect(seenArgs).toMatchObject({ command: 'true', work_item_id: 'WI-inner' });
   });
 });

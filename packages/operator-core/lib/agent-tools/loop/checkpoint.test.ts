@@ -3186,6 +3186,64 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(read.checks[0]?.observed).toBeUndefined();
     });
 
+    it('persists verification for both keyed rows under rowsMode:merge through immediate readback (EI-26313956798536800)', async () => {
+      const prior = mergeCarryRows({
+        priorNote: null,
+        baseNote: 'prior body',
+        checks: [
+          { id: 'inbox-wake-progress', claim: 'the inbox wake progressed', recheck: 'read the wake ledger' },
+          { id: 'inbox-wake-unfulfilled', claim: 'no inbox wake remained unfulfilled', recheck: 'read the wake ledger' },
+        ],
+        hasNoteWrite: true,
+      }).note;
+      getLoopCarryNote.mockResolvedValue(prior);
+      // Model the production write/read round trip so the regression proves the
+      // persisted artifact is what the immediate reader returns for BOTH rows.
+      setLoopCarryNote.mockImplementationOnce(async (_ref: unknown, note: unknown) => note as string);
+
+      const progressEvidence = 'observed the inbox wake progress at 12:24Z';
+      const unfulfilledEvidence = 'observed zero unfulfilled inbox wakes at 12:24Z';
+      const b = body(
+        await call({
+          checks: [
+            {
+              id: 'inbox-wake-progress',
+              claim: 'the inbox wake progressed',
+              recheck: 'read the wake ledger',
+              verified: progressEvidence,
+            },
+            {
+              id: 'inbox-wake-unfulfilled',
+              claim: 'no inbox wake remained unfulfilled',
+              recheck: 'read the wake ledger',
+              verified: unfulfilledEvidence,
+            },
+          ],
+          rowsMode: 'merge',
+        }),
+      );
+
+      expect(b).toMatchObject({ ok: true, verified: true, checks: 2, rowsMode: 'merge' });
+      expect(b.repairs).toBeUndefined();
+      const storedChecks = splitCarryNoteChecks(lastStoredNote).checks;
+      expect(storedChecks).toHaveLength(2);
+      expect(storedChecks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 'inbox-wake-progress', verified: expect.stringContaining(progressEvidence) }),
+          expect.objectContaining({ id: 'inbox-wake-unfulfilled', verified: expect.stringContaining(unfulfilledEvidence) }),
+        ]),
+      );
+
+      const read = body(await call({ read: true }));
+      expect(read.checks).toHaveLength(2);
+      expect(read.checks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 'inbox-wake-progress', verified: expect.stringContaining(progressEvidence) }),
+          expect.objectContaining({ id: 'inbox-wake-unfulfilled', verified: expect.stringContaining(unfulfilledEvidence) }),
+        ]),
+      );
+    });
+
     it('maps {status, evidence} to `verified`, PRESERVING the evidence rather than dropping it', () => {
       const out = parse({
         checks: [{ claim: 'gate is green', recheck: 'state:read', status: 'verified', evidence: 'saw 30/30 pass' }],

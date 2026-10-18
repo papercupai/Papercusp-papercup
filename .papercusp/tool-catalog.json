@@ -3035,7 +3035,7 @@
       ],
       "guidance": {
         "when": "Poll a capability:bash background job. After carry use task_id: it reattaches through the durable ledger and never starts a replacement. Repeated calls drain new output; terminal status includes the tail and exit code.",
-        "notWhen": "For a foreground command — its output is in the capability:bash result directly. A miss WITH a log tail means the job's in-memory tracking is gone while its log survived; three DISTINCT reason codes say what is known, never conflate them. `\"tracking_lost_process_alive\"` = CONFIRMED running (task-ledger pid re-probe) — do NOT re-run, keep polling. `\"job_process_gone\"` = CONFIRMED ended (the ledger observed a terminal state) — safe to re-run. `\"job_liveness_unknown\"` = only a whole-operator restart was ruled out; liveness is UNKNOWN and the job is most often alive but QUEUED behind pc-heavy's slot clamp — check `ps` for your command before re-running, or you add load to the very queue that is delaying it.",
+        "notWhen": "Foreground output is in capability:bash directly. A registry miss can recover running status from process identity or systemd ActiveState, and terminal status from the task ledger or retained systemd Result. job_liveness_unknown means neither liveness nor exit cause was established; verify the task before relaunching to avoid a duplicate.",
         "chaining": "capability:bash { run_in_background:true } → capability:bash_output { task_id } after carry (or { bash_id } in the launching context) → processes:kill { taskId } to stop early."
       }
     },

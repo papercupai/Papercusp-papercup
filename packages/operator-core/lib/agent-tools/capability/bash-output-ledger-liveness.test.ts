@@ -226,11 +226,13 @@ describe('taskScopeIsActive (EI-21238945235772551)', () => {
     'accepts systemd ActiveState=%s for the canonical confined bash-job service',
     async (activeState) => {
       const exec = vi.fn(async (_file: string, _args: readonly string[], _options: object) => ({
-        stdout: `${activeState}\n`,
+        stdout: `Id=${serviceUnit}\nLoadState=loaded\nActiveState=${activeState}\n`,
       }));
 
       await expect(taskScopeIsActive(base, exec)).resolves.toBe(true);
-      expect(exec).toHaveBeenCalledWith('systemctl', ['--user', 'show', '-p', 'ActiveState', '--value', serviceUnit], {
+      expect(exec).toHaveBeenCalledWith('systemctl', expect.arrayContaining([
+        '--user', 'show', '--no-pager', expect.stringContaining('Result,ExecMainCode,ExecMainStatus'), serviceUnit,
+      ]), {
         timeout: 2_000,
         maxBuffer: 64 * 1024,
       });
@@ -238,14 +240,14 @@ describe('taskScopeIsActive (EI-21238945235772551)', () => {
   );
 
   it('rejects an inactive service, a scope-shaped unit, and non-bash or unconfined rows without probing', async () => {
-    const exec = vi.fn(async () => ({ stdout: 'active\n' }));
+    const exec = vi.fn(async () => ({ stdout: `Id=${serviceUnit}\nLoadState=loaded\nActiveState=active\n` }));
 
     await expect(taskScopeIsActive({ ...base, scopeUnit: 'pc-tsk0000001.service' }, exec)).resolves.toBe(true);
     await expect(taskScopeIsActive({ ...base, scopeUnit: scopeUnitForTask(taskId) }, exec)).resolves.toBe(false);
     await expect(taskScopeIsActive({ ...base, class: 'agent-session' }, exec)).resolves.toBe(false);
     await expect(taskScopeIsActive({ ...base, confined: false }, exec)).resolves.toBe(false);
 
-    const inactiveExec = vi.fn(async () => ({ stdout: 'inactive\n' }));
+    const inactiveExec = vi.fn(async () => ({ stdout: `Id=${serviceUnit}\nLoadState=loaded\nActiveState=inactive\n` }));
     await expect(taskScopeIsActive(base, inactiveExec)).resolves.toBe(false);
     expect(inactiveExec).toHaveBeenCalledTimes(1);
     expect(exec).toHaveBeenCalledTimes(1);

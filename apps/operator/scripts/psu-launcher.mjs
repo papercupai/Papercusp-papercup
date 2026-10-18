@@ -5123,6 +5123,9 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // events:await lifecycle; a trimmed client must be able to retract its own wait
   // without a tools:find/tools:invoke round-trip.
   "events:cancel",
+  // events:status is the recovery read paired with the await lifecycle; keep
+  // the launcher mirror in lockstep with the canonical orchestrator spine.
+  "events:status",
   // EI-6770: without this, an agent nearing its compaction limit self-halts instead of
   // compacting cleanly ("no compaction tool available"), losing in-flight work.
   "session:request-compaction",

@@ -271,7 +271,7 @@ describe('inbox:bulk-run-report late-return evidence', () => {
 describe('inbox:bulk-run-manifest canonical action vocabulary', () => {
   it('bypasses the UI list projection, which intentionally strips actions', async () => {
     h.callPlansRead.mockImplementation(async () => {
-      h.callPlansReadWorkspace = currentRequestWorkspaceId();
+      h.callPlansReadWorkspace = currentRequestWorkspaceId() ?? null;
       return {
         groups: [{ items: [{ id: item.itemId, ref: item.ref, actions: [{ id: 'ack', label: 'Acknowledge' }] }] }],
       };

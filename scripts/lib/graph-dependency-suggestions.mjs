@@ -37,6 +37,12 @@ export const MAX_CONCURRENT_SOURCE_READS = 16;
 export const MAX_DEPENDENCY_PATH_DEPTH = 64;
 export const MAX_DEPENDENCY_PATHS = 100;
 
+/**
+ * Stable result shape for a suggestion walk. Degraded outcomes intentionally omit optional
+ * path fields, but callers should not have to narrow the implementation-detail union of the
+ * internal object literals.
+ * @typedef {{ status: string, reason?: string, suggestedFiles: string[], dependencyPaths?: any[], pathsTruncated?: boolean, accepted: any[], rejected: any[], truncated?: boolean, index?: any }} SuggestionWalkResult
+
 const RESOLVE_EXTS = ["", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".json"];
 const JS_TO_TS = new Map([
   [".js", [".ts", ".tsx"]],
@@ -397,6 +403,7 @@ function finishSuggestionWalk(state) {
 /** Walk verified importers of `changed` files in `snapshot`. Never throws on bad data; the
  * only outputs are accepted importer files plus a full account of what was rejected.
  * @param {{ changed: string[], snapshot: any, now: number, maxAgeMs?: number, readSource: (rel: string) => string | null }} args
+ * @returns {SuggestionWalkResult}
  */
 export function suggestFromSnapshot({ changed, snapshot, now, maxAgeMs, readSource }) {
   const prepared = prepareSuggestionWalk({ changed, snapshot, now, maxAgeMs });
@@ -452,6 +459,7 @@ async function preloadSourceFiles(paths, readSource, cache) {
  * reachable from each BFS frontier, plus target package manifests, with bounded parallel reads.
  * The same `verifyEdge` check still decides every accepted/rejected edge.
  * @param {{ changed: string[], snapshot: any, now: number, maxAgeMs?: number, readSource: (rel: string) => Promise<string | null> }} args
+ * @returns {Promise<SuggestionWalkResult>}
  */
 export async function suggestFromSnapshotAsync({ changed, snapshot, now, maxAgeMs, readSource }) {
   const prepared = prepareSuggestionWalk({ changed, snapshot, now, maxAgeMs });
@@ -604,7 +612,10 @@ export function computeGraphSuggestions({ changed, snapshotPath, readFile, readS
   };
 }
 
-/** Async selector path used by affected-tests; snapshot loading stays sync, source verification does not. */
+/**
+ * Async selector path used by affected-tests; snapshot loading stays sync, source verification does not.
+ * @param {{ changed: string[], snapshotPath: string | null, readFile: (p: string) => string, readSource: (rel: string) => Promise<string | null>, ownerOfPath: (file: string) => string[], now: number, maxAgeMs?: number }} args
+ */
 export async function computeGraphSuggestionsAsync({ changed, snapshotPath, readFile, readSource, ownerOfPath, now, maxAgeMs }) {
   if (!snapshotPath) {
     return { status: "unavailable", reason: "no-snapshot-path", workspaces: [], accepted: 0, rejected: 0, index: null, ageMs: null };

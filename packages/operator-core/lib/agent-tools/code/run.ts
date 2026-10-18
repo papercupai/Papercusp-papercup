@@ -42,7 +42,7 @@ import {
   resolveLiveBoundRefs,
   type RecipeAuthorityContext,
 } from '../../recipe-authority';
-import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
+import { bindCurrentCallerDispatch, withNestedWorkItemId } from '../orchestration/current-caller-dispatch';
 import { recordRecipeRun } from '../../code-recipes-store';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
 import { buildScratchUri, safeScratchFilesystemPath } from '../../scratch-uri';
@@ -294,6 +294,9 @@ export default defineTool({
     ),
     inputs: z.record(z.string().max(200), z.unknown()).optional().describe(
       'Explicit JSON-only replay state for the sandbox inputs object. Use with store/load: a successful run returns state when store/load was used; persist that state outside the process and pass it here after an operator restart. Inputs never restore arbitrary globalThis objects or functions.',
+    ),
+    work_item_id: z.string().min(1).max(120).optional().describe(
+      'Default work-item attribution for nested capability:bash calls. Use the exact held WI-/EI-/F- id when this session holds multiple work-items; an explicit nested work_item_id takes precedence.',
     ),
     script: z
       .string()
@@ -549,7 +552,7 @@ export default defineTool({
     const result = await runToolOrchestration(script, {
       ...(kernelHandle ? { kernel: kernelHandle } : {}),
       ...(kernelHandle ? { executeScript: runManagedKernelScript } : {}),
-      ctx,
+      ctx: withNestedWorkItemId(ctx, args.work_item_id),
       // Thread the host's REAL dispatch deps (B-CX-DEPS): inner tool calls route through
       // the same dispatcher pipeline as any MCP `tools/call` — so they are recordInvocation-
       // logged (visible to spend/quota, not invisible), quota-counted, capability-envelope-

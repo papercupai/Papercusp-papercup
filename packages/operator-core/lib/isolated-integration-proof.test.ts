@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pruneRuns, runHarness } from '@papercusp/verification-harness';
-import { assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedWorkerOptions, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
+import { assertIsolatedWorkerReaped, captureIsolatedWorker, isolatedIntegrationDiagnosticArtifacts, isolatedWorkerOptions, recordIsolatedIntegrationProof, retainIsolatedNativeTaskDiagnostics, retainIsolatedWorkerProgress, withIsolatedNativeLaunchDiagnostics } from '../test/isolated-integration-proof';
 import { assertPrivateUnrelatedCheckpointObservation, privateClaudeModelConfig, privateCodexModelConfig, retainPrivateProviderResponse, stopPrivateOperatorHost, type PrivateUnrelatedCheckpointObservation } from '../test/private-http-workspace-preflight';
 const NEVER_EMIT_MARKER = 'never-emit-me';
 
@@ -226,7 +226,7 @@ it('reaps a native descendant after host exit before waiting for inherited pipes
     expect(Number.isSafeInteger(nativePid)).toBe(true);
     let hostExitedBeforeReap = false;
     await stopPrivateOperatorHost(host, async () => {
-      hostExitedBeforeReap = host.exitCode !== null;
+      hostExitedBeforeReap = host.exitCode !== null || host.signalCode !== null;
       process.kill(nativePid!, 0);
       process.kill(nativePid!, 'SIGKILL');
     }, 1_000);
@@ -239,12 +239,12 @@ it('reaps a native descendant after host exit before waiting for inherited pipes
   }
 }, 5_000);
 
-it('fails bounded host cleanup when a descendant still owns the output pipes', async () => {
+it.each(['exit', 'signal'] as const)('fails bounded host cleanup when a descendant still owns the output pipes: %s', async (termination) => {
   const host = spawn(process.execPath, ['-e', `
     const { spawn } = require('node:child_process');
     const native = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 1, 2] });
+    process.on('SIGTERM', () => ${termination === 'signal' ? "process.kill(process.pid, 'SIGKILL')" : 'process.exit(0)'});
     console.log(native.pid);
-    process.on('SIGTERM', () => process.exit(0));
     setInterval(() => {}, 1000);
   `], { stdio: ['ignore', 'pipe', 'pipe'] });
   let nativePid: number | undefined;
@@ -253,7 +253,8 @@ it('fails bounded host cleanup when a descendant still owns the output pipes', a
     nativePid = Number(String(chunk).trim());
     expect(Number.isSafeInteger(nativePid)).toBe(true);
     await expect(stopPrivateOperatorHost(host, undefined, 100)).rejects.toThrow('stdio drainage did not settle');
-    expect(host.exitCode).not.toBeNull();
+    expect(host.exitCode !== null || host.signalCode !== null).toBe(true);
+    if (termination === 'signal') expect(host.signalCode).toBe('SIGKILL');
     expect(() => process.kill(nativePid!, 0)).not.toThrow();
   } finally {
     host.kill('SIGKILL');
@@ -324,6 +325,26 @@ it('retains native output when a later source snapshot is empty or shorter', () 
     retainIsolatedNativeTaskDiagnostics(evidenceDir, task, { stdout: source });
     expect(readFileSync(join(evidenceDir, 'native-task-stdout.log'), 'utf8')).toContain('new output');
   } finally { rmSync(evidenceDir, { recursive: true, force: true }); }
+});
+
+it('retains and enrolls the native Codex TUI log before disposable home removal', () => {
+  const root = mkdtempSync(join(tmpdir(), 'isolated-codex-log-'));
+  const home = join(root, 'native-home');
+  const evidence = join(root, 'phases', 'execute');
+  mkdirSync(join(home, 'log'), { recursive: true });
+  mkdirSync(evidence, { recursive: true });
+  const log = join(home, 'log', 'codex-tui.log');
+  try {
+    writeFileSync(log, 'MCP initialization failed: superuser_non_loopback\n');
+    retainIsolatedNativeTaskDiagnostics(evidence, { taskId: 'private-native' }, {}, home);
+    rmSync(home, { recursive: true });
+    retainIsolatedNativeTaskDiagnostics(evidence, { taskId: 'private-native' }, {}, home);
+    expect(readFileSync(join(evidence, 'native-task-codex-tui.log'), 'utf8'))
+      .toContain('MCP initialization failed: superuser_non_loopback');
+    expect(JSON.parse(readFileSync(join(evidence, 'native-task-diagnostics.json'), 'utf8')))
+      .toMatchObject({ files: { 'codex-tui': { source: log, captured: false, reason: 'missing' } } });
+    expect(isolatedIntegrationDiagnosticArtifacts(root)).toContain('phases/execute/native-task-codex-tui.log');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 it('preserves failure progress and verifies a real reaped signal without certifying success', async () => {

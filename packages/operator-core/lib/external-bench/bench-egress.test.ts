@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createServer, connect, type Server } from 'node:net';
-import { createServer as createHttpServer } from 'node:http';
+import { createServer as createHttpServer, request as httpRequest } from 'node:http';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -163,6 +163,47 @@ describe('listeningPortsFromProcNet', () => {
 });
 
 describe('startBenchEgress', () => {
+  it('streams an MCP POST response before upstream completion and closes the live stream on stop', async () => {
+    let received = '';
+    const host = createHttpServer(async (req, res) => {
+      for await (const chunk of req) received += chunk;
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: first-event\n\n');
+      // Intentionally stays open: buffering the response would never resolve.
+    });
+    await new Promise<void>(done => host.listen(0, '127.0.0.1', done));
+    const fake = fakeDocker({ listen: [9071] });
+    let client: ReturnType<typeof httpRequest> | undefined;
+    let egress: BenchEgress | undefined;
+    try {
+      egress = await startBenchEgress({ runId: 'http-stream', endpoints: [{ name: 'mcp', listenPort: 9071,
+        targetPort: (host.address() as { port: number }).port, transport: 'http' }],
+        exec: fake.exec, workRoot, readyTimeoutMs: 2000, readyPollMs: 10 });
+      started.push(egress);
+      let streamClosed: Promise<void> | undefined;
+      const first = new Promise<string>((resolve, reject) => {
+        client = httpRequest({ socketPath: join(relayDirOf(fake.calls), 'mcp.sock'),
+          method: 'POST', path: '/api/mcp?superuser=1', headers: { host: 'papercusp-egress:9071',
+            'content-type': 'application/json' } }, response => {
+          streamClosed = new Promise<void>(done => response.once('close', done));
+          response.on('error', () => undefined); // stop intentionally aborts this open stream.
+          response.once('data', chunk => resolve(String(chunk)));
+        });
+        client.on('error', reject);
+        client.end('{"jsonrpc":"2.0","method":"tools/list","id":1}');
+      });
+      expect(await first).toBe('data: first-event\n\n');
+      expect(JSON.parse(received)).toMatchObject({ method: 'tools/list', id: 1 });
+      expect(await egress.stop()).toEqual({ errors: [] });
+      await streamClosed;
+    } finally {
+      client?.destroy();
+      await egress?.stop();
+      host.closeAllConnections();
+      await new Promise<void>(done => host.close(() => done()));
+    }
+  });
+
   it('HTTP MCP relay preserves loopback authentication without trusting external forwarding headers', async () => {
     const seen: Array<{ host: string | undefined; bearer: string | undefined; path: string | undefined }> = [];
     const host = createHttpServer((req, res) => {

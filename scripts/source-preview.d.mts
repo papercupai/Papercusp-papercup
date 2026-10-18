@@ -359,12 +359,12 @@ export function admitVerifierCommandBudget(estimate: any, { env, nowMs, preparat
     nowMs?: number | undefined;
     preparation?: boolean | undefined;
 }): {
+    estimate: any;
     deadlineEpochMs: number | null;
     remainingMs: number | null;
     knownEstimateMs: number;
     cleanupReserveMs: number;
     childCutoffEpochMs: number | null;
-    estimate: any;
 };
 export function noticeText(manifest: any): string;
 /**

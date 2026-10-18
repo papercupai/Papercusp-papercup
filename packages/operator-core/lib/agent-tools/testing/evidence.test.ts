@@ -173,12 +173,29 @@ describe('test-time evidence continuity', () => {
     mockResolvedOnceTyped(d.bind, { status: 'spec_revision_not_found', specId: 'R-2', specRevision: 99 });
     mockResolvedTyped(d.list, [{
       id: 101,
+      workItemId: 'WI-1',
+      planSlug: 'p1',
       evidenceKind: 'test',
       specId: 'R-1',
       specRevision: 2,
+      sourceValId: null,
+      currentRevision: 2,
+      specFingerprint: 'spec-fingerprint',
       evidenceRef: 'test-run-group:' + runId + ':0',
+      fingerprints: {
+        sourceFingerprint: 'source-fingerprint',
+        testFingerprint: null,
+        fixtureFingerprint: null,
+        rubricFingerprint: null,
+        environmentFingerprint: null,
+      },
+      coverageEvidenceRef: null,
       testRunId: null,
       details: { testExecution: { schemaVersion: 1, phase: 'pending', runId, originRunId: runId } },
+      observedAt: '2026-09-24T00:00:00.000Z',
+      bindingFingerprint: 'binding-fingerprint',
+      createdBy: 'su-test',
+      createdAt: '2026-09-24T00:00:00.000Z',
     }]);
 
     await expect(prepareTestEvidence(batch, runId, [binding.testPath], scope, d))
